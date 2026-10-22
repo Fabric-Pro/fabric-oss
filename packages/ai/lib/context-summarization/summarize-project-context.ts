@@ -429,10 +429,6 @@ export async function foldContextBatch(
 			`${input.systemPrompt?.trim() || SYSTEM_GUIDANCE}\n${FORMATTING_GUIDANCE}`,
 		),
 		messages: [{ role: "user" as const, content: promptParts.join("\n") }],
-		// Optional fields make Azure/OpenAI reject a strict JSON schema (Bug
-		// #1681); disable strict mode — the AI SDK still validates the object
-		// against the Zod schema.
-		providerOptions: { openai: { strictJsonSchema: false } },
 	});
 
 	trackUsage();

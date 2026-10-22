@@ -1,3 +1,4 @@
+import { getEmbeddingChangeImpactProcedure } from "./procedures/embeddings/change-impact";
 import { listAvailableModelsProcedure } from "./procedures/models/list-available";
 import { listModelCatalogProcedure } from "./procedures/models/list-catalog";
 import { listModelsFromGatewayProcedure } from "./procedures/models/list-from-gateway";
@@ -20,6 +21,7 @@ import {
 import {
 	deleteUserProviderProcedure,
 	getProviderConfigProcedure,
+	previewSetDefaultProviderProcedure,
 	setDefaultProviderProcedure,
 	setEmbeddingProviderProcedure,
 	updateEnabledProvidersProcedure,
@@ -30,6 +32,7 @@ import { resolveModelForAgentProcedure } from "./procedures/resolution/resolve-f
 import { resolveModelProcedure } from "./procedures/resolution/resolve-model";
 
 export const aiConfigRouter = {
+	embeddings: { changeImpact: getEmbeddingChangeImpactProcedure },
 	// Model catalog
 	models: {
 		list: listModelCatalogProcedure,
@@ -44,6 +47,7 @@ export const aiConfigRouter = {
 		upsert: upsertUserProviderProcedure,
 		delete: deleteUserProviderProcedure,
 		setDefault: setDefaultProviderProcedure,
+		previewSetDefault: previewSetDefaultProviderProcedure,
 		setEmbedding: setEmbeddingProviderProcedure,
 		setPlanSpentFallback: setPlanSpentFallbackProcedure,
 		updateEnabled: updateEnabledProvidersProcedure,

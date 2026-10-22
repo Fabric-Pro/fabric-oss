@@ -1,4 +1,7 @@
-import { listPendingBacklogProposals } from "@repo/database";
+import {
+	listPendingBacklogProposals,
+	REVIEW_INBOX_PROPOSAL_STATUSES,
+} from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -8,8 +11,8 @@ import {
 
 /**
  * Returns PendingBacklogProposal rows for the project. Defaults to the
- * "needs-attention" set (PENDING + FAILED) for the Roadmap inbox; pass an
- * explicit status list to override.
+ * review-inbox set (PENDING, APPROVED, APPLYING, FAILED); pass an explicit
+ * status list to override.
  */
 const statusEnum = z.enum([
 	"PENDING",
@@ -30,7 +33,7 @@ export const listPendingProposalsProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Teams Channel Monitor"],
 		summary: "List pending backlog proposals",
 		description:
-			"Returns backlog proposals awaiting review (default: PENDING + FAILED).",
+			"Returns backlog proposals awaiting review (default: PENDING, APPROVED, APPLYING, and FAILED).",
 	})
 	.input(
 		z.object({
@@ -42,11 +45,6 @@ export const listPendingProposalsProcedure = tenantProtectedProcedure
 	.handler(async ({ input }) => {
 		return await listPendingBacklogProposals({
 			projectId: input.projectId,
-			status: input.status ?? [
-				"PENDING",
-				"APPROVED",
-				"APPLYING",
-				"FAILED",
-			],
+			status: input.status ?? REVIEW_INBOX_PROPOSAL_STATUSES,
 		});
 	});

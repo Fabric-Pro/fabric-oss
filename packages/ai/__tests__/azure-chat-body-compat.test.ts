@@ -1,25 +1,145 @@
+import { zodSchema } from "ai";
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
+import { toStrictJsonSchema } from "../lib/strict-json-schema-middleware";
 import { applyAzureChatBodyCompat } from "../model-factory";
 
 describe("applyAzureChatBodyCompat", () => {
-	it("flips strict json_schema structured outputs to non-strict (Bug #1681)", () => {
-		// @ai-sdk/openai defaults strictJsonSchema=true, which Azure rejects with
-		// a 400 when the Zod schema has optional fields. Force non-strict.
+	it("preserves a middleware-converted schema with defaults and nested optional objects", async () => {
+		const schema = toStrictJsonSchema(
+			await zodSchema(
+				z.object({
+					meta: z
+						.object({
+							note: z.string().max(200).default("example"),
+						})
+						.optional(),
+					rows: z.array(z.object({ note: z.string().optional() })),
+				}),
+			).jsonSchema,
+		);
+		expect(schema).toBeDefined();
 		const body = {
 			response_format: {
 				type: "json_schema",
-				json_schema: { name: "Proposal", strict: true, schema: {} },
+				json_schema: { strict: true, schema },
+			},
+		};
+		expect(applyAzureChatBodyCompat(body, "gpt-4.1-mini")).toBe(false);
+		expect(body.response_format.json_schema.strict).toBe(true);
+		expect(body.response_format.json_schema.schema).toBe(schema);
+	});
+	it.each(["properties", "items", "anyOf", "$defs", "definitions"])(
+		"relaxes incompatible nested objects through %s",
+		(path) => {
+			const invalid = {
+				type: "object",
+				properties: { note: { type: "string" } },
+				required: ["note"],
+			};
+			const root = {
+				type: "object",
+				properties: {},
+				required: [],
+				additionalProperties: false,
+			};
+			const schema =
+				path === "properties"
+					? {
+							...root,
+							properties: { entry: invalid },
+							required: ["entry"],
+						}
+					: path === "items"
+						? {
+								...root,
+								properties: {
+									rows: { type: "array", items: invalid },
+								},
+								required: ["rows"],
+							}
+						: path === "anyOf"
+							? {
+									...root,
+									properties: {
+										entry: {
+											anyOf: [invalid, { type: "null" }],
+										},
+									},
+									required: ["entry"],
+								}
+							: { ...root, [path]: { entry: invalid } };
+			const body = {
+				response_format: {
+					type: "json_schema",
+					json_schema: { strict: true, schema },
+				},
+			};
+			expect(applyAzureChatBodyCompat(body, "gpt-4.1-mini")).toBe(true);
+			expect(body.response_format.json_schema.strict).toBe(false);
+		},
+	);
+	it("relaxes a closed object that does not require each property", () => {
+		const body = {
+			response_format: {
+				type: "json_schema",
+				json_schema: {
+					strict: true,
+					schema: {
+						type: "object",
+						properties: { note: { type: "string" } },
+						required: [],
+						additionalProperties: false,
+					},
+				},
+			},
+		};
+		expect(applyAzureChatBodyCompat(body, "gpt-4.1-mini")).toBe(true);
+		expect(body.response_format.json_schema.strict).toBe(false);
+	});
+
+	it("relaxes an unconverted strict schema at the fetch boundary", () => {
+		const body = {
+			response_format: {
+				type: "json_schema",
+				json_schema: {
+					strict: true,
+					schema: {
+						type: "object",
+						properties: { note: { type: "string" } },
+					},
+				},
+			},
+		};
+		expect(applyAzureChatBodyCompat(body, "gpt-4.1-mini")).toBe(true);
+		expect(body.response_format.json_schema.strict).toBe(false);
+	});
+
+	it("preserves the structured-output middleware strict decision", () => {
+		const body = {
+			response_format: {
+				type: "json_schema",
+				json_schema: {
+					name: "Proposal",
+					strict: true,
+					schema: {
+						type: "object",
+						properties: {},
+						required: [],
+						additionalProperties: false,
+					},
+				},
 			},
 		} as Record<string, unknown>;
 		const modified = applyAzureChatBodyCompat(body, "gpt-4.1-mini");
-		expect(modified).toBe(true);
+		expect(modified).toBe(false);
 		expect(
 			(
 				body.response_format as {
 					json_schema: { strict: boolean };
 				}
 			).json_schema.strict,
-		).toBe(false);
+		).toBe(true);
 	});
 
 	it("leaves an already non-strict json_schema untouched", () => {

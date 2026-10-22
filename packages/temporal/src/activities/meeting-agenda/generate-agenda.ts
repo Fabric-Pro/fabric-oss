@@ -114,10 +114,6 @@ export async function generateAgendaActivity(
 		model,
 		schema: AgendaSchema,
 		prompt,
-		// AgendaSchema has optional fields, which make Azure/OpenAI reject a
-		// strict JSON schema (bug #1681). The AI SDK still validates the object
-		// against the zod schema.
-		providerOptions: { openai: { strictJsonSchema: false } },
 	});
 
 	trackUsage();

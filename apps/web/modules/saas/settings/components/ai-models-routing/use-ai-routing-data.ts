@@ -29,7 +29,7 @@ export function useAiRoutingData() {
 		(provider) => provider.purpose !== "EMBEDDINGS_ONLY",
 	);
 	const embeddingProvider =
-		configured.find((provider) => provider.isEmbeddingProvider) ?? null;
+		status.data?.organizationEmbedding?.provider ?? null;
 
 	return {
 		organizationSlug,
@@ -41,7 +41,7 @@ export function useAiRoutingData() {
 		/** Keys exist, but every one is embeddings-only. */
 		onlyEmbeddingsKeys: configured.length > 0 && apiProviders.length === 0,
 		embeddingProvider,
-		embeddingModel: status.data?.embeddingModel ?? null,
+		organizationEmbedding: status.data?.organizationEmbedding ?? null,
 		/**
 		 * The VIEWER's own key that serves their work while every plan is
 		 * spent (Fizzy #3085), never another member's; null when none.

@@ -16,6 +16,8 @@ import {
 	searchEpisodicMemories,
 	updateOrchestratorMemoryPreferences,
 } from "@repo/database";
+import { logger } from "@repo/logs";
+import { deleteEpisodeEmbedding } from "@repo/rag/lib/vector-store/episodic-memory-store";
 import { z } from "zod";
 import {
 	Permissions,
@@ -287,6 +289,31 @@ export const deleteEpisode = tenantProtectedProcedure
 				success: false,
 				message: "Episode not found or access denied",
 			};
+		}
+
+		// The deleted row's organization equals orgId: deleteEpisodicMemory matched it.
+		try {
+			const vectorDeleted = await deleteEpisodeEmbedding(
+				input.episodeId,
+				orgId,
+			);
+			if (!vectorDeleted) {
+				logger.warn(
+					"[OrchestratorMemory] Failed to delete episode vector",
+					{ episodeId: input.episodeId },
+				);
+			}
+		} catch (error) {
+			logger.warn(
+				"[OrchestratorMemory] Failed to delete episode vector",
+				{
+					episodeId: input.episodeId,
+					error:
+						error instanceof Error
+							? error.message
+							: "Unknown error",
+				},
+			);
 		}
 
 		return {

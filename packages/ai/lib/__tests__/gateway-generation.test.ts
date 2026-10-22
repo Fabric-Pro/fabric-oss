@@ -35,6 +35,53 @@ describe("fetchGatewayGenerationCostUsd", () => {
 		);
 	});
 
+	it("adds the provider's charge to a BYOK generation's gateway cost", async () => {
+		mockFetch(
+			() =>
+				new Response(
+					JSON.stringify({
+						data: {
+							total_cost: 0.001,
+							upstream_inference_cost: 0.042,
+							is_byok: true,
+						},
+					}),
+					{ status: 200 },
+				),
+		);
+		expect(await fetchGatewayGenerationCostUsd("gen_x", "key")).toBeCloseTo(
+			0.043,
+		);
+	});
+
+	it("keeps the estimate for a BYOK generation with no provider charge reported", async () => {
+		mockFetch(
+			() =>
+				new Response(
+					JSON.stringify({
+						data: {
+							total_cost: 0,
+							upstream_inference_cost: 0,
+							is_byok: true,
+						},
+					}),
+					{ status: 200 },
+				),
+		);
+		expect(await fetchGatewayGenerationCostUsd("gen_x", "key")).toBeNull();
+	});
+
+	it("never reports a zero cost as actual", async () => {
+		mockFetch(
+			() =>
+				new Response(
+					JSON.stringify({ data: { total_cost: 0, is_byok: false } }),
+					{ status: 200 },
+				),
+		);
+		expect(await fetchGatewayGenerationCostUsd("gen_x", "key")).toBeNull();
+	});
+
 	it("does not read a total_cost outside the data envelope", async () => {
 		mockFetch(
 			() =>

@@ -5,7 +5,10 @@ import {
 } from "@repo/ai/lib/feature-keys";
 import { AI_TOKEN_HEADER, verifyAIToken } from "@repo/ai-token";
 import {
+	type AIProvider,
+	getCanonicalNameForProviderModelId,
 	getChatGptPlanOrgAccount,
+	getModelByCanonicalName,
 	getProjectAccessContext,
 	logAiUsage,
 } from "@repo/database";
@@ -165,12 +168,19 @@ export async function POST(request: Request) {
 			verifiedFrameId = frame.usageFrameId;
 		}
 
-		// Strip provider prefix ("anthropic/claude-haiku-4.5" → "claude-haiku-4.5")
-		// so canonicalName matches what Temporal-originated rows already store
-		// and the dashboard shows a consistent short name.
-		const modelCanonicalName = body.model.includes("/")
-			? (body.model.split("/").pop() ?? body.model)
-			: body.model;
+		// Provider IDs can differ from catalog names beyond a vendor prefix.
+		const mappedCanonicalName = await getCanonicalNameForProviderModelId(
+			body.model,
+			body.provider as AIProvider,
+		);
+		const catalogModel = mappedCanonicalName
+			? null
+			: await getModelByCanonicalName(body.model);
+		const modelCanonicalName =
+			mappedCanonicalName ??
+			catalogModel?.canonicalName ??
+			body.model.split("/").pop() ??
+			body.model;
 
 		const providerConfigId = await sharedPlanAccountId({
 			provider: body.provider,

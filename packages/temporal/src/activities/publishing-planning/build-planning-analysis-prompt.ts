@@ -123,15 +123,13 @@ export type PublishingBlockerKind = (typeof PUBLISHING_BLOCKER_KINDS)[number];
  * The Planning & Analysis document, one field per section of the PO's prompt
  * "Output Format" (v1.1), in that order.
  *
- * EVERY section is optional, because FR21–FR38 each say "where available". A
+ * The schema declares each section optional, because FR21–FR38 each say "where available". A
  * thin topic must yield a thin analysis rather than a validation failure that
  * fails the whole run — the failure mode that would hit exactly the manual and
  * release-derived topics whose context is thinnest.
  *
- * That optionality is also why the `generateObject` call MUST pass
- * `providerOptions: { openai: { strictJsonSchema: false } }` — Azure/OpenAI
- * reject a strict JSON schema containing optional fields outright (bug #1681).
- * The AI SDK still validates the object against this schema.
+ * The shared packages/ai middleware handles provider-specific strict-schema
+ * conversion. The AI SDK validates the result against this original schema.
  */
 export const PublishingPlanningAnalysisSchema = z.object({
 	/** FR21 */

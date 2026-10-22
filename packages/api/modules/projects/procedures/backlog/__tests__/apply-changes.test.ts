@@ -48,6 +48,8 @@ vi.mock("@repo/database", () => ({
 				mocks.architectureDecisionFindMany(...args),
 		},
 		pendingBacklogProposal: {
+			updateMany: (...args: unknown[]) =>
+				mocks.pendingBacklogProposalUpdate(...args),
 			update: (...args: unknown[]) => {
 				mocks.callOrder.push("pendingBacklogProposal.update");
 				return mocks.pendingBacklogProposalUpdate(...args);
@@ -167,9 +169,7 @@ beforeEach(() => {
 		id: "proposal-new-1",
 	});
 	mocks.markProposalApplyDispatched.mockResolvedValue(1);
-	mocks.pendingBacklogProposalUpdate.mockResolvedValue({
-		id: "proposal-new-1",
-	});
+	mocks.pendingBacklogProposalUpdate.mockResolvedValue({ count: 1 });
 	mocks.workflowStart.mockResolvedValue({
 		workflowId: "wf-1",
 		firstExecutionRunId: "run-1",
@@ -202,7 +202,7 @@ describe("applyChangesProcedure — proposal row up-front (AC #1)", () => {
 		]);
 	});
 
-	it("stamps the dispatch on the fresh row, guarded as unclaimed, with the started workflow", async () => {
+	it("stamps the dispatch on the fresh row, guarded as claimed, with the started workflow", async () => {
 		await handlers.applyChanges({ input: baseInput, context: ctx });
 
 		const startOpts = mocks.workflowStart.mock.calls[0]?.[1] as {
@@ -211,7 +211,7 @@ describe("applyChangesProcedure — proposal row up-front (AC #1)", () => {
 		expect(mocks.markProposalApplyDispatched).toHaveBeenCalledWith({
 			proposalId: "proposal-new-1",
 			applyWorkflowId: startOpts.workflowId,
-			mode: "fresh",
+			mode: "claimed",
 		});
 	});
 
@@ -343,16 +343,19 @@ describe("applyChangesProcedure — failure modes", () => {
 	});
 
 	it("marks the proposal row as FAILED when workflow start fails", async () => {
-		// Without this safety net, the row would be stuck PENDING with no
-		// workflow ever flipping it — leaking as a perpetually-pending
-		// proposal that the user couldn't retry or dismiss.
+		// A failed dispatch should surface immediately rather than waiting
+		// for the watchdog to recover the APPLYING claim.
 		mocks.workflowStart.mockRejectedValue(new Error("temporal down"));
 		await expect(
 			handlers.applyChanges({ input: baseInput, context: ctx }),
 		).rejects.toBeInstanceOf(ORPCError);
 		expect(mocks.pendingBacklogProposalUpdate).toHaveBeenCalledWith(
 			expect.objectContaining({
-				where: { id: "proposal-new-1" },
+				where: {
+					id: "proposal-new-1",
+					status: "APPLYING",
+					applyWorkflowId: expect.any(String),
+				},
 				data: expect.objectContaining({
 					status: "FAILED",
 					errorClass: "TemporalScheduleFailed",
@@ -757,6 +760,9 @@ describe("applyChangesProcedure — ROADMAP_RECOMMENDATION accept (Fizzy #2208)"
 				storyKind: "FEATURE",
 				userId: "user-1",
 				organizationId: "org-1",
+				// The pre-flight must check the same prompt the drafting will
+				// run, which honours the project's own default.
+				projectId: "project-1",
 			}),
 		);
 		expect(mocks.claimPendingProposalForApply).not.toHaveBeenCalled();

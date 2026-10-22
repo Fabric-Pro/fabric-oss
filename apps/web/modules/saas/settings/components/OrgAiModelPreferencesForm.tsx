@@ -1,24 +1,22 @@
 "use client";
 
+import { embeddingModelFitsVectorStore } from "@repo/rag/lib/embedding/dimensions";
 import { SettingsItem } from "@saas/shared/components/SettingsItem";
-import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
-import { Card } from "@ui/components/card";
-import {
-	AlertCircleIcon,
-	AlertTriangleIcon,
-	CheckCircleIcon,
-	LoaderIcon,
-	LockIcon,
-	SaveIcon,
-	SettingsIcon,
-	ShieldIcon,
-} from "lucide-react";
+import { LoaderIcon, LockIcon } from "lucide-react";
 import Link from "next/link";
-import { ApiTaskModelSelect } from "./org-ai-model-preferences/ApiTaskModelSelect";
+import { useTranslations } from "next-intl";
+import { useEmbeddingsChangeConfirmation } from "./EmbeddingsChangeConfirmDialog";
+
 import {
-	PROVIDER_DISPLAY_NAMES,
+	API_DEFAULT_VALUE,
+	ApiTaskModelSelect,
+} from "./org-ai-model-preferences/ApiTaskModelSelect";
+import { DefaultApiProviderPanel } from "./org-ai-model-preferences/DefaultApiProviderPanel";
+import { ModelFitNote } from "./org-ai-model-preferences/ModelFitNote";
+import {
 	TASK_TYPES,
+	TEXT_TASK_IDS,
 	useOrgApiModelPreferences,
 } from "./org-ai-model-preferences/use-org-api-model-preferences";
 
@@ -27,365 +25,277 @@ export function OrgAiModelPreferencesForm({
 }: {
 	readOnly?: boolean;
 }) {
-	const {
-		organizationSlug,
-		isOrgContext,
-		configuredProviders,
-		models,
-		hasNoProviders,
-		isLoading,
-		pendingChanges,
-		hasPendingChanges,
-		isSaving,
-		handleModelChange,
-		handleSaveAll,
-		handleResetToDefault,
-		getTaskView,
-	} = useOrgApiModelPreferences({ readOnly });
-
-	if (!isOrgContext) {
+	const api = useOrgApiModelPreferences({ readOnly });
+	const t = useTranslations("settings.aiModelsRouting.models");
+	const embeddingChange = useEmbeddingsChangeConfirmation(api.organizationId);
+	const applyChoice = (taskType: string, value: string) =>
+		value === API_DEFAULT_VALUE
+			? api.handlePendingResetToDefault(taskType)
+			: api.handleModelChange(taskType, value);
+	const changeChoice = (
+		taskType: string,
+		value: string,
+		invoker?: HTMLElement | null,
+	) => {
+		if (
+			taskType === "EMBEDDING" &&
+			api.embeddingChoiceChangesIdentity(value)
+		) {
+			void embeddingChange.requestChange(
+				() => applyChoice(taskType, value),
+				invoker,
+			);
+			return;
+		}
+		applyChoice(taskType, value);
+	};
+	const renderRow = (taskTypeId: string) => {
+		const taskType = TASK_TYPES.find((task) => task.id === taskTypeId);
+		if (!taskType) {
+			return null;
+		}
+		const view = api.getTaskView(taskType.id);
 		return (
-			<SettingsItem
-				title="AI Model Preferences"
-				description="Configure AI models for your organization"
+			<tr
+				key={taskType.id}
+				data-testid={
+					taskType.id === "EMBEDDING"
+						? "ai-models-embeddings"
+						: `ai-models-row-${taskType.id}`
+				}
+				className="block border-b border-border py-3 last:border-b-0 md:table-row md:py-0"
 			>
-				<div className="flex items-center justify-center py-8">
-					<LoaderIcon className="size-5 animate-spin text-muted-foreground" />
-				</div>
-			</SettingsItem>
+				<th
+					scope="row"
+					className="block pb-2 text-left font-medium md:table-cell md:py-3 md:pr-4"
+				>
+					<span>{taskType.label}</span>
+					{view.hasPendingChange && (
+						<span className="text-xs text-muted-foreground">
+							{t("unsaved")}
+						</span>
+					)}
+					<span className="block text-xs font-normal text-muted-foreground">
+						{taskType.description}
+					</span>
+				</th>
+				<td className="block py-2 md:table-cell md:py-3">
+					{taskType.id === "EMBEDDING" &&
+					api.organizationEmbedding?.source === "platform" ? (
+						<p>{t("embeddingsPlatform")}</p>
+					) : (
+						<ApiTaskModelSelect
+							view={view}
+							triggerClassName="w-full"
+							modelUnavailableReason={
+								taskType.id === "EMBEDDING"
+									? (name) =>
+											embeddingModelFitsVectorStore(name)
+												? undefined
+												: t("embeddingsNeedsVectorSize")
+									: undefined
+							}
+							hasNoProviders={api.hasNoProviders}
+							disabled={readOnly || embeddingChange.isChecking}
+							ariaLabel={t("apiSelectLabel", {
+								task:
+									taskType.id === "EMBEDDING"
+										? t("embeddingsTitle")
+										: t(`tasks.${taskType.id}.name`),
+							})}
+							defaultLabel={
+								view.hasCustomPref
+									? t("defaultPlain")
+									: undefined
+							}
+							onValueChange={(value, invoker) =>
+								changeChoice(taskType.id, value, invoker)
+							}
+						/>
+					)}
+					{!view.isDefaultChoice &&
+						(view.hasCustomPref || view.hasPendingChange) && (
+							<ModelFitNote
+								taskType={view.taskType}
+								model={view.currentModel}
+							/>
+						)}
+					{view.hasCustomPref && (
+						<p className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+							<LockIcon aria-hidden="true" className="size-3" />
+							{t("enforced")}
+						</p>
+					)}
+					{view.hasCustomPref && !readOnly && (
+						<Button
+							variant="ghost"
+							disabled={embeddingChange.isChecking}
+							size="sm"
+							onClick={() =>
+								changeChoice(taskType.id, API_DEFAULT_VALUE)
+							}
+						>
+							Reset
+						</Button>
+					)}
+					{!view.hasModels &&
+						(taskType.id !== "EMBEDDING" ||
+							api.organizationEmbedding?.source !== "platform") &&
+						!view.noDefaultProvider &&
+						taskType.id !== "DECISION" && (
+							<p className="text-xs text-muted-foreground">
+								{t("noModelsAvailable")}{" "}
+								{api.organizationSlug && (
+									<Link
+										href={`/app/${api.organizationSlug}/settings/ai-providers`}
+									>
+										{t("configureProvidersFirst")}
+									</Link>
+								)}
+							</p>
+						)}
+					{!view.hasModels && taskType.id === "DECISION" && (
+						<p className="text-xs text-muted-foreground">
+							{t("decisionUnavailable")}
+						</p>
+					)}
+					{view.isDisabledChoice && (
+						<p className="text-xs text-muted-foreground">
+							Decisions are switched off. Work items and
+							action-item routing use your regular AI model.
+						</p>
+					)}
+				</td>
+			</tr>
 		);
-	}
-
+	};
 	return (
 		<SettingsItem
 			title="Organization AI Model Preferences"
 			description="Configure which AI models to use for different types of tasks across your organization."
 		>
 			<div className="space-y-6">
-				{/* Read-Only Banner */}
 				{readOnly && (
-					<div className="rounded-md border border-highlight/20 bg-highlight/5 p-4">
-						<div className="flex gap-3">
-							<LockIcon className="size-5 shrink-0 text-highlight" />
-							<div className="space-y-1 text-sm">
-								<p className="font-medium text-foreground">
-									View Only
-								</p>
-								<p className="text-highlight/80">
-									Only organization administrators can modify
-									AI model preferences.
-								</p>
-							</div>
-						</div>
-					</div>
+					<p className="text-sm text-muted-foreground">
+						Only organization administrators can modify AI model
+						preferences.
+					</p>
 				)}
-
-				{/* No Providers Warning */}
-				{hasNoProviders && (
-					<div className="rounded-md border border-highlight/20 bg-highlight/5 p-4">
-						<div className="flex gap-3">
-							<AlertTriangleIcon className="size-5 shrink-0 text-highlight" />
-							<div className="space-y-2 text-sm">
-								<p className="font-medium text-foreground">
-									No AI Providers Configured
-								</p>
-								<p className="text-highlight/80">
-									You need to configure at least one AI
-									provider before you can select models.
-									Configure an AI gateway (like Vercel,
-									OpenRouter) or a direct provider API key.
-								</p>
-								{!readOnly && organizationSlug && (
-									<Link
-										href={`/app/${organizationSlug}/settings/ai-providers`}
-										className="inline-flex items-center gap-1 text-highlight/80 underline hover:text-highlight"
-									>
-										<SettingsIcon className="size-4" />
-										Configure AI Providers
-									</Link>
-								)}
-							</div>
-						</div>
-					</div>
+				{api.hasNoProviders && (
+					<p>
+						No AI Providers Configured{" "}
+						{api.organizationSlug && (
+							<Link
+								href={`/app/${api.organizationSlug}/settings/ai-providers`}
+							>
+								Configure AI Providers
+							</Link>
+						)}
+					</p>
 				)}
-
-				{/* Configured Providers */}
-				{!hasNoProviders && (
-					<div className="rounded-md border border-success/20 bg-success/5 p-4">
-						<div className="flex gap-3">
-							<CheckCircleIcon className="size-5 shrink-0 text-success" />
-							<div className="space-y-3 text-sm w-full">
-								<p className="font-medium text-foreground">
-									AI Configuration
-								</p>
-
-								<div className="flex flex-wrap gap-2">
-									{configuredProviders.map((provider) => (
-										<Badge
-											key={provider.id}
-											variant="outline"
-											className={`${
-												provider.isDefault
-													? "border-success bg-success/10 text-success"
-													: "border-success/40 text-success bg-background"
-											}`}
-										>
-											{provider.displayName ||
-												PROVIDER_DISPLAY_NAMES[
-													provider.provider
-												] ||
-												provider.provider}
-											{provider.isDefault && (
-												<span className="ml-1 text-xs opacity-75">
-													(Default)
-												</span>
-											)}
-										</Badge>
-									))}
-								</div>
-
-								<p className="text-success/80 pt-1">
-									{models.length} models available through
-									your configuration.
-								</p>
-							</div>
-						</div>
-					</div>
-				)}
-
-				{/* Enforce Banner */}
-				{!readOnly && (
-					<div className="rounded-md border border-secondary/20 bg-secondary/5 p-4">
-						<div className="flex gap-3">
-							<ShieldIcon className="size-5 shrink-0 text-secondary" />
-							<div className="space-y-1 text-sm">
-								<p className="font-medium text-foreground">
-									Enforce for Members
-								</p>
-								<p className="text-secondary/80">
-									When enabled, organization members cannot
-									override the model preference for that task
-									type. This is useful for ensuring compliance
-									with cost or capability requirements.
-								</p>
-							</div>
-						</div>
-					</div>
-				)}
-
-				{/* Save Button */}
-				{hasPendingChanges && !readOnly && (
-					<div className="flex flex-col gap-3 rounded-md border border-highlight/20 bg-highlight/5 p-3 sm:flex-row sm:items-center sm:justify-between">
-						<div className="flex items-center gap-2">
-							<AlertCircleIcon className="size-4 text-highlight" />
-							<span className="text-sm text-foreground">
-								You have {Object.keys(pendingChanges).length}{" "}
-								unsaved change(s)
-							</span>
-						</div>
+				{!readOnly && api.hasPendingChanges && (
+					<div className="flex items-center justify-between gap-3">
+						<p className="text-sm">
+							You have {Object.keys(api.pendingChanges).length}{" "}
+							unsaved change(s)
+						</p>
 						<Button
-							onClick={handleSaveAll}
-							disabled={isSaving}
 							size="sm"
+							disabled={
+								api.isSaving || embeddingChange.isChecking
+							}
+							onClick={api.handleSaveAll}
 						>
-							{isSaving ? (
-								<>
-									<LoaderIcon className="mr-2 size-4 animate-spin" />
-									Saving...
-								</>
-							) : (
-								<>
-									<SaveIcon className="mr-2 size-4" />
-									Save Changes
-								</>
-							)}
+							{api.isSaving ? "Saving..." : "Save Changes"}
 						</Button>
 					</div>
 				)}
-
-				{isLoading ? (
-					<div className="flex items-center justify-center py-8">
-						<LoaderIcon className="size-6 animate-spin text-muted-foreground" />
-					</div>
+				{!api.isOrgContext || api.isLoading ? (
+					<LoaderIcon className="size-5 animate-spin text-muted-foreground" />
 				) : (
-					<div className="space-y-4">
-						{TASK_TYPES.map((taskType) => {
-							const view = getTaskView(taskType.id);
-							const {
-								currentModel,
-								currentGateway,
-								hasCustomPref,
-								hasPendingChange,
-								isDisabledChoice,
-								hasModels,
-							} = view;
-							const Icon = taskType.icon;
-
-							return (
-								<Card key={taskType.id} className="p-4">
-									<div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-										{/* Task Type Info */}
-										<div className="flex items-start gap-3">
-											<div
-												className={`rounded-lg bg-muted p-2 ${taskType.color}`}
+					<>
+						<section
+							className="space-y-4"
+							aria-label={t("textTasks")}
+						>
+							{!api.hasNoProviders && (
+								<DefaultApiProviderPanel
+									api={api}
+									readOnly={readOnly}
+								/>
+							)}
+							<div className="min-w-0">
+								<table
+									aria-label={t("textTasks")}
+									className="block w-full text-sm md:table md:table-fixed"
+								>
+									<thead className="sr-only md:not-sr-only">
+										<tr className="border-b border-border text-left text-xs text-muted-foreground">
+											<th
+												scope="col"
+												className="pb-2.5 font-medium"
 											>
-												<Icon className="size-5" />
-											</div>
-											<div className="flex-1">
-												<div className="flex items-center gap-2">
-													<h4 className="font-semibold">
-														{taskType.label}
-													</h4>
-													{hasCustomPref &&
-														!hasPendingChange && (
-															<Badge
-																variant="secondary"
-																className="text-xs"
-															>
-																Custom
-															</Badge>
-														)}
-													{hasPendingChange && (
-														<Badge
-															variant="outline"
-															className="border-yellow-500 text-xs text-highlight"
-														>
-															Unsaved
-														</Badge>
-													)}
-												</div>
-												<p className="text-xs text-muted-foreground">
-													{taskType.description}
-												</p>
-											</div>
-										</div>
-
-										{/* Model Selection - Hierarchical Dropdown */}
-										<div className="flex items-center gap-3">
-											<ApiTaskModelSelect
-												disabled={readOnly}
-												hasNoProviders={hasNoProviders}
-												onValueChange={(value) =>
-													handleModelChange(
-														taskType.id,
-														value,
-													)
-												}
-												view={view}
-											/>
-
-											{hasCustomPref && !readOnly && (
-												<Button
-													variant="ghost"
-													size="sm"
-													onClick={() =>
-														handleResetToDefault(
-															taskType.id,
-														)
-													}
-													className="text-muted-foreground hover:text-foreground"
-												>
-													Reset
-												</Button>
-											)}
-										</div>
-									</div>
-
-									{/* Switched-Off Helper Text */}
-									{isDisabledChoice && (
-										<div className="mt-3 rounded-md border border-muted-foreground/20 bg-muted/40 px-3 py-2">
-											<p className="text-xs text-muted-foreground">
-												Decisions are switched off. Work
-												items and action-item routing
-												use your regular AI model.
-											</p>
-										</div>
-									)}
-
-									{/* No Models Available Helper Text */}
-									{!hasModels && !hasNoProviders && (
-										<div className="mt-3 rounded-md border border-highlight/20 bg-highlight/5 px-3 py-2">
-											<p className="text-xs text-highlight/80">
-												{taskType.id === "EMBEDDING" &&
-													"Embeddings require OpenAI, Cohere, Together AI, Fireworks, Mistral, or a Gateway provider (Vercel, OpenRouter)."}
-												{taskType.id === "IMAGE" &&
-													"Image generation requires OpenAI, Replicate, or a Gateway provider."}
-												{taskType.id === "AUDIO" &&
-													"Audio transcription requires OpenAI, Groq, or a Gateway provider."}
-												{taskType.id === "DECISION" &&
-													"Decision models require Vercel AI Gateway. Work items use your regular AI model when no decision model is available."}
-												{![
-													"EMBEDDING",
-													"IMAGE",
-													"AUDIO",
-													"DECISION",
-												].includes(taskType.id) &&
-													"Your configured providers don't have models for this task type."}{" "}
-												<Link
-													href={`/app/${organizationSlug}/settings/ai-providers`}
-													className="font-medium underline hover:text-highlight"
-												>
-													Configure AI Providers
-												</Link>
-											</p>
-										</div>
-									)}
-
-									{/* Current Model Details */}
-									{currentModel && (
-										<div className="mt-3 flex flex-wrap gap-2 border-t pt-3">
-											<Badge
-												variant="secondary"
-												className="text-xs"
+												{t("kindColumn")}
+											</th>
+											<th
+												scope="col"
+												className="pb-2.5 font-medium"
 											>
-												{currentModel.family}
-											</Badge>
-											<Badge
-												variant="outline"
-												className={`text-xs ${
-													currentModel.speedTier ===
-													"FAST"
-														? "border-green-500 text-success"
-														: currentModel.speedTier ===
-																"BALANCED"
-															? "border-primary text-primary"
-															: "border-secondary text-secondary"
-												}`}
+												{t("modelColumn")}
+											</th>
+										</tr>
+									</thead>
+									<tbody className="block md:table-row-group">
+										{TEXT_TASK_IDS.map(renderRow)}
+									</tbody>
+								</table>
+							</div>
+						</section>
+						<section
+							aria-label={t("otherWorkTitle")}
+							className="space-y-3"
+						>
+							<h2 className="text-lg font-medium">
+								{t("otherWorkTitle")}
+							</h2>
+							<p className="text-sm text-muted-foreground">
+								{t("otherWorkDescription")}
+							</p>
+							<div className="min-w-0">
+								<table
+									aria-label={t("otherWorkTitle")}
+									className="block w-full text-sm md:table md:table-fixed"
+								>
+									<thead className="sr-only md:not-sr-only">
+										<tr className="border-b border-border text-left text-xs text-muted-foreground">
+											<th
+												scope="col"
+												className="pb-2.5 font-medium"
 											>
-												{currentModel.speedTier}
-											</Badge>
-											<Badge
-												variant="outline"
-												className={`text-xs ${
-													currentModel.qualityTier ===
-													"BASIC"
-														? "border-gray-500 text-gray-600"
-														: currentModel.qualityTier ===
-																"STANDARD"
-															? "border-primary text-primary"
-															: "border-secondary text-secondary"
-												}`}
+												{t("kindColumn")}
+											</th>
+											<th
+												scope="col"
+												className="pb-2.5 font-medium"
 											>
-												{currentModel.qualityTier}
-											</Badge>
-											{currentGateway && (
-												<Badge
-													variant="outline"
-													className="text-xs border-cyan-500 text-cyan-600"
-												>
-													Route:{" "}
-													{PROVIDER_DISPLAY_NAMES[
-														currentGateway
-													] || currentGateway}
-												</Badge>
-											)}
-										</div>
-									)}
-								</Card>
-							);
-						})}
-					</div>
+												{t("modelColumn")}
+											</th>
+										</tr>
+									</thead>
+									<tbody className="block md:table-row-group">
+										{[
+											"IMAGE",
+											"AUDIO",
+											"DECISION",
+											"EMBEDDING",
+										].map(renderRow)}
+									</tbody>
+								</table>
+							</div>
+						</section>
+					</>
 				)}
+				{embeddingChange.dialog}
 			</div>
 		</SettingsItem>
 	);

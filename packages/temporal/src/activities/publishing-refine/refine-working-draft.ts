@@ -211,9 +211,6 @@ export async function refineWorkingDraftActivity(
 			schema,
 			prompt,
 			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-			// Azure/OpenAI reject a strict JSON schema containing optional
-			// fields outright (bug #1681), and this schema has one.
-			providerOptions: { openai: { strictJsonSchema: false } },
 		});
 	} finally {
 		clearInterval(beat);

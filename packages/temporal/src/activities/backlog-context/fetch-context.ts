@@ -14,12 +14,6 @@
  */
 
 import {
-	generateText,
-	getAIModelWithMetadata,
-	logModelUsageAsync,
-} from "@repo/ai";
-import { computeScaledOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
-import {
 	db,
 	getLatestProjectScan,
 	listArchitectureDecisions,
@@ -33,9 +27,37 @@ import { logger } from "@repo/logs";
 import { getCachedMcpClientForConfig } from "@repo/mcp";
 import { formatContextsForPrompt, retrieveProjectContexts } from "@repo/rag";
 import { getBaseUrl } from "@repo/utils";
+import { Context } from "@temporalio/activity";
+import { MAX_FETCH_MEETING_SUMMARY_TARGET_CHARS } from "../../lib/meeting-summary-target";
 import { CacheKeys, CacheTTL, RedisCache } from "../../lib/redis-cache";
+import { withHeartbeatKeepalive } from "../../lib/with-heartbeat-keepalive";
 import { fetchRecentSlackMessages } from "../search-project-slack-messages";
 import { fetchRecentTeamsMessages } from "../search-project-teams-messages";
+import {
+	meetingTranscriptCeiling,
+	TRANSCRIPT_TRUNCATION_NOTICE,
+	transcriptFitsCeiling,
+	truncateTranscriptToCeiling,
+} from "./analysis-budget";
+import {
+	meetingSummaryHeading,
+	summarizeTranscript,
+	transcriptSummaryTargetChars,
+} from "./summarize-transcript";
+import { withTranscriptSummaryTimeout } from "./summary-call-timeout";
+import {
+	readTranscriptSummary,
+	writeTranscriptSummary,
+} from "./transcript-summary-cache";
+
+// Starting value for the stronger extraction tier; fits the 120s fetch activity
+// with two bounded cache waits and heartbeat keepalive. Tune from per-call latency.
+const FETCH_SUMMARY_CALL_TIMEOUT_MS = 100_000;
+// Two bounded 2s cache waits plus 1s for scheduling and returning the fallback.
+const FETCH_SUMMARY_CACHE_RESERVE_MS = 5_000;
+// Admit substantial VTT sources while bounding each seven-day live cache entry.
+// Measure serialized UTF-8, including JSON escaping and the result envelope.
+export const MAX_LIVE_TRANSCRIPT_CACHE_BYTES = 4 * 1024 * 1024;
 
 // =============================================================================
 // Types
@@ -74,6 +96,8 @@ export interface FetchSlackMessagesForBacklogOutput {
 }
 
 export interface FetchMeetingTranscriptInput {
+	/** The full selection sizes the payload share; omitted by older histories. */
+	selectedMeetingCount?: number;
 	joinUrl: string;
 	startTime?: string; // ISO date of the selected meeting instance
 	userId: string;
@@ -136,13 +160,6 @@ export interface RetrieveProjectRagContextOutput {
 	chunkCount: number;
 	error?: string;
 }
-
-// =============================================================================
-// Constants
-// =============================================================================
-
-/** Maximum transcript length before LLM summarization kicks in */
-const TRANSCRIPT_SUMMARIZATION_THRESHOLD = 50_000;
 
 // =============================================================================
 // Activities
@@ -290,8 +307,9 @@ export async function fetchSlackMessagesForBacklog(
  * 2. List available transcripts for the meeting
  * 3. Fetch the transcript content
  *
- * If the transcript exceeds 50K characters, it is summarized using an LLM
- * to keep the backlog context manageable.
+ * Fit returned text to the analysis character ceiling and this selection's
+ * raw and JSON-encoded UTF-8 payload share. Analysis separately decides what fits
+ * its token budget.
  *
  * @param input - Meeting join URL and user context
  * @returns Transcript content (raw or summarized)
@@ -300,6 +318,7 @@ export async function fetchMeetingTranscript(
 	input: FetchMeetingTranscriptInput,
 ): Promise<FetchMeetingTranscriptOutput> {
 	const { joinUrl, startTime, userId, organizationId, projectId } = input;
+	const ceiling = meetingTranscriptCeiling(input.selectedMeetingCount);
 
 	logger.info("[BacklogContext] Fetching meeting transcript", {
 		joinUrl: `${joinUrl.substring(0, 80)}...`,
@@ -316,6 +335,7 @@ export async function fetchMeetingTranscript(
 				startTime,
 				userId,
 				organizationId,
+				ceiling,
 			});
 			if (cached) {
 				logger.info("[BacklogContext] Meeting transcript cache hit", {
@@ -336,6 +356,7 @@ export async function fetchMeetingTranscript(
 				startTime,
 				userId,
 				organizationId,
+				ceiling,
 			});
 			if (imported) {
 				return imported;
@@ -345,9 +366,9 @@ export async function fetchMeetingTranscript(
 		// Redis L2 cache: a previously-fetched transcript for this exact
 		// instance (per-user key). Transcripts are immutable, so this turns
 		// repeat/overlapping AI Update runs over the same window into instant
-		// reads instead of the 3-call Graph round-trip + re-summarization. Keyed
-		// on the selected startTime, so recurring-meeting instances never
-		// collide and a hit is always the right meeting.
+		// reads instead of the 3-call Graph round-trip. Store a selection-independent
+		// body, then fit it to the current share on read. startTime distinguishes
+		// recurring-meeting instances.
 		const transcriptCacheKey = CacheKeys.meetingTranscript(
 			userId,
 			joinUrl,
@@ -363,7 +384,7 @@ export async function fetchMeetingTranscript(
 				wasSummarized: redisCached.wasSummarized,
 				contentLength: redisCached.transcript.length,
 			});
-			return redisCached;
+			return await fitLiveCachedTranscript(redisCached, input, ceiling);
 		}
 
 		// Step 1: Resolve online meeting ID from join URL
@@ -435,34 +456,43 @@ export async function fetchMeetingTranscript(
 			};
 		}
 
-		// Select transcript matching the requested date, or fall back to most recent
-		let transcriptId: string;
-		if (startTime && transcriptListResult.transcripts.length > 1) {
-			const targetDate = new Date(startTime).getTime();
-			// Find transcript with closest createdDateTime to the selected meeting date
-			const sorted = [...transcriptListResult.transcripts].sort(
-				(a, b) => {
-					const aDiff = Math.abs(
-						new Date(a.createdDateTime ?? "").getTime() -
-							targetDate,
-					);
-					const bDiff = Math.abs(
-						new Date(b.createdDateTime ?? "").getTime() -
-							targetDate,
-					);
-					return aDiff - bDiff;
+		// A recurring series lists every occurrence's transcript. Take the one for
+		// the selected occurrence only: the closest one may belong to another day
+		// when this occurrence was never transcribed or its transcript is not
+		// ready yet (Fizzy #3253). Without a startTime, take the first listed.
+		const selectedTranscript = chooseOccurrence(
+			transcriptListResult.transcripts,
+			(t) => {
+				const at = new Date(t.createdDateTime ?? "").getTime();
+				return Number.isNaN(at) ? undefined : at;
+			},
+			startTime,
+		);
+		if (!selectedTranscript) {
+			logger.info(
+				"[BacklogContext] No transcript for the selected occurrence",
+				{
+					meetingId,
+					targetDate: startTime,
+					totalTranscripts: transcriptListResult.transcripts.length,
 				},
 			);
-			transcriptId = sorted[0].id;
+			return {
+				success: false,
+				transcript: "",
+				meetingSubject,
+				wasSummarized: false,
+				error: "No transcript available for this meeting occurrence yet. Transcripts usually appear 60–90 minutes after a call, and a meeting that was not transcribed will not produce one.",
+			};
+		}
+		const transcriptId = selectedTranscript.id;
+		if (startTime) {
 			logger.info("[BacklogContext] Selected transcript by date", {
 				meetingId,
 				targetDate: startTime,
-				transcriptDate: sorted[0].createdDateTime,
+				transcriptDate: selectedTranscript.createdDateTime,
 				totalTranscripts: transcriptListResult.transcripts.length,
 			});
-		} else {
-			// Fall back to most recent transcript
-			transcriptId = transcriptListResult.transcripts[0].id;
 		}
 
 		// Step 3: Fetch transcript content
@@ -524,50 +554,25 @@ export async function fetchMeetingTranscript(
 			contentLength: rawTranscript.length,
 		});
 
-		// Summarize if transcript is too long, then write-through to the cache.
-		let output: FetchMeetingTranscriptOutput;
-		if (rawTranscript.length > TRANSCRIPT_SUMMARIZATION_THRESHOLD) {
-			logger.info(
-				"[BacklogContext] Transcript exceeds threshold, summarizing",
-				{
-					originalLength: rawTranscript.length,
-					threshold: TRANSCRIPT_SUMMARIZATION_THRESHOLD,
-				},
+		// Cache the source independently of the selection. Derived extracts have a
+		// separate target-aware cache and are fitted before entering activity history.
+		const canonical: FetchMeetingTranscriptOutput = {
+			success: true,
+			transcript: rawTranscript,
+			meetingSubject,
+			wasSummarized: false,
+		};
+		if (
+			Buffer.byteLength(JSON.stringify(canonical), "utf8") <=
+			MAX_LIVE_TRANSCRIPT_CACHE_BYTES
+		) {
+			await RedisCache.set(
+				transcriptCacheKey,
+				canonical,
+				CacheTTL.meetingTranscript,
 			);
-
-			const summarized = await summarizeTranscript(
-				rawTranscript,
-				meetingSubject || "Meeting",
-				userId,
-				organizationId,
-				projectId,
-			);
-
-			output = {
-				success: true,
-				transcript: summarized,
-				meetingSubject,
-				wasSummarized: true,
-			};
-		} else {
-			output = {
-				success: true,
-				transcript: rawTranscript,
-				meetingSubject,
-				wasSummarized: false,
-			};
 		}
-
-		// Write-through: cache the finalized transcript (per-user, per-instance)
-		// so subsequent AI Update runs over an overlapping window reuse it
-		// instead of paying the Graph round-trips (and re-summarization) again.
-		await RedisCache.set(
-			transcriptCacheKey,
-			output,
-			CacheTTL.meetingTranscript,
-		);
-
-		return output;
+		return await fitLiveCachedTranscript(canonical, input, ceiling);
 	} catch (error) {
 		const errorMessage =
 			error instanceof Error ? error.message : String(error);
@@ -978,7 +983,8 @@ export async function retrieveProjectRagContext(
  * transcript is for a *different* instance — analyzing it would feed the LLM
  * the wrong meeting. Only trust the cache when the picked instance and the
  * cached instance are within this window of each other; otherwise fall
- * through to the live Graph path which authoritatively picks the right one.
+ * through to the live Graph path, which applies the same window to Graph's
+ * transcript list and reports no transcript when nothing falls inside it.
  *
  * 12 hours is well below the typical recurring cadence (daily/weekly) and
  * comfortably above any clock skew between the meeting's `startTime` (from
@@ -1006,8 +1012,10 @@ async function readCachedTranscript(args: {
 	startTime?: string;
 	userId: string;
 	organizationId?: string;
+	ceiling: ReturnType<typeof meetingTranscriptCeiling>;
 }): Promise<FetchMeetingTranscriptOutput | null> {
-	const { projectId, joinUrl, startTime, userId, organizationId } = args;
+	const { projectId, joinUrl, startTime, userId, organizationId, ceiling } =
+		args;
 
 	try {
 		const linkedMeeting = await db.projectLinkedMeeting.findUnique({
@@ -1076,45 +1084,18 @@ async function readCachedTranscript(args: {
 			return null;
 		}
 
-		// The sync used to cap what it stored, so this path could assume the
-		// cached body was already small. It no longer does — a transcript is
-		// stored whole however long it is (Fizzy #2316) — and this is now the
-		// only thing standing between a multi-hundred-kilobyte transcript and
-		// `applyTokenBudget`, which allocates greedily and ranks
-		// `meetingTranscripts` just after the small architecture decision section
-		// (which includes binding constraints), ahead of the remaining sources.
-		// Without this, one long meeting can consume the remaining budget and
-		// drop other context, producing a worse analysis than the summary. Same guard the imported path below applies, for the same
-		// reason.
-		if (context.content.length > TRANSCRIPT_SUMMARIZATION_THRESHOLD) {
-			logger.info(
-				"[BacklogContext] Cached transcript exceeds threshold, summarizing",
-				{
-					projectId,
-					originalLength: context.content.length,
-					threshold: TRANSCRIPT_SUMMARIZATION_THRESHOLD,
-				},
-			);
-			return {
-				success: true,
-				transcript: await summarizeTranscript(
-					context.content,
-					chosen.meetingSubject ?? "Meeting",
-					userId,
-					organizationId,
-					projectId,
-				),
+		// Stored bodies stay whole; return only this selection's bounded payload share.
+		return (
+			await prepareMeetingTranscript({
+				transcript: context.content,
 				meetingSubject: chosen.meetingSubject ?? undefined,
-				wasSummarized: true,
-			};
-		}
-
-		return {
-			success: true,
-			transcript: context.content,
-			meetingSubject: chosen.meetingSubject ?? undefined,
-			wasSummarized: chosen.wasSummarized,
-		};
+				userId,
+				organizationId,
+				projectId,
+				ceiling,
+				wasSummarized: chosen.wasSummarized ?? false,
+			})
+		).output;
 	} catch (error) {
 		logger.warn("[BacklogContext] Cache lookup failed, falling through", {
 			error: error instanceof Error ? error.message : String(error),
@@ -1128,7 +1109,8 @@ async function readCachedTranscript(args: {
  * Pick the entry whose date sits closest to the selected occurrence, or null if
  * even the closest one is outside the recurring-meeting freshness window.
  *
- * Used by the IMPORTED lookup only. The linked-meeting path above still carries
+ * Used by the IMPORTED lookup and the live Graph transcript pick in
+ * `fetchMeetingTranscript`. The linked-meeting path above still carries
  * its own inline copy of this rule and was deliberately not converted: the two
  * differ in their no-`startTime` fallback (that one takes the newest
  * `meetingDate`, this one the newest import), and rewriting the team path to
@@ -1137,7 +1119,8 @@ async function readCachedTranscript(args: {
  * freshness window or the tie-break here, check whether the copy at
  * `readCachedTranscript` needs the same edit.
  *
- * An entry with no date can never win: it would be indistinguishable from the
+ * With a valid startTime, an entry with no date cannot win (its distance is
+ * Infinity, so it always fails the window check): it would be indistinguishable from the
  * right occurrence, and analyzing the wrong meeting is worse than paying for a
  * live fetch.
  */
@@ -1193,8 +1176,10 @@ async function readImportedTranscript(args: {
 	startTime?: string;
 	userId: string;
 	organizationId?: string;
+	ceiling: ReturnType<typeof meetingTranscriptCeiling>;
 }): Promise<FetchMeetingTranscriptOutput | null> {
-	const { projectId, joinUrl, startTime, userId, organizationId } = args;
+	const { projectId, joinUrl, startTime, userId, organizationId, ceiling } =
+		args;
 
 	try {
 		// Metadata first, content second. A recurring series can accumulate many
@@ -1252,49 +1237,18 @@ async function readImportedTranscript(args: {
 			contentLength: context.content.length,
 		});
 
-		// Summarise on the way OUT, above the same threshold every other
-		// producer of this function respects — the live path summarises before
-		// returning, and the linked path returns content the sync activity had
-		// already summarised at ingest.
-		//
-		// The import deliberately stores the transcript whole (a stored
-		// fragment is data loss, and the Context tab is meant to hold the real
-		// thing), which left this the only producer that could hand the
-		// analyzer a 1M-character section. That is not merely large:
-		// `applyTokenBudget` allocates greedily in priority order and ranks
-		// `meetingTranscripts` just after the small architecture decision section
-		// (which includes binding constraints), ahead of the remaining sources.
-		// One oversized import could consume the remaining budget and silently
-		// drop other context — a worse analysis than using a summary.
-		if (context.content.length > TRANSCRIPT_SUMMARIZATION_THRESHOLD) {
-			logger.info(
-				"[BacklogContext] Imported transcript exceeds threshold, summarizing",
-				{
-					projectId,
-					originalLength: context.content.length,
-					threshold: TRANSCRIPT_SUMMARIZATION_THRESHOLD,
-				},
-			);
-			return {
-				success: true,
-				transcript: await summarizeTranscript(
-					context.content,
-					metadata?.meetingSubject || "Meeting",
-					userId,
-					organizationId,
-					projectId,
-				),
+		// Stored bodies stay whole; return only this selection's bounded payload share.
+		return (
+			await prepareMeetingTranscript({
+				transcript: context.content,
 				meetingSubject: metadata?.meetingSubject,
-				wasSummarized: true,
-			};
-		}
-
-		return {
-			success: true,
-			transcript: context.content,
-			meetingSubject: metadata?.meetingSubject,
-			wasSummarized: metadata?.wasSummarized ?? false,
-		};
+				userId,
+				organizationId,
+				projectId,
+				ceiling,
+				wasSummarized: metadata?.wasSummarized ?? false,
+			})
+		).output;
 	} catch (error) {
 		logger.warn(
 			"[BacklogContext] Imported transcript lookup failed, falling through",
@@ -1307,96 +1261,204 @@ async function readImportedTranscript(args: {
 	}
 }
 
-/**
- * Summarize a long transcript using an LLM.
- *
- * Used when meeting transcripts exceed 50K characters to keep
- * the backlog context size manageable.
- */
-async function summarizeTranscript(
-	transcript: string,
-	meetingSubject: string,
-	userId: string,
-	organizationId?: string,
-	projectId?: string,
-): Promise<string> {
-	try {
-		const { model, metadata, trackUsage } = await getAIModelWithMetadata(
-			{
-				taskType: "SIMPLE",
-				complexity: "simple",
+/** Derive a selection's payload without replacing the canonical live-cache entry. */
+async function fitLiveCachedTranscript(
+	cached: FetchMeetingTranscriptOutput,
+	input: FetchMeetingTranscriptInput,
+	ceiling: ReturnType<typeof meetingTranscriptCeiling>,
+): Promise<FetchMeetingTranscriptOutput> {
+	// The current live-cache namespace stores raw sources; extracts use separate keys.
+	return (
+		await prepareMeetingTranscript({
+			transcript: cached.transcript,
+			meetingSubject: cached.meetingSubject,
+			userId: input.userId,
+			organizationId: input.organizationId,
+			projectId: input.projectId,
+			ceiling,
+		})
+	).output;
+}
+
+/** Summarize above the fetch share, then cap model output or the failure fallback. */
+async function prepareMeetingTranscript(args: {
+	transcript: string;
+	meetingSubject?: string;
+	userId: string;
+	organizationId?: string;
+	projectId?: string;
+	ceiling: ReturnType<typeof meetingTranscriptCeiling>;
+	wasSummarized?: boolean;
+}): Promise<{ output: FetchMeetingTranscriptOutput; cacheable: boolean }> {
+	const {
+		transcript,
+		meetingSubject,
+		userId,
+		organizationId,
+		projectId,
+		ceiling,
+	} = args;
+	if (transcriptFitsCeiling(transcript, ceiling)) {
+		return {
+			output: {
+				success: true,
+				transcript,
+				meetingSubject,
+				wasSummarized: args.wasSummarized ?? false,
 			},
-			{ userId, organizationId, projectId, featureKey: "backlog-update" },
-		);
-
-		const generationStart = Date.now();
-		const summarySystem = `You are a meeting summarizer. Create a concise, structured summary of the meeting transcript.
-Focus on:
-- Key decisions made
-- Action items and who is responsible
-- Important discussion topics and conclusions
-- Any deadlines or commitments mentioned
-
-Keep the summary under 3000 words. Use bullet points and clear headings.`;
-		const summaryPrompt = `Meeting: ${meetingSubject}
-
-Transcript:
-${transcript}
-
-Provide a structured summary of this meeting.`;
-
-		// Bounded ~3,000-word summary — but that still exceeds the 4,096 Anthropic
-		// unrecognized-model fallback and can clip under Databricks' 8,192 default.
-		// Scaled mode with inputChars 0 requests the floor (16,384), clamped to the
-		// provider cap and context window. `undefined` leaves other providers on
-		// their SDK defaults.
-		const maxOutputTokens = computeScaledOutputTokenBudget(metadata, {
-			inputChars: 0,
-			promptChars: summarySystem.length + summaryPrompt.length,
-		});
-		const response = await generateText({
-			model,
-			instructions: summarySystem,
-			prompt: summaryPrompt,
-			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-		});
-
-		// Track usage (fire-and-forget)
-		trackUsage();
-		logModelUsageAsync({
-			context: { userId, organizationId },
-			metadata,
-			taskType: "SIMPLE",
-			usage: response.usage,
-			latencyMs: Date.now() - generationStart,
-			projectId,
-		});
-
-		const summary = response.text || "";
-
-		if (summary.trim().length === 0) {
-			logger.warn(
-				"[BacklogContext] LLM returned empty summary, using truncated transcript",
-			);
-			return transcript.substring(0, TRANSCRIPT_SUMMARIZATION_THRESHOLD);
-		}
-
-		logger.info("[BacklogContext] Transcript summarized", {
-			originalLength: transcript.length,
-			summaryLength: summary.length,
-		});
-
-		return `## Meeting Summary: ${meetingSubject}\n\n${summary}`;
-	} catch (error) {
-		const errorMessage =
-			error instanceof Error ? error.message : String(error);
-		logger.error("[BacklogContext] Failed to summarize transcript", {
-			error: errorMessage,
-		});
-
-		// Fall back to truncated transcript
-		return transcript.substring(0, TRANSCRIPT_SUMMARIZATION_THRESHOLD);
+			cacheable: true,
+		};
 	}
+	logger.info(
+		"[BacklogContext] Transcript exceeds fetch share, summarizing",
+		{
+			projectId,
+			originalChars: transcript.length,
+			ceilingChars: ceiling.maxChars,
+			originalBytes: Buffer.byteLength(transcript, "utf8"),
+			ceilingBytes: ceiling.maxBytes,
+		},
+	);
+	const heading = meetingSummaryHeading(meetingSubject || "Meeting");
+	// Estimate output byte expansion from the source; actual output is still
+	// checked against raw and JSON byte ceilings below.
+	const bytesPerChar = Math.max(
+		1,
+		Buffer.byteLength(transcript, "utf8") / transcript.length,
+	);
+	const serializedBytesPerChar = Math.max(
+		1,
+		(Buffer.byteLength(JSON.stringify(transcript), "utf8") - 2) /
+			transcript.length,
+	);
+	const bodyRoomChars = Math.floor(
+		Math.min(
+			ceiling.maxChars - heading.length,
+			(ceiling.maxBytes - Buffer.byteLength(heading, "utf8")) /
+				bytesPerChar,
+			(ceiling.serializedBytes -
+				Buffer.byteLength(JSON.stringify(heading), "utf8")) /
+				serializedBytesPerChar,
+		),
+	);
+	let callTimeoutMs = FETCH_SUMMARY_CALL_TIMEOUT_MS;
+	let cancellationSignal: AbortSignal | undefined;
+	try {
+		const activity = Context.current();
+		const remainingMs =
+			activity.info.currentAttemptScheduledTimestampMs +
+			activity.info.startToCloseTimeoutMs -
+			Date.now();
+		if (Number.isFinite(remainingMs)) {
+			callTimeoutMs = Math.max(
+				0,
+				Math.min(
+					callTimeoutMs,
+					remainingMs - FETCH_SUMMARY_CACHE_RESERVE_MS,
+				),
+			);
+		}
+		cancellationSignal = activity.cancellationSignal;
+	} catch {
+		/* Non-activity callers use the fixed call limit. */
+	}
+	// If fetching consumed part of the activity deadline, shrink both the call
+	// and its target in proportion to the starting throughput assumption.
+	const callMaxChars = Math.floor(
+		(MAX_FETCH_MEETING_SUMMARY_TARGET_CHARS * callTimeoutMs) /
+			FETCH_SUMMARY_CALL_TIMEOUT_MS,
+	);
+	// Fetch's hard ceiling takes precedence over the usual useful minimum.
+	const targetChars = transcriptSummaryTargetChars(
+		bodyRoomChars,
+		transcript.length,
+		0,
+		callMaxChars,
+	);
+	if (targetChars === 0) {
+		return {
+			output: {
+				success: true,
+				transcript: truncateTranscriptToCeiling(
+					transcript,
+					ceiling,
+					TRANSCRIPT_TRUNCATION_NOTICE,
+				),
+				meetingSubject,
+				wasSummarized: args.wasSummarized ?? false,
+			},
+			cacheable: false,
+		};
+	}
+	const summary = await withHeartbeatKeepalive(
+		{ stage: "fetch-meeting-summary", projectId },
+		async () => {
+			const cached = await readTranscriptSummary(
+				transcript,
+				targetChars,
+				organizationId,
+				projectId,
+			);
+			if (cached !== null) {
+				return { text: cached, partial: false };
+			}
+			let resolvedTargetChars = targetChars;
+			const { summary, timedOut, latencyMs } =
+				await withTranscriptSummaryTimeout(
+					(abortSignal) =>
+						summarizeTranscript(
+							transcript,
+							meetingSubject || "Meeting",
+							userId,
+							organizationId,
+							projectId,
+							{
+								targetChars,
+								abortSignal,
+								onTargetCharsResolved: (resolvedTarget) => {
+									resolvedTargetChars = resolvedTarget;
+								},
+							},
+						),
+					callTimeoutMs,
+					cancellationSignal,
+				);
+			logger.info("[BacklogContext] Fetch summary call completed", {
+				event: "backlog.fetch_meeting_transcript_summary",
+				projectId,
+				requestedTargetChars: targetChars,
+				targetChars: resolvedTargetChars,
+				timeoutMs: callTimeoutMs,
+				partial: summary?.partial ?? false,
+				timedOut,
+				latencyMs,
+			});
+			if (summary !== null && !summary.partial) {
+				// Reuse a complete provider-shortened extract for the larger request.
+				await writeTranscriptSummary(
+					transcript,
+					targetChars,
+					summary.text,
+					organizationId,
+					projectId,
+				);
+			}
+			return summary;
+		},
+	);
+	return {
+		output: {
+			success: true,
+			transcript: truncateTranscriptToCeiling(
+				summary?.text ?? transcript,
+				ceiling,
+				summary === null ? TRANSCRIPT_TRUNCATION_NOTICE : "",
+			),
+			meetingSubject,
+			wasSummarized: summary !== null || (args.wasSummarized ?? false),
+		},
+		cacheable: summary !== null && !summary.partial,
+	};
 }
 
 // =============================================================================

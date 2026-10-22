@@ -1,6 +1,8 @@
 ---
 title: Geplante Agent-Workflows
 description: Einen Agenten nach Zeitplan eine Aufgabe erledigen und das Ergebnis als Seite veröffentlichen lassen – mit den Regeln, die einen Lauf ohne Aufsicht sicher machen.
+audience: Organisationsmitglieder, die Workflows erstellen und pflegen
+owner: Platform team
 ---
 
 Ein geplanter Agent-Workflow erledigt eine Aufgabe nach Zeitplan, ohne dass jemand zusieht: Jeden Montagmorgen liest ein Agent die Arbeitselemente Ihres Projekts, schreibt eine Statusseite und veröffentlicht sie dort, wo das Team sie findet. Sie beschreiben die Aufgabe gegenüber Fabric Agent, prüfen den Entwurf, und Fabric führt sie von da an aus.
@@ -19,6 +21,12 @@ Fragen Sie Fabric Agent in einem beliebigen Chat: „Schreibe jeden Montag um 9 
 
 Fabric Agent fragt auf dieselbe Weise, bevor er einen Workflow ändert, veröffentlicht, zurückzieht, pausiert, fortsetzt oder ausführt. Die Karte zeigt die genauen Werte, die die Aktion verwenden würde.
 
+Die Karte listet jeden Schritt des Workflows mit Typ und Einstellungen auf, eine Ebene tiefer eingeschlossen. So sehen Sie eine Änderung an einer Einstellung wie `sprintContext.iterationPaths`, bevor Sie zustimmen. Eine Einstellung, deren Name sie als Zugangsdaten ausweist (Authorization-Header, Cookie, Token, Secret, Passwort oder API-Schlüssel), erscheint als `(hidden)`.
+
+![Die Karte Approval Required mit dem Hinweis HIGH RISK für das Anlegen des Workflows Daily sprint story review. Sie listet drei Schritte: den Schedule-Trigger mit Cron und Zeitzone, Review ADO Stories mit Person, Rubrik, Story-Limit und verschachtelten Sprint-Einstellungen sowie Publish Review mit Titel und Ablageort, darunter die Schaltflächen Approve, Decline und Provide Feedback.](/images/docs/qa/workflow-approval-card.png)
+
+Bitten Sie den Agenten, den Workflow Ihrem Projekt zuzuordnen. Seine Läufe folgen dann den Regeln dieses Projekts: In einem Projekt im Nur-Lese-Modus wird ein Schritt abgelehnt, der in einen verbundenen Dienst schreiben würde.
+
 Den gespeicherten Workflow können Sie jederzeit im Workflow Builder öffnen und seine Knoten von Hand bearbeiten.
 
 ## Die Knoten
@@ -27,6 +35,7 @@ Den gespeicherten Workflow können Sie jederzeit im Workflow Builder öffnen und
 
 Der **Trigger Type** des Trigger-Knotens ist **Schedule**, mit einem Cron-Ausdruck und einer Zeitzone.
 
+- **Ein Cron-Ausdruck ist Pflicht.** Ein Schedule-Trigger ohne ihn erscheint als Problem auf der Karte, und das Veröffentlichen wird abgelehnt.
 - **Zeitzone.** Der Cron wird in der von Ihnen gesetzten Zeitzone gelesen, als IANA-Name wie `Europe/Berlin` oder `America/New_York`. Ohne Angabe wird er in `UTC` gelesen, was selten dort ist, wo Sie sind – geben Sie also eine an. Ein Name, der keine Zeitzone ist, wird beim Veröffentlichen des Workflows abgelehnt.
 - **Höchstens alle 15 Minuten.** Ein Zeitplan, der einen Agent Task ausführt, darf nicht häufiger als alle 15 Minuten auslösen. Ein schnellerer Zeitplan oder einer, dessen Intervall sich nicht bestimmen lässt, wird beim Veröffentlichen des Workflows abgelehnt.
 
@@ -45,6 +54,42 @@ Führt einen KI-Agenten mit einem von Ihnen geschriebenen Prompt aus. Seine Eins
 | **Output format** | `html` oder `markdown` |
 
 Sein Ergebnis steht späteren Knoten als `{{Agent Task.html}}` oder `{{Agent Task.markdown}}` zur Verfügung.
+
+### Review ADO Stories
+
+Dieser Knoten ersetzt den Agent Task, wenn Sie die Azure-DevOps-Stories eines Sprints gegen Ihre eigene Definition of Ready prüfen lassen wollen. Er braucht die Azure-DevOps-Verbindung des Projekts, die unter [Workspaces](/docs/features/workspace-pages#azure-devops-work-item-summaries) beschrieben ist. Fragen Sie Fabric Agent zum Beispiel:
+
+> Prüfe an jedem Werktag um 08:00 die User Stories, die mir im aktuellen Sprint zugewiesen sind, gegen unsere Definition of Ready und veröffentliche das Ergebnis auf dem Artifacts-Tab dieses Projekts.
+
+Seine Einstellungen:
+
+| Einstellung | Bedeutung |
+|-------------|-----------|
+| **Assignee** | Wessen Stories geprüft werden: die Person, die in der vom Workflow genutzten Azure-DevOps-Verbindung angemeldet ist, oder eine namentlich genannte Person |
+| **Sprint** | Ein oder zwei Iterationspfade und die ein oder zwei Felder, die sagen, wem ein Element gehört: `System.AssignedTo` oder ein Personenfeld Ihres eigenen Prozesses, etwa `Custom.Engineer` |
+| **Work item types** | Welche Typen als Story zählen; leer bedeutet `User Story` |
+| **Requirement fields** | Die Felder, die eine Prüfung liest; leer bedeutet Titel, Beschreibung und Akzeptanzkriterien |
+| **Rubric** | Wie eine fertige Story aussieht, bis zu 16.000 Zeichen |
+| **Model** | Optional; leer bedeutet das Standardmodell |
+| **Max stories** | Wie viele Stories ein Lauf prüft, standardmäßig 20, höchstens 50 |
+
+Jede Story erhält das Urteil bereit, nachzuarbeiten oder blockiert, mit einer Zusammenfassung und bis zu acht Punkten. Der Bericht verlinkt jede Story und nennt die Person, für die sie ausgewählt wurde, auch wenn ein eigenes Personenfeld sie ausgewählt hat.
+
+![Ein Bericht Sprint story review für ein Beispielprojekt: Die Überschrift zählt 4 Sprint-Stories, davon 1 geprüft und 3 wiederverwendet; Kacheln zeigen die Summen für bereit, nachzuarbeiten und blockiert; ein Bereich What changed nennt die Story mit geändertem Titel; Urteilskarten zeigen Link, Status, zugewiesene Person und Lücken jeder Story.](/images/docs/qa/sprint-story-review-report.png)
+
+```mermaid
+flowchart TD
+    S["Stories des Sprints für<br/>die Person lesen"] --> C{"Anforderungsfelder oder<br/>Kommentare seit der letzten<br/>Prüfung geändert?"}
+    C -->|Nein| R["Früheres Urteil<br/>wiederverwenden"]
+    C -->|Ja, oder erzwungener manueller Lauf| M["Mit dem Modell prüfen"]
+    R --> P["Mit dem vorherigen<br/>geplanten Lauf vergleichen"]
+    M --> P
+    P --> F["Bericht veröffentlichen"]
+```
+
+Ein Lauf prüft eine Story nur dann erneut, wenn sich ihre Anforderungsfelder oder Kommentare seit der letzten Prüfung geändert haben. Die übrigen Stories behalten ihr früheres Urteil, ohne dass das Modell aufgerufen wird. Eine Änderung der Rubrik oder des Modells prüft alle Stories erneut, und ein manueller Lauf kann eine frische Prüfung aller Stories anfordern.
+
+Ein geplanter Lauf vergleicht den Sprint außerdem mit dem vorherigen geplanten Lauf und zählt die geprüften, wiederverwendeten und entfernten Stories. Der erste geplante Lauf hat nichts zum Vergleichen und sagt das. Hat sich nichts geändert, steht im Bericht „No changes since the last capture."
 
 ### Publish Frame
 

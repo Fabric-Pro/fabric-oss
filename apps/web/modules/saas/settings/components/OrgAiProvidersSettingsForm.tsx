@@ -39,7 +39,8 @@ import {
 	SettingsIcon,
 	StarIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslations } from "next-intl";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
 	type AuthMode,
@@ -55,11 +56,13 @@ import {
 	isServicePrincipalMode,
 	type ProviderWithIcon,
 } from "../lib/ai-providers";
+import { useEmbeddingsChangeConfirmation } from "./EmbeddingsChangeConfirmDialog";
 import {
 	EmbeddingsBadge,
 	EmbeddingsOnlyOption,
 	EmbeddingsOnlyToggle,
 } from "./EmbeddingsOnlyControls";
+import { DefaultApiProviderSwitchDialog } from "./org-ai-model-preferences/DefaultApiProviderPanel";
 
 interface OrgAiProvidersSettingsFormProps {
 	readOnly?: boolean;
@@ -101,11 +104,9 @@ export function OrgAiProvidersSettingsForm({
 	const [selectedGatewayForProviders, setSelectedGatewayForProviders] =
 		useState<string | null>(null);
 	const [enabledProviders, setEnabledProviders] = useState<string[]>([]);
-	const [embeddingChangeConfirmOpen, setEmbeddingChangeConfirmOpen] =
-		useState(false);
-	const [pendingEmbeddingProvider, setPendingEmbeddingProvider] = useState<
-		string | null
-	>(null);
+	const embeddingChange = useEmbeddingsChangeConfirmation(organizationId);
+	const tModels = useTranslations("settings.aiModelsRouting.models");
+	const saveProviderButtonId = useId();
 	const [testingProviderId, setTestingProviderId] = useState<string | null>(
 		null,
 	);
@@ -120,6 +121,19 @@ export function OrgAiProvidersSettingsForm({
 		},
 		enabled: !!isOrgContext,
 	});
+
+	const validDefaultTargets = useQuery({
+		queryKey: ["aiDefaultProviderSwitch", organizationId, ""],
+		queryFn: () =>
+			orpcClient.aiConfig.providers.previewSetDefault({
+				organizationId: organizationId as string,
+			}),
+		enabled: !!isOrgContext && !!organizationId && !readOnly,
+	});
+	const canSetDefault = (provider: string) =>
+		validDefaultTargets.data?.validProviders.some(
+			(row) => row.provider === provider,
+		) ?? false;
 
 	// Test connection mutation (for new configurations)
 	const testConnectionMutation = useMutation({
@@ -206,14 +220,19 @@ export function OrgAiProvidersSettingsForm({
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: ["aiConfigStatus"] });
-			// Invalidate AI chat queries so model selector updates immediately
-			// Include organizationId so the query key matches what AiChat uses
 			queryClient.invalidateQueries({
-				queryKey: ["aiAvailableModels", organizationId],
+				queryKey: ["aiDefaultProviderSwitch", organizationId],
 			});
-			queryClient.invalidateQueries({
-				queryKey: ["aiTaskDefaults", organizationId],
-			});
+			for (const key of [
+				"aiTaskDefaults",
+				"aiAvailableModels",
+				"aiOrgPreferences",
+			]) {
+				queryClient.invalidateQueries({
+					queryKey: [key, organizationId],
+				});
+			}
+
 			toast.success("Provider configured", {
 				description: `${selectedProvider?.name} has been configured successfully`,
 			});
@@ -228,28 +247,9 @@ export function OrgAiProvidersSettingsForm({
 		},
 	});
 
-	// Set default provider mutation
-	const setDefaultMutation = useMutation({
-		mutationFn: async (provider: string) => {
-			// Cast to never to satisfy API type (API validates on server)
-			return await orpcClient.aiConfig.providers.setDefault({
-				provider: provider as never,
-				organizationId: organizationId ?? undefined, // Set default for organization
-			});
-		},
-		onSuccess: () => {
-			queryClient.invalidateQueries({ queryKey: ["aiConfigStatus"] });
-			// Invalidate AI chat queries so model selector updates immediately
-			// Include organizationId so the query key matches what AiChat uses
-			queryClient.invalidateQueries({
-				queryKey: ["aiAvailableModels", organizationId],
-			});
-			queryClient.invalidateQueries({
-				queryKey: ["aiTaskDefaults", organizationId],
-			});
-		},
-	});
-
+	const [defaultSwitchTarget, setDefaultSwitchTarget] = useState<
+		string | null
+	>(null);
 	// Set embedding provider mutation
 	const setEmbeddingMutation = useMutation({
 		mutationFn: async (provider: string) => {
@@ -261,6 +261,18 @@ export function OrgAiProvidersSettingsForm({
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: ["aiConfigStatus"] });
+			queryClient.invalidateQueries({
+				queryKey: ["aiDefaultProviderSwitch", organizationId],
+			});
+			for (const key of [
+				"aiTaskDefaults",
+				"aiAvailableModels",
+				"aiOrgPreferences",
+			]) {
+				queryClient.invalidateQueries({
+					queryKey: [key, organizationId],
+				});
+			}
 			toast.success("Embedding provider updated");
 		},
 	});
@@ -306,6 +318,18 @@ export function OrgAiProvidersSettingsForm({
 		},
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: ["aiConfigStatus"] });
+			queryClient.invalidateQueries({
+				queryKey: ["aiDefaultProviderSwitch", organizationId],
+			});
+			for (const key of [
+				"aiTaskDefaults",
+				"aiAvailableModels",
+				"aiOrgPreferences",
+			]) {
+				queryClient.invalidateQueries({
+					queryKey: [key, organizationId],
+				});
+			}
 			queryClient.invalidateQueries({
 				queryKey: ["ai-config", "gateway-models"],
 			});
@@ -401,6 +425,7 @@ export function OrgAiProvidersSettingsForm({
 	 * into the next provider's dialog.
 	 */
 	const resetCredentialFields = () => {
+		embeddingChange.cancel();
 		// Bumps BOTH counters: supersedes an in-flight prefill and invalidates
 		// any passing test, so a reset can never leave a stale green check.
 		supersedePrefill();
@@ -534,7 +559,7 @@ export function OrgAiProvidersSettingsForm({
 					}
 			: { isDefault: !configStatus?.isConfigured };
 
-	const handleSaveProvider = async () => {
+	const handleSaveProvider = () => {
 		// Belt-and-braces alongside the disabled Save button: never persist a
 		// credential that the passing test did not actually exercise.
 		if (
@@ -546,7 +571,7 @@ export function OrgAiProvidersSettingsForm({
 			return;
 		}
 
-		await saveProviderMutation.mutateAsync({
+		const payload = {
 			provider: selectedProvider.id,
 			...credentialPayload,
 			baseUrl: selectedProvider.requiresBaseUrl
@@ -554,11 +579,34 @@ export function OrgAiProvidersSettingsForm({
 				: undefined,
 			deploymentName: deploymentNamePayload,
 			...embeddingsOnlyPayload,
-		});
+		};
+		const revision = formRevisionRef.current;
+		const save = () => {
+			if (formRevisionRef.current === revision) {
+				// The mutation's onError reports save failures.
+				void saveProviderMutation.mutateAsync(payload).catch(() => {});
+			}
+		};
+		// These provider-only actions keep the saved embedding choice. Changing
+		// provider changes its qualified identity even for the same canonical model.
+		const currentEmbeddingIdentity =
+			configStatus?.organizationEmbedding?.identity;
+		// Upsert makes an unrestricted key default when no usable default exists,
+		// even if isConfigured counts another enabled row. A platform identity is
+		// redacted, so replacing it requires the impact check rather than guessing.
+		if (
+			(embeddingsOnly ||
+				configStatus?.organizationEmbedding?.source === "platform") &&
+			!currentEmbeddingIdentity?.startsWith(`${selectedProvider.id}:`)
+		) {
+			void embeddingChange.requestChange(save);
+		} else {
+			save();
+		}
 	};
 
 	const handleConfigureProvider = (provider: ProviderWithIcon) => {
-		if (readOnly) {
+		if (readOnly || embeddingChange.isChecking || embeddingChange.open) {
 			return;
 		}
 		setSelectedProvider(provider);
@@ -624,44 +672,43 @@ export function OrgAiProvidersSettingsForm({
 		);
 	};
 
-	const isProviderEmbedding = (providerId: string) => {
-		return (
-			configStatus?.configuredProviders.some(
-				(p) => p.provider === providerId && p.isEmbeddingProvider,
-			) ?? false
-		);
-	};
+	// Stored designation gates edits; resolution only describes current routing.
+	const isStoredDocumentsProvider = (providerId: string) =>
+		configStatus?.configuredProviders.some(
+			(p) => p.provider === providerId && p.isEmbeddingProvider,
+		) ?? false;
+	const isResolvedEmbeddingProvider = (providerId: string) =>
+		configStatus?.organizationEmbedding?.provider === providerId;
 
-	const handleSetDefault = async (providerId: string) => {
-		if (readOnly) {
-			return;
-		}
-		try {
-			await setDefaultMutation.mutateAsync(providerId);
-			toast.success("Default provider updated");
-		} catch (error) {
-			toast.error("Failed to set default provider", {
-				description:
-					error instanceof Error ? error.message : "Unknown error",
-			});
-		}
-	};
-
-	const handleSetEmbedding = async (providerId: string) => {
-		if (readOnly) {
-			return;
-		}
-
-		// If there's already an embedding provider, show warning
+	const handleSetDefault = (providerId: string) => {
 		if (
-			configStatus?.embeddingProvider &&
-			configStatus.embeddingProvider !== providerId
+			!readOnly &&
+			!embeddingChange.isChecking &&
+			!embeddingChange.open &&
+			canSetDefault(providerId)
 		) {
-			setPendingEmbeddingProvider(providerId);
-			setEmbeddingChangeConfirmOpen(true);
+			setDefaultSwitchTarget(providerId);
+		}
+	};
+
+	const handleSetEmbedding = async (
+		providerId: string,
+		invoker: HTMLElement,
+	) => {
+		if (readOnly || embeddingChange.isChecking || embeddingChange.open) {
 			return;
 		}
 
+		// These provider-only actions keep the saved embedding choice. Changing
+		// provider changes its qualified identity even for the same canonical model.
+		const currentEmbeddingIdentity =
+			configStatus?.organizationEmbedding?.identity;
+		if (!currentEmbeddingIdentity?.startsWith(`${providerId}:`)) {
+			void embeddingChange.requestChange(() => {
+				void confirmSetEmbedding(providerId);
+			}, invoker);
+			return;
+		}
 		await confirmSetEmbedding(providerId);
 	};
 
@@ -673,9 +720,6 @@ export function OrgAiProvidersSettingsForm({
 				description:
 					error instanceof Error ? error.message : "Unknown error",
 			});
-		} finally {
-			setEmbeddingChangeConfirmOpen(false);
-			setPendingEmbeddingProvider(null);
 		}
 	};
 
@@ -699,6 +743,23 @@ export function OrgAiProvidersSettingsForm({
 
 	return (
 		<>
+			{defaultSwitchTarget && !readOnly && (
+				<DefaultApiProviderSwitchDialog
+					key={defaultSwitchTarget}
+					organizationId={organizationId}
+					currentProvider={configStatus?.defaultProvider ?? null}
+					configuredProviders={
+						configStatus?.configuredProviders ?? []
+					}
+					open
+					initialProvider={defaultSwitchTarget}
+					onOpenChange={(value) => {
+						if (!value) {
+							setDefaultSwitchTarget(null);
+						}
+					}}
+				/>
+			)}
 			<SettingsItem
 				title="Organization AI Providers"
 				description="Configure AI providers for your organization. These settings apply to all organization members unless they have personal overrides."
@@ -766,6 +827,9 @@ export function OrgAiProvidersSettingsForm({
 															</Badge>
 															{!readOnly &&
 																!p.isDefault &&
+																canSetDefault(
+																	p.provider,
+																) &&
 																p.purpose !==
 																	"EMBEDDINGS_ONLY" &&
 																configStatus
@@ -777,11 +841,8 @@ export function OrgAiProvidersSettingsForm({
 																		size="sm"
 																		className="h-5 px-1 text-xs text-muted-foreground hover:text-foreground"
 																		onClick={() => {
-																			setDefaultMutation.mutate(
+																			handleSetDefault(
 																				p.provider,
-																			);
-																			toast.success(
-																				"Default provider updated",
 																			);
 																		}}
 																	>
@@ -799,7 +860,23 @@ export function OrgAiProvidersSettingsForm({
 												<span className="text-success/80">
 													Document Search:
 												</span>
-												{configStatus.embeddingProvider ? (
+												{configStatus
+													.organizationEmbedding
+													?.source === "platform" ? (
+													<span className="text-muted-foreground text-xs">
+														{tModels(
+															"embeddingsPlatform",
+														)}
+													</span>
+												) : !configStatus.organizationEmbedding ? (
+													<span>
+														{tModels(
+															"embeddingsResolutionUnavailable",
+														)}
+													</span>
+												) : configStatus
+														.organizationEmbedding
+														.provider ? (
 													<div className="flex items-center gap-1.5">
 														<Badge
 															variant="outline"
@@ -808,20 +885,25 @@ export function OrgAiProvidersSettingsForm({
 															{configStatus.configuredProviders.find(
 																(p) =>
 																	p.provider ===
-																	configStatus.embeddingProvider,
+																	configStatus
+																		.organizationEmbedding
+																		?.provider,
 															)?.displayName ||
-																configStatus.embeddingProvider.replace(
+																configStatus.organizationEmbedding.provider.replace(
 																	/_/g,
 																	" ",
 																)}
 														</Badge>
-														{configStatus.embeddingModel && (
+														{configStatus
+															.organizationEmbedding
+															.model && (
 															<>
 																<span className="text-muted-foreground">
 																	→
 																</span>
 																{configStatus
-																	.embeddingModel
+																	.organizationEmbedding
+																	.model
 																	.subProvider && (
 																	<Badge
 																		variant="secondary"
@@ -829,7 +911,8 @@ export function OrgAiProvidersSettingsForm({
 																	>
 																		{
 																			configStatus
-																				.embeddingModel
+																				.organizationEmbedding
+																				.model
 																				.subProvider
 																		}
 																	</Badge>
@@ -837,7 +920,8 @@ export function OrgAiProvidersSettingsForm({
 																<span className="text-success/80 text-xs">
 																	{
 																		configStatus
-																			.embeddingModel
+																			.organizationEmbedding
+																			.model
 																			.displayName
 																	}
 																</span>
@@ -874,9 +958,17 @@ export function OrgAiProvidersSettingsForm({
 						</div>
 					)}
 
+					{!configStatus?.isConfigured &&
+						configStatus?.organizationEmbedding?.source ===
+							"platform" && (
+							<p className="text-sm text-muted-foreground">
+								Document Search: {tModels("embeddingsPlatform")}
+							</p>
+						)}
+
 					{/* Embedding Provider Info Banner */}
 					{configStatus?.isConfigured &&
-						!configStatus?.embeddingProvider &&
+						configStatus?.organizationEmbedding?.source === null &&
 						!readOnly && (
 							<div className="rounded-md border border-border bg-muted/40 p-4">
 								<div className="flex gap-3">
@@ -915,9 +1007,10 @@ export function OrgAiProvidersSettingsForm({
 								const isDefault = isProviderDefault(
 									provider.id,
 								);
-								const isEmbedding = isProviderEmbedding(
-									provider.id,
-								);
+								const resolvesEmbeddings =
+									isResolvedEmbeddingProvider(provider.id);
+								const isDocumentsProvider =
+									isStoredDocumentsProvider(provider.id);
 								const isEmbeddingsOnly =
 									isProviderEmbeddingsOnly(
 										provider.id,
@@ -966,7 +1059,7 @@ export function OrgAiProvidersSettingsForm({
 																Active
 															</Badge>
 														)}
-														{isEmbedding && (
+														{resolvesEmbeddings && (
 															<EmbeddingsBadge
 																onlyForDocuments={
 																	!isDefault
@@ -1057,6 +1150,9 @@ export function OrgAiProvidersSettingsForm({
 												)}
 												{isConfigured &&
 													!isDefault &&
+													canSetDefault(
+														provider.id,
+													) &&
 													!isEmbeddingsOnly &&
 													!readOnly && (
 														<Button
@@ -1068,7 +1164,8 @@ export function OrgAiProvidersSettingsForm({
 																)
 															}
 															disabled={
-																setDefaultMutation.isPending
+																defaultSwitchTarget !==
+																null
 															}
 														>
 															<StarIcon className="mr-1 size-3" />
@@ -1076,7 +1173,7 @@ export function OrgAiProvidersSettingsForm({
 														</Button>
 													)}
 												{isConfigured &&
-													!isEmbedding &&
+													!isDocumentsProvider &&
 													!readOnly &&
 													canProviderSupportEmbeddings(
 														provider.id,
@@ -1089,13 +1186,17 @@ export function OrgAiProvidersSettingsForm({
 																<Button
 																	variant="outline"
 																	size="sm"
-																	onClick={() =>
+																	onClick={(
+																		event,
+																	) =>
 																		handleSetEmbedding(
 																			provider.id,
+																			event.currentTarget,
 																		)
 																	}
 																	disabled={
-																		setEmbeddingMutation.isPending
+																		setEmbeddingMutation.isPending ||
+																		embeddingChange.isChecking
 																	}
 																>
 																	<DatabaseIcon className="mr-1 size-3" />
@@ -1124,7 +1225,7 @@ export function OrgAiProvidersSettingsForm({
 														</Tooltip>
 													)}
 												{isConfigured &&
-													isEmbedding &&
+													isDocumentsProvider &&
 													!readOnly && (
 														<EmbeddingsOnlyToggle
 															provider={
@@ -1160,9 +1261,10 @@ export function OrgAiProvidersSettingsForm({
 								const isDefault = isProviderDefault(
 									provider.id,
 								);
-								const isEmbedding = isProviderEmbedding(
-									provider.id,
-								);
+								const resolvesEmbeddings =
+									isResolvedEmbeddingProvider(provider.id);
+								const isDocumentsProvider =
+									isStoredDocumentsProvider(provider.id);
 								const isEmbeddingsOnly =
 									isProviderEmbeddingsOnly(
 										provider.id,
@@ -1210,7 +1312,7 @@ export function OrgAiProvidersSettingsForm({
 																Active
 															</Badge>
 														)}
-														{isEmbedding && (
+														{resolvesEmbeddings && (
 															<EmbeddingsBadge
 																onlyForDocuments={
 																	!isDefault
@@ -1286,6 +1388,9 @@ export function OrgAiProvidersSettingsForm({
 												)}
 												{isConfigured &&
 													!isDefault &&
+													canSetDefault(
+														provider.id,
+													) &&
 													!isEmbeddingsOnly &&
 													!readOnly && (
 														<Button
@@ -1297,7 +1402,8 @@ export function OrgAiProvidersSettingsForm({
 																)
 															}
 															disabled={
-																setDefaultMutation.isPending
+																defaultSwitchTarget !==
+																null
 															}
 														>
 															<StarIcon className="mr-1 size-3" />
@@ -1305,7 +1411,7 @@ export function OrgAiProvidersSettingsForm({
 														</Button>
 													)}
 												{isConfigured &&
-													!isEmbedding &&
+													!isDocumentsProvider &&
 													!readOnly &&
 													canProviderSupportEmbeddings(
 														provider.id,
@@ -1318,13 +1424,17 @@ export function OrgAiProvidersSettingsForm({
 																<Button
 																	variant="outline"
 																	size="sm"
-																	onClick={() =>
+																	onClick={(
+																		event,
+																	) =>
 																		handleSetEmbedding(
 																			provider.id,
+																			event.currentTarget,
 																		)
 																	}
 																	disabled={
-																		setEmbeddingMutation.isPending
+																		setEmbeddingMutation.isPending ||
+																		embeddingChange.isChecking
 																	}
 																>
 																	<DatabaseIcon className="mr-1 size-3" />
@@ -1353,7 +1463,7 @@ export function OrgAiProvidersSettingsForm({
 														</Tooltip>
 													)}
 												{isConfigured &&
-													isEmbedding &&
+													isDocumentsProvider &&
 													!readOnly && (
 														<EmbeddingsOnlyToggle
 															provider={
@@ -1393,9 +1503,10 @@ export function OrgAiProvidersSettingsForm({
 								const isDefault = isProviderDefault(
 									provider.id,
 								);
-								const isEmbedding = isProviderEmbedding(
-									provider.id,
-								);
+								const resolvesEmbeddings =
+									isResolvedEmbeddingProvider(provider.id);
+								const isDocumentsProvider =
+									isStoredDocumentsProvider(provider.id);
 								const isEmbeddingsOnly =
 									isProviderEmbeddingsOnly(
 										provider.id,
@@ -1443,7 +1554,7 @@ export function OrgAiProvidersSettingsForm({
 																Active
 															</Badge>
 														)}
-														{isEmbedding && (
+														{resolvesEmbeddings && (
 															<EmbeddingsBadge
 																onlyForDocuments={
 																	!isDefault
@@ -1515,6 +1626,9 @@ export function OrgAiProvidersSettingsForm({
 												)}
 												{isConfigured &&
 													!isDefault &&
+													canSetDefault(
+														provider.id,
+													) &&
 													!isEmbeddingsOnly &&
 													!readOnly && (
 														<Button
@@ -1526,7 +1640,8 @@ export function OrgAiProvidersSettingsForm({
 																)
 															}
 															disabled={
-																setDefaultMutation.isPending
+																defaultSwitchTarget !==
+																null
 															}
 														>
 															<StarIcon className="mr-1 size-3" />
@@ -1534,7 +1649,7 @@ export function OrgAiProvidersSettingsForm({
 														</Button>
 													)}
 												{isConfigured &&
-													!isEmbedding &&
+													!isDocumentsProvider &&
 													!readOnly &&
 													canProviderSupportEmbeddings(
 														provider.id,
@@ -1547,13 +1662,17 @@ export function OrgAiProvidersSettingsForm({
 																<Button
 																	variant="outline"
 																	size="sm"
-																	onClick={() =>
+																	onClick={(
+																		event,
+																	) =>
 																		handleSetEmbedding(
 																			provider.id,
+																			event.currentTarget,
 																		)
 																	}
 																	disabled={
-																		setEmbeddingMutation.isPending
+																		setEmbeddingMutation.isPending ||
+																		embeddingChange.isChecking
 																	}
 																>
 																	<DatabaseIcon className="mr-1 size-3" />
@@ -1582,7 +1701,7 @@ export function OrgAiProvidersSettingsForm({
 														</Tooltip>
 													)}
 												{isConfigured &&
-													isEmbedding &&
+													isDocumentsProvider &&
 													!readOnly && (
 														<EmbeddingsOnlyToggle
 															provider={
@@ -1609,7 +1728,7 @@ export function OrgAiProvidersSettingsForm({
 
 			{/* Configuration Dialog */}
 			<Dialog
-				open={!!selectedProvider && !readOnly}
+				open={!!selectedProvider && !readOnly && !embeddingChange.open}
 				onOpenChange={(open) => {
 					if (!open) {
 						setSelectedProvider(null);
@@ -1968,6 +2087,7 @@ export function OrgAiProvidersSettingsForm({
 							Cancel
 						</Button>
 						<Button
+							id={saveProviderButtonId}
 							type="button"
 							autoLoading={false}
 							onClick={handleSaveProvider}
@@ -1977,6 +2097,7 @@ export function OrgAiProvidersSettingsForm({
 								// for the values currently in the form.
 								!testPassedForCurrentInput ||
 								saveProviderMutation.isPending ||
+								embeddingChange.isChecking ||
 								(selectedProvider?.requiresBaseUrl &&
 									!customBaseUrl) ||
 								// Azure AI Foundry requires deployment name
@@ -2093,87 +2214,7 @@ export function OrgAiProvidersSettingsForm({
 				</DialogContent>
 			</Dialog>
 
-			{/* Embedding Provider Change Confirmation Dialog */}
-			<Dialog
-				open={embeddingChangeConfirmOpen && !readOnly}
-				onOpenChange={(open) => {
-					if (!open) {
-						setEmbeddingChangeConfirmOpen(false);
-						setPendingEmbeddingProvider(null);
-					}
-				}}
-			>
-				<DialogContent className="max-w-md">
-					<DialogHeader>
-						<DialogTitle className="flex items-center gap-2 text-highlight">
-							<AlertCircleIcon className="size-5" />
-							Change Embedding Provider?
-						</DialogTitle>
-						<DialogDescription className="space-y-3">
-							<p>
-								You're about to change the organization's
-								embedding provider from{" "}
-								<strong>
-									{configStatus?.embeddingProvider?.replace(
-										/_/g,
-										" ",
-									)}
-								</strong>{" "}
-								to{" "}
-								<strong>
-									{pendingEmbeddingProvider?.replace(
-										/_/g,
-										" ",
-									)}
-								</strong>
-								.
-							</p>
-							<div className="rounded-md border border-highlight/20 bg-highlight/5 p-3">
-								<p className="text-highlight text-sm">
-									<strong>Warning:</strong> Different
-									embedding providers produce incompatible
-									vectors. Documents indexed with the previous
-									provider may not be searchable correctly.
-								</p>
-								<p className="text-highlight/80 text-sm mt-2">
-									Consider re-indexing your organization's
-									documents after changing the embedding
-									provider.
-								</p>
-							</div>
-						</DialogDescription>
-					</DialogHeader>
-
-					<DialogFooter>
-						<Button
-							variant="outline"
-							onClick={() => {
-								setEmbeddingChangeConfirmOpen(false);
-								setPendingEmbeddingProvider(null);
-							}}
-						>
-							Cancel
-						</Button>
-						<Button
-							variant="destructive"
-							onClick={() =>
-								pendingEmbeddingProvider &&
-								confirmSetEmbedding(pendingEmbeddingProvider)
-							}
-							disabled={setEmbeddingMutation.isPending}
-						>
-							{setEmbeddingMutation.isPending ? (
-								<>
-									<LoaderIcon className="mr-2 size-4 animate-spin" />
-									Changing...
-								</>
-							) : (
-								"Change Embedding Provider"
-							)}
-						</Button>
-					</DialogFooter>
-				</DialogContent>
-			</Dialog>
+			{embeddingChange.dialog}
 		</>
 	);
 }

@@ -15,6 +15,7 @@ const { mockDb, mockRecordAudit, tx, mockRequireOrgMembership } = vi.hoisted(
 	() => {
 		const model = () => ({
 			findUnique: vi.fn(),
+			findMany: vi.fn(async () => []),
 			findFirst: vi.fn(),
 			update: vi.fn(),
 			updateMany: vi.fn().mockResolvedValue({ count: 1 }),
@@ -22,6 +23,7 @@ const { mockDb, mockRecordAudit, tx, mockRequireOrgMembership } = vi.hoisted(
 			deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
 		});
 		const tx = {
+			$queryRaw: vi.fn(async () => []),
 			cloudProviderConfig: model(),
 			userCloudProviderConfig: model(),
 			organizationModelPreference: model(),
@@ -43,8 +45,44 @@ const { mockDb, mockRecordAudit, tx, mockRequireOrgMembership } = vi.hoisted(
 	},
 );
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/ai/model-selector", () => ({
+	selectModelDynamic: vi.fn(async () => ({
+		modelId: "example-default",
+		canonicalName: "example-default",
+		displayName: "Example default",
+	})),
+}));
+
+vi.mock("@repo/database", async () => ({
+	organizationDefaultProviderWhere: (
+		await vi.importActual<
+			typeof import("../../../../../../database/prisma/queries/ai-gateway")
+		>("../../../../../../database/prisma/queries/ai-gateway")
+	).organizationDefaultProviderWhere,
+	readProviderRowCredentials: (
+		await vi.importActual<
+			typeof import("../../../../../../database/prisma/queries/ai-gateway")
+		>("../../../../../../database/prisma/queries/ai-gateway")
+	).readProviderRowCredentials,
 	db: mockDb,
+	getOrganizationDefaultProvider: async () =>
+		(
+			await mockDb.cloudProviderConfig.findFirst({
+				where: { isDefault: true },
+			})
+		)?.provider ?? null,
+	getAiProviderApiKeyByProvider: async ({
+		provider,
+	}: {
+		provider: string;
+	}) => ({ provider, source: "organization" }),
+	getSystemAiProviderApiKey: async () => ({ provider: null }),
+	lockTenantProviderConnections: (
+		await import(
+			"../../../../../../database/prisma/queries/provider-write-locks"
+		)
+	).lockTenantProviderConnections,
+	taskDefaultsSnapshotMutation: vi.fn(async () => ({})),
 	LLM_PROVIDER_PURPOSE_FILTER: { purpose: { not: "EMBEDDINGS_ONLY" } },
 	getProviderMetadata: vi.fn(() => ({
 		requiresBaseUrl: false,
@@ -160,6 +198,7 @@ function expectNoSecrets(input: unknown) {
 }
 
 const existingRow = {
+	encryptedApiKey: "example-encrypted-key",
 	id: "cpc_1",
 	provider: "AZURE_AI_FOUNDRY",
 	clientId: null,
@@ -174,6 +213,9 @@ const existingRow = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mockDb.cloudProviderConfig.findMany.mockResolvedValue([
+		{ provider: "AZURE_AI_FOUNDRY" },
+	]);
 	mockRequireOrgMembership.mockResolvedValue({ role: "admin" });
 	for (const model of [tx.cloudProviderConfig, tx.userCloudProviderConfig]) {
 		model.findUnique.mockResolvedValue(null);
@@ -366,16 +408,15 @@ describe("setDefault audit", () => {
 	] as const)(
 		"records the %s default change with the previous default",
 		async (_l, action, context, model) => {
-			tx[model].findFirst
-				.mockResolvedValueOnce({
-					id: "old_1",
-					provider: "OPENAI_DIRECT",
-				})
-				.mockResolvedValueOnce({
-					...existingRow,
-					provider: "AZURE_AI_FOUNDRY",
-				});
+			tx[model].findFirst.mockImplementation(async ({ where }) =>
+				where.isDefault
+					? { ...existingRow, id: "old_1", provider: "OPENAI_DIRECT" }
+					: { ...existingRow, provider: "AZURE_AI_FOUNDRY" },
+			);
 
+			tx.cloudProviderConfig.findMany.mockResolvedValue([
+				{ ...existingRow, provider: "AZURE_AI_FOUNDRY" },
+			]);
 			await call(
 				setDefaultProviderProcedure,
 				{ provider: "AZURE_AI_FOUNDRY" },
@@ -418,6 +459,7 @@ describe("setEmbedding audit", () => {
 		"records the %s embedding change with the previous provider",
 		async (_l, action, context, model) => {
 			tx[model].findFirst
+				.mockResolvedValueOnce(null)
 				.mockResolvedValueOnce({
 					id: "old_1",
 					provider: "OPENAI_DIRECT",
@@ -497,7 +539,18 @@ describe("delete audit", () => {
 	] as const)(
 		"records the %s deletion with what the row held",
 		async (_l, action, context, model) => {
+			tx[model].findMany.mockResolvedValueOnce([
+				{
+					id: "next_1",
+					provider: "OPENAI_DIRECT",
+					encryptedApiKey: "example-key",
+					clientId: null,
+					encryptedClientSecret: null,
+					config: {},
+				},
+			]);
 			tx[model].findFirst
+				.mockResolvedValueOnce(null)
 				.mockResolvedValueOnce(existingRow)
 				.mockResolvedValueOnce(null)
 				.mockResolvedValueOnce({

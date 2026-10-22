@@ -20,6 +20,9 @@ vi.mock("@repo/database", () => ({
 	getMergedSearchProviderConfigs: vi.fn().mockResolvedValue([]),
 	getSearchProviderConfig: vi.fn(),
 	getProjectCodeIndexes: vi.fn().mockResolvedValue([{ status: "READY" }]),
+	getProjectAccessContext: vi
+		.fn()
+		.mockResolvedValue({ organizationId: "org-1" }),
 	resolveModelWithCredentials: vi.fn(),
 }));
 

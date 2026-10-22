@@ -112,7 +112,8 @@ A schedule is read from the trigger node's **Schedule (cron)** field, in five- o
 form — for example `0 9 * * 1-5` for 09:00, Monday to Friday. That field carries a default,
 so it is the **Trigger Type** that decides whether a schedule is created, not the presence
 of a cron. Fabric registers it when you publish and
-removes it when you unpublish, pause or archive the workflow.
+removes it when you unpublish, pause or archive the workflow. A workflow that Fabric Agent
+drafted with a **Schedule** trigger and no cron is refused when you publish it.
 
 ## Nodes
 
@@ -224,7 +225,7 @@ executor. Connect the service it uses before running it.
 | **Create GitLab Issue** | GitLab | Create a new issue in a GitLab project |
 | **Get File Contents** | GitLab | Get the contents of a file from a GitLab project |
 | **Search GitLab Issues** | GitLab | Search issues in a GitLab project |
-| **MCP Tool** | MCP Tools | Execute a tool from an MCP server |
+| **MCP Tool** | MCP Tools | Execute a tool from an MCP server. In a project in read-only mode, Fabric runs only tools it recognizes as reads from their name; any other tool is refused |
 
 #### Productivity
 

@@ -80,6 +80,7 @@ export const resolveModelProcedure = tenantProtectedProcedure
 			input.taskType,
 			organizationId,
 			input.complexity,
+			providerConfig,
 		);
 
 		if (!result?.model) {

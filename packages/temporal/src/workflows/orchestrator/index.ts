@@ -27,9 +27,9 @@ import {
 	setHandler,
 	workflowInfo,
 } from "@temporalio/workflow";
-
 import type * as allActivities from "../../activities";
 import type * as orchestratorActivities from "../../activities/orchestrator";
+import { AI_NON_RETRYABLE_ERROR_TYPES } from "../ai-non-retryable-errors";
 import { buildConversationSummary } from "./conversation-summary";
 import {
 	buildWorkflowOutput,
@@ -81,6 +81,7 @@ import {
 	usesIterativeExecution,
 	type WorkflowState,
 } from "./types";
+import { orchestratorErrorMessage } from "./usage-limit";
 import { usageOriginFields } from "./workflow-usage-attribution";
 
 // =============================================================================
@@ -148,6 +149,7 @@ const longRunningActivities = proxyActivities<typeof orchestratorActivities>({
 	startToCloseTimeout: "10 minutes",
 	heartbeatTimeout: "30s",
 	retry: {
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 		initialInterval: "2s",
 		backoffCoefficient: 2,
 		maximumInterval: "60s",
@@ -166,6 +168,7 @@ const turnLongRunningActivities = proxyActivities<
 	heartbeatTimeout: "30s",
 	cancellationType: ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
 	retry: {
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 		initialInterval: "2s",
 		backoffCoefficient: 2,
 		maximumInterval: "60s",
@@ -186,6 +189,7 @@ const { analyzeIntentClarityActivity } = proxyActivities<
 	heartbeatTimeout: "30 seconds",
 	cancellationType: ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
 	retry: {
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 		initialInterval: "1s",
 		backoffCoefficient: 2,
 		maximumInterval: "10s",
@@ -202,6 +206,7 @@ const { finalizeConversationTurnActivity } = proxyActivities<
 >({
 	startToCloseTimeout: "1 minute",
 	retry: {
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 		initialInterval: "1s",
 		backoffCoefficient: 2,
 		maximumInterval: "10s",
@@ -239,6 +244,7 @@ const { cleanupWeaveResourcesActivity } = proxyActivities<typeof allActivities>(
 	{
 		startToCloseTimeout: "2 minutes",
 		retry: {
+			nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 			initialInterval: "1s",
 			backoffCoefficient: 2,
 			maximumInterval: "10s",
@@ -532,7 +538,7 @@ async function writeTurnTerminalState(
 		log.error("Failed to write the chat turn's terminal state", {
 			turnId: turnScope.turnId,
 			outcome,
-			error: error instanceof Error ? error.message : String(error),
+			error: orchestratorErrorMessage(error, String(error)),
 		});
 		return { status: null };
 	}
@@ -1096,6 +1102,8 @@ async function runOrchestratorExecution(
 					state,
 					"failed",
 					iterativeResult.error,
+					undefined,
+					iterativeResult.usageLimit,
 				);
 			}
 
@@ -1529,8 +1537,7 @@ async function runOrchestratorExecution(
 		// `exitReason` stays `"exception"` (its default) for unhandled
 		// throws — gives operators a visible signal in the audit log
 		// distinct from the deliberate `"failure"` returns.
-		const errorMessage =
-			error instanceof Error ? error.message : "Unknown error";
+		const errorMessage = orchestratorErrorMessage(error);
 		exitErrorMessage = errorMessage;
 		log.error("Orchestrator workflow failed", { error: errorMessage });
 		return buildWorkflowOutput(state, "failed", errorMessage);

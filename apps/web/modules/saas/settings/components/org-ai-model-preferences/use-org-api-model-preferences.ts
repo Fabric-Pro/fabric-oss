@@ -1,5 +1,9 @@
 "use client";
 
+import { buildProviderModelString } from "@repo/ai/lib/provider-model-string";
+import type { AIProvider } from "@repo/database";
+import { companyEmbeddingIdentity } from "@repo/rag/lib/company-contexts/resolution";
+
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -17,6 +21,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { API_DEFAULT_VALUE } from "./api-model-values";
 
 /**
  * The organization's API model per task: the data, the per-task view and the
@@ -102,6 +107,33 @@ export const TASK_TYPES = [
 
 type TaskTypeId = (typeof TASK_TYPES)[number]["id"];
 
+export const TEXT_TASK_IDS = [
+	"COMPLEX",
+	"REASONING",
+	"TOOL_CALLING",
+	"CHAT",
+	"EVAL",
+	"SIMPLE",
+] as const;
+
+/** Audio retains its existing provider selection. */
+function effectiveProviderForTask(
+	taskType: string,
+	defaultProvider: string | null,
+	embeddingProvider: string | null,
+): string | null | undefined {
+	if (taskType === "EMBEDDING") {
+		return embeddingProvider;
+	}
+	if (taskType === "IMAGE" || taskType === "DECISION") {
+		return "VERCEL_GATEWAY";
+	}
+	if ((TEXT_TASK_IDS as readonly string[]).includes(taskType)) {
+		return defaultProvider;
+	}
+	return undefined;
+}
+
 export interface ModelOption {
 	id: string;
 	canonicalName: string;
@@ -110,7 +142,10 @@ export interface ModelOption {
 	vendor: string;
 	speedTier: string;
 	qualityTier: string;
+	inputCostPer1M?: number | null;
+	outputCostPer1M?: number | null;
 	capabilities?: string[];
+	suitableForTasks?: string[];
 }
 
 // Capability requirements for each task type
@@ -199,7 +234,8 @@ function withoutChatGptPlanRows<T extends { provider: string | null }>(
 }
 
 interface PendingChange {
-	// null = the organization chose to switch this task's model off.
+	reset?: boolean;
+	// Without reset, null is the explicit Decision Disabled choice.
 	modelCanonicalName: string | null;
 	provider?: string | null;
 }
@@ -209,6 +245,11 @@ interface PendingChange {
  * models it may pick from (gateway → provider → models), and its value.
  */
 export interface ApiTaskView {
+	/** Keeps Audio on its existing control while its provider behavior is deferred. */
+	taskType: string;
+	readOnly: boolean;
+	noDefaultProvider?: boolean;
+	isDefaultChoice?: boolean;
 	currentModel: ModelOption | null;
 	/** The model the task runs on without a choice of the organization's. */
 	defaultModel: ModelOption | null;
@@ -248,7 +289,7 @@ export function useOrgApiModelPreferences({
 	const queryClient = useQueryClient();
 	const { organizationId, organizationSlug, isOrgContext } =
 		useOrganizationContext();
-	const [pendingChanges, setPendingChanges] = useState<
+	const [rawPendingChanges, setPendingChanges] = useState<
 		Record<string, PendingChange>
 	>({});
 	const [isSaving, setIsSaving] = useState(false);
@@ -269,7 +310,8 @@ export function useOrgApiModelPreferences({
 	const modelsByGatewayAndProvider =
 		availableModelsData?.modelsByGatewayAndProvider ?? {};
 	const configuredProviders = availableModelsData?.configuredProviders ?? [];
-	const defaultProvider = availableModelsData?.defaultProvider ?? null;
+	const defaultProvider =
+		availableModelsData?.organizationDefaultProvider ?? null;
 
 	// Decision evaluation models are an isolated SDK modality. Fetch them with
 	// their task type so the API never returns them to language-model selectors.
@@ -297,6 +339,7 @@ export function useOrgApiModelPreferences({
 		queryFn: async () => {
 			return await orpcClient.aiConfig.preferences.getTaskDefaults({
 				organizationId: organizationId ?? undefined,
+				provider: defaultProvider ?? undefined,
 			});
 		},
 		select: withoutChatGptPlanRows,
@@ -304,7 +347,7 @@ export function useOrgApiModelPreferences({
 		enabled: !!isOrgContext && !isLoadingModels,
 	});
 
-	// Query organization preferences (scoped to current default provider)
+	// Read API preferences across providers; task views select the effective provider.
 	const { data: orgPreferences = [], isLoading: isLoadingPrefs } = useQuery({
 		queryKey: ["aiOrgPreferences", organizationId, defaultProvider],
 		queryFn: async () => {
@@ -318,6 +361,53 @@ export function useOrgApiModelPreferences({
 		select: withoutChatGptPlanRows,
 		enabled: !!isOrgContext && !isLoadingModels,
 	});
+
+	const { data: providerStatus, isLoading: isLoadingProviderStatus } =
+		useQuery({
+			queryKey: ["aiConfigStatus", organizationId],
+			queryFn: () =>
+				orpcClient.aiConfig.resolution.getStatus({ organizationId }),
+			enabled: !!isOrgContext,
+		});
+	const embeddingProvider =
+		providerStatus?.organizationEmbedding?.provider ?? null;
+
+	const organizationEmbedding = providerStatus?.organizationEmbedding ?? null;
+
+	const matchesEffectiveProvider = (
+		taskType: string,
+		provider: string | null,
+	) => {
+		const effective = effectiveProviderForTask(
+			taskType,
+			defaultProvider,
+			embeddingProvider,
+		);
+		return (
+			effective === undefined ||
+			(effective !== null && provider === effective)
+		);
+	};
+	const getOrgPreference = (taskType: string) =>
+		orgPreferences.find(
+			(p) =>
+				p.taskType === taskType &&
+				matchesEffectiveProvider(taskType, p.provider),
+		);
+	const getTaskDefault = (taskType: string) =>
+		taskDefaults.find(
+			(p) =>
+				p.taskType === taskType &&
+				matchesEffectiveProvider(taskType, p.provider),
+		);
+	const pendingChanges = Object.fromEntries(
+		Object.entries(rawPendingChanges).filter(([taskType, change]) =>
+			matchesEffectiveProvider(
+				taskType,
+				change.provider ?? defaultProvider,
+			),
+		),
+	);
 
 	// Set organization preference mutation
 	const setPreferenceMutation = useMutation({
@@ -340,6 +430,15 @@ export function useOrgApiModelPreferences({
 			queryClient.invalidateQueries({
 				queryKey: ["aiOrgPreferences", organizationId],
 			});
+			for (const key of [
+				"aiConfigStatus",
+				"aiTaskDefaults",
+				"aiDefaultProviderSwitch",
+			]) {
+				queryClient.invalidateQueries({
+					queryKey: [key, organizationId],
+				});
+			}
 		},
 	});
 
@@ -358,6 +457,15 @@ export function useOrgApiModelPreferences({
 			queryClient.invalidateQueries({
 				queryKey: ["aiOrgPreferences", organizationId],
 			});
+			for (const key of [
+				"aiConfigStatus",
+				"aiTaskDefaults",
+				"aiDefaultProviderSwitch",
+			]) {
+				queryClient.invalidateQueries({
+					queryKey: [key, organizationId],
+				});
+			}
 		},
 	});
 
@@ -365,7 +473,8 @@ export function useOrgApiModelPreferences({
 		isLoadingModels ||
 		isLoadingDecisionModels ||
 		isLoadingDefaults ||
-		isLoadingPrefs;
+		isLoadingPrefs ||
+		isLoadingProviderStatus;
 
 	// Is this task's model switched off — either pending or already saved?
 	// A saved preference row with no model is the organization's explicit
@@ -373,12 +482,45 @@ export function useOrgApiModelPreferences({
 	// show the system default.
 	const isTaskDisabled = (taskType: string): boolean => {
 		const pending = pendingChanges[taskType];
+		if (taskType === "EMBEDDING") {
+			return false;
+		}
 		if (pending) {
-			return pending.modelCanonicalName === null;
+			return !pending.reset && pending.modelCanonicalName === null;
 		}
 
-		const orgPref = orgPreferences.find((p) => p.taskType === taskType);
+		const orgPref = getOrgPreference(taskType);
 		return !!orgPref && orgPref.model === null;
+	};
+
+	// The persisted effective choice, excluding unsaved picker selections.
+	const getSavedModel = (taskType: string): ModelOption | null => {
+		if (taskType === "EMBEDDING") {
+			const resolved = organizationEmbedding?.model;
+			if (!resolved) {
+				return null;
+			}
+			return (
+				models.find((m) => m.id === resolved.id) ?? {
+					...resolved,
+					family: "",
+					vendor: "",
+					speedTier: "",
+					qualityTier: "",
+				}
+			);
+		}
+		const orgPref = getOrgPreference(taskType);
+		if (orgPref) {
+			return orgPref.model;
+		}
+
+		const systemDefault = getTaskDefault(taskType);
+		if (systemDefault) {
+			return systemDefault.model;
+		}
+
+		return null;
 	};
 
 	// Get the current model for a task type
@@ -388,6 +530,9 @@ export function useOrgApiModelPreferences({
 		}
 
 		const pending = pendingChanges[taskType];
+		if (pending?.reset) {
+			return getTaskDefault(taskType)?.model ?? null;
+		}
 		if (pending) {
 			const model = models.find(
 				(m) => m.canonicalName === pending.modelCanonicalName,
@@ -397,25 +542,45 @@ export function useOrgApiModelPreferences({
 			}
 		}
 
-		const orgPref = orgPreferences.find((p) => p.taskType === taskType);
-		if (orgPref) {
-			return orgPref.model;
-		}
-
-		const systemDefault = taskDefaults.find((d) => d.taskType === taskType);
-		if (systemDefault) {
-			return systemDefault.model;
-		}
-
-		return null;
+		return getSavedModel(taskType);
 	};
 
 	// Get the provider for the current model (to show fallback info)
 	const getCurrentModelProvider = (
 		taskType: string,
 	): { provider: string | null; isFallback: boolean } => {
-		// Check org preferences first
-		const orgPref = orgPreferences.find((p) => p.taskType === taskType);
+		const pending = pendingChanges[taskType];
+		if (pending?.reset) {
+			return {
+				provider: getTaskDefault(taskType)?.provider ?? null,
+				isFallback: false,
+			};
+		}
+		if (
+			pending &&
+			effectiveProviderForTask(
+				taskType,
+				defaultProvider,
+				embeddingProvider,
+			) !== undefined
+		) {
+			return {
+				provider:
+					pending.provider ??
+					effectiveProviderForTask(
+						taskType,
+						defaultProvider,
+						embeddingProvider,
+					) ??
+					defaultProvider,
+				isFallback: false,
+			};
+		}
+		if (taskType === "EMBEDDING") {
+			return { provider: embeddingProvider, isFallback: false };
+		}
+		// Check the effective provider's preference first.
+		const orgPref = getOrgPreference(taskType);
 		if (orgPref) {
 			return {
 				provider: orgPref.provider || null,
@@ -424,7 +589,7 @@ export function useOrgApiModelPreferences({
 		}
 
 		// Fall back to system default
-		const systemDefault = taskDefaults.find((d) => d.taskType === taskType);
+		const systemDefault = getTaskDefault(taskType);
 		if (systemDefault) {
 			return {
 				provider: systemDefault.provider,
@@ -432,7 +597,15 @@ export function useOrgApiModelPreferences({
 			};
 		}
 
-		return { provider: null, isFallback: false };
+		return {
+			provider:
+				effectiveProviderForTask(
+					taskType,
+					defaultProvider,
+					embeddingProvider,
+				) ?? null,
+			isFallback: false,
+		};
 	};
 
 	// Get the current gateway for a task type (kept for backwards compatibility)
@@ -443,7 +616,7 @@ export function useOrgApiModelPreferences({
 
 	// Check if org has a custom preference for this task
 	const hasOrgPreference = (taskType: string): boolean => {
-		return orgPreferences.some((p) => p.taskType === taskType);
+		return !!getOrgPreference(taskType);
 	};
 
 	// Get hierarchical models for task: Gateway → Provider → Models
@@ -463,7 +636,10 @@ export function useOrgApiModelPreferences({
 				providerModelId: string;
 				speedTier: string;
 				qualityTier: string;
+				inputCostPer1M?: number | null;
+				outputCostPer1M?: number | null;
 				capabilities?: string[];
+				suitableForTasks?: string[];
 			}>;
 		}>;
 	}> => {
@@ -482,7 +658,10 @@ export function useOrgApiModelPreferences({
 					providerModelId: string;
 					speedTier: string;
 					qualityTier: string;
+					inputCostPer1M?: number | null;
+					outputCostPer1M?: number | null;
 					capabilities?: string[];
+					suitableForTasks?: string[];
 				}>;
 			}>;
 		}> = [];
@@ -493,6 +672,9 @@ export function useOrgApiModelPreferences({
 				: modelsByGatewayAndProvider;
 
 		for (const [gateway, gatewayData] of Object.entries(modelsForTask)) {
+			if (!matchesEffectiveProvider(taskType, gateway)) {
+				continue;
+			}
 			const providers: Array<{
 				provider: string;
 				providerDisplayName: string;
@@ -503,7 +685,10 @@ export function useOrgApiModelPreferences({
 					providerModelId: string;
 					speedTier: string;
 					qualityTier: string;
+					inputCostPer1M?: number | null;
+					outputCostPer1M?: number | null;
 					capabilities?: string[];
+					suitableForTasks?: string[];
 				}>;
 			}> = [];
 
@@ -611,12 +796,16 @@ export function useOrgApiModelPreferences({
 		try {
 			const changes = Object.entries(pendingChanges);
 			for (const [taskType, change] of changes) {
-				await setPreferenceMutation.mutateAsync({
-					taskType,
-					modelCanonicalName: change.modelCanonicalName,
-					// Include provider for specialized models (IMAGE/AUDIO from non-default providers)
-					overrideProvider: change.provider || undefined,
-				});
+				if (change.reset) {
+					await deletePreferenceMutation.mutateAsync(taskType);
+				} else {
+					await setPreferenceMutation.mutateAsync({
+						taskType,
+						modelCanonicalName: change.modelCanonicalName,
+						// Include provider for specialized models (IMAGE/AUDIO from non-default providers)
+						overrideProvider: change.provider || undefined,
+					});
+				}
 			}
 			setPendingChanges({});
 			toast.success("Preferences saved", {
@@ -632,11 +821,38 @@ export function useOrgApiModelPreferences({
 		}
 	};
 
+	const clearPendingTask = (taskType: string) =>
+		setPendingChanges((prev) => {
+			const next = { ...prev };
+			delete next[taskType];
+			return next;
+		});
+	const handlePendingResetToDefault = (taskType: string) => {
+		if (readOnly) {
+			return;
+		}
+		if (!getOrgPreference(taskType)) {
+			clearPendingTask(taskType);
+			return;
+		}
+		setPendingChanges((prev) => ({
+			...prev,
+			[taskType]: {
+				reset: true,
+				modelCanonicalName: null,
+				provider: getOrgPreference(taskType)?.provider,
+			},
+		}));
+	};
 	const handleResetToDefault = async (taskType: string) => {
 		if (readOnly) {
 			return;
 		}
 
+		if (!getOrgPreference(taskType)) {
+			clearPendingTask(taskType);
+			return;
+		}
 		try {
 			await deletePreferenceMutation.mutateAsync(taskType);
 			setPendingChanges((prev) => {
@@ -645,7 +861,7 @@ export function useOrgApiModelPreferences({
 				return next;
 			});
 			toast.success("Reset to default", {
-				description: `${taskType} now uses the system default model`,
+				description: getTaskDefault(taskType)?.model.displayName,
 			});
 		} catch (_error) {
 			toast.error("Failed to reset preference");
@@ -707,10 +923,16 @@ export function useOrgApiModelPreferences({
 					: "";
 
 		return {
+			taskType: taskTypeId,
+			readOnly,
+			noDefaultProvider:
+				(TEXT_TASK_IDS as readonly string[]).includes(taskTypeId) &&
+				!defaultProvider,
+			isDefaultChoice:
+				!!pendingSelection?.reset ||
+				(!hasCustomPref && !hasPendingChange),
 			currentModel,
-			defaultModel:
-				taskDefaults.find((d) => d.taskType === taskTypeId)?.model ??
-				null,
+			defaultModel: getTaskDefault(taskTypeId)?.model ?? null,
 			currentGateway,
 			hierarchicalModels,
 			hasCustomPref,
@@ -743,7 +965,38 @@ export function useOrgApiModelPreferences({
 		}
 	};
 
+	const embeddingChoiceChangesIdentity = (value: string) => {
+		const reset = value === API_DEFAULT_VALUE;
+		const choice = reset ? null : parseModelValue(value);
+		const provider = reset
+			? getTaskDefault("EMBEDDING")?.provider
+			: choice?.provider;
+		const canonicalName = reset
+			? getTaskDefault("EMBEDDING")?.model.canonicalName
+			: choice?.modelCanonicalName;
+		const mapping = getHierarchicalModelsForTask("EMBEDDING")
+			.find((g) => g.gateway === provider)
+			?.providers.flatMap((p) => p.models)
+			.find((m) => m.canonicalName === canonicalName);
+		const candidate =
+			provider && canonicalName
+				? companyEmbeddingIdentity({
+						provider,
+						modelString: buildProviderModelString(
+							mapping?.providerModelId ?? canonicalName,
+							provider as AIProvider,
+						),
+					})
+				: null;
+		return candidate !== organizationEmbedding?.identity;
+	};
+
 	return {
+		organizationId,
+		organizationEmbedding,
+		embeddingChoiceChangesIdentity,
+		defaultProvider,
+		clearPendingChanges: () => setPendingChanges({}),
 		organizationSlug,
 		isOrgContext,
 		configuredProviders,
@@ -756,7 +1009,9 @@ export function useOrgApiModelPreferences({
 		handleModelChange,
 		handleSaveAll,
 		handleResetToDefault,
+		handlePendingResetToDefault,
 		getHierarchicalModelsForTask,
+		getSavedModel,
 		getTaskView,
 		saveModelChoice,
 	};

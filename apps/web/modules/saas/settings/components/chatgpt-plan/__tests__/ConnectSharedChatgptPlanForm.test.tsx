@@ -53,7 +53,7 @@ describe("Connect a shared ChatGPT plan account", () => {
 				state="state-example"
 			/>,
 		);
-		expect(screen.getByText(/Example Org shares/)).toBeInTheDocument();
+		expect(screen.getByText(/Example Org will share/)).toBeInTheDocument();
 		await userEvent.click(
 			screen.getByRole("button", { name: connectCopy.approve }),
 		);

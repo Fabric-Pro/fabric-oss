@@ -218,6 +218,7 @@ export const reevaluateBugProcedure = tenantProtectedProcedure
 			storyKind: "BUG",
 			userId: user.id,
 			organizationId: orgId,
+			projectId: story.projectId,
 		});
 		if (!boundPrompt?.version?.content) {
 			throw new ORPCError("INTERNAL_SERVER_ERROR", {

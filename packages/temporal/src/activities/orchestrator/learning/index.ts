@@ -37,14 +37,6 @@ export {
 	type PatternOptimization,
 	PatternRecognizer,
 } from "./pattern-recognition";
-// Tool Usage Learning (Phase 5.1) - Persistent (Qdrant)
-export {
-	getToolPatternActivity,
-	QdrantToolUsageStore,
-	queryToolLearningsActivity,
-	recordToolUsageActivity,
-	searchSimilarToolContextsActivity,
-} from "./qdrant-tool-store";
 // Tool Usage Learning (Phase 5.1) - In-Memory
 export {
 	type ArgumentSuggestion,

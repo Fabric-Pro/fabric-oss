@@ -1,3 +1,4 @@
+import { ORPCError } from "@orpc/server";
 import {
 	type AIProvider,
 	type AiModelCapability,
@@ -6,8 +7,15 @@ import {
 	getAiProviderApiKey,
 	getAiProviderApiKeyByProvider,
 	getEmbeddingProviderConfig,
+	getOrganizationDefaultProvider,
+	getSystemAiProviderApiKey,
+	getTaskDefaultModel,
 	LLM_PROVIDER_PURPOSE_FILTER,
+	type Prisma,
+	readTaskDefaultsSnapshot,
+	TEXT_TASK_TYPES,
 } from "@repo/database";
+import { AiTaskTypeSchema } from "@repo/database/prisma/zod";
 import { z } from "zod";
 import {
 	Permissions,
@@ -15,6 +23,8 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { resolveEmbeddingModel } from "../../lib/embedding-model-resolution";
+import { resolveOrganizationEmbedding } from "../../lib/organization-embedding-resolution";
 
 // Task type to required capabilities mapping for computing defaults from available models
 const TASK_CAPABILITY_MAP: Record<
@@ -78,6 +88,10 @@ interface TaskDefaultRow {
 		vendor: string;
 		speedTier: string;
 		qualityTier: string;
+		inputCostPer1M?: Prisma.Decimal | number | null;
+		outputCostPer1M?: Prisma.Decimal | number | null;
+		suitableForTasks?: string[];
+		capabilities?: string[];
 	};
 }
 
@@ -95,6 +109,16 @@ function toTaskDefaultOutput(d: TaskDefaultRow) {
 			vendor: d.model.vendor,
 			speedTier: d.model.speedTier,
 			qualityTier: d.model.qualityTier,
+			inputCostPer1M:
+				d.model.inputCostPer1M != null
+					? Number(d.model.inputCostPer1M)
+					: null,
+			outputCostPer1M:
+				d.model.outputCostPer1M != null
+					? Number(d.model.outputCostPer1M)
+					: null,
+			suitableForTasks: d.model.suitableForTasks,
+			capabilities: d.model.capabilities,
 		},
 	};
 }
@@ -123,11 +147,8 @@ async function getConfiguredLlmProviders(
 }
 
 /**
- * Get system default models for each task type, filtered by the user's default provider.
- *
- * Each provider has its own default models for each task type. When the user's default
- * provider is e.g. OPENAI_DIRECT, this returns OpenAI's default models for each task.
- * When the default is ANTHROPIC_DIRECT, it returns Anthropic's defaults, etc.
+ * Get text defaults for the selected API provider and embedding defaults from
+ * runtime provider routing, including the documents provider when configured.
  */
 export const getTaskDefaultsProcedure = tenantProtectedProcedure
 	.use(requireInputOrgPermission(Permissions.ORG_AI_CONFIG_READ))
@@ -137,12 +158,13 @@ export const getTaskDefaultsProcedure = tenantProtectedProcedure
 		tags: ["AI Config"],
 		summary: "Get task-to-model defaults",
 		description:
-			"Get the system default model for each task type based on user's default provider",
+			"Get task defaults using the selected text provider and runtime embedding routing",
 	})
 	.input(
 		z
 			.object({
 				organizationId: z.string().nullable().optional(),
+				provider: z.string().optional(),
 			})
 			.optional(),
 	)
@@ -161,6 +183,10 @@ export const getTaskDefaultsProcedure = tenantProtectedProcedure
 					vendor: z.string(),
 					speedTier: z.string(),
 					qualityTier: z.string(),
+					inputCostPer1M: z.number().nullable().optional(),
+					outputCostPer1M: z.number().nullable().optional(),
+					suitableForTasks: z.array(z.string()).optional(),
+					capabilities: z.array(z.string()).optional(),
 				}),
 			}),
 		),
@@ -177,14 +203,59 @@ export const getTaskDefaultsProcedure = tenantProtectedProcedure
 		});
 
 		try {
-			// Get the user's/org's default provider
-			const providerConfig = await getAiProviderApiKey({
-				userId: context.user.id,
-				organizationId,
-			});
-
-			const defaultProvider =
-				providerConfig.provider as AIProvider | null;
+			// A preview may request only an enabled API provider in this tenant.
+			const requestedProvider = organizationId
+				? input?.provider
+				: undefined;
+			if (requestedProvider !== undefined) {
+				const configured = await getConfiguredLlmProviders(
+					context.user.id,
+					organizationId,
+				);
+				if (!configured.includes(requestedProvider as AIProvider)) {
+					throw new ORPCError("BAD_REQUEST", {
+						message:
+							"Choose an enabled API provider configured for this organization.",
+					});
+				}
+			}
+			const defaultProvider = (requestedProvider ??
+				(organizationId
+					? await getOrganizationDefaultProvider(organizationId)
+					: (
+							await getAiProviderApiKey({
+								userId: context.user.id,
+								organizationId,
+							})
+						).provider)) as AIProvider | null;
+			const providerConfig = defaultProvider
+				? await getAiProviderApiKeyByProvider({
+						userId: context.user.id,
+						organizationId,
+						provider: defaultProvider,
+					})
+				: null;
+			const organizationEmbedding = organizationId
+				? await resolveOrganizationEmbedding({
+						organizationId,
+						userId: context.user.id,
+						ignorePreferences: true,
+					})
+				: null;
+			const embeddingProvider = organizationId
+				? (organizationEmbedding?.provider ?? null)
+				: ((
+						await getEmbeddingProviderConfig({
+							organizationId,
+							userId: context.user.id,
+						})
+					).provider ??
+					(
+						await getSystemAiProviderApiKey({
+							organizationId,
+							userId: context.user.id,
+						})
+					).provider);
 			console.log("[AI Config] Default provider:", defaultProvider);
 
 			// Inference-only providers that don't support EMBEDDING/IMAGE/AUDIO
@@ -196,41 +267,22 @@ export const getTaskDefaultsProcedure = tenantProtectedProcedure
 			];
 
 			// Specialized task types that need OpenAI fallback
-			const SPECIALIZED_TASK_TYPES: AiTaskType[] = [
-				"EMBEDDING",
-				"IMAGE",
-				"AUDIO",
-			];
+			const SPECIALIZED_TASK_TYPES: AiTaskType[] = organizationId
+				? ["EMBEDDING", "AUDIO"]
+				: ["EMBEDDING", "IMAGE", "AUDIO"];
 
-			// Query defaults filtered by the default provider. Without one, only
-			// the tenant's configured LLM providers: never the whole catalog,
-			// which would offer a ChatGPT plan's defaults as API choices.
-			const configuredProviders = defaultProvider
-				? null
-				: await getConfiguredLlmProviders(
-						context.user.id,
-						organizationId,
-					);
-			if (configuredProviders?.length === 0) {
-				// An embeddings-only key is never an LLM provider, but its
-				// documents default still applies.
-				const embedding = await getEmbeddingProviderConfig({
-					userId: context.user.id,
-					organizationId,
-				});
-				if (!embedding.provider) {
-					return [];
-				}
-				const embeddingDefaults = await db.aiTaskModelDefault.findMany({
-					where: {
-						provider: embedding.provider as AIProvider,
-						taskType: "EMBEDDING" as AiTaskType,
-					},
-					include: { model: true },
-					orderBy: [{ complexity: "asc" }, { priority: "desc" }],
-				});
-				return embeddingDefaults.map(toTaskDefaultOutput);
-			}
+			// Organization text defaults require the explicit organization default.
+			// Personal context keeps its existing configured-provider fallback.
+			const configuredProviders =
+				organizationId && !defaultProvider
+					? []
+					: defaultProvider
+						? null
+						: await getConfiguredLlmProviders(
+								context.user.id,
+								organizationId,
+							);
+
 			const defaults = await db.aiTaskModelDefault.findMany({
 				where: defaultProvider
 					? { provider: defaultProvider }
@@ -253,32 +305,140 @@ export const getTaskDefaultsProcedure = tenantProtectedProcedure
 			);
 
 			// Check if we need to add OpenAI defaults for specialized tasks
-			// This happens when the default provider is inference-only (no EMBEDDING/IMAGE/AUDIO support)
+			// This happens when the default provider is inference-only (no specialized-task support)
 			let allDefaults = [...defaults];
+			const snapshot = readTaskDefaultsSnapshot(
+				providerConfig?.taskDefaultsSnapshot,
+				providerConfig?.configId,
+			);
+			if (defaultProvider && snapshot) {
+				for (const taskType of TEXT_TASK_TYPES) {
+					const model = await getTaskDefaultModel(
+						taskType,
+						"MEDIUM",
+						defaultProvider,
+						providerConfig ?? undefined,
+					);
+					const existing = allDefaults.find(
+						(row) =>
+							row.taskType === taskType &&
+							row.complexity === "MEDIUM",
+					);
+					const existingIndex = allDefaults.findIndex(
+						(row) => row.taskType === taskType,
+					);
+					allDefaults = allDefaults.filter(
+						(row) => row.taskType !== taskType,
+					);
+					if (model) {
+						// The base query orders by the Postgres enum, not the task name.
+						const enumIndex =
+							AiTaskTypeSchema.options.indexOf(taskType);
+						const nextIndex = allDefaults.findIndex(
+							(row) =>
+								AiTaskTypeSchema.options.indexOf(row.taskType) >
+								enumIndex,
+						);
+						const insertAt =
+							existingIndex >= 0
+								? existingIndex
+								: nextIndex >= 0
+									? nextIndex
+									: allDefaults.length;
+						allDefaults.splice(
+							insertAt,
+							0,
+							existing
+								? { ...existing, modelId: model.id, model }
+								: {
+										taskType,
+										complexity: "MEDIUM",
+										priority: 100,
+										provider: defaultProvider,
+										id: `snapshot-${taskType}`,
+										modelId: model.id,
+										requiresToolCalling:
+											taskType === "TOOL_CALLING",
+										minContextWindow: null,
+										createdAt: new Date(),
+										updatedAt: new Date(),
+										model,
+									},
+						);
+					}
+				}
+			}
 
-			// Typed decisions are available only through Vercel AI Gateway. Keep
-			// that default visible when the organization has configured the gateway
-			// alongside a different primary text provider.
+			// Embeddings resolve independently of the provider requested for text defaults.
+			allDefaults = allDefaults.filter(
+				(row) => row.taskType !== "EMBEDDING",
+			);
+			if (embeddingProvider) {
+				const resolved = organizationId
+					? organizationEmbedding?.model
+						? { modelId: organizationEmbedding.model.id }
+						: null
+					: await resolveEmbeddingModel({
+							organizationId,
+							userId: context.user.id,
+							provider: embeddingProvider,
+							ignorePreferences: true,
+							organizationOnly: !!organizationId,
+						});
+				const model = resolved
+					? await db.aiModel.findUnique({
+							where: { id: resolved.modelId },
+						})
+					: null;
+				if (model) {
+					allDefaults.push({
+						id: "resolved-embedding",
+						taskType: "EMBEDDING",
+						complexity: "MEDIUM",
+						priority: 100,
+						provider: embeddingProvider as AIProvider,
+						modelId: model.id,
+						requiresToolCalling: false,
+						minContextWindow: null,
+						createdAt: new Date(),
+						updatedAt: new Date(),
+						model,
+					});
+				}
+			}
+
+			// The gateway image path reads this preference on Vercel AI Gateway;
+			// other image paths do not. Typed decisions also resolve on that gateway.
+			// Do not present another provider's defaults for these tasks.
+			if (organizationId) {
+				allDefaults = allDefaults.filter(
+					(d) =>
+						!["IMAGE", "DECISION"].includes(d.taskType) ||
+						d.provider === "VERCEL_GATEWAY",
+				);
+			}
 			if (organizationId && defaultProvider !== "VERCEL_GATEWAY") {
-				const decisionGateway = await getAiProviderApiKeyByProvider({
+				const gatewayConfig = await getAiProviderApiKeyByProvider({
 					userId: context.user.id,
 					organizationId,
 					provider: "VERCEL_GATEWAY",
 				});
 				if (
-					decisionGateway.provider === "VERCEL_GATEWAY" &&
-					decisionGateway.source === "organization" &&
-					decisionGateway.apiKey
+					gatewayConfig.provider === "VERCEL_GATEWAY" &&
+					gatewayConfig.source === "organization" &&
+					gatewayConfig.apiKey
 				) {
-					const decisionDefaults =
+					const gatewayDefaults =
 						await db.aiTaskModelDefault.findMany({
 							where: {
 								provider: "VERCEL_GATEWAY",
-								taskType: "DECISION" as AiTaskType,
+								taskType: {
+									in: ["DECISION", "IMAGE"] as AiTaskType[],
+								},
 							},
 							include: { model: true },
 						});
-					allDefaults = [...allDefaults, ...decisionDefaults];
+					allDefaults = [...allDefaults, ...gatewayDefaults];
 				}
 			}
 
@@ -291,7 +451,9 @@ export const getTaskDefaultsProcedure = tenantProtectedProcedure
 					defaults.map((d) => d.taskType),
 				);
 				const missingSpecializedTasks = SPECIALIZED_TASK_TYPES.filter(
-					(task) => !existingTaskTypes.has(task as AiTaskType),
+					(task) =>
+						!existingTaskTypes.has(task as AiTaskType) &&
+						task !== "EMBEDDING",
 				);
 
 				if (missingSpecializedTasks.length > 0) {
@@ -366,7 +528,13 @@ export const getTaskDefaultsProcedure = tenantProtectedProcedure
 				allDefaults.map((d) => d.taskType),
 			);
 			const missingTaskTypes = ALL_TASK_TYPES.filter(
-				(task) => !existingTaskTypes.has(task),
+				(task) =>
+					!existingTaskTypes.has(task) &&
+					task !== "EMBEDDING" &&
+					(!organizationId ||
+						(task !== "DECISION" &&
+							(task !== "IMAGE" ||
+								defaultProvider === "VERCEL_GATEWAY"))),
 			);
 
 			if (missingTaskTypes.length > 0 && defaultProvider) {

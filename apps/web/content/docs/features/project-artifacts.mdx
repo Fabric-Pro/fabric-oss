@@ -1,6 +1,8 @@
 ---
 title: Project Artifacts
 description: Pages Fabric Agent writes for one project, kept on the project's Artifacts tab and opened by its members.
+audience: Project members creating and using Artifacts
+owner: Platform team
 ---
 
 Project Artifacts are the pages Fabric Agent has written for a single project: a status board of the project's work, a release-readiness report, a small tool the team keeps using. They live on the **Artifacts** tab of the project, next to its documents and roadmap, and the project's members open them from there.
@@ -47,7 +49,7 @@ If a project is moved to the trash, its artifacts are gone with it for the peopl
 
 An artifact runs in the same locked frame as a Workspace, with the same buttons that act through Fabric (`window.fabric`): reading runs at once, anything that changes data asks the person looking at the page first, and an edited page asks again. See [Workspaces](/docs/features/workspace-pages#buttons-that-act-through-fabric) for how those calls are checked and which tools no page may use.
 
-A page cannot make network requests, load scripts or fonts from another site, or read anything of yours except through those buttons. A page that a scheduled workflow wrote with nobody watching is shown without any script.
+A page cannot make network requests, load scripts or fonts from another site, or read anything of yours except through those buttons. A page that a scheduled workflow wrote with nobody watching is shown without any script, and so is a copy of it.
 
 ## Artifacts from a schedule
 

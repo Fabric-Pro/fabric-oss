@@ -29,6 +29,7 @@ import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { toast } from "sonner";
 import { ChatgptConnectCommand } from "../chatgpt-plan/ChatgptConnectCommand";
+import { ChatgptMark } from "../chatgpt-plan/ChatgptMark";
 import { ChatgptPlanSubscription } from "../chatgpt-plan/ChatgptPlanSubscription";
 import { ChatgptPlanTestAction } from "../chatgpt-plan/ChatgptPlanTestAction";
 import { useTakeBackChatgptPlan } from "../chatgpt-plan/chatgpt-plan-status";
@@ -587,11 +588,16 @@ export function OrgChatgptPlanAccountsCard({
 			className="space-y-4 p-4"
 			data-testid="chatgpt-plan-pool-accounts"
 		>
-			<div className="space-y-1">
-				<h3 className="font-medium text-base">{t("accountsTitle")}</h3>
-				<p className="text-muted-foreground text-sm">
-					{t("accountsDescription")}
-				</p>
+			<div className="flex items-start gap-3">
+				<ChatgptMark />
+				<div className="min-w-0 space-y-1">
+					<h3 className="font-medium text-base">
+						{t("accountsTitle")}
+					</h3>
+					<p className="text-muted-foreground text-sm">
+						{t("accountsDescription")}
+					</p>
+				</div>
 			</div>
 
 			{accounts.length > 0 && !terms.accepted ? (

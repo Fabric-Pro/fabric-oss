@@ -1,4 +1,7 @@
-import { listPendingBacklogProposals } from "@repo/database";
+import {
+	listPendingBacklogProposals,
+	REVIEW_INBOX_PROPOSAL_STATUSES,
+} from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -8,9 +11,9 @@ import {
 
 /**
  * Returns PendingBacklogProposal rows for the project — surface scoped to the
- * Teams Chat Monitor namespace. Defaults to the "needs-attention" set
- * (PENDING + FAILED) so the inbox surfaces both unreviewed and
- * in-flight items. The underlying query is source-agnostic — the response
+ * Teams Chat Monitor namespace. Defaults to the review-inbox set
+ * (PENDING, APPROVED, APPLYING, FAILED), including unreviewed and in-flight
+ * items. The underlying query is source-agnostic — the response
  * includes the `source` field so the UI can filter / label per source.
  */
 const statusEnum = z.enum([
@@ -32,7 +35,7 @@ export const listPendingProposalsProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Teams Chat Monitor"],
 		summary: "List pending backlog proposals (chat-scoped surface)",
 		description:
-			"Returns backlog proposals awaiting review (default: PENDING + FAILED).",
+			"Returns backlog proposals awaiting review (default: PENDING, APPROVED, APPLYING, and FAILED).",
 	})
 	.input(
 		z.object({
@@ -44,11 +47,6 @@ export const listPendingProposalsProcedure = tenantProtectedProcedure
 	.handler(async ({ input }) => {
 		return await listPendingBacklogProposals({
 			projectId: input.projectId,
-			status: input.status ?? [
-				"PENDING",
-				"APPROVED",
-				"APPLYING",
-				"FAILED",
-			],
+			status: input.status ?? REVIEW_INBOX_PROPOSAL_STATUSES,
 		});
 	});

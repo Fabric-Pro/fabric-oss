@@ -24,6 +24,7 @@
 		"./pm-sync-user-error": "./src/activities/pm-integration/pm-sync-user-error.ts",
 		"./pm-sync-start": "./src/lib/pm-sync-start.ts",
 		"./temporal-client-errors": "./src/lib/temporal-client-errors.ts",
+		"./project-repository-tool-schemas": "./src/workflows/orchestrator/project-repository-tool-schemas.ts",
 		"./turn-budget-policy": "./src/workflows/orchestrator/turn-budget-policy.ts",
 		"./prompt-kind-guard": "./src/lib/prompt-kind-guard.ts",
 		"./proposal-artifact-prompts": "./src/lib/proposal-artifact/prompts.ts",

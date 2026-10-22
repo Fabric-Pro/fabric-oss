@@ -40,6 +40,10 @@ vi.mock("@repo/database", async (importOriginal) => ({
 		project: { findUnique: vi.fn(async () => null) },
 		workflowIntegration: { findFirst: vi.fn(async () => null) },
 	},
+	// The handler rechecks project access per call; the user may read it.
+	getProjectAccessContext: vi.fn(async () => ({
+		organizationId: "org-example-1",
+	})),
 	getProjectCodeIndexes: vi.fn(async () => [{ status: "READY" }]),
 	getProjectReposForCodeSearch: vi.fn(async () => [
 		{

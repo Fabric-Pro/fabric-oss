@@ -2,9 +2,9 @@ import { ORPCError } from "@orpc/server";
 import type { AIProvider, AiTaskType } from "@repo/database";
 import {
 	deleteOrgModelPreferencesByTaskType,
-	getAiProviderApiKey,
 	getAiProviderApiKeyByProvider,
 	getModelByCanonicalName,
+	getOrganizationDefaultProvider,
 	isGatewayProvider,
 	setOrgModelPreference,
 } from "@repo/database";
@@ -17,6 +17,15 @@ import {
 } from "../../../../orpc/procedures";
 import { requireOrgMembership } from "../../../organizations/lib/membership";
 import { assertEmbeddingModelFitsVectorStore } from "../../lib/embedding-model-guard";
+
+const TEXT_TASK_TYPES = [
+	"SIMPLE",
+	"COMPLEX",
+	"REASONING",
+	"CHAT",
+	"TOOL_CALLING",
+	"EVAL",
+];
 
 const AiTaskTypeEnum = z.enum([
 	"SIMPLE",
@@ -93,13 +102,17 @@ export const setOrgModelPreferenceProcedure = tenantProtectedProcedure
 			});
 		}
 
-		// Get org's default provider
-		const providerConfig = await getAiProviderApiKey({
-			userId: context.user.id,
-			organizationId,
-		});
+		const isTextTask = TEXT_TASK_TYPES.includes(input.taskType);
+		const organizationDefaultProvider =
+			await getOrganizationDefaultProvider(organizationId);
+		if (isTextTask && !organizationDefaultProvider) {
+			throw new ORPCError("BAD_REQUEST", {
+				message:
+					"Choose a default API provider for the organization first",
+			});
+		}
 
-		if (!providerConfig.provider && !input.overrideProvider) {
+		if (!organizationDefaultProvider && !input.overrideProvider) {
 			throw new ORPCError("PRECONDITION_FAILED", {
 				message:
 					"No AI provider configured. Please configure a default provider first.",
@@ -110,7 +123,7 @@ export const setOrgModelPreferenceProcedure = tenantProtectedProcedure
 		// otherwise fall back to the org's default provider
 		const provider =
 			(input.overrideProvider as AIProvider) ||
-			(providerConfig.provider as AIProvider);
+			(organizationDefaultProvider as AIProvider);
 		const taskType = input.taskType as AiTaskType;
 		const requestedModelCanonicalName = input.modelCanonicalName;
 		const isDisableRequest = requestedModelCanonicalName === null;
@@ -124,21 +137,27 @@ export const setOrgModelPreferenceProcedure = tenantProtectedProcedure
 			});
 		}
 
-		if (taskType === "DECISION") {
-			const decisionProviderConfig = await getAiProviderApiKeyByProvider({
+		if (taskType === "IMAGE" && provider !== "VERCEL_GATEWAY") {
+			throw new ORPCError("BAD_REQUEST", {
+				message: "Image tasks require Vercel AI Gateway.",
+			});
+		}
+		if (taskType === "DECISION" || taskType === "IMAGE") {
+			const gateway = await getAiProviderApiKeyByProvider({
 				userId: context.user.id,
 				organizationId,
 				provider: "VERCEL_GATEWAY",
 			});
-
 			if (
 				provider !== "VERCEL_GATEWAY" ||
-				decisionProviderConfig?.source !== "organization" ||
-				!decisionProviderConfig.apiKey
+				gateway?.source !== "organization" ||
+				!gateway.apiKey
 			) {
 				throw new ORPCError("PRECONDITION_FAILED", {
 					message:
-						"Decision models require an organization Vercel AI Gateway configuration",
+						taskType === "DECISION"
+							? "Decision models require an organization Vercel AI Gateway configuration"
+							: "Image models require an organization Vercel AI Gateway configuration",
 				});
 			}
 		}
@@ -196,6 +215,13 @@ export const setOrgModelPreferenceProcedure = tenantProtectedProcedure
 			throw new ORPCError("BAD_REQUEST", {
 				message:
 					"Evaluation models can only be configured for DECISION tasks.",
+			});
+		}
+
+		if (isTextTask && provider !== organizationDefaultProvider) {
+			throw new ORPCError("BAD_REQUEST", {
+				message:
+					"Text tasks must use the organization's current default provider.",
 			});
 		}
 

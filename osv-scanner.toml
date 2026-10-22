@@ -30,6 +30,16 @@ id = "GHSA-7mx3-vvmw-hjmv"
 ignoreUntil = 2026-12-31
 reason = "@graphql-tools/utils@10.10.1 is patched locally with the upstream mergeDeep prototype-pollution fix. CI verifies reviewed patch bytes, every lockfile consumer hash, effective CJS/ESM consumer behavior and GraphQL executor variable compatibility. OSV cannot recognize pnpm patches. Retire with a compatible fixed consumer upgrade. See SECURITY.md § Documented dismissals."
 
+# Published 2026-10-22 against the same package and version as the entry above,
+# fixed upstream only in 12.0.2. The same pnpm patch now also backports the
+# mergeIncrementalResult path-segment fix, and nothing installed or first-party
+# calls that function. Same `ignoreUntil` as its sibling, so one consumer
+# upgrade retires both in a single re-evaluation.
+[[IgnoredVulns]]
+id = "GHSA-c4qx-w738-7hr3"
+ignoreUntil = 2026-12-31
+reason = "@graphql-tools/utils@10.10.1 is patched locally with the upstream mergeIncrementalResult fix rejecting non-primitive and prototype-chain path segments. No installed package or first-party code calls mergeIncrementalResult. CI verifies reviewed patch bytes, every lockfile consumer hash and effective CJS/ESM behavior. OSV cannot recognize pnpm patches. Retire with a compatible fixed consumer upgrade. See SECURITY.md § Documented dismissals."
+
 # The former brace-expansion entry (GHSA-mh99-v99m-4gvg) was removed
 # 2026-08-03: the 1.x/2.x backports it was waiting for shipped and the
 # lockfile now resolves 1.1.18 / 2.1.4.

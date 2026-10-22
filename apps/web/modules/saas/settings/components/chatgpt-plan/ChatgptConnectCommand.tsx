@@ -86,57 +86,54 @@ export function ChatgptConnectCommand({
 	});
 
 	return (
-		<div className="flex items-start gap-1">
-			<div className="min-w-0 flex-1">
-				<CopyableLine
-					line={lines.primary}
-					testId="chatgpt-connect-line"
-				/>
-			</div>
-			<Popover>
-				<PopoverTrigger asChild>
-					<Button
-						aria-label={t("helpLabel")}
-						autoLoading={false}
-						size="icon"
-						type="button"
-						variant="ghost"
+		<div className="space-y-1.5">
+			<div className="flex items-start gap-1">
+				<div className="min-w-0 flex-1">
+					<CopyableLine
+						line={lines.primary}
+						testId="chatgpt-connect-line"
+					/>
+				</div>
+				<Popover>
+					<PopoverTrigger asChild>
+						<Button
+							aria-label={t("helpLabel")}
+							autoLoading={false}
+							size="icon"
+							type="button"
+							variant="ghost"
+						>
+							<InfoIcon aria-hidden="true" className="size-4" />
+						</Button>
+					</PopoverTrigger>
+					<PopoverContent
+						className="w-96 max-w-[calc(100vw-2rem)] space-y-3"
+						data-testid="chatgpt-connect-help"
 					>
-						<InfoIcon aria-hidden="true" className="size-4" />
-					</Button>
-				</PopoverTrigger>
-				<PopoverContent
-					className="w-96 max-w-[calc(100vw-2rem)] space-y-3"
-					data-testid="chatgpt-connect-help"
-				>
-					<p className="font-medium text-sm">{t("helpTitle")}</p>
-					{lines.primaryKind === "served" ? (
+						<p className="font-medium text-sm">{t("helpTitle")}</p>
 						<p className="text-muted-foreground text-sm">
-							{t("servedPrimary")}
+							{lines.primaryKind === "served"
+								? t("servedPrimary")
+								: t("installFirst")}
 						</p>
-					) : lines.servedLine ? (
-						<>
+						{lines.primaryKind === "served" ? (
 							<p className="text-muted-foreground text-sm">
-								{t("noCliYet")}
+								{t("permanentInstall")}
 							</p>
-							<CopyableLine line={lines.servedLine} />
-						</>
-					) : (
-						<p className="text-muted-foreground text-sm">
-							{t("installFirst")}
+						) : null}
+						<CopyableLine line={CLI_NPM_INSTALL} />
+						<p className="text-muted-foreground text-xs">
+							{t("checkVersion")}
 						</p>
-					)}
-					{lines.primaryKind === "served" || lines.servedLine ? (
-						<p className="text-muted-foreground text-sm">
-							{t("permanentInstall")}
-						</p>
-					) : null}
-					<CopyableLine line={CLI_NPM_INSTALL} />
-					<p className="text-muted-foreground text-xs">
-						{t("checkVersion")}
-					</p>
-				</PopoverContent>
-			</Popover>
+					</PopoverContent>
+				</Popover>
+			</div>
+			<p
+				className="text-muted-foreground text-xs"
+				data-testid="chatgpt-connect-why-terminal"
+			>
+				{t("whyTerminal")}
+			</p>
 		</div>
 	);
 }

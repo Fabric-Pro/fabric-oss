@@ -4,6 +4,7 @@ import {
 	getAiProviderApiKey,
 	getEmbeddingProviderConfig,
 	getModelForTask,
+	getOrganizationDefaultProvider,
 	getPlanSpentPersonalProviderConfig,
 	getProviderDisplayName,
 	isGatewayProvider,
@@ -21,6 +22,11 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+
+import {
+	organizationEmbeddingSchema,
+	resolveOrganizationEmbedding,
+} from "../../lib/organization-embedding-resolution";
 
 /**
  * AI Configuration Status API
@@ -231,6 +237,7 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 	)
 	.output(
 		z.object({
+			organizationEmbedding: organizationEmbeddingSchema.nullable(),
 			isConfigured: z.boolean(),
 			/**
 			 * Whether THIS caller can reach a usable provider from this
@@ -246,19 +253,17 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 			 * What embedding resolution will ACTUALLY land on for this caller —
 			 * the provider `resolveModelWithProvider` returns for an EMBEDDING
 			 * task, obtained by calling the very functions the runtime calls.
-			 * It is the only field in this payload describing a RESOLVED
-			 * OUTCOME; every other provider field describes STORED
-			 * CONFIGURATION, and the two are not interchangeable.
+			 * It describes the caller. `organizationEmbedding` separately describes
+			 * the organization-only outcome used by settings. Stored configuration
+			 * fields are not interchangeable with either resolution.
 			 *
 			 * It exists because a UI notice used to infer the outcome from
 			 * `defaultProvider` / `embeddingProvider` / `configuredProviders`,
 			 * and that inference is wrong in three reachable states:
 			 *
-			 * 1. The organization has enabled rows but none marked `isDefault`,
-			 *    so the back-fill below fabricates a `defaultProvider` from
-			 *    `configuredProviders[0]` — a row the resolver's
-			 *    `findFirst({ isDefault: true })` never sees. The caller
-			 *    meanwhile resolves to their own personal provider.
+			 * 1. The organization has enabled rows but no explicit usable
+			 *    default, so `defaultProvider` is null while the caller may
+			 *    resolve to their own personal provider.
 			 * 2. The organization's default row IS that provider but carries no
 			 *    usable credential, so the resolver rejects it and falls
 			 *    through to the caller's personal default.
@@ -368,6 +373,22 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 			input?.organizationId,
 			session,
 		);
+		let organizationEmbedding: Awaited<
+			ReturnType<typeof resolveOrganizationEmbedding>
+		> | null = null;
+		if (organizationId) {
+			try {
+				organizationEmbedding = await resolveOrganizationEmbedding({
+					organizationId,
+					userId: user.id,
+				});
+			} catch (error) {
+				console.error(
+					"[AI Config] Failed to resolve organization embeddings:",
+					error,
+				);
+			}
+		}
 		const configuredProviders: ConfiguredProvider[] = [];
 		let hasUserConfig = false;
 		let hasOrgConfig = false;
@@ -384,36 +405,31 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 				orderBy: [{ isDefault: "desc" }, { priority: "desc" }],
 			});
 
+			defaultProvider =
+				await getOrganizationDefaultProvider(organizationId);
+
 			if (orgProviders.length > 0) {
 				hasOrgConfig = true;
 				for (const p of orgProviders) {
 					configuredProviders.push({
 						provider: p.provider,
 						displayName: p.displayName,
-						isDefault: p.isDefault,
+						isDefault:
+							p.isDefault && p.provider === defaultProvider,
 						isEmbeddingProvider: p.isEmbeddingProvider,
 						purpose: p.purpose,
 						useWhenPlanSpent: false,
 						source: "org_config",
 					});
-					if (p.isDefault && !defaultProvider) {
-						defaultProvider = p.provider;
-					}
+
 					if (p.isEmbeddingProvider && !embeddingProvider) {
 						embeddingProvider = p.provider;
 					}
 				}
 			}
 
-			// Only the DEFAULT row, because that is the only one the resolver
-			// looks at: `resolveTenantProviderConfig` issues a `findFirst` with
-			// `isDefault: true`. Asking whether ANY enabled row carries a
-			// credential answers a different question, and answers it wrongly
-			// for an organization whose default was saved without one while
-			// some other row has one — it would report resolvable while every
-			// real call refuses, which is the exact divergence this field
-			// exists to remove.
-			canResolveProvider = orgProviders.some(isResolvableDefault);
+			// The same explicit usable organization default as every settings path.
+			canResolveProvider = !!defaultProvider;
 		} else {
 			// Personal context: ONLY query user_cloud_provider_config
 			const userProviders = await db.userCloudProviderConfig.findMany({
@@ -466,11 +482,9 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 			canResolveProvider = ownProviders.some(rowCarriesCredentials);
 		}
 
-		// Asked, never inferred. Computed BEFORE the back-fill below so it is
-		// visibly independent of it: the back-fill invents a `defaultProvider`
-		// the resolver would never pick, and this field must not inherit that
-		// invention. See the output-schema comment for the three states the old
-		// inference got wrong; the helper carries the cost note.
+		// Ask the runtime resolver for the caller's outcome separately from
+		// the organization's explicit default. The personal-context display
+		// fallback below must not feed either resolved field.
 		//
 		// Sequential on purpose. It needs nothing this block produces, so it
 		// could start alongside it behind the usual `.catch(() => {})` marker —
@@ -520,11 +534,11 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 			);
 		}
 
-		// If still no default, use first configured that may serve LLM work
+		// Keep the legacy display fallback in personal context only.
 		const fallbackDefault = configuredProviders.find(
 			(p) => p.purpose !== "EMBEDDINGS_ONLY",
 		);
-		if (!defaultProvider && fallbackDefault) {
+		if (!organizationId && !defaultProvider && fallbackDefault) {
 			defaultProvider = fallbackDefault.provider;
 			fallbackDefault.isDefault = true;
 		}
@@ -552,7 +566,13 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 			subProvider: string | null;
 		} | null = null;
 
-		if (embeddingProvider) {
+		if (organizationEmbedding?.model) {
+			embeddingModel = {
+				displayName: organizationEmbedding.model.displayName,
+				modelId: organizationEmbedding.model.modelString,
+				subProvider: organizationEmbedding.model.subProvider,
+			};
+		} else if (!organizationId && embeddingProvider) {
 			try {
 				const modelResult = await getModelForTask(
 					user.id,
@@ -619,6 +639,7 @@ export const getAiConfigStatusProcedure = tenantProtectedProcedure
 			defaultProvider,
 			embeddingProvider,
 			embeddingModel,
+			organizationEmbedding,
 			message,
 		};
 	});

@@ -11,7 +11,10 @@
  * - Variable interpolation for step inputs ({{step-X.output}}, etc.)
  */
 
+import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
+import { ApplicationFailure } from "@temporalio/common";
+import { isUsageLimitRefusalText } from "../../../../lib/ai-usage-limit-refusal";
 import { HANDLER_PRIORITY } from "../../config";
 import { throwIfTurnStopped } from "../../turn-dispatch";
 import type {
@@ -218,6 +221,13 @@ interface LazyHandlerEntry {
 	instance?: StepHandler;
 }
 
+/** Keep refusal text recognizable at Temporal's activity boundary. */
+function stepFailure(message: string): Error {
+	return isUsageLimitRefusalText(message)
+		? ApplicationFailure.nonRetryable(message, "AiUsageLimitExceededError")
+		: new Error(message);
+}
+
 /**
  * Registry for step handlers.
  * Manages handler registration and routing based on capabilities.
@@ -398,6 +408,10 @@ export class HandlerRegistry {
 		// before.
 		throwIfStepStopped(resolvedInput);
 
+		if (result.error && isUsageLimitRefusalText(result.error)) {
+			throw stepFailure(result.error);
+		}
+
 		// If handler succeeded, return output
 		if (result.handled && result.output) {
 			return result.output;
@@ -413,7 +427,7 @@ export class HandlerRegistry {
 
 			// If it's already the fallback handler, throw the error
 			if (handler === fallbackHandler) {
-				throw new Error(result.error || "Step execution failed");
+				throw stepFailure(result.error || "Step execution failed");
 			}
 
 			// Use MCP tool handler as fallback
@@ -423,18 +437,24 @@ export class HandlerRegistry {
 				fallbackHandler,
 			);
 			throwIfStepStopped(resolvedInput);
+			if (
+				fallbackResult.error &&
+				isUsageLimitRefusalText(fallbackResult.error)
+			) {
+				throw stepFailure(fallbackResult.error);
+			}
 			if (fallbackResult.handled && fallbackResult.output) {
 				return fallbackResult.output;
 			}
 
 			// Fallback also failed
-			throw new Error(
+			throw stepFailure(
 				fallbackResult.error || result.error || "Step execution failed",
 			);
 		}
 
 		// Handler didn't handle and didn't request fallback - error
-		throw new Error(result.error || "No handler could process this step");
+		throw stepFailure(result.error || "No handler could process this step");
 	}
 
 	/**
@@ -470,6 +490,10 @@ export class HandlerRegistry {
 					return { handled: true, output };
 				} catch (error) {
 					rethrowIfDispatchStopped(error);
+					const usageLimitError = findAiUsageLimitError(error);
+					if (usageLimitError) {
+						throw usageLimitError;
+					}
 					const errorMessage =
 						error instanceof Error ? error.message : String(error);
 					return { handled: false, error: errorMessage };

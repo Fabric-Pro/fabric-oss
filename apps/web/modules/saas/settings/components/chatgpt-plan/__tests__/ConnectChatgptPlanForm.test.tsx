@@ -133,6 +133,25 @@ describe("Connect ChatGPT plan page", () => {
 		expect(steps[1]).toHaveAttribute("aria-current", "step");
 	});
 
+	it("leads with the ChatGPT and Fabric marks and the signed-in account", () => {
+		render(
+			<ConnectChatgptPlanForm
+				email="dev@example.com"
+				organizations={ORGS}
+				port={54321}
+				state="state-example"
+			/>,
+		);
+		expect(screen.getByTestId("chatgpt-fabric-marks")).toBeInTheDocument();
+		expect(
+			screen.getByRole("img", { name: "ChatGPT" }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("heading", { level: 1, name: copy.title }),
+		).toBeInTheDocument();
+		expect(screen.getByText(/dev@example\.com/)).toBeInTheDocument();
+	});
+
 	it("moves to the ChatGPT sign-in once approved", async () => {
 		render(
 			<ConnectChatgptPlanForm

@@ -229,11 +229,6 @@ export async function decideWithModel<S extends z.ZodType>(
 				schema,
 				prompt,
 				maxOutputTokens,
-				// The Azure fetch shim already relaxes this for Azure. Sending it
-				// explicitly covers every other OpenAI-compatible deployment,
-				// which gets no shim and rejects an optional-heavy schema under
-				// strict mode.
-				providerOptions: { openai: { strictJsonSchema: false } },
 			}),
 		);
 		return { value: object as z.infer<S>, via: "object", calls: 1 };

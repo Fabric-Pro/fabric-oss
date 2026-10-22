@@ -5,6 +5,7 @@
  * asking it to return strict JSON describing entities and relationships.
  */
 
+import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import { requireServiceUrl } from "@repo/utils";
 import {
 	getDispatchGuard,
@@ -72,6 +73,10 @@ export class WeaveQueryHandler implements StepHandler {
 			// Inside a chat turn's dispatch guard a stop is not a step failure
 			// to report or fall back from; a no-op outside one.
 			rethrowIfDispatchStopped(error);
+			const usageLimitError = findAiUsageLimitError(error);
+			if (usageLimitError) {
+				throw usageLimitError;
+			}
 			return {
 				handled: false,
 				error: error instanceof Error ? error.message : String(error),

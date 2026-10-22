@@ -49,7 +49,7 @@ import {
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import type { ReactNode } from "react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 import {
 	needsLegacyGlossyEdition,
@@ -57,7 +57,10 @@ import {
 } from "../hooks/use-legacy-glossy-edition";
 import {
 	getDocumentsPollInterval,
+	getDocumentsVersionStepPollInterval,
 	isDocumentGenerationRunning,
+	shorterPollInterval,
+	type VersionStepWatch,
 } from "../lib/document-pipeline";
 import { describeDocumentWriteRefusal } from "../lib/document-write-refusal";
 import { buildGlossyEditionRoute } from "../lib/stories/routes";
@@ -459,6 +462,13 @@ export function DocumentsList({
 	const [completingDocId, setCompletingDocId] = useState<string | null>(null);
 	const [editingDocId, setEditingDocId] = useState<string | null>(null);
 
+	// The list also asks for a short while after a run it saw under way ends,
+	// so the version step the run sends no nudge for reaches the card's
+	// version number (Fizzy #2946). The watches belong to one query key.
+	const versionStepWatchRef = useRef<{
+		queryHash: string;
+		watches: Record<string, VersionStepWatch>;
+	} | null>(null);
 	const { data, isLoading, error, refetch, isFetching } = useQuery({
 		...orpc.projects.documents.list.queryOptions({
 			input: { projectId, organizationId },
@@ -466,8 +476,22 @@ export function DocumentsList({
 		// Cadence, not a flat tick: a queued document is watching a wait the
 		// server owns and backs off from on its own, so the list widens toward
 		// 30s rather than asking twenty times a minute for an hour.
-		refetchInterval: (query) =>
-			getDocumentsPollInterval(query.state.data?.documents),
+		refetchInterval: (query) => {
+			const documents = query.state.data?.documents;
+			const held = versionStepWatchRef.current;
+			const { watches, interval } = getDocumentsVersionStepPollInterval(
+				held?.queryHash === query.queryHash ? held.watches : undefined,
+				documents,
+			);
+			versionStepWatchRef.current = {
+				queryHash: query.queryHash,
+				watches,
+			};
+			return shorterPollInterval(
+				getDocumentsPollInterval(documents),
+				interval,
+			);
+		},
 		refetchOnWindowFocus: (query) =>
 			query.state.data?.documents?.some((d) =>
 				isDocumentGenerationRunning(d.status),

@@ -459,14 +459,12 @@ describe("generatePlanningAnalysisActivity — contributor fence scope", () => {
 });
 
 describe("generatePlanningAnalysisActivity — the model call", () => {
-	it("disables strict JSON schema", async () => {
-		// Every section of the analysis schema is optional, and Azure/OpenAI reject
-		// a strict JSON schema containing optional fields outright (bug #1681).
+	it("leaves structured-output policy to the model middleware", async () => {
 		await run();
 
-		expect(generateObject.mock.calls[0]?.[0]?.providerOptions).toEqual({
-			openai: { strictJsonSchema: false },
-		});
+		expect(
+			generateObject.mock.calls[0]?.[0]?.providerOptions,
+		).toBeUndefined();
 	});
 
 	it("tracks usage", async () => {

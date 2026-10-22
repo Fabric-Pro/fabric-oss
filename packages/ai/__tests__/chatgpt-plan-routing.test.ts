@@ -41,6 +41,13 @@ vi.mock("@repo/database", () => ({
 	getEmbeddingProviderConfig: mocks.embeddingProvider,
 	getModelForTask: mocks.getModelForTask,
 	getProviderModelIdForCanonical: mocks.providerModelIdFor,
+	getProviderModelMappingForCanonical: async (
+		name: string,
+		provider: string,
+	) => ({
+		exists: true,
+		providerModelId: await mocks.providerModelIdFor(name, provider),
+	}),
 	getSystemAiProviderApiKey: vi.fn(),
 	getTaskDefaultModel: vi.fn(),
 	updateProviderLastUsed: vi.fn(() => Promise.resolve()),

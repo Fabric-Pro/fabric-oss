@@ -4,6 +4,7 @@ import { auth } from "@/lib/auth";
 import { getFabricToolSession } from "@/lib/fabric-tools";
 import { createMCPClient } from "@ai-sdk/mcp";
 import { streamText, convertToModelMessages } from "ai";
+import { anthropic } from "@ai-sdk/anthropic";
 
 // 1. Mock Auth (Fabric auth compatibility layer)
 vi.mock("@/lib/auth", () => ({
@@ -127,6 +128,27 @@ describe("Chat API POST", () => {
 		const body = await res.text();
 		expect(body).toBe("data: [DONE]\n\n");
 	});
+
+	it.each(["opus", "sonnet", "haiku"])(
+		"sends the direct %s 5.5 ID to the Anthropic SDK",
+		async (family) => {
+			vi.mocked(auth).mockResolvedValue({
+				user: { id: `example-${family}` },
+			});
+			const res = await POST(
+				new Request("http://localhost/api/chat", {
+					method: "POST",
+					body: JSON.stringify({
+						model: `anthropic/claude-${family}-5.5`,
+						messages: [{ role: "user", content: "Hello" }],
+					}),
+				}),
+			);
+			expect(res.status).toBe(200);
+			await res.text();
+			expect(anthropic).toHaveBeenCalledWith(`claude-${family}-5-5`);
+		},
+	);
 
 	it("closes the MCP client when the model run ends", async () => {
 		// `vi.mocked` rather than the `as any` casts the older assertions in

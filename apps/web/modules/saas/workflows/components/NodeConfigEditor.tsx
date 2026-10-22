@@ -1,6 +1,5 @@
 "use client";
 
-import { Button } from "@ui/components/button";
 import { Input } from "@ui/components/input";
 import { Label } from "@ui/components/label";
 import {
@@ -12,7 +11,6 @@ import {
 } from "@ui/components/select";
 import { Textarea } from "@ui/components/textarea";
 import type { Node } from "@xyflow/react";
-import { TrashIcon } from "lucide-react";
 import { getNodeDefinition } from "../lib/node-definitions";
 import { findActionById } from "../lib/plugins/registry";
 import type { ConfigField, WorkflowNodeData } from "../lib/types";
@@ -25,14 +23,13 @@ import { McpToolSelector } from "./config-fields/McpToolSelector";
 interface NodeConfigEditorProps {
 	node: Node<WorkflowNodeData>;
 	onUpdate: (nodeId: string, data: Partial<WorkflowNodeData>) => void;
-	onDelete: (nodeId: string) => void;
 }
 
-export function NodeConfigEditor({
-	node,
-	onUpdate,
-	onDelete,
-}: NodeConfigEditorProps) {
+/**
+ * A step's editable fields. The step's identity (icon, kind) and its delete
+ * action belong to the inspector around it, not to this form.
+ */
+export function NodeConfigEditor({ node, onUpdate }: NodeConfigEditorProps) {
 	const definition = node.type ? getNodeDefinition(node.type) : undefined;
 	// Plugin-backed nodes render their config from the integration's own
 	// action declaration; system nodes (trigger, http-request, condition)
@@ -262,14 +259,6 @@ export function NodeConfigEditor({
 				/>
 			</div>
 
-			{/* Node Type (read-only) */}
-			<div className="space-y-2">
-				<Label>Type</Label>
-				<p className="text-sm text-muted-foreground">
-					{definition?.label || node.type}
-				</p>
-			</div>
-
 			{/* Dynamic Config Fields.
 			    A plugin-backed node renders from the action's own
 			    `configFields` — that declaration is what the integration
@@ -318,19 +307,6 @@ export function NodeConfigEditor({
 					</dl>
 				</div>
 			)}
-
-			{/* Delete Button */}
-			<div className="pt-4 border-t">
-				<Button
-					variant="destructive"
-					size="sm"
-					onClick={() => onDelete(node.id)}
-					className="w-full"
-				>
-					<TrashIcon className="h-4 w-4 mr-2" />
-					Delete Node
-				</Button>
-			</div>
 		</div>
 	);
 }

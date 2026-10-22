@@ -285,9 +285,9 @@ export interface FinalizeClaimedProposalInput
 }
 
 export interface FinalizeClaimedProposalOutput {
-	/** True when this call moved the row out of APPLYING. */
+	/** True when a terminal or keep-open proposal transition succeeded. */
 	finalized: boolean;
-	/** True when the legacy (APPROVED-status) path was used instead. */
+	/** True when a transitional APPROVED or PENDING path was used instead. */
 	legacyFallback: boolean;
 }
 
@@ -299,7 +299,9 @@ export interface FinalizeClaimedProposalOutput {
  * APPROVED with either no `applyWorkflowId` or this workflow's id. Those are
  * finalised through the legacy unconditional path so in-flight approvals at
  * deploy time still reach a terminal state. Rows owned by a different
- * claimant are left untouched and reported as `finalized: false`.
+ * claimant are left untouched and reported as `finalized: false`. Older API
+ * versions also dispatch PENDING rows; those require this workflow id and a
+ * compare-and-set on both status and workflow id at write time.
  */
 export async function finalizeClaimedProposalActivity(
 	input: FinalizeClaimedProposalInput,
@@ -346,6 +348,47 @@ export async function finalizeClaimedProposalActivity(
 	}
 
 	const row = await getPendingBacklogProposal(input.proposalId);
+	if (
+		row?.status === "PENDING" &&
+		row.applyWorkflowId === input.applyWorkflowId
+	) {
+		// Rolling deployment compatibility for dispatches from the previous API.
+		// Recheck ownership in the write so cancellation or re-claim wins safely.
+		const legacy = await db.pendingBacklogProposal.updateMany({
+			where: {
+				id: input.proposalId,
+				status: "PENDING",
+				applyWorkflowId: input.applyWorkflowId,
+			},
+			data:
+				input.outcome === "applied"
+					? {
+							status: "APPLIED",
+							appliedAt: new Date(),
+							applyError: null,
+						}
+					: {
+							status: "FAILED",
+							errorClass: (input.errorClass ?? "default").slice(
+								0,
+								200,
+							),
+							errorMessage: (
+								input.errorMessage ?? "apply workflow failed"
+							).slice(0, 500),
+							applyError: (
+								input.rawApplyError ??
+								input.errorMessage ??
+								"apply workflow failed"
+							).slice(0, 4000),
+							failedAt: new Date(),
+						},
+		});
+		if (legacy.count === 1) {
+			await mirrorProposalOutcomeOntoSession(input);
+			return { finalized: true, legacyFallback: true };
+		}
+	}
 	if (
 		row &&
 		row.status === "APPROVED" &&

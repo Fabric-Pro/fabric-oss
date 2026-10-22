@@ -171,6 +171,8 @@ export const resolveModelForAgentProcedure = publicProcedure
 			provider,
 			input.taskType as AiTaskType,
 			organizationId,
+			"MEDIUM",
+			providerConfig,
 		);
 
 		if (!result?.model) {

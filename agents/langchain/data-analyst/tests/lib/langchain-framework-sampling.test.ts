@@ -9,7 +9,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const captured = vi.hoisted(() => ({
-	llm: undefined as undefined | { invocationParams: (o?: unknown) => unknown },
+	llm: undefined as
+		| undefined
+		| { invocationParams: (o?: unknown) => unknown },
 }));
 
 vi.mock("@langchain/mcp-adapters", () => ({
@@ -30,7 +32,11 @@ vi.mock("@langchain/langgraph/prebuilt", () => ({
 					unknown
 				>;
 				return {
-					messages: [{ content: `temperature=${String(params.temperature)}` }],
+					messages: [
+						{
+							content: `temperature=${String(params.temperature)}`,
+						},
+					],
 				};
 			},
 		};
@@ -79,3 +85,13 @@ describe("data-analyst LangChain framework — Anthropic sampling params", () =>
 		expect(await run("anthropic/claude-sonnet-4-6")).toBe("temperature=0");
 	});
 });
+
+it.each(["opus", "sonnet", "haiku"])(
+	"sends the direct %s 5.5 ID to LangChain",
+	async (family) => {
+		await run(`anthropic/claude-${family}-5.5`);
+		expect(captured.llm?.invocationParams({})).toMatchObject({
+			model: `claude-${family}-5-5`,
+		});
+	},
+);

@@ -2505,8 +2505,10 @@ describe("listAllFizzyCards: account_slug auto-resolve", () => {
 //
 // fizzy-mcp's `fields: "summary"` drops `description`/`description_html` — the
 // bulk of a card page — in exchange for a 200-char `description_preview`. It is
-// safe for the two pickers, which never read a description, and NOT safe for
-// the pull-sync / hierarchy paths, which persist one. These tests pin both
+// safe for the two pickers, which never read a description, and for the
+// prompt-only hierarchy read, which opts into `descriptionFromPreview`. It is
+// NOT safe for paths that persist a description, such as the pull sync and
+// existing-project setup. These tests pin both
 // halves: the default must stay a byte-identical request, and the opt-in must
 // actually reach the wire.
 

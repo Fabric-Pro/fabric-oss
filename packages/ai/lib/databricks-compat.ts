@@ -18,6 +18,8 @@ import {
 	stripUnsupportedRequestFields as stripSharedUnsupportedRequestFields,
 } from "@repo/agent-types/databricks-compat";
 
+import { relaxIncompatibleStrictJsonSchema } from "./strict-json-schema-middleware";
+
 export { isReasoningModelName } from "@repo/agent-types/databricks-compat";
 
 /**
@@ -30,19 +32,9 @@ export { isReasoningModelName } from "@repo/agent-types/databricks-compat";
  *  - Drop `temperature` — Databricks-served Claude (e.g. Claude Sonnet 5)
  *    rejects the sampling params with `400: does not support the temperature
  *    parameter`; callers such as the security scan pass `temperature: 0`.
- *  - Relax strict JSON-schema structured outputs
- *    (`response_format.json_schema.strict: true → false`). `@ai-sdk/openai`
- *    defaults `strict` to `true` for `generateObject`; strict mode requires
- *    every property in `required`, so the optional-heavy schemas used by the
- *    security scan / review / grouping / backlog analysis get a 400 (the same
- *    "Bug #1681" already fixed for Azure). The AI SDK still validates the
- *    result against the Zod schema. `max_tokens` is intentionally left
- *    untouched — Anthropic/Databricks require it (unlike Azure's o1/o3 rename).
- *
- * The `temperature` and strict-`json_schema` transforms are Vercel-EXCLUSIVE:
- * the agent path omits `temperature` at the `ChatOpenAI` constructor and does
- * structured output via tool-calling (never `response_format.json_schema`), so
- * it keeps the shared default rule and never runs this function.
+ * The shared structural checker relaxes incompatible strict schemas from
+ * explicit-strict callers or future clients. max_tokens is left untouched because
+ * Anthropic/Databricks require it.
  */
 export function applyDatabricksChatBodyCompat(
 	body: Record<string, unknown>,
@@ -59,21 +51,7 @@ export function applyDatabricksChatBodyCompat(
 		mutated = true;
 	}
 
-	// Bug #1681: @ai-sdk/openai defaults strict JSON-schema structured outputs
-	// (`response_format.json_schema.strict = true`); strict mode requires every
-	// property to appear in `required`, so optional-heavy schemas (security scan,
-	// review, grouping, backlog analysis) are rejected with a 400. Force
-	// non-strict — the AI SDK still validates the result against the Zod schema.
-	const responseFormat = body.response_format as
-		| { type?: string; json_schema?: { strict?: boolean } }
-		| undefined;
-	if (
-		responseFormat?.type === "json_schema" &&
-		responseFormat.json_schema?.strict === true
-	) {
-		responseFormat.json_schema.strict = false;
-		mutated = true;
-	}
+	mutated = relaxIncompatibleStrictJsonSchema(body) || mutated;
 
 	return mutated;
 }

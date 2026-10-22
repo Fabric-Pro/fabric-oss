@@ -308,35 +308,49 @@ export async function removeLearnedPattern(
 // =============================================================================
 
 /**
- * Create an episodic memory entry from a conversation
+ * Create a conversation episode or replace its latest turn for the same owner.
+ * Preserve the original start/creation timestamps and existing vector reference.
+ * Reject owner mismatches, including null versus non-null organizations.
  */
 export async function createEpisodicMemory(
 	input: CreateEpisodeInput,
 ): Promise<EpisodeSummary> {
-	const episode = await db.episodicMemory.create({
-		data: {
-			userId: input.userId,
-			organizationId: input.organizationId ?? null,
-			projectId: input.projectId ?? null,
-			workspaceId: input.workspaceId ?? null,
-			conversationId: input.conversationId,
-			agentId: input.agentId ?? null,
-			title: input.title,
-			summary: input.summary,
-			keyTopics: input.keyTopics,
-			userIntents: input.userIntents,
-			outcome: input.outcome,
-			messageCount: input.messageCount,
-			turnCount: input.turnCount,
-			toolsUsed: input.toolsUsed,
-			agentsUsed: input.agentsUsed,
+	const where = {
+		conversationId: input.conversationId,
+		userId: input.userId,
+		organizationId: input.organizationId ?? null,
+	};
+	const update = {
+		projectId: input.projectId ?? null,
+		workspaceId: input.workspaceId ?? null,
+		agentId: input.agentId ?? null,
+		title: input.title,
+		summary: input.summary,
+		keyTopics: input.keyTopics,
+		userIntents: input.userIntents,
+		outcome: input.outcome,
+		messageCount: input.messageCount,
+		turnCount: input.turnCount,
+		toolsUsed: input.toolsUsed,
+		agentsUsed: input.agentsUsed,
+		conversationEndedAt: input.conversationEndedAt ?? null,
+	};
+	const episode = await db.episodicMemory.upsert({
+		where,
+		create: {
+			...where,
+			...update,
 			conversationStartedAt: input.conversationStartedAt,
-			conversationEndedAt: input.conversationEndedAt ?? null,
 			qdrantPointId: input.qdrantPointId ?? null,
 			qdrantCollection: input.qdrantCollection ?? null,
 		},
+		update,
 	});
-
+	// Prisma runs this as INSERT ... ON CONFLICT DO UPDATE WHERE <owner>; when the
+	// conversation belongs to another owner nothing is written and it returns null.
+	if (!episode) {
+		throw new Error("Episodic memory owner mismatch");
+	}
 	return episodeToSummary(episode);
 }
 
@@ -437,7 +451,7 @@ export async function searchEpisodicMemories(params: {
 		skip: offset,
 	});
 
-	return filterAccessibleEpisodes(
+	return filterAccessibleMemoryScopes(
 		episodes.map(episodeToSummary),
 		userId,
 		organizationId,
@@ -462,7 +476,7 @@ export async function getRecentEpisodes(
 		take: limit,
 	});
 
-	return filterAccessibleEpisodes(
+	return filterAccessibleMemoryScopes(
 		episodes.map(episodeToSummary),
 		userId,
 		organizationId,
@@ -493,7 +507,7 @@ export async function getProjectEpisodes(
 		take: limit,
 	});
 
-	return filterAccessibleEpisodes(
+	return filterAccessibleMemoryScopes(
 		episodes.map(episodeToSummary),
 		userId,
 		organizationId,
@@ -524,7 +538,7 @@ export async function getWorkspaceEpisodes(
 		take: limit,
 	});
 
-	return filterAccessibleEpisodes(
+	return filterAccessibleMemoryScopes(
 		episodes.map(episodeToSummary),
 		userId,
 		organizationId,
@@ -574,7 +588,11 @@ export async function getEpisodesByIds(
 		.map((id) => episodeMap.get(id))
 		.filter((e): e is EpisodeRecord => e !== undefined)
 		.map((e) => episodeToSummary(e));
-	return filterAccessibleEpisodes(orderedEpisodes, userId, organizationId);
+	return filterAccessibleMemoryScopes(
+		orderedEpisodes,
+		userId,
+		organizationId,
+	);
 }
 
 /**
@@ -605,16 +623,23 @@ export async function deleteEpisodeByConversationId(
  * Recheck current resource access once per distinct id in this result set.
  * Query limits precede this filter, so revoked access can yield fewer results.
  */
-async function filterAccessibleEpisodes(
-	episodes: EpisodeSummary[],
-	userId: string,
-	organizationId?: string | null,
-): Promise<EpisodeSummary[]> {
+export async function filterAccessibleMemoryScopes<
+	T extends {
+		projectId?: string | null;
+		workspaceId?: string | null;
+		workspaceIds?: string[];
+	},
+>(memories: T[], userId: string, organizationId?: string | null): Promise<T[]> {
 	const projectIds = new Set(
-		episodes.flatMap((e) => (e.projectId ? [e.projectId] : [])),
+		memories.flatMap((memory) =>
+			memory.projectId ? [memory.projectId] : [],
+		),
 	);
 	const workspaceIds = new Set(
-		episodes.flatMap((e) => (e.workspaceId ? [e.workspaceId] : [])),
+		memories.flatMap((memory) => [
+			...(memory.workspaceId ? [memory.workspaceId] : []),
+			...(memory.workspaceIds ?? []),
+		]),
 	);
 	const check = async (
 		ids: Set<string>,
@@ -638,11 +663,14 @@ async function filterAccessibleEpisodes(
 		),
 		check(workspaceIds, (id) => hasWorkspaceAccess(id, userId)),
 	]);
-	return episodes.filter(
-		(episode) =>
-			(!episode.projectId || projects.get(episode.projectId) === true) &&
-			(!episode.workspaceId ||
-				workspaces.get(episode.workspaceId) === true),
+	return memories.filter(
+		(memory) =>
+			(!memory.projectId || projects.get(memory.projectId) === true) &&
+			(!memory.workspaceId ||
+				workspaces.get(memory.workspaceId) === true) &&
+			(memory.workspaceIds ?? []).every(
+				(id) => workspaces.get(id) === true,
+			),
 	);
 }
 

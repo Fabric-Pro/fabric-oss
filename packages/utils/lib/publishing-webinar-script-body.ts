@@ -78,11 +78,10 @@ export const BaseWebinarScriptSchema = z.object({
 	//
 	// These six were required, each carrying a comment arguing that the prompt
 	// tells the model to write a "[… TBD]" placeholder rather than leave one
-	// blank. The instruction is real; the enforcement never was. `generateObject`
-	// runs with `strictJsonSchema: false` — Azure/OpenAI reject a strict schema
-	// containing optional fields (bug #1681) — so nothing obliges a provider to
-	// emit a field at all, and on a topic whose context does not suit a webinar
-	// the model simply leaves several out.
+	// blank. These fields historically ran with guidance-only schemas, so a
+	// provider could omit them on topics that did not suit a webinar. The shared
+	// AI middleware now chooses enforcement when the provider and schema support
+	// it; fallback routes still need this scaffold-compatible shape.
 	//
 	// The result was a hard failure rather than a thin draft: `generateObject`
 	// threw `NoObjectGeneratedError` before any validation in this module could

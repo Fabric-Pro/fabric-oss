@@ -23,6 +23,7 @@ const mockSearchEpisodicMemories = vi.fn();
 const mockBuildOrchestratorMemoryContext = vi.fn();
 const mockBuildMemoryContextPromptVariables = vi.fn();
 const mockCreateEpisodicMemory = vi.fn();
+const mockUpdateEpisodeQdrantReference = vi.fn();
 const mockUpdateRecentActivity = vi.fn();
 const mockLearnPattern = vi.fn();
 
@@ -41,6 +42,8 @@ vi.mock("@repo/database", () => ({
 		mockBuildMemoryContextPromptVariables(...args),
 	createEpisodicMemory: (...args: unknown[]) =>
 		mockCreateEpisodicMemory(...args),
+	updateEpisodeQdrantReference: (...args: unknown[]) =>
+		mockUpdateEpisodeQdrantReference(...args),
 	updateRecentActivity: (...args: unknown[]) =>
 		mockUpdateRecentActivity(...args),
 	learnPattern: (...args: unknown[]) => mockLearnPattern(...args),
@@ -53,8 +56,11 @@ vi.mock("../src/activities/lib/memory-context-prompt", () => ({
 // Mock RAG vector store
 const mockStoreEpisodeEmbedding = vi.fn();
 const mockSearchSimilarEpisodes = vi.fn();
+const mockDeleteEpisodeEmbedding = vi.fn();
 
 vi.mock("@repo/rag/lib/vector-store", () => ({
+	deleteEpisodeEmbedding: (...args: unknown[]) =>
+		mockDeleteEpisodeEmbedding(...args),
 	storeEpisodeEmbedding: (...args: unknown[]) =>
 		mockStoreEpisodeEmbedding(...args),
 	searchSimilarEpisodes: (...args: unknown[]) =>
@@ -246,6 +252,137 @@ describe("Orchestrator Memory System", () => {
 			);
 			expect(mockStoreEpisodeEmbedding).toHaveBeenCalled();
 		});
+
+		it.each([
+			"success",
+			"store-false",
+			"store-throws",
+			"reference-throws",
+			"reference-missing",
+			"cleanup-false",
+			"cleanup-throws",
+		])(
+			"persists the embedding reference only after a successful store (%s)",
+			async (scenario) => {
+				mockCreateEpisodicMemory.mockResolvedValue({
+					id: "episode-example",
+				});
+				mockUpdateEpisodeQdrantReference.mockResolvedValue(undefined);
+				mockDeleteEpisodeEmbedding.mockResolvedValue(true);
+				mockStoreEpisodeEmbedding.mockResolvedValue({
+					success: true,
+					pointId: "point-example",
+					collectionName: "example-written-collection",
+				});
+				const { createEpisodicMemoryActivity } = await import(
+					"../src/activities/orchestrator-memory/index"
+				);
+				const input = {
+					userId: "user-example-1",
+					organizationId: "example-org",
+					conversationId: "conversation-example",
+					title: "Example turn",
+					summary: "Example summary",
+					keyTopics: [],
+					userIntents: [],
+					outcome: "success",
+					messageCount: 2,
+					turnCount: 1,
+					toolsUsed: [],
+					agentsUsed: [],
+					conversationStartedAt: new Date("2026-10-01"),
+				};
+				await createEpisodicMemoryActivity(input);
+				expect(mockUpdateEpisodeQdrantReference).toHaveBeenCalledWith(
+					"episode-example",
+					"point-example",
+					"example-written-collection",
+				);
+				expect(
+					mockUpdateEpisodeQdrantReference.mock
+						.invocationCallOrder[0],
+				).toBeGreaterThan(
+					mockStoreEpisodeEmbedding.mock.invocationCallOrder[0],
+				);
+				mockUpdateEpisodeQdrantReference.mockClear();
+				if (scenario === "store-false") {
+					mockStoreEpisodeEmbedding.mockResolvedValue({
+						success: false,
+						pointId: null,
+					});
+				}
+				if (scenario === "store-throws") {
+					mockStoreEpisodeEmbedding.mockRejectedValue(
+						new Error("Store unavailable"),
+					);
+				}
+				if (scenario === "reference-throws") {
+					mockUpdateEpisodeQdrantReference.mockRejectedValue(
+						new Error("Reference unavailable"),
+					);
+				}
+				if (
+					[
+						"reference-missing",
+						"cleanup-false",
+						"cleanup-throws",
+					].includes(scenario)
+				) {
+					mockUpdateEpisodeQdrantReference.mockRejectedValue(
+						Object.assign(new Error("Episode removed"), {
+							code: "P2025",
+						}),
+					);
+				}
+				if (scenario === "cleanup-false") {
+					mockDeleteEpisodeEmbedding.mockResolvedValue(false);
+				}
+				if (scenario === "cleanup-throws") {
+					mockDeleteEpisodeEmbedding.mockRejectedValue(
+						new Error("Cleanup unavailable"),
+					);
+				}
+				const result = await createEpisodicMemoryActivity(input);
+				if (
+					[
+						"reference-missing",
+						"cleanup-false",
+						"cleanup-throws",
+					].includes(scenario)
+				) {
+					expect(mockDeleteEpisodeEmbedding).toHaveBeenCalledWith(
+						"episode-example",
+						"example-org",
+					);
+					expect(
+						mockDeleteEpisodeEmbedding.mock.invocationCallOrder[0],
+					).toBeGreaterThan(
+						mockUpdateEpisodeQdrantReference.mock
+							.invocationCallOrder[0],
+					);
+				} else {
+					expect(mockDeleteEpisodeEmbedding).not.toHaveBeenCalled();
+				}
+
+				if (scenario.startsWith("store-")) {
+					expect(
+						mockUpdateEpisodeQdrantReference,
+					).not.toHaveBeenCalled();
+				} else {
+					expect(
+						mockUpdateEpisodeQdrantReference,
+					).toHaveBeenCalledWith(
+						"episode-example",
+						"point-example",
+						"example-written-collection",
+					);
+					expect(result).toEqual({
+						episodeId: "episode-example",
+						qdrantPointId: "point-example",
+					});
+				}
+			},
+		);
 
 		it("should handle embedding failure gracefully", async () => {
 			// When embedding fails, the activity catches the error and returns null

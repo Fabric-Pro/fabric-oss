@@ -26,6 +26,7 @@ import { toast } from "sonner";
 import { ChatgptPlanModelList } from "../chatgpt-plan-models/ChatgptPlanModelList";
 import { useChatgptPlanModels } from "../chatgpt-plan-models/chatgpt-plan-models-queries";
 import { ChatgptConnectCommand } from "./ChatgptConnectCommand";
+import { ChatgptMark } from "./ChatgptMark";
 import { ChatgptPlanReconnectActions } from "./ChatgptPlanReconnectActions";
 import {
 	ChatgptPlanShareAction,
@@ -171,13 +172,19 @@ function ChatgptPlanSection() {
 			className="mt-6 space-y-4"
 			data-testid="chatgpt-plan-settings"
 		>
-			<div className="space-y-1">
-				<h2 className="font-semibold text-lg" id="chatgpt-plan-heading">
-					{t("title")}
-				</h2>
-				<p className="text-muted-foreground text-sm">
-					{t("description")}
-				</p>
+			<div className="flex items-start gap-3">
+				<ChatgptMark />
+				<div className="min-w-0 space-y-1">
+					<h2
+						className="font-semibold text-lg"
+						id="chatgpt-plan-heading"
+					>
+						{t("title")}
+					</h2>
+					<p className="text-muted-foreground text-sm">
+						{t("description")}
+					</p>
+				</div>
 			</div>
 
 			{query.isPending ? (

@@ -33,7 +33,6 @@ import { seedCarriedOverHistory } from "../carried-over-context";
 import { assertChatWorkflowPayload } from "../chat-workflow-payload";
 import { resolveUsageFrame } from "../resolve-usage-frame";
 import { unionDefaultMcpConfigIds } from "../union-default-mcp-config-ids";
-import { extractAiUsageLimitExceededError } from "./extract-ai-usage-limit-error";
 import { historyWindowSchema } from "./history-window";
 import {
 	bindsLiveFeatureTools,
@@ -44,35 +43,12 @@ import {
 	normalizeReasoningMode,
 } from "./normalize-reasoning-mode";
 import {
+	buildWorkflowErrorEvent,
 	doneTurnEvent,
 	failedTurnEvent,
 	partialTurnEvent,
 	ROUTE_TIMEOUT_MESSAGE,
 } from "./turn-events";
-import { extractWorkflowFailureMessage } from "./workflow-failure-message";
-
-function buildWorkflowErrorEvent(error: unknown) {
-	const limitError = extractAiUsageLimitExceededError(error);
-	if (limitError) {
-		return {
-			type: "error" as const,
-			code: "AI_USAGE_LIMIT_EXCEEDED" as const,
-			message: limitError.message,
-			data: {
-				limitId: limitError.limitId,
-				dimension: limitError.dimension,
-				window: limitError.window,
-				used: limitError.used.toString(),
-				max: limitError.max.toString(),
-				manageLimitsUrl: limitError.manageLimitsUrl,
-			},
-		};
-	}
-	return {
-		type: "error" as const,
-		message: extractWorkflowFailureMessage(error),
-	};
-}
 
 const AGENT_CONTEXT_STORY_LIMIT = 30;
 const AGENT_CONTEXT_STORY_RENDER_LIMIT = 15;

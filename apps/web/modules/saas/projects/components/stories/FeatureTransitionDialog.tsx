@@ -269,6 +269,7 @@ export function FeatureTransitionDialog({
 						<p className="text-xs text-muted-foreground">Prompt</p>
 						<PromptSelector
 							agentName="project_document_generator"
+							projectId={projectId}
 							documentType={targetStage}
 							storyKind={storyKind}
 							value={selectedPromptId}

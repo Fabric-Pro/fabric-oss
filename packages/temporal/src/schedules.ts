@@ -2289,12 +2289,11 @@ async function registerWeaveExecutionWatchdogSchedule(
  * Register the backlog-apply-watchdog schedule.
  *
  * Runs every 5 minutes on the `fabric-worker` queue. Finds
- * `PendingBacklogProposal` rows still PENDING with an apply dispatched
- * (`applyStartedAt` set) longer than `FABRIC_BACKLOG_APPLY_STALE_MINUTES`
- * (default 15). For each: force-terminates the leaked apply workflow, flips the
- * row `PENDING → FAILED` (errorClass "TimedOut", compare-and-set so a late
- * finalize / manual cancel can't be clobbered), finalizes the session-history
- * row, and writes a `backlog.proposal.timed_out` audit entry.
+ * stale dispatched PENDING and claimed APPROVED/APPLYING proposals, including
+ * claims that did not reach dispatch. Uses FABRIC_BACKLOG_APPLY_STALE_MINUTES
+ * (default 15). Attempts to terminate each leaked workflow, then moves rows
+ * still matching the atomic stale guard to FAILED (errorClass "TimedOut"),
+ * finalizes session history, and records backlog.proposal.timed_out.
  *
  * Idempotent registration via the `ScheduleAlreadyRunning` catch.
  */
@@ -2319,7 +2318,7 @@ async function registerBacklogApplyWatchdogSchedule(
 			},
 			state: {
 				paused: false,
-				note: "Recovers PendingBacklogProposal rows stuck mid-apply (PENDING with applyStartedAt older than FABRIC_BACKLOG_APPLY_STALE_MINUTES, default 15). Writes a backlog.proposal.timed_out audit entry per recovery.",
+				note: "Recovers stale dispatched PENDING and claimed APPROVED/APPLYING proposals after FABRIC_BACKLOG_APPLY_STALE_MINUTES without progress (default 15). Writes a backlog.proposal.timed_out audit entry per recovery.",
 			},
 		});
 

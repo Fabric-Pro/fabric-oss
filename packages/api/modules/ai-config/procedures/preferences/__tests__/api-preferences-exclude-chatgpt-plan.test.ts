@@ -14,9 +14,21 @@ const mocks = vi.hoisted(() => ({
 	orgProviderFindMany: vi.fn(),
 	userProviderFindMany: vi.fn(),
 	getAiProviderApiKey: vi.fn(),
+	getOrganizationDefaultProvider: vi.fn(),
+	getOrganizationSystemAiProviderApiKey: async () => ({ provider: null }),
+	getSystemAiProviderApiKey: async () => ({ provider: null }),
 	getEmbeddingProviderConfig: vi.fn(),
 	getOrgModelPreferences: vi.fn(),
 	getUserModelPreferences: vi.fn(),
+}));
+
+vi.mock("@repo/ai/model-selector", () => ({
+	selectModelDynamic: vi.fn(async () => ({
+		modelId: "VERCEL_GATEWAY-EMBEDDING",
+		canonicalName: "example-embedding",
+		displayName: "Example embedding",
+		providerModelId: "example-embedding",
+	})),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -30,9 +42,20 @@ vi.mock("@repo/database", () => ({
 			findMany: mocks.userProviderFindMany,
 			findFirst: vi.fn(),
 		},
-		aiModel: { findMany: vi.fn().mockResolvedValue([]) },
+		aiModel: {
+			findMany: vi.fn().mockResolvedValue([]),
+			findUnique: vi.fn(
+				async () =>
+					CATALOG.find((entry) => entry.taskType === "EMBEDDING")
+						?.model ?? null,
+			),
+		},
 	},
 	getAiProviderApiKey: mocks.getAiProviderApiKey,
+	getOrganizationDefaultProvider: mocks.getOrganizationDefaultProvider,
+	getSystemAiProviderApiKey: mocks.getSystemAiProviderApiKey,
+	getOrganizationSystemAiProviderApiKey:
+		mocks.getOrganizationSystemAiProviderApiKey,
 	getEmbeddingProviderConfig: mocks.getEmbeddingProviderConfig,
 	getAiProviderApiKeyByProvider: vi
 		.fn()
@@ -40,6 +63,9 @@ vi.mock("@repo/database", () => ({
 	getOrgModelPreferences: mocks.getOrgModelPreferences,
 	getUserModelPreferences: mocks.getUserModelPreferences,
 	LLM_PROVIDER_PURPOSE_FILTER: { purpose: { not: "EMBEDDINGS_ONLY" } },
+	// No connection snapshot: Settings reads the live template rows above.
+	readTaskDefaultsSnapshot: vi.fn(() => null),
+	getTaskDefaultModel: vi.fn(),
 }));
 
 vi.mock("../../../../../orpc/procedures", () => {
@@ -48,8 +74,14 @@ vi.mock("../../../../../orpc/procedures", () => {
 		use: () => chainable,
 		route: () => chainable,
 		input: () => chainable,
-		output: () => chainable,
-		handler: (fn: (...args: unknown[]) => unknown) => ({ _handler: fn }),
+		output: (schema: unknown) => {
+			chainable._outputSchema = schema;
+			return chainable;
+		},
+		handler: (fn: (...args: unknown[]) => unknown) => ({
+			_handler: fn,
+			_outputSchema: chainable._outputSchema,
+		}),
 	});
 	return {
 		tenantProtectedProcedure: chainable,
@@ -106,6 +138,7 @@ function inProviders(where: Record<string, unknown>) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.getOrganizationDefaultProvider.mockResolvedValue(null);
 	mocks.taskDefaultFindMany.mockImplementation(
 		async ({ where }: { where: Record<string, unknown> }) =>
 			CATALOG.filter(inProviders(where)).filter(
@@ -133,18 +166,10 @@ describe("getTaskDefaults (F4)", () => {
 		});
 
 		expect(defaults).toEqual([]);
-		expect(mocks.orgProviderFindMany).toHaveBeenCalledWith(
-			expect.objectContaining({
-				where: {
-					organizationId: "org-1",
-					enabled: true,
-					purpose: { not: "EMBEDDINGS_ONLY" },
-				},
-			}),
-		);
+		expect(mocks.orgProviderFindMany).not.toHaveBeenCalled();
 	});
 
-	it("returns only the configured LLM providers' defaults when there is no default", async () => {
+	it("returns no text defaults when configured LLM providers have no default", async () => {
 		mocks.getAiProviderApiKey.mockResolvedValue({ provider: null });
 		mocks.orgProviderFindMany.mockResolvedValue([
 			{ provider: "ANTHROPIC_DIRECT" },
@@ -155,7 +180,7 @@ describe("getTaskDefaults (F4)", () => {
 			context,
 		});
 
-		expect(defaults.map((d) => d.provider)).toEqual(["ANTHROPIC_DIRECT"]);
+		expect(defaults).toEqual([]);
 	});
 
 	// Fizzy #2770: an embeddings-only key is never the default and never an
@@ -174,6 +199,19 @@ describe("getTaskDefaults (F4)", () => {
 		expect(defaults.map((d) => [d.taskType, d.provider])).toEqual([
 			["EMBEDDING", "VERCEL_GATEWAY"],
 		]);
+		const { selectModelDynamic } = await import("@repo/ai/model-selector");
+		expect(selectModelDynamic).toHaveBeenCalledWith(
+			{
+				taskType: "EMBEDDING",
+				preferredProvider: "VERCEL_GATEWAY",
+				ignorePreferences: true,
+			},
+			{
+				userId: "user-1",
+				organizationId: "org-1",
+				organizationOnly: true,
+			},
+		);
 		expect(mocks.getEmbeddingProviderConfig).toHaveBeenCalledWith({
 			userId: "user-1",
 			organizationId: "org-1",
@@ -181,6 +219,7 @@ describe("getTaskDefaults (F4)", () => {
 	});
 
 	it("still returns the default provider's defaults, never a plan row", async () => {
+		mocks.getOrganizationDefaultProvider.mockResolvedValue("OPENAI_DIRECT");
 		mocks.getAiProviderApiKey.mockResolvedValue({
 			provider: "OPENAI_DIRECT",
 		});
@@ -190,12 +229,20 @@ describe("getTaskDefaults (F4)", () => {
 			context,
 		});
 
-		expect(defaults.map((d) => d.provider)).toEqual(["OPENAI_DIRECT"]);
+		expect(defaults.map((d) => d.provider)).toEqual([
+			"OPENAI_DIRECT",
+			"OPENAI_DIRECT",
+		]);
 		expect(mocks.orgProviderFindMany).not.toHaveBeenCalled();
 	});
 });
 
 describe("getOrg preferences (F5)", () => {
+	beforeEach(() =>
+		mocks.orgProviderFindMany.mockResolvedValue([
+			{ provider: "OPENAI_DIRECT" },
+		]),
+	);
 	const getOrg = getOrgModelPreferencesProcedure as unknown as Handler<
 		Array<{ provider: string }>
 	>;
@@ -228,6 +275,10 @@ describe("getOrg preferences (F5)", () => {
 			contextWindow: 8191,
 			speedTier: "BALANCED",
 			qualityTier: "PREMIUM",
+			inputCostPer1M: 2,
+			outputCostPer1M: 8,
+			suitableForTasks: ["EMBEDDING"],
+			capabilities: ["EMBEDDING"],
 		},
 	};
 
@@ -236,23 +287,49 @@ describe("getOrg preferences (F5)", () => {
 		mocks.getEmbeddingProviderConfig.mockResolvedValue({
 			provider: "VERCEL_GATEWAY",
 		});
-		mocks.getOrgModelPreferences.mockResolvedValue([EMBEDDING_PREFERENCE]);
+		mocks.getOrgModelPreferences.mockResolvedValue([
+			{
+				...EMBEDDING_PREFERENCE,
+				model: {
+					...EMBEDDING_PREFERENCE.model,
+					inputCostPer1M: { toString: () => "2" },
+					outputCostPer1M: { toString: () => "8" },
+				},
+			},
+		]);
 
 		const preferences = await getOrg._handler({
 			input: { organizationId: "org-1" },
 			context,
 		});
 
-		expect(preferences).toEqual([EMBEDDING_PREFERENCE]);
-		expect(mocks.getEmbeddingProviderConfig).toHaveBeenCalledWith({
-			userId: "user-1",
-			organizationId: "org-1",
+		const parsed = (
+			getOrgModelPreferencesProcedure as unknown as {
+				_outputSchema: { parse: (value: unknown) => unknown };
+			}
+		)._outputSchema.parse(preferences);
+		expect(parsed).toEqual([EMBEDDING_PREFERENCE]);
+		expect(mocks.orgProviderFindMany).toHaveBeenCalledWith({
+			where: { organizationId: "org-1", enabled: true },
+			select: { id: true },
+			take: 1,
 		});
 	});
 
 	it("returns nothing when the organization has no provider at all", async () => {
+		mocks.orgProviderFindMany.mockResolvedValue([]);
+		mocks.getOrganizationDefaultProvider.mockResolvedValue(null);
 		mocks.getAiProviderApiKey.mockResolvedValue({ provider: null });
-		mocks.getOrgModelPreferences.mockResolvedValue([EMBEDDING_PREFERENCE]);
+		mocks.getOrgModelPreferences.mockResolvedValue([
+			{
+				...EMBEDDING_PREFERENCE,
+				model: {
+					...EMBEDDING_PREFERENCE.model,
+					inputCostPer1M: { toString: () => "2" },
+					outputCostPer1M: { toString: () => "8" },
+				},
+			},
+		]);
 
 		await expect(
 			getOrg._handler({ input: { organizationId: "org-1" }, context }),
@@ -277,4 +354,54 @@ describe("getOrg preferences (F5)", () => {
 
 		expect(preferences.map((pref) => pref.taskType)).toEqual(["EMBEDDING"]);
 	});
+});
+
+it("preserves personal documents defaults when no personal LLM default is configured", async () => {
+	mocks.getAiProviderApiKey.mockResolvedValue({ provider: null });
+	mocks.getEmbeddingProviderConfig.mockResolvedValue({
+		provider: "VERCEL_GATEWAY",
+	});
+	const result = await (
+		getTaskDefaultsProcedure as unknown as Handler<
+			Array<{ taskType: string; provider: string }>
+		>
+	)._handler({ input: { organizationId: null }, context });
+	expect(result.map((row) => [row.taskType, row.provider])).toEqual([
+		["EMBEDDING", "VERCEL_GATEWAY"],
+	]);
+});
+
+it("returns the saved Decision choice with a keyed gateway and no organization default", async () => {
+	mocks.getOrganizationDefaultProvider.mockResolvedValue(null);
+	mocks.getAiProviderApiKey.mockResolvedValue({ provider: null });
+	mocks.getEmbeddingProviderConfig.mockResolvedValue({ provider: null });
+	mocks.orgProviderFindMany.mockResolvedValue([
+		{
+			provider: "VERCEL_GATEWAY",
+			enabled: true,
+			purpose: "ALL",
+			encryptedApiKey: "example-key",
+		},
+	]);
+	const choice = {
+		id: "example-decision",
+		provider: "VERCEL_GATEWAY",
+		taskType: "DECISION",
+		customParameters: null,
+		model: taskDefault("DECISION", "VERCEL_GATEWAY").model,
+	};
+	mocks.getOrgModelPreferences.mockResolvedValue([choice]);
+	const result = await (
+		getOrgModelPreferencesProcedure as unknown as Handler<unknown>
+	)._handler({ input: { organizationId: "example-org" }, context });
+	expect(result).toEqual([
+		{
+			...choice,
+			model: {
+				...choice.model,
+				inputCostPer1M: null,
+				outputCostPer1M: null,
+			},
+		},
+	]);
 });

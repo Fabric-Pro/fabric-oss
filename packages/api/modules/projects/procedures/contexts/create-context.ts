@@ -12,6 +12,7 @@ import {
 import { ProjectContextTypeSchema } from "@repo/database/prisma/zod";
 import { logger } from "@repo/logs";
 import { getTemporalClient } from "@repo/temporal";
+import { countDocumentWords } from "@repo/utils/document-word-count";
 import { z } from "zod";
 import { emitActivity, emitContextChange } from "../../../../lib/realtime";
 import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
@@ -146,9 +147,7 @@ export const createContextProcedure = tenantProtectedProcedure
 						source: "IMPORTED",
 						sourceContextId: projectContext.id,
 						isActive: !existingActive,
-						wordCount: input.content
-							.split(/\s+/)
-							.filter((w: string) => w.length > 0).length,
+						wordCount: countDocumentWords(input.content),
 						version: 1,
 						userId: user.id,
 						organizationId: organizationId ?? null,

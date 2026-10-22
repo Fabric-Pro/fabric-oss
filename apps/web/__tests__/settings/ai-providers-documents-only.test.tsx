@@ -5,10 +5,17 @@
  * "Embeddings" badge.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+	within,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockGetStatus, mockSetEmbedding } = vi.hoisted(() => ({
+const { mockImpact, mockGetStatus, mockSetEmbedding } = vi.hoisted(() => ({
+	mockImpact: vi.fn(),
 	mockGetStatus: vi.fn(),
 	mockSetEmbedding: vi.fn(),
 }));
@@ -16,6 +23,7 @@ const { mockGetStatus, mockSetEmbedding } = vi.hoisted(() => ({
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		aiConfig: {
+			embeddings: { changeImpact: mockImpact },
 			resolution: { getStatus: mockGetStatus },
 			providers: {
 				testConnection: vi.fn(),
@@ -47,15 +55,11 @@ vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 import { OrgAiProvidersSettingsForm } from "../../modules/saas/settings/components/OrgAiProvidersSettingsForm";
 
-function renderForm() {
+function renderForm(
+	client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
 	return render(
-		<QueryClientProvider
-			client={
-				new QueryClient({
-					defaultOptions: { queries: { retry: false } },
-				})
-			}
-		>
+		<QueryClientProvider client={client}>
 			<OrgAiProvidersSettingsForm />
 		</QueryClientProvider>,
 	);
@@ -83,6 +87,12 @@ const status = (embeddingIsDefault: boolean) => ({
 				]),
 	],
 	embeddingProvider: "OPENAI_DIRECT",
+	organizationEmbedding: {
+		provider: "OPENAI_DIRECT",
+		model: null,
+		identity: "OPENAI_DIRECT:example-embedding",
+		source: "documents_provider",
+	},
 	embeddingModel: null,
 });
 
@@ -152,4 +162,266 @@ describe("Embeddings only", () => {
 			}),
 		);
 	});
+});
+
+it.each(["company", "project", "empty", "unavailable"] as const)(
+	"checks indexed content before moving documents off the resolved default (%s)",
+	async (kind) => {
+		const empty = kind === "empty";
+		if (kind === "unavailable") {
+			mockImpact.mockRejectedValue(
+				new Error("Example count unavailable"),
+			);
+		} else {
+			mockImpact.mockResolvedValue({
+				companyContext: {
+					indexedWithCurrentModel: kind === "company" ? 2 : 0,
+					total: 5,
+				},
+				projectContent: { indexed: kind === "project" ? 7 : 0 },
+			});
+		}
+
+		mockSetEmbedding.mockResolvedValue({ success: true });
+		mockGetStatus.mockResolvedValue({
+			...status(false),
+			embeddingProvider: null,
+			organizationEmbedding: {
+				provider: "ANTHROPIC_DIRECT",
+				model: null,
+				identity: "ANTHROPIC_DIRECT:example-embedding",
+				source: "default_provider",
+			},
+			resolvedEmbeddingProvider: "ANTHROPIC_DIRECT",
+			configuredProviders: status(false).configuredProviders.map((p) => ({
+				...p,
+				isEmbeddingProvider: false,
+				purpose: "ALL",
+			})),
+		});
+		renderForm();
+		const card = (await screen.findAllByText("OpenAI"))[0].closest(
+			"div.relative",
+		) as HTMLElement;
+		await waitFor(() =>
+			expect(
+				within(card).getByRole("button", { name: /Use for Documents/ }),
+			).not.toBeDisabled(),
+		);
+		fireEvent.click(
+			within(card).getByRole("button", { name: /Use for Documents/ }),
+		);
+		if (!empty) {
+			const dialog = await screen.findByRole("alertdialog");
+			if (kind === "unavailable") {
+				expect(within(dialog).getByRole("alert")).toHaveTextContent(
+					"embeddingsImpactUnavailable",
+				);
+			}
+			expect(mockSetEmbedding).not.toHaveBeenCalled();
+			const confirm = within(dialog).getByRole("button", {
+				name: "embeddingsChangeConfirm",
+			});
+			expect(confirm).toBeDisabled();
+			fireEvent.change(
+				within(dialog).getByRole("textbox", {
+					name: "embeddingsConfirmationLabel",
+				}),
+				{ target: { value: "embeddingsConfirmationWord" } },
+			);
+			fireEvent.click(confirm);
+		}
+		await waitFor(() =>
+			expect(mockSetEmbedding).toHaveBeenCalledWith({
+				provider: "OPENAI_DIRECT",
+				organizationId: "org-1",
+			}),
+		);
+		expect(mockImpact).toHaveBeenCalledWith({ organizationId: "org-1" });
+		if (empty) {
+			expect(screen.queryByRole("alertdialog")).toBeNull();
+		}
+	},
+);
+
+it("invalidates cached embedding defaults and available models after Use for Documents", async () => {
+	const client = new QueryClient({
+		defaultOptions: { queries: { retry: false, staleTime: 60_000 } },
+	});
+	const keys = ["aiTaskDefaults", "aiAvailableModels", "aiOrgPreferences"];
+	for (const key of keys) {
+		client.setQueryData([key, "org-1"], [{ provider: "ANTHROPIC_DIRECT" }]);
+	}
+	mockGetStatus.mockResolvedValue({
+		...status(false),
+		configuredProviders: status(false).configuredProviders.map((p) => ({
+			...p,
+			isEmbeddingProvider: false,
+		})),
+		embeddingProvider: null,
+		organizationEmbedding: {
+			provider: "ANTHROPIC_DIRECT",
+			model: null,
+			identity: "ANTHROPIC_DIRECT:example-embedding",
+			source: "default_provider",
+		},
+	});
+	mockImpact.mockResolvedValue({
+		companyContext: { indexedWithCurrentModel: 0, total: 0 },
+		projectContent: { indexed: 0 },
+	});
+	mockSetEmbedding.mockResolvedValue({ success: true });
+	renderForm(client);
+	const trigger = await screen.findByRole("button", {
+		name: /Use for Documents/,
+	});
+	fireEvent.click(trigger);
+	await waitFor(() => expect(mockSetEmbedding).toHaveBeenCalled());
+	await waitFor(() => {
+		for (const key of keys) {
+			expect(client.getQueryState([key, "org-1"])?.isInvalidated).toBe(
+				true,
+			);
+		}
+	});
+});
+
+it("confirms a same-model provider change using the organization identity despite the viewer's personal key", async () => {
+	mockGetStatus.mockResolvedValue({
+		...status(false),
+		configuredProviders: status(false).configuredProviders.map((p) => ({
+			...p,
+			isEmbeddingProvider: false,
+		})),
+		embeddingProvider: null,
+		resolvedEmbeddingProvider: "OPENAI_DIRECT",
+		resolvedEmbeddingSource: "user",
+		organizationEmbedding: {
+			provider: "VERCEL_GATEWAY",
+			model: {
+				canonicalName: "text-embedding-3-small",
+				modelString: "openai/text-embedding-3-small",
+			},
+			identity: "VERCEL_GATEWAY:openai/text-embedding-3-small",
+			source: "documents_provider",
+		},
+	});
+	mockImpact.mockResolvedValue({
+		companyContext: { indexedWithCurrentModel: 2, total: 2 },
+		projectContent: { indexed: 0 },
+	});
+	renderForm();
+	fireEvent.click(
+		await screen.findByRole("button", { name: /Use for Documents/ }),
+	);
+	expect(await screen.findByRole("alertdialog")).toBeInTheDocument();
+	expect(mockSetEmbedding).not.toHaveBeenCalled();
+});
+
+it.each([
+	["VERCEL_GATEWAY", "Vercel AI Gateway"],
+	["OPENAI_DIRECT", "OpenAI"],
+	["AZURE_AI_FOUNDRY", "Azure AI Foundry"],
+])(
+	"keeps stored documents actions separate from resolved display (%s)",
+	async (provider, displayName) => {
+		mockGetStatus.mockResolvedValue({
+			...status(true),
+			configuredProviders: [
+				{
+					provider,
+					displayName,
+					isDefault: true,
+					isEmbeddingProvider: false,
+					purpose: "ALL",
+				},
+			],
+			organizationEmbedding: {
+				...status(true).organizationEmbedding,
+				provider,
+				identity: `${provider}:example-embedding`,
+				source: "default_provider",
+			},
+		});
+		renderForm();
+		const heading = await screen.findByRole("heading", {
+			name: displayName,
+		});
+		const card = heading.closest("div.relative") as HTMLElement;
+		expect(await within(card).findByText("Embeddings")).toBeInTheDocument();
+		expect(screen.getByText("Document Search:")).toBeInTheDocument();
+		expect(within(card).queryByRole("switch")).toBeNull();
+		expect(
+			within(card).getByRole("button", { name: /Use for Documents/ }),
+		).toBeEnabled();
+	},
+);
+
+it("does not offer the destructive embeddings-only action on an unflagged Anthropic default", async () => {
+	mockGetStatus.mockResolvedValue({
+		...status(true),
+		configuredProviders: [
+			{
+				provider: "ANTHROPIC_DIRECT",
+				displayName: "Anthropic",
+				isDefault: true,
+				isEmbeddingProvider: false,
+				purpose: "ALL",
+			},
+		],
+		organizationEmbedding: {
+			...status(true).organizationEmbedding,
+			provider: "ANTHROPIC_DIRECT",
+			identity: "ANTHROPIC_DIRECT:example-embedding",
+			source: "default_provider",
+		},
+	});
+	renderForm();
+	const heading = await screen.findByRole("heading", { name: "Anthropic" });
+	const card = heading.closest("div.relative") as HTMLElement;
+	expect(await within(card).findByText("Embeddings")).toBeInTheDocument();
+	expect(within(card).queryByRole("switch")).toBeNull();
+});
+
+it("returns focus to Use for Documents after a Safari-style unfocused click and count check", async () => {
+	let resolveImpact!: (value: unknown) => void;
+	mockImpact.mockImplementation(
+		() =>
+			new Promise((resolve) => {
+				resolveImpact = resolve;
+			}),
+	);
+	mockGetStatus.mockResolvedValue({
+		...status(false),
+		configuredProviders: status(false).configuredProviders.map((p) => ({
+			...p,
+			isEmbeddingProvider: false,
+		})),
+		organizationEmbedding: {
+			...status(false).organizationEmbedding,
+			provider: "ANTHROPIC_DIRECT",
+			identity: "ANTHROPIC_DIRECT:example-embedding",
+			source: "default_provider",
+		},
+	});
+	renderForm();
+	const card = (
+		await screen.findByRole("heading", { name: "OpenAI" })
+	).closest("div.relative") as HTMLElement;
+	const trigger = await within(card).findByRole("button", {
+		name: /Use for Documents/,
+	});
+	(document.activeElement as HTMLElement)?.blur();
+	expect(document.body).toHaveFocus();
+	fireEvent.click(trigger);
+	await waitFor(() => expect(trigger).toBeDisabled());
+	resolveImpact({
+		companyContext: { indexedWithCurrentModel: 1, total: 1 },
+		projectContent: { indexed: 0 },
+	});
+	const dialog = await screen.findByRole("alertdialog");
+	fireEvent.click(
+		within(dialog).getByRole("button", { name: "embeddingsChangeCancel" }),
+	);
+	await waitFor(() => expect(trigger).toHaveFocus());
 });

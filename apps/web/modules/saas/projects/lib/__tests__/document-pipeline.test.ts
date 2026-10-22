@@ -9,6 +9,7 @@ import {
 	getDocumentMeta,
 	getDocumentPollInterval,
 	getDocumentStatusView,
+	getDocumentsVersionStepPollInterval,
 	getPipelineDocuments,
 	getVersionStepPollInterval,
 	isDocumentGenerationRunning,
@@ -438,5 +439,114 @@ describe("getVersionStepPollInterval", () => {
 			T0 + 1000,
 		);
 		expect(again).toEqual(ended);
+	});
+});
+
+/**
+ * The Documents tab stops polling at a run's COMPLETE too, so it watches each
+ * listed document's version step the same way (Fizzy #2946).
+ */
+describe("getDocumentsVersionStepPollInterval", () => {
+	const T0 = Date.parse("2026-10-20T12:00:00.000Z");
+
+	type Listed = [id: string, status: string, version: number];
+
+	/** Feeds the list answers in order, each at its time. */
+	function replay(answers: Array<[number, Listed[]]>) {
+		let watches: Record<string, VersionStepWatch> | undefined;
+		return answers.map(([at, listed]) => {
+			const next = getDocumentsVersionStepPollInterval(
+				watches,
+				listed.map(([id, status, version]) => ({
+					id,
+					status,
+					version,
+				})),
+				T0 + at,
+			);
+			watches = next.watches;
+			return next.interval;
+		});
+	}
+
+	it("keeps asking after a listed run ends until its version step arrives", () => {
+		expect(
+			replay([
+				[
+					0,
+					[
+						["doc-a", "GENERATING", 2],
+						["doc-b", "COMPLETE", 5],
+					],
+				],
+				[
+					1000,
+					[
+						["doc-a", "COMPLETE", 2],
+						["doc-b", "COMPLETE", 5],
+					],
+				],
+				[
+					4000,
+					[
+						["doc-a", "COMPLETE", 2],
+						["doc-b", "COMPLETE", 5],
+					],
+				],
+				[
+					10_000,
+					[
+						["doc-a", "COMPLETE", 3],
+						["doc-b", "COMPLETE", 5],
+					],
+				],
+			]),
+		).toEqual([false, 3000, 6000, false]);
+	});
+
+	it("watches each document on its own clock, the sooner one setting the pace", () => {
+		expect(
+			replay([
+				[
+					0,
+					[
+						["doc-a", "GENERATING", 2],
+						["doc-b", "GENERATING", 4],
+					],
+				],
+				[
+					1000,
+					[
+						["doc-a", "COMPLETE", 2],
+						["doc-b", "GENERATING", 4],
+					],
+				],
+				[
+					10_000,
+					[
+						["doc-a", "COMPLETE", 2],
+						["doc-b", "COMPLETE", 4],
+					],
+				],
+				[
+					13_000,
+					[
+						["doc-a", "COMPLETE", 3],
+						["doc-b", "COMPLETE", 4],
+					],
+				],
+			]),
+		).toEqual([false, 3000, 3000, 6000]);
+	});
+
+	it("forgets a document the list stops carrying", () => {
+		expect(
+			replay([
+				[0, [["doc-a", "GENERATING", 2]]],
+				[1000, [["doc-a", "COMPLETE", 2]]],
+				[4000, []],
+				[7000, [["doc-a", "COMPLETE", 2]]],
+			]),
+		).toEqual([false, 3000, false, false]);
 	});
 });

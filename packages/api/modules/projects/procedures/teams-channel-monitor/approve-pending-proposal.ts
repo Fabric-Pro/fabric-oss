@@ -10,9 +10,9 @@ import {
 	inferDedupFamily,
 	markPendingProposalApplied,
 	markPendingProposalFailed,
+	markProposalApplyDispatched,
 	type SkippedDuplicate,
 	setPendingProposalAttachmentResult,
-	setProposalApplyWorkflowId,
 	updateStory,
 } from "@repo/database";
 import type { TeamsHostedContentRef } from "@repo/integrations";
@@ -1358,9 +1358,8 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 
 		// 3. Dispatch UPDATE changes. We pass `pendingProposalId` into the
 		//    workflow so it flips terminal state (APPLIED/FAILED) when the
-		//    apply + PM-sync finishes. The approval row stays APPROVED
-		//    until the workflow reports back — inbox queries include
-		//    APPROVED so in-flight proposals remain visible.
+		//    apply + PM-sync finishes. The claimed row stays APPLYING
+		//    until the workflow reports back; the inbox includes in-flight rows.
 		let updateWorkflowId: string | null = null;
 		if (updates.length > 0) {
 			try {
@@ -1407,21 +1406,20 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 					}),
 				);
 				updateWorkflowId = handle.workflowId;
-				// Persist only the workflow id — DO NOT call
-				// markPendingProposalApproved again. If the workflow finalized
-				// APPLIED/FAILED between handle.start() and this line, this
-				// update keeps the terminal status intact and just stamps the
-				// workflow reference for traceability.
+				// Restart the watchdog clock at dispatch, after synchronous creates.
+				// The claim and workflow start share workflowId; a late stamp cannot
+				// arm a row already finalized back to PENDING for review.
 				try {
-					await setProposalApplyWorkflowId(
-						input.proposalId,
-						updateWorkflowId,
-					);
+					await markProposalApplyDispatched({
+						proposalId: input.proposalId,
+						applyWorkflowId: updateWorkflowId,
+						mode: "claimed",
+					});
 				} catch (persistErr) {
 					// Non-fatal — the workflow is still running and will flip
-					// terminal state via finalizePendingProposalActivity.
+					// terminal state via finalizeClaimedProposalActivity.
 					console.error(
-						"[approvePendingProposal] failed to persist applyWorkflowId (non-fatal):",
+						"[approvePendingProposal] failed to stamp apply dispatch (non-fatal):",
 						persistErr,
 					);
 				}

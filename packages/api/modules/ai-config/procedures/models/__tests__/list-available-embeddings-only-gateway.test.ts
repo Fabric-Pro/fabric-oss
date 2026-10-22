@@ -5,6 +5,8 @@
  * model listing may offer a model only that key would serve. Provider
  * resolution is the real `getConfiguredProviders`.
  */
+
+import { getOrganizationDefaultProvider } from "@repo/database";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const db = vi.hoisted(() => ({
@@ -18,6 +20,7 @@ vi.mock("@repo/database", () => ({
 		cloudProviderConfig: { findMany: db.providers },
 		aiModel: { findMany: db.models },
 	},
+	getOrganizationDefaultProvider: vi.fn(async () => null),
 	getProviderDisplayName: (provider: string) => provider,
 	ALL_AUDIO_CAPABLE_PROVIDERS: ["OPENAI_DIRECT"],
 	ALL_IMAGE_CAPABLE_PROVIDERS: ["OPENAI_DIRECT"],
@@ -35,8 +38,14 @@ vi.mock("../../../../../orpc/procedures", () => {
 		use: () => chainable,
 		route: () => chainable,
 		input: () => chainable,
-		output: () => chainable,
-		handler: (fn: (...args: unknown[]) => unknown) => ({ _handler: fn }),
+		output: (schema: unknown) => {
+			chainable._outputSchema = schema;
+			return chainable;
+		},
+		handler: (fn: (...args: unknown[]) => unknown) => ({
+			_handler: fn,
+			_outputSchema: chainable._outputSchema,
+		}),
 	});
 	return {
 		tenantProtectedProcedure: chainable,
@@ -56,6 +65,9 @@ const listAvailable = listAvailableModelsProcedure as unknown as {
 		input: unknown;
 		context: { user: { id: string }; session: unknown };
 	}) => Promise<{
+		organizationDefaultProvider: string | null;
+		defaultProvider: string | null;
+		configuredProviders: Array<{ provider: string; isDefault: boolean }>;
 		models: Array<{ canonicalName: string }>;
 		modelsByGatewayAndProvider: Record<
 			string,
@@ -83,8 +95,8 @@ const model = (canonicalName: string, suitableForTasks: string[]) => ({
 	capabilities: suitableForTasks.includes("EMBEDDING")
 		? ["EMBEDDING"]
 		: ["TEXT"],
-	inputCostPer1M: null,
-	outputCostPer1M: null,
+	inputCostPer1M: { toString: () => "2" },
+	outputCostPer1M: { toString: () => "8" },
 	providerMappings: [
 		{
 			provider: "VERCEL_GATEWAY",
@@ -176,4 +188,59 @@ describe("the plan answer's task", () => {
 			expect.objectContaining({ taskType: "CHAT" }),
 		);
 	});
+});
+
+it("returns no default and never marks an arbitrary enabled organization provider as default", async () => {
+	db.providers.mockResolvedValue([
+		{
+			id: "example-config",
+			provider: "OPENAI_DIRECT",
+			displayName: "OpenAI",
+			isDefault: false,
+			enabled: true,
+			priority: 1,
+			purpose: "ALL",
+			config: {},
+		},
+	]);
+	const result = await call({});
+	expect(result.defaultProvider).toBeNull();
+	expect(result.configuredProviders).toEqual([
+		expect.objectContaining({
+			provider: "OPENAI_DIRECT",
+			isDefault: false,
+		}),
+	]);
+	expect(result.organizationDefaultProvider).toBeNull();
+});
+
+it("resolves the organization default once for a model listing", async () => {
+	await call({});
+	expect(getOrganizationDefaultProvider).toHaveBeenCalledTimes(1);
+});
+
+it("preserves fit metadata in the flat and gateway model payloads", async () => {
+	const raw = await call({ taskType: "EMBEDDING" });
+	const result = (
+		listAvailableModelsProcedure as unknown as {
+			_outputSchema: {
+				parse: (value: unknown) => typeof raw & {
+					modelsByProvider: Record<string, unknown[]>;
+				};
+			};
+		}
+	)._outputSchema.parse(raw);
+	const metadata = {
+		inputCostPer1M: 2,
+		outputCostPer1M: 8,
+		suitableForTasks: ["EMBEDDING"],
+		capabilities: ["EMBEDDING"],
+		qualityTier: "STANDARD",
+	};
+	expect(result.models[0]).toMatchObject(metadata);
+	expect(result.modelsByProvider.VERCEL_GATEWAY[0]).toMatchObject(metadata);
+	expect(
+		result.modelsByGatewayAndProvider.VERCEL_GATEWAY.providers.OpenAI
+			.models[0],
+	).toMatchObject(metadata);
 });

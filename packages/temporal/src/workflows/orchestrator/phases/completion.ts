@@ -21,12 +21,15 @@ import type * as orchestratorActivities from "../../../activities/orchestrator";
 import type * as orchestratorMemoryActivities from "../../../activities/orchestrator-memory";
 import type * as postOperationResultModule from "../../../activities/post-operation-result";
 import type * as weaveActivities from "../../../activities/weave";
+import { AI_NON_RETRYABLE_ERROR_TYPES } from "../../ai-non-retryable-errors";
+import { orchestratorErrorMessage } from "../usage-limit";
 
 const { destroySandboxActivity, updateWeaveExecutionActivity } =
 	proxyActivities<typeof weaveActivities>({
 		startToCloseTimeout: "1 minute",
 		heartbeatTimeout: "30 seconds",
 		retry: {
+			nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 			initialInterval: "1s",
 			backoffCoefficient: 2,
 			maximumAttempts: 3,
@@ -70,6 +73,7 @@ export interface CompletionWorkflowInput {
 	usageFrameId?: string;
 	projectId?: string;
 	workspaceIds?: string[];
+	launchWorkspaceId?: string;
 	startTime: number;
 	lettaAgentId: string | null;
 	// Serialized execution data
@@ -107,6 +111,7 @@ const {
 	startToCloseTimeout: "5 minutes",
 	heartbeatTimeout: "30 seconds",
 	retry: {
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 		initialInterval: "1s",
 		backoffCoefficient: 2,
 		maximumInterval: "30s",
@@ -119,6 +124,7 @@ const { createEpisodeFromExecutionActivity, extractAndLearnPatternsActivity } =
 		startToCloseTimeout: "2 minutes",
 		heartbeatTimeout: "30 seconds",
 		retry: {
+			nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 			initialInterval: "500ms",
 			backoffCoefficient: 2,
 			maximumInterval: "10s",
@@ -150,6 +156,7 @@ const { postOperationResultActivity } = proxyActivities<
 	startToCloseTimeout: "30 seconds",
 	scheduleToCloseTimeout: "2 minutes",
 	retry: {
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 		initialInterval: "1s",
 		backoffCoefficient: 2,
 		maximumInterval: "5s",
@@ -183,6 +190,7 @@ export async function orchestratorCompletionWorkflow(
 		conversationId,
 		projectId,
 		workspaceIds,
+		launchWorkspaceId,
 		startTime,
 		lettaAgentId,
 		taskPlanSteps,
@@ -221,7 +229,7 @@ export async function orchestratorCompletionWorkflow(
 	} catch (error) {
 		if (!workflowInfo().unsafe.isReplaying) {
 			log.warn("Final reflection failed", {
-				error: error instanceof Error ? error.message : "Unknown error",
+				error: orchestratorErrorMessage(error),
 			});
 		}
 	}
@@ -267,7 +275,7 @@ export async function orchestratorCompletionWorkflow(
 	} catch (error) {
 		if (!workflowInfo().unsafe.isReplaying) {
 			log.warn("Failed to record execution pattern in Letta", {
-				error: error instanceof Error ? error.message : "Unknown error",
+				error: orchestratorErrorMessage(error),
 			});
 		}
 	}
@@ -292,6 +300,13 @@ export async function orchestratorCompletionWorkflow(
 			userId,
 			organizationId,
 			...usageOriginFields(input),
+			projectId,
+			workspaceIds: [
+				...new Set([
+					...(workspaceIds ?? []),
+					...(launchWorkspaceId ? [launchWorkspaceId] : []),
+				]),
+			],
 		});
 
 		if (!workflowInfo().unsafe.isReplaying) {
@@ -304,7 +319,7 @@ export async function orchestratorCompletionWorkflow(
 	} catch (error) {
 		if (!workflowInfo().unsafe.isReplaying) {
 			log.warn("Failed to store execution in Qdrant", {
-				error: error instanceof Error ? error.message : "Unknown error",
+				error: orchestratorErrorMessage(error),
 			});
 		}
 	}
@@ -393,7 +408,7 @@ export async function orchestratorCompletionWorkflow(
 	} catch (error) {
 		if (!workflowInfo().unsafe.isReplaying) {
 			log.warn("Failed to create episodic memory", {
-				error: error instanceof Error ? error.message : "Unknown error",
+				error: orchestratorErrorMessage(error),
 			});
 		}
 	}
@@ -423,7 +438,7 @@ export async function orchestratorCompletionWorkflow(
 	} catch (error) {
 		if (!workflowInfo().unsafe.isReplaying) {
 			log.warn("Failed to save trajectory", {
-				error: error instanceof Error ? error.message : "Unknown error",
+				error: orchestratorErrorMessage(error),
 			});
 		}
 	}
@@ -693,7 +708,7 @@ export async function executeCompletionPhase(
 			});
 		} catch (error) {
 			log.warn("Failed to update weave execution completion state", {
-				error: error instanceof Error ? error.message : String(error),
+				error: orchestratorErrorMessage(error, String(error)),
 				executionId: input.weaveExecutionId,
 			});
 		}
@@ -711,7 +726,7 @@ export async function executeCompletionPhase(
 			});
 		} catch (error) {
 			log.warn("Failed to destroy weave sandbox", {
-				error: error instanceof Error ? error.message : String(error),
+				error: orchestratorErrorMessage(error, String(error)),
 			});
 		}
 	}
@@ -729,6 +744,7 @@ export async function executeCompletionPhase(
 			...(input.usageFrameId ? { usageFrameId: input.usageFrameId } : {}),
 			projectId: input.projectId,
 			workspaceIds: input.workspaceIds,
+			launchWorkspaceId: input.launchWorkspaceId,
 			startTime: state.startTime,
 			lettaAgentId,
 			taskPlanSteps: effectiveTaskPlan.steps.map((s) => ({
@@ -773,8 +789,7 @@ export async function executeCompletionPhase(
 			shouldContinue: true,
 		};
 	} catch (error) {
-		const errorMessage =
-			error instanceof Error ? error.message : "Unknown error";
+		const errorMessage = orchestratorErrorMessage(error);
 		log.error("Failed to start completion child workflow", {
 			error: errorMessage,
 		});
@@ -973,6 +988,7 @@ export function buildWorkflowOutput(
 	finalStatus: OrchestratorWorkflowOutput["status"],
 	error?: string,
 	response?: string,
+	usageLimit?: OrchestratorWorkflowOutput["usageLimit"],
 ): OrchestratorWorkflowOutput {
 	const {
 		executionId,
@@ -1107,6 +1123,7 @@ export function buildWorkflowOutput(
 	return {
 		executionId,
 		status: finalStatus,
+		...(usageLimit ? { usageLimit } : {}),
 		response:
 			typeof response === "string" &&
 			response.length > MAX_RESPONSE_LENGTH

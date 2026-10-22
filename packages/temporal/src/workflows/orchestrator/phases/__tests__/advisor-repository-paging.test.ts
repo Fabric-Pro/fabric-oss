@@ -49,6 +49,11 @@ vi.mock("@temporalio/workflow", () => ({
 // The handler's own dependencies: one GitHub repository, no code index.
 vi.mock("@repo/database", () => ({
 	db: { project: { findUnique: vi.fn() } },
+	// The handler rechecks project access per call; the harness runs the turn
+	// in "org-1" (advisor-scenario-harness.ts), the project's organization.
+	getProjectAccessContext: vi
+		.fn()
+		.mockResolvedValue({ organizationId: "org-1" }),
 	getProjectCodeIndexes: vi.fn().mockResolvedValue([]),
 	getProjectReposForCodeSearch: vi.fn().mockResolvedValue([
 		{

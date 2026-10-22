@@ -1,6 +1,8 @@
 ---
 title: KI-Konfiguration
 description: KI-Anbieter verbinden, Modellpräferenzen konfigurieren und Einbettungen für Ihr Konto oder Ihre Organisation verwalten.
+audience: Organisationsadmins und Mitglieder, die KI-Anbieter konfigurieren
+owner: Platform team
 ---
 
 Fabric AI unterstützt 20+ KI-Anbieter. Konfigurieren Sie Ihre bevorzugten Anbieter, legen Sie Modellpräferenzen pro Aufgabentyp fest und verwalten Sie Einbettungen für die Dokumentensuche.
@@ -195,6 +197,20 @@ Bei Verwendung eines Gateways (z. B. Vercel Gateway oder OpenRouter) können Sie
 2. Den Abschnitt **Aktivierte Anbieter** erweitern
 3. Einzelne Anbieter ein- oder ausschalten
 4. Nur aktivierte Sub-Anbieter erscheinen bei der Modellauswahl
+
+## Kosten von Gateway-Aufrufen
+
+**Settings → AI Usage** erfasst jeden Modellaufruf mit seinen Kosten. Ein Aufruf über Vercel Gateway wird zunächst mit einer Schätzung erfasst. Innerhalb weniger Minuten ersetzt Fabric die Schätzung durch die Kosten, die Vercel abgerechnet hat, abgefragt mit demselben Organisations- oder persönlichen Schlüssel, der den Aufruf gemacht hat.
+
+```mermaid
+flowchart LR
+    A["Modellaufruf über<br/>Vercel Gateway"] --> E["Mit einer Schätzung<br/>erfasst"]
+    E --> L{"Meldet Vercel die Kosten<br/>innerhalb von sechs Stunden?"}
+    L -->|Ja| B["Schätzung durch abgerechnete Kosten ersetzt,<br/>bei BYOK plus Gebühr des Anbieters"]
+    L -->|Nein| K["Schätzung bleibt"]
+```
+
+Erreicht das Gateway ein Modell mit Ihrem eigenen Anbieterschlüssel (BYOK), rechnet der Anbieter direkt mit Ihnen ab, und die erfassten Kosten enthalten diese Gebühr so, wie Vercel sie meldet. Meldet Vercel für einen Aufruf innerhalb von sechs Stunden keine Kosten, behält er seine Schätzung.
 
 ## Best Practices
 

@@ -131,6 +131,7 @@ const COLLECTION_CONFIGS: Record<
 		vectorSize: VECTOR_SIZE,
 		distanceMetric: DEFAULT_DISTANCE_METRIC,
 		payloadIndexes: [
+			{ fieldName: "accessScopeVersion", fieldSchema: "integer" },
 			{ fieldName: "userId", fieldSchema: "keyword" },
 			{ fieldName: "organizationId", fieldSchema: "keyword" },
 			{ fieldName: "outcome", fieldSchema: "keyword" },

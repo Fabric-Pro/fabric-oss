@@ -27,6 +27,7 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", async () => ({
+	getProjectAccessContext: vi.fn(async () => ({ organizationId: "org-1" })),
 	db: {
 		project: { findUnique: vi.fn(async () => h.project) },
 		workflowIntegration: { findFirst: vi.fn(async () => h.integration) },

@@ -22,6 +22,7 @@ vi.mock("../prisma/queries/workspaces/workspaces", () => ({
 import {
 	buildOrchestratorMemoryContext,
 	type EpisodeSummary,
+	filterAccessibleMemoryScopes,
 	getProjectEpisodes,
 	getRecentEpisodes,
 	getWorkspaceEpisodes,
@@ -165,5 +166,35 @@ describe("semantic hit hydration", () => {
 			relevantEpisodeIds: ["error", "safe"],
 		});
 		expect(context.relevantEpisodes.map((row) => row.id)).toEqual(["safe"]);
+	});
+});
+
+describe("memory scope workspace arrays", () => {
+	it("requires access to each attached workspace and deduplicates across scope forms", async () => {
+		const rows = [
+			{
+				id: "denied",
+				workspaceIds: ["example-allowed", "example-denied"],
+			},
+			{
+				id: "allowed",
+				projectId: "example-project",
+				workspaceId: "example-allowed",
+				workspaceIds: ["example-allowed"],
+			},
+			{ id: "unscoped", workspaceIds: [] },
+		];
+		mocks.workspaceAccess.mockImplementation(
+			async (id: string) => id !== "example-denied",
+		);
+		expect(
+			await filterAccessibleMemoryScopes(
+				rows,
+				"example-user",
+				"example-org",
+			),
+		).toEqual(rows.slice(1));
+		expect(mocks.projectAccess).toHaveBeenCalledTimes(1);
+		expect(mocks.workspaceAccess).toHaveBeenCalledTimes(2);
 	});
 });

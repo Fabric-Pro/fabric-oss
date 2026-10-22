@@ -408,9 +408,6 @@ Instructions:
 						schema: zodSchema(AiReadinessLlmSchema),
 						prompt,
 						maxOutputTokens,
-						providerOptions: {
-							openai: { strictJsonSchema: false },
-						},
 					});
 					rawObject = object;
 					break;

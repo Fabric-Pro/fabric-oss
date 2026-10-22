@@ -29,7 +29,6 @@ export function FullscreenProvider({ children }: PropsWithChildren) {
 export function useFullscreen() {
 	const context = useContext(FullscreenContext);
 	// Return a safe default when used outside provider
-	// This allows FullscreenToggle to be used in pages without FullscreenProvider
 	if (context === undefined) {
 		return {
 			isFullscreen: false,

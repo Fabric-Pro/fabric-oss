@@ -4,9 +4,9 @@
  * The gateway stamps each response with a `generationId`
  * (providerMetadata.gateway.generationId). Its real billed cost — `total_cost`
  * in USD, including surcharges — becomes available shortly AFTER the call via
- * `GET /v1/generation?id=<id>`, as `data.total_cost`. This is the source of
- * truth for gateway spend; the estimate is only the immediate placeholder until
- * this lands.
+ * `GET /v1/generation?id=<id>`, as `data.total_cost` plus, for a BYOK call,
+ * `data.upstream_inference_cost`. This is the source of truth for gateway
+ * spend; the estimate is only the immediate placeholder until this lands.
  *
  * Returns `null` when the cost is not (yet) available or on any error — the
  * caller keeps the estimate and may retry on a later reconciliation sweep. Never
@@ -51,12 +51,29 @@ export async function fetchGatewayGenerationCostUsd(
 			}
 			return null;
 		}
-		const body = (await res.json()) as { data?: { total_cost?: unknown } };
-		const totalCost = body.data?.total_cost;
+		const body = (await res.json()) as {
+			data?: {
+				total_cost?: unknown;
+				upstream_inference_cost?: unknown;
+				is_byok?: unknown;
+			};
+		};
+		// `total_cost` is only what the gateway debited. A BYOK call is billed by
+		// the provider on the tenant's own key and reported as
+		// `upstream_inference_cost`. A total of zero means the real cost is
+		// unknown, so the row keeps its estimate rather than recording zero.
 		const cost =
-			typeof totalCost === "number" ? totalCost : Number(totalCost);
-		return Number.isFinite(cost) && cost >= 0 ? cost : null;
+			toCostUsd(body.data?.total_cost) +
+			(body.data?.is_byok === true
+				? toCostUsd(body.data.upstream_inference_cost)
+				: 0);
+		return cost > 0 ? cost : null;
 	} catch {
 		return null;
 	}
+}
+
+function toCostUsd(value: unknown): number {
+	const cost = typeof value === "number" ? value : Number(value);
+	return Number.isFinite(cost) && cost > 0 ? cost : 0;
 }

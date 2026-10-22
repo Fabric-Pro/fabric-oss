@@ -61,6 +61,10 @@ describe("ChatgptConnectCommand", () => {
 				`npx -y ${origin}/cli/fabric-0.4.0-0123456789.tgz connect chatgpt --org example-org --shared --base-url ${origin}`,
 			),
 		);
+		// There is no button for this; the page says why.
+		expect(
+			screen.getByTestId("chatgpt-connect-why-terminal"),
+		).toHaveTextContent(copy.whyTerminal);
 		await userEvent.click(
 			screen.getByRole("button", { name: copy.helpLabel }),
 		);

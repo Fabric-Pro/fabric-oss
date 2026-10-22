@@ -1,6 +1,6 @@
 import {
 	db,
-	LLM_PROVIDER_PURPOSE_FILTER,
+	organizationDefaultProviderWhere,
 	readProviderRowCredentials,
 } from "@repo/database";
 import { logger } from "@repo/logs";
@@ -29,12 +29,7 @@ export async function isRoadmapRecommendationProviderAvailable(args: {
 	}
 	try {
 		const config = await db.cloudProviderConfig.findFirst({
-			where: {
-				organizationId: args.organizationId,
-				isDefault: true,
-				enabled: true,
-				...LLM_PROVIDER_PURPOSE_FILTER,
-			},
+			where: organizationDefaultProviderWhere(args.organizationId),
 			select: {
 				encryptedApiKey: true,
 				clientId: true,

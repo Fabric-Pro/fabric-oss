@@ -22,12 +22,13 @@ const { handlers, mocks } = vi.hoisted(() => {
 	const mocks = {
 		// DB queries
 		workflowStart: vi.fn(),
+		claim: vi.fn(async () => true),
 		getPendingBacklogProposal: vi.fn(),
 		markPendingProposalApproved: vi.fn(),
 		markPendingProposalApplied: vi.fn(),
 		markPendingProposalFailed: vi.fn(),
 		appendAppliedChangeIndexes: vi.fn(),
-		setProposalApplyWorkflowId: vi.fn(),
+		markProposalApplyDispatched: vi.fn(),
 		setPendingProposalAttachmentResult: vi.fn(),
 		markPendingProposalRejected: vi.fn(),
 		projectFindUnique: vi.fn(),
@@ -51,14 +52,14 @@ const { handlers, mocks } = vi.hoisted(() => {
 
 vi.mock("@repo/database", () => ({
 	getAppliedChangeIndexes: vi.fn(async () => new Set<number>()),
-	claimPendingProposalForApply: vi.fn(async () => true),
+	claimPendingProposalForApply: mocks.claim,
 
 	getPendingBacklogProposal: mocks.getPendingBacklogProposal,
 	markPendingProposalApproved: mocks.markPendingProposalApproved,
 	markPendingProposalApplied: mocks.markPendingProposalApplied,
 	markPendingProposalFailed: mocks.markPendingProposalFailed,
 	appendAppliedChangeIndexes: mocks.appendAppliedChangeIndexes,
-	setProposalApplyWorkflowId: mocks.setProposalApplyWorkflowId,
+	markProposalApplyDispatched: mocks.markProposalApplyDispatched,
 	setPendingProposalAttachmentResult:
 		mocks.setPendingProposalAttachmentResult,
 	markPendingProposalRejected: mocks.markPendingProposalRejected,
@@ -773,4 +774,48 @@ it("returns earlier created IDs when a later create is refused", async () => {
 	} finally {
 		log.mockRestore();
 	}
+});
+
+describe("approve dispatch clock", () => {
+	it("stamps the dispatched workflow after synchronous creates", async () => {
+		const update = {
+			...CHANGE_BUG,
+			action: "update" as const,
+			existingId: "example-story",
+		};
+		mocks.getPendingBacklogProposal.mockResolvedValueOnce(
+			makeProposalRow({
+				changes: [CHANGE_BUG, update as unknown as typeof CHANGE_BUG],
+			}),
+		);
+		mocks.workflowStart.mockImplementationOnce(async (_name, options) => ({
+			workflowId: options.workflowId,
+		}));
+		await handlers.approve({
+			input: {
+				projectId: PROJECT_ID,
+				organizationId: ORG_ID,
+				proposalId: PROPOSAL_ID,
+				approvedChanges: [CHANGE_BUG, update],
+				syncToPM: false,
+			},
+			context: APPROVAL_CTX,
+		});
+		expect(mocks.workflowStart).toHaveBeenCalledTimes(1);
+		const workflowId = mocks.workflowStart.mock.calls[0][1].workflowId;
+		expect(mocks.claim).toHaveBeenCalledWith(
+			expect.objectContaining({ applyWorkflowId: workflowId }),
+		);
+		expect(mocks.markProposalApplyDispatched).toHaveBeenCalledWith({
+			proposalId: PROPOSAL_ID,
+			applyWorkflowId: workflowId,
+			mode: "claimed",
+		});
+		expect(
+			mocks.createStoryFromProposal.mock.invocationCallOrder[0],
+		).toBeLessThan(mocks.workflowStart.mock.invocationCallOrder[0]);
+		expect(mocks.workflowStart.mock.invocationCallOrder[0]).toBeLessThan(
+			mocks.markProposalApplyDispatched.mock.invocationCallOrder[0],
+		);
+	});
 });

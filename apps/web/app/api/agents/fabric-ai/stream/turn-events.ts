@@ -1,5 +1,7 @@
 import { classifyLimitError, type LimitSignal } from "@repo/ai/limits";
 import type { DirectChatWorkflowOutput } from "@repo/temporal";
+import { extractAiUsageLimitExceededError } from "./extract-ai-usage-limit-error";
+import { extractWorkflowFailureMessage } from "./workflow-failure-message";
 
 /**
  * SSE events that close a Direct turn, built from the workflow's result.
@@ -40,12 +42,11 @@ function limitFor(
 	result: TurnResult,
 	message: string,
 ): Pick<TurnErrorEvent, "limit" | "code" | "data"> {
-	if (result.usageLimit) {
-		// The payload `buildWorkflowErrorEvent` sends for a refusal at model
-		// resolution, so the client handles both the same way.
-		const { message: _message, ...data } = result.usageLimit;
-		return { code: "AI_USAGE_LIMIT_EXCEEDED", data };
+	const event = buildWorkflowErrorEvent(message, result.usageLimit);
+	if ("code" in event) {
+		return { code: event.code, data: event.data };
 	}
+
 	const limit = result.limitSignal ?? classifyLimitError(message);
 	return limit ? { limit } : {};
 }
@@ -97,3 +98,36 @@ export function doneTurnEvent(result: TurnResult) {
  */
 export const ROUTE_TIMEOUT_MESSAGE =
 	"This reply ran past the 5-minute limit and was stopped. Try a narrower request, or split it into smaller steps.";
+
+export function buildWorkflowErrorEvent(
+	error: unknown,
+	usageLimit?: TurnResult["usageLimit"],
+) {
+	const limitError =
+		usageLimit ??
+		extractAiUsageLimitExceededError(
+			typeof error === "string" ? { message: error } : error,
+		);
+	if (limitError) {
+		return {
+			type: "error" as const,
+			code: "AI_USAGE_LIMIT_EXCEEDED" as const,
+			message: limitError.message,
+			data: {
+				limitId: limitError.limitId,
+				dimension: limitError.dimension,
+				window: limitError.window,
+				used: limitError.used.toString(),
+				max: limitError.max.toString(),
+				manageLimitsUrl: limitError.manageLimitsUrl,
+			},
+		};
+	}
+	return {
+		type: "error" as const,
+		message:
+			typeof error === "string"
+				? error
+				: extractWorkflowFailureMessage(error),
+	};
+}

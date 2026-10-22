@@ -33,6 +33,7 @@ import { resolveSearchProviderForTenant } from "../lib/get-search-provider";
 import { getAllFabricAiTools } from "../orchestrator/tools/fabric-ai-tools";
 import { jsonSchemaToZod } from "../orchestrator/utils";
 import { agentToolDefersStoryDrafting } from "../shared/agent-tool-runtime";
+import { canReadChatProject } from "../shared/chat-project-access";
 import { getFabricToolDefinitionMap } from "../shared/fabric-content-tools";
 import {
 	createFirstClassFrame,
@@ -104,7 +105,8 @@ interface CreateBuiltInToolsOptions extends BuiltInToolContext {
 	additionalFabricToolIds?: string[];
 	/**
 	 * Bind the attached project's live roadmap, document and Context-tab
-	 * source reads alongside a non-empty explicit tool list. Set only by the interactive chat, where the project
+	 * source reads, and its repository code reads, alongside a non-empty
+	 * explicit tool list. Set only by the interactive chat, where the project
 	 * is the one the user attached; agent runtimes (e.g. Slack triggers acting
 	 * as the agent's owner) get them only through their `project-context`
 	 * capability.
@@ -210,9 +212,15 @@ async function createWebSearchTool(
 	};
 }
 
+const NO_PROJECT_ACCESS_RESULT = {
+	success: false,
+	error: "You do not have access to this project's code.",
+	results: [],
+};
+
 /**
  * The project's code-indexed repositories, with each one's index status.
- * Scoped by `projectId` only — the caller has already authorized the project.
+ * Scoped by `projectId` only — callers check `canReadChatProject` first.
  */
 async function loadCodeSearchRepositories(projectId: string): Promise<{
 	indexes: Array<{ repositoryIntegrationId: string | null; status: string }>;
@@ -293,7 +301,10 @@ export async function createCodeSearchTool(
 		preferredRepositoryUrl,
 		liveRepositoryReads,
 	} = context;
-	if (!projectId) {
+	if (
+		!projectId ||
+		!(await canReadChatProject(projectId, userId, organizationId))
+	) {
 		return {};
 	}
 
@@ -336,6 +347,15 @@ export async function createCodeSearchTool(
 				repo?: string;
 				maxResults?: number;
 			}) => {
+				if (
+					!(await canReadChatProject(
+						projectId,
+						userId,
+						organizationId,
+					))
+				) {
+					return NO_PROJECT_ACCESS_RESULT;
+				}
 				const {
 					indexes: codeIndexes,
 					repositories,
@@ -588,7 +608,10 @@ async function createSymbolSearchTool(
 	context: BuiltInToolContext,
 ): Promise<Record<string, unknown>> {
 	const { projectId, userId, organizationId } = context;
-	if (!projectId) {
+	if (
+		!projectId ||
+		!(await canReadChatProject(projectId, userId, organizationId))
+	) {
 		return {};
 	}
 
@@ -611,6 +634,15 @@ async function createSymbolSearchTool(
 				type?: string;
 				maxResults?: number;
 			}) => {
+				if (
+					!(await canReadChatProject(
+						projectId,
+						userId,
+						organizationId,
+					))
+				) {
+					return NO_PROJECT_ACCESS_RESULT;
+				}
 				const { searchCodeSymbols } = await import("@repo/database");
 
 				const symbols = await searchCodeSymbols({
@@ -655,6 +687,17 @@ export async function createFabricTool(
 	const projectId = context.projectId;
 	const toolDefinition = fabricToolDefinitions.get(toolId);
 	if (!toolDefinition?.inputSchema) {
+		return {};
+	}
+
+	// The workspace reads search only the chat's attached workspaces. With
+	// none attached every call fails, and each failure spends one of the
+	// turn's steps (Fizzy #3215), so the tool is not offered at all.
+	if (
+		(toolId === "workspace_rag_query" ||
+			toolId === "workspace_rag_summarize") &&
+		(!workspaceIds || workspaceIds.length === 0)
+	) {
 		return {};
 	}
 
@@ -1728,6 +1771,32 @@ export async function createBuiltInTools(
 					...(options.usageOrigin
 						? { usageOrigin: options.usageOrigin }
 						: {}),
+					userId,
+					organizationId,
+					workspaceIds,
+					projectId,
+				}),
+			);
+		}
+		// The repository reads ride along too. The source list tells the model
+		// to use code_search for code, so without it a codebase question loops
+		// on fabric_list_project_sources until the step limit (Fizzy #2869).
+		// Bound with the same inputs as on the default bundle.
+		if (projectId && includeProjectFeatureReads) {
+			Object.assign(
+				tools,
+				await createCodeSearchTool({
+					usageConversationId: options.usageConversationId,
+					...(options.usageOrigin
+						? { usageOrigin: options.usageOrigin }
+						: {}),
+					userId,
+					organizationId,
+					workspaceIds,
+					projectId,
+					preferredRepositoryUrl,
+				}),
+				await createSymbolSearchTool({
 					userId,
 					organizationId,
 					workspaceIds,

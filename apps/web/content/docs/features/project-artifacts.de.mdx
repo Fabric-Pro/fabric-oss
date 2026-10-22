@@ -1,6 +1,8 @@
 ---
 title: Projekt-Artifacts
 description: Seiten, die Fabric Agent für ein Projekt schreibt, auf dem Artifacts-Tab des Projekts abgelegt und von dessen Mitgliedern geöffnet.
+audience: Projektmitglieder, die Artifacts erstellen und verwenden
+owner: Platform team
 ---
 
 Projekt-Artifacts sind die Seiten, die Fabric Agent für ein einzelnes Projekt geschrieben hat: ein Statusboard der Arbeit des Projekts, ein Bericht zur Release-Bereitschaft, ein kleines Werkzeug, das das Team weiter nutzt. Sie liegen auf dem Tab **Artifacts** des Projekts, neben dessen Dokumenten und Roadmap, und die Mitglieder des Projekts öffnen sie dort.
@@ -47,7 +49,7 @@ Wird ein Projekt in den Papierkorb verschoben, sind seine Artifacts für alle, d
 
 Ein Artifact läuft im selben abgeschotteten Frame wie ein Workspace, mit denselben Schaltflächen, die über Fabric handeln (`window.fabric`): Lesen läuft sofort, alles, was Daten ändert, fragt zuerst die Person, die die Seite ansieht, und eine bearbeitete Seite fragt erneut. Wie diese Aufrufe geprüft werden und welche Tools keine Seite verwenden darf, steht unter [Workspaces](/docs/features/workspace-pages#schaltflächen-die-über-fabric-handeln).
 
-Eine Seite kann keine Netzwerkanfragen stellen, keine Skripte oder Schriften von einer anderen Website laden und nichts von Ihnen lesen, außer über diese Schaltflächen. Eine Seite, die ein geplanter Workflow ohne Aufsicht geschrieben hat, wird ganz ohne Skript angezeigt.
+Eine Seite kann keine Netzwerkanfragen stellen, keine Skripte oder Schriften von einer anderen Website laden und nichts von Ihnen lesen, außer über diese Schaltflächen. Eine Seite, die ein geplanter Workflow ohne Aufsicht geschrieben hat, wird ganz ohne Skript angezeigt, ebenso eine Kopie davon.
 
 ## Artifacts nach Zeitplan
 

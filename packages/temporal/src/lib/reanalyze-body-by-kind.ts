@@ -168,6 +168,7 @@ export async function reanalyzeBodyByKind(
 			storyKind: kind,
 			userId,
 			organizationId: orgId,
+			projectId,
 		});
 		if (params.abortSignal?.aborted) {
 			return aborted();

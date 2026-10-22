@@ -21,6 +21,7 @@ import {
 	rethrowIfDispatchStopped,
 	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
+import { bucketMeetingSummaryTargetChars } from "./meeting-summary-target";
 import { getRedisClient } from "./redis-publisher";
 
 // ---------------------------------------------------------------------------
@@ -70,14 +71,37 @@ export const CacheKeys = {
 	 * Key for a fetched meeting transcript. Scoped to the user (the calendar is
 	 * the signed-in user's) AND the specific instance (joinUrl + the selected
 	 * startTime), so recurring-meeting instances never collide. A finalized
-	 * transcript is immutable, so this is safe to cache for a long TTL.
+	 * transcript is immutable, so this is safe to cache for a long TTL. The v7
+	 * namespace drops entries v6 could hold under the wrong instance, when the
+	 * live pick took a neighbouring occurrence's transcript (Fizzy #3253). It
+	 * holds a selection-independent raw body. Derived extracts use the target-aware
+	 * summary key below.
+	 * Fetch applies the current selection's byte ceilings after reading it.
 	 */
 	meetingTranscript: (
 		userId: string,
 		joinUrl: string,
 		startTime?: string,
 	): string =>
-		`transcript:${userId}:${shortHash(joinUrl)}:${startTime ?? "latest"}`,
+		`transcript:v7:${userId}:${shortHash(joinUrl)}:${startTime ?? "latest"}`,
+
+	/** Content-addressed extracts within an organization and project.
+	 * v4 identifies attributed extracts with geometric size buckets, written
+	 * under the prompt that asks for half the bucket.
+	 */
+	meetingTranscriptSummary: (
+		transcript: string,
+		organizationId: string,
+		projectId: string,
+		targetChars: number,
+	): string =>
+		`transcript-summary:v4:${bucketMeetingSummaryTargetChars(targetChars)}:${createHash(
+			"sha256",
+		)
+			.update(JSON.stringify([organizationId, projectId]))
+			.digest(
+				"hex",
+			)}:${createHash("sha256").update(transcript).digest("hex")}`,
 };
 
 // ---------------------------------------------------------------------------

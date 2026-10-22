@@ -46,6 +46,18 @@ vi.mock("@repo/database", () => ({
 			}),
 		},
 		pendingBacklogProposal: {
+			updateMany: async ({ where, data }: any) => {
+				const row = h.rows.get(where.id);
+				const matches = (w: any): boolean =>
+					Object.entries(w).every(([key, value]: any) =>
+						key === "OR" ? value.some(matches) : row[key] === value,
+					);
+				if (!row || !matches(where)) {
+					return { count: 0 };
+				}
+				Object.assign(row, data);
+				return { count: 1 };
+			},
 			findUnique: async ({ where }: any) => h.rows.get(where.id) ?? null,
 			upsert: (...args: any[]) => h.upsert(...args),
 			update: async ({ where, data }: any) =>
@@ -129,13 +141,24 @@ beforeEach(() => {
 	let now = 1000;
 	vi.spyOn(Date, "now").mockImplementation(() => ++now);
 	h.create.mockImplementation(async (data: any) => {
-		const row = { ...data, id: `legacy-${h.rows.size}`, status: "PENDING" };
+		const row = {
+			...data,
+			id: `legacy-${h.rows.size}`,
+			status: "PENDING",
+			applyWorkflowId: null,
+			applyStartedAt: null,
+		};
 		h.rows.set(row.id, row);
 		return row;
 	});
 	h.upsert.mockImplementation(async ({ where, create }: any) => {
 		if (!h.rows.has(where.id)) {
-			h.rows.set(where.id, { ...create, status: "PENDING" });
+			h.rows.set(where.id, {
+				...create,
+				status: "PENDING",
+				applyWorkflowId: null,
+				applyStartedAt: null,
+			});
 		}
 		return h.rows.get(where.id);
 	});
@@ -155,7 +178,10 @@ beforeEach(() => {
 	});
 	h.stamp.mockImplementation(async ({ proposalId, applyWorkflowId }: any) => {
 		const row = h.rows.get(proposalId);
-		if (row.status !== "PENDING" || row.applyWorkflowId) {
+		if (
+			row.status !== "APPLYING" ||
+			row.applyWorkflowId !== applyWorkflowId
+		) {
 			return 0;
 		}
 		Object.assign(row, { applyWorkflowId, applyStartedAt: new Date() });

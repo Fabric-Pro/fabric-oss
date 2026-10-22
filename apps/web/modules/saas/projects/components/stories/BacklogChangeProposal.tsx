@@ -55,6 +55,7 @@ import { PmSyncConflictBadge } from "./pm-sync/PmSyncConflictBadge";
 import { PmSyncDiffModal } from "./pm-sync/PmSyncDiffModal";
 import { PmSyncOutageRollup } from "./pm-sync/PmSyncOutageRollup";
 import type { PmSyncError } from "./pm-sync/pmSyncError";
+import { isApplyInFlight } from "./proposal-status";
 import { usePersistedProposalDrafts } from "./use-persisted-proposal-drafts";
 import {
 	hasVisionSuggestions,
@@ -2295,80 +2296,84 @@ export function BacklogChangeProposal({
 			)}
 
 			{/* Actions */}
-			<div className="flex flex-wrap items-center gap-2 pt-1">
-				<Button
-					size="sm"
-					// Field-skip / kindOverride folding + the per-row PM-sync
-					// overrides happen inside runApply(), which also cancels any
-					// in-flight persisted draft. The ticket is always created
-					// through the kind prompt (verbatim if a completed draft exists,
-					// else drafted at apply).
-					onClick={runApply}
-					disabled={
-						selectedCount === 0 ||
-						routingBlockedIndexes.length > 0 ||
-						(reformattingIndex !== null &&
-							selected.has(reformattingIndex))
-					}
-				>
-					<CheckIcon className="size-3.5 mr-1.5" />
-					{isRejectedProposal ? "Restore & Apply" : "Apply"} Selected
-					({selectedCount}/{changes.length})
-				</Button>
-				{/* Always mounted, empty when there is nothing to say: several
+			{!isApplyInFlight(proposalStatus) && (
+				<div className="flex flex-wrap items-center gap-2 pt-1">
+					<Button
+						size="sm"
+						// Field-skip / kindOverride folding + the per-row PM-sync
+						// overrides happen inside runApply(), which also cancels any
+						// in-flight persisted draft. The ticket is created
+						// through the kind prompt (verbatim if a completed draft exists,
+						// else drafted at apply).
+						onClick={runApply}
+						disabled={
+							selectedCount === 0 ||
+							routingBlockedIndexes.length > 0 ||
+							(reformattingIndex !== null &&
+								selected.has(reformattingIndex))
+						}
+					>
+						<CheckIcon className="size-3.5 mr-1.5" />
+						{isRejectedProposal ? "Restore & Apply" : "Apply"}{" "}
+						Selected ({selectedCount}/{changes.length})
+					</Button>
+					{/* Mounted while actions are available, empty when there is nothing to say: several
 				    screen readers do not announce a live region that is inserted
 				    into the DOM at the moment it first has content. */}
-				<output className="text-destructive text-xs">
-					{routingBlockedMessage}
-				</output>
-				{/* Move to Rejected — on a PENDING proposal this is the only way
+					<output className="text-destructive text-xs">
+						{routingBlockedMessage}
+					</output>
+					{/* Move to Rejected — on a PENDING proposal this is the only way
 				    to clear it besides Apply. Reject is intentionally NOT offered
 				    on pending: every suggestion funnels through Rejected first,
 				    so nothing is permanently dismissed while still recoverable. A
 				    quiet `ghost` treatment keeps Apply the primary action (FR6). */}
-				{onBacklog && proposalStatus === "PENDING" && (
-					<Button
-						size="sm"
-						variant="ghost"
-						onClick={() => {
-							setResolved("backlog");
-							onBacklog();
-						}}
-						aria-label="Move this proposal to Rejected proposals"
-					>
-						<ArchiveIcon className="size-3.5 mr-1.5" />
-						Move to Rejected
-					</Button>
-				)}
-				{/* Permanent dismissal is offered only once a proposal is out of
+					{onBacklog && proposalStatus === "PENDING" && (
+						<Button
+							size="sm"
+							variant="ghost"
+							onClick={() => {
+								setResolved("backlog");
+								onBacklog();
+							}}
+							aria-label="Move this proposal to Rejected proposals"
+						>
+							<ArchiveIcon className="size-3.5 mr-1.5" />
+							Move to Rejected
+						</Button>
+					)}
+					{/* Permanent dismissal is offered only once a proposal is out of
 				    the pending queue (already in Rejected, or FAILED). This makes
 				    Rejected the single funnel: a pending suggestion is moved there
 				    first, then can be deleted for good from the Rejected
 				    view — it can never be permanently rejected straight from the
 				    review queue. */}
-				{proposalStatus !== "PENDING" && (
-					<Button
-						size="sm"
-						variant="outline"
-						aria-label={
-							isRejectedProposal
-								? "Delete proposal permanently"
-								: "Reject all proposed changes"
-						}
-						onClick={() => {
-							setResolved("rejected");
-							onReject();
-						}}
-					>
-						{isRejectedProposal ? (
-							<Trash2Icon className="size-3.5 mr-1.5" />
-						) : (
-							<XIcon className="size-3.5 mr-1.5" />
-						)}
-						{isRejectedProposal ? "Delete proposal" : "Reject All"}
-					</Button>
-				)}
-			</div>
+					{proposalStatus !== "PENDING" && (
+						<Button
+							size="sm"
+							variant="outline"
+							aria-label={
+								isRejectedProposal
+									? "Delete proposal permanently"
+									: "Reject all proposed changes"
+							}
+							onClick={() => {
+								setResolved("rejected");
+								onReject();
+							}}
+						>
+							{isRejectedProposal ? (
+								<Trash2Icon className="size-3.5 mr-1.5" />
+							) : (
+								<XIcon className="size-3.5 mr-1.5" />
+							)}
+							{isRejectedProposal
+								? "Delete proposal"
+								: "Reject All"}
+						</Button>
+					)}
+				</div>
+			)}
 
 			{/* PM sync diff modal — opened from the per-row conflict badge.
 			    Also mounts for "PM unavailable" rows, where it shows the

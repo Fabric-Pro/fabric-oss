@@ -5,7 +5,7 @@
  *   1. Full approve → fail → retry → success cycle: seed a FAILED
  *      `PendingBacklogProposal`; call retry; assert the workflow start was
  *      issued with the filtered payload (indexes of the still-failing
- *      changes); assert the row is flipped to PENDING with the new
+ *      changes); assert the row is flipped to APPLYING with the new
  *      `applyWorkflowId`.
  *   2. Dedup-collision retry: pre-seed a UserStory whose title matches
  *      the FAILED proposal's first change; call retry; assert the proposal
@@ -250,7 +250,7 @@ describe.skipIf(!hasReachableDb())(
 			return row;
 		}
 
-		it("happy path: filters payload, flips status to PENDING, queues workflow", async () => {
+		it("happy path: filters payload, claims APPLYING, queues workflow", async () => {
 			const project = await seedProject({
 				orgId: ORG_A,
 				userId: USER_A,
@@ -312,7 +312,7 @@ describe.skipIf(!hasReachableDb())(
 			const reread = await db.pendingBacklogProposal.findUniqueOrThrow({
 				where: { id: failed.id },
 			});
-			expect(reread.status).toBe("PENDING");
+			expect(reread.status).toBe("APPLYING");
 			expect(reread.applyError).toBeNull();
 			expect(reread.errorClass).toBeNull();
 		});

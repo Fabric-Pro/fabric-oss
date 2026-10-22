@@ -232,6 +232,9 @@ export const resolveStoryPromptProcedure = tenantProtectedProcedure
 			storyKind: kind,
 			userId: user.id,
 			organizationId,
+			// The story's own project, so a project default outranks the org-wide
+			// one for this project only.
+			projectId: story.projectId,
 		});
 		const boundContent = boundPrompt?.version?.content;
 		if (!boundPrompt || !boundContent?.trim()) {

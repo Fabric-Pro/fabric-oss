@@ -6,7 +6,7 @@ import {
 	db,
 	getPendingBacklogProposal,
 	inferDedupFamily,
-	markPendingProposalApplied,
+	markProposalApplyDispatched,
 	returnFailedRecommendationToReview,
 } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
@@ -60,9 +60,9 @@ interface StoredSourceMetadata {
  *        - miss → include in the workflow payload.
  *   4. If every remaining change resolved via dedup → mark APPLIED
  *      directly, no workflow.
- *   5. Otherwise: atomically flip status to PENDING (idempotency under
- *      double-click — second call sees a non-FAILED row and CONFLICTs) and
- *      start `backlogApplyChangesWorkflow` with the filtered payload and
+ *   5. Otherwise: compare-and-set FAILED → APPLYING (a double-click's second
+ *      call matches no row and CONFLICTs), start
+ *      `backlogApplyChangesWorkflow` with the filtered payload and
  *      `pendingProposalId` so the workflow's terminal transition lands on
  *      the same row.
  *
@@ -217,11 +217,9 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 					...newlyApplied,
 				]),
 			);
-			// Atomic flip — single Prisma update writes APPLIED + the merged
-			// appliedChangeIndexes set so a concurrent retry sees the new
-			// status before it tries to claim the row.
-			await db.pendingBacklogProposal.update({
-				where: { id: input.proposalId },
+			// Close only a still-FAILED row; a concurrent dispatch owns its claim.
+			const finalized = await db.pendingBacklogProposal.updateMany({
+				where: { id: input.proposalId, status: "FAILED" },
 				data: {
 					status: "APPLIED",
 					appliedAt: new Date(),
@@ -229,12 +227,11 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 					appliedChangeIndexes: mergedApplied,
 				},
 			});
-			// Call the shared helper too so a future change to the
-			// APPLIED-transition contract picks it up (idempotent — the row
-			// is already APPLIED).
-			await markPendingProposalApplied(input.proposalId).catch(() => {
-				// no-op: row already APPLIED in the line above.
-			});
+			if (finalized.count !== 1) {
+				throw new ORPCError("CONFLICT", {
+					message: "This proposal is no longer failed.",
+				});
+			}
 			return {
 				workflowId: null,
 				dedupCollisionCount,
@@ -242,39 +239,7 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 			};
 		}
 
-		// 5. Atomic flip to PENDING + restart workflow.
-		//    Idempotency: a second concurrent retry call will load the row,
-		//    see `status === "PENDING"`, and return CONFLICT before it
-		//    reaches this update. If the second call slipped past the load
-		//    check, the Prisma `update` with the `id` PK is single-statement
-		//    and PG row-locks under the hood; the dedup guard catches any
-		//    eventual duplicate CREATE at the workflow level (PR #1238).
-		const newWorkflowId = `backlog-apply-retry-${input.projectId}-${Date.now()}`;
-		const mergedApplied = Array.from(
-			new Set([
-				...(proposal.appliedChangeIndexes ?? []),
-				...newlyApplied,
-			]),
-		);
-		await db.pendingBacklogProposal.update({
-			where: { id: input.proposalId },
-			data: {
-				status: "PENDING",
-				applyWorkflowId: newWorkflowId,
-				// Reset the dispatch clock the stuck-apply watchdog measures from
-				// — the original row's `createdAt` is stale on a retry.
-				applyStartedAt: new Date(),
-				applyError: null,
-				errorClass: null,
-				errorMessage: null,
-				failedAt: null,
-				appliedChangeIndexes: mergedApplied,
-			},
-		});
-
-		// Best-effort project meta (PM container name) — same shape as
-		// `apply-changes.ts`. Project tenancy is enforced by the row read +
-		// the explicit XOR check below.
+		// Resolve project scope and PM metadata before taking the apply claim.
 		const project = await db.project.findFirst({
 			where: {
 				id: input.projectId,
@@ -292,6 +257,39 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 		if (!project) {
 			throw new ORPCError("NOT_FOUND", {
 				message: "Project not found",
+			});
+		}
+
+		// 5. Compare-and-set FAILED → APPLYING before dispatch. A competing
+		// retry that already loaded FAILED must still win this write to start.
+		const newWorkflowId = `backlog-apply-retry-${input.projectId}-${Date.now()}`;
+		const mergedApplied = Array.from(
+			new Set([
+				...(proposal.appliedChangeIndexes ?? []),
+				...newlyApplied,
+			]),
+		);
+		const claimed = await db.pendingBacklogProposal.updateMany({
+			where: { id: input.proposalId, status: "FAILED" },
+			data: {
+				status: "APPLYING",
+				reviewedAt: new Date(),
+				reviewedBy: user.id,
+				applyWorkflowId: newWorkflowId,
+				// This claim is unconfirmed until workflow.start returns. The
+				// watchdog uses the fresh reviewedAt while the start is in flight.
+				applyStartedAt: null,
+				applyError: null,
+				errorClass: null,
+				errorMessage: null,
+				failedAt: null,
+				appliedChangeIndexes: mergedApplied,
+			},
+		});
+
+		if (claimed.count !== 1) {
+			throw new ORPCError("CONFLICT", {
+				message: "This proposal is no longer failed.",
 			});
 		}
 
@@ -345,6 +343,12 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 				}),
 			);
 
+			await markProposalApplyDispatched({
+				proposalId: input.proposalId,
+				applyWorkflowId: newWorkflowId,
+				mode: "claimed",
+			}).catch(() => 0);
+
 			return {
 				workflowId: handle.workflowId,
 				runId: handle.firstExecutionRunId,
@@ -357,13 +361,15 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 			};
 		} catch (error) {
 			console.error("[backlog] retry-failed-proposal failed:", error);
-			// Workflow start failed AFTER we flipped the row to PENDING.
-			// Revert the row back to FAILED so the inbox + banner still
-			// surface it. Best-effort — if the revert fails the inbox will
-			// show a leaked PENDING row that the user can dismiss / retry.
+			// Return this claim to FAILED if start failed. A concurrent cancel,
+			// finalization, or replacement claimant must keep its outcome.
 			await db.pendingBacklogProposal
-				.update({
-					where: { id: input.proposalId },
+				.updateMany({
+					where: {
+						id: input.proposalId,
+						status: "APPLYING",
+						applyWorkflowId: newWorkflowId,
+					},
 					data: {
 						status: "FAILED",
 						applyError: (error instanceof Error

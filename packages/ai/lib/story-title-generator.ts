@@ -17,13 +17,10 @@ import { logModelUsageAsync } from "./usage-logging";
 
 /**
  * Zod schema describing the shape the LLM must return. Passed to
- * `generateObject` so the AI SDK translates it to the provider's native
- * structured-output mode (Azure OpenAI `response_format: json_schema`,
- * OpenAI function calling, Anthropic tool use, etc.) and the provider
- * enforces the shape — regardless of what the prompt body asks for. This
- * is the primary defense against gpt-4.1-mini / gpt-5.4-style markdown-
- * fence wrapping; the three-stage manual JSON parse below it stays as a
- * fallback only for providers that do not support structured outputs.
+ * `generateObject` for validation against the caller's Zod schema. The shared
+ * model middleware selects upstream enforcement for supported routes and schemas,
+ * with guidance-only fallback after strict rejection. The manual JSON parse below
+ * handles providers whose replies still do not meet the structured-output contract.
  */
 const TITLE_RESPONSE_SCHEMA = z.object({
 	title: z.string(),
@@ -366,13 +363,9 @@ export async function generateStoryTitleFromDescription(
 
 		const generationStart = Date.now();
 
-		// Primary path: `generateObject` with a Zod schema. The AI SDK
-		// translates the schema to the provider's native structured-output
-		// mode (Azure OpenAI `response_format: json_schema`, OpenAI function
-		// calling, Anthropic tool use, etc.) so the provider — not the
-		// prompt — enforces the response shape. Markdown wrappers, prose
-		// preludes, and other "creative" responses are impossible at this
-		// layer for compliant providers.
+		// Primary path: generateObject validates the response against the Zod schema.
+		// The shared model middleware selects strict enforcement on supported routes
+		// and schemas, and retries rejected strict requests with schema guidance.
 		//
 		// Fallback path: a small minority of providers (some OpenRouter
 		// passthroughs, older self-hosted models) don't support structured

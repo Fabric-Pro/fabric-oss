@@ -1,9 +1,4 @@
-/**
- * One default Fabric AI model (Fizzy #2040, F20). Every code-level "nobody
- * picked a model" fallback reads DEFAULT_FABRIC_AI_MODEL, and the seeded task
- * defaults put it on every provider that carries it — so changing the default
- * is one edit, and no surface is left on an older model by accident.
- */
+/** Current code-level and new-connection template defaults. */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -21,8 +16,8 @@ const PROVIDERS_CARRYING_IT = [
 ] as const;
 
 describe("DEFAULT_FABRIC_AI_MODEL", () => {
-	it("is Claude Sonnet 5, an active catalog entry", () => {
-		expect(DEFAULT_FABRIC_AI_MODEL).toBe("claude-sonnet-5");
+	it("is Claude Sonnet 5.5, an active catalog entry", () => {
+		expect(DEFAULT_FABRIC_AI_MODEL).toBe("claude-sonnet-5-5");
 		const entry = MODELS.find(
 			(m) => m.canonicalName === DEFAULT_FABRIC_AI_MODEL,
 		);
@@ -41,7 +36,7 @@ describe("DEFAULT_FABRIC_AI_MODEL", () => {
 	});
 
 	it.each(["CHAT", "COMPLEX", "TOOL_CALLING"] as const)(
-		"is the %s task default on every provider that carries it",
+		"is the %s task default on the mapped providers",
 		(taskType) => {
 			for (const provider of PROVIDERS_CARRYING_IT) {
 				const row = TASK_DEFAULTS.find(

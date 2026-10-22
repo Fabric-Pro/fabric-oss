@@ -18,6 +18,7 @@ import {
 	SidebarCollapseProvider,
 	useSidebarCollapse,
 } from "@saas/shared/contexts/SidebarCollapseContext";
+import { isFullHeightPath } from "@saas/shared/lib/full-height-routes";
 import {
 	SHELL_DOCK_GUTTER_CLASS,
 	SHELL_DOCK_LAYER_CLASS,
@@ -38,20 +39,7 @@ function AppWrapperContent({ children }: PropsWithChildren) {
 	const { isFullscreen } = useFullscreen();
 	const { isCollapsed } = useSidebarCollapse();
 	const pathname = usePathname();
-	// Only apply canvas behavior to workflow editor routes (e.g., /app/workflows/[id])
-	// Exclude integrations, new, and list pages which need normal scrolling
-	const isWorkflowCanvasRoute =
-		pathname?.match(/^\/app\/workflows\/[^/]+$/) &&
-		!pathname?.endsWith("/integrations") &&
-		!pathname?.endsWith("/new");
-	// Chatbot routes should also use full-height layout with internal scrolling only
-	const isChatbotRoute =
-		pathname?.endsWith("/chatbot") || pathname?.endsWith("/nexus");
-	// Kanban embed routes need full-height layout with no padding
-	const isKanbanRoute = !!pathname?.match(/\/kanban(\/|\?|$)/);
-	// Combined check for full-height routes that need overflow hidden
-	const isFullHeightRoute =
-		isWorkflowCanvasRoute || isChatbotRoute || isKanbanRoute;
+	const isFullHeightRoute = isFullHeightPath(pathname ?? "");
 
 	// All routes use full-width layout — no card wrapper or outer padding
 	const mainPaddingClasses = isFullHeightRoute

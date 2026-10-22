@@ -12,13 +12,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const hoisted = vi.hoisted(() => ({
 	generateEmbeddings: vi.fn(),
 	toolIndexSearch: vi.fn(),
+	findMany: vi.fn(),
+	getMcpClient: vi.fn(),
 }));
 
 // Explicit mock (no importOriginal): the real @repo/database would keep
 // pg.Pool handles alive past vitest exit.
 vi.mock("@repo/database", () => ({
 	checkConversationTurnDispatchable: vi.fn(),
-	db: { mCPConfig: { findMany: vi.fn().mockResolvedValue([]) } },
+	db: { mCPConfig: { findMany: hoisted.findMany } },
 }));
 
 vi.mock("@repo/database/prisma/queries/lib/oauth-app-row", () => ({
@@ -40,7 +42,7 @@ vi.mock("@repo/ai", () => ({
 }));
 
 vi.mock("@repo/agent-core/backend", () => ({
-	getMcpClient: vi.fn(),
+	getMcpClient: hoisted.getMcpClient,
 	closeMcpClientSafe: vi.fn(),
 }));
 
@@ -85,12 +87,24 @@ vi.mock("../../../../lib/redis-cache", () => ({
 	},
 }));
 
+import { ALWAYS_AVAILABLE_CAPABILITIES } from "../capability-keywords";
+import { getFabricAiTools } from "../fabric-ai-tools";
+import {
+	LOOP_DISPATCHED_PROJECT_TOOL_NAMES,
+	PROJECT_TOOL_NAMES,
+} from "../project-tools";
 import { searchAvailableTools } from "../search-tools";
+import { WORKSPACE_TOOL_NAMES } from "../workspace-tools";
+
+const DEFAULT_FABRIC_TOOLS = vi.mocked(getFabricAiTools)();
 
 const TENANT = { userId: "user-example-1", organizationId: "org-example-1" };
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	hoisted.findMany.mockResolvedValue([]);
+	hoisted.getMcpClient.mockReset();
+	vi.mocked(getFabricAiTools).mockReturnValue(DEFAULT_FABRIC_TOOLS);
 	hoisted.generateEmbeddings.mockResolvedValue({ embeddings: [] });
 	hoisted.toolIndexSearch.mockResolvedValue([]);
 });
@@ -150,5 +164,248 @@ describe("searchAvailableTools exact names", () => {
 		});
 
 		expect(result.telemetry?.strategy).not.toBe("exact_name");
+	});
+});
+
+describe("searchAvailableTools workspace context", () => {
+	it.each(Object.values(WORKSPACE_TOOL_NAMES))(
+		"continues past exact-name selection when %s has no workspace",
+		async (name) => {
+			const names = Object.values(WORKSPACE_TOOL_NAMES);
+			vi.mocked(getFabricAiTools).mockReturnValue(
+				names.map((toolName) => ({
+					name: toolName,
+					description: toolName,
+					inputSchema: { type: "object" },
+				})),
+			);
+			for (const workspaceIds of [undefined, [], ["ws-example"]]) {
+				const result = await searchAvailableTools({
+					query: `use ${name}`,
+					...TENANT,
+					workspaceIds,
+				});
+				const offered = result.results.map((r) => r.toolName);
+				if (workspaceIds?.length === 0) {
+					for (const toolName of names) {
+						expect(offered).not.toContain(toolName);
+					}
+					expect(result.telemetry?.strategy).not.toBe("exact_name");
+					expect(hoisted.toolIndexSearch).toHaveBeenCalled();
+				} else {
+					expect(offered).toEqual([name]);
+					expect(result.telemetry?.strategy).toBe("exact_name");
+				}
+			}
+		},
+	);
+
+	it("removes workspace capability matches before merging search results", async () => {
+		// An empty catalog isolates capability matches from the keyword corpus.
+		vi.mocked(getFabricAiTools).mockReturnValue([]);
+		const mergedSummary = vi
+			.spyOn(console, "log")
+			.mockImplementation(() => {});
+		try {
+			for (const workspaceIds of [undefined, [], ["ws-example"]]) {
+				mergedSummary.mockClear();
+				const result = await searchAvailableTools({
+					query: "search my documents in my files workspace attached files uploaded documents",
+					...TENANT,
+					workspaceIds,
+				});
+				expect(result.telemetry?.strategy).toBe("semantic");
+				if (workspaceIds?.length === 0) {
+					expect(result.results).toEqual([]);
+					// This diagnostic counts the merged matches before the response filter.
+					expect(mergedSummary).toHaveBeenCalledWith(
+						expect.stringMatching(
+							/Found 0 tools .*always-available: 0/,
+						),
+					);
+				} else {
+					expect(result.results).toHaveLength(1);
+					expect(result.results[0]).toMatchObject({
+						toolName: WORKSPACE_TOOL_NAMES.query,
+						matchReason:
+							expect.stringContaining("Always-available:"),
+					});
+					expect(mergedSummary).toHaveBeenCalledWith(
+						expect.stringMatching(
+							/Found 1 tools .*always-available: 1/,
+						),
+					);
+				}
+			}
+		} finally {
+			mergedSummary.mockRestore();
+		}
+	});
+
+	it("filters same-named workspace tools from the focused MCP fallback", async () => {
+		const names = Object.values(WORKSPACE_TOOL_NAMES);
+		hoisted.findMany.mockResolvedValue([
+			{
+				id: "cfg-example",
+				displayName: "Example Service",
+				mcpServer: { name: "Example Service" },
+			},
+		]);
+		hoisted.getMcpClient.mockResolvedValue({
+			client: {
+				tools: vi
+					.fn()
+					.mockResolvedValue(
+						Object.fromEntries(
+							[...names, "external_read"].map((name) => [
+								name,
+								{ description: name },
+							]),
+						),
+					),
+			},
+		});
+		for (const workspaceIds of [undefined, [], ["ws-example"]]) {
+			const result = await searchAvailableTools({
+				query: "retrieve external reference",
+				...TENANT,
+				workspaceIds,
+				enabledMcpConfigIds: ["cfg-example"],
+			});
+			expect(result.telemetry?.strategy).toBe("focused_server_fallback");
+			expect(result.results.map((r) => r.toolName).sort()).toEqual(
+				(workspaceIds?.length === 0
+					? ["external_read"]
+					: [...names, "external_read"]
+				).sort(),
+			);
+		}
+	});
+});
+
+describe("searchAvailableTools project context", () => {
+	it.each(PROJECT_TOOL_NAMES)(
+		"continues past exact-name selection when %s has no project",
+		async (name) => {
+			const names = PROJECT_TOOL_NAMES;
+			vi.mocked(getFabricAiTools).mockReturnValue(
+				names.map((toolName) => ({
+					name: toolName,
+					description: toolName,
+					inputSchema: { type: "object" },
+				})),
+			);
+			for (const projectId of [undefined, null, "project-example"]) {
+				const result = await searchAvailableTools({
+					query: `use ${name}`,
+					...TENANT,
+					projectId,
+				});
+				const offered = result.results.map((r) => r.toolName);
+				if (projectId === null) {
+					expect(offered).not.toContain(name);
+					expect(result.telemetry?.strategy).not.toBe("exact_name");
+					expect(hoisted.toolIndexSearch).toHaveBeenCalled();
+				} else {
+					expect(offered).toEqual([name]);
+					expect(result.telemetry?.strategy).toBe("exact_name");
+				}
+			}
+		},
+	);
+
+	it("removes project capability matches before merging search results", async () => {
+		// An empty catalog isolates capability matches from the keyword corpus.
+		vi.mocked(getFabricAiTools).mockReturnValue([]);
+		const mergedSummary = vi
+			.spyOn(console, "log")
+			.mockImplementation(() => {});
+		try {
+			for (const projectId of [undefined, null, "project-example"]) {
+				mergedSummary.mockClear();
+				const result = await searchAvailableTools({
+					query:
+						ALWAYS_AVAILABLE_CAPABILITIES.find(
+							(capability) =>
+								capability.id ===
+								"fabric_list_feature_decisions",
+						)?.description ?? "",
+					...TENANT,
+					projectId,
+				});
+				expect(result.telemetry?.strategy).toBe("semantic");
+				if (projectId === null) {
+					expect(result.results).toEqual([]);
+					// This diagnostic counts the merged matches before the response filter.
+					expect(mergedSummary).toHaveBeenCalledWith(
+						expect.stringMatching(
+							/Found 0 tools .*always-available: 0/,
+						),
+					);
+				} else {
+					expect(result.results).toHaveLength(1);
+					expect(result.results[0]).toMatchObject({
+						toolName: "fabric_list_feature_decisions",
+						matchReason:
+							expect.stringContaining("Always-available:"),
+					});
+					expect(mergedSummary).toHaveBeenCalledWith(
+						expect.stringMatching(
+							/Found 1 tools .*always-available: 1/,
+						),
+					);
+				}
+			}
+		} finally {
+			mergedSummary.mockRestore();
+		}
+	});
+
+	it("filters same-named project tools from the focused MCP fallback", async () => {
+		const names = PROJECT_TOOL_NAMES;
+		hoisted.findMany.mockResolvedValue([
+			{
+				id: "cfg-example",
+				displayName: "Example Service",
+				mcpServer: { name: "Example Service" },
+			},
+		]);
+		hoisted.getMcpClient.mockResolvedValue({
+			client: {
+				tools: vi
+					.fn()
+					.mockResolvedValue(
+						Object.fromEntries(
+							[...names, "external_read"].map((name) => [
+								name,
+								{ description: name },
+							]),
+						),
+					),
+			},
+		});
+		for (const projectId of [undefined, null, "project-example"]) {
+			const result = await searchAvailableTools({
+				query: "retrieve external reference",
+				...TENANT,
+				projectId,
+				enabledMcpConfigIds: ["cfg-example"],
+			});
+			expect(result.telemetry?.strategy).toBe("focused_server_fallback");
+			expect(result.results.map((r) => r.toolName).sort()).toEqual(
+				(projectId === null
+					? [
+							...names.filter(
+								(name) =>
+									!new Set<string>(
+										LOOP_DISPATCHED_PROJECT_TOOL_NAMES,
+									).has(name),
+							),
+							"external_read",
+						]
+					: [...names, "external_read"]
+				).sort(),
+			);
+		}
 	});
 });

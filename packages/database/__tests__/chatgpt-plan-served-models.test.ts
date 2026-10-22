@@ -282,9 +282,22 @@ describe("the catalog seed", () => {
 				return Promise.resolve({ count: 1 });
 			});
 		Object.assign(db, {
+			$queryRaw: vi.fn(async (sql: TemplateStringsArray) => {
+				const text = sql.join("?").replace(/\s+/g, " ").trim();
+				expect(text).toMatch(/ORDER BY id FOR NO KEY UPDATE$/);
+				ops.push([
+					text.includes('"user_cloud_provider_config"')
+						? "userLocks"
+						: "orgLocks",
+					undefined,
+				]);
+				return [];
+			}),
 			organizationModelPreference: { updateMany: recorder("orgPrefs") },
 			userModelPreference: { updateMany: recorder("userPrefs") },
-			$transaction: (steps: Promise<unknown>[]) => Promise.all(steps),
+			$transaction: (
+				steps: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>),
+			) => (typeof steps === "function" ? steps(db) : Promise.all(steps)),
 		});
 		Object.assign(db.aiTaskModelDefault, {
 			updateMany: recorder("taskDefaults"),
@@ -313,6 +326,8 @@ describe("the catalog seed", () => {
 			data: { modelId: "model_catalog" },
 		};
 		expect(ops).toEqual([
+			["orgLocks", undefined],
+			["userLocks", undefined],
 			["orgPrefs", repoint],
 			["userPrefs", repoint],
 			["taskDefaults", repoint],
@@ -375,9 +390,12 @@ describe("the catalog seed", () => {
 			return Promise.resolve({ count: 1 });
 		});
 		Object.assign(db, {
+			$queryRaw: vi.fn(async () => []),
 			organizationModelPreference: { updateMany: record },
 			userModelPreference: { updateMany: record },
-			$transaction: (steps: Promise<unknown>[]) => Promise.all(steps),
+			$transaction: (
+				steps: Promise<unknown>[] | ((tx: unknown) => Promise<unknown>),
+			) => (typeof steps === "function" ? steps(db) : Promise.all(steps)),
 		});
 		Object.assign(db.aiTaskModelDefault, { updateMany: record });
 		store.models.push({ id: "model_luna", canonicalName: "gpt-6-luna" });

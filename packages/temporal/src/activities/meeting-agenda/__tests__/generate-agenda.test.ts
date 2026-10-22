@@ -93,14 +93,12 @@ beforeEach(() => {
 });
 
 describe("generateAgendaActivity", () => {
-	it("disables strict JSON schema so Azure accepts optional fields (bug #1681)", async () => {
+	it("leaves structured-output policy to the model middleware", async () => {
 		await generateAgendaActivity(INPUT);
 
-		expect(aiMock.generateObject).toHaveBeenCalledWith(
-			expect.objectContaining({
-				providerOptions: { openai: { strictJsonSchema: false } },
-			}),
-		);
+		expect(
+			aiMock.generateObject.mock.calls[0]?.[0]?.providerOptions,
+		).toBeUndefined();
 	});
 
 	it("persists rendered markdown, READY status, and the context stats", async () => {

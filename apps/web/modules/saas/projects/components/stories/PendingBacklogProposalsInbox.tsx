@@ -77,6 +77,7 @@ import {
 	type LockedReason,
 } from "./BacklogChangeProposal";
 import { failureClassToCopy } from "./lib/failure-class-copy";
+import { isApplyInFlight } from "./proposal-status";
 
 type Props = {
 	projectId: string;
@@ -148,10 +149,6 @@ const APPLY_WATCH_MAX_POLLS = 90;
 
 /** The post-accept notice carries about 60 words; the global 5s is too short. */
 const ACCEPTED_NOTICE_DURATION_MS = 12_000;
-
-function isApplyInFlight(status: string | null | undefined): boolean {
-	return status === "APPROVED" || status === "APPLYING";
-}
 
 const RECOMMENDATION_ENTRY_POINT_LABELS: Record<string, string> = {
 	EMPTY_ROADMAP: "Start Building Your Roadmap",
@@ -684,12 +681,12 @@ export function PendingBacklogProposalsInbox({
 	const listQuery = useQuery({
 		queryKey: listQueryKey,
 		queryFn: async () => {
+			// Use the server review-inbox default so the list matches the badge count.
 			const result =
 				await orpcClient.projects.teamsChannelMonitor.pendingProposals.list(
 					{
 						projectId,
 						organizationId,
-						status: ["PENDING", "FAILED"],
 					},
 				);
 			return (result ?? []) as PendingProposalRow[];
@@ -1975,7 +1972,9 @@ function ProposalRow({
 								? "Failed"
 								: proposal.status === "BACKLOG"
 									? "Rejected"
-									: proposal.status}
+									: isApplyInFlight(proposal.status)
+										? "Applying"
+										: proposal.status}
 					</span>
 					<span className="text-xs text-muted-foreground">
 						{createdLabel}

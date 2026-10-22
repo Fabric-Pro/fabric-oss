@@ -837,6 +837,7 @@ describe("analyzer prompt — type-specific body template from the catalog (Fizz
 				storyKind: "FEATURE",
 				userId: "user-1",
 				organizationId: "org-1",
+				projectId: "project-1",
 			}),
 		);
 		expect(calls).toContainEqual(
@@ -846,6 +847,7 @@ describe("analyzer prompt — type-specific body template from the catalog (Fizz
 				storyKind: "BUG",
 				userId: "user-1",
 				organizationId: "org-1",
+				projectId: "project-1",
 			}),
 		);
 	});

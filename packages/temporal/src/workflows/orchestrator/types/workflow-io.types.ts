@@ -6,6 +6,7 @@
  */
 
 import type { LimitSignal, TokenBudgetStatus } from "@repo/ai/limits";
+import type { DirectChatUsageLimitRefusal } from "../../../types";
 import type { ALTKConfig } from "./altk.types";
 import type { ExecutionMode } from "./execution-mode.types";
 import type { PolicyContext } from "./policy.types";
@@ -392,6 +393,7 @@ export interface OrchestratorStepResult {
 // =============================================================================
 
 export interface OrchestratorWorkflowOutput {
+	usageLimit?: DirectChatUsageLimitRefusal;
 	executionId: string;
 	status:
 		| "completed"

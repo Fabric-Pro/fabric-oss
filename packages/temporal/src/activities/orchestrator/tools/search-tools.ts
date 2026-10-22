@@ -35,6 +35,7 @@ import {
 	toolToCapabilityWithKeywords,
 } from "./capability-keywords";
 import { type FabricAiTool, getFabricAiTools } from "./fabric-ai-tools";
+import { isRunContextToolHidden } from "./run-context-tools";
 import { selectFabricToolsByName } from "./select-tools-by-name";
 import {
 	type ToolCategory,
@@ -1391,7 +1392,19 @@ export async function searchAvailableTools(
 ): Promise<SearchAvailableToolsOutput> {
 	const stopHeartbeat = startTurnHeartbeat(input.turnScope);
 	try {
-		return await runToolSearch(input);
+		const result = await runToolSearch(input);
+		// Direct MCP/OAuth fallbacks can also return names outside the Fabric catalog.
+		return {
+			...result,
+			results: result.results.filter(
+				(tool) =>
+					!isRunContextToolHidden(
+						tool.toolName,
+						input,
+						tool.configId,
+					),
+			),
+		};
 	} finally {
 		stopHeartbeat();
 	}
@@ -1406,11 +1419,12 @@ async function runToolSearch(
 
 	const allFabricAiTools = getFabricAiTools();
 	// Filter Fabric AI tools by enabled list if provided
-	const fabricAiTools = Array.isArray(input.enabledFabricToolIds)
-		? allFabricAiTools.filter((tool) =>
-				(input.enabledFabricToolIds as string[]).includes(tool.name),
-			)
-		: allFabricAiTools;
+	const fabricAiTools = allFabricAiTools.filter(
+		(tool) =>
+			!isRunContextToolHidden(tool.name, input) &&
+			(!Array.isArray(input.enabledFabricToolIds) ||
+				input.enabledFabricToolIds.includes(tool.name)),
+	);
 
 	// ==========================================================================
 	// STEP 0: Tools named exactly in the query load as named, unranked
@@ -1451,6 +1465,13 @@ async function runToolSearch(
 	// ==========================================================================
 	const alwaysAvailableMatches = matchAlwaysAvailableCapabilities(
 		input.query,
+	).filter(
+		(match) =>
+			!isRunContextToolHidden(
+				match.id,
+				input,
+				match.metadata?.configId as string | undefined,
+			),
 	);
 
 	if (alwaysAvailableMatches.length > 0) {
@@ -1646,6 +1667,15 @@ async function runToolSearch(
 		const indexedEntries = toolIndex.getAllEntries();
 		const oauthToolCapabilities: CapabilityWithKeywords[] = indexedEntries
 			.filter((entry) => {
+				if (
+					isRunContextToolHidden(
+						entry.toolName,
+						input,
+						entry.configId,
+					)
+				) {
+					return false;
+				}
 				if (!entry.configId?.startsWith("oauth:integration:")) {
 					return false;
 				}
@@ -1689,6 +1719,8 @@ async function runToolSearch(
 		enabledMcpConfigIds: input.enabledMcpConfigIds,
 		enabledIntegrationIds: input.enabledIntegrationIds,
 		enabledFabricToolIds: input.enabledFabricToolIds,
+		workspaceIds: input.workspaceIds,
+		projectId: input.projectId,
 	});
 
 	if (corpusKeywordResults.length > 0) {
@@ -1738,6 +1770,8 @@ async function runToolSearch(
 				enabledMcpConfigIds: input.enabledMcpConfigIds,
 				enabledIntegrationIds: input.enabledIntegrationIds,
 				enabledFabricToolIds: input.enabledFabricToolIds,
+				workspaceIds: input.workspaceIds,
+				projectId: input.projectId,
 			},
 			tenantContext,
 		);
@@ -1759,6 +1793,8 @@ async function runToolSearch(
 			enabledMcpConfigIds: input.enabledMcpConfigIds,
 			enabledIntegrationIds: input.enabledIntegrationIds,
 			enabledFabricToolIds: input.enabledFabricToolIds,
+			workspaceIds: input.workspaceIds,
+			projectId: input.projectId,
 		});
 		semanticSearchUsed = false;
 	}
@@ -2004,7 +2040,7 @@ async function runToolSearch(
 
 	// ==========================================================================
 	// STEP 6: Merge with always-available matches
-	// Ensures high-frequency tools like workspace_rag_query are always considered
+	// Uses the request-filtered capability matches from step 1.
 	// ==========================================================================
 	const mergedResults = mergeResults(
 		outputResults,

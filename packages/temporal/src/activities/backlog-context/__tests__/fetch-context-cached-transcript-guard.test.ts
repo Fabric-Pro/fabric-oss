@@ -1,18 +1,4 @@
-/**
- * Fizzy #2316 — the cached (linked-meeting) path must cap what it hands the
- * analyzer.
- *
- * That path used to return `ProjectContext.content` untouched, which was safe
- * only because the sync had already capped it at ingest. The sync now stores a
- * transcript whole, so this is the last thing standing between a very long
- * meeting and `applyTokenBudget` — which allocates greedily and ranks
- * `meetingTranscripts` above `notionContent` and `ragContext`, so an unbounded
- * transcript silently drops the project's other context.
- *
- * Mock shape follows `fetch-context-transcript-cache.test.ts`.
- */
-
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const execTool = vi.fn();
 const redisGet = vi.fn();
@@ -25,12 +11,16 @@ const getModelMock = vi.fn();
 vi.mock("@repo/integrations/microsoft", () => ({
 	executeMicrosoftTeamsTool: (...a: unknown[]) => execTool(...a),
 }));
-vi.mock("../../../lib/redis-cache", () => ({
+vi.mock("../../../lib/redis-cache", async (importOriginal) => ({
 	RedisCache: {
 		get: (...a: unknown[]) => redisGet(...a),
 		set: (...a: unknown[]) => redisSet(...a),
 	},
-	CacheKeys: { meetingTranscript: () => "tkey" },
+	CacheKeys: {
+		...(await importOriginal<typeof import("../../../lib/redis-cache")>())
+			.CacheKeys,
+		meetingTranscript: () => "tkey",
+	},
 	CacheTTL: { meetingTranscript: 604800 },
 }));
 vi.mock("@repo/database", () => ({
@@ -106,10 +96,10 @@ beforeEach(() => {
 	});
 });
 
-describe("fetchMeetingTranscript — cached-body size guard (#2316)", () => {
+describe("fetchMeetingTranscript — cached-body analysis ceiling", () => {
 	it("summarizes a cached transcript that exceeds the threshold", async () => {
-		const long = `Alice: ${"we talked about the integration surface. ".repeat(2000)}`;
-		expect(long.length).toBeGreaterThan(50_000);
+		const long = "x".repeat(320_001);
+		expect(long.length).toBeGreaterThan(320_000);
 		wireCachedBody(long);
 
 		const result = await fetchMeetingTranscript(INPUT);
@@ -134,4 +124,145 @@ describe("fetchMeetingTranscript — cached-body size guard (#2316)", () => {
 		expect(result.wasSummarized).toBe(false);
 		expect(generateTextMock).not.toHaveBeenCalled();
 	});
+});
+
+// The former 50K guard summarized these bodies before analysis could budget them.
+it.each([70_000, 320_000])(
+	"keeps a %i-character cached transcript verbatim",
+	async (length) => {
+		const transcript = "x".repeat(length);
+		wireCachedBody(transcript);
+		const result = await fetchMeetingTranscript(INPUT);
+		expect(result.transcript).toBe(transcript);
+		expect(result.wasSummarized).toBe(false);
+		expect(generateTextMock).not.toHaveBeenCalled();
+	},
+);
+
+it.each(["error", "empty"])(
+	"caps a cached transcript at the ceiling on a summary %s",
+	async (failure) => {
+		const transcript = "x".repeat(320_001);
+		wireCachedBody(transcript);
+		if (failure === "error") {
+			generateTextMock.mockRejectedValue(
+				new Error("summary unavailable"),
+			);
+		} else {
+			generateTextMock.mockResolvedValue({ text: "  ", usage: {} });
+		}
+		const result = await fetchMeetingTranscript(INPUT);
+		expect(result.success).toBe(true);
+		expect(result.transcript.length).toBeLessThanOrEqual(320_000);
+		expect(result.transcript).toMatch(/^x+\n\n\[.*truncated.*\]$/);
+		expect(redisSet).not.toHaveBeenCalled();
+		expect(result.wasSummarized).toBe(false);
+	},
+);
+
+it.each(["x".repeat(70_000), "界".repeat(10_000)])(
+	"applies the selected-meeting byte share to cached bodies (%#)",
+	async (transcript) => {
+		wireCachedBody(transcript);
+		const result = await fetchMeetingTranscript({
+			...INPUT,
+			selectedMeetingCount: 60,
+		});
+		expect(generateTextMock).toHaveBeenCalledTimes(1);
+		expect(result.wasSummarized).toBe(true);
+		expect(Buffer.byteLength(result.transcript)).toBeLessThanOrEqual(
+			26_214,
+		);
+	},
+);
+
+it.each([110_000, 320_000])(
+	"keeps a stored %i-character CJK transcript whole for one selection",
+	async (length) => {
+		const transcript = "界".repeat(length);
+		wireCachedBody(transcript);
+		const result = await fetchMeetingTranscript(INPUT);
+		expect(result.transcript).toBe(transcript);
+		expect(result.wasSummarized).toBe(false);
+		expect(generateTextMock).not.toHaveBeenCalled();
+	},
+);
+it("reuses a successful stored-body summary across repeat selections", async () => {
+	const transcript = "x".repeat(70_000);
+	wireCachedBody(transcript);
+	const cache = new Map<string, unknown>();
+	redisGet.mockImplementation(async (key: string) => cache.get(key) ?? null);
+	redisSet.mockImplementation(async (key: string, value: unknown) => {
+		cache.set(key, value);
+	});
+	generateTextMock.mockResolvedValue({ text: "Summary", usage: {} });
+	const input = { ...INPUT, selectedMeetingCount: 60 };
+	const first = await fetchMeetingTranscript(input);
+	const second = await fetchMeetingTranscript(input);
+	expect(first.wasSummarized).toBe(true);
+	expect(second.transcript).toBe(first.transcript);
+	expect(generateTextMock).toHaveBeenCalledTimes(1);
+	expect(redisSet).toHaveBeenCalledWith(
+		expect.stringMatching(/^transcript-summary:v4:/),
+		expect.any(String),
+		604800,
+	);
+	expect(execTool).not.toHaveBeenCalled();
+});
+
+afterEach(() => {
+	vi.clearAllTimers();
+	vi.useRealTimers();
+});
+
+it.each(["read", "write"])(
+	"tolerates a fetch summary cache %s failure",
+	async (operation) => {
+		wireCachedBody("x".repeat(70_000));
+		if (operation === "read") {
+			redisGet.mockRejectedValue(new Error("cache unavailable"));
+		} else {
+			redisSet.mockRejectedValue(new Error("cache unavailable"));
+		}
+		const result = await fetchMeetingTranscript({
+			...INPUT,
+			selectedMeetingCount: 60,
+		});
+		expect(result.success).toBe(true);
+		expect(result.wasSummarized).toBe(true);
+		expect(generateTextMock).toHaveBeenCalledTimes(1);
+		expect(redisGet).toHaveBeenCalledWith(
+			expect.stringMatching(/^transcript-summary:v4:/),
+		);
+	},
+);
+
+it("bounds fetch summary cache reads and writes that do not settle", async () => {
+	vi.useFakeTimers();
+	wireCachedBody("x".repeat(70_000));
+	redisGet.mockImplementation(() => new Promise(() => {}));
+	redisSet.mockImplementation(() => new Promise(() => {}));
+	const fetched = fetchMeetingTranscript({
+		...INPUT,
+		selectedMeetingCount: 60,
+	});
+	await vi.advanceTimersByTimeAsync(4_000);
+	expect((await fetched).wasSummarized).toBe(true);
+	expect(redisGet).toHaveBeenCalledTimes(1);
+	expect(redisSet).toHaveBeenCalledTimes(1);
+	expect(vi.getTimerCount()).toBe(0);
+});
+
+it("does not share fetch summaries without a resolved organization", async () => {
+	wireCachedBody("x".repeat(70_000));
+	for (let attempt = 0; attempt < 2; attempt++) {
+		await fetchMeetingTranscript({
+			...INPUT,
+			organizationId: undefined,
+			selectedMeetingCount: 60,
+		});
+	}
+	expect(generateTextMock).toHaveBeenCalledTimes(2);
+	expect(redisGet).not.toHaveBeenCalled();
+	expect(redisSet).not.toHaveBeenCalled();
 });

@@ -18,6 +18,7 @@ import type { Editor } from "@tiptap/core";
 import TurndownService from "turndown";
 // @ts-expect-error - turndown-plugin-gfm has no types
 import { gfm } from "turndown-plugin-gfm";
+import { stripResidualDiffMarkers } from "./diff-utils";
 import {
 	applyGfmStrikethroughFix,
 	collapseAdjacentBoldSpans,
@@ -107,6 +108,9 @@ export function createTurndownService(): TurndownService {
 		codeBlockStyle: "fenced",
 		bulletListMarker: "-",
 		emDelimiter: "*",
+		// `---` is the form normalizeMarkdownForDiff rewrites every rule to, so
+		// a saved rule matches the diff baseline instead of flipping spelling.
+		hr: "---",
 		// Preserve `<excalidraw-embed>` (an atomic, text-less node Turndown would
 		// otherwise treat as blank and drop). See excalidrawAwareBlankReplacement.
 		blankReplacement: excalidrawAwareBlankReplacement,
@@ -282,8 +286,8 @@ export function getTurndownService(): TurndownService {
 }
 
 /**
- * Convert the current editor HTML to Markdown for saving: strip diff tags, then
- * run Turndown (GFM + custom rules).
+ * Convert the current editor HTML to Markdown for saving: strip diff tags, run
+ * Turndown (GFM + custom rules), then drop any leftover diff marker characters.
  *
  * Returns `null` when the editor is absent or serialization throws — Fizzy
  * #1987: this used to return `""`, and callers wrote that straight to the DB as
@@ -301,8 +305,8 @@ export function getEditorMarkdownForSave(editor: Editor | null): string | null {
 			return "";
 		}
 		const sanitized = stripDiffTags(html);
-		return collapseAdjacentBoldSpans(
-			getTurndownService().turndown(sanitized),
+		return stripResidualDiffMarkers(
+			collapseAdjacentBoldSpans(getTurndownService().turndown(sanitized)),
 		);
 	} catch (error) {
 		console.error("[editor-markdown-save] serialization failed", error);

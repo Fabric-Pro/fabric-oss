@@ -1,6 +1,8 @@
 ---
 title: Scheduled agent workflows
 description: Have an agent do a job on a schedule and publish what it wrote as a page, with the rules that keep an unattended run safe.
+audience: Organization members building and maintaining workflows
+owner: Platform team
 ---
 
 A scheduled agent workflow does a job on a timetable with nobody watching: every Monday morning an agent reads your project's work items, writes a status page, and publishes it where the team will find it. You describe the job to Fabric Agent, check the draft, and Fabric runs it from then on.
@@ -19,6 +21,12 @@ Ask Fabric Agent in any chat: "Every Monday at 9 write a status page of this pro
 
 Fabric Agent asks the same way before it changes, publishes, unpublishes, pauses, resumes or runs a workflow. The card shows the exact values the action would use.
 
+The card lists every step of the workflow with its type and settings, one level down included, so a change to a setting such as `sprintContext.iterationPaths` is visible before you approve it. A setting whose name marks it as a credential (an authorization header, cookie, token, secret, password or API key) shows as `(hidden)`.
+
+![The Approval Required card with a HIGH RISK badge for creating the Daily sprint story review workflow. It lists three steps: the Schedule trigger with its cron and time zone, Review ADO Stories with its assignee, rubric, story limit and nested sprint settings, and Publish Review with its title and surface, above the Approve, Decline and Provide Feedback buttons.](/images/docs/qa/workflow-approval-card.png)
+
+Ask the agent to attach the workflow to your project. Its runs then follow that project's rules: in a project in read-only mode, a step that would write to a connected service is refused.
+
 You can open the saved workflow in the Workflow Builder at any time and edit its nodes by hand.
 
 ## The nodes
@@ -27,6 +35,7 @@ You can open the saved workflow in the Workflow Builder at any time and edit its
 
 The trigger node's **Trigger Type** is **Schedule**, with a cron expression and a time zone.
 
+- **A cron is required.** A Schedule trigger without one is listed as a problem on the card, and publishing is refused.
 - **Time zone.** The cron is read in the time zone you set, as an IANA name such as `Europe/Berlin` or `America/New_York`. Without one it is read in `UTC`, which is rarely where you are, so give one. A name that is not a time zone is refused when the workflow is published.
 - **At most every 15 minutes.** A schedule that runs an Agent Task may not fire more often than every 15 minutes. A faster schedule, or one whose interval cannot be worked out, is refused when the workflow is published.
 
@@ -45,6 +54,42 @@ Runs an AI agent with a prompt you write. Its settings:
 | **Output format** | `html` or `markdown` |
 
 Its result is available to later nodes as `{{Agent Task.html}}` or `{{Agent Task.markdown}}`.
+
+### Review ADO Stories
+
+Use this node in place of the Agent Task to review the Azure DevOps stories in a sprint against your own definition of ready. It needs the project's Azure DevOps connection described in [Workspaces](/docs/features/workspace-pages#azure-devops-work-item-summaries). Ask Fabric Agent, for example:
+
+> Every weekday at 08:00, review the user stories assigned to me in the current sprint against our definition of ready and publish the result on this project's Artifacts tab.
+
+Its settings:
+
+| Setting | What it does |
+|---------|--------------|
+| **Assignee** | Whose stories to review: the person signed in to the Azure DevOps connection the workflow uses, or a named person |
+| **Sprint** | One or two iteration paths, and the one or two fields that say who an item belongs to: `System.AssignedTo` or a person field of your own process, such as `Custom.Engineer` |
+| **Work item types** | Which types count as stories; `User Story` when empty |
+| **Requirement fields** | The fields a review reads; title, description and acceptance criteria when empty |
+| **Rubric** | What a ready story looks like, up to 16,000 characters |
+| **Model** | Optional; the default model when empty |
+| **Max stories** | How many stories one run reviews, 20 by default and at most 50 |
+
+Each story gets a verdict of ready, needs work or blocked, with a summary and up to eight issues. The report links every story and names the person it was picked for, also when a custom person field picked it.
+
+![A Sprint story review report for an example project: the headline counts 4 sprint stories with 1 reviewed and 3 reused, tiles show the ready, needs work and blocked totals, a What changed panel lists the story whose title changed, and verdict cards show each story's link, state, assignee and gaps.](/images/docs/qa/sprint-story-review-report.png)
+
+```mermaid
+flowchart TD
+    S["Read the sprint's stories<br/>for the assignee"] --> C{"Requirement fields or<br/>comments changed since<br/>the last review?"}
+    C -->|No| R["Reuse the earlier verdict"]
+    C -->|Yes, or a forced manual run| M["Review with the model"]
+    R --> P["Compare with the previous<br/>scheduled run"]
+    M --> P
+    P --> F["Publish the report"]
+```
+
+A run reviews a story again only when its requirement fields or comments changed since its last review. Other stories reuse their earlier verdict without calling the model. Changing the rubric or the model reviews every story again, and a manual run can ask for a fresh review of all of them.
+
+A scheduled run also compares the sprint with the previous scheduled run and counts the stories reviewed, reused and removed. The first scheduled run has nothing to compare with and says so. When nothing changed, the report says "No changes since the last capture."
 
 ### Publish Frame
 

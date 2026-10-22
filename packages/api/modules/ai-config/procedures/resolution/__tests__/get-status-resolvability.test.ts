@@ -27,6 +27,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	mockDb,
+	mockSelector,
 	mockGetModelForTask,
 	mockResolveOrganizationId,
 	mockGetEmbeddingProviderConfig,
@@ -37,6 +38,7 @@ const {
 		cloudProviderConfig: { findMany: vi.fn() },
 		userCloudProviderConfig: { findMany: vi.fn() },
 	},
+	mockSelector: vi.fn(),
 	mockGetModelForTask: vi.fn(),
 	mockResolveOrganizationId: vi.fn(
 		(organizationId: string | null | undefined) => organizationId ?? null,
@@ -54,8 +56,29 @@ const {
 	mockGetPlanSpentPersonalProviderConfig: vi.fn(),
 }));
 
+vi.mock("@repo/config", () => ({
+	config: { ai: { enableGateway: false, gatewayApiKey: "" } },
+}));
+vi.mock("@repo/ai/model-selector", () => ({
+	selectModelDynamic: mockSelector,
+}));
 vi.mock("@repo/database", () => ({
 	db: mockDb,
+	getOrganizationDefaultProvider: async (organizationId: string) => {
+		const rows = await mockDb.cloudProviderConfig.findMany({
+			where: { organizationId, enabled: true },
+		});
+		const row = rows.find(
+			(p: Record<string, unknown>) =>
+				p.isDefault && p.purpose !== "EMBEDDINGS_ONLY",
+		);
+		return row &&
+			(row.encryptedApiKey ||
+				(row.config as { apiKey?: string })?.apiKey ||
+				(row.clientId && row.encryptedClientSecret))
+			? row.provider
+			: null;
+	},
 	LLM_PROVIDER_PURPOSE_FILTER: { purpose: { not: "EMBEDDINGS_ONLY" } },
 	getModelForTask: (...args: unknown[]) => mockGetModelForTask(...args),
 	getProviderDisplayName: (provider: string) => provider,
@@ -117,6 +140,12 @@ vi.mock("../../../../../orpc/procedures", () => {
 import { getAiConfigStatusProcedure } from "../get-status";
 
 type StatusResult = {
+	organizationEmbedding: {
+		provider: string | null;
+		model: any;
+		identity: string | null;
+		source: string | null;
+	};
 	isConfigured: boolean;
 	canResolveProvider: boolean;
 	resolvedEmbeddingProvider: string | null;
@@ -197,6 +226,13 @@ function callInOrg() {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mockSelector.mockResolvedValue({
+		modelId: "example-embedding",
+		canonicalName: "text-embedding-3-small",
+		displayName: "Example embedding",
+		provider: "OPENAI_DIRECT",
+		providerModelId: "openai/text-embedding-3-small",
+	});
 	mockDb.cloudProviderConfig.findMany.mockResolvedValue([]);
 	mockDb.userCloudProviderConfig.findMany.mockResolvedValue([]);
 	mockGetModelForTask.mockResolvedValue(null);
@@ -460,17 +496,15 @@ describe("resolvedEmbeddingProvider — asked, never inferred", () => {
 
 		const result = await callInOrg();
 
-		// The tenant-scoped field still reports what is STORED, unchanged.
-		expect(result.defaultProvider).toBe("ANTHROPIC");
+		// The organization has no usable default; the runtime field can still report the caller's provider.
+		expect(result.defaultProvider).toBeNull();
 		expect(result.resolvedEmbeddingProvider).toBe("OPENAI");
 		expect(result.resolvedEmbeddingProvider).not.toBe("ANTHROPIC");
 	});
 
-	it("STATE 1: does not report the back-filled `configuredProviders[0]` when the resolver returns something else", async () => {
-		// No row is marked `isDefault`, so the handler's own back-fill invents a
-		// `defaultProvider` from the first configured row — a row the resolver's
-		// `findFirst({ isDefault: true })` never sees. Meanwhile the caller
-		// resolves on their personal default.
+	it("STATE 1: keeps the organization default null when the caller resolves personally", async () => {
+		// No organization row is marked default, so only the caller's personal
+		// runtime resolution can answer; the settings default stays null.
 		mockDb.cloudProviderConfig.findMany.mockResolvedValue([
 			row({
 				provider: "ANTHROPIC",
@@ -487,17 +521,15 @@ describe("resolvedEmbeddingProvider — asked, never inferred", () => {
 
 		const result = await callInOrg();
 
-		// The fabrication is still there — it is what the settings form reads —
-		// and the resolved field is visibly independent of it.
-		expect(result.defaultProvider).toBe("ANTHROPIC");
-		expect(result.configuredProviders[0].isDefault).toBe(true);
+		// The organization has no explicit usable default; personal runtime resolution stays separate.
+		expect(result.defaultProvider).toBeNull();
+		expect(result.configuredProviders[0].isDefault).toBe(false);
 		expect(result.resolvedEmbeddingProvider).toBe("OPENAI");
 	});
 
-	it("STATE 1, agreeing: reports the back-filled provider only because the resolver genuinely returned it", async () => {
-		// Same fabricated default, but this time the resolver really does land
-		// on ANTHROPIC. The field agrees with the back-fill here — by asking,
-		// not by copying it. That distinction is the whole change.
+	it("STATE 1, agreeing: reports the caller provider independently of the organization default", async () => {
+		// The caller's personal default happens to match the configured
+		// organization provider, but the organization still has no default.
 		//
 		// It lands there by the CALLER'S OWN default, and the mock says `user`
 		// for that reason. An organization-sourced answer would be impossible
@@ -547,7 +579,7 @@ describe("resolvedEmbeddingProvider — asked, never inferred", () => {
 		const result = await callInOrg();
 
 		expect(result.resolvedEmbeddingProvider).toBeNull();
-		expect(mockGetEmbeddingProviderConfig).toHaveBeenCalledTimes(1);
+		expect(mockGetEmbeddingProviderConfig).toHaveBeenCalledTimes(2);
 		expect(mockGetAiProviderApiKey).toHaveBeenCalledTimes(1);
 	});
 });
@@ -1015,4 +1047,73 @@ describe("the caller's plan-spent personal key", () => {
 		};
 		expect(org.configuredProviders[0].useWhenPlanSpent).toBe(false);
 	});
+});
+
+it("resolves organization embeddings on an unflagged usable default with a runtime identity", async () => {
+	mockDb.cloudProviderConfig.findMany.mockResolvedValue([
+		row({ provider: "OPENAI_DIRECT", encryptedApiKey: "example-key" }),
+	]);
+	const result = await callInOrg();
+	expect(result.organizationEmbedding).toMatchObject({
+		provider: "OPENAI_DIRECT",
+		source: "default_provider",
+		identity: "OPENAI_DIRECT:text-embedding-3-small",
+		model: { canonicalName: "text-embedding-3-small" },
+	});
+	expect(mockSelector).toHaveBeenCalledWith(
+		expect.anything(),
+		expect.objectContaining({ organizationOnly: true }),
+	);
+});
+it("does not expose the viewing admin's personal embeddings in organization status", async () => {
+	mockGetAiProviderApiKey.mockResolvedValue(
+		resolvedConfig("OPENAI_DIRECT", "user"),
+	);
+	const result = await callInOrg();
+	expect(result.resolvedEmbeddingProvider).toBe("OPENAI_DIRECT");
+	expect(result.organizationEmbedding).toEqual({
+		provider: null,
+		model: null,
+		identity: null,
+		source: null,
+	});
+});
+it("reports a redacted platform source without invoking platform key encryption or model selection", async () => {
+	const { config } = await import("@repo/config");
+	config.ai.enableGateway = true;
+	config.ai.gatewayApiKey = "example-platform-key";
+	try {
+		const result = await callInOrg();
+		expect(result.organizationEmbedding).toEqual({
+			provider: null,
+			model: null,
+			identity: null,
+			source: "platform",
+		});
+		expect(mockSelector).not.toHaveBeenCalled();
+	} finally {
+		config.ai.enableGateway = false;
+		config.ai.gatewayApiKey = "";
+	}
+});
+
+it("keeps the provider in the company identity when the canonical model is shared", async () => {
+	const identities = [];
+	for (const provider of ["VERCEL_GATEWAY", "OPENAI_DIRECT"]) {
+		mockDb.cloudProviderConfig.findMany.mockResolvedValue([
+			row({ provider, encryptedApiKey: "example-key" }),
+		]);
+		mockSelector.mockResolvedValue({
+			modelId: "example-shared-embedding",
+			canonicalName: "text-embedding-3-small",
+			displayName: "Example embedding",
+			provider,
+			providerModelId: "openai/text-embedding-3-small",
+		});
+		identities.push((await callInOrg()).organizationEmbedding.identity);
+	}
+	expect(identities).toEqual([
+		"VERCEL_GATEWAY:openai/text-embedding-3-small",
+		"OPENAI_DIRECT:text-embedding-3-small",
+	]);
 });

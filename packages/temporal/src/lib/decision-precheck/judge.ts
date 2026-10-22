@@ -325,10 +325,6 @@ export async function judgeDecisionContradictions(
 				model,
 				schema: DecisionJudgeOutputSchema,
 				prompt: buildJudgePrompt(candidates, items),
-				// Optional fields make Azure/OpenAI reject a strict JSON schema
-				// (Bug #1681); disable strict mode — the AI SDK still validates
-				// the object against the Zod schema.
-				providerOptions: { openai: { strictJsonSchema: false } },
 				abortSignal: abortController.signal,
 			}),
 			resolveTimeoutMs(),

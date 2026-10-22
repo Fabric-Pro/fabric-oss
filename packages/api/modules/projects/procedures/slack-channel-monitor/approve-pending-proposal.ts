@@ -9,9 +9,9 @@ import {
 	markPendingProposalApplied,
 	markPendingProposalApproved,
 	markPendingProposalFailed,
+	markProposalApplyDispatched,
 	type SkippedDuplicate,
 	setPendingProposalAttachmentResult,
-	setProposalApplyWorkflowId,
 	updateStory,
 } from "@repo/database";
 import { getSlackCredentials } from "@repo/integrations/slack";
@@ -71,10 +71,11 @@ import { backlogApplyWorkflowId } from "../backlog/workflow-id";
  *   - Transcript building reads Slack-shaped `messages` (`user`/`text`)
  *     before falling back to the LLM rationale.
  *
- * Status transitions match Teams exactly:
+ * Status transitions mirror Teams, except that the approved row is held in
+ * APPROVED (Teams claims it as APPLYING):
  *   - All-create proposals, no errors → APPLIED synchronously.
- *   - Mixed / update-only → APPROVED + applyWorkflowId set; the workflow flips
- *     terminal state on completion.
+ *   - Mixed / update-only → APPROVED with the update workflow's id recorded
+ *     at approval; the workflow flips terminal state on completion.
  *   - Any CREATE errors → FAILED with `applyError` populated.
  */
 
@@ -570,12 +571,16 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 		);
 
 		// Claim the approval up-front so the apply workflow can safely transition
-		// APPROVED → APPLIED/FAILED via finalizePendingProposalActivity without
-		// racing this handler.
+		// APPROVED → APPLIED/FAILED via finalizeClaimedProposalActivity's legacy
+		// APPROVED path without racing this handler. The update workflow's id is
+		// recorded now, as Teams does with its claim, so the row keeps it even
+		// when a fast finalize lands before the dispatch stamp below.
+		const updateApplyWorkflowId =
+			updates.length > 0 ? backlogApplyWorkflowId(input.projectId) : null;
 		await markPendingProposalApproved({
 			proposalId: input.proposalId,
 			reviewedBy: user.id,
-			applyWorkflowId: null,
+			applyWorkflowId: updateApplyWorkflowId,
 		});
 
 		const createdStoryIds: string[] = [];
@@ -1117,7 +1122,9 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 			try {
 				const { getTemporalClient } = await import("@repo/temporal");
 				const client = await getTemporalClient();
-				const workflowId = backlogApplyWorkflowId(input.projectId);
+				const workflowId =
+					updateApplyWorkflowId ??
+					backlogApplyWorkflowId(input.projectId);
 				const handle = await client.workflow.start(
 					"backlogApplyChangesWorkflow",
 					withCorrelationMemo({
@@ -1158,14 +1165,16 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 					}),
 				);
 				updateWorkflowId = handle.workflowId;
+				// Stamp only the still-approved row; a fast finalize may have moved it on.
 				try {
-					await setProposalApplyWorkflowId(
-						input.proposalId,
-						updateWorkflowId,
-					);
+					await markProposalApplyDispatched({
+						proposalId: input.proposalId,
+						applyWorkflowId: updateWorkflowId,
+						mode: "approved",
+					});
 				} catch (persistErr) {
 					console.error(
-						"[approvePendingProposal:slack] failed to persist applyWorkflowId (non-fatal):",
+						"[approvePendingProposal:slack] failed to stamp apply dispatch (non-fatal):",
 						persistErr,
 					);
 				}

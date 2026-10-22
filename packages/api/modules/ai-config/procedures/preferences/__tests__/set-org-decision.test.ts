@@ -3,18 +3,22 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const {
 	mockDeleteByTask,
 	mockGetDefaultProvider,
+	mockOrganizationDefault,
 	mockGetProviderByProvider,
 	mockGetModel,
 	mockSetPreference,
 } = vi.hoisted(() => ({
 	mockDeleteByTask: vi.fn(),
 	mockGetDefaultProvider: vi.fn(),
+	mockOrganizationDefault: vi.fn(),
 	mockGetProviderByProvider: vi.fn(),
 	mockGetModel: vi.fn(),
 	mockSetPreference: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
+	getOrganizationDefaultProvider: (...args: unknown[]) =>
+		mockOrganizationDefault(...args),
 	deleteOrgModelPreferencesByTaskType: (...args: unknown[]) =>
 		mockDeleteByTask(...args),
 	getAiProviderApiKey: (...args: unknown[]) =>
@@ -74,6 +78,12 @@ const decisionModel = {
 beforeEach(() => {
 	vi.clearAllMocks();
 	mockGetDefaultProvider.mockResolvedValue({ provider: "OPENAI_DIRECT" });
+	mockOrganizationDefault.mockResolvedValue("OPENAI_DIRECT");
+	mockGetProviderByProvider.mockResolvedValue({
+		provider: "VERCEL_GATEWAY",
+		source: "organization",
+		apiKey: "example-key",
+	});
 	mockGetModel.mockResolvedValue(decisionModel);
 	mockDeleteByTask.mockResolvedValue(undefined);
 	mockSetPreference.mockResolvedValue({
@@ -304,4 +314,176 @@ describe("set organization decision model preference", () => {
 		});
 		expect(mockSetPreference).not.toHaveBeenCalled();
 	});
+});
+
+// Removing the text-provider guard must make this rejection test fail.
+it.each(["SIMPLE", "COMPLEX", "REASONING", "CHAT", "TOOL_CALLING", "EVAL"])(
+	"rejects %s under a non-default provider",
+	async (taskType) => {
+		mockGetModel.mockResolvedValue({
+			id: "example-model",
+			capabilities: ["TEXT"],
+			providerMappings: [{ provider: "OPENAI_DIRECT" }],
+		});
+		await expect(
+			setPreference._handler({
+				input: {
+					organizationId: "example-org",
+					taskType,
+					modelCanonicalName: "example-text",
+					overrideProvider: "VERCEL_GATEWAY",
+				},
+				context,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: expect.stringContaining("default provider"),
+		});
+		expect(mockSetPreference).not.toHaveBeenCalled();
+		expect(mockDeleteByTask).not.toHaveBeenCalled();
+		await setPreference._handler({
+			input: {
+				organizationId: "example-org",
+				taskType,
+				modelCanonicalName: "example-text",
+				overrideProvider: "OPENAI_DIRECT",
+			},
+			context,
+		});
+		expect(mockSetPreference).toHaveBeenCalledWith(
+			expect.objectContaining({ provider: "OPENAI_DIRECT", taskType }),
+		);
+		mockGetModel.mockResolvedValue({
+			id: "example-image",
+			capabilities: ["IMAGE"],
+			providerMappings: [],
+		});
+		await setPreference._handler({
+			input: {
+				organizationId: "example-org",
+				taskType: "IMAGE",
+				modelCanonicalName: "example-image",
+				overrideProvider: "VERCEL_GATEWAY",
+			},
+			context,
+		});
+		expect(mockSetPreference).toHaveBeenCalledWith(
+			expect.objectContaining({
+				provider: "VERCEL_GATEWAY",
+				taskType: "IMAGE",
+			}),
+		);
+	},
+);
+
+it.each(["SIMPLE", "COMPLEX", "REASONING", "CHAT", "TOOL_CALLING", "EVAL"])(
+	"rejects %s when enabled organization providers have no explicit default",
+	async (taskType) => {
+		mockOrganizationDefault.mockResolvedValue(null);
+		// The admin's personal fallback must never authorize an organization text save.
+		mockGetDefaultProvider.mockResolvedValue({
+			provider: "OPENAI_DIRECT",
+			source: "user",
+		});
+		mockGetModel.mockResolvedValue({
+			id: "example-model",
+			capabilities: ["TEXT"],
+			providerMappings: [{ provider: "OPENAI_DIRECT" }],
+		});
+		await expect(
+			setPreference._handler({
+				input: {
+					organizationId: "example-org",
+					taskType,
+					modelCanonicalName: "example-text",
+					overrideProvider: "OPENAI_DIRECT",
+				},
+				context,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: "Choose a default API provider for the organization first",
+		});
+		expect(mockOrganizationDefault).toHaveBeenCalledWith("example-org");
+		expect(mockSetPreference).not.toHaveBeenCalled();
+		expect(mockDeleteByTask).not.toHaveBeenCalled();
+	},
+);
+
+it("saves text against the organization default when the caller's fallback provider differs", async () => {
+	mockOrganizationDefault.mockResolvedValue("OPENAI_DIRECT");
+	mockGetDefaultProvider.mockResolvedValue({
+		provider: "ANTHROPIC_DIRECT",
+		source: "user",
+	});
+	mockGetModel.mockResolvedValue({
+		id: "example-model",
+		capabilities: ["TEXT"],
+		providerMappings: [{ provider: "OPENAI_DIRECT" }],
+	});
+	await setPreference._handler({
+		input: {
+			organizationId: "example-org",
+			taskType: "CHAT",
+			modelCanonicalName: "example-text",
+		},
+		context,
+	});
+	expect(mockSetPreference).toHaveBeenCalledWith(
+		expect.objectContaining({
+			organizationId: "example-org",
+			provider: "OPENAI_DIRECT",
+			taskType: "CHAT",
+			modelId: "example-model",
+		}),
+	);
+});
+
+it("rejects IMAGE saves outside Vercel AI Gateway before deleting the saved choice", async () => {
+	mockGetModel.mockResolvedValue({
+		id: "example-image",
+		canonicalName: "example-image",
+		capabilities: ["IMAGE"],
+		providerMappings: [{ provider: "OPENAI_DIRECT" }],
+	});
+	await expect(
+		setPreference._handler({
+			input: {
+				organizationId: "example-org",
+				taskType: "IMAGE",
+				modelCanonicalName: "example-image",
+				overrideProvider: "OPENAI_DIRECT",
+			},
+			context,
+		}),
+	).rejects.toMatchObject({ code: "BAD_REQUEST" });
+	expect(mockSetPreference).not.toHaveBeenCalled();
+	expect(mockDeleteByTask).not.toHaveBeenCalled();
+});
+
+it("refuses IMAGE when the organization gateway lacks a usable key", async () => {
+	mockGetProviderByProvider.mockResolvedValue({
+		provider: "VERCEL_GATEWAY",
+		source: "organization",
+		apiKey: null,
+	});
+	mockGetModel.mockResolvedValue({
+		id: "example-image",
+		canonicalName: "example-image",
+		capabilities: ["IMAGE"],
+		providerMappings: [{ provider: "VERCEL_GATEWAY" }],
+	});
+	await expect(
+		setPreference._handler({
+			input: {
+				organizationId: "example-org",
+				taskType: "IMAGE",
+				modelCanonicalName: "example-image",
+				overrideProvider: "VERCEL_GATEWAY",
+			},
+			context,
+		}),
+	).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+	expect(mockDeleteByTask).not.toHaveBeenCalled();
+	expect(mockSetPreference).not.toHaveBeenCalled();
 });

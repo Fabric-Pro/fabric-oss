@@ -11,9 +11,8 @@ import type { AgendaContext } from "./collect-agenda-context";
  * (user editing) simple — nothing has to be reconciled back into a structured
  * document after a human rewrites a bullet.
  *
- * NOTE for the caller: this schema has optional fields, so the generateObject
- * call MUST pass `providerOptions: { openai: { strictJsonSchema: false } }` or
- * Azure rejects the request outright (bug #1681).
+ * Structured-output schema conversion and provider flags are selected by the
+ * shared packages/ai middleware; callers keep this optional-field contract.
  */
 export const AgendaSchema = z.object({
 	items: z

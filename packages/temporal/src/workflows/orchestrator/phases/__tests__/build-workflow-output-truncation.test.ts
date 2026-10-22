@@ -41,6 +41,7 @@ vi.mock("@temporalio/workflow", () => ({
 }));
 
 import { createInitialState, type WorkflowState } from "../../types";
+import { streamFailureResult } from "../../usage-limit";
 import { buildWorkflowOutput } from "../completion";
 
 function buildState(overrides: Partial<WorkflowState> = {}): WorkflowState {
@@ -356,5 +357,37 @@ describe("buildWorkflowOutput — tool-call truncation", () => {
 		expect(typeof nested?.args).toBe("object");
 		expect(flat.args).toEqual({ elements });
 		expect(nested?.args).toEqual({ elements });
+	});
+});
+
+describe("workflow output usage refusal", () => {
+	it("carries a refusal from the failed iteration into the workflow output", () => {
+		const usageLimit = {
+			message: "limit reached",
+			limitId: "example-limit",
+			dimension: "TOKENS" as const,
+			window: "DAILY" as const,
+			used: "10",
+			max: "10",
+			manageLimitsUrl: "/settings/limits",
+		};
+		const phase = streamFailureResult({
+			message: usageLimit.message,
+			usageLimit,
+		});
+		expect(phase).toMatchObject({ success: false, shouldContinue: false });
+		expect(
+			buildWorkflowOutput(
+				buildState(),
+				"failed",
+				phase.error,
+				undefined,
+				phase.usageLimit,
+			),
+		).toMatchObject({
+			status: "failed",
+			error: "LLM stream error: limit reached",
+			usageLimit,
+		});
 	});
 });

@@ -32,14 +32,21 @@ const {
 	};
 	const mockOrgCreate = vi.fn();
 	const txOrg = {
+		findMany: vi.fn(async () => []),
 		findUnique: vi.fn(),
 		findFirst: vi.fn(),
 		updateMany: vi.fn().mockResolvedValue({ count: 0 }),
 		create: mockOrgCreate,
 	};
 	const mockDb = {
+		cloudProviderConfig: { findFirst: vi.fn(async () => null) },
+		userCloudProviderConfig: { findFirst: vi.fn(async () => null) },
 		$transaction: vi.fn(async (cb: (tx: unknown) => unknown) =>
-			cb({ userCloudProviderConfig: txUser, cloudProviderConfig: txOrg }),
+			cb({
+				$queryRaw: vi.fn(async () => []),
+				userCloudProviderConfig: txUser,
+				cloudProviderConfig: txOrg,
+			}),
 		),
 	};
 	return {
@@ -56,8 +63,32 @@ const {
 	};
 });
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/ai/model-selector", () => ({
+	selectModelDynamic: vi.fn(async () => ({
+		modelId: "example-default",
+		canonicalName: "example-default",
+		displayName: "Example default",
+	})),
+}));
+
+vi.mock("@repo/database", async () => ({
+	organizationDefaultProviderWhere: (
+		await vi.importActual<
+			typeof import("../../../../../../database/prisma/queries/ai-gateway")
+		>("../../../../../../database/prisma/queries/ai-gateway")
+	).organizationDefaultProviderWhere,
+	readProviderRowCredentials: (
+		await vi.importActual<
+			typeof import("../../../../../../database/prisma/queries/ai-gateway")
+		>("../../../../../../database/prisma/queries/ai-gateway")
+	).readProviderRowCredentials,
+	lockTenantProviderConnections: (
+		await import(
+			"../../../../../../database/prisma/queries/provider-write-locks"
+		)
+	).lockTenantProviderConnections,
 	db: mockDb,
+	taskDefaultsSnapshotMutation: vi.fn(async () => ({})),
 	LLM_PROVIDER_PURPOSE_FILTER: { purpose: { not: "EMBEDDINGS_ONLY" } },
 	getProviderMetadata: (...args: unknown[]) =>
 		mockGetProviderMetadata(...args),

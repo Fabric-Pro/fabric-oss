@@ -16,6 +16,7 @@ import {
 	ALL_IMAGE_CAPABLE_PROVIDERS,
 	db,
 	GATEWAY_PROVIDERS,
+	getOrganizationDefaultProvider,
 } from "@repo/database";
 import type { AiProviderPurpose } from "@repo/database/prisma/zod";
 
@@ -108,6 +109,9 @@ export async function getConfiguredProviders(
 			orderBy: [{ isDefault: "desc" }, { priority: "desc" }],
 		});
 
+		const organizationDefault =
+			await getOrganizationDefaultProvider(organizationId);
+
 		for (const config of orgProviders) {
 			const configData = config.config as Record<string, unknown>;
 			const enabledProviders =
@@ -126,7 +130,8 @@ export async function getConfiguredProviders(
 				id: config.id,
 				provider: config.provider,
 				displayName: config.displayName,
-				isDefault: config.isDefault,
+				isDefault:
+					config.isDefault && config.provider === organizationDefault,
 				priority: config.priority,
 				enabledProviders: providers,
 				purpose: config.purpose,
@@ -135,7 +140,7 @@ export async function getConfiguredProviders(
 
 			allProviders.push(gateway);
 
-			if (config.isDefault && !defaultProvider) {
+			if (gateway.isDefault && !defaultProvider) {
 				defaultProvider = gateway;
 			}
 		}
@@ -179,8 +184,8 @@ export async function getConfiguredProviders(
 		}
 	}
 
-	// If no default, use first configured that may serve LLM work
-	if (!defaultProvider) {
+	// Preserve the legacy fallback in personal context only.
+	if (!organizationId && !defaultProvider) {
 		defaultProvider =
 			allProviders.find((p) => p.purpose !== "EMBEDDINGS_ONLY") ?? null;
 		if (defaultProvider) {

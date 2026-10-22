@@ -11,6 +11,7 @@
  * See that module for why the tool exists (Fizzy #2473).
  */
 
+import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import {
 	listProjectMeetingTranscripts,
@@ -45,6 +46,10 @@ export class MeetingTranscriptsHandler implements StepHandler {
 			// Inside a chat turn's dispatch guard a stop is not a step failure
 			// to report or fall back from; a no-op outside one.
 			rethrowIfDispatchStopped(error);
+			const usageLimitError = findAiUsageLimitError(error);
+			if (usageLimitError) {
+				throw usageLimitError;
+			}
 			const message =
 				error instanceof Error ? error.message : String(error);
 			console.error("[MeetingTranscriptsHandler] failed:", error);

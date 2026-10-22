@@ -21,12 +21,23 @@ const {
 	assertWithinAiUsageLimitsMock,
 	getAiProviderApiKeyMock,
 	getModelForTaskMock,
+	getModelByCanonicalNameMock,
+	getProviderModelMappingForCanonicalMock,
+	getProviderModelIdForCanonicalMock,
+	getCanonicalNameForProviderModelIdMock,
 	getModelMock,
 	logAiUsageAsyncMock,
 } = vi.hoisted(() => ({
 	assertWithinAiUsageLimitsMock: vi.fn(),
 	getAiProviderApiKeyMock: vi.fn(),
 	getModelForTaskMock: vi.fn(),
+	getModelByCanonicalNameMock: vi.fn(),
+	getProviderModelMappingForCanonicalMock: vi.fn(async () => ({
+		exists: false,
+		providerModelId: null,
+	})),
+	getProviderModelIdForCanonicalMock: vi.fn(),
+	getCanonicalNameForProviderModelIdMock: vi.fn(),
 	getModelMock: vi.fn(),
 	logAiUsageAsyncMock: vi.fn(),
 }));
@@ -38,7 +49,11 @@ vi.mock("@repo/database", () => ({
 	getAiProviderApiKeyByProvider: vi.fn(),
 	getEmbeddingProviderConfig: vi.fn(),
 	getModelForTask: getModelForTaskMock,
-	getProviderModelIdForCanonical: vi.fn(),
+	getProviderModelIdForCanonical: getProviderModelIdForCanonicalMock,
+	getModelByCanonicalName: getModelByCanonicalNameMock,
+	getProviderModelMappingForCanonical:
+		getProviderModelMappingForCanonicalMock,
+	getCanonicalNameForProviderModelId: getCanonicalNameForProviderModelIdMock,
 	getSystemAiProviderApiKey: vi.fn(),
 	getTaskDefaultModel: vi.fn(),
 	updateProviderLastUsed: vi.fn(() => Promise.resolve()),
@@ -321,5 +336,137 @@ describe("getAIModelWithMetadata — per-request usage-limit check", () => {
 		expect(assertWithinAiUsageLimitsMock.mock.calls[2]).toEqual([
 			LIMIT_SCOPE,
 		]);
+	});
+});
+
+describe("model override catalog identity", () => {
+	beforeEach(() => {
+		getAiProviderApiKeyMock.mockResolvedValue({
+			...ORGANIZATION_GATEWAY,
+			provider: "DATABRICKS",
+			baseUrl: "https://example.com/serving-endpoints",
+		});
+		getModelForTaskMock.mockResolvedValue({
+			...SELECTION,
+			model: {
+				...SELECTION.model,
+				providerMappings: [
+					{
+						isAvailable: true,
+						provider: "DATABRICKS",
+						providerModelId: "system.ai.example-default",
+					},
+				],
+			},
+			providerModelId: "system.ai.example-default",
+		});
+		getProviderModelIdForCanonicalMock.mockResolvedValue(null);
+		getProviderModelMappingForCanonicalMock.mockResolvedValue({
+			exists: false,
+			providerModelId: null,
+		});
+		getModelByCanonicalNameMock.mockResolvedValue(null);
+		getCanonicalNameForProviderModelIdMock.mockResolvedValue(null);
+	});
+
+	it.each([
+		["system.ai.claude-sonnet-5", "claude-sonnet-5", false],
+		["claude-sonnet-5", "claude-sonnet-5", true],
+		["example-unknown-model", "example-unknown-model", false],
+	])(
+		"resolves %s identity to %s without changing dispatch",
+		async (override, canonicalName, mapped) => {
+			if (mapped) {
+				getProviderModelMappingForCanonicalMock.mockResolvedValue({
+					exists: true,
+					providerModelId: "system.ai.claude-sonnet-5",
+				});
+			} else if (override === "system.ai.claude-sonnet-5") {
+				getCanonicalNameForProviderModelIdMock.mockResolvedValue(
+					canonicalName,
+				);
+			}
+			const resolved = await getAIModelWithMetadata(
+				{ taskType: "CHAT", modelOverride: override },
+				CONTEXT,
+			);
+			expect(resolved.metadata.canonicalName).toBe(canonicalName);
+			expect(resolved.metadata.modelString).toBe(
+				mapped ? "system.ai.claude-sonnet-5" : override,
+			);
+			expect(resolved.metadata.selectionSource).toBe("override");
+			expect(resolved.metadata.maxOutputTokens).toBeUndefined();
+			expect(resolved.metadata.contextWindow).toBeUndefined();
+			expect(getModelMock).toHaveBeenCalledWith(
+				resolved.metadata.modelString,
+				expect.objectContaining({
+					canonicalModelName: canonicalName,
+					isReasoningModel: false,
+				}),
+			);
+			await generateText({ model: resolved.model, prompt: "Hi" });
+			for (const [scope] of assertWithinAiUsageLimitsMock.mock.calls) {
+				expect(scope.modelCanonicalName).toBe(canonicalName);
+			}
+			expect(logAiUsageAsyncMock).toHaveBeenCalledWith(
+				expect.objectContaining({ modelCanonicalName: canonicalName }),
+			);
+			expect(
+				getProviderModelMappingForCanonicalMock,
+			).toHaveBeenCalledTimes(1);
+			expect(getModelByCanonicalNameMock).not.toHaveBeenCalled();
+			expect(getProviderModelIdForCanonicalMock).not.toHaveBeenCalled();
+			if (mapped) {
+				expect(
+					getCanonicalNameForProviderModelIdMock,
+				).not.toHaveBeenCalled();
+				expect(getModelByCanonicalNameMock).not.toHaveBeenCalled();
+			} else {
+				expect(
+					getCanonicalNameForProviderModelIdMock,
+				).toHaveBeenCalledWith(override, "DATABRICKS");
+			}
+		},
+	);
+
+	it("keeps a canonical without a mapping before considering reverse matches", async () => {
+		getProviderModelMappingForCanonicalMock.mockResolvedValue({
+			exists: true,
+			providerModelId: null,
+		});
+		const resolved = await getAIModelWithMetadata(
+			{ taskType: "CHAT", modelOverride: "claude-sonnet-5" },
+			CONTEXT,
+		);
+		expect(resolved.metadata.canonicalName).toBe("claude-sonnet-5");
+		expect(resolved.metadata.modelString).toBe("claude-sonnet-5");
+		expect(getModelByCanonicalNameMock).not.toHaveBeenCalled();
+		expect(getProviderModelMappingForCanonicalMock).toHaveBeenCalledTimes(
+			1,
+		);
+		expect(
+			getProviderModelIdForCanonicalMock,
+		).toHaveBeenCalledExactlyOnceWith(
+			"claude-sonnet-5",
+			"OPENAI_CHATGPT_PLAN",
+		);
+		expect(getCanonicalNameForProviderModelIdMock).not.toHaveBeenCalled();
+	});
+	it("uses the canonical identity for reasoning detection on an opaque provider id", async () => {
+		getCanonicalNameForProviderModelIdMock.mockResolvedValue("deepseek-r1");
+		const resolved = await getAIModelWithMetadata(
+			{ taskType: "CHAT", modelOverride: "system.ai.example-endpoint" },
+			CONTEXT,
+		);
+		expect(resolved.metadata.modelString).toBe(
+			"system.ai.example-endpoint",
+		);
+		expect(getModelMock).toHaveBeenCalledWith(
+			"system.ai.example-endpoint",
+			expect.objectContaining({
+				canonicalModelName: "deepseek-r1",
+				isReasoningModel: true,
+			}),
+		);
 	});
 });

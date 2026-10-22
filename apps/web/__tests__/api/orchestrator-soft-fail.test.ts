@@ -67,7 +67,7 @@ vi.mock("@repo/database", async () => ({
 }));
 
 const SESSION_USER_ID = "user-soft-fail-1";
-const EXECUTION_ID = "orch-9294c339-2222-4333-8444-555555555555";
+const EXECUTION_ID = "orch-11111111-2222-4333-8444-555555555555";
 
 /** Drains an SSE response body and returns the parsed `data:` events. */
 async function readEvents(response: Response) {
@@ -152,9 +152,94 @@ describe("POST orchestrator-temporal/stream — soft-failed workflow result", ()
 			message:
 				"provider signalled finishReason=tool-calls but streamed no tool-call parts (text: 15 chars)",
 		});
+		expect(errorEvent).not.toHaveProperty("code");
+		expect(errorEvent).not.toHaveProperty("data");
 		// The partial-stub response must never reach the client as a
 		// successful completion.
 		expect(events.find((e) => e.type === "completed")).toBeUndefined();
+	});
+
+	it.each(["structured", "text", "FAILED"] as const)(
+		"emits usage-limit data for %s refusal",
+		async (kind) => {
+			const message =
+				"LLM stream error: AI usage limit exceeded: example-limit (TOKENS, DAILY) — used 10 of 10";
+			const data = {
+				limitId: "example-limit",
+				dimension: "TOKENS",
+				window: "DAILY",
+				used: "10",
+				max: "10",
+				manageLimitsUrl: "/settings/limits",
+			};
+			getHandleMock.mockReturnValue({
+				workflowId: EXECUTION_ID,
+				describe: async () => ({
+					status: {
+						name: kind === "FAILED" ? "FAILED" : "COMPLETED",
+					},
+					memo: { userId: SESSION_USER_ID },
+				}),
+				query: async () => {
+					throw new Error("workflow closed");
+				},
+				result: async () => {
+					if (kind === "FAILED") {
+						throw new Error(message);
+					}
+					return {
+						status: "failed",
+						error: message,
+						toolCalls: [],
+						usageLimit:
+							kind === "structured"
+								? { ...data, message }
+								: undefined,
+					};
+				},
+			});
+			const { POST } = await import(
+				"../../app/api/agents/fabric-ai/orchestrator-temporal/stream/route"
+			);
+			const events = await readEvents(
+				await POST(postBody({ executionId: EXECUTION_ID })),
+			);
+			expect(events.find((e) => e.type === "error")).toMatchObject({
+				type: "error",
+				code: "AI_USAGE_LIMIT_EXCEEDED",
+				data: {
+					...data,
+					manageLimitsUrl:
+						kind === "structured" ? "/settings/limits" : "",
+				},
+			});
+			expect(events.find((e) => e.type === "completed")).toBeUndefined();
+		},
+	);
+
+	it("replays the stored refusal as a structured error without attaching to Temporal", async () => {
+		const { getConversationTurnForExecution } = await import(
+			"@repo/database"
+		);
+		vi.mocked(getConversationTurnForExecution).mockResolvedValueOnce({
+			id: "example-turn",
+			status: "FAILED",
+			executionId: EXECUTION_ID,
+			scopeConversationId: null,
+			terminalReason:
+				"AI usage limit exceeded: example-limit (TOKENS, DAILY) — used 10 of 10",
+		} as never);
+		const { POST } = await import(
+			"../../app/api/agents/fabric-ai/orchestrator-temporal/stream/route"
+		);
+		const events = await readEvents(
+			await POST(postBody({ executionId: EXECUTION_ID })),
+		);
+		expect(events.find((e) => e.type === "error")).toMatchObject({
+			code: "AI_USAGE_LIMIT_EXCEEDED",
+			data: { limitId: "example-limit", manageLimitsUrl: "" },
+		});
+		expect(getHandleMock).not.toHaveBeenCalled();
 	});
 
 	it("falls back to a generic message when the failed result carries no `error` string", async () => {

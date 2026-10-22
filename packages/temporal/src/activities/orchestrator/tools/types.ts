@@ -33,6 +33,10 @@ export interface SearchAvailableToolsInput extends SecondaryUsageInput {
 	useSemanticSearch?: boolean;
 	/** User ID for MCP config access */
 	userId: string;
+	/** Undefined leaves discovery unchanged; an empty array hides workspace tools. */
+	workspaceIds?: string[];
+	/** Null hides project-only tools; omission preserves discovery without run context. */
+	projectId?: string | null;
 	/** Organization ID for MCP config access */
 	organizationId?: string;
 	// SECURITY: Credentials are fetched internally by generateEmbedding()

@@ -12,10 +12,14 @@ import {
 	ALL_EMBEDDING_CAPABLE_PROVIDERS,
 	canProviderSupportEmbeddings,
 	db,
-	getEmbeddingProviderConfig,
 	getProviderDisplayName,
 	getProviderMetadata,
 	LLM_PROVIDER_PURPOSE_FILTER,
+	lockTenantProviderConnections,
+	organizationDefaultProviderWhere,
+	type Prisma,
+	readProviderRowCredentials,
+	taskDefaultsSnapshotMutation,
 } from "@repo/database";
 import {
 	type AiProviderPurpose,
@@ -31,8 +35,18 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { requireOrgMembership } from "../../../organizations/lib/membership";
+import {
+	defaultProviderSwitchPreviewSchema,
+	defaultProviderSwitchRules,
+	EMBEDDINGS_ONLY_DEFAULT_MESSAGE,
+	pinDefaultSwitchEmbeddings,
+	planDefaultProviderSwitch,
+	prepareDefaultSwitchEmbeddings,
+	previewDefaultProviderSwitch,
+} from "../../lib/default-provider-switch";
 import { assertEmbeddingPreferenceFitsVectorStore } from "../../lib/embedding-model-guard";
 import {
+	type ProviderAuditScope,
 	type ProviderAuditSnapshot,
 	recordProviderConfigured,
 	recordProviderDeleted,
@@ -79,9 +93,6 @@ function buildCredentialFields(input: {
 		encryptedClientSecret: null,
 	};
 }
-
-const EMBEDDINGS_ONLY_DEFAULT_MESSAGE =
-	"An embeddings-only key cannot be the default AI provider. Change its purpose to allow all AI work first.";
 
 /**
  * Validate a save's purpose against the request and the tenant's other rows.
@@ -190,6 +201,96 @@ interface UpsertOutcome {
 	/** Row state before the write (null when created) and after it. */
 	before: ProviderAuditSnapshot | null;
 	after: ProviderAuditSnapshot;
+	embeddingPin?: {
+		id: string;
+		provider: string;
+		previousEmbeddingProvider: string | null;
+	} | null;
+}
+
+function recordDefaultSwitchEmbeddingPin(
+	context: Parameters<typeof recordProviderSettingChanged>[0],
+	scope: ProviderAuditScope,
+	pin: UpsertOutcome["embeddingPin"],
+) {
+	if (pin) {
+		recordProviderSettingChanged(context, scope, "embedding_changed", pin, {
+			before: { isEmbeddingProvider: false },
+			after: { isEmbeddingProvider: true },
+			details: {
+				reason: "pinned_by_default_switch",
+				previousEmbeddingProvider: pin.previousEmbeddingProvider,
+			},
+		});
+	}
+}
+
+/** Only a usable LLM key may be promoted, even when a stale default flag exists. */
+async function findUsableOrganizationProvider(
+	tx: Prisma.TransactionClient,
+	organizationId: string,
+	exclude: Prisma.CloudProviderConfigWhereInput = {},
+) {
+	const rows = await tx.cloudProviderConfig.findMany({
+		where: {
+			organizationId,
+			enabled: true,
+			...LLM_PROVIDER_PURPOSE_FILTER,
+			...exclude,
+		},
+	});
+	return (
+		rows.find((row) => readProviderRowCredentials(row).hasCredentials) ??
+		null
+	);
+}
+
+/** Resolve the default from locked tenant rows before changing any flags. */
+async function findResolvedDefaultProvider(
+	tx: Prisma.TransactionClient,
+	scope: { type: "organization" | "user"; id: string },
+) {
+	const row =
+		scope.type === "organization"
+			? await tx.cloudProviderConfig.findFirst({
+					where: organizationDefaultProviderWhere(scope.id),
+				})
+			: await tx.userCloudProviderConfig.findFirst({
+					where: {
+						userId: scope.id,
+						isDefault: true,
+						enabled: true,
+						...LLM_PROVIDER_PURPOSE_FILTER,
+					},
+				});
+	return row && readProviderRowCredentials(row).hasCredentials
+		? row.provider
+		: null;
+}
+
+async function promoteOrganizationProvider(
+	tx: Prisma.TransactionClient,
+	organizationId: string,
+	id: string,
+	currentDefaultProvider: AIProvider | null,
+) {
+	const target = await tx.cloudProviderConfig.findUnique({ where: { id } });
+	const snapshotMutation = target
+		? await taskDefaultsSnapshotMutation(
+				target.provider,
+				{ isDefault: currentDefaultProvider === target.provider },
+				true,
+				tx,
+			)
+		: {};
+	await tx.cloudProviderConfig.updateMany({
+		where: { organizationId },
+		data: { isDefault: false },
+	});
+	await tx.cloudProviderConfig.update({
+		where: { id },
+		data: { isDefault: true, ...snapshotMutation },
+	});
 }
 
 /**
@@ -198,6 +299,7 @@ interface UpsertOutcome {
  */
 interface OrganizationProviderUpsert {
 	organizationId: string;
+	userId: string;
 	provider: AIProvider;
 	displayName: string;
 	credentials: ProviderCredentialFields;
@@ -211,6 +313,7 @@ interface OrganizationProviderUpsert {
 
 async function upsertOrganizationProvider({
 	organizationId,
+	userId,
 	provider,
 	displayName,
 	credentials,
@@ -220,9 +323,22 @@ async function upsertOrganizationProvider({
 	baseUrl,
 	deploymentName,
 }: OrganizationProviderUpsert): Promise<UpsertOutcome> {
-	// Use transaction to ensure atomicity of all reads and writes
-	// This prevents race conditions that could leave no default or multiple defaults
+	const preparedEmbeddings = await prepareDefaultSwitchEmbeddings({
+		organizationId,
+		userId,
+		targetProvider: isDefault === true ? provider : undefined,
+	});
+	// Revalidate the pre-read under lock before committing provider writes
+	// Existing targets are locked before deriving their default transition.
 	return await db.$transaction(async (tx) => {
+		await lockTenantProviderConnections(tx, {
+			type: "organization",
+			id: organizationId,
+		});
+		const currentDefaultProvider = await findResolvedDefaultProvider(tx, {
+			type: "organization",
+			id: organizationId,
+		});
 		// Check if this provider already exists for this organization
 		const existing = await tx.cloudProviderConfig.findUnique({
 			where: {
@@ -250,26 +366,25 @@ async function upsertOrganizationProvider({
 		}
 
 		// Determine if this should be default (first provider or explicitly set)
-		// All reads must be inside transaction to prevent race conditions.
+		// Derive the default choice after locking and refreshing the target.
 		// Embeddings-only rows never count: they can never be the default.
-		const otherEnabledProvider = await tx.cloudProviderConfig.findFirst({
-			where: {
-				organizationId,
-				enabled: true,
-				...LLM_PROVIDER_PURPOSE_FILTER,
-				...notThisRow,
-			},
-		});
+		const otherEnabledProvider = await findUsableOrganizationProvider(
+			tx,
+			organizationId,
+			notThisRow,
+		);
 		// Check if there's another provider that IS default (not just enabled)
-		const otherDefaultProvider = await tx.cloudProviderConfig.findFirst({
+		const otherDefaultRow = await tx.cloudProviderConfig.findFirst({
 			where: {
-				organizationId,
-				enabled: true,
-				isDefault: true,
-				...LLM_PROVIDER_PURPOSE_FILTER,
+				...organizationDefaultProviderWhere(organizationId),
 				...notThisRow,
 			},
 		});
+		const otherDefaultProvider =
+			otherDefaultRow &&
+			readProviderRowCredentials(otherDefaultRow).hasCredentials
+				? otherDefaultRow
+				: null;
 		// Logic:
 		// 0. An embeddings-only key is never default
 		// 1. If explicitly set to true, use that
@@ -282,8 +397,31 @@ async function upsertOrganizationProvider({
 				!otherEnabledProvider ||
 				!otherDefaultProvider);
 
-		// Clear existing defaults if this provider will become default
+		const snapshotMutation = await taskDefaultsSnapshotMutation(
+			provider,
+			existing
+				? { isDefault: currentDefaultProvider === provider }
+				: null,
+			shouldBeDefault,
+			tx,
+		);
+
+		let embeddingPin: UpsertOutcome["embeddingPin"] = null;
+		// Validate routing and pin before changing the default; upsert keeps saved preferences.
 		if (shouldBeDefault) {
+			const currentDefault = await tx.cloudProviderConfig.findFirst({
+				where: organizationDefaultProviderWhere(organizationId),
+			});
+			embeddingPin = (
+				await pinDefaultSwitchEmbeddings(tx, {
+					organizationId,
+					userId,
+					targetProvider: provider,
+					prepared: preparedEmbeddings,
+					currentDefault,
+				})
+			).pin;
+
 			await tx.cloudProviderConfig.updateMany({
 				where: { organizationId, isDefault: true },
 				data: { isDefault: false },
@@ -303,11 +441,16 @@ async function upsertOrganizationProvider({
 				data: { isEmbeddingProvider: false },
 			});
 			// Never leave the organization without a default it could have.
-			if (!otherDefaultProvider && otherEnabledProvider) {
-				await tx.cloudProviderConfig.update({
-					where: { id: otherEnabledProvider.id },
-					data: { isDefault: true },
-				});
+			if (
+				otherEnabledProvider &&
+				(!currentDefaultProvider || currentDefaultProvider === provider)
+			) {
+				await promoteOrganizationProvider(
+					tx,
+					organizationId,
+					otherEnabledProvider.id,
+					currentDefaultProvider,
+				);
 			}
 		}
 		const purposeFields = {
@@ -337,6 +480,7 @@ async function upsertOrganizationProvider({
 					displayName,
 					enabled: true,
 					isDefault: shouldBeDefault,
+					...snapshotMutation,
 					...purposeFields,
 					updatedAt: new Date(),
 				},
@@ -353,6 +497,7 @@ async function upsertOrganizationProvider({
 				},
 				before: snapshotProviderRow(existing),
 				after: snapshotProviderRow(updated),
+				embeddingPin,
 			};
 		}
 
@@ -373,6 +518,7 @@ async function upsertOrganizationProvider({
 				displayName,
 				enabled: true,
 				isDefault: shouldBeDefault,
+				...snapshotMutation,
 				...purposeFields,
 				priority: 1,
 				updatedAt: new Date(),
@@ -394,6 +540,7 @@ async function upsertOrganizationProvider({
 			},
 			before: null,
 			after: snapshotProviderRow(created),
+			embeddingPin,
 		};
 	});
 }
@@ -536,6 +683,7 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 
 			const outcome = await upsertOrganizationProvider({
 				organizationId,
+				userId: user.id,
 				provider,
 				displayName,
 				credentials,
@@ -551,14 +699,34 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 				outcome.result,
 				{ before: outcome.before, after: outcome.after, keyChanged },
 			);
+			recordDefaultSwitchEmbeddingPin(
+				context,
+				{ kind: "org", organizationId },
+				outcome.embeddingPin,
+			);
 			return outcome.result;
 		}
 
+		const preparedEmbeddings = await prepareDefaultSwitchEmbeddings({
+			organizationId,
+			userId: user.id,
+			targetProvider: input.isDefault === true ? provider : undefined,
+		});
+
 		// Otherwise, save to user-level config
-		// Use transaction to ensure atomicity of all reads and writes
-		// This prevents race conditions that could leave no default or multiple defaults
+		// Revalidate the pre-read under lock before committing provider writes
+		// Existing targets are locked before deriving their default transition.
 		const outcome = await db.$transaction(
 			async (tx): Promise<UpsertOutcome> => {
+				await lockTenantProviderConnections(tx, {
+					type: "user",
+					id: user.id,
+				});
+				const currentDefaultProvider =
+					await findResolvedDefaultProvider(tx, {
+						type: "user",
+						id: user.id,
+					});
 				// Check if this provider already exists for this user
 				const existing = await tx.userCloudProviderConfig.findUnique({
 					where: {
@@ -587,7 +755,7 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 				}
 
 				// Determine if this should be default (first provider or explicitly set)
-				// All reads must be inside transaction to prevent race conditions.
+				// Derive the default choice after locking and refreshing the target.
 				// Embeddings-only rows never count: they can never be the default.
 				const otherEnabledProvider =
 					await tx.userCloudProviderConfig.findFirst({
@@ -621,8 +789,37 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 						!otherEnabledProvider ||
 						!otherDefaultProvider);
 
-				// Clear existing defaults if this provider will become default
+				const snapshotMutation = await taskDefaultsSnapshotMutation(
+					provider,
+					existing
+						? { isDefault: currentDefaultProvider === provider }
+						: null,
+					shouldBeDefault,
+					tx,
+				);
+
+				let embeddingPin: UpsertOutcome["embeddingPin"] = null;
+				// Validate routing and pin before changing the default; upsert keeps saved preferences.
 				if (shouldBeDefault) {
+					const currentDefault =
+						await tx.userCloudProviderConfig.findFirst({
+							where: {
+								userId: user.id,
+								isDefault: true,
+								enabled: true,
+								...LLM_PROVIDER_PURPOSE_FILTER,
+							},
+						});
+					embeddingPin = (
+						await pinDefaultSwitchEmbeddings(tx, {
+							organizationId,
+							userId: user.id,
+							targetProvider: provider,
+							prepared: preparedEmbeddings,
+							currentDefault,
+						})
+					).pin;
+
 					await tx.userCloudProviderConfig.updateMany({
 						where: { userId: user.id, isDefault: true },
 						data: { isDefault: false },
@@ -645,10 +842,26 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 						data: { isEmbeddingProvider: false },
 					});
 					// Never leave the account without a default it could have.
-					if (!otherDefaultProvider && otherEnabledProvider) {
+					if (
+						otherEnabledProvider &&
+						(!currentDefaultProvider ||
+							currentDefaultProvider === provider)
+					) {
 						await tx.userCloudProviderConfig.update({
 							where: { id: otherEnabledProvider.id },
-							data: { isDefault: true },
+							data: {
+								isDefault: true,
+								...(await taskDefaultsSnapshotMutation(
+									otherEnabledProvider.provider,
+									{
+										isDefault:
+											currentDefaultProvider ===
+											otherEnabledProvider.provider,
+									},
+									true,
+									tx,
+								)),
+							},
 						});
 					}
 				}
@@ -689,6 +902,7 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 							displayName,
 							enabled: true,
 							isDefault: shouldBeDefault,
+							...snapshotMutation,
 							...purposeFields,
 							updatedAt: new Date(),
 						},
@@ -705,6 +919,7 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 						},
 						before: snapshotProviderRow(existing),
 						after: snapshotProviderRow(updated),
+						embeddingPin,
 					};
 				}
 
@@ -731,6 +946,7 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 						displayName,
 						enabled: true,
 						isDefault: shouldBeDefault,
+						...snapshotMutation,
 						...purposeFields,
 						priority: 1,
 						updatedAt: new Date(),
@@ -748,6 +964,7 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 					},
 					before: null,
 					after: snapshotProviderRow(created),
+					embeddingPin,
 				};
 			},
 		);
@@ -756,6 +973,11 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 			after: outcome.after,
 			keyChanged,
 		});
+		recordDefaultSwitchEmbeddingPin(
+			context,
+			{ kind: "account" },
+			outcome.embeddingPin,
+		);
 		return outcome.result;
 	});
 
@@ -805,6 +1027,15 @@ export const deleteUserProviderProcedure = tenantProtectedProcedure
 
 			// Use transaction to ensure atomicity of delete + potential default reassignment
 			const deleted = await db.$transaction(async (tx) => {
+				await lockTenantProviderConnections(tx, {
+					type: "organization",
+					id: organizationId,
+				});
+				const currentDefaultProvider =
+					await findResolvedDefaultProvider(tx, {
+						type: "organization",
+						id: organizationId,
+					});
 				const existing = await tx.cloudProviderConfig.findFirst({
 					where: { organizationId, provider },
 				});
@@ -815,29 +1046,40 @@ export const deleteUserProviderProcedure = tenantProtectedProcedure
 				await tx.organizationModelPreference.deleteMany({
 					where: { organizationId, provider },
 				});
+				// API-only organization deletion may change the embedding identity when
+				// the default/documents key is removed. This reassignment has no embeddings
+				// impact confirmation; organization settings offers no delete action.
 				let defaultReassignedTo: string | null = null;
 
 				// After deletion, check if ANY default provider exists
 				// This is more robust than checking the deleted row's state (which could be stale)
-				const existingDefault = await tx.cloudProviderConfig.findFirst({
-					where: { organizationId, enabled: true, isDefault: true },
+				const defaultRow = await tx.cloudProviderConfig.findFirst({
+					where: organizationDefaultProviderWhere(organizationId),
 				});
+				const existingDefault =
+					defaultRow &&
+					readProviderRowCredentials(defaultRow).hasCredentials
+						? defaultRow
+						: null;
 
-				// If no default exists, set one
-				if (!existingDefault) {
+				// Capture a survivor that becomes the resolved default, including a stale flagged row.
+				if (
+					!existingDefault ||
+					existingDefault.provider !== currentDefaultProvider
+				) {
 					const anotherProvider =
-						await tx.cloudProviderConfig.findFirst({
-							where: {
-								organizationId,
-								enabled: true,
-								...LLM_PROVIDER_PURPOSE_FILTER,
-							},
-						});
+						existingDefault ??
+						(await findUsableOrganizationProvider(
+							tx,
+							organizationId,
+						));
 					if (anotherProvider) {
-						await tx.cloudProviderConfig.update({
-							where: { id: anotherProvider.id },
-							data: { isDefault: true },
-						});
+						await promoteOrganizationProvider(
+							tx,
+							organizationId,
+							anotherProvider.id,
+							currentDefaultProvider,
+						);
 						defaultReassignedTo = anotherProvider.provider;
 						console.log(
 							`[AI Config] Set ${anotherProvider.provider} as new default after deleting ${provider}`,
@@ -860,6 +1102,15 @@ export const deleteUserProviderProcedure = tenantProtectedProcedure
 		} else {
 			// Use transaction to ensure atomicity of delete + potential default reassignment
 			const deleted = await db.$transaction(async (tx) => {
+				await lockTenantProviderConnections(tx, {
+					type: "user",
+					id: user.id,
+				});
+				const currentDefaultProvider =
+					await findResolvedDefaultProvider(tx, {
+						type: "user",
+						id: user.id,
+					});
 				const existing = await tx.userCloudProviderConfig.findFirst({
 					where: { userId: user.id, provider },
 				});
@@ -874,29 +1125,50 @@ export const deleteUserProviderProcedure = tenantProtectedProcedure
 
 				// After deletion, check if ANY default provider exists
 				// This is more robust than checking the deleted row's state (which could be stale)
+				const defaultRow = await tx.userCloudProviderConfig.findFirst({
+					where: {
+						userId: user.id,
+						enabled: true,
+						isDefault: true,
+						...LLM_PROVIDER_PURPOSE_FILTER,
+					},
+				});
 				const existingDefault =
-					await tx.userCloudProviderConfig.findFirst({
-						where: {
-							userId: user.id,
-							enabled: true,
-							isDefault: true,
-						},
-					});
+					defaultRow &&
+					readProviderRowCredentials(defaultRow).hasCredentials
+						? defaultRow
+						: null;
 
-				// If no default exists, set one
-				if (!existingDefault) {
+				// Capture a survivor that becomes the resolved default, including a stale flagged row.
+				if (
+					!existingDefault ||
+					existingDefault.provider !== currentDefaultProvider
+				) {
 					const anotherProvider =
-						await tx.userCloudProviderConfig.findFirst({
+						existingDefault ??
+						(await tx.userCloudProviderConfig.findFirst({
 							where: {
 								userId: user.id,
 								enabled: true,
 								...LLM_PROVIDER_PURPOSE_FILTER,
 							},
-						});
+						}));
 					if (anotherProvider) {
 						await tx.userCloudProviderConfig.update({
 							where: { id: anotherProvider.id },
-							data: { isDefault: true },
+							data: {
+								isDefault: true,
+								...(await taskDefaultsSnapshotMutation(
+									anotherProvider.provider,
+									{
+										isDefault:
+											currentDefaultProvider ===
+											anotherProvider.provider,
+									},
+									true,
+									tx,
+								)),
+							},
 						});
 						defaultReassignedTo = anotherProvider.provider;
 						console.log(
@@ -920,6 +1192,48 @@ export const deleteUserProviderProcedure = tenantProtectedProcedure
 		}
 
 		return { success: true };
+	});
+
+export const previewSetDefaultProviderProcedure = tenantProtectedProcedure
+	.use(requirePermission(Permissions.ORG_AI_CONFIG_EDIT))
+	.route({
+		method: "GET",
+		path: "/ai-config/providers/preview-set-default",
+		tags: ["AI Config"],
+		summary: "Preview an organization default provider switch",
+	})
+	.input(
+		z.object({
+			organizationId: z.string(),
+			provider: z.string().optional(),
+		}),
+	)
+	.output(defaultProviderSwitchPreviewSchema)
+	.handler(async ({ context, input }) => {
+		const organizationId = resolveOrganizationId(
+			input.organizationId,
+			context.session,
+		);
+		if (!organizationId) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: "Organization ID is required",
+			});
+		}
+		const membership = await requireOrgMembership(
+			context.user.id,
+			organizationId,
+			["owner", "admin"],
+		);
+		if (!membership) {
+			throw new ORPCError("FORBIDDEN", {
+				message: "Only organization admins can set default AI provider",
+			});
+		}
+		return await previewDefaultProviderSwitch({
+			organizationId,
+			userId: context.user.id,
+			targetProvider: input.provider,
+		});
 	});
 
 export const setDefaultProviderProcedure = tenantProtectedProcedure
@@ -968,81 +1282,106 @@ export const setDefaultProviderProcedure = tenantProtectedProcedure
 				});
 			}
 
+			await planDefaultProviderSwitch({
+				organizationId,
+				userId: user.id,
+				targetProvider: provider,
+			});
+			const preparedEmbeddings = await prepareDefaultSwitchEmbeddings({
+				organizationId,
+				userId: user.id,
+				targetProvider: provider,
+			});
 			// Get current default provider to check if it's changing
-			const currentDefault = await db.cloudProviderConfig.findFirst({
-				where: { organizationId, isDefault: true },
-			});
-			const target = await db.cloudProviderConfig.findFirst({
-				where: { organizationId, provider },
-			});
-			if (target?.purpose === "EMBEDDINGS_ONLY") {
-				throw new ORPCError("BAD_REQUEST", {
-					message: EMBEDDINGS_ONLY_DEFAULT_MESSAGE,
-				});
-			}
+			const { currentDefault, target, embeddingPin } =
+				await db.$transaction(async (tx) => {
+					await lockTenantProviderConnections(tx, {
+						type: "organization",
+						id: organizationId,
+					});
+					const target = await tx.cloudProviderConfig.findFirst({
+						where: { organizationId, provider },
+					});
+					const currentDefault =
+						await tx.cloudProviderConfig.findFirst({
+							where: organizationDefaultProviderWhere(
+								organizationId,
+							),
+						});
+					if (target?.purpose === "EMBEDDINGS_ONLY") {
+						throw new ORPCError("BAD_REQUEST", {
+							message: EMBEDDINGS_ONLY_DEFAULT_MESSAGE,
+						});
+					}
 
-			// Only clear preferences if provider is actually changing
-			if (currentDefault && currentDefault.provider !== provider) {
-				// Clear organization model preferences when provider changes
-				// This ensures users don't have models selected that aren't available.
-				//
-				// Exception: the embeddings model is pinned to the dedicated
-				// "Use for Documents" provider (isEmbeddingProvider), independent of
-				// the default AI provider — re-pointing it would invalidate already
-				// indexed vectors. So when a distinct documents provider governs
-				// embeddings, preserve the EMBEDDING preference. When none is
-				// configured (or it IS the new default), embeddings fall back to /
-				// recompute from the default provider as before.
-				//
-				// Exception: DECISION is always pinned to the organization's
-				// Vercel AI Gateway, never to the default provider, so a new
-				// default cannot make its choice unavailable. It is also the
-				// one task whose preference row can mean "switched off"
-				// (modelId NULL); clearing that row would silently re-enable
-				// the seeded decision model. IMAGE and every other task type
-				// are always cleared.
-				const embeddingProvider = await getEmbeddingProviderConfig({
-					userId: user.id,
-					organizationId,
-				});
-				const preserveEmbedding =
-					!!embeddingProvider.provider &&
-					embeddingProvider.provider !== provider;
-				const preservedTaskTypes: AiTaskType[] = preserveEmbedding
-					? ["DECISION", "EMBEDDING"]
-					: ["DECISION"];
+					if (
+						!target ||
+						!target.enabled ||
+						!readProviderRowCredentials(target).hasCredentials
+					) {
+						throw new ORPCError("BAD_REQUEST", {
+							message:
+								"Choose an enabled API provider with usable credentials that allows language model work.",
+						});
+					}
 
-				const deleteResult =
-					await db.organizationModelPreference.deleteMany({
-						where: {
-							organizationId,
-							taskType: { notIn: preservedTaskTypes },
-							// The ChatGPT plan's model choices are not tied to
-							// the API default provider.
-							provider: { not: "OPENAI_CHATGPT_PLAN" },
+					const currentProvider =
+						currentDefault &&
+						readProviderRowCredentials(currentDefault)
+							.hasCredentials
+							? currentDefault.provider
+							: null;
+					const snapshotMutation = await taskDefaultsSnapshotMutation(
+						provider,
+						{ isDefault: currentProvider === provider },
+						true,
+						tx,
+					);
+					const embedding = await pinDefaultSwitchEmbeddings(tx, {
+						organizationId,
+						userId: user.id,
+						targetProvider: provider,
+						prepared: preparedEmbeddings,
+						currentDefault,
+					});
+					const plan = defaultProviderSwitchRules({
+						organizationId,
+						currentProvider,
+						targetProvider: provider,
+						documentsProvider: embedding.documentsProvider,
+					});
+
+					if (plan.deleteWhere) {
+						const result =
+							await tx.organizationModelPreference.deleteMany({
+								where: plan.deleteWhere,
+							});
+						preferencesCleared = result.count;
+					}
+
+					// Clear preferences, flip the default and capture in this transaction.
+					await tx.cloudProviderConfig.updateMany({
+						where: { organizationId, isDefault: true },
+						data: { isDefault: false },
+					});
+					await tx.cloudProviderConfig.updateMany({
+						where: { organizationId, provider },
+						data: {
+							isDefault: true,
+							...snapshotMutation,
 						},
 					});
-				preferencesCleared = deleteResult.count;
-				console.log(
-					`[AI Config] Cleared ${preferencesCleared} org model preferences (provider changed from ${currentDefault.provider} to ${provider}${
-						preserveEmbedding
-							? `, embeddings preserved for documents provider ${embeddingProvider.provider}`
-							: ""
-					})`,
-				);
-			}
-
-			// Use transaction to ensure atomicity of clearing + setting default
-			await db.$transaction(async (tx) => {
-				await tx.cloudProviderConfig.updateMany({
-					where: { organizationId, isDefault: true },
-					data: { isDefault: false },
+					return {
+						currentDefault,
+						target,
+						embeddingPin: embedding.pin,
+					};
 				});
-				await tx.cloudProviderConfig.updateMany({
-					where: { organizationId, provider },
-					data: { isDefault: true },
-				});
-			});
+			recordDefaultSwitchEmbeddingPin(
+				context,
+				{ kind: "org", organizationId },
+				embeddingPin,
+			);
 			recordProviderSettingChanged(
 				context,
 				{ kind: "org", organizationId },
@@ -1059,65 +1398,124 @@ export const setDefaultProviderProcedure = tenantProtectedProcedure
 				},
 			);
 		} else {
+			const preparedEmbeddings = await prepareDefaultSwitchEmbeddings({
+				organizationId,
+				userId: user.id,
+				targetProvider: provider,
+			});
 			// Get current default provider to check if it's changing
-			const currentDefault = await db.userCloudProviderConfig.findFirst({
-				where: { userId: user.id, isDefault: true },
-			});
-			const target = await db.userCloudProviderConfig.findFirst({
-				where: { userId: user.id, provider },
-			});
-			if (target?.purpose === "EMBEDDINGS_ONLY") {
-				throw new ORPCError("BAD_REQUEST", {
-					message: EMBEDDINGS_ONLY_DEFAULT_MESSAGE,
-				});
-			}
+			const { currentDefault, target, embeddingPin } =
+				await db.$transaction(async (tx) => {
+					await lockTenantProviderConnections(tx, {
+						type: "user",
+						id: user.id,
+					});
+					const target = await tx.userCloudProviderConfig.findFirst({
+						where: { userId: user.id, provider },
+					});
+					const currentDefault =
+						await tx.userCloudProviderConfig.findFirst({
+							where: {
+								userId: user.id,
+								isDefault: true,
+								enabled: true,
+								...LLM_PROVIDER_PURPOSE_FILTER,
+							},
+						});
+					if (target?.purpose === "EMBEDDINGS_ONLY") {
+						throw new ORPCError("BAD_REQUEST", {
+							message: EMBEDDINGS_ONLY_DEFAULT_MESSAGE,
+						});
+					}
 
-			// Only clear preferences if provider is actually changing
-			if (currentDefault && currentDefault.provider !== provider) {
-				// Clear user model preferences when provider changes
-				// This ensures users don't have models selected that aren't available.
-				//
-				// Exception (see org branch): preserve the embeddings model when a
-				// distinct "Use for Documents" provider (isEmbeddingProvider) governs
-				// it, so switching the default provider doesn't re-point embeddings
-				// and invalidate already indexed vectors.
-				const embeddingProvider = await getEmbeddingProviderConfig({
-					userId: user.id,
-					organizationId,
-				});
-				const preserveEmbedding =
-					!!embeddingProvider.provider &&
-					embeddingProvider.provider !== provider;
+					const currentProvider =
+						currentDefault &&
+						readProviderRowCredentials(currentDefault)
+							.hasCredentials
+							? currentDefault.provider
+							: null;
+					const changing = currentProvider !== provider;
+					const snapshotMutation = target
+						? await taskDefaultsSnapshotMutation(
+								provider,
+								{ isDefault: !changing },
+								true,
+								tx,
+							)
+						: {};
 
-				const deleteResult = await db.userModelPreference.deleteMany({
-					where: {
+					const embedding = await pinDefaultSwitchEmbeddings(tx, {
+						organizationId,
 						userId: user.id,
-						...(preserveEmbedding
-							? { taskType: { not: "EMBEDDING" as AiTaskType } }
-							: {}),
-					},
-				});
-				preferencesCleared = deleteResult.count;
-				console.log(
-					`[AI Config] Cleared ${preferencesCleared} user model preferences (provider changed from ${currentDefault.provider} to ${provider}${
-						preserveEmbedding
-							? `, embeddings preserved for documents provider ${embeddingProvider.provider}`
-							: ""
-					})`,
-				);
-			}
+						targetProvider: provider,
+						prepared: preparedEmbeddings,
+						currentDefault,
+					});
 
-			// Use transaction to ensure atomicity of clearing + setting default
-			await db.$transaction(async (tx) => {
-				await tx.userCloudProviderConfig.updateMany({
-					where: { userId: user.id, isDefault: true },
-					data: { isDefault: false },
+					// Only clear preferences when another flagged default is being
+					// replaced, as before this snapshot change. With no current
+					// default, saved choices are kept; the snapshot above still
+					// captures because this becomes the resolved default.
+					if (
+						currentDefault &&
+						currentDefault.provider !== provider
+					) {
+						// Clear user model preferences when provider changes
+						// This ensures users don't have models selected that aren't available.
+						//
+						// Exception (see org branch): preserve the embeddings model when a
+						// configured "Use for Documents" provider (isEmbeddingProvider) governs
+						// it, so switching the default provider doesn't re-point embeddings
+						// and invalidate already indexed vectors.
+
+						const preserveEmbedding = !!embedding.documentsProvider;
+
+						const deleteResult =
+							await tx.userModelPreference.deleteMany({
+								where: {
+									userId: user.id,
+									...(preserveEmbedding
+										? {
+												taskType: {
+													not: "EMBEDDING" as AiTaskType,
+												},
+											}
+										: {}),
+								},
+							});
+						preferencesCleared = deleteResult.count;
+						console.log(
+							`[AI Config] Cleared ${preferencesCleared} user model preferences (provider changed from ${currentProvider ?? "none"} to ${provider}${
+								preserveEmbedding
+									? `, embeddings preserved for documents provider ${embedding.documentsProvider}`
+									: ""
+							})`,
+						);
+					}
+
+					// Clear preferences, flip the default and capture in this transaction.
+					await tx.userCloudProviderConfig.updateMany({
+						where: { userId: user.id, isDefault: true },
+						data: { isDefault: false },
+					});
+					await tx.userCloudProviderConfig.updateMany({
+						where: { userId: user.id, provider },
+						data: {
+							isDefault: true,
+							...snapshotMutation,
+						},
+					});
+					return {
+						currentDefault,
+						target,
+						embeddingPin: embedding.pin,
+					};
 				});
-				await tx.userCloudProviderConfig.updateMany({
-					where: { userId: user.id, provider },
-					data: { isDefault: true },
-				});
-			});
+			recordDefaultSwitchEmbeddingPin(
+				context,
+				{ kind: "account" },
+				embeddingPin,
+			);
 			recordProviderSettingChanged(
 				context,
 				{ kind: "account" },
@@ -1334,58 +1732,72 @@ export const setEmbeddingProviderProcedure = tenantProtectedProcedure
 				});
 			}
 
-			const previous = await db.cloudProviderConfig.findFirst({
-				where: { organizationId, isEmbeddingProvider: true },
-			});
-			assertEmbeddingFlagCanMove(previous, provider);
-			const target = await db.cloudProviderConfig.findFirst({
-				where: { organizationId, provider },
-			});
 			const embeddingsOnly = input.purpose === "EMBEDDINGS_ONLY";
-			// Use transaction to ensure atomicity of clearing + setting embedding provider
-			const defaultReassignedTo = await db.$transaction(async (tx) => {
-				await tx.cloudProviderConfig.updateMany({
-					where: { organizationId, isEmbeddingProvider: true },
-					data: { isEmbeddingProvider: false },
-				});
-				await tx.cloudProviderConfig.updateMany({
-					where: { organizationId, provider },
-					data: {
-						isEmbeddingProvider: true,
-						...(input.purpose ? { purpose: input.purpose } : {}),
-						...(embeddingsOnly ? { isDefault: false } : {}),
-					},
-				});
-				if (embeddingsOnly) {
-					await tx.organizationModelPreference.deleteMany({
-						where: {
-							organizationId,
-							...llmPreferencesPinnedTo(provider),
+			const { defaultReassignedTo, previous, target } =
+				await db.$transaction(async (tx) => {
+					await lockTenantProviderConnections(tx, {
+						type: "organization",
+						id: organizationId,
+					});
+					const currentDefaultProvider =
+						await findResolvedDefaultProvider(tx, {
+							type: "organization",
+							id: organizationId,
+						});
+					const previous = await tx.cloudProviderConfig.findFirst({
+						where: { organizationId, isEmbeddingProvider: true },
+					});
+					assertEmbeddingFlagCanMove(previous, provider);
+					const target = await tx.cloudProviderConfig.findFirst({
+						where: { organizationId, provider },
+					});
+					await tx.cloudProviderConfig.updateMany({
+						where: { organizationId, isEmbeddingProvider: true },
+						data: { isEmbeddingProvider: false },
+					});
+					await tx.cloudProviderConfig.updateMany({
+						where: { organizationId, provider },
+						data: {
+							isEmbeddingProvider: true,
+							...(input.purpose
+								? { purpose: input.purpose }
+								: {}),
+							...(embeddingsOnly ? { isDefault: false } : {}),
 						},
 					});
-				}
-				if (!(embeddingsOnly && target?.isDefault)) {
-					return null;
-				}
-				// The default just became embeddings-only: hand the role to a
-				// key that may serve LLM work, if the organization has one.
-				const replacement = await tx.cloudProviderConfig.findFirst({
-					where: {
+					if (embeddingsOnly) {
+						await tx.organizationModelPreference.deleteMany({
+							where: {
+								organizationId,
+								...llmPreferencesPinnedTo(provider),
+							},
+						});
+					}
+					if (!(embeddingsOnly && target?.isDefault)) {
+						return { defaultReassignedTo: null, previous, target };
+					}
+					// The default just became embeddings-only: hand the role to a
+					// key that may serve LLM work, if the organization has one.
+					const replacement = await findUsableOrganizationProvider(
+						tx,
 						organizationId,
-						enabled: true,
-						provider: { not: provider },
-						...LLM_PROVIDER_PURPOSE_FILTER,
-					},
+						{ provider: { not: provider } },
+					);
+					if (!replacement) {
+						return { defaultReassignedTo: null, previous, target };
+					}
+					await promoteOrganizationProvider(
+						tx,
+						organizationId,
+						replacement.id,
+						currentDefaultProvider,
+					);
+					return {
+						defaultReassignedTo: replacement.provider,
+						previous,
+						target,
+					};
 				});
-				if (!replacement) {
-					return null;
-				}
-				await tx.cloudProviderConfig.update({
-					where: { id: replacement.id },
-					data: { isDefault: true },
-				});
-				return replacement.provider;
-			});
 			recordProviderSettingChanged(
 				context,
 				{ kind: "org", organizationId },
@@ -1397,60 +1809,93 @@ export const setEmbeddingProviderProcedure = tenantProtectedProcedure
 				}),
 			);
 		} else {
-			const previous = await db.userCloudProviderConfig.findFirst({
-				where: { userId: user.id, isEmbeddingProvider: true },
-			});
-			assertEmbeddingFlagCanMove(previous, provider);
-			const target = await db.userCloudProviderConfig.findFirst({
-				where: { userId: user.id, provider },
-			});
 			const embeddingsOnly = input.purpose === "EMBEDDINGS_ONLY";
-			// Use transaction to ensure atomicity of clearing + setting embedding provider
-			const defaultReassignedTo = await db.$transaction(async (tx) => {
-				await tx.userCloudProviderConfig.updateMany({
-					where: { userId: user.id, isEmbeddingProvider: true },
-					data: { isEmbeddingProvider: false },
-				});
-				await tx.userCloudProviderConfig.updateMany({
-					where: { userId: user.id, provider },
-					data: {
-						isEmbeddingProvider: true,
-						...(input.purpose ? { purpose: input.purpose } : {}),
-						// Never the default, nor the key for a spent plan.
-						...(embeddingsOnly
-							? { isDefault: false, useWhenPlanSpent: false }
-							: {}),
-					},
-				});
-				if (embeddingsOnly) {
-					await tx.userModelPreference.deleteMany({
-						where: {
-							userId: user.id,
-							...llmPreferencesPinnedTo(provider),
+			const { defaultReassignedTo, previous, target } =
+				await db.$transaction(async (tx) => {
+					await lockTenantProviderConnections(tx, {
+						type: "user",
+						id: user.id,
+					});
+					const currentDefaultProvider =
+						await findResolvedDefaultProvider(tx, {
+							type: "user",
+							id: user.id,
+						});
+					const previous = await tx.userCloudProviderConfig.findFirst(
+						{
+							where: {
+								userId: user.id,
+								isEmbeddingProvider: true,
+							},
+						},
+					);
+					assertEmbeddingFlagCanMove(previous, provider);
+					const target = await tx.userCloudProviderConfig.findFirst({
+						where: { userId: user.id, provider },
+					});
+					await tx.userCloudProviderConfig.updateMany({
+						where: { userId: user.id, isEmbeddingProvider: true },
+						data: { isEmbeddingProvider: false },
+					});
+					await tx.userCloudProviderConfig.updateMany({
+						where: { userId: user.id, provider },
+						data: {
+							isEmbeddingProvider: true,
+							...(input.purpose
+								? { purpose: input.purpose }
+								: {}),
+							// Never the default, nor the key for a spent plan.
+							...(embeddingsOnly
+								? { isDefault: false, useWhenPlanSpent: false }
+								: {}),
 						},
 					});
-				}
-				if (!(embeddingsOnly && target?.isDefault)) {
-					return null;
-				}
-				// See the organization branch.
-				const replacement = await tx.userCloudProviderConfig.findFirst({
-					where: {
-						userId: user.id,
-						enabled: true,
-						provider: { not: provider },
-						...LLM_PROVIDER_PURPOSE_FILTER,
-					},
+					if (embeddingsOnly) {
+						await tx.userModelPreference.deleteMany({
+							where: {
+								userId: user.id,
+								...llmPreferencesPinnedTo(provider),
+							},
+						});
+					}
+					if (!(embeddingsOnly && target?.isDefault)) {
+						return { defaultReassignedTo: null, previous, target };
+					}
+					// See the organization branch.
+					const replacement =
+						await tx.userCloudProviderConfig.findFirst({
+							where: {
+								userId: user.id,
+								enabled: true,
+								provider: { not: provider },
+								...LLM_PROVIDER_PURPOSE_FILTER,
+							},
+						});
+					if (!replacement) {
+						return { defaultReassignedTo: null, previous, target };
+					}
+					await tx.userCloudProviderConfig.update({
+						where: { id: replacement.id },
+						data: {
+							isDefault: true,
+							...(await taskDefaultsSnapshotMutation(
+								replacement.provider,
+								{
+									isDefault:
+										currentDefaultProvider ===
+										replacement.provider,
+								},
+								true,
+								tx,
+							)),
+						},
+					});
+					return {
+						defaultReassignedTo: replacement.provider,
+						previous,
+						target,
+					};
 				});
-				if (!replacement) {
-					return null;
-				}
-				await tx.userCloudProviderConfig.update({
-					where: { id: replacement.id },
-					data: { isDefault: true },
-				});
-				return replacement.provider;
-			});
 			recordProviderSettingChanged(
 				context,
 				{ kind: "account" },

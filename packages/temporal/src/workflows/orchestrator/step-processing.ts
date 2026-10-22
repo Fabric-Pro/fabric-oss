@@ -15,6 +15,8 @@ import {
 	sleep,
 	workflowInfo,
 } from "@temporalio/workflow";
+import { AI_NON_RETRYABLE_ERROR_TYPES } from "../ai-non-retryable-errors";
+import { orchestratorErrorMessage, shouldAbortUsageLimit } from "./usage-limit";
 import { usageOriginFields } from "./workflow-usage-attribution";
 
 // ---------------------------------------------------------------------------
@@ -82,6 +84,7 @@ const activities = proxyActivities<typeof orchestratorActivities>({
 	startToCloseTimeout: "15 minutes", // Weave shuttle steps can take 10+ min (CodingRun bridge)
 	heartbeatTimeout: "5 minutes", // Agent delegation (A2A) can block for minutes during LLM calls
 	retry: {
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 		initialInterval: "1s",
 		backoffCoefficient: 2,
 		maximumInterval: "30s",
@@ -101,6 +104,7 @@ const turnStepActivities = proxyActivities<typeof orchestratorActivities>({
 	heartbeatTimeout: "1 minute",
 	cancellationType: ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
 	retry: {
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 		initialInterval: "1s",
 		backoffCoefficient: 2,
 		maximumInterval: "30s",
@@ -320,6 +324,29 @@ export async function processStepResult(params: {
 	// =========================================================================
 	const error = stepResult.error || "Unknown error";
 
+	const abortUsageLimit = (error: string) => {
+		step.status = "error";
+		step.error = error;
+		step.completedAt = safeNowISO();
+		step.durationMs = safeNowMs() - stepStartTime;
+		state.stepResults.push({
+			stepId: step.id,
+			stepDescription: step.description,
+			status: "error",
+			toolCalls: [],
+			durationMs: step.durationMs,
+			error,
+		});
+		return {
+			responseChunk: "",
+			shouldAbort: true as const,
+			abortError: error,
+		};
+	};
+	if (shouldAbortUsageLimit(error)) {
+		return abortUsageLimit(error);
+	}
+
 	const recoveryResult = await attemptStepRecovery(
 		state,
 		input,
@@ -330,6 +357,13 @@ export async function processStepResult(params: {
 		altkConfig,
 		turn,
 	);
+
+	if (
+		recoveryResult.finalError &&
+		shouldAbortUsageLimit(recoveryResult.finalError)
+	) {
+		return abortUsageLimit(recoveryResult.finalError);
+	}
 
 	if (recoveryResult.recovered) {
 		state.agentCircuitBreakers = recordSuccess(
@@ -603,8 +637,7 @@ export async function executeStepWithContext(
 		};
 	} catch (error) {
 		rethrowTurnStop(error, turn);
-		const errorMessage =
-			error instanceof Error ? error.message : "Unknown error";
+		const errorMessage = orchestratorErrorMessage(error);
 		return { success: false, error: errorMessage };
 	}
 }
@@ -808,6 +841,14 @@ export async function attemptStepRecovery(
 				turn,
 			);
 
+			if (shouldAbortUsageLimit(retryResult.error)) {
+				return {
+					recovered: false,
+					attemptsMade: attemptNumber,
+					finalError: retryResult.error,
+				};
+			}
+
 			if (retryResult.success && retryResult.result) {
 				return {
 					recovered: true,
@@ -868,7 +909,7 @@ export async function performReflection(
 	} catch (error) {
 		rethrowTurnStop(error, turn);
 		log.warn("Reflection failed", {
-			error: error instanceof Error ? error.message : "Unknown error",
+			error: orchestratorErrorMessage(error),
 		});
 	}
 }
@@ -919,7 +960,7 @@ export async function summarizeContextIfNeeded(
 		rethrowTurnStop(error, turn);
 		if (!workflowInfo().unsafe.isReplaying) {
 			log.warn("Context summarization failed", {
-				error: error instanceof Error ? error.message : "Unknown error",
+				error: orchestratorErrorMessage(error),
 				stepCount: state.trajectorySteps.length,
 			});
 		}

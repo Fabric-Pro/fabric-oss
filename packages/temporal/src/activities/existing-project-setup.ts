@@ -125,6 +125,12 @@ export async function ingestBacklogForRAG(
 		hierarchy.features.length +
 		hierarchy.stories.length;
 
+	if (hierarchy.listingTruncated) {
+		logger.warn("[ExistingProjectSetup] PM board listing was truncated", {
+			totalItems,
+		});
+	}
+
 	// Format as structured markdown
 	const content = formatBacklogAsMarkdown(hierarchy);
 

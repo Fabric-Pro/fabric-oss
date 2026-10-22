@@ -18,7 +18,7 @@
  *     deterministic seed.
  *   - The dedup-guard idempotency invariant: the activity does NOT delete
  *     or re-create the proposal row. Its proposal id is the same row that
- *     a follow-up retry will flip from FAILED → PENDING, and any title
+ *     a follow-up retry will flip from FAILED → APPLYING, and any title
  *     collision at retry time short-circuits to APPLIED. The mock for
  *     `markPendingProposalFailed` proves the row is updated in place.
  *

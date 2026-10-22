@@ -44,10 +44,12 @@ import type {
 } from "../generated/client";
 import {
 	type AiProviderConfig,
+	getAiProviderApiKeyByProvider,
 	getSystemAiProviderApiKey,
 	hasProviderCredentials,
 } from "./ai-gateway";
 import { getModelForTask } from "./ai-models";
+import { TEXT_TASK_TYPES } from "./task-default-snapshots";
 
 // ============================================================================
 // Types
@@ -160,13 +162,14 @@ export async function resolveModel(
 
 	// Get provider - either from params, pre-fetched config, or fetch from user's default
 	let provider = params.provider;
+	let providerConfig = _providerConfig;
 	let apiKey: string | undefined;
 	let baseUrl: string | null | undefined;
 
 	if (!provider) {
 		// Use pre-fetched config if available to avoid duplicate DB queries
 		// See: server-cache-react rule from Vercel React Best Practices
-		const providerConfig =
+		providerConfig =
 			_providerConfig ??
 			(await getSystemAiProviderApiKey({
 				userId,
@@ -183,6 +186,25 @@ export async function resolveModel(
 		baseUrl = providerConfig.baseUrl;
 	}
 
+	if (
+		provider &&
+		providerConfig?.provider !== provider &&
+		TEXT_TASK_TYPES.some((task) => task === taskType)
+	) {
+		const defaultConnection = await getSystemAiProviderApiKey({
+			userId,
+			organizationId,
+		});
+		providerConfig =
+			defaultConnection.provider === provider
+				? defaultConnection
+				: await getAiProviderApiKeyByProvider({
+						userId,
+						organizationId,
+						provider,
+					});
+	}
+
 	// Query database for model
 	const result = await getModelForTask(
 		userId,
@@ -190,6 +212,7 @@ export async function resolveModel(
 		taskType,
 		organizationId,
 		complexity,
+		providerConfig,
 	);
 
 	if (!result || !result.providerModelId) {

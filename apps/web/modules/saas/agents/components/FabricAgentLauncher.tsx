@@ -24,6 +24,7 @@ import {
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import type { AttachedFile } from "@saas/shared/components/copilot/use-copilot-document-upload";
 import { FabricLogo } from "@saas/shared/components/FabricLogo";
+import { isWorkflowCanvasPath } from "@saas/shared/lib/full-height-routes";
 import { useIsMobile } from "@shared/hooks/use-is-mobile";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -1576,7 +1577,11 @@ export function FabricAgentLauncherProvider({ children }: PropsWithChildren) {
 		setDraftInput(undefined);
 	}, [pathname]);
 
-	const shouldShowFloatingTrigger = !pathname?.includes("/agents/fabric-ai");
+	// The workflow canvas has its own Ask AI bar in the same bottom-centre spot;
+	// the keyboard shortcut still opens the launcher there.
+	const shouldShowFloatingTrigger =
+		!pathname?.includes("/agents/fabric-ai") &&
+		!isWorkflowCanvasPath(pathname ?? "");
 	const isMobile = useIsMobile();
 
 	return (

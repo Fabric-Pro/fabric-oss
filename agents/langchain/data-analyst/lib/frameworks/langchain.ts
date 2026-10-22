@@ -4,7 +4,10 @@ import { ChatOpenAI } from "@langchain/openai";
 import { createReactAgent } from "@langchain/langgraph/prebuilt";
 import { HumanMessage, AIMessage, BaseMessage } from "@langchain/core/messages";
 import { anthropicTemperature } from "../anthropic-model-constraints";
-import { DEFAULT_ANTHROPIC_MODEL_NAME } from "../constants";
+import {
+	DEFAULT_ANTHROPIC_MODEL_NAME,
+	getAnthropicModelName,
+} from "../constants";
 
 export async function handleLangchainFramework(
 	mcpUrl: string,
@@ -34,10 +37,11 @@ export async function handleLangchainFramework(
 			temperature: 0,
 		});
 	} else if (provider === "anthropic") {
+		const directModelName = getAnthropicModelName(model);
 		llm = new ChatAnthropic({
 			apiKey: process.env.ANTHROPIC_API_KEY,
-			modelName,
-			...anthropicTemperature(modelName, 0),
+			modelName: directModelName,
+			...anthropicTemperature(directModelName, 0),
 		});
 	} else {
 		llm = new ChatAnthropic({

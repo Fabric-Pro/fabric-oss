@@ -1,4 +1,7 @@
-import { listPendingBacklogProposals } from "@repo/database";
+import {
+	listPendingBacklogProposals,
+	REVIEW_INBOX_PROPOSAL_STATUSES,
+} from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -8,13 +11,14 @@ import {
 
 /**
  * Source-agnostic list of PendingBacklogProposal rows for the project,
- * defaulting to the "needs-attention" set (PENDING + FAILED). The
- * underlying query is shared with the Teams routes — the per-source route
+ * defaulting to the review-inbox set (PENDING, APPROVED, APPLYING, FAILED).
+ * The underlying query is shared with the Teams routes — the per-source route
  * surface exists for UX namespacing, not for filtering by `source`.
  */
 const statusEnum = z.enum([
 	"PENDING",
 	"APPROVED",
+	"APPLYING",
 	"APPLIED",
 	"REJECTED",
 	"FAILED",
@@ -30,7 +34,7 @@ export const listPendingProposalsProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Slack Channel Monitor"],
 		summary: "List pending backlog proposals",
 		description:
-			"Returns backlog proposals awaiting review (default: PENDING + FAILED).",
+			"Returns backlog proposals awaiting review (default: PENDING, APPROVED, APPLYING, and FAILED).",
 	})
 	.input(
 		z.object({
@@ -42,6 +46,6 @@ export const listPendingProposalsProcedure = tenantProtectedProcedure
 	.handler(async ({ input }) => {
 		return await listPendingBacklogProposals({
 			projectId: input.projectId,
-			status: input.status ?? ["PENDING", "FAILED"],
+			status: input.status ?? REVIEW_INBOX_PROPOSAL_STATUSES,
 		});
 	});

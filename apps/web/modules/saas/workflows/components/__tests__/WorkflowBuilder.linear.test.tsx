@@ -37,8 +37,7 @@ describe("WorkflowBuilder — Linear action nodes visibility", () => {
 	it("hides Linear nodes from the palette when LINEAR_INTEGRATION is false", () => {
 		renderBuilder({ LINEAR_INTEGRATION: false });
 
-		const addActionBtn = screen.getByTitle("Add action");
-		fireEvent.click(addActionBtn);
+		fireEvent.click(screen.getByRole("tab", { name: "Add step" }));
 
 		expect(screen.getByText("HTTP Request")).toBeInTheDocument();
 		expect(
@@ -52,8 +51,7 @@ describe("WorkflowBuilder — Linear action nodes visibility", () => {
 	it("shows Linear nodes in the palette when LINEAR_INTEGRATION is true", async () => {
 		renderBuilder({ LINEAR_INTEGRATION: true });
 
-		const addActionBtn = screen.getByTitle("Add action");
-		fireEvent.click(addActionBtn);
+		fireEvent.click(screen.getByRole("tab", { name: "Add step" }));
 
 		await screen.findByText("Create Linear Ticket");
 		expect(screen.getByText("Find Linear Issues")).toBeInTheDocument();

@@ -21,6 +21,7 @@ import {
 } from "@temporalio/workflow";
 import type * as orchestratorActivities from "../../../activities/orchestrator";
 import type * as weaveActivities from "../../../activities/weave";
+import { AI_NON_RETRYABLE_ERROR_TYPES } from "../../ai-non-retryable-errors";
 import { computeExecutionWaves } from "../execution-waves";
 import { AUTHORITY_CHECK_FAILED, WORKFLOW } from "../orchestrator-config";
 import {
@@ -47,6 +48,7 @@ import type {
 	WaitForApprovalOptions,
 	WorkflowState,
 } from "../types";
+import { orchestratorErrorMessage } from "../usage-limit";
 
 const {
 	createOrchestratorApprovalRequest,
@@ -58,6 +60,7 @@ const {
 	startToCloseTimeout: "5 minutes",
 	heartbeatTimeout: "30 seconds",
 	retry: {
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 		initialInterval: "1s",
 		backoffCoefficient: 2,
 		maximumInterval: "30s",
@@ -71,6 +74,7 @@ const { updateWeaveExecutionActivity, loomRoutingActivity } = proxyActivities<
 	startToCloseTimeout: "2 minutes",
 	heartbeatTimeout: "30 seconds",
 	retry: {
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 		initialInterval: "1s",
 		backoffCoefficient: 2,
 		maximumAttempts: 2,
@@ -81,6 +85,7 @@ const { updateWeaveExecutionActivity, loomRoutingActivity } = proxyActivities<
 const { sendShuttlePromptActivity } = proxyActivities<typeof weaveActivities>({
 	startToCloseTimeout: "2 minutes",
 	retry: {
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 		initialInterval: "2s",
 		backoffCoefficient: 2,
 		maximumAttempts: 3,
@@ -90,6 +95,7 @@ const { sendShuttlePromptActivity } = proxyActivities<typeof weaveActivities>({
 const { pollShuttleStatusActivity } = proxyActivities<typeof weaveActivities>({
 	startToCloseTimeout: "30 seconds",
 	retry: {
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 		initialInterval: "1s",
 		backoffCoefficient: 2,
 		maximumAttempts: 2,
@@ -101,6 +107,7 @@ const { delegateWeaveImplementationActivity } = proxyActivities<
 >({
 	startToCloseTimeout: "120 minutes",
 	retry: {
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 		initialInterval: "2s",
 		backoffCoefficient: 2,
 		maximumAttempts: 2,
@@ -844,10 +851,10 @@ async function executeParallelSteps(params: {
 				? result.value
 				: {
 						success: false,
-						error:
-							result.reason instanceof Error
-								? result.reason.message
-								: String(result.reason),
+						error: orchestratorErrorMessage(
+							result.reason,
+							String(result.reason),
+						),
 					};
 
 		// Process each step that maps to this promise result
@@ -1298,7 +1305,7 @@ async function handleStepApproval(
 		rethrowTurnStop(error, turn);
 		log.warn("Failed to update approval task status", {
 			approvalId: stepApproval.approvalId,
-			error: error instanceof Error ? error.message : "Unknown error",
+			error: orchestratorErrorMessage(error),
 		});
 	}
 
@@ -1656,7 +1663,7 @@ async function executeShuttleStep(
 				provider: generalizedProvider,
 			});
 		} catch (error) {
-			const msg = error instanceof Error ? error.message : String(error);
+			const msg = orchestratorErrorMessage(error, String(error));
 			log.error("Shuttle: generalized delegation failed", {
 				provider: generalizedProvider,
 				error: msg,
@@ -1706,7 +1713,7 @@ async function executeShuttleStep(
 			organizationId: input.organizationId,
 		});
 	} catch (error) {
-		const msg = error instanceof Error ? error.message : String(error);
+		const msg = orchestratorErrorMessage(error, String(error));
 		log.error("Shuttle: failed to send prompt", { error: msg });
 		return {
 			success: false,
@@ -1783,7 +1790,7 @@ async function executeShuttleStep(
 			}
 		} catch (error) {
 			log.warn("Shuttle: poll failed, will retry", {
-				error: error instanceof Error ? error.message : String(error),
+				error: orchestratorErrorMessage(error, String(error)),
 				pollCount: i + 1,
 			});
 			// Continue polling — transient failures are expected
@@ -1905,7 +1912,7 @@ async function executeBatchedShuttleSteps(
 				provider: generalizedProvider,
 			});
 		} catch (error) {
-			const msg = error instanceof Error ? error.message : String(error);
+			const msg = orchestratorErrorMessage(error, String(error));
 			log.error("Shuttle: generalized batched delegation failed", {
 				provider: generalizedProvider,
 				error: msg,
@@ -1958,7 +1965,7 @@ async function executeBatchedShuttleSteps(
 			organizationId: input.organizationId,
 		});
 	} catch (error) {
-		const msg = error instanceof Error ? error.message : String(error);
+		const msg = orchestratorErrorMessage(error, String(error));
 		log.error("Shuttle: failed to send batched prompt", { error: msg });
 		return {
 			success: false,
@@ -2039,7 +2046,7 @@ async function executeBatchedShuttleSteps(
 			}
 		} catch (error) {
 			log.warn("Shuttle: poll failed, will retry", {
-				error: error instanceof Error ? error.message : String(error),
+				error: orchestratorErrorMessage(error, String(error)),
 				pollCount: i + 1,
 			});
 		}

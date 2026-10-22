@@ -1,17 +1,13 @@
 /**
  * Backlog Apply Watchdog Workflow
  *
- * Cron-driven safety net for `PendingBacklogProposal` rows stuck mid-apply:
- * still PENDING with an apply dispatched (`applyStartedAt` set) longer than the
- * configured ceiling. This happens when the apply workflow was force-terminated
- * (OOM, worker crash, execution-timeout) before its finalize step ran, or was
- * scheduled but never picked up by a worker — either way the proposal leaks in
- * PENDING forever and the user has no terminal state to retry / dismiss from.
+ * Cron-driven safety net for stale dispatched PENDING and claimed
+ * APPROVED/APPLYING proposals, including claims that did not reach dispatch.
  *
  * Runs every 5 minutes on the `fabric-worker` queue, fetches up to `batchSize`
- * stuck proposals, force-terminates each leaked apply workflow, then flips the
- * row `PENDING → FAILED` (compare-and-set, so a late finalize / manual cancel
- * can't be clobbered) and writes a `backlog.proposal.timed_out` audit entry.
+ * stuck proposals, attempts to terminate each leaked apply workflow, then moves
+ * still-stale rows to FAILED with an atomic database guard and writes a
+ * `backlog.proposal.timed_out` audit entry for transitions it won.
  *
  * Mirrors `weaveExecutionWatchdogWorkflow`.
  */
@@ -35,11 +31,9 @@ const {
 
 export interface BacklogApplyWatchdogInput {
 	/**
-	 * Proposals whose apply was dispatched (`applyStartedAt`) more than this
-	 * many minutes ago and are still PENDING are considered stuck. Defaults to
-	 * `FABRIC_BACKLOG_APPLY_STALE_MINUTES` (or 15 when unset). The default
-	 * applies even when the caller passes `0` — that would otherwise nuke every
-	 * in-flight apply, which is never what we want from a scheduled cron.
+	 * Inactivity ceiling for dispatched PENDING and claimed APPROVED/APPLYING
+	 * proposals. Defaults to FABRIC_BACKLOG_APPLY_STALE_MINUTES (or 15 when unset).
+	 * The input can only raise that ceiling; smaller values use the default.
 	 */
 	staleAfterMinutes?: number;
 	/** Max rows per tick — keeps each watchdog run bounded. */
@@ -75,8 +69,8 @@ export async function backlogApplyWatchdogWorkflow(
 
 	for (const row of stale.rows) {
 		try {
-			// Terminate the leaked apply workflow FIRST so it can't finalize
-			// after we flip the row (best-effort — it's usually already dead).
+			// Attempt to terminate the leaked workflow before the guarded write
+			// (best-effort — it may already be dead).
 			if (row.workflowId) {
 				await terminateBacklogApplyWorkflowActivity({
 					workflowId: row.workflowId,

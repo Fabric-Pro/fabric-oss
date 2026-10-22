@@ -465,7 +465,6 @@ async function generateMetric<
 		instructions: params.instructions,
 		prompt: params.prompt,
 		output: Output.object({ schema: params.schema }),
-		providerOptions: { openai: { strictJsonSchema: false } },
 	});
 
 	return result.output;

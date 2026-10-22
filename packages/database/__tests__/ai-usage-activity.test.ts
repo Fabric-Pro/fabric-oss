@@ -14,6 +14,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const findManyMock = vi.fn();
+const modelFind = vi.fn(
+	async (_args: unknown) =>
+		[] as Array<{
+			canonicalName: string;
+			suitableForTasks: string[];
+			capabilities: string[];
+			qualityTier: string;
+		}>,
+);
 const aggregateMock = vi.fn();
 const groupByMock = vi.fn();
 const countMock = vi.fn(async (_args: unknown) => 0);
@@ -23,6 +32,7 @@ const organizationFind = vi.fn(async (_args: unknown) => ({
 
 vi.mock("../prisma/client", () => ({
 	db: {
+		aiModel: { findMany: (args: unknown) => modelFind(args) },
 		aiUsageLog: {
 			findMany: (args: unknown) => findManyMock(args),
 			aggregate: (args: unknown) => aggregateMock(args),
@@ -55,6 +65,8 @@ const EMPTY_AGGREGATE = {
 
 describe("listAiUsageActivity", () => {
 	beforeEach(() => {
+		modelFind.mockReset();
+		modelFind.mockResolvedValue([]);
 		findManyMock.mockReset();
 		aggregateMock.mockReset();
 		groupByMock.mockReset();
@@ -64,6 +76,98 @@ describe("listAiUsageActivity", () => {
 		organizationFind.mockClear();
 	});
 
+	it("classifies distinct page models in one lookup and ignores missing metadata", async () => {
+		findManyMock.mockResolvedValue([
+			{
+				id: "weak",
+				modelCanonicalName: "example-basic",
+				taskType: "COMPLEX",
+			},
+			{
+				id: "cost",
+				modelCanonicalName: "example-premium",
+				taskType: "SIMPLE",
+			},
+			{
+				id: "suitable",
+				modelCanonicalName: "example-basic",
+				taskType: "CHAT",
+			},
+			{
+				id: "no-task",
+				modelCanonicalName: "example-basic",
+				taskType: null,
+			},
+			{ id: "no-model", modelCanonicalName: null, taskType: "CHAT" },
+			{
+				id: "unknown",
+				modelCanonicalName: "example-unknown",
+				taskType: "CHAT",
+			},
+			{
+				id: "plan",
+				provider: "OPENAI_CHATGPT_PLAN",
+				modelCanonicalName: "example-basic",
+				taskType: "COMPLEX",
+			},
+			{
+				id: "unrated",
+				modelCanonicalName: "example-unrated",
+				taskType: "CHAT",
+			},
+		]);
+		modelFind.mockResolvedValue([
+			{
+				canonicalName: "example-basic",
+				suitableForTasks: ["COMPLEX", "CHAT"],
+				capabilities: ["TEXT"],
+				qualityTier: "BASIC",
+			},
+			{
+				canonicalName: "example-premium",
+				suitableForTasks: ["SIMPLE"],
+				capabilities: ["TEXT"],
+				qualityTier: "PREMIUM",
+			},
+			{
+				canonicalName: "example-unrated",
+				suitableForTasks: [],
+				capabilities: [],
+				qualityTier: "BASIC",
+			},
+		]);
+		const result = await listAiUsageActivity({
+			organizationId: "example-org",
+		});
+		expect(modelFind).toHaveBeenCalledExactlyOnceWith({
+			where: {
+				canonicalName: {
+					in: [
+						"example-basic",
+						"example-premium",
+						"example-unknown",
+						"example-unrated",
+					],
+				},
+			},
+			select: {
+				canonicalName: true,
+				suitableForTasks: true,
+				capabilities: true,
+				qualityTier: true,
+			},
+		});
+		expect(result.rows.map((r) => r.modelFit ?? null)).toEqual([
+			{ kind: "quality", reason: "basic-tier" },
+			null,
+			null,
+			null,
+			null,
+			null,
+			null,
+			null,
+		]);
+	});
 	it("returns persisted origins and derives workflow navigation from its execution", async () => {
 		findManyMock.mockResolvedValue([
 			{

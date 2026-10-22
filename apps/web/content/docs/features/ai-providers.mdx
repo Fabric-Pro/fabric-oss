@@ -1,6 +1,8 @@
 ---
 title: AI Configuration
 description: Connect AI providers, configure model preferences, and manage embeddings for your account or organization.
+audience: Organization admins and members configuring AI providers
+owner: Platform team
 ---
 
 Fabric AI supports 20+ AI providers. Configure your preferred providers, set model preferences per task type, and manage embeddings for document search.
@@ -195,6 +197,20 @@ When using a gateway (e.g., Vercel Gateway or OpenRouter), you can enable or dis
 2. Expand the **Enabled Providers** section
 3. Toggle individual providers on or off
 4. Only enabled sub-providers appear in model selection
+
+## Cost of gateway calls
+
+**Settings → AI Usage** records every model call with its cost. A call through Vercel Gateway is first recorded with an estimate. Within a few minutes Fabric replaces the estimate with the cost Vercel billed, looked up with the same organization or personal key that made the call.
+
+```mermaid
+flowchart LR
+    A["Model call through<br/>Vercel Gateway"] --> E["Recorded with<br/>an estimate"]
+    E --> L{"Vercel reports the cost<br/>within six hours?"}
+    L -->|Yes| B["Estimate replaced by the billed cost,<br/>plus the provider's charge for BYOK"]
+    L -->|No| K["Keeps the estimate"]
+```
+
+When the gateway reaches a model with your own provider key (BYOK), the provider bills you directly, and the recorded cost includes that charge as Vercel reports it. A call keeps its estimate if Vercel reports no cost for it within six hours.
 
 ## Best Practices
 

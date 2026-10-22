@@ -220,12 +220,13 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          # Matches root package.json `engines.node` (>=22.19.0) and the
+          # Matches root package.json `engines.node` (^22.23.4 || >=24.22.1) and the
           # temporal-tests job below. This job used to pin 20; the prompt
           # notification-delivery suite's import graph (undici v8 via the
           # external-delivery path) requires >=22, and shipping on 22 while
           # testing on 20 exercises a runtime nobody runs.
           node-version: '22'
+          check-latest: true
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -1703,10 +1704,11 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          # Matches root package.json `engines.node` (>=22.19.0) and unit-tests.yml.
+          # Matches root package.json `engines.node` (^22.23.4 || >=24.22.1) and unit-tests.yml.
           # The suite under test ships on 22, so pinning an older major here would
           # exercise a runtime nobody runs.
           node-version: '22'
+          check-latest: true
           cache: 'pnpm'
 
       - name: Install dependencies

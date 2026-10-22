@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sprint story review</title>
+<!-- Real Inter + JetBrains Mono, loaded so the renderer's Inter check passes.
+     The report itself uses its own system font stack, as the generator does. -->
+<link rel="stylesheet" href="../.fonts/fonts.css">
+<!-- Stylesheet copied verbatim from STYLE in
+     packages/temporal/src/activities/lib/ado-story-review/page.ts. The published
+     report carries its own palette, not the app's theme.css tokens. -->
+<style>
+:root{color-scheme:light dark;--bg:#fafaf9;--card:#fff;--muted:#f5f5f4;--border:#e7e5e4;--text:#1c1917;--soft:#57534e;--faint:#78716c;--accent:#9f2a3a;--ok:#047857;--ok-bg:#ecfdf5;--warn:#b45309;--warn-bg:#fffbeb;--bad:#b91c1c;--bad-bg:#fef2f2}
+@media (prefers-color-scheme:dark){:root{--bg:#18181b;--card:#1c1c1e;--muted:#27272a;--border:#3f3f46;--text:#f4f4f5;--soft:#d4d4d8;--faint:#a1a1aa;--accent:#c4556a;--ok:#34d399;--ok-bg:#064e3b55;--warn:#fbbf24;--warn-bg:#78350f55;--bad:#f87171;--bad-bg:#7f1d1d55}}
+*{box-sizing:border-box}
+body{margin:0;padding:24px 16px 40px;background:var(--bg);color:var(--text);font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+main{max-width:1040px;margin:0 auto}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+.label{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--faint);border-left:2px solid var(--accent);padding-left:8px;margin:0 0 8px}
+h1{font:400 30px/1.2 "EB Garamond",Georgia,serif;margin:0 0 8px}
+h2{font-size:16px;font-weight:600;margin:0}
+h3{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--faint);margin:16px 0 6px}
+.lede{color:var(--soft);margin:0 0 20px;max-width:72ch}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin:0 0 24px}
+.tile{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 14px}
+.tile b{display:block;font-size:24px;font-weight:600;line-height:1.1}
+.tile span{font-size:12px;color:var(--faint)}
+.tile.ok b{color:var(--ok)}.tile.warn b{color:var(--warn)}.tile.bad b{color:var(--bad)}
+section{margin:0 0 24px}
+.panel{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px 16px}
+ul{margin:0;padding-left:18px}li{margin:2px 0}
+.changes li{color:var(--soft)}
+.cards{display:grid;gap:12px}
+.card{background:var(--card);border:1px solid var(--border);border-left:4px solid var(--border);border-radius:12px;padding:16px 18px}
+.card.ready{border-left-color:var(--ok)}.card.needs_work{border-left-color:var(--warn)}.card.blocked{border-left-color:var(--bad)}
+.card-head{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:8px 16px}
+.meta{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 10px}
+.chip{font-size:12px;color:var(--soft);background:var(--muted);border-radius:999px;padding:2px 9px}
+.badge{font-size:12px;font-weight:600;border-radius:999px;padding:2px 10px;white-space:nowrap}
+.badge.ready{color:var(--ok);background:var(--ok-bg)}.badge.needs_work{color:var(--warn);background:var(--warn-bg)}.badge.blocked{color:var(--bad);background:var(--bad-bg)}
+.summary{margin:0 0 8px}
+.issues li{margin:4px 0}
+details{margin-top:10px;border-top:1px solid var(--border);padding-top:8px}
+summary{cursor:pointer;color:var(--faint);font-size:12px}
+details ul{margin-top:6px;color:var(--soft)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;font-weight:600;color:var(--faint);font-size:11px;letter-spacing:.08em;text-transform:uppercase;border-bottom:1px solid var(--border);padding:6px 8px}
+td{border-bottom:1px solid var(--border);padding:7px 8px;vertical-align:top}
+tr:last-child td{border-bottom:0}
+.scroll{overflow-x:auto}
+.empty{color:var(--faint);margin:0}
+</style>
+<style>
+/* Mock-only: the shot is cut from #shot-report, so it carries the body's
+   padding and background itself, at a fixed width for a stable image. */
+body{padding:0;width:1072px}
+#shot-report{padding:24px 16px 40px;background:var(--bg)}
+.font-probe{position:absolute;left:-9999px;top:0;font:500 14px Inter,sans-serif}
+</style>
+</head>
+<body>
+<!-- Renders Inter once so render.mjs's document.fonts.check("500 14px Inter") passes. -->
+<span class="font-probe" aria-hidden="true">Inter</span>
+
+<!-- Markup mirrors reviewPage() / storyCard() in page.ts and
+     renderSprintStoryReview() in render.ts. Synthetic data only.
+     Trimmed for the shot: story #1204 (Needs work) and the
+     "Assigned sprint workload" section that follows the cards. -->
+<div id="shot-report">
+<main><p class="label">Story review</p><h1>Sprint story review</h1><p class="lede">4 sprint stories: 1 reviewed, 3 reused, 0 removed. Requirements as of 2026-10-20T08:00:05Z. Changes since the scheduled capture at 2026-10-19T08:00:04Z, through 2026-10-20T08:00:05Z. Comments are non-atomic current captures.</p>
+<div class="tiles"><div class="tile"><b>4</b><span>Stories</span></div><div class="tile ok"><b>1</b><span>Ready</span></div><div class="tile warn"><b>2</b><span>Needs work</span></div><div class="tile bad"><b>1</b><span>Blocked</span></div><div class="tile"><b>1</b><span>Reviewed now</span></div><div class="tile"><b>3</b><span>Reused</span></div></div>
+<section><p class="label">What changed</p><div class="panel"><ul class="changes"><li>#1202: story requirements changed: System.Title; story, context or discovery observations changed</li></ul></div></section>
+<section><p class="label">Stories</p><div class="cards">
+<article class="card ready"><div class="card-head"><h2><a href="https://dev.azure.com/example-org/Example%20Project/_workitems/edit/1201" rel="noopener noreferrer">#1201 Export the sprint summary as CSV</a></h2><span class="badge ready">Ready</span></div><div class="meta"><span class="chip">Active</span><span class="chip">assigned: dev@example.com</span><span class="chip">from #1201 (direct)</span></div><p class="summary">The description and acceptance criteria name the columns, the file name and the empty-sprint case, so the story can be built and tested as written.</p><h3>Gaps</h3><ul class="issues"><li>The acceptance criteria do not say whether dates are exported in UTC or the viewer&#39;s time zone.</li></ul><details><summary>Immediate context (1)</summary><ul><li>child: <a href="https://dev.azure.com/example-org/Example%20Project/_workitems/edit/1205" rel="noopener noreferrer">#1205 Add the CSV writer</a> · Task · Active</li></ul></details></article>
+<article class="card needs_work"><div class="card-head"><h2><a href="https://dev.azure.com/example-org/Example%20Project/_workitems/edit/1202" rel="noopener noreferrer">#1202 Filter the backlog by release label</a></h2><span class="badge needs_work">Needs work</span></div><div class="meta"><span class="chip">New</span><span class="chip">assigned: dev@example.com</span><span class="chip">from #1202 (direct)</span></div><p class="summary">The renamed title now scopes the filter to release labels, but the description still describes filtering by any tag.</p><h3>Gaps</h3><ul class="issues"><li>The description and the new title disagree on which labels the filter applies to.</li><li>No acceptance criterion covers items that carry no release label.</li></ul><details><summary>Immediate context (0)</summary><ul><li>None</li></ul></details></article>
+<article class="card blocked"><div class="card-head"><h2><a href="https://dev.azure.com/example-org/Example%20Project/_workitems/edit/1203" rel="noopener noreferrer">#1203 Single sign-on for workspace admins</a></h2><span class="badge blocked">Blocked</span></div><div class="meta"><span class="chip">New</span><span class="chip">assigned: dev@example.com</span><span class="chip">from #1203 (direct)</span></div><p class="summary">The story depends on an identity provider settings page that is still New and has no agreed design.</p><h3>Gaps</h3><ul class="issues"><li>The related settings story has no acceptance criteria to build against.</li><li>The supported sign-in protocols are not named.</li><li>There is no fallback for an admin whose identity provider is unavailable.</li></ul><details><summary>Immediate context (1)</summary><ul><li>related: <a href="https://dev.azure.com/example-org/Example%20Project/_workitems/edit/1206" rel="noopener noreferrer">#1206 Identity provider settings page</a> · User Story · New</li></ul></details></article>
+</div></section></main>
+</div>
+</body>
+</html>
