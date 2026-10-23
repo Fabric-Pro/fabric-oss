@@ -1,16 +1,6 @@
 "use client";
 
 import { embeddingModelFitsVectorStore } from "@repo/rag/lib/embedding/dimensions";
-import {
-	AlertDialog,
-	AlertDialogAction,
-	AlertDialogCancel,
-	AlertDialogContent,
-	AlertDialogDescription,
-	AlertDialogFooter,
-	AlertDialogHeader,
-	AlertDialogTitle,
-} from "@ui/components/alert-dialog";
 import { Card } from "@ui/components/card";
 import {
 	Select,
@@ -25,18 +15,22 @@ import { cn } from "@ui/lib";
 import { LockIcon } from "lucide-react";
 import Link from "next/link";
 import { useTranslations } from "next-intl";
-import { type ReactNode, useState } from "react";
+import type { ReactNode } from "react";
 import { toast } from "sonner";
 import {
 	type ChatgptPlanModelTask,
 	useSetChatgptPlanModel,
 } from "../chatgpt-plan-models/chatgpt-plan-models-queries";
+import { useEmbeddingsChangeConfirmation } from "../EmbeddingsChangeConfirmDialog";
 import {
 	API_DEFAULT_VALUE,
 	ApiTaskModelSelect,
 } from "../org-ai-model-preferences/ApiTaskModelSelect";
+import { DefaultApiProviderPanel } from "../org-ai-model-preferences/DefaultApiProviderPanel";
+import { ModelFitNote } from "../org-ai-model-preferences/ModelFitNote";
 import {
 	PROVIDER_DISPLAY_NAMES,
+	TEXT_TASK_IDS,
 	useOrgApiModelPreferences,
 } from "../org-ai-model-preferences/use-org-api-model-preferences";
 import type { AiRoutingData } from "./use-ai-routing-data";
@@ -186,11 +180,8 @@ export function AiModelsTable({
 }) {
 	const t = useTranslations("settings.aiModelsRouting.models");
 	const api = useOrgApiModelPreferences({ readOnly });
-	// An embeddings change waiting for the admin to accept that documents
-	// indexed with the current model need re-indexing (Fizzy #2770).
-	const [pendingEmbeddingChange, setPendingEmbeddingChange] = useState<
-		string | null
-	>(null);
+	// Reuse the impact check and confirmation for indexed content.
+	const embeddingChange = useEmbeddingsChangeConfirmation(api.organizationId);
 	const plan = data.planModels.data;
 	const planTasks = new Map(
 		(plan?.tasks ?? []).map((task) => [task.taskType as string, task]),
@@ -220,7 +211,13 @@ export function AiModelsTable({
 			value === API_DEFAULT_VALUE
 				? api.handleResetToDefault(taskType)
 				: api.saveModelChoice(taskType, value);
-		if (!api.isLoading && !api.hasNoProviders && !view.hasModels) {
+		if (
+			taskType !== "EMBEDDING" &&
+			!api.isLoading &&
+			!api.hasNoProviders &&
+			!view.hasModels &&
+			!view.noDefaultProvider
+		) {
 			return (
 				<span
 					className="text-muted-foreground text-sm"
@@ -238,7 +235,9 @@ export function AiModelsTable({
 					defaultLabel={
 						view.hasCustomPref ? t("defaultPlain") : undefined
 					}
-					disabled={readOnly || api.isLoading}
+					disabled={
+						readOnly || api.isLoading || embeddingChange.isChecking
+					}
 					hasNoProviders={api.hasNoProviders}
 					modelUnavailableReason={
 						taskType === "EMBEDDING"
@@ -248,20 +247,15 @@ export function AiModelsTable({
 										: t("embeddingsNeedsVectorSize")
 							: undefined
 					}
-					onValueChange={(value) => {
-						// Indexed documents need re-indexing only when the
-						// model actually changes: "Default" when the saved
-						// choice is the default model is no change.
-						const chosen =
-							value === API_DEFAULT_VALUE
-								? view.defaultModel?.canonicalName
-								: value.split(":").slice(1).join(":");
+					onValueChange={(value, invoker) => {
 						if (
 							taskType === "EMBEDDING" &&
-							view.currentModel &&
-							chosen !== view.currentModel.canonicalName
+							api.embeddingChoiceChangesIdentity(value)
 						) {
-							setPendingEmbeddingChange(value);
+							void embeddingChange.requestChange(
+								() => applyChoice(value),
+								invoker,
+							);
 							return;
 						}
 						applyChoice(value);
@@ -269,6 +263,13 @@ export function AiModelsTable({
 					triggerClassName="w-full"
 					view={view}
 				/>
+				{!view.isDefaultChoice &&
+					(view.hasCustomPref || view.hasPendingChange) && (
+						<ModelFitNote
+							taskType={view.taskType}
+							model={view.currentModel}
+						/>
+					)}
 				{view.hasCustomPref ? (
 					<p className="inline-flex items-center gap-1 text-muted-foreground text-xs">
 						<LockIcon aria-hidden="true" className="size-3" />
@@ -278,6 +279,127 @@ export function AiModelsTable({
 			</div>
 		);
 	};
+
+	const renderTable = (tasks: readonly RowTask[], label: string) => (
+		<div className="min-w-0">
+			<table
+				aria-label={label}
+				className="block w-full border-collapse text-sm md:table md:table-fixed"
+			>
+				<thead className="sr-only md:not-sr-only">
+					<tr className="border-border border-b text-left text-muted-foreground text-xs">
+						<th className="pb-2.5 font-medium" scope="col">
+							{t("kindColumn")}
+						</th>
+						<th
+							className="w-[34%] px-3 pb-2.5 font-medium"
+							scope="col"
+						>
+							{t("planColumn")}
+							<span className="block font-normal">
+								{t("planColumnHint")}
+							</span>
+						</th>
+						<th
+							className="w-[34%] pb-2.5 pl-3 font-medium"
+							scope="col"
+						>
+							{t("apiColumn")}
+							<span className="block font-normal">
+								{noApi
+									? t("apiColumnHintNone")
+									: t("apiColumnHint")}
+							</span>
+						</th>
+					</tr>
+				</thead>
+				<tbody className="block md:table-row-group">
+					{tasks.map((taskType) => {
+						const taskName = t(`tasks.${taskType}.name`);
+						const planTask = planTasks.get(taskType);
+						// A decision a plan can serve is made by the
+						// language model of the work it belongs to, on
+						// the plan; the API decision model is the fallback.
+						const decidedOnPlan = Boolean(
+							plan && taskType === "DECISION",
+						);
+						return (
+							<tr
+								className="block border-border border-b py-3 last:border-b-0 md:table-row md:py-0"
+								data-testid={`ai-models-row-${taskType}`}
+								key={taskType}
+							>
+								<th
+									className="block pb-2 text-left font-medium md:table-cell md:py-3 md:pr-3"
+									scope="row"
+								>
+									{taskName}
+									<span className="block font-normal text-muted-foreground text-xs">
+										{t(`tasks.${taskType}.hint`)}
+									</span>
+								</th>
+								{!(planTask && plan) &&
+								!decidedOnPlan &&
+								noApi ? (
+									// Neither column could ever offer a choice.
+									<td
+										className="block py-2 align-middle text-muted-foreground text-sm md:table-cell md:px-3 md:py-3"
+										colSpan={2}
+										data-testid={`ai-models-unavailable-${taskType}`}
+									>
+										{t("needsApiProvider")}
+									</td>
+								) : (
+									<>
+										<td className="block py-2 align-middle md:table-cell md:px-3 md:py-3">
+											<span
+												aria-hidden="true"
+												className="mb-1 block text-xs text-muted-foreground md:hidden"
+											>
+												{t("planColumn")}
+											</span>
+											{planTask && plan ? (
+												<PlanModelSelect
+													plan={plan}
+													task={planTask}
+													taskName={taskName}
+												/>
+											) : decidedOnPlan ? (
+												<div
+													className="space-y-1 text-sm"
+													data-testid={`ai-models-plan-decision-${taskType}`}
+												>
+													<p>{t("decisionOnPlan")}</p>
+													<p className="text-muted-foreground text-xs">
+														{t(
+															"decisionOnPlanHint",
+														)}
+													</p>
+												</div>
+											) : (
+												<span className="text-muted-foreground text-sm">
+													{t("notOnPlan")}
+												</span>
+											)}
+										</td>
+										<td className="block py-2 align-middle md:table-cell md:py-3 md:pl-3">
+											<span
+												aria-hidden="true"
+												className="mb-1 block text-xs text-muted-foreground md:hidden"
+											>
+												{t("apiColumn")}
+											</span>
+											{apiCell(taskType, taskName)}
+										</td>
+									</>
+								)}
+							</tr>
+						);
+					})}
+				</tbody>
+			</table>
+		</div>
+	);
 
 	return (
 		<Card
@@ -296,152 +418,29 @@ export function AiModelsTable({
 				</p>
 			</div>
 
-			<div className="-mx-6 overflow-x-auto px-6">
-				<table className="w-full min-w-[720px] border-collapse text-sm">
-					<thead>
-						<tr className="border-border border-b text-left text-muted-foreground text-xs">
-							<th className="pb-2.5 font-medium" scope="col">
-								{t("kindColumn")}
-							</th>
-							<th
-								className="w-[34%] px-3 pb-2.5 font-medium"
-								scope="col"
-							>
-								{t("planColumn")}
-								<span className="block font-normal">
-									{t("planColumnHint")}
-								</span>
-							</th>
-							<th
-								className="w-[34%] pb-2.5 pl-3 font-medium"
-								scope="col"
-							>
-								{t("apiColumn")}
-								<span className="block font-normal">
-									{noApi
-										? t("apiColumnHintNone")
-										: t("apiColumnHint")}
-								</span>
-							</th>
-						</tr>
-					</thead>
-					<tbody>
-						{ROWS.map((taskType) => {
-							const taskName = t(`tasks.${taskType}.name`);
-							const planTask = planTasks.get(taskType);
-							// A decision a plan can serve is made by the
-							// language model of the work it belongs to, on
-							// the plan; the API decision model is the fallback.
-							const decidedOnPlan = Boolean(
-								plan && taskType === "DECISION",
-							);
-							return (
-								<tr
-									className="border-border border-b last:border-b-0"
-									data-testid={`ai-models-row-${taskType}`}
-									key={taskType}
-								>
-									<th
-										className="py-3 text-left font-medium"
-										scope="row"
-									>
-										{taskName}
-										<span className="block font-normal text-muted-foreground text-xs">
-											{t(`tasks.${taskType}.hint`)}
-										</span>
-									</th>
-									{!(planTask && plan) &&
-									!decidedOnPlan &&
-									noApi ? (
-										// Neither column could ever offer a choice.
-										<td
-											className="px-3 py-3 align-middle text-muted-foreground text-sm"
-											colSpan={2}
-											data-testid={`ai-models-unavailable-${taskType}`}
-										>
-											{t("needsApiProvider")}
-										</td>
-									) : (
-										<>
-											<td className="px-3 py-3 align-middle">
-												{planTask && plan ? (
-													<PlanModelSelect
-														plan={plan}
-														task={planTask}
-														taskName={taskName}
-													/>
-												) : decidedOnPlan ? (
-													<div
-														className="space-y-1 text-sm"
-														data-testid={`ai-models-plan-decision-${taskType}`}
-													>
-														<p>
-															{t(
-																"decisionOnPlan",
-															)}
-														</p>
-														<p className="text-muted-foreground text-xs">
-															{t(
-																"decisionOnPlanHint",
-															)}
-														</p>
-													</div>
-												) : (
-													<span className="text-muted-foreground text-sm">
-														{t("notOnPlan")}
-													</span>
-												)}
-											</td>
-											<td className="py-3 pl-3 align-middle">
-												{apiCell(taskType, taskName)}
-											</td>
-										</>
-									)}
-								</tr>
-							);
-						})}
-					</tbody>
-				</table>
-			</div>
+			<section aria-label={t("textTasks")} className="space-y-3">
+				{!noApi && (
+					<DefaultApiProviderPanel
+						api={api}
+						readOnly={readOnly}
+						disabled={embeddingChange.isChecking}
+					/>
+				)}
+				{renderTable(TEXT_TASK_IDS, t("textTasks"))}
+			</section>
+			<section aria-label={t("otherWorkTitle")} className="space-y-3">
+				<h2 className="font-medium text-lg">{t("otherWorkTitle")}</h2>
+				<p className="text-muted-foreground text-sm">
+					{t("otherWorkDescription")}
+				</p>
+				{renderTable(
+					["IMAGE", "AUDIO", "DECISION"],
+					t("otherWorkTitle"),
+				)}
 
-			<EmbeddingsRow apiSelect={apiSelect} data={data} />
-			<AlertDialog
-				onOpenChange={(open) => {
-					if (!open) {
-						setPendingEmbeddingChange(null);
-					}
-				}}
-				open={pendingEmbeddingChange !== null}
-			>
-				<AlertDialogContent data-testid="ai-models-embeddings-change">
-					<AlertDialogHeader>
-						<AlertDialogTitle>
-							{t("embeddingsChangeTitle")}
-						</AlertDialogTitle>
-						<AlertDialogDescription>
-							{t("embeddingsChangeBody")}
-						</AlertDialogDescription>
-					</AlertDialogHeader>
-					<AlertDialogFooter>
-						<AlertDialogCancel>
-							{t("embeddingsChangeCancel")}
-						</AlertDialogCancel>
-						<AlertDialogAction
-							onClick={() => {
-								const value = pendingEmbeddingChange;
-								setPendingEmbeddingChange(null);
-								if (value === API_DEFAULT_VALUE) {
-									api.handleResetToDefault("EMBEDDING");
-								} else if (value) {
-									api.saveModelChoice("EMBEDDING", value);
-								}
-							}}
-						>
-							{t("embeddingsChangeConfirm")}
-						</AlertDialogAction>
-					</AlertDialogFooter>
-				</AlertDialogContent>
-			</AlertDialog>
+				<EmbeddingsRow apiSelect={apiSelect} data={data} />
+			</section>
+			{embeddingChange.dialog}
 		</Card>
 	);
 }
@@ -456,9 +455,7 @@ function EmbeddingsRow({
 	const t = useTranslations("settings.aiModelsRouting.models");
 	const provider = data.embeddingProvider;
 	const providerName = provider
-		? (provider.displayName ??
-			PROVIDER_DISPLAY_NAMES[provider.provider] ??
-			provider.provider)
+		? (PROVIDER_DISPLAY_NAMES[provider] ?? provider)
 		: null;
 	return (
 		<div
@@ -471,7 +468,15 @@ function EmbeddingsRow({
 					{t("embeddingsHint")}
 				</span>
 			</div>
-			{provider ? (
+			{data.organizationEmbedding?.source === "platform" ? (
+				<p className="text-muted-foreground text-sm">
+					{t("embeddingsPlatform")}
+				</p>
+			) : !data.organizationEmbedding ? (
+				<p className="text-muted-foreground text-sm">
+					{t("embeddingsResolutionUnavailable")}
+				</p>
+			) : provider ? (
 				<div className="flex flex-wrap items-center justify-between gap-3">
 					<div className="w-full max-w-md">
 						{apiSelect("EMBEDDING", t("embeddingsTitle"))}

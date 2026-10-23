@@ -372,15 +372,14 @@ The system uses a cascading priority system to determine which model to use:
 │  ┌─────────────────────────────────────────────────────────────────────┐    │
 │  │ PRIORITY 6: System Default for Task Type                            │    │
 │  │                                                                     │    │
-│  │ • Database-configured defaults from AI Model Catalog               │    │
-│  │ • Seeded via: pnpm --filter @repo/database seed:ai-models          │    │
-│  │                                                                     │    │
-│  │ Defaults (from ai-model-catalog.ts):                               │    │
-│  │ • SIMPLE: gpt-4o-mini (OpenAI) / llama-3-1-8b (Groq/Cerebras)     │    │
-│  │ • COMPLEX: gpt-4o (OpenAI) / llama-3-3-70b (Groq/Cerebras)        │    │
-│  │ • REASONING: o1 (OpenAI) / deepseek-r1 (Groq/DeepSeek)            │    │
-│  │ • CHAT: gpt-4o (OpenAI) / llama-3-3-70b (Groq/Cerebras)           │    │
-│  │ • TOOL_CALLING: gpt-4o (OpenAI) / gpt-oss-120b (Groq/Cerebras)    │    │
+│  │ • Template: TASK_DEFAULTS in ai-model-catalog.ts, seeded into      │    │
+│  │   ai_task_model_default by deploy:seeds                            │    │
+│  │ • Text tasks (SIMPLE, COMPLEX, REASONING, CHAT, TOOL_CALLING,      │    │
+│  │   EVAL) read the serving connection's task_defaults_snapshot:      │    │
+│  │   the template as it stood when the connection was created or      │    │
+│  │   became the default provider (ADR-023)                            │    │
+│  │ • No snapshot (platform gateway key, ChatGPT plan) and other       │    │
+│  │   task types read the live template                                │    │
 │  └─────────────────────────────────────────────────────────────────────┘    │
 │                                      │                                       │
 │                                      ▼                                       │

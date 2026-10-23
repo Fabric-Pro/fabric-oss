@@ -92,3 +92,19 @@ it.each(["credentials", "other"])(
 		expect(h.create).not.toHaveBeenCalled();
 	},
 );
+
+it("warns on a truncated listing and still ingests the available items", async () => {
+	h.fetch.mockResolvedValue({
+		epics: [],
+		features: [],
+		stories: [{ id: "42", title: "Example issue" }],
+		readStatus: "ok",
+		listingTruncated: true,
+	});
+	await ingestBacklogForRAG(input);
+	expect(h.create).toHaveBeenCalledOnce();
+	expect(h.warn).toHaveBeenCalledWith(
+		"[ExistingProjectSetup] PM board listing was truncated",
+		{ totalItems: 1 },
+	);
+});

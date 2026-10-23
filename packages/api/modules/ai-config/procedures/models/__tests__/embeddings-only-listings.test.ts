@@ -26,6 +26,7 @@ vi.mock("@repo/database", () => ({
 		aiModelProviderMapping: { findMany: mocks.mappingFindMany },
 	},
 	getOrganizationMembership: mocks.getOrganizationMembership,
+	getOrganizationDefaultProvider: vi.fn(async () => null),
 	getProviderDisplayName: (provider: string) => provider,
 	LLM_PROVIDER_PURPOSE_FILTER: { purpose: { not: "EMBEDDINGS_ONLY" } },
 }));
@@ -80,13 +81,7 @@ describe("listModelsFromGateway", () => {
 			listModelsFromGatewayProcedure as unknown as Handler<unknown>
 		)._handler({ input: { organizationId: "org-1" }, context });
 
-		expect(mocks.orgFindFirst).toHaveBeenCalledTimes(2);
-		for (const [args] of mocks.orgFindFirst.mock.calls) {
-			expect(args.where).toMatchObject({
-				organizationId: "org-1",
-				purpose: { not: "EMBEDDINGS_ONLY" },
-			});
-		}
+		expect(mocks.orgFindFirst).not.toHaveBeenCalled();
 	});
 });
 

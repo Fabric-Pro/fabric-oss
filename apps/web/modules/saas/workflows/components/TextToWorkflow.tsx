@@ -174,42 +174,49 @@ export function TextToWorkflow({
 		}
 	};
 
-	// Inline version for bottom canvas
+	// Inline version: the canvas's bottom "Ask AI" bar supplies the frame,
+	// this is the borderless prompt and its Generate button inside it.
 	if (inline) {
 		return (
-			<div className="space-y-3">
-				<div className="flex gap-2">
-					<Input
-						id="workflow-prompt-inline"
-						placeholder={
-							hasExistingWorkflow
-								? "Describe your workflow with natural language..."
-								: "Describe your workflow with natural language..."
-						}
-						value={prompt}
-						onChange={(e) => setPrompt(e.target.value)}
-						onKeyPress={handleKeyPress}
-						disabled={isGenerating}
-						className="flex-1"
-					/>
-					<Button
-						onClick={handleGenerate}
-						disabled={isGenerating || !prompt.trim()}
-						className="gap-2"
-					>
-						{isGenerating ? (
-							<>
-								<Loader2Icon className="h-4 w-4 animate-spin" />
-								Generating...
-							</>
-						) : (
-							<>
-								<SparklesIcon className="h-4 w-4" />
-								Generate
-							</>
-						)}
-					</Button>
-				</div>
+			<div className="flex min-w-0 flex-1 items-center gap-2">
+				<input
+					id="workflow-prompt-inline"
+					aria-label={
+						hasExistingWorkflow
+							? "Describe changes to your workflow"
+							: "Describe your workflow"
+					}
+					placeholder={
+						hasExistingWorkflow
+							? "Describe a change to this workflow…"
+							: "Describe your workflow…"
+					}
+					value={prompt}
+					onChange={(e) => setPrompt(e.target.value)}
+					onKeyPress={handleKeyPress}
+					disabled={isGenerating}
+					// biome-ignore lint/a11y/noAutofocus: the bar opens on an explicit click or ⌘K to type into it
+					autoFocus
+					className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+				/>
+				<Button
+					size="sm"
+					onClick={handleGenerate}
+					disabled={isGenerating || !prompt.trim()}
+					className="h-7 gap-1.5"
+				>
+					{isGenerating ? (
+						<>
+							<Loader2Icon className="h-4 w-4 motion-safe:animate-spin" />
+							Generating...
+						</>
+					) : (
+						<>
+							<SparklesIcon className="h-4 w-4" />
+							Generate
+						</>
+					)}
+				</Button>
 			</div>
 		);
 	}

@@ -15,6 +15,72 @@ index 4b07a0707f71818fd3d56152d7ad8bd386e4fbfd..2a883c491031d62797f9963cf0d15130
                      output[key] = mergeDeep([output[key], source[key]], respectPrototype, respectArrays, respectArrayLength);
                  }
                  else {
+diff --git a/cjs/mergeIncrementalResult.js b/cjs/mergeIncrementalResult.js
+index c19d3f7330816a98189d340c173aa38aa93f046f..1ddb61bc70d1acd465d5ff84b3a35770d2b0b975 100644
+--- a/cjs/mergeIncrementalResult.js
++++ b/cjs/mergeIncrementalResult.js
+@@ -5,10 +5,14 @@ const mergeDeep_js_1 = require("./mergeDeep.js");
+ function mergeIncrementalResult({ incrementalResult, executionResult, }) {
+     const path = ['data', ...(incrementalResult.path ?? [])];
+     if (incrementalResult.items) {
+-        for (const item of incrementalResult.items) {
+-            setObjectKeyPath(executionResult, path, item);
+-            // Increment the last path segment (the array index) to merge the next item at the next index
+-            path[path.length - 1]++;
++        // reject the whole items batch if any path segment is unsafe, so a later
++        // index increment cannot turn a bad segment into a write at `data.NaN`
++        if (isSafeKeyPath(path)) {
++            for (const item of incrementalResult.items) {
++                setObjectKeyPath(executionResult, path, item);
++                // Increment the last path segment (the array index) to merge the next item at the next index
++                path[path.length - 1]++;
++            }
+         }
+     }
+     if (incrementalResult.data) {
+@@ -30,24 +34,34 @@ function mergeIncrementalResult({ incrementalResult, executionResult, }) {
+         });
+     }
+ }
++// only primitive string/number segments that cannot reach the prototype chain;
++// a non-primitive segment such as ["__proto__"] would coerce to "__proto__"
++function isSafeObjectKey(key) {
++    if (typeof key !== 'string' && typeof key !== 'number') {
++        return false;
++    }
++    return key !== '__proto__' && key !== 'constructor' && key !== 'prototype';
++}
++function isSafeKeyPath(keyPath) {
++    return keyPath.every(isSafeObjectKey);
++}
+ function setObjectKeyPath(obj, keyPath, value) {
++    // validate the full path before creating any parent containers, so a late
++    // unsafe segment cannot leave partial writes on executionResult
++    if (!isSafeKeyPath(keyPath)) {
++        return;
++    }
+     let current = obj;
+     let i;
+     for (i = 0; i < keyPath.length - 1; i++) {
+         const key = keyPath[i];
+-        if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+-            return;
+-        }
+-        if (current[key] == null) {
++        if (!Object.prototype.hasOwnProperty.call(current, key) || current[key] == null) {
+             // Determine if the next key is a number to create an array, otherwise create an object
+             current[key] = typeof keyPath[i + 1] === 'number' ? [] : {};
+         }
+         current = current[key];
+     }
+     const finalKey = keyPath[i];
+-    if (finalKey === '__proto__' || finalKey === 'constructor' || finalKey === 'prototype') {
+-        return;
+-    }
+-    const existingValue = current[finalKey];
++    const existingValue = Object.prototype.hasOwnProperty.call(current, finalKey) ? current[finalKey] : undefined;
+     current[finalKey] = existingValue != null ? (0, mergeDeep_js_1.mergeDeep)([existingValue, value]) : value;
+ }
 diff --git a/esm/mergeDeep.js b/esm/mergeDeep.js
 index 0263c8f23ad78b950bc29ecea5740d8f87cc029a..6bfad39f97aedd1a9d701249c7b8d98c5cf203ca 100644
 --- a/esm/mergeDeep.js
@@ -32,3 +98,69 @@ index 0263c8f23ad78b950bc29ecea5740d8f87cc029a..6bfad39f97aedd1a9d701249c7b8d98c
                      output[key] = mergeDeep([output[key], source[key]], respectPrototype, respectArrays, respectArrayLength);
                  }
                  else {
+diff --git a/esm/mergeIncrementalResult.js b/esm/mergeIncrementalResult.js
+index 7ba3fda910c92c9362868001f1814ade79f60f8b..5d1dc8d69749113159598096860926c6c0c0ffe9 100644
+--- a/esm/mergeIncrementalResult.js
++++ b/esm/mergeIncrementalResult.js
+@@ -2,10 +2,14 @@ import { mergeDeep } from './mergeDeep.js';
+ export function mergeIncrementalResult({ incrementalResult, executionResult, }) {
+     const path = ['data', ...(incrementalResult.path ?? [])];
+     if (incrementalResult.items) {
+-        for (const item of incrementalResult.items) {
+-            setObjectKeyPath(executionResult, path, item);
+-            // Increment the last path segment (the array index) to merge the next item at the next index
+-            path[path.length - 1]++;
++        // reject the whole items batch if any path segment is unsafe, so a later
++        // index increment cannot turn a bad segment into a write at `data.NaN`
++        if (isSafeKeyPath(path)) {
++            for (const item of incrementalResult.items) {
++                setObjectKeyPath(executionResult, path, item);
++                // Increment the last path segment (the array index) to merge the next item at the next index
++                path[path.length - 1]++;
++            }
+         }
+     }
+     if (incrementalResult.data) {
+@@ -27,24 +31,34 @@ export function mergeIncrementalResult({ incrementalResult, executionResult, })
+         });
+     }
+ }
++// only primitive string/number segments that cannot reach the prototype chain;
++// a non-primitive segment such as ["__proto__"] would coerce to "__proto__"
++function isSafeObjectKey(key) {
++    if (typeof key !== 'string' && typeof key !== 'number') {
++        return false;
++    }
++    return key !== '__proto__' && key !== 'constructor' && key !== 'prototype';
++}
++function isSafeKeyPath(keyPath) {
++    return keyPath.every(isSafeObjectKey);
++}
+ function setObjectKeyPath(obj, keyPath, value) {
++    // validate the full path before creating any parent containers, so a late
++    // unsafe segment cannot leave partial writes on executionResult
++    if (!isSafeKeyPath(keyPath)) {
++        return;
++    }
+     let current = obj;
+     let i;
+     for (i = 0; i < keyPath.length - 1; i++) {
+         const key = keyPath[i];
+-        if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+-            return;
+-        }
+-        if (current[key] == null) {
++        if (!Object.prototype.hasOwnProperty.call(current, key) || current[key] == null) {
+             // Determine if the next key is a number to create an array, otherwise create an object
+             current[key] = typeof keyPath[i + 1] === 'number' ? [] : {};
+         }
+         current = current[key];
+     }
+     const finalKey = keyPath[i];
+-    if (finalKey === '__proto__' || finalKey === 'constructor' || finalKey === 'prototype') {
+-        return;
+-    }
+-    const existingValue = current[finalKey];
++    const existingValue = Object.prototype.hasOwnProperty.call(current, finalKey) ? current[finalKey] : undefined;
+     current[finalKey] = existingValue != null ? mergeDeep([existingValue, value]) : value;
+ }

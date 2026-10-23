@@ -14,6 +14,10 @@ import type {
 } from "../../generated/enums";
 import { advisoryObjectKey } from "../lib/refresh-lock-key";
 
+/** Statuses shown in the Roadmap review inbox and counted by its badge. */
+export const REVIEW_INBOX_PROPOSAL_STATUSES: readonly PendingBacklogProposalStatus[] =
+	["PENDING", "APPROVED", "APPLYING", "FAILED"];
+
 /**
  * Structural shape of one `AttachmentWarning` carried on
  * `PendingBacklogProposal.sourceMetadata.attachmentWarnings`. Kept
@@ -218,12 +222,15 @@ export async function createRoadmapRecommendationBatchOnce(
 
 export async function listPendingBacklogProposals(params: {
 	projectId: string;
-	status?: PendingBacklogProposalStatus | PendingBacklogProposalStatus[];
+	status?:
+		| PendingBacklogProposalStatus
+		| readonly PendingBacklogProposalStatus[];
 	limit?: number;
 }) {
-	const statusFilter = Array.isArray(params.status)
-		? { in: params.status }
-		: params.status;
+	const statusFilter =
+		typeof params.status === "string" || params.status === undefined
+			? params.status
+			: { in: [...params.status] };
 	return await db.pendingBacklogProposal.findMany({
 		where: {
 			projectId: params.projectId,
@@ -243,8 +250,8 @@ export async function listPendingBacklogProposals(params: {
 			createdAt: true,
 			reviewedAt: true,
 			appliedAt: true,
-			// Drives the "Applying…" affordance + Cancel control: a PENDING row
-			// with a dispatch timestamp is mid-apply (vs. awaiting review).
+			// Set once the current claimant's workflow start returned. Legacy
+			// PENDING rows with a timestamp were dispatched by an older API.
 			applyStartedAt: true,
 		},
 		orderBy: { createdAt: "desc" },
@@ -262,30 +269,14 @@ export async function getPendingBacklogProposal(proposalId: string) {
 
 export async function countPendingBacklogProposals(
 	projectId: string,
-	status: PendingBacklogProposalStatus | PendingBacklogProposalStatus[] = [
-		"PENDING",
-		"FAILED",
-	],
+	status:
+		| PendingBacklogProposalStatus
+		| readonly PendingBacklogProposalStatus[] = REVIEW_INBOX_PROPOSAL_STATUSES,
 ) {
-	const statusFilter = Array.isArray(status) ? { in: status } : status;
+	const statusFilter =
+		typeof status === "string" ? status : { in: [...status] };
 	return await db.pendingBacklogProposal.count({
 		where: { projectId, status: statusFilter },
-	});
-}
-
-/**
- * Update only the applyWorkflowId field on a proposal. Separate from
- * markPendingProposalApproved so callers can set the workflow id after
- * launching a workflow without risking an overwrite of a terminal state
- * that the workflow may have already reached.
- */
-export async function setProposalApplyWorkflowId(
-	proposalId: string,
-	applyWorkflowId: string | null,
-) {
-	return await db.pendingBacklogProposal.update({
-		where: { id: proposalId },
-		data: { applyWorkflowId },
 	});
 }
 
@@ -329,6 +320,7 @@ export async function markPendingProposalApproved(params: {
 			reviewedAt: new Date(),
 			reviewedBy: params.reviewedBy,
 			applyWorkflowId: params.applyWorkflowId ?? null,
+			applyStartedAt: null,
 			applyError: null,
 		},
 	});
@@ -393,8 +385,8 @@ export async function markPendingProposalFailed(
  * Stamp the proposal at apply-dispatch time: records the workflow id AND the
  * dispatch wall-clock the stuck-apply watchdog measures staleness from. Call
  * right after `client.workflow.start("backlogApplyChangesWorkflow", …)` on the
- * AI Update apply path (the retry paths fold both fields into their atomic
- * PENDING flip instead, so they need no extra write).
+ * AI Update, retry, and monitor approve paths. Claims clear the previous
+ * dispatch timestamp; this post-start write confirms the current dispatch.
  *
  * The write is a compare-and-set, because a fast workflow can finalize before
  * it lands:
@@ -403,18 +395,15 @@ export async function markPendingProposalFailed(
  *     to PENDING, awaiting review) or after another tab re-claimed the row
  *     matches nothing, so it can neither arm the watchdog against a batch
  *     waiting on a person nor overwrite the live claimant.
- *   - `fresh`: the row was created by this call and never claimed (PENDING,
- *     no workflow id yet). A row someone else claimed in between is left alone.
- *
- * Only `claimed` is distinguished by the caller: after a keep-open finalize a
- * claimed row looks exactly like a fresh one.
+ *   - `approved`: the Slack approval is still APPROVED and its workflow id is
+ *     null or this caller's id. A late stamp on a returned PENDING row is a no-op.
  *
  * @returns rows stamped — 0 when the row moved on before the stamp landed.
  */
 export async function markProposalApplyDispatched(params: {
 	proposalId: string;
 	applyWorkflowId: string;
-	mode: "claimed" | "fresh";
+	mode: "claimed" | "approved";
 }): Promise<number> {
 	const res = await db.pendingBacklogProposal.updateMany({
 		where:
@@ -426,8 +415,11 @@ export async function markProposalApplyDispatched(params: {
 					}
 				: {
 						id: params.proposalId,
-						status: "PENDING",
-						applyWorkflowId: null,
+						status: "APPROVED",
+						OR: [
+							{ applyWorkflowId: null },
+							{ applyWorkflowId: params.applyWorkflowId },
+						],
 					},
 		data: {
 			applyWorkflowId: params.applyWorkflowId,
@@ -438,25 +430,32 @@ export async function markProposalApplyDispatched(params: {
 }
 
 /**
- * Compare-and-set terminal stop for a proposal still mid-apply — used by manual
- * cancel and by the stuck-apply watchdog. Transitions ONLY `PENDING → FAILED`
- * (a `updateMany` status guard), so a concurrent workflow finalize or a second
- * stop can't be clobbered: whoever flips the row out of PENDING first wins.
+ * Compare-and-set terminal stop for a proposal mid-apply, used by manual
+ * cancel. Requires confirmed dispatch on APPLYING or legacy PENDING rows.
+ * Unconfirmed claims are left to the watchdog. The workflow-id
+ * guard preserves a replacement claim; the status guard preserves a terminal
+ * outcome that wins the race. The watchdog uses timeOutStaleApply instead.
  *
  * Reuses the FAILED terminal state (with a distinguishing `errorClass` —
  * "Cancelled" / "TimedOut") rather than a new enum value, so the existing
  * Retry / Dismiss inbox controls keep working on a stopped proposal.
  *
  * @returns rows updated — 1 when this caller won the transition, 0 when the row
- * was already terminal (or never pending).
+ * was unconfirmed, already terminal, or its claim changed.
  */
 export async function stopApplyingProposal(params: {
 	proposalId: string;
+	applyWorkflowId: string | null;
 	errorClass: string;
 	errorMessage: string;
 }): Promise<number> {
 	const res = await db.pendingBacklogProposal.updateMany({
-		where: { id: params.proposalId, status: "PENDING" },
+		where: {
+			id: params.proposalId,
+			applyWorkflowId: params.applyWorkflowId,
+			status: { in: ["APPLYING", "PENDING"] },
+			applyStartedAt: { not: null },
+		},
 		data: {
 			status: "FAILED",
 			errorClass: params.errorClass.slice(0, 200),
@@ -469,38 +468,83 @@ export async function stopApplyingProposal(params: {
 }
 
 /**
- * Find proposals stuck mid-apply: still `PENDING` with an apply dispatched
- * (`applyStartedAt` set) longer than `cutoff` ago. Awaiting-review proposals
- * (`applyStartedAt = null`) are never returned, so the watchdog can never touch
- * a proposal that's legitimately waiting on a human. Oldest dispatch first,
- * capped by `limit`. Global (not project-scoped): the stuck-apply watchdog is a
- * system sweep, mirroring the Weave execution watchdog.
+ * Shared discovery/write guard for stale dispatched or claimed proposals.
+ * An unstamped APPLYING claim is measured from reviewedAt (createdAt when
+ * absent). Claims refresh reviewedAt and clear applyStartedAt; a post-start
+ * stamp extends the clock to dispatch confirmation. Both clocks must be old.
+ */
+function staleApplyWhere(
+	cutoff: Date,
+): Prisma.PendingBacklogProposalWhereInput {
+	return {
+		OR: [
+			{ status: "PENDING", applyStartedAt: { not: null, lt: cutoff } },
+			{
+				status: { in: ["APPROVED", "APPLYING"] },
+				AND: [
+					{
+						OR: [
+							{ applyStartedAt: null },
+							{ applyStartedAt: { lt: cutoff } },
+						],
+					},
+					{
+						OR: [
+							{ reviewedAt: { lt: cutoff } },
+							{ reviewedAt: null, createdAt: { lt: cutoff } },
+						],
+					},
+				],
+			},
+		],
+	};
+}
+
+/**
+ * Time out only a proposal that still meets the stale-apply guard at write time.
+ * Completed, cancelled, re-claimed, or keep-open finalized rows no longer match.
+ */
+export async function timeOutStaleApply(params: {
+	proposalId: string;
+	cutoff: Date;
+	errorClass: string;
+	errorMessage: string;
+}): Promise<number> {
+	const res = await db.pendingBacklogProposal.updateMany({
+		where: { id: params.proposalId, ...staleApplyWhere(params.cutoff) },
+		data: {
+			status: "FAILED",
+			errorClass: params.errorClass.slice(0, 200),
+			errorMessage: params.errorMessage.slice(0, 500),
+			applyError: params.errorMessage.slice(0, 4000),
+			failedAt: new Date(),
+		},
+	});
+	return res.count;
+}
+
+/**
+ * Find stale dispatched PENDING or claimed APPROVED/APPLYING proposals.
+ * Undispatched PENDING rows are excluded by the shared guard. Global system
+ * sweep, oldest created first, capped by limit. Includes activity timestamps
+ * for claims that did not reach dispatch.
  */
 export async function findStaleApplyingProposals(params: {
 	cutoff: Date;
 	limit: number;
-}): Promise<
-	Array<{
-		id: string;
-		projectId: string;
-		organizationId: string | null;
-		applyWorkflowId: string | null;
-		applyStartedAt: Date | null;
-	}>
-> {
+}) {
 	return await db.pendingBacklogProposal.findMany({
-		where: {
-			status: "PENDING",
-			applyStartedAt: { not: null, lt: params.cutoff },
-		},
+		where: staleApplyWhere(params.cutoff),
 		select: {
 			id: true,
 			projectId: true,
 			organizationId: true,
 			applyWorkflowId: true,
 			applyStartedAt: true,
+			reviewedAt: true,
+			createdAt: true,
 		},
-		orderBy: { applyStartedAt: "asc" },
+		orderBy: { createdAt: "asc" },
 		take: params.limit,
 	});
 }
@@ -701,9 +745,8 @@ export async function setPendingProposalAttachmentResult(
 /**
  * Atomically claim a proposal for application: PENDING | FAILED → APPLYING,
  * stamping the workflow that owns the apply. Returns false when another
- * claimant won (or the proposal is in a terminal state). Every subsequent
- * write must include the same `applyWorkflowId`, so only the claimant can
- * advance the row.
+ * claimant won (or the proposal is in a terminal state). The claimed finalizer
+ * checks `applyWorkflowId` before advancing the row.
  */
 export async function claimPendingProposalForApply(params: {
 	proposalId: string;
@@ -730,6 +773,7 @@ export async function claimPendingProposalForApply(params: {
 			reviewedAt: new Date(),
 			reviewedBy: params.reviewedBy,
 			applyWorkflowId: params.applyWorkflowId,
+			applyStartedAt: null,
 			applyError: null,
 		},
 	});
@@ -904,6 +948,7 @@ export async function finalizeClaimedProposal(params: {
 				? { status: "APPLIED", appliedAt: new Date(), applyError: null }
 				: {
 						status: "FAILED",
+						failedAt: new Date(),
 						applyError: (
 							params.errorMessage ?? "apply workflow failed"
 						).slice(0, 4000),

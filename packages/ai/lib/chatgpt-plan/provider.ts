@@ -17,6 +17,8 @@ import {
 	type LanguageModelMiddleware,
 	wrapLanguageModel,
 } from "ai";
+import { createStrictJsonSchemaMiddleware } from "../strict-json-schema-middleware";
+import { structuredOutputCapabilityFor } from "../structured-output-capabilities";
 import {
 	capturePlanCredentials,
 	notePlanCredentialUsed,
@@ -53,9 +55,6 @@ import { createChatGptPlanStructuredOutputMiddleware } from "./structured-output
  *   server-stored items that do not exist for plan requests;
  * - system messages as developer messages (system items are rejected);
  * - no sampling, output cap, conversation or previous-response options;
- * - non-strict JSON schemas: strict mode demands every property in
- *   `required`, and Fabric's schemas use optional fields (the answers' nulls
- *   are mapped back by `createChatGptPlanStructuredOutputMiddleware`);
  * - the task's reasoning effort, unless the caller chose one.
  */
 export function createChatGptPlanRequestMiddleware(
@@ -83,7 +82,6 @@ export function createChatGptPlanRequestMiddleware(
 				providerOptions: {
 					...rest.providerOptions,
 					openai: {
-						strictJsonSchema: false,
 						...(reasoningEffort && { reasoningEffort }),
 						...keptOpenaiOptions,
 						store: false,
@@ -396,6 +394,13 @@ export function createChatGptPlanModel({
 				beforeModelFallback,
 				onModelFallback,
 			}),
+			createStrictJsonSchemaMiddleware(
+				structuredOutputCapabilityFor(
+					"OPENAI_CHATGPT_PLAN",
+					false,
+					modelId,
+				),
+			),
 		],
 	});
 }

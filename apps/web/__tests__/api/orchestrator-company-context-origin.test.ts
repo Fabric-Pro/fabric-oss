@@ -23,6 +23,8 @@ const getTemporalClientMock = vi.fn();
 const startWorkflowMock = vi.fn();
 const memberFindFirstMock = vi.fn();
 const projectFindUniqueMock = vi.fn();
+const hasProjectAccessMock = vi.fn();
+const getConversationProjectMock = vi.fn();
 
 vi.mock("@saas/auth/lib/server", () => ({
 	getSession: () => getSessionMock(),
@@ -66,8 +68,9 @@ vi.mock("@repo/database", async () => ({
 		aiChat: { findFirst: vi.fn(async () => null) },
 	},
 	getConversationWorkspaces: vi.fn(async () => []),
-	getConversationProject: vi.fn(async () => null),
-	hasProjectAccess: vi.fn(async () => true),
+	getConversationProject: (...args: unknown[]) =>
+		getConversationProjectMock(...args),
+	hasProjectAccess: (...args: unknown[]) => hasProjectAccessMock(...args),
 	filterAccessibleWorkspaceIds: vi.fn(async () => ({
 		allowed: [],
 		dropped: [],
@@ -122,6 +125,8 @@ describe("POST orchestrator-temporal/stream — the Advisor's company-context op
 		});
 		getAIModelWithMetadataMock.mockResolvedValue({ trackUsage: vi.fn() });
 		memberFindFirstMock.mockResolvedValue({ id: "member-1" });
+		hasProjectAccessMock.mockResolvedValue(true);
+		getConversationProjectMock.mockResolvedValue(null);
 		projectFindUniqueMock.mockResolvedValue({
 			organizationId: ORGANIZATION_ID,
 		});
@@ -269,6 +274,133 @@ describe("POST orchestrator-temporal/stream — the Advisor's company-context op
 			);
 		}
 	});
+
+	it.each([
+		{ tools: ["search_documents"] },
+		{ tools: ["search_documents", "code_file_get", "search_documents"] },
+	])(
+		"binds repository reads to the Advisor's explicit list %j",
+		async ({ tools }) => {
+			const response = await post({
+				...CHAT_BODY,
+				advisorOrigin: true,
+				projectId: "project-of-example-org",
+				enabledFabricToolIds: tools,
+			});
+
+			expect(response.status).toBe(200);
+			expect(startWorkflowMock).toHaveBeenCalledTimes(1);
+			expect(startedInput()?.projectId).toBe("project-of-example-org");
+			expect(startedInput()?.enabledFabricToolIds).toEqual([
+				...new Set([
+					...tools,
+					"code_tree",
+					"code_file_get",
+					"code_search",
+				]),
+			]);
+		},
+	);
+
+	it("binds repository reads when the project comes from the conversation", async () => {
+		const { db } = await import("@repo/database");
+		vi.mocked(db.agentConversation.findFirst).mockResolvedValue({
+			id: "conversation-example",
+			organizationId: ORGANIZATION_ID,
+			parentConversationId: null,
+			carriedOverSummary: null,
+		} as never);
+		getConversationProjectMock.mockResolvedValue({
+			project: { id: "project-of-example-org" },
+		});
+		const response = await post({
+			...CHAT_BODY,
+			advisorOrigin: true,
+			conversationId: "conversation-example",
+			enabledFabricToolIds: ["search_documents"],
+		});
+
+		expect(response.status).toBe(200);
+		expect(getConversationProjectMock).toHaveBeenCalledWith(
+			"conversation-example",
+		);
+		expect(hasProjectAccessMock).toHaveBeenCalledWith(
+			"project-of-example-org",
+			SESSION_USER_ID,
+			ORGANIZATION_ID,
+		);
+		expect(startedInput()?.projectId).toBe("project-of-example-org");
+		expect(startedInput()?.enabledFabricToolIds).toEqual([
+			"search_documents",
+			"code_tree",
+			"code_file_get",
+			"code_search",
+		]);
+	});
+
+	it.each([undefined, false, "true", 1, null])(
+		"preserves configured lists without literal Advisor origin (%j)",
+		async (advisorOrigin) => {
+			const tools = ["search_documents", "code_file_get"];
+			await post({
+				...CHAT_BODY,
+				advisorOrigin,
+				projectId: "project-of-example-org",
+				enabledFabricToolIds: tools,
+			});
+
+			expect(startedInput()).toBeDefined();
+			expect(startedInput()?.enabledFabricToolIds).toEqual(tools);
+		},
+	);
+
+	it.each(["absent", "inaccessible", "other organization"])(
+		"preserves the list when the final project is %s",
+		async (project) => {
+			hasProjectAccessMock.mockResolvedValue(project !== "inaccessible");
+			if (project === "other organization") {
+				projectFindUniqueMock.mockResolvedValue({
+					organizationId: "another-example-org",
+				});
+			}
+			const tools = ["search_documents"];
+			await post({
+				...CHAT_BODY,
+				advisorOrigin: true,
+				projectId:
+					project === "absent" ? undefined : "project-of-example-org",
+				enabledFabricToolIds: tools,
+			});
+
+			expect(startedInput()).toBeDefined();
+			expect(startedInput()?.projectId).toBeUndefined();
+			expect(startedInput()?.enabledFabricToolIds).toEqual(tools);
+		},
+	);
+
+	it.each([
+		{ enabledFabricToolIds: null },
+		{ enabledFabricToolIds: [] },
+		{ enabledFabricToolIds: undefined },
+	])(
+		"preserves all-tools and no-tools selections (%j)",
+		async ({ enabledFabricToolIds }) => {
+			await post({
+				...CHAT_BODY,
+				advisorOrigin: true,
+				projectId: "project-of-example-org",
+				enabledFabricToolIds,
+			});
+
+			expect(startedInput()).toBeDefined();
+			expect(startedInput()?.projectId).toBe("project-of-example-org");
+			expect(startedInput()?.enabledFabricToolIds).toEqual(
+				enabledFabricToolIds === undefined
+					? null
+					: enabledFabricToolIds,
+			);
+		},
+	);
 
 	it("keeps the memo's shape", async () => {
 		await post({ ...CHAT_BODY, advisorOrigin: true });

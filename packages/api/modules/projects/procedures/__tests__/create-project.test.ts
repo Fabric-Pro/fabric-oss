@@ -20,6 +20,9 @@ const mockProjectFindFirst = vi.fn();
 // connection is on a self-hosted instance and `srv-gl` is GitLab.
 const mockProjectUpdate = vi.hoisted(() => vi.fn());
 const mockProjectFindUnique = vi.hoisted(() => vi.fn());
+const mockProjectDocumentCreate = vi.hoisted(() => vi.fn());
+const mockProjectContextFindMany = vi.hoisted(() => vi.fn());
+const mockMoveWizardTempContexts = vi.hoisted(() => vi.fn());
 vi.mock("@repo/integrations/gitlab", async (importOriginal) => ({
 	...(await importOriginal<object>()),
 	findUsableGitLabConnection: async () => ({
@@ -64,13 +67,18 @@ vi.mock("@repo/database", async () => ({
 		mCPConfig: { findFirst: async () => null },
 		projectDocument: {
 			findFirst: vi.fn(),
-			create: vi.fn(),
+			create: (...args: unknown[]) => mockProjectDocumentCreate(...args),
 		},
 		documentVersion: {
 			create: vi.fn(),
 		},
+		projectContext: {
+			findMany: (...args: unknown[]) =>
+				mockProjectContextFindMany(...args),
+		},
 	},
-	moveWizardTempContextsToProject: vi.fn(),
+	moveWizardTempContextsToProject: (...args: unknown[]) =>
+		mockMoveWizardTempContexts(...args),
 	seedTerminalStatusesIfEmpty: vi.fn(),
 	Prisma: { JsonNull: "__JSON_NULL__", DbNull: "__DB_NULL__" },
 }));
@@ -618,5 +626,79 @@ describe("createProjectProcedure — the GitLab container's instance", () => {
 			gitlabOrigin: "https://gitlab.example.com",
 		});
 		expect(mockCreateProject).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * A document imported at creation counts its words as an editor save and a
+ * generation run do, so a fenced code block or an image adds nothing to its
+ * `wordCount` (Fizzy #2946).
+ */
+describe("createProjectProcedure — imported documents' word count", () => {
+	const BODY = [
+		"Scope and goals",
+		"",
+		"```ts",
+		"const answer = 42;",
+		"```",
+		"",
+		"![Flow](https://example.com/flow.png)",
+	].join("\n");
+
+	beforeEach(() => {
+		mockCreateProject.mockResolvedValue(projectFixture());
+		mockProjectDocumentCreate.mockResolvedValue({ id: "doc-1" });
+	});
+
+	it("counts an onboarding artifact's words without its code and images", async () => {
+		await handler({
+			input: {
+				name: "Test Project",
+				organizationId: null,
+				projectManagementAdditionalContext: { prdContent: BODY },
+			},
+			context: baseCtx,
+		});
+
+		expect(mockProjectDocumentCreate).toHaveBeenCalledTimes(1);
+		expect(mockProjectDocumentCreate.mock.calls[0][0].data).toMatchObject({
+			type: "PRD",
+			source: "IMPORTED",
+			wordCount: 3,
+		});
+	});
+
+	it("counts a tagged wizard context's words without its code and images", async () => {
+		mockMoveWizardTempContexts.mockResolvedValue({
+			movedCount: 1,
+			contextIds: ["ctx-1"],
+			contextIdMapping: {},
+			sessionId: "wizard-session-1",
+		});
+		mockProjectContextFindMany.mockResolvedValue([
+			{
+				id: "ctx-1",
+				content: BODY,
+				metadata: { documentTag: "ARCHITECTURE" },
+				originalFilename: "architecture.md",
+				extractionStatus: "COMPLETED",
+			},
+		]);
+
+		await handler({
+			input: {
+				name: "Test Project",
+				organizationId: null,
+				tempSessionId: "wizard-session-1",
+			},
+			context: baseCtx,
+		});
+
+		expect(mockProjectDocumentCreate).toHaveBeenCalledTimes(1);
+		expect(mockProjectDocumentCreate.mock.calls[0][0].data).toMatchObject({
+			type: "ARCHITECTURE",
+			sourceContextId: "ctx-1",
+			wordCount: 3,
+		});
 	});
 });

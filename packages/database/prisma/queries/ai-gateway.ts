@@ -8,16 +8,18 @@
 import { config } from "@repo/config";
 import { encryptApiKey } from "@repo/utils";
 import { db } from "../client";
+import type { AIProvider } from "../generated/client";
+import {
+	materializeTaskDefaultsSnapshot,
+	type TaskDefaultsSnapshot,
+} from "./task-default-snapshots";
 
-/**
- * Columns every provider read needs to resolve a credential. Kept as one
- * constant so a new credential field can never be added to some reads and
- * silently missed by others.
- */
-const PROVIDER_CREDENTIAL_SELECT = {
+/** Shared fields for credential resolution and connection task defaults. */
+const PROVIDER_CONFIG_SELECT = {
 	encryptedApiKey: true,
 	clientId: true,
 	encryptedClientSecret: true,
+	taskDefaultsSnapshot: true,
 } as const;
 
 /**
@@ -85,6 +87,7 @@ export function readProviderRowCredentials(row: {
  * Full provider config result for AI API calls
  */
 export interface AiProviderConfig {
+	taskDefaultsSnapshot?: TaskDefaultsSnapshot | null;
 	apiKey: string | null;
 	configId: string | null;
 	provider: string | null;
@@ -132,7 +135,7 @@ const EMPTY_PROVIDER_CONFIG: AiProviderConfig = {
  * Shared by every provider read below so a newly added credential field is
  * threaded through all of them at once.
  */
-function toAiProviderConfig(
+async function toAiProviderConfig(
 	row: {
 		id: string;
 		provider: string;
@@ -140,9 +143,10 @@ function toAiProviderConfig(
 		clientId: string | null;
 		encryptedClientSecret: string | null;
 		config: unknown;
+		taskDefaultsSnapshot: unknown;
 	},
 	source: "organization" | "user",
-): AiProviderConfig | null {
+): Promise<AiProviderConfig | null> {
 	const { apiKey, hasCredentials } = readProviderRowCredentials(row);
 
 	if (!hasCredentials) {
@@ -154,6 +158,10 @@ function toAiProviderConfig(
 	return {
 		apiKey,
 		configId: row.id,
+		taskDefaultsSnapshot: await materializeTaskDefaultsSnapshot(
+			{ ...row, provider: row.provider as AIProvider },
+			source,
+		),
 		provider: row.provider,
 		baseUrl: (configData?.baseUrl as string) || null,
 		enabledProviders: (configData?.enabledProviders as string[]) || [],
@@ -179,6 +187,21 @@ function getPlatformGatewayProviderConfig(): AiProviderConfig | null {
 	};
 }
 
+export const organizationDefaultProviderWhere = (organizationId: string) => ({
+	organizationId,
+	isDefault: true,
+	enabled: true,
+	...LLM_PROVIDER_PURPOSE_FILTER,
+});
+
+/** The organization's explicit, usable LLM default; never a personal fallback. */
+export async function getOrganizationDefaultProvider(
+	organizationId: string,
+): Promise<AIProvider | null> {
+	const resolved = await resolveOrganizationProviderConfig(organizationId);
+	return (resolved?.provider as AIProvider | undefined) ?? null;
+}
+
 /**
  * The organization's own default provider configuration, or null when it has
  * none with a usable credential. The organization rung of
@@ -189,16 +212,11 @@ async function resolveOrganizationProviderConfig(
 	organizationId: string,
 ): Promise<AiProviderConfig | null> {
 	const orgConfig = await db.cloudProviderConfig.findFirst({
-		where: {
-			organizationId,
-			isDefault: true,
-			enabled: true,
-			...LLM_PROVIDER_PURPOSE_FILTER,
-		},
+		where: organizationDefaultProviderWhere(organizationId),
 		select: {
 			id: true,
 			provider: true,
-			...PROVIDER_CREDENTIAL_SELECT,
+			...PROVIDER_CONFIG_SELECT,
 			config: true,
 		},
 	});
@@ -269,13 +287,13 @@ async function resolveTenantProviderConfig({
 		select: {
 			id: true,
 			provider: true,
-			...PROVIDER_CREDENTIAL_SELECT,
+			...PROVIDER_CONFIG_SELECT,
 			config: true,
 		},
 	});
 
 	if (userConfig) {
-		const resolved = toAiProviderConfig(userConfig, "user");
+		const resolved = await toAiProviderConfig(userConfig, "user");
 		if (resolved) {
 			return resolved;
 		}
@@ -316,12 +334,12 @@ export async function getPlanSpentPersonalProviderConfig({
 		select: {
 			id: true,
 			provider: true,
-			...PROVIDER_CREDENTIAL_SELECT,
+			...PROVIDER_CONFIG_SELECT,
 			config: true,
 		},
 	});
 	for (const row of rows) {
-		const resolved = toAiProviderConfig(row, "user");
+		const resolved = await toAiProviderConfig(row, "user");
 		if (resolved) {
 			return resolved;
 		}
@@ -528,13 +546,16 @@ export async function getEmbeddingProviderConfig({
 			select: {
 				id: true,
 				provider: true,
-				...PROVIDER_CREDENTIAL_SELECT,
+				...PROVIDER_CONFIG_SELECT,
 				config: true,
 			},
 		});
 
 		if (orgConfig) {
-			const resolved = toAiProviderConfig(orgConfig, "organization");
+			const resolved = await toAiProviderConfig(
+				orgConfig,
+				"organization",
+			);
 			if (resolved) {
 				return resolved;
 			}
@@ -554,13 +575,13 @@ export async function getEmbeddingProviderConfig({
 		select: {
 			id: true,
 			provider: true,
-			...PROVIDER_CREDENTIAL_SELECT,
+			...PROVIDER_CONFIG_SELECT,
 			config: true,
 		},
 	});
 
 	if (userConfig) {
-		const resolved = toAiProviderConfig(userConfig, "user");
+		const resolved = await toAiProviderConfig(userConfig, "user");
 		if (resolved) {
 			return resolved;
 		}
@@ -657,13 +678,16 @@ export async function getAiProviderApiKeyByProvider({
 			select: {
 				id: true,
 				provider: true,
-				...PROVIDER_CREDENTIAL_SELECT,
+				...PROVIDER_CONFIG_SELECT,
 				config: true,
 			},
 		});
 
 		if (orgConfig) {
-			const resolved = toAiProviderConfig(orgConfig, "organization");
+			const resolved = await toAiProviderConfig(
+				orgConfig,
+				"organization",
+			);
 			if (resolved) {
 				return resolved;
 			}
@@ -683,13 +707,13 @@ export async function getAiProviderApiKeyByProvider({
 		select: {
 			id: true,
 			provider: true,
-			...PROVIDER_CREDENTIAL_SELECT,
+			...PROVIDER_CONFIG_SELECT,
 			config: true,
 		},
 	});
 
 	if (userConfig) {
-		const resolved = toAiProviderConfig(userConfig, "user");
+		const resolved = await toAiProviderConfig(userConfig, "user");
 		if (resolved) {
 			return resolved;
 		}

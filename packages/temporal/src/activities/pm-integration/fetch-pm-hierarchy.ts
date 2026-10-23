@@ -29,13 +29,12 @@ import type { PMToolCapabilities } from "./tool-analyzer";
  * Per-item description cap applied at the source.
  *
  * The downstream backlog-context LLM prompt inlines at most 150 characters
- * of PM-item description. Capping here keeps the activity result well under
- * Temporal's 2 MiB input limit when PM tools return many items with long
- * descriptions. 500 chars leaves a ~3.3x buffer over current prompt usage.
+ * of PM-item description. Capping here reduces description data in activity
+ * results when PM tools return many items with long descriptions. 500 chars
+ * leaves a ~3.3x buffer over current prompt usage.
  *
- * Note: the `raw` field on PMWorkItemSummary is intentionally NOT truncated
- * here — downstream consumers may rely on its structure. Only `description`,
- * which is the dominant size contributor, is capped.
+ * The `raw` field is preserved by default because consumers may rely on its
+ * structure. Prompt-only reads omit it through the hierarchy finalizer below.
  */
 export const PM_HIERARCHY_DESCRIPTION_MAX_CHARS = 500;
 
@@ -57,12 +56,21 @@ function truncatePmItemDescription(item: PMWorkItemSummary): PMWorkItemSummary {
 
 function truncatePmHierarchyDescriptions(
 	result: PMHierarchyResult,
+	forPrompt = false,
 ): PMHierarchyResult {
+	const prepareItem = (item: PMWorkItemSummary): PMWorkItemSummary => {
+		const truncated = truncatePmItemDescription(item);
+		if (!forPrompt) {
+			return truncated;
+		}
+		const { raw: _raw, ...summary } = truncated;
+		return summary;
+	};
 	return {
 		...result,
-		epics: result.epics.map(truncatePmItemDescription),
-		features: result.features.map(truncatePmItemDescription),
-		stories: result.stories.map(truncatePmItemDescription),
+		epics: result.epics.map(prepareItem),
+		features: result.features.map(prepareItem),
+		stories: result.stories.map(prepareItem),
 	};
 }
 
@@ -350,6 +358,11 @@ export async function fillJiraCreateArgs(params: {
 // ============================================================================
 
 export interface FetchPMHierarchyInput {
+	/**
+	 * The caller only reads identity, title, state, URL, type and a short
+	 * description for a prompt. Allows provider summary projections and omits raw.
+	 */
+	forPrompt?: boolean;
 	projectId: string;
 	mcpConfigId: string;
 	containerId: string;
@@ -362,12 +375,18 @@ export interface FetchPMHierarchyInput {
 export interface PMHierarchyResult {
 	readStatus?: "ok" | "no-columns" | "failed";
 	readErrorKind?: PMBoardReadErrorKind;
+	listingTruncated?: boolean;
 	epics: PMWorkItemSummary[];
 	features: PMWorkItemSummary[];
 	stories: PMWorkItemSummary[];
 	/** Detected PM tool type (e.g. "fizzy", "azure-devops", "linear") */
 	detectedType?: string;
 }
+
+// Keep the activity result within Temporal payload limits; analysis prompts are token-budgeted.
+const PM_LIST_PAGE_SIZE = 50;
+const PM_LIST_MAX_ITEMS = 500;
+const PM_LIST_MAX_PAGES = 20;
 
 /** ADO backlog category reference names (these are categoryReferenceName values, NOT WIT names) */
 const ADO_WORK_ITEM_TYPE_TO_BACKLOG: Record<string, string> = {
@@ -532,6 +551,19 @@ export function parseListResponse(
 	output: unknown,
 	strict = false,
 ): PMWorkItemSummary[] {
+	return parseListPage(output, strict).items;
+}
+
+function parseListPage(
+	output: unknown,
+	strict = false,
+): {
+	items: PMWorkItemSummary[];
+	total?: number;
+	rawCount: number;
+	hasNextPage: boolean;
+	recognized: boolean;
+} {
 	const items: PMWorkItemSummary[] = [];
 	let data: unknown = output;
 
@@ -548,7 +580,12 @@ export function parseListResponse(
 					if (strict) {
 						throw new Error("Unreadable PM listing response.");
 					}
-					return items;
+					return {
+						items,
+						rawCount: 0,
+						hasNextPage: false,
+						recognized: false,
+					};
 				}
 			}
 		}
@@ -622,7 +659,52 @@ export function parseListResponse(
 		}
 	}
 
-	return items;
+	const envelope =
+		extracted?.envelope ??
+		(data && typeof data === "object" && !Array.isArray(data)
+			? (data as Record<string, unknown>)
+			: undefined);
+	const rawTotal = envelope
+		? (envelope.total ??
+			envelope.totalCount ??
+			envelope.total_count ??
+			(envelope.meta && typeof envelope.meta === "object"
+				? (envelope.meta as Record<string, unknown>).total
+				: undefined) ??
+			(envelope.pagination && typeof envelope.pagination === "object"
+				? (envelope.pagination as Record<string, unknown>).total
+				: undefined))
+		: undefined;
+	// `count` often describes only this page, so it cannot establish completeness.
+	const total =
+		typeof rawTotal === "number" && rawTotal >= 0 ? rawTotal : undefined;
+	const hasMoreMarker = (value: unknown): boolean => {
+		if (!value || typeof value !== "object") {
+			return false;
+		}
+		const record = value as Record<string, unknown>;
+		return (
+			record.hasNextPage === true ||
+			record.hasMore === true ||
+			record.has_more === true ||
+			record.isLast === false ||
+			record.last_page === false ||
+			[
+				record.nextCursor,
+				record.next_cursor,
+				record.nextPageToken,
+				record.next_page_token,
+			].some((token) => typeof token === "string" && token.length > 0)
+		);
+	};
+	return {
+		items,
+		total,
+		rawCount: arr?.length ?? 0,
+		hasNextPage:
+			hasMoreMarker(envelope) || hasMoreMarker(envelope?.pageInfo),
+		recognized: !!extracted,
+	};
 }
 
 /**
@@ -789,6 +871,7 @@ async function fetchFizzyBoardCards(params: {
 	userId: string;
 	organizationId?: string;
 	capabilities: PMToolCapabilities;
+	forPrompt?: boolean;
 }): Promise<PMHierarchyResult> {
 	const read = await readFizzyBoardCards({
 		mcpConfigId: params.mcpConfigId,
@@ -797,6 +880,9 @@ async function fetchFizzyBoardCards(params: {
 		userId: params.userId,
 		organizationId: params.organizationId,
 		capabilities: params.capabilities,
+		...(params.forPrompt
+			? { fields: "summary" as const, descriptionFromPreview: true }
+			: {}),
 	});
 
 	return {
@@ -826,6 +912,8 @@ async function fetchFizzyBoardCards(params: {
 export async function fetchPMWorkItemsByType(
 	input: FetchPMHierarchyInput,
 ): Promise<PMHierarchyResult> {
+	const finalize = (result: PMHierarchyResult) =>
+		truncatePmHierarchyDescriptions(result, input.forPrompt);
 	const {
 		mcpConfigId,
 		containerId,
@@ -856,7 +944,7 @@ export async function fetchPMWorkItemsByType(
 		logger.warn(
 			"[Fetch PM Hierarchy] PM tool does not support listing work items",
 		);
-		return truncatePmHierarchyDescriptions({
+		return finalize({
 			epics: [],
 			features: [],
 			stories: [],
@@ -1039,7 +1127,7 @@ export async function fetchPMWorkItemsByType(
 			);
 		}
 
-		return truncatePmHierarchyDescriptions({
+		return finalize({
 			...result,
 			detectedType: capabilities.detectedType,
 		});
@@ -1058,44 +1146,155 @@ export async function fetchPMWorkItemsByType(
 			userId,
 			organizationId,
 			capabilities,
+			forPrompt: input.forPrompt,
 		});
-		return truncatePmHierarchyDescriptions(fizzyResult);
+		return finalize(fizzyResult);
 	}
 
-	// Non-ADO: fetch all items (can't filter by type)
+	// Non-ADO: page items without type filtering.
 	let readErrorKind: PMBoardReadErrorKind | undefined;
 	try {
-		const listArgs: Record<string, unknown> = {
+		const baseArgs: Record<string, unknown> = {
 			[listTool.containerParam]: containerId,
 		};
-
 		for (const param of listTool.filterParams) {
 			if (additionalContext?.[param]) {
-				listArgs[param] = additionalContext[param];
+				baseArgs[param] = additionalContext[param];
 			}
 		}
 
-		const listResult = await executeMcpTool({
-			pmTarget: { additionalContext },
-			toolName: listTool.toolName,
-			args: listArgs,
-			userId,
-			organizationId,
-			mcpConfigId,
-		});
-
-		if (listResult.success) {
-			const allItems = parseListResponse(listResult.output, true);
-			// Can't differentiate types for non-ADO, put all in stories
-			return truncatePmHierarchyDescriptions({
+		const { paginationInfo } = listTool;
+		const canPage =
+			paginationInfo.style === "offset-page" ||
+			paginationInfo.style === "offset-skip";
+		const allItems: PMWorkItemSummary[] = [];
+		const seen = new Set<string>();
+		let effectivePageSize: number | undefined;
+		let listingTruncated = false;
+		let offset = 0;
+		let knownTotal: number | undefined;
+		let previousPageFull = false;
+		let previousHasMore = false;
+		let isProbe = false;
+		for (let page = 1; page <= PM_LIST_MAX_PAGES; page++) {
+			const listArgs = { ...baseArgs };
+			if (paginationInfo.style === "offset-page") {
+				if (paginationInfo.pageParam) {
+					listArgs[paginationInfo.pageParam] = page;
+				}
+				if (paginationInfo.pageSizeParam) {
+					listArgs[paginationInfo.pageSizeParam] = PM_LIST_PAGE_SIZE;
+				}
+			} else if (paginationInfo.style === "offset-skip") {
+				if (paginationInfo.skipParam) {
+					listArgs[paginationInfo.skipParam] = offset;
+				}
+				if (paginationInfo.pageSizeParam) {
+					listArgs[paginationInfo.pageSizeParam] = PM_LIST_PAGE_SIZE;
+				}
+			}
+			let result: ReturnType<typeof parseListPage>;
+			try {
+				const listResult = await executeMcpTool({
+					pmTarget: { additionalContext },
+					toolName: listTool.toolName,
+					args: listArgs,
+					userId,
+					organizationId,
+					mcpConfigId,
+				});
+				if (!listResult.success) {
+					if (isProbe) {
+						listingTruncated = true;
+					} else {
+						readErrorKind = pmBoardReadError(listResult);
+					}
+					break;
+				}
+				result = parseListPage(listResult.output, true);
+				if (page > 1 && !result.recognized) {
+					throw new Error("Unreadable PM listing page.");
+				}
+			} catch (error) {
+				if (!isProbe) {
+					throw error;
+				}
+				// A speculative short-page probe must not invalidate items already read.
+				listingTruncated = true;
+				break;
+			}
+			offset += result.rawCount;
+			knownTotal = result.total ?? knownTotal;
+			const newItems = result.items.filter((item) => {
+				if (seen.has(item.id)) {
+					return false;
+				}
+				seen.add(item.id);
+				return true;
+			});
+			allItems.push(
+				...newItems.slice(0, PM_LIST_MAX_ITEMS - allItems.length),
+			);
+			if (!canPage) {
+				listingTruncated =
+					newItems.length > allItems.length ||
+					(knownTotal != null && knownTotal > allItems.length) ||
+					result.hasNextPage;
+				break;
+			}
+			// Stop tools that repeat or empty a page, retaining evidence of unread items.
+			if (newItems.length === 0) {
+				listingTruncated =
+					(knownTotal != null && knownTotal > seen.size) ||
+					result.hasNextPage ||
+					previousHasMore ||
+					// An empty page ends a list; only a repeated full page suggests more.
+					(knownTotal == null &&
+						previousPageFull &&
+						result.rawCount > 0);
+				break;
+			}
+			// Only the page after the first short page is a speculative probe.
+			const capDetectedNow =
+				effectivePageSize == null &&
+				result.rawCount < PM_LIST_PAGE_SIZE;
+			if (capDetectedNow) {
+				effectivePageSize = result.rawCount;
+			}
+			const hasMore =
+				result.hasNextPage ||
+				(knownTotal != null
+					? seen.size < knownTotal
+					: result.rawCount >=
+						(effectivePageSize ?? PM_LIST_PAGE_SIZE));
+			if (
+				seen.size > allItems.length ||
+				((allItems.length >= PM_LIST_MAX_ITEMS ||
+					page === PM_LIST_MAX_PAGES) &&
+					hasMore)
+			) {
+				listingTruncated = true;
+				break;
+			}
+			if (!hasMore) {
+				break;
+			}
+			previousPageFull = result.rawCount >= PM_LIST_PAGE_SIZE;
+			previousHasMore = result.hasNextPage;
+			isProbe =
+				knownTotal == null && !result.hasNextPage && capDetectedNow;
+		}
+		if (!readErrorKind) {
+			// Can't differentiate types for non-ADO, put all in stories.
+			return finalize({
 				epics: [],
 				features: [],
 				stories: allItems,
 				readStatus: "ok",
+				...(listingTruncated ? { listingTruncated: true } : {}),
 				detectedType: capabilities.detectedType,
 			});
 		}
-		readErrorKind = pmBoardReadError(listResult);
 	} catch (error) {
 		readErrorKind = pmBoardReadError(error);
 		logger.warn("[Fetch PM Hierarchy] Failed to fetch items", {
@@ -1103,7 +1302,7 @@ export async function fetchPMWorkItemsByType(
 		});
 	}
 
-	return truncatePmHierarchyDescriptions({
+	return finalize({
 		epics: [],
 		features: [],
 		stories: [],

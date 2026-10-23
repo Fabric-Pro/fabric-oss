@@ -44,7 +44,6 @@ describe("Script Transform configuration", () => {
 					data: { label: "Transform", config },
 				}}
 				onUpdate={onUpdate}
-				onDelete={vi.fn()}
 			/>,
 		);
 		const code =

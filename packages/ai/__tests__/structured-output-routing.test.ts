@@ -1,18 +1,6 @@
-/**
- * The OpenAI, Groq and OpenAI-compatible (Cerebras) SDKs default
- * `strictJsonSchema` to true, and OpenAI-style strict mode refuses any schema
- * with an optional property (Fizzy #2985). `getModel` defaults the flag off
- * for structured-output calls under the namespace each route's SDK reads,
- * while keeping an explicit caller choice. The end-to-end cases capture the
- * body each route actually sends.
- */
-import { generateObject, generateText, type LanguageModelMiddleware } from "ai";
+import { generateObject, generateText } from "ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import {
-	createNonStrictJsonSchemaMiddleware,
-	strictJsonSchemaNamespacesFor,
-} from "../lib/non-strict-json-schema-middleware";
 
 // The gateway routes send through undici's fetch; the direct providers use
 // the global fetch. Both point at the same capture.
@@ -60,128 +48,17 @@ async function sentBody(
 
 afterEach(() => {
 	fetchMock.mockReset();
+	vi.restoreAllMocks();
 });
 
-type LanguageModelV4CallOptions = Parameters<
-	NonNullable<LanguageModelMiddleware["transformParams"]>
->[0]["params"];
-
-const baseParams = {
-	prompt: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
-} as unknown as LanguageModelV4CallOptions;
-
-async function transform(
-	params: LanguageModelV4CallOptions,
-	provider = "OPENAI_DIRECT",
-	viaGateway = false,
-): Promise<LanguageModelV4CallOptions> {
-	const middleware = createNonStrictJsonSchemaMiddleware(
-		strictJsonSchemaNamespacesFor(provider, viaGateway),
-	);
-	if (!middleware.transformParams) {
-		throw new Error("middleware has no transformParams");
-	}
-	return middleware.transformParams({
-		params,
-		type: "generate",
-		model: {} as never,
-	});
-}
-
-describe("createNonStrictJsonSchemaMiddleware", () => {
-	it("defaults strictJsonSchema off for a JSON response format", async () => {
-		const out = await transform({
-			...baseParams,
-			responseFormat: { type: "json", schema: { type: "object" } },
-			providerOptions: { anthropic: { cacheControl: true } },
-		});
-		expect(out.providerOptions).toEqual({
-			anthropic: { cacheControl: true },
-			openai: { strictJsonSchema: false },
-		});
-	});
-
-	it("keeps the caller's other openai options", async () => {
-		const out = await transform({
-			...baseParams,
-			responseFormat: { type: "json" },
-			providerOptions: { openai: { reasoningEffort: "low" } },
-		});
-		expect(out.providerOptions?.openai).toEqual({
-			reasoningEffort: "low",
-			strictJsonSchema: false,
-		});
-	});
-
-	it.each([true, false])(
-		"respects an explicit strictJsonSchema: %s",
-		async (explicit) => {
-			const params = {
-				...baseParams,
-				responseFormat: { type: "json" as const },
-				providerOptions: { openai: { strictJsonSchema: explicit } },
-			};
-			const out = await transform(params);
-			expect(out).toBe(params);
-		},
-	);
-
-	it("keeps an explicit openaiCompatible choice on Cerebras, which merges it under cerebras", async () => {
-		const params = {
-			...baseParams,
-			responseFormat: { type: "json" as const },
-			providerOptions: { openaiCompatible: { strictJsonSchema: true } },
-		};
-		expect(await transform(params, "CEREBRAS")).toBe(params);
-	});
-
-	it("defaults only the gateway namespaces the caller left unset", async () => {
-		const out = await transform(
-			{
-				...baseParams,
-				responseFormat: { type: "json" },
-				providerOptions: { groq: { strictJsonSchema: true } },
-			},
-			"VERCEL_GATEWAY",
-			true,
-		);
-		expect(out.providerOptions).toEqual({
-			openai: { strictJsonSchema: false },
-			groq: { strictJsonSchema: true },
-			cerebras: { strictJsonSchema: false },
-		});
-	});
-
-	it.each(["ANTHROPIC_DIRECT", "DEEPSEEK"])(
-		"adds nothing for %s, whose SDK sends no strict flag",
-		async (provider) => {
-			const params = {
-				...baseParams,
-				responseFormat: { type: "json" as const },
-			};
-			expect(await transform(params, provider)).toBe(params);
-		},
-	);
-
-	it("is a no-op without a JSON response format", async () => {
-		const text = await transform(baseParams);
-		expect(text).toBe(baseParams);
-		const explicitText = {
-			...baseParams,
-			responseFormat: { type: "text" as const },
-		};
-		expect(await transform(explicitText)).toBe(explicitText);
-	});
-});
-
-describe("getModel sends non-strict structured output (Fizzy #2985)", () => {
-	it("OpenAI direct (Responses API) sends strict: false", async () => {
+describe("getModel structured-output routing", () => {
+	it("OpenAI direct (Responses API) sends a converted strict schema", async () => {
 		const body = await sentBody("gpt-6.1-sol", {
 			apiKey: "example-openai-key",
 			provider: "OPENAI_DIRECT",
 		});
 		expect(body).toHaveProperty("text.format.type", "json_schema");
-		expect(body).toHaveProperty("text.format.strict", false);
+		expect(body).toHaveProperty("text.format.strict", true);
 	});
 
 	it("an explicit strictJsonSchema: true still reaches OpenAI direct", async () => {
@@ -236,7 +113,7 @@ describe("getModel sends non-strict structured output (Fizzy #2985)", () => {
 	});
 
 	it.each(["VERCEL_GATEWAY", "OPENROUTER", "CLOUDFLARE_AI"])(
-		"%s forwards strictJsonSchema: false to the gateway",
+		"%s forwards strict only for the confirmed OpenAI gateway upstream",
 		async (provider) => {
 			const body = await sentBody("openai/gpt-6.1-sol", {
 				apiKey: "example-gateway-key",
@@ -244,12 +121,104 @@ describe("getModel sends non-strict structured output (Fizzy #2985)", () => {
 			});
 			expect(body).toHaveProperty("responseFormat.type", "json");
 			expect(body).toHaveProperty("providerOptions", {
-				openai: { strictJsonSchema: false },
+				openai: { strictJsonSchema: true },
 				groq: { strictJsonSchema: false },
 				cerebras: { strictJsonSchema: false },
 			});
 		},
 	);
+
+	it("gateway uses the sent OpenAI name for an unprefixed model", async () => {
+		const body = await sentBody("gpt-6.1-sol", {
+			apiKey: "example-gateway-key",
+			provider: "VERCEL_GATEWAY",
+		});
+		expect(body).toHaveProperty(
+			"providerOptions.openai.strictJsonSchema",
+			true,
+		);
+		expect(body).toHaveProperty("responseFormat.schema.required", [
+			"description",
+			"acceptanceCriteria",
+		]);
+	});
+
+	it("isolates identical Azure deployments on different resources through getModel", async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const sent: { url: string; body: Record<string, any> }[] = [];
+		fetchMock.mockImplementation(
+			async (url: unknown, init?: RequestInit) => {
+				const body = JSON.parse(String(init?.body));
+				sent.push({ url: String(url), body });
+				if (body.response_format.json_schema.strict) {
+					return new Response(
+						JSON.stringify({
+							error: {
+								message: "Invalid schema for response_format",
+								type: "invalid_request_error",
+							},
+						}),
+						{
+							status: 400,
+							headers: { "content-type": "application/json" },
+						},
+					);
+				}
+				return new Response(
+					JSON.stringify({
+						id: "example",
+						created: 1,
+						model: "gpt-4o",
+						object: "chat.completion",
+						choices: [
+							{
+								index: 0,
+								message: {
+									role: "assistant",
+									content: '{"description":"Example"}',
+								},
+								finish_reason: "stop",
+							},
+						],
+						usage: {
+							prompt_tokens: 1,
+							completion_tokens: 1,
+							total_tokens: 2,
+						},
+					}),
+					{ headers: { "content-type": "application/json" } },
+				);
+			},
+		);
+		const { getModel } = await import("../model-factory");
+		for (const baseUrl of [
+			"https://example-a.openai.azure.com",
+			"https://example-a.openai.azure.com",
+			"https://example-b.openai.azure.com",
+		]) {
+			const result = await generateObject({
+				model: getModel("gpt-4o", {
+					apiKey: "example-azure-key",
+					provider: "AZURE_AI_FOUNDRY",
+					baseUrl,
+				}),
+				schema,
+				prompt: "Example",
+				maxRetries: 0,
+			});
+			expect(result.object).toEqual({ description: "Example" });
+		}
+		expect(
+			sent.map(({ body }) => body.response_format.json_schema.strict),
+		).toEqual([true, false, false, true, false]);
+		expect(sent.map(({ url }) => new URL(url).hostname)).toEqual([
+			"example-a.openai.azure.com",
+			"example-a.openai.azure.com",
+			"example-a.openai.azure.com",
+			"example-b.openai.azure.com",
+			"example-b.openai.azure.com",
+		]);
+	});
 
 	it("leaves a plain text call on the gateway without provider options", async () => {
 		let body: Record<string, unknown> | undefined;

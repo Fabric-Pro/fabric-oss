@@ -4,13 +4,6 @@ import {
 } from "@saas/cli-distribution/lib/cli-discovery";
 import { quoteShellArgIfNeeded } from "@saas/projects/lib/instructions-repository-sync";
 
-/**
- * Where an installed `fabric` signs in when told nothing. Mirrors
- * `DEFAULT_ORIGIN` in `packages/cli/src/lib/origin.ts`; a test pins the two
- * equal.
- */
-export const CLI_DEFAULT_ORIGIN = "https://fabric.pro";
-
 export const CLI_NPM_INSTALL = "npm i -g @fabricorg/cli";
 
 export interface ChatgptConnectLines {
@@ -21,8 +14,6 @@ export interface ChatgptConnectLines {
 	 * CLI this deployment serves, straight from its URL (`served`).
 	 */
 	primaryKind: "installed" | "served";
-	/** The served-CLI line, offered for someone with no CLI yet; null when there is none or it is already primary. */
-	servedLine: string | null;
 }
 
 /**
@@ -30,7 +21,9 @@ export interface ChatgptConnectLines {
  * (Fizzy #2770), built like the Connect dialog's setup line:
  *
  * - all commands explicitly target the page's address;
- * - when available, the deployment's CLI is offered through `npx` from its URL.
+ * - when available, the deployment's CLI runs through `npx` from its URL, so
+ *   nothing has to be installed first; only a deployment that serves no CLI
+ *   falls back to an installed `fabric`.
  */
 export function chatgptConnectLines(params: {
 	document: CliDiscoveryDocument | null;
@@ -49,28 +42,18 @@ export function chatgptConnectLines(params: {
 				]),
 		`--base-url ${quoteShellArgIfNeeded(origin)}`,
 	];
-	const installed = ["fabric", ...args].join(" ");
-	const served = document
-		? [
-				"npx -y",
-				quoteShellArgIfNeeded(tarballUrlOnOrigin(document, origin)),
-				...args,
-			].join(" ")
-		: null;
-
-	if (served === null) {
+	if (document === null) {
 		return {
-			primary: installed,
+			primary: ["fabric", ...args].join(" "),
 			primaryKind: "installed",
-			servedLine: null,
 		};
 	}
-	if (origin === CLI_DEFAULT_ORIGIN) {
-		return {
-			primary: installed,
-			primaryKind: "installed",
-			servedLine: served,
-		};
-	}
-	return { primary: served, primaryKind: "served", servedLine: null };
+	return {
+		primary: [
+			"npx -y",
+			quoteShellArgIfNeeded(tarballUrlOnOrigin(document, origin)),
+			...args,
+		].join(" "),
+		primaryKind: "served",
+	};
 }

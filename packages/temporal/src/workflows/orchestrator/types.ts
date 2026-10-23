@@ -5,6 +5,7 @@
  */
 
 import type { LimitSignal } from "@repo/ai/limits";
+import type { DirectChatUsageLimitRefusal } from "../../types";
 import type { CircuitBreakerState } from "./circuit-breaker";
 import type {
 	AgentVariable as AgentVariableType,
@@ -540,6 +541,7 @@ export interface StepExecutionContext {
  * Phase result - standard return type for each phase
  */
 export interface PhaseResult<T = void> {
+	usageLimit?: DirectChatUsageLimitRefusal;
 	success: boolean;
 	data?: T;
 	error?: string;

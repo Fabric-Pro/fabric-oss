@@ -82,32 +82,30 @@ ENV DATABASE_URL="postgresql://dummy:dummy@localhost:5432/dummy"
 
 # The `|| true` tolerates a transient generate failure (historic flake), but a
 # STALE client shipping silently has caused real outages ("worker client
-# missing newer columns") — so the builder asserts that the generated client
+# missing newer columns") — so the next step asserts that the generated client
 # actually contains a model this build's activities write (StoryPriorityChange,
 # written by the AI-backlog apply path). A stale or missing client fails the
 # IMAGE BUILD instead of every apply at runtime. `mkdir -p` leaves the
-# builder's COPY a source when generate failed early.
+# assertion a directory to search when generate failed early.
 RUN (pnpm --filter @repo/database generate || true) \
 	&& mkdir -p packages/database/prisma/generated
-
-# =============================================================================
-# Stage 2: Build - Bring in the Prisma client and prepare
-# =============================================================================
-FROM base AS builder
-
-# Copy all source code
-COPY packages ./packages
-COPY config ./config
-
-COPY --from=prisma /app/packages/database/prisma/generated ./packages/database/prisma/generated
-COPY --from=prisma /app/packages/database/prisma/zod ./packages/database/prisma/zod
 RUN grep -rq "storyPriorityChange" packages/database/prisma/generated/ || \
 	(echo "FATAL: generated Prisma client is missing StoryPriorityChange — prisma generate failed or shipped stale output" && exit 1)
 
 # =============================================================================
-# Stage 3: Production - Minimal runtime image
+# Stage 2: Runtime dependencies - everything except the application source
 # =============================================================================
-FROM node:22-slim AS production
+# Every RUN in the runtime image lives here, before any application source
+# arrives, so this stage stays cached until a dependency input changes
+# (lockfile, manifests, patches, tooling, the base image or this file). The
+# source then lands in the final stage through `COPY --link` alone.
+#
+# Measured on a source-only change (2026-10-21): when a RUN or COPY followed the
+# source, BuildKit had to download and unpack the cached install layer (1.16 GB,
+# 128 s) and the node_modules layer (544 MB, 57 s) from the registry cache on a
+# fresh runner just to have a filesystem to run it on, though both were cache
+# hits. Linked copies with no RUN after them do not need those layers unpacked.
+FROM node:22-slim AS runtime-deps
 
 # Install OpenSSL for Prisma runtime, git for code indexing clone, and other tools.
 #
@@ -194,23 +192,20 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 WORKDIR /app
 
-# Copy workspace configuration
-COPY --from=builder /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml ./
-COPY --from=builder /app/patches ./patches
-COPY --from=builder /app/tooling ./tooling
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/packages ./packages
+# Workspace configuration and the installed dependencies. `packages` and
+# `config` from `base` hold only manifests and each package's node_modules
+# links; the source arrives in the final stage.
+COPY --link --from=base /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml ./
+COPY --link --from=base /app/patches ./patches
+COPY --link --from=base /app/tooling ./tooling
+COPY --link --from=base /app/node_modules ./node_modules
+COPY --link --from=base /app/packages ./packages
+COPY --link --from=base /app/config ./config
 
-# Apache-2.0 §4(a) and §4(d): a recipient of the Work gets the licence and the
-# NOTICE attributions. Publishing this image for someone else to pull is
-# distribution, so they travel inside it. THIRD_PARTY_NOTICES.md comes too,
-# because NOTICE points at it.
-COPY LICENSE NOTICE THIRD_PARTY_NOTICES.md ./
-COPY --from=builder /app/config ./config
-
-# Installed AFTER the COPY steps, because the CLI it runs comes out of the copied
-# node_modules — placing this earlier looks tidier and fails the build on a path
-# that does not exist yet.
+# Installed AFTER the dependency copies, because the CLI it runs comes out of the
+# copied node_modules — placing this earlier looks tidier and fails the build on
+# a path that does not exist yet. It needs no application source, so it runs
+# before the source copies.
 #
 # The `node -e` line then launches the browser the LIBRARY resolves and asserts it
 # runs, in the same spirit as the Prisma-client assertion above. Without it, the
@@ -222,10 +217,6 @@ RUN PW=/app/packages/temporal/node_modules/.bin/playwright \
     && node -e "const {chromium}=require(require.resolve('playwright',{paths:['/app/packages/temporal']}));const p=chromium.executablePath();console.log('chromium at',p);require('child_process').execFileSync(p,['--version'],{stdio:'inherit'})" \
     && chmod -R a+rX /ms-playwright \
     && rm -rf /var/lib/apt/lists/*
-
-ENV NODE_ENV=production
-
-WORKDIR /app/packages/temporal
 
 # Run as a non-root, least-privilege user (SOC 2 CC7.1, card 1721 FR-7).
 # The worker writes ONLY to the OS temp dir — git clones for code-indexing/Atlas
@@ -240,6 +231,32 @@ RUN addgroup --system --gid 1001 nodejs \
     && adduser --system --uid 1001 --ingroup nodejs --home /var/lib/appuser appuser \
     && mkdir -p /var/lib/appuser \
     && chown appuser:nodejs /var/lib/appuser
+
+WORKDIR /app/packages/temporal
+
+# =============================================================================
+# Stage 3: Production - runtime dependencies plus the application source
+# =============================================================================
+# Keep RUN out of this stage: a RUN after these copies misses the cache on every
+# source change, and BuildKit then has to unpack the cached layers beneath it to
+# run it (see runtime-deps above).
+FROM runtime-deps AS production
+
+COPY --link packages /app/packages
+COPY --link config /app/config
+
+# Apache-2.0 §4(a) and §4(d): a recipient of the Work gets the licence and the
+# NOTICE attributions. Publishing this image for someone else to pull is
+# distribution, so they travel inside it. THIRD_PARTY_NOTICES.md comes too,
+# because NOTICE points at it.
+COPY --link LICENSE NOTICE THIRD_PARTY_NOTICES.md /app/
+
+# The generated client and Zod output go on top of the source: the source's own
+# prisma/zod directory is the generator's input, and generate rewrites it.
+COPY --link --from=prisma /app/packages/database/prisma/generated /app/packages/database/prisma/generated
+COPY --link --from=prisma /app/packages/database/prisma/zod /app/packages/database/prisma/zod
+
+ENV NODE_ENV=production
 ENV HOME=/var/lib/appuser
 USER appuser
 

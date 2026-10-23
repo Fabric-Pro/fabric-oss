@@ -142,6 +142,7 @@ import {
 	DIRECT_CHAT_CACHEABLE_SYSTEM_PROMPT,
 } from "./prompt-cache";
 import { extractReasoningText } from "./reasoning-stream";
+import { guardToolsAgainstRepeatedCalls } from "./repeated-tool-call-guard";
 import { extractStreamErrorMessage } from "./stream-error";
 import { resolveStreamOutcome } from "./stream-outcome";
 import { describeToolAvailability } from "./tool-availability-line";
@@ -1313,6 +1314,15 @@ async function runDirectChatTurnBody(
 	// Before the runtime wraps them (Parlume), so its own checks run first and
 	// the cancellation check sits closest to each tool's dispatch.
 	guardToolsAgainstCancellation(allTools, cancellation);
+	// Tell the model about unchanged results without changing tools or UI output.
+	guardToolsAgainstRepeatedCalls(allTools, {
+		onRepeat: (toolName, count) => {
+			logger.warn("Direct chat tool returned a repeated result", {
+				toolName,
+				count,
+			});
+		},
+	});
 	const preparedResponse = await prepareAgentTools(allTools, {
 		...toolToServerMap,
 		...fabricToolSources(fabricPlatform),

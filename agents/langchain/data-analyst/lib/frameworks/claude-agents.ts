@@ -1,5 +1,5 @@
 import { query, type Options } from "@anthropic-ai/claude-agent-sdk";
-import { DEFAULT_ANTHROPIC_MODEL_NAME } from "../constants";
+import { getAnthropicModelName } from "../constants";
 
 interface StreamMessage {
 	type: string;
@@ -24,10 +24,7 @@ export async function handleClaudeAgentsFramework(
 	_chatId?: string, // Not used in V1 - history is passed in prompt
 	model?: string,
 ): Promise<ReadableStream<string>> {
-	// Extract model name from "anthropic/claude-xxx" format
-	const modelId = model?.startsWith("anthropic/")
-		? model.replace("anthropic/", "")
-		: model || DEFAULT_ANTHROPIC_MODEL_NAME;
+	const modelId = getAnthropicModelName(model);
 
 	const options: Options = {
 		model: modelId,

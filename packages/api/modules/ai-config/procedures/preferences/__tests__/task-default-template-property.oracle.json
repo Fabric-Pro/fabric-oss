@@ -1,0 +1,969 @@
+{
+	"baseCommit": "05d45582e",
+	"cases": {
+		"own-row": {
+			"scoped": {
+				"SIMPLE": "example-old",
+				"COMPLEX": "example-old",
+				"REASONING": "example-old",
+				"CHAT": "example-old",
+				"TOOL_CALLING": "example-old",
+				"EVAL": null
+			},
+			"unscoped": {
+				"SIMPLE": "example-old",
+				"COMPLEX": "example-old",
+				"REASONING": "example-old",
+				"CHAT": "example-old",
+				"TOOL_CALLING": "example-old",
+				"EVAL": null
+			},
+			"expected": {
+				"SIMPLE/getModelForTask": 0,
+				"SIMPLE/selectModelDynamic": 1,
+				"SIMPLE/resolveModel": 2,
+				"SIMPLE/resolve-for-agent": 3,
+				"SIMPLE/resolve-model": 4,
+				"COMPLEX/getModelForTask": 0,
+				"COMPLEX/selectModelDynamic": 1,
+				"COMPLEX/resolveModel": 2,
+				"COMPLEX/resolve-for-agent": 3,
+				"COMPLEX/resolve-model": 4,
+				"REASONING/getModelForTask": 0,
+				"REASONING/selectModelDynamic": 1,
+				"REASONING/resolveModel": 2,
+				"REASONING/resolve-for-agent": 3,
+				"REASONING/resolve-model": 4,
+				"CHAT/getModelForTask": 0,
+				"CHAT/selectModelDynamic": 1,
+				"CHAT/resolveModel": 2,
+				"CHAT/resolve-for-agent": 3,
+				"CHAT/resolve-model": 4,
+				"CHAT/Settings": 5,
+				"TOOL_CALLING/getModelForTask": 0,
+				"TOOL_CALLING/selectModelDynamic": 1,
+				"TOOL_CALLING/resolveModel": 2,
+				"TOOL_CALLING/resolve-for-agent": 3,
+				"TOOL_CALLING/resolve-model": 4,
+				"EVAL/getModelForTask": 6,
+				"EVAL/selectModelDynamic": 7,
+				"EVAL/resolveModel": 8,
+				"EVAL/resolve-for-agent": 9,
+				"EVAL/resolve-model": 10
+			}
+		},
+		"fallback with preferred mapping": {
+			"scoped": {
+				"SIMPLE": null,
+				"COMPLEX": null,
+				"REASONING": null,
+				"CHAT": null,
+				"TOOL_CALLING": null,
+				"EVAL": null
+			},
+			"unscoped": {
+				"SIMPLE": "example-old",
+				"COMPLEX": "example-old",
+				"REASONING": "example-old",
+				"CHAT": "example-old",
+				"TOOL_CALLING": "example-old",
+				"EVAL": null
+			},
+			"expected": {
+				"SIMPLE/getModelForTask": 6,
+				"SIMPLE/selectModelDynamic": 11,
+				"SIMPLE/resolveModel": 12,
+				"SIMPLE/resolve-for-agent": 13,
+				"SIMPLE/resolve-model": 14,
+				"COMPLEX/getModelForTask": 6,
+				"COMPLEX/selectModelDynamic": 11,
+				"COMPLEX/resolveModel": 15,
+				"COMPLEX/resolve-for-agent": 16,
+				"COMPLEX/resolve-model": 17,
+				"REASONING/getModelForTask": 6,
+				"REASONING/selectModelDynamic": 11,
+				"REASONING/resolveModel": 18,
+				"REASONING/resolve-for-agent": 19,
+				"REASONING/resolve-model": 20,
+				"CHAT/getModelForTask": 6,
+				"CHAT/selectModelDynamic": 11,
+				"CHAT/resolveModel": 21,
+				"CHAT/resolve-for-agent": 22,
+				"CHAT/resolve-model": 23,
+				"CHAT/Settings": 24,
+				"TOOL_CALLING/getModelForTask": 6,
+				"TOOL_CALLING/selectModelDynamic": 11,
+				"TOOL_CALLING/resolveModel": 25,
+				"TOOL_CALLING/resolve-for-agent": 26,
+				"TOOL_CALLING/resolve-model": 27,
+				"EVAL/getModelForTask": 6,
+				"EVAL/selectModelDynamic": 28,
+				"EVAL/resolveModel": 29,
+				"EVAL/resolve-for-agent": 30,
+				"EVAL/resolve-model": 31
+			}
+		},
+		"fallback without preferred mapping": {
+			"scoped": {
+				"SIMPLE": null,
+				"COMPLEX": null,
+				"REASONING": null,
+				"CHAT": null,
+				"TOOL_CALLING": null,
+				"EVAL": null
+			},
+			"unscoped": {
+				"SIMPLE": "example-old",
+				"COMPLEX": "example-old",
+				"REASONING": "example-old",
+				"CHAT": "example-old",
+				"TOOL_CALLING": "example-old",
+				"EVAL": null
+			},
+			"expected": {
+				"SIMPLE/getModelForTask": 6,
+				"SIMPLE/selectModelDynamic": 1,
+				"SIMPLE/resolveModel": 32,
+				"SIMPLE/resolve-for-agent": 33,
+				"SIMPLE/resolve-model": 34,
+				"COMPLEX/getModelForTask": 6,
+				"COMPLEX/selectModelDynamic": 1,
+				"COMPLEX/resolveModel": 35,
+				"COMPLEX/resolve-for-agent": 36,
+				"COMPLEX/resolve-model": 37,
+				"REASONING/getModelForTask": 6,
+				"REASONING/selectModelDynamic": 1,
+				"REASONING/resolveModel": 38,
+				"REASONING/resolve-for-agent": 39,
+				"REASONING/resolve-model": 40,
+				"CHAT/getModelForTask": 6,
+				"CHAT/selectModelDynamic": 1,
+				"CHAT/resolveModel": 41,
+				"CHAT/resolve-for-agent": 42,
+				"CHAT/resolve-model": 43,
+				"CHAT/Settings": 44,
+				"TOOL_CALLING/getModelForTask": 6,
+				"TOOL_CALLING/selectModelDynamic": 1,
+				"TOOL_CALLING/resolveModel": 45,
+				"TOOL_CALLING/resolve-for-agent": 46,
+				"TOOL_CALLING/resolve-model": 47,
+				"EVAL/getModelForTask": 6,
+				"EVAL/selectModelDynamic": 48,
+				"EVAL/resolveModel": 49,
+				"EVAL/resolve-for-agent": 50,
+				"EVAL/resolve-model": 51
+			}
+		},
+		"agent has no own TOOL_CALLING row": {
+			"scoped": {
+				"SIMPLE": null,
+				"COMPLEX": null,
+				"REASONING": null,
+				"CHAT": null,
+				"TOOL_CALLING": null,
+				"EVAL": null
+			},
+			"unscoped": {
+				"SIMPLE": "example-old",
+				"COMPLEX": "example-old",
+				"REASONING": "example-old",
+				"CHAT": "example-old",
+				"TOOL_CALLING": "example-old",
+				"EVAL": null
+			},
+			"expected": {
+				"SIMPLE/getModelForTask": 6,
+				"SIMPLE/selectModelDynamic": 1,
+				"SIMPLE/resolveModel": 52,
+				"SIMPLE/resolve-for-agent": 53,
+				"SIMPLE/resolve-model": 54,
+				"COMPLEX/getModelForTask": 6,
+				"COMPLEX/selectModelDynamic": 1,
+				"COMPLEX/resolveModel": 55,
+				"COMPLEX/resolve-for-agent": 56,
+				"COMPLEX/resolve-model": 57,
+				"REASONING/getModelForTask": 6,
+				"REASONING/selectModelDynamic": 1,
+				"REASONING/resolveModel": 58,
+				"REASONING/resolve-for-agent": 59,
+				"REASONING/resolve-model": 60,
+				"CHAT/getModelForTask": 6,
+				"CHAT/selectModelDynamic": 1,
+				"CHAT/resolveModel": 61,
+				"CHAT/resolve-for-agent": 62,
+				"CHAT/resolve-model": 63,
+				"CHAT/Settings": 64,
+				"TOOL_CALLING/getModelForTask": 6,
+				"TOOL_CALLING/selectModelDynamic": 1,
+				"TOOL_CALLING/resolveModel": 65,
+				"TOOL_CALLING/resolve-for-agent": 66,
+				"TOOL_CALLING/resolve-model": 67,
+				"EVAL/getModelForTask": 6,
+				"EVAL/selectModelDynamic": 68,
+				"EVAL/resolveModel": 69,
+				"EVAL/resolve-for-agent": 70,
+				"EVAL/resolve-model": 71
+			}
+		},
+		"nothing found": {
+			"scoped": {
+				"SIMPLE": null,
+				"COMPLEX": null,
+				"REASONING": null,
+				"CHAT": null,
+				"TOOL_CALLING": null,
+				"EVAL": null
+			},
+			"unscoped": {
+				"SIMPLE": null,
+				"COMPLEX": null,
+				"REASONING": null,
+				"CHAT": null,
+				"TOOL_CALLING": null,
+				"EVAL": null
+			},
+			"expected": {
+				"SIMPLE/getModelForTask": 6,
+				"SIMPLE/selectModelDynamic": 72,
+				"SIMPLE/resolveModel": 32,
+				"SIMPLE/resolve-for-agent": 33,
+				"SIMPLE/resolve-model": 34,
+				"COMPLEX/getModelForTask": 6,
+				"COMPLEX/selectModelDynamic": 73,
+				"COMPLEX/resolveModel": 35,
+				"COMPLEX/resolve-for-agent": 36,
+				"COMPLEX/resolve-model": 37,
+				"REASONING/getModelForTask": 6,
+				"REASONING/selectModelDynamic": 74,
+				"REASONING/resolveModel": 38,
+				"REASONING/resolve-for-agent": 39,
+				"REASONING/resolve-model": 40,
+				"CHAT/getModelForTask": 6,
+				"CHAT/selectModelDynamic": 75,
+				"CHAT/resolveModel": 41,
+				"CHAT/resolve-for-agent": 42,
+				"CHAT/resolve-model": 43,
+				"CHAT/Settings": 44,
+				"TOOL_CALLING/getModelForTask": 6,
+				"TOOL_CALLING/selectModelDynamic": 76,
+				"TOOL_CALLING/resolveModel": 45,
+				"TOOL_CALLING/resolve-for-agent": 46,
+				"TOOL_CALLING/resolve-model": 47,
+				"EVAL/getModelForTask": 6,
+				"EVAL/selectModelDynamic": 48,
+				"EVAL/resolveModel": 49,
+				"EVAL/resolve-for-agent": 50,
+				"EVAL/resolve-model": 51
+			}
+		}
+	},
+	"outcomes": [
+		{
+			"value": {
+				"model": {
+					"id": "example-old",
+					"canonicalName": "example-old",
+					"displayName": "example-old",
+					"family": "example",
+					"vendor": "Example",
+					"speedTier": "BALANCED",
+					"qualityTier": "STANDARD",
+					"capabilities": ["TEXT", "REASONING", "TOOL_CALLING"],
+					"contextWindow": 10000,
+					"maxOutputTokens": 2000,
+					"inputCostPer1M": null,
+					"outputCostPer1M": null,
+					"deprecatedAt": null,
+					"replacementModelId": null,
+					"providerMappings": [
+						{
+							"provider": "ANTHROPIC_DIRECT",
+							"providerModelId": "ANTHROPIC_DIRECT/example-old",
+							"isAvailable": true
+						},
+						{
+							"provider": "ANTHROPIC_DIRECT",
+							"providerModelId": "ANTHROPIC_DIRECT/example-old",
+							"isAvailable": true
+						}
+					]
+				},
+				"providerModelId": "ANTHROPIC_DIRECT/example-old",
+				"source": "system_default",
+				"wasDeprecated": false
+			}
+		},
+		{
+			"value": {
+				"modelId": "example-old",
+				"canonicalName": "example-old",
+				"displayName": "example-old",
+				"provider": "ANTHROPIC_DIRECT",
+				"providerModelId": "ANTHROPIC_DIRECT/example-old",
+				"selectionSource": "system_default",
+				"maxTokens": 10000,
+				"maxOutputTokens": 2000
+			}
+		},
+		{
+			"value": {
+				"canonicalName": "example-old",
+				"providerModelId": "ANTHROPIC_DIRECT/example-old",
+				"provider": "ANTHROPIC_DIRECT",
+				"source": "system_default",
+				"apiKey": "example-encrypted",
+				"supportsReasoning": false
+			}
+		},
+		{
+			"value": {
+				"provider": "ANTHROPIC_DIRECT",
+				"providerModelId": "ANTHROPIC_DIRECT/example-old",
+				"modelString": "anthropic/ANTHROPIC_DIRECT/example-old",
+				"userId": "example-user",
+				"organizationId": "example-org",
+				"selectionSource": "system_default",
+				"cacheTtlSeconds": 600
+			}
+		},
+		{
+			"value": {
+				"canonicalName": "example-old",
+				"displayName": "example-old",
+				"providerModelId": "ANTHROPIC_DIRECT/example-old",
+				"provider": "ANTHROPIC_DIRECT",
+				"source": "system_default",
+				"contextWindow": 10000,
+				"inputCostPer1M": null,
+				"outputCostPer1M": null
+			}
+		},
+		{
+			"value": [
+				{
+					"taskType": "SIMPLE",
+					"complexity": "MEDIUM",
+					"priority": 100,
+					"provider": "ANTHROPIC_DIRECT",
+					"model": {
+						"id": "example-old",
+						"canonicalName": "example-old",
+						"displayName": "example-old",
+						"family": "example",
+						"vendor": "Example",
+						"speedTier": "BALANCED",
+						"qualityTier": "STANDARD"
+					}
+				},
+				{
+					"taskType": "COMPLEX",
+					"complexity": "MEDIUM",
+					"priority": 100,
+					"provider": "ANTHROPIC_DIRECT",
+					"model": {
+						"id": "example-old",
+						"canonicalName": "example-old",
+						"displayName": "example-old",
+						"family": "example",
+						"vendor": "Example",
+						"speedTier": "BALANCED",
+						"qualityTier": "STANDARD"
+					}
+				},
+				{
+					"taskType": "REASONING",
+					"complexity": "MEDIUM",
+					"priority": 100,
+					"provider": "ANTHROPIC_DIRECT",
+					"model": {
+						"id": "example-old",
+						"canonicalName": "example-old",
+						"displayName": "example-old",
+						"family": "example",
+						"vendor": "Example",
+						"speedTier": "BALANCED",
+						"qualityTier": "STANDARD"
+					}
+				},
+				{
+					"taskType": "CHAT",
+					"complexity": "MEDIUM",
+					"priority": 100,
+					"provider": "ANTHROPIC_DIRECT",
+					"model": {
+						"id": "example-old",
+						"canonicalName": "example-old",
+						"displayName": "example-old",
+						"family": "example",
+						"vendor": "Example",
+						"speedTier": "BALANCED",
+						"qualityTier": "STANDARD"
+					}
+				},
+				{
+					"taskType": "TOOL_CALLING",
+					"complexity": "MEDIUM",
+					"priority": 100,
+					"provider": "ANTHROPIC_DIRECT",
+					"model": {
+						"id": "example-old",
+						"canonicalName": "example-old",
+						"displayName": "example-old",
+						"family": "example",
+						"vendor": "Example",
+						"speedTier": "BALANCED",
+						"qualityTier": "STANDARD"
+					}
+				},
+				{
+					"taskType": "EVAL",
+					"complexity": "MEDIUM",
+					"priority": 50,
+					"provider": "ANTHROPIC_DIRECT",
+					"model": {
+						"id": "example-old",
+						"canonicalName": "example-old",
+						"displayName": "example-old",
+						"family": "example",
+						"vendor": "Example",
+						"speedTier": "BALANCED",
+						"qualityTier": "STANDARD"
+					}
+				}
+			]
+		},
+		{
+			"value": null
+		},
+		{
+			"error": "[ModelSelector] No model configured for provider \"ANTHROPIC_DIRECT\" and task type \"EVAL\". Please ensure the AI model catalog is seeded: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "[ModelResolution] No model configured for provider \"ANTHROPIC_DIRECT\" and task type \"EVAL\". Please ensure the AI model catalog is seeded with: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "No model available for task type EVAL with provider ANTHROPIC_DIRECT.",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "No model configured for task type EVAL with provider ANTHROPIC_DIRECT",
+			"code": "NOT_FOUND"
+		},
+		{
+			"value": {
+				"modelId": "example-old",
+				"canonicalName": "example-old",
+				"displayName": "example-old",
+				"provider": "DATABRICKS",
+				"providerModelId": "DATABRICKS/example-old",
+				"selectionSource": "system_default",
+				"maxTokens": 10000,
+				"maxOutputTokens": 2000
+			}
+		},
+		{
+			"error": "[ModelResolution] No model configured for provider \"DATABRICKS\" and task type \"SIMPLE\". Please ensure the AI model catalog is seeded with: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "No model available for task type SIMPLE with provider DATABRICKS.",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "No model configured for task type SIMPLE with provider DATABRICKS",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "[ModelResolution] No model configured for provider \"DATABRICKS\" and task type \"COMPLEX\". Please ensure the AI model catalog is seeded with: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "No model available for task type COMPLEX with provider DATABRICKS.",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "No model configured for task type COMPLEX with provider DATABRICKS",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "[ModelResolution] No model configured for provider \"DATABRICKS\" and task type \"REASONING\". Please ensure the AI model catalog is seeded with: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "No model available for task type REASONING with provider DATABRICKS.",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "No model configured for task type REASONING with provider DATABRICKS",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "[ModelResolution] No model configured for provider \"DATABRICKS\" and task type \"CHAT\". Please ensure the AI model catalog is seeded with: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "No model available for task type CHAT with provider DATABRICKS.",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "No model configured for task type CHAT with provider DATABRICKS",
+			"code": "NOT_FOUND"
+		},
+		{
+			"value": [
+				{
+					"taskType": "SIMPLE",
+					"complexity": "MEDIUM",
+					"priority": 50,
+					"provider": "DATABRICKS",
+					"model": {
+						"id": "example-old",
+						"canonicalName": "example-old",
+						"displayName": "example-old",
+						"family": "example",
+						"vendor": "Example",
+						"speedTier": "BALANCED",
+						"qualityTier": "STANDARD"
+					}
+				},
+				{
+					"taskType": "COMPLEX",
+					"complexity": "MEDIUM",
+					"priority": 50,
+					"provider": "DATABRICKS",
+					"model": {
+						"id": "example-old",
+						"canonicalName": "example-old",
+						"displayName": "example-old",
+						"family": "example",
+						"vendor": "Example",
+						"speedTier": "BALANCED",
+						"qualityTier": "STANDARD"
+					}
+				},
+				{
+					"taskType": "REASONING",
+					"complexity": "MEDIUM",
+					"priority": 50,
+					"provider": "DATABRICKS",
+					"model": {
+						"id": "example-old",
+						"canonicalName": "example-old",
+						"displayName": "example-old",
+						"family": "example",
+						"vendor": "Example",
+						"speedTier": "BALANCED",
+						"qualityTier": "STANDARD"
+					}
+				},
+				{
+					"taskType": "CHAT",
+					"complexity": "MEDIUM",
+					"priority": 50,
+					"provider": "DATABRICKS",
+					"model": {
+						"id": "example-old",
+						"canonicalName": "example-old",
+						"displayName": "example-old",
+						"family": "example",
+						"vendor": "Example",
+						"speedTier": "BALANCED",
+						"qualityTier": "STANDARD"
+					}
+				},
+				{
+					"taskType": "TOOL_CALLING",
+					"complexity": "MEDIUM",
+					"priority": 50,
+					"provider": "DATABRICKS",
+					"model": {
+						"id": "example-old",
+						"canonicalName": "example-old",
+						"displayName": "example-old",
+						"family": "example",
+						"vendor": "Example",
+						"speedTier": "BALANCED",
+						"qualityTier": "STANDARD"
+					}
+				},
+				{
+					"taskType": "EVAL",
+					"complexity": "MEDIUM",
+					"priority": 50,
+					"provider": "DATABRICKS",
+					"model": {
+						"id": "example-old",
+						"canonicalName": "example-old",
+						"displayName": "example-old",
+						"family": "example",
+						"vendor": "Example",
+						"speedTier": "BALANCED",
+						"qualityTier": "STANDARD"
+					}
+				}
+			]
+		},
+		{
+			"error": "[ModelResolution] No model configured for provider \"DATABRICKS\" and task type \"TOOL_CALLING\". Please ensure the AI model catalog is seeded with: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "No model available for task type TOOL_CALLING with provider DATABRICKS.",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "No model configured for task type TOOL_CALLING with provider DATABRICKS",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "[ModelSelector] No model configured for provider \"DATABRICKS\" and task type \"EVAL\". Please ensure the AI model catalog is seeded: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "[ModelResolution] No model configured for provider \"DATABRICKS\" and task type \"EVAL\". Please ensure the AI model catalog is seeded with: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "No model available for task type EVAL with provider DATABRICKS.",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "No model configured for task type EVAL with provider DATABRICKS",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "[ModelResolution] No model configured for provider \"OPENROUTER\" and task type \"SIMPLE\". Please ensure the AI model catalog is seeded with: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "No model available for task type SIMPLE with provider OPENROUTER.",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "No model configured for task type SIMPLE with provider OPENROUTER",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "[ModelResolution] No model configured for provider \"OPENROUTER\" and task type \"COMPLEX\". Please ensure the AI model catalog is seeded with: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "No model available for task type COMPLEX with provider OPENROUTER.",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "No model configured for task type COMPLEX with provider OPENROUTER",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "[ModelResolution] No model configured for provider \"OPENROUTER\" and task type \"REASONING\". Please ensure the AI model catalog is seeded with: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "No model available for task type REASONING with provider OPENROUTER.",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "No model configured for task type REASONING with provider OPENROUTER",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "[ModelResolution] No model configured for provider \"OPENROUTER\" and task type \"CHAT\". Please ensure the AI model catalog is seeded with: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "No model available for task type CHAT with provider OPENROUTER.",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "No model configured for task type CHAT with provider OPENROUTER",
+			"code": "NOT_FOUND"
+		},
+		{
+			"value": [
+				{
+					"taskType": "SIMPLE",
+					"complexity": "MEDIUM",
+					"priority": 50,
+					"provider": "OPENROUTER",
+					"model": {
+						"id": "example-new",
+						"canonicalName": "example-new",
+						"displayName": "example-new",
+						"family": "example",
+						"vendor": "Example",
+						"speedTier": "BALANCED",
+						"qualityTier": "STANDARD"
+					}
+				},
+				{
+					"taskType": "COMPLEX",
+					"complexity": "MEDIUM",
+					"priority": 50,
+					"provider": "OPENROUTER",
+					"model": {
+						"id": "example-new",
+						"canonicalName": "example-new",
+						"displayName": "example-new",
+						"family": "example",
+						"vendor": "Example",
+						"speedTier": "BALANCED",
+						"qualityTier": "STANDARD"
+					}
+				},
+				{
+					"taskType": "REASONING",
+					"complexity": "MEDIUM",
+					"priority": 50,
+					"provider": "OPENROUTER",
+					"model": {
+						"id": "example-new",
+						"canonicalName": "example-new",
+						"displayName": "example-new",
+						"family": "example",
+						"vendor": "Example",
+						"speedTier": "BALANCED",
+						"qualityTier": "STANDARD"
+					}
+				},
+				{
+					"taskType": "CHAT",
+					"complexity": "MEDIUM",
+					"priority": 50,
+					"provider": "OPENROUTER",
+					"model": {
+						"id": "example-new",
+						"canonicalName": "example-new",
+						"displayName": "example-new",
+						"family": "example",
+						"vendor": "Example",
+						"speedTier": "BALANCED",
+						"qualityTier": "STANDARD"
+					}
+				},
+				{
+					"taskType": "TOOL_CALLING",
+					"complexity": "MEDIUM",
+					"priority": 50,
+					"provider": "OPENROUTER",
+					"model": {
+						"id": "example-new",
+						"canonicalName": "example-new",
+						"displayName": "example-new",
+						"family": "example",
+						"vendor": "Example",
+						"speedTier": "BALANCED",
+						"qualityTier": "STANDARD"
+					}
+				},
+				{
+					"taskType": "EVAL",
+					"complexity": "MEDIUM",
+					"priority": 50,
+					"provider": "OPENROUTER",
+					"model": {
+						"id": "example-new",
+						"canonicalName": "example-new",
+						"displayName": "example-new",
+						"family": "example",
+						"vendor": "Example",
+						"speedTier": "BALANCED",
+						"qualityTier": "STANDARD"
+					}
+				}
+			]
+		},
+		{
+			"error": "[ModelResolution] No model configured for provider \"OPENROUTER\" and task type \"TOOL_CALLING\". Please ensure the AI model catalog is seeded with: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "No model available for task type TOOL_CALLING with provider OPENROUTER.",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "No model configured for task type TOOL_CALLING with provider OPENROUTER",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "[ModelSelector] No model configured for provider \"OPENROUTER\" and task type \"EVAL\". Please ensure the AI model catalog is seeded: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "[ModelResolution] No model configured for provider \"OPENROUTER\" and task type \"EVAL\". Please ensure the AI model catalog is seeded with: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "No model available for task type EVAL with provider OPENROUTER.",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "No model configured for task type EVAL with provider OPENROUTER",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "[ModelResolution] No model configured for provider \"TOGETHER_AI\" and task type \"SIMPLE\". Please ensure the AI model catalog is seeded with: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "No model available for task type SIMPLE with provider TOGETHER_AI.",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "No model configured for task type SIMPLE with provider TOGETHER_AI",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "[ModelResolution] No model configured for provider \"TOGETHER_AI\" and task type \"COMPLEX\". Please ensure the AI model catalog is seeded with: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "No model available for task type COMPLEX with provider TOGETHER_AI.",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "No model configured for task type COMPLEX with provider TOGETHER_AI",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "[ModelResolution] No model configured for provider \"TOGETHER_AI\" and task type \"REASONING\". Please ensure the AI model catalog is seeded with: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "No model available for task type REASONING with provider TOGETHER_AI.",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "No model configured for task type REASONING with provider TOGETHER_AI",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "[ModelResolution] No model configured for provider \"TOGETHER_AI\" and task type \"CHAT\". Please ensure the AI model catalog is seeded with: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "No model available for task type CHAT with provider TOGETHER_AI.",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "No model configured for task type CHAT with provider TOGETHER_AI",
+			"code": "NOT_FOUND"
+		},
+		{
+			"value": [
+				{
+					"taskType": "SIMPLE",
+					"complexity": "MEDIUM",
+					"priority": 50,
+					"provider": "TOGETHER_AI",
+					"model": {
+						"id": "example-new",
+						"canonicalName": "example-new",
+						"displayName": "example-new",
+						"family": "example",
+						"vendor": "Example",
+						"speedTier": "BALANCED",
+						"qualityTier": "STANDARD"
+					}
+				},
+				{
+					"taskType": "COMPLEX",
+					"complexity": "MEDIUM",
+					"priority": 50,
+					"provider": "TOGETHER_AI",
+					"model": {
+						"id": "example-new",
+						"canonicalName": "example-new",
+						"displayName": "example-new",
+						"family": "example",
+						"vendor": "Example",
+						"speedTier": "BALANCED",
+						"qualityTier": "STANDARD"
+					}
+				},
+				{
+					"taskType": "REASONING",
+					"complexity": "MEDIUM",
+					"priority": 50,
+					"provider": "TOGETHER_AI",
+					"model": {
+						"id": "example-new",
+						"canonicalName": "example-new",
+						"displayName": "example-new",
+						"family": "example",
+						"vendor": "Example",
+						"speedTier": "BALANCED",
+						"qualityTier": "STANDARD"
+					}
+				},
+				{
+					"taskType": "CHAT",
+					"complexity": "MEDIUM",
+					"priority": 50,
+					"provider": "TOGETHER_AI",
+					"model": {
+						"id": "example-new",
+						"canonicalName": "example-new",
+						"displayName": "example-new",
+						"family": "example",
+						"vendor": "Example",
+						"speedTier": "BALANCED",
+						"qualityTier": "STANDARD"
+					}
+				},
+				{
+					"taskType": "TOOL_CALLING",
+					"complexity": "MEDIUM",
+					"priority": 50,
+					"provider": "TOGETHER_AI",
+					"model": {
+						"id": "example-new",
+						"canonicalName": "example-new",
+						"displayName": "example-new",
+						"family": "example",
+						"vendor": "Example",
+						"speedTier": "BALANCED",
+						"qualityTier": "STANDARD"
+					}
+				},
+				{
+					"taskType": "EVAL",
+					"complexity": "MEDIUM",
+					"priority": 50,
+					"provider": "TOGETHER_AI",
+					"model": {
+						"id": "example-new",
+						"canonicalName": "example-new",
+						"displayName": "example-new",
+						"family": "example",
+						"vendor": "Example",
+						"speedTier": "BALANCED",
+						"qualityTier": "STANDARD"
+					}
+				}
+			]
+		},
+		{
+			"error": "[ModelResolution] No model configured for provider \"TOGETHER_AI\" and task type \"TOOL_CALLING\". Please ensure the AI model catalog is seeded with: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "No model available for task type TOOL_CALLING with provider TOGETHER_AI.",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "No model configured for task type TOOL_CALLING with provider TOGETHER_AI",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "[ModelSelector] No model configured for provider \"TOGETHER_AI\" and task type \"EVAL\". Please ensure the AI model catalog is seeded: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "[ModelResolution] No model configured for provider \"TOGETHER_AI\" and task type \"EVAL\". Please ensure the AI model catalog is seeded with: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "No model available for task type EVAL with provider TOGETHER_AI.",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "No model configured for task type EVAL with provider TOGETHER_AI",
+			"code": "NOT_FOUND"
+		},
+		{
+			"error": "[ModelSelector] No model configured for provider \"OPENROUTER\" and task type \"SIMPLE\". Please ensure the AI model catalog is seeded: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "[ModelSelector] No model configured for provider \"OPENROUTER\" and task type \"COMPLEX\". Please ensure the AI model catalog is seeded: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "[ModelSelector] No model configured for provider \"OPENROUTER\" and task type \"REASONING\". Please ensure the AI model catalog is seeded: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "[ModelSelector] No model configured for provider \"OPENROUTER\" and task type \"CHAT\". Please ensure the AI model catalog is seeded: pnpm --filter @repo/database seed:ai-models"
+		},
+		{
+			"error": "[ModelSelector] No model configured for provider \"OPENROUTER\" and task type \"TOOL_CALLING\". Please ensure the AI model catalog is seeded: pnpm --filter @repo/database seed:ai-models"
+		}
+	]
+}

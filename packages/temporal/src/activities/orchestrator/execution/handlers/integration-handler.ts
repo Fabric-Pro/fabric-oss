@@ -8,6 +8,7 @@
  * without requiring MCP servers for common services.
  */
 
+import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import type { WorkflowIntegrationProvider } from "@repo/database";
 import {
 	fetchCredentialsByIdAndProviderInTenant,
@@ -485,6 +486,10 @@ export class IntegrationHandler implements StepHandler {
 			// Inside a chat turn's dispatch guard a stop is not a step failure
 			// to report or fall back from; a no-op outside one.
 			rethrowIfDispatchStopped(error);
+			const usageLimitError = findAiUsageLimitError(error);
+			if (usageLimitError) {
+				throw usageLimitError;
+			}
 			const errorMessage =
 				error instanceof Error ? error.message : String(error);
 			console.error(`[IntegrationHandler] Error: ${errorMessage}`);
@@ -816,6 +821,10 @@ export class IntegrationHandler implements StepHandler {
 				};
 			} catch (error) {
 				rethrowIfDispatchStopped(error);
+				const usageLimitError = findAiUsageLimitError(error);
+				if (usageLimitError) {
+					throw usageLimitError;
+				}
 				return {
 					success: false,
 					error:
@@ -2635,6 +2644,10 @@ export class IntegrationHandler implements StepHandler {
 			// A chat turn's stop (refused at a write's send) is not a failed
 			// Graph call.
 			rethrowIfDispatchStopped(error);
+			const usageLimitError = findAiUsageLimitError(error);
+			if (usageLimitError) {
+				throw usageLimitError;
+			}
 			return {
 				success: false,
 				error:

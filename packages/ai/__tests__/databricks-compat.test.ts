@@ -7,6 +7,7 @@
  * `@repo/ai`'s wrappers, which swap in the Vercel-only rule
  * (`applyDatabricksChatBodyCompat`).
  */
+
 import { createOpenAI } from "@ai-sdk/openai";
 import {
 	applyDatabricksPromptCacheMarkers,
@@ -21,13 +22,16 @@ import {
 	stripReasoningFromMessages,
 	stripUnsupportedRequestFields,
 } from "@repo/agent-types/databricks-compat";
+import { zodSchema } from "ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import {
 	applyDatabricksChatBodyCompat,
 	createDatabricksFetch as createVercelDatabricksFetch,
 	stripUnsupportedRequestFields as stripVercelRequestFields,
 	isReasoningModelName as vercelIsReasoningModelName,
 } from "../lib/databricks-compat";
+import { toStrictJsonSchema } from "../lib/strict-json-schema-middleware";
 
 async function runThroughSseTransform(
 	inputs: string[],
@@ -114,7 +118,16 @@ describe("stripUnsupportedRequestFields — default (agent path) rule", () => {
 			temperature: 0,
 			response_format: {
 				type: "json_schema",
-				json_schema: { name: "s", strict: true, schema: {} },
+				json_schema: {
+					name: "s",
+					strict: true,
+					schema: {
+						type: "object",
+						properties: {},
+						required: [],
+						additionalProperties: false,
+					},
+				},
 			},
 			messages: [],
 		});
@@ -145,17 +158,26 @@ describe("stripUnsupportedRequestFields — @repo/ai (Vercel path) rule", () => 
 		expect(out.temperature).toBeUndefined();
 	});
 
-	it("relaxes strict json_schema (Bug #1681)", () => {
+	it("preserves the middleware strict json_schema decision", () => {
 		const body = JSON.stringify({
 			model: "m",
 			response_format: {
 				type: "json_schema",
-				json_schema: { name: "s", strict: true, schema: {} },
+				json_schema: {
+					name: "s",
+					strict: true,
+					schema: {
+						type: "object",
+						properties: {},
+						required: [],
+						additionalProperties: false,
+					},
+				},
 			},
 			messages: [],
 		});
 		const out = JSON.parse(stripVercelRequestFields(body));
-		expect(out.response_format.json_schema.strict).toBe(false);
+		expect(out.response_format.json_schema.strict).toBe(true);
 	});
 
 	it("still injects prompt-cache markers for a Claude endpoint", () => {
@@ -180,7 +202,117 @@ describe("@repo/ai re-exports", () => {
 });
 
 describe("applyDatabricksChatBodyCompat", () => {
-	it("strips fields, drops temperature, and relaxes strict json_schema in one pass", () => {
+	it("preserves a middleware-converted schema with defaults and nested optional objects", async () => {
+		const schema = toStrictJsonSchema(
+			await zodSchema(
+				z.object({
+					meta: z
+						.object({
+							note: z.string().max(200).default("example"),
+						})
+						.optional(),
+					rows: z.array(z.object({ note: z.string().optional() })),
+				}),
+			).jsonSchema,
+		);
+		expect(schema).toBeDefined();
+		const body = {
+			response_format: {
+				type: "json_schema",
+				json_schema: { strict: true, schema },
+			},
+		};
+		expect(applyDatabricksChatBodyCompat(body)).toBe(false);
+		expect(body.response_format.json_schema.strict).toBe(true);
+		expect(body.response_format.json_schema.schema).toBe(schema);
+	});
+	it.each(["properties", "items", "anyOf", "$defs", "definitions"])(
+		"relaxes incompatible nested objects through %s",
+		(path) => {
+			const invalid = {
+				type: "object",
+				properties: { note: { type: "string" } },
+				required: ["note"],
+			};
+			const root = {
+				type: "object",
+				properties: {},
+				required: [],
+				additionalProperties: false,
+			};
+			const schema =
+				path === "properties"
+					? {
+							...root,
+							properties: { entry: invalid },
+							required: ["entry"],
+						}
+					: path === "items"
+						? {
+								...root,
+								properties: {
+									rows: { type: "array", items: invalid },
+								},
+								required: ["rows"],
+							}
+						: path === "anyOf"
+							? {
+									...root,
+									properties: {
+										entry: {
+											anyOf: [invalid, { type: "null" }],
+										},
+									},
+									required: ["entry"],
+								}
+							: { ...root, [path]: { entry: invalid } };
+			const body = {
+				response_format: {
+					type: "json_schema",
+					json_schema: { strict: true, schema },
+				},
+			};
+			expect(applyDatabricksChatBodyCompat(body)).toBe(true);
+			expect(body.response_format.json_schema.strict).toBe(false);
+		},
+	);
+	it("relaxes a closed object that does not require each property", () => {
+		const body = {
+			response_format: {
+				type: "json_schema",
+				json_schema: {
+					strict: true,
+					schema: {
+						type: "object",
+						properties: { note: { type: "string" } },
+						required: [],
+						additionalProperties: false,
+					},
+				},
+			},
+		};
+		expect(applyDatabricksChatBodyCompat(body)).toBe(true);
+		expect(body.response_format.json_schema.strict).toBe(false);
+	});
+
+	it("relaxes an unconverted strict schema at the fetch boundary", () => {
+		const body = {
+			response_format: {
+				type: "json_schema",
+				json_schema: {
+					strict: true,
+					schema: {
+						type: "object",
+						properties: { note: { type: "string" } },
+					},
+				},
+			},
+		};
+		expect(applyDatabricksChatBodyCompat(body)).toBe(true);
+		expect(body.response_format.json_schema.strict).toBe(false);
+	});
+
+	it("strips fields, drops temperature, and preserves strict json_schema in one pass", () => {
 		const body: Record<string, unknown> = {
 			model: "system.ai.claude-sonnet-5",
 			stream: true,
@@ -190,7 +322,16 @@ describe("applyDatabricksChatBodyCompat", () => {
 			max_tokens: 4096,
 			response_format: {
 				type: "json_schema",
-				json_schema: { name: "s", strict: true, schema: {} },
+				json_schema: {
+					name: "s",
+					strict: true,
+					schema: {
+						type: "object",
+						properties: {},
+						required: [],
+						additionalProperties: false,
+					},
+				},
 			},
 		};
 		expect(applyDatabricksChatBodyCompat(body)).toBe(true);
@@ -202,7 +343,7 @@ describe("applyDatabricksChatBodyCompat", () => {
 		expect(
 			(body.response_format as { json_schema: { strict: boolean } })
 				.json_schema.strict,
-		).toBe(false);
+		).toBe(true);
 	});
 
 	it("leaves max_tokens untouched", () => {
@@ -388,7 +529,7 @@ describe("createDatabricksFetch", () => {
 		expect(JSON.parse(sentBody as string).stream_options).toBeUndefined();
 	});
 
-	it("@repo/ai wrapper: drops temperature and relaxes strict json_schema on the outgoing body", async () => {
+	it("@repo/ai wrapper: drops temperature and preserves strict json_schema on the outgoing body", async () => {
 		let sentBody: string | undefined;
 		const baseFetch = vi.fn(async (_input: unknown, init?: RequestInit) => {
 			sentBody = init?.body as string;
@@ -407,7 +548,16 @@ describe("createDatabricksFetch", () => {
 				max_tokens: 4096,
 				response_format: {
 					type: "json_schema",
-					json_schema: { name: "scan", strict: true, schema: {} },
+					json_schema: {
+						name: "scan",
+						strict: true,
+						schema: {
+							type: "object",
+							properties: {},
+							required: [],
+							additionalProperties: false,
+						},
+					},
 				},
 			}),
 		});
@@ -416,7 +566,7 @@ describe("createDatabricksFetch", () => {
 		const parsed = JSON.parse(sentBody as string);
 		expect(parsed.temperature).toBeUndefined();
 		expect(parsed.max_tokens).toBe(4096);
-		expect(parsed.response_format.json_schema.strict).toBe(false);
+		expect(parsed.response_format.json_schema.strict).toBe(true);
 	});
 
 	it("default rule: leaves temperature and strict json_schema on the outgoing body", async () => {
@@ -438,7 +588,16 @@ describe("createDatabricksFetch", () => {
 				parallel_tool_calls: true,
 				response_format: {
 					type: "json_schema",
-					json_schema: { name: "scan", strict: true, schema: {} },
+					json_schema: {
+						name: "scan",
+						strict: true,
+						schema: {
+							type: "object",
+							properties: {},
+							required: [],
+							additionalProperties: false,
+						},
+					},
 				},
 			}),
 		});

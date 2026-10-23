@@ -21,7 +21,7 @@ const { handlers, mocks, schemas } = vi.hoisted(() => {
 		markPendingProposalApplied: vi.fn(),
 		markPendingProposalFailed: vi.fn(),
 		appendAppliedChangeIndexes: vi.fn(),
-		setProposalApplyWorkflowId: vi.fn(),
+		markProposalApplyDispatched: vi.fn(),
 		setPendingProposalAttachmentResult: vi.fn(),
 		markPendingProposalRejected: vi.fn(),
 		projectFindUnique: vi.fn(),
@@ -45,7 +45,7 @@ vi.mock("@repo/database", () => ({
 	markPendingProposalApplied: mocks.markPendingProposalApplied,
 	markPendingProposalFailed: mocks.markPendingProposalFailed,
 	appendAppliedChangeIndexes: mocks.appendAppliedChangeIndexes,
-	setProposalApplyWorkflowId: mocks.setProposalApplyWorkflowId,
+	markProposalApplyDispatched: mocks.markProposalApplyDispatched,
 	setPendingProposalAttachmentResult:
 		mocks.setPendingProposalAttachmentResult,
 	markPendingProposalRejected: mocks.markPendingProposalRejected,
@@ -602,4 +602,51 @@ describe("approval workflow start failure messages", () => {
 			}
 		},
 	);
+});
+
+describe("approve dispatch clock", () => {
+	it("stamps the dispatched workflow after synchronous creates", async () => {
+		const update = {
+			...CHANGE_BUG,
+			action: "update" as const,
+			existingId: "example-story",
+		};
+		mocks.getPendingBacklogProposal.mockResolvedValueOnce(
+			makeProposalRow({
+				changes: [CHANGE_BUG, update as unknown as typeof CHANGE_BUG],
+			}),
+		);
+		mocks.workflowStart.mockImplementationOnce(async (_name, options) => ({
+			workflowId: options.workflowId,
+		}));
+		await handlers.approve({
+			input: {
+				projectId: PROJECT_ID,
+				organizationId: ORG_ID,
+				proposalId: PROPOSAL_ID,
+				approvedChanges: [CHANGE_BUG, update],
+				syncToPM: false,
+			},
+			context: APPROVAL_CTX,
+		});
+		expect(mocks.workflowStart).toHaveBeenCalledTimes(1);
+		const workflowId = mocks.workflowStart.mock.calls[0][1].workflowId;
+		expect(mocks.markPendingProposalApproved).toHaveBeenCalledWith({
+			proposalId: PROPOSAL_ID,
+			reviewedBy: APPROVER_ID,
+			// Recorded at approval so a fast finalize cannot leave the row without it.
+			applyWorkflowId: workflowId,
+		});
+		expect(mocks.markProposalApplyDispatched).toHaveBeenCalledWith({
+			proposalId: PROPOSAL_ID,
+			applyWorkflowId: workflowId,
+			mode: "approved",
+		});
+		expect(
+			mocks.createStoryFromProposal.mock.invocationCallOrder[0],
+		).toBeLessThan(mocks.workflowStart.mock.invocationCallOrder[0]);
+		expect(mocks.workflowStart.mock.invocationCallOrder[0]).toBeLessThan(
+			mocks.markProposalApplyDispatched.mock.invocationCallOrder[0],
+		);
+	});
 });

@@ -11,6 +11,7 @@ import {
 	type ChatgptPlanModelListTask,
 } from "../chatgpt-plan-models/ChatgptPlanModelList";
 import { ChatgptConnectSteps } from "./ChatgptConnectSteps";
+import { ChatgptFabricMarks } from "./ChatgptMark";
 
 const CLI_CALLBACK_PATH = "/fabric/callback";
 
@@ -25,6 +26,32 @@ interface ConnectOrganization {
 /** The CLI's own listener; only the port comes from the link. */
 function callbackUrl(port: number, query: Record<string, string>): string {
 	return `http://127.0.0.1:${port}${CLI_CALLBACK_PATH}?${new URLSearchParams(query).toString()}`;
+}
+
+/** ChatGPT ↔ Fabric, then one short line: the screen reads like ChatGPT's own consent page. */
+function ConnectHeader({
+	title,
+	description,
+}: {
+	title: string;
+	description: string;
+}) {
+	return (
+		<div className="space-y-3 text-center">
+			<ChatgptFabricMarks />
+			<h1 className="font-serif text-2xl">{title}</h1>
+			<p className="text-muted-foreground text-sm">{description}</p>
+		</div>
+	);
+}
+
+function EncryptedNote() {
+	const t = useTranslations("settings.chatgptPlan.connect");
+	return (
+		<p className="text-center text-muted-foreground text-xs">
+			{t("encryptedNote")}
+		</p>
+	);
 }
 
 export function ConnectChatgptPlanForm({
@@ -148,12 +175,10 @@ export function ConnectChatgptPlanForm({
 
 	return (
 		<div className="space-y-5">
-			<div className="space-y-2">
-				<h1 className="font-serif text-2xl">{t("title")}</h1>
-				<p className="text-muted-foreground text-sm">
-					{t("description", { email })}
-				</p>
-			</div>
+			<ConnectHeader
+				description={t("description", { email })}
+				title={t("title")}
+			/>
 
 			<ChatgptConnectSteps current={2} />
 
@@ -195,7 +220,7 @@ export function ConnectChatgptPlanForm({
 				</Alert>
 			) : null}
 
-			<div className="flex gap-2">
+			<div className="grid gap-2">
 				<Button
 					autoLoading={false}
 					disabled={status === "approving" || chosen.size === 0}
@@ -214,6 +239,7 @@ export function ConnectChatgptPlanForm({
 					{t("cancel")}
 				</Button>
 			</div>
+			<EncryptedNote />
 		</div>
 	);
 }
@@ -319,12 +345,12 @@ export function ConnectSharedChatgptPlanForm({
 
 	return (
 		<div className="space-y-5">
-			<div className="space-y-2">
-				<h1 className="font-serif text-2xl">{t("title")}</h1>
-				<p className="text-muted-foreground text-sm">
-					{t("description", { organization: organization.name })}
-				</p>
-			</div>
+			<ConnectHeader
+				description={t("description", {
+					organization: organization.name,
+				})}
+				title={t("title")}
+			/>
 
 			<ChatgptConnectSteps current={2} shared />
 
@@ -345,7 +371,7 @@ export function ConnectSharedChatgptPlanForm({
 				</Alert>
 			) : null}
 
-			<div className="flex gap-2">
+			<div className="grid gap-2">
 				<Button
 					autoLoading={false}
 					disabled={status === "approving"}
@@ -366,6 +392,7 @@ export function ConnectSharedChatgptPlanForm({
 					{tConnect("cancel")}
 				</Button>
 			</div>
+			<EncryptedNote />
 		</div>
 	);
 }

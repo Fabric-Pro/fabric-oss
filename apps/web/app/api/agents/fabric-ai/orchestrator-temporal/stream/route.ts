@@ -48,6 +48,7 @@ import type {
 	TaskPlan,
 } from "@repo/temporal";
 import { getTemporalClient } from "@repo/temporal";
+import { PROJECT_REPOSITORY_TOOLS } from "@repo/temporal/project-repository-tool-schemas";
 import { REDIS_KEEPALIVE_MS } from "@repo/utils/redis-connection";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
@@ -60,6 +61,7 @@ import {
 } from "../../orchestrator-execution-mode";
 import { resolveUsageFrame } from "../../resolve-usage-frame";
 import { windowUntypedHistory } from "../../stream/history-window";
+import { buildWorkflowErrorEvent } from "../../stream/turn-events";
 import { unionDefaultMcpConfigIds } from "../../union-default-mcp-config-ids";
 import {
 	isOrchestratorOrganizationMember,
@@ -944,6 +946,25 @@ export async function POST(request: NextRequest) {
 			);
 		}
 
+		// Fizzy #3216: the Advisor's toggle-built list omits repository reads.
+		// Bind them as Direct does (Fizzy #2869) for Advisor turns, including
+		// agents chosen there, with an accessible project. Callers without
+		// advisorOrigin keep their configured list.
+		const effectiveEnabledFabricToolIds =
+			advisorOrigin === true &&
+			projectId &&
+			Array.isArray(enabledFabricToolIds) &&
+			enabledFabricToolIds.length > 0
+				? Array.from(
+						new Set([
+							...enabledFabricToolIds,
+							...PROJECT_REPOSITORY_TOOLS.map(
+								(tool) => tool.name,
+							),
+						]),
+					)
+				: enabledFabricToolIds;
+
 		// Build workflow input
 		// SECURITY: Credentials are NOT passed in workflow inputs
 		// Activities fetch credentials internally to avoid storing them in Temporal history
@@ -959,7 +980,7 @@ export async function POST(request: NextRequest) {
 			executionMode,
 			enabledMcpConfigIds: effectiveEnabledMcpConfigIds,
 			enabledAgentIds,
-			enabledFabricToolIds,
+			enabledFabricToolIds: effectiveEnabledFabricToolIds,
 			enabledIntegrationIds,
 			prioritizedToolIds,
 			prioritizedAgentIds,
@@ -1061,10 +1082,10 @@ export async function POST(request: NextRequest) {
 				},
 				status === "failed"
 					? {
-							type: "error",
-							message:
+							...buildWorkflowErrorEvent(
 								turn.terminalReason ??
-								"Workflow execution failed",
+									"Workflow execution failed",
+							),
 							// The row's stored stop, whatever the status,
 							// exactly as the live event carried it.
 							budgetStop: turnBudgetStopForStream(
@@ -1728,10 +1749,11 @@ export async function POST(request: NextRequest) {
 								// normal `completed` emit below, unchanged.
 								if (result.status === "failed") {
 									sendEvent({
-										type: "error",
-										message:
+										...buildWorkflowErrorEvent(
 											result.error ??
-											"Workflow execution failed",
+												"Workflow execution failed",
+											result.usageLimit,
+										),
 										// The turn row's stored stop, as the
 										// workflow returned it.
 										budgetStop: result.budgetStop,
@@ -1779,21 +1801,30 @@ export async function POST(request: NextRequest) {
 							} else if (description.status.name === "FAILED") {
 								// Try to get the actual error from the workflow result
 								let errorMessage = "Workflow execution failed";
+								let failure: unknown = errorMessage;
+								let usageLimit: Parameters<
+									typeof buildWorkflowErrorEvent
+								>[1];
 								try {
 									const result = await handle.result();
-									if (result?.error) {
-										errorMessage = result.error;
-									}
+									errorMessage =
+										result?.error || errorMessage;
+									failure = errorMessage;
+									usageLimit = result?.usageLimit;
 								} catch (resultError: unknown) {
-									// Extract error message from the failure
+									failure = resultError;
 									if (resultError instanceof Error) {
 										errorMessage = resultError.message;
 									}
 								}
-								sendEvent({
-									type: "error",
-									message: errorMessage,
-								});
+								const event = buildWorkflowErrorEvent(
+									failure,
+									usageLimit,
+								);
+								if (!("code" in event)) {
+									event.message = errorMessage;
+								}
+								sendEvent(event);
 								isComplete = true;
 							} else if (
 								description.status.name === "CANCELLED"

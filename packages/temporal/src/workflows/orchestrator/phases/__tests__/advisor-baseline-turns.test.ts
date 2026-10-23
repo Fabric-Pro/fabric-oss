@@ -66,6 +66,50 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("baseline turns", () => {
+	it("passes attached workspace IDs or an explicit empty list to tool search", async () => {
+		for (const workspaceIds of [undefined, [], ["ws-example"]]) {
+			await runTurn(mocks, {
+				message: "Find tools for searching documents",
+				workspaceIds,
+				steps: [
+					{
+						calls: [
+							{
+								name: "search_tools",
+								args: { query: "search documents" },
+							},
+						],
+					},
+					{ answer: "Done" },
+				],
+			});
+			expect(mocks.stub("searchAvailableTools")).toHaveBeenLastCalledWith(
+				expect.objectContaining({ workspaceIds: workspaceIds ?? [] }),
+			);
+		}
+	});
+	it("passes the attached project ID or null to tool search", async () => {
+		for (const projectId of [null, "", "project-example"]) {
+			await runTurn(mocks, {
+				message: "Find tools for searching documents",
+				projectId,
+				steps: [
+					{
+						calls: [
+							{
+								name: "search_tools",
+								args: { query: "search documents" },
+							},
+						],
+					},
+					{ answer: "Done" },
+				],
+			});
+			expect(mocks.stub("searchAvailableTools")).toHaveBeenLastCalledWith(
+				expect.objectContaining({ projectId: projectId || null }),
+			);
+		}
+	});
 	it("answers without tools in one model call", async () => {
 		const { result, seen } = await runTurn(mocks, {
 			message: "Say hello.",

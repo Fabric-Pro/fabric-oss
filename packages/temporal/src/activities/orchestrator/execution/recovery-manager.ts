@@ -8,6 +8,7 @@
  */
 
 import { logger } from "@repo/logs";
+import { isUsageLimitRefusalText } from "../../../lib/ai-usage-limit-refusal";
 import type { AgentVariable, TaskPlan, TaskStep } from "../types";
 
 // =============================================================================
@@ -15,6 +16,7 @@ import type { AgentVariable, TaskPlan, TaskStep } from "../types";
 // =============================================================================
 
 export type FailureType =
+	| "usage_limit"
 	| "executor_unavailable"
 	| "input_invalid"
 	| "timeout"
@@ -87,6 +89,13 @@ export function classifyFailure(
 	step: TaskStep,
 ): FailureClassification {
 	const errorMessage = error instanceof Error ? error.message : String(error);
+	if (isUsageLimitRefusalText(errorMessage)) {
+		return {
+			type: "usage_limit",
+			message: errorMessage,
+			isRetryable: false,
+		};
+	}
 	const errorLower = errorMessage.toLowerCase();
 
 	// Executor unavailable

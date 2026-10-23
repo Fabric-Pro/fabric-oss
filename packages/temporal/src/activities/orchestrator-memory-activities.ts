@@ -66,6 +66,7 @@ export interface EmbedAndStoreTrajectoryInput {
 	conversationId?: string;
 	frameId?: string;
 	projectId?: string;
+	workspaceIds?: string[];
 }
 
 export interface SearchSemanticMemoryInput extends SecondaryUsageInput {
@@ -311,7 +312,10 @@ export async function embedAndStoreTrajectory(
 	try {
 		// Skip if already stored (idempotency for Temporal replays)
 		// This avoids expensive LLM summary generation on replays
-		const alreadyStored = await executionExists(executionId);
+		const alreadyStored = await executionExists(
+			executionId,
+			organizationId,
+		);
 		if (alreadyStored) {
 			console.log(
 				`[OrchestratorMemory] Execution ${executionId} already stored, skipping`,
@@ -380,6 +384,8 @@ export async function embedAndStoreTrajectory(
 			stepCount: steps.length,
 			userId,
 			organizationId,
+			projectId: input.projectId,
+			workspaceIds: input.workspaceIds ?? [],
 			timestamp: new Date().toISOString(),
 		};
 

@@ -487,7 +487,7 @@ describe("markProposalApplyDispatched — late stamp guard", () => {
 		expect(row.applyWorkflowId).toBe("wf-2");
 	});
 
-	it("stamps a fresh row only while nobody has claimed it", async () => {
+	it("does not stamp a fresh caller over another workflow claim", async () => {
 		const row = statefulRow({ ...batch, source: "AI_UPDATE_SIDEBAR" });
 		await claimPendingProposalForApply({
 			proposalId: "batch-1",
@@ -498,7 +498,7 @@ describe("markProposalApplyDispatched — late stamp guard", () => {
 		const stamped = await markProposalApplyDispatched({
 			proposalId: "batch-1",
 			applyWorkflowId: "wf-1",
-			mode: "fresh",
+			mode: "claimed",
 		});
 
 		expect(stamped).toBe(0);

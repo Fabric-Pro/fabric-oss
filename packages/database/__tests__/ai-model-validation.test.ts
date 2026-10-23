@@ -24,6 +24,7 @@
  * - OpenRouter: https://openrouter.ai/models
  */
 
+import { getAiModelFit } from "@repo/utils/ai-model-fit";
 import { describe, expect, it } from "vitest";
 import { MODELS, TASK_DEFAULTS } from "../prisma/ai-model-catalog";
 import type { AIProvider } from "../prisma/generated/client";
@@ -1245,4 +1246,63 @@ describe("AI Model Validation Summary", () => {
 		// Individual provider tests will fail on invalid models
 		expect(true).toBe(true);
 	});
+});
+
+// Suitability is used by auto-selection as well as advisory UI.
+describe("Active catalog suitability consistency", () => {
+	const active = MODELS.filter((model) => !model.deprecation);
+	for (const task of ["TOOL_CALLING", "REASONING"] as const) {
+		it(`${task} suitability requires its capability`, () => {
+			expect(
+				active
+					.filter(
+						(m) =>
+							m.suitableForTasks.includes(task) &&
+							!m.capabilities.includes(task),
+					)
+					.map((m) => m.canonicalName),
+			).toEqual([]);
+		});
+	}
+	it("text suitability requires TEXT", () => {
+		const text = [
+			"COMPLEX",
+			"REASONING",
+			"TOOL_CALLING",
+			"CHAT",
+			"EVAL",
+			"SIMPLE",
+		];
+		expect(
+			active
+				.filter(
+					(m) =>
+						m.suitableForTasks.some((t) => text.includes(t)) &&
+						!m.capabilities.includes("TEXT"),
+				)
+				.map((m) => m.canonicalName),
+		).toEqual([]);
+	});
+});
+
+it("seeded task defaults do not produce quality warnings", () => {
+	const byName = new Map(MODELS.map((model) => [model.canonicalName, model]));
+	const warnings = TASK_DEFAULTS.flatMap((entry) => {
+		const model = byName.get(entry.canonicalName);
+		expect(model, entry.canonicalName).toBeDefined();
+		const fit =
+			model && getAiModelFit({ taskType: entry.taskType, ...model });
+		return fit?.kind === "quality"
+			? [
+					{
+						model: entry.canonicalName,
+						task: entry.taskType,
+						provider: entry.provider,
+						complexity: entry.complexity,
+						reason: fit.reason,
+					},
+				]
+			: [];
+	});
+	expect(warnings).toEqual([]);
 });

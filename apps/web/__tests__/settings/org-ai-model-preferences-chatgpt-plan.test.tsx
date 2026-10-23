@@ -1,3 +1,4 @@
+import en from "@repo/i18n/translations/en.json";
 /**
  * The ChatGPT plan tab writes its per-task models into the same preferences
  * table, and the catalog seeds task defaults for OPENAI_CHATGPT_PLAN
@@ -6,8 +7,11 @@
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
+import { NextIntlClientProvider } from "next-intl";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
+
+vi.mock("next-intl", async () => vi.importActual("next-intl"));
 
 const { mockListAvailable, mockGetTaskDefaults, mockGetOrg, mockSetOrg } =
 	vi.hoisted(() => ({
@@ -21,6 +25,9 @@ vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		aiConfig: {
 			models: { listAvailable: mockListAvailable },
+			resolution: {
+				getStatus: vi.fn(async () => ({ configuredProviders: [] })),
+			},
 			preferences: {
 				getTaskDefaults: mockGetTaskDefaults,
 				getOrg: mockGetOrg,
@@ -77,6 +84,7 @@ const generalModelsResponse = {
 		},
 	],
 	defaultProvider: "OPENAI_DIRECT",
+	organizationDefaultProvider: "OPENAI_DIRECT",
 	providerIds: ["OPENAI_DIRECT"],
 	models: [
 		{
@@ -123,9 +131,11 @@ function renderForm() {
 		defaultOptions: { queries: { retry: false } },
 	});
 	return render(
-		<QueryClientProvider client={client}>
-			<OrgAiModelPreferencesForm />
-		</QueryClientProvider>,
+		<NextIntlClientProvider locale="en" messages={en} timeZone="UTC">
+			<QueryClientProvider client={client}>
+				<OrgAiModelPreferencesForm />
+			</QueryClientProvider>
+		</NextIntlClientProvider>,
 	);
 }
 

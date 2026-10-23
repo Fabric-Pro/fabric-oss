@@ -12,6 +12,7 @@
  * - Graceful degradation if Qdrant unavailable
  */
 
+import { filterAccessibleMemoryScopes } from "@repo/database";
 import { logger } from "@repo/logs";
 import { ensureCollection } from "../collection-manager";
 import { generatePointId } from "../utils";
@@ -74,6 +75,8 @@ export interface ExecutionSummary {
 	userId: string;
 	/** Organization ID for multi-tenancy */
 	organizationId?: string;
+	projectId?: string;
+	workspaceIds?: string[];
 	/** Timestamp */
 	timestamp: string;
 }
@@ -160,7 +163,13 @@ export async function storeExecutionSummary(
 			stepCount: execution.stepCount,
 			userId: execution.userId,
 			timestamp: execution.timestamp,
+			workspaceIds: execution.workspaceIds ?? [],
+			accessScopeVersion: 1,
 		};
+
+		if (execution.projectId) {
+			payload.projectId = execution.projectId;
+		}
 
 		if (execution.organizationId) {
 			payload.organizationId = execution.organizationId;
@@ -212,17 +221,15 @@ export async function searchSimilarExecutions(
 		// Build filter for multi-tenancy (additional safety layer within collection)
 		const filter: {
 			must: Array<
-				| { key: string; match: { value: string } }
+				| { key: string; match: { value: string | number } }
 				| { is_empty: { key: string } }
 			>;
 		} = {
-			must: [],
+			must: [{ key: "accessScopeVersion", match: { value: 1 } }],
 		};
 
 		// User/org isolation — strict XOR, same shape as the Prisma tenant
-		// filter. Organization data normally lives in its own collection, but
-		// the base collection is also written to directly by the orchestrator
-		// tool-learning store, so the payload filter has to stand on its own.
+		// filter, with payload checks in addition to collection isolation.
 		if (organizationId) {
 			// Execution memories belong to the requesting user within the org.
 			filter.must.push({
@@ -264,7 +271,14 @@ export async function searchSimilarExecutions(
 		}
 
 		// Map results to ExecutionSummary
-		const results: SemanticSearchResult[] = searchResult.map((result) => ({
+		const validResults = searchResult.filter((result) => {
+			const workspaceIds = result.payload?.workspaceIds;
+			return (
+				Array.isArray(workspaceIds) &&
+				workspaceIds.every((id) => typeof id === "string")
+			);
+		});
+		const results: SemanticSearchResult[] = validResults.map((result) => ({
 			execution: {
 				id: result.payload?.executionId as string,
 				taskDescription: result.payload?.taskDescription as string,
@@ -282,16 +296,29 @@ export async function searchSimilarExecutions(
 				organizationId: result.payload?.organizationId as
 					| string
 					| undefined,
+				projectId: result.payload?.projectId as string | undefined,
+				workspaceIds: result.payload?.workspaceIds as string[],
 				timestamp: result.payload?.timestamp as string,
 			},
 			similarity: result.score,
 		}));
 
-		logger.info(
-			`[OrchestratorMemory] Found ${results.length} similar executions (top: ${results[0]?.similarity.toFixed(3)})`,
+		const accessibleExecutions = new Set(
+			await filterAccessibleMemoryScopes(
+				results.map((result) => result.execution),
+				userId,
+				organizationId,
+			),
+		);
+		const accessibleResults = results.filter((result) =>
+			accessibleExecutions.has(result.execution),
 		);
 
-		return results;
+		logger.info(
+			`[OrchestratorMemory] Found ${accessibleResults.length} similar executions (top: ${accessibleResults[0]?.similarity.toFixed(3)})`,
+		);
+
+		return accessibleResults;
 	} catch (error) {
 		logger.error(
 			`[OrchestratorMemory] Failed to search executions: ${error}`,

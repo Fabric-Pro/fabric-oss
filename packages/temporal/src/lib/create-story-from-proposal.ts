@@ -555,6 +555,8 @@ async function assertExplicitPromptAllowedForKind(params: {
 async function resolvePrompt(params: {
 	userId: string;
 	organizationId: string | null | undefined;
+	/** The work item's project: its PROJECT default outranks the org-wide one. */
+	projectId: string;
 	draftingStage: FeatureDraftingStage;
 	storyKind: StoryKind;
 	explicitPromptId?: string;
@@ -574,7 +576,7 @@ async function resolvePrompt(params: {
 	agentName: string | null;
 	documentType: string | null;
 } | null> {
-	const { userId, organizationId } = params;
+	const { userId, organizationId, projectId } = params;
 	const orgId = organizationId ?? undefined;
 
 	if (params.explicitPromptVersionId) {
@@ -634,6 +636,7 @@ async function resolvePrompt(params: {
 		storyKind: params.storyKind,
 		userId,
 		organizationId: orgId,
+		projectId,
 	});
 	if (cleanSpecPrompt?.version?.content) {
 		return {
@@ -659,6 +662,7 @@ async function resolvePrompt(params: {
 		storyKind: params.storyKind,
 		userId,
 		organizationId: orgId,
+		projectId,
 	});
 	if (boundPrompt?.version?.content) {
 		return {
@@ -824,6 +828,7 @@ export async function createStoryFromProposal(
 		: await resolvePrompt({
 				userId: params.createdById,
 				organizationId: params.organizationId,
+				projectId: params.projectId,
 				draftingStage: effectiveStage,
 				storyKind: effectiveKind,
 				explicitPromptId: params.explicitPromptId,
@@ -1208,6 +1213,7 @@ export async function draftBodyByKind(
 	const resolvedPrompt = await resolvePrompt({
 		userId: params.userId,
 		organizationId: params.organizationId,
+		projectId: params.projectId,
 		draftingStage: effectiveStage,
 		storyKind: params.kind,
 		explicitPromptId: params.explicitPromptId,

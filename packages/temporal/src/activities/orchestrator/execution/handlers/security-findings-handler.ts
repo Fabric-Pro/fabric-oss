@@ -6,6 +6,7 @@
  * directly from the ScanFinding table and formats them for the agent.
  */
 
+import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import type { ExecuteStepInput, ExecuteStepOutput } from "../../types";
 import type {
@@ -44,6 +45,10 @@ export class SecurityFindingsHandler implements StepHandler {
 			// Inside a chat turn's dispatch guard a stop is not a step failure
 			// to report or fall back from; a no-op outside one.
 			rethrowIfDispatchStopped(error);
+			const usageLimitError = findAiUsageLimitError(error);
+			if (usageLimitError) {
+				throw usageLimitError;
+			}
 			const message =
 				error instanceof Error ? error.message : String(error);
 			console.error("[SecurityFindingsHandler] failed:", error);

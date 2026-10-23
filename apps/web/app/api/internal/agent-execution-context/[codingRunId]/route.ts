@@ -11,6 +11,7 @@
 
 import { createHash, timingSafeEqual } from "node:crypto";
 import { db, resolveModel } from "@repo/database";
+import { DEFAULT_FABRIC_AI_MODEL } from "@repo/database/prisma/ai-model-catalog";
 import { contextMetaHeader } from "@repo/rag";
 import { type NextRequest, NextResponse } from "next/server";
 
@@ -225,7 +226,7 @@ export async function GET(
 
 	// Resolve AI model from user/org settings, falling back to Claude Sonnet.
 	let model: { model: string; reasoningEffort: string | null } = {
-		model: "claude-sonnet-5",
+		model: DEFAULT_FABRIC_AI_MODEL,
 		reasoningEffort: null,
 	};
 	try {

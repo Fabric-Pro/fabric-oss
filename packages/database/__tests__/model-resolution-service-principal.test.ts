@@ -11,11 +11,16 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { getSystemAiProviderApiKey, getModelForTask } = vi.hoisted(() => ({
+const {
+	getSystemAiProviderApiKey,
+	getAiProviderApiKeyByProvider,
+	getModelForTask,
+} = vi.hoisted(() => ({
 	// The SYSTEM entry point, not the tenant-facing one: `resolveModelWithCredentials`
 	// backs background work (Temporal activities, agent runtimes), which keeps the
 	// platform-gateway fallback the user-facing resolver no longer has.
 	getSystemAiProviderApiKey: vi.fn(),
+	getAiProviderApiKeyByProvider: vi.fn(),
 	getModelForTask: vi.fn(),
 }));
 
@@ -23,7 +28,11 @@ vi.mock("../prisma/queries/ai-gateway", async (importOriginal) => {
 	// Keep the real `hasProviderCredentials` — it is the predicate under test.
 	const actual =
 		await importOriginal<typeof import("../prisma/queries/ai-gateway")>();
-	return { ...actual, getSystemAiProviderApiKey };
+	return {
+		...actual,
+		getSystemAiProviderApiKey,
+		getAiProviderApiKeyByProvider,
+	};
 });
 
 vi.mock("../prisma/queries/ai-models", () => ({ getModelForTask }));
@@ -32,7 +41,10 @@ vi.mock("../prisma/client", () => ({
 	db: {},
 }));
 
-import { resolveModelWithCredentials } from "../prisma/queries/model-resolution";
+import {
+	resolveModel,
+	resolveModelWithCredentials,
+} from "../prisma/queries/model-resolution";
 
 const WORKSPACE = "https://example-workspace.cloud.databricks.com";
 
@@ -140,4 +152,31 @@ describe("resolveModelWithCredentials", () => {
 			}),
 		).rejects.toThrow(/No AI provider configured/i);
 	});
+});
+
+it("resolves IMAGE on an explicit provider without a connection lookup", async () => {
+	getModelForTask.mockResolvedValue({
+		model: { canonicalName: "example-image" },
+		providerModelId: "example-image",
+		source: "system_default",
+	});
+	getSystemAiProviderApiKey.mockRejectedValue(
+		new Error("transient connection lookup failure"),
+	);
+	getAiProviderApiKeyByProvider.mockRejectedValue(
+		new Error("unexpected provider lookup"),
+	);
+	expect(
+		await resolveModel({
+			userId: "example-user",
+			organizationId: "example-org",
+			taskType: "IMAGE",
+			provider: "VERCEL_GATEWAY",
+		}),
+	).toMatchObject({
+		provider: "VERCEL_GATEWAY",
+		providerModelId: "example-image",
+	});
+	expect(getSystemAiProviderApiKey).not.toHaveBeenCalled();
+	expect(getAiProviderApiKeyByProvider).not.toHaveBeenCalled();
 });

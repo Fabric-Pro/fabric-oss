@@ -7,6 +7,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	logAiUsage: vi.fn(),
+	getModelByCanonicalName: vi.fn(),
+	getCanonicalNameForProviderModelId: vi.fn(),
 }));
 
 vi.mock("@repo/ai-token", () => ({
@@ -18,6 +20,9 @@ vi.mock("@repo/ai-token", () => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	getModelByCanonicalName: mocks.getModelByCanonicalName,
+	getCanonicalNameForProviderModelId:
+		mocks.getCanonicalNameForProviderModelId,
 	getProjectAccessContext: vi.fn(async () => ({
 		organizationId: "org-1",
 	})),
@@ -52,7 +57,9 @@ function loggedFeatureKey(): unknown {
 }
 
 beforeEach(() => {
-	vi.clearAllMocks();
+	vi.resetAllMocks();
+	mocks.getModelByCanonicalName.mockResolvedValue(null);
+	mocks.getCanonicalNameForProviderModelId.mockResolvedValue(null);
 });
 
 describe("POST /api/internal/ai-usage — agent feature keys", () => {
@@ -83,4 +90,51 @@ describe("POST /api/internal/ai-usage — agent feature keys", () => {
 		});
 		expect(loggedFeatureKey()).toBe("clean-spec");
 	});
+});
+
+describe("external usage catalog identity", () => {
+	it.each([
+		["DATABRICKS", "system.ai.claude-sonnet-5", "claude-sonnet-5"],
+		["VERCEL_GATEWAY", "anthropic/claude-haiku-4.5", "claude-haiku-4-5"],
+	])("resolves %s model %s to %s", async (provider, model, canonicalName) => {
+		mocks.getCanonicalNameForProviderModelId.mockResolvedValue(
+			canonicalName,
+		);
+		expect((await usage({ provider, model })).status).toBe(200);
+		expect(mocks.getCanonicalNameForProviderModelId).toHaveBeenCalledWith(
+			model,
+			provider,
+		);
+		expect(mocks.getModelByCanonicalName).not.toHaveBeenCalled();
+		expect(mocks.logAiUsage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				providerModelId: model,
+				modelCanonicalName: canonicalName,
+			}),
+		);
+	});
+
+	it("preserves a catalog canonical when no mapping matches", async () => {
+		mocks.getModelByCanonicalName.mockResolvedValue({
+			canonicalName: "claude-sonnet-5",
+		});
+		await usage({ model: "claude-sonnet-5" });
+		expect(mocks.logAiUsage).toHaveBeenCalledWith(
+			expect.objectContaining({ modelCanonicalName: "claude-sonnet-5" }),
+		);
+		expect(mocks.getCanonicalNameForProviderModelId).toHaveBeenCalledOnce();
+	});
+
+	it.each([
+		["example-vendor/new-model", "new-model"],
+		["example-unknown-model", "example-unknown-model"],
+	])(
+		"keeps the legacy unresolved fallback for %s",
+		async (model, canonicalName) => {
+			await usage({ model });
+			expect(mocks.logAiUsage).toHaveBeenCalledWith(
+				expect.objectContaining({ modelCanonicalName: canonicalName }),
+			);
+		},
+	);
 });

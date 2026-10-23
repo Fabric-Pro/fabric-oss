@@ -24,12 +24,16 @@ const generateTextMock = vi.fn();
 vi.mock("@repo/integrations/microsoft", () => ({
 	executeMicrosoftTeamsTool: (...a: unknown[]) => execTool(...a),
 }));
-vi.mock("../../../lib/redis-cache", () => ({
+vi.mock("../../../lib/redis-cache", async (importOriginal) => ({
 	RedisCache: {
 		get: (...a: unknown[]) => redisGet(...a),
 		set: (...a: unknown[]) => redisSet(...a),
 	},
-	CacheKeys: { meetingTranscript: () => "tkey" },
+	CacheKeys: {
+		...(await importOriginal<typeof import("../../../lib/redis-cache")>())
+			.CacheKeys,
+		meetingTranscript: () => "tkey",
+	},
 	CacheTTL: { meetingTranscript: 604800 },
 }));
 vi.mock("@repo/database", () => ({
@@ -266,20 +270,9 @@ describe("fetchMeetingTranscript — imported personal meetings", () => {
 	});
 });
 
-/**
- * The import stores a transcript whole — a stored fragment is data loss, and
- * the Context tab is meant to hold the real thing. That makes this the only
- * producer feeding `fetchMeetingTranscript` that could hand the analyzer a
- * million-character section: the live path summarises before returning, and the
- * linked path returns content the sync activity already summarised at ingest.
- *
- * It matters because `applyTokenBudget` allocates greedily in priority order
- * and ranks `meetingTranscripts` ahead of `notionContent` and `ragContext`, so
- * one oversized import would eat the whole budget and silently drop the rest of
- * the project's context — a worse analysis than not importing the meeting.
- */
+/** Imported bodies stay whole when analysis might have room for them. */
 describe("fetchMeetingTranscript — oversized imports are summarised on read", () => {
-	const oversized = `Ada: ${"context ".repeat(10_000)}`; // > 50k chars
+	const oversized = "x".repeat(320_001);
 
 	it("summarises above the same threshold the live path uses", async () => {
 		findManyContexts.mockResolvedValue([
@@ -298,7 +291,7 @@ describe("fetchMeetingTranscript — oversized imports are summarised on read", 
 		});
 
 		// summarizeTranscript prefixes its own heading, and the fallback on an
-		// LLM failure is a 50k truncation — so this assertion also distinguishes
+		// LLM failure is a ceiling-sized truncation — so this assertion also distinguishes
 		// "summarised" from "quietly truncated", which look alike from outside.
 		expect(result).toMatchObject({
 			success: true,
@@ -328,3 +321,134 @@ describe("fetchMeetingTranscript — oversized imports are summarised on read", 
 		expect(generateTextMock).not.toHaveBeenCalled();
 	});
 });
+
+it.each([70_000, 320_000])(
+	"keeps a %i-character imported transcript verbatim",
+	async (length) => {
+		const transcript = "x".repeat(length);
+		findManyContexts.mockResolvedValue([
+			importedContext({ content: transcript }),
+		]);
+		const result = await fetchMeetingTranscript({
+			joinUrl: JOIN_URL,
+			startTime: START_TIME,
+			userId: "example-user",
+			organizationId: "example-org",
+			projectId: "example-project",
+		});
+		expect(result.transcript).toBe(transcript);
+		expect(result.wasSummarized).toBe(false);
+		expect(generateTextMock).not.toHaveBeenCalled();
+	},
+);
+
+it.each(["x".repeat(70_000), "界".repeat(10_000)])(
+	"applies the selected-meeting byte share to imported bodies (%#)",
+	async (transcript) => {
+		findManyContexts.mockResolvedValue([
+			importedContext({ content: transcript }),
+		]);
+		generateTextMock.mockResolvedValue({ text: "Summary", usage: {} });
+		const result = await fetchMeetingTranscript({
+			joinUrl: JOIN_URL,
+			startTime: START_TIME,
+			userId: "example-user",
+			projectId: "example-project",
+			selectedMeetingCount: 60,
+		});
+		expect(generateTextMock).toHaveBeenCalledTimes(1);
+		expect(result.wasSummarized).toBe(true);
+		expect(Buffer.byteLength(result.transcript)).toBeLessThanOrEqual(
+			26_214,
+		);
+	},
+);
+
+it.each([110_000, 320_000])(
+	"keeps a stored %i-character CJK transcript whole for one selection",
+	async (length) => {
+		const transcript = "界".repeat(length);
+		findManyContexts.mockResolvedValue([
+			importedContext({ content: transcript }),
+		]);
+		const result = await fetchMeetingTranscript({
+			joinUrl: JOIN_URL,
+			startTime: START_TIME,
+			userId: "example-user",
+			organizationId: "example-org",
+			projectId: "example-project",
+		});
+		expect(result.transcript).toBe(transcript);
+		expect(result.wasSummarized).toBe(false);
+		expect(generateTextMock).not.toHaveBeenCalled();
+	},
+);
+it("reuses a successful stored-body summary across repeat selections", async () => {
+	const transcript = "x".repeat(70_000);
+	findManyContexts.mockResolvedValue([
+		importedContext({ content: transcript }),
+	]);
+	const cache = new Map<string, unknown>();
+	redisGet.mockImplementation(async (key: string) => cache.get(key) ?? null);
+	redisSet.mockImplementation(async (key: string, value: unknown) => {
+		cache.set(key, value);
+	});
+	generateTextMock.mockResolvedValue({ text: "Summary", usage: {} });
+	const input = {
+		...{
+			joinUrl: JOIN_URL,
+			startTime: START_TIME,
+			userId: "example-user",
+			organizationId: "example-org",
+			projectId: "example-project",
+		},
+		selectedMeetingCount: 60,
+	};
+	const first = await fetchMeetingTranscript(input);
+	const second = await fetchMeetingTranscript(input);
+	expect(first.wasSummarized).toBe(true);
+	expect(second.transcript).toBe(first.transcript);
+	expect(generateTextMock).toHaveBeenCalledTimes(1);
+	expect(redisSet).toHaveBeenCalledWith(
+		expect.stringMatching(/^transcript-summary:v4:/),
+		expect.any(String),
+		604800,
+	);
+	expect(execTool).not.toHaveBeenCalled();
+});
+
+it.each(["error", "empty"])(
+	"labels an imported transcript clipped after a summary %s without caching it",
+	async (failure) => {
+		const transcript = "\u0001😀".repeat(110_000);
+		findManyContexts.mockResolvedValue([
+			importedContext({ content: transcript }),
+		]);
+		if (failure === "error") {
+			generateTextMock.mockRejectedValue(
+				new Error("summary unavailable"),
+			);
+		} else {
+			generateTextMock.mockResolvedValue({ text: " ", usage: {} });
+		}
+		const result = await fetchMeetingTranscript({
+			joinUrl: JOIN_URL,
+			startTime: START_TIME,
+			userId: "example-user",
+			organizationId: "example-org",
+			projectId: "example-project",
+			selectedMeetingCount: 60,
+		});
+		expect(result.success).toBe(true);
+		expect(result.wasSummarized).toBe(false);
+		expect(result.transcript).toMatch(/\[.*truncated.*\]$/);
+		expect(result.transcript).not.toContain("�");
+		expect(Buffer.byteLength(result.transcript)).toBeLessThanOrEqual(
+			26_214,
+		);
+		expect(
+			Buffer.byteLength(JSON.stringify(result.transcript)),
+		).toBeLessThanOrEqual(26_211);
+		expect(redisSet).not.toHaveBeenCalled();
+	},
+);

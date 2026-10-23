@@ -185,12 +185,14 @@ describe("draftBodyByKind", () => {
 		});
 		expect(res.aiDrafted).toBe(true);
 		expect(res.description).toBe("legacy-drafted feature");
-		// First call = clean-spec (unbound); second = legacy stage binding.
+		// First call = clean-spec (unbound); second = legacy stage binding. Both
+		// carry the project, so a project default outranks the org-wide one.
 		expect(mocks.getBoundPromptForAgent).toHaveBeenNthCalledWith(
 			1,
 			expect.objectContaining({
 				agentName: "feature_clean_spec_generator",
 				documentType: "CLEAN_SPEC",
+				projectId: "p1",
 			}),
 		);
 		expect(mocks.getBoundPromptForAgent).toHaveBeenNthCalledWith(
@@ -198,6 +200,7 @@ describe("draftBodyByKind", () => {
 			expect.objectContaining({
 				agentName: "project_document_generator",
 				documentType: "PLACEHOLDER",
+				projectId: "p1",
 			}),
 		);
 	});

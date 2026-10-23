@@ -1,5 +1,6 @@
 import DOMPurify from "isomorphic-dompurify";
 import { FABRIC_RUNTIME_SCRIPT } from "./fabric-runtime-script";
+import { FRAME_RUNTIME_HOST_READY_TYPE } from "./frame-embed-protocol";
 
 /**
  * Project-scoped frame rendering (inverted-loop plan, Slice 3 "Frame
@@ -293,8 +294,18 @@ function neutraliseScriptText(text: string): string {
  * The resize reporter runs inside the sandboxed document and posts the
  * rendered height to its parent. postMessage is not a network request, so
  * the CSP allows it; the parent verifies `event.source` before trusting it.
+ *
+ * The height is the content's, not the document's scroll height: that one never
+ * falls below the frame's own height, so a frame could grow but never shrink
+ * and kept a blank band after its content got shorter or wider.
+ *
+ * The page can load before the embed listens (the embed hydrates after the
+ * srcdoc starts), and a height posted then reaches no one. The embed posts
+ * `host-ready` once it listens, and the reporter answers it with the current
+ * height even when unchanged; otherwise the frame stayed at its first height
+ * and cut the page off.
  */
-const RESIZE_SCRIPT = `(function(){var h=0;function send(){var d=document.documentElement,b=document.body;var n=Math.max(d?d.scrollHeight:0,b?b.scrollHeight:0,b?b.offsetHeight:0);if(n>0&&n!==h){h=n;try{window.parent.postMessage({type:${JSON.stringify(PROJECT_FRAME_HEIGHT_MESSAGE)},height:n},"*")}catch(e){}}}if(typeof ResizeObserver==="function"&&document.body){new ResizeObserver(send).observe(document.body)}window.addEventListener("load",send);setTimeout(send,0);setTimeout(send,400);setTimeout(send,1200)})();`;
+const RESIZE_SCRIPT = `(function(){var h=0;function measure(){var d=document.documentElement,b=document.body;if(!d||!b){return 0}var s=window.getComputedStyle(b);return Math.ceil(Math.max(d.getBoundingClientRect().height,b.scrollHeight+(parseFloat(s.marginTop)||0)+(parseFloat(s.marginBottom)||0)))}function send(force){var n=measure();if(n>0&&(force===true||n!==h)){h=n;try{window.parent.postMessage({type:${JSON.stringify(PROJECT_FRAME_HEIGHT_MESSAGE)},height:n},"*")}catch(e){}}}if(typeof ResizeObserver==="function"){var o=new ResizeObserver(function(){send()});o.observe(document.documentElement);if(document.body){o.observe(document.body)}}window.addEventListener("message",function(e){if(e.source===window.parent&&e.data&&e.data.type===${JSON.stringify(FRAME_RUNTIME_HOST_READY_TYPE)}){send(true)}});window.addEventListener("load",function(){send()});setTimeout(send,0);setTimeout(send,400);setTimeout(send,1200)})();`;
 
 function escapeAttribute(value: string): string {
 	return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;");

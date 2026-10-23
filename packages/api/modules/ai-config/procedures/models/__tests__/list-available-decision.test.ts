@@ -5,6 +5,7 @@ const mockConfiguredProviders = vi.hoisted(() => vi.fn());
 
 vi.mock("@repo/database", () => ({
 	db: { aiModel: { findMany: mockFindMany } },
+	getOrganizationDefaultProvider: vi.fn(async () => "VERCEL_GATEWAY"),
 	getProviderDisplayName: (provider: string) => provider,
 }));
 

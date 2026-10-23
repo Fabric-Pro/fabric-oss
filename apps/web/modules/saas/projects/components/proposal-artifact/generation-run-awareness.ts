@@ -188,6 +188,14 @@ export const ROOM_CONVERGENCE_TIMINGS = {
 	 */
 	observationGapMs: 3_000,
 	/**
+	 * How long after the first look at a room behind the end of a run the
+	 * editor, read-only from that look, gives way to the saved body. The
+	 * editor that puts the run's body into the room has usually done so by
+	 * then, and the page does not swap views for a moment. Shorter than
+	 * `observationGapMs`, or the second look decides first.
+	 */
+	savedBodyGraceMs: 750,
+	/**
 	 * How long a claim waits, after it is written, for a concurrent claim to
 	 * reach it through the room before the map is read for the winner.
 	 */

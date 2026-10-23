@@ -1,3 +1,4 @@
+import { type AiModelFit, getAiModelFit } from "@repo/utils/ai-model-fit";
 import { db, type Prisma } from "../client";
 import type { AIProvider, AiTaskType } from "../generated/client";
 
@@ -82,6 +83,7 @@ type TenantParams =
 	| { userId: string; organizationId?: null | undefined };
 
 export interface AiUsageActivityRow {
+	modelFit?: Extract<AiModelFit, { kind: "quality" }> | null;
 	id: string;
 	createdAt: Date;
 	userId: string | null;
@@ -429,8 +431,38 @@ export async function listAiUsageActivity(
 				)
 			: new Map<string, { id: string; name: string; email: string }>();
 
+	const canonicalNames = [
+		...new Set(
+			sliced
+				.filter((row) => row.provider !== CHATGPT_PLAN_PROVIDER)
+				.map((row) => row.modelCanonicalName)
+				.filter((name): name is string => Boolean(name)),
+		),
+	];
+	const modelsByName = new Map(
+		(canonicalNames.length
+			? await db.aiModel.findMany({
+					where: { canonicalName: { in: canonicalNames } },
+					select: {
+						canonicalName: true,
+						suitableForTasks: true,
+						capabilities: true,
+						qualityTier: true,
+					},
+				})
+			: []
+		).map((model) => [model.canonicalName, model]),
+	);
+
 	const rows: AiUsageActivityRow[] = sliced.map((row) => {
 		const user = row.userId ? usersById.get(row.userId) : null;
+		const model = row.modelCanonicalName
+			? modelsByName.get(row.modelCanonicalName)
+			: null;
+		const fit =
+			row.provider !== CHATGPT_PLAN_PROVIDER && model && row.taskType
+				? getAiModelFit({ taskType: row.taskType, ...model })
+				: null;
 		return {
 			id: row.id,
 			createdAt: row.createdAt,
@@ -439,6 +471,7 @@ export async function listAiUsageActivity(
 			userEmail: user?.email ?? null,
 			provider: row.provider,
 			modelCanonicalName: row.modelCanonicalName,
+			modelFit: fit?.kind === "quality" ? fit : null,
 			providerModelId: row.providerModelId,
 			taskType: row.taskType,
 			agentId: row.agentId,

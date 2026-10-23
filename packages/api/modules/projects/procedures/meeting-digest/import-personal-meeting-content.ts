@@ -21,9 +21,9 @@
  * Refuse rather than slice.
  *
  * The card's NFR asks that long transcripts be handled "without silent
- * truncation", and the import deliberately performs no lossy transform (unlike
- * the team sync path, which LLM-summarises above 50k chars because it ingests
- * automatically and cannot ask). This ceiling exists only so a pathological
+ * truncation", and the import deliberately performs no lossy transform. The
+ * team sync also retains the full body and generates a separate digest summary
+ * above its own size threshold. This ceiling exists only so a pathological
  * payload fails loudly instead of being written; at ~1M chars it is roughly a
  * twenty-hour meeting, far past anything real.
  */

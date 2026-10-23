@@ -147,6 +147,13 @@ describe("createStoryFromProposal — requireCleanSpec", () => {
 		);
 		expect(mocks.createStory).not.toHaveBeenCalled();
 		expect(mocks.getBoundPromptForAgent).toHaveBeenCalledOnce();
+		// The target project's own default outranks the org-wide one.
+		expect(mocks.getBoundPromptForAgent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				organizationId: "org-1",
+				projectId: "proj-1",
+			}),
+		);
 	});
 
 	it("throws instead of creating a raw-field stub when drafting fails", async () => {

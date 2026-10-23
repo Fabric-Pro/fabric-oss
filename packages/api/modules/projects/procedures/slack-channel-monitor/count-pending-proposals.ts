@@ -1,4 +1,7 @@
-import { countPendingBacklogProposals } from "@repo/database";
+import {
+	countPendingBacklogProposals,
+	REVIEW_INBOX_PROPOSAL_STATUSES,
+} from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -20,7 +23,7 @@ export const countPendingProposalsProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Slack Channel Monitor"],
 		summary: "Count pending backlog proposals",
 		description:
-			"Returns the count of PENDING + FAILED proposals for the Roadmap badge.",
+			"Returns the count of PENDING, APPROVED, APPLYING, and FAILED proposals for the Roadmap badge.",
 	})
 	.input(
 		z.object({
@@ -29,9 +32,9 @@ export const countPendingProposalsProcedure = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input }) => {
-		const count = await countPendingBacklogProposals(input.projectId, [
-			"PENDING",
-			"FAILED",
-		]);
+		const count = await countPendingBacklogProposals(
+			input.projectId,
+			REVIEW_INBOX_PROPOSAL_STATUSES,
+		);
 		return { count };
 	});

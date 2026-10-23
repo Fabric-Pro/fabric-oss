@@ -21,6 +21,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 			get: { queryOptions: () => ({}) },
 			update: { mutationOptions: (options: unknown) => options },
 			executions: {
+				get: { queryOptions: () => ({}) },
 				start: { mutationOptions: (options: unknown) => options },
 			},
 		},

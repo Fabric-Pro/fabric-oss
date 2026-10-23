@@ -12,6 +12,8 @@ vi.mock("@repo/ai-token", () => ({
 	verifyAIToken: mocks.verifyAIToken,
 }));
 vi.mock("@repo/database", () => ({
+	getModelByCanonicalName: vi.fn(async () => null),
+	getCanonicalNameForProviderModelId: vi.fn(async () => null),
 	getProjectAccessContext: mocks.getProjectAccessContext,
 	getAccessibleFrameById: mocks.getAccessibleFrameById,
 	logAiUsage: mocks.logAiUsage,

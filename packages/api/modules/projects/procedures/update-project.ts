@@ -30,6 +30,7 @@ import {
 	MAX_ATTACHMENT_RETENTION_DAYS,
 	MIN_ATTACHMENT_RETENTION_DAYS,
 } from "@repo/utils/attachment";
+import { countDocumentWords } from "@repo/utils/document-word-count";
 import { isPmAttachmentSyncEnabled } from "@repo/utils/feature-flag";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../lib/audit";
@@ -1082,10 +1083,9 @@ export const updateProjectProcedure = tenantProtectedProcedure
 										source: "IMPORTED",
 										sourceContextId: ctx.id,
 										isActive: !existingActive,
-										wordCount: ctx.content
-											.split(/\s+/)
-											.filter((w: string) => w.length > 0)
-											.length,
+										wordCount: countDocumentWords(
+											ctx.content,
+										),
 										version: 1,
 										userId: user.id,
 										organizationId: organizationId ?? null,

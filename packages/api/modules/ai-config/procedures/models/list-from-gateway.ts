@@ -8,7 +8,11 @@
 
 import { resolveProviderApiKey } from "@repo/ai";
 import type { AIProvider } from "@repo/database";
-import { db, LLM_PROVIDER_PURPOSE_FILTER } from "@repo/database";
+import {
+	db,
+	getOrganizationDefaultProvider,
+	LLM_PROVIDER_PURPOSE_FILTER,
+} from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -98,28 +102,18 @@ export const listModelsFromGatewayProcedure = tenantProtectedProcedure
 		} | null = null;
 
 		if (organizationId) {
-			// Organization context: ONLY query cloud_provider_config
-			const gatewayConfig = await db.cloudProviderConfig.findFirst({
-				where: {
-					organizationId,
-					enabled: true,
-					isDefault: true,
-					...LLM_PROVIDER_PURPOSE_FILTER,
-				},
-				orderBy: { priority: "desc" },
-			});
-
-			// If no default, try first enabled
-			config =
-				gatewayConfig ||
-				(await db.cloudProviderConfig.findFirst({
-					where: {
-						organizationId,
-						enabled: true,
-						...LLM_PROVIDER_PURPOSE_FILTER,
-					},
-					orderBy: { priority: "desc" },
-				}));
+			const provider =
+				await getOrganizationDefaultProvider(organizationId);
+			config = provider
+				? await db.cloudProviderConfig.findFirst({
+						where: {
+							organizationId,
+							provider,
+							enabled: true,
+							...LLM_PROVIDER_PURPOSE_FILTER,
+						},
+					})
+				: null;
 		} else {
 			// Personal context: ONLY query user_cloud_provider_config
 			const gatewayConfig = await db.userCloudProviderConfig.findFirst({

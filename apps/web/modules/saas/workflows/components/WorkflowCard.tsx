@@ -26,6 +26,7 @@ import {
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
+import { WORKFLOW_STATUS_DISPLAY } from "../lib/workflow-status-display";
 import { ScheduledBadge } from "./ScheduledBadge";
 
 interface WorkflowCardProps {
@@ -49,43 +50,13 @@ interface WorkflowCardProps {
 	onRefresh?: () => void;
 }
 
-const statusConfig: Record<
-	string,
-	{ label: string; className: string; dot: string }
-> = {
-	DRAFT: {
-		label: "Draft",
-		className: "bg-muted text-muted-foreground",
-		dot: "bg-muted-foreground/50",
-	},
-	PUBLISHED: {
-		label: "Published",
-		className: "bg-primary/10 text-primary",
-		dot: "bg-primary",
-	},
-	ACTIVE: {
-		label: "Active",
-		className: "bg-success/10 text-success",
-		dot: "bg-success",
-	},
-	PAUSED: {
-		label: "Paused",
-		className: "bg-highlight/10 text-highlight",
-		dot: "bg-highlight",
-	},
-	ARCHIVED: {
-		label: "Archived",
-		className: "bg-destructive/10 text-destructive",
-		dot: "bg-destructive",
-	},
-};
-
 function StatusBadge({
 	status,
 }: {
 	status: WorkflowCardProps["workflow"]["status"];
 }) {
-	const statusInfo = statusConfig[status] ?? statusConfig.DRAFT;
+	const statusInfo =
+		WORKFLOW_STATUS_DISPLAY[status] ?? WORKFLOW_STATUS_DISPLAY.DRAFT;
 	return (
 		<span
 			className={cn(

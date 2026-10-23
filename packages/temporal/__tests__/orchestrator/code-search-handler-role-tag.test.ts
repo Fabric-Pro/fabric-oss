@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", () => ({
+	getProjectAccessContext: vi.fn(async () => ({ organizationId: "org-1" })),
 	db: {
 		projectRepositoryIntegration: {
 			findMany: vi.fn(),

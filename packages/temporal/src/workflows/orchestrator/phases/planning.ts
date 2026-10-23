@@ -13,6 +13,7 @@ import { ActivityCancellationType } from "@temporalio/common";
 import { log, proxyActivities } from "@temporalio/workflow";
 import type * as orchestratorActivities from "../../../activities/orchestrator";
 import type * as weaveActivities from "../../../activities/weave";
+import { AI_NON_RETRYABLE_ERROR_TYPES } from "../../ai-non-retryable-errors";
 import { TRAJECTORY } from "../orchestrator-config";
 import {
 	type IterativeTurnOptions,
@@ -29,6 +30,7 @@ import type {
 	Trajectory,
 	WorkflowState,
 } from "../types";
+import { orchestratorErrorMessage } from "../usage-limit";
 import { usageOriginFields } from "../workflow-usage-attribution";
 
 const {
@@ -45,6 +47,7 @@ const {
 	startToCloseTimeout: "5 minutes",
 	heartbeatTimeout: "30 seconds",
 	retry: {
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 		initialInterval: "1s",
 		backoffCoefficient: 2,
 		maximumInterval: "30s",
@@ -65,6 +68,7 @@ const {
 	heartbeatTimeout: "30 seconds",
 	cancellationType: ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
 	retry: {
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 		initialInterval: "1s",
 		backoffCoefficient: 2,
 		maximumInterval: "30s",
@@ -78,6 +82,7 @@ const { convertWeavePlanToOrchestratorSteps } = proxyActivities<
 	startToCloseTimeout: "2 minutes",
 	heartbeatTimeout: "30 seconds",
 	retry: {
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 		initialInterval: "1s",
 		backoffCoefficient: 2,
 		maximumAttempts: 3,
@@ -458,8 +463,7 @@ export async function executePlanningPhase(
 		// A chat turn's stop is not a failed plan: it reaches the workflow's
 		// top-level handler, which ends the run cancelled.
 		rethrowTurnStop(error, turn);
-		const errorMessage =
-			error instanceof Error ? error.message : "Unknown error";
+		const errorMessage = orchestratorErrorMessage(error);
 		log.error("Planning phase failed", { error: errorMessage });
 		return {
 			success: false,
@@ -531,7 +535,7 @@ async function validateTaskPlan(
 	} catch (error) {
 		rethrowTurnStop(error, turn);
 		log.warn("Plan validation/contract inference failed, continuing", {
-			error: error instanceof Error ? error.message : "Unknown error",
+			error: orchestratorErrorMessage(error),
 		});
 	}
 }
@@ -672,7 +676,7 @@ async function handlePlanApproval(
 		rethrowTurnStop(error, turn);
 		log.warn("Failed to update plan approval task status", {
 			approvalId: approvalRequest.approvalId,
-			error: error instanceof Error ? error.message : "Unknown error",
+			error: orchestratorErrorMessage(error),
 		});
 	}
 

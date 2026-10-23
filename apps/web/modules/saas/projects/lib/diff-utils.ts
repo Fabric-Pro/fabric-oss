@@ -182,7 +182,10 @@ function splitMultilineDiffBlocks(text: string): string {
 			`${escapeRegExp(startMarker)}([\\s\\S]*?)${escapeRegExp(endMarker)}`,
 			"g",
 		);
-		const wrapLine = (line: string, inListContext = false): string => {
+		const wrapLineContent = (
+			line: string,
+			inListContext: boolean,
+		): string => {
 			if (line.trim().length === 0) {
 				return "";
 			}
@@ -245,6 +248,14 @@ function splitMultilineDiffBlocks(text: string): string {
 				return `${indentMatch[1]}${startMarker}${indentMatch[2]}${endMarker}`;
 			}
 			return `${startMarker}${line}${endMarker}`;
+		};
+		// A two-space hard break must stay at the very end of the line, after
+		// the end marker; inside it MarkdownIt no longer sees the break.
+		const wrapLine = (line: string, inListContext = false): string => {
+			const hardBreak = /\S {2,}$/.test(line)
+				? line.slice(line.trimEnd().length)
+				: "";
+			return `${wrapLineContent(line.slice(0, line.length - hardBreak.length), inListContext)}${hardBreak}`;
 		};
 
 		result = result.replace(re, (match, body: string, offset: number) => {
@@ -654,6 +665,37 @@ function normalizeTables(html: string): string {
 // Markdown Processing Functions
 // ============================================
 
+const ESCAPED_BULLET_LINE = /^(\s*)\\([-*+])(\s+)/;
+const LIST_ITEM_LINE = /^\s*(?:[-*+]|\d{1,9}[.)])\s/;
+const ATX_HEADING_LINE = /^ {0,3}#{1,6}(?:\s|$)/;
+// A backslash hard break is an odd run of trailing backslashes; an even run
+// is escaped literal backslashes.
+const HARD_BREAK_LINE_END = /(?:^|[^\\])(?:\\\\)*\\$| {2,}$/;
+
+/**
+ * Turn an escaped bullet (`\- Item`) that AI output produced back into a list
+ * marker, but only where a list can start: the top of the document, after a
+ * blank line or heading, or after a list item that does not end in a hard
+ * break. A `\- ` line that continues a paragraph is literal text after a hard
+ * break, which the editor's serializer escapes on purpose; unescaping it there
+ * turned the user's hyphen into a bullet on every load.
+ */
+function unescapeBlockStartBullets(text: string): string {
+	const lines = text.split("\n");
+	for (let i = 0; i < lines.length; i++) {
+		const previous = i === 0 ? "" : lines[i - 1].replace(/\r$/, "");
+		const startsBlock =
+			previous.trim() === "" ||
+			ATX_HEADING_LINE.test(previous) ||
+			(LIST_ITEM_LINE.test(previous) &&
+				!HARD_BREAK_LINE_END.test(previous));
+		if (startsBlock) {
+			lines[i] = lines[i].replace(ESCAPED_BULLET_LINE, "$1$2$3");
+		}
+	}
+	return lines.join("\n");
+}
+
 /**
  * Fix common markdown issues from AI generation.
  *
@@ -983,8 +1025,7 @@ function fixAIMarkdownIssues(text: string): string {
 	fixed = fixed.replace(/\\`\\`\\`/g, "```");
 	fixed = fixed.replace(/\\`/g, "`");
 
-	// Normalize escaped bullet markers like "\- Item" into proper markdown bullets.
-	fixed = fixed.replace(/^(\s*)\\([-*+])(\s+)/gm, "$1$2$3");
+	fixed = unescapeBlockStartBullets(fixed);
 
 	// Fix mermaid code blocks that might have issues
 	// Some AI models output "```mermaid" without proper spacing
@@ -2050,8 +2091,9 @@ function normalizeMarkdownForDiff(text: string): string {
 
 		let n = line;
 
-		// Remove trailing whitespace
-		n = n.trimEnd();
+		// Remove trailing whitespace, except a two-space hard break after
+		// content: trimming it turned the break into a soft break on accept.
+		n = /\S {2,}$/.test(n) ? `${n.trimEnd()}  ` : n.trimEnd();
 
 		// Normalize table separator rows: |---|---| with varying dashes/spaces → consistent
 		if (/^\|[\s:]*-+[\s:]*(\|[\s:]*-+[\s:]*)*\|?\s*$/.test(n)) {
@@ -2186,6 +2228,62 @@ function mergePhantomEscapeDiffs(parts: DiffPart[]): DiffPart[] {
 		i += 1;
 	}
 	return merged;
+}
+
+// An inline code span is matched whole and kept. So is `\\`, so an escaped
+// backslash is never split. The other characters are the Turndown escapes
+// `mergePhantomEscapeDiffs` collapses back to the baseline's escaped form.
+const AGENT_UNESCAPE_RE = /(`+)[^`]*?\1|\\([\\[\]\-+#>.])/g;
+
+function unescapeAgentLine(line: string): string {
+	return line.replace(
+		AGENT_UNESCAPE_RE,
+		(match, _codeTicks: string | undefined, char: string | undefined) =>
+			char && char !== "\\" ? char : match,
+	);
+}
+
+/**
+ * The document as the AI Assistant should read it: the editor's Turndown
+ * output without the defensive escapes (`\[`, `\]`, `\-`, `\+`, `\#`, `\>`,
+ * `\.`) that `mergePhantomEscapeDiffs` collapses on the way back.
+ *
+ * The agent edits the text it is given. Handed `\[S1\]`, models echo the
+ * escapes into their rewrites, doubled (`\\[`) or copied onto real links
+ * (`\[Docs\](…)`). An added backslash is a real diff, so every accepted edit
+ * saved one more visible layer. With the escapes removed there is nothing to
+ * echo, and an untouched region still diffs as unchanged because the merge
+ * restores the baseline's escaped form.
+ *
+ * `\\` and `` \` `` stay, because the merge does not collapse them. Code
+ * fences, inline code and tables stay byte-identical: their content is
+ * literal, and tables are diffed as whole blocks, so a single changed byte
+ * would show an untouched table as replaced.
+ */
+export function toAgentDocument(markdown: string): string {
+	let inFence = false;
+	let inHtmlTable = false;
+	return markdown
+		.split("\n")
+		.map((line) => {
+			const trimmed = line.trimStart();
+			if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
+				inFence = !inFence;
+				return line;
+			}
+			if (inFence) {
+				return line;
+			}
+			if (inHtmlTable || /<table\b/i.test(line)) {
+				inHtmlTable = !/<\/table>/i.test(line);
+				return line;
+			}
+			if (GFM_TABLE_ROW.test(line)) {
+				return line;
+			}
+			return unescapeAgentLine(line);
+		})
+		.join("\n");
 }
 
 /**
@@ -2989,6 +3087,19 @@ export function stripDiffMarkup(text: string | undefined): string {
 			.replace(new RegExp(escapeRegExp(DIFF_DEL_START), "g"), "")
 			.replace(new RegExp(escapeRegExp(DIFF_DEL_END), "g"), "")
 	);
+}
+
+/**
+ * Remove diff marker tokens and stray zero-width characters (U+200B, U+FEFF)
+ * from markdown that is about to be saved. A marker that escaped the diff
+ * plugin reaches the editor as plain text, and without this pass its invisible
+ * characters were written into the stored document. Ordinary non-breaking
+ * spaces are left alone; only the ones inside a whole marker are removed.
+ */
+export function stripResidualDiffMarkers(markdown: string): string {
+	return markdown
+		.replace(new RegExp(ANY_MARKER_SOURCE, "g"), "")
+		.replace(/[\u200B\uFEFF]/g, "");
 }
 
 // Throttle state for focusOnLastDiff

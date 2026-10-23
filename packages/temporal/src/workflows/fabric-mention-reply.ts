@@ -1,6 +1,6 @@
 import type { AiJobKey } from "@repo/ai";
 import { FABRIC_AGENT_ID } from "@repo/utils/page-limits";
-import { executeChild, proxyActivities } from "@temporalio/workflow";
+import { executeChild, log, proxyActivities } from "@temporalio/workflow";
 import type * as fabricMentionActivities from "../activities/fabric-mention-comments";
 import type { DirectChatWorkflowInput } from "../types";
 import { directChatWorkflow } from "./direct-chat";
@@ -28,6 +28,19 @@ const { loadFabricMentionContextActivity, persistFabricMentionReplyActivity } =
 		startToCloseTimeout: "1 minute",
 		retry: { maximumAttempts: 3 },
 	});
+
+/**
+ * The visible text of a failed reply. Any project reader, invited guests
+ * included, gets the comment and its metadata, so neither carries the raw
+ * error: provider text, or a usage limit's id and counters (Fizzy #3193). That
+ * detail goes to the workflow log and result. The prefix is what the comments
+ * panel matches on older replies that predate `metadata.status`.
+ */
+function failedReplyContent(failureReason: "usage_limit" | "error") {
+	return failureReason === "usage_limit"
+		? "I couldn't generate a reply: an AI usage limit was reached."
+		: "I couldn't generate a reply: Fabric Agent ran into an error.";
+}
 
 export async function fabricMentionReplyWorkflow(
 	input: FabricMentionReplyWorkflowInput,
@@ -71,6 +84,12 @@ export async function fabricMentionReplyWorkflow(
 		if (!result.success || !result.responseText) {
 			const errorMessage =
 				result.error ?? "Fabric Agent did not return a response.";
+			const failureReason = result.usageLimit ? "usage_limit" : "error";
+			log.warn("Fabric mention reply failed", {
+				workflowId: input.workflowId,
+				error: errorMessage,
+				usageLimit: result.usageLimit,
+			});
 			const failureReply = await persistFabricMentionReplyActivity({
 				targetType: input.targetType,
 				targetId: input.targetId,
@@ -78,14 +97,14 @@ export async function fabricMentionReplyWorkflow(
 				authorId: input.userId,
 				organizationId: input.organizationId,
 				workflowId: input.workflowId,
-				content: `I couldn't generate a reply: ${errorMessage}`,
+				content: failedReplyContent(failureReason),
 				metadata: {
 					agentId: FABRIC_AGENT_ID,
 					agentDisplayName: "Fabric",
 					directChatWorkflowId: `${input.workflowId}-direct-chat`,
 					targetType: input.targetType,
 					status: "failed",
-					error: errorMessage,
+					failureReason,
 				},
 			});
 			return {
@@ -119,6 +138,10 @@ export async function fabricMentionReplyWorkflow(
 	} catch (error) {
 		const errorMessage =
 			error instanceof Error ? error.message : String(error);
+		log.error("Fabric mention reply failed", {
+			workflowId: input.workflowId,
+			error: errorMessage,
+		});
 		try {
 			const failureReply = await persistFabricMentionReplyActivity({
 				targetType: input.targetType,
@@ -127,13 +150,13 @@ export async function fabricMentionReplyWorkflow(
 				authorId: input.userId,
 				organizationId: input.organizationId,
 				workflowId: input.workflowId,
-				content: `I couldn't generate a reply: ${errorMessage}`,
+				content: failedReplyContent("error"),
 				metadata: {
 					agentId: FABRIC_AGENT_ID,
 					agentDisplayName: "Fabric",
 					targetType: input.targetType,
 					status: "failed",
-					error: errorMessage,
+					failureReason: "error",
 				},
 			});
 			return {

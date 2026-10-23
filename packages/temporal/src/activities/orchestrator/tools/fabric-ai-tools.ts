@@ -38,6 +38,7 @@ import {
 	CODE_TREE_INPUT_SCHEMA,
 } from "../../../workflows/orchestrator/project-repository-tool-schemas";
 import { FABRIC_GATEWAY_CATALOG_TOOLS } from "./fabric-gateway-catalog-tools";
+import { WORKSPACE_TOOL_NAMES } from "./workspace-tools";
 
 export interface FabricAiTool {
 	name: string;
@@ -95,7 +96,7 @@ function getFabricAiToolsInternal(): FabricAiTool[] {
 		// These tools retrieve documents during execution, not initialization.
 		// =======================================================================
 		{
-			name: "workspace_rag_query",
+			name: WORKSPACE_TOOL_NAMES.query,
 			description:
 				"Search and retrieve information from the user's workspace documents using semantic similarity. " +
 				"Use this tool when the user asks about their documents, attached files, personal files, workspace content, " +
@@ -153,7 +154,7 @@ function getFabricAiToolsInternal(): FabricAiTool[] {
 			},
 		},
 		{
-			name: "workspace_rag_summarize",
+			name: WORKSPACE_TOOL_NAMES.summarize,
 			description:
 				"Summarize or get an overview of documents in the user's workspace. " +
 				"Use when the user asks to 'summarize my documents', 'what's in my workspace', 'overview of my files', " +

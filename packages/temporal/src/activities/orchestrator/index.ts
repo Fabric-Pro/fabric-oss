@@ -419,16 +419,11 @@ export {
 // =============================================================================
 // Learning - Tool Usage Patterns, Execution Patterns, Negative Memory
 // =============================================================================
-export {
-	getToolPatternActivity,
-	queryToolLearningsActivity,
-	// Persistent Qdrant store
-	recordToolUsageActivity,
-	searchSimilarToolContextsActivity,
+export type {
 	// Types
-	type ToolCallRecord,
-	type ToolLearningResult,
-	type ToolUsagePattern,
+	ToolCallRecord,
+	ToolLearningResult,
+	ToolUsagePattern,
 } from "./learning";
 
 // =============================================================================

@@ -32,6 +32,7 @@ const { passThrough } = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/payments", () => ({}));
+vi.mock("@repo/ai/model-selector", () => ({ selectModelDynamic: vi.fn() }));
 vi.mock("@repo/auth", () => ({
 	auth: { api: { getSession: (...a: unknown[]) => mocks.getSession(...a) } },
 }));
@@ -42,7 +43,18 @@ vi.mock("@repo/temporal/activities", () => ({
 	previewAgentTurn: (...a: unknown[]) => mocks.previewAgentTurn(...a),
 }));
 vi.mock("@repo/database", () => ({
-	db: {},
+	db: {
+		cloudProviderConfig: {
+			findMany: vi.fn(async () => [{ provider: "VERCEL_GATEWAY" }]),
+		},
+		aiTaskModelDefault: { findMany: vi.fn(async () => []) },
+		organizationModelPreference: { findMany: vi.fn(async () => []) },
+		aiModel: { findMany: vi.fn(async () => []) },
+	},
+	LLM_PROVIDER_PURPOSE_FILTER: { purpose: { not: "EMBEDDINGS_ONLY" } },
+	getOrganizationDefaultProvider: vi.fn(async () => "OPENAI_DIRECT"),
+	getAiProviderApiKeyByProvider: vi.fn(async () => ({ provider: null })),
+	getIndexedProjectContentCount: vi.fn(async () => 0),
 	getTenantContext: () => ({ effectiveWriteOrgId: null }),
 	getOrganizationMembership: (...a: unknown[]) =>
 		mocks.getOrganizationMembership(...a),
@@ -98,11 +110,24 @@ vi.mock("../../../../orpc/middleware/tenant-context-middleware", async () => ({
 import { previewDraftAgent } from "../../../agents/procedures/preview-draft-agent";
 import { getUserProviders as getUserRagProviders } from "../../../rag-providers/procedures/get-user-providers";
 import { getUserProviders as getUserSearchProviders } from "../../../search-providers/procedures/get-user-providers";
+import { getTaskDefaultsProcedure } from "../preferences/get-task-defaults";
 import { getUserModelPreferencesProcedure } from "../preferences/get-user";
 import {
 	deleteUserModelPreferenceProcedure,
 	setUserModelPreferenceProcedure,
 } from "../preferences/set-user";
+
+import {
+	previewSetDefaultProviderProcedure,
+	setDefaultProviderProcedure,
+} from "../providers/upsert";
+
+vi.mock(
+	"../../../organizations/procedures/company-context/lib/source-state",
+	() => ({ resolveCurrentCompanyModel: vi.fn() }),
+);
+
+import { getEmbeddingChangeImpactProcedure } from "../embeddings/change-impact";
 
 const context = { headers: new Headers() };
 
@@ -307,4 +332,109 @@ describe("a soft-deleted organization the caller still belongs to", () => {
 		});
 		expect(mocks.previewAgentTurn).not.toHaveBeenCalled();
 	});
+});
+
+it("refuses target-provider defaults for another organization before reading providers", async () => {
+	await expect(
+		call(
+			getTaskDefaultsProcedure,
+			{ organizationId: ORG_OTHER, provider: "VERCEL_GATEWAY" },
+			{ context },
+		),
+	).rejects.toMatchObject({ code: "FORBIDDEN" });
+	expect(mocks.getAiProviderApiKey).not.toHaveBeenCalled();
+});
+
+it.each([previewSetDefaultProviderProcedure, setDefaultProviderProcedure])(
+	"refuses a provider-switch request for another organization through the real procedure chain",
+	async (procedure) => {
+		await expect(
+			call(
+				procedure,
+				{ organizationId: ORG_OTHER, provider: "VERCEL_GATEWAY" },
+				{ context },
+			),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+	},
+);
+it.each([previewSetDefaultProviderProcedure, setDefaultProviderProcedure])(
+	"refuses a non-admin provider-switch request through the real procedure chain",
+	async (procedure) => {
+		mocks.getOrganizationMembership.mockResolvedValue({ role: "member" });
+		await expect(
+			call(
+				procedure,
+				{ organizationId: ORG_MEMBER, provider: "VERCEL_GATEWAY" },
+				{ context },
+			),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+	},
+);
+it.each([previewSetDefaultProviderProcedure, setDefaultProviderProcedure])(
+	"validates the provider-switch target through the real procedure chain",
+	async (procedure) => {
+		await expect(
+			call(
+				procedure,
+				{ organizationId: ORG_MEMBER, provider: "INVALID_PROVIDER" },
+				{ context },
+			),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+	},
+);
+
+it.each([null, { role: null }])(
+	"rejects embeddings impact reads without organization AI configuration permission (%j)",
+	async (membership) => {
+		mocks.getOrganizationMembership.mockResolvedValue(membership);
+		await expect(
+			call(
+				getEmbeddingChangeImpactProcedure,
+				{ organizationId: ORG_OTHER },
+				{ context },
+			),
+		).rejects.toMatchObject({ code: "FORBIDDEN" });
+		const { resolveCurrentCompanyModel } = await import(
+			"../../../organizations/procedures/company-context/lib/source-state"
+		);
+		expect(resolveCurrentCompanyModel).not.toHaveBeenCalled();
+	},
+);
+
+it("requires an organization for embeddings impact through the real permission chain", async () => {
+	mocks.getSession.mockResolvedValue({
+		session: { activeOrganizationId: null },
+		user: { id: USER_ID },
+	});
+	await expect(
+		call(getEmbeddingChangeImpactProcedure, {}, { context }),
+	).rejects.toMatchObject({
+		code: "FORBIDDEN",
+		data: { errorCode: "MISSING_ORGANIZATION_CONTEXT" },
+	});
+});
+
+it("refuses a viewer embeddings impact read before reading private-project counts", async () => {
+	mocks.getOrganizationMembership.mockResolvedValue({ role: "viewer" });
+	await expect(
+		call(
+			getEmbeddingChangeImpactProcedure,
+			{ organizationId: ORG_OTHER },
+			{ context },
+		),
+	).rejects.toMatchObject({ code: "FORBIDDEN" });
+	const { getIndexedProjectContentCount } = await import("@repo/database");
+	expect(getIndexedProjectContentCount).not.toHaveBeenCalled();
+});
+it("allows an admin embeddings impact read in the requested organization", async () => {
+	mocks.getOrganizationMembership.mockResolvedValue({ role: "admin" });
+	expect(
+		await call(
+			getEmbeddingChangeImpactProcedure,
+			{ organizationId: ORG_OTHER },
+			{ context },
+		),
+	).toMatchObject({ projectContent: { indexed: 0 } });
+	const { getIndexedProjectContentCount } = await import("@repo/database");
+	expect(getIndexedProjectContentCount).toHaveBeenCalledWith(ORG_OTHER);
 });

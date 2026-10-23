@@ -16,6 +16,7 @@ import { logger } from "@repo/logs";
 import { MODELS, TASK_DEFAULTS } from "./ai-model-catalog";
 import { db } from "./client";
 import { isAutoDetectedChatGptPlanModel } from "./queries/chatgpt-plan-served-models";
+import { lockTenantProviderConnections } from "./queries/provider-write-locks";
 
 // Re-export for backwards compatibility
 export { MODELS, TASK_DEFAULTS };
@@ -282,15 +283,18 @@ export async function retireAdoptedChatGptPlanProbeModels(): Promise<number> {
 			where: { modelId: probe.modelId },
 			data: { modelId: catalogModelId },
 		};
-		await db.$transaction([
-			db.organizationModelPreference.updateMany(repoint),
-			db.userModelPreference.updateMany(repoint),
-			db.aiTaskModelDefault.updateMany(repoint),
-			db.aiModelProviderMapping.deleteMany({
+		await db.$transaction(async (tx) => {
+			await lockTenantProviderConnections(tx, {
+				type: "catalog-maintenance",
+			});
+			await tx.organizationModelPreference.updateMany(repoint);
+			await tx.userModelPreference.updateMany(repoint);
+			await tx.aiTaskModelDefault.updateMany(repoint);
+			await tx.aiModelProviderMapping.deleteMany({
 				where: { modelId: probe.modelId },
-			}),
-			db.aiModel.deleteMany({ where: { id: probe.modelId } }),
-		]);
+			});
+			await tx.aiModel.deleteMany({ where: { id: probe.modelId } });
+		});
 		logger.info(
 			`  ↷ ${probe.model.canonicalName}: the catalog now maps plan slug ${probe.providerModelId}; preferences moved, stand-in removed`,
 		);

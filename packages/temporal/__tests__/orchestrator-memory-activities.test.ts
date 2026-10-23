@@ -63,9 +63,20 @@ describe("orchestrator-memory embedding provider logic", () => {
 			userId: "user-1",
 			organizationId: "org-1",
 			useLLMSummary: false,
+			projectId: "example-project",
+			workspaceIds: ["example-workspace"],
 		});
 
 		expect(result).toBe(true);
+		expect(executionExists).toHaveBeenCalledWith("exec-1", "org-1");
+		expect(storeExecutionSummary).toHaveBeenCalledWith(
+			expect.objectContaining({
+				execution: expect.objectContaining({
+					projectId: "example-project",
+					workspaceIds: ["example-workspace"],
+				}),
+			}),
+		);
 		expect(generateEmbedding).toHaveBeenCalledWith(
 			expect.any(String),
 			expect.objectContaining({

@@ -4,6 +4,7 @@
  * Handles steps that delegate to specialized agents via A2A protocol.
  */
 
+import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { Context } from "@temporalio/activity";
 import {
@@ -374,6 +375,10 @@ export class AgentHandler implements StepHandler {
 			// Inside a chat turn's dispatch guard a stop is not a step failure
 			// to report or fall back from; a no-op outside one.
 			rethrowIfDispatchStopped(error);
+			const usageLimitError = findAiUsageLimitError(error);
+			if (usageLimitError) {
+				throw usageLimitError;
+			}
 			const errorMessage =
 				error instanceof Error ? error.message : String(error);
 			console.error("[AgentHandler] Agent delegation failed:", error);

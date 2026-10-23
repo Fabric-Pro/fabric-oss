@@ -4751,6 +4751,7 @@ function CreateStoryDialog({
 				    known. */}
 						<PromptSelector
 							agentName="project_document_generator"
+							projectId={projectId}
 							documentType={draftingStage}
 							storyKind="FEATURE"
 							value={selectedPromptId}

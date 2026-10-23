@@ -34,7 +34,8 @@ import {
  *
  * - `inSync`: the room's stamp names the saved body (or nothing is checked).
  * - `checking`: the stamp differed once; a second look, a poll interval
- *   later, decides. Saves wait.
+ *   later, decides. Saves wait. What the editor shows meanwhile is
+ *   `CheckingView`.
  * - `updating`: the room is behind and is being brought to the saved body,
  *   by this editor or another. Saves wait and the editor is read-only.
  * - `failed`: the room still differed from the saved body after one more
@@ -49,6 +50,21 @@ export type RoomStatus =
 	| "failed"
 	| "behindReadOnly";
 
+/**
+ * What the editor shows while the room is `checking` (Fizzy #2946). A run
+ * that ended is usually put into the room by the editor that follows it, a
+ * moment after this one learned of the end — or a poll later, or never, when
+ * no editor follows it. Until then the room holds the body from before the
+ * run, so the editor stops taking input at once (`frozen`) and gives way to
+ * the saved body after `savedBodyGraceMs` (`savedBody`): nobody types into a
+ * body about to be replaced, and the page does not swap views for the moment
+ * a following editor takes. Only for the end of a run this room has not
+ * taken in. An editor that has not seen the room in step yet cannot tell
+ * that from a rewind, and only holds still. For anything else, and in an
+ * editor with typing of its own, the room's body stays as it is (`room`).
+ */
+export type CheckingView = "room" | "frozen" | "savedBody";
+
 interface RoomConvergenceOptions {
 	/** Flag on, collaborative, provider ready and synced. */
 	active: boolean;
@@ -61,6 +77,11 @@ interface RoomConvergenceOptions {
 	/** The saved document's stamp, from the document query. */
 	savedStamp: RoomStamp | null;
 	savedBody: string | null;
+	/**
+	 * The saved document's latest run, by its identity, or `null` when it
+	 * names none.
+	 */
+	savedRun?: string | null;
 	/** When the document query last answered. */
 	savedAt: number;
 	runLive: boolean;
@@ -113,6 +134,18 @@ interface RoomConvergenceMemo {
 	offeredFor: string | null;
 	/** The saved document as this editor last saw the room hold it. */
 	inSyncAt: RoomStamp | null;
+	/**
+	 * The run the saved document named when this editor last saw the room
+	 * hold it with no run under way; `undefined` before that. Kept through a
+	 * run, unlike `inSyncAt`.
+	 */
+	inSyncRun: string | null | undefined;
+	/**
+	 * The run under way when this editor last saw the room hold the saved
+	 * document: until that run ends, the saved body is the one from before
+	 * it. Cleared once the room is seen in step outside a run.
+	 */
+	inSyncBeforeRun: string | null;
 	/** The fetch made when the room moved on alone, and which stamp moved. */
 	roomAheadFetch: { stamp: RoomStamp; savedAt: number } | null;
 	/** The room's stamp at the last look; `undefined` before the first. */
@@ -166,6 +199,8 @@ function resetWaiting(memo: RoomConvergenceMemo): void {
  */
 export function useRoomConvergence(options: RoomConvergenceOptions): {
 	status: RoomStatus;
+	/** What the editor shows while `status` is `checking`. */
+	checkingView: CheckingView;
 	/**
 	 * A save named the room's stamp and the server refused it with CONFLICT
 	 * while the stamp had not moved: the first look at a room behind the
@@ -179,6 +214,7 @@ export function useRoomConvergence(options: RoomConvergenceOptions): {
 	reloadLatest: () => void;
 } {
 	const [status, setStatus] = useState<RoomStatus>("inSync");
+	const [checkingView, setCheckingView] = useState<CheckingView>("room");
 	const [roomTick, setRoomTick] = useState(0);
 	const optionsRef = useRef(options);
 	optionsRef.current = options;
@@ -195,6 +231,8 @@ export function useRoomConvergence(options: RoomConvergenceOptions): {
 		serverBody: null,
 		offeredFor: null,
 		inSyncAt: null,
+		inSyncRun: undefined,
+		inSyncBeforeRun: null,
 		roomAheadFetch: null,
 		lastStamp: undefined,
 		savedForm: null,
@@ -327,6 +365,12 @@ export function useRoomConvergence(options: RoomConvergenceOptions): {
 			memo.peerHoldSince = null;
 			memo.inSyncAt = saved;
 			memo.roomAheadFetch = null;
+			if (o.runLive) {
+				memo.inSyncBeforeRun = o.savedRun ?? null;
+			} else {
+				memo.inSyncRun = o.savedRun ?? null;
+				memo.inSyncBeforeRun = null;
+			}
 			const failedClaim =
 				claimForSaved?.settled === "failed" ? claimForSaved : null;
 			const failedHoldsUntil = failedClaim
@@ -570,16 +614,71 @@ export function useRoomConvergence(options: RoomConvergenceOptions): {
 				setStatus("inSync");
 				return;
 			}
+			// The room holds another body than the saved one, at the saved
+			// version or an earlier one, and the saved document names a run
+			// other than the one it named when this editor last saw the room
+			// in step, or the run that was under way then: a run ended that
+			// the room has not taken in yet (see `CheckingView`). The run is
+			// what tells this apart from the rewind of a rejected regeneration
+			// with no version to go back to, which keeps the version: with
+			// this editor's copy of the document older than the room, that
+			// would show the older body.
+			const runEndNotTakenIn =
+				stamp !== null &&
+				stamp.contentHash !== saved.contentHash &&
+				saved.version >= stamp.version &&
+				o.savedRun != null &&
+				((memo.inSyncRun !== undefined &&
+					o.savedRun !== memo.inSyncRun) ||
+					o.savedRun === memo.inSyncBeforeRun) &&
+				!o.hasLocalTyping();
+			// An editor that has not seen the room in step yet — opened, or
+			// back from a drop, with the room already behind — cannot tell a
+			// run's end from a rewind: it holds the room's body still, and
+			// shows nothing else, until the second look decides.
+			const unexplainedAtMount =
+				!runEndNotTakenIn &&
+				stamp !== null &&
+				stamp.contentHash !== saved.contentHash &&
+				saved.version >= stamp.version &&
+				memo.inSyncRun === undefined &&
+				memo.inSyncBeforeRun === null &&
+				!o.hasLocalTyping();
+			const showChecking = (observedAt: number) => {
+				setCheckingView(
+					runEndNotTakenIn
+						? now - observedAt >= timings.savedBodyGraceMs
+							? "savedBody"
+							: "frozen"
+						: unexplainedAtMount
+							? "frozen"
+							: "room",
+				);
+				setStatus("checking");
+			};
 			if (o.ownSaveInFlight) {
 				// Its answer advances the stamp; look again then.
 				clearTimer();
-				setStatus(memo.observation ? "checking" : "inSync");
+				if (memo.observation) {
+					showChecking(memo.observation.at);
+				} else {
+					setStatus("inSync");
+				}
 				return;
 			}
 			if (!memo.observation) {
 				memo.observation = { at: now, savedAt: o.savedAt };
-				schedule(timings.observationGapMs, true);
-				setStatus("checking");
+				if (
+					runEndNotTakenIn &&
+					timings.savedBodyGraceMs < timings.observationGapMs
+				) {
+					// The saved body takes over first. When it does, the branch
+					// below schedules the second look for the usual moment.
+					schedule(timings.savedBodyGraceMs);
+				} else {
+					schedule(timings.observationGapMs, true);
+				}
+				showChecking(now);
 				return;
 			}
 			const elapsed = now - memo.observation.at;
@@ -587,7 +686,15 @@ export function useRoomConvergence(options: RoomConvergenceOptions): {
 				elapsed < timings.observationGapMs ||
 				o.savedAt <= memo.observation.savedAt
 			) {
-				if (!timerRef.current) {
+				if (
+					runEndNotTakenIn &&
+					elapsed < timings.savedBodyGraceMs &&
+					timings.savedBodyGraceMs < timings.observationGapMs
+				) {
+					// Also in a look a conflict opened, or one this editor's
+					// own save held: the saved body takes over first.
+					schedule(timings.savedBodyGraceMs - elapsed);
+				} else if (!timerRef.current) {
 					schedule(
 						elapsed < timings.observationGapMs
 							? timings.observationGapMs - elapsed
@@ -595,7 +702,7 @@ export function useRoomConvergence(options: RoomConvergenceOptions): {
 						true,
 					);
 				}
-				setStatus("checking");
+				showChecking(memo.observation.at);
 				return;
 			}
 		}
@@ -804,6 +911,7 @@ export function useRoomConvergence(options: RoomConvergenceOptions): {
 		options.savedStamp?.version,
 		options.savedStamp?.contentHash,
 		options.savedBody,
+		options.savedRun,
 		options.savedAt,
 		options.runLive,
 		options.ownSaveInFlight,
@@ -858,5 +966,5 @@ export function useRoomConvergence(options: RoomConvergenceOptions): {
 		evaluateRef.current();
 	}, []);
 
-	return { status, noteConflict, reloadLatest };
+	return { status, checkingView, noteConflict, reloadLatest };
 }

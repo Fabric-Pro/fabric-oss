@@ -18,11 +18,13 @@ import {
 	getRecentEpisodes,
 	learnPattern,
 	type OrchestratorMemoryPreferencesData,
+	updateEpisodeQdrantReference,
 	updateOrchestratorMemoryPreferences,
 	updateRecentActivity,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import {
+	deleteEpisodeEmbedding,
 	type EpisodeSearchResult,
 	searchSimilarEpisodes,
 	storeEpisodeEmbedding,
@@ -404,6 +406,63 @@ export async function createEpisodicMemoryActivity(
 			});
 
 			qdrantPointId = storeResult.pointId;
+			if (storeResult.success && qdrantPointId) {
+				try {
+					await updateEpisodeQdrantReference(
+						episode.id,
+						qdrantPointId,
+						storeResult.collectionName,
+					);
+				} catch (error) {
+					if (
+						error &&
+						typeof error === "object" &&
+						"code" in error &&
+						error.code === "P2025"
+					) {
+						// The episode was deleted while this activity was embedding it.
+						try {
+							const removed = await deleteEpisodeEmbedding(
+								episode.id,
+								input.organizationId,
+							);
+							if (removed) {
+								logger.info(
+									"[OrchestratorMemory] Removed vector for deleted episode",
+									{ episodeId: episode.id },
+								);
+							} else {
+								logger.warn(
+									"[OrchestratorMemory] Failed to remove vector for deleted episode",
+									{ episodeId: episode.id },
+								);
+							}
+						} catch (cleanupError) {
+							logger.warn(
+								"[OrchestratorMemory] Failed to remove vector for deleted episode",
+								{
+									episodeId: episode.id,
+									error:
+										cleanupError instanceof Error
+											? cleanupError.message
+											: "Unknown error",
+								},
+							);
+						}
+					}
+
+					logger.warn(
+						"[OrchestratorMemory] Failed to persist episode vector reference",
+						{
+							episodeId: episode.id,
+							error:
+								error instanceof Error
+									? error.message
+									: "Unknown error",
+						},
+					);
+				}
+			}
 		}
 
 		logger.info("[OrchestratorMemory] Episodic memory created", {

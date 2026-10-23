@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	getOrganizationDefaultProvider: vi.fn(async () => "OPENAI_DIRECT"),
 	db: {
 		organizationModelPreference: { findFirst: mocks.orgPreference },
 		userModelPreference: { findFirst: mocks.userPreference },

@@ -64,6 +64,10 @@ const SHOTS = {
 		["#shot-sheet", "pr-review-diff.png"],
 	],
 	"qa-strategy-depth": [["#shot-depth", "qa-strategy-depth.png"]],
+	"sprint-story-review": [["#shot-report", "sprint-story-review-report.png"]],
+	"workflow-approval-card": [
+		["#shot-approval", "workflow-approval-card.png"],
+	],
 	"qa-surfaces": [
 		["#shot-cases", "qa-cases-segment.png"],
 		["#shot-findings", "qa-ci-findings.png"],

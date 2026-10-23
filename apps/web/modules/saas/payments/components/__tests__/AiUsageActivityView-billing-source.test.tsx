@@ -438,3 +438,57 @@ describe("AiUsageActivityView — failed attempts", () => {
 		);
 	});
 });
+
+describe("model fit markers", () => {
+	it.each([
+		{ kind: "quality", reason: "basic-tier", text: /is a basic model/ },
+		{ kind: "quality", reason: "not-suitable", text: /isn't a good fit/ },
+		{
+			kind: "quality",
+			reason: "no-tool-calling",
+			text: /may not have been able to use tools/,
+		},
+	])(
+		"shows $kind advice in the row and detail sheet",
+		async ({ kind, reason, text }) => {
+			mockQueries();
+			const row = LIST_DATA.rows[1];
+			useQueryMock.mockImplementation((options: QueryOptions) => ({
+				data:
+					options.queryKey[0] === "payments.listAiActivity"
+						? {
+								...LIST_DATA,
+								rows: [
+									{
+										...row,
+										modelCanonicalName: "example-model",
+										taskType: "COMPLEX",
+										modelFit: { kind, reason },
+									},
+								],
+							}
+						: options.queryKey[0] === "payments.getAiActivityFacets"
+							? facetsData(0)
+							: { points: [] },
+				isLoading: false,
+				isPending: false,
+				isError: false,
+			}));
+			render(<AiUsageActivityView organizationId="org-1" />);
+			const marker = screen.getByRole("img", { name: text });
+			expect(marker).toBeInTheDocument();
+			await userEvent.click(marker.closest("tr") as HTMLElement);
+			expect(await screen.findByText("Model fit")).toBeInTheDocument();
+			expect(
+				screen.getByText(text, { selector: "span" }),
+			).toBeInTheDocument();
+		},
+	);
+	it("omits advice when there is no fit result", () => {
+		mockQueries();
+		render(<AiUsageActivityView organizationId="org-1" />);
+		expect(
+			screen.queryByRole("img", { name: /weaker|Costs more/ }),
+		).toBeNull();
+	});
+});

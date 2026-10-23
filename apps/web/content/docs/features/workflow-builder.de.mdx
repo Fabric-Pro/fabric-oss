@@ -119,7 +119,8 @@ fünf oder sechs Feldern — zum Beispiel `0 9 * * 1-5` für 09:00 Uhr von monta
 Dieses Feld ist vorbelegt; ob ein Zeitplan entsteht, entscheidet also die **Trigger Type**,
 nicht das Vorhandensein eines Cron-Ausdrucks. Fabric registriert ihn beim
 Veröffentlichen und entfernt ihn, sobald Sie den Workflow zurückziehen, pausieren oder
-archivieren.
+archivieren. Einen von Fabric Agent entworfenen Workflow mit **Schedule**-Trigger, aber ohne
+Cron-Ausdruck lehnt Fabric beim Veröffentlichen ab.
 
 ## Knoten
 
@@ -237,7 +238,7 @@ gibt es einen Fabric-Executor. Verbinden Sie den jeweiligen Dienst vor dem erste
 | **Create GitLab Issue** | GitLab | Issue in einem GitLab-Projekt anlegen |
 | **Get File Contents** | GitLab | Dateiinhalt aus einem GitLab-Projekt lesen |
 | **Search GitLab Issues** | GitLab | Issues eines GitLab-Projekts durchsuchen |
-| **MCP Tool** | MCP Tools | Ein Tool eines MCP-Servers ausführen |
+| **MCP Tool** | MCP Tools | Ein Tool eines MCP-Servers ausführen. In einem Projekt im Nur-Lese-Modus führt Fabric nur Tools aus, die es an ihrem Namen als Lesezugriff erkennt; jedes andere Tool wird abgelehnt |
 
 #### Productivity
 

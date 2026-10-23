@@ -235,7 +235,13 @@ function makeListRow(
 		id: string;
 		source: RowSource;
 		sourceMetadata: Record<string, unknown> | null;
-		status: "PENDING" | "FAILED" | "APPLIED" | "BACKLOG";
+		status:
+			| "PENDING"
+			| "APPROVED"
+			| "APPLYING"
+			| "FAILED"
+			| "APPLIED"
+			| "BACKLOG";
 		applyError: string | null;
 		errorClass: string | null;
 		errorMessage: string | null;
@@ -264,7 +270,13 @@ function makeDetail(
 	overrides: Partial<{
 		source: RowSource;
 		sourceMetadata: Record<string, unknown> | null;
-		status: "PENDING" | "FAILED" | "APPLIED" | "BACKLOG";
+		status:
+			| "PENDING"
+			| "APPROVED"
+			| "APPLYING"
+			| "FAILED"
+			| "APPLIED"
+			| "BACKLOG";
 		applyError: string | null;
 		errorClass: string | null;
 		errorMessage: string | null;
@@ -1887,4 +1899,40 @@ describe("PendingBacklogProposalsInbox — Roadmap recommendation batches", () =
 		).approvedChanges;
 		expect(approved.map((c) => c.title.to)).toEqual(["Export to CSV"]);
 	});
+});
+
+describe("PendingBacklogProposalsInbox — review status defaults", () => {
+	it.each(["APPROVED", "APPLYING"] as const)(
+		"fetches %s with the server default and renders Applying",
+		async (status) => {
+			pendingProposalsList.mockReset();
+			pendingProposalsList.mockImplementation(async (input) =>
+				input.status
+					? []
+					: [
+							makeListRow({
+								status,
+								summary: "Example in-flight proposal",
+							}),
+						],
+			);
+			renderInbox();
+			expect(await screen.findByText("Applying (1)")).toBeInTheDocument();
+			expect(
+				screen.getByText("Applying", { exact: true }),
+			).toBeInTheDocument();
+			expect(
+				screen.getByText("Example in-flight proposal"),
+			).toBeInTheDocument();
+			expect(pendingProposalsList).toHaveBeenCalledWith({
+				projectId: PROJECT_ID,
+				organizationId: null,
+			});
+			expect(pendingProposalsList).toHaveBeenCalledWith({
+				projectId: PROJECT_ID,
+				organizationId: null,
+				status: ["BACKLOG"],
+			});
+		},
+	);
 });

@@ -2222,7 +2222,7 @@
 			"description": "Führe deine eigene KI-Arbeit in dieser Organisation über deinen ChatGPT-Plan statt über den Anbieter der Organisation aus. Hintergrund- und geplante Aufgaben bleiben beim Anbieter der Organisation, sofern du sie unten nicht einschließt.",
 			"loadFailed": "Deine ChatGPT-Plan-Verbindung konnte nicht geladen werden.",
 			"notConnected": "Es ist kein ChatGPT-Plan verbunden.",
-			"howToConnect": "Verbinde deinen Plan im Terminal mit der Fabric CLI. Bestätige zuerst die Verbindung hier in Fabric und melde dich dann im Browserfenster, das die CLI öffnet, bei ChatGPT an. Dein Terminal meldet, wenn der Plan verbunden ist.",
+			"howToConnect": "Führe diesen Befehl im Terminal aus, bestätige die Verbindung in Fabric und melde dich dann im Browserfenster, das sich öffnet, bei ChatGPT an.",
 			"copyCommand": "Befehl kopieren",
 			"copied": "Befehl kopiert",
 			"copyFailed": "Der Befehl konnte nicht kopiert werden. Markiere ihn und kopiere ihn manuell.",
@@ -2262,8 +2262,8 @@
 			"backgroundJobsOn": "Hintergrundarbeit und Agenten nutzen hier jetzt deinen ChatGPT-Plan.",
 			"backgroundJobsOff": "Hintergrundarbeit und Agenten nutzen wieder den Anbieter der Organisation.",
 			"connect": {
-				"title": "Verbinde deinen ChatGPT-Plan",
-				"description": "Die Fabric CLI möchte deinen ChatGPT-Plan mit deinem Konto {email} verbinden. Bestätige das hier und melde dich dann im Browserfenster, das die CLI öffnet, bei ChatGPT an. Fabric speichert die Anmeldung verschlüsselt.",
+				"title": "ChatGPT mit Fabric verbinden",
+				"description": "Bei Fabric angemeldet als {email}.",
 				"chooseOrganizations": "Meinen Plan für meine eigene Arbeit nutzen in",
 				"noOrganizations": "Der ChatGPT-Plan ist für keine deiner Organisationen aktiviert. Bitte deinen Fabric-Admin, ihn zu aktivieren.",
 				"approve": "Verbinden",
@@ -2276,17 +2276,18 @@
 				"close": "Schließen",
 				"steps": {
 					"label": "So funktioniert das Verbinden",
-					"cli": "Du hast den Befehl der Fabric CLI in deinem Terminal ausgeführt.",
-					"approve": "Bestätige die Verbindung hier in Fabric.",
-					"chatgpt": "Die CLI öffnet ChatGPT in deinem Browser. Melde dich mit dem ChatGPT-Konto an, das du verbinden möchtest.",
-					"chatgptShared": "Die CLI öffnet ChatGPT in deinem Browser. Melde dich mit dem ChatGPT-Konto der Organisation an, nicht mit deinem eigenen.",
-					"terminal": "Kehre zu deinem Terminal zurück. Es meldet, wenn der Plan verbunden ist.",
+					"cli": "Führe den Befehl in deinem Terminal aus.",
+					"approve": "Bestätige hier.",
+					"chatgpt": "Melde dich im Browserfenster, das sich öffnet, bei ChatGPT an.",
+					"chatgptShared": "Melde dich mit dem ChatGPT-Konto der Organisation an, nicht mit deinem eigenen.",
+					"terminal": "Dein Terminal bestätigt die Verbindung.",
 					"done": "erledigt"
-				}
+				},
+				"encryptedNote": "Fabric speichert deine ChatGPT-Anmeldung verschlüsselt."
 			},
 			"connectShared": {
-				"title": "Gemeinsames ChatGPT-Plan-Konto verbinden",
-				"description": "Die Fabric CLI möchte ein ChatGPT-Konto verbinden, das {organization} gemeinsam nutzt. Bestätige das hier und melde dich dann im Browserfenster, das die CLI öffnet, bei ChatGPT an – mit dem Konto, das die Organisation teilen soll, nicht mit deinem eigenen. Fabric speichert die Anmeldung verschlüsselt; Admins legen in den KI-Anbieter-Einstellungen der Organisation fest, welche Arbeit es übernimmt.",
+				"title": "Gemeinsames ChatGPT-Konto verbinden",
+				"description": "{organization} nutzt dieses ChatGPT-Konto gemeinsam. Melde dich mit dem Konto der Organisation an, nicht mit deinem eigenen.",
 				"notAllowed": "Ein gemeinsames ChatGPT-Plan-Konto kannst du nur mit einer Organisation verbinden, die du verwaltest und in der ChatGPT-Plan-Pooling aktiviert ist.",
 				"invalidLink": "Diesem Link fehlen die CLI-Angaben. Führe `fabric connect chatgpt --shared` erneut aus, mit `--org` und dem Slug deiner Organisation.",
 				"returnToTerminal": "Bestätigt. Die Fabric CLI öffnet jetzt ChatGPT in deinem Browser – melde dich mit dem Konto an, das {organization} teilen soll, nicht mit deinem eigenen. Dein Terminal meldet, wenn es verbunden ist."
@@ -2305,10 +2306,10 @@
 				"helpLabel": "So installierst du die Fabric CLI",
 				"helpTitle": "So installierst du die Fabric CLI",
 				"servedPrimary": "Diese Zeile startet die Fabric CLI, die dieses Deployment bereitstellt – ohne vorherige Installation. Sie benötigt Node.js 22 oder neuer.",
-				"noCliYet": "Noch keine Fabric CLI? Starte die, die dieses Deployment bereitstellt (Node.js 22 oder neuer):",
 				"installFirst": "Installiere zuerst die Fabric CLI (Node.js 22 oder neuer):",
 				"permanentInstall": "Oder installiere die CLI dauerhaft:",
-				"checkVersion": "Mit fabric --version prüfst du, ob sie installiert ist."
+				"checkVersion": "Mit fabric --version prüfst du, ob sie installiert ist.",
+				"whyTerminal": "ChatGPT erlaubt die Anmeldung nur für Tools auf deinem eigenen Computer. Deshalb verbindest du per Terminalbefehl statt per Button."
 			},
 			"providerStatus": {
 				"chip": "ChatGPT-Plan",
@@ -2545,6 +2546,12 @@
 				"backgroundShareDescription": "Wie viel vom 5-Stunden-Fenster jedes geteilten Kontos die Hintergrundarbeit nutzen darf. 100 % bedeutet keine Grenze; alles darunter bleibt für die eigene Arbeit von Menschen frei."
 			},
 			"models": {
+				"modelFit": {
+					"not-suitable": "{model} ist für {task} keine gute Wahl. Die Aufgabe wird trotzdem ausgeführt, aber die Ergebnisse können schwächer ausfallen.",
+					"no-tool-calling": "{model} kann möglicherweise keine Tools verwenden. Die Ergebnisse für {task} können daher schwächer ausfallen. Die Aufgabe wird trotzdem ausgeführt.",
+					"basic-tier": "{model} ist ein einfaches Modell. {task} wird trotzdem ausgeführt, aber die Ergebnisse können schwächer ausfallen.",
+					"expensive-for-simple": "Kostet mehr, als diese Aufgabe erfordert."
+				},
 				"label": "Modelle",
 				"title": "Modell für jede Art von Arbeit",
 				"description": "Die linke Spalte läuft, wann immer ein ChatGPT-Plan die Anfrage bedient. Die rechte Spalte läuft über API-Abrechnung.",
@@ -2571,6 +2578,10 @@
 				"planSelectLabel": "{task} auf einem ChatGPT-Plan",
 				"apiSelectLabel": "{task} über API-Abrechnung",
 				"embeddingsTitle": "Embeddings",
+				"providerSwitchNote": "Prüfen Sie vor dem Wechsel, welche Einstellungen gelöscht oder beibehalten werden.",
+				"embeddingsResolutionUnavailable": "Die Embeddings-Auflösung der Organisation ist nicht verfügbar.",
+				"embeddingsOrganizationLoading": "Die Organisation wird noch geladen. Bitte versuchen Sie es erneut, sobald sie verfügbar ist.",
+				"embeddingsPlatform": "Läuft über den enthaltenen Plattformschlüssel.",
 				"embeddingsHint": "Dokumentensuche, Codebase-Indexierung, Wissensabruf",
 				"embeddingsWhy": "Immer API-Abrechnung. Pläne führen keine Embeddings aus.",
 				"embeddingsVia": "über {provider}",
@@ -2579,7 +2590,15 @@
 				"addEmbeddingsKey": "Embeddings-Schlüssel hinzufügen",
 				"embeddingsNeedsVectorSize": "benötigt Vektoren mit 1536 Dimensionen",
 				"embeddingsChangeTitle": "Embeddings-Modell ändern?",
-				"embeddingsChangeBody": "Mit dem aktuellen Modell indexierte Dokumente müssen neu indexiert werden, bevor die Suche sie findet.",
+				"embeddingsChangeBody": "Durch den Wechsel des Embeddings-Modells wird der Unternehmenskontext unzugänglich, bis die betroffenen Inhalte neu indexiert wurden. Der Modellwechsel startet keine Neuindexierung.",
+				"embeddingsConfirmationDescription": "Prüfen Sie die indexierten Inhalte, die von dieser Änderung betroffen sind.",
+				"embeddingsCompanyImpact": "Mit dem aktuellen Modell indexierte Quellen des Unternehmenskontexts: {indexedWithCurrentModel} von {total}.",
+				"embeddingsProjectImpact": "Indexierte Projektkontextquellen und Projektdokumente: {indexed}. Vektoren verschiedener Modelle sind nicht vergleichbar, daher werden die Ergebnisse der Projektsuche unzuverlässig, bis die Inhalte neu indexiert wurden.",
+				"embeddingsImpactLoading": "Indexierte Inhalte werden geprüft…",
+				"embeddingsImpactUnavailable": "Die Anzahl der indexierten Inhalte ist nicht verfügbar. Bestehende Inhalte müssen möglicherweise neu indexiert werden.",
+				"embeddingsConfirmationLabel": "Bestätigungswort",
+				"embeddingsConfirmationWord": "NEUINDEXIEREN",
+				"embeddingsConfirmationInstruction": "Geben Sie zur Bestätigung {word} ein.",
 				"embeddingsChangeCancel": "Abbrechen",
 				"embeddingsChangeConfirm": "Ändern",
 				"tasks": {

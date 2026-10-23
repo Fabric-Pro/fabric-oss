@@ -164,7 +164,7 @@ How a call is treated:
 
 A Workspace runs in a locked frame, including when opened through a public link. It cannot make network requests, read your cookies or storage, load scripts, styles or fonts from another site, or open other pages inside itself. Images and fonts have to be embedded in the page. This keeps a page somebody else wrote from sending what it shows anywhere else.
 
-A page that a scheduled workflow wrote with nobody watching is shown without any script, so it reads as a static report. Pages written in a chat keep their buttons.
+A page that a scheduled workflow wrote with nobody watching is shown without any script, so it reads as a static report, and so is a copy of it. Pages written in a chat keep their buttons. A page that loads a script from another site, such as a chart library from a CDN, shows without it; ask Fabric Agent to build the chart inside the page.
 
 On a public link, buttons that call Fabric do not work: there is no signed-in person for them to act as.
 

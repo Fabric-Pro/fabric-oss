@@ -26,7 +26,7 @@
  *     intentionally left untouched — Anthropic/Databricks require it.
  *
  *     `@repo/ai` passes its own rule, `applyDatabricksChatBodyCompat`, which
- *     also drops `temperature` and relaxes strict `response_format.json_schema`.
+ *     also drops `temperature` and relaxes incompatible strict `response_format.json_schema`.
  *     Those two transforms are Vercel-EXCLUSIVE: the agent path omits
  *     `temperature` at the `ChatOpenAI` constructor and does structured output
  *     via tool-calling (never `response_format.json_schema`), so the default

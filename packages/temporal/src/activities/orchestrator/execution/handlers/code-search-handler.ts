@@ -6,6 +6,7 @@
  * from project integrations and calls the code search APIs.
  */
 
+import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import type { RepositoryStructure } from "@repo/connectors";
 // Static, not `await import(...)`: the worker runs under tsx, where a dynamic
 // import of an ES-module package (@repo/integrations) fails to link any named
@@ -23,6 +24,7 @@ import {
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { TOOL_RESULTS } from "../../../../workflows/orchestrator/orchestrator-config";
 import { codeIndexUnavailableResult } from "../../../direct-chat/code-search-repositories";
+import { canReadChatProject } from "../../../shared/chat-project-access";
 import type { ExecuteStepInput, ExecuteStepOutput } from "../../types";
 import type {
 	HandlerContext,
@@ -134,6 +136,10 @@ export class CodeSearchHandler implements StepHandler {
 			// Inside a chat turn's dispatch guard a stop is not a step failure
 			// to report or fall back from; a no-op outside one.
 			rethrowIfDispatchStopped(error);
+			const usageLimitError = findAiUsageLimitError(error);
+			if (usageLimitError) {
+				throw usageLimitError;
+			}
 			// Class name only: the message can carry a token or a URL with one.
 			console.error("[CodeSearchHandler] Failed", {
 				toolName,
@@ -287,6 +293,36 @@ export class CodeSearchHandler implements StepHandler {
 			};
 		}
 
+		// A failed step whose message is the full sentence: the chat's catalog
+		// adapter reports a failed step by this result, so it is what the
+		// model is told.
+		const failStep = (message: string): ExecuteStepOutput => {
+			toolCalls.push({
+				id: `code-search-${Date.now()}`,
+				name: toolName,
+				args: stepInputs ?? {},
+				result: { message },
+				status: "error",
+				durationMs: Date.now() - startTime,
+			});
+			return {
+				outputs: { response: message, toolResults: toolCalls },
+				variables: {},
+				toolCalls,
+				response: message,
+			};
+		};
+
+		if (
+			!(await canReadChatProject(
+				projectId,
+				input.userId,
+				input.organizationId,
+			))
+		) {
+			return failStep("You do not have access to this project's code.");
+		}
+
 		// Dynamic imports to avoid circular dependencies. The
 		// @repo/integrations readers are imported statically above: see there.
 		const { db, getProjectReposForCodeSearch, parseRepoUrl } = await import(
@@ -317,26 +353,6 @@ export class CodeSearchHandler implements StepHandler {
 				getGitHubAccessToken,
 			},
 		);
-
-		// A failed step whose message is the full sentence: the chat's catalog
-		// adapter reports a failed step by this result, so it is what the
-		// model is told.
-		const failStep = (message: string): ExecuteStepOutput => {
-			toolCalls.push({
-				id: `code-search-${Date.now()}`,
-				name: toolName,
-				args: stepInputs ?? {},
-				result: { message },
-				status: "error",
-				durationMs: Date.now() - startTime,
-			});
-			return {
-				outputs: { response: message, toolResults: toolCalls },
-				variables: {},
-				toolCalls,
-				response: message,
-			};
-		};
 
 		// A failed lookup of the legacy repository proves nothing about what
 		// is connected, so no answer here may conclude a repository is absent.

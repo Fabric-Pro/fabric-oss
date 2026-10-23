@@ -77,9 +77,8 @@ describe("PublishingWebinarScriptSchema", () => {
 		// THE REGRESSION. Six narrative fields were required, each argued for by
 		// a comment saying the prompt tells the model to write a "[… TBD]"
 		// placeholder rather than leave one blank. Nothing enforced that:
-		// `generateObject` runs with `strictJsonSchema: false`, so a provider is
-		// free to omit a field, and on a topic whose context does not suit a
-		// webinar it does. `generateObject` then threw `NoObjectGeneratedError`
+		// Guidance-only output could omit fields on topics that did not suit a
+		// webinar; non-strict provider/schema fallbacks can still do so. `generateObject` then threw `NoObjectGeneratedError`
 		// before any validation in this module could run — deterministically,
 		// every attempt, with the reader shown only the neutral "the reason is
 		// recorded in the run log".

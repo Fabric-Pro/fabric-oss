@@ -1446,7 +1446,7 @@ export type AzureAiModelDeploymentScalarFieldEnum = z.infer<typeof AzureAiModelD
 
 // File: CloudProviderConfigScalarFieldEnum.schema.ts
 
-export const CloudProviderConfigScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'provider', 'enabled', 'isDefault', 'isEmbeddingProvider', 'purpose', 'priority', 'config', 'encryptedApiKey', 'clientId', 'encryptedClientSecret', 'displayName', 'description', 'tags', 'healthStatus', 'lastHealthCheck', 'lastUsedAt', 'createdAt', 'updatedAt'])
+export const CloudProviderConfigScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'provider', 'enabled', 'isDefault', 'isEmbeddingProvider', 'purpose', 'priority', 'config', 'taskDefaultsSnapshot', 'encryptedApiKey', 'clientId', 'encryptedClientSecret', 'displayName', 'description', 'tags', 'healthStatus', 'lastHealthCheck', 'lastUsedAt', 'createdAt', 'updatedAt'])
 
 export type CloudProviderConfigScalarFieldEnum = z.infer<typeof CloudProviderConfigScalarFieldEnumSchema>;
 
@@ -1458,7 +1458,7 @@ export type ModelRouterConfigScalarFieldEnum = z.infer<typeof ModelRouterConfigS
 
 // File: UserCloudProviderConfigScalarFieldEnum.schema.ts
 
-export const UserCloudProviderConfigScalarFieldEnumSchema = z.enum(['id', 'userId', 'provider', 'enabled', 'isDefault', 'isEmbeddingProvider', 'purpose', 'useWhenPlanSpent', 'priority', 'config', 'encryptedApiKey', 'clientId', 'encryptedClientSecret', 'displayName', 'description', 'tags', 'healthStatus', 'lastHealthCheck', 'lastUsedAt', 'createdAt', 'updatedAt'])
+export const UserCloudProviderConfigScalarFieldEnumSchema = z.enum(['id', 'userId', 'provider', 'enabled', 'isDefault', 'isEmbeddingProvider', 'purpose', 'useWhenPlanSpent', 'priority', 'config', 'taskDefaultsSnapshot', 'encryptedApiKey', 'clientId', 'encryptedClientSecret', 'displayName', 'description', 'tags', 'healthStatus', 'lastHealthCheck', 'lastUsedAt', 'createdAt', 'updatedAt'])
 
 export type UserCloudProviderConfigScalarFieldEnum = z.infer<typeof UserCloudProviderConfigScalarFieldEnumSchema>;
 
@@ -9709,6 +9709,7 @@ export const CloudProviderConfigSchema = z.object({
   purpose: AiProviderPurposeSchema.default("ALL"),
   priority: z.number().int(),
   config: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  taskDefaultsSnapshot: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   encryptedApiKey: z.string().nullish(),
   clientId: z.string().nullish(),
   encryptedClientSecret: z.string().nullish(),
@@ -9756,6 +9757,7 @@ export const UserCloudProviderConfigSchema = z.object({
   useWhenPlanSpent: z.boolean(),
   priority: z.number().int(),
   config: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  taskDefaultsSnapshot: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   encryptedApiKey: z.string().nullish(),
   clientId: z.string().nullish(),
   encryptedClientSecret: z.string().nullish(),

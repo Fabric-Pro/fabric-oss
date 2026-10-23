@@ -1,9 +1,11 @@
 "use client";
 
+import type { AiModelFit } from "@repo/utils/ai-model-fit";
 import {
 	type AiUsageLimitDto,
 	useAiUsageLimits,
 } from "@saas/payments/hooks/useAiUsageLimits";
+import { ModelFitIndicator } from "@saas/shared/components/ModelFitIndicator";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
@@ -95,8 +97,8 @@ import {
 } from "recharts";
 import {
 	AI_USAGE_ORIGIN_CSV_HEADERS,
-	aiUsageOriginCsvFields,
 	type AiUsageOrigin,
+	aiUsageOriginCsvFields,
 } from "../lib/ai-usage-origin";
 import { AiUsageLimitsCard } from "./AiUsageLimitsCard";
 import { AiUsageOriginDetails } from "./AiUsageOriginDetails";
@@ -324,6 +326,7 @@ function formatTaskType(value: string | null): string {
 type DateRange = { from: Date | undefined; to: Date | undefined };
 
 type ActivityRow = AiUsageOrigin & {
+	modelFit?: Extract<AiModelFit, { kind: "quality" }> | null;
 	id: string;
 	createdAt: string | Date;
 	userId: string | null;
@@ -346,6 +349,32 @@ type ActivityRow = AiUsageOrigin & {
 	success: boolean;
 	errorMessage: string | null;
 };
+
+function UsageModelFit({
+	row,
+	compact = false,
+}: {
+	row: ActivityRow;
+	compact?: boolean;
+}) {
+	if (!row.modelFit || !row.taskType || !row.modelCanonicalName) {
+		return null;
+	}
+	const model = formatModel(row.modelCanonicalName);
+	const task = formatTaskType(row.taskType);
+	const messages = {
+		"not-suitable": `${model} isn't a good fit for ${task}; results may have been weaker.`,
+		"no-tool-calling": `${model} may not have been able to use tools for ${task}; results may have been weaker.`,
+		"basic-tier": `${model} is a basic model; results for ${task} may have been weaker.`,
+	};
+	return (
+		<ModelFitIndicator
+			fit={row.modelFit}
+			compact={compact}
+			message={messages[row.modelFit.reason]}
+		/>
+	);
+}
 
 function SummaryTile({
 	label,
@@ -1556,6 +1585,10 @@ export function AiUsageActivityView({
 																row.modelCanonicalName ??
 																	row.providerModelId,
 															)}
+															<UsageModelFit
+																row={row}
+																compact
+															/>
 														</div>
 														<div className="text-xs text-muted-foreground">
 															{formatProvider(
@@ -1812,6 +1845,18 @@ export function AiUsageActivityView({
 												selectedRow.providerModelId,
 										)}
 									/>
+									{selectedRow.modelFit &&
+									selectedRow.taskType &&
+									selectedRow.modelCanonicalName ? (
+										<DetailRow
+											label="Model fit"
+											value={
+												<UsageModelFit
+													row={selectedRow}
+												/>
+											}
+										/>
+									) : null}
 									<DetailRow
 										label="Project"
 										value={selectedRow.projectName ?? "—"}

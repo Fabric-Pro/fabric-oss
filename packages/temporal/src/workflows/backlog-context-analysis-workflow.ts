@@ -196,7 +196,8 @@ const { fetchBacklogSnapshot } = proxyActivities<{
 const { fetchPMWorkItemsByType } = proxyActivities<{
 	fetchPMWorkItemsByType: typeof FetchPMWorkItemsByTypeFn;
 }>({
-	startToCloseTimeout: "60 seconds",
+	// Timeout options do not affect replay determinism; command and activity types stay the same.
+	startToCloseTimeout: "5 minutes",
 	retry: {
 		initialInterval: "2s",
 		backoffCoefficient: 2,
@@ -500,6 +501,7 @@ export async function backlogContextAnalysisWorkflow(
 					const settled = await Promise.all(
 						chunk.map((meeting) =>
 							fetchMeetingTranscript({
+								selectedMeetingCount: meetings.length,
 								joinUrl: meeting.joinUrl,
 								startTime: meeting.startTime,
 								userId,
@@ -541,6 +543,8 @@ export async function backlogContextAnalysisWorkflow(
 					}
 					try {
 						const result = await fetchMeetingTranscript({
+							selectedMeetingCount:
+								contextSources.selectedMeetings.length,
 							joinUrl: meeting.joinUrl,
 							startTime: meeting.startTime,
 							userId,
@@ -874,6 +878,7 @@ export async function backlogContextAnalysisWorkflow(
 		if (pmConfig && !cancelled) {
 			try {
 				const pmResult = await fetchPMWorkItemsByType({
+					forPrompt: true,
 					projectId,
 					mcpConfigId: pmConfig.mcpConfigId,
 					containerId: pmConfig.containerId,
@@ -891,6 +896,13 @@ export async function backlogContextAnalysisWorkflow(
 				} else if (pmResult.readStatus === "no-columns") {
 					progress.pmContextNote =
 						"Your Fizzy board has no workflow columns, so no cards were read. Cards in triage aren't included.";
+				} else if (pmResult.listingTruncated) {
+					// No patched() gate: this only assigns progress; older histories lack the field and issue no new command.
+					const count =
+						pmResult.epics.length +
+						pmResult.features.length +
+						pmResult.stories.length;
+					progress.pmContextNote = `Only ${count} items on your board were read, so AI Update may not see the rest.`;
 				}
 				log.info("Fetched PM work items", {
 					epics: pmResult.epics.length,

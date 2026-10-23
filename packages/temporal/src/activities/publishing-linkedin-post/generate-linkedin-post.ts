@@ -285,10 +285,6 @@ export async function generateLinkedInPostActivity(
 			schema: PublishingLinkedInPostSchema,
 			prompt,
 			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-			// Azure/OpenAI reject a strict JSON schema containing optional fields
-			// outright (bug #1681), and this schema has three. The AI SDK still
-			// validates the object against the zod schema.
-			providerOptions: { openai: { strictJsonSchema: false } },
 		});
 	} catch (error) {
 		// `generateObject` validates against the zod schema ITSELF and throws

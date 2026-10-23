@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { FABRIC_RUNTIME_SCRIPT } from "../fabric-runtime-script";
+import { FRAME_RUNTIME_HOST_READY_TYPE } from "../frame-embed-protocol";
 import {
 	buildProjectFrameSrcdoc,
 	isProjectFrameHeightMessage,
@@ -466,6 +467,126 @@ describe("buildProjectFrameSrcdoc", () => {
 				),
 			);
 		});
+	});
+});
+
+/**
+ * The reporter runs inside the sandboxed document, so it is evaluated against a
+ * stand-in window and document whose sizes the test sets. The document's
+ * scroll height stands for the frame's own height, which the reporter must not
+ * report: the content can be shorter than the frame it is in.
+ */
+describe("resize reporter", () => {
+	function runReporter() {
+		const script = Array.from(
+			new DOMParser()
+				.parseFromString(
+					buildProjectFrameSrcdoc("<p>x</p>"),
+					"text/html",
+				)
+				.querySelectorAll("script"),
+		).at(-1)?.textContent;
+		if (!script) {
+			throw new Error("the srcdoc carries no resize reporter");
+		}
+		const posted: number[] = [];
+		const listeners: Record<string, ((event: unknown) => void)[]> = {};
+		const observed: (() => void)[] = [];
+		const size = { content: 900, frame: 2400 };
+		const parent = {
+			postMessage: (message: { height: number }) => {
+				posted.push(message.height);
+			},
+		};
+		const page = {
+			parent,
+			getComputedStyle: () => ({ marginTop: "0px", marginBottom: "0px" }),
+			addEventListener: (
+				type: string,
+				listener: (event: unknown) => void,
+			) => {
+				listeners[type] = [...(listeners[type] ?? []), listener];
+			},
+		};
+		const document = {
+			documentElement: {
+				get scrollHeight() {
+					return size.frame;
+				},
+				getBoundingClientRect: () => ({ height: size.content }),
+			},
+			body: {
+				get scrollHeight() {
+					return size.content;
+				},
+			},
+		};
+		class StandInResizeObserver {
+			constructor(private readonly callback: () => void) {}
+			observe() {
+				observed.push(this.callback);
+			}
+		}
+		new Function(
+			"window",
+			"document",
+			"ResizeObserver",
+			"setTimeout",
+			script,
+		)(page, document, StandInResizeObserver, () => undefined);
+		const emit = (type: string, event: unknown = {}) => {
+			for (const listener of listeners[type] ?? []) {
+				listener(event);
+			}
+		};
+		const resize = () => {
+			for (const callback of observed) {
+				callback();
+			}
+		};
+		return { posted, size, parent, emit, resize };
+	}
+
+	it("reports the content's height, below the frame's own height", () => {
+		const { posted, emit } = runReporter();
+
+		emit("load");
+
+		expect(posted).toEqual([900]);
+	});
+
+	it("reports a shorter height when the content shrinks", () => {
+		const { posted, size, emit, resize } = runReporter();
+		emit("load");
+
+		size.content = 600;
+		resize();
+
+		expect(posted).toEqual([900, 600]);
+	});
+
+	it("answers the embed's host-ready with the current height even when unchanged", () => {
+		const { posted, parent, emit } = runReporter();
+		emit("load");
+
+		emit("message", {
+			source: parent,
+			data: { type: FRAME_RUNTIME_HOST_READY_TYPE },
+		});
+
+		expect(posted).toEqual([900, 900]);
+	});
+
+	it("ignores a host-ready that does not come from the parent", () => {
+		const { posted, emit } = runReporter();
+		emit("load");
+
+		emit("message", {
+			source: {},
+			data: { type: FRAME_RUNTIME_HOST_READY_TYPE },
+		});
+
+		expect(posted).toEqual([900]);
 	});
 });
 

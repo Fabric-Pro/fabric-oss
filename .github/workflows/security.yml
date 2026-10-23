@@ -134,6 +134,7 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
+          check-latest: true
 
       # Runs first and supplies its own synthetic terms, so it proves the
       # matcher still works even on PRs where the secret is absent. Without it a

@@ -52,6 +52,10 @@ export async function listAvailableModels(input: {
 		input.taskType,
 	);
 
+	const organizationDefaultProvider = organizationId
+		? defaultProviderType
+		: null;
+
 	console.log(
 		"[AI Config] All configured providers:",
 		allProviders.map((g) => g.provider),
@@ -74,6 +78,7 @@ export async function listAvailableModels(input: {
 		// No provider configured - return empty
 		return {
 			configuredProviders: allProviders,
+			organizationDefaultProvider,
 			defaultProvider: null,
 			providerIds: [],
 			models: [],
@@ -163,6 +168,7 @@ export async function listAvailableModels(input: {
 			vendor: string;
 			contextWindow: number;
 			capabilities: string[];
+			suitableForTasks: string[];
 			inputCostPer1M: number | null;
 			outputCostPer1M: number | null;
 		}>
@@ -199,12 +205,15 @@ export async function listAvailableModels(input: {
 				vendor: model.vendor,
 				contextWindow: model.contextWindow,
 				capabilities: model.capabilities,
-				inputCostPer1M: model.inputCostPer1M
-					? Number(model.inputCostPer1M)
-					: null,
-				outputCostPer1M: model.outputCostPer1M
-					? Number(model.outputCostPer1M)
-					: null,
+				suitableForTasks: model.suitableForTasks,
+				inputCostPer1M:
+					model.inputCostPer1M != null
+						? Number(model.inputCostPer1M)
+						: null,
+				outputCostPer1M:
+					model.outputCostPer1M != null
+						? Number(model.outputCostPer1M)
+						: null,
 			});
 		}
 	}
@@ -227,7 +236,10 @@ export async function listAvailableModels(input: {
 						providerModelId: string;
 						speedTier: string;
 						qualityTier: string;
+						inputCostPer1M: number | null;
+						outputCostPer1M: number | null;
 						capabilities: string[];
+						suitableForTasks: string[];
 					}>;
 				}
 			>;
@@ -294,7 +306,10 @@ export async function listAvailableModels(input: {
 								providerModelId: m.providerModelId,
 								speedTier: m.speedTier,
 								qualityTier: m.qualityTier,
+								inputCostPer1M: m.inputCostPer1M,
+								outputCostPer1M: m.outputCostPer1M,
 								capabilities: m.capabilities,
+								suitableForTasks: m.suitableForTasks,
 							})),
 						};
 				}
@@ -315,7 +330,10 @@ export async function listAvailableModels(input: {
 							providerModelId: m.providerModelId,
 							speedTier: m.speedTier,
 							qualityTier: m.qualityTier,
+							inputCostPer1M: m.inputCostPer1M,
+							outputCostPer1M: m.outputCostPer1M,
 							capabilities: m.capabilities,
+							suitableForTasks: m.suitableForTasks,
 						})),
 					};
 			}
@@ -324,6 +342,7 @@ export async function listAvailableModels(input: {
 
 	return {
 		configuredProviders: allProviders,
+		organizationDefaultProvider,
 		defaultProvider: defaultProviderType,
 		providerIds: effectiveProviders,
 		chatgptPlan,
@@ -337,7 +356,16 @@ export async function listAvailableModels(input: {
 			contextWindow: model.contextWindow,
 			speedTier: model.speedTier,
 			qualityTier: model.qualityTier,
+			inputCostPer1M:
+				model.inputCostPer1M != null
+					? Number(model.inputCostPer1M)
+					: null,
+			outputCostPer1M:
+				model.outputCostPer1M != null
+					? Number(model.outputCostPer1M)
+					: null,
 			suitableForTasks: model.suitableForTasks,
+			capabilities: model.capabilities,
 			providerMappings: model.providerMappings.map((pm) => ({
 				provider: pm.provider,
 				providerModelId: pm.providerModelId,

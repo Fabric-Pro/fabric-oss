@@ -72,6 +72,12 @@ describe("AI Update PM context note", () => {
 		],
 		["no-columns", "fizzy", undefined, "Cards in triage aren't included"],
 		["ok", "fizzy", undefined, undefined],
+		[
+			"truncated",
+			"github",
+			undefined,
+			"Only 2 items on your board were read, so AI Update may not see the rest.",
+		],
 		[undefined, "fizzy", undefined, undefined],
 	])(
 		"%s (%s, %s) continues and carries a safe note",
@@ -85,8 +91,13 @@ describe("AI Update PM context note", () => {
 				return {
 					epics: [],
 					features: [],
-					stories: [],
-					readStatus,
+					stories:
+						readStatus === "truncated"
+							? [{ id: "42" }, { id: "43" }]
+							: [],
+					readStatus: readStatus === "truncated" ? "ok" : readStatus,
+					listingTruncated:
+						readStatus === "truncated" ? true : undefined,
 					detectedType,
 					readErrorKind: readError,
 				};
@@ -102,6 +113,9 @@ describe("AI Update PM context note", () => {
 					containerId: "example-board",
 				},
 			});
+			expect(h.activities.fetchPMWorkItemsByType).toHaveBeenCalledWith(
+				expect.objectContaining({ forPrompt: true }),
+			);
 			expect(result.success).toBe(true);
 			const progress = h.handlers.get(
 				analysisProgressQuery as unknown as string,

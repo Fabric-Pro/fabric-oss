@@ -398,6 +398,9 @@ export const enhanceFeatureProcedure = tenantProtectedProcedure
 				storyKind: story.kind,
 				userId: user.id,
 				organizationId,
+				// The story's own project, so a project default outranks the
+				// org-wide one for this project only.
+				projectId: story.projectId,
 			});
 			if (boundPrompt?.version?.content?.trim()) {
 				resolvedPrompt = {

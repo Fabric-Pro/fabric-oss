@@ -13,6 +13,7 @@
  * for backward compatibility.
  */
 
+import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import type { ConnectorConfig } from "@repo/connectors";
 // Static, not `await import(...)`: under the worker's tsx runtime a dynamic
 // import of this ES-module package fails to link its named imports from
@@ -74,6 +75,10 @@ export class UnifiedSearchHandler implements StepHandler {
 			// Inside a chat turn's dispatch guard a stop is not a step failure
 			// to report or fall back from; a no-op outside one.
 			rethrowIfDispatchStopped(error);
+			const usageLimitError = findAiUsageLimitError(error);
+			if (usageLimitError) {
+				throw usageLimitError;
+			}
 			const errorMessage =
 				error instanceof Error ? error.message : String(error);
 			console.error(

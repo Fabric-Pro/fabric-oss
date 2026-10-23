@@ -44,6 +44,10 @@ export const getOrgModelPreferencesProcedure = tenantProtectedProcedure
 						contextWindow: z.number(),
 						speedTier: z.string(),
 						qualityTier: z.string(),
+						inputCostPer1M: z.number().nullable().optional(),
+						outputCostPer1M: z.number().nullable().optional(),
+						suitableForTasks: z.array(z.string()).optional(),
+						capabilities: z.array(z.string()).optional(),
 					})
 					.nullable(),
 			}),
@@ -91,6 +95,16 @@ export const getOrgModelPreferencesProcedure = tenantProtectedProcedure
 						contextWindow: pref.model.contextWindow,
 						speedTier: pref.model.speedTier,
 						qualityTier: pref.model.qualityTier,
+						inputCostPer1M:
+							pref.model.inputCostPer1M != null
+								? Number(pref.model.inputCostPer1M)
+								: null,
+						outputCostPer1M:
+							pref.model.outputCostPer1M != null
+								? Number(pref.model.outputCostPer1M)
+								: null,
+						suitableForTasks: pref.model.suitableForTasks,
+						capabilities: pref.model.capabilities,
 					}
 				: null,
 		}));

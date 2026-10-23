@@ -1,7 +1,8 @@
 "use client";
 
+import { cn } from "@ui/lib";
 import { Handle, Position } from "@xyflow/react";
-import { PlusIcon, SparklesIcon } from "lucide-react";
+import { PlusIcon } from "lucide-react";
 import { memo } from "react";
 
 interface EmptyActionNodeProps {
@@ -12,6 +13,10 @@ interface EmptyActionNodeProps {
 	selected?: boolean;
 }
 
+const HANDLE_CLASS =
+	"size-2! border-2! border-background! bg-muted-foreground!";
+
+/** A step whose action has not been chosen yet; picking one replaces it. */
 export const EmptyActionNode = memo(
 	({ data, selected }: EmptyActionNodeProps) => {
 		return (
@@ -28,38 +33,33 @@ export const EmptyActionNode = memo(
 				<Handle
 					type="target"
 					position={Position.Top}
-					className="w-2 h-2"
+					className={HANDLE_CLASS}
 				/>
 
 				<div
-					className={`
-					min-w-[200px] px-4 py-3 rounded-lg border-2 border-dashed
-					bg-background cursor-pointer transition-all
-					${selected ? "border-primary shadow-lg" : "border-muted-foreground/30 hover:border-primary/50"}
-				`}
+					className={cn(
+						"flex w-[300px] cursor-pointer items-center gap-3 rounded-[10px] border border-dashed bg-card px-3.5 py-3",
+						"motion-safe:transition-[border-color,box-shadow] motion-safe:duration-150",
+						selected
+							? "border-foreground ring-[3px] ring-foreground/10"
+							: "border-input hover:border-muted-foreground",
+					)}
 				>
-					<div className="flex items-center gap-3">
-						<div className="h-10 w-10 rounded-md bg-muted flex items-center justify-center flex-shrink-0">
-							<SparklesIcon className="h-5 w-5 text-muted-foreground" />
-						</div>
-						<div className="flex-1 min-w-0">
-							<div className="flex items-center gap-2 mb-1">
-								<span className="text-sm font-medium">
-									Action
-								</span>
-								<PlusIcon className="h-3 w-3 text-muted-foreground" />
-							</div>
-							<p className="text-xs text-muted-foreground">
-								Select an action
-							</p>
-						</div>
-					</div>
+					<span className="flex size-[34px] shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+						<PlusIcon className="size-[17px]" aria-hidden="true" />
+					</span>
+					<span className="flex min-w-0 flex-col gap-0.5">
+						<span className="text-sm font-medium">New step</span>
+						<span className="text-xs text-muted-foreground">
+							Choose an action in Add step
+						</span>
+					</span>
 				</div>
 
 				<Handle
 					type="source"
 					position={Position.Bottom}
-					className="w-2 h-2"
+					className={HANDLE_CLASS}
 				/>
 			</div>
 		);

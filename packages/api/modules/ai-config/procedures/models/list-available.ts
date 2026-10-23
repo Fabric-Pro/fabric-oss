@@ -77,6 +77,8 @@ export const listAvailableModelsProcedure = tenantProtectedProcedure
 					source: z.string(),
 				}),
 			),
+			// Explicit organization LLM default, without discovery's substitution.
+			organizationDefaultProvider: z.string().nullable(),
 			// Default gateway/provider
 			defaultProvider: z.string().nullable(),
 			// All enabled provider IDs (for filtering models)
@@ -93,7 +95,10 @@ export const listAvailableModelsProcedure = tenantProtectedProcedure
 					contextWindow: z.number(),
 					speedTier: z.string(),
 					qualityTier: z.string(),
+					inputCostPer1M: z.number().nullable().optional(),
+					outputCostPer1M: z.number().nullable().optional(),
 					suitableForTasks: z.array(z.string()),
+					capabilities: z.array(z.string()).optional(),
 					providerMappings: z.array(
 						z.object({
 							provider: z.string(),
@@ -114,6 +119,7 @@ export const listAvailableModelsProcedure = tenantProtectedProcedure
 						providerModelId: z.string(),
 						speedTier: z.string(),
 						qualityTier: z.string(),
+						suitableForTasks: z.array(z.string()).optional(),
 						// Extended data for hover submenu
 						description: z.string().nullable().optional(),
 						family: z.string().optional(),
@@ -167,6 +173,17 @@ export const listAvailableModelsProcedure = tenantProtectedProcedure
 									providerModelId: z.string(),
 									speedTier: z.string(),
 									qualityTier: z.string(),
+									inputCostPer1M: z
+										.number()
+										.nullable()
+										.optional(),
+									outputCostPer1M: z
+										.number()
+										.nullable()
+										.optional(),
+									suitableForTasks: z
+										.array(z.string())
+										.optional(),
 									capabilities: z
 										.array(z.string())
 										.optional(),

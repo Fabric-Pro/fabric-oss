@@ -103,7 +103,8 @@ export type PersonalTranscriptResult =
  * matters: without it their comparator results are NaN, and ECMA-262's
  * SortCompare coerces a NaN comparefn result to +0 — "equal" — so an undated
  * transcript would simply hold its input position and could win over a dated
- * one. (The fetch-meeting-notes version of this logic has that flaw.)
+ * one. The document editor's meeting-notes fetch (fetch-meeting-notes.ts) uses
+ * this function too.
  *
  * NEAREST IS NOT ENOUGH, and that was a data-integrity bug. `meetingId` is the
  * SERIES, so this list answers for every occurrence of a recurring meeting.

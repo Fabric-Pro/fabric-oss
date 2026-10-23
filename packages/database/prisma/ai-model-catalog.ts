@@ -20,15 +20,12 @@ import type {
 } from "./generated/client";
 
 /**
- * The default Fabric AI model (canonical name): the one source of truth for
- * "which model runs when nobody picked one". The chat's default agent, the
- * CHAT / COMPLEX / TOOL_CALLING task defaults on every provider that carries
- * it, `DEFAULT_MODELS` (MCP sampling, cost estimates) all read this
- * constant; seeded agent templates suggest no model and so land on the task
- * defaults. A provider without a mapping for it keeps
- * its own task default below.
+ * Current Fabric AI template for chat, complex and tool-calling work on providers
+ * that carry it. Task defaults are pinned per connection when it is created or
+ * becomes default. The chat default chip, MCP sampling and cost estimates also
+ * read this constant; providers without a mapping keep their own task template.
  */
-export const DEFAULT_FABRIC_AI_MODEL = "claude-sonnet-5";
+export const DEFAULT_FABRIC_AI_MODEL = "claude-sonnet-5-5";
 
 // ============================================================================
 // Types
@@ -328,6 +325,7 @@ export const MODELS: ModelSeedData[] = [
 			"TOOL_CALLING",
 			"REASONING",
 			"EVAL",
+			"SIMPLE",
 		],
 		providerMappings: [
 			{ provider: "OPENAI_DIRECT", providerModelId: "gpt-5.5" },
@@ -1391,7 +1389,7 @@ export const MODELS: ModelSeedData[] = [
 		qualityTier: "PREMIUM",
 		inputCostPer1M: 0.59,
 		outputCostPer1M: 0.79,
-		suitableForTasks: ["COMPLEX", "CHAT", "TOOL_CALLING"],
+		suitableForTasks: ["COMPLEX", "CHAT", "TOOL_CALLING", "SIMPLE", "EVAL"],
 		providerMappings: [
 			{ provider: "GROQ", providerModelId: "llama-3.3-70b-versatile" },
 			{
@@ -1501,7 +1499,7 @@ export const MODELS: ModelSeedData[] = [
 		qualityTier: "STANDARD",
 		inputCostPer1M: 0.28,
 		outputCostPer1M: 0.42,
-		suitableForTasks: ["CHAT", "COMPLEX", "TOOL_CALLING"],
+		suitableForTasks: ["CHAT", "COMPLEX", "TOOL_CALLING", "SIMPLE", "EVAL"],
 		providerMappings: [
 			{ provider: "DEEPSEEK", providerModelId: "deepseek-chat" },
 			{
@@ -1682,7 +1680,7 @@ export const MODELS: ModelSeedData[] = [
 		qualityTier: "PREMIUM",
 		inputCostPer1M: 2,
 		outputCostPer1M: 6,
-		suitableForTasks: ["COMPLEX", "CHAT", "TOOL_CALLING"],
+		suitableForTasks: ["COMPLEX", "CHAT", "TOOL_CALLING", "EVAL"],
 		providerMappings: [
 			{ provider: "MISTRAL_AI", providerModelId: "mistral-large-latest" },
 			{
@@ -2032,7 +2030,7 @@ export const MODELS: ModelSeedData[] = [
 		qualityTier: "PREMIUM",
 		inputCostPer1M: 3,
 		outputCostPer1M: 15,
-		suitableForTasks: ["CHAT", "COMPLEX"],
+		suitableForTasks: ["CHAT", "COMPLEX", "EVAL"],
 		providerMappings: [
 			{ provider: "PERPLEXITY", providerModelId: "sonar-pro" },
 			{ provider: "OPENROUTER", providerModelId: "perplexity/sonar-pro" },
@@ -2140,7 +2138,7 @@ export const MODELS: ModelSeedData[] = [
 		qualityTier: "PREMIUM",
 		inputCostPer1M: 2.5,
 		outputCostPer1M: 10,
-		suitableForTasks: ["COMPLEX", "CHAT", "TOOL_CALLING"],
+		suitableForTasks: ["COMPLEX", "CHAT", "TOOL_CALLING", "EVAL"],
 		providerMappings: [
 			{ provider: "COHERE", providerModelId: "command-a-03-2025" },
 			{ provider: "OPENROUTER", providerModelId: "cohere/command-a" },
@@ -2592,9 +2590,9 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 		// CHATGPT_PLAN_TASK_DEFAULTS in @repo/ai.
 		OPENAI_CHATGPT_PLAN: "gpt-6-luna",
 		DATABRICKS: "llama-3-3-70b",
-		VERCEL_GATEWAY: "claude-haiku-4-5",
-		OPENAI_DIRECT: "gpt-5.5",
-		ANTHROPIC_DIRECT: "claude-haiku-4-5",
+		VERCEL_GATEWAY: "claude-haiku-5-5",
+		OPENAI_DIRECT: "gpt-6-luna",
+		ANTHROPIC_DIRECT: "claude-haiku-5-5",
 		GROQ: "llama-3-1-8b",
 		DEEPSEEK: "deepseek-chat",
 		CEREBRAS: "llama-3-1-8b",
@@ -2616,14 +2614,14 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 		OPENAI_CHATGPT_PLAN: "gpt-6.1-sol",
 		DATABRICKS: DEFAULT_FABRIC_AI_MODEL,
 		VERCEL_GATEWAY: DEFAULT_FABRIC_AI_MODEL,
-		OPENAI_DIRECT: "gpt-5.5",
+		OPENAI_DIRECT: "gpt-6.1-sol",
 		ANTHROPIC_DIRECT: DEFAULT_FABRIC_AI_MODEL,
 		GROQ: "llama-3-3-70b",
 		DEEPSEEK: "deepseek-chat",
 		CEREBRAS: "llama-3-3-70b",
 		AZURE_AI_FOUNDRY: "gpt-5.5",
 		MISTRAL_AI: "mistral-large-3",
-		XAI: "grok-3",
+		XAI: "grok-4-1-fast",
 		COHERE: "command-a",
 		PERPLEXITY: "sonar-pro",
 		TOGETHER_AI: "llama-3-3-70b",
@@ -2637,9 +2635,9 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 		// A member's own ChatGPT plan (Fizzy #2939); keep in step with
 		// CHATGPT_PLAN_TASK_DEFAULTS in @repo/ai.
 		OPENAI_CHATGPT_PLAN: "gpt-6.1-sol",
-		VERCEL_GATEWAY: "claude-opus-4-8",
-		OPENAI_DIRECT: "gpt-5.5",
-		ANTHROPIC_DIRECT: "claude-opus-4-8",
+		VERCEL_GATEWAY: "claude-opus-5-5",
+		OPENAI_DIRECT: "gpt-6.1-sol",
+		ANTHROPIC_DIRECT: "claude-opus-5-5",
 		GROQ: "deepseek-r1",
 		DEEPSEEK: "deepseek-r1",
 		CEREBRAS: "gpt-oss-120b",
@@ -2659,7 +2657,7 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 		OPENAI_CHATGPT_PLAN: "gpt-6.1-sol",
 		DATABRICKS: DEFAULT_FABRIC_AI_MODEL,
 		VERCEL_GATEWAY: DEFAULT_FABRIC_AI_MODEL,
-		OPENAI_DIRECT: "gpt-5.5",
+		OPENAI_DIRECT: "gpt-6.1-sol",
 		ANTHROPIC_DIRECT: DEFAULT_FABRIC_AI_MODEL,
 		GROQ: "llama-3-3-70b",
 		DEEPSEEK: "deepseek-chat",
@@ -2685,7 +2683,7 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 			OPENAI_CHATGPT_PLAN: "gpt-6.1-sol",
 			DATABRICKS: DEFAULT_FABRIC_AI_MODEL,
 			VERCEL_GATEWAY: DEFAULT_FABRIC_AI_MODEL,
-			OPENAI_DIRECT: "gpt-5.5",
+			OPENAI_DIRECT: "gpt-6.1-sol",
 			ANTHROPIC_DIRECT: DEFAULT_FABRIC_AI_MODEL,
 			GROQ: "gpt-oss-120b",
 			DEEPSEEK: "deepseek-chat",
@@ -2734,9 +2732,9 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 		// A member's own ChatGPT plan (Fizzy #2939); keep in step with
 		// CHATGPT_PLAN_TASK_DEFAULTS in @repo/ai.
 		OPENAI_CHATGPT_PLAN: "gpt-6.1-sol",
-		VERCEL_GATEWAY: "claude-sonnet-5",
-		OPENAI_DIRECT: "gpt-5.5",
-		ANTHROPIC_DIRECT: "claude-sonnet-5",
+		VERCEL_GATEWAY: "claude-sonnet-5-5",
+		OPENAI_DIRECT: "gpt-6.1-sol",
+		ANTHROPIC_DIRECT: "claude-sonnet-5-5",
 		GROQ: "llama-3-3-70b",
 		DEEPSEEK: "deepseek-chat",
 		CEREBRAS: "llama-3-3-70b",
@@ -2961,12 +2959,12 @@ export const MODEL_ALIASES: Record<string, string> = {
 	"o3-mini": "gpt-5.5",
 
 	// Anthropic shortcuts
-	claude: "claude-sonnet-5",
-	"claude-3": "claude-sonnet-5",
-	"claude-3.5": "claude-sonnet-5",
-	"claude-sonnet": "claude-sonnet-5",
-	"claude-opus": "claude-opus-4-8",
-	"claude-haiku": "claude-haiku-4-5",
+	claude: "claude-sonnet-5-5",
+	"claude-3": "claude-sonnet-5-5",
+	"claude-3.5": "claude-sonnet-5-5",
+	"claude-sonnet": "claude-sonnet-5-5",
+	"claude-opus": "claude-opus-5-5",
+	"claude-haiku": "claude-haiku-5-5",
 
 	// Llama shortcuts
 	llama: "llama-3-3-70b",

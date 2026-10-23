@@ -1,8 +1,8 @@
 /**
  * Unit tests for the backlog-apply watchdog activities.
  *
- *  - `findStaleApplyingProposalsActivity` — maps helper rows, drops null
- *    `applyStartedAt`, derives the cutoff from minutes / env default.
+ *  - `findStaleApplyingProposalsActivity` — maps helper rows using latest activity
+ *    time, including null `applyStartedAt`, derives the cutoff from minutes / env default.
  *  - `terminateBacklogApplyWorkflowActivity` — terminate + swallow errors.
  *  - `markBacklogProposalTimedOutActivity` — compare-and-set: audit + finalize
  *    only when the watchdog actually won the transition (count === 1).
@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	findStaleMock: vi.fn(),
-	stopApplyingMock: vi.fn(),
+	timeOutMock: vi.fn(),
 	finalizeSessionMock: vi.fn(),
 	recordAuditMock: vi.fn(),
 	getHandleMock: vi.fn(),
@@ -22,8 +22,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@repo/database", () => ({
 	findStaleApplyingProposals: (...args: unknown[]) =>
 		mocks.findStaleMock(...args),
-	stopApplyingProposal: (...args: unknown[]) =>
-		mocks.stopApplyingMock(...args),
+	timeOutStaleApply: (...args: unknown[]) => mocks.timeOutMock(...args),
 	finalizeBacklogUpdateSession: (...args: unknown[]) =>
 		mocks.finalizeSessionMock(...args),
 	recordAudit: (...args: unknown[]) => mocks.recordAuditMock(...args),
@@ -43,7 +42,7 @@ import {
 
 beforeEach(() => {
 	mocks.findStaleMock.mockReset();
-	mocks.stopApplyingMock.mockReset();
+	mocks.timeOutMock.mockReset();
 	mocks.finalizeSessionMock.mockReset();
 	mocks.recordAuditMock.mockReset();
 	mocks.getHandleMock.mockReset();
@@ -57,7 +56,7 @@ afterEach(() => {
 });
 
 describe("findStaleApplyingProposalsActivity", () => {
-	it("maps helper rows and drops any with a null applyStartedAt", async () => {
+	it("maps stale APPROVED rows without a dispatch timestamp and uses latest activity", async () => {
 		mocks.findStaleMock.mockResolvedValueOnce([
 			{
 				id: "p-1",
@@ -65,15 +64,18 @@ describe("findStaleApplyingProposalsActivity", () => {
 				organizationId: "o-1",
 				applyWorkflowId: "backlog-apply-proj-1-123",
 				applyStartedAt: new Date("2026-06-11T00:00:00Z"),
+				reviewedAt: new Date("2026-06-11T00:01:00Z"),
+				createdAt: new Date("2026-06-10T00:00:00Z"),
 			},
-			// Defensive: a null applyStartedAt should never reach here (the
-			// helper filters `not: null`), but the activity drops it anyway.
+			// APPROVED may be stranded before dispatch writes a timestamp.
 			{
 				id: "p-skip",
 				projectId: "proj-2",
 				organizationId: null,
 				applyWorkflowId: null,
 				applyStartedAt: null,
+				reviewedAt: null,
+				createdAt: new Date("2026-06-10T00:00:00Z"),
 			},
 		]);
 
@@ -82,13 +84,16 @@ describe("findStaleApplyingProposalsActivity", () => {
 			batchSize: 50,
 		});
 
-		expect(rows).toHaveLength(1);
+		expect(rows).toHaveLength(2);
+		expect(rows[1].applyStartedAtMs).toBe(
+			new Date("2026-06-10T00:00:00Z").getTime(),
+		);
 		expect(rows[0]).toEqual({
 			proposalId: "p-1",
 			projectId: "proj-1",
 			organizationId: "o-1",
 			workflowId: "backlog-apply-proj-1-123",
-			applyStartedAtMs: new Date("2026-06-11T00:00:00Z").getTime(),
+			applyStartedAtMs: new Date("2026-06-11T00:01:00Z").getTime(),
 		});
 	});
 
@@ -209,7 +214,7 @@ describe("terminateBacklogApplyWorkflowActivity", () => {
 
 describe("markBacklogProposalTimedOutActivity", () => {
 	it("flips the row, finalizes the session, writes a timed_out audit when it wins the transition", async () => {
-		mocks.stopApplyingMock.mockResolvedValueOnce(1);
+		mocks.timeOutMock.mockResolvedValueOnce(1);
 
 		const killed = await markBacklogProposalTimedOutActivity({
 			proposalId: "p-1",
@@ -219,8 +224,9 @@ describe("markBacklogProposalTimedOutActivity", () => {
 		});
 
 		expect(killed).toBe(true);
-		expect(mocks.stopApplyingMock).toHaveBeenCalledWith({
+		expect(mocks.timeOutMock).toHaveBeenCalledWith({
 			proposalId: "p-1",
+			cutoff: expect.any(Date),
 			errorClass: "TimedOut",
 			errorMessage: expect.stringContaining("timed out"),
 		});
@@ -241,7 +247,7 @@ describe("markBacklogProposalTimedOutActivity", () => {
 	});
 
 	it("does nothing (no finalize, no audit) when the row was already terminal (count === 0)", async () => {
-		mocks.stopApplyingMock.mockResolvedValueOnce(0);
+		mocks.timeOutMock.mockResolvedValueOnce(0);
 
 		const killed = await markBacklogProposalTimedOutActivity({
 			proposalId: "p-raced",
@@ -256,7 +262,7 @@ describe("markBacklogProposalTimedOutActivity", () => {
 	});
 
 	it("still resolves when the session finalize rejects (best-effort)", async () => {
-		mocks.stopApplyingMock.mockResolvedValueOnce(1);
+		mocks.timeOutMock.mockResolvedValueOnce(1);
 		mocks.finalizeSessionMock.mockRejectedValueOnce(new Error("no row"));
 
 		const killed = await markBacklogProposalTimedOutActivity({
@@ -269,5 +275,58 @@ describe("markBacklogProposalTimedOutActivity", () => {
 		expect(killed).toBe(true);
 		// Audit still written even though the session finalize failed.
 		expect(mocks.recordAuditMock).toHaveBeenCalledTimes(1);
+	});
+	it("rechecks the timeout using the same env cutoff as discovery", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-10-21T12:00:00Z"));
+		vi.stubEnv("FABRIC_BACKLOG_APPLY_STALE_MINUTES", "30");
+		try {
+			mocks.findStaleMock.mockResolvedValue([]);
+			mocks.timeOutMock.mockResolvedValue(0);
+			await findStaleApplyingProposalsActivity({
+				staleAfterMinutes: 0,
+				batchSize: 50,
+			});
+			await markBacklogProposalTimedOutActivity({
+				proposalId: "example-proposal",
+				projectId: "example-project",
+				organizationId: "example-org",
+				applyDurationMs: 31 * 60000,
+			});
+			expect(mocks.timeOutMock.mock.calls[0][0].cutoff).toEqual(
+				new Date("2026-10-21T11:30:00Z"),
+			);
+			expect(mocks.findStaleMock.mock.calls[0][0].cutoff).toEqual(
+				new Date("2026-10-21T11:30:00Z"),
+			);
+		} finally {
+			vi.useRealTimers();
+			vi.unstubAllEnvs();
+		}
+	});
+});
+
+describe("discovery threshold floor", () => {
+	it.each([
+		[5, "30", "11:30"],
+		[5, "", "11:45"],
+		[45, "30", "11:15"],
+	])("input %i with env %s scans at %s", async (minutes, env, time) => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-10-21T12:00:00Z"));
+		vi.stubEnv("FABRIC_BACKLOG_APPLY_STALE_MINUTES", env);
+		try {
+			mocks.findStaleMock.mockResolvedValue([]);
+			await findStaleApplyingProposalsActivity({
+				staleAfterMinutes: minutes,
+				batchSize: 50,
+			});
+			expect(mocks.findStaleMock.mock.calls[0][0].cutoff).toEqual(
+				new Date(`2026-10-21T${time}:00Z`),
+			);
+		} finally {
+			vi.useRealTimers();
+			vi.unstubAllEnvs();
+		}
 	});
 });

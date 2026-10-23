@@ -394,7 +394,7 @@ export const applyChangesProcedure = tenantProtectedProcedure
 				await markProposalApplyDispatched({
 					proposalId,
 					applyWorkflowId: workflowId,
-					mode: "fresh",
+					mode: "claimed",
 				}).catch(() => 0);
 				return {
 					workflowId,
@@ -410,17 +410,16 @@ export const applyChangesProcedure = tenantProtectedProcedure
 					const row = await db.pendingBacklogProposal.findUnique({
 						where: { id: proposalId },
 					});
-					// A durable dispatch stamp (or terminal outcome) outlives Temporal history.
-					// Missing history is not permission to dispatch a completed operation again.
+					// This operation's dispatch stamp or claimed APPLIED outcome can
+					// outlive Temporal history. Other terminal statuses alone do
+					// not confirm dispatch: rejection or timeout can precede start.
 					if (
-						row?.applyWorkflowId ||
-						(row &&
-							["APPLIED", "FAILED", "REJECTED"].includes(
-								row.status,
-							))
+						row?.applyWorkflowId === workflowId &&
+						(row.applyStartedAt !== null ||
+							row.status === "APPLIED")
 					) {
 						return {
-							workflowId: row.applyWorkflowId ?? workflowId,
+							workflowId,
 							proposalId,
 							message:
 								"Backlog apply already dispatched; open Review proposals for its outcome.",
@@ -544,6 +543,7 @@ export const applyChangesProcedure = tenantProtectedProcedure
 					storyKind: "FEATURE",
 					userId: user.id,
 					organizationId: resolvedOrganizationId,
+					projectId: existing.projectId,
 				});
 				if (!cleanSpecPrompt?.version?.content?.trim()) {
 					throw new ORPCError("PRECONDITION_FAILED", {
@@ -684,6 +684,7 @@ export const applyChangesProcedure = tenantProtectedProcedure
 		// workflow's finalize activity flips it to a terminal status (correlated by
 		// `pendingProposalId`). Best-effort — a session-row failure must never break
 		// the apply (the history tab is the only consumer).
+		let createdSessionId: string | undefined;
 		try {
 			const createCount = input.approvedChanges.filter(
 				(change) => change.action === "create",
@@ -719,7 +720,7 @@ export const applyChangesProcedure = tenantProtectedProcedure
 				// The lock and insert share a transaction, so concurrent deliveries see the winner's session.
 				// FOR NO KEY UPDATE still serializes duplicate deliveries without blocking other
 				// transactions' FK inserts that reference this proposal (FK checks take FOR KEY SHARE).
-				await db.$transaction(
+				createdSessionId = await db.$transaction(
 					async (tx) => {
 						await tx.$queryRaw`SELECT "id" FROM "pending_backlog_proposal" WHERE "id" = ${proposalId} FOR NO KEY UPDATE`;
 						const existing =
@@ -728,13 +729,18 @@ export const applyChangesProcedure = tenantProtectedProcedure
 								select: { id: true },
 							});
 						if (!existing) {
-							await createBacklogUpdateSession(sessionInput, tx);
+							const session = await createBacklogUpdateSession(
+								sessionInput,
+								tx,
+							);
+							return session.id;
 						}
 					},
 					{ timeout: 10000, maxWait: 10000 },
 				);
 			} else {
-				await createBacklogUpdateSession(sessionInput);
+				const session = await createBacklogUpdateSession(sessionInput);
+				createdSessionId = session.id;
 			}
 		} catch {
 			// Non-fatal: a missing session row only affects the history tab.
@@ -747,6 +753,65 @@ export const applyChangesProcedure = tenantProtectedProcedure
 				const existing = await existingWorkflow(proposalId);
 				if (existing) {
 					return existing;
+				}
+			}
+			if (!input.proposalId) {
+				// Claim before dispatch: even an immediately finishing workflow must
+				// see its own APPLYING row. Keyed redelivery may reuse that claim,
+				// but cannot resurrect a terminal row or take another workflow's row.
+				// Reusing APPLYING requires a null stamp so a concurrent confirmation
+				// after reconciliation is preserved rather than cleared.
+				const claimed = await db.pendingBacklogProposal.updateMany({
+					where: {
+						id: proposalId,
+						OR: [
+							{ status: "PENDING", applyWorkflowId: null },
+							{
+								status: "APPLYING",
+								applyWorkflowId: workflowId,
+								applyStartedAt: null,
+							},
+						],
+					},
+					data: {
+						status: "APPLYING",
+						applyWorkflowId: workflowId,
+						applyStartedAt: null,
+						reviewedAt: new Date(),
+						reviewedBy: user.id,
+					},
+				});
+				if (claimed.count !== 1) {
+					// A keyed delivery may have dispatched between reconciliation
+					// and the claim. Recheck through the shared evidence gate.
+					if (operationRowId) {
+						const existing = await existingWorkflow(proposalId);
+						if (existing) {
+							return existing;
+						}
+					}
+					if (createdSessionId) {
+						// Only this call's insert belongs to the failed claim. A keyed
+						// redelivery may have reused another call's session instead.
+						await db.backlogUpdateSession
+							.updateMany({
+								where: {
+									id: createdSessionId,
+									status: "APPLYING",
+								},
+								data: {
+									status: "FAILED",
+									appliedCount: 0,
+									failedCount: input.approvedChanges.length,
+									finalizedAt: new Date(),
+								},
+							})
+							.catch(() => 0);
+					}
+					throw new ORPCError("CONFLICT", {
+						message:
+							"This proposal is no longer available to apply.",
+					});
 				}
 			}
 			const handle = await client.workflow.start(
@@ -785,7 +850,7 @@ export const applyChangesProcedure = tenantProtectedProcedure
 							// Threaded so the workflow can flip the row to
 							// APPLIED on success or FAILED on per-change
 							// error. Without this the row would stay
-							// PENDING and surface as a leaked proposal.
+							// APPLYING and surface as an unfinished proposal.
 							pendingProposalId: proposalId,
 							// See input-schema comment.
 							conversationId: input.conversationId,
@@ -794,17 +859,13 @@ export const applyChangesProcedure = tenantProtectedProcedure
 				}),
 			);
 
-			// Stamp the dispatch so the stuck-apply watchdog + manual cancel can
-			// find and terminate this apply. Best-effort: the workflow has
-			// already started, so a stamp failure must NOT fail the apply — it
-			// only means the watchdog can't auto-recover this row (the user can
-			// still dismiss / retry it from the inbox). Guarded on the row's
-			// state, so a stamp that lands after the workflow already finalized
-			// (or after another claimant took the row) is a no-op.
+			// Record confirmed dispatch. A late stamp after finalization or a
+			// replacement claim is a no-op. If stamping fails, the watchdog falls
+			// back to reviewedAt / createdAt until dispatch can be confirmed.
 			await markProposalApplyDispatched({
 				proposalId,
 				applyWorkflowId: workflowId,
-				mode: input.proposalId ? "claimed" : "fresh",
+				mode: "claimed",
 			}).catch(() => 0);
 
 			// Server-authoritative override log: the user applied AI output that
@@ -843,6 +904,9 @@ export const applyChangesProcedure = tenantProtectedProcedure
 				proposalId,
 			};
 		} catch (error) {
+			if (error instanceof ORPCError) {
+				throw error;
+			}
 			if (operationRowId) {
 				// Start may have committed before transport failure. Reconcile the
 				// same id; if unknown, retain the row for an identical retry.
@@ -884,12 +948,15 @@ export const applyChangesProcedure = tenantProtectedProcedure
 			}
 			// Workflow start failed AFTER we persisted the proposal row. Mark
 			// the row as FAILED so it surfaces in the inbox / banner — without
-			// this, the row would be stuck PENDING forever and the user would
-			// have no way to retry or dismiss it. Best-effort: the rethrown
-			// error is what the client sees; the row update is the safety net.
+			// this, recovery would wait for the watchdog. The row
+			// update is best-effort; the rethrown error is what the client sees.
 			await db.pendingBacklogProposal
-				.update({
-					where: { id: proposalId },
+				.updateMany({
+					where: {
+						id: proposalId,
+						status: "APPLYING",
+						applyWorkflowId: workflowId,
+					},
 					data: {
 						status: "FAILED",
 						errorClass: "TemporalScheduleFailed",

@@ -37,7 +37,8 @@ const MIN_PANEL_WIDTH = 320;
 const MAX_PANEL_WIDTH = 1200;
 const DEFAULT_PANEL_WIDTH = 420;
 const INITIAL_OFFSET_RIGHT = 20;
-const INITIAL_OFFSET_TOP = 20;
+// Opens below the editor's 52px header, so Save, Publish and Run stay reachable.
+const INITIAL_OFFSET_TOP = 64;
 
 interface ExecutionPanelProps {
 	executionId: string;

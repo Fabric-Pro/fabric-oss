@@ -34,7 +34,9 @@ import {
 	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
 import { FABRIC_CHAT_TOOL_DEFINITIONS } from "../../../lib/fabric-gateway-tools";
+import { isRunContextToolHidden } from "./run-context-tools";
 import { toolSearchUsage } from "./tool-search-usage";
+import { WORKSPACE_TOOL_NAMES } from "./workspace-tools";
 
 // =============================================================================
 // Turned-off MCP configs
@@ -94,8 +96,8 @@ async function findDisabledMcpConfigIds(
 const INFRASTRUCTURE_FABRIC_TOOLS = new Set([
 	...FABRIC_CHAT_TOOL_DEFINITIONS.map((definition) => definition.name),
 	"project_rag_query",
-	"workspace_rag_query",
-	"workspace_rag_summarize",
+	WORKSPACE_TOOL_NAMES.query,
+	WORKSPACE_TOOL_NAMES.summarize,
 	"fabric_list_architecture_decisions",
 	"fabric_list_feature_decisions",
 	"fabric_list_security_findings",
@@ -141,12 +143,16 @@ interface EnabledToolSets {
 	mcpConfigIds: Set<string> | null;
 	integrationIds: Set<string> | null;
 	fabricToolIds: Set<string> | null;
+	workspaceIds?: string[];
+	projectId?: string | null;
 }
 
 function toEnabledToolSets(lists: {
 	enabledMcpConfigIds?: string[] | null;
 	enabledIntegrationIds?: string[] | null;
 	enabledFabricToolIds?: string[] | null;
+	workspaceIds?: string[];
+	projectId?: string | null;
 }): EnabledToolSets {
 	const toSet = (ids?: string[] | null) =>
 		Array.isArray(ids) ? new Set(ids) : null;
@@ -154,6 +160,8 @@ function toEnabledToolSets(lists: {
 		mcpConfigIds: toSet(lists.enabledMcpConfigIds),
 		integrationIds: toSet(lists.enabledIntegrationIds),
 		fabricToolIds: toSet(lists.enabledFabricToolIds),
+		workspaceIds: lists.workspaceIds,
+		projectId: lists.projectId,
 	};
 }
 
@@ -163,7 +171,8 @@ function toEnabledToolSets(lists: {
  * requests, so it can hold tools that an earlier request's lists allowed
  * and this one's do not (Fizzy #2925).
  *
- * - No `configId`: a system tool, always offered.
+ * Run-context tools are rejected first when their required attachments are absent.
+ * - No `configId`: a system tool, offered after the run-context check.
  * - `fabric-ai-server`: follows the Fabric tool list only.
  * - `oauth:integration:{id}`: follows the integration list.
  * - Anything else is an `MCPConfig` row id and follows the MCP config list.
@@ -175,6 +184,9 @@ function isToolEnabledForRequest(
 	toolName: string,
 	enabled: EnabledToolSets,
 ): boolean {
+	if (isRunContextToolHidden(toolName, enabled, configId)) {
+		return false;
+	}
 	if (!configId) {
 		return true;
 	}
@@ -263,6 +275,9 @@ export interface ToolSearchOptions {
 	enabledMcpConfigIds?: string[] | null;
 	/** Specific OAuth integration IDs to include (null = all) */
 	enabledIntegrationIds?: string[] | null;
+	/** Undefined leaves discovery unchanged; an empty array hides workspace tools. */
+	workspaceIds?: string[];
+	projectId?: string | null;
 	/** Specific Fabric AI tool IDs to include (null = all, [] = none) */
 	enabledFabricToolIds?: string[] | null;
 }
@@ -703,6 +718,8 @@ export class ToolIndex {
 						enabledMcpConfigIds: options.enabledMcpConfigIds,
 						enabledIntegrationIds: options.enabledIntegrationIds,
 						enabledFabricToolIds: options.enabledFabricToolIds,
+						workspaceIds: options.workspaceIds,
+						projectId: options.projectId,
 					});
 				}
 			} catch (error) {
@@ -767,6 +784,8 @@ export class ToolIndex {
 			enabledMcpConfigIds?: string[] | null;
 			enabledIntegrationIds?: string[] | null;
 			enabledFabricToolIds?: string[] | null;
+			workspaceIds?: string[];
+			projectId?: string | null;
 		},
 	): Promise<ToolSearchResult[]> {
 		// Generate query embedding - tenantContext is used internally to resolve

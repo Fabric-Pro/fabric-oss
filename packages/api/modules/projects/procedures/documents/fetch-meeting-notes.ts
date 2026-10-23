@@ -9,6 +9,7 @@ import {
 	resolveSourceCredentialOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { selectTranscriptId } from "../meeting-digest/personal-transcript-fetch";
 
 /** Maximum characters per meeting transcript before truncation */
 const MAX_TRANSCRIPT_LENGTH = 15_000;
@@ -17,7 +18,8 @@ const MAX_TRANSCRIPT_LENGTH = 15_000;
  * Fetch meeting transcripts/summaries for selected meetings.
  *
  * For each provided join URL, resolves the meeting via Microsoft Graph,
- * fetches the most recent transcript, and returns formatted content.
+ * fetches the selected occurrence's transcript (the first listed when no
+ * startTime is given), and returns formatted content.
  * Used by the document editor to inject meeting context into AI-assisted editing.
  *
  * AUTHORIZATION: Uses hasProjectAccess() - verifies org membership + project access
@@ -137,29 +139,20 @@ export const fetchMeetingNotesProcedure = tenantProtectedProcedure
 					continue;
 				}
 
-				// Select transcript matching the requested date, or fall back to most recent
-				let transcriptId: string;
-				if (
-					meeting.startTime &&
-					transcriptListResult.transcripts.length > 1
-				) {
-					const targetDate = new Date(meeting.startTime).getTime();
-					const sorted = [...transcriptListResult.transcripts].sort(
-						(a, b) => {
-							const aDiff = Math.abs(
-								new Date(a.createdDateTime ?? "").getTime() -
-									targetDate,
-							);
-							const bDiff = Math.abs(
-								new Date(b.createdDateTime ?? "").getTime() -
-									targetDate,
-							);
-							return aDiff - bDiff;
-						},
-					);
-					transcriptId = sorted[0].id;
-				} else {
-					transcriptId = transcriptListResult.transcripts[0].id;
+				// A recurring series lists every occurrence's transcript; accept only
+				// one that covers the selected occurrence by selectTranscriptId's
+				// rule, rather than the nearest of any day (Fizzy #3253).
+				const transcriptId = selectTranscriptId(
+					transcriptListResult.transcripts,
+					meeting.startTime,
+				);
+				if (!transcriptId) {
+					notes.push({
+						subject: meetingSubject,
+						content: "",
+						error: "No transcript available for this meeting occurrence yet. Transcription may not have been enabled.",
+					});
+					continue;
 				}
 
 				// Step 3: Fetch transcript content

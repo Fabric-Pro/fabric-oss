@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const mockDefault = vi.hoisted(() => vi.fn());
 const mockDb = vi.hoisted(() => ({
 	cloudProviderConfig: { findMany: vi.fn() },
 	userCloudProviderConfig: { findMany: vi.fn() },
@@ -7,6 +8,7 @@ const mockDb = vi.hoisted(() => ({
 
 vi.mock("@repo/database", () => ({
 	db: mockDb,
+	getOrganizationDefaultProvider: mockDefault,
 	ALL_AUDIO_CAPABLE_PROVIDERS: [],
 	ALL_EMBEDDING_CAPABLE_PROVIDERS: [],
 	ALL_IMAGE_CAPABLE_PROVIDERS: [],
@@ -17,6 +19,7 @@ import { getConfiguredProviders } from "../configured-providers";
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mockDefault.mockResolvedValue("OPENAI_DIRECT");
 });
 
 describe("getConfiguredProviders for DECISION", () => {
@@ -101,3 +104,34 @@ describe("getConfiguredProviders with an embeddings-only key", () => {
 		});
 	});
 });
+
+it.each([false, true])(
+	"does not invent an organization default from a row with isDefault=%s when no usable default resolves",
+	async (isDefault) => {
+		mockDefault.mockResolvedValue(null);
+		mockDb.cloudProviderConfig.findMany.mockResolvedValue([
+			{
+				id: "example-config",
+				provider: "ANTHROPIC_DIRECT",
+				displayName: null,
+				isDefault,
+				priority: 1,
+				purpose: "ALL",
+				encryptedApiKey: null,
+				clientId: null,
+				encryptedClientSecret: null,
+				config: {},
+			},
+		]);
+		const result = await getConfiguredProviders(
+			"example-user",
+			"example-org",
+			"CHAT",
+		);
+		expect(result.defaultProvider).toBeNull();
+		expect(result.defaultProviderType).toBeNull();
+		expect(result.effectiveProviders).toEqual([]);
+		expect(result.allProviders[0].isDefault).toBe(false);
+		expect(mockDefault).toHaveBeenCalledWith("example-org");
+	},
+);

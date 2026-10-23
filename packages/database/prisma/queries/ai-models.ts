@@ -18,6 +18,11 @@ import { estimateAiUsageCostUsd } from "./ai-credits";
 import { writeAiUsageLog } from "./ai-usage-origins";
 import { redactSensitiveKeys } from "./audit-log";
 import { aiModelCatalogCache, aiTaskDefaultsCache } from "./cache";
+import {
+	readTaskDefaultsSnapshot,
+	type TaskDefaultsConnection,
+	TEXT_TASK_TYPES,
+} from "./task-default-snapshots";
 
 // ============================================================================
 // Model Catalog Queries
@@ -131,15 +136,111 @@ export async function getTaskDefaultModel(
 	taskType: AiTaskType,
 	complexity: TaskComplexity = "MEDIUM",
 	provider?: AIProvider,
+	connection?: TaskDefaultsConnection,
 ) {
-	// Build cache key from parameters
+	if (TEXT_TASK_TYPES.some((task) => task === taskType)) {
+		const snapshot = readTaskDefaultsSnapshot(
+			connection?.taskDefaultsSnapshot,
+			connection?.configId,
+		);
+		if (
+			snapshot &&
+			(provider === undefined || provider === connection?.provider)
+		) {
+			const scope =
+				provider === undefined ? snapshot.unscoped : snapshot.scoped;
+			const name = scope[taskType as (typeof TEXT_TASK_TYPES)[number]];
+			if (name === null) {
+				return null;
+			}
+			const cacheKey = `snapshot-model:${name}`;
+			let cached = aiModelCatalogCache.get<{
+				model: Awaited<ReturnType<typeof getModelByCanonicalName>>;
+			}>(cacheKey);
+			if (!cached) {
+				const model = await getModelByCanonicalName(name);
+				cached = { model };
+				// Wrapping the value distinguishes a cached miss from an absent entry.
+				aiModelCatalogCache.set(
+					cacheKey,
+					cached,
+					model ? undefined : 60_000,
+				);
+				if (!model) {
+					console.warn(
+						"[AI defaults] Pinned model unavailable; using template",
+						{
+							configId: connection?.configId,
+							taskType,
+							provider,
+							canonicalName: name,
+						},
+					);
+				}
+			}
+			if (cached.model) {
+				return cached.model;
+			}
+		}
+	}
 	const cacheKey = `task-default:${taskType}:${complexity}:${provider ?? "any"}`;
+	return await aiTaskDefaultsCache.getOrSet(cacheKey, () =>
+		getTaskDefaultModelUncached(taskType, complexity, provider),
+	);
+}
 
-	return await aiTaskDefaultsCache.getOrSet(cacheKey, async () => {
-		const defaults = await db.aiTaskModelDefault.findMany({
+/** Query the live template without populating or reading the task-default cache. */
+export async function getTaskDefaultModelUncached(
+	taskType: AiTaskType,
+	complexity: TaskComplexity = "MEDIUM",
+	provider?: AIProvider,
+	tx: Prisma.TransactionClient = db,
+) {
+	const defaults = await tx.aiTaskModelDefault.findMany({
+		where: {
+			taskType,
+			complexity,
+			...(provider && { provider }),
+		},
+		include: {
+			model: {
+				include: {
+					providerMappings: {
+						where: { isAvailable: true },
+					},
+				},
+			},
+		},
+		orderBy: [{ priority: "desc" }, { id: "asc" }],
+		take: 1,
+	});
+
+	if (defaults[0]?.model) {
+		return defaults[0].model;
+	}
+
+	// Defensive complexity fallback (PR 1102 post-merge regression).
+	// The catalog seed in `prisma/ai-model-catalog.ts` does not
+	// uniformly populate all (taskType, complexity) tiers. The
+	// concrete gap that motivated this fallback: `TOOL_CALLING` only
+	// has `MEDIUM` entries, but reasoningMode="pro" routes a
+	// tool-bound request through complexity="COMPLEX". Without this
+	// fallback, affected "pro" mode calls from the Fabric Loom launcher
+	// threw `executeDirectChatActivity` failure before reaching
+	// streamText — surfaced to users as the generic "Workflow
+	// execution failed".
+	//
+	// Retry with MEDIUM whenever the requested complexity has no
+	// rows. MEDIUM is the baseline seeded tier in the catalog. If the
+	// requested complexity already IS "MEDIUM", skip — there's
+	// nothing to fall back to and we should return null so the
+	// caller can surface a clear "no model configured" error
+	// instead of looping.
+	if (complexity !== "MEDIUM") {
+		const mediumDefaults = await tx.aiTaskModelDefault.findMany({
 			where: {
 				taskType,
-				complexity,
+				complexity: "MEDIUM",
 				...(provider && { provider }),
 			},
 			include: {
@@ -151,64 +252,21 @@ export async function getTaskDefaultModel(
 					},
 				},
 			},
-			orderBy: { priority: "desc" },
+			orderBy: [{ priority: "desc" }, { id: "asc" }],
 			take: 1,
 		});
-
-		if (defaults[0]?.model) {
-			return defaults[0].model;
+		if (mediumDefaults[0]?.model) {
+			console.warn(
+				"[getTaskDefaultModel] complexity fallback engaged: " +
+					`requested ${taskType}+${complexity}+${provider ?? "any"} ` +
+					`has no rows; using MEDIUM (${mediumDefaults[0].model.canonicalName}). ` +
+					"Add a catalog entry for this tier if the resolution is intended.",
+			);
+			return mediumDefaults[0].model;
 		}
+	}
 
-		// Defensive complexity fallback (PR 1102 post-merge regression).
-		// The catalog seed in `prisma/ai-model-catalog.ts` does not
-		// uniformly populate all (taskType, complexity) tiers. The
-		// concrete gap that motivated this fallback: `TOOL_CALLING` only
-		// has `MEDIUM` entries, but reasoningMode="pro" routes a
-		// tool-bound request through complexity="COMPLEX". Without this
-		// fallback, every "pro" mode call from the Fabric Loom launcher
-		// threw `executeDirectChatActivity` failure before reaching
-		// streamText — surfaced to users as the generic "Workflow
-		// execution failed".
-		//
-		// Retry with MEDIUM whenever the requested complexity has no
-		// rows. MEDIUM is the only universally-seeded tier across all
-		// task types (see catalog), so it's a safe default. If the
-		// requested complexity already IS "MEDIUM", skip — there's
-		// nothing to fall back to and we should return null so the
-		// caller can surface a clear "no model configured" error
-		// instead of looping.
-		if (complexity !== "MEDIUM") {
-			const mediumDefaults = await db.aiTaskModelDefault.findMany({
-				where: {
-					taskType,
-					complexity: "MEDIUM",
-					...(provider && { provider }),
-				},
-				include: {
-					model: {
-						include: {
-							providerMappings: {
-								where: { isAvailable: true },
-							},
-						},
-					},
-				},
-				orderBy: { priority: "desc" },
-				take: 1,
-			});
-			if (mediumDefaults[0]?.model) {
-				console.warn(
-					"[getTaskDefaultModel] complexity fallback engaged: " +
-						`requested ${taskType}+${complexity}+${provider ?? "any"} ` +
-						`has no rows; using MEDIUM (${mediumDefaults[0].model.canonicalName}). ` +
-						"Add a catalog entry for this tier if the resolution is intended.",
-				);
-				return mediumDefaults[0].model;
-			}
-		}
-
-		return null;
-	});
+	return null;
 }
 
 // ============================================================================
@@ -776,10 +834,12 @@ export async function getModelForTask(
 	taskType: AiTaskType,
 	organizationId?: string | null,
 	complexity: TaskComplexity = "MEDIUM",
+	connection?: TaskDefaultsConnection,
+	options?: { ignorePreferences?: boolean },
 ): Promise<ModelResolutionResult | null> {
 	// XOR PATTERN: Check context-specific overrides ONLY
 	// Personal preferences NEVER leak into org context and vice versa
-	if (organizationId) {
+	if (organizationId && !options?.ignorePreferences) {
 		// ORGANIZATION CONTEXT: Only check org overrides
 		const orgOverride = await getOrgModelPreference(
 			organizationId,
@@ -862,7 +922,7 @@ export async function getModelForTask(
 				},
 			);
 		}
-	} else {
+	} else if (!organizationId && !options?.ignorePreferences) {
 		// PERSONAL CONTEXT: Only check user overrides
 		const userOverride = await getUserModelPreference(
 			userId,
@@ -905,6 +965,7 @@ export async function getModelForTask(
 		taskType,
 		complexity,
 		provider,
+		connection,
 	);
 	if (systemDefault) {
 		// Handle deprecation (unlikely for system defaults, but handle for completeness)
@@ -939,6 +1000,15 @@ export async function getProviderModelIdForCanonical(
 	canonicalName: string,
 	provider: AIProvider,
 ): Promise<string | null> {
+	return (await getProviderModelMappingForCanonical(canonicalName, provider))
+		.providerModelId;
+}
+
+/** Return canonical existence and the available provider ID from one lookup. */
+export async function getProviderModelMappingForCanonical(
+	canonicalName: string,
+	provider: AIProvider,
+): Promise<{ exists: boolean; providerModelId: string | null }> {
 	const model = await db.aiModel.findUnique({
 		where: { canonicalName },
 		include: {
@@ -948,7 +1018,47 @@ export async function getProviderModelIdForCanonical(
 			},
 		},
 	});
-	return model?.providerMappings?.[0]?.providerModelId ?? null;
+	return {
+		exists: model !== null,
+		providerModelId: model?.providerMappings?.[0]?.providerModelId ?? null,
+	};
+}
+
+/**
+ * Resolve a provider ID, accepting matches only when unambiguous at each step.
+ * The cross-provider step ignores availability so retired IDs still resolve for logging and limits.
+ */
+export async function getCanonicalNameForProviderModelId(
+	providerModelId: string,
+	provider: AIProvider,
+): Promise<string | null> {
+	const providerModels = await db.aiModel.findMany({
+		where: {
+			providerMappings: {
+				some: { provider, providerModelId, isAvailable: true },
+			},
+		},
+		select: { canonicalName: true },
+		take: 2,
+	});
+	if (providerModels.length > 0) {
+		return providerModels.length === 1
+			? providerModels[0].canonicalName
+			: null;
+	}
+
+	// Query models rather than mappings so multiple providers of the same
+	// catalog model count as one match. Two models are enough to detect ambiguity.
+	const models = await db.aiModel.findMany({
+		where: {
+			providerMappings: {
+				some: { providerModelId },
+			},
+		},
+		select: { canonicalName: true },
+		take: 2,
+	});
+	return models.length === 1 ? models[0].canonicalName : null;
 }
 
 // ============================================================================

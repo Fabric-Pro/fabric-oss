@@ -32,7 +32,7 @@ describe("CacheKeys.meetingTranscript", () => {
 				"2026-06-11T10:00:00Z",
 			),
 		);
-		expect(k.startsWith("transcript:user-1:")).toBe(true);
+		expect(k.startsWith("transcript:v7:user-1:")).toBe(true);
 	});
 
 	it("never collides across users (no cross-user leak)", () => {
@@ -87,4 +87,71 @@ describe("CacheKeys.meetingTranscript", () => {
 	it("caches transcripts for a long TTL since they are immutable", () => {
 		expect(CacheTTL.meetingTranscript).toBe(7 * 24 * 60 * 60);
 	});
+});
+
+it("scopes summary cache keys by content, organization and project", () => {
+	const key = CacheKeys.meetingTranscriptSummary(
+		"transcript",
+		"example-org",
+		"example-project",
+		4_096,
+	);
+	expect(
+		CacheKeys.meetingTranscriptSummary(
+			"transcript",
+			"example-org",
+			"example-project",
+			4_096,
+		),
+	).toBe(key);
+	expect(
+		CacheKeys.meetingTranscriptSummary(
+			"changed",
+			"example-org",
+			"example-project",
+			4_096,
+		),
+	).not.toBe(key);
+	expect(
+		CacheKeys.meetingTranscriptSummary(
+			"transcript",
+			"another-org",
+			"example-project",
+			4_096,
+		),
+	).not.toBe(key);
+	expect(
+		CacheKeys.meetingTranscriptSummary(
+			"transcript",
+			"example-org",
+			"another-project",
+			4_096,
+		),
+	).not.toBe(key);
+	expect(key).not.toContain("transcript:");
+});
+
+it("versions extraction summaries and buckets nearby target sizes", () => {
+	const key = (targetChars: number) =>
+		CacheKeys.meetingTranscriptSummary(
+			"example transcript",
+			"example-org",
+			"example-project",
+			targetChars,
+		);
+	expect(key(4_001)).toMatch(/^transcript-summary:v4:/);
+	expect(key(4_001)).toBe(key(4_050));
+	expect(key(4_001)).not.toBe(key(5_000));
+});
+
+it("shares a geometric summary bucket across targets hundreds of characters apart", () => {
+	const key = (target: number) =>
+		CacheKeys.meetingTranscriptSummary(
+			"example transcript",
+			"example-org",
+			"example-project",
+			target,
+		);
+	expect(key(5_000)).toBe(key(5_500));
+	expect(key(5_000)).not.toBe(key(6_500));
 });

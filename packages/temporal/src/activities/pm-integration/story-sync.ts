@@ -8033,14 +8033,13 @@ export type FizzyBoardCardsRead =
  * push the upstream Worker isolate over its memory budget, which is what
  * produced the intermittent Cloudflare 1101s (Fabric-Pro/fizzy-mcp#29).
  *
- * ONLY pass "summary" when the caller provably never reads `description`.
- * `fetch-pm-hierarchy` feeds the RAG backlog snapshot, and
- * `story-sync-workflow`'s non-selective pull writes the list-derived
- * description into the story at create time. That create-time value is
- * normally overwritten moments later by the post-create `syncStoryToPM`
- * content pull, which does re-fetch the full card — but that pull is
- * best-effort and its failure is caught and logged, so on a bad day summary
- * mode would leave a brand-new story holding whatever the listing supplied.
+ * Use summary for pickers that do not read descriptions, or for explicit
+ * prompt-only reads that accept a short preview. `fetch-pm-hierarchy` uses
+ * summary only for prompt-only callers; `existing-project-setup` still reads
+ * full descriptions for the embedded ProjectContext. `story-sync-workflow`'s
+ * non-selective pull also reads full descriptions because it persists the
+ * list-derived description when creating stories. Its later full content pull
+ * is best-effort, so it cannot guarantee replacing a preview.
  * Left unset the `fields` arg is omitted entirely, so the request is
  * byte-identical to before and a fizzy-mcp deployment predating the
  * projection is unaffected.
@@ -8061,6 +8060,8 @@ export async function readFizzyBoardCards(input: {
 	organizationId?: string;
 	capabilities: PMToolCapabilities;
 	fields?: "summary" | "full";
+	/** Explicit prompt-only opt-in to use a preview when the description is absent. */
+	descriptionFromPreview?: boolean;
 }): Promise<FizzyBoardCardsRead> {
 	const {
 		mcpConfigId: maybeMcpConfigId,
@@ -8295,7 +8296,10 @@ export async function readFizzyBoardCards(input: {
 					// `state` with the column name so the UI state filter works
 					// (Fizzy cards don't carry state themselves — the column IS
 					// the state).
-					const page = parseFizzyCardsResponse(cardsResult.output);
+					const page = parseFizzyCardsResponse(
+						cardsResult.output,
+						input.descriptionFromPreview,
+					);
 					cardsReturnedForColumn += page.rawCount;
 					if (page.totalCount != null) {
 						reportedTotal = page.totalCount;
@@ -8527,7 +8531,10 @@ function asNonNegativeInt(value: unknown): number | null {
  * Handles MCP content wrapper, the `{cards, has_more, next_page, total_count}`
  * page envelope, and various Fizzy field names.
  */
-function parseFizzyCardsResponse(output: unknown): FizzyCardPage {
+function parseFizzyCardsResponse(
+	output: unknown,
+	descriptionFromPreview = false,
+): FizzyCardPage {
 	const items: PMWorkItemSummary[] = [];
 	let data: unknown = output;
 
@@ -8603,14 +8610,13 @@ function parseFizzyCardsResponse(output: unknown): FizzyCardPage {
 		const title = (rec.title ?? rec.name ?? rec.summary) as
 			| string
 			| undefined;
-		// Under `fields: "summary"` the server sends no `description` at all —
-		// only a 200-char `description_preview`. That preview is deliberately
-		// NOT back-filled here: a caller that opts into summary on a path which
-		// persists descriptions should see them come back empty (loud) rather
-		// than silently truncated to 200 chars (invisible, and permanent once
-		// written to a story). `listAllFizzyCards` documents which callers may
-		// opt in.
-		const description = (rec.description ?? rec.body ?? rec.content) as
+		// Summary cards carry description_preview instead of description. Back-fill
+		// only for an explicit prompt-only caller; fields: "summary" alone keeps
+		// descriptions empty so persistence paths do not store clipped previews.
+		const description = (rec.description ??
+			rec.body ??
+			rec.content ??
+			(descriptionFromPreview ? rec.description_preview : undefined)) as
 			| string
 			| null
 			| undefined;

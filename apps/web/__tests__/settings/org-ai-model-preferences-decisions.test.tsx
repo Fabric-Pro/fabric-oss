@@ -1,3 +1,4 @@
+import en from "@repo/i18n/translations/en.json";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
 	fireEvent,
@@ -6,8 +7,11 @@ import {
 	waitFor,
 	within,
 } from "@testing-library/react";
+import { NextIntlClientProvider } from "next-intl";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
+
+vi.mock("next-intl", async () => vi.importActual("next-intl"));
 
 const { mockListAvailable, mockGetTaskDefaults, mockGetOrg, mockSetOrg } =
 	vi.hoisted(() => ({
@@ -21,6 +25,9 @@ vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		aiConfig: {
 			models: { listAvailable: mockListAvailable },
+			resolution: {
+				getStatus: vi.fn(async () => ({ configuredProviders: [] })),
+			},
 			preferences: {
 				getTaskDefaults: mockGetTaskDefaults,
 				getOrg: mockGetOrg,
@@ -77,6 +84,7 @@ const generalModelsResponse = {
 		},
 	],
 	defaultProvider: "OPENAI_DIRECT",
+	organizationDefaultProvider: "OPENAI_DIRECT",
 	providerIds: ["OPENAI_DIRECT"],
 	models: [
 		{
@@ -204,9 +212,11 @@ function renderForm() {
 		defaultOptions: { queries: { retry: false } },
 	});
 	return render(
-		<QueryClientProvider client={client}>
-			<OrgAiModelPreferencesForm />
-		</QueryClientProvider>,
+		<NextIntlClientProvider locale="en" messages={en} timeZone="UTC">
+			<QueryClientProvider client={client}>
+				<OrgAiModelPreferencesForm />
+			</QueryClientProvider>
+		</NextIntlClientProvider>,
 	);
 }
 
@@ -241,12 +251,12 @@ describe("organization AI model preferences decisions", () => {
 			taskType: "DECISION",
 		});
 
-		const decisionCard = decisionsHeading.closest("div.p-4");
+		const decisionCard = decisionsHeading.closest("tr");
 		if (!decisionCard) {
 			throw new Error("Decisions card was not rendered");
 		}
 
-		fireEvent.click(within(decisionCard).getByRole("combobox"));
+		fireEvent.click(within(decisionCard).getByRole("button"));
 		expect(await screen.findByText("typesafe-ai/jev")).toBeInTheDocument();
 		// Luna is the default decision model; Jev stays selectable beside it.
 		expect(
@@ -275,7 +285,7 @@ describe("switching decisions off", () => {
 
 	async function findDecisionCard() {
 		const heading = await screen.findByText("Decisions");
-		const card = heading.closest("div.p-4");
+		const card = heading.closest("tr");
 		if (!card) {
 			throw new Error("Decisions card was not rendered");
 		}
@@ -289,10 +299,12 @@ describe("switching decisions off", () => {
 		renderForm();
 		const decisionCard = await findDecisionCard();
 
-		fireEvent.click(within(decisionCard).getByRole("combobox"));
+		fireEvent.click(within(decisionCard).getByRole("button"));
 
 		expect(await screen.findByText("TypeSafe AI Jev")).toBeInTheDocument();
-		expect(screen.getByText("Off")).toBeInTheDocument();
+		expect(
+			screen.getByRole("combobox", { name: "Search models" }),
+		).toBeInTheDocument();
 		expect(screen.getByText("Disabled")).toBeInTheDocument();
 		expect(
 			screen.getByText("Use the regular AI model instead"),
@@ -305,12 +317,12 @@ describe("switching decisions off", () => {
 
 		renderForm();
 		const heading = await screen.findByText("Evaluations");
-		const card = heading.closest("div.p-4");
+		const card = heading.closest("tr");
 		if (!card) {
 			throw new Error("Evaluations card was not rendered");
 		}
 
-		fireEvent.click(within(card as HTMLElement).getByRole("combobox"));
+		fireEvent.click(within(card as HTMLElement).getByRole("button"));
 
 		expect(await screen.findByText("Text Model")).toBeInTheDocument();
 		expect(screen.queryByText("Disabled")).not.toBeInTheDocument();
@@ -329,7 +341,7 @@ describe("switching decisions off", () => {
 		renderForm();
 		const decisionCard = await findDecisionCard();
 
-		fireEvent.click(within(decisionCard).getByRole("combobox"));
+		fireEvent.click(within(decisionCard).getByRole("button"));
 		fireEvent.click(await screen.findByText("Disabled"));
 
 		expect(
@@ -406,11 +418,11 @@ describe("decisions without Vercel", () => {
 		mockGetOrg.mockResolvedValue([]);
 		renderForm();
 		const heading = await screen.findByText("Decisions");
-		const card = heading.closest("div.p-4");
+		const card = heading.closest("tr");
 		if (!card) {
 			throw new Error("Decisions card missing");
 		}
-		expect(within(card).getByRole("combobox")).toBeDisabled();
+		expect(within(card).getByRole("button")).toBeDisabled();
 		expect(
 			within(card).queryByText("TypeSafe AI Jev"),
 		).not.toBeInTheDocument();

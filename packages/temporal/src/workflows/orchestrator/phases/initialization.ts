@@ -17,6 +17,7 @@ import type * as projectMetadataActivities from "../../../activities/project-met
 import type * as weaveActivities from "../../../activities/weave";
 import { orchestratorBasePrompt } from "../../../lib/assistant-identity";
 import { formatRepositoryRoleMap } from "../../../lib/repository-role-formatter";
+import { AI_NON_RETRYABLE_ERROR_TYPES } from "../../ai-non-retryable-errors";
 import {
 	type IterativeTurnOptions,
 	rethrowTurnStop,
@@ -29,6 +30,7 @@ import {
 	usesIterativeExecution,
 	type WorkflowState,
 } from "../types";
+import { orchestratorErrorMessage } from "../usage-limit";
 import { secondaryUsageOriginFields } from "../workflow-usage-attribution";
 import {
 	attachedProjectReferenceLine,
@@ -48,6 +50,7 @@ const {
 	startToCloseTimeout: "5 minutes",
 	heartbeatTimeout: "30 seconds",
 	retry: {
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 		initialInterval: "1s",
 		backoffCoefficient: 2,
 		maximumInterval: "30s",
@@ -60,6 +63,7 @@ const { loadOrchestratorMemoryActivity, updateRecentActivityActivity } =
 		startToCloseTimeout: "2 minutes",
 		heartbeatTimeout: "30 seconds",
 		retry: {
+			nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 			initialInterval: "500ms",
 			backoffCoefficient: 2,
 			maximumInterval: "10s",
@@ -73,6 +77,7 @@ const { createSandboxActivity, updateWeaveExecutionActivity } = proxyActivities<
 	startToCloseTimeout: "2 minutes",
 	heartbeatTimeout: "30 seconds",
 	retry: {
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 		initialInterval: "1s",
 		backoffCoefficient: 2,
 		maximumAttempts: 3,
@@ -84,6 +89,7 @@ const { getProjectMetadataActivity } = proxyActivities<
 >({
 	startToCloseTimeout: "30 seconds",
 	retry: {
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 		initialInterval: "500ms",
 		backoffCoefficient: 2,
 		maximumInterval: "5s",
@@ -262,8 +268,7 @@ export async function executeInitializationPhase(
 				type: "orchestrator_memory",
 				description: "Failed to load memory context",
 				used: false,
-				usageReason:
-					error instanceof Error ? error.message : "Unknown error",
+				usageReason: orchestratorErrorMessage(error),
 			});
 			// Issue #9: Track degraded capability
 			state.degradedCapabilities.orchestratorMemory = true;
@@ -826,8 +831,7 @@ export async function executeInitializationPhase(
 				}
 			} catch (error) {
 				rethrowTurnStop(error, turn);
-				const message =
-					error instanceof Error ? error.message : String(error);
+				const message = orchestratorErrorMessage(error, String(error));
 				// A weave BACKGROUND_AGENTS run without a sandbox is doomed —
 				// the shuttle step has no session to talk to. Fail fast with
 				// an actionable error instead of swallowing and proceeding.
@@ -886,8 +890,7 @@ export async function executeInitializationPhase(
 		};
 	} catch (error) {
 		rethrowTurnStop(error, turn);
-		const errorMessage =
-			error instanceof Error ? error.message : "Unknown error";
+		const errorMessage = orchestratorErrorMessage(error);
 		log.error("Initialization phase failed", { error: errorMessage });
 		return {
 			success: false,

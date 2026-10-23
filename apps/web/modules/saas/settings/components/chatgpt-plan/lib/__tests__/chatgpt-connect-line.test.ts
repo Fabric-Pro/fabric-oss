@@ -2,15 +2,11 @@
  * The `fabric connect chatgpt` line each deployment shows (Fizzy #2770),
  * built like the Connect dialog's setup line so it works where it is shown.
  */
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import {
-	CLI_DEFAULT_ORIGIN,
-	chatgptConnectLines,
-} from "../chatgpt-connect-line";
+import { chatgptConnectLines } from "../chatgpt-connect-line";
 
 const STAGING = "https://staging.example.com";
+const DEFAULT_ORIGIN = "https://fabric.pro";
 
 const document = (origin: string | null) => ({
 	spec: 1 as const,
@@ -32,7 +28,6 @@ describe("chatgptConnectLines", () => {
 		).toEqual({
 			primary: `npx -y ${STAGING}/cli/fabric-0.4.0-0123456789.tgz connect chatgpt --base-url ${STAGING}`,
 			primaryKind: "served",
-			servedLine: null,
 		});
 	});
 
@@ -57,33 +52,18 @@ describe("chatgptConnectLines", () => {
 		).toEqual({
 			primary: `fabric connect chatgpt --org example-org --shared --base-url ${STAGING}`,
 			primaryKind: "installed",
-			servedLine: null,
 		});
 	});
 
-	it("pins both installed and served commands on the default address", () => {
+	it("leads with the served CLI on the CLI's own default address too, so nothing has to be installed first", () => {
 		expect(
 			chatgptConnectLines({
-				document: document(CLI_DEFAULT_ORIGIN),
-				origin: CLI_DEFAULT_ORIGIN,
+				document: document(DEFAULT_ORIGIN),
+				origin: DEFAULT_ORIGIN,
 			}),
 		).toEqual({
-			primary: `fabric connect chatgpt --base-url ${CLI_DEFAULT_ORIGIN}`,
-			primaryKind: "installed",
-			servedLine: `npx -y ${CLI_DEFAULT_ORIGIN}/cli/fabric-0.4.0-0123456789.tgz connect chatgpt --base-url ${CLI_DEFAULT_ORIGIN}`,
+			primary: `npx -y ${DEFAULT_ORIGIN}/cli/fabric-0.4.0-0123456789.tgz connect chatgpt --base-url ${DEFAULT_ORIGIN}`,
+			primaryKind: "served",
 		});
-	});
-
-	it("agrees with the CLI on its default address", () => {
-		const source = readFileSync(
-			resolve(
-				__dirname,
-				"../../../../../../../../../packages/cli/src/lib/origin.ts",
-			),
-			"utf8",
-		);
-		expect(source).toContain(
-			`export const DEFAULT_ORIGIN = "${CLI_DEFAULT_ORIGIN}";`,
-		);
 	});
 });

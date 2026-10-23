@@ -17,11 +17,13 @@ const h = vi.hoisted(() => ({
 	project: vi.fn(),
 	count: vi.fn(),
 	query: vi.fn(),
+	access: vi.fn(),
 }));
 
 vi.mock("@repo/database", async (importOriginal) => ({
 	...(await importOriginal<Record<string, unknown>>()),
 	getProjectCodeIndexes: h.getProjectCodeIndexes,
+	getProjectAccessContext: h.access,
 	db: {
 		projectRepositoryIntegration: { findMany: h.integrations },
 		project: { findUnique: h.project },
@@ -109,6 +111,7 @@ beforeEach(() => {
 	h.project.mockResolvedValue(null);
 	h.count.mockResolvedValue({ count: 10 });
 	h.query.mockResolvedValue({ points: [] });
+	h.access.mockResolvedValue({ organizationId: "org-1" });
 });
 
 describe("code_search repository scope", () => {
@@ -391,4 +394,37 @@ describe("code_search on a connected repository with no index", () => {
 			expect(said(directChat)).toContain("other sources");
 		},
 	);
+});
+
+// The route checks project access when the turn starts; the turn runs on
+// after that, so the tool checks again before reading anything (Fizzy #2869).
+describe("code_search project access", () => {
+	it("is not bound, and loads no repositories, for a user who cannot read the project", async () => {
+		h.access.mockResolvedValue(null);
+		expect(await buildTool()).toBeUndefined();
+		expect(h.getProjectCodeIndexes).not.toHaveBeenCalled();
+		expect(h.integrations).not.toHaveBeenCalled();
+	});
+
+	it("is not bound for a project hosted by another organization than the chat's", async () => {
+		h.access.mockResolvedValue({ organizationId: "org-2" });
+		expect(await buildTool()).toBeUndefined();
+	});
+
+	it("is not bound when the access lookup fails", async () => {
+		h.access.mockRejectedValue(new Error("db down"));
+		expect(await buildTool()).toBeUndefined();
+	});
+
+	it("refuses to search once access is revoked mid-turn", async () => {
+		const tool = await buildTool();
+		h.getProjectCodeIndexes.mockClear();
+		h.access.mockResolvedValue(null);
+
+		const result = await tool.execute({ query: "auth" });
+
+		expect(result).toMatchObject({ success: false, results: [] });
+		expect(h.getProjectCodeIndexes).not.toHaveBeenCalled();
+		expect(h.query).not.toHaveBeenCalled();
+	});
 });

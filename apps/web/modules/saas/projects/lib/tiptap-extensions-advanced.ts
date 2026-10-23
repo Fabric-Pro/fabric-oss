@@ -500,8 +500,14 @@ function buildSharedRichDocumentExtensions(
 			showOnlyWhenEditable: true,
 		}),
 
-		// Smart typography (auto-convert quotes, dashes, etc.)
-		Typography,
+		// Smart typography (dashes, arrows, symbols). Quotes stay straight so
+		// typed text matches the straight quotes in stored markdown and AI output.
+		Typography.configure({
+			openDoubleQuote: false,
+			closeDoubleQuote: false,
+			openSingleQuote: false,
+			closeSingleQuote: false,
+		}),
 
 		// Text styling foundations
 		TextStyle,

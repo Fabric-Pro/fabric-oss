@@ -11,7 +11,7 @@ vi.mock("../../pm-source", () => ({ assertPmMcpTargetOrigin: vi.fn() }));
 
 import { fetchPMWorkItemsByType } from "../fetch-pm-hierarchy";
 import { listAllFizzyCards, readFizzyBoardCards } from "../story-sync";
-import type { PMToolCapabilities } from "../tool-analyzer";
+import type { PaginationInfo, PMToolCapabilities } from "../tool-analyzer";
 
 const taskList = {
 	toolName: "fizzy_get_cards",
@@ -380,5 +380,586 @@ describe("successful unfamiliar PM payloads", () => {
 		});
 		expect(result.readErrorKind).toBe("other");
 		expect(result).not.toHaveProperty("readError");
+	});
+});
+
+describe("prompt-only PM hierarchy reads", () => {
+	const card = {
+		id: "example-card",
+		title: "Example card",
+		description_preview: "Useful short description",
+	};
+	const mockBoard = () =>
+		wire.execute.mockImplementation(async ({ toolName }) =>
+			ok(
+				toolName === "fizzy_get_columns"
+					? [{ id: "example-column", name: "Todo" }]
+					: [card],
+			),
+		);
+
+	it("back-fills a preview only with explicit prompt-only opt-in", async () => {
+		mockBoard();
+		const legacy = await readFizzyBoardCards({
+			...input,
+			fields: "summary",
+		});
+		expect(legacy).toMatchObject({
+			kind: "ok",
+			result: { items: [{ description: null }] },
+		});
+		const prompt = await readFizzyBoardCards({
+			...input,
+			fields: "summary",
+			descriptionFromPreview: true,
+		});
+		expect(prompt).toMatchObject({
+			kind: "ok",
+			result: { items: [{ description: card.description_preview }] },
+		});
+	});
+
+	it("requests summary and retains the preview only for prompt hierarchy reads", async () => {
+		mockBoard();
+		const legacy = await fetchPMWorkItemsByType(input);
+		const legacyCall = wire.execute.mock.calls.find(
+			([call]) => call.toolName === "fizzy_get_cards",
+		);
+		expect(legacyCall).toBeDefined();
+		expect(legacyCall?.[0].args).not.toHaveProperty("fields");
+		expect(legacy.stories[0].description).toBeNull();
+		wire.execute.mockClear();
+		const prompt = await fetchPMWorkItemsByType({
+			...input,
+			forPrompt: true,
+		});
+		expect(wire.execute).toHaveBeenCalledWith(
+			expect.objectContaining({
+				toolName: "fizzy_get_cards",
+				args: expect.objectContaining({ fields: "summary" }),
+			}),
+		);
+		expect(prompt.stories[0].description).toBe(card.description_preview);
+	});
+
+	it.each(["fizzy", "ado", "ado-partial-failure", "generic"])(
+		"omits raw only for prompt reads: %s",
+		async (provider) => {
+			const ado = provider.startsWith("ado");
+			const categories = [
+				"Microsoft.EpicCategory",
+				"Microsoft.FeatureCategory",
+				"Microsoft.RequirementCategory",
+			];
+			wire.execute.mockImplementation(async ({ toolName, args }) => {
+				if (toolName === "fizzy_get_columns") {
+					return ok([{ id: "example-column", name: "Todo" }]);
+				}
+				if (toolName === "wit_list_backlogs") {
+					return ok(categories.map((id) => ({ id })));
+				}
+				if (
+					provider === "ado-partial-failure" &&
+					args.backlogId === categories[2]
+				) {
+					return { success: false };
+				}
+				return ok([{ ...card, description: "Full description" }]);
+			});
+			const args = {
+				...input,
+				capabilities: {
+					...capabilities,
+					detectedType:
+						provider === "fizzy"
+							? "fizzy"
+							: ado
+								? "azure-devops"
+								: "linear",
+					taskList: {
+						...taskList,
+						toolName: ado
+							? "wit_list_backlog_work_items"
+							: "fizzy_get_cards",
+					},
+				},
+			};
+			const legacy = await fetchPMWorkItemsByType(args);
+			const prompt = await fetchPMWorkItemsByType({
+				...args,
+				forPrompt: true,
+			});
+			const legacyItems = [
+				...legacy.epics,
+				...legacy.features,
+				...legacy.stories,
+			];
+			const promptItems = [
+				...prompt.epics,
+				...prompt.features,
+				...prompt.stories,
+			];
+			expect(legacyItems).toHaveLength(
+				ado ? (provider === "ado" ? 3 : 2) : 1,
+			);
+			expect(promptItems).toHaveLength(legacyItems.length);
+			for (const item of legacyItems) {
+				expect(item.raw).toEqual({
+					...card,
+					description: "Full description",
+				});
+			}
+			for (const item of promptItems) {
+				expect(item).not.toHaveProperty("raw");
+			}
+			expect(prompt).toEqual({
+				...legacy,
+				epics: legacy.epics.map(({ raw: _raw, ...item }) => item),
+				features: legacy.features.map(({ raw: _raw, ...item }) => item),
+				stories: legacy.stories.map(({ raw: _raw, ...item }) => item),
+			});
+		},
+	);
+});
+
+describe("non-ADO paged hierarchy reads", () => {
+	const pagedInput = (paginationInfo: PaginationInfo) => ({
+		...input,
+		forPrompt: true,
+		capabilities: {
+			...capabilities,
+			detectedType: "github",
+			taskList: {
+				...taskList,
+				toolName: "list_issues",
+				filterParams: ["team"],
+				paginationInfo,
+			},
+		},
+	});
+	const numbered = {
+		style: "offset-page" as const,
+		pageParam: "page",
+		pageSizeParam: "per_page",
+	};
+	const items = (start: number, length: number) =>
+		Array.from({ length }, (_, i) => ({
+			id: 9999999 + i,
+			number: start + i,
+			title: "Example issue",
+			description: "x".repeat(800),
+		}));
+
+	it.each([
+		numbered,
+		{
+			style: "offset-skip" as const,
+			skipParam: "startAt",
+			pageSizeParam: "maxResults",
+		},
+	])(
+		"multi-page read collects pages with $style args",
+		async (paginationInfo) => {
+			wire.execute
+				.mockResolvedValueOnce(ok({ issues: items(42, 50), total: 52 }))
+				.mockResolvedValueOnce(ok({ issues: items(92, 2), total: 52 }));
+			const result = await fetchPMWorkItemsByType(
+				pagedInput(paginationInfo),
+			);
+			expect(result.stories).toHaveLength(52);
+			expect(result.stories[0].id).toBe("42");
+			expect(wire.execute).toHaveBeenCalledTimes(2);
+			for (const [index, [call]] of wire.execute.mock.calls.entries()) {
+				expect(call.args).toEqual(
+					paginationInfo.style === "offset-page"
+						? {
+								board_id: "example-board",
+								team: "example-team",
+								page: index + 1,
+								per_page: 50,
+							}
+						: {
+								board_id: "example-board",
+								team: "example-team",
+								startAt: index * 50,
+								maxResults: 50,
+							},
+				);
+			}
+			expect(result.listingTruncated).not.toBe(true);
+			for (const item of result.stories) {
+				expect(item).not.toHaveProperty("raw");
+				expect(item.description?.length).toBeLessThanOrEqual(500);
+			}
+		},
+	);
+	it.each(["maxResults", undefined])(
+		"skip offsets follow raw 20-item pages with size param %s",
+		async (pageSizeParam) => {
+			wire.execute.mockImplementation(async ({ args }) =>
+				ok({
+					issues: items(
+						args.startAt,
+						Math.max(0, Math.min(20, 100 - args.startAt)),
+					),
+					total: 100,
+				}),
+			);
+			const result = await fetchPMWorkItemsByType(
+				pagedInput({
+					style: "offset-skip",
+					skipParam: "startAt",
+					pageSizeParam,
+				}),
+			);
+			expect(result.stories).toHaveLength(100);
+			expect(result.stories.map((item) => item.id)).toEqual(
+				Array.from({ length: 100 }, (_, i) => String(i)),
+			);
+			expect(
+				wire.execute.mock.calls.map(([call]) => call.args.startAt),
+			).toEqual([0, 20, 40, 60, 80]);
+			expect(result.readStatus).toBe("ok");
+			expect(result.listingTruncated).not.toBe(true);
+		},
+	);
+
+	it.each([
+		{ total: 50 },
+		{ totalCount: 50 },
+		{ total_count: 50 },
+		{ meta: { total: 50 } },
+		{ pagination: { total: 50 } },
+	])("trusts envelope total %j even on a full page", async (metadata) => {
+		wire.execute.mockResolvedValue(
+			ok({ issues: items(1, 50), ...metadata }),
+		);
+		const result = await fetchPMWorkItemsByType(pagedInput(numbered));
+		expect(result.stories).toHaveLength(50);
+		expect(wire.execute).toHaveBeenCalledTimes(1);
+		expect(result.listingTruncated).not.toBe(true);
+	});
+	it("detects an effective size cap and excludes count from totals", async () => {
+		wire.execute
+			.mockResolvedValueOnce(ok({ issues: items(1, 30), count: 30 }))
+			.mockResolvedValueOnce(ok({ issues: items(31, 30), count: 30 }))
+			.mockResolvedValueOnce(ok({ issues: items(61, 4), count: 4 }));
+		const result = await fetchPMWorkItemsByType(pagedInput(numbered));
+		expect(result.stories).toHaveLength(64);
+		expect(wire.execute).toHaveBeenCalledTimes(3);
+		expect(result.listingTruncated).not.toBe(true);
+	});
+	it("treats an empty page after a full page without total as the end of the list", async () => {
+		wire.execute
+			.mockResolvedValueOnce(ok(items(1, 50)))
+			.mockResolvedValueOnce(ok([]));
+		const result = await fetchPMWorkItemsByType(pagedInput(numbered));
+		expect(result.stories).toHaveLength(50);
+		expect(wire.execute).toHaveBeenCalledTimes(2);
+		expect(result.listingTruncated).not.toBe(true);
+	});
+	it("marks a repeated full page without total as truncated", async () => {
+		wire.execute.mockResolvedValue(ok(items(1, 50)));
+		const result = await fetchPMWorkItemsByType(pagedInput(numbered));
+		expect(result.stories).toHaveLength(50);
+		expect(wire.execute).toHaveBeenCalledTimes(2);
+		expect(result.listingTruncated).toBe(true);
+	});
+	it("fails the read when a page after a confirmed size cap is refused", async () => {
+		wire.execute
+			.mockResolvedValueOnce(ok(items(1, 30)))
+			.mockResolvedValueOnce(ok(items(31, 30)))
+			.mockResolvedValueOnce({
+				success: false,
+				error: "403 secret-token",
+			});
+		const result = await fetchPMWorkItemsByType(pagedInput(numbered));
+		expect(result).toMatchObject({
+			readStatus: "failed",
+			readErrorKind: "credentials",
+			stories: [],
+		});
+		expect(wire.execute).toHaveBeenCalledTimes(3);
+	});
+	it.each([undefined, 501, 500])(
+		"caps at 500 with total %s",
+		async (total) => {
+			wire.execute.mockImplementation(async ({ args }) =>
+				ok({ issues: items((args.page - 1) * 50 + 1, 50), total }),
+			);
+			const result = await fetchPMWorkItemsByType(pagedInput(numbered));
+			expect(result.stories).toHaveLength(500);
+			expect(wire.execute).toHaveBeenCalledTimes(10);
+			expect(result.listingTruncated === true).toBe(total !== 500);
+		},
+	);
+	it("caps at 20 pages when the tool limits pages to 10 items", async () => {
+		wire.execute.mockImplementation(async ({ args }) =>
+			ok(items((args.page - 1) * 10 + 1, 10)),
+		);
+		const result = await fetchPMWorkItemsByType(pagedInput(numbered));
+		expect(result.stories).toHaveLength(200);
+		expect(wire.execute).toHaveBeenCalledTimes(20);
+		expect(result.listingTruncated).toBe(true);
+	});
+	it("deduplicates overlapping pages and stops an ignored page argument with truncation when total says more remain", async () => {
+		wire.execute.mockResolvedValue(
+			ok({ issues: items(1, 50), total: 500 }),
+		);
+		const result = await fetchPMWorkItemsByType(pagedInput(numbered));
+		expect(result.stories).toHaveLength(50);
+		expect(new Set(result.stories.map((item) => item.id)).size).toBe(50);
+		expect(wire.execute).toHaveBeenCalledTimes(2);
+		expect(result.listingTruncated).toBe(true);
+	});
+	it("retains only new ids from overlapping pages", async () => {
+		wire.execute
+			.mockResolvedValueOnce(ok({ issues: items(1, 50), total: 70 }))
+			.mockResolvedValueOnce(ok({ issues: items(21, 50), total: 70 }));
+		const result = await fetchPMWorkItemsByType(pagedInput(numbered));
+		expect(result.stories).toHaveLength(70);
+		expect(new Set(result.stories.map((item) => item.id)).size).toBe(70);
+		expect(wire.execute).toHaveBeenCalledTimes(2);
+	});
+	it.each(["cursor", "none"] as const)(
+		"%s makes one call and reports known partial reads",
+		async (style) => {
+			for (const metadata of [
+				{ total: 100 },
+				{ pageInfo: { hasNextPage: true } },
+				{},
+			]) {
+				wire.execute
+					.mockReset()
+					.mockResolvedValue(
+						ok({ issues: items(1, 2), ...metadata }),
+					);
+				const result = await fetchPMWorkItemsByType(
+					pagedInput({ style, cursorParam: "after" }),
+				);
+				expect(result.stories).toHaveLength(2);
+				expect(result.listingTruncated === true).toBe(
+					Object.keys(metadata).length > 0,
+				);
+				expect(wire.execute).toHaveBeenCalledTimes(1);
+				expect(wire.execute.mock.calls[0][0].args).toEqual({
+					board_id: "example-board",
+					team: "example-team",
+				});
+			}
+		},
+	);
+	it.each(["refused", "throw", "malformed", "unknown-envelope"])(
+		"later page %s fails the whole read",
+		async (mode) => {
+			wire.execute
+				.mockResolvedValueOnce(ok({ issues: items(1, 50), total: 70 }))
+				.mockImplementationOnce(async () => {
+					if (mode === "throw") {
+						throw new Error("403 secret-token");
+					}
+					if (mode === "refused") {
+						return { success: false, error: "403 secret-token" };
+					}
+					return mode === "unknown-envelope"
+						? ok({ entries: [] })
+						: {
+								success: true,
+								output: {
+									content: [
+										{
+											type: "text",
+											text: "Unreadable response",
+										},
+									],
+								},
+							};
+				});
+			const result = await fetchPMWorkItemsByType(pagedInput(numbered));
+			expect(result).toMatchObject({
+				readStatus: "failed",
+				readErrorKind:
+					mode === "refused" || mode === "throw"
+						? "credentials"
+						: "other",
+				stories: [],
+			});
+			expect(JSON.stringify(result)).not.toContain("secret-token");
+			expect(wire.execute).toHaveBeenCalledTimes(2);
+		},
+	);
+	it("advances skip offsets by raw rows before deduplication", async () => {
+		wire.execute
+			.mockResolvedValueOnce(
+				ok({ issues: [...items(0, 20), ...items(0, 5)], total: 40 }),
+			)
+			.mockResolvedValueOnce(ok({ issues: items(20, 20), total: 40 }));
+		const result = await fetchPMWorkItemsByType(
+			pagedInput({ style: "offset-skip", skipParam: "startAt" }),
+		);
+		expect(
+			wire.execute.mock.calls.map(([call]) => call.args.startAt),
+		).toEqual([0, 25]);
+		expect(result.stories).toHaveLength(40);
+		expect(result.listingTruncated).not.toBe(true);
+	});
+	it("stops a repeated short page without total or more markers as complete", async () => {
+		wire.execute.mockResolvedValue(ok(items(1, 12)));
+		const result = await fetchPMWorkItemsByType(pagedInput(numbered));
+		expect(result.stories).toHaveLength(12);
+		expect(result.listingTruncated).not.toBe(true);
+		expect(wire.execute).toHaveBeenCalledTimes(2);
+	});
+	it.each(["empty", "repeat"])(
+		"retains known total evidence on a later %s page without metadata",
+		async (mode) => {
+			wire.execute
+				.mockResolvedValueOnce(ok({ issues: items(1, 12), total: 120 }))
+				.mockResolvedValueOnce(
+					ok(mode === "empty" ? [] : items(1, 12)),
+				);
+			const result = await fetchPMWorkItemsByType(pagedInput(numbered));
+			expect(result).toMatchObject({
+				readStatus: "ok",
+				listingTruncated: true,
+			});
+			expect(result.stories).toHaveLength(12);
+		},
+	);
+	it.each(["empty", "repeat"])(
+		"retains has-more evidence on a later %s page",
+		async (mode) => {
+			wire.execute
+				.mockResolvedValueOnce(
+					ok({ issues: items(1, 12), hasMore: true }),
+				)
+				.mockResolvedValueOnce(
+					ok({
+						issues: mode === "empty" ? [] : items(1, 12),
+						hasMore: true,
+					}),
+				);
+			const result = await fetchPMWorkItemsByType(pagedInput(numbered));
+			expect(result).toMatchObject({
+				readStatus: "ok",
+				listingTruncated: true,
+			});
+		},
+	);
+	it.each(["refused", "throw", "malformed", "unknown-envelope"])(
+		"failed short-page heuristic probe (%s) preserves the read with truncation",
+		async (mode) => {
+			wire.execute
+				.mockResolvedValueOnce(ok(items(1, 12)))
+				.mockImplementationOnce(async () => {
+					if (mode === "throw") {
+						throw new Error("403 secret-token");
+					}
+					if (mode === "refused") {
+						return { success: false, error: "403 secret-token" };
+					}
+					return mode === "unknown-envelope"
+						? ok({ entries: [] })
+						: {
+								success: true,
+								output: {
+									content: [
+										{
+											type: "text",
+											text: "Unreadable response",
+										},
+									],
+								},
+							};
+				});
+			const result = await fetchPMWorkItemsByType(pagedInput(numbered));
+			expect(result).toMatchObject({
+				readStatus: "ok",
+				listingTruncated: true,
+			});
+			expect(result.stories).toHaveLength(12);
+			expect(result).not.toHaveProperty("readErrorKind");
+			expect(JSON.stringify(result)).not.toContain("secret-token");
+		},
+	);
+	it.each([{ total: 120 }, { hasMore: true }])(
+		"a short page with evidence %j requires the next page",
+		async (metadata) => {
+			wire.execute
+				.mockResolvedValueOnce(
+					ok({ issues: items(1, 12), ...metadata }),
+				)
+				.mockResolvedValueOnce({
+					success: false,
+					error: "403 secret-token",
+				});
+			const result = await fetchPMWorkItemsByType(pagedInput(numbered));
+			expect(result).toMatchObject({
+				readStatus: "failed",
+				readErrorKind: "credentials",
+				stories: [],
+			});
+		},
+	);
+	const moreMarkers = [
+		{ hasNextPage: true },
+		{ hasMore: true },
+		{ has_more: true },
+		{ nextCursor: "example-next" },
+		{ next_cursor: "example-next" },
+		{ nextPageToken: "example-next" },
+		{ next_page_token: "example-next" },
+		{ isLast: false },
+		{ last_page: false },
+	];
+	it.each(moreMarkers)(
+		"recognizes more marker %j for single-call and paged tools",
+		async (marker) => {
+			for (const metadata of [marker, { pageInfo: marker }]) {
+				for (const style of ["cursor", "none"] as const) {
+					wire.execute
+						.mockReset()
+						.mockResolvedValue(
+							ok({ issues: items(1, 2), ...metadata }),
+						);
+					const result = await fetchPMWorkItemsByType(
+						pagedInput({ style }),
+					);
+					expect(result).toMatchObject({
+						readStatus: "ok",
+						listingTruncated: true,
+					});
+					expect(wire.execute).toHaveBeenCalledTimes(1);
+				}
+				wire.execute
+					.mockReset()
+					.mockResolvedValueOnce(
+						ok({ issues: items(1, 2), total: 2, ...metadata }),
+					)
+					.mockResolvedValueOnce(
+						ok({ issues: items(3, 2), total: 4 }),
+					);
+				const result = await fetchPMWorkItemsByType(
+					pagedInput(numbered),
+				);
+				expect(result.stories).toHaveLength(4);
+				expect(wire.execute).toHaveBeenCalledTimes(2);
+			}
+		},
+	);
+	it("ignores empty tokens and false has-more markers", async () => {
+		wire.execute.mockResolvedValue(
+			ok({
+				issues: items(1, 2),
+				nextPageToken: "",
+				hasMore: false,
+				isLast: true,
+				pageInfo: { nextCursor: "", last_page: true },
+			}),
+		);
+		const result = await fetchPMWorkItemsByType(
+			pagedInput({ style: "cursor" }),
+		);
+		expect(result.listingTruncated).not.toBe(true);
 	});
 });

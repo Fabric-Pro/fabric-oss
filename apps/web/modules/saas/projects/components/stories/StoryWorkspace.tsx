@@ -133,6 +133,7 @@ import {
 	fromMarkdown,
 	repairMarkdownDocument,
 	resetScrollTracking,
+	toAgentDocument,
 } from "../../lib/diff-utils";
 import {
 	getEditorMarkdownForSave,
@@ -2043,12 +2044,22 @@ export function StoryWorkspace({
 
 	const {
 		state: agentState,
-		setState: setAgentState,
+		setState: setCoAgentState,
 		nodeName,
 	} = useCoAgent<AgentState>({
 		name: "project_document_generator",
 		initialState: initialAgentState,
 	});
+
+	// Every document handed to the agent goes through `toAgentDocument`, so the
+	// model never sees (and echoes back) Turndown's escapes. What the agent
+	// returns is therefore compared against `toAgentDocument(baseline)`.
+	const setAgentState = (update: AgentState) =>
+		setCoAgentState(
+			typeof update.document === "string"
+				? { ...update, document: toAgentDocument(update.document) }
+				: update,
+		);
 
 	// `useCoAgent` returns a new `setState` function every render, so listing it
 	// in a useEffect dep array causes an infinite render loop. Stash the latest
@@ -2497,7 +2508,7 @@ export function StoryWorkspace({
 			if (
 				baseline.trim().length > 0 &&
 				newDocument.trim().length > 0 &&
-				baseline !== newDocument
+				toAgentDocument(baseline) !== newDocument
 			) {
 				const diff = diffPartialText(baseline, newDocument, true);
 				const markdown = fromMarkdown(diff);
@@ -2529,7 +2540,10 @@ export function StoryWorkspace({
 				return;
 			}
 
-			if (newDocument.trim().length === 0 || newDocument === baseline) {
+			if (
+				newDocument.trim().length === 0 ||
+				newDocument === toAgentDocument(baseline)
+			) {
 				return;
 			}
 
@@ -4097,7 +4111,7 @@ export function StoryWorkspace({
 					if (
 						editor &&
 						agentFinalDoc &&
-						agentFinalDoc !== baselineAtAccept &&
+						agentFinalDoc !== toAgentDocument(baselineAtAccept) &&
 						getEditorMarkdownForSave(editor) === baselineAtAccept
 					) {
 						const diff = diffPartialText(
@@ -5705,7 +5719,14 @@ export function StoryWorkspace({
 																!showRaw,
 															);
 														}}
-														disabled={isAiLoading}
+														// Switching rebuilds the editor
+														// from markdown, which would drop
+														// a pending diff review.
+														disabled={
+															isAiLoading ||
+															isDiffReviewActive ||
+															isPendingReviewOpen
+														}
 														aria-label={
 															showRaw
 																? "Switch to rich editor"

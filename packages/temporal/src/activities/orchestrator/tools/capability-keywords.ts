@@ -14,6 +14,8 @@
  * 3. Semantic similarity (fallback)
  */
 
+import { WORKSPACE_TOOL_NAMES } from "./workspace-tools";
+
 // =============================================================================
 // Types
 // =============================================================================
@@ -355,7 +357,7 @@ export function searchByKeywords(
 export const ALWAYS_AVAILABLE_CAPABILITIES: CapabilityWithKeywords[] = [
 	// Workspace RAG - most common for document queries
 	{
-		id: "workspace_rag_query",
+		id: WORKSPACE_TOOL_NAMES.query,
 		type: "workspace",
 		name: "Workspace Document Search",
 		description:

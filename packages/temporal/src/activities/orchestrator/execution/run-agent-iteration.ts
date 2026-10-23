@@ -11,6 +11,7 @@
 
 import { isStepCount, jsonSchema, streamText, tool } from "@repo/ai";
 import { getModelCapabilities } from "@repo/ai/capabilities";
+import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import { classifyLimitError, type LimitSignal } from "@repo/ai/limits";
 import {
 	isPromptCacheTarget,
@@ -25,14 +26,16 @@ import { runWithDispatchRequestSizer } from "@repo/utils/dispatch-guard";
 import { heartbeat } from "@temporalio/activity";
 import type { ModelMessage } from "ai";
 import { publishExecutionEvent } from "../../../lib/redis-publisher";
+import type { DirectChatUsageLimitRefusal } from "../../../types";
 import { isInlineDiagramRequest } from "../../../workflows/orchestrator/diagram-rendering";
-import { usageOriginFields } from "../../../workflows/orchestrator/usage-attribution";
 import type {
 	IterativeMessage,
 	OrchestratorBudgetAttemptKind,
 	TurnLedgerSnapshot,
 } from "../../../workflows/orchestrator/types";
+import { usageOriginFields } from "../../../workflows/orchestrator/usage-attribution";
 import { decideForcedToolChoice } from "../../direct-chat/decide-forced-tool-choice";
+import { toUsageLimitRefusal } from "../../direct-chat/usage-limit-refusal";
 import {
 	activityAbortSignal,
 	findTurnBudgetExhausted,
@@ -194,6 +197,7 @@ export type AgentIterationResult = IterationAccounting &
 		 */
 		| {
 				type: "stream_error";
+				usageLimit?: DirectChatUsageLimitRefusal;
 				message: string;
 				partialResponse: string;
 				usage: {
@@ -849,21 +853,38 @@ async function runAgentIterationRound(
 	// tool-capable model is chosen whenever any tool (caller-supplied or
 	// skill) is bound on this call.
 	const hasTools = aiSdkToolCount > 0;
+	let selection: Awaited<ReturnType<typeof getAiModelWithSelection>>;
+	try {
+		selection = await getAiModelWithSelection(
+			userId,
+			organizationId,
+			hasTools,
+			modelOverride,
+			undefined,
+			input.conversationId || input.frameId || input.projectId
+				? usageOriginFields(input)
+				: undefined,
+		);
+	} catch (error) {
+		const refusal = findAiUsageLimitError(error);
+		if (!refusal) {
+			throw error;
+		}
+		return {
+			type: "stream_error",
+			message: refusal.message,
+			usageLimit: toUsageLimitRefusal(refusal),
+			partialResponse: "",
+			usage: { inputTokens: 0, outputTokens: 0 },
+		};
+	}
 	const {
 		model,
 		provider: modelProvider,
 		modelString,
 		canonicalName: modelCanonicalName,
-	} = await getAiModelWithSelection(
-		userId,
-		organizationId,
-		hasTools,
-		modelOverride,
-		undefined,
-		input.conversationId || input.frameId || input.projectId
-			? usageOriginFields(input)
-			: undefined,
-	);
+	} = selection;
+
 	// The model every provider request of this round goes through: checked
 	// against the turn record before each physical request when the round
 	// belongs to a chat turn (see guardTurnModel).
@@ -1119,6 +1140,7 @@ async function runAgentIterationRound(
 		// deterministic and skip retry — they surface as a `response` with a
 		// `limitSignal` so the existing soft-degradation path handles them.
 		const MAX_STREAM_ATTEMPTS = 2;
+		let usageLimit: DirectChatUsageLimitRefusal | undefined;
 
 		// `aggregatedUsage` (declared before the try) is the running total.
 
@@ -1247,6 +1269,10 @@ async function runAgentIterationRound(
 						]);
 						throw refusal;
 					}
+					const limitRefusal = findAiUsageLimitError(part.error);
+					if (limitRefusal) {
+						usageLimit = toUsageLimitRefusal(limitRefusal);
+					}
 					const errorMsg =
 						part.error instanceof Error
 							? part.error.message
@@ -1368,6 +1394,16 @@ async function runAgentIterationRound(
 				break;
 			}
 
+			if (usageLimit) {
+				return {
+					type: "stream_error",
+					message: usageLimit.message,
+					usageLimit,
+					partialResponse: responseText,
+					usage: aggregatedUsage,
+					...(usageUnknown ? { usageUnknown: true } : {}),
+				};
+			}
 			const limitSignal = classifyLimitError(errorMsg) || undefined;
 			if (limitSignal) {
 				break;
@@ -1506,6 +1542,18 @@ async function runAgentIterationRound(
 		// failure. Converting either into a `stream_error` result would
 		// hand the workflow an ordinary turn failure instead.
 		rethrowIfTurnStopped(error);
+		const refusal = findAiUsageLimitError(error);
+		if (refusal) {
+			return {
+				type: "stream_error",
+				message: refusal.message,
+				usageLimit: toUsageLimitRefusal(refusal),
+				partialResponse: "",
+				usage: { ...aggregatedUsage },
+				usageUnknown: true,
+			};
+		}
+
 		const errorMessage =
 			error instanceof Error ? error.message : String(error);
 		console.error(`[AgentIteration] LLM call failed: ${errorMessage}`);

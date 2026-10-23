@@ -130,6 +130,7 @@ describe("reanalyzeBodyByKind — BUG", () => {
 			expect.objectContaining({
 				agentName: "bug_reanalyzer",
 				storyKind: "BUG",
+				projectId: "p1",
 			}),
 		);
 	});

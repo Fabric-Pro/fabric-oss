@@ -75,8 +75,8 @@ function itemSchemas(schema: JsonSchema, root: JsonSchema): JsonSchema[] {
  * The value with every `null` removed from an object property the schema
  * neither requires nor lets be null.
  *
- * The plan route is sent a non-strict JSON schema (strict mode would refuse
- * Fabric's optional fields), and its models answer a field they have nothing
+ * Plan strict enforcement is unverified, so the transport sends the schema as
+ * non-strict guidance. Its models can answer a field they have nothing
  * for with `null` — the strict-mode convention for "absent". Zod's
  * `.optional()` and `.default()` accept an absent field but refuse `null`, so
  * a correct answer failed validation as "did not match schema". Removing the

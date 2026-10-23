@@ -1,24 +1,28 @@
 "use client";
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { useFullscreen } from "@saas/shared/contexts/FullscreenContext";
 import { Spinner } from "@shared/components/Spinner";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Card } from "@ui/components/card";
-import {
-	Tooltip,
-	TooltipContent,
-	TooltipTrigger,
-} from "@ui/components/tooltip";
-import { ArrowLeftIcon, PanelRightCloseIcon } from "lucide-react";
+import { ArrowLeftIcon, PanelLeftOpenIcon } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { workflowExecutionsKey } from "../lib/query-keys";
+import { workflowExecutionsScopeKey } from "../lib/query-keys";
+import {
+	useViewedExecution,
+	useWorkflowRunStats,
+	useWorkflowRuns,
+} from "../lib/run-queries";
+import { buildStepRuns, shortRunId, type ViewedRun } from "../lib/run-steps";
 import { describeSaveFailure } from "../lib/save-error";
 import type { WorkflowEdge, WorkflowNode } from "../lib/types";
+import type { WorkflowStatus } from "../lib/workflow-status-display";
 import { ExecutionPanel } from "./ExecutionPanel";
+import { RunOverlayPill } from "./editor/RunOverlayPill";
 import {
 	ValidationErrorsPanel,
 	type ValidationResult,
@@ -36,6 +40,7 @@ export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
 	const { organizationId, basePath } = useOrganizationContext();
 	const [showExecutionPanel, setShowExecutionPanel] = useState(false);
 	const [showRunHistory, setShowRunHistory] = useState(true);
+	// The run shown on the canvas (and in the execution panel).
 	const [currentExecutionId, setCurrentExecutionId] = useState<string | null>(
 		null,
 	);
@@ -46,11 +51,28 @@ export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
 		useState<ValidationResult | null>(null);
 	const [isPhoneViewport, setIsPhoneViewport] = useState(false);
 
+	// The canvas needs the width: collapse the app sidebar to its icon rail
+	// while the editor is open, the way the other full-screen pages do.
+	const { setIsFullscreen } = useFullscreen();
+	useEffect(() => {
+		setIsFullscreen(true);
+		return () => {
+			setIsFullscreen(false);
+		};
+	}, [setIsFullscreen]);
+
 	// Fetch workflow data
 	const { data, isLoading, error } = useQuery(
 		orpc.workflows.get.queryOptions({
 			input: { id: workflowId, organizationId },
 		}),
+	);
+
+	const runStats = useWorkflowRunStats(workflowId, organizationId);
+	const recentRuns = useWorkflowRuns(workflowId, organizationId, "all");
+	const viewedExecution = useViewedExecution(
+		currentExecutionId,
+		organizationId,
 	);
 
 	// Update mutation
@@ -93,7 +115,6 @@ export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
 					toast.success("Workflow execution started");
 				}
 				setCurrentExecutionId(result.execution.id);
-				setShowExecutionPanel(true);
 				setRecentlyStartedExecutionId(result.execution.id);
 			},
 			onError: (error) => {
@@ -182,7 +203,27 @@ export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
 		[workflowId, organizationId, updateMutation],
 	);
 
-	// Invalidate executions query when a new execution is started
+	// Selecting the run already on the canvas returns to editing.
+	const handleSelectExecution = useCallback(
+		(executionId: string) => {
+			const next =
+				currentExecutionId === executionId ? null : executionId;
+			setCurrentExecutionId(next);
+			// The canvas and the step inspector show the run; the floating
+			// details panel opens only from the run pill's Details.
+			if (next === null) {
+				setShowExecutionPanel(false);
+			}
+		},
+		[currentExecutionId],
+	);
+
+	const handleExitRun = useCallback(() => {
+		setCurrentExecutionId(null);
+		setShowExecutionPanel(false);
+	}, []);
+
+	// Refresh every run list and count when a new execution is started.
 	// This hook must be before early returns to follow Rules of Hooks
 	const workflow = data?.workflow;
 	useEffect(() => {
@@ -191,7 +232,7 @@ export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
 		}
 
 		queryClient.invalidateQueries({
-			queryKey: workflowExecutionsKey(workflowId, organizationId),
+			queryKey: workflowExecutionsScopeKey(workflowId, organizationId),
 		});
 
 		setRecentlyStartedExecutionId(null);
@@ -227,6 +268,38 @@ export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
 			mediaQuery.removeListener(handleViewportChange);
 		};
 	}, []);
+
+	// Workflow stores nodes and edges as separate JSON fields. Memoised so
+	// the builder only reloads its graph when the stored one changes.
+	const workflowNodes = workflow?.nodes;
+	const workflowEdges = workflow?.edges;
+	const nodes = useMemo(
+		() => (workflowNodes as WorkflowNode[] | null | undefined) ?? [],
+		[workflowNodes],
+	);
+	const edges = useMemo(
+		() => (workflowEdges as WorkflowEdge[] | null | undefined) ?? [],
+		[workflowEdges],
+	);
+
+	const execution = viewedExecution.data?.execution;
+	const viewedRun = useMemo<ViewedRun | null>(
+		() =>
+			currentExecutionId
+				? {
+						shortId: shortRunId(currentExecutionId),
+						steps: buildStepRuns(
+							execution?.id === currentExecutionId
+								? execution.logs
+								: [],
+						),
+					}
+				: null,
+		[currentExecutionId, execution],
+	);
+
+	const latestRun = recentRuns.data?.executions?.[0];
+	const runCount = runStats.data?.total;
 
 	if (isLoading) {
 		return (
@@ -283,9 +356,40 @@ export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
 		);
 	}
 
-	// Workflow stores nodes and edges as separate JSON fields
-	const nodes = (workflow.nodes as WorkflowNode[] | null) ?? [];
-	const edges = (workflow.edges as WorkflowEdge[] | null) ?? [];
+	const canvasOverlay = (
+		<>
+			{!showRunHistory && (
+				<button
+					type="button"
+					onClick={() => setShowRunHistory(true)}
+					title="Show runs"
+					className="absolute left-3 top-3 z-20 flex h-[30px] items-center gap-1.5 rounded-lg border bg-card px-2.5 text-xs hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring"
+				>
+					<PanelLeftOpenIcon
+						className="size-3.5"
+						aria-hidden="true"
+					/>
+					Runs{runCount !== undefined ? ` · ${runCount}` : ""}
+				</button>
+			)}
+			{currentExecutionId && viewedRun && (
+				<RunOverlayPill
+					shortId={viewedRun.shortId}
+					execution={
+						execution?.id === currentExecutionId
+							? execution
+							: undefined
+					}
+					onShowDetails={
+						showExecutionPanel
+							? undefined
+							: () => setShowExecutionPanel(true)
+					}
+					onExit={handleExitRun}
+				/>
+			)}
+		</>
+	);
 
 	return (
 		<div className="flex-1 flex flex-col min-h-0">
@@ -298,95 +402,58 @@ export function WorkflowEditor({ workflowId }: WorkflowEditorProps) {
 				/>
 			)}
 
-			{/* Main content area */}
-			<div className="flex-1 flex flex-col lg:flex-row relative min-h-0">
-				{showRunHistory && (
-					<div className="w-full lg:w-80 xl:w-96 border-b lg:border-b-0 lg:border-r bg-background flex flex-col min-h-0">
-						<WorkflowRunHistory
-							workflowId={workflowId}
-							organizationId={organizationId}
-							selectedExecutionId={currentExecutionId}
-							onSelectExecution={(executionId) => {
-								setCurrentExecutionId(executionId);
-								setShowExecutionPanel(true);
-							}}
-							onHide={() => setShowRunHistory(false)}
-						/>
-					</div>
-				)}
+			<div className="flex-1 flex relative min-h-0">
+				<WorkflowErrorBoundary
+					onError={(error, errorInfo) => {
+						console.error(
+							"[WorkflowEditor] Workflow builder error:",
+							error,
+							errorInfo,
+						);
+						toast.error(
+							"An error occurred in the workflow builder",
+						);
+					}}
+				>
+					<WorkflowBuilder
+						initialNodes={nodes}
+						initialEdges={edges}
+						onSave={handleSave}
+						onRun={handleRun}
+						onNameChange={handleNameChange}
+						isLoading={
+							updateMutation.isPending ||
+							executeMutation.isPending
+						}
+						workflowName={workflow.name}
+						workflowId={workflow.id}
+						organizationId={organizationId}
+						workflowStatus={workflow.status as WorkflowStatus}
+						workflowVersion={workflow.version}
+						publishedVersion={workflow.publishedVersion}
+						onPublished={() => {
+							queryClient.invalidateQueries({
+								queryKey: ["workflow", workflowId],
+							});
+						}}
+						runsPanel={
+							showRunHistory ? (
+								<WorkflowRunHistory
+									workflowId={workflowId}
+									organizationId={organizationId}
+									selectedExecutionId={currentExecutionId}
+									onSelectExecution={handleSelectExecution}
+									onHide={() => setShowRunHistory(false)}
+								/>
+							) : null
+						}
+						canvasOverlay={canvasOverlay}
+						viewedRun={viewedRun}
+						lastRun={latestRun ?? null}
+					/>
+				</WorkflowErrorBoundary>
 
-				<div className="flex-1 flex relative min-h-0">
-					{/* Builder - always takes full width since ExecutionPanel is now an overlay */}
-					<div className="w-full">
-						<WorkflowErrorBoundary
-							onError={(error, errorInfo) => {
-								console.error(
-									"[WorkflowEditor] Workflow builder error:",
-									error,
-									errorInfo,
-								);
-								toast.error(
-									"An error occurred in the workflow builder",
-								);
-							}}
-						>
-							<WorkflowBuilder
-								initialNodes={nodes}
-								initialEdges={edges}
-								onSave={handleSave}
-								onRun={handleRun}
-								onToggleRunHistory={() =>
-									setShowRunHistory((prev) => !prev)
-								}
-								showRunHistory={showRunHistory}
-								onNameChange={handleNameChange}
-								isLoading={
-									updateMutation.isPending ||
-									executeMutation.isPending
-								}
-								workflowName={workflow.name}
-								workflowId={workflow.id}
-								organizationId={organizationId}
-								workflowStatus={
-									workflow.status as
-										| "DRAFT"
-										| "PUBLISHED"
-										| "ACTIVE"
-										| "PAUSED"
-										| "ARCHIVED"
-								}
-								workflowVersion={workflow.version}
-								publishedVersion={workflow.publishedVersion}
-								onPublished={() => {
-									queryClient.invalidateQueries({
-										queryKey: ["workflow", workflowId],
-									});
-								}}
-							/>
-						</WorkflowErrorBoundary>
-					</div>
-
-					{/* Button to reopen execution panel when closed */}
-					{!showExecutionPanel && currentExecutionId && (
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<Button
-									variant="secondary"
-									size="icon"
-									className="absolute bottom-4 right-4 h-10 w-10 rounded-full shadow-lg z-10"
-									onClick={() => setShowExecutionPanel(true)}
-								>
-									<PanelRightCloseIcon className="h-5 w-5" />
-								</Button>
-							</TooltipTrigger>
-							<TooltipContent side="left">
-								<p>Show Execution Details</p>
-							</TooltipContent>
-						</Tooltip>
-					)}
-				</div>
-
-				{/* Execution Panel - now a floating overlay */}
+				{/* Execution details float over the editor */}
 				{showExecutionPanel && currentExecutionId && (
 					<ExecutionPanel
 						executionId={currentExecutionId}

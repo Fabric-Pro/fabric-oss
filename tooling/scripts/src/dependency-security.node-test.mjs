@@ -9,9 +9,12 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const patchPath = "patches/@graphql-tools__utils@10.10.1.patch";
-// Reviewed backport of upstream commit 0b9529f1988fd36186a7c106a6efe0356f1b7f2e.
+// Reviewed backport of upstream commit 0b9529f1988fd36186a7c106a6efe0356f1b7f2e
+// (mergeDeep) and of the setObjectKeyPath changes in upstream commits
+// 20d36a5c6eb8fd5524420988e01a48618c450d70 and
+// 19f5b3373fd7ace0688d19950fc529ce8347952a (mergeIncrementalResult).
 const patchHash =
-	"d20fc7fa1ff651691ab252c082cc06dec88f1e8250b04b9b299107ed56bb56be";
+	"b529f122ce959d0691cbe9ff7c411d816b4e12858753cc52ad289f083878539a";
 const utilsConsumers = [
 	["@graphql-tools/executor", "1.4.11"],
 	["@graphql-tools/merge", "9.1.3"],
@@ -436,6 +439,44 @@ for (const [name, version] of utilsConsumers) {
 				assert.ok(merged instanceof Resolver);
 				assert.equal(merged.method(), "ordinary");
 				assert.equal(merged.value, 2);
+			}
+		}
+	});
+	test(`${name}: effective CJS and ESM mergeIncrementalResult reject unsafe path segments`, async () => {
+		for (const { require } of installedConsumers(name, version)) {
+			const cjs = require.resolve("@graphql-tools/utils");
+			const esm = join(dirname(dirname(cjs)), "esm/index.js");
+			// GHSA-c4qx-w738-7hr3: a non-primitive segment such as ["__proto__"]
+			// passed the string-equality guard and coerced to "__proto__" on
+			// access. Each resolution runs in a process of its own, as above.
+			for (const entry of [cjs, esm]) {
+				runChild(
+					`
+					import assert from "node:assert/strict";
+					const { mergeIncrementalResult } = await import(process.argv[1]);
+					const marker = "fabricSecurityIncrementalProbe";
+					const unsafePaths = [
+						[["__proto__"], marker],
+						[{ toString: () => "__proto__" }, marker],
+						["__proto__", marker],
+						["constructor", "prototype", marker],
+					];
+					for (const path of unsafePaths) {
+						const executionResult = { data: {} };
+						mergeIncrementalResult({ executionResult, incrementalResult: { path, data: { polluted: true } } });
+						mergeIncrementalResult({ executionResult, incrementalResult: { path: [...path, 0], items: [true] } });
+						assert.equal(Object.prototype[marker], undefined);
+						assert.equal(Object.prototype.polluted, undefined);
+						assert.deepEqual(executionResult, { data: {} });
+					}
+					const executionResult = { data: { node: { a: 1 }, list: [{ id: 1 }] } };
+					mergeIncrementalResult({ executionResult, incrementalResult: { path: ["node"], data: { b: 2 } } });
+					mergeIncrementalResult({ executionResult, incrementalResult: { path: ["list", 1], items: [{ id: 2 }, { id: 3 }] } });
+					mergeIncrementalResult({ executionResult, incrementalResult: { incremental: [{ path: ["node", "c"], data: { d: 4 } }] } });
+					assert.deepEqual(executionResult, { data: { node: { a: 1, b: 2, c: { d: 4 } }, list: [{ id: 1 }, { id: 2 }, { id: 3 }] } });
+				`,
+					[pathToFileURL(entry).href],
+				);
 			}
 		}
 	});

@@ -1195,8 +1195,8 @@ export async function updateMeetingTranscriptSyncLastRunActivity(
 /**
  * Summarize a long transcript using an LLM.
  *
- * Used when meeting transcripts exceed 50K characters to keep
- * the project context size manageable.
+ * Used above the sync digest threshold to generate a separate summary.
+ * The stored transcript body stays whole; AI Update budgets it when analyzing.
  */
 async function summarizeTranscript(
 	transcript: string,

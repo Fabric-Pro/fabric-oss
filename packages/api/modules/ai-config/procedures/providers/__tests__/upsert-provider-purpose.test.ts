@@ -12,7 +12,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 type Row = Record<string, unknown>;
 
-const { tables, mockRequireOrgMembership } = vi.hoisted(() => ({
+const { tables, mockRequireOrgMembership, state } = vi.hoisted(() => ({
+	state: {
+		template: "example-current",
+		failDefault: false,
+		flipOnReadId: null as string | null,
+		lockedIds: [] as string[],
+		activeTransaction: false,
+		tenantLocked: false,
+		selectorActiveStates: [] as boolean[],
+		tenantLocks: [] as { table: string; owner: string }[],
+	},
 	tables: {
 		cloudProviderConfig: [] as Record<string, unknown>[],
 		userCloudProviderConfig: [] as Record<string, unknown>[],
@@ -22,7 +32,21 @@ const { tables, mockRequireOrgMembership } = vi.hoisted(() => ({
 	mockRequireOrgMembership: vi.fn(),
 }));
 
+vi.mock("@repo/ai/model-selector", () => ({
+	selectModelDynamic: vi.fn(async () => {
+		state.selectorActiveStates.push(state.activeTransaction);
+		return {
+			modelId: "example-default",
+			canonicalName: "example-default",
+			displayName: "Example default",
+		};
+	}),
+}));
+
 vi.mock("@repo/database", async () => {
+	const shared = await vi.importActual<
+		typeof import("../../../../../../database/prisma/queries/ai-gateway")
+	>("../../../../../../database/prisma/queries/ai-gateway");
 	function matches(row: Row, where: Row = {}): boolean {
 		return Object.entries(where).every(([key, condition]) => {
 			if (
@@ -51,12 +75,25 @@ vi.mock("@repo/database", async () => {
 		});
 	}
 	// Prisma hands back a snapshot, never a live reference.
+	function assertTenantLock() {
+		if (state.activeTransaction && !state.tenantLocked) {
+			throw new Error(
+				"tenant provider lock must be the first transaction statement",
+			);
+		}
+	}
 	function snapshot(rows: Row[], where: Row) {
+		assertTenantLock();
 		const row = rows.find((r) => matches(r, where));
-		return row ? { ...row } : null;
+		const result = row ? { ...row } : null;
+
+		return result;
 	}
 	function table(rows: Row[]) {
 		return {
+			findMany: vi.fn(async ({ where }: { where: Row }) =>
+				rows.filter((row) => matches(row, where)),
+			),
 			findUnique: vi.fn(async ({ where }: { where: Row }) =>
 				snapshot(rows, where),
 			),
@@ -65,6 +102,10 @@ vi.mock("@repo/database", async () => {
 			),
 			updateMany: vi.fn(
 				async ({ where, data }: { where: Row; data: Row }) => {
+					assertTenantLock();
+					if (state.failDefault && data.isDefault === true) {
+						throw new Error("default write failed");
+					}
 					const hit = rows.filter((row) => matches(row, where));
 					for (const row of hit) {
 						Object.assign(row, data);
@@ -74,6 +115,7 @@ vi.mock("@repo/database", async () => {
 			),
 			update: vi.fn(
 				async ({ where, data }: { where: Row; data: Row }) => {
+					assertTenantLock();
 					const row = rows.find((r) => matches(r, where));
 					if (!row) {
 						throw new Error("not found");
@@ -83,6 +125,7 @@ vi.mock("@repo/database", async () => {
 				},
 			),
 			create: vi.fn(async ({ data }: { data: Row }) => {
+				assertTenantLock();
 				const row = {
 					isEmbeddingProvider: false,
 					purpose: "ALL",
@@ -92,6 +135,7 @@ vi.mock("@repo/database", async () => {
 				return { ...row };
 			}),
 			deleteMany: vi.fn(async ({ where }: { where: Row }) => {
+				assertTenantLock();
 				const before = rows.length;
 				for (let i = rows.length - 1; i >= 0; i--) {
 					if (matches(rows[i], where)) {
@@ -103,15 +147,110 @@ vi.mock("@repo/database", async () => {
 		};
 	}
 	const tx = {
+		aiModel: { findFirst: vi.fn(async () => null) },
+		$queryRaw: vi.fn(async (sql: TemplateStringsArray, owner: string) => {
+			expect(state.activeTransaction).toBe(true);
+			expect(state.tenantLocked).toBe(false);
+			const text = sql.join("?").replace(/\s+/g, " ").trim();
+			const organization = text.includes('"cloud_provider_config"');
+			const table = organization
+				? "cloud_provider_config"
+				: "user_cloud_provider_config";
+			const column = organization ? "organizationId" : "userId";
+			expect(text).toBe(
+				`SELECT id FROM "${table}" WHERE "${column}" = ? ORDER BY id FOR NO KEY UPDATE`,
+			);
+			const rows = (
+				organization
+					? tables.cloudProviderConfig
+					: tables.userCloudProviderConfig
+			).filter((row) => row[column] === owner);
+			// A concurrent writer may commit while this statement waits for its lock.
+			const target = rows.find((row) => row.id === state.flipOnReadId);
+			if (target) {
+				state.flipOnReadId = null;
+				const wasDefault = target.isDefault;
+				for (const row of rows) {
+					row.isDefault =
+						row.id === target.id ? !wasDefault : !!wasDefault;
+				}
+			}
+			state.tenantLocked = true;
+			state.tenantLocks.push({ table, owner });
+			state.lockedIds.push(...rows.map((row) => row.id as string).sort());
+			return rows.map((row) => ({ id: row.id }));
+		}),
+		aiTaskModelDefault: {
+			findMany: vi.fn(async ({ where }) => {
+				assertTenantLock();
+				return where.taskType === "CHAT"
+					? [{ model: { canonicalName: state.template } }]
+					: [];
+			}),
+		},
 		cloudProviderConfig: table(tables.cloudProviderConfig),
 		userCloudProviderConfig: table(tables.userCloudProviderConfig),
 		organizationModelPreference: table(tables.organizationModelPreference),
 		userModelPreference: table(tables.userModelPreference),
 	};
+	const { taskDefaultsSnapshotMutation } = await import(
+		"../../../../../../database/prisma/queries/task-default-snapshots"
+	);
 	return {
+		lockTenantProviderConnections: (
+			await import(
+				"../../../../../../database/prisma/queries/provider-write-locks"
+			)
+		).lockTenantProviderConnections,
+		getTaskDefaultModelUncached: (
+			await vi.importActual<
+				typeof import("../../../../../../database/prisma/queries/ai-models")
+			>("../../../../../../database/prisma/queries/ai-models")
+		).getTaskDefaultModelUncached,
+		taskDefaultsSnapshotMutation,
+		organizationDefaultProviderWhere:
+			shared.organizationDefaultProviderWhere,
+		getOrganizationDefaultProvider: async () =>
+			tables.cloudProviderConfig.find(
+				(row) =>
+					row.isDefault &&
+					row.enabled &&
+					row.purpose !== "EMBEDDINGS_ONLY" &&
+					shared.readProviderRowCredentials(row as never)
+						.hasCredentials,
+			)?.provider ?? null,
+		getAiProviderApiKeyByProvider: async ({
+			provider,
+		}: {
+			provider: string;
+		}) => ({ provider, source: "organization" }),
+		getSystemAiProviderApiKey: async () => ({ provider: null }),
+		readProviderRowCredentials: shared.readProviderRowCredentials,
 		db: {
 			...tx,
-			$transaction: vi.fn(async (cb: (t: unknown) => unknown) => cb(tx)),
+			$transaction: vi.fn(async (cb: (t: unknown) => unknown) => {
+				const before = structuredClone(tables);
+				state.activeTransaction = true;
+				state.tenantLocked = false;
+				try {
+					const result = await cb(tx);
+					expect(state.tenantLocked).toBe(true);
+					return result;
+				} catch (error) {
+					for (const key of Object.keys(
+						tables,
+					) as (keyof typeof tables)[]) {
+						tables[key].splice(
+							0,
+							tables[key].length,
+							...before[key],
+						);
+					}
+					throw error;
+				} finally {
+					state.activeTransaction = false;
+				}
+			}),
 		},
 		getProviderMetadata: vi.fn(() => ({ requiresBaseUrl: false })),
 		getProviderDisplayName: vi.fn((p: string) => p),
@@ -215,6 +354,13 @@ function seedOrgRow(overrides: Row) {
 }
 
 beforeEach(() => {
+	state.template = "example-current";
+	state.failDefault = false;
+	state.flipOnReadId = null;
+	state.lockedIds = [];
+	state.activeTransaction = false;
+	state.tenantLocked = false;
+	state.tenantLocks = [];
 	tables.cloudProviderConfig.length = 0;
 	tables.userCloudProviderConfig.length = 0;
 	tables.organizationModelPreference.length = 0;
@@ -583,3 +729,599 @@ describe("model preferences", () => {
 		expect(prefs()).toEqual(["CHAT:OPENAI_CHATGPT_PLAN"]);
 	});
 });
+
+// Without capture on create, these rows carry no frozen defaults.
+describe.each([orgContext, personalContext])(
+	"connection snapshots (%j)",
+	(context) => {
+		it("captures on creation, including a non-default connection", async () => {
+			await call(
+				upsertUserProviderProcedure,
+				{ provider: "OPENAI_DIRECT", apiKey: "sk-test" },
+				context,
+			);
+			await call(
+				upsertUserProviderProcedure,
+				{
+					provider: "ANTHROPIC_DIRECT",
+					apiKey: "sk-test",
+					isDefault: false,
+				},
+				context,
+			);
+			const rows =
+				context === orgContext
+					? tables.cloudProviderConfig
+					: tables.userCloudProviderConfig;
+			expect(rows[1].taskDefaultsSnapshot).toMatchObject({
+				version: 1,
+				scoped: { CHAT: "example-current" },
+				unscoped: { CHAT: "example-current" },
+			});
+		});
+		// Recapture-on-edit would lose the old model; omitting switch capture would retain it.
+		it("preserves credential edits and re-defaults, and recaptures an explicit switch", async () => {
+			const rows =
+				context === orgContext
+					? tables.cloudProviderConfig
+					: tables.userCloudProviderConfig;
+			await call(
+				upsertUserProviderProcedure,
+				{ provider: "OPENAI_DIRECT", apiKey: "sk-test" },
+				context,
+			);
+			const original = structuredClone(rows[0].taskDefaultsSnapshot);
+			state.template = "example-new";
+			await call(
+				upsertUserProviderProcedure,
+				{
+					provider: "OPENAI_DIRECT",
+					apiKey: "sk-rotated",
+					displayName: "Example connection",
+					baseUrl: "https://example.com",
+					enabledProviders: ["OPENAI"],
+				},
+				context,
+			);
+			expect(rows[0].enabled).toBe(true);
+			expect(rows[0].taskDefaultsSnapshot).toEqual(original);
+			await call(
+				setDefaultProviderProcedure,
+				{ provider: "OPENAI_DIRECT" },
+				context,
+			);
+			expect(rows[0].taskDefaultsSnapshot).toEqual(original);
+			await call(
+				upsertUserProviderProcedure,
+				{
+					provider: "ANTHROPIC_DIRECT",
+					apiKey: "sk-test",
+					isDefault: false,
+				},
+				context,
+			);
+			state.template = "example-newest";
+			await call(
+				setDefaultProviderProcedure,
+				{ provider: "ANTHROPIC_DIRECT" },
+				context,
+			);
+			expect(rows[1].taskDefaultsSnapshot).toMatchObject({
+				scoped: { CHAT: "example-newest" },
+				unscoped: { CHAT: "example-newest" },
+			});
+			expect(rows[0].isDefault).toBe(false);
+			expect(rows[1].isDefault).toBe(true);
+		});
+		// Promotion without capture would retain example-current on the surviving connection.
+		it("recaptures automatic promotion after deleting the default and captures a re-add", async () => {
+			const rows =
+				context === orgContext
+					? tables.cloudProviderConfig
+					: tables.userCloudProviderConfig;
+			for (const provider of ["OPENAI_DIRECT", "ANTHROPIC_DIRECT"]) {
+				await call(
+					upsertUserProviderProcedure,
+					{ provider, apiKey: "sk-test", isDefault: false },
+					context,
+				);
+			}
+			state.template = "example-promoted";
+			await call(
+				deleteUserProviderProcedure,
+				{ provider: "OPENAI_DIRECT" },
+				context,
+			);
+			expect(rows[0]).toMatchObject({
+				isDefault: true,
+				taskDefaultsSnapshot: {
+					scoped: { CHAT: "example-promoted" },
+					unscoped: { CHAT: "example-promoted" },
+				},
+			});
+			await call(
+				upsertUserProviderProcedure,
+				{
+					provider: "OPENAI_DIRECT",
+					apiKey: "sk-test",
+					isDefault: false,
+				},
+				context,
+			);
+			expect(rows[1].taskDefaultsSnapshot).toMatchObject({
+				scoped: { CHAT: "example-promoted" },
+				unscoped: { CHAT: "example-promoted" },
+			});
+		});
+		it("preserves re-enabling a non-default connection and captures when re-enabling makes it the resolved default", async () => {
+			const rows =
+				context === orgContext
+					? tables.cloudProviderConfig
+					: tables.userCloudProviderConfig;
+			for (const provider of ["OPENAI_DIRECT", "ANTHROPIC_DIRECT"]) {
+				await call(
+					upsertUserProviderProcedure,
+					{ provider, apiKey: "example-key", isDefault: false },
+					context,
+				);
+			}
+			const original = structuredClone(rows[1].taskDefaultsSnapshot);
+			rows[1].enabled = false;
+			state.template = "example-re-enabled";
+			await call(
+				upsertUserProviderProcedure,
+				{ provider: "ANTHROPIC_DIRECT", apiKey: "example-key" },
+				context,
+			);
+			expect(rows[1].taskDefaultsSnapshot).toEqual(original);
+			rows[0].enabled = false;
+			rows[1].enabled = false;
+			rows[1].isDefault = true;
+			await call(
+				upsertUserProviderProcedure,
+				{ provider: "ANTHROPIC_DIRECT", apiKey: "example-key" },
+				context,
+			);
+			expect(rows[1].taskDefaultsSnapshot).toMatchObject({
+				scoped: { CHAT: state.template },
+				unscoped: { CHAT: state.template },
+			});
+		});
+		it("recaptures an upsert that makes a non-default connection default", async () => {
+			const rows =
+				context === orgContext
+					? tables.cloudProviderConfig
+					: tables.userCloudProviderConfig;
+			for (const provider of ["OPENAI_DIRECT", "ANTHROPIC_DIRECT"]) {
+				await call(
+					upsertUserProviderProcedure,
+					{ provider, apiKey: "sk-test", isDefault: false },
+					context,
+				);
+			}
+			state.template = "example-switched";
+			await call(
+				upsertUserProviderProcedure,
+				{
+					provider: "ANTHROPIC_DIRECT",
+					apiKey: "sk-rotated",
+					isDefault: true,
+				},
+				context,
+			);
+			expect(rows[1]).toMatchObject({
+				isDefault: true,
+				taskDefaultsSnapshot: {
+					scoped: { CHAT: "example-switched" },
+					unscoped: { CHAT: "example-switched" },
+				},
+			});
+		});
+
+		// Deletion outside the transaction would survive the failed default update.
+		it("rolls back preference deletion when the default flip fails", async () => {
+			const rows =
+				context === orgContext
+					? tables.cloudProviderConfig
+					: tables.userCloudProviderConfig;
+			const prefs =
+				context === orgContext
+					? tables.organizationModelPreference
+					: tables.userModelPreference;
+			for (const provider of ["OPENAI_DIRECT", "ANTHROPIC_DIRECT"]) {
+				await call(
+					upsertUserProviderProcedure,
+					{ provider, apiKey: "sk-test", isDefault: false },
+					context,
+				);
+			}
+			prefs.push({
+				organizationId: ORG,
+				userId: USER,
+				provider: "OPENAI_DIRECT",
+				taskType: "CHAT",
+				modelId: "example-model",
+			});
+			const before = structuredClone(rows);
+			state.failDefault = true;
+			await expect(
+				call(
+					setDefaultProviderProcedure,
+					{ provider: "ANTHROPIC_DIRECT" },
+					context,
+				),
+			).rejects.toThrow("default write failed");
+			expect(prefs).toHaveLength(1);
+			expect(rows).toEqual(before);
+		});
+		// Both paths that restrict a default to embeddings must capture the promoted connection.
+		it.each(["upsert", "documents"])(
+			"recaptures promotion when the default becomes embeddings-only via %s",
+			async (mode) => {
+				const rows =
+					context === orgContext
+						? tables.cloudProviderConfig
+						: tables.userCloudProviderConfig;
+				for (const provider of ["OPENAI_DIRECT", "ANTHROPIC_DIRECT"]) {
+					await call(
+						upsertUserProviderProcedure,
+						{ provider, apiKey: "sk-test", isDefault: false },
+						context,
+					);
+				}
+				state.template = "example-promoted";
+				await call(
+					mode === "upsert"
+						? upsertUserProviderProcedure
+						: setEmbeddingProviderProcedure,
+					{
+						provider: "OPENAI_DIRECT",
+						apiKey: "sk-test",
+						purpose: "EMBEDDINGS_ONLY",
+					},
+					context,
+				);
+				expect(rows[1]).toMatchObject({
+					isDefault: true,
+					taskDefaultsSnapshot: {
+						scoped: { CHAT: "example-promoted" },
+						unscoped: { CHAT: "example-promoted" },
+					},
+				});
+			},
+		);
+	},
+);
+
+describe.each([orgContext, personalContext])(
+	"post-lock default decisions (%j)",
+	(context) => {
+		it.each(["setDefault", "upsert"] as const)(
+			"%s rejects a concurrent default switch and captures on retry",
+			async (mode) => {
+				const rows =
+					context === orgContext
+						? tables.cloudProviderConfig
+						: tables.userCloudProviderConfig;
+				for (const provider of ["OPENAI_DIRECT", "ANTHROPIC_DIRECT"]) {
+					await call(
+						upsertUserProviderProcedure,
+						{ provider, apiKey: "example-key", isDefault: false },
+						context,
+					);
+				}
+				const before = structuredClone(rows);
+				const procedure =
+					mode === "setDefault"
+						? setDefaultProviderProcedure
+						: upsertUserProviderProcedure;
+				const request = {
+					provider: "OPENAI_DIRECT",
+					isDefault: true,
+					apiKey: "example-key",
+				};
+				state.template = "example-after-switch";
+				state.flipOnReadId = rows[0].id as string;
+				await expect(
+					call(procedure, request, context),
+				).rejects.toMatchObject({ code: "CONFLICT" });
+				expect(rows).toEqual(before);
+				// The transaction fake rolls back the simulated competing commit too.
+				// Reapply that commit before retrying against the new default.
+				rows[0].isDefault = false;
+				rows[1].isDefault = true;
+				await call(procedure, request, context);
+				expect(rows[0]).toMatchObject({
+					isDefault: true,
+					taskDefaultsSnapshot: {
+						scoped: { CHAT: "example-after-switch" },
+						unscoped: { CHAT: "example-after-switch" },
+					},
+				});
+				const snapshot = structuredClone(rows[0].taskDefaultsSnapshot);
+				state.template = "example-should-preserve";
+				await call(procedure, request, context);
+				expect(rows[0].taskDefaultsSnapshot).toEqual(snapshot);
+			},
+		);
+
+		it("does not capture when setDefault targets a missing connection", async () => {
+			const { db } = await import("@repo/database");
+			vi.mocked(db.aiTaskModelDefault.findMany).mockClear();
+			const result = call(
+				setDefaultProviderProcedure,
+				{ provider: "OPENAI_DIRECT" },
+				context,
+			);
+			if (context === orgContext) {
+				await expect(result).rejects.toThrow(
+					"Choose an enabled API provider",
+				);
+			} else {
+				await result;
+			}
+			expect(db.aiTaskModelDefault.findMany).not.toHaveBeenCalled();
+		});
+	},
+);
+
+describe.each([orgContext, personalContext])(
+	"tenant lock first (%j)",
+	(context) => {
+		it.each(["upsert", "delete", "setDefault", "setEmbedding"] as const)(
+			"%s locks the resolved tenant before reading or writing",
+			async (operation) => {
+				for (const provider of ["OPENAI_DIRECT", "ANTHROPIC_DIRECT"]) {
+					await call(
+						upsertUserProviderProcedure,
+						{ provider, apiKey: "example-key", isDefault: false },
+						context,
+					);
+				}
+				state.tenantLocks = [];
+				const procedure = {
+					upsert: upsertUserProviderProcedure,
+					delete: deleteUserProviderProcedure,
+					setDefault: setDefaultProviderProcedure,
+					setEmbedding: setEmbeddingProviderProcedure,
+				}[operation];
+				await call(
+					procedure,
+					{
+						provider: "OPENAI_DIRECT",
+						apiKey: "example-key",
+						isDefault: true,
+						...(operation === "setEmbedding"
+							? { purpose: "EMBEDDINGS_ONLY" }
+							: {}),
+					},
+					context,
+				);
+				expect(state.tenantLocks).toEqual([
+					{
+						table:
+							context === orgContext
+								? "cloud_provider_config"
+								: "user_cloud_provider_config",
+						owner:
+							context.session.activeOrganizationId ??
+							context.user.id,
+					},
+				]);
+			},
+		);
+	},
+);
+
+it.each(["delete", "upsert embeddings-only", "set embeddings-only"])(
+	"promotes exactly one credentialed organization row after %s despite a stale default flag",
+	async (action) => {
+		seedOrgRow({
+			provider: "GROQ",
+			isDefault: true,
+			encryptedApiKey: null,
+		});
+		seedOrgRow({ provider: "ANTHROPIC" });
+		seedOrgRow({
+			provider: "OPENAI_DIRECT",
+			isDefault: action === "set embeddings-only",
+		});
+		if (action === "delete") {
+			await call(deleteUserProviderProcedure, {
+				provider: "OPENAI_DIRECT",
+			});
+		} else if (action === "upsert embeddings-only") {
+			await call(upsertUserProviderProcedure, {
+				provider: "OPENAI_DIRECT",
+				apiKey: "example-key",
+				purpose: "EMBEDDINGS_ONLY",
+			});
+		} else {
+			await call(setEmbeddingProviderProcedure, {
+				provider: "OPENAI_DIRECT",
+				purpose: "EMBEDDINGS_ONLY",
+			});
+		}
+		expect(
+			tables.cloudProviderConfig
+				.filter((row) => row.isDefault)
+				.map((row) => row.provider),
+		).toEqual(["ANTHROPIC"]);
+	},
+);
+
+describe.each([orgContext, personalContext])(
+	"duplicate default flags (%j)",
+	(context) => {
+		it.each(["setDefault", "upsert"] as const)(
+			"%s captures a flagged target that is not the resolved default",
+			async (operation) => {
+				const rows =
+					context === orgContext
+						? tables.cloudProviderConfig
+						: tables.userCloudProviderConfig;
+				for (const provider of ["OPENAI_DIRECT", "ANTHROPIC_DIRECT"]) {
+					await call(
+						upsertUserProviderProcedure,
+						{ provider, apiKey: "example-key", isDefault: false },
+						context,
+					);
+				}
+				const target = rows[1];
+				target.isDefault = true;
+				state.template = "example-live-after-duplicate";
+				await call(
+					operation === "setDefault"
+						? setDefaultProviderProcedure
+						: upsertUserProviderProcedure,
+					{
+						provider: "ANTHROPIC_DIRECT",
+						apiKey: "example-key",
+						isDefault: true,
+					},
+					context,
+				);
+				expect(target.taskDefaultsSnapshot).toMatchObject({
+					scoped: { CHAT: state.template },
+					unscoped: { CHAT: state.template },
+				});
+				expect(
+					rows
+						.filter((row) => row.isDefault)
+						.map((row) => row.provider),
+				).toEqual(["ANTHROPIC_DIRECT"]);
+			},
+		);
+		it("delete captures a flagged survivor when the resolved default is removed", async () => {
+			const rows =
+				context === orgContext
+					? tables.cloudProviderConfig
+					: tables.userCloudProviderConfig;
+			for (const provider of ["OPENAI_DIRECT", "ANTHROPIC_DIRECT"]) {
+				await call(
+					upsertUserProviderProcedure,
+					{ provider, apiKey: "example-key", isDefault: false },
+					context,
+				);
+			}
+			rows[1].isDefault = true;
+			state.template = "example-live-after-delete";
+			await call(
+				deleteUserProviderProcedure,
+				{ provider: "OPENAI_DIRECT" },
+				context,
+			);
+			expect(rows[0].taskDefaultsSnapshot).toMatchObject({
+				scoped: { CHAT: state.template },
+				unscoped: { CHAT: state.template },
+			});
+		});
+		it.each(["upsert", "documents"] as const)(
+			"%s promotion recaptures a flagged replacement when no default resolves",
+			async (operation) => {
+				const rows =
+					context === orgContext
+						? tables.cloudProviderConfig
+						: tables.userCloudProviderConfig;
+				for (const provider of ["OPENAI_DIRECT", "ANTHROPIC_DIRECT"]) {
+					await call(
+						upsertUserProviderProcedure,
+						{ provider, apiKey: "example-key", isDefault: false },
+						context,
+					);
+				}
+				// The first flagged row has no credential. Runtime resolves no default,
+				// even though the usable replacement also has a stale default flag.
+				rows[0].encryptedApiKey = null;
+				rows[1].isDefault = true;
+				state.template = "example-live-promotion";
+				await call(
+					operation === "upsert"
+						? upsertUserProviderProcedure
+						: setEmbeddingProviderProcedure,
+					{
+						provider: "OPENAI_DIRECT",
+						apiKey: "example-key",
+						purpose: "EMBEDDINGS_ONLY",
+					},
+					context,
+				);
+				expect(rows[1].taskDefaultsSnapshot).toMatchObject({
+					scoped: { CHAT: state.template },
+					unscoped: { CHAT: state.template },
+				});
+			},
+		);
+	},
+);
+
+it.each(["organization", "user"] as const)(
+	"pins embeddings with resolution outside the transaction when an upsert switches the %s default",
+	async (scope) => {
+		state.selectorActiveStates = [];
+		const context = {
+			user: { id: "example-user", email: "dev@example.com" },
+			session: {
+				activeOrganizationId:
+					scope === "organization" ? "example-org" : null,
+			},
+		};
+		const rows =
+			scope === "organization"
+				? tables.cloudProviderConfig
+				: tables.userCloudProviderConfig;
+		const preferences =
+			scope === "organization"
+				? tables.organizationModelPreference
+				: tables.userModelPreference;
+		rows.push({
+			id: "example-outgoing",
+			provider: "OPENAI_DIRECT",
+			organizationId: "example-org",
+			userId: "example-user",
+			isDefault: true,
+			isEmbeddingProvider: false,
+			enabled: true,
+			purpose: "ALL",
+			encryptedApiKey: "example-key",
+			config: {},
+		});
+		preferences.push({
+			id: "example-embedding-choice",
+			taskType: "EMBEDDING",
+			provider: "OPENAI_DIRECT",
+			organizationId: "example-org",
+			userId: "example-user",
+		});
+		await call(
+			upsertUserProviderProcedure,
+			{
+				provider: "ANTHROPIC_DIRECT",
+				apiKey: "example-key",
+				isDefault: true,
+			},
+			context,
+		);
+		expect(state.selectorActiveStates.length).toBeGreaterThan(0);
+		expect(state.selectorActiveStates).not.toContain(true);
+		expect(
+			rows.find((entry) => entry.id === "example-outgoing")
+				?.isEmbeddingProvider,
+		).toBe(true);
+		expect(preferences.map((entry) => entry.id)).toEqual([
+			"example-embedding-choice",
+		]);
+		const { recordAuditFromRequest } = await import(
+			"../../../../../lib/audit"
+		);
+		expect(recordAuditFromRequest).toHaveBeenCalledWith(
+			context,
+			expect.objectContaining({
+				action: `${scope === "organization" ? "org" : "account"}.ai_provider.embedding_changed`,
+				metadata: expect.objectContaining({
+					reason: "pinned_by_default_switch",
+				}),
+			}),
+		);
+	},
+);

@@ -309,20 +309,34 @@ export function getDocumentsPollInterval(
 ): number | false {
 	let interval: number | false = false;
 	for (const doc of documents ?? []) {
-		const next = getDocumentPollInterval(
-			doc.status,
-			resolveGenerationClock(
+		interval = shorterPollInterval(
+			interval,
+			getDocumentPollInterval(
 				doc.status,
-				doc.generationStartedAt,
-				doc.updatedAt,
+				resolveGenerationClock(
+					doc.status,
+					doc.generationStartedAt,
+					doc.updatedAt,
+				),
+				now,
 			),
-			now,
 		);
-		if (next !== false && (interval === false || next < interval)) {
-			interval = next;
-		}
 	}
 	return interval;
+}
+
+/** The sooner of two cadences, where `false` asks for nothing. */
+export function shorterPollInterval(
+	a: number | false,
+	b: number | false,
+): number | false {
+	if (a === false) {
+		return b;
+	}
+	if (b === false) {
+		return a;
+	}
+	return Math.min(a, b);
 }
 
 /**
@@ -396,6 +410,31 @@ export function getVersionStepPollInterval(
 		watch: { running: false, endedAt: null, endedVersion: version },
 		interval: false,
 	};
+}
+
+/**
+ * `getVersionStepPollInterval` for a LIST of documents: each one is watched by
+ * its id, and the most impatient sets the pace for the one request. The list
+ * stops polling at a run's COMPLETE as the editor does, so its version number
+ * stayed behind the same way (Fizzy #2946). A document the answer no longer
+ * carries drops its watch.
+ */
+export function getDocumentsVersionStepPollInterval(
+	watches: Readonly<Record<string, VersionStepWatch>> | undefined,
+	documents:
+		| Array<{ id: string; status: string; version?: number | null }>
+		| undefined
+		| null,
+	now: number = Date.now(),
+): { watches: Record<string, VersionStepWatch>; interval: number | false } {
+	const next: Record<string, VersionStepWatch> = {};
+	let interval: number | false = false;
+	for (const doc of documents ?? []) {
+		const answer = getVersionStepPollInterval(watches?.[doc.id], doc, now);
+		next[doc.id] = answer.watch;
+		interval = shorterPollInterval(interval, answer.interval);
+	}
+	return { watches: next, interval };
 }
 
 /**

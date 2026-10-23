@@ -116,16 +116,14 @@ describe("decideWithModel", () => {
 		);
 	});
 
-	it("relaxes strict JSON schema, which an optional-heavy schema is rejected under", async () => {
+	it("leaves structured-output policy to the model middleware", async () => {
 		generateObject.mockResolvedValue({ object: {} });
 
 		await call();
 
-		expect(generateObject).toHaveBeenCalledWith(
-			expect.objectContaining({
-				providerOptions: { openai: { strictJsonSchema: false } },
-			}),
-		);
+		expect(
+			generateObject.mock.calls[0]?.[0]?.providerOptions,
+		).toBeUndefined();
 	});
 
 	it("returns the object without a second call when the schema is honoured", async () => {

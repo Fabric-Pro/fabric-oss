@@ -50,10 +50,21 @@ import {
 } from "../../lib/resolve-backlog-update-target";
 import { detectDestructiveRewrite } from "../../lib/structure-guards";
 import { triggerDuplicateDetection } from "../../lib/trigger-duplicate-detection";
+import { withHeartbeatKeepalive } from "../../lib/with-heartbeat-keepalive";
 import { findWorkflowHandledPlanRefusal } from "../lib/chatgpt-plan-refusal";
 import { describeSyncErrorForUser } from "../pm-integration/pm-sync-user-error";
+import { CHARS_PER_TOKEN, MAX_TOKEN_BUDGET } from "./analysis-budget";
 import { routeActionItemsToExistingTickets } from "./route-action-items";
 import { addRoutingNoteToSummary } from "./routing-summary";
+import {
+	MEETING_TRANSCRIPT_SEPARATOR,
+	summarizeMeetingsToFit,
+} from "./summarize-meetings-to-fit";
+import {
+	sanitizeUntrustedIntake,
+	UNTRUSTED_INTAKE_BLOCK_END,
+	UNTRUSTED_INTAKE_BLOCK_START,
+} from "./untrusted-intake";
 
 // =============================================================================
 // Schemas
@@ -882,18 +893,10 @@ export type VisionSuggestions = NonNullable<
  */
 export type BacklogIntakeMode = "standard" | "explore" | "recommend";
 
-/**
- * Delimiters for the untrusted block used in explore mode. Everything the
- * user typed into the chat, plus every fetched context section, sits
- * between them; the rules outside the block tell the model to treat that
- * text as data. Look-alikes inside the block are neutralised.
- */
-export const UNTRUSTED_INTAKE_BLOCK_START = "<<<UNTRUSTED_INTAKE_TEXT>>>";
-export const UNTRUSTED_INTAKE_BLOCK_END = "<<<END_UNTRUSTED_INTAKE_TEXT>>>";
-
-function sanitizeUntrustedIntake(text: string): string {
-	return text.replaceAll("<<<", "< < <").replaceAll(">>>", "> > >");
-}
+export {
+	UNTRUSTED_INTAKE_BLOCK_END,
+	UNTRUSTED_INTAKE_BLOCK_START,
+} from "./untrusted-intake";
 
 /**
  * `sourceContext` values accepted by the apply path and the review UI.
@@ -1262,8 +1265,6 @@ export interface ApplyBacklogChangesResult {
 // Token Budget Management
 // =============================================================================
 
-const MAX_TOKEN_BUDGET = 80_000;
-const CHARS_PER_TOKEN = 4;
 // Reserve enough work-item identifiers for updates while leaving most of the budget for meeting evidence.
 const MIN_WORK_ITEM_BLOCK_TOKENS = 8_000;
 // Require roughly 500 characters of capacity for a truncated meeting, beyond a heading or fragment.
@@ -1392,7 +1393,7 @@ type SectionBudgetOutcome = {
 };
 
 /**
- * One structured line per analysis describing what the budget squeezed out.
+ * One structured line per budget pass describing what the budget squeezed out.
  *
  * The reason this exists: allocation is greedy in a fixed priority order, so a
  * single oversized section silently evicts everything behind it — and until now
@@ -1400,7 +1401,9 @@ type SectionBudgetOutcome = {
  * open question of whether accumulated context is actually hurting analyses
  * (Fizzy #2316, Phase 2) cannot be answered without measuring it, and a
  * measurement that only fires under pressure has no denominator. This logs on
- * each run; `underPressure` distinguishes requests that exceed the budget.
+ * each budget pass; `underPressure` distinguishes requests that exceed the budget.
+ * Runs that attempt summaries also log a rebuilt budget; the meeting-summary
+ * event correlates the before and after grants for those runs.
  */
 function logBudgetOutcome(args: {
 	projectId?: string;
@@ -1721,6 +1724,7 @@ async function resolveWorkItemBodyTemplates(params: {
 				storyKind,
 				userId: params.userId,
 				organizationId: params.organizationId,
+				projectId: params.projectId,
 			});
 			const content = bound?.version?.content;
 			if (!bound || !content?.trim()) {
@@ -2773,8 +2777,9 @@ export async function analyzeContextAndPropose(
 	// this seam again; only a new ARRAY source needs a line.
 	const flattenedContext = {
 		...fetchedContext,
-		meetingTranscripts:
-			fetchedContext.meetingTranscripts?.join("\n\n---\n\n"),
+		meetingTranscripts: fetchedContext.meetingTranscripts?.join(
+			MEETING_TRANSCRIPT_SEPARATOR,
+		),
 		notionContent: fetchedContext.notionContent?.join("\n\n---\n\n"),
 	};
 
@@ -2791,7 +2796,7 @@ export async function analyzeContextAndPropose(
 	});
 
 	// Build the analysis prompt
-	const { prompt, meetingTranscriptBudget } = buildAnalysisPromptWithBudget({
+	const promptInput = {
 		projectId,
 		fetchedContext: flattenedContext,
 		existingBacklog,
@@ -2802,7 +2807,50 @@ export async function analyzeContextAndPropose(
 		featureBodyTemplate: workItemBodyTemplates.feature,
 		bugBodyTemplate: workItemBodyTemplates.bug,
 		intakeMode,
-	});
+	};
+	let { prompt, meetingTranscriptBudget } =
+		buildAnalysisPromptWithBudget(promptInput);
+	if (
+		meetingTranscriptBudget.grantedTokens <
+			meetingTranscriptBudget.requestedTokens &&
+		meetingTranscriptBudget.grantedTokens >= MIN_MEETING_TRANSCRIPT_TOKENS
+	) {
+		const before = meetingTranscriptBudget;
+		const summarized = await withHeartbeatKeepalive(
+			{ stage: "summarize-meetings", projectId },
+			() =>
+				summarizeMeetingsToFit(
+					fetchedContext.meetingTranscripts ?? [],
+					before.grantedTokens,
+					{ userId, organizationId, projectId, jobType },
+				),
+		);
+		if (summarized.selectedCount > 0) {
+			flattenedContext.meetingTranscripts = summarized.transcripts.join(
+				MEETING_TRANSCRIPT_SEPARATOR,
+			);
+			({ prompt, meetingTranscriptBudget } =
+				buildAnalysisPromptWithBudget(promptInput));
+			logger.info(
+				"[Backlog Analysis] meeting transcripts summarized to fit",
+				{
+					event: "backlog.meeting_transcript_summaries",
+					projectId,
+					meetingCount: summarized.transcripts.length,
+					selectedCount: summarized.selectedCount,
+					summarizedCount: summarized.summarizedCount,
+					partial: summarized.partialCount > 0,
+					partialCount: summarized.partialCount,
+					cacheHitCount: summarized.cacheHitCount,
+					timedOutCount: summarized.timedOutCount,
+					summaryCallLatenciesMs: summarized.summaryCallLatenciesMs,
+					deadlineStopped: summarized.deadlineStopped,
+					before,
+					after: meetingTranscriptBudget,
+				},
+			);
+		}
+	}
 
 	// Bug #391: model resolution and the LLM call were previously unguarded, so
 	// any failure (provider not configured, quota/rate-limit, context-length,
@@ -2884,18 +2932,6 @@ export async function analyzeContextAndPropose(
 			schema: generationSchema,
 			prompt,
 			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-			// Bug #1681: ChangeProposalSchema has many optional fields. The
-			// OpenAI/Azure provider (@ai-sdk/openai) defaults
-			// `strictJsonSchema` to `true`, which sends a strict
-			// `response_format: { type: "json_schema", strict: true }`. Strict
-			// mode REQUIRES every property to appear in `required`, so optional
-			// fields make Azure reject the request with a 400 ("Invalid schema
-			// for response_format"). Plain-text generation (chat/connection
-			// test) never hits this path — which is exactly why text worked but
-			// AI Update's structured generateObject failed on Azure AI Foundry.
-			// Disable strict mode so optional fields are tolerated; the AI SDK
-			// still validates the result against the Zod schema.
-			providerOptions: { openai: { strictJsonSchema: false } },
 		});
 
 		trackUsage();
@@ -3249,35 +3285,6 @@ export function mapSize(
 // normalizeBacklogTitle moved to @repo/database/utils so the AI Update
 // sidebar guard (here) and the Teams/Slack approve-pending-proposal guards
 // share a single equivalence class.
-
-/**
- * Run a slow per-change operation while emitting a Temporal heartbeat every 15s.
- *
- * A single LLM-heavy `createStoryFromProposal` (bug classify + draft) can exceed
- * the activity's 60s `heartbeatTimeout`. The apply loop only heartbeats BETWEEN
- * changes, so without an intra-call keepalive the activity is timed out and
- * retried mid-create — and a retry re-runs the whole batch, which for the
- * terminal-redirect create produced duplicate rows. The interval is a no-op for
- * fast calls (they resolve before the first tick) and harmless outside an
- * activity context (unit tests), where `heartbeat()` throws and is swallowed.
- */
-async function withHeartbeatKeepalive<T>(
-	details: Record<string, unknown>,
-	fn: () => Promise<T>,
-): Promise<T> {
-	const interval = setInterval(() => {
-		try {
-			heartbeat({ keepalive: true, ...details });
-		} catch {
-			// Not inside an activity (e.g. unit tests) — nothing to keep alive.
-		}
-	}, 15_000);
-	try {
-		return await fn();
-	} finally {
-		clearInterval(interval);
-	}
-}
 
 // Leave 30s for the default 20s decision pre-check plus bookkeeping and return.
 // When analysis is nested in auto-analyze-meeting-transcript, analyze-slack-thread,

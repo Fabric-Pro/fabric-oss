@@ -2,12 +2,9 @@
  * Stuck-Apply Watchdog Activities
  *
  * The activities behind `backlogApplyWatchdogWorkflow` — the 5-minute cron that
- * recovers `PendingBacklogProposal` rows stuck mid-apply: still PENDING with an
- * apply dispatched (`applyStartedAt` set) longer than the configured ceiling.
- * This happens when the apply workflow was force-terminated (OOM, worker crash,
- * execution-timeout) before its finalize step ran, OR was scheduled but never
- * picked up by a worker — either way the row leaks in PENDING forever and the
- * user is stuck with no terminal state to retry / dismiss from.
+ * recovers stale dispatched PENDING and claimed APPROVED/APPLYING proposals.
+ * A workflow can terminate before finalize, or a claim can fail before dispatch;
+ * the watchdog moves these rows to FAILED so the inbox offers Retry / Dismiss.
  *
  * Activity boundary: every Prisma write and Temporal client call lives here,
  * NOT in the workflow, so the workflow stays replay-safe under the post-1.16
@@ -18,29 +15,45 @@ import {
 	finalizeBacklogUpdateSession,
 	findStaleApplyingProposals,
 	recordAudit,
-	stopApplyingProposal,
+	timeOutStaleApply,
 } from "@repo/database";
 import type { Client } from "@temporalio/client";
 import { getTemporalClient } from "../client";
 
 /**
- * Default ceiling: a proposal whose apply was dispatched more than this many
- * minutes ago and is still PENDING is considered stuck. Conservative on
- * purpose — a large batch syncing to a PM tool can legitimately run a few
- * minutes, so 15 only catches genuinely-dead applies. Override per-deployment
- * via `FABRIC_BACKLOG_APPLY_STALE_MINUTES`.
+ * Default inactivity ceiling for dispatched PENDING and claimed
+ * APPROVED/APPLYING proposals. Override per deployment via
+ * `FABRIC_BACKLOG_APPLY_STALE_MINUTES`.
  */
 const DEFAULT_STALE_MINUTES = 15;
+
+function staleApplyCutoff(staleAfterMinutes = 0): Date {
+	const envCeiling = Number.parseInt(
+		process.env.FABRIC_BACKLOG_APPLY_STALE_MINUTES ?? "",
+		10,
+	);
+	const baselineMinutes =
+		Number.isFinite(envCeiling) && envCeiling > 0
+			? envCeiling
+			: DEFAULT_STALE_MINUTES;
+	const effectiveMinutes =
+		staleAfterMinutes > baselineMinutes
+			? staleAfterMinutes
+			: baselineMinutes;
+	return new Date(Date.now() - effectiveMinutes * 60_000);
+}
 
 export interface StaleApplyProposal {
 	proposalId: string;
 	projectId: string;
 	organizationId: string | null;
 	workflowId: string | null;
+	/** Latest apply/review activity, falling back to creation time (legacy field name). */
 	applyStartedAtMs: number;
 }
 
 export interface FindStaleApplyingProposalsInput {
+	/** May raise the env/default ceiling; smaller values use that ceiling. */
 	staleAfterMinutes: number;
 	batchSize: number;
 }
@@ -50,25 +63,15 @@ export interface FindStaleApplyingProposalsOutput {
 }
 
 /**
- * Find proposals stuck mid-apply. Reads `FABRIC_BACKLOG_APPLY_STALE_MINUTES`
- * from env when `input.staleAfterMinutes` is 0 / negative, so the workflow body
- * stays free of `process.env` reads (non-deterministic in Temporal workflows
- * under SDK 1.16 + reuseV8Context). Defaults to 15 minutes.
+ * Find stale dispatched PENDING and claimed APPROVED/APPLYING rows.
+ * The input can only raise the env/default inactivity ceiling, so discovery
+ * does not select younger rows than the timeout write permits. Environment
+ * reads stay in activities; the default ceiling is 15 minutes.
  */
 export async function findStaleApplyingProposalsActivity(
 	input: FindStaleApplyingProposalsInput,
 ): Promise<FindStaleApplyingProposalsOutput> {
-	const envCeiling = Number.parseInt(
-		process.env.FABRIC_BACKLOG_APPLY_STALE_MINUTES ?? "",
-		10,
-	);
-	const effectiveMinutes =
-		input.staleAfterMinutes > 0
-			? input.staleAfterMinutes
-			: Number.isFinite(envCeiling) && envCeiling > 0
-				? envCeiling
-				: DEFAULT_STALE_MINUTES;
-	const cutoff = new Date(Date.now() - effectiveMinutes * 60_000);
+	const cutoff = staleApplyCutoff(input.staleAfterMinutes);
 
 	const stale = await findStaleApplyingProposals({
 		cutoff,
@@ -76,16 +79,16 @@ export async function findStaleApplyingProposalsActivity(
 	});
 
 	return {
-		rows: stale
-			.filter((r) => r.applyStartedAt !== null)
-			.map<StaleApplyProposal>((r) => ({
-				proposalId: r.id,
-				projectId: r.projectId,
-				organizationId: r.organizationId,
-				workflowId: r.applyWorkflowId,
-				// biome-ignore lint/style/noNonNullAssertion: filtered above
-				applyStartedAtMs: r.applyStartedAt!.getTime(),
-			})),
+		rows: stale.map<StaleApplyProposal>((r) => ({
+			proposalId: r.id,
+			projectId: r.projectId,
+			organizationId: r.organizationId,
+			workflowId: r.applyWorkflowId,
+			applyStartedAtMs: Math.max(
+				r.applyStartedAt?.getTime() ?? r.createdAt.getTime(),
+				r.reviewedAt?.getTime() ?? r.createdAt.getTime(),
+			),
+		})),
 	};
 }
 
@@ -125,29 +128,28 @@ export interface MarkBacklogProposalTimedOutInput {
 }
 
 /**
- * Flip the stuck proposal `PENDING → FAILED` via the compare-and-set helper,
+ * Flip stale PENDING/APPROVED/APPLYING proposals to FAILED via the atomic guard,
  * mirror the terminal status onto its session-history row, and write a
  * `backlog.proposal.timed_out` audit entry — but ONLY when this watchdog
- * actually won the transition (`stopApplyingProposal` returned 1). When the
+ * actually won the transition (`timeOutStaleApply` returned 1). When the
  * guard prevents the update (the apply workflow's own finalize raced us, or a
- * manual cancel beat us), we skip the session-finalize and audit so we never
- * emit a misleading duplicate.
+ * manual cancel or fresh claim beat us), skip session-finalize and audit.
  *
  * @returns true when the watchdog stopped the proposal, false when it was
- * already terminal.
+ * no longer stale.
  */
 export async function markBacklogProposalTimedOutActivity(
 	input: MarkBacklogProposalTimedOutInput,
 ): Promise<boolean> {
-	const stopped = await stopApplyingProposal({
+	const stopped = await timeOutStaleApply({
 		proposalId: input.proposalId,
+		cutoff: staleApplyCutoff(),
 		errorClass: "TimedOut",
 		errorMessage:
 			"Apply timed out and was automatically stopped. You can retry it.",
 	});
 	if (stopped === 0) {
-		// The apply workflow's finalize (or a manual cancel) already moved the
-		// row out of PENDING — nothing leaked, so no session-finalize / audit.
+		// The row no longer meets the stale guard (finalize, cancel, or fresh claim).
 		return false;
 	}
 

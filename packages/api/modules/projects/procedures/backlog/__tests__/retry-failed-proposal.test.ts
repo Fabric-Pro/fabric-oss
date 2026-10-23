@@ -24,6 +24,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		buildBacklogDedupGuard: vi.fn(),
 		inferDedupFamily: vi.fn(),
 		markPendingProposalApplied: vi.fn(),
+		markProposalApplyDispatched: vi.fn(),
 		projectFindFirst: vi.fn(),
 		proposalUpdate: vi.fn(),
 		getTemporalClient: vi.fn(),
@@ -36,12 +37,16 @@ const { handlers, mocks } = vi.hoisted(() => {
 vi.mock("@repo/database", () => ({
 	db: {
 		project: { findFirst: mocks.projectFindFirst },
-		pendingBacklogProposal: { update: mocks.proposalUpdate },
+		pendingBacklogProposal: {
+			update: mocks.proposalUpdate,
+			updateMany: mocks.proposalUpdate,
+		},
 	},
 	getPendingBacklogProposal: mocks.getPendingBacklogProposal,
 	buildBacklogDedupGuard: mocks.buildBacklogDedupGuard,
 	inferDedupFamily: mocks.inferDedupFamily,
 	markPendingProposalApplied: mocks.markPendingProposalApplied,
+	markProposalApplyDispatched: mocks.markProposalApplyDispatched,
 	returnFailedRecommendationToReview:
 		mocks.returnFailedRecommendationToReview,
 }));
@@ -129,7 +134,8 @@ beforeEach(() => {
 		organizationId: "org-1",
 		projectManagementContainerName: null,
 	});
-	mocks.proposalUpdate.mockResolvedValue({ id: "proposal-1" });
+	mocks.proposalUpdate.mockResolvedValue({ count: 1 });
+	mocks.markProposalApplyDispatched.mockResolvedValue(1);
 	mocks.inferDedupFamily.mockReturnValue("FEATURE");
 	mocks.buildBacklogDedupGuard.mockResolvedValue({
 		findCollision: () => null,
@@ -163,7 +169,7 @@ describe("retryFailedProposalProcedure — happy path", () => {
 		expect(mocks.workflowStart).toHaveBeenCalledTimes(1);
 	});
 
-	it("flips status to PENDING (atomic) before starting the workflow", async () => {
+	it("claims APPLYING atomically before starting the workflow", async () => {
 		mocks.getPendingBacklogProposal.mockResolvedValue(baseProposal);
 
 		await handlers.retry({
@@ -178,7 +184,7 @@ describe("retryFailedProposalProcedure — happy path", () => {
 		expect(mocks.proposalUpdate).toHaveBeenCalledWith(
 			expect.objectContaining({
 				data: expect.objectContaining({
-					status: "PENDING",
+					status: "APPLYING",
 					errorClass: null,
 					errorMessage: null,
 					failedAt: null,
@@ -394,7 +400,7 @@ describe("retryFailedProposalProcedure — workflow-start failure", () => {
 			}),
 		).rejects.toMatchObject({ code: "INTERNAL_SERVER_ERROR" });
 
-		// Two updates: first PENDING flip, then the FAILED revert.
+		// Two updates: first APPLYING claim, then the FAILED revert.
 		const updateCalls = mocks.proposalUpdate.mock.calls;
 		const lastStatus = (
 			updateCalls[updateCalls.length - 1]?.[0] as {

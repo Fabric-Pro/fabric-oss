@@ -9,11 +9,11 @@
  *   ZodError: expected "string", code "invalid_type",
  *             path ["changes", 0, "reasoning"]
  *
- * `reasoning` and `sourceContext` are narrative annotations. Every consumer
- * already guards them — `change.reasoning ? … : ""` in `structurePreserveUpdates`
+ * `reasoning` and `sourceContext` are narrative annotations. Consumers
+ * guard them — `change.reasoning ? … : ""` in `structurePreserveUpdates`
  * and `applyBacklogChanges`, and `routing.reasoning` is already
  * `.nullable().optional()`. Only the generation schema treated them as
- * load-bearing, so one omitted sentence discarded every other valid change in
+ * load-bearing, so one omitted sentence discarded the other valid changes in
  * the same response.
  *
  * These tests pin the asymmetry shut: the schema must accept a change that
@@ -28,8 +28,21 @@ import {
 	countAnthropicSchemaParameters,
 	createAnthropicStructuredOutputLimitsMiddleware,
 } from "@repo/ai/lib/prompt-steered-structured-output-middleware";
+import {
+	createStrictJsonSchemaMiddleware,
+	strictJsonSchemaSize,
+	toStrictJsonSchema,
+} from "@repo/ai/lib/strict-json-schema-middleware";
+import { structuredOutputCapabilityFor } from "@repo/ai/lib/structured-output-capabilities";
 import { logger } from "@repo/logs";
-import { asSchema, zodSchema } from "ai";
+import {
+	asSchema,
+	extractReasoningMiddleware,
+	generateObject,
+	wrapLanguageModel,
+	zodSchema,
+} from "ai";
+import { MockLanguageModelV4 } from "ai/test";
 import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
@@ -41,6 +54,8 @@ import {
 } from "../src/activities/backlog-context/analyze-context";
 
 import changeProposalJsonSchema from "./fixtures/change-proposal-json-schema.json";
+
+vi.mock("@qdrant/js-client-rest", () => ({ QdrantClient: class {} }));
 
 /** Drop keys without binding an unused name for each one. */
 function omit(source: Record<string, unknown>, ...keys: string[]) {
@@ -74,6 +89,80 @@ type TitleCase = {
 };
 
 describe("ChangeProposalSchema", () => {
+	it("converts the real AI Update generation schema to strict structure", async () => {
+		const converted = toStrictJsonSchema(
+			await zodSchema(ChangeProposalSchema).jsonSchema,
+		);
+		expect(converted).toBeDefined();
+		if (!converted) {
+			throw new Error("Expected a convertible proposal schema");
+		}
+		const size = strictJsonSchemaSize(converted);
+		console.info(`CHANGE_PROPOSAL_STRICT_SIZE ${JSON.stringify(size)}`);
+		expect(size.objectDepth).toBeLessThanOrEqual(10);
+		expect(size.properties).toBeLessThanOrEqual(5000);
+	});
+
+	it.each([false, true])(
+		"validates required title and repairs optional fields behind reasoning (invalid title: %s)",
+		async (invalidTitle) => {
+			const change = {
+				...minimalChange(),
+				title: invalidTitle ? null : { to: "Example" },
+				description: null,
+			};
+			const model = wrapLanguageModel({
+				model: new MockLanguageModelV4({
+					doGenerate: {
+						content: [
+							{
+								type: "text",
+								text: `<think>Example reasoning</think>${JSON.stringify({ summary: null, changes: [change] })}`,
+							},
+						],
+						finishReason: { unified: "stop", raw: "stop" },
+						usage: {
+							inputTokens: {
+								total: 1,
+								noCache: 1,
+								cacheRead: 0,
+								cacheWrite: 0,
+							},
+							outputTokens: { total: 1, text: 1, reasoning: 0 },
+						},
+						warnings: [],
+					},
+				}),
+				middleware: [
+					extractReasoningMiddleware({ tagName: "think" }),
+					createStrictJsonSchemaMiddleware(
+						structuredOutputCapabilityFor(
+							"OPENAI_DIRECT",
+							false,
+							"example",
+						),
+					),
+				],
+			});
+			const result = await generateObject({
+				model,
+				schema: ChangeProposalSchema,
+				prompt: "Example",
+				maxRetries: 0,
+			});
+			expect(result.object.summary).toBe("");
+			expect(result.object.changes).toHaveLength(invalidTitle ? 0 : 1);
+			if (!invalidTitle) {
+				expect(result.object.changes[0]?.title).toEqual({
+					to: "Example",
+				});
+				expect(result.object.changes[0]).not.toHaveProperty(
+					"description",
+				);
+			}
+		},
+	);
+
 	it.each<TitleCase>([
 		{ name: "missing", input: {}, changed: undefined, fallback: undefined },
 		{
@@ -538,7 +627,7 @@ describe("ChangeProposalSchema", () => {
 	// This asserted a REJECTED parse when it was written. The contract changed
 	// deliberately: a change the apply path cannot use is now dropped rather
 	// than rejecting the whole response with it. The intent is unchanged — such
-	// a change must never reach the apply path — so the assertion moved from
+	// a change is excluded by dropUnusableChanges before the apply path — so the assertion moved from
 	// "the parse fails" to "the change is not in the result".
 	it("does not let a change with no title through to the apply path", () => {
 		const result = ChangeProposalSchema.safeParse({
@@ -555,15 +644,15 @@ describe("ChangeProposalSchema", () => {
  *
  * The 18 Aug fix made `reasoning` and `sourceContext` optional, which removed
  * ONE instance of a class: `generateObject` validates the entire response, so
- * anything the model gets wrong anywhere in `changes` rejects the lot — every
- * valid change in the same response included.
+ * anything the model gets wrong anywhere in `changes` rejects the lot — the
+ * valid changes in the same response included.
  *
  * The regression run that evening proved the class was still open, with a
  * different shape entirely:
  *
  *   ZodError: expected "object", code "invalid_type", path ["changes", 1]
  *
- * No amount of per-field relaxation can enumerate every way a model might
+ * No amount of per-field relaxation can enumerate the ways a model might
  * malform an element. So the array drops what it cannot use and keeps the rest.
  *
  * The array ITSELF stays strict on purpose: a response carrying no `changes` at
@@ -685,8 +774,8 @@ describe("ChangeProposalSchema — a double-encoded changes array", () => {
 /**
  * The salvage uses `z.preprocess`, and this schema is not only a
  * validator — the AI SDK converts it to JSON Schema to TELL the model what to
- * produce. A wrapper that flattened the element shape would still pass every
- * test above while quietly degrading generation, which is the failure mode that
+ * produce. A wrapper that flattened the element shape would still pass the
+ * tests above while quietly degrading generation, which is the failure mode that
  * produced the malformed elements in the first place.
  */
 describe("the JSON Schema the model is handed", () => {

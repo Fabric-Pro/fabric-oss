@@ -13,6 +13,7 @@ import {
 	seedTerminalStatusesIfEmpty,
 } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
+import { countDocumentWords } from "@repo/utils/document-word-count";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../lib/audit";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
@@ -423,9 +424,7 @@ export const createProjectProcedure = tenantProtectedProcedure
 								status: "COMPLETE",
 								source: "IMPORTED",
 								isActive: !existingActive,
-								wordCount: sanitized
-									.split(/\s+/)
-									.filter((w) => w.length > 0).length,
+								wordCount: countDocumentWords(sanitized),
 								version: 1,
 								userId: user.id,
 								organizationId: organizationId ?? null,
@@ -592,11 +591,9 @@ export const createProjectProcedure = tenantProtectedProcedure
 											source: "IMPORTED",
 											sourceContextId: ctx.id,
 											isActive: !existingActive,
-											wordCount: ctx.content
-												.split(/\s+/)
-												.filter(
-													(w: string) => w.length > 0,
-												).length,
+											wordCount: countDocumentWords(
+												ctx.content,
+											),
 											version: 1,
 											userId: user.id,
 											organizationId:

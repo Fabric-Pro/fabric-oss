@@ -28,6 +28,7 @@ const {
 	mockLinkSlackChannel,
 	mockTemporalStart,
 	mockGetTemporalClient,
+	mockProjectDocumentCreate,
 } = vi.hoisted(() => ({
 	mockHasProjectAccess: vi.fn(),
 	mockCreateContext: vi.fn(),
@@ -38,11 +39,15 @@ const {
 	mockLinkSlackChannel: vi.fn(),
 	mockTemporalStart: vi.fn(),
 	mockGetTemporalClient: vi.fn(),
+	mockProjectDocumentCreate: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
 	db: {
-		projectDocument: { findFirst: vi.fn(), create: vi.fn() },
+		projectDocument: {
+			findFirst: vi.fn(),
+			create: mockProjectDocumentCreate,
+		},
 		documentVersion: { create: vi.fn() },
 	},
 	hasProjectAccess: mockHasProjectAccess,
@@ -401,5 +406,49 @@ describe("createContextProcedure — non-INTEGRATION types untouched", () => {
 		});
 		expect(mockLinkTeamsChat).not.toHaveBeenCalled();
 		expect(mockUpdateContextExtractionStatus).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * A tagged context's document counts its words as an editor save and a
+ * generation run do, so a fenced code block or an image adds nothing to its
+ * `wordCount` (Fizzy #2946).
+ */
+describe("createContextProcedure — a tagged context's document", () => {
+	it("counts the document's words without its code and images", async () => {
+		const content = [
+			"Scope and goals",
+			"",
+			"```ts",
+			"const answer = 42;",
+			"```",
+			"",
+			"![Flow](https://example.com/flow.png)",
+		].join("\n");
+		mockCreateContext.mockResolvedValueOnce({
+			id: "ctx-doc",
+			projectId: "proj-1",
+			type: "DOCUMENT",
+			extractionStatus: "PENDING",
+			content,
+		});
+		mockProjectDocumentCreate.mockResolvedValueOnce({ id: "doc-1" });
+		const handler = await loadHandler();
+		await handler({
+			input: {
+				projectId: "proj-1",
+				type: "DOCUMENT",
+				content,
+				metadata: { documentTag: "PRD" },
+			},
+			context: personalCtx,
+		});
+
+		expect(mockProjectDocumentCreate).toHaveBeenCalledTimes(1);
+		expect(mockProjectDocumentCreate.mock.calls[0][0].data).toMatchObject({
+			type: "PRD",
+			sourceContextId: "ctx-doc",
+			wordCount: 3,
+		});
 	});
 });

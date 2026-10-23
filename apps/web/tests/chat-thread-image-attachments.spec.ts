@@ -257,6 +257,7 @@ interface PendingProposalSeed {
 	status:
 		| "PENDING"
 		| "APPROVED"
+		| "APPLYING"
 		| "APPLIED"
 		| "REJECTED"
 		| "FAILED"
@@ -392,8 +393,10 @@ async function installInboxMocks(page: Page, state: MockState): Promise<void> {
 	await page.route(
 		"**/api/rpc/projects/teamsChannelMonitor/pendingProposals/count**",
 		async (route) => {
-			const count = state.currentSeeds.filter(
-				(s) => s.status === "PENDING" || s.status === "FAILED",
+			const count = state.currentSeeds.filter((s) =>
+				["PENDING", "APPROVED", "APPLYING", "FAILED"].includes(
+					s.status,
+				),
 			).length;
 			await fulfillJson(route, { count });
 		},

@@ -8,6 +8,7 @@
  * - getAIModel() / getAIModelWithMetadata() from @repo/ai/model-selector
  */
 
+import { createHash } from "node:crypto";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createCerebras } from "@ai-sdk/cerebras";
 import { createDeepSeek } from "@ai-sdk/deepseek";
@@ -30,14 +31,15 @@ import { toDatabricksServingBaseUrl } from "./lib/databricks-url";
 import { createEmptyToolInputRepairMiddleware } from "./lib/empty-tool-input-middleware";
 import { createLLMTelemetryMiddleware } from "./lib/llm-telemetry-middleware";
 import {
-	createNonStrictJsonSchemaMiddleware,
-	strictJsonSchemaNamespacesFor,
-} from "./lib/non-strict-json-schema-middleware";
-import {
 	createAnthropicStructuredOutputLimitsMiddleware,
 	createPromptSteeredStructuredOutputMiddleware,
 	databricksModelNeedsPromptSteeredStructuredOutput,
 } from "./lib/prompt-steered-structured-output-middleware";
+import {
+	createStrictJsonSchemaMiddleware,
+	relaxIncompatibleStrictJsonSchema,
+} from "./lib/strict-json-schema-middleware";
+import { structuredOutputCapabilityFor } from "./lib/structured-output-capabilities";
 
 /**
  * Reasoning model patterns that need middleware extraction
@@ -51,7 +53,7 @@ const REASONING_MODEL_PATTERNS = [
 
 /**
  * Vercel AI Gateway Configuration
- * When AI_GATEWAY_API_KEY is set, all AI requests will be routed through Vercel AI Gateway
+ * AI_GATEWAY_API_KEY supplies the gateway used by getModel when no per-call key is supplied.
  * The gateway provides a unified API to access models from multiple providers
  * This enables centralized monitoring, cost tracking, rate limiting, and provider fallbacks
  *
@@ -212,10 +214,10 @@ function needsReasoningMiddleware(modelName: string): boolean {
  * Decide whether a model needs `<think>`-tag reasoning-extraction middleware.
  *
  * A DeepSeek-R1-architecture model returns its chain-of-thought wrapped in
- * `<think>…</think>` tags in the message content on every OpenAI-compatible
+ * `<think>…</think>` tags in the message content on OpenAI-compatible
  * serving surface EXCEPT the DeepSeek *direct* provider (`@ai-sdk/deepseek`),
  * which parses it into a dedicated `reasoning_content` field. So the tags must
- * be extracted for everyone else; only the native-reasoning DeepSeek surface is
+ * be extracted for those routes; only the native-reasoning DeepSeek surface is
  * skipped.
  *
  * Bug #1942 (U3): the DeepSeek short-circuit keyed off the model *name*
@@ -223,7 +225,7 @@ function needsReasoningMiddleware(modelName: string): boolean {
  * be *named* `deepseek-r1` / `deepseek-reasoner` (Databricks strips the routing
  * prefix, so the bare name reaches here) while being served over the raw
  * OpenAI-compatible surface that DOES leak `<think>` tags. The resolved provider
- * TYPE is authoritative: when it's DATABRICKS, always extract for an R1 model.
+ * TYPE drives needsReasoningExtraction: DATABRICKS selects extraction for an R1 model.
  *
  * Bug #1942 (review): a Databricks endpoint can also be aliased to an *opaque*
  * name (e.g. `prod-chat`) that matches none of the R1 name patterns, so the
@@ -266,6 +268,20 @@ export function needsReasoningExtraction(
 	return true;
 }
 
+function endpointScopeFor(baseURL: string): string {
+	let resource: string;
+	try {
+		const url = new URL(baseURL);
+		// Hash the resource's origin and path, omitting credentials, query and fragment.
+		resource = url.origin + url.pathname.replace(/\/+$/, "");
+	} catch {
+		// An unparseable base URL keeps failing at request time, as before; the
+		// raw string is only hashed, never stored or logged.
+		resource = baseURL;
+	}
+	return createHash("sha256").update(resource).digest("hex");
+}
+
 /**
  * Wrap a model with reasoning extraction middleware if needed
  * For Groq/Together AI / Databricks models that use DeepSeek R1 architecture,
@@ -289,11 +305,12 @@ function wrapWithProviderMiddleware(
 	isReasoningModel?: boolean,
 	viaGateway = false,
 	promptSteerStructuredOutput = false,
+	endpointScope = viaGateway ? "vercel-ai-gateway" : "openai-default",
 ): LanguageModel {
-	// Always applied, and a no-op on any provider that emits its tool calls
-	// correctly: `@ai-sdk/openai@3` silently drops a streamed call whose
-	// arguments never parse as JSON, which is every NO-PARAMETER tool (they
-	// arrive as `arguments: ""`). See empty-tool-input-middleware.ts.
+	// The middleware array below applies repair, a no-op when a provider emits
+	// tool calls correctly: `@ai-sdk/openai@3` silently drops a streamed call whose
+	// arguments fail to parse as JSON, including no-parameter calls arriving
+	// as `arguments: ""`. See empty-tool-input-middleware.ts.
 	const middleware = [
 		createLLMTelemetryMiddleware({
 			provider: resolvedProvider ?? nameProvider,
@@ -331,13 +348,17 @@ function wrapWithProviderMiddleware(
 		);
 	}
 
-	// Always applied, and last so it is the innermost wrapper: it sees the
-	// params after every middleware above, so a call whose JSON response
-	// format was replaced by the prompt-steered middleware no longer has one
-	// and passes through untouched. See non-strict-json-schema-middleware.ts.
+	// Last in this array is innermost (wrapLanguageModel). Prompt-steered
+	// requests have already removed responseFormat before this transform runs.
 	middleware.push(
-		createNonStrictJsonSchemaMiddleware(
-			strictJsonSchemaNamespacesFor(resolvedProvider, viaGateway),
+		createStrictJsonSchemaMiddleware(
+			structuredOutputCapabilityFor(
+				resolvedProvider,
+				viaGateway,
+				modelName,
+			),
+			resolvedProvider ?? nameProvider,
+			endpointScope,
 		),
 	);
 
@@ -445,7 +466,7 @@ const cerebrasProviderCache = new Map<
  *
  * BOUNDED, unlike the other provider caches: a service-principal tenant's
  * `apiKey` is a short-lived OAuth access token that rotates roughly hourly, so
- * every refresh mints a NEW cache key. A static PAT keeps the key set naturally
+ * a refresh mints a NEW cache key. A static PAT keeps the key set naturally
  * bounded by tenant count, but rotation would grow this map without limit in
  * long-lived processes (the Temporal worker, agent containers). Stale entries
  * are harmless — just an expired token nobody asks for again — so oldest-first
@@ -460,7 +481,8 @@ const databricksProviderCache = new Map<
 /**
  * Shared fetch for Databricks providers: applies the Vercel-path request-body
  * rule (strips `stream_options`/`parallel_tool_calls`, drops `temperature`,
- * relaxes strict JSON schema), injects Claude prompt-cache markers, and
+ * relaxes incompatible explicit-strict JSON schemas), injects Claude prompt-cache
+ * markers, and
  * flattens Claude's non-standard `delta.content` reasoning arrays to plain text.
  * See lib/databricks-compat.ts and `@repo/agent-types`' databricks-compat.ts.
  */
@@ -474,6 +496,12 @@ export function isVercelGatewayKey(apiKey: string): boolean {
 	return apiKey.startsWith("vck_");
 }
 
+function openAIBaseURL(apiKey: string): string {
+	return isVercelGatewayKey(apiKey)
+		? VERCEL_AI_GATEWAY_BASE_URL
+		: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1";
+}
+
 /**
  * Get or create an OpenAI provider for a specific API key
  * Automatically detects if it's a Vercel Gateway key and configures baseURL accordingly
@@ -484,22 +512,12 @@ export function isVercelGatewayKey(apiKey: string): boolean {
 function getOpenAIProviderWithKey(
 	apiKey: string,
 ): ReturnType<typeof createOpenAI> {
-	if (!openaiProviderCache.has(apiKey)) {
-		if (isVercelGatewayKey(apiKey)) {
-			// When using Vercel AI Gateway key, configure OpenAI provider to use gateway endpoint
-			openaiProviderCache.set(
-				apiKey,
-				createOpenAI({
-					apiKey,
-					baseURL: VERCEL_AI_GATEWAY_BASE_URL,
-				}),
-			);
-		} else {
-			// Direct OpenAI API key - use default OpenAI endpoint
-			openaiProviderCache.set(apiKey, createOpenAI({ apiKey }));
-		}
+	const baseURL = openAIBaseURL(apiKey);
+	const cacheKey = `${apiKey}::${baseURL}`;
+	if (!openaiProviderCache.has(cacheKey)) {
+		openaiProviderCache.set(cacheKey, createOpenAI({ apiKey, baseURL }));
 	}
-	const provider = openaiProviderCache.get(apiKey);
+	const provider = openaiProviderCache.get(cacheKey);
 	if (!provider) {
 		throw new Error("Failed to create OpenAI provider");
 	}
@@ -702,9 +720,9 @@ function extractProvider(modelStr: string): string {
  * Azure OpenAI chat/completions request body. Returns whether the body changed.
  *
  * Exported as a pure function so the transform rules are unit-testable without a
- * live Azure endpoint. Mirrors the inline patches the Azure `fetch` interceptor
- * has always done (temperature / max_tokens), plus the Bug #1681 strict-schema
- * flip that fixes structured `generateObject` across every Azure caller.
+ * live Azure endpoint. The shared schema checker preserves compatible strict
+ * requests and relaxes incompatible schemas from explicit-strict callers or
+ * future clients.
  */
 export function applyAzureChatBodyCompat(
 	body: Record<string, unknown>,
@@ -733,23 +751,7 @@ export function applyAzureChatBodyCompat(
 		modified = true;
 	}
 
-	// Bug #1681: @ai-sdk/openai defaults strict JSON-schema structured outputs
-	// (`response_format.json_schema.strict = true`), which Azure rejects with a
-	// 400 when the Zod schema has optional fields (strict mode requires every
-	// property in `required`). Force non-strict so optional-heavy schemas
-	// (backlog analysis, daily-brief, deep-researcher, …) work across ALL
-	// `generateObject` callers on Azure; the AI SDK still validates the result
-	// against the Zod schema.
-	const responseFormat = body.response_format as
-		| { type?: string; json_schema?: { strict?: boolean } }
-		| undefined;
-	if (
-		responseFormat?.type === "json_schema" &&
-		responseFormat.json_schema?.strict === true
-	) {
-		responseFormat.json_schema.strict = false;
-		modified = true;
-	}
+	modified = relaxIncompatibleStrictJsonSchema(body) || modified;
 
 	return modified;
 }
@@ -801,7 +803,7 @@ export function getModel(
 			const baseModel = gateway(formatModelName(normalizedModel));
 			return wrapWithProviderMiddleware(
 				baseModel,
-				model,
+				formatModelName(normalizedModel),
 				modelProvider,
 				provider,
 				context.isReasoningModel,
@@ -824,7 +826,7 @@ export function getModel(
 			const baseModel = gateway(formatModelName(normalizedModel));
 			return wrapWithProviderMiddleware(
 				baseModel,
-				model,
+				formatModelName(normalizedModel),
 				modelProvider,
 				provider,
 				context.isReasoningModel,
@@ -833,8 +835,10 @@ export function getModel(
 		}
 
 		let baseModel: LanguageModel;
+		let endpointScope = "openai-default";
 		switch (provider) {
 			case "OPENAI_DIRECT":
+				endpointScope = endpointScopeFor(openAIBaseURL(context.apiKey));
 				baseModel = getOpenAIProviderWithKey(context.apiKey)(
 					modelWithoutPrefix,
 				);
@@ -892,6 +896,7 @@ export function getModel(
 					context.baseUrl,
 					azureDeploymentName,
 				);
+				endpointScope = endpointScopeFor(azureChatTarget.baseURL);
 				const azureChatProvider = createOpenAI({
 					apiKey: context.apiKey,
 					baseURL: azureChatTarget.baseURL,
@@ -959,6 +964,9 @@ export function getModel(
 				// modelWithoutPrefix is the serving-endpoint name (e.g.
 				// "databricks-meta-llama-3-3-70b-instruct"). .chat() forces the
 				// chat/completions path — Databricks has no OpenAI Responses API.
+				endpointScope = endpointScopeFor(
+					toDatabricksServingBaseUrl(context.baseUrl),
+				);
 				baseModel = getDatabricksProviderWithKey(
 					context.apiKey,
 					context.baseUrl,
@@ -967,6 +975,7 @@ export function getModel(
 			}
 			default:
 				// Fall back to OpenAI-compatible endpoint for unknown providers
+				endpointScope = endpointScopeFor(openAIBaseURL(context.apiKey));
 				baseModel = getOpenAIProviderWithKey(context.apiKey)(
 					modelWithoutPrefix,
 				);
@@ -983,6 +992,7 @@ export function getModel(
 					modelWithoutPrefix,
 					context.canonicalModelName,
 				),
+			endpointScope,
 		);
 	}
 
@@ -1002,7 +1012,7 @@ export function getModel(
 		const baseModel = provider(formatModelName(normalizedModel));
 		return wrapWithProviderMiddleware(
 			baseModel,
-			model,
+			formatModelName(normalizedModel),
 			modelProvider,
 			undefined,
 			context?.isReasoningModel,

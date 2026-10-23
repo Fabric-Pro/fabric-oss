@@ -15,7 +15,11 @@
 
 import type { Schemas } from "@qdrant/js-client-rest";
 import { logger } from "@repo/logs";
-import { ensureCollection } from "../collection-manager";
+import {
+	collectionExistsUncached,
+	ensureCollection,
+	getCollectionName,
+} from "../collection-manager";
 import { generatePointId } from "../utils";
 import { qdrantClient } from "./client";
 
@@ -137,7 +141,10 @@ export async function episodeExists(
  */
 export async function storeEpisodeEmbedding(
 	options: StoreEpisodeOptions,
-): Promise<{ success: boolean; pointId: string | null }> {
+): Promise<
+	| { success: true; pointId: string; collectionName: string }
+	| { success: false; pointId: null; collectionName: null }
+> {
 	const { episode, embedding } = options;
 
 	try {
@@ -186,10 +193,10 @@ export async function storeEpisodeEmbedding(
 		logger.info(
 			`[EpisodicMemory] Stored episode ${episode.id} (${episode.title})`,
 		);
-		return { success: true, pointId };
+		return { success: true, pointId, collectionName };
 	} catch (error) {
 		logger.error(`[EpisodicMemory] Failed to store episode: ${error}`);
-		return { success: false, pointId: null };
+		return { success: false, pointId: null, collectionName: null };
 	}
 }
 
@@ -293,8 +300,13 @@ export async function deleteEpisodeEmbedding(
 	organizationId?: string | null,
 ): Promise<boolean> {
 	try {
-		const collectionName =
-			await getEpisodicMemoryCollection(organizationId);
+		const collectionName = getCollectionName(
+			EPISODIC_MEMORY_COLLECTION_PREFIX,
+			organizationId,
+		);
+		if (!(await collectionExistsUncached(collectionName))) {
+			return true;
+		}
 		const pointId = generatePointId(episodeId);
 
 		await qdrantClient.delete(collectionName, {
@@ -318,8 +330,13 @@ export async function deleteConversationEpisodes(
 	organizationId?: string | null,
 ): Promise<boolean> {
 	try {
-		const collectionName =
-			await getEpisodicMemoryCollection(organizationId);
+		const collectionName = getCollectionName(
+			EPISODIC_MEMORY_COLLECTION_PREFIX,
+			organizationId,
+		);
+		if (!(await collectionExistsUncached(collectionName))) {
+			return true;
+		}
 
 		await qdrantClient.delete(collectionName, {
 			wait: true,

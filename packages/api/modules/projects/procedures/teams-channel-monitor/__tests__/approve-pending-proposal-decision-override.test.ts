@@ -18,7 +18,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		markPendingProposalApplied: vi.fn(),
 		markPendingProposalFailed: vi.fn(),
 		appendAppliedChangeIndexes: vi.fn(),
-		setProposalApplyWorkflowId: vi.fn(),
+		markProposalApplyDispatched: vi.fn(),
 		setPendingProposalAttachmentResult: vi.fn(),
 		projectFindUnique: vi.fn(),
 		userStoryUpdate: vi.fn(),
@@ -50,7 +50,7 @@ vi.mock("@repo/database", () => ({
 	markPendingProposalFailed: mocks.markPendingProposalFailed,
 	setPendingProposalAttachmentResult:
 		mocks.setPendingProposalAttachmentResult,
-	setProposalApplyWorkflowId: mocks.setProposalApplyWorkflowId,
+	markProposalApplyDispatched: mocks.markProposalApplyDispatched,
 	updateStory: vi.fn(),
 }));
 

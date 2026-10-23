@@ -279,10 +279,6 @@ export async function generatePlanningAnalysisActivity(
 			schema: PublishingPlanningAnalysisSchema,
 			prompt,
 			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
-			// Every section of the schema is optional, and Azure/OpenAI reject a
-			// strict JSON schema containing optional fields outright (bug #1681).
-			// The AI SDK still validates the object against the zod schema.
-			providerOptions: { openai: { strictJsonSchema: false } },
 		});
 	} finally {
 		clearInterval(beat);

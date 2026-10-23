@@ -10,6 +10,11 @@
 	"main": "./index.ts",
 	"type": "module",
 	"exports": {
+		"./ai-model-fit": {
+			"types": "./lib/ai-model-fit.ts",
+			"import": "./lib/ai-model-fit.ts",
+			"default": "./lib/ai-model-fit.ts"
+		},
 		"./base-url": {
 			"types": "./lib/base-url.ts",
 			"import": "./lib/base-url.ts",

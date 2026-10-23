@@ -106,9 +106,13 @@ const harness = await vi.hoisted(async () => {
 		tabByClient: new Map<unknown, Tab>(),
 		/** How long into a pause in typing the editor autosaves. */
 		autosave: { delayMs: 10_000 },
-		/** The stale rule's and the election's waits, shortened. */
+		/**
+		 * The stale rule's and the election's waits, shortened. The saved
+		 * body's grace is not: past the second look, it never takes over.
+		 */
 		timings: {
 			observationGapMs: 60,
+			savedBodyGraceMs: 750,
 			claimSettleMs: 30,
 			fallThroughMs: 300,
 			failedClaimExpiryMs: 60_000,
@@ -324,8 +328,12 @@ function makeOrpcProxy(): any {
 						},
 					});
 				}
+				if (prop === "mutationKey") {
+					return () => [...path];
+				}
 				if (prop === "mutationOptions") {
 					return (config: Record<string, unknown>) => ({
+						mutationKey: [...path],
 						mutationFn: (
 							vars: Record<string, unknown>,
 							context?: { client?: unknown },
@@ -2013,6 +2021,447 @@ describe("the room at the end of a run (Fizzy #2946)", () => {
 		expect(held).toContain("Typed by the follower.");
 		expect(saveCalls).toEqual([]);
 	});
+
+	describe("what a tab shows between learning of a run's end and the room holding its body", () => {
+		/** Production waits: a second look takes a poll, a claim seconds. */
+		const PRODUCTION_TIMINGS = {
+			observationGapMs: 3000,
+			savedBodyGraceMs: 750,
+			claimSettleMs: 1500,
+			fallThroughMs: 10_000,
+		};
+		const FAKE_CLOCK = {
+			toFake: ["setTimeout", "clearTimeout", "Date"],
+		} as const;
+		const BODY_C =
+			"## Scope\n\nPhase one, then two, rewritten by a later run.\n\n## Pricing\n\nA fixed fee per phase.";
+
+		/** Which body a text is: before the run, the run's, a later run's. */
+		function bodyMarker(text: string): string {
+			if (text.includes("rewritten by a later run")) {
+				return "later";
+			}
+			if (text.includes("rewritten by the run")) {
+				return "run";
+			}
+			if (text.includes("Phase one, then two.")) {
+				return "before";
+			}
+			return text.trim() ? "other" : "empty";
+		}
+
+		type Sample = {
+			at: number;
+			tab: string;
+			body: string;
+			savedView: boolean;
+			editable: boolean;
+			saveOff: boolean;
+		};
+
+		function describeSample(sample: Sample): string {
+			const how = sample.savedView
+				? "saved body"
+				: sample.editable
+					? "editable"
+					: "read-only";
+			return `${sample.at} ms ${sample.tab}: ${sample.body}, ${how}, Save ${sample.saveOff ? "off" : "on"}`;
+		}
+
+		// The view's queries search the whole page, which holds every tab:
+		// these look in one tab's own part of it.
+		function drawsSavedBody(tab: Tab): boolean {
+			return (
+				tab.view?.container.querySelector(
+					'[data-testid="room-saved-body"]',
+				) != null
+			);
+		}
+		function roomEditorHidden(tab: Tab): boolean {
+			const content = [
+				...(tab.view?.container.querySelectorAll(
+					'[data-testid="editor-content"]',
+				) ?? []),
+			].find(
+				(element) =>
+					!element.closest('[data-testid="room-saved-body"]'),
+			);
+			return content?.className.includes("hidden") ?? true;
+		}
+
+		/** Steps the fake clock, noting every `stepMs` what each tab shows. */
+		async function sampleShown(tabs: Tab[], untilMs: number, stepMs = 250) {
+			const samples: Sample[] = [];
+			for (let at = 0; at <= untilMs; at += stepMs) {
+				for (const tab of tabs) {
+					const savedView = drawsSavedBody(tab);
+					const editorHidden = roomEditorHidden(tab);
+					samples.push({
+						at,
+						tab: tab.name,
+						body: bodyMarker(
+							savedView
+								? savedBodyViewText(tab)
+								: editorBody(tab),
+						),
+						savedView,
+						editable:
+							!editorHidden &&
+							mainEditor(tab)?.isEditable === true,
+						saveOff: saveButton(tab).hasAttribute("disabled"),
+					});
+				}
+				await act(async () => {
+					await vi.advanceTimersByTimeAsync(stepMs);
+				});
+			}
+			return samples;
+		}
+
+		/**
+		 * The moments a tab showed another body than the run's other than as
+		 * allowed: the body from before, read-only with Save off, within the
+		 * grace.
+		 */
+		function otherThanTheRuns(samples: Sample[], body: string): string[] {
+			return samples
+				.filter(
+					(sample) =>
+						sample.body !== body &&
+						(sample.at > PRODUCTION_TIMINGS.savedBodyGraceMs ||
+							sample.editable ||
+							sample.savedView ||
+							!sample.saveOff),
+				)
+				.map(describeSample);
+		}
+
+		/** Steps the fake clock until `done`, at most `maxMs`. */
+		async function stepUntil(done: () => boolean, maxMs = 20_000) {
+			for (let at = 0; at <= maxMs; at += 100) {
+				if (done()) {
+					return true;
+				}
+				await act(async () => {
+					await vi.advanceTimersByTimeAsync(100);
+				});
+			}
+			return done();
+		}
+
+		/** The room holds the saved body under its stamp, and the tabs show it. */
+		function convergedOn(tabs: Tab[], body: string) {
+			return () =>
+				readRoomStamp(room.doc)?.contentHash ===
+					hashOf(server.content) &&
+				tabs.every(
+					(tab) =>
+						!drawsSavedBody(tab) &&
+						bodyMarker(editorBody(tab)) === body &&
+						within(tab.syncSlot).queryByTestId("sync-pill") !==
+							null,
+				);
+		}
+
+		it("a passive follower that learns of a UI-started run's end a poll before its starter never shows the previous body editable: it holds it still, then shows the run's saved body until the starter's review puts it into the room", async () => {
+			Object.assign(harness.timings, PRODUCTION_TIMINGS);
+			await persistRoom(BODY_A, savedStamp());
+			const starter = await openTab("starter", { clientId: 20 });
+			const follower = await openTab("follower", {
+				clientId: 30,
+				attachToServerRun: true,
+			});
+			await startRunFromChat(starter);
+			server.generationStartedAt = new Date().toISOString();
+			server.status = "GENERATING";
+			await nudge(starter, follower);
+			await settle(30);
+			expect(starter.awareness.own[GENERATION_RUN_AWARENESS_FIELD]).toBe(
+				"started",
+			);
+			expect(follower.awareness.own[GENERATION_RUN_AWARENESS_FIELD]).toBe(
+				"attached",
+			);
+
+			vi.useFakeTimers(FAKE_CLOCK);
+			// The run's final save. The follower's poll lands just after it,
+			// the starter's a poll later.
+			server.content = BODY_B;
+			server.status = "COMPLETE";
+			await nudge(follower);
+			const meanwhile = await sampleShown([follower], 2750);
+			await nudge(starter);
+			const converged = await stepUntil(
+				convergedOn([starter, follower], "run"),
+			);
+			vi.useRealTimers();
+
+			expect(otherThanTheRuns(meanwhile, "run")).toEqual([]);
+			expect(meanwhile.some((sample) => sample.savedView)).toBe(true);
+			// The starter's review put the body in, once; no claim, no save.
+			expect(converged).toBe(true);
+			expect(readConvergenceClaim(room.doc)).toBeNull();
+			expect(occurrences(await roomBody(), "rewritten by the run")).toBe(
+				1,
+			);
+			expect(saveCalls).toEqual([]);
+		});
+
+		it("a run no open tab follows: every tab holds the previous body still, then shows the run's saved body until the room is brought to it", async () => {
+			Object.assign(harness.timings, PRODUCTION_TIMINGS);
+			await persistRoom(BODY_A, savedStamp());
+			// Not on the artifact page: neither tab attaches to the run.
+			const one = await openTab("one", { clientId: 20 });
+			const two = await openTab("two", { clientId: 30 });
+			server.generationStartedAt = new Date().toISOString();
+			server.status = "GENERATING";
+			await nudge(one, two);
+			await settle(30);
+
+			vi.useFakeTimers(FAKE_CLOCK);
+			server.content = BODY_B;
+			server.status = "COMPLETE";
+			await nudge(one, two);
+			const meanwhile = await sampleShown([one, two], 6000);
+			const converged = await stepUntil(convergedOn([one, two], "run"));
+			vi.useRealTimers();
+
+			expect(otherThanTheRuns(meanwhile, "run")).toEqual([]);
+			expect(meanwhile.some((sample) => sample.savedView)).toBe(true);
+			// The fallback brought the room to the saved body: one claim, the
+			// body once, no save.
+			expect(converged).toBe(true);
+			expect(readConvergenceClaim(room.doc)?.settled).toBe("verified");
+			expect(occurrences(await roomBody(), "rewritten by the run")).toBe(
+				1,
+			);
+			expect(saveCalls).toEqual([]);
+		});
+
+		it("a tab alone with the review of an earlier run that learns of a newer run only from its end holds the reviewed body still, then shows the newer run's saved body", async () => {
+			Object.assign(harness.timings, PRODUCTION_TIMINGS);
+			await persistRoom(BODY_A, savedStamp());
+			const tab = await openTab("alone", { attachToServerRun: true });
+			server.generationStartedAt = new Date().toISOString();
+			await startRunFromChat(tab);
+			server.status = "GENERATING";
+			await nudge(tab);
+			await settle(30);
+			server.content = BODY_B;
+			server.status = "COMPLETE";
+			await nudge(tab);
+			await waitFor(() => {
+				expect(
+					tab.view?.queryByTestId("regeneration-confirm-modal"),
+				).not.toBeNull();
+				expect(readRoomStamp(room.doc)).toEqual(savedStamp());
+			});
+			await settle(100);
+
+			vi.useFakeTimers(FAKE_CLOCK);
+			// A later run started elsewhere: this tab hears of it only as it
+			// ends.
+			server.generationStartedAt = new Date(
+				Date.now() + 60_000,
+			).toISOString();
+			server.content = BODY_C;
+			server.status = "COMPLETE";
+			await nudge(tab);
+			const meanwhile = await sampleShown([tab], 6000);
+			const converged = await stepUntil(convergedOn([tab], "later"));
+			vi.useRealTimers();
+
+			expect(otherThanTheRuns(meanwhile, "later")).toEqual([]);
+			expect(meanwhile.some((sample) => sample.savedView)).toBe(true);
+			expect(converged).toBe(true);
+			expect(
+				tab.view?.queryByTestId("regeneration-confirm-modal"),
+			).toBeNull();
+			expect(
+				occurrences(await roomBody(), "rewritten by a later run"),
+			).toBe(1);
+			expect(saveCalls).toEqual([]);
+		});
+
+		it("tabs opened while the run is under way hold the previous body still at its end, then show the run's saved body", async () => {
+			Object.assign(harness.timings, PRODUCTION_TIMINGS);
+			await persistRoom(BODY_A, savedStamp());
+			server.generationStartedAt = new Date().toISOString();
+			server.status = "GENERATING";
+			// Neither tab saw the room before the run.
+			const one = await openTab("one", { clientId: 20 });
+			const two = await openTab("two", { clientId: 30 });
+			await settle(30);
+
+			vi.useFakeTimers(FAKE_CLOCK);
+			server.content = BODY_B;
+			server.status = "COMPLETE";
+			await nudge(one, two);
+			const meanwhile = await sampleShown([one, two], 3000);
+			const converged = await stepUntil(convergedOn([one, two], "run"));
+			vi.useRealTimers();
+
+			expect(otherThanTheRuns(meanwhile, "run")).toEqual([]);
+			expect(meanwhile.some((sample) => sample.savedView)).toBe(true);
+			expect(converged).toBe(true);
+			expect(occurrences(await roomBody(), "rewritten by the run")).toBe(
+				1,
+			);
+			expect(saveCalls).toEqual([]);
+		});
+
+		it("a write outside any run — the API, an agent — leaves the second look as it was: the room's body stays on screen, editable, while saves wait", async () => {
+			Object.assign(harness.timings, PRODUCTION_TIMINGS);
+			// The row names an earlier run, which the room took in.
+			server.generationStartedAt = new Date().toISOString();
+			await persistRoom(BODY_A, savedStamp());
+			const tab = await openTab("tab");
+
+			vi.useFakeTimers(FAKE_CLOCK);
+			server.content = BODY_B;
+			server.version = 8;
+			await nudge(tab);
+			const meanwhile = await sampleShown([tab], 2750);
+			const converged = await stepUntil(convergedOn([tab], "run"));
+			vi.useRealTimers();
+
+			expect(
+				meanwhile
+					.filter(
+						(sample) =>
+							sample.body !== "before" ||
+							!sample.editable ||
+							sample.savedView ||
+							!sample.saveOff,
+					)
+					.map(describeSample),
+			).toEqual([]);
+			expect(converged).toBe(true);
+			expect(saveCalls).toEqual([]);
+		});
+
+		it("a tab back from a drop, whose copy of the document predates a rewind the room took at the same version meanwhile, keeps the room's body: no run ended, so its older copy is never shown", async () => {
+			Object.assign(harness.timings, PRODUCTION_TIMINGS);
+			// The row names an earlier run, and holds its body.
+			server.generationStartedAt = new Date().toISOString();
+			server.content = BODY_B;
+			await persistRoom(BODY_B, savedStamp());
+			const tab = await openTab("tab");
+			expect(editorBody(tab)).toContain("rewritten by the run");
+
+			tab.synced = false;
+			rerender(tab);
+			await settle(20);
+			expect(mainEditor(tab)).toBeNull();
+			// Meanwhile a colleague rejects that run with no version to go
+			// back to: the row and the room go back to the body before it at
+			// the same version, and this tab's copy is not asked again.
+			server.content = BODY_A;
+			await persistRoom(BODY_A, savedStamp());
+
+			vi.useFakeTimers(FAKE_CLOCK);
+			tab.synced = true;
+			rerender(tab);
+			const meanwhile = await sampleShown([tab], 3500);
+			const converged = await stepUntil(convergedOn([tab], "before"));
+			vi.useRealTimers();
+
+			expect(
+				meanwhile
+					.filter((sample) => sample.body !== "before")
+					.map(describeSample),
+			).toEqual([]);
+			expect(converged).toBe(true);
+			expect(saveCalls).toEqual([]);
+		});
+
+		it("a tab back from a drop after a run ended while it was away holds the previous body still: with nothing to tell a run's end from a rewind, it waits read-only for the second look", async () => {
+			Object.assign(harness.timings, PRODUCTION_TIMINGS);
+			await persistRoom(BODY_A, savedStamp());
+			const tab = await openTab("tab");
+
+			tab.synced = false;
+			rerender(tab);
+			await settle(20);
+			expect(mainEditor(tab)).toBeNull();
+			// A run starts and ends while the room is away; the tab's copy of
+			// the document hears of it.
+			server.generationStartedAt = new Date().toISOString();
+			server.content = BODY_B;
+			await nudge(tab);
+
+			vi.useFakeTimers(FAKE_CLOCK);
+			tab.synced = true;
+			rerender(tab);
+			const meanwhile = await sampleShown([tab], 2750);
+			const converged = await stepUntil(convergedOn([tab], "run"));
+			vi.useRealTimers();
+
+			expect(
+				meanwhile
+					.filter(
+						(sample) =>
+							sample.body !== "run" &&
+							(sample.editable || !sample.saveOff),
+					)
+					.map(describeSample),
+			).toEqual([]);
+			expect(converged).toBe(true);
+			expect(occurrences(await roomBody(), "rewritten by the run")).toBe(
+				1,
+			);
+			expect(saveCalls).toEqual([]);
+		});
+
+		it("the raw markdown view holds still too, and shows the run's saved body with the rich view", async () => {
+			Object.assign(harness.timings, PRODUCTION_TIMINGS);
+			await persistRoom(BODY_A, savedStamp());
+			const tab = await openTab("tab");
+			server.generationStartedAt = new Date().toISOString();
+			server.status = "GENERATING";
+			await nudge(tab);
+			await settle(30);
+			await toggleRawView();
+			expect(rawTextarea(tab).value).toContain("Phase one, then two.");
+
+			vi.useFakeTimers(FAKE_CLOCK);
+			server.content = BODY_B;
+			server.status = "COMPLETE";
+			await nudge(tab);
+			const meanwhile: string[] = [];
+			for (let at = 0; at <= 2750; at += 250) {
+				const area = rawTextarea(tab);
+				meanwhile.push(
+					`${at} ms: ${bodyMarker(area.value)}, ${area.disabled ? "read-only" : "editable"}`,
+				);
+				await act(async () => {
+					await vi.advanceTimersByTimeAsync(250);
+				});
+			}
+			const converged = await stepUntil(
+				() =>
+					readRoomStamp(room.doc)?.contentHash === hashOf(BODY_B) &&
+					!rawTextarea(tab).disabled,
+			);
+			vi.useRealTimers();
+
+			expect(
+				meanwhile.filter(
+					(sample) =>
+						sample.endsWith("editable") ||
+						(!sample.includes(": run,") &&
+							Number(sample.split(" ")[0]) >
+								PRODUCTION_TIMINGS.savedBodyGraceMs),
+				),
+			).toEqual([]);
+			expect(meanwhile.some((sample) => sample.includes(": run,"))).toBe(
+				true,
+			);
+			expect(converged).toBe(true);
+			expect(rawTextarea(tab).value).toContain("rewritten by the run");
+			expect(saveCalls).toEqual([]);
+		});
+	});
 });
 
 describe("a tab that typed nothing in a room (Fizzy #2946)", () => {
@@ -3041,6 +3490,65 @@ describe("a long drop after the first sync (Fizzy #2946)", () => {
 		expect(saveButton(tab)).toHaveAccessibleName(
 			"Document saved, no changes to save",
 		);
+	});
+
+	it("keeps typing unsaved when the save in flight across a short drop fails after the room is back: the save's optimistic body is no saved baseline", async () => {
+		await persistRoom(BODY_A, savedStamp());
+		const tab = await openTab("tab");
+		vi.useFakeTimers({
+			toFake: ["setTimeout", "clearTimeout"],
+			shouldAdvanceTime: true,
+		});
+		await type(tab, " Typed before the drop.");
+		// The autosave goes out, and its answer is slow.
+		server.failNext = new Error("Service unavailable");
+		server.holdAnswers = true;
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(10_500);
+		});
+		await waitFor(() => {
+			expect(saveCalls).toHaveLength(1);
+		});
+
+		tab.synced = false;
+		rerender(tab);
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(4_000);
+		});
+		expect(mainEditor(tab)).toBeNull();
+		tab.synced = true;
+		rerender(tab);
+		await waitFor(() => {
+			expect(editorBody(tab)).toContain("Typed before the drop.");
+		});
+
+		// Only now does the save answer, with a failure: nothing was written.
+		server.holdAnswers = false;
+		await act(async () => {
+			for (const answer of server.held.splice(0)) {
+				answer();
+			}
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		await waitFor(() => {
+			expect(toast.error).toHaveBeenCalledWith("failed");
+		});
+		expect(server.content).toBe(BODY_A);
+		await waitFor(() => {
+			expect(saveButton(tab)).toHaveAccessibleName("Save document");
+		});
+
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(10_500);
+		});
+		await waitFor(() => {
+			expect(saveCalls).toHaveLength(2);
+		});
+		vi.useRealTimers();
+		expect(saveCalls[1]?.content).toContain("Typed before the drop.");
+		await waitFor(() => {
+			expect(server.content).toContain("Typed before the drop.");
+		});
 	});
 
 	it("offers nothing to copy when nothing was typed here since the last save", async () => {

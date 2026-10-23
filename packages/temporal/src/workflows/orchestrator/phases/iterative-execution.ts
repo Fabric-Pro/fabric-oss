@@ -42,6 +42,8 @@ import type { ToolCategory } from "../../../activities/orchestrator";
 // own, so it carries nothing into the workflow sandbox. Same shape as
 // `safeEvaluateExpression` in template-execution.ts.
 import { DEFAULT_MCP_TOOL_TIMEOUT_MS } from "../../../activities/orchestrator/execution/mcp-call-timeout";
+import type { DirectChatUsageLimitRefusal } from "../../../types";
+import { AI_NON_RETRYABLE_ERROR_TYPES } from "../../ai-non-retryable-errors";
 import {
 	COMPANY_CONTEXT_SEARCH_DESCRIPTION,
 	COMPANY_CONTEXT_SEARCH_INPUT_SCHEMA,
@@ -125,9 +127,10 @@ import type {
 	WaitForApprovalOptions,
 	WorkflowState,
 } from "../types";
+import { orchestratorErrorMessage, streamFailureResult } from "../usage-limit";
 import {
-	secondaryUsageOriginFields,
 	secondaryUsageOptionArgs,
+	secondaryUsageOriginFields,
 	usageOriginFields,
 } from "../workflow-usage-attribution";
 import {
@@ -252,6 +255,7 @@ const {
 	// on a provider, which is what delivers the cancel to them.
 	cancellationType: ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
 	retry: {
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 		initialInterval: "1s",
 		backoffCoefficient: 2,
 		maximumInterval: "30s",
@@ -266,6 +270,7 @@ const { listDefaultEnabledMcpServersActivity } = proxyActivities<
 >({
 	startToCloseTimeout: "30 seconds",
 	retry: {
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 		initialInterval: "1s",
 		backoffCoefficient: 2,
 		maximumInterval: "10s",
@@ -292,6 +297,7 @@ const {
 	// model work.
 	cancellationType: ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
 	retry: {
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 		initialInterval: "1s",
 		backoffCoefficient: 2,
 		maximumInterval: "30s",
@@ -310,6 +316,7 @@ const { publishMcpDefaultToolSignalActivity } = proxyActivities<
 >({
 	startToCloseTimeout: "10 seconds",
 	retry: {
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
 		initialInterval: "500ms",
 		backoffCoefficient: 2,
 		maximumInterval: "2s",
@@ -803,6 +810,7 @@ async function synthesizeFinalAnswer(params: {
 	 */
 	handleBudgetRefusal?: boolean;
 }): Promise<{
+	usageLimit?: DirectChatUsageLimitRefusal;
 	content: string;
 	truncated: "output_limit" | undefined;
 	/**
@@ -829,6 +837,7 @@ async function synthesizeFinalAnswer(params: {
 	// Set when the synthesis itself hit the output ceiling.
 	let synthesisTruncated: "output_limit" | undefined;
 	let finalizationDenied = false;
+	let usageLimit: DirectChatUsageLimitRefusal | undefined;
 	try {
 		// Do NOT add an extra pruneConversationHistory pass here. The
 		// per-iteration prune already retains the last
@@ -880,6 +889,17 @@ async function synthesizeFinalAnswer(params: {
 			outputTokens: synthesisResult.usage.outputTokens,
 		});
 
+		// Gate the refusal fallback so replay without this marker retains the
+		// retry scheduled by earlier workers.
+		const skipRefusedSynthesis =
+			synthesisResult.type === "stream_error" &&
+			synthesisResult.usageLimit !== undefined &&
+			patched("orch-synthesis-usage-limit-skip-v1");
+
+		if (skipRefusedSynthesis) {
+			usageLimit = synthesisResult.usageLimit;
+		}
+
 		// One-shot retry when the model returns under the threshold.
 		// Sonnet's adherence to "minimum one paragraph" is imperfect:
 		// even with substantive context the model occasionally emits
@@ -887,7 +907,10 @@ async function synthesizeFinalAnswer(params: {
 		// attempt with an explicit length-failure callout reliably
 		// recovers in our tests. Cheap (~3K input tokens, single
 		// completion) and runs only on the rare failure path.
-		if (synthesisContent.trim().length < MIN_USEFUL_SYNTHESIS_CHARS) {
+		if (
+			!skipRefusedSynthesis &&
+			synthesisContent.trim().length < MIN_USEFUL_SYNTHESIS_CHARS
+		) {
 			log.warn(
 				"Synthesis output too short — retrying with stricter instructions",
 				{
@@ -979,6 +1002,7 @@ async function synthesizeFinalAnswer(params: {
 			truncated: synthesisTruncated,
 			usedFallback: true,
 			finalizationDenied,
+			...(usageLimit ? { usageLimit } : {}),
 		};
 	}
 
@@ -1746,6 +1770,7 @@ async function turnBudgetExit(params: {
 				truncated: undefined,
 				usedFallback: true,
 				finalizationDenied: true,
+				usageLimit: undefined,
 			}
 		: await synthesizeFinalAnswer({
 				state,
@@ -1761,6 +1786,16 @@ async function turnBudgetExit(params: {
 				turn,
 				handleBudgetRefusal: true,
 			});
+	if (
+		synthesis.usageLimit &&
+		patched("orch-synthesis-usage-limit-notice-v1")
+	) {
+		refreshTurnBudgetStop(state);
+		return streamFailureResult({
+			message: synthesis.usageLimit.message,
+			usageLimit: synthesis.usageLimit,
+		});
+	}
 	if (synthesis.usedFallback) {
 		recordTurnBudgetStop(state, undefined, "finalization_unavailable");
 	}
@@ -2506,6 +2541,15 @@ Never guess or use example values — always use real data from API responses.`;
 					summarizeAccomplishments(state, { includeFindings }),
 				turn,
 			});
+			if (
+				synthesis.usageLimit &&
+				patched("orch-synthesis-usage-limit-notice-v1")
+			) {
+				return streamFailureResult({
+					message: synthesis.usageLimit.message,
+					usageLimit: synthesis.usageLimit,
+				});
+			}
 			const synthesisContent = synthesis.content;
 
 			// Cancelled while the synthesis ran (its activity completed
@@ -2711,11 +2755,7 @@ Never guess or use example values — always use real data from API responses.`;
 				message: iterationResult.message,
 				partialChars: iterationResult.partialResponse.length,
 			});
-			return {
-				success: false,
-				error: `LLM stream error: ${iterationResult.message}`,
-				shouldContinue: false,
-			};
+			return streamFailureResult(iterationResult);
 		}
 
 		// Check if this is a final response
@@ -3064,6 +3104,8 @@ Never guess or use example values — always use real data from API responses.`;
 							input.enabledIntegrationIds ?? undefined,
 						enabledFabricToolIds:
 							input.enabledFabricToolIds ?? undefined,
+						workspaceIds: input.workspaceIds ?? [],
+						projectId: input.projectId || null,
 						...turnScopeField(turn),
 					});
 
@@ -3870,8 +3912,7 @@ Never guess or use example values — always use real data from API responses.`;
 			} catch (error) {
 				// A stop is not a tool error for the model to work around.
 				rethrowTurnStop(error, turn);
-				toolError =
-					error instanceof Error ? error.message : String(error);
+				toolError = orchestratorErrorMessage(error, String(error));
 				toolResult = { error: toolError };
 				log.warn("Tool execution threw exception", {
 					toolName: toolCall.name,
@@ -4269,6 +4310,15 @@ Never guess or use example values — always use real data from API responses.`;
 							},
 						)}`,
 				});
+				if (
+					synthesis.usageLimit &&
+					patched("orch-synthesis-usage-limit-notice-v1")
+				) {
+					return streamFailureResult({
+						message: synthesis.usageLimit.message,
+						usageLimit: synthesis.usageLimit,
+					});
+				}
 				// Cancelled while the synthesis ran. Under the turn contract
 				// the synthesized text is kept as the turn's partial result.
 				if (isCancelled()) {

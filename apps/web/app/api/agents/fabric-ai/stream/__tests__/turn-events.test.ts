@@ -27,6 +27,24 @@ describe("failedTurnEvent", () => {
 		});
 	});
 
+	it("parses a usage refusal from failed result text without changing the message", () => {
+		const message =
+			"LLM stream error: AI usage limit exceeded: example-limit (TOKENS, DAILY) — used 10 of 10";
+		expect(failedTurnEvent({ error: message })).toEqual({
+			type: "error",
+			code: "AI_USAGE_LIMIT_EXCEEDED",
+			message,
+			data: {
+				limitId: "example-limit",
+				dimension: "TOKENS",
+				window: "DAILY",
+				used: "10",
+				max: "10",
+				manageLimitsUrl: "",
+			},
+		});
+	});
+
 	it("attaches the limit the activity classified", () => {
 		const event = failedTurnEvent({
 			error: "Too Many Requests",

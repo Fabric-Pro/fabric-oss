@@ -40,6 +40,8 @@ import {
 	getAiProviderApiKey,
 	getAiProviderApiKeyByProvider,
 	getEmbeddingProviderConfig,
+	getOrganizationDefaultProvider,
+	getOrganizationSystemAiProviderApiKey,
 } from "../prisma/queries/ai-gateway";
 
 const WORKSPACE = "https://example-workspace.cloud.databricks.com";
@@ -217,4 +219,29 @@ describe("getAiProviderApiKeyByProvider", () => {
 			}),
 		);
 	});
+});
+
+// Both entry points must use the runtime organization's exact default predicate.
+describe("organization default provider identity", () => {
+	it.each([patRow, servicePrincipalRow, null])(
+		"agrees with organization runtime resolution for %j",
+		async (row) => {
+			orgFindFirst.mockResolvedValue(row);
+			const provider =
+				await getOrganizationDefaultProvider("example-org");
+			const resolved = await getOrganizationSystemAiProviderApiKey({
+				organizationId: "example-org",
+			});
+			expect(provider).toBe(resolved.provider);
+			const [identityQuery, runtimeQuery] = orgFindFirst.mock.calls;
+			expect(identityQuery[0].where).toEqual(runtimeQuery[0].where);
+			expect(identityQuery[0].where).toEqual({
+				organizationId: "example-org",
+				isDefault: true,
+				enabled: true,
+				purpose: { not: "EMBEDDINGS_ONLY" },
+			});
+			expect(userFindFirst).not.toHaveBeenCalled();
+		},
+	);
 });

@@ -13,14 +13,17 @@
  * keeps its fallback, and a run without a turn behaves as before.
  */
 
+import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
 import { guardDispatch } from "@repo/utils/dispatch-guard";
 import { ApplicationFailure } from "@temporalio/common";
 import { MockActivityEnvironment } from "@temporalio/testing";
+import { RetryError } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
 	checkDispatchable: vi.fn(),
 	generateText: vi.fn(),
+	loadMcpTools: vi.fn(),
 	resolveOpenAiApiKey: vi.fn(),
 	uploadFile: vi.fn(),
 	delegateToAgent: vi.fn(),
@@ -54,6 +57,8 @@ vi.mock("../../../../fabric-ai", () => ({
 vi.mock("../../../../image-generation", () => ({
 	generateImageActivity: h.generateImageActivity,
 }));
+
+vi.mock("../../context/tool-loader", () => ({ loadMcpTools: h.loadMcpTools }));
 
 vi.mock("../../../utils", () => ({
 	getAiModel: vi.fn(async () => ({ id: "example-model" })),
@@ -115,6 +120,7 @@ import { FabricAiHandler } from "../fabric-ai-handler";
 import { HandlerRegistry } from "../handler-registry";
 import { IntegrationHandler } from "../integration-handler";
 import { LlmHandler } from "../llm-handler";
+import { McpToolHandler } from "../mcp-tool-handler";
 import type { HandlerContext, HandlerResult, StepHandler } from "../types";
 import { buildContext, buildInput } from "./integration-handler-fixtures";
 
@@ -574,5 +580,177 @@ describe("executeStep heartbeats", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+});
+
+describe("Planner HARD usage refusal at the activity boundary", () => {
+	const refusal =
+		"AI usage limit exceeded: example-limit (TOKENS, DAILY) — used 10 of 10";
+	function limitError() {
+		return new AiUsageLimitExceededError({
+			message: refusal,
+			limitId: "example-limit",
+			dimension: "TOKENS",
+			window: "DAILY",
+			used: 10n,
+			max: 10n,
+			manageLimitsUrl: "",
+		});
+	}
+	it.each([false, true])(
+		"preserves a model refusal class through the LLM handler and registry, SDK wrapped=%s",
+		async (wrapped) => {
+			const error = limitError();
+			h.generateText.mockRejectedValue(
+				wrapped
+					? new RetryError({
+							message: "Retry refused",
+							reason: "errorNotRetryable",
+							errors: [error],
+						})
+					: error,
+			);
+			const fallback = fakeFallback();
+			await expect(
+				registryWith(new LlmHandler(), fallback).executeStep(
+					stepInput({ capability: "llm" }, false),
+				),
+			).rejects.toBe(error);
+			expect(fallback.execute).not.toHaveBeenCalled();
+		},
+	);
+	it("preserves a refusal from the MCP handler's no-tools model call", async () => {
+		const error = limitError();
+		h.loadMcpTools.mockResolvedValue({
+			tools: {},
+			toolToConfig: {},
+			authRequiredConfigs: [],
+		});
+		h.generateText.mockRejectedValue(error);
+		const fallback = new McpToolHandler();
+		await expect(
+			registryWith(fallback, fallback).executeStep(
+				stepInput({ capability: "mcp_tool" }, false),
+			),
+		).rejects.toBe(error);
+		expect(h.generateText).toHaveBeenCalledTimes(1);
+	});
+	it("preserves a delegated class refusal instead of asking MCP", async () => {
+		const error = limitError();
+		h.delegateToAgent.mockRejectedValue(error);
+		const fallback = fakeFallback();
+		await expect(
+			new MockActivityEnvironment().run(() =>
+				registryWith(new AgentHandler(), fallback).executeStep(
+					stepInput(
+						{ capability: "agent", app: "researcher" },
+						false,
+					),
+				),
+			),
+		).rejects.toBe(error);
+		expect(fallback.execute).not.toHaveBeenCalled();
+	});
+	it("turns a delegated refusal response into a non-retryable typed failure before fallback", async () => {
+		h.delegateToAgent.mockResolvedValue({
+			status: "failed",
+			response: refusal,
+			artifacts: [],
+			durationMs: 1,
+		});
+		const fallback = fakeFallback();
+		await expect(
+			new MockActivityEnvironment().run(() =>
+				registryWith(new AgentHandler(), fallback).executeStep(
+					stepInput(
+						{ capability: "agent", app: "researcher" },
+						false,
+					),
+				),
+			),
+		).rejects.toMatchObject({
+			message: refusal,
+			type: "AiUsageLimitExceededError",
+			nonRetryable: true,
+		});
+		expect(fallback.execute).not.toHaveBeenCalled();
+	});
+	it.each([false, true])(
+		"preserves a refusal-text result, fallback requested=%s",
+		async (shouldFallback) => {
+			const primary: StepHandler = {
+				name: "example",
+				capabilities: ["llm"],
+				canHandle: () => true,
+				execute: vi.fn(async () => ({
+					handled: false,
+					shouldFallback,
+					error: refusal,
+				})),
+			};
+			const fallback = fakeFallback();
+			const failure = await registryWith(primary, fallback)
+				.executeStep(stepInput({ capability: "llm" }, false))
+				.catch((error: unknown) => error);
+			expect(failure).toBeInstanceOf(ApplicationFailure);
+			expect(failure).toMatchObject({
+				message: refusal,
+				type: "AiUsageLimitExceededError",
+				nonRetryable: true,
+			});
+			expect(fallback.execute).not.toHaveBeenCalled();
+		},
+	);
+	it.each([false, true])(
+		"preserves refusal text from the fallback result, handled=%s",
+		async (handled) => {
+			const primary: StepHandler = {
+				name: "example",
+				capabilities: ["llm"],
+				canHandle: () => true,
+				execute: vi.fn(async () => ({
+					handled: false,
+					shouldFallback: true,
+					error: "ordinary failure",
+				})),
+			};
+			const fallback = fakeFallback();
+			vi.mocked(fallback.execute).mockResolvedValue({
+				handled,
+				output: handled ? { response: "fallback answer" } : undefined,
+				error: refusal,
+			});
+			await expect(
+				registryWith(primary, fallback).executeStep(
+					stepInput({ capability: "llm" }, false),
+				),
+			).rejects.toMatchObject({
+				message: refusal,
+				type: "AiUsageLimitExceededError",
+				nonRetryable: true,
+			});
+		},
+	);
+	it("preserves the class thrown by MCP's delegation fallback method", async () => {
+		const error = limitError();
+		const primary: StepHandler = {
+			name: "example",
+			capabilities: ["llm"],
+			canHandle: () => true,
+			execute: vi.fn(async () => ({
+				handled: false,
+				shouldFallback: true,
+				error: "ordinary failure",
+				fallbackReason: "Agent delegation failed",
+			})),
+		};
+		const fallback = Object.assign(fakeFallback(), {
+			executeWithFallback: vi.fn().mockRejectedValue(error),
+		});
+		await expect(
+			registryWith(primary, fallback).executeStep(
+				stepInput({ capability: "llm" }, false),
+			),
+		).rejects.toBe(error);
 	});
 });

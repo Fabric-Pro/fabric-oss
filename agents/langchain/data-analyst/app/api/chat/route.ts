@@ -13,7 +13,7 @@ import { google } from "@ai-sdk/google";
 import { createMCPClient } from "@ai-sdk/mcp";
 import { z } from "zod/v4";
 import { auth } from "@/lib/auth";
-import { DEFAULT_MODEL } from "@/lib/constants";
+import { DEFAULT_MODEL, getAnthropicModelName } from "@/lib/constants";
 import { handleClaudeAgentsFramework } from "@/lib/frameworks/claude-agents";
 import { handleLangchainFramework } from "@/lib/frameworks/langchain";
 import { handleOpenAIAgentsFramework } from "@/lib/frameworks/openai-agents";
@@ -50,7 +50,7 @@ function getModel(modelId: string): LanguageModel {
 		case "openai":
 			return openai(modelName);
 		case "anthropic":
-			return anthropic(modelName);
+			return anthropic(getAnthropicModelName(modelId));
 		case "google":
 			return google(modelName);
 		default:

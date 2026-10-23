@@ -1,5 +1,49 @@
 # fabric-app
 
+## 1.16.28
+
+### Patch Changes
+
+- efc60b6: The Advisor page can now search an attached project's repository code, so questions about a project's codebase no longer loop on listing Context-tab sources until the chat runs out of steps, and code search now rechecks the user's project access on every call.
+- efc60b6: The Advisor no longer offers the library search tools in a chat with no workspace attached, where every call failed and used up one of the turn's steps.
+- efc60b6: Advisor chats in orchestrator mode can now read an attached project’s connected repositories when Fabric tools are enabled.
+- efc60b6: Advisor now tells the model when a tool call returns the same result as an identical earlier call in the turn, so a turn that keeps repeating a call can answer instead of running out of steps.
+- efc60b6: Feature documents no longer gain stray backslashes each time an AI Assistant edit is accepted.
+- efc60b6: AI Update applies and retried proposals now show as Applied or Failed when they finish, instead of staying pending and timing out.
+- efc60b6: AI Update now reads further pages of PM boards whose list tools page by number or offset (up to 500 items), and says when it could read only part of a board.
+- efc60b6: AI Update now reads a short description preview for every Fizzy card instead of losing card descriptions to a size limit on large boards, so it matches changes against existing cards more reliably.
+- efc60b6: When AI Update shortens long meeting transcripts, it now asks for extracts sized to land within the room the analysis has for them, so action items and open questions at the end of an extract are much less likely to be cut off.
+- efc60b6: AI Update no longer summarizes every meeting transcript longer than 50,000 characters: a long meeting now reaches the analysis in full when there is room for it, and meetings are summarized only when the selection is too large to fit.
+- efc60b6: When AI Update has to shorten a long meeting transcript, it now extracts requests, problems, decisions, action items and open questions with speaker attribution, sized to the room available for analysis.
+- efc60b6: AI usage reports now group calls under the catalog model name even when a model override or an agent reported the provider's own model id, so usage limits set for a model apply to those calls too.
+- efc60b6: AI structured responses now use schema enforcement on supported provider routes and compatible schemas while preserving optional fields for callers.
+- efc60b6: Connecting a ChatGPT plan is clearer: the approval page leads with the ChatGPT and Fabric marks, plan cards show ChatGPT's logo, and the command runs without installing the CLI.
+- efc60b6: Updated Next.js, DOMPurify and other dependencies to versions that fix published security advisories.
+- efc60b6: Model choices on the AI Models page now match the models that run, and switching the default API provider previews which saved choices will change.
+- efc60b6: Changing the default AI provider no longer changes the model that documents are embedded with, and changing the embeddings model in organization AI settings now asks the admin to type a confirmation when indexed content would need re-indexing.
+- efc60b6: AI memory now keeps the latest turn of a conversation instead of only the first, and deleting a memory now also removes it from the memory search index.
+- efc60b6: When Fabric Agent can't answer an @Fabric comment, its reply now says only that an AI usage limit was reached or that it ran into an error, instead of showing the raw failure text and usage-limit counters to everyone who can read the project.
+- efc60b6: Workspace pages and artifacts now size to their content, so a page is no longer cut off at the bottom or left with a blank band after it gets shorter.
+- efc60b6: AI usage made through a gateway on the tenant's own provider keys now records the provider's charge instead of zero.
+- efc60b6: The Temporal worker container image now rebuilds faster after a change to application code alone, because its dependency, browser and tool layers no longer have to be unpacked again; the image contents are unchanged.
+- efc60b6: Feature documents keep hard line breaks, horizontal rules, literal hyphens and straight quotes through AI edits and the raw markdown view.
+- efc60b6: The MCP stdio wrapper image now installs the same pinned pnpm release as every other Fabric image, instead of whichever pnpm 11 release is newest when the image is built.
+- efc60b6: AI Update and document meeting notes now use only a transcript recorded close to the selected occurrence of a recurring meeting, and report when that occurrence has no transcript yet instead of falling back to the nearest one from any day.
+- efc60b6: Orchestrator chats no longer offer project-only tools when no project is attached, avoiding calls that ask for a project and consume a step.
+- efc60b6: Orchestrator chats no longer offer the workspace document search tools when no workspace is attached, where every call came back empty and used up a step.
+- efc60b6: Orchestrator chat now shows the usage-limit notice when an AI usage limit stops a run partway through, instead of a generic error.
+- efc60b6: Show the AI usage-limit notice when a limit is reached during the final summary or a Planner step, instead of returning a summary or completing a run with failed steps.
+- efc60b6: New and newly switched AI provider connections default to Claude Sonnet 5.5, Opus 5.5, Haiku 5.5, GPT-6.1 Sol, GPT-6 Luna, and Grok 4.1 Fast where supported, while existing connections keep their current task defaults. The platform's default chat model is now Claude Sonnet 5.5.
+- efc60b6: Feature analysis and drafting now use a project's own default prompt when one is set, falling back to the organization default and then the system prompt.
+- efc60b6: When a generation ends while a document is open in a shared editor, the tabs that learn of the end before the new version reaches the shared editor no longer leave the previous version on screen and open to typing for a few seconds: they stop taking input at once and show the new version shortly after, until the shared editor holds it.
+- efc60b6: The Roadmap's "Review proposals" count now matches what the review inbox shows, because the inbox now lists proposals that are still being applied. A proposal stuck while being applied is now marked as timed out after 15 minutes without progress, so it can be retried or dismissed instead of being counted forever.
+- efc60b6: AI memory no longer recalls past run summaries from projects or workspaces the user can no longer access. Run memories saved before this update are no longer recalled.
+- efc60b6: The AI Models cost note for Simple tasks now depends on the model's price rather than its quality tier, so affordable large models no longer show it.
+- efc60b6: The AI Models settings page now warns when a selected model is a weak fit for a task, and AI usage activity marks runs that used one.
+- efc60b6: The workflow editor no longer shows the floating Fabric Agent button on top of its Ask AI bar.
+- efc60b6: The workflow editor fills the window again, and its zoom controls, Ask AI bar, run pill and details panel no longer overlap each other or the steps.
+- efc60b6: The workflow editor has a single-line header, a compact runs panel, step cards laid out top to bottom with insert buttons, a run overlay that shows each step's result, and a Workflow/Step inspector.
+
 ## 1.16.27
 
 ### Patch Changes

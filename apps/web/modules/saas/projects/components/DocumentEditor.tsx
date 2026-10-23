@@ -52,7 +52,12 @@ import { FabricLogo } from "@saas/shared/components/FabricLogo";
 import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+	useIsMutating,
+	useMutation,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
 import { Editor as DetachedEditor } from "@tiptap/core";
 import { isChangeOrigin } from "@tiptap/extension-collaboration";
 import { EditorContent, useEditor } from "@tiptap/react";
@@ -246,7 +251,7 @@ type EditorContentArg = Parameters<
 >[0];
 
 /**
- * Where a programmatic content application comes from (Fizzy #2589, KTD17).
+ * Where a programmatic content application comes from (Fizzy #2589).
  * Required at every call site, so the type checker makes each new one
  * choose:
  *
@@ -2018,7 +2023,7 @@ function DocumentEditorInner({
 	// document, then each save, context update, restore, regeneration or
 	// rejected regeneration it adopted. An accepted assistant proposal keeps
 	// the editor's visual slots, so when a slot is involved its save is
-	// guarded with this version (Fizzy #2589, KTD17). The query cache is not
+	// guarded with this version (Fizzy #2589). The query cache is not
 	// used: a refetch can bring a newer version the editor never took on.
 	// Held with the run's state, so a remount keeps the version the editor
 	// took on rather than whatever the cache holds by then.
@@ -3280,6 +3285,7 @@ function DocumentEditorInner({
 		visible: tabVisible,
 		savedStamp,
 		savedBody: document?.content ?? null,
+		savedRun: runIdentity(document?.generationStartedAt),
 		savedAt: documentDataUpdatedAt,
 		runLive: isRunStillWriting || isRegenerating,
 		ownSaveInFlight: isSaving || adoptingBase,
@@ -3305,20 +3311,29 @@ function DocumentEditorInner({
 				: null);
 	// What the editor shows meanwhile: the saved body, read-only, instead of
 	// the room's older one, once the room is being replaced (or cannot be).
-	// Not while the stale rule only looks a second time: that look usually
-	// finds the room in step, and hiding the editor for it blanks the page
-	// at the end of every run (Fizzy #2946).
+	// While the stale rule only looks a second time, only at the end of a
+	// run the room has not taken in, and only after a moment: the editor
+	// that follows the run usually puts its body in first, and hiding the
+	// editor for that moment blanks the page at the end of every run (Fizzy
+	// #2946). Before that moment the editor holds still (see
+	// `CheckingView`).
+	const checkingView = roomStampsOn
+		? roomConvergenceState.checkingView
+		: "room";
 	const showsSavedBody =
 		roomStatus === "updating" ||
 		roomStatus === "failed" ||
-		roomStatus === "behindReadOnly";
-	// The editor takes no input while the room is replaced, and never from a
+		roomStatus === "behindReadOnly" ||
+		(roomStatus === "checking" && checkingView === "savedBody");
+	// The editor takes no input while the room is replaced, nor at the end of
+	// a run while the room still holds the body before it, and never from a
 	// client that may not edit it.
 	const roomFreezesEditor =
 		roomStampsOn &&
 		(roomStatus === "updating" ||
 			roomStatus === "failed" ||
 			roomStatus === "behindReadOnly" ||
+			(roomStatus === "checking" && checkingView !== "room") ||
 			canEdit === false);
 	// Typing that waited for the room is saved once saves may go again: the
 	// autosave that fell due meanwhile stood down without rescheduling.
@@ -4005,9 +4020,18 @@ function DocumentEditorInner({
 	// edit; a save clears the lifted flag. Only for typing from before this
 	// mount: typing here — an accepted proposal included — already reads as
 	// unsaved, and the saved body read meanwhile may be a save's optimistic
-	// answer, which would mark that typing saved before the save lands.
+	// answer, which would mark that typing saved before the save lands. For
+	// the same reason a save still in flight from before the loss is waited
+	// for: until it answers, the saved body is its optimistic one; then a
+	// failure has put the saved body back, and a success has cleared the flag.
 	const restoredTypingRef = useRef(false);
 	const typedBeforeMountRef = useRef(typedSinceSaveRef?.current === true);
+	const savesInFlight = useIsMutating({
+		mutationKey: orpc.projects.documents.update.mutationKey(),
+		predicate: (mutation) =>
+			(mutation.state.variables as { id?: unknown } | undefined)?.id ===
+			documentId,
+	});
 	useEffect(() => {
 		if (
 			restoredTypingRef.current ||
@@ -4016,11 +4040,14 @@ function DocumentEditorInner({
 			!enableCollaboration ||
 			canEdit !== true ||
 			!editor ||
-			typedSinceSaveRef?.current !== true
+			savesInFlight > 0
 		) {
 			return;
 		}
 		restoredTypingRef.current = true;
+		if (typedSinceSaveRef?.current !== true) {
+			return;
+		}
 		lastSavedContentRef.current = document?.content ?? "";
 		recomputeDirtyState();
 	}, [
@@ -4028,6 +4055,7 @@ function DocumentEditorInner({
 		enableCollaboration,
 		canEdit,
 		editor,
+		savesInFlight,
 		document?.content,
 		typedSinceSaveRef,
 		recomputeDirtyState,
@@ -9334,8 +9362,18 @@ function DocumentEditorInner({
 													Ask About Selection
 												</Button>
 											</div>
+											{/* The raw view holds still with the
+											    room's editor, and shows the saved
+											    body with it unless it holds edits
+											    of its own (Fizzy #2946). */}
 											<Textarea
-												value={rawContent}
+												value={
+													showsSavedBody &&
+													!rawEditPending()
+														? (document?.content ??
+															"")
+														: rawContent
+												}
 												onChange={(e) =>
 													handleRawContentChange(
 														e.target.value,
@@ -9344,7 +9382,9 @@ function DocumentEditorInner({
 												placeholder="Enter your document content in markdown format... Type @fabric followed by your question to ask the AI agent."
 												className="font-mono text-sm resize-none min-h-[calc(100vh-300px)] w-full"
 												disabled={
-													isLoading || rejectPending
+													isLoading ||
+													rejectPending ||
+													roomFreezesEditor
 												}
 											/>
 											<div className="mt-4 space-y-2">

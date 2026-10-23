@@ -21,18 +21,17 @@ import {
  *
  * The companion to the stuck-apply watchdog (which auto-recovers after
  * `FABRIC_BACKLOG_APPLY_STALE_MINUTES`, default 15): this gives the user an
- * *immediate* out when an apply hangs, so they're never stuck waiting on the
- * cron.
+ * immediate stop when an apply hangs, without waiting for the cron.
  *
  * Behaviour (robust against a down / unreachable worker):
  *   1. Load proposal, verify project + tenancy.
- *   2. Verify it's actually mid-apply: `status === "PENDING"` AND
- *      `applyStartedAt` set. An awaiting-review proposal has no apply to
- *      cancel — that's a dismiss / reject, not a cancel.
+ *   2. Verify it is APPLYING or legacy PENDING with applyStartedAt set.
+ *      An unconfirmed claim is left to the watchdog; an awaiting-review
+ *      proposal has no dispatched apply to cancel.
  *   3. Best-effort terminate the apply workflow (swallowed — it may already be
  *      dead / closed / never have started).
- *   4. Compare-and-set `PENDING → FAILED` (errorClass "Cancelled"). The guard
- *      means a workflow finalize that lands first wins and this no-ops.
+ *   4. Compare-and-set the live claim to FAILED (errorClass "Cancelled").
+ *      A workflow finalize that lands first wins and this no-ops.
  *   5. Finalize the session-history row + emit `backlog.proposal.cancelled`.
  *
  * Reuses the FAILED terminal state (not a new enum value) so the existing
@@ -91,14 +90,19 @@ export const cancelPendingProposalProcedure = tenantProtectedProcedure
 			});
 		}
 
-		// 2. Must be mid-apply. An awaiting-review proposal (no applyStartedAt)
-		//    isn't applying — there's nothing to cancel (use dismiss / reject).
-		if (proposal.status !== "PENDING" || proposal.applyStartedAt === null) {
+		// 2. Cancel only confirmed dispatches. A claim whose start is still
+		// unconfirmed is left to the watchdog, including APPLYING rows.
+		if (
+			(proposal.status !== "APPLYING" && proposal.status !== "PENDING") ||
+			proposal.applyStartedAt === null
+		) {
 			throw new ORPCError("CONFLICT", {
 				message:
-					proposal.status === "PENDING"
-						? "This proposal isn't applying."
-						: `Proposal is already '${proposal.status}'.`,
+					proposal.status === "APPLYING"
+						? "This apply is still starting. Try cancelling once it has started."
+						: proposal.status === "PENDING"
+							? "This proposal isn't applying."
+							: `Proposal is already '${proposal.status}'.`,
 			});
 		}
 
@@ -116,10 +120,11 @@ export const cancelPendingProposalProcedure = tenantProtectedProcedure
 			}
 		}
 
-		// 4. Compare-and-set PENDING → FAILED. If a workflow finalize raced us
-		//    and already moved the row out of PENDING, `count === 0`.
+		// 4. Stop only the loaded claim; a concurrent terminal outcome or
+		//    replacement workflow makes this a no-op.
 		const stopped = await stopApplyingProposal({
 			proposalId: input.proposalId,
+			applyWorkflowId: proposal.applyWorkflowId,
 			errorClass: "Cancelled",
 			errorMessage: "Cancelled by you. You can retry it.",
 		});

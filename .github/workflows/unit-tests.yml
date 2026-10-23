@@ -198,6 +198,7 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
+          check-latest: true
           # No `cache: 'pnpm'` on purpose: this job never installs, so it has
           # no store to save, and a save here would race the shards' own.
 
@@ -465,6 +466,7 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
+          check-latest: true
           cache: 'pnpm'
 
       # Persist Turbo's local cache (.turbo/cache) across runs — the
@@ -627,6 +629,7 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
+          check-latest: true
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -711,6 +714,7 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
+          check-latest: true
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -781,6 +785,7 @@ jobs:
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
+          check-latest: true
           cache: 'pnpm'
 
       - name: Restore Turbo cache

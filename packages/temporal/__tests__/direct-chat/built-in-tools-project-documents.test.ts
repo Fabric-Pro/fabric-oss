@@ -5,7 +5,8 @@
  * tool list. Agent runtimes get them only through `project-context`. The
  * project comes from the chat, never from the model's arguments, and the
  * descriptions are the catalog's — the ones that tell the model to list
- * rather than search.
+ * rather than search. The repository code reads ride along on the same terms
+ * (Fizzy #2869).
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,6 +16,8 @@ const h = vi.hoisted(() => ({
 	getProjectDocument: vi.fn(),
 	listProjectSources: vi.fn(),
 	getProjectSource: vi.fn(),
+	getProjectAccessContext: vi.fn(),
+	searchCodeSymbols: vi.fn(),
 }));
 
 vi.mock("@repo/ai", () => ({
@@ -23,6 +26,8 @@ vi.mock("@repo/ai", () => ({
 
 vi.mock("@repo/database", () => ({
 	canCreateProjectStory: vi.fn(),
+	getProjectAccessContext: h.getProjectAccessContext,
+	searchCodeSymbols: h.searchCodeSymbols,
 	db: {
 		organization: { findUnique: vi.fn() },
 		userStory: { update: vi.fn() },
@@ -86,6 +91,7 @@ const NAMES = Object.keys(TOOLS) as Array<keyof typeof TOOLS>;
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	h.getProjectAccessContext.mockResolvedValue({ organizationId: "org-1" });
 });
 
 describe("createBuiltInTools — document and source reads", () => {
@@ -140,6 +146,60 @@ describe("createBuiltInTools — document and source reads", () => {
 		expect((tools.project_rag_query as Executable).description).toContain(
 			"fabric_list_project_documents",
 		);
+	});
+
+	// The source list's own text sends the model to code_search for code, so
+	// the interactive chat binds the code reads wherever it adds the source
+	// reads to an explicit list (Fizzy #2869).
+	it("binds the repository code reads alongside the interactive chat's explicit tool list", async () => {
+		const tools = await createBuiltInTools({
+			...CTX,
+			enabledFabricToolIds: ["fabric_web_search"],
+			includeProjectFeatureReads: true,
+		});
+		expect(tools).toHaveProperty("fabric_list_project_sources");
+		expect(tools).toHaveProperty("code_search");
+		expect(tools).toHaveProperty("symbol_search");
+	});
+
+	it("does not add the repository code reads to an agent runtime's explicit list or without a project", async () => {
+		const runtime = await createBuiltInTools({
+			...CTX,
+			enabledFabricToolIds: ["fabric_web_search"],
+		});
+		const noProject = await createBuiltInTools({
+			userId: "user-1",
+			organizationId: "org-1",
+			enabledFabricToolIds: ["fabric_web_search"],
+			includeProjectFeatureReads: true,
+		});
+		for (const tools of [runtime, noProject]) {
+			expect(tools).not.toHaveProperty("code_search");
+			expect(tools).not.toHaveProperty("symbol_search");
+		}
+	});
+
+	it("binds no code reads for a user who cannot read the project", async () => {
+		h.getProjectAccessContext.mockResolvedValue(null);
+		const tools = await createBuiltInTools({
+			...CTX,
+			enabledFabricToolIds: ["fabric_web_search"],
+			includeProjectFeatureReads: true,
+		});
+		expect(tools).not.toHaveProperty("code_search");
+		expect(tools).not.toHaveProperty("symbol_search");
+	});
+
+	it("symbol_search refuses once project access is revoked mid-turn", async () => {
+		const tools = await createBuiltInTools(CTX);
+		h.getProjectAccessContext.mockResolvedValue(null);
+
+		const result = await (tools.symbol_search as Executable).execute({
+			query: "Report",
+		});
+
+		expect(result).toMatchObject({ success: false, results: [] });
+		expect(h.searchCodeSymbols).not.toHaveBeenCalled();
 	});
 
 	it.each(NAMES)(

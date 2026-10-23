@@ -12,18 +12,25 @@
  * 7. Hardcoded fallback (if database is empty)
  */
 
+import { buildProviderModelString } from "./provider-model-string";
+
+export { buildProviderModelString } from "./provider-model-string";
+
 import {
 	GATEWAY_PROVIDERS as DB_GATEWAY_PROVIDERS,
 	getActiveModels,
 	getAiProviderApiKey,
 	getAiProviderApiKeyByProvider,
+	getCanonicalNameForProviderModelId,
 	getEmbeddingProviderConfig,
 	getModelForTask,
 	getOrganizationSystemAiProviderApiKey,
 	getPlanSpentPersonalProviderConfig,
 	getProviderModelIdForCanonical,
+	getProviderModelMappingForCanonical,
 	getSystemAiProviderApiKey,
 	getTaskDefaultModel,
+	TEXT_TASK_TYPES,
 } from "@repo/database";
 import { assertWithinAiUsageLimits } from "@repo/payments";
 import type { AiFeatureKey } from "./feature-keys";
@@ -60,6 +67,9 @@ export interface DynamicModelSelectionOptions {
 	requiresToolCalling?: boolean;
 	preferredProvider?: DbAIProvider;
 	maxTokensNeeded?: number;
+	providerConfig?: import("@repo/database").AiProviderConfig;
+	/** Resolve the post-reset default without mutating saved preferences. */
+	ignorePreferences?: boolean;
 }
 
 /** Result of dynamic model selection */
@@ -239,6 +249,27 @@ export async function selectModelDynamic(
 	}
 
 	const dbComplexity = mapComplexityToDb(complexity);
+	let connection =
+		options.providerConfig?.provider === preferredProvider
+			? options.providerConfig
+			: undefined;
+	if (
+		!connection &&
+		TEXT_TASK_TYPES.some((task) => task === effectiveTaskType)
+	) {
+		const defaultConnection = await getAiProviderApiKey({
+			userId: context.userId,
+			organizationId: context.organizationId,
+		});
+		connection =
+			defaultConnection?.provider === preferredProvider
+				? defaultConnection
+				: await getAiProviderApiKeyByProvider({
+						userId: context.userId,
+						organizationId: context.organizationId,
+						provider: preferredProvider,
+					});
+	}
 
 	// Use simplified getModelForTask which handles user override, org override, and system default
 	const result = await getModelForTask(
@@ -247,6 +278,8 @@ export async function selectModelDynamic(
 		effectiveTaskType,
 		context.organizationId ?? null,
 		dbComplexity,
+		connection,
+		options.ignorePreferences ? { ignorePreferences: true } : undefined,
 	);
 
 	if (result?.model) {
@@ -267,6 +300,8 @@ export async function selectModelDynamic(
 	const defaultModel = await getTaskDefaultModel(
 		effectiveTaskType,
 		dbComplexity,
+		undefined,
+		connection,
 	);
 
 	if (defaultModel) {
@@ -526,36 +561,6 @@ function mapProviderToPrefix(provider: DbAIProvider): string {
 	}
 }
 
-/**
- * Build the provider-specific model string from a resolved `providerModelId`,
- * applying the same prefix rules used by task-default resolution:
- * - Gateway providers get a routing prefix (e.g. "openai/gpt-4o") unless present.
- * - Inference providers (Groq/Cerebras) keep the id as-is.
- * - Direct providers strip any prefix.
- *
- * Shared by the normal task-default path and the model-override path so both
- * produce identical strings.
- */
-export function buildProviderModelString(
-	providerModelId: string,
-	provider: DbAIProvider,
-): string {
-	const isGateway = GATEWAY_PROVIDERS.has(provider);
-	const isInferenceProvider = provider === "GROQ" || provider === "CEREBRAS";
-
-	if (isGateway) {
-		return providerModelId.includes("/")
-			? providerModelId
-			: `${mapProviderToPrefix(provider)}/${providerModelId}`;
-	}
-	if (isInferenceProvider) {
-		return providerModelId;
-	}
-	// Direct providers: strip any prefix. `.split("/").pop()` already returns the
-	// input unchanged when there is no slash, so no guard is needed.
-	return providerModelId.split("/").pop() ?? providerModelId;
-}
-
 // ============================================================================
 // High-Level Helper Functions
 // ============================================================================
@@ -726,6 +731,7 @@ export async function resolveModelWithProvider(
 			complexity: options?.complexity,
 			requiresToolCalling: options?.requiresToolCalling,
 			preferredProvider,
+			providerConfig,
 		},
 		context,
 	);
@@ -1764,26 +1770,30 @@ export async function getAIModelWithMetadata(
 	});
 
 	// Step 4: Determine final model string (override takes precedence).
-	// A modelOverride is a catalog canonical name (from the model picker), so it
-	// MUST be mapped to the resolved provider's model string via the catalog —
+	// A modelOverride may be a catalog canonical name (from the model picker),
+	// which must be mapped to the resolved provider's model string via the catalog —
 	// otherwise a provider whose id differs from the canonical (Databricks Unity
 	// AI Gateway "system.ai.claude-sonnet-5", Azure, Bedrock) receives the raw
 	// canonical and rejects it. Falls back to the override as-is when it isn't a
 	// catalog canonical for this provider (e.g. an already provider-specific id).
 	let finalModelString = config.modelString;
 	let apiModelOverride = modelOverride;
+	let overrideExistsInCatalog = false;
 	if (apiModelOverride) {
-		const overrideProviderModelId = config.provider
-			? await getProviderModelIdForCanonical(
+		const overrideMapping = config.provider
+			? await getProviderModelMappingForCanonical(
 					apiModelOverride,
 					config.provider,
 				)
-			: null;
+			: { exists: false, providerModelId: null };
+		const overrideProviderModelId = overrideMapping.providerModelId;
+		overrideExistsInCatalog = overrideMapping.exists;
 		// A model only a ChatGPT plan serves (a saved pick from before the
 		// plan, or one a plan's list added) is no model of this provider:
 		// the task's own model runs, rather than a call the provider rejects.
 		if (
 			!overrideProviderModelId &&
+			overrideExistsInCatalog &&
 			(await getProviderModelIdForCanonical(
 				apiModelOverride,
 				"OPENAI_CHATGPT_PLAN",
@@ -1799,6 +1809,15 @@ export async function getAIModelWithMetadata(
 						)
 					: apiModelOverride;
 		}
+	}
+	// Keep request IDs separate from the catalog identity used by limits and logs.
+	let canonicalName = apiModelOverride || config.canonicalName;
+	if (apiModelOverride && !overrideExistsInCatalog) {
+		canonicalName =
+			(await getCanonicalNameForProviderModelId(
+				apiModelOverride,
+				config.provider,
+			)) ?? apiModelOverride;
 	}
 	const selectionSource = apiModelOverride
 		? "override"
@@ -1816,7 +1835,7 @@ export async function getAIModelWithMetadata(
 		organizationId: context.organizationId ?? null,
 		projectId: context.projectId ?? null,
 		providerConfigId: config.configId,
-		modelCanonicalName: apiModelOverride || config.canonicalName,
+		modelCanonicalName: canonicalName,
 		taskType: mapTaskTypeToDb(taskType as string),
 	};
 	await assertWithinAiUsageLimits(limitScope);
@@ -1834,10 +1853,8 @@ export async function getAIModelWithMetadata(
 		baseUrl: config.baseUrl,
 		headers: billingState.headers ?? undefined,
 		deploymentName: config.deploymentName,
-		isReasoningModel: isReasoningModelName(
-			apiModelOverride || config.canonicalName,
-		),
-		canonicalModelName: apiModelOverride || config.canonicalName,
+		isReasoningModel: isReasoningModelName(canonicalName),
+		canonicalModelName: canonicalName,
 	});
 
 	// Step 6: Build metadata
@@ -1847,7 +1864,7 @@ export async function getAIModelWithMetadata(
 		configId: config.configId,
 		configSource: config.configSource,
 		selectionSource,
-		canonicalName: apiModelOverride || config.canonicalName,
+		canonicalName,
 		maxOutputTokens: apiModelOverride ? undefined : config.maxOutputTokens,
 		contextWindow: apiModelOverride ? undefined : config.contextWindow,
 		billingMode: billingState.mode,

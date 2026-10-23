@@ -882,14 +882,12 @@ describe("generateNewsletterBlurbActivity — the model call", () => {
 		);
 	});
 
-	it("disables strict JSON schema", async () => {
-		// Azure/OpenAI reject a strict JSON schema containing optional fields
-		// outright (bug #1681), and this schema has several.
+	it("leaves structured-output policy to the model middleware", async () => {
 		await run();
 
-		expect(generateObject.mock.calls[0]?.[0]?.providerOptions).toEqual({
-			openai: { strictJsonSchema: false },
-		});
+		expect(
+			generateObject.mock.calls[0]?.[0]?.providerOptions,
+		).toBeUndefined();
 	});
 
 	it("tracks usage", async () => {

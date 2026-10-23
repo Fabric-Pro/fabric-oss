@@ -226,3 +226,41 @@ describe("BacklogChangeProposal — locked (already accepted) rows", () => {
 		},
 	);
 });
+
+describe("BacklogChangeProposal — in-flight actions", () => {
+	it.each(["APPROVED", "APPLYING"] as const)(
+		"hides apply and reject for %s",
+		(proposalStatus) => {
+			renderBatch({ proposalStatus });
+			expect(
+				screen.queryByRole("button", { name: /Apply Selected/ }),
+			).not.toBeInTheDocument();
+			expect(
+				screen.queryByRole("button", {
+					name: "Reject all proposed changes",
+				}),
+			).not.toBeInTheDocument();
+		},
+	);
+	it.each([undefined, "PENDING", "FAILED", "BACKLOG"] as const)(
+		"preserves actions for %s",
+		(proposalStatus) => {
+			renderBatch({ proposalStatus });
+			expect(
+				screen.getByRole("button", {
+					name: /(?:Apply|Restore & Apply) Selected/,
+				}),
+			).toBeEnabled();
+			if (proposalStatus !== "PENDING") {
+				expect(
+					screen.getByRole("button", {
+						name:
+							proposalStatus === "BACKLOG"
+								? "Delete proposal permanently"
+								: "Reject all proposed changes",
+					}),
+				).toBeEnabled();
+			}
+		},
+	);
+});

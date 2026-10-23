@@ -700,6 +700,8 @@ export function useOrchestratorStream(
 	 * counter has to be idempotent per step rather than a bare increment.
 	 */
 	const completedStepIdsRef = useRef<Set<string>>(new Set());
+	// Output may arrive in separate tool/step state before the next React render.
+	const hasTurnOutputRef = useRef(false);
 
 	// Track when we should clear content on next text_delta instead of immediately
 	// on text_start - this prevents a blank flash between iterations
@@ -908,6 +910,7 @@ export function useOrchestratorStream(
 			// by this turn's resume loop, and its counted steps start over.
 			executionIdRef.current = attachExecutionId;
 			completedStepIdsRef.current = new Set();
+			hasTurnOutputRef.current = false;
 			// One key per user message; retries of this message reuse it. An
 			// attached turn's key stayed with the tab that sent it, and its
 			// executionId already identifies it everywhere a key would.
@@ -1827,6 +1830,9 @@ export function useOrchestratorStream(
 					break;
 
 				case "step_complete": {
+					if (data.response || data.toolCalls?.length) {
+						hasTurnOutputRef.current = true;
+					}
 					// Add the completed step with its tool calls AND response
 					const stepStatus = (data.status || "complete") as
 						| "complete"
@@ -2021,6 +2027,8 @@ export function useOrchestratorStream(
 					if (!toolName) {
 						break;
 					}
+
+					hasTurnOutputRef.current = true;
 
 					const newToolCall: ToolCallState = {
 						id: data.toolCallId || `tc-${Date.now()}-${toolName}`,
@@ -2350,11 +2358,47 @@ export function useOrchestratorStream(
 						if (payload) {
 							showAiUsageLimitToastRef.current(payload);
 						}
+						setCurrentPhase("idle");
+						setProgressMessage("");
+						setCurrentStep(null);
+						setStreamingToolCalls(
+							(prev) => settleUnfinishedToolCalls(prev) ?? prev,
+						);
+						const hadTurnOutput = hasTurnOutputRef.current;
 						setMessages((prev) =>
-							prev.filter((m) => m.id !== assistantMessageId),
+							prev.flatMap((message) => {
+								if (message.id !== assistantMessageId) {
+									return [message];
+								}
+								// Keep earlier work; only the empty streaming placeholder is removed.
+								if (
+									!message.content.trim() &&
+									!message.toolCalls?.length &&
+									!hadTurnOutput
+								) {
+									return [];
+								}
+								return [
+									{
+										...message,
+										isStreaming: false,
+										isError: true,
+										streamStatus: "error" as const,
+										toolCalls: settleUnfinishedToolCalls(
+											message.toolCalls,
+										),
+									},
+								];
+							}),
 						);
 						setIsLoading(false);
-						setState((prev) => ({ ...prev, status: "idle" }));
+						setState((prev) => ({
+							...prev,
+							status: "idle",
+							budgetStop:
+								parseTurnBudgetStop(data.budgetStop) ??
+								prev.budgetStop,
+						}));
 						break;
 					}
 					setCurrentPhase("error");
@@ -2799,6 +2843,7 @@ export function useOrchestratorStream(
 		// to and the step counter starts clean.
 		executionIdRef.current = null;
 		completedStepIdsRef.current = new Set();
+		hasTurnOutputRef.current = false;
 		clientRequestKeyRef.current = null;
 		turnConversationIdRef.current = null;
 		// Mark that next sendMessage should start fresh

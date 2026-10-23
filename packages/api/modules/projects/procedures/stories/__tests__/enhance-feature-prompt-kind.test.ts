@@ -591,3 +591,49 @@ describe("enhanceFeatureProcedure — a stage transition (no cleanSpecRefresh) k
 		);
 	});
 });
+
+/**
+ * A PROJECT default narrows the org tier to one project. The bound lookup only
+ * applies it when it is told which project the work item lives in, so both the
+ * stage transition and the Clean Spec refresh have to pass the story's project.
+ */
+describe("enhanceFeatureProcedure — the work item's project reaches the bound lookup", () => {
+	it.each([
+		["a stage transition", { targetStage: "DRAFT" as const }],
+		["a Clean Spec refresh", { cleanSpecRefresh: true }],
+	])("resolves %s with the story's project", async (_label, extra) => {
+		mocks.getStoryById.mockResolvedValue({
+			id: "story-1",
+			projectId: "project-1",
+			title: "Existing work item",
+			description: "Original description body",
+			acceptanceCriteria: null,
+			draftingStage: "PLACEHOLDER",
+			kind: "BUG",
+			identifier: "F-001",
+			version: 1,
+		});
+		mocks.getBoundPromptForAgent.mockResolvedValue({
+			version: { content: "BOUND_PROMPT_SENTINEL" },
+			format: "PLAIN_TEXT",
+			key: "bound_prompt",
+		});
+
+		await handlers.enhance({
+			input: {
+				projectId: "project-1",
+				storyId: "story-1",
+				organizationId: "org-1",
+				...extra,
+			},
+			context: ctx,
+		});
+
+		expect(mocks.getBoundPromptForAgent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				organizationId: "org-1",
+				projectId: "project-1",
+			}),
+		);
+	});
+});

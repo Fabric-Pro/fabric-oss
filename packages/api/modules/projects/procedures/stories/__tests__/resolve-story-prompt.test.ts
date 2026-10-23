@@ -422,6 +422,39 @@ describe("resolveStoryPromptProcedure — tenancy and scoping", () => {
 		);
 	});
 
+	it.each([
+		["a stage transition", { targetStage: "ACTIVE_ANALYSIS" as const }],
+		["a Clean Spec refresh", {}],
+	])(
+		"resolves %s with the work item's project, so a project default outranks the org one",
+		async (_label, extra) => {
+			mocks.getStoryById.mockResolvedValue({
+				id: "story-1",
+				projectId: "project-1",
+				title: "Stored work item",
+				kind: "FEATURE",
+				draftingStage: "PASSIVE_ANALYSIS",
+			});
+
+			await handlers.resolvePrompt({
+				input: {
+					projectId: "project-1",
+					storyId: "story-1",
+					organizationId: "org-1",
+					...extra,
+				},
+				context: ctx,
+			});
+
+			expect(mocks.getBoundPromptForAgent).toHaveBeenCalledWith(
+				expect.objectContaining({
+					organizationId: "org-1",
+					projectId: "project-1",
+				}),
+			);
+		},
+	);
+
 	it("rejects a work item id that does not belong to the project", async () => {
 		mocks.getStoryById.mockResolvedValue(null);
 

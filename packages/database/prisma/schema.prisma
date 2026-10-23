@@ -6810,8 +6810,8 @@ model PendingBacklogProposal {
   @@index([userId])
   @@index([organizationId])
   @@index([createdAt])
-  // Stuck-apply watchdog: scans PENDING rows whose apply was dispatched and has
-  // since gone stale. Keeps the periodic sweep off a sequential scan.
+  // Supports the stale-apply watchdog scan of dispatched PENDING and claimed
+  // APPROVED/APPLYING rows; claims also check reviewedAt or createdAt.
   @@index([status, applyStartedAt])
   @@map("pending_backlog_proposal")
 }
@@ -13302,6 +13302,7 @@ model CloudProviderConfig {
   purpose               AiProviderPurpose @default(ALL)
   priority              Int               @default(0)
   config                Json
+  taskDefaultsSnapshot  Json?             @map("task_defaults_snapshot")
   encryptedApiKey       String?           @map("encrypted_api_key") // Dedicated column for encrypted API key (migrated from config.json)
   // OAuth M2M (service principal) credentials — currently only Databricks.
   // XOR with `encryptedApiKey`: a row carries either a static key/PAT or a
@@ -13356,6 +13357,7 @@ model UserCloudProviderConfig {
   useWhenPlanSpent      Boolean           @default(false)
   priority              Int               @default(0)
   config                Json
+  taskDefaultsSnapshot  Json?             @map("task_defaults_snapshot")
   encryptedApiKey       String?           @map("encrypted_api_key") // Dedicated column for encrypted API key (migrated from config.json)
   // OAuth M2M (service principal) credentials — currently only Databricks.
   // XOR with `encryptedApiKey`: a row carries either a static key/PAT or a
@@ -15473,7 +15475,7 @@ model AiTaskModelDefault {
 
 // User-level model preferences (overrides per provider)
 // Stores user's model overrides for each task type, scoped by provider.
-// When user switches default provider, their overrides for that provider are restored.
+// Switching the default provider clears these overrides (EMBEDDING is kept when a separate documents provider is set).
 model UserModelPreference {
   id     String @id @default(cuid())
   userId String
@@ -15651,7 +15653,8 @@ model NotificationPreference {
 
 // Organization-level model preferences (overrides per provider)
 // Stores org's model overrides for each task type, scoped by provider.
-// When org switches default provider, their overrides for that provider are restored.
+// A default-provider switch clears API choices except DECISION, IMAGE, and AUDIO.
+// EMBEDDING is also retained when a documents provider distinct from the new default exists.
 model OrganizationModelPreference {
   id             String @id @default(cuid())
   organizationId String

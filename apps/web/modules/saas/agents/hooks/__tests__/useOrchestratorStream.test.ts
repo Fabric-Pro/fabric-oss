@@ -1,3 +1,14 @@
+import { toast } from "sonner";
+
+vi.mock("sonner", () => ({
+	toast: {
+		error: vi.fn(),
+		success: vi.fn(),
+		info: vi.fn(),
+		warning: vi.fn(),
+	},
+}));
+
 /**
  * Unit tests for `useOrchestratorStream.stop()` semantics.
  *
@@ -2035,7 +2046,7 @@ describe("useOrchestratorStream — every plan spent", () => {
 				data: {
 					limitId: "limit-1",
 					dimension: "TOKENS",
-					window: "DAY",
+					window: "DAILY",
 					used: "10",
 					max: "10",
 					manageLimitsUrl: "/settings/limits",
@@ -2050,6 +2061,7 @@ describe("useOrchestratorStream — every plan spent", () => {
 	])(
 		"leaves no routing phase behind after %s refused the turn",
 		async (_case, status, body) => {
+			vi.mocked(toast.error).mockClear();
 			global.fetch = vi.fn(async () => ({
 				ok: false,
 				status,
@@ -2065,6 +2077,159 @@ describe("useOrchestratorStream — every plan spent", () => {
 			await waitFor(() => expect(result.current.isLoading).toBe(false));
 			expect(result.current.isRunning).toBe(false);
 			expect(result.current.currentPhase).toBe("idle");
+			if (body.code === "AI_USAGE_LIMIT_EXCEEDED") {
+				expect(toast.error).toHaveBeenCalledTimes(1);
+			}
 		},
 	);
+});
+
+describe("useOrchestratorStream usage-limit SSE", () => {
+	const originalFetch = global.fetch;
+	afterEach(() => {
+		global.fetch = originalFetch;
+	});
+	it("shows the limit toast and removes the assistant placeholder", async () => {
+		vi.mocked(toast.error).mockClear();
+		const { response, enqueueLine, enqueueDone } = makeSseResponse();
+		global.fetch = vi.fn(async () => response) as unknown as typeof fetch;
+		const { result } = renderHook(() => useOrchestratorStream());
+		let sending: Promise<void>;
+		act(() => {
+			sending = result.current.sendMessage("hello");
+		});
+		await waitFor(() => expect(global.fetch).toHaveBeenCalled());
+		await act(async () => {
+			enqueueLine(
+				'data: {"type":"started","executionId":"example-execution"}',
+			);
+			enqueueLine(
+				'data: {"type":"error","code":"AI_USAGE_LIMIT_EXCEEDED","message":"Limit reached","data":{"limitId":"example-limit","dimension":"TOKENS","window":"DAILY","used":"10","max":"10","manageLimitsUrl":"/settings/limits"}}',
+			);
+			enqueueDone();
+			await sending;
+		});
+		expect(toast.error).toHaveBeenCalledTimes(1);
+		expect(
+			result.current.messages.filter(
+				(message) => message.role === "assistant",
+			),
+		).toEqual([]);
+		expect(result.current.isLoading).toBe(false);
+	});
+});
+
+describe("a terminal usage refusal after progress", () => {
+	const originalFetch = global.fetch;
+	afterEach(() => {
+		global.fetch = originalFetch;
+	});
+	it("settles progress and keeps the partial answer out of next-turn history", async () => {
+		vi.mocked(toast.error).mockClear();
+		const { response, enqueueLine, enqueueDone } = makeSseResponse();
+		global.fetch = vi.fn(async () => response) as unknown as typeof fetch;
+		const { result } = renderHook(() => useOrchestratorStream());
+		let sending: ReturnType<typeof result.current.sendMessage> | undefined;
+		act(() => {
+			sending = result.current.sendMessage("hello");
+		});
+		await act(async () => {
+			enqueueLine(
+				'data: {"type":"started","executionId":"example-execution"}',
+			);
+			enqueueLine(
+				'data: {"type":"step_start","stepId":"example-step","description":"Read files","order":0}',
+			);
+			enqueueLine(
+				'data: {"type":"text_delta","content":"Found the configuration."}',
+			);
+			enqueueLine(
+				'data: {"type":"tool_start","toolCallId":"example-call","toolName":"read_file","args":{}}',
+			);
+		});
+		await waitFor(() => {
+			expect(result.current.currentPhase).toBe("executing");
+			expect(result.current.currentStep?.id).toBe("example-step");
+			expect(result.current.streamingToolCalls[0]?.status).toBe(
+				"running",
+			);
+			expect(result.current.messages.at(-1)?.content).toBe(
+				"Found the configuration.",
+			);
+		});
+		await act(async () => {
+			enqueueLine(
+				'data: {"type":"error","code":"AI_USAGE_LIMIT_EXCEEDED","message":"Limit reached","data":{"limitId":"example-limit","dimension":"TOKENS","window":"DAILY","used":"10","max":"10","manageLimitsUrl":""}}',
+			);
+			enqueueDone();
+			await sending;
+		});
+		expect(toast.error).toHaveBeenCalledTimes(1);
+		expect(result.current.messages.at(-1)).toMatchObject({
+			role: "assistant",
+			content: "Found the configuration.",
+			isStreaming: false,
+			isError: true,
+		});
+		// The live-message history filter in FabricTemporalOrchestratorChat.
+		expect(
+			result.current.messages.filter(
+				(message) =>
+					!message.isStreaming &&
+					!message.isError &&
+					message.role === "assistant",
+			),
+		).toEqual([]);
+		expect(result.current.currentPhase).toBe("idle");
+		expect(result.current.currentStep).toBeNull();
+		expect(result.current.progressMessage).toBe("");
+		expect(result.current.streamingToolCalls).toMatchObject([
+			{ id: "example-call", status: "error" },
+		]);
+		expect(result.current.isLoading).toBe(false);
+		expect(result.current.isRunning).toBe(false);
+	});
+});
+
+describe("a terminal usage refusal after tool output only", () => {
+	const originalFetch = global.fetch;
+	afterEach(() => {
+		global.fetch = originalFetch;
+	});
+	it("keeps the assistant turn and completed tool output without text", async () => {
+		const { response, enqueueLine, enqueueDone } = makeSseResponse();
+		global.fetch = vi.fn(async () => response) as unknown as typeof fetch;
+		const { result } = renderHook(() => useOrchestratorStream());
+		let sending: ReturnType<typeof result.current.sendMessage> | undefined;
+		act(() => {
+			sending = result.current.sendMessage("hello");
+		});
+		await act(async () => {
+			enqueueLine(
+				'data: {"type":"started","executionId":"example-execution"}',
+			);
+			enqueueLine(
+				'data: {"type":"tool_result","toolCallId":"example-call","toolName":"read_file","args":{},"result":"configuration found"}',
+			);
+			enqueueLine(
+				'data: {"type":"error","code":"AI_USAGE_LIMIT_EXCEEDED","message":"Limit reached","data":{"limitId":"example-limit","dimension":"TOKENS","window":"DAILY","used":"10","max":"10","manageLimitsUrl":""}}',
+			);
+			enqueueDone();
+			await sending;
+		});
+		expect(result.current.messages.at(-1)).toMatchObject({
+			role: "assistant",
+			content: "",
+			isStreaming: false,
+			isError: true,
+		});
+		expect(result.current.streamingToolCalls).toMatchObject([
+			{
+				id: "example-call",
+				status: "complete",
+				result: "configuration found",
+			},
+		]);
+		expect(result.current.isLoading).toBe(false);
+	});
 });

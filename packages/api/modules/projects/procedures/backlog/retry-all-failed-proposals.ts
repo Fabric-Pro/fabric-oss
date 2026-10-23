@@ -8,7 +8,7 @@ import {
 	getPendingBacklogProposal,
 	inferDedupFamily,
 	listFailedProposals,
-	markPendingProposalApplied,
+	markProposalApplyDispatched,
 	returnFailedRecommendationToReview,
 } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
@@ -257,8 +257,8 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 
 			if (workflowChanges.length === 0) {
 				// Full-dedup short-circuit — mark APPLIED, no workflow start.
-				await db.pendingBacklogProposal.update({
-					where: { id: fresh.id },
+				const claimed = await db.pendingBacklogProposal.updateMany({
+					where: { id: fresh.id, status: "FAILED" },
 					data: {
 						status: "APPLIED",
 						appliedAt: new Date(),
@@ -266,9 +266,15 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 						appliedChangeIndexes: mergedApplied,
 					},
 				});
-				await markPendingProposalApplied(fresh.id).catch(() => {
-					// no-op: already APPLIED.
-				});
+				if (claimed.count !== 1) {
+					results.push({
+						proposalId: fresh.id,
+						workflowId: null,
+						status: "error",
+						message: "This proposal is no longer failed.",
+					});
+					continue;
+				}
 				// This terminal flip bypasses the apply workflow's finalize
 				// activity, so finalize any session-history row directly (best-
 				// effort, no-op when none exists) to avoid a stuck APPLYING row.
@@ -309,14 +315,16 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 
 			const newWorkflowId = `backlog-apply-retry-all-${input.projectId}-${fresh.id}-${Date.now()}`;
 			try {
-				await db.pendingBacklogProposal.update({
-					where: { id: fresh.id },
+				const claimed = await db.pendingBacklogProposal.updateMany({
+					where: { id: fresh.id, status: "FAILED" },
 					data: {
-						status: "PENDING",
+						status: "APPLYING",
+						reviewedAt: new Date(),
+						reviewedBy: user.id,
 						applyWorkflowId: newWorkflowId,
-						// Reset the dispatch clock the stuck-apply watchdog
-						// measures from — `createdAt` is stale on a retry.
-						applyStartedAt: new Date(),
+						// Until start returns, the watchdog measures this
+						// unconfirmed claim from the fresh reviewedAt.
+						applyStartedAt: null,
 						applyError: null,
 						errorClass: null,
 						errorMessage: null,
@@ -324,6 +332,16 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 						appliedChangeIndexes: mergedApplied,
 					},
 				});
+
+				if (claimed.count !== 1) {
+					results.push({
+						proposalId: fresh.id,
+						workflowId: null,
+						status: "error",
+						message: "This proposal is no longer failed.",
+					});
+					continue;
+				}
 
 				const handle = await client.workflow.start(
 					"backlogApplyChangesWorkflow",
@@ -370,6 +388,12 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 					}),
 				);
 
+				await markProposalApplyDispatched({
+					proposalId: fresh.id,
+					applyWorkflowId: newWorkflowId,
+					mode: "claimed",
+				}).catch(() => 0);
+
 				results.push({
 					proposalId: fresh.id,
 					workflowId: handle.workflowId,
@@ -384,10 +408,14 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 					"[backlog] retry-all-failed-proposals failed:",
 					error,
 				);
-				// Revert the row to FAILED so the inbox still surfaces it.
+				// Revert only this live claim; preserve a concurrent terminal outcome.
 				await db.pendingBacklogProposal
-					.update({
-						where: { id: fresh.id },
+					.updateMany({
+						where: {
+							id: fresh.id,
+							status: "APPLYING",
+							applyWorkflowId: newWorkflowId,
+						},
 						data: {
 							status: "FAILED",
 							applyError: (error instanceof Error

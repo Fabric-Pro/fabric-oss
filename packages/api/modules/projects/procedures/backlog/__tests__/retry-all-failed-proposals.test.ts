@@ -22,6 +22,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		buildBacklogDedupGuard: vi.fn(),
 		inferDedupFamily: vi.fn(),
 		markPendingProposalApplied: vi.fn(),
+		markProposalApplyDispatched: vi.fn(),
 		proposalUpdate: vi.fn(),
 		getTemporalClient: vi.fn(),
 		workflowStart: vi.fn(),
@@ -33,13 +34,17 @@ const { handlers, mocks } = vi.hoisted(() => {
 vi.mock("@repo/database", () => ({
 	db: {
 		project: { findFirst: mocks.projectFindFirst },
-		pendingBacklogProposal: { update: mocks.proposalUpdate },
+		pendingBacklogProposal: {
+			update: mocks.proposalUpdate,
+			updateMany: mocks.proposalUpdate,
+		},
 	},
 	listFailedProposals: mocks.listFailedProposals,
 	getPendingBacklogProposal: mocks.getPendingBacklogProposal,
 	buildBacklogDedupGuard: mocks.buildBacklogDedupGuard,
 	inferDedupFamily: mocks.inferDedupFamily,
 	markPendingProposalApplied: mocks.markPendingProposalApplied,
+	markProposalApplyDispatched: mocks.markProposalApplyDispatched,
 	returnFailedRecommendationToReview:
 		mocks.returnFailedRecommendationToReview,
 }));
@@ -133,7 +138,8 @@ beforeEach(() => {
 		organizationId: "org-1",
 		projectManagementContainerName: null,
 	});
-	mocks.proposalUpdate.mockResolvedValue({});
+	mocks.proposalUpdate.mockResolvedValue({ count: 1 });
+	mocks.markProposalApplyDispatched.mockResolvedValue(1);
 	mocks.markPendingProposalApplied.mockResolvedValue(undefined);
 	mocks.inferDedupFamily.mockReturnValue("FEATURE");
 	mocks.buildBacklogDedupGuard.mockResolvedValue({

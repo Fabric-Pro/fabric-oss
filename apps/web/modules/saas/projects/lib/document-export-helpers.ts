@@ -45,8 +45,8 @@ export function stripInlineMarkdown(text: string): string {
 
 /**
  * A horizontal rule in any CommonMark spelling: three or more of one of
- * `-`, `*` or `_`, spaces allowed between. The editor saves its rule as
- * `* * *`, which would otherwise read as a list item.
+ * `-`, `*` or `_`, spaces allowed between. Documents saved by older editor
+ * versions spell the rule `* * *`, which would otherwise read as a list item.
  */
 const THEMATIC_BREAK = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/;
 
