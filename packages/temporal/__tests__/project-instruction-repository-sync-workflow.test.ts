@@ -421,79 +421,6 @@ describe("projectInstructionRepositorySyncWorkflow", () => {
 		});
 	}, 60_000);
 
-	it("keeps the parent open while an adopted child is open, cancels it after exactly 18 pending polls, and records only once it has closed", async () => {
-		let polls = 0;
-		let statusAtRecord = "";
-		let parentWorkflowId = "";
-		const sync = syncMocks("snap_stuck", {
-			awaitInstructionSnapshotSettled: vi.fn(
-				async (): Promise<AwaitSnapshotSettledResult> => {
-					polls++;
-					if (polls <= 18) {
-						return { settled: false };
-					}
-					return {
-						settled:
-							(await childStatus("snap_stuck")) !== "RUNNING",
-					};
-				},
-			),
-			recordInstructionRepositorySyncRun: vi.fn(async () => {
-				statusAtRecord = await childStatus("snap_stuck");
-				return { recorded: true, status: "FAILED" };
-			}),
-		});
-		const child = childMocks({
-			// Holds the child open until it is cancelled or the worker stops.
-			verifyAndScanInstructionFiles: vi.fn(async () => {
-				await Context.current().cancelled;
-				return { ok: true, rejections: [] };
-			}),
-		});
-
-		await run(sync, child, async (taskQueue) => {
-			parentWorkflowId = `${taskQueue}-wf`;
-			await env.client.workflow.start(
-				"projectInstructionSnapshotWorkflow",
-				{
-					args: [childRef("snap_stuck")],
-					taskQueue,
-					workflowId: instructionSnapshotWorkflowId("snap_stuck"),
-				},
-			);
-		});
-
-		expect(statusAtRecord).not.toBe("RUNNING");
-		expect(await childStatus("snap_stuck")).toBe("CANCELLED");
-
-		// Pinned via the PARENT's own recorded history, not a real-time race
-		// against when the child happens to observe its cancellation (N4):
-		// the external-cancel command must be the event immediately after
-		// the 18th `awaitInstructionSnapshotSettled` schedule, and before
-		// the 19th — `SETTLE_POLLS_BEFORE_CANCEL`, not some other count a
-		// looser `toBeGreaterThan` assertion would equally have accepted.
-		const history = await env.client.workflow
-			.getHandle(parentWorkflowId)
-			.fetchHistory();
-		let scheduledCount = 0;
-		let scheduledCountAtCancel = -1;
-		for (const event of history.events ?? []) {
-			if (
-				event.activityTaskScheduledEventAttributes?.activityType
-					?.name === "awaitInstructionSnapshotSettled"
-			) {
-				scheduledCount++;
-			}
-			if (
-				event.requestCancelExternalWorkflowExecutionInitiatedEventAttributes
-			) {
-				scheduledCountAtCancel = scheduledCount;
-				break;
-			}
-		}
-		expect(scheduledCountAtCancel).toBe(18);
-	}, 120_000);
-
 	// S1: the settle activity must retry without limit, because the parent
 	// can never be allowed to record while the adopted child is still open.
 	// A Temporal client error or a heartbeat blip during the 3-hour wait must
@@ -585,6 +512,12 @@ describe("projectInstructionRepositorySyncWorkflow", () => {
 			connection: env.nativeConnection,
 			taskQueue: INSTRUCTION_SYNC_ACTIVITY_TASK_QUEUE,
 			activities: sync,
+			// The cancel reaches the activity only in the reply to a heartbeat
+			// the worker sends, and the worker throttles those to 80% of the
+			// 60 s heartbeat timeout: 48 s of real time, since the test server
+			// does not skip time while an activity runs. A short throttle
+			// delivers the same cancel within a second.
+			maxHeartbeatThrottleInterval: "1s",
 		});
 
 		await workflowWorker.runUntil(
@@ -609,72 +542,6 @@ describe("projectInstructionRepositorySyncWorkflow", () => {
 			1,
 		);
 	}, 90_000);
-
-	// S3: parent workflow cancellation. The child workflow is started for
-	// real (no adoption involved) and cancellation is issued only once its
-	// own activity has genuinely started, synchronized through a promise
-	// resolved from inside the mock rather than a timing guess. Child
-	// workflows default to `WAIT_CANCELLATION_COMPLETED`, so the child is
-	// cancelled and closed before the parent's own cancellation is reported.
-	it("cancels the child first, records exactly once under nonCancellable, and ends CANCELLED when the parent itself is cancelled (S3)", async () => {
-		const snapshotId = "snap_cancel_parent";
-		const sync = syncMocks(snapshotId);
-		let markChildActivityStarted: () => void = () => {};
-		const childActivityStarted = new Promise<void>((resolve) => {
-			markChildActivityStarted = resolve;
-		});
-		const child = childMocks({
-			verifyAndScanInstructionFiles: vi.fn(async () => {
-				markChildActivityStarted();
-				await Context.current().cancelled;
-				return { ok: true, rejections: [] };
-			}),
-		});
-
-		const taskQueue = `instruction-sync-${seq++}`;
-		const workflowId = `${taskQueue}-wf`;
-		const workflowWorker = await Worker.create({
-			connection: env.nativeConnection,
-			taskQueue,
-			workflowBundle,
-			activities: child,
-		});
-		const activityWorker = await Worker.create({
-			connection: env.nativeConnection,
-			taskQueue: INSTRUCTION_SYNC_ACTIVITY_TASK_QUEUE,
-			activities: sync,
-		});
-
-		const outcome = await workflowWorker.runUntil(
-			activityWorker.runUntil(
-				(async () => {
-					const handle = await env.client.workflow.start(
-						WORKFLOW_NAME,
-						{ args: [INPUT], taskQueue, workflowId },
-					);
-					await childActivityStarted;
-					await handle.cancel();
-					return handle.result().then(
-						() => "resolved" as const,
-						(error: unknown) => {
-							expect(error).toBeInstanceOf(WorkflowFailedError);
-							return "rejected" as const;
-						},
-					);
-				})(),
-			),
-		);
-
-		expect(outcome).toBe("rejected");
-		expect(
-			(await env.client.workflow.getHandle(workflowId).describe()).status
-				.name,
-		).toBe("CANCELLED");
-		expect(await childStatus(snapshotId)).toBe("CANCELLED");
-		expect(sync.recordInstructionRepositorySyncRun).toHaveBeenCalledTimes(
-			1,
-		);
-	}, 60_000);
 
 	// S3: the child's own verdict was REJECTED (a secret hit or an integrity
 	// failure), not a workflow failure — the workflow still completes, and
@@ -965,4 +832,152 @@ describe("projectInstructionRepositorySyncWorkflow", () => {
 		);
 		expect(recorded(sync)).toMatchObject({ error: "CLONE_FAILED" });
 	}, 60_000);
+
+	// KEEP THESE TWO TESTS LAST. Each cancels a child whose activity waits
+	// for a cancellation it never hears (it does not heartbeat), so the child
+	// closes while that activity is still running and the activity outlives
+	// it. The time-skipping server does not skip time while an activity is
+	// outstanding, and in CI it did not skip again for the rest of the file:
+	// every retry backoff in a later test ran in real time (5 + 10 + 20 s for
+	// S1, 1 + 2 + 4 + 8 s for an exhausted begin), while the same kind of
+	// backoff earlier in the file was skipped. Placed last, they slow nothing.
+	//
+	// S3: parent workflow cancellation. The child workflow is started for
+	// real (no adoption involved) and cancellation is issued only once its
+	// own activity has genuinely started, synchronized through a promise
+	// resolved from inside the mock rather than a timing guess. Child
+	// workflows default to `WAIT_CANCELLATION_COMPLETED`, so the child is
+	// cancelled and closed before the parent's own cancellation is reported.
+	it("cancels the child first, records exactly once under nonCancellable, and ends CANCELLED when the parent itself is cancelled (S3)", async () => {
+		const snapshotId = "snap_cancel_parent";
+		const sync = syncMocks(snapshotId);
+		let markChildActivityStarted: () => void = () => {};
+		const childActivityStarted = new Promise<void>((resolve) => {
+			markChildActivityStarted = resolve;
+		});
+		const child = childMocks({
+			verifyAndScanInstructionFiles: vi.fn(async () => {
+				markChildActivityStarted();
+				await Context.current().cancelled;
+				return { ok: true, rejections: [] };
+			}),
+		});
+
+		const taskQueue = `instruction-sync-${seq++}`;
+		const workflowId = `${taskQueue}-wf`;
+		const workflowWorker = await Worker.create({
+			connection: env.nativeConnection,
+			taskQueue,
+			workflowBundle,
+			activities: child,
+		});
+		const activityWorker = await Worker.create({
+			connection: env.nativeConnection,
+			taskQueue: INSTRUCTION_SYNC_ACTIVITY_TASK_QUEUE,
+			activities: sync,
+		});
+
+		const outcome = await workflowWorker.runUntil(
+			activityWorker.runUntil(
+				(async () => {
+					const handle = await env.client.workflow.start(
+						WORKFLOW_NAME,
+						{ args: [INPUT], taskQueue, workflowId },
+					);
+					await childActivityStarted;
+					await handle.cancel();
+					return handle.result().then(
+						() => "resolved" as const,
+						(error: unknown) => {
+							expect(error).toBeInstanceOf(WorkflowFailedError);
+							return "rejected" as const;
+						},
+					);
+				})(),
+			),
+		);
+
+		expect(outcome).toBe("rejected");
+		expect(
+			(await env.client.workflow.getHandle(workflowId).describe()).status
+				.name,
+		).toBe("CANCELLED");
+		expect(await childStatus(snapshotId)).toBe("CANCELLED");
+		expect(sync.recordInstructionRepositorySyncRun).toHaveBeenCalledTimes(
+			1,
+		);
+	}, 60_000);
+
+	it("keeps the parent open while an adopted child is open, cancels it after exactly 18 pending polls, and records only once it has closed", async () => {
+		let polls = 0;
+		let statusAtRecord = "";
+		let parentWorkflowId = "";
+		const sync = syncMocks("snap_stuck", {
+			awaitInstructionSnapshotSettled: vi.fn(
+				async (): Promise<AwaitSnapshotSettledResult> => {
+					polls++;
+					if (polls <= 18) {
+						return { settled: false };
+					}
+					return {
+						settled:
+							(await childStatus("snap_stuck")) !== "RUNNING",
+					};
+				},
+			),
+			recordInstructionRepositorySyncRun: vi.fn(async () => {
+				statusAtRecord = await childStatus("snap_stuck");
+				return { recorded: true, status: "FAILED" };
+			}),
+		});
+		const child = childMocks({
+			// Holds the child open until it is cancelled or the worker stops.
+			verifyAndScanInstructionFiles: vi.fn(async () => {
+				await Context.current().cancelled;
+				return { ok: true, rejections: [] };
+			}),
+		});
+
+		await run(sync, child, async (taskQueue) => {
+			parentWorkflowId = `${taskQueue}-wf`;
+			await env.client.workflow.start(
+				"projectInstructionSnapshotWorkflow",
+				{
+					args: [childRef("snap_stuck")],
+					taskQueue,
+					workflowId: instructionSnapshotWorkflowId("snap_stuck"),
+				},
+			);
+		});
+
+		expect(statusAtRecord).not.toBe("RUNNING");
+		expect(await childStatus("snap_stuck")).toBe("CANCELLED");
+
+		// Pinned via the PARENT's own recorded history, not a real-time race
+		// against when the child happens to observe its cancellation (N4):
+		// the external-cancel command must be the event immediately after
+		// the 18th `awaitInstructionSnapshotSettled` schedule, and before
+		// the 19th — `SETTLE_POLLS_BEFORE_CANCEL`, not some other count a
+		// looser `toBeGreaterThan` assertion would equally have accepted.
+		const history = await env.client.workflow
+			.getHandle(parentWorkflowId)
+			.fetchHistory();
+		let scheduledCount = 0;
+		let scheduledCountAtCancel = -1;
+		for (const event of history.events ?? []) {
+			if (
+				event.activityTaskScheduledEventAttributes?.activityType
+					?.name === "awaitInstructionSnapshotSettled"
+			) {
+				scheduledCount++;
+			}
+			if (
+				event.requestCancelExternalWorkflowExecutionInitiatedEventAttributes
+			) {
+				scheduledCountAtCancel = scheduledCount;
+				break;
+			}
+		}
+		expect(scheduledCountAtCancel).toBe(18);
+	}, 120_000);
 });

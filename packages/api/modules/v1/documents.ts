@@ -44,6 +44,7 @@ import {
 	hasVisualSlots,
 	preserveVisualSlots,
 } from "@repo/utils/glossy/visual-slots";
+import { preserveVisualMarkers } from "@repo/utils/proposal-artifact/visual-identity";
 import type { Hono } from "hono";
 import { requireScope } from "../external-api/middleware/api-key-auth";
 import type { ExternalApiVariables } from "../external-api/types";
@@ -529,9 +530,9 @@ export function registerDocumentRoutes(
 			// Strip whatever slot tags it sent and splice back the ones the
 			// stored body holds, from the read authorized above (KTD17). A
 			// body with no slot on either side passes through as is.
-			updates.content = preserveVisualSlots(
+			updates.content = preserveVisualMarkers(
 				existing.content,
-				body.content,
+				preserveVisualSlots(existing.content, body.content),
 			);
 		}
 		if (body.status !== undefined) {

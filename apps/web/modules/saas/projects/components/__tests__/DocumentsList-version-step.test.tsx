@@ -8,6 +8,7 @@
  */
 
 import {
+	focusManager,
 	QueryClient,
 	QueryClientProvider,
 	type QueryKey,
@@ -185,8 +186,11 @@ function listOf(overrides: Record<string, unknown>) {
 
 let client: QueryClient;
 
-/** Renders the list on this answer, with the clock faked from the start. */
-async function renderOn(overrides: Record<string, unknown>) {
+/**
+ * Renders the list on this answer, with the clock faked from the start, and
+ * answers fresh for `staleTime`.
+ */
+async function renderOn(overrides: Record<string, unknown>, staleTime = 0) {
 	vi.useFakeTimers({
 		toFake: [
 			"setTimeout",
@@ -198,7 +202,7 @@ async function renderOn(overrides: Record<string, unknown>) {
 	});
 	documentsListMock.mockResolvedValue(listOf(overrides));
 	client = new QueryClient({
-		defaultOptions: { queries: { retry: false } },
+		defaultOptions: { queries: { retry: false, staleTime } },
 	});
 	render(
 		<QueryClientProvider client={client}>
@@ -231,6 +235,7 @@ describe("DocumentsList — the version step after a run", () => {
 	afterEach(() => {
 		vi.useRealTimers();
 		documentsListMock.mockReset();
+		focusManager.setFocused(undefined);
 	});
 
 	it("asks again after a run ends and shows the stepped version once it arrives", async () => {
@@ -250,6 +255,43 @@ describe("DocumentsList — the version step after a run", () => {
 
 		await wait(30_000);
 		expect(reads()).toBe(before + 2);
+		expect(screen.getByText("v3")).toBeInTheDocument();
+	});
+
+	it("asks again when its tab comes back to an answer older than half a minute, and shows the version a run stepped to meanwhile", async () => {
+		// The app's answers stay fresh for a minute (see `getQueryClient`).
+		await renderOn({ status: "COMPLETE", version: 2 }, 60_000);
+		expect(screen.getByText("v2")).toBeInTheDocument();
+
+		// The tab goes to the background; a run starts and ends there, its
+		// version step included, and the list hears none of it.
+		await act(async () => {
+			focusManager.setFocused(false);
+		});
+		documentsListMock.mockResolvedValue(
+			listOf({ status: "COMPLETE", version: 3 }),
+		);
+
+		// Back within the half minute: the answer is recent, nothing is asked.
+		await wait(10_000);
+		const before = reads();
+		await act(async () => {
+			focusManager.setFocused(true);
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		expect(reads()).toBe(before);
+		expect(screen.getByText("v2")).toBeInTheDocument();
+
+		// Away again, and back once the answer is older than that.
+		await act(async () => {
+			focusManager.setFocused(false);
+		});
+		await wait(30_000);
+		await act(async () => {
+			focusManager.setFocused(true);
+			await vi.advanceTimersByTimeAsync(0);
+		});
+		expect(reads()).toBe(before + 1);
 		expect(screen.getByText("v3")).toBeInTheDocument();
 	});
 });

@@ -1257,3 +1257,41 @@ describe("describeModelCallError", () => {
 		expect(JSON.stringify(described.details)).not.toContain("shh");
 	});
 });
+
+it.each(["databricks-openjev-qwen35-4b", "databricks-unrelated"])(
+	"keeps Databricks decision usage on its catalog model for response %s",
+	async (modelId) => {
+		logAiUsageAsync.mockReset();
+		const model = wrapEvaluationModelWithUsageLogging(
+			{
+				specificationVersion: "v4",
+				provider: "typesafe-ai",
+				modelId: "system.ai.openjev-qwen35-4b",
+				supportedQuestionTypes: ["boolean"],
+				doDecide: vi.fn(async () => ({
+					answers: {},
+					warnings: [],
+					usage: { inputTokens: 173, outputTokens: 0 },
+					response: { modelId },
+				})),
+			},
+			{
+				...CTX,
+				provider: "DATABRICKS",
+				providerModelId: "system.ai.openjev-qwen35-4b",
+				modelCanonicalName: "openjev-qwen35-4b",
+				taskType: "DECISION",
+			},
+		);
+		await model.doDecide({ state: [], questions: {} });
+		expect(logAiUsageAsync).toHaveBeenCalledTimes(1);
+		expect(logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+			provider: "DATABRICKS",
+			providerModelId: "system.ai.openjev-qwen35-4b",
+			modelCanonicalName: "openjev-qwen35-4b",
+			inputTokens: 173,
+			outputTokens: 0,
+			success: true,
+		});
+	},
+);

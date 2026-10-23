@@ -1,23 +1,33 @@
+import { randomUUID } from "node:crypto";
 import {
 	boundGlossyField,
 	GLOSSY_MAX_OPPORTUNITIES,
 	GLOSSY_STYLE_DIRECTION_MAX_CHARS,
 	type GlossyDetectableKind,
 } from "@repo/agent-prompts/glossy";
-import { db, getDocumentStyle, getRecipientBrand } from "@repo/database";
-import { parseOutline, scanFences } from "@repo/utils/glossy/outline";
 import {
-	deriveGlossyPalette,
-	fillVisualColors,
-	type GlossyPalette,
-} from "@repo/utils/glossy/visual-colors";
+	appendProposalVisualSpec,
+	db,
+	resolveProposalThemeTokens,
+} from "@repo/database";
+import { violationCode } from "@repo/utils/glossy/fact-guard";
+import { parseOutline, scanFences } from "@repo/utils/glossy/outline";
 import type { VisualSpec } from "@repo/utils/glossy/visual-spec";
-import { visualSpecToMermaid } from "@repo/utils/glossy/visual-templates";
+import {
+	PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
+	visualSpecToMermaid,
+} from "@repo/utils/glossy/visual-templates";
+import { mintVisualId } from "@repo/utils/proposal-artifact/visual-id-server";
+import {
+	VISUAL_ORIGIN,
+	visualSourceHash,
+} from "@repo/utils/proposal-artifact/visual-identity";
 import {
 	comparisonToMarkdownTable,
 	insertVisuals,
 	type SectionVisual,
 	toMermaidFence,
+	toMermaidFenceBody,
 } from "@repo/utils/proposal-artifact/visual-insert";
 import { CancelledFailure } from "@temporalio/common";
 import { detectGlossyOpportunities } from "../../lib/glossy/detect-opportunities";
@@ -45,18 +55,39 @@ import { activityLogger } from "../lib/activity-logger";
  * build activities (those are bound to `GlossyBuild` rows): one detection
  * over the Main sections, then one extraction per detected opportunity, each
  * fact-checked against its section by `extractGlossyVisual`. Timeline, flow
- * and org chart become ```` ```mermaid ```` fences with their colors filled
- * here; comparison becomes a markdown table; stat is not produced in this
- * release, so detection is told every section already shows one.
+ * and org chart become ```` ```mermaid ```` fences; comparison becomes a
+ * markdown table; stat is not produced in this release, so detection is
+ * told every section already shows one.
  *
- * Colors come from the document's Style and the project's recipient brand,
- * never the organization's brand kit; neither set gives the neutral palette.
+ * A fence holds no colour (Fizzy #2946): every node carries the `surface`
+ * role class, and the live page and the export paint the roles from the
+ * document's theme when they draw it, so a Style or Brand kit change
+ * recolours a diagram without touching Main. Labels are kept short and a
+ * long timeline runs top-down, so a diagram reads at page width.
  *
- * Fail-open: a failed extraction drops only its own visual, and any other
- * error, or a cancelled attempt, returns the content it was given, unchanged,
- * so the run saves Main without visuals. Each model call ticks a heartbeat; a
+ * Detection and extraction are told the audience: inline visuals are for
+ * executive readers, and a section whose heading starts with "Appendix" or
+ * "Anhang" is marked as one, where a more technical diagram fits.
+ *
+ * A member can turn the step off for one document in its Style; it then
+ * returns the content unchanged without a model call. No Style row means on.
+ *
+ * Each diagram gets a minted id on a `%% fabric-visual:` marker line, its
+ * fence's first, and its fact-checked spec is stored under that id and the
+ * fence body's source hash before the fence goes in (Fizzy #2946), so the
+ * editor can tell a generated diagram from one a person changed. A
+ * comparison table has no fence to carry a marker and stores no spec. The
+ * step runs once per generation, so a rerun mints new ids; storing the same
+ * spec twice is a no-op.
+ *
+ * Fail-open: a failed extraction, or a spec that cannot be stored, drops
+ * only its own visual, and any other error, or a cancelled attempt, returns
+ * the content it was given, unchanged, so the run saves Main without
+ * visuals. Each model call ticks a heartbeat; a
  * progress write after each step keeps the page's staleness clock moving.
- * The caller bounds the step to one attempt, so nothing here is retried.
+ * The caller bounds the step to one attempt; the only retry is one fresh
+ * extraction for a visual the fact check refused, and it goes through the
+ * same fact check, spec write and placement.
  */
 export async function generateProposalVisuals(
 	input: GenerateProposalVisualsInput,
@@ -78,25 +109,21 @@ export async function generateProposalVisuals(
 		}
 
 		await reportVisualProgress(input, VISUALS_PROGRESS_START);
-		const [style, recipientBrand] = await Promise.all([
-			getDocumentStyle({
-				documentId: input.documentId,
-				organizationId: input.organizationId,
-			}),
-			getRecipientBrand(input.projectId),
-		]);
-		const palette = proposalVisualPalette({
-			primaryColor: style?.primaryColor ?? null,
-			accentColors: style?.accentColors ?? null,
-			// The brand row is project-level; it is used only when it is in
-			// the same organization as the run.
-			recipientColors:
-				recipientBrand?.organizationId === input.organizationId
-					? recipientBrand.colors
-					: null,
+		const theme = await resolveProposalThemeTokens({
+			organizationId: input.organizationId,
+			projectId: input.projectId,
+			documentId: input.documentId,
 		});
+		// Off only when the document's Style says so: no Style row reads as on.
+		if (theme.autoVisuals === false) {
+			activityLogger.info("Proposal visuals skipped", {
+				...ids,
+				reason: "disabled",
+			});
+			return unchanged;
+		}
 		const styleDirection = boundGlossyField(
-			style?.styleDirection,
+			theme.styleDirection,
 			GLOSSY_STYLE_DIRECTION_MAX_CHARS,
 		);
 		const model: GlossyModelContext = {
@@ -112,11 +139,13 @@ export async function generateProposalVisuals(
 			detectGlossyOpportunities({
 				...model,
 				documentType: "PROPOSAL",
+				proposalArtifact: true,
 				sections: sections.map((section) => ({
 					sectionKey: section.key,
 					heading: section.heading,
 					markdown: section.markdown,
 					reservedKinds: NOT_PRODUCED_KINDS,
+					...(section.appendix ? { appendix: true } : {}),
 				})),
 				limit: GLOSSY_MAX_OPPORTUNITIES,
 			}),
@@ -142,9 +171,31 @@ export async function generateProposalVisuals(
 		const visuals: Array<SectionVisual | null> = new Array(
 			wanted.length,
 		).fill(null);
+		const kinds: Array<string | null> = new Array(wanted.length).fill(null);
 		let done = 0;
-		let dropped = 0;
+		const dropped: Partial<Record<VisualDropReason, number>> = {};
+		const drop = (reason: VisualDropReason) => {
+			dropped[reason] = (dropped[reason] ?? 0) + 1;
+		};
 		let providerMissing = false;
+		let retried = 0;
+		let recoveredByRetry = 0;
+		// Codes only (`presence:date`), never the fact or section text.
+		const logDrop = (
+			kind: string,
+			result: {
+				reason: string;
+				violations: Array<Parameters<typeof violationCode>[0]>;
+			},
+			attempt: number,
+		) =>
+			activityLogger.info("Proposal visual dropped", {
+				...ids,
+				kind,
+				reason: result.reason,
+				violations: result.violations.map(violationCode),
+				...(attempt > 1 ? { attempt } : {}),
+			});
 		await forEachWithConcurrency(
 			wanted,
 			EXTRACTION_CONCURRENCY,
@@ -156,12 +207,12 @@ export async function generateProposalVisuals(
 				if (!section) {
 					return;
 				}
-				let markdown: string | null = null;
-				try {
-					const result = await withHeartbeatTicker(() =>
+				const extract = (variantNonce?: string) =>
+					withHeartbeatTicker(() =>
 						extractGlossyVisual({
 							...model,
 							documentType: "PROPOSAL",
+							proposalArtifact: true,
 							section: {
 								heading: section.heading,
 								markdown: section.markdown,
@@ -169,16 +220,40 @@ export async function generateProposalVisuals(
 							kind: opportunity.kind,
 							styleDirection,
 							source: "detected",
+							...(variantNonce ? { variantNonce } : {}),
 						}),
 					);
+				let rendered: RenderedVisual | null = null;
+				let dropReason: VisualDropReason = "notProduced";
+				let attempt = 1;
+				try {
+					let result = await extract();
+					// A fact-check refusal is retried once with a fresh variant
+					// nonce: a second pass often leaves out the date, name or
+					// figure the section does not state. Cost: at most one
+					// extra extraction call per refused visual, and none once
+					// too little of the attempt is left to start one.
+					if (
+						result.status === "dropped" &&
+						result.reason === "factCheck" &&
+						!pastDeadline(deadline) &&
+						model.abortSignal?.aborted !== true
+					) {
+						logDrop(opportunity.kind, result, attempt);
+						attempt = 2;
+						retried += 1;
+						result = await extract(randomUUID());
+					}
 					if (result.status === "aiProviderNotConfigured") {
 						providerMissing = true;
 						return;
 					}
-					markdown =
-						result.status === "extracted"
-							? renderProposalVisual(result.spec, palette)
-							: null;
+					if (result.status === "extracted") {
+						rendered = renderProposalVisual(result.spec);
+					} else {
+						dropReason = result.reason;
+						logDrop(opportunity.kind, result, attempt);
+					}
 				} catch (error) {
 					// A cancelled attempt stops here: no new extraction
 					// starts, and the step fails open below.
@@ -187,11 +262,13 @@ export async function generateProposalVisuals(
 					}
 					// Anything else (a provider error, a spec that does not
 					// render) costs only this visual; the others still go in.
+					dropReason = "error";
 					activityLogger.warn(
 						"Proposal visual extraction failed; dropped",
 						{
 							...ids,
 							kind: opportunity.kind,
+							...(attempt > 1 ? { attempt } : {}),
 							errorName:
 								error instanceof Error
 									? error.name
@@ -199,14 +276,28 @@ export async function generateProposalVisuals(
 						},
 					);
 				}
-				if (markdown) {
+				if (rendered?.identity) {
+					const stored = await storeVisualSpec(
+						input,
+						rendered.identity,
+					);
+					if (!stored) {
+						rendered = null;
+						dropReason = "specWrite";
+					}
+				}
+				if (rendered) {
 					visuals[index] = {
 						headingPath: section.headingPath,
 						occurrenceIndex: section.occurrenceIndex,
-						markdown,
+						markdown: rendered.markdown,
 					};
+					kinds[index] = rendered.kind;
+					if (attempt > 1) {
+						recoveredByRetry += 1;
+					}
 				} else {
-					dropped += 1;
+					drop(dropReason);
 				}
 				done += 1;
 				await reportVisualProgress(
@@ -222,18 +313,24 @@ export async function generateProposalVisuals(
 			},
 		);
 
+		const ready = visuals.flatMap((visual, index) =>
+			visual ? [{ visual, kind: kinds[index] ?? "unknown" }] : [],
+		);
 		const placed = insertVisuals(
 			input.content,
-			visuals.filter(
-				(visual): visual is SectionVisual => visual !== null,
-			),
+			ready.map((entry) => entry.visual),
 		);
 		activityLogger.info("Proposal visuals generated", {
 			...ids,
 			sections: sections.length,
 			detected: wanted.length,
 			dropped,
+			retried,
+			recoveredByRetry,
 			inserted: placed.inserted,
+			insertedKinds: placed.insertedIndexes.map(
+				(index) => ready[index].kind,
+			),
 			skipped: placed.skipped,
 			unmatched: placed.unmatched,
 			providerMissing,
@@ -253,6 +350,20 @@ export async function generateProposalVisuals(
 		return unchanged;
 	}
 }
+
+/**
+ * Why a detected visual did not reach placement: the extraction's own drop
+ * reason, an extraction error, a kind this release does not render, or a
+ * spec that could not be stored.
+ */
+type VisualDropReason =
+	| "truncated"
+	| "invalidSpec"
+	| "kindMismatch"
+	| "factCheck"
+	| "error"
+	| "notProduced"
+	| "specWrite";
 
 /** Usage of every visuals model call is attributed here, not to Glossy. */
 const PROPOSAL_VISUALS_FEATURE_KEY = "proposal-visuals";
@@ -287,6 +398,22 @@ interface ProposalVisualSection {
 	heading: string;
 	/** The section's own body: up to the next heading of any level. */
 	markdown: string;
+	/** The heading, numbering aside, starts with "Appendix" or "Anhang". */
+	appendix: boolean;
+}
+
+/**
+ * A leading heading number, which is structure: "5 ", "5. ", "5.2 ", "1A) ",
+ * "B. ", "IV. " (a letter or numeral needs its `.` or `)`).
+ */
+const HEADING_NUMBERING =
+	/^(?:\d+(?:\.\d+)*[A-Za-z]?\\?[.)]?|[A-Za-z]\\?[.)]|[IVXLC]+\\?[.)])\s+/i;
+
+/** An appendix heading, in English or German, once its numbering is gone. */
+const APPENDIX_HEADING = /^(?:appendix|anhang)(?![\p{L}\p{N}])/iu;
+
+function isAppendixHeading(heading: string): boolean {
+	return APPENDIX_HEADING.test(heading.trim().replace(HEADING_NUMBERING, ""));
 }
 
 /**
@@ -327,49 +454,96 @@ function proposalVisualSections(content: string): ProposalVisualSection[] {
 			occurrenceIndex: heading.occurrenceIndex,
 			heading: heading.text,
 			markdown,
+			appendix: isAppendixHeading(heading.text),
 		});
 	});
 	return sections;
 }
 
-/**
- * The palette from the document's Style and the recipient brand only. A
- * Style primary color leads, then the Style accents, then the recipient's
- * colors; with none of them, the neutral palette.
- */
-function proposalVisualPalette(input: {
-	primaryColor: string | null;
-	accentColors: readonly string[] | null;
-	recipientColors: readonly string[] | null;
-}): GlossyPalette {
-	return deriveGlossyPalette({
-		overrides: {
-			primary: input.primaryColor,
-			accents: input.accentColors,
-		},
-		recipientColors: input.recipientColors,
-	});
+/** A diagram's identity: what its spec row is stored under. */
+interface VisualIdentity {
+	visualId: string;
+	sourceHash: string;
+	kind: string;
+	spec: VisualSpec;
+}
+
+interface RenderedVisual {
+	kind: string;
+	markdown: string;
+	/** Diagrams only; a comparison table carries no marker. */
+	identity?: VisualIdentity;
 }
 
 /**
- * One extracted spec as the markdown block it becomes in Main, colors
- * filled, or null for a kind this release does not produce.
+ * One extracted spec as the markdown block it becomes in Main, or null for
+ * a kind this release does not produce. A diagram's fence opens with a
+ * freshly minted marker id and assigns roles, never colours.
  */
-function renderProposalVisual(
-	spec: VisualSpec,
-	palette: GlossyPalette,
-): string | null {
+function renderProposalVisual(spec: VisualSpec): RenderedVisual | null {
 	switch (spec.kind) {
 		case "timeline":
 		case "flow":
-		case "org_chart":
-			return toMermaidFence(
-				fillVisualColors(visualSpecToMermaid(spec), palette),
+		case "org_chart": {
+			const visualId = mintVisualId();
+			const source = visualSpecToMermaid(
+				spec,
+				PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
 			);
+			const markdown = toMermaidFence(source, visualId);
+			const body = toMermaidFenceBody(source, visualId);
+			return {
+				kind: spec.kind,
+				markdown,
+				identity: {
+					visualId,
+					sourceHash: visualSourceHash(body),
+					kind: spec.kind,
+					spec,
+				},
+			};
+		}
 		case "comparison":
-			return comparisonToMarkdownTable(spec);
+			return {
+				kind: spec.kind,
+				markdown: comparisonToMarkdownTable(spec),
+			};
 		default:
 			return null;
+	}
+}
+
+/**
+ * Store a diagram's spec (origin STEP) before its fence goes into Main.
+ * Returns false when the write failed, so the caller drops that visual.
+ * A row whose Main save later fails is harmless: nothing references it.
+ */
+async function storeVisualSpec(
+	input: GenerateProposalVisualsInput,
+	identity: VisualIdentity,
+): Promise<boolean> {
+	try {
+		await appendProposalVisualSpec({
+			organizationId: input.organizationId,
+			projectId: input.projectId,
+			documentId: input.documentId,
+			visualId: identity.visualId,
+			sourceHash: identity.sourceHash,
+			kind: identity.kind,
+			origin: VISUAL_ORIGIN.STEP,
+			spec: identity.spec,
+			createdById: input.userId,
+		});
+		return true;
+	} catch (error) {
+		activityLogger.warn("Proposal visual spec write failed; dropped", {
+			projectId: input.projectId,
+			documentId: input.documentId,
+			liveRunId: input.liveRunId,
+			kind: identity.kind,
+			errorName: error instanceof Error ? error.name : typeof error,
+		});
+		return false;
 	}
 }
 

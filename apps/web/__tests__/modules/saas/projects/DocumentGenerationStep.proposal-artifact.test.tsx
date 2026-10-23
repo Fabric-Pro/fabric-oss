@@ -137,14 +137,19 @@ vi.mock("@saas/projects/components/PausedBatchNotice", () => ({
 vi.mock("@saas/prompts/components/PromptSelector", () => ({
 	PromptSelector: ({
 		documentType,
+		projectId,
 		onValueChange,
 		showBindAction,
 	}: {
 		documentType?: string;
+		projectId?: string | null;
 		onValueChange: (promptId: string | undefined) => void;
 		showBindAction?: boolean;
 	}) => (
-		<div data-testid={`prompt-selector-${documentType}`}>
+		<div
+			data-testid={`prompt-selector-${documentType}`}
+			data-project-id={projectId ?? ""}
+		>
 			<button
 				type="button"
 				onClick={() => onValueChange(`prompt-${documentType}`)}
@@ -255,6 +260,12 @@ describe("DocumentGenerationStep — Proposal prompt behind the Proposal artifac
 				"Add any specific requirements or focus areas...",
 			),
 		).toHaveLength(2);
+	});
+
+	it("scopes the prompt selector to the project, so it preselects the project's own default", async () => {
+		await renderStep(["PRD"]);
+
+		expect(selector("PRD")).toHaveAttribute("data-project-id", "project-1");
 	});
 
 	it("sends no prompt for a Proposal but keeps its instructions with the gate on", async () => {

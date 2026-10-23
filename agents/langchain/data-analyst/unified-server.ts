@@ -349,7 +349,7 @@ const { app, start } = createUnifiedServer(
 		maxAutonomyLevel: "task",
 	},
 	// Invoke function - wraps the LangGraph graph
-	async (input) => {
+	async (input, runtimeConfig) => {
 		const rawMessages = input.messages as Array<Record<string, unknown>>;
 		const messages = normalizeMessages(rawMessages);
 
@@ -375,6 +375,7 @@ const { app, start } = createUnifiedServer(
 				systemPrompt: SYSTEM_PROMPT,
 			},
 			{
+				signal: runtimeConfig?.signal,
 				recursionLimit: DEFAULT_RECURSION_LIMIT,
 				configurable: {
 					...buildAgentConfigurable(input),
@@ -473,6 +474,7 @@ const { app, start } = createUnifiedServer(
 				systemPrompt: SYSTEM_PROMPT,
 			},
 			{
+				signal: config?.signal,
 				streamMode: ["updates", "messages"] as const,
 				recursionLimit: DEFAULT_RECURSION_LIMIT,
 				configurable: config?.configurable,

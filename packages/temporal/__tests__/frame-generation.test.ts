@@ -10,15 +10,24 @@
  */
 
 import { getAIModelWithMetadata } from "@repo/ai";
+import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
+import { RetryError } from "ai";
+import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const stubs = vi.hoisted(() => ({
 	streamText: vi.fn(),
 	answers: [] as Array<string | Error>,
+	loggerError: vi.fn(),
 	prompts: [] as Array<{ instructions: string; user: string }>,
 }));
 
-vi.mock("ai", () => ({ streamText: stubs.streamText }));
+vi.mock("@repo/logs", () => ({ logger: { error: stubs.loggerError } }));
+
+vi.mock("ai", async (importOriginal) => ({
+	...(await importOriginal<typeof import("ai")>()),
+	streamText: stubs.streamText,
+}));
 vi.mock("@repo/ai", () => ({
 	getAIModelWithMetadata: vi.fn(async () => ({
 		model: { __mockModel: true },
@@ -66,6 +75,7 @@ function generate(overrides: Partial<FrameGenerationSpec> = {}) {
 
 beforeEach(() => {
 	stubs.streamText.mockReset();
+	stubs.loggerError.mockReset();
 	stubs.answers.length = 0;
 	stubs.prompts.length = 0;
 	stubs.streamText.mockImplementation(
@@ -304,4 +314,81 @@ describe("usage attribution", () => {
 		const [context] = resolverContexts();
 		expect(context).not.toHaveProperty("conversationId");
 	});
+});
+
+describe.each(["frame", "slideshow"] as const)("%s usage refusal", (kind) => {
+	it.each(["resolution", "stream", "wrapped"])(
+		"rejects a %s refusal without defaults",
+		async (phase) => {
+			const refusal = new AiUsageLimitExceededError({
+				message: "Example COMPLEX limit exhausted",
+				limitId: "example-limit",
+				dimension: "TOKENS" as never,
+				window: "MONTHLY" as never,
+				used: 100n,
+				max: 100n,
+				manageLimitsUrl: "https://example.com/limits",
+			});
+			if (phase === "resolution") {
+				vi.mocked(getAIModelWithMetadata).mockRejectedValueOnce(
+					refusal,
+				);
+			} else {
+				const error =
+					phase === "wrapped"
+						? new RetryError({
+								message: "Retry refused",
+								reason: "errorNotRetryable",
+								errors: [refusal],
+							})
+						: refusal;
+				const sdk = await vi.importActual<typeof import("ai")>("ai");
+				stubs.streamText.mockImplementationOnce((options) =>
+					sdk.streamText({
+						...options,
+						model: new MockLanguageModelV4({
+							doStream: async () => ({
+								stream: simulateReadableStream({
+									chunks: [
+										{ type: "stream-start", warnings: [] },
+										{
+											type: "text-start",
+											id: "example-text",
+										},
+										{
+											type: "text-delta",
+											id: "example-text",
+											delta: "partial",
+										},
+										{
+											type: "text-end",
+											id: "example-text",
+										},
+										{ type: "error", error },
+									],
+								}),
+							}),
+						}),
+					}),
+				);
+			}
+			await expect(generate({ kind })).rejects.toBe(refusal);
+		},
+	);
+});
+
+it("logs a non-limit SDK error part before returning fallback content", async () => {
+	const error = new Error("Example provider offline");
+	stubs.streamText.mockImplementationOnce((options) => ({
+		textStream: (async function* () {
+			options.onError?.({ error });
+			yield "";
+		})(),
+	}));
+	const [block] = await generate();
+	expect(block.content).toContain("<h1>Weekly report</h1>");
+	expect(stubs.loggerError).toHaveBeenCalledWith(
+		"Frame generation stream failed",
+		{ error },
+	);
 });

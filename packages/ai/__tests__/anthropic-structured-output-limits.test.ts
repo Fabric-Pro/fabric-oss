@@ -59,6 +59,41 @@ afterEach(() => {
 });
 
 describe("countAnthropicSchemaParameters", () => {
+	it.each([16, 17])(
+		"counts nullable type arrays and anyOf equally at %i unions",
+		async (unions) => {
+			const compact = schemaWith(24, unions);
+			const legacy = {
+				...compact,
+				properties: Object.fromEntries(
+					Object.entries(compact.properties).map(([key, schema]) => [
+						key,
+						Array.isArray(schema.type)
+							? { anyOf: schema.type.map((type) => ({ type })) }
+							: schema,
+					]),
+				),
+			};
+			expect(countAnthropicSchemaParameters(compact)).toEqual({
+				optionalParameters: 24,
+				unionParameters: unions,
+			});
+			expect(countAnthropicSchemaParameters(legacy)).toEqual(
+				countAnthropicSchemaParameters(compact),
+			);
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+			for (const schema of [compact, legacy]) {
+				const params = paramsFor(schema);
+				const out = await transform(params);
+				expect(out?.responseFormat !== undefined).toBe(unions <= 16);
+				if (unions <= 16) {
+					expect(out).toBe(params);
+				}
+			}
+			warn.mockRestore();
+		},
+	);
+
 	it("counts properties through nested objects, tuples, branches and definitions", () => {
 		const leaf = { properties: { value: { type: ["string", "null"] } } };
 		expect(

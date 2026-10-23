@@ -48,13 +48,13 @@ const FRAGMENT_HREF = /^#[A-Za-z0-9._~:-]{0,200}$/;
 
 /**
  * A reference to a stored object: the key prefix of a document's media, a
- * project's brand assets, a story's media or attachments, a workspace file
+ * project's or an organization's brand assets, a story's media or attachments, a workspace file
  * or an export, or a presigned URL's signature, which grants whoever holds
  * it the object. Exported files carry neither. Only prefixes no ordinary
  * prose or public URL path uses are listed (not `projects/` or `docs/`).
  */
 export const STORAGE_REFERENCE =
-	/(?:document-media|project-brand|story-media|story-attachments|workspace-files|proposal-exports)\/|X-Amz-(?:Signature|Credential)=/i;
+	/(?:document-media|project-brand|organization-brand|story-media|story-attachments|workspace-files|proposal-exports)\/|X-Amz-(?:Signature|Credential)=/i;
 
 /**
  * A run of URL characters that holds a storage reference. It stops at the

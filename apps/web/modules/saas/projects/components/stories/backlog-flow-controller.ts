@@ -59,32 +59,169 @@ export interface FlowServices {
 	poll: (workflowId: string) => Promise<Progress>;
 }
 
+async function withAbort<T>(
+	work: Promise<T>,
+	signal?: AbortSignal,
+): Promise<T> {
+	if (!signal) {
+		return work;
+	}
+	let onAbort = () => {};
+	const aborted = new Promise<never>((_resolve, reject) => {
+		onAbort = () => reject(signal.reason);
+		signal.addEventListener("abort", onAbort, { once: true });
+		if (signal.aborted) {
+			onAbort();
+		}
+	});
+	try {
+		return await Promise.race([work, aborted]);
+	} finally {
+		signal.removeEventListener("abort", onAbort);
+	}
+}
+
 /** Bound a single remote call, including calls whose transport does not settle. */
 export async function beforeDeadline<T>(
 	work: Promise<T>,
 	deadline: number,
 	message: string,
+	signal?: AbortSignal,
 ): Promise<T> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
-		return await Promise.race([
-			work,
-			new Promise<never>((_resolve, reject) => {
-				timer = setTimeout(
-					() =>
-						reject(
-							Object.assign(new Error(message), {
-								name: "TimeoutError",
-							}),
-						),
-					Math.max(0, deadline - Date.now()),
-				);
-			}),
-		]);
+		return await withAbort(
+			Promise.race([
+				work,
+				new Promise<never>((_resolve, reject) => {
+					timer = setTimeout(
+						() =>
+							reject(
+								Object.assign(new Error(message), {
+									name: "TimeoutError",
+								}),
+							),
+						Math.max(0, deadline - Date.now()),
+					);
+				}),
+			]),
+			signal,
+		);
 	} finally {
 		if (timer !== undefined) {
 			clearTimeout(timer);
 		}
+	}
+}
+
+const WORKFLOW_POLL_INTERVAL_MS = 2000;
+const WORKFLOW_SLOW_POLL_INTERVAL_MS = 10000;
+const WORKFLOW_SLOW_AFTER_MS = 5 * 60 * 1000;
+const WORKFLOW_READ_TIMEOUT_MS = 30000;
+const WORKFLOW_READ_FAILURE_WINDOW_MS = 2 * 60 * 1000;
+const WORKFLOW_POLL_CEILING_MS = 45 * 60 * 1000;
+
+export function workflowPollMessage(
+	message: string,
+	slow: boolean,
+	operation: "apply" | "analysis",
+) {
+	if (!slow) {
+		return message;
+	}
+	const hint =
+		operation === "apply"
+			? "Still applying — this batch is taking longer than usual. It keeps running if you leave this page."
+			: "Still analyzing. This is taking longer than usual.";
+	return message === "Applying..." || message === "Analyzing..."
+		? hint
+		: `${message} ${hint}`;
+}
+
+/** Transport failures end observation only after a sustained outage. */
+export async function* pollWorkflowProgress<T>(
+	read: () => Promise<T>,
+	onWaiting: (slow: boolean) => void,
+	isActive: () => boolean,
+	immediate = false,
+	signal?: AbortSignal,
+): AsyncGenerator<{ progress: T; slow: boolean }> {
+	if (signal?.aborted) {
+		return;
+	}
+	let sleepTimer: ReturnType<typeof setTimeout> | undefined;
+	const began = Date.now();
+	const ceiling = began + WORKFLOW_POLL_CEILING_MS;
+	let failedSince: number | undefined;
+	let pollImmediately = immediate;
+	const slowTimer = setTimeout(() => {
+		if (isActive()) {
+			onWaiting(true);
+		}
+	}, WORKFLOW_SLOW_AFTER_MS);
+	try {
+		while (isActive()) {
+			const deadline = Math.min(
+				ceiling,
+				failedSince === undefined
+					? ceiling
+					: failedSince + WORKFLOW_READ_FAILURE_WINDOW_MS,
+			);
+			if (!pollImmediately) {
+				const interval =
+					Date.now() - began >= WORKFLOW_SLOW_AFTER_MS
+						? WORKFLOW_SLOW_POLL_INTERVAL_MS
+						: WORKFLOW_POLL_INTERVAL_MS;
+				await withAbort(
+					new Promise((resolve) => {
+						sleepTimer = setTimeout(
+							resolve,
+							Math.max(
+								0,
+								Math.min(interval, deadline - Date.now()),
+							),
+						);
+					}),
+					signal,
+				);
+				clearTimeout(sleepTimer);
+			}
+			pollImmediately = false;
+			if (!isActive() || Date.now() >= deadline) {
+				return;
+			}
+			const readBegan = Date.now();
+			let progress: T;
+			try {
+				progress = await beforeDeadline(
+					read(),
+					Math.min(deadline, readBegan + WORKFLOW_READ_TIMEOUT_MS),
+					"Could not read workflow progress",
+					signal,
+				);
+			} catch {
+				if (signal?.aborted) {
+					return;
+				}
+				failedSince ??= readBegan;
+				continue;
+			}
+			if (!isActive()) {
+				return;
+			}
+			failedSince = undefined;
+			yield {
+				progress,
+				slow: Date.now() - began >= WORKFLOW_SLOW_AFTER_MS,
+			};
+		}
+	} catch (error) {
+		if (!signal?.aborted) {
+			throw error;
+		}
+	} finally {
+		clearTimeout(slowTimer);
+		clearTimeout(sleepTimer);
 	}
 }
 
@@ -176,6 +313,50 @@ export class BacklogFlowController {
 
 	canApply(flowId: string) {
 		return this.owns(flowId, "applying");
+	}
+
+	canObserveApply(flowId: string) {
+		const flow = this.get(flowId);
+		return (
+			this.activeId === flowId &&
+			flow?.phase === "applying" &&
+			!flow.apply?.result
+		);
+	}
+
+	finishCancelledApply(flowId: string) {
+		const flow = this.get(flowId);
+		// The cancel response can arrive after termination made a progress read fail.
+		const failedBeforeCancel =
+			this.activeId === flowId &&
+			(flow?.phase === "applying" || flow?.phase === "done") &&
+			flow?.apply?.result?.status === "failed";
+		if (
+			!flow?.apply ||
+			(!this.canObserveApply(flowId) && !failedBeforeCancel)
+		) {
+			return false;
+		}
+		this.update(flowId, {
+			phase: "done",
+			outcome: "approved",
+			apply: {
+				...flow.apply,
+				progress: "",
+				result: {
+					status: "unconfirmed",
+					createdCount: 0,
+					updatedCount: 0,
+					failedCount: 0,
+					batchTotal: flow.apply.approvedCount,
+					syncedToPM: false,
+					items: [],
+					message:
+						"Apply cancelled. You can retry it from Review proposals.",
+				},
+			},
+		});
+		return true;
 	}
 
 	stop() {
@@ -502,51 +683,62 @@ export class BacklogFlowController {
 		services: FlowServices,
 		immediate = false,
 	) {
-		const began = Date.now();
-		let pollImmediately = immediate;
-		while (Date.now() - began < 300000) {
-			if (!pollImmediately) {
-				await new Promise((resolve) => setTimeout(resolve, 2000));
-			}
-			pollImmediately = false;
-			if (!this.owns(flowId, "analyzing")) {
-				return;
-			}
-			const progress = await this.pollBeforeDeadline(
-				services,
-				workflowId,
-				began + 300000,
-			);
-			if (!this.owns(flowId, "analyzing")) {
-				return;
-			}
+		let message = "Analyzing...";
+		for await (const { progress, slow } of pollWorkflowProgress(
+			() => services.poll(workflowId),
+			(slow) =>
+				this.update(flowId, {
+					progress: workflowPollMessage(message, slow, "analysis"),
+				}),
+			() => this.owns(flowId, "analyzing"),
+			immediate,
+		)) {
+			message = progress.progress?.message ?? "Analyzing...";
 			this.update(flowId, {
-				progress: progress.progress?.message ?? "Analyzing...",
+				progress: workflowPollMessage(message, slow, "analysis"),
 				logContextNote: progress.progress?.logContextNote,
 				pmContextNote: progress.progress?.pmContextNote,
 			});
 			if (progress.progress?.status === "failed") {
-				throw new Error(progress.progress.message ?? "Analysis failed");
+				this.update(flowId, {
+					phase: "failed",
+					failureStatus: "failed",
+					startRetryable: false,
+					progress: progress.progress.message ?? "Analysis failed",
+				});
+				return;
 			}
-			if (progress.progress?.status === "complete" && progress.proposal) {
-				const hasChanges = (progress.proposal.changes?.length ?? 0) > 0;
+			if (progress.progress?.status === "cancelled") {
+				this.update(flowId, {
+					phase: "done",
+					outcome: "cancelled",
+					progress: "Analysis cancelled.",
+				});
+				return;
+			}
+			if (progress.progress?.status === "complete") {
+				const hasChanges =
+					(progress.proposal?.changes?.length ?? 0) > 0;
 				this.update(flowId, {
 					phase: hasChanges ? "reviewing" : "no-changes",
-					proposal: progress.proposal,
+					proposal: progress.proposal ?? undefined,
 					decisionPrecheckPending:
-						hasChanges && !progress.proposal.decisionConflicts,
+						hasChanges && !progress.proposal?.decisionConflicts,
 				});
-				if (hasChanges && !progress.proposal.decisionConflicts) {
+				if (hasChanges && !progress.proposal?.decisionConflicts) {
 					void this.pollDecision(flowId, workflowId, services);
 				}
 				return;
 			}
 		}
+		if (!this.owns(flowId, "analyzing")) {
+			return;
+		}
 		this.update(flowId, {
 			phase: "failed",
 			failureStatus: "timeout",
 			progress:
-				"Analysis timed out after 5 minutes. Its workflow may still be running.",
+				"Lost track of this analysis. Its workflow may still be running.",
 		});
 	}
 
@@ -558,7 +750,7 @@ export class BacklogFlowController {
 		return beforeDeadline(
 			services.poll(workflowId),
 			deadline,
-			"Analysis timed out after 5 minutes. Its workflow may still be running.",
+			"Could not read the optional decision precheck.",
 		);
 	}
 

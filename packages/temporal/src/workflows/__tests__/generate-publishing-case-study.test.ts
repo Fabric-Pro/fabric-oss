@@ -317,6 +317,7 @@ describe("generatePublishingCaseStudyWorkflow", () => {
 				// A tenant with no configured provider gets the same refusal on
 				// every attempt — see `ai-non-retryable-errors.ts`.
 				"AIProviderNotConfiguredError",
+				"UnsupportedEmbeddingModelError",
 				"AiUsageLimitExceededError",
 				"SubscriptionPlanExhaustedError",
 				"ChatGptPlanAuthError",

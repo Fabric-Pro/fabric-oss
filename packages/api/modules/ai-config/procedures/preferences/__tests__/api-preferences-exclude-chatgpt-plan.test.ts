@@ -405,3 +405,45 @@ it("returns the saved Decision choice with a keyed gateway and no organization d
 		},
 	]);
 });
+
+it.each([false, true])(
+	"returns a saved OpenJev choice with Databricks credentials (OAuth=%s)",
+	async (oauth) => {
+		mocks.getOrganizationDefaultProvider.mockResolvedValue(null);
+		mocks.orgProviderFindMany.mockResolvedValue([
+			{
+				provider: "DATABRICKS",
+				enabled: true,
+				purpose: "ALL",
+				encryptedApiKey: oauth ? null : "encrypted:example-key",
+				clientId: oauth ? "example-client" : null,
+				encryptedClientSecret: oauth
+					? "encrypted:example-secret"
+					: null,
+			},
+		]);
+		const choice = {
+			id: "example-preference",
+			provider: "DATABRICKS",
+			taskType: "DECISION",
+			customParameters: null,
+			model: {
+				...taskDefault("DECISION", "DATABRICKS").model,
+				canonicalName: "openjev-qwen35-4b",
+				displayName: "OpenJev (Qwen3.5 4B)",
+			},
+		};
+		mocks.getOrgModelPreferences.mockResolvedValue([choice]);
+		const result = await (
+			getOrgModelPreferencesProcedure as unknown as Handler<unknown>
+		)._handler({ input: { organizationId: "example-org" }, context });
+		expect(result).toMatchObject([
+			{
+				provider: "DATABRICKS",
+				taskType: "DECISION",
+				model: { canonicalName: "openjev-qwen35-4b" },
+			},
+		]);
+		expect(mocks.userProviderFindMany).not.toHaveBeenCalled();
+	},
+);

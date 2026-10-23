@@ -108,6 +108,9 @@ export async function listAvailableModels(input: {
 				...(input.taskType && {
 					suitableForTasks: { has: input.taskType },
 				}),
+				...(input.taskType === "DECISION" && {
+					capabilities: { has: "EVALUATION" as const },
+				}),
 				// Evaluation models must only be listed on their typed decision
 				// surface. The settings UI obtains them in a separate DECISION query.
 				...(!input.taskType && {

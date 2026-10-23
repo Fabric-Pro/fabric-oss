@@ -36,6 +36,8 @@ import { DIRECT_CHAT_MEMORY_PROMPT_AGENT_KEY } from "./direct-chat-memory-prompt
 import { documentTypeShortLabel } from "./document-type-catalog";
 import { ORCHESTRATOR_MEMORY_PROMPT_AGENT_KEY } from "./orchestrator-memory-prompt";
 import { PAGE_ASK_PROMPT_AGENT_KEY } from "./page-ask-prompt";
+import { PARLUME_REALTIME_VOICE_PROMPT_AGENT_KEY } from "./parlume-realtime-voice-prompt";
+import { PARLUME_SUGGESTION_PROMPT_AGENT_KEY } from "./parlume-suggestion-prompt";
 import { PUBLISHING_BLOG_POST_AGENT_KEY } from "./publishing-blog-post-prompt";
 import { PUBLISHING_CASE_STUDY_AGENT_KEY } from "./publishing-case-study-prompt";
 import { PUBLISHING_LINKEDIN_POST_AGENT_KEY } from "./publishing-linkedin-post-prompt";
@@ -46,6 +48,7 @@ import { PUBLISHING_SHORT_POST_AGENT_KEY } from "./publishing-short-post-prompt"
 import { PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY } from "./publishing-stakeholder-email-prompt";
 import { PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY } from "./publishing-suggestion-prompt";
 import { PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY } from "./publishing-webinar-script-prompt";
+import { RECURRING_ERROR_BUG_PROMPT_AGENT_KEY } from "./recurring-error-bug-prompt";
 
 export type PromptStoryKind = "FEATURE" | "BUG" | null;
 
@@ -483,6 +486,16 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 		actions: perKind("DRAFT", "BUG"),
 	},
 	{
+		// The bug report the recurring-error scan files for an error group or a
+		// cluster of open bug reports. Editing it changes the title style and
+		// the report layout; the evidence is fenced as untrusted data
+		// code-side, so it cannot be edited to follow what a log line says.
+		key: RECURRING_ERROR_BUG_PROMPT_AGENT_KEY,
+		label: "Recurring error — bug report",
+		featureType: "QUALITY",
+		actions: nonStage("GENERAL"),
+	},
+	{
 		// The pre-meeting agenda prompt. Editing it changes the persona, the
 		// section layout and every tuning rule; it cannot remove the grounding
 		// and carried-forward classification clauses, appended code-side.
@@ -497,6 +510,26 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 		// it changes how readily Fabric enriches rather than creates.
 		key: "action_item_routing_judge",
 		label: "Action Item Routing Judge",
+		featureType: "MEETINGS",
+		actions: nonStage("GENERAL"),
+	},
+	{
+		// Whether Parlume offers an unprompted suggestion in a live meeting's
+		// chat, and how it words one. Editing it changes how often and on what
+		// Parlume speaks up; the meeting material is fenced as untrusted data
+		// code-side, and how often a pass runs is decided by the bridge.
+		key: PARLUME_SUGGESTION_PROMPT_AGENT_KEY,
+		label: "Parlume Meeting Suggestions",
+		featureType: "MEETINGS",
+		actions: nonStage("GENERAL"),
+	},
+	{
+		// How Parlume's realtime voice behaves in a live meeting: how it
+		// answers, when it hands a request to Fabric, and what it treats as
+		// data. When it speaks is decided by the bridge, and the project, mode
+		// and participants are appended code-side as fenced meeting data.
+		key: PARLUME_REALTIME_VOICE_PROMPT_AGENT_KEY,
+		label: "Parlume Realtime Voice",
 		featureType: "MEETINGS",
 		actions: nonStage("GENERAL"),
 	},

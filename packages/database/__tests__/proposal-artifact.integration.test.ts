@@ -851,6 +851,31 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					updatedById: USERS.guest,
 				});
 			});
+
+			it("keeps a stored automatic-diagrams switch through a save that leaves it out", async () => {
+				const documentId = await freshDocument(PA, {
+					status: "COMPLETE",
+				});
+				const base = {
+					documentId,
+					projectId: PA,
+					styleDirection: null,
+					primaryColor: null,
+					accentColors: [],
+					updatedById: USERS.owner,
+				};
+				expect((await upsertDocumentStyle(base)).autoVisuals).toBe(
+					true,
+				);
+				await upsertDocumentStyle({ ...base, autoVisuals: false });
+				await upsertDocumentStyle({ ...base, styleDirection: "Calm" });
+				expect(
+					await getDocumentStyle({
+						documentId,
+						organizationId: ORG_A,
+					}),
+				).toMatchObject({ styleDirection: "Calm", autoVisuals: false });
+			});
 		});
 
 		/** A COMPLETE generation run over the document's saved body. */

@@ -1,3 +1,4 @@
+import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
 /**
  * Tests for `detectAndFlagDuplicateStories` — the automatic, one-vs-rest
  * duplicate check shared by the AI backlog-update activity and the channel
@@ -735,5 +736,39 @@ describe("detectAndFlagDuplicateStories", () => {
 				targetStoryIds: ["new"],
 			}),
 		).rejects.toMatchObject({ name: "AIProviderNotConfiguredError" });
+	});
+});
+
+describe("embedding configuration refusals", () => {
+	it("preserves the embedding-step verdict", async () => {
+		arrange(
+			[
+				{
+					id: "a",
+					identifier: "F-1",
+					title: "Example one",
+					description: null,
+				},
+				{
+					id: "b",
+					identifier: "F-2",
+					title: "Example two",
+					description: null,
+				},
+			],
+			() => [1, 0],
+		);
+		const error = new UnsupportedEmbeddingModelError(
+			"databricks-gte-large-en",
+		);
+		mockGenerateEmbeddings.mockRejectedValue(error);
+		await expect(
+			detectAndFlagDuplicateStories({
+				projectId: "example-project",
+				userId: "example-user",
+				organizationId: "example-org",
+				targetStoryIds: ["b"],
+			}),
+		).rejects.toBe(error);
 	});
 });

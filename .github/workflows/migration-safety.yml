@@ -206,11 +206,10 @@ jobs:
         with:
           node-version: '22'
           check-latest: true
-          cache: 'pnpm'
 
       - name: Install dependencies
         if: steps.scope.outputs.relevant == 'true'
-        run: pnpm install --frozen-lockfile
+        uses: ./.github/actions/pnpm-install
 
       # The linter reads migration SQL off disk and needs no database.
       - name: Lint migrations

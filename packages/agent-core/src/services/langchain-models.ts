@@ -428,6 +428,8 @@ export interface RuntimeProviderConfig {
  * Model creation options
  */
 export interface ModelOptions {
+	/** Conversation or run key for ChatGPT plan prompt caching. */
+	sessionKey?: string;
 	/** Temperature for generation (default: 0.7) */
 	temperature?: number;
 	/** Maximum tokens to generate (default: 4000) */
@@ -1359,7 +1361,7 @@ function createUninstrumentedProviderModel(
 	const { provider, apiKey, model, baseUrl } = config;
 
 	if (provider === "OPENAI_CHATGPT_PLAN") {
-		return createChatGptPlanChatModel(config);
+		return createChatGptPlanChatModel(config, options.sessionKey);
 	}
 
 	// Calculate temperature with retry reduction
@@ -1923,6 +1925,7 @@ function createUninstrumentedProviderModel(
  */
 function createChatGptPlanChatModel(
 	config: RuntimeProviderConfig,
+	sessionKey?: string,
 ): BaseChatModel {
 	const { model } = config;
 	let accessToken = config.apiKey;
@@ -1936,6 +1939,7 @@ function createChatGptPlanChatModel(
 		configuration: {
 			baseURL: `${CHATGPT_PLAN_ORIGIN}/v1`,
 			fetch: createChatGptPlanFetch({
+				sessionKey,
 				getAccessToken: async () => accessToken,
 				onExhausted: async ({ resetAt }) => {
 					// Every process stops sending this plan work until it
@@ -2042,6 +2046,13 @@ export function getAgentModelFromConfig(
 	config?: { configurable?: Record<string, unknown> } | null,
 	options: ModelOptions = {},
 ): BaseChatModel {
+	const threadId = config?.configurable?.thread_id;
+	const modelOptions = {
+		...options,
+		sessionKey:
+			options.sessionKey?.trim() ||
+			(typeof threadId === "string" ? threadId : undefined),
+	};
 	// Try to extract provider config from runtime
 	const providerConfig = extractProviderConfig(config);
 
@@ -2049,7 +2060,7 @@ export function getAgentModelFromConfig(
 		console.log(
 			`[LangChainModels] Using provider config: ${providerConfig.provider || "gateway"} / ${providerConfig.model}`,
 		);
-		return createProviderModel(providerConfig, options);
+		return createProviderModel(providerConfig, modelOptions);
 	}
 
 	// No provider config found - throw an error with helpful message
@@ -2078,6 +2089,13 @@ export async function getAgentModelAsync(
 	config?: { configurable?: Record<string, unknown> } | null,
 	options: ModelOptions = {},
 ): Promise<BaseChatModel> {
+	const threadId = config?.configurable?.thread_id;
+	const modelOptions = {
+		...options,
+		sessionKey:
+			options.sessionKey?.trim() ||
+			(typeof threadId === "string" ? threadId : undefined),
+	};
 	const configurable = config?.configurable;
 	const tenantUserId = configurable?.tenant_user_id as string | undefined;
 	const tenantOrgId = configurable?.tenant_organization_id as
@@ -2170,7 +2188,7 @@ export async function getAgentModelAsync(
 		console.log(
 			`[LangChainModels] Using provider config: ${providerConfig.provider || "gateway"} / ${providerConfig.model}`,
 		);
-		return createProviderModel(providerConfig, options);
+		return createProviderModel(providerConfig, modelOptions);
 	}
 
 	// Fallback: Try to fetch config from API using tenant context
@@ -2187,7 +2205,7 @@ export async function getAgentModelAsync(
 			console.log(
 				`[LangChainModels] Using API-fetched config: ${apiFetchedConfig.provider || "gateway"} / ${apiFetchedConfig.model}`,
 			);
-			return createProviderModel(apiFetchedConfig, options);
+			return createProviderModel(apiFetchedConfig, modelOptions);
 		}
 	}
 

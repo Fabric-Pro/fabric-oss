@@ -27,6 +27,7 @@ import {
 import { useState } from "react";
 import { ProjectEnvironmentsSettings } from "./ProjectEnvironmentsSettings";
 import { ProjectQaSettingsForm } from "./ProjectQaSettingsForm";
+import { ProjectRecurringErrorSettings } from "./ProjectRecurringErrorSettings";
 import { ProjectTestCaseGenerationSettings } from "./ProjectTestCaseGenerationSettings";
 import { QaCiSetupSection } from "./QaCiSetupSection";
 import { QaPipelineSourcesSettings } from "./QaPipelineSourcesSettings";
@@ -66,6 +67,14 @@ type Props = {
 		generateManualTestCases?: boolean | null;
 		applyTddApproach?: boolean | null;
 		autoCreateBugsFromFailures?: boolean | null;
+		autoDetectRecurringErrors?: boolean | null;
+		recurringErrorThreshold?: number | null;
+		recurringErrorWindowHours?: number | null;
+		recurringErrorSimilarityThreshold?: number | null;
+		recurringErrorLastScanAt?: Date | string | null;
+		recurringErrorLastScanError?: string | null;
+		logSourceProvider?: string | null;
+		logSourceConfig?: unknown;
 	};
 	canEdit: boolean;
 };
@@ -219,10 +228,16 @@ export function TestingSettingsPanel({ project, canEdit }: Props) {
 				</div>
 
 				{section === "generation" && (
-					<ProjectTestCaseGenerationSettings
-						project={project}
-						canEdit={canEdit}
-					/>
+					<>
+						<ProjectTestCaseGenerationSettings
+							project={project}
+							canEdit={canEdit}
+						/>
+						<ProjectRecurringErrorSettings
+							project={project}
+							canEdit={canEdit}
+						/>
+					</>
 				)}
 
 				{section === "environments" && (

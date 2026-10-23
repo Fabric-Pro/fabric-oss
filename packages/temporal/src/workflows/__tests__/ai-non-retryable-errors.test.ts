@@ -242,6 +242,9 @@ describe("every workflow proxy that reaches a model refuses to retry it", () => 
 			// — the constant is spread alongside them, never in place of them.
 			for (const bag of declaring) {
 				expect(retryTypes(bag)).toContain("AiUsageLimitExceededError");
+				expect(retryTypes(bag)).toContain(
+					"UnsupportedEmbeddingModelError",
+				);
 			}
 		});
 	}
@@ -285,4 +288,15 @@ describe("a spent ChatGPT plan window is non-retryable (Fizzy #2939)", () => {
 		expect(failure.type).toBe("PlanSourceRotatedError");
 		expect(AI_NON_RETRYABLE_ERROR_TYPES).not.toContain(failure.type);
 	});
+});
+
+it("records embedding width refusal under a non-retryable Temporal type", async () => {
+	const { UnsupportedEmbeddingModelError } = await import(
+		"@repo/ai/lib/embedding-dimensions"
+	);
+	const { ensureApplicationFailure } = await import("@temporalio/common");
+	const failure = ensureApplicationFailure(
+		new UnsupportedEmbeddingModelError("databricks-gte-large-en"),
+	);
+	expect(AI_NON_RETRYABLE_ERROR_TYPES).toContain(failure.type);
 });

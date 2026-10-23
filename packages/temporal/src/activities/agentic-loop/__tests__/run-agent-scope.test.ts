@@ -92,6 +92,8 @@ vi.mock("../../shared/agent-tool-runtime", () => ({
 	agentToolAbortSignal: () => undefined,
 }));
 
+import { generateText } from "ai";
+import { loadMcpToolsForAgent } from "../../agent-execution-core";
 import { getAvailableAgents, runAgent } from "../run-agent";
 
 const run = (agentId: string, organizationId?: string) =>
@@ -152,5 +154,43 @@ describe("getAvailableAgents", () => {
 			"own-agent",
 			"system-agent",
 		]);
+	});
+});
+
+it("sends repeat notices to the model without replacing sub-agent tool results", async () => {
+	vi.mocked(loadMcpToolsForAgent).mockResolvedValue({
+		tools: { search: { execute: async () => "example result" } },
+		toolToConfig: {},
+	} as Awaited<ReturnType<typeof loadMcpToolsForAgent>>);
+	const outputs: unknown[] = [];
+	vi.mocked(generateText).mockImplementationOnce(async ({ tools }: any) => {
+		for (const toolCallId of ["first", "second"]) {
+			const input = { query: "example" };
+			const output = await tools.search.execute(input, { toolCallId });
+			expect(output).toBe("example result");
+			outputs.push(
+				tools.search.toModelOutput?.({ input, output, toolCallId }) ?? {
+					type: "text",
+					value: output,
+				},
+			);
+		}
+		return { text: "done", usage: {} } as any;
+	});
+	const result = await runAgent({
+		agentId: "own-agent",
+		goal: "example",
+		mode: "inline",
+		currentDepth: 0,
+		callingAgentId: "parent-example",
+		userId: "user-example",
+		organizationId: "org-example",
+		mcpConfigIds: ["example-config"],
+	});
+	expect(result.success).toBe(true);
+	expect(outputs[0]).toEqual({ type: "text", value: "example result" });
+	expect(outputs[1]).toEqual({
+		type: "text",
+		value: expect.stringContaining("same result"),
 	});
 });

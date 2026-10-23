@@ -674,6 +674,24 @@ describe("Parlume session procedures", () => {
 		);
 	});
 
+	it("records an invitation that turned chat suggestions off", async () => {
+		await handlers.start({
+			input: {
+				projectId: "project-1",
+				agentKind: "FABRIC_AGENT",
+				meetingUrl: "https://teams.microsoft.com/l/meetup-join/example",
+				suggestionsEnabled: false,
+			},
+			context,
+		});
+
+		expect(mocks.sessionCreate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({ suggestionsEnabled: false }),
+			}),
+		);
+	});
+
 	it("rejects a mixed built-in and custom selection before creating a session", async () => {
 		await expect(
 			handlers.start({

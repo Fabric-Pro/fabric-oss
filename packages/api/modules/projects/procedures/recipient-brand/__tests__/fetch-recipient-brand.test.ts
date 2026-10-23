@@ -79,6 +79,8 @@ vi.mock("@repo/database", async () => {
 		}),
 		hasProjectAccess: async () => true,
 		canEditProject: mocks.canEditProject,
+		isOrganizationMember: async (userId: string) =>
+			world.orgMembers.has(userId),
 		confirmRecipientBrand: mocks.confirmRecipientBrand,
 	};
 });

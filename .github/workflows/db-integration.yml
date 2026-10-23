@@ -227,10 +227,9 @@ jobs:
           # testing on 20 exercises a runtime nobody runs.
           node-version: '22'
           check-latest: true
-          cache: 'pnpm'
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        uses: ./.github/actions/pnpm-install
 
       - name: Verify Prisma generation patches
         run: node --test packages/database/scripts/__tests__/prisma-generation-queue.test.mjs packages/database/scripts/__tests__/prisma-zod-dmmf.test.mjs
@@ -1709,10 +1708,9 @@ jobs:
           # exercise a runtime nobody runs.
           node-version: '22'
           check-latest: true
-          cache: 'pnpm'
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        uses: ./.github/actions/pnpm-install
 
       # Same compiled-client cache as db-tests and the unit-tests push warmer.
       # A cold cache can still make both independent DB jobs generate.

@@ -136,7 +136,7 @@ model opinion — an import either matches a forbidden pattern or it does not.
 
 - [ ] Every oRPC mutation carries an ownership or membership check. A procedure
       that writes without one is a tenant-isolation hole, not a style problem.
-- [ ] No `Math.random`, `Date.now`, `fetch` or `fs` inside a Temporal workflow
+- [ ] No I/O (`fetch`, `fs`, database or AI clients) or `workflowInfo().unsafe.now()` inside a Temporal workflow (`Date.now()`, `new Date()` and `Math.random()` are replay-safe there)
       file. Workflows replay, so a non-deterministic call makes history diverge
       and the failure surfaces long after the change that caused it.
 - [ ] Imports address a package entry point, not a deep path into its internals.

@@ -1,6 +1,12 @@
 import { repairDegradedMarkdown } from "@repo/agent-prompts/markdown-repair";
+import {
+	FENCE_MARKER,
+	type FenceRole,
+	scanFences,
+	VISUAL_SLOT_TAG,
+} from "@repo/utils/glossy/outline";
 import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
-import { diffWords } from "diff";
+import { type ArrayChange, diffArrays, diffWords } from "diff";
 import MarkdownIt from "markdown-it";
 import type StateInline from "markdown-it/lib/rules_inline/state_inline.mjs";
 import { mentionSpanInlinePlugin } from "./mention-markdown-plugin";
@@ -50,6 +56,9 @@ const ANY_MARKER_SOURCE = [
 ]
 	.map((marker) => escapeRegExp(marker))
 	.join("|");
+
+/** Every diff marker, for `String.replace` only (it resets `lastIndex`). */
+const ANY_MARKER_RE = new RegExp(ANY_MARKER_SOURCE, "g");
 
 /**
  * Merge adjacent ADD or DEL diff blocks that are separated only by short
@@ -138,6 +147,39 @@ function mergeAdjacentDiffBlocks(text: string): string {
 }
 
 /**
+ * Whether an offset in diff-marked text sits inside a fenced code block, for
+ * a text that does not change while it is asked. The fences are scanned once,
+ * with the markers taken out (they hold no line break, so the lines are the
+ * same), and each lookup is a binary search over the line starts.
+ */
+function fenceContextOf(text: string): (offset: number) => boolean {
+	const lines = text.split("\n");
+	const roles = scanFences(
+		lines.map((line) => line.replace(ANY_MARKER_RE, "")),
+	);
+	const starts: number[] = [];
+	let start = 0;
+	for (const line of lines) {
+		starts.push(start);
+		start += line.length + 1;
+	}
+	return (offset) => {
+		let low = 0;
+		let high = starts.length - 1;
+		while (low < high) {
+			const mid = (low + high + 1) >> 1;
+			if (starts[mid] <= offset) {
+				low = mid;
+			} else {
+				high = mid - 1;
+			}
+		}
+		// A fence was open before this line.
+		return roles[low] === "inside" || roles[low] === "close";
+	};
+}
+
+/**
  * Split multi-line diff blocks into per-line diff runs so MarkdownIt's
  * BLOCK parser can still recognize lists, headings, and paragraphs.
  *
@@ -162,7 +204,7 @@ function mergeAdjacentDiffBlocks(text: string): string {
  * region loses its "added" highlight, but it still renders as a proper
  * `<pre><code>` block instead of getting smashed into inline prose. (Pure
  * fence ADD/DEL blocks are pulled out earlier by `extractDiffWrappedFences`
- * and reinjected with a proper diff-block wrapper.)
+ * and reinjected as a code block inside one diff mark.)
  *
  * Single-line DEL bodies are NOT relocated. A DEL body matching a prefix
  * (e.g. `<DEL>- </DEL>Item`) represents the prefix being REMOVED — the
@@ -189,9 +231,14 @@ function splitMultilineDiffBlocks(text: string): string {
 			if (line.trim().length === 0) {
 				return "";
 			}
-			const listMatch = line.match(/^(\s*(?:\d+[.)]|[-*+])\s+)(.*)$/);
+			const listMatch = line.match(/^(\s*(?:\d+[.)]|[-*+]))(\s+)(.*)$/);
 			if (listMatch) {
-				return `${listMatch[1]}${startMarker}${listMatch[2]}${endMarker}`;
+				// A deleted item comes from the old text, whose marker padding
+				// (`-   `) can be wider than the new text's child indent. One
+				// space keeps the children that follow it nested under it, so
+				// accepting can hand them to the item before it.
+				const padding = isAddSide ? listMatch[2] : " ";
+				return `${listMatch[1]}${padding}${startMarker}${listMatch[3]}${endMarker}`;
 			}
 			const headingMatch = line.match(/^(\s*#{1,6}\s+)(.*)$/);
 			if (headingMatch) {
@@ -258,7 +305,31 @@ function splitMultilineDiffBlocks(text: string): string {
 			return `${wrapLineContent(line.slice(0, line.length - hardBreak.length), inListContext)}${hardBreak}`;
 		};
 
+		const insideFenceAt = fenceContextOf(result);
 		result = result.replace(re, (match, body: string, offset: number) => {
+			// Inside a code block whitespace is content. An added indent
+			// (`\n  ` before YAML nesting) is emitted as plain text: wrapped, it
+			// is a whitespace-only node TipTap drops, and dropped, the indent is
+			// gone from the accepted code.
+			const inCode = insideFenceAt(offset);
+			const keepCodeWhitespace = (line: string): string | null =>
+				inCode && line.trim() === "" ? (isAddSide ? line : "") : null;
+			const whitespace = keepCodeWhitespace(body);
+			if (whitespace !== null) {
+				return whitespace;
+			}
+			// A fence is not parsed into blocks, so a body inside one needs no
+			// per-line split. Splitting it would move each line's newline out
+			// of the marker, where it becomes a bare text node the editor's
+			// HTML parser drops, joining two lines of code; split deleted
+			// lines would also leave their breaks behind as blank lines, and a
+			// hoisted `- ` with them.
+			if (
+				inCode &&
+				!body.split("\n").some((line) => FENCE_MARKER.test(line))
+			) {
+				return match;
+			}
 			// A continuation only belongs to a list item when a list is
 			// actually open — the item may sit before this block or in it.
 			const opensList = (candidate: string | undefined): boolean =>
@@ -274,6 +345,22 @@ function splitMultilineDiffBlocks(text: string): string {
 				opensList(precedingLine) || continuesBlock(precedingLine);
 
 			if (!body.includes("\n")) {
+				// A single-line ADD that is nothing but a block prefix
+				// (`<ADD>- </ADD>Text`) is the AI changing the line's block role,
+				// e.g. paragraph → list item. Hoisting it would leave an empty
+				// marker, so the review would show no change while accepting it
+				// silently turned the paragraph into a bullet. Leave it wrapped;
+				// reconstructBrokenStructureLines then splits the line into a
+				// visible old/new pair. Multi-line bodies keep hoisting: there a
+				// lone prefix line is usually the word diff re-aligning the
+				// prefix of the next, unchanged block.
+				if (
+					isAddSide &&
+					BLOCK_PREFIX_RE.test(body) &&
+					body.replace(BLOCK_PREFIX_RE, "").trim() === ""
+				) {
+					return match;
+				}
 				return isAddSide ? wrapLine(body, inListContext) : match;
 			}
 
@@ -282,6 +369,11 @@ function splitMultilineDiffBlocks(text: string): string {
 			let inFence = false;
 			for (const line of lines) {
 				const trimmed = line.trim();
+				const whitespace = keepCodeWhitespace(line);
+				if (whitespace !== null) {
+					output.push(whitespace);
+					continue;
+				}
 				if (trimmed.length > 0) {
 					// A list item opens the context; any other unindented
 					// line closes it.
@@ -547,11 +639,51 @@ function reconstructBrokenStructureLines(text: string): string {
 			.replaceAll(DIFF_DEL_END, "");
 
 	const output: string[] = [];
+	// Consecutive split lines are emitted as one run — every old line, then
+	// every new line. Interleaving them would put an old line straight after
+	// a new list item, where MarkdownIt reads it as a lazy continuation of
+	// that item instead of part of the deleted paragraph.
+	const splitOld: string[] = [];
+	const splitNew: string[] = [];
+	const flushSplit = () => {
+		if (splitOld.length === 0) {
+			return;
+		}
+		output.push(
+			...splitOld.map((old) => `${DIFF_DEL_START}${old}${DIFF_DEL_END}`),
+		);
+		// Only `1.` may interrupt a paragraph in CommonMark, so an ordered
+		// item numbered anything else would be absorbed into the preceding
+		// DEL line and lose its list role. A blank line keeps the two sides
+		// as separate blocks. Headings need no such break.
+		if (/^\s*(?:0|[2-9]|\d{2,})[.)]\s/.test(splitNew[0])) {
+			output.push("");
+		}
+		output.push(
+			...splitNew.map(
+				(next) => `${DIFF_ADD_START}${next}${DIFF_ADD_END}`,
+			),
+		);
+		splitOld.length = 0;
+		splitNew.length = 0;
+	};
+	const emit = (...lines: string[]) => {
+		flushSplit();
+		output.push(...lines);
+	};
+	// Inside a fence every line is code: a `- ` the AI added there is text,
+	// not a paragraph turning into a list item.
+	let inFence = false;
 	for (const line of text.split("\n")) {
+		if (/^\s*(?:```|~~~)/.test(stripAllMarkers(line))) {
+			inFence = !inFence;
+			emit(line);
+			continue;
+		}
 		const hasAdd = line.includes(DIFF_ADD_START);
 		const hasDel = line.includes(DIFF_DEL_START);
-		if (!hasAdd && !hasDel) {
-			output.push(line);
+		if (inFence || (!hasAdd && !hasDel)) {
+			emit(line);
 			continue;
 		}
 		// Fast path: markers sit inline within an already-recognised block
@@ -567,18 +699,19 @@ function reconstructBrokenStructureLines(text: string): string {
 				classifyLineBlock(line),
 			)
 		) {
-			output.push(line);
+			emit(line);
 			continue;
 		}
 		const oldLine = getOldVersionOfLine(line);
 		const newLine = getNewVersionOfLine(line);
 		if (oldLine === newLine) {
-			output.push(line);
+			emit(line);
 			continue;
 		}
 		const oldKind = classifyLineBlock(oldLine);
 		const newKind = classifyLineBlock(newLine);
 		if (newKind.kind === "hr" || oldKind.kind === "hr") {
+			flushSplit();
 			if (oldKind.kind !== "hr" && hasContentBeyondPrefix(oldLine)) {
 				output.push(`${DIFF_DEL_START}${oldLine}${DIFF_DEL_END}`);
 			}
@@ -604,14 +737,14 @@ function reconstructBrokenStructureLines(text: string): string {
 					? hoistBlockPrefixOutOfMarkers(line, prefix)
 					: null;
 				if (hoisted !== null) {
-					output.push(hoisted);
+					emit(hoisted);
 					continue;
 				}
 				// Not hoistable — fall through to the whole-line split
 				// below, which renders both sides without losing the
 				// deleted text.
 			} else {
-				output.push(line);
+				emit(line);
 				continue;
 			}
 		}
@@ -622,19 +755,13 @@ function reconstructBrokenStructureLines(text: string): string {
 			!hasContentBeyondPrefix(oldLine) ||
 			!hasContentBeyondPrefix(newLine)
 		) {
-			output.push(line);
+			emit(line);
 			continue;
 		}
-		output.push(`${DIFF_DEL_START}${oldLine}${DIFF_DEL_END}`);
-		// Only `1.` may interrupt a paragraph in CommonMark, so an
-		// ordered item numbered anything else would be absorbed into the
-		// preceding DEL line and lose its list role. A blank line keeps
-		// the two sides as separate blocks. Headings need no such break.
-		if (/^\s*(?:0|[2-9]|\d{2,})[.)]\s/.test(newLine)) {
-			output.push("");
-		}
-		output.push(`${DIFF_ADD_START}${newLine}${DIFF_ADD_END}`);
+		splitOld.push(oldLine);
+		splitNew.push(newLine);
 	}
+	flushSplit();
 	return output.join("\n");
 }
 
@@ -1443,12 +1570,15 @@ export function mergeOrphanBulletContinuations(text: string): string {
 	}
 
 	const lines = text.split("\n");
+	// A numbered or bulleted line inside fenced code is code, not a list item.
+	const fenceRoles = scanFences(lines);
 	const out: string[] = [];
 	let i = 0;
 
 	while (i < lines.length) {
 		const line = lines[i];
-		const bulletMatch = line.match(BULLET_PATTERN);
+		const bulletMatch =
+			fenceRoles[i] === null ? line.match(BULLET_PATTERN) : null;
 		if (!bulletMatch) {
 			out.push(line);
 			i++;
@@ -1862,8 +1992,8 @@ function escapeHtml(str: string): string {
  * Pull out fenced code blocks that sit inside an ADD or DEL diff block.
  *
  * Phase A (pure): the entire diff body is just a fence with optional
- * surrounding whitespace. Extract and reinject as a proper `<pre><code>`
- * (ADD) or per-line `<p><del class="diff-del">line</del></p>` (DEL).
+ * surrounding whitespace. Extract and reinject as a `<pre><code>` whose
+ * content is one `<ins>` (ADD) or `<del>` (DEL).
  *
  * Phase B (mixed DEL only): the diff body is a mix of prose and one or more
  * fences. Walk the body, extract each fence, and split the surrounding
@@ -1899,9 +2029,17 @@ function extractDiffWrappedFences(text: string): {
 			"g",
 		);
 
+	// A marker that opens inside a fence cannot wrap a whole fence: its first
+	// backtick line is that fence's closer, not an opener. Extracting it would
+	// take the closer and the next opener for one empty fence and leave the
+	// placeholder in the code; leave it to the per-line handling instead.
+	let insideFenceAt = fenceContextOf(processed);
 	processed = processed.replace(
 		makePattern(DIFF_ADD_START, DIFF_ADD_END),
-		(_match, language: string, code: string) => {
+		(match, language: string, code: string, offset: number) => {
+			if (insideFenceAt(offset)) {
+				return match;
+			}
 			const index = fences.length;
 			fences.push({
 				language: language.trim(),
@@ -1912,9 +2050,13 @@ function extractDiffWrappedFences(text: string): {
 		},
 	);
 
+	insideFenceAt = fenceContextOf(processed);
 	processed = processed.replace(
 		makePattern(DIFF_DEL_START, DIFF_DEL_END),
-		(_match, language: string, code: string) => {
+		(match, language: string, code: string, offset: number) => {
+			if (insideFenceAt(offset)) {
+				return match;
+			}
 			const index = fences.length;
 			fences.push({
 				language: language.trim(),
@@ -1931,39 +2073,43 @@ function extractDiffWrappedFences(text: string): {
 		"g",
 	);
 	const fenceRe = /```([a-zA-Z0-9+_-]*)\s*\n([\s\S]*?)\n```/g;
-	processed = processed.replace(delRegionRe, (match, body: string) => {
-		if (!body.includes("```")) {
-			return match;
-		}
-		const fenceMatches = Array.from(body.matchAll(fenceRe));
-		if (fenceMatches.length === 0) {
-			// Body contains ``` but no complete fence pair — let the
-			// downstream per-line wrapper handle it (best-effort).
-			return match;
-		}
-		const parts: string[] = [];
-		let lastIndex = 0;
-		for (const fenceMatch of fenceMatches) {
-			const matchIndex = fenceMatch.index ?? 0;
-			const prose = body.slice(lastIndex, matchIndex).trim();
-			if (prose.length > 0) {
-				parts.push(`${DIFF_DEL_START}${prose}${DIFF_DEL_END}`);
+	insideFenceAt = fenceContextOf(processed);
+	processed = processed.replace(
+		delRegionRe,
+		(match, body: string, offset: number) => {
+			if (!body.includes("```") || insideFenceAt(offset)) {
+				return match;
 			}
-			const index = fences.length;
-			fences.push({
-				language: fenceMatch[1].trim(),
-				code: fenceMatch[2],
-				type: "deleted",
-			});
-			parts.push(`\n\n<!--DIFF_FENCE_${index}-->\n\n`);
-			lastIndex = matchIndex + fenceMatch[0].length;
-		}
-		const trailing = body.slice(lastIndex).trim();
-		if (trailing.length > 0) {
-			parts.push(`${DIFF_DEL_START}${trailing}${DIFF_DEL_END}`);
-		}
-		return parts.join("");
-	});
+			const fenceMatches = Array.from(body.matchAll(fenceRe));
+			if (fenceMatches.length === 0) {
+				// Body contains ``` but no complete fence pair — let the
+				// downstream per-line wrapper handle it (best-effort).
+				return match;
+			}
+			const parts: string[] = [];
+			let lastIndex = 0;
+			for (const fenceMatch of fenceMatches) {
+				const matchIndex = fenceMatch.index ?? 0;
+				const prose = body.slice(lastIndex, matchIndex).trim();
+				if (prose.length > 0) {
+					parts.push(`${DIFF_DEL_START}${prose}${DIFF_DEL_END}`);
+				}
+				const index = fences.length;
+				fences.push({
+					language: fenceMatch[1].trim(),
+					code: fenceMatch[2],
+					type: "deleted",
+				});
+				parts.push(`\n\n<!--DIFF_FENCE_${index}-->\n\n`);
+				lastIndex = matchIndex + fenceMatch[0].length;
+			}
+			const trailing = body.slice(lastIndex).trim();
+			if (trailing.length > 0) {
+				parts.push(`${DIFF_DEL_START}${trailing}${DIFF_DEL_END}`);
+			}
+			return parts.join("");
+		},
+	);
 
 	return { processed, fences };
 }
@@ -2164,8 +2310,9 @@ type DiffPart = { added?: boolean; removed?: boolean; value: string };
  * unchanged lines survive.
  *
  * `diffWords` typically splits the backslash off as its own token, so the
- * common shape is `[removed: "\\"][unchanged: "X..."]`. The rarer paired
- * shape `[removed: "\\X"][added: "X"]` is also handled.
+ * common shape is `[removed: "\\"][unchanged: "X..."]`, or a longer removal
+ * ending in that `\`. The rarer paired shape `[removed: "\\X"][added: "X"]`
+ * is also handled.
  */
 function mergePhantomEscapeDiffs(parts: DiffPart[]): DiffPart[] {
 	const isPairedEscape = (
@@ -2179,11 +2326,15 @@ function mergePhantomEscapeDiffs(parts: DiffPart[]): DiffPart[] {
 		TURNDOWN_ESCAPABLE.has(removed[1]) &&
 		removed.slice(1) === added;
 
-	const isLoneBackslashBeforeEscapable = (
+	// A removed run ending in an escape for the unchanged char after it: the
+	// lone `\` token, or the tail of a longer removal (`Reference: \` before
+	// an unchanged `[S1]`). An even run of trailing backslashes ends in an
+	// escaped backslash, not an escape.
+	const endsWithEscapeBeforeEscapable = (
 		cur: DiffPart,
 		next: DiffPart | undefined,
 	): boolean =>
-		cur.value === "\\" &&
+		(cur.value.match(/\\+$/)?.[0].length ?? 0) % 2 === 1 &&
 		next != null &&
 		!next.added &&
 		!next.removed &&
@@ -2199,9 +2350,27 @@ function mergePhantomEscapeDiffs(parts: DiffPart[]): DiffPart[] {
 	while (i < parts.length) {
 		const cur = parts[i];
 		const next = parts[i + 1];
-		if (cur.removed && isLoneBackslashBeforeEscapable(cur, next)) {
+		if (cur.removed && endsWithEscapeBeforeEscapable(cur, next)) {
+			if (cur.value.length > 1) {
+				merged.push({ removed: true, value: cur.value.slice(0, -1) });
+			}
 			merged.push({ value: "\\" });
 			i += 1;
+			continue;
+		}
+		// The same escape when a rewrite inserts text before the unchanged char:
+		// `[removed "…\\"][added "…"][unchanged "X…"]`. The escape moves after
+		// the insertion, where it still escapes `X`.
+		if (
+			cur.removed &&
+			next?.added &&
+			endsWithEscapeBeforeEscapable(cur, parts[i + 2])
+		) {
+			if (cur.value.length > 1) {
+				merged.push({ removed: true, value: cur.value.slice(0, -1) });
+			}
+			merged.push(next, { value: "\\" });
+			i += 2;
 			continue;
 		}
 		if (
@@ -2258,7 +2427,8 @@ function unescapeAgentLine(line: string): string {
  * `\\` and `` \` `` stay, because the merge does not collapse them. Code
  * fences, inline code and tables stay byte-identical: their content is
  * literal, and tables are diffed as whole blocks, so a single changed byte
- * would show an untouched table as replaced.
+ * would show an untouched table as replaced. Visual slot tags stay too: their
+ * attributes are HTML, not markdown.
  */
 export function toAgentDocument(markdown: string): string {
 	let inFence = false;
@@ -2278,7 +2448,10 @@ export function toAgentDocument(markdown: string): string {
 				inHtmlTable = !/<\/table>/i.test(line);
 				return line;
 			}
-			if (GFM_TABLE_ROW.test(line)) {
+			if (
+				GFM_TABLE_ROW.test(line) ||
+				line.includes(`<${VISUAL_SLOT_TAG}`)
+			) {
 				return line;
 			}
 			return unescapeAgentLine(line);
@@ -2634,6 +2807,457 @@ function restoreHtmlTables(value: string, blocks: Map<string, string>): string {
 }
 
 /**
+ * Slide a pure removal or insertion of whole lines so it starts and ends on a
+ * fence boundary when it can. Two diagrams in a row share their opener and
+ * marker line, so removing the first one lines up equally well as "the first
+ * fence" or as "the end of the first fence plus the start of the second"; the
+ * second crosses a closer and an opener, and no mark can span two code blocks.
+ * Sliding moves the run up over the equal lines it repeats, which keeps the
+ * same alignment cost. `oldRoles`/`newRoles` are the fence roles of the keyed
+ * (non-blank) lines.
+ */
+function alignRunsWithFences(
+	chunks: ArrayChange<string>[],
+	oldRoles: FenceRole[],
+	newRoles: FenceRole[],
+): ArrayChange<string>[] {
+	// A run is aligned when it neither starts inside a fence nor ends inside
+	// one it did not open, i.e. its fence roles balance on their own.
+	const aligned = (roles: FenceRole[], from: number, count: number) => {
+		let open = false;
+		for (let k = from; k < from + count; k++) {
+			const role = roles[k];
+			if (role === "open") {
+				open = true;
+			} else if (role === "close") {
+				if (!open) {
+					return false;
+				}
+				open = false;
+			} else if (role === "inside" && !open) {
+				return false;
+			}
+		}
+		return !open;
+	};
+	// Without a fence on either side every run is aligned already.
+	if (
+		oldRoles.every((role) => role === null) &&
+		newRoles.every((role) => role === null)
+	) {
+		return chunks;
+	}
+	const result = chunks.map((chunk) => ({
+		...chunk,
+		value: [...chunk.value],
+	}));
+	let oldPos = 0;
+	let newPos = 0;
+	for (let i = 0; i < result.length; i++) {
+		const chunk = result[i];
+		const prev = result[i - 1];
+		const count = chunk.value.length;
+		// A removal followed by an insertion is a replacement, not a pure run.
+		const paired = chunk.removed && result[i + 1]?.added;
+		const roles = chunk.removed ? oldRoles : newRoles;
+		const pos = chunk.removed ? oldPos : newPos;
+		if (
+			(chunk.removed || chunk.added) &&
+			!paired &&
+			prev &&
+			!prev.added &&
+			!prev.removed &&
+			!aligned(roles, pos, count)
+		) {
+			// Each step moves the run up one line over an equal line that
+			// repeats its last one.
+			let shift = 0;
+			while (
+				shift < Math.min(prev.value.length, count) &&
+				prev.value[prev.value.length - 1 - shift] ===
+					chunk.value[count - 1 - shift] &&
+				!aligned(roles, pos - shift, count)
+			) {
+				shift += 1;
+			}
+			if (shift > 0 && aligned(roles, pos - shift, count)) {
+				const moved = prev.value.splice(
+					prev.value.length - shift,
+					shift,
+				);
+				const tail = chunk.value.splice(count - shift, shift);
+				chunk.value.unshift(...moved);
+				prev.count = prev.value.length;
+				const next = result[i + 1];
+				if (next && !next.added && !next.removed) {
+					next.value.unshift(...tail);
+					next.count = next.value.length;
+				} else {
+					result.splice(i + 1, 0, {
+						value: tail,
+						count: tail.length,
+						added: false,
+						removed: false,
+					});
+				}
+				// The equal run before gave up `shift` lines on both sides.
+				oldPos -= shift;
+				newPos -= shift;
+			}
+		}
+		if (!chunk.added) {
+			oldPos += chunk.value.length;
+		}
+		if (!chunk.removed) {
+			newPos += chunk.value.length;
+		}
+	}
+	return result.filter((chunk) => chunk.value.length > 0);
+}
+
+// Line identity for alignment: indentation, list-marker padding and the
+// marker character are formatting the serializer and the model write
+// differently, so they never decide whether a line changed.
+function lineKey(line: string): string {
+	return line
+		.trim()
+		.replace(/^(?:[-*+]|(\d+)[.)])\s+/, (_match, number?: string) =>
+			number ? `${number}. ` : "- ",
+		)
+		.replace(/\s+/g, " ");
+}
+
+const BLOCK_START_RE =
+	/^\s*(?:[-*+]\s|\d+[.)]\s|#{1,6}\s|>|```|~~~|\||[-*_]{3,}\s*$)/;
+
+type LineUnit = { first: number; last: number };
+
+/**
+ * Group lines into the units the diff aligns: a block's first line plus the
+ * wrapped lines that continue it (no blank line, no block prefix of their
+ * own), so a bullet the model re-wraps onto two lines is still one unit.
+ * Inside a fence every line is its own unit. A line `scanFences` gives a
+ * role (`roles`) is a fence line too, so a fence unit is always one line
+ * even where the two rules disagree (a ``` line inside a ~~~ fence).
+ */
+function lineUnits(lines: string[], roles: FenceRole[]): LineUnit[] {
+	const units: LineUnit[] = [];
+	let inFence = false;
+	let open: LineUnit | null = null;
+	lines.forEach((line, index) => {
+		if (!line.trim()) {
+			open = null;
+			return;
+		}
+		const isFence = /^\s*(?:```|~~~)/.test(line);
+		if (isFence) {
+			inFence = !inFence;
+		}
+		const code = inFence || isFence || roles[index] !== null;
+		if (open && !code && !BLOCK_START_RE.test(line)) {
+			open.last = index;
+			return;
+		}
+		open = { first: index, last: index };
+		units.push(open);
+		if (code) {
+			open = null;
+		}
+	});
+	return units;
+}
+
+/** The same lines, one unit per non-blank line. */
+function singleLineUnits(lines: string[], units: LineUnit[]): LineUnit[] {
+	return units.flatMap((unit) =>
+		lines.slice(unit.first, unit.last + 1).flatMap((line, offset) =>
+			line.trim()
+				? [
+						{
+							first: unit.first + offset,
+							last: unit.first + offset,
+						},
+					]
+				: [],
+		),
+	);
+}
+
+function unitWords(text: string): Set<string> {
+	return new Set(text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []);
+}
+
+function wordOverlap(a: Set<string>, b: Set<string>): number {
+	if (a.size === 0 || b.size === 0) {
+		return 0;
+	}
+	let shared = 0;
+	for (const word of a) {
+		if (b.has(word)) {
+			shared++;
+		}
+	}
+	return (2 * shared) / (a.size + b.size);
+}
+
+type HunkStep = { oldUnit?: number; newUnit?: number };
+
+/**
+ * Pair the old and new blocks of one changed run in order, by shared words:
+ * an edited block pairs with its new version, and a block added or removed
+ * next to it stays unpaired instead of dragging its neighbour's words along.
+ */
+function alignHunkUnits(oldHunk: string[], newHunk: string[]): HunkStep[] {
+	const minOverlap = 0.3;
+	const oldWords = oldHunk.map(unitWords);
+	const newWords = newHunk.map(unitWords);
+	const overlap = (i: number, j: number) =>
+		wordOverlap(oldWords[i], newWords[j]);
+	const score = Array.from({ length: oldHunk.length + 1 }, () =>
+		new Array<number>(newHunk.length + 1).fill(0),
+	);
+	for (let i = 1; i <= oldHunk.length; i++) {
+		for (let j = 1; j <= newHunk.length; j++) {
+			const pair = overlap(i - 1, j - 1);
+			score[i][j] = Math.max(
+				score[i - 1][j],
+				score[i][j - 1],
+				pair >= minOverlap ? score[i - 1][j - 1] + pair : 0,
+			);
+		}
+	}
+	const steps: HunkStep[] = [];
+	let i = oldHunk.length;
+	let j = newHunk.length;
+	while (i > 0 || j > 0) {
+		const pair = i > 0 && j > 0 ? overlap(i - 1, j - 1) : 0;
+		if (pair >= minOverlap && score[i][j] === score[i - 1][j - 1] + pair) {
+			steps.push({ oldUnit: i - 1, newUnit: j - 1 });
+			i--;
+			j--;
+		} else if (i > 0 && (j === 0 || score[i][j] === score[i - 1][j])) {
+			steps.push({ oldUnit: i - 1 });
+			i--;
+		} else {
+			steps.push({ newUnit: j - 1 });
+			j--;
+		}
+	}
+	return steps.reverse();
+}
+
+/**
+ * Diff a complete document line by line, then word by word only inside the
+ * lines that changed. A whole-document `diffWords` aligns punctuation tokens
+ * across lines: the `-` of a new bullet pairs with a dash of the `---` below
+ * it, or with the hyphen in `up-to-date` on the line above, and a newline plus
+ * indent is pulled into an insertion. Accepting such a diff drops the rule,
+ * leaves a dangling `-`, or un-nests the next list item.
+ *
+ * Blank lines are left out of the alignment (the serializer writes loose
+ * lists, the model usually tight ones) and are emitted from the new text.
+ */
+function diffByLines(oldText: string, newText: string): DiffPart[] {
+	const oldLines = oldText.split("\n");
+	const newLines = newText.split("\n");
+	const oldRoles = scanFences(oldLines);
+	const newRoles = scanFences(newLines);
+	const oldRefs = lineUnits(oldLines, oldRoles);
+	const newRefs = lineUnits(newLines, newRoles);
+	const unitText = (lines: string[], unit: LineUnit) =>
+		lines.slice(unit.first, unit.last + 1).join("\n");
+	// A unit with a fence role is one line, so its first line's role is its own.
+	const allInside = (
+		roles: FenceRole[],
+		refs: LineUnit[],
+		from: number,
+		count: number,
+	) => {
+		for (let k = 0; k < count; k++) {
+			if (roles[refs[from + k].first] !== "inside") {
+				return false;
+			}
+		}
+		return true;
+	};
+	const chunks = alignRunsWithFences(
+		diffArrays(
+			oldRefs.map((unit) => lineKey(unitText(oldLines, unit))),
+			newRefs.map((unit) => lineKey(unitText(newLines, unit))),
+		),
+		oldRefs.map((unit) => oldRoles[unit.first]),
+		newRefs.map((unit) => newRoles[unit.first]),
+	);
+
+	const parts: DiffPart[] = [];
+	let oldPos = 0;
+	let newPos = 0;
+	let newCursor = 0;
+	const lastNewLine = newLines.length - 1;
+	const emitNewThrough = (lastIndex: number) => {
+		if (lastIndex < newCursor) {
+			return;
+		}
+		const text = newLines.slice(newCursor, lastIndex + 1).join("\n");
+		parts.push({ value: lastIndex < lastNewLine ? `${text}\n` : text });
+		newCursor = lastIndex + 1;
+	};
+	// A removed block sits right after the previous kept line. After a
+	// paragraph line it needs a blank line of its own: a block that cannot
+	// interrupt a paragraph (`2. item`) would otherwise continue it, and its
+	// hoisted marker would survive the accept as text.
+	const removedPart = (oldText: string): DiffPart => {
+		if (newCursor > lastNewLine) {
+			return { removed: true, value: `\n${oldText}` };
+		}
+		const previous = newLines[newCursor - 1] ?? "";
+		// Code is not parsed into blocks, and inside it the blank line would
+		// be content that rejecting the deletion keeps.
+		const separate =
+			newRoles[newCursor - 1] !== "inside" &&
+			previous.trim() !== "" &&
+			!BLOCK_START_RE.test(previous) &&
+			/^\s*\d+[.)]\s/.test(oldText);
+		return {
+			removed: true,
+			value: separate ? `\n${oldText}\n` : `${oldText}\n`,
+		};
+	};
+	const oldSlice = (count: number) =>
+		oldLines
+			.slice(oldRefs[oldPos].first, oldRefs[oldPos + count - 1].last + 1)
+			.join("\n");
+	const newSlice = (count: number) =>
+		newLines
+			.slice(newRefs[newPos].first, newRefs[newPos + count - 1].last + 1)
+			.join("\n");
+	const closeNewSlice = (count: number) => {
+		newCursor = newRefs[newPos + count - 1].last + 1;
+		if (newCursor <= lastNewLine) {
+			parts.push({ value: "\n" });
+		}
+	};
+
+	for (let i = 0; i < chunks.length; i++) {
+		const chunk = chunks[i];
+		const count = chunk.value.length;
+		if (!chunk.added && !chunk.removed) {
+			emitNewThrough(newRefs[newPos + count - 1].last);
+			oldPos += count;
+			newPos += count;
+			continue;
+		}
+		if (chunk.removed) {
+			const next = chunks[i + 1];
+			const removed = oldSlice(count);
+			if (next?.added) {
+				const addedCount = next.value.length;
+				if (
+					allInside(oldRoles, oldRefs, oldPos, count) &&
+					allInside(newRoles, newRefs, newPos, addedCount)
+				) {
+					emitNewThrough(newRefs[newPos].first - 1);
+					// Inside a fence every line is code: replace the changed lines
+					// whole, each side carrying its own newline. A line break left
+					// between two diff elements is dropped by the editor's HTML
+					// parser, and accepting then joins two lines of the diagram.
+					if (count === addedCount) {
+						// Line by line, so each line stays its own change.
+						for (let k = 0; k < count; k++) {
+							const newUnit = newRefs[newPos + k];
+							emitNewThrough(newUnit.first - 1);
+							parts.push(
+								{
+									removed: true,
+									value: `${unitText(oldLines, oldRefs[oldPos + k])}\n`,
+								},
+								{
+									added: true,
+									value: `${unitText(newLines, newUnit)}\n`,
+								},
+							);
+							newCursor = newUnit.last + 1;
+						}
+					} else {
+						parts.push(
+							{ removed: true, value: `${removed}\n` },
+							{ added: true, value: `${newSlice(addedCount)}\n` },
+						);
+						newCursor = newRefs[newPos + addedCount - 1].last + 1;
+					}
+					newPos += addedCount;
+					i += 1;
+					oldPos += count;
+					continue;
+				}
+				let oldUnits = oldRefs.slice(oldPos, oldPos + count);
+				let newHunk = newRefs.slice(newPos, newPos + addedCount);
+				// A wrapped paragraph whose lines became separate blocks (or
+				// blocks joined into one wrapped paragraph) aligns line by line.
+				if (oldUnits.length !== newHunk.length) {
+					const oldSingles = singleLineUnits(oldLines, oldUnits);
+					const newSingles = singleLineUnits(newLines, newHunk);
+					if (oldSingles.length === newHunk.length) {
+						oldUnits = oldSingles;
+					} else if (newSingles.length === oldUnits.length) {
+						newHunk = newSingles;
+					}
+				}
+				const oldHunk = oldUnits.map((unit) =>
+					unitText(oldLines, unit),
+				);
+				// Word-diff each block against the block it became, so a token
+				// in one block can never match a token in its neighbour. A block
+				// with no counterpart is a whole deletion or addition.
+				for (const step of alignHunkUnits(
+					oldHunk,
+					newHunk.map((unit) => unitText(newLines, unit)),
+				)) {
+					if (step.newUnit === undefined) {
+						parts.push(removedPart(oldHunk[step.oldUnit ?? 0]));
+						continue;
+					}
+					const newUnit = newHunk[step.newUnit];
+					emitNewThrough(newUnit.first - 1);
+					const newText = unitText(newLines, newUnit);
+					if (step.oldUnit === undefined) {
+						parts.push({ added: true, value: newText });
+					} else {
+						parts.push(
+							...diffWords(oldHunk[step.oldUnit], newText),
+						);
+					}
+					newCursor = newUnit.last + 1;
+					if (newUnit.last < lastNewLine) {
+						parts.push({ value: "\n" });
+					}
+				}
+				newPos += addedCount;
+				i += 1;
+			} else {
+				parts.push(removedPart(removed));
+			}
+			oldPos += count;
+			continue;
+		}
+		emitNewThrough(newRefs[newPos].first - 1);
+		if (allInside(newRoles, newRefs, newPos, count)) {
+			// An added code line takes its newline with it, so rejecting it
+			// leaves no empty line behind.
+			parts.push({ added: true, value: `${newSlice(count)}\n` });
+			newCursor = newRefs[newPos + count - 1].last + 1;
+			newPos += count;
+			continue;
+		}
+		parts.push({ added: true, value: newSlice(count) });
+		closeNewSlice(count);
+		newPos += count;
+	}
+	emitNewThrough(lastNewLine);
+	return parts;
+}
+
+/**
  * Calculate diff between two text strings using word-level comparison
  *
  * Uses placeholder tokens that are later replaced with HTML tags after markdown processing.
@@ -2681,7 +3305,9 @@ export function diffPartialText(
 	}
 
 	const changes = mergePhantomEscapeDiffs(
-		diffWords(oldTextToCompare, newProcessed),
+		isComplete
+			? diffByLines(oldTextToCompare, newProcessed)
+			: diffWords(oldTextToCompare, newProcessed),
 	);
 
 	// When the diff part contains an HTML `<table>` (post-restore) along
@@ -2817,6 +3443,49 @@ export interface FromMarkdownOptions {
 	repairLegacyBullets?: boolean;
 }
 
+const INLINE_TAGS = "ins|del|strong|em|s|code|a|mark|span";
+const SPACE_BETWEEN_INLINE_TAGS_RE = new RegExp(
+	`(</(?:${INLINE_TAGS})>)([ \\t]*\\n\\s*)(<(${INLINE_TAGS})\\b[^>]*>)`,
+	"g",
+);
+
+/**
+ * A soft line break between two inline elements (`</ins>\n<ins …>`, two lines
+ * the AI added to one paragraph) is a whitespace-only text node, and TipTap
+ * drops those when it parses HTML, gluing `line.Next` together on accept.
+ * Move the space into the neighbouring insertion, which accepting keeps as
+ * plain text. Other pairs are left alone: a space inside `<code>` or `<em>`
+ * would change the code or break the emphasis. Inside a code block the line
+ * break and indent are content, so they move into the insertion unchanged.
+ */
+function keepSpaceBetweenInlineTags(html: string): string {
+	return html
+		.split(/(<pre\b[\s\S]*?<\/pre>)/)
+		.map((segment, index) => {
+			// The split puts every whole <pre> at an odd index.
+			const inCode = index % 2 === 1;
+			return segment.replace(
+				SPACE_BETWEEN_INLINE_TAGS_RE,
+				(
+					match,
+					close: string,
+					whitespace: string,
+					open: string,
+					openTag: string,
+				) => {
+					const kept = inCode ? whitespace : " ";
+					if (openTag === "ins") {
+						return `${close}${open}${kept}`;
+					}
+					return close === "</ins>"
+						? `${kept}${close}${open}`
+						: match;
+				},
+			);
+		})
+		.join("");
+}
+
 export function fromMarkdown(
 	text: string | undefined,
 	options?: FromMarkdownOptions,
@@ -2866,8 +3535,7 @@ export function fromMarkdown(
 	// fence's opening line prevent MarkdownIt from recognising the fence,
 	// and per-line wrapping would turn `ADD_START```bashADD_END` into
 	// garbage. Pulling them out here lets us render the code block cleanly
-	// and reinject with a proper diff-block wrapper class that
-	// `stripDiffTags` understands on save.
+	// and reinject it with its content in one diff mark.
 	const { processed: textWithoutFences, fences } =
 		extractDiffWrappedFences(textAfterHtmlTables);
 
@@ -2942,40 +3610,26 @@ export function fromMarkdown(
 
 	// Phase 3b: Reinject extracted diff-wrapped fences.
 	//
-	// ADD fences: render as a clean `<pre><code>` block. TipTap drops any
-	// outer `<div>` wrapper during parse, so the "added" highlight would be
-	// lost on a wrapped variant — but the code block itself is preserved
-	// and round-trips correctly through save.
-	//
-	// DEL fences: render as per-line `<p><del class="diff-del">…</del></p>`.
-	// We can't wrap the text in `<code>` because TipTap's Code mark is
-	// exclusive (`excludes: "_"`) and would strip DiffDelete during parse.
-	// Plain text inside `<del class="diff-del">` survives a parse/serialize
-	// round trip cleanly, and `stripDiffTags` removes every
-	// `<del class="diff-del">…</del>` with content on save so the deleted
-	// fence disappears entirely. The reviewer loses code styling during the
-	// diff view but the save is correct.
+	// A removed or added fence stays a code block, its whole content in one
+	// diff mark. Code blocks and diagrams admit the two diff marks, so the
+	// review bar accepts or rejects the block as one change and the source
+	// never lands outside it as paragraphs. Accepting a removal or rejecting
+	// an addition empties the block; the review bar and `stripDiffTags` then
+	// drop it.
 	if (fences.length > 0) {
 		fences.forEach((fence, index) => {
-			let replacement: string;
-			if (fence.type === "added") {
-				const langAttr = fence.language
-					? ` class="language-${fence.language}"`
-					: "";
-				replacement = `<pre><code${langAttr}>${escapeHtml(fence.code)}</code></pre>`;
-			} else {
-				const lines = fence.code.split("\n");
-				replacement = lines
-					.map((line) => {
-						if (line.length === 0) {
-							return "";
-						}
-						return `<p><del class="diff-del">${escapeHtml(line)}</del></p>`;
-					})
-					.filter((paragraph) => paragraph.length > 0)
-					.join("");
-			}
-			html = html.replace(`<!--DIFF_FENCE_${index}-->`, replacement);
+			const langAttr = fence.language
+				? ` class="language-${fence.language}"`
+				: "";
+			const tag = fence.type === "added" ? "ins" : "del";
+			const markClass = fence.type === "added" ? "diff-ins" : "diff-del";
+			const content = fence.code
+				? `<${tag} class="${markClass}">${escapeHtml(fence.code)}</${tag}>`
+				: "";
+			html = html.replace(
+				`<!--DIFF_FENCE_${index}-->`,
+				`<pre><code${langAttr}>${content}</code></pre>`,
+			);
 		});
 	}
 
@@ -2993,6 +3647,8 @@ export function fromMarkdown(
 			'<del class="diff-del">',
 		)
 		.replace(new RegExp(escapeRegExp(DIFF_DEL_END), "g"), "</del>");
+
+	html = keepSpaceBetweenInlineTags(html);
 
 	// Normalize tables for TipTap compatibility
 	// MarkdownIt produces tables with <thead> and <tbody> wrappers, but TipTap's

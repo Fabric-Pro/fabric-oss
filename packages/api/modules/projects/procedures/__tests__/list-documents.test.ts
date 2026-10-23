@@ -10,6 +10,7 @@
  * organization can read this list but not `projects.contexts.createDownloadUrl`.
  */
 
+import { contentIdentity } from "@repo/utils/content-identity";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/logs", () => ({
@@ -67,6 +68,7 @@ type Handler = (args: {
 }) => Promise<{
 	documents: Array<{
 		id: string;
+		contentHash: string;
 		sourceFile: { contextId: string; filename: string | null } | null;
 	}>;
 	total: number;
@@ -82,8 +84,17 @@ function doc(
 	id: string,
 	source: "IMPORTED" | "GENERATED",
 	sourceContextId: string | null,
+	row: { content?: string; contentHash?: string | null } = {},
 ) {
-	return { id, projectId: "proj-1", source, sourceContextId };
+	return {
+		id,
+		projectId: "proj-1",
+		source,
+		sourceContextId,
+		content: `# ${id}`,
+		contentHash: null as string | null,
+		...row,
+	};
 }
 
 function listed(...documents: ReturnType<typeof doc>[]) {
@@ -278,5 +289,37 @@ describe("projects.documents.list — sourceFile", () => {
 		).rejects.toMatchObject({ code: "FORBIDDEN" });
 		expect(listDocuments).not.toHaveBeenCalled();
 		expect(listStoredSourceContexts).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * Each document's `contentHash` is its body's identity, as `documents.get`
+ * returns it (Fizzy #2946): a client may take it from the list as the base of
+ * a save. The column of that name belongs to the embedding pipeline — null on
+ * a draft nothing has embedded, else the short hash of the body it last
+ * embedded.
+ */
+describe("projects.documents.list — contentHash", () => {
+	it("returns each body's identity, never the embed column", async () => {
+		listed(
+			doc("doc-draft", "GENERATED", null, {
+				content: "",
+				contentHash: null,
+			}),
+			doc("doc-embedded", "GENERATED", null, {
+				content: "## Scope\n\nThe current body.",
+				contentHash: "0123456789abcdef",
+			}),
+		);
+
+		const result = await handler({
+			input: { projectId: "proj-1" },
+			context: caller,
+		});
+
+		expect(result.documents.map((d) => [d.id, d.contentHash])).toEqual([
+			["doc-draft", contentIdentity("")],
+			["doc-embedded", contentIdentity("## Scope\n\nThe current body.")],
+		]);
 	});
 });

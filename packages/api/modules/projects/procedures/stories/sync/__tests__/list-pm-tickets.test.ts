@@ -204,6 +204,57 @@ describe("listPMTicketsProcedure", () => {
 		mockGetGitLabIssueForPM.mockReset();
 	});
 
+	it("advances picker offsets by raw rows before filtering and deduplication", async () => {
+		defaultSetup({
+			project: { id: "example-project", organizationId: "example-org" },
+		});
+		mockDiscoverPMToolCapabilities.mockResolvedValue({
+			detectedType: "jira",
+			taskList: { paginationInfo: { style: "offset-skip" } },
+		});
+		mockListWorkItemsFromPM
+			.mockResolvedValueOnce({
+				items: [{ id: "example-first", title: "Example first" }],
+				rawCount: 3,
+				total: 5,
+				hasNextPage: true,
+			})
+			.mockResolvedValueOnce({
+				items: [
+					{ id: "example-first", title: "Example first" },
+					{ id: "example-last", title: "Example last" },
+				],
+				rawCount: 2,
+				total: 5,
+				hasNextPage: false,
+			})
+			.mockResolvedValue({ items: [], rawCount: 0, hasNextPage: false });
+		const handler = await loadProcedureHandler();
+		const result = (await handler({
+			input: { projectId: "example-project", page: 1, pageSize: 30 },
+			context: {
+				user: { id: "example-user" },
+				session: { id: "example-session" },
+			},
+		})) as { tickets: { id: string }[] };
+		expect(result.tickets.map((item) => item.id)).toEqual([
+			"example-first",
+			"example-last",
+		]);
+		expect(mockListWorkItemsFromPM).toHaveBeenNthCalledWith(
+			1,
+			expect.objectContaining({ offset: 0 }),
+		);
+		expect(mockListWorkItemsFromPM).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({ offset: 3 }),
+		);
+		expect(mockListWorkItemsFromPM).toHaveBeenNthCalledWith(
+			3,
+			expect.objectContaining({ offset: 5 }),
+		);
+	});
+
 	it("honors XOR tenant context for personal projects (organizationId: null)", async () => {
 		defaultSetup({ project: { organizationId: null } });
 		mockDiscoverPMToolCapabilities.mockResolvedValue(jiraCapabilities());

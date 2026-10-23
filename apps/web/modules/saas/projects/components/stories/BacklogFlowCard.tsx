@@ -149,7 +149,9 @@ export function BacklogFlowCard({
 						? "Changes rejected"
 						: flow.outcome === "superseded"
 							? "Superseded by a new request"
-							: "Request cancelled"
+							: flow.workflowId
+								? "Analysis cancelled."
+								: "Request cancelled"
 					: "Analyzing Context";
 	return (
 		<section className="rounded-lg border p-4 space-y-2" aria-live="polite">

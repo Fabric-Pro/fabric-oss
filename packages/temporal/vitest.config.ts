@@ -1,3 +1,4 @@
+import { availableParallelism } from "node:os";
 import path from "node:path";
 import { defineConfig } from "vitest/config";
 
@@ -61,27 +62,27 @@ export default defineConfig({
 		// parallelism AND no transform reuse. On a 30-file subset that showed
 		// as 30.2s of import against 0.49s of actual test execution.
 		//
-		// Measured: this does NOT reliably shorten CI. On the 8-core runner
-		// three heavy packages run concurrently under `turbo --concurrency=4`,
-		// so the suite is bound by aggregate CPU — the cores freed here go to
-		// apps/web, which sets no cap and rose from ~314s to ~484s while this
-		// suite fell from ~558s to ~402s. Across three full uncached runs a
-		// side the step mean moved 645s -> 617s on ranges that overlap almost
-		// entirely, which is noise: treat CI wall clock as unchanged.
-		// The dependable gain is local, where one package runs at a time.
-		// Shortening CI needs more cores (sharding the job), not a different
-		// worker count here.
-		//
-		// A percentage rather than a fixed count so this scales with whatever
-		// it runs on — CI's 8-core runner resolves it to 4, a 2-core box to 1,
-		// a dev machine to half its cores. A hard-coded number tuned for CI
-		// would oversubscribe the small runners and starve the large ones.
 		// Full suite: >600s at one worker (killed at a 10-minute cap) against
 		// 91s at 10, with 491 files / 5575 tests passing either way.
 		//
+		// CI: every core but one, which is Vitest's own run-mode default and
+		// what apps/web already gets. Half the cores was right while three
+		// heavy packages shared one 8-core runner under `turbo --concurrency=4`
+		// (the suite was bound by aggregate CPU, so a bigger share here only
+		// slowed apps/web). unit-tests.yml now gives this package runners of
+		// its own, one Turbo task at a time, and "50%" left half of each idle:
+		// a full CI run kept about 3.7 files in flight (import 906s + tests
+		// 1060s over a 528s run) where an apps/web shard on the same runner
+		// type kept about 6.5.
+		//
+		// Locally: half the cores, a percentage so it scales with the machine,
+		// because `turbo run test` runs several packages at once there.
+		//
 		// Leave `isolate` at its default (true). Do NOT set isolate:false —
 		// measured directly, it fails 8 files / 69 tests in this suite.
-		maxWorkers: "50%",
+		maxWorkers: process.env.CI
+			? Math.max(availableParallelism() - 1, 1)
+			: "50%",
 		// ONE DATABASE, SO ONE FILE AT A TIME (Fizzy #2382). Every
 		// RUN_DB_INTEGRATION suite in this package shares a single Postgres, and
 		// `maxWorkers` above runs test FILES concurrently. That is safe only while

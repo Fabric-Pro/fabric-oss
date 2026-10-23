@@ -2,7 +2,7 @@
  * Letta Memory Activities
  *
  * Temporal activities for Letta-based semantic memory operations.
- * Provides tool result caching, execution history, and pattern learning.
+ * Provides tool result caching and cleanup of legacy run memory.
  *
  * @security All operations include:
  * - Agent ownership verification
@@ -130,8 +130,8 @@ function getLettaClientFromEnv(): LettaClient | null {
 // ============================================================================
 
 /**
- * Initialize or get existing Letta memory agent for a user
- * This agent stores execution history and learned patterns
+ * Initialize or get the organization-shared Letta memory agent.
+ * Tool cache entries are scoped by user; legacy run blocks are cleared at completion.
  */
 export async function initializeLettaMemory(
 	input: InitializeLettaMemoryInput,
@@ -588,99 +588,52 @@ export async function getCachedToolResult(
 // ============================================================================
 
 /**
- * Record an execution for pattern learning
+ * Clear legacy run text while preserving the scheduled activity contract.
+ * Organization-shared memory must not retain tasks or step descriptions.
  */
 export async function recordExecution(
 	input: RecordExecutionInput,
 ): Promise<void> {
-	const client = getLettaClientFromEnv();
-	if (!client) {
-		return;
-	}
-
 	try {
-		// Get or create the execution_history block (handles agents created before this feature)
-		const block = (await client.getOrCreateMemoryBlock(
-			input.lettaAgentId,
-			"execution_history",
-			"[]",
-			{
-				limit: 30000,
-				description:
-					"History of task executions for learning and optimization",
-			},
-		)) as { value?: string; _isMock?: boolean; label: string };
-
-		// Skip update if we got a mock block (Letta API issue)
-		if (block._isMock) {
-			console.warn(
-				`[LettaMemory] Skipping execution_history update - block is in corrupted state for agent ${input.lettaAgentId}`,
-			);
+		const client = getLettaClientFromEnv();
+		if (!client) {
 			return;
 		}
 
-		const history: Array<{
-			executionId: string;
-			task: string;
-			steps: typeof input.steps;
-			success: boolean;
-			durationMs: number;
-			recordedAt: string;
-		}> = JSON.parse(block.value || "[]");
-
-		history.push({
-			executionId: input.executionId,
-			task: input.task,
-			steps: input.steps,
-			success: input.success,
-			durationMs: input.durationMs,
-			recordedAt: new Date().toISOString(),
-		});
-
-		// Keep last 100 executions, but also truncate to fit character limit
-		// This prevents the "Value length exceeds block limit" error from Letta
-		const trimmed = truncateToFitLimit(
-			history.slice(-100),
-			LETTA_MEMORY_CHAR_LIMIT - 100, // Leave some buffer
-			{
-				summarizeEntry: summarizeExecutionEntry,
-				minEntries: 5, // Keep at least 5 recent executions
-			},
-		);
-
-		await client.updateMemoryBlock(
-			input.lettaAgentId,
+		for (const label of [
 			"execution_history",
-			JSON.stringify(trimmed),
-		);
-
-		// Record successful patterns
-		if (input.success) {
-			await recordSuccessfulPattern(client, input.lettaAgentId, {
-				task: input.task,
-				agents: [
-					...new Set(
-						input.steps
-							.map((s) => s.agentId)
-							.filter(Boolean) as string[],
-					),
-				],
-				stepCount: input.steps.length,
-				tools: input.steps
-					.flatMap((s) => s.toolCalls?.map((tc) => tc.name) || [])
-					.filter((v, i, arr) => arr.indexOf(v) === i),
-			});
-		} else {
-			// Record error pattern
-			await recordErrorPattern(client, input.lettaAgentId, {
-				task: input.task,
-				failedSteps: input.steps.filter((s) => s.status === "error"),
-			});
+			"successful_patterns",
+			"error_patterns",
+		]) {
+			try {
+				const block = await client.getMemoryBlock(
+					input.lettaAgentId,
+					label,
+				);
+				if (block && block.value !== "[]") {
+					await client.updateMemoryBlock(
+						input.lettaAgentId,
+						label,
+						"[]",
+					);
+				}
+			} catch (error) {
+				if (
+					error instanceof LettaError &&
+					error.code === "BLOCK_NOT_FOUND"
+				) {
+					continue;
+				}
+				// Provider errors can contain legacy block text; log only the label.
+				console.error(
+					"[LettaMemory] Failed to clear legacy run block",
+					{ label },
+				);
+			}
 		}
-
-		console.log(`[LettaMemory] Recorded execution: ${input.executionId}`);
-	} catch (error) {
-		console.error("[LettaMemory] Failed to record execution:", error);
+		console.log("[LettaMemory] Legacy run block cleanup finished");
+	} catch {
+		console.error("[LettaMemory] Failed to clear legacy run memory");
 	}
 }
 
@@ -688,82 +641,11 @@ export async function recordExecution(
 // Activity: Get Routing Suggestions
 // ============================================================================
 
-/**
- * Get routing suggestions based on historical patterns
- */
+/** Retained for registered activity compatibility; shared patterns are disabled. */
 export async function getRoutingSuggestions(
-	input: GetRoutingSuggestionsInput,
+	_input: GetRoutingSuggestionsInput,
 ): Promise<RoutingSuggestion[]> {
-	const client = getLettaClientFromEnv();
-	if (!client) {
-		return [];
-	}
-
-	try {
-		let block: { value: string } | undefined;
-		try {
-			block = await client.getMemoryBlock(
-				input.lettaAgentId,
-				"successful_patterns",
-			);
-		} catch (blockError) {
-			// Memory block may not exist yet - this is expected for new agents
-			if (
-				blockError instanceof Error &&
-				"code" in blockError &&
-				blockError.code === "BLOCK_NOT_FOUND"
-			) {
-				console.log(
-					"[LettaMemory] successful_patterns block not found, returning empty suggestions",
-				);
-				return [];
-			}
-			throw blockError;
-		}
-		const patterns = JSON.parse(block?.value || "[]") as Array<{
-			taskPattern: string;
-			agents: string[];
-			tools: string[];
-			stepCount: number;
-			usageCount: number;
-			lastUsed: string;
-		}>;
-
-		// Simple keyword matching
-		const taskLower = input.task.toLowerCase();
-		const taskWords = new Set(
-			taskLower.split(/\s+/).filter((w) => w.length > 2),
-		);
-
-		const matches = patterns
-			.map((p) => {
-				const patternWords = p.taskPattern.toLowerCase().split(/\s+/);
-				const overlap = patternWords.filter((w) =>
-					taskWords.has(w),
-				).length;
-				return { pattern: p, overlap };
-			})
-			.filter((m) => m.overlap >= 2)
-			.sort((a, b) => {
-				// Sort by overlap first, then usage count
-				if (b.overlap !== a.overlap) {
-					return b.overlap - a.overlap;
-				}
-				return b.pattern.usageCount - a.pattern.usageCount;
-			});
-
-		return matches.slice(0, 3).map((m) => ({
-			agents: m.pattern.agents,
-			confidence: Math.min(m.pattern.usageCount * 10 + m.overlap * 5, 90),
-			pattern: m.pattern.taskPattern,
-		}));
-	} catch (error) {
-		console.error(
-			"[LettaMemory] Failed to get routing suggestions:",
-			error,
-		);
-		return [];
-	}
+	return [];
 }
 
 // ============================================================================
@@ -823,114 +705,6 @@ export async function getCachedToolsSummary(
 // Helpers
 // ============================================================================
 
-/** Letta's character limit for memory blocks */
-const LETTA_MEMORY_CHAR_LIMIT = 30000;
-
-/**
- * Truncate an array of entries to fit within Letta's character limit.
- * Removes entries from the front (oldest) until it fits.
- * Also truncates individual entry data if entries are too large.
- */
-function truncateToFitLimit<T>(
-	entries: T[],
-	maxChars: number = LETTA_MEMORY_CHAR_LIMIT,
-	options?: {
-		/** Function to summarize/truncate individual entries if they're too large */
-		summarizeEntry?: (entry: T) => T;
-		/** Minimum entries to keep even if over limit */
-		minEntries?: number;
-	},
-): T[] {
-	const minEntries = options?.minEntries ?? 1;
-	let result = [...entries];
-
-	// First, try summarizing entries if they're too large
-	if (options?.summarizeEntry) {
-		const summarizeEntry = options.summarizeEntry;
-		result = result.map(summarizeEntry);
-	}
-
-	let serialized = JSON.stringify(result);
-
-	// Remove entries from the front until we're under the limit
-	while (serialized.length > maxChars && result.length > minEntries) {
-		result.shift(); // Remove oldest entry
-		serialized = JSON.stringify(result);
-	}
-
-	// If still over limit with minimum entries, truncate the content more aggressively
-	if (serialized.length > maxChars && options?.summarizeEntry) {
-		const summarizeEntry = options.summarizeEntry;
-		// Apply more aggressive truncation
-		result = result.map((entry) => {
-			const entryStr = JSON.stringify(entry);
-			if (entryStr.length > maxChars / minEntries) {
-				// Entry is too large, summarize it
-				return summarizeEntry(entry);
-			}
-			return entry;
-		});
-	}
-
-	return result;
-}
-
-/**
- * Summarize execution history entry to reduce size.
- * Truncates step data which can be very verbose.
- */
-function summarizeExecutionEntry(entry: {
-	executionId: string;
-	task: string;
-	steps: Array<{
-		stepId: string;
-		description: string;
-		status: string;
-		agentId?: string;
-		toolCalls?: Array<{ name: string; args?: unknown; result?: unknown }>;
-		output?: string;
-		error?: string;
-	}>;
-	success: boolean;
-	durationMs: number;
-	recordedAt: string;
-}): typeof entry {
-	return {
-		...entry,
-		// Truncate task if too long
-		task:
-			entry.task.length > 200
-				? `${entry.task.substring(0, 200)}...`
-				: entry.task,
-		// Summarize steps - keep structure but truncate verbose data
-		steps: entry.steps.map((step) => ({
-			stepId: step.stepId,
-			description:
-				step.description?.length > 100
-					? `${step.description.substring(0, 100)}...`
-					: step.description,
-			status: step.status,
-			agentId: step.agentId,
-			// Only keep tool names, not full args/results
-			toolCalls: step.toolCalls?.map((tc) => ({
-				name: tc.name,
-				// Truncate args summary
-				args: tc.args ? "[truncated]" : undefined,
-				result: undefined, // Drop results entirely - too large
-			})),
-			// Truncate output/error
-			output:
-				step.output?.length && step.output.length > 100
-					? `${step.output.substring(0, 100)}...`
-					: step.output,
-			error:
-				step.error?.length && step.error.length > 100
-					? `${step.error.substring(0, 100)}...`
-					: step.error,
-		})),
-	};
-}
-
 function createCacheKey(
 	toolName: string,
 	userId: string,
@@ -947,177 +721,4 @@ function createCacheKey(
 		.map(([k, v]) => `${k}=${JSON.stringify(v)}`)
 		.join("&");
 	return `${toolName}:${sortedArgs}:${userId}`;
-}
-
-async function recordSuccessfulPattern(
-	client: LettaClient,
-	agentId: string,
-	pattern: {
-		task: string;
-		agents: string[];
-		tools: string[];
-		stepCount: number;
-	},
-): Promise<void> {
-	try {
-		// Get or create the successful_patterns block (handles agents created before this feature)
-		const block = await client.getOrCreateMemoryBlock(
-			agentId,
-			"successful_patterns",
-			"[]",
-			{
-				limit: 10000,
-				description:
-					"Patterns of successful task executions for routing optimization",
-			},
-		);
-		const patterns = JSON.parse(block?.value || "[]") as Array<{
-			taskPattern: string;
-			agents: string[];
-			tools: string[];
-			stepCount: number;
-			usageCount: number;
-			lastUsed: string;
-		}>;
-
-		// Find similar pattern
-		const existing = patterns.find(
-			(p) =>
-				p.agents.sort().join(",") === pattern.agents.sort().join(",") &&
-				p.tools.sort().join(",") === pattern.tools.sort().join(","),
-		);
-
-		if (existing) {
-			existing.usageCount++;
-			existing.lastUsed = new Date().toISOString();
-		} else {
-			patterns.push({
-				taskPattern: pattern.task,
-				agents: pattern.agents,
-				tools: pattern.tools,
-				stepCount: pattern.stepCount,
-				usageCount: 1,
-				lastUsed: new Date().toISOString(),
-			});
-		}
-
-		// Keep top 50 by usage, but also ensure it fits within character limit
-		const sorted = patterns
-			.sort((a, b) => b.usageCount - a.usageCount)
-			.slice(0, 50);
-
-		// Truncate to fit Letta's character limit (successful_patterns has 10000 limit)
-		const truncated = truncateToFitLimit(sorted, 10000 - 50, {
-			summarizeEntry: (entry) => ({
-				...entry,
-				taskPattern:
-					entry.taskPattern.length > 150
-						? `${entry.taskPattern.substring(0, 150)}...`
-						: entry.taskPattern,
-			}),
-			minEntries: 10,
-		});
-
-		await client.updateMemoryBlock(
-			agentId,
-			"successful_patterns",
-			JSON.stringify(truncated),
-		);
-	} catch (error) {
-		console.error(
-			"[LettaMemory] Failed to record successful pattern:",
-			error,
-		);
-	}
-}
-
-async function recordErrorPattern(
-	client: LettaClient,
-	agentId: string,
-	pattern: {
-		task: string;
-		failedSteps: Array<{ stepId: string; description: string }>;
-	},
-): Promise<void> {
-	try {
-		let patterns: Array<{
-			taskPattern: string;
-			failedSteps: typeof pattern.failedSteps;
-			count: number;
-			lastOccurred: string;
-		}> = [];
-
-		// Get or create the error_patterns block (handles agents created before this feature)
-		const block = await client.getOrCreateMemoryBlock(
-			agentId,
-			"error_patterns",
-			"[]",
-			{
-				limit: 10000,
-				description: "Common error patterns and failures to avoid",
-			},
-		);
-		patterns = JSON.parse(block.value || "[]");
-
-		// Find similar error
-		const existing = patterns.find(
-			(p) =>
-				p.failedSteps
-					.map((s) => s.description)
-					.sort()
-					.join("|") ===
-				pattern.failedSteps
-					.map((s) => s.description)
-					.sort()
-					.join("|"),
-		);
-
-		if (existing) {
-			existing.count++;
-			existing.lastOccurred = new Date().toISOString();
-		} else {
-			patterns.push({
-				taskPattern: pattern.task,
-				failedSteps: pattern.failedSteps,
-				count: 1,
-				lastOccurred: new Date().toISOString(),
-			});
-		}
-
-		// Keep last 30 error patterns, but also ensure it fits within character limit
-		const sorted = patterns
-			.sort(
-				(a, b) =>
-					new Date(b.lastOccurred).getTime() -
-					new Date(a.lastOccurred).getTime(),
-			)
-			.slice(0, 30);
-
-		// Truncate to fit Letta's character limit (error_patterns has 10000 limit)
-		const truncated = truncateToFitLimit(sorted, 10000 - 50, {
-			summarizeEntry: (entry) => ({
-				...entry,
-				taskPattern:
-					entry.taskPattern.length > 150
-						? `${entry.taskPattern.substring(0, 150)}...`
-						: entry.taskPattern,
-				failedSteps: entry.failedSteps.map((step) => ({
-					...step,
-					description:
-						step.description?.length > 100
-							? `${step.description.substring(0, 100)}...`
-							: step.description,
-				})),
-			}),
-			minEntries: 5,
-		});
-
-		await client.updateMemoryBlock(
-			agentId,
-			"error_patterns",
-			JSON.stringify(truncated),
-		);
-	} catch (error) {
-		console.error("[LettaMemory] Failed to record error pattern:", error);
-	}
 }

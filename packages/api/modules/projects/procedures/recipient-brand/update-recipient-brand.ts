@@ -8,12 +8,10 @@ import {
 	RecipientBrandValidationError,
 } from "@repo/database";
 import {
-	LOGO_MAX_INPUT_BYTES,
 	type NormalizeLogoFailureCode,
-	normalizeLogo,
 	normalizeWebsiteUrl,
 } from "@repo/integrations/website-brand";
-import { getStorageProvider } from "@repo/storage";
+import { BRAND_ASSET_REJECTION_CODES } from "@repo/utils/brand-assets";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
 import {
@@ -24,39 +22,23 @@ import {
 import { requireGlossyOrProposalArtifactEnabled } from "../../lib/proposal-artifact-feature";
 import {
 	deleteRecipientBrandObjects,
+	deleteUnsavedRecipientLogo,
 	listRecipientLogoPendingKeys,
 	loadRecipientBrandProject,
-	newRecipientLogoCurrentKey,
-	recipientBrandBucket,
+	promoteRecipientLogo,
 	recipientLogoPendingKey,
 } from "../../lib/recipient-brand";
 
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 
-const LOGO_REJECTION_CODES = [
-	"too_large",
-	"unsupported",
-] as const satisfies readonly NormalizeLogoFailureCode[];
-
 type Promotion =
-	| { ok: true; key: string }
+	| { ok: true; key: string; hash: string }
 	| { ok: false; code: NormalizeLogoFailureCode };
 
-function storageFailure(): ORPCError<"INTERNAL_SERVER_ERROR", unknown> {
-	return new ORPCError("INTERNAL_SERVER_ERROR", {
-		message: "Could not save the logo",
-	});
-}
-
 /**
- * KTD23 step 1: normalize the pending object a token names and copy it to a
- * new immutable `current/{promotionId}.png`. Nothing references the new
- * object yet, so any failure here changes nothing.
- *
- * The bytes are untrusted whichever way they arrived — an editor's upload or
- * a website fetch — so both go through the same hardened pipeline, which
- * refuses anything that is not a raster PNG, JPEG, GIF or WebP (an SVG or an
- * HTML page uploaded as `image/png` included) and re-encodes the rest.
+ * Step 1 for an editor's upload or fetch: promote the pending object a token
+ * names through the shared pipeline (`promoteRecipientLogo`). A pending
+ * object belongs to this one confirmation, so a refused one is deleted here.
  */
 async function promotePendingLogo(
 	projectId: string,
@@ -65,54 +47,23 @@ async function promotePendingLogo(
 	// Built from the gated project and a token-shaped value only: a key, a
 	// path, `..`, or another project's object cannot be named here.
 	const pendingKey = recipientLogoPendingKey(projectId, token);
-	const storage = getStorageProvider();
-	const bucket = recipientBrandBucket();
-
-	let metadata: Awaited<ReturnType<typeof storage.getFileMetadata>>;
-	try {
-		metadata = await storage.getFileMetadata(pendingKey, { bucket });
-	} catch {
-		throw storageFailure();
-	}
-	if (!metadata) {
+	const promotion = await promoteRecipientLogo(projectId, pendingKey);
+	if (promotion.outcome === "missing") {
 		// Never issued for this project, already consumed, or cleaned up
 		// after another editor's confirmation.
 		throw new ORPCError("BAD_REQUEST", {
 			message: "The logo upload was not found. Upload or fetch it again.",
 		});
 	}
-
-	let normalized: Awaited<ReturnType<typeof normalizeLogo>>;
-	if (metadata.size > LOGO_MAX_INPUT_BYTES) {
-		normalized = { ok: false, code: "too_large" };
-	} else {
-		let bytes: Buffer;
-		try {
-			bytes = (await storage.downloadFile(pendingKey, { bucket })).data;
-		} catch {
-			throw storageFailure();
-		}
-		normalized = await normalizeLogo(bytes);
-	}
-	if (!normalized.ok) {
+	if (promotion.outcome === "rejected") {
 		await deleteRecipientBrandObjects(projectId, [pendingKey]);
-		return { ok: false, code: normalized.code };
+		return { ok: false, code: promotion.code };
 	}
-
-	const key = newRecipientLogoCurrentKey(projectId);
-	try {
-		await storage.uploadFile(key, normalized.png, {
-			bucket,
-			contentType: "image/png",
-		});
-	} catch {
-		throw storageFailure();
-	}
-	return { ok: true, key };
+	return { ok: true, key: promotion.key, hash: promotion.hash };
 }
 
 /**
- * Confirm the project's recipient brand (Fizzy #2589, R32, R33, KTD23).
+ * Confirm the project's recipient brand (Fizzy #2589).
  *
  * The editor sends the whole brand plus the `version` they read. A new logo
  * is named by the token a fetch or an upload returned, and is promoted in
@@ -122,15 +73,16 @@ async function promotePendingLogo(
  *   3. on `applied`, delete the superseded logo and every pending object —
  *      each belongs to a flow that read an older version and can now only
  *      conflict; on `conflict`, delete the object this attempt promoted, so
- *      one editor cannot confirm over another's change without seeing it.
+ *      one editor cannot confirm over another's change without seeing it; on
+ *      an error, delete it only when the stored row does not point at it.
  * Step 3 is best-effort: a leftover object is unreferenced, stays under the
  * project prefix, and goes when the project does.
  *
  * AUTHORIZATION: `requireGlossyOrProposalArtifactEnabled` first (GLOSSY_EDITION
  * and PROPOSAL_ARTIFACT both off → NOT_FOUND for every caller), then
- * `requireProjectPermission(DOCUMENT_UPDATE)`, then the shared
- * recipient brand gate including `canEditProject` (an invited guest editor
- * passes it).
+ * `requireProjectPermission(DOCUMENT_UPDATE)`, then the shared recipient
+ * brand write gate: `canEditProject` and a `member` row in the project's
+ * owning organization, so a project guest editor is FORBIDDEN.
  */
 export const updateRecipientBrandProcedure = tenantProtectedProcedure
 	.use(requireGlossyOrProposalArtifactEnabled())
@@ -173,7 +125,7 @@ export const updateRecipientBrandProcedure = tenantProtectedProcedure
 			z.object({ outcome: z.literal("conflict") }),
 			z.object({
 				outcome: z.literal("logoRejected"),
-				code: z.enum(LOGO_REJECTION_CODES),
+				code: z.enum(BRAND_ASSET_REJECTION_CODES),
 			}),
 		]),
 	)
@@ -216,17 +168,23 @@ export const updateRecipientBrandProcedure = tenantProtectedProcedure
 		// An early answer for the common stale case: someone confirmed since
 		// this editor read. The compare-and-set below stays the authority;
 		// this only spares a promotion that could not win.
-		const current = await getRecipientBrand(projectId);
+		const row = await getRecipientBrand(projectId);
+		// A row left behind in another organization is no recipient brand,
+		// and its logo is never kept into this one.
+		const current = row?.organizationId === organizationId ? row : null;
 		if ((current?.version ?? 0) !== expectedVersion) {
 			return { outcome: "conflict" as const };
 		}
 
 		let logoKey: string | null = null;
+		let logoHash: string | null = null;
 		let promotedKey: string | null = null;
 		if (input.logo.action === "keep") {
 			// Unchanged by construction: the compare-and-set applies only at
-			// the version this row was read at.
+			// the version this row was read at. The hash goes with the logo,
+			// so a later website fetch of the same logo reads as the same.
 			logoKey = current?.logoKey ?? null;
+			logoHash = current?.logoHash ?? null;
 		} else if (input.logo.action === "replace") {
 			const promotion = await promotePendingLogo(
 				projectId,
@@ -239,6 +197,7 @@ export const updateRecipientBrandProcedure = tenantProtectedProcedure
 				};
 			}
 			logoKey = promotion.key;
+			logoHash = promotion.hash;
 			promotedKey = promotion.key;
 		}
 
@@ -249,17 +208,18 @@ export const updateRecipientBrandProcedure = tenantProtectedProcedure
 				expectedVersion,
 				...fields,
 				logoKey,
+				logoHash,
 				updatedById: context.user.id,
 				organizationId,
 			});
 		} catch (error) {
-			if (promotedKey) {
-				await deleteRecipientBrandObjects(projectId, [promotedKey]);
-			}
+			await deleteUnsavedRecipientLogo(projectId, promotedKey);
 			throw error;
 		}
 
-		if (result.outcome === "conflict") {
+		// `stale` answers only a confirmation that names a suggestion, which
+		// this save never does; it is a conflict here all the same.
+		if (result.outcome !== "applied") {
 			if (promotedKey) {
 				await deleteRecipientBrandObjects(projectId, [promotedKey]);
 			}

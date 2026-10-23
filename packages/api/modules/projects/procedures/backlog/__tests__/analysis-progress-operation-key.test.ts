@@ -23,7 +23,10 @@ vi.mock("../../../../../orpc/procedures", () => {
 		Permissions: { PROJECT_UPDATE: "PROJECT_UPDATE" },
 	};
 });
-vi.mock("@repo/temporal", () => ({
+vi.mock("@repo/temporal", async () => ({
+	...(await import(
+		"../../../../../../temporal/src/workflows/backlog-constants"
+	)),
 	getTemporalClient: h.client,
 	analysisProgressQuery: "progress",
 	analysisResultQuery: "proposal",

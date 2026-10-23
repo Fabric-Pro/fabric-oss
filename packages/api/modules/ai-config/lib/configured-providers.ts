@@ -47,7 +47,7 @@ function getCapableProvidersForTask(
 		case "EMBEDDING":
 			return ALL_EMBEDDING_CAPABLE_PROVIDERS;
 		case "DECISION":
-			return ["VERCEL_GATEWAY"];
+			return ["VERCEL_GATEWAY", "DATABRICKS"];
 		default:
 			return null; // Not a specialized task, use default provider only
 	}

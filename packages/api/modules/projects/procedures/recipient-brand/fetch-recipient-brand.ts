@@ -25,8 +25,7 @@ import {
 } from "../../lib/recipient-brand";
 
 /**
- * Propose a recipient brand from the recipient's own website (Fizzy #2589,
- * R33, R34, KTD22, KTD23).
+ * Propose a recipient brand from the recipient's own website (Fizzy #2589).
  *
  * The extractor is SSRF-safe and deterministic; this procedure adds the parts
  * it leaves to its caller: the per-user rate limit (checked BEFORE any
@@ -34,14 +33,15 @@ import {
  * the audit record. Nothing is saved to the project — the editor confirms,
  * edits or discards the proposal through `recipientBrand.update`.
  *
- * A failure is an answer, not an error (R34, AE9): a fixed code and whatever
- * colors were found, so the form falls back to manual entry. It never carries
- * a host, resolver message or upstream text.
+ * A failure is an answer, not an error: a fixed code and whatever colors
+ * were found, so the form falls back to manual entry. It never carries a
+ * host, resolver message or upstream text.
  *
  * AUTHORIZATION: `requireGlossyOrProposalArtifactEnabled` first (GLOSSY_EDITION
  * and PROPOSAL_ARTIFACT both off → NOT_FOUND for every caller), then
- * `requireProjectPermission(DOCUMENT_UPDATE)`, then the shared
- * recipient brand gate including `canEditProject`.
+ * `requireProjectPermission(DOCUMENT_UPDATE)`, then the shared recipient
+ * brand write gate: `canEditProject` and a `member` row in the project's
+ * owning organization, so a project guest editor is FORBIDDEN.
  */
 export const fetchRecipientBrandProcedure = tenantProtectedProcedure
 	.use(requireGlossyOrProposalArtifactEnabled())

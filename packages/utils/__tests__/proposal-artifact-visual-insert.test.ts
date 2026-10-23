@@ -82,6 +82,7 @@ describe("insertVisuals", () => {
 		expect(result).toEqual({
 			markdown: DOC,
 			inserted: 0,
+			insertedIndexes: [],
 			skipped: 0,
 			unmatched: 1,
 		});
@@ -95,6 +96,7 @@ describe("insertVisuals", () => {
 		expect(result).toEqual({
 			markdown: DOC,
 			inserted: 0,
+			insertedIndexes: [],
 			skipped: 1,
 			unmatched: 0,
 		});
@@ -363,6 +365,7 @@ describe("insertVisuals", () => {
 		expect(result).toEqual({
 			markdown: DOC,
 			inserted: 0,
+			insertedIndexes: [],
 			skipped: 2,
 			unmatched: 0,
 		});
@@ -401,8 +404,25 @@ describe("insertVisuals", () => {
 		expect(insertVisuals(DOC, [])).toEqual({
 			markdown: DOC,
 			inserted: 0,
+			insertedIndexes: [],
 			skipped: 0,
 			unmatched: 0,
+		});
+	});
+
+	it("reports which of the given visuals it placed", () => {
+		const result = insertVisuals(DOC, [
+			visual(["website redesign proposal", "pricing"]),
+			visual(["overview"]),
+			visual(["timeline"]),
+			visual(["investment"]),
+		]);
+
+		expect(result).toMatchObject({
+			inserted: 2,
+			insertedIndexes: [1, 3],
+			skipped: 1,
+			unmatched: 1,
 		});
 	});
 
@@ -426,6 +446,27 @@ describe("toMermaidFence", () => {
 		expect(toMermaidFence(lines("flowchart LR", "````", "A"))).toBe(
 			lines("`````mermaid", "flowchart LR", "````", "A", "`````"),
 		);
+	});
+});
+
+describe("toMermaidFence with a visual id (Fizzy #2946)", () => {
+	it("opens the body with the marker line", () => {
+		expect(
+			toMermaidFence("\nflowchart LR\nA --> B\n", "k3v9q2m7x1a8c4d6"),
+		).toBe(
+			lines(
+				"```mermaid",
+				"%% fabric-visual: k3v9q2m7x1a8c4d6",
+				"flowchart LR",
+				"A --> B",
+				"```",
+			),
+		);
+	});
+
+	it("refuses an id of the wrong shape", () => {
+		expect(() => toMermaidFence("flowchart LR", "Not-An-Id")).toThrow();
+		expect(() => toMermaidFence("flowchart LR", "short")).toThrow();
 	});
 });
 

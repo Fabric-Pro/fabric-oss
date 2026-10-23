@@ -5,20 +5,23 @@
  * opens one only to screenshot diagrams. Every stage's warnings are merged by
  * code in declared order, a diagram or logo failure never fails the export,
  * an access failure uploads nothing, and the result is the upload's key with
- * no URL in it.
+ * no URL in it. After the upload, and only then, the brand the export printed
+ * is recorded against the document; a failed record never fails the export.
  *
  * Mocked: every stage (`load-export-input` except the real `exportDateLabel`,
  * `load-theme-assets`, `render-diagrams`, `print-pdf`, `upload-export`), the
  * browser (`withExportBrowser` runs `work` on a fake), the page and DOCX
  * builders, the image reader (keeping the real `createExportImageBudget`),
- * the heartbeat ticker (runs its function directly) and the stores the real
- * modules import. `prepareExportMarkdown`, `resolveThemePaint`,
- * `exportFileName` and `mergeExportWarnings` are real.
+ * the heartbeat ticker (runs its function directly), the brand record write
+ * and the stores the real modules import. `prepareExportMarkdown`,
+ * `resolveThemePaint`, `themeTokenHash`, `exportFileName` and
+ * `mergeExportWarnings` are real.
  */
 
 import {
 	buildProposalThemeTokens,
 	type ProposalThemeTokens,
+	themeTokenHash,
 } from "@repo/utils/proposal-artifact/theme-tokens";
 import { ApplicationFailure } from "@temporalio/common";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -34,14 +37,16 @@ const h = vi.hoisted(() => ({
 	buildProposalDocx: vi.fn(),
 	extractDocumentImages: vi.fn(),
 	withHeartbeatTicker: vi.fn(),
+	recordProposalExportBrand: vi.fn(),
 	loggerInfo: vi.fn(),
+	loggerWarn: vi.fn(),
 	fakeBrowser: { newPage: vi.fn(), blockedRequests: 0 },
 }));
 
 vi.mock("@repo/logs", () => ({
 	logger: {
 		info: h.loggerInfo,
-		warn: vi.fn(),
+		warn: h.loggerWarn,
 		error: vi.fn(),
 		debug: vi.fn(),
 	},
@@ -59,6 +64,7 @@ vi.mock("@repo/database", () => ({
 	hasProjectAccess: vi.fn(),
 	isProposalClientDocument: vi.fn(),
 	resolveGuestSafeProposalThemeTokens: vi.fn(),
+	recordProposalExportBrand: h.recordProposalExportBrand,
 }));
 vi.mock("../load-export-input", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../load-export-input")>()),
@@ -145,6 +151,8 @@ function arrange(
 	options: {
 		content?: string;
 		title?: string;
+		stored?: ProposalThemeTokens;
+		printed?: ProposalThemeTokens;
 		logoWarnings?: ProposalExportWarning[];
 		imageWarnings?: ProposalExportWarning[];
 		diagramWarnings?: ProposalExportWarning[];
@@ -156,10 +164,11 @@ function arrange(
 	h.loadExportInput.mockResolvedValue({
 		title: options.title ?? "Example Proposal: Q3 Pilot!",
 		content: options.content ?? PLAIN_CONTENT,
-		tokens: STORED_TOKENS,
+		tokens: options.stored ?? STORED_TOKENS,
 	});
 	h.loadThemeAssets.mockResolvedValue({
 		tokens: PRINT_TOKENS,
+		printed: options.printed ?? options.stored ?? STORED_TOKENS,
 		warnings: options.logoWarnings ?? [],
 	});
 	h.extractDocumentImages.mockResolvedValue({
@@ -225,6 +234,7 @@ beforeEach(() => {
 	h.withHeartbeatTicker.mockImplementation(
 		async (fn: () => Promise<unknown>) => await fn(),
 	);
+	h.recordProposalExportBrand.mockResolvedValue(true);
 	arrange();
 });
 
@@ -534,6 +544,281 @@ describe("exportProposalDocumentActivity: warnings and failures", () => {
 			exportProposalDocumentActivity(input("pdf")),
 		).rejects.toMatchObject({ type: "EXPORT_TIMED_OUT" });
 		expect(h.uploadProposalExport).not.toHaveBeenCalled();
+	});
+});
+
+describe("exportProposalDocumentActivity: the brand record", () => {
+	type Recorded = {
+		documentId: string;
+		projectId: string;
+		organizationId: string;
+		themeTokenHash: string;
+		format: string;
+		exportedAt: Date;
+	};
+
+	function recorded(): Recorded {
+		expect(h.recordProposalExportBrand).toHaveBeenCalledTimes(1);
+		return h.recordProposalExportBrand.mock.calls[0]?.[0] as Recorded;
+	}
+
+	it("records the hash of the printed tokens for a PDF, after the upload", async () => {
+		const before = new Date();
+		await exportProposalDocumentActivity(input("pdf"));
+		const after = new Date();
+
+		const row = recorded();
+		expect(row).toEqual({
+			documentId: "document-example-1",
+			projectId: "project-example-1",
+			organizationId: "org-example-1",
+			themeTokenHash: themeTokenHash(STORED_TOKENS),
+			format: "PDF",
+			exportedAt: expect.any(Date),
+		});
+		expect(row.exportedAt.getTime()).toBeGreaterThanOrEqual(
+			before.getTime(),
+		);
+		expect(row.exportedAt.getTime()).toBeLessThanOrEqual(after.getTime());
+		expect(h.uploadProposalExport.mock.invocationCallOrder[0]).toBeLessThan(
+			h.recordProposalExportBrand.mock.invocationCallOrder[0],
+		);
+	});
+
+	it("records a Word export as DOCX", async () => {
+		await exportProposalDocumentActivity(input("docx"));
+
+		expect(recorded().format).toBe("DOCX");
+	});
+
+	it("records when the export resolved its tokens, not when it finished", async () => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		try {
+			const resolvedAt = new Date("2026-10-22T09:00:00.000Z");
+			vi.setSystemTime(resolvedAt);
+			h.loadExportInput.mockImplementation(async () => {
+				vi.setSystemTime(resolvedAt.getTime() + 1_000);
+				return {
+					title: "Example Proposal",
+					content: PLAIN_CONTENT,
+					tokens: STORED_TOKENS,
+				};
+			});
+			const upload = h.uploadProposalExport.getMockImplementation();
+			h.uploadProposalExport.mockImplementation(async (...args) => {
+				vi.setSystemTime(resolvedAt.getTime() + 30_000);
+				return upload?.(...args);
+			});
+
+			await exportProposalDocumentActivity(input("pdf"));
+
+			expect(recorded().exportedAt.getTime()).toBe(resolvedAt.getTime());
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	/** Export `printed` in `format` and return the hash it recorded. */
+	async function recordedHash(
+		format: ProposalExportWorkflowInput["format"],
+		printed: ProposalThemeTokens,
+	): Promise<string> {
+		arrange({ stored: printed, printed });
+		h.recordProposalExportBrand.mockClear();
+		await exportProposalDocumentActivity(input(format));
+		return recorded().themeTokenHash;
+	}
+
+	function brandedTokens(fonts: {
+		display: string | null;
+		body: string | null;
+		displayFile?: string | null;
+		bodyFile?: string | null;
+		primary?: string;
+	}): ProposalThemeTokens {
+		return buildProposalThemeTokens({
+			organization: { name: "Example Org", logoKey: null },
+			style: null,
+			brandKit: {
+				accentColors: ["#0d9488"],
+				primaryColor: fonts.primary ?? "#1f3a6b",
+				displayFontFamily: fonts.display,
+				bodyFontFamily: fonts.body,
+				displayFontFileId: fonts.displayFile ?? null,
+				bodyFontFileId: fonts.bodyFile ?? null,
+			},
+			recipient: null,
+		});
+	}
+
+	it("leaves a PDF's record hash alone when only the Brand kit fonts change, since print sets Inter", async () => {
+		const none = await recordedHash(
+			"pdf",
+			brandedTokens({ display: null, body: null }),
+		);
+		const named = await recordedHash(
+			"pdf",
+			brandedTokens({ display: "Example Serif", body: "Example Sans" }),
+		);
+		const uploaded = await recordedHash(
+			"pdf",
+			brandedTokens({
+				display: "Example Display",
+				body: "Example Text",
+				displayFile: "font-file-example-1",
+				bodyFile: "font-file-example-2",
+			}),
+		);
+
+		expect(named).toBe(none);
+		expect(uploaded).toBe(none);
+		// A colour change still reads as a different brand.
+		expect(
+			await recordedHash(
+				"pdf",
+				brandedTokens({
+					display: null,
+					body: null,
+					primary: "#7c2d12",
+				}),
+			),
+		).not.toBe(none);
+	});
+
+	it("never counts uploaded font files for a Word export, which writes the family names only", async () => {
+		const named = brandedTokens({
+			display: "Example Serif",
+			body: "Example Sans",
+		});
+		const withFiles = brandedTokens({
+			display: "Example Serif",
+			body: "Example Sans",
+			displayFile: "font-file-example-1",
+			bodyFile: "font-file-example-2",
+		});
+		expect(withFiles.proposer.fontFiles?.display.value).toBe(
+			"font-file-example-1",
+		);
+
+		const namedHash = await recordedHash("docx", named);
+
+		expect(await recordedHash("docx", withFiles)).toBe(namedHash);
+		expect(
+			await recordedHash(
+				"docx",
+				brandedTokens({
+					display: "Example Display",
+					body: "Example Sans",
+				}),
+			),
+		).not.toBe(namedHash);
+	});
+
+	it("hashes what printed, so an asset the export left out does not count", async () => {
+		const stored = buildProposalThemeTokens({
+			organization: { name: "Example Org", logoKey: "org-example-1.png" },
+			style: null,
+			brandKit: null,
+			recipient: null,
+		});
+		const printed: ProposalThemeTokens = {
+			...stored,
+			proposer: {
+				...stored.proposer,
+				logo: { value: null, source: "BRAND_KIT" },
+			},
+		};
+		arrange({ stored, printed });
+
+		await exportProposalDocumentActivity(input("pdf"));
+
+		expect(recorded().themeTokenHash).toBe(themeTokenHash(printed));
+		expect(recorded().themeTokenHash).not.toBe(themeTokenHash(stored));
+	});
+
+	it("records the neutral brand for a document with no brand values, printed with no logo, no hero and Inter", async () => {
+		const neutral = buildProposalThemeTokens({
+			organization: null,
+			style: null,
+			brandKit: null,
+			recipient: null,
+		});
+		arrange({ stored: neutral });
+		h.loadThemeAssets.mockResolvedValue({
+			tokens: neutral as unknown as ExportThemeTokens,
+			printed: neutral,
+			warnings: [],
+		});
+
+		await exportProposalDocumentActivity(input("pdf"));
+
+		const page = h.buildThemeHtml.mock.calls[0]?.[0] as {
+			tokens: ExportThemeTokens;
+		};
+		expect(page.tokens.proposer.logo.value).toBeNull();
+		expect(page.tokens.proposer.hero.value).toBeNull();
+		expect(page.tokens.recipient.logo.value).toBeNull();
+		expect(page.tokens.proposer.fonts.display.value).toBe("Inter");
+		expect(page.tokens.proposer.fonts.body.value).toBe("Inter");
+		expect(recorded().themeTokenHash).toBe(themeTokenHash(neutral));
+	});
+
+	it("writes nothing when the upload fails", async () => {
+		h.uploadProposalExport.mockRejectedValue(new Error("upload failed"));
+
+		await expect(
+			exportProposalDocumentActivity(input("pdf")),
+		).rejects.toThrow("upload failed");
+		expect(h.recordProposalExportBrand).not.toHaveBeenCalled();
+	});
+
+	it("writes nothing when the render fails", async () => {
+		h.withExportBrowser.mockRejectedValue(
+			exportFailure("EXPORT_TIMED_OUT"),
+		);
+
+		await expect(
+			exportProposalDocumentActivity(input("pdf")),
+		).rejects.toMatchObject({ type: "EXPORT_TIMED_OUT" });
+		expect(h.recordProposalExportBrand).not.toHaveBeenCalled();
+	});
+
+	it("still returns the uploaded file when the record write fails, logging only ids and the error's name", async () => {
+		h.recordProposalExportBrand.mockRejectedValue(
+			new Error("connection to db.example.com reset"),
+		);
+
+		const result = await exportProposalDocumentActivity(input("pdf"));
+
+		expect(result).toMatchObject({
+			key: `proposal-exports/project-example-1/${EXPORT_ID}.pdf`,
+			contentType: "application/pdf",
+		});
+		expect(h.loggerWarn).toHaveBeenCalledWith(
+			{
+				event: "proposal_export.brand_not_recorded",
+				organizationId: "org-example-1",
+				projectId: "project-example-1",
+				documentId: "document-example-1",
+				exportId: EXPORT_ID,
+				errorName: "Error",
+			},
+			expect.any(String),
+		);
+		expect(JSON.stringify(h.loggerWarn.mock.calls)).not.toContain(
+			"db.example.com",
+		);
+	});
+
+	it("still returns the uploaded file when a newer export already holds the record", async () => {
+		h.recordProposalExportBrand.mockResolvedValue(false);
+
+		const result = await exportProposalDocumentActivity(input("pdf"));
+
+		expect(result.key).toBe(
+			`proposal-exports/project-example-1/${EXPORT_ID}.pdf`,
+		);
+		expect(h.loggerWarn).not.toHaveBeenCalled();
 	});
 });
 

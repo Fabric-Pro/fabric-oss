@@ -6,6 +6,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 import yaml
 from types import SimpleNamespace
@@ -130,14 +131,21 @@ class StagingWorkflowContracts(unittest.TestCase):
             'SOURCE_REPOSITORY_ID': '${{ github.repository_id }}',
         }
         # Both jobs that push tags or attestations into the private packages.
+        # The reuse job checks every component of its chunk in turn.
         for name, publishes in [('build', lambda step: step.get('id') == 'build'),
-                                ('reuse', lambda step: step.get('name') == 'Tag the reused digest with the full SHA')]:
+                                ('reuse', lambda step: step.get('id') == 'verify')]:
             job = data['jobs'][name]
             steps = job['steps']
             privacy_steps = [step for step in steps if helper in step.get('run', '')]
             self.assertEqual(len(privacy_steps), 1, name)
             privacy = privacy_steps[0]
-            for key, value in expected_env.items():
+            env = dict(expected_env)
+            if name == 'reuse':
+                del env['COMPONENT']
+                self.assertNotIn('COMPONENT', privacy['env'])
+                self.assertIn('''COMPONENTS=$(jq -er '.[].component' <<<"$REUSED")''', privacy['run'])
+                self.assertIn('for COMPONENT in $COMPONENTS; do', privacy['run'])
+            for key, value in env.items():
                 with self.subTest(job=name, env=key):
                     self.assertEqual(privacy['env'].get(key), value)
             self.assertIn('set -euo pipefail', privacy['run'])
@@ -257,18 +265,29 @@ class StagingWorkflowContracts(unittest.TestCase):
             expression = expression[3:-2].strip().replace('&&', ' and ').replace('||', ' or ')
             return eval(expression, {'__builtins__': {}}, {'github': SimpleNamespace(event_name=event, ref=ref)})
         reuse = data['jobs']['plan']['env']['REUSE']
+        runner = data['jobs']['build']['runs-on']
         for event, ref, automatic in [('push', 'refs/heads/staging', True),
                                       ('push', 'refs/heads/promotion/example-cycle', False),
                                       ('workflow_dispatch', 'refs/heads/staging', False),
                                       ('workflow_dispatch', 'refs/heads/promotion/example-cycle', False)]:
             with self.subTest(event=event, ref=ref):
                 self.assertEqual(evaluate(reuse, event, ref), automatic)
-        # Larger runners cost more than they save on these builds (measured on
-        # 2026-10-15 against every October staging run), so every job stays on
-        # the standard runner.
+                # Promotion and recovery builds keep the runner they always used.
+                self.assertEqual(evaluate(runner, event, ref), 'ubuntu-8core' if automatic else 'ubuntu-latest')
+        # A deliberate trade of cost for speed, chosen by the owner on
+        # 2026-10-23. The 2026-10-15 scratch runs measured the 8-core x64 runner
+        # (3.7x the per-minute price) at 1.3x on cached builds, 1.7x on
+        # dependency-layer rebuilds and 1.7x on SBOM scans, with no disk
+        # reclaim. Replaying the 194 automatic staging runs of 2026-10-16..23
+        # with those ratios: build-job billed minutes 13,755 -> ~7,750 and
+        # images cost ~$100 -> ~$180 a week, while the median run drops from
+        # ~11 to ~7 minutes and p90 from ~18 to ~10. The larger runner is
+        # GitHub-hosted, so admission's --deny-self-hosted-runners still holds.
+        # Every other job is short and stays on the standard runner.
         for name, job in data['jobs'].items():
-            with self.subTest(job=name):
-                self.assertEqual(job['runs-on'], 'ubuntu-latest')
+            if name != 'build':
+                with self.subTest(job=name):
+                    self.assertEqual(job['runs-on'], 'ubuntu-latest')
         self.assertIn("github.ref == 'refs/heads/staging'", data['jobs']['reuse']['if'])
         self.assertNotIn('promotion', data['jobs']['reuse']['if'])
         plan = next(step for step in data['jobs']['plan']['steps'] if step.get('id') == 'plan')
@@ -276,6 +295,402 @@ class StagingWorkflowContracts(unittest.TestCase):
         # Without inputs the build adds no label, so those images are unchanged.
         build = next(step for step in data['jobs']['build']['steps'] if step.get('id') == 'build')
         self.assertIn("${{ matrix.inputs != '' && format('{0}={1}', env.INPUTS_LABEL, matrix.inputs) || '' }}", build['with']['labels'])
+
+    def test_reuse_plan_reads_the_previous_snapshot_tags_at_once(self):
+        plan = next(step for step in workflow('private-staging-images.yml')['jobs']['plan']['steps']
+                     if step.get('id') == 'plan')
+        previous_sha, other_sha, current = 'a' * 40, 'b' * 40, 'e' * 40
+        namespace = 'ghcr.io/example/snapshots'
+        base_digest = 'sha256:' + '4' * 64
+        image = lambda digest: json.dumps({'manifest': {'digest': digest}, 'image': {
+            'created': '2026-10-23T10:00:00Z', 'config': {'Labels': {'example.inputs': 'sha256:' + '1' * 64}}}})
+        expected_image = lambda digest: {'digest': digest, 'created': '2026-10-23T10:00:00Z',
+                                         'labels': {'example.inputs': 'sha256:' + '1' * 64}}
+        run = lambda run_id, sha, created, branch='staging', path='.github/workflows/private-staging-images.yml': {
+            'id': run_id, 'head_sha': sha, 'created_at': created, 'head_branch': branch,
+            'head_repository': {'full_name': 'example-org/example'}, 'path': path}
+        current_run = run(90, current, '2026-10-23T12:00:00Z')
+        fakes = {
+            'gh': '#!/bin/bash\ncat "$FAKE/runs.json"\n',
+            # `buildx imagetools inspect <ref> --format <format>`: c2 has no tag.
+            'docker': f'''#!/bin/bash
+echo "$4" >>"$FAKE/inspected.log"
+case "$4" in
+  node:22-slim) echo '{{"digest":"{base_digest}"}}' ;;
+  {namespace}/c1:{previous_sha}) cat "$FAKE/c1.json" ;;
+  {namespace}/c3:{previous_sha}) cat "$FAKE/c3.json" ;;
+  *) echo "not found: $4" >&2; exit 1 ;;
+esac
+''',
+            # The planner's contract: a component the snapshot has is reused.
+            'node': '''#!/bin/bash
+case "$2" in
+  components) printf 'c1\\nc2\\nc3\\n' ;;
+  images) echo node:22-slim ;;
+  plan)
+    previous=$(sed -n 's/.*--previous \\([^ ]*\\).*/\\1/p' <<<"$*")
+    jq -c '. as $snapshot | {
+      build: [("c1", "c2", "c3") | select($snapshot.images[.] == null) | {component: ., reason: "inputs changed"}],
+      reuse: [("c1", "c2", "c3") | select($snapshot.images[.] != null)
+              | {component: ., digest: $snapshot.images[.].digest, reusedSourceSha: $snapshot.sourceSha}]}' "$previous" ;;
+  *) exit 2 ;;
+esac
+''',
+        }
+        for runs, expected_previous, expected_inspections, counts in [
+            ([current_run, run(80, previous_sha, '2026-10-23T11:00:00Z'), run(70, other_sha, '2026-10-23T10:00:00Z'),
+              run(40, other_sha, '2026-10-23T11:30:00Z', branch='example-branch'),
+              run(30, other_sha, '2026-10-23T11:45:00Z', path='.github/workflows/other.yml')],
+             {'sourceSha': previous_sha, 'run': '80', 'images': {
+                 'c1': expected_image('sha256:' + '2' * 64), 'c3': expected_image('sha256:' + '3' * 64)}},
+             [f'{namespace}/{component}:{previous_sha}' for component in ['c1', 'c2', 'c3']], ('1', '2')),
+            ([current_run], {}, [], ('3', '0')),
+        ]:
+            with self.subTest(previous=bool(expected_previous)), tempfile.TemporaryDirectory() as directory:
+                temp = pathlib.Path(directory)
+                bin_dir = temp / 'bin'
+                bin_dir.mkdir()
+                (temp / 'runs.json').write_text(json.dumps({'workflow_runs': runs}))
+                (temp / 'c1.json').write_text(image('sha256:' + '2' * 64))
+                (temp / 'c3.json').write_text(image('sha256:' + '3' * 64))
+                for name, text in fakes.items():
+                    (bin_dir / name).write_text(text)
+                    (bin_dir / name).chmod(0o755)
+                output, summary = temp / 'output', temp / 'summary'
+                result = subprocess.run(['bash', '-c', plan['run']], cwd=directory, env={
+                    'PATH': str(bin_dir) + os.pathsep + os.environ['PATH'], 'FAKE': directory,
+                    'REUSE': 'true', 'GH_TOKEN': 'synthetic-token', 'REPOSITORY': 'example-org/example',
+                    'RUN_ID': '90', 'SNAPSHOT_NAMESPACE': namespace, 'GITHUB_SHA': current,
+                    'GITHUB_REF': 'refs/heads/staging', 'RUNNER_TEMP': directory,
+                    'GITHUB_OUTPUT': str(output), 'GITHUB_STEP_SUMMARY': str(summary),
+                    'REUSE_SLOTS': '1',
+                }, capture_output=True, text=True, timeout=30)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                inspected = (temp / 'inspected.log').read_text().split()
+                self.assertEqual(inspected[0], 'node:22-slim')
+                # The newest other successful staging run, every component once.
+                self.assertEqual(sorted(inspected[1:]), expected_inspections)
+                self.assertEqual(json.loads((temp / 'previous.json').read_text()), expected_previous)
+                # A tag that could not be read leaves no partial record behind.
+                self.assertFalse((temp / 'inspected' / 'c2.json').exists())
+                outputs = dict(line.split('=', 1) for line in output.read_text().splitlines())
+                self.assertEqual((outputs['build_count'], outputs['reuse_count']), counts)
+                # One reuse job per chunk of REUSE_SLOTS components.
+                chunks = json.loads(outputs['reuse'])['include']
+                self.assertEqual([chunk['chunk'] for chunk in chunks], list(range(1, int(counts[1]) + 1)))
+                self.assertEqual([chunk['names'] for chunk in chunks],
+                                 [component['component'] for chunk in chunks for component in chunk['components']])
+                self.assertEqual([len(chunk['components']) for chunk in chunks], [1] * int(counts[1]))
+
+    def test_reuse_plan_chunks_never_exceed_the_attestation_slots(self):
+        data = workflow('private-staging-images.yml')
+        plan = next(step for step in data['jobs']['plan']['steps'] if step.get('id') == 'plan')
+        slots = int(data['env']['REUSE_SLOTS'])
+        # The step's own output block, from the `reuse=` line through its
+        # two-line jq program, evaluated as written.
+        lines = plan['run'].splitlines()
+        start = next(index for index, line in enumerate(lines) if line.strip().startswith('echo "reuse='))
+        command = '\n'.join(lines[start:start + 2])
+        for count in [1, 3, 4, 5, 8, 13, 14]:
+            with self.subTest(count=count), tempfile.TemporaryDirectory() as directory:
+                reused = [{'component': f'c{index}', 'digest': 'sha256:' + '1' * 64} for index in range(count)]
+                (pathlib.Path(directory) / 'plan.json').write_text(json.dumps({'build': [], 'reuse': reused}))
+                result = subprocess.run(['bash', '-c', 'PLAN=$(cat plan.json)\n' + command], cwd=directory,
+                                        env={'PATH': os.environ['PATH'], 'REUSE_SLOTS': str(slots)},
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                chunks = json.loads(result.stdout.split('=', 1)[1])['include']
+                self.assertTrue(all(1 <= len(chunk['components']) <= slots for chunk in chunks))
+                self.assertEqual([component for chunk in chunks for component in chunk['components']], reused)
+                self.assertEqual([chunk['chunk'] for chunk in chunks], list(range(1, len(chunks) + 1)))
+                self.assertEqual([chunk['names'] for chunk in chunks],
+                                 [', '.join(component['component'] for component in chunk['components']) for chunk in chunks])
+        # All 14 components fit in a small fixed number of reuse jobs.
+        self.assertLessEqual(-(-14 // slots), 4)
+
+    def test_sbom_gate_binds_the_scanned_manifest_to_the_built_digest(self):
+        steps = workflow('private-staging-images.yml')['jobs']['build']['steps']
+        names = [step.get('name') for step in steps]
+        gate_index = names.index('Verify the SBOM describes the built digest')
+        self.assertLess(names.index('Generate SPDX SBOM from pushed digest'), gate_index)
+        self.assertLess(gate_index, names.index('Attest build provenance'))
+        self.assertLess(gate_index, names.index('Attest SPDX SBOM'))
+        gate = steps[gate_index]
+        self.assertEqual(gate['env'], {'COMPONENT': '${{ matrix.component }}',
+                                       'DIGEST': '${{ steps.build.outputs.digest }}'})
+        built = 'sha256:' + '5' * 64
+        root = 'SPDXRef-DocumentRoot-Image-example'
+        def sbom(checksums=(('SHA256', '5' * 64),), roots=(root,)):
+            # The shape Syft 1.x writes for an image source (see its SPDX JSON
+            # image encoder snapshot): the root package carries the manifest
+            # digest, and the document DESCRIBES it.
+            return {
+                'spdxVersion': 'SPDX-2.3',
+                'packages': [
+                    {'SPDXID': 'SPDXRef-Package-npm-example', 'name': 'example',
+                     'checksums': [{'algorithm': 'SHA256', 'checksumValue': '7' * 64}]},
+                    {'SPDXID': root, 'name': 'ghcr.io/example/snapshots/example',
+                     'checksums': [{'algorithm': algorithm, 'checksumValue': value} for algorithm, value in checksums]},
+                ],
+                'relationships': [
+                    {'spdxElementId': root, 'relatedSpdxElement': 'SPDXRef-Package-npm-example', 'relationshipType': 'CONTAINS'},
+                    *[{'spdxElementId': 'SPDXRef-DOCUMENT', 'relatedSpdxElement': item, 'relationshipType': 'DESCRIBES'}
+                      for item in roots],
+                ],
+            }
+        cases = [
+            ('matching digest', sbom(), built, 0),
+            ('another manifest', sbom(checksums=(('SHA256', '6' * 64),)), built, 1),
+            ('no manifest checksum', sbom(checksums=()), built, 1),
+            ('only another algorithm', sbom(checksums=(('SHA1', '5' * 40),)), built, 1),
+            ('no described root', sbom(roots=()), built, 1),
+            ('two described roots', sbom(roots=(root, 'SPDXRef-Package-npm-example')), built, 1),
+            ('malformed build digest', sbom(), 'sha256:short', 1),
+        ]
+        for label, document, digest, expected in cases:
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as directory:
+                (pathlib.Path(directory) / 'example.spdx.json').write_text(json.dumps(document))
+                result = subprocess.run(['bash', '-c', gate['run']], cwd=directory, env={
+                    'PATH': os.environ['PATH'], 'COMPONENT': 'example', 'DIGEST': digest,
+                    'IMAGE_NAME': 'ghcr.io/example/snapshots/example',
+                }, capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode != 0, expected != 0, result.stderr)
+
+    def test_disk_reclaim_and_prune_run_only_below_the_free_space_floor(self):
+        job = workflow('private-staging-images.yml')['jobs']['build']
+        steps = {step.get('name'): step for step in job['steps']}
+        start = steps['Start freeing runner disk for the image build']
+        prune = steps['Reclaim BuildKit space before SBOM scan']
+        floor = job['env']['MIN_FREE_GB']
+        # Above the standard runner's ~31 GB after a reclaim, below the 8-core
+        # runner's 371 GB.
+        self.assertEqual(floor, '40')
+        directories = ['/opt/ghc', '/opt/hostedtoolcache/CodeQL', '/usr/local/lib/android', '/usr/share/dotnet']
+        for free, reclaims in [('371', False), ('40', False), ('39', True), ('13', True)]:
+            with self.subTest(free=free), tempfile.TemporaryDirectory() as directory:
+                temp = pathlib.Path(directory)
+                bin_dir = temp / 'bin'
+                bin_dir.mkdir()
+                trace = temp / 'trace'
+                # Fakes only: `sudo` records the removal it was asked for.
+                for name, text in {
+                    'df': '#!/bin/sh\nif [ "$1" = --output=avail ]; then printf "Avail\\n %s\\n" "$FREE_GB"; '
+                          'else echo "/dev/root synthetic"; fi\n',
+                    'sudo': '#!/bin/sh\necho "$*" >>"$TRACE"\n',
+                    'docker': '#!/bin/sh\necho "docker $*" >>"$TRACE"\n',
+                }.items():
+                    (bin_dir / name).write_text(text)
+                    (bin_dir / name).chmod(0o755)
+                env = {'PATH': str(bin_dir) + os.pathsep + os.environ['PATH'], 'FREE_GB': free,
+                       'TRACE': str(trace), 'RUNNER_TEMP': directory, 'MIN_FREE_GB': floor}
+                calls = lambda: trace.read_text().splitlines() if trace.exists() else []
+                result = subprocess.run(['bash', '-e', '-c', start['run']], env=env,
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                status = temp / 'disk-reclaim' / 'status'
+                deadline = time.monotonic() + 10
+                while not status.exists() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                # The wait step blocks on this file either way.
+                self.assertEqual(status.read_text().strip(), '0')
+                self.assertEqual(sorted(calls()), [f'rm -rf {path}' for path in directories] if reclaims else [])
+                trace.unlink(missing_ok=True)
+                result = subprocess.run(['bash', '-e', '-c', prune['run']], env=env,
+                                        capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(calls(), ['docker buildx prune --all --force'] if reclaims else [])
+
+    def test_reuse_job_attests_each_slot_with_its_verified_component(self):
+        data = workflow('private-staging-images.yml')
+        job = data['jobs']['reuse']
+        slots = int(data['env']['REUSE_SLOTS'])
+        self.assertEqual(job['name'], 'Reuse and attest ${{ matrix.names }}')
+        self.assertEqual(job['env']['REUSED'], '${{ toJSON(matrix.components) }}')
+        steps = job['steps']
+        names = [step.get('name') for step in steps]
+        verify_index = names.index('Verify the reused snapshots')
+        publish_index = names.index('Tag the reused digests with the full SHA')
+        self.assertEqual(steps[verify_index]['id'], 'verify')
+        self.assertEqual(steps[verify_index]['run'], 'bash .github/actions/oss-snapshot/reuse-snapshots.sh verify')
+        self.assertEqual(steps[publish_index]['run'], 'bash .github/actions/oss-snapshot/reuse-snapshots.sh publish')
+        for index in [verify_index, publish_index]:
+            self.assertNotIn('if', steps[index])
+            self.assertNotIn('continue-on-error', steps[index])
+        pin = 'actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6'
+        expected = []
+        for slot in range(slots):
+            out = lambda key: f'${{{{ steps.verify.outputs.{key}_{slot} }}}}'
+            subject = {'subject-name': out('image'), 'subject-digest': out('digest')}
+            condition = f"steps.verify.outputs.digest_{slot} != ''"
+            expected += [
+                {'name': f'Attest build provenance for {out("component")}', 'if': condition, 'uses': pin,
+                 'with': {**subject, 'predicate-type': 'https://slsa.dev/provenance/v1',
+                          'predicate-path': out('provenance'), 'push-to-registry': 'true',
+                          'create-storage-record': 'false'}},
+                {'name': f'Attest SPDX SBOM for {out("component")}', 'if': condition, 'uses': pin,
+                 'with': {**subject, 'sbom-path': out('sbom'), 'push-to-registry': 'true',
+                          'create-storage-record': 'false'}},
+            ]
+        # Both attestations of every slot, and only then the tags.
+        self.assertEqual(steps[verify_index + 1:publish_index], expected)
+        upload = steps[-1]
+        self.assertEqual(upload['name'], 'Upload component evidence')
+        self.assertEqual(upload['with']['name'], 'oss-snapshot-part-reused-${{ matrix.chunk }}')
+        self.assertEqual(upload['with']['path'], '${{ env.EVIDENCE_DIR }}/')
+        self.assertEqual(upload['with']['if-no-files-found'], 'error')
+        download = next(step for step in data['jobs']['aggregate']['steps'] if step.get('uses', '').startswith('actions/download-artifact@'))
+        self.assertEqual(download['with']['pattern'], 'oss-snapshot-part-*')
+
+    def test_reuse_script_verifies_and_publishes_every_component(self):
+        script = ROOT / '.github/actions/oss-snapshot/reuse-snapshots.sh'
+        reused_sha, built_sha, current = 'a' * 40, 'b' * 40, 'c' * 40
+        inputs = 'sha256:' + '1' * 64
+        namespace = 'ghcr.io/example-org/snapshots'
+        signer = 'example-org/example/.github/workflows/private-staging-images.yml'
+        entry = lambda component, digit: {
+            'component': component, 'dockerfile': f'agents/{component}/Dockerfile', 'inputs': inputs,
+            'digest': 'sha256:' + digit * 64, 'reusedSourceSha': reused_sha, 'reusedRun': '80',
+            'builtSourceSha': built_sha}
+        fakes = {
+            # `gh attestation verify oci://<image>@<digest> ...`
+            'gh': '''#!/bin/bash
+echo "$*" >>"$FAKE/gh.log"
+component=${3##*/}; component=${component%@*}
+case " $FAIL_GH " in *" $component "*) echo "synthetic verification failure" >&2; exit 1 ;; esac
+if [[ "$*" == *"--format json"* ]]; then
+  jq -n --arg name "$component" '[{verificationResult: {statement: {predicate: {spdxVersion: "SPDX-2.3", name: $name}}}}]'
+else
+  echo "verified $3"
+fi
+''',
+            # `docker buildx imagetools inspect <ref> --format ...` and
+            # `docker buildx imagetools create --prefer-index=false --tag <tag> <source>`
+            'docker': '''#!/bin/bash
+echo "$*" >>"$FAKE/docker.log"
+case "$3" in
+  inspect)
+    component=${4##*/}; component=${component%%[@:]*}
+    case " $FAIL_DOCKER " in *" $component "*) exit 1 ;; esac
+    if [[ "$4" == *@* ]]; then
+      jq -n --arg digest "${4#*@}" --arg label "$INPUTS_LABEL" --arg inputs "$FAKE_INPUTS" --arg built "$FAKE_BUILT" \\
+        '{manifest: {digest: $digest}, image: {config: {Labels: {($label): $inputs, "org.opencontainers.image.revision": $built}}}}'
+    else
+      cat "$FAKE/tag-$component"
+    fi ;;
+  create)
+    component=${7##*/}; component=${component%@*}
+    jq -n --arg digest "${7#*@}" '{digest: $digest}' >"$FAKE/tag-$component" ;;
+  *) exit 2 ;;
+esac
+''',
+        }
+        def run(phase, reused, directory, **overrides):
+            temp = pathlib.Path(directory)
+            bin_dir = temp / 'bin'
+            bin_dir.mkdir(exist_ok=True)
+            for name, text in fakes.items():
+                (bin_dir / name).write_text(text)
+                (bin_dir / name).chmod(0o755)
+            env = {
+                'PATH': str(bin_dir) + os.pathsep + os.environ['PATH'], 'FAKE': directory,
+                'REUSED': json.dumps(reused, indent=2), 'REUSE_SLOTS': '4',
+                'EVIDENCE_DIR': str(temp / 'evidence'), 'RUNNER_TEMP': directory,
+                'SNAPSHOT_NAMESPACE': namespace, 'INPUTS_LABEL': 'pro.fabric.snapshot.inputs',
+                'SIGNER_WORKFLOW': signer, 'REPOSITORY': 'example-org/example',
+                'SOURCE_URL': 'https://github.com/example-org/example',
+                'WORKFLOW_REF': f'{signer}@refs/heads/staging', 'GH_TOKEN': 'synthetic-token',
+                'GITHUB_OUTPUT': str(temp / 'output'), 'GITHUB_SHA': current, 'GITHUB_REF': 'refs/heads/staging',
+                'GITHUB_SERVER_URL': 'https://github.com', 'GITHUB_REPOSITORY': 'example-org/example',
+                'GITHUB_WORKFLOW_REF': f'{signer}@refs/heads/staging', 'GITHUB_RUN_ID': '90',
+                'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_EVENT_NAME': 'push', 'GITHUB_REPOSITORY_ID': '1',
+                'GITHUB_REPOSITORY_OWNER_ID': '2', 'RUNNER_ENVIRONMENT': 'github-hosted',
+                'FAKE_INPUTS': inputs, 'FAKE_BUILT': built_sha, 'FAIL_GH': '', 'FAIL_DOCKER': '', **overrides}
+            return subprocess.run(['bash', str(script), phase], cwd=ROOT, env=env,
+                                  capture_output=True, text=True, timeout=60)
+        read = lambda path: path.read_text().splitlines() if path.exists() else []
+        reused = [entry('c1', '1'), entry('c2', '2'), entry('c3', '3')]
+        admission = ['--bundle-from-oci', '--repo example-org/example', f'--signer-workflow {signer}',
+                     '--source-ref refs/heads/staging', '--deny-self-hosted-runners']
+        with tempfile.TemporaryDirectory() as directory:
+            temp = pathlib.Path(directory)
+            result = run('verify', reused, directory)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            outputs = dict(line.split('=', 1) for line in read(temp / 'output'))
+            expected = {}
+            for slot, item in enumerate(reused):
+                component = item['component']
+                expected.update({
+                    f'component_{slot}': component, f'image_{slot}': f'{namespace}/{component}',
+                    f'digest_{slot}': item['digest'], f'sbom_{slot}': f'{temp}/evidence/{component}.spdx.json',
+                    f'provenance_{slot}': f'{temp}/reuse-snapshots/{component}.provenance.json'})
+                # The carried-forward SBOM is the verified predicate, compact.
+                self.assertEqual((temp / 'evidence' / f'{component}.spdx.json').read_text(),
+                                 json.dumps({'spdxVersion': 'SPDX-2.3', 'name': component}, separators=(',', ':')) + '\n')
+                provenance = json.loads((temp / 'reuse-snapshots' / f'{component}.provenance.json').read_text())
+                self.assertEqual(provenance['buildDefinition']['resolvedDependencies'][1]['digest'],
+                                 {'sha256': item['digest'][len('sha256:'):]})
+            self.assertEqual(outputs, expected)
+            calls = read(temp / 'gh.log')
+            self.assertEqual(len(calls), 6)
+            for call in calls:
+                # Admission's arguments, bound to the SHA the digest was reused from.
+                for argument in [*admission, f'--source-digest {reused_sha}']:
+                    self.assertIn(argument, call)
+            self.assertFalse(any('create' in call for call in read(temp / 'docker.log')), 'verify never tags')
+            (temp / 'gh.log').unlink()
+            result = run('publish', reused, directory)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            calls = read(temp / 'gh.log')
+            self.assertEqual(len(calls), 6)
+            for call in calls:
+                for argument in [*admission, f'--source-digest {current}']:
+                    self.assertIn(argument, call)
+            for item in reused:
+                component = item['component']
+                self.assertIn(f'buildx imagetools create --prefer-index=false --tag {namespace}/{component}:{current} '
+                              f'{namespace}/{component}@{item["digest"]}', read(temp / 'docker.log'))
+                self.assertEqual(json.loads((temp / 'evidence' / f'{component}.manifest.json').read_text()), {
+                    'schemaVersion': '1.0.0', 'component': component, 'dockerfile': item['dockerfile'],
+                    'context': '.', 'image': f'{namespace}/{component}', 'tag': current, 'digest': item['digest'],
+                    'inputs': inputs, 'sourceSha': current, 'sourceRef': 'refs/heads/staging',
+                    'sourceRepository': 'example-org/example', 'buildWorkflow': f'{signer}@refs/heads/staging',
+                    'signerWorkflow': signer,
+                    'labels': {'org.opencontainers.image.source': 'https://github.com/example-org/example',
+                               'org.opencontainers.image.revision': built_sha},
+                    'attestations': {'provenance': 'https://slsa.dev/provenance/v1',
+                                     'sbom': 'https://spdx.dev/Document/v2.3'},
+                    'reuse': {'reusedFromSourceSha': reused_sha, 'reusedFromRun': '80',
+                              'builtFromSourceSha': built_sha}})
+        # Each failure fails the phase and names exactly the components that
+        # failed; a failed verify publishes no slot, so nothing is attested.
+        failures = [
+            ('verify', reused, {'FAIL_GH': 'c2'}, ['c2']),
+            # An unguarded command failing inside a worker still fails it.
+            ('verify', reused, {'FAIL_DOCKER': 'c3'}, ['c3']),
+            ('verify', reused, {'FAKE_INPUTS': 'sha256:' + '9' * 64}, ['c1', 'c2', 'c3']),
+            ('verify', reused, {'FAKE_BUILT': 'd' * 40}, ['c1', 'c2', 'c3']),
+            ('verify', [reused[0], {**reused[1], 'digest': 'sha256:short'}], {}, ['c2']),
+            ('verify', [reused[0], {**reused[1], 'reusedSourceSha': 'HEAD'}], {}, ['c2']),
+            ('publish', reused, {'FAIL_GH': 'c1'}, ['c1']),
+            ('publish', reused, {'FAIL_DOCKER': 'c2'}, ['c2']),
+        ]
+        for phase, items, overrides, failed in failures:
+            with self.subTest(phase=phase, overrides=overrides, failed=failed), tempfile.TemporaryDirectory() as directory:
+                if phase == 'publish':
+                    self.assertEqual(run('verify', items, directory).returncode, 0)
+                    pathlib.Path(directory, 'output').unlink()
+                result = run(phase, items, directory, **overrides)
+                self.assertNotEqual(result.returncode, 0)
+                errors = sorted(line.split(' for ', 1)[1] for line in result.stdout.splitlines()
+                                if line.startswith('::error::') and ' failed for ' in line)
+                self.assertEqual(errors, failed, result.stdout + result.stderr)
+                self.assertEqual(read(pathlib.Path(directory, 'output')), [])
+        with tempfile.TemporaryDirectory() as directory:
+            five = [entry(f'c{index}', str(index)) for index in range(1, 6)]
+            result = run('verify', five, directory)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('::error::5 reused components exceed the 4 attestation slots', result.stdout)
+            self.assertEqual(read(pathlib.Path(directory, 'gh.log')), [])
 
     def test_promotion_build_admission_uses_exact_tree_and_preserves_recovery(self):
         data = workflow('private-staging-images.yml')
@@ -541,7 +956,7 @@ def gha_eval(expression, github, needs=None, variables=None):
     e = expression.strip()
     if e.startswith('${{'):
         e = e[3:-2]
-    e = e.replace('labels.*.name', 'labels_star_name')
+    e = e.replace('labels.*.name', 'labels_star_name').replace('pull_requests.*.base.ref', 'pull_requests_star_base_ref')
     e = re.sub(r'!(?!=)', ' not ', e).replace('&&', ' and ').replace('||', ' or ')
     e = re.sub(r'needs\.([a-zA-Z0-9_-]+)', lambda m: 'needs.' + m[1].replace('-', '_'), e)
     e = ' '.join(e.split())
@@ -598,15 +1013,27 @@ class RelayNotifierContracts(unittest.TestCase):
 
     def test_payload_promotion_filters_preserve_ordinary_wakeups(self):
         job = workflow('oss-relay-notify.yml')['jobs']['notify']
+        def admitted(event, branch, bases):
+            # `pull_requests_star_base_ref` stands for `pull_requests.*.base.ref`.
+            github = {'repository': 'Fabric-Pro/fabric-dev', 'event_name': event, 'event': {
+                'action': 'labeled', 'label': {'name': 'ready-for-relay'},
+                'pull_request': {'head': {'ref': branch, 'repo': {'full_name': 'Fabric-Pro/fabric-dev'}},
+                                 'labels_star_name': ['ready-for-relay']},
+                'workflow_run': {'event': 'pull_request', 'head_branch': branch,
+                                 'pull_requests_star_base_ref': bases}}}
+            return bool(gha_eval(job['if'], github))
         for branch, expected in [('promotion/example-cycle', False), ('feature/example', True)]:
-            for event in ['pull_request_target', 'workflow_run']:
-                with self.subTest(event=event, branch=branch):
-                    github = {'repository': 'Fabric-Pro/fabric-dev', 'event_name': event, 'event': {
-                        'action': 'labeled', 'label': {'name': 'ready-for-relay'},
-                        'pull_request': {'head': {'ref': branch, 'repo': {'full_name': 'Fabric-Pro/fabric-dev'}},
-                                         'labels_star_name': ['ready-for-relay']},
-                        'workflow_run': {'event': 'pull_request', 'head_branch': branch}}}
-                    self.assertEqual(bool(gha_eval(job['if'], github)), expected)
+            with self.subTest(event='pull_request_target', branch=branch):
+                self.assertEqual(admitted('pull_request_target', branch, []), expected)
+        # A CI completion wakes the relay only for a master-based pull request:
+        # staging-based ones skip before a runner is allocated.
+        for branch, bases, expected in [('feature/example', ['master'], True),
+                                        ('feature/example', ['staging', 'master'], True),
+                                        ('feature/example', ['staging'], False),
+                                        ('feature/example', [], False),
+                                        ('promotion/example-cycle', ['master'], False)]:
+            with self.subTest(event='workflow_run', branch=branch, bases=bases):
+                self.assertEqual(admitted('workflow_run', branch, bases), expected)
         github = {'repository': 'Fabric-Pro/fabric-dev', 'event_name': 'issue_comment', 'event': {
             'issue': {'pull_request': {}}, 'comment': {'body': '/relay ' + 'a' * 40}}}
         self.assertTrue(gha_eval(job['if'], github))
@@ -680,6 +1107,153 @@ class PullRequestContracts(unittest.TestCase):
         self.assertNotEqual(run(CHANGES_RESULT='failure'), 0)
         self.assertEqual(run(PLAN_RESULT='success'), 0, 'merged plan job succeeds with planning steps skipped on a no-code PR')
         self.assertNotEqual(run(CHANGES_RESULT=''), 0, 'an empty filter outcome fails closed')
+
+
+class AutoMergeContracts(unittest.TestCase):
+    NAME = 'auto-merge.yml'
+    APP_TOKEN = '${{ steps.app-token.outputs.token }}'
+
+    def job(self):
+        return workflow(self.NAME)['jobs']['arm']
+
+    def step(self, name):
+        return next(step for step in self.job()['steps'] if step.get('name') == name)
+
+    def test_runs_trusted_definition_with_least_privilege(self):
+        data = workflow(self.NAME)
+        self.assertEqual(list(data['on']), ['pull_request_target'])
+        trigger = data['on']['pull_request_target']
+        self.assertEqual(trigger['branches'], ['staging'])
+        self.assertEqual(set(trigger['types']), {'opened', 'reopened', 'ready_for_review', 'synchronize',
+                                                 'labeled', 'unlabeled', 'edited'})
+        self.assertEqual(data['permissions'], {})
+        self.assertEqual(list(data['jobs']), ['arm'])
+        job = self.job()
+        self.assertEqual(job['permissions'], {'contents': 'read'})
+        self.assertEqual(job['environment'], 'auto-merge')
+        # Job-level, so a run the `if` skips can never cancel a live one.
+        self.assertNotIn('concurrency', data)
+        self.assertEqual(job['concurrency'], {'group': 'auto-merge-${{ github.event.pull_request.number }}',
+                                              'cancel-in-progress': 'true'})
+
+    def test_never_checks_out_or_executes_pull_request_content(self):
+        text = (ROOT / '.github/workflows' / self.NAME).read_text()
+        for marker in ['pull_request.head.sha', 'pull_request.head.ref', 'head_ref', 'merge_commit_sha',
+                       'refs/pull/', 'download-artifact', 'actions/cache', 'pnpm', 'npm ']:
+            self.assertNotIn(marker, text)
+        checkouts = [step for step in self.job()['steps'] if step.get('uses', '').startswith('actions/checkout@')]
+        self.assertEqual(len(checkouts), 1)
+        self.assertEqual(checkouts[0]['with'], {'ref': '${{ github.sha }}', 'persist-credentials': 'false',
+                                                'sparse-checkout': '.github/scripts/auto-merge'})
+        for step in self.job()['steps']:
+            with self.subTest(step=step.get('name')):
+                # Event fields reach shells only through env, never interpolated.
+                self.assertNotIn('${{', step.get('run', ''))
+        self.assertIn('node .github/scripts/auto-merge/eligible.mjs',
+                      self.step('Decide from the live pull request')['run'])
+
+    def test_merge_uses_the_app_token_and_never_github_token(self):
+        text = (ROOT / '.github/workflows' / self.NAME).read_text()
+        self.assertNotIn('github.token', text)
+        self.assertNotIn('GITHUB_TOKEN }}', text)
+        self.assertNotIn('secrets.GITHUB_TOKEN', text)
+        mint = self.step('Mint the auto-merge App token')
+        pins = set(re.findall(r'actions/create-github-app-token@[0-9a-f]{40}',
+                              ''.join(path.read_text() for path in (ROOT / '.github/workflows').glob('*.yml')
+                                      if path.name != self.NAME)))
+        self.assertEqual(len(pins), 1, 'other workflows disagree on the App token action pin')
+        self.assertEqual(mint['uses'].split(' ')[0], pins.pop())
+        self.assertEqual(mint['with']['app-id'], '${{ secrets.AUTO_MERGE_APP_ID }}')
+        self.assertEqual(mint['with']['private-key'], '${{ secrets.AUTO_MERGE_APP_PRIVATE_KEY }}')
+        self.assertEqual(mint['with']['repositories'], 'fabric-dev')
+        for name in ['Decide from the live pull request', 'Apply the decision']:
+            self.assertEqual(self.step(name)['env']['GH_TOKEN'], self.APP_TOKEN, name)
+        for step in self.job()['steps'][1:]:
+            with self.subTest(step=step.get('name')):
+                self.assertIn("steps.credentials.outputs.present == 'true'", step['if'])
+
+    def test_missing_app_credentials_warn_and_stop(self):
+        script = self.step('Check the App credentials')['run']
+        for app_id, key, present in [('', '', 'false'), ('1', '', 'false'), ('', 'k', 'false'), ('1', 'k', 'true')]:
+            with self.subTest(app_id=app_id, key=key), tempfile.TemporaryDirectory() as directory:
+                output, summary = pathlib.Path(directory, 'output'), pathlib.Path(directory, 'summary')
+                result = subprocess.run([shutil.which('bash'), '-c', script], env={
+                    'PATH': os.environ['PATH'], 'APP_ID': app_id, 'APP_PRIVATE_KEY': key,
+                    'GITHUB_OUTPUT': output.as_posix(), 'GITHUB_STEP_SUMMARY': summary.as_posix(),
+                }, capture_output=True, text=True, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(output.read_text(), f'present={present}\n')
+                if present == 'false':
+                    self.assertIn('::warning', result.stdout)
+                    self.assertIn('never falls back to GITHUB_TOKEN', summary.read_text())
+                else:
+                    self.assertFalse(summary.exists() and summary.read_text())
+
+    def test_apply_step_issues_only_the_decided_gh_calls(self):
+        script = self.step('Apply the decision')['run']
+        sha = 'b' * 40
+        expected = {
+            'enable': [f'pr merge 9 --auto --squash --match-head-commit {sha}'],
+            'rearm': ['pr merge 9 --disable-auto', f'pr merge 9 --auto --squash --match-head-commit {sha}'],
+            'disable': ['pr merge 9 --disable-auto'],
+        }
+        for action, head, token in [*[(action, sha, 'app-token') for action in expected],
+                                    ('unknown', sha, 'app-token'), ('enable', 'HEAD', 'app-token'),
+                                    ('enable', sha, '')]:
+            with self.subTest(action=action, head=head, token=token), tempfile.TemporaryDirectory() as directory:
+                trace = pathlib.Path(directory, 'trace')
+                gh = pathlib.Path(directory, 'gh')
+                gh.write_text('#!/bin/sh\necho "$*" >>"$GH_TRACE"\n')
+                gh.chmod(0o755)
+                result = subprocess.run([shutil.which('bash'), '-c', script], env={
+                    'PATH': directory + os.pathsep + os.environ['PATH'], 'GH_TRACE': trace.as_posix(),
+                    'GH_TOKEN': token, 'PR_NUMBER': '9', 'ACTION': action, 'HEAD_SHA': head,
+                }, capture_output=True, text=True, timeout=10)
+                calls = trace.read_text().splitlines() if trace.exists() else []
+                if action in expected and head == sha and token:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(calls, expected[action])
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(calls, [])
+
+    def test_job_guards_admit_only_staging_pull_requests_in_the_private_repository(self):
+        condition = self.job()['if']
+        variables = {'AUTO_MERGE_ENABLED': 'true'}
+
+        def admitted(repository='Fabric-Pro/fabric-dev', base='staging', head_repo='Fabric-Pro/fabric-dev',
+                     draft=False, action='opened', label=None, changes=None, enabled='true'):
+            event = {'action': action, 'pull_request': {
+                'base': {'ref': base}, 'draft': draft, 'head': {'repo': {'full_name': head_repo}}}}
+            if label is not None:
+                event['label'] = {'name': label}
+            if changes is not None:
+                event['changes'] = changes
+            github = {'repository': repository, 'event_name': 'pull_request_target', 'event': event}
+            return bool(gha_eval(condition, github, variables={**variables, 'AUTO_MERGE_ENABLED': enabled}))
+
+        for action in ['opened', 'reopened', 'ready_for_review', 'synchronize']:
+            self.assertTrue(admitted(action=action), action)
+        self.assertFalse(admitted(repository='Fabric-Pro/fabric-oss'))
+        self.assertFalse(admitted(repository='example-org/fork'))
+        self.assertFalse(admitted(base='master'))
+        self.assertFalse(admitted(head_repo='example-user/fork'))
+        self.assertFalse(admitted(draft=True))
+        self.assertFalse(admitted(enabled='false'))
+        self.assertFalse(admitted(enabled=''))
+        for action in ['labeled', 'unlabeled']:
+            self.assertTrue(admitted(action=action, label='no-auto-merge'), action)
+            self.assertFalse(admitted(action=action, label='bug'), action)
+        self.assertFalse(admitted(action='edited', changes={'title': {'from': 'old'}}))
+        self.assertTrue(admitted(action='edited', changes={'base': {'ref': {'from': 'master'}}}))
+
+    def test_opt_out_label_is_shared_by_workflow_and_script(self):
+        script = (ROOT / '.github/scripts/auto-merge/eligible.mjs').read_text()
+        self.assertIn('export const OPT_OUT_LABEL = "no-auto-merge";', script)
+        self.assertIn('export const AUTO_MERGE_REPOSITORY = "Fabric-Pro/fabric-dev";', script)
+        self.assertIn('export const AUTO_MERGE_BASE = "staging";', script)
+        self.assertIn("github.event.label.name == 'no-auto-merge'", self.job()['if'])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -4,8 +4,10 @@ import { getTemporalClient } from "@repo/temporal";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
+	chatMessageDedupeKey,
 	isParlumeServiceRequestAuthorized,
 	MAX_PARLUME_SEGMENT_CHARS,
+	realtimeJobDedupeKey,
 	segmentDedupeKey,
 } from "../lib";
 
@@ -18,7 +20,33 @@ const bodySchema = z.object({
 	utteranceStartMs: z.number().int().min(0).max(14_400_000).nullable(),
 	utteranceEndMs: z.number().int().min(0).max(14_400_000).nullable(),
 	voiceGeneration: z.number().int().min(0).default(0),
+	replyChannel: z.enum(["VOICE", "CHAT"]).default("VOICE"),
+	chatMessageId: z.string().min(1).max(128).optional(),
+	// `realtime`: Parlume's realtime voice asked Fabric for this, as job
+	// `job`; the worker posts the answer back for that voice to speak.
+	delivery: z.enum(["speech", "realtime"]).default("speech"),
+	job: z
+		.string()
+		.regex(/^J\d{1,6}$/)
+		.optional(),
 });
+
+function turnDedupeKey(
+	sessionId: string,
+	turn: z.infer<typeof bodySchema>,
+): string {
+	if (turn.delivery === "realtime" && turn.job) {
+		return realtimeJobDedupeKey({
+			sessionId,
+			voiceGeneration: turn.voiceGeneration,
+			job: turn.job,
+			text: turn.text,
+		});
+	}
+	return turn.chatMessageId
+		? chatMessageDedupeKey(sessionId, turn.chatMessageId)
+		: segmentDedupeKey(turn);
+}
 
 export async function POST(request: NextRequest) {
 	if (
@@ -29,7 +57,11 @@ export async function POST(request: NextRequest) {
 		return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 	}
 	const parsed = bodySchema.safeParse(await request.json());
-	if (!parsed.success) {
+	if (
+		!parsed.success ||
+		(parsed.data.delivery === "realtime") !==
+			(parsed.data.job !== undefined)
+	) {
 		return NextResponse.json({ error: "Invalid turn" }, { status: 400 });
 	}
 	const session = await db.parlumeMeetingSession.findFirst({
@@ -57,7 +89,7 @@ export async function POST(request: NextRequest) {
 	if (session.activeTurnId) {
 		return NextResponse.json({ error: "Turn busy" }, { status: 409 });
 	}
-	const dedupeKey = segmentDedupeKey(parsed.data);
+	const dedupeKey = turnDedupeKey(session.id, parsed.data);
 	const created = await db.parlumeMeetingTurn.createMany({
 		data: {
 			sessionId: session.id,
@@ -69,6 +101,7 @@ export async function POST(request: NextRequest) {
 			speakerName: parsed.data.speakerName,
 			speakerId: parsed.data.speakerId,
 			voiceGeneration: parsed.data.voiceGeneration,
+			replyChannel: parsed.data.replyChannel,
 		},
 		skipDuplicates: true,
 	});
@@ -150,6 +183,9 @@ export async function POST(request: NextRequest) {
 						projectId: session.projectId,
 						readOnly: session.toolsReadOnly,
 					}),
+					...(parsed.data.job
+						? { realtimeJob: parsed.data.job }
+						: {}),
 				},
 			],
 		});

@@ -132,6 +132,22 @@ describe("computeAppliedProposalIndexes", () => {
 		).toEqual([]);
 	});
 
+	it("uses each position as its proposal index when no indexes are given (AI Update chat apply)", () => {
+		// Fizzy #3238: a chat apply has no `approvedChangeIndexes`. Its applied
+		// set must still come from what actually applied, conflicts included,
+		// rather than collapsing to nothing.
+		expect(
+			computeAppliedProposalIndexes({
+				...base,
+				approvedChangeIndexes: undefined,
+				fabricSucceededPositions: [0, 1, 2],
+				syncToPM: true,
+				pmSucceededPositions: new Set([0, 2]),
+				pmConflictPositions: new Set([1]),
+			}),
+		).toEqual([0, 1, 2]);
+	});
+
 	it("ignores positions with no mapped proposal index", () => {
 		expect(
 			computeAppliedProposalIndexes({

@@ -17,6 +17,10 @@
 			"types": "./src/ai-interactive-context.ts",
 			"default": "./src/ai-interactive-context.ts"
 		},
+		"./repeated-tool-call-guard": {
+			"types": "./src/repeated-tool-call-guard.ts",
+			"default": "./src/repeated-tool-call-guard.ts"
+		},
 		"./databricks-compat": {
 			"types": "./src/databricks-compat.ts",
 			"default": "./src/databricks-compat.ts"

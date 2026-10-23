@@ -218,3 +218,43 @@ describe("updateWithContextProcedure apply — visual slots", () => {
 		expect(savedContent()).toBe(CONFIRMED);
 	});
 });
+
+// A generated diagram the confirmed text left unchanged keeps its marker
+// line, so its stored spec stays referenced (Fizzy #2946).
+describe("updateWithContextProcedure apply — generated diagram markers", () => {
+	const MARKER = "%% fabric-visual: k3v9q2m7x1a8c4d6";
+	const diagram = (marker: boolean, label = "Launch") =>
+		[
+			"```mermaid",
+			...(marker ? [MARKER] : []),
+			"flowchart LR",
+			`  s0["Discovery"] --> s1["${label}"]`,
+			"```",
+		].join("\n");
+	const body = (fence: string, intro = "Phase one covers discovery.") =>
+		["# Proposal", "", "## Delivery", "", intro, "", fence, ""].join("\n");
+
+	it("puts back the marker of an unchanged diagram and keeps the rest as confirmed", async () => {
+		mocks.getDocumentById.mockResolvedValue(
+			makeDocument(body(diagram(true))),
+		);
+
+		await apply(
+			body(diagram(false), "Phase one covers discovery and design."),
+		);
+
+		expect(savedContent()).toBe(
+			body(diagram(true), "Phase one covers discovery and design."),
+		);
+	});
+
+	it("adds no marker to a diagram whose body changed", async () => {
+		mocks.getDocumentById.mockResolvedValue(
+			makeDocument(body(diagram(true))),
+		);
+
+		await apply(body(diagram(false, "Go-live")));
+
+		expect(savedContent()).toBe(body(diagram(false, "Go-live")));
+	});
+});

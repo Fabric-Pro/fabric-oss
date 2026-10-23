@@ -9,6 +9,7 @@ import {
 } from "@copilotkit/react-core";
 import { CopilotSidebar } from "@copilotkit/react-ui";
 import { normalizeDocumentType, type ProjectContext } from "@repo/agent-types";
+import { countDocumentWords } from "@repo/utils/document-word-count";
 import {
 	DOCUMENT_GENERATION_IN_PROGRESS,
 	isGenerationRunStillWriting,
@@ -20,6 +21,7 @@ import {
 	preserveVisualSlots,
 } from "@repo/utils/glossy/visual-slots";
 import { normalizeForComparison } from "@repo/utils/normalize-for-comparison";
+import { preserveVisualMarkers } from "@repo/utils/proposal-artifact/visual-identity";
 import { AttachmentRegistryProvider } from "@saas/shared/components/copilot/AttachmentRegistry";
 import { CopilotAssistantMessage } from "@saas/shared/components/copilot/CopilotAssistantMessage";
 import { createCopilotSidebarInput } from "@saas/shared/components/copilot/CopilotSidebarInput";
@@ -40,7 +42,11 @@ import { HydratedMessagesProvider } from "./copilot/HydratedMessagesContext";
 import "@copilotkit/react-ui/styles.css";
 import "./DocumentEditor.css";
 import { useRegisterFabricAgentContext } from "@saas/agents/components/FabricAgentLauncher";
-import { useConfirmChangesOperationResult } from "@saas/agents/copilot/useConfirmChangesOperationResult";
+import { ACCEPT_OUTCOME_SUMMARIES } from "@saas/agents/copilot/accept-outcome-summaries";
+import {
+	type RecordOnResolveOptions,
+	useConfirmChangesOperationResult,
+} from "@saas/agents/copilot/useConfirmChangesOperationResult";
 import { useCodeContextLauncher } from "@saas/agents/hooks/useCodeContextLauncher";
 import { useDefaultMcpInlineRender } from "@saas/agents/hooks/useDefaultMcpInlineRender";
 import { useFabricMention } from "@saas/agents/hooks/useFabricMention";
@@ -61,6 +67,7 @@ import {
 import { Editor as DetachedEditor } from "@tiptap/core";
 import { isChangeOrigin } from "@tiptap/extension-collaboration";
 import { EditorContent, useEditor } from "@tiptap/react";
+import { ySyncPluginKey } from "@tiptap/y-tiptap";
 import { Button } from "@ui/components/button";
 import {
 	DropdownMenu,
@@ -111,6 +118,10 @@ import { createPortal, flushSync } from "react-dom";
 import { toast } from "sonner";
 import * as Y from "yjs";
 import { PromptSelector } from "../../prompts/components/PromptSelector";
+import {
+	type DiffOutcomeAudit,
+	useDiffOutcomeStamp,
+} from "../hooks/use-diff-outcome-stamp";
 import { useDiffPreview } from "../hooks/use-diff-view-mode";
 import { useCollaborativeEditor } from "../hooks/useCollaborativeEditor";
 import { useDocumentAssistantHistoryRealtimeSync } from "../hooks/useDocumentAssistantHistory";
@@ -125,6 +136,7 @@ import {
 	fromMarkdown,
 	repairMarkdownDocument,
 	resetScrollTracking,
+	toAgentDocument,
 } from "../lib/diff-utils";
 import {
 	isDocumentGenerationStale,
@@ -152,6 +164,10 @@ import {
 	type MentionActiveIds,
 	MentionStatusContext,
 } from "../lib/mention-status-context";
+import {
+	MermaidVisualProvider,
+	type ProposalVisualsOptions,
+} from "../lib/mermaid-visual-context";
 import {
 	createSignedMediaUrlRefresher,
 	type SignedMediaUrlRefresher,
@@ -310,6 +326,56 @@ interface ApplyProgrammaticContent {
 const ACCEPT_VERSION_CONFLICT_MESSAGE =
 	"Your accepted changes were not saved: the document changed in the meantime. They are still in the editor — copy anything you want to keep, then reload to review the latest version and apply them again.";
 
+/**
+ * How a save sent past `handleSave` was refused (Fizzy #2946): the editor
+ * still holds what it would have saved, or no longer does — the page was
+ * left, or the room was brought back to the saved document — and the text
+ * was offered to copy instead; or the single-user editor that held it was
+ * closed, and nothing holds it any more.
+ */
+type DirectSaveFailure = "keptInEditor" | "offeredToCopy" | "editorClosed";
+
+/**
+ * How long the run that answers a proposal must keep the editor locked
+ * before the editor says so (Fizzy #2946): a shorter lock is neither shown
+ * nor announced.
+ */
+const ASSISTANT_FINISHING_SHOW_DELAY_MS = 300;
+
+/**
+ * How long an answer to a proposal waits for the run it starts before it no
+ * longer counts for the status above (Fizzy #2946).
+ */
+const ASSISTANT_FINISHING_ARM_MS = 10_000;
+
+/**
+ * How often, at most, the raw markdown view reads the editor's body again
+ * while changes keep reaching the editor — a colleague typing (Fizzy #2946):
+ * each read runs Turndown over the whole document.
+ */
+const RAW_VIEW_FOLLOW_MS = 150;
+
+/** Why the switch between the rich and the raw view waits (Fizzy #2946). */
+const VIEW_SWITCH_HELD_TEXT =
+	"Switching views waits until the assistant, a generation run or a review is done with the document.";
+
+/**
+ * An accepted proposal whose save waits behind the one in flight, or is
+ * the one in flight, with what it says of that save (Fizzy #2946).
+ */
+interface AcceptAwaitingSave {
+	/** The text the accept saves. */
+	accepted: string;
+	/** The body the proposal's review started from. */
+	acceptedFrom: string;
+	/** The saved body when it was accepted. */
+	savedBody: string;
+	onSaved?: (saved: RoomStamp | null) => boolean | undefined;
+	onFailed?: (failure: DirectSaveFailure) => void;
+	onSettled?: () => void;
+	onUndone: () => void;
+}
+
 const DOCUMENT_TYPE_LABELS: Record<string, string> = {
 	GENERAL: "General",
 	PRD: "PRD",
@@ -446,6 +512,13 @@ type Props = {
 	 * once when the editor is built, so pass a value known at mount.
 	 */
 	statTiles?: boolean;
+	/**
+	 * What a client-document Proposal's diagrams need beside `statTiles`
+	 * (Fizzy #2946): the theme's paint for their role colours, and whether
+	 * the viewer is a member of the owning organization (Build with AI is
+	 * offered to members only). Read only where `statTiles` is on.
+	 */
+	proposalVisuals?: ProposalVisualsOptions;
 };
 
 interface AgentState {
@@ -496,6 +569,7 @@ interface AgentState {
 type SaveBlockReason =
 	| "regenerating"
 	| "review"
+	| "proposal"
 	| "runLive"
 	| "reconnecting"
 	| "updatingToLatest"
@@ -520,6 +594,7 @@ export function DocumentEditor({
 	promptSelectorReplacement,
 	contentThemeProps,
 	statTiles = false,
+	proposalVisuals,
 }: Props) {
 	const [isRegenerating, setIsRegenerating] = useState(false);
 	// Beside `isRegenerating`, above the collaboration branch that remounts
@@ -753,6 +828,7 @@ export function DocumentEditor({
 				promptSelectorReplacement={promptSelectorReplacement}
 				contentThemeProps={contentThemeProps}
 				statTiles={statTiles}
+				proposalVisuals={proposalVisuals}
 			/>
 		);
 	}
@@ -804,6 +880,7 @@ export function DocumentEditor({
 			promptSelectorReplacement={promptSelectorReplacement}
 			contentThemeProps={contentThemeProps}
 			statTiles={statTiles}
+			proposalVisuals={proposalVisuals}
 		/>
 	);
 }
@@ -955,6 +1032,7 @@ function CollaborativeDocumentEditor({
 	promptSelectorReplacement,
 	contentThemeProps,
 	statTiles,
+	proposalVisuals,
 }: {
 	projectId: string;
 	documentId: string;
@@ -1017,6 +1095,7 @@ function CollaborativeDocumentEditor({
 	promptSelectorReplacement?: ReactNode;
 	contentThemeProps?: ProposalThemeRootProps;
 	statTiles: boolean;
+	proposalVisuals?: ProposalVisualsOptions;
 	roomConvergence: boolean;
 	canEdit: boolean | null;
 }) {
@@ -1317,6 +1396,7 @@ function CollaborativeDocumentEditor({
 				promptSelectorReplacement={promptSelectorReplacement}
 				contentThemeProps={contentThemeProps}
 				statTiles={statTiles}
+				proposalVisuals={proposalVisuals}
 			/>
 		);
 	}
@@ -1445,6 +1525,7 @@ function CollaborativeDocumentEditor({
 			promptSelectorReplacement={promptSelectorReplacement}
 			contentThemeProps={contentThemeProps}
 			statTiles={statTiles}
+			proposalVisuals={proposalVisuals}
 		/>
 	);
 }
@@ -1567,6 +1648,8 @@ interface DocumentEditorInnerProps {
 	contentThemeProps?: ProposalThemeRootProps;
 	/** See the public DocumentEditor `statTiles` prop. */
 	statTiles: boolean;
+	/** See the public DocumentEditor `proposalVisuals` prop. */
+	proposalVisuals?: ProposalVisualsOptions;
 	/** `DOCUMENT_ROOM_CONVERGENCE`, read by the outer `DocumentEditor`. */
 	roomConvergence: boolean;
 	/**
@@ -1613,6 +1696,37 @@ function liveEditorOrNull<T extends { isDestroyed: boolean }>(
 	editor: T | null | undefined,
 ): T | null {
 	return editor && !editor.isDestroyed ? editor : null;
+}
+
+/**
+ * Where an offset into `before` lands in `after`, taking the two to differ
+ * in one stretch (Fizzy #2946): before it, the offset stays; after it, it
+ * moves with the text; inside it, it stays within what replaced it.
+ */
+function followTextOffset(
+	before: string,
+	after: string,
+	offset: number,
+): number {
+	const shorter = Math.min(before.length, after.length);
+	let prefix = 0;
+	while (prefix < shorter && before[prefix] === after[prefix]) {
+		prefix += 1;
+	}
+	let suffix = 0;
+	while (
+		suffix < shorter - prefix &&
+		before[before.length - 1 - suffix] === after[after.length - 1 - suffix]
+	) {
+		suffix += 1;
+	}
+	if (offset <= prefix) {
+		return offset;
+	}
+	if (offset >= before.length - suffix) {
+		return offset + after.length - before.length;
+	}
+	return Math.min(offset, after.length - suffix);
 }
 
 function formatTranscriptContexts(
@@ -1679,6 +1793,7 @@ function DocumentEditorInner({
 	promptSelectorReplacement,
 	contentThemeProps,
 	statTiles,
+	proposalVisuals,
 	roomConvergence,
 	canEdit,
 	tabVisible,
@@ -2064,6 +2179,11 @@ function DocumentEditorInner({
 	// gone: none sends a save again, and a refusal is said, since nobody is
 	// in the editor to see the text left unsaved.
 	const pageLeft = () => pageLeaveRef?.current.left === true;
+	// A single-user editor that was closed (Fizzy #2946): no room holds what
+	// it held, and its leaving offers nothing to copy, so text no save took
+	// is gone. (A room's editor unmounted by a sync loss is not: the room
+	// still holds its text.)
+	const editorClosed = () => unmountedRef.current && !ydoc;
 	/** The text the page was left with, when a save was sent for it. */
 	const leaveContentRef = useRef<string | null>(null);
 	const handleSaveRef = useRef<() => void>(() => {});
@@ -2092,12 +2212,36 @@ function DocumentEditorInner({
 	/** The same for the one waiting in `pendingDirectSaveRef`. */
 	const pendingDirectOnSettledRef = useRef<(() => void) | null>(null);
 	/**
+	 * The accepted proposals whose save waits in `pendingDirectSaveRef`,
+	 * with what each says of its answer (Fizzy #2946). A save of what the
+	 * editor holds that displaces it carries each one whose text it still
+	 * holds, and says it; one undone in the editor meanwhile says so, and
+	 * its text is not saved.
+	 */
+	const pendingAcceptsRef = useRef<AcceptAwaitingSave[]>([]);
+	/**
+	 * The accepted proposals the save in flight carries (Fizzy #2946). The
+	 * save of the editor's last text, sent behind it on leaving, makes one
+	 * it undid say so, once: its own answer then says nothing.
+	 */
+	const inFlightAcceptsRef = useRef<AcceptAwaitingSave[]>([]);
+	/** The text the save in flight carries: the saved body once it lands. */
+	const sendingContentRef = useRef<string | null>(null);
+	/**
 	 * What the save sent past `handleSave` that is in flight says once it
 	 * lands, if anything; set when it is sent, so never by the answer of a
 	 * save it waited for, and dropped when it fails.
 	 */
 	const directSaveOnSavedRef = useRef<
 		((saved: RoomStamp | null) => boolean | undefined) | null
+	>(null);
+	/**
+	 * The same for its refusal (Fizzy #2946): set when it is sent, and
+	 * carried to the one save sent again after a CONFLICT, whose answer
+	 * is then the one said.
+	 */
+	const directSaveOnFailedRef = useRef<
+		((failure: DirectSaveFailure) => void) | null
 	>(null);
 	const sendDirectSaveRef = useRef<
 		(request: {
@@ -2122,6 +2266,24 @@ function DocumentEditorInner({
 			 * `false`: the room did not take that body, so it keeps its stamp.
 			 */
 			onSaved?: (saved: RoomStamp | null) => boolean | undefined;
+			/**
+			 * Once it is refused, or answered after the page was left, with
+			 * where its text is now; never for the refusal of a save that is
+			 * sent once more.
+			 */
+			onFailed?: (failure: DirectSaveFailure) => void;
+			/**
+			 * The text it saves, when read from the editor as it is asked
+			 * for — an accepted proposal, the save on leaving the page: an
+			 * accepted proposal it displaces is in it, unless undone.
+			 */
+			savesEditor?: string;
+			/**
+			 * An accepted proposal: the editor's body just before it was
+			 * applied, and what it says when it is undone before its save
+			 * goes.
+			 */
+			accept?: { from: string; onUndone: () => void };
 		}) => void
 	>(() => {});
 	// The single-user editor learned from a CONFLICT that the document moved
@@ -2314,6 +2476,18 @@ function DocumentEditorInner({
 		}
 		return null;
 	}, [internalMessagesForToolCallMatcher, visibleMessages]);
+	// Where the outcome of the proposal under review is stamped: by the
+	// review bar's buttons, and by the chat card's, which read it when
+	// clicked (Fizzy #2946).
+	const diffOutcomeAudit: DiffOutcomeAudit = {
+		conversationId: activeAssistantConversationId,
+		projectId,
+		organizationId,
+		messageId: lastWriteDocumentLocalToolCall?.messageId ?? null,
+		toolCallId: lastWriteDocumentLocalToolCall?.toolCallId ?? null,
+	};
+	const diffOutcomeAuditRef = useRef(diffOutcomeAudit);
+	diffOutcomeAuditRef.current = diffOutcomeAudit;
 
 	// Chat-session attachment contexts. Kept separate from `localRagContexts`
 	// (which holds project-level vector-searched docs + Teams/Slack and is
@@ -2569,22 +2743,28 @@ function DocumentEditorInner({
 		generationStartedAt: document?.generationStartedAt,
 		updatedAt: document?.updatedAt,
 	});
+	// hasPendingConfirm: generation is done, Confirm Changes dialog is showing
+	const [hasPendingConfirm, setHasPendingConfirm] = useState(false);
+	// An assistant proposal under review holds saves back as a regeneration's
+	// review does (Fizzy #2946): the editor holds the proposal, which a save
+	// would write before anyone accepted it, and a Reject would not undo.
 	const runSaveBlockReason: SaveBlockReason | null = isRegenerating
 		? "regenerating"
 		: showConfirmDialog || isConfirming || rejectPending
 			? "review"
-			: isRunStillWriting
-				? "runLive"
-				: enableCollaboration && (!provider || !isCollabSynced)
-					? "reconnecting"
-					: null;
+			: hasPendingConfirm
+				? "proposal"
+				: isRunStillWriting
+					? "runLive"
+					: enableCollaboration && (!provider || !isCollabSynced)
+						? "reconnecting"
+						: null;
 	const saveBlockedId = useId();
-	// hasPendingConfirm: generation is done, Confirm Changes dialog is showing
-	const [hasPendingConfirm, setHasPendingConfirm] = useState(false);
-	// Callbacks for the DiffReviewBar to trigger accept/reject
+	// Callbacks for the DiffReviewBar to trigger accept/reject. Each says
+	// what the proposal was answered with.
 	const confirmCallbacksRef = useRef<{
-		accept: () => void;
-		reject: () => void;
+		accept: () => boolean;
+		reject: () => boolean;
 	} | null>(null);
 	// Whether the current executing confirm has already been processed (armed a
 	// card OR resolved as a no-op). Gates the one-time arm side effects so they
@@ -2681,12 +2861,33 @@ function DocumentEditorInner({
 	viewModeRef.current = viewMode;
 	const rawContentRef = useRef(rawContent);
 	rawContentRef.current = rawContent;
+	// The raw view's textarea, and the selection it keeps across a body it
+	// follows (see the raw view's follow below).
+	const rawTextareaRef = useRef<HTMLTextAreaElement>(null);
+	const rawSelectionRef = useRef<{ start: number; end: number } | null>(null);
 	// Edits in the raw view that nothing has saved or carried back to the
 	// rich editor yet: they live only in the raw text.
 	const rawEditPending = useCallback(
 		() => viewModeRef.current === "raw" && rawEditedRef.current,
 		[],
 	);
+	// Edits in the raw view whose base the editor has moved past — an
+	// accepted proposal, a run's body, the room's — while they waited
+	// (Fizzy #2946). Nothing saves them but an explicit Save: an autosave
+	// would write the older body they were made on over the newer one.
+	const rawEditsStaleRef = useRef(false);
+	// Those edits as they stand now, typing after they went stale included:
+	// what their offer copies, when clicked, also after the page was left.
+	const staleRawTextRef = useRef("");
+	// Counts every change to the editor's body, so a save's answer can tell
+	// whether the editor still holds what it held when the save was sent.
+	const editorBodyRevisionRef = useRef(0);
+	// The raw text last offered back, and whether by the toast that keeps it
+	// in the raw view (see `noteRawEditsStale`).
+	const rawOfferRef = useRef<{ text: string; kept: boolean } | null>(null);
+	// Whether the raw view is held now (see `rawViewHeld`), for the view
+	// switch, whose keyboard shortcut outlives a render.
+	const rawViewHeldRef = useRef(false);
 
 	// Create collaborative extensions when provider and ydoc are available
 	// Additional guards ensure provider.awareness is ready before creating extensions
@@ -2842,9 +3043,18 @@ function DocumentEditorInner({
 					return;
 				}
 				// Typed here, not received from a collaborator through the room
-				// (the binding marks those transactions as its own). An update
+				// (the binding marks those transactions as its own). An undo or
+				// redo in the room is applied the same way, but it is this
+				// person's: the room's undo manager reverts only this client's
+				// own changes (Fizzy #2946). Uncounted, an undo made after the
+				// save covering the edit had landed was never saved. An update
 				// that changed nothing, as `setEditable` emits, is no edit.
-				if (transaction?.docChanged && !isChangeOrigin(transaction)) {
+				if (
+					transaction?.docChanged &&
+					(!isChangeOrigin(transaction) ||
+						transaction.getMeta(ySyncPluginKey)
+							?.isUndoRedoOperation === true)
+				) {
 					localEditCountRef.current += 1;
 					noteTypedSinceSave();
 					typedSinceRejectRef.current = true;
@@ -2927,10 +3137,22 @@ function DocumentEditorInner({
 			let applied = content;
 			let appliedMarkdown: string | null = null;
 			if (source === "assistant" && typeof content === "string") {
-				appliedMarkdown =
+				const withSlots =
 					slotSource === undefined
 						? preserveEditorVisualSlots(ed, content)
 						: preserveVisualSlots(slotSource, content);
+				// A generated diagram the assistant left unchanged keeps its
+				// marker (Fizzy #2946). The editor is serialised only when it
+				// holds one.
+				const markerSource =
+					slotSource ??
+					(ed.state.doc.textContent.includes("fabric-visual:")
+						? getEditorMarkdownForSave(ed)
+						: null);
+				appliedMarkdown = preserveVisualMarkers(
+					markerSource,
+					withSlots,
+				);
 				applied = render(appliedMarkdown);
 			}
 			isProgrammaticUpdateRef.current = true;
@@ -3250,10 +3472,39 @@ function DocumentEditorInner({
 		return ed ? getEditorMarkdownForSave(ed) : null;
 	}, [rawEditPending]);
 	// Text a room brought back to the saved document took from this person,
-	// offered back once rather than dropped (Fizzy #2946).
+	// offered back once rather than dropped (Fizzy #2946). Also raw-view
+	// edits the editor moved past, under a toast of their own that the
+	// offer replaces once they leave the raw view.
+	const rawOfferToastId = `raw-edits-offer:${documentId}`;
 	const offerBackReplacedText = useCallback(
-		(text: string) => {
-			toast.warning(tRoom("offerBack.message"), {
+		(
+			text: string,
+			{
+				message,
+				id,
+				read,
+			}: {
+				message?: string;
+				id?: string;
+				/** The text to copy when clicked, if not `text` as it is now. */
+				read?: () => string;
+			} = {},
+		) => {
+			rawOfferRef.current = { text, kept: false };
+			// The room offering the raw view's own edits: under the one toast
+			// that says what became of them, copying them as they stand when
+			// clicked (Fizzy #2946) — leaving replaces it, it is never doubled.
+			const rawText = rawEditPending() && text === rawContentRef.current;
+			if (rawText) {
+				staleRawTextRef.current = text;
+			}
+			const toastId = id ?? (rawText ? rawOfferToastId : undefined);
+			const copied =
+				rawText && read === undefined
+					? () => staleRawTextRef.current
+					: (read ?? (() => text));
+			toast.warning(message ?? tRoom("offerBack.message"), {
+				...(toastId ? { id: toastId } : {}),
 				duration: Number.POSITIVE_INFINITY,
 				action: {
 					label: tRoom("offerBack.copy"),
@@ -3266,7 +3517,7 @@ function DocumentEditorInner({
 							toast.error(tRoom("offerBack.copyFailed"));
 							return;
 						}
-						clipboard.writeText(text).then(
+						clipboard.writeText(copied()).then(
 							() => toast.success(tRoom("offerBack.copied")),
 							() => toast.error(tRoom("offerBack.copyFailed")),
 						);
@@ -3274,8 +3525,33 @@ function DocumentEditorInner({
 				},
 			});
 		},
-		[tRoom],
+		[tRoom, rawEditPending, rawOfferToastId],
 	);
+	// The editor took a newer body while the raw view held edits of their
+	// own: they stay there, unsaved, and are no longer saved on their own
+	// (see `rawEditsStaleRef`). Said once, with the text to copy, unless the
+	// room just offered it back as it replaced the body.
+	const noteRawEditsStale = () => {
+		if (rawEditsStaleRef.current) {
+			return;
+		}
+		rawEditsStaleRef.current = true;
+		const text = rawContentRef.current;
+		staleRawTextRef.current = text;
+		if (rawOfferRef.current?.text === text) {
+			return;
+		}
+		// The raw view stays editable: what is copied is the text as it
+		// stands when the offer is clicked.
+		offerBackReplacedText(text, {
+			message: tRoom("rawEditsStale.message"),
+			id: rawOfferToastId,
+			read: () => staleRawTextRef.current,
+		});
+		rawOfferRef.current = { text, kept: true };
+	};
+	const noteRawEditsStaleRef = useRef(noteRawEditsStale);
+	noteRawEditsStaleRef.current = noteRawEditsStale;
 	const roomConvergenceState = useRoomConvergence({
 		active: roomStampsOn && !!provider && isCollabSynced,
 		ydoc: roomStampsOn ? ydoc : null,
@@ -3335,15 +3611,20 @@ function DocumentEditorInner({
 			roomStatus === "behindReadOnly" ||
 			(roomStatus === "checking" && checkingView !== "room") ||
 			canEdit === false);
-	// Typing that waited for the room is saved once saves may go again: the
-	// autosave that fell due meanwhile stood down without rescheduling.
+	// Typing that waited for the room, or for the answer to an assistant
+	// proposal, is saved once saves may go again: the autosave that fell
+	// due meanwhile stood down without rescheduling (Fizzy #2946). After a
+	// proposal only when no save of its own went — an accept sends one, and
+	// a failed save is retried by the person, not on its own.
 	const previousSaveBlockRef = useRef(saveBlockReason);
 	useEffect(() => {
 		const previous = previousSaveBlockRef.current;
 		previousSaveBlockRef.current = saveBlockReason;
 		if (
-			roomConvergence &&
-			previous === "updatingToLatest" &&
+			((roomConvergence && previous === "updatingToLatest") ||
+				(previous === "proposal" &&
+					!saveInFlightRef.current &&
+					!pendingDirectSaveRef.current)) &&
 			saveBlockReason === null &&
 			hasUnsavedChanges
 		) {
@@ -3492,12 +3773,28 @@ function DocumentEditorInner({
 
 	const {
 		state: agentState,
-		setState: setAgentState,
+		setState: setCoAgentState,
 		nodeName,
 	} = useCoAgent<AgentState>({
 		name: "project_document_generator",
 		initialState: initialAgentState,
 	});
+
+	// Every document handed to the agent goes through `toAgentDocument`, so the
+	// model never sees (and echoes back) Turndown's escapes. What the agent
+	// returns is therefore compared against `toAgentDocument(baseline)`.
+	const withAgentDocument = (state: AgentState): AgentState =>
+		typeof state.document === "string"
+			? { ...state, document: toAgentDocument(state.document) }
+			: state;
+	const setAgentState = (
+		update: AgentState | ((prev: AgentState | undefined) => AgentState),
+	) =>
+		setCoAgentState(
+			typeof update === "function"
+				? (prev) => withAgentDocument(update(prev))
+				: withAgentDocument(update),
+		);
 
 	// `useCoAgent` returns a new `setState` function every render, so listing it in
 	// a useEffect dep array causes an infinite render loop. Stash the latest
@@ -4714,7 +5011,7 @@ function DocumentEditorInner({
 			if (
 				baseline.trim().length > 0 &&
 				newDocument.trim().length > 0 &&
-				baseline !== newDocument
+				toAgentDocument(baseline) !== newDocument
 			) {
 				// TipTap's setContent calls flushSync internally; deferring to a
 				// microtask moves it out of the useEffect's render phase, where
@@ -4779,7 +5076,10 @@ function DocumentEditorInner({
 			}
 
 			// Skip if new document is empty or same as baseline
-			if (newDocument.trim().length === 0 || newDocument === baseline) {
+			if (
+				newDocument.trim().length === 0 ||
+				newDocument === toAgentDocument(baseline)
+			) {
 				return;
 			}
 
@@ -4845,11 +5145,113 @@ function DocumentEditorInner({
 		}
 	}, [editor?.state?.doc, viewMode, editor]);
 
+	// The raw view shows the editor's body. Someone reading or placing the
+	// caret in it keeps the caret where it was in the text, which a new value
+	// would move to the end.
+	const showInRawView = (markdown: string) => {
+		const area = rawTextareaRef.current;
+		if (
+			area &&
+			area.ownerDocument.activeElement === area &&
+			area.value === rawContentRef.current &&
+			rawContentRef.current !== markdown
+		) {
+			rawSelectionRef.current = {
+				start: followTextOffset(
+					area.value,
+					markdown,
+					area.selectionStart,
+				),
+				end: followTextOffset(area.value, markdown, area.selectionEnd),
+			};
+		}
+		setRawContent(markdown);
+	};
+	const showInRawViewRef = useRef(showInRawView);
+	showInRawViewRef.current = showInRawView;
+
+	// The raw view follows the editor's body while it holds no edits of its
+	// own (Fizzy #2946). Nothing types into the editor while the raw view is
+	// open: what reaches it comes from outside — a colleague's typing, a
+	// run's body put into the room by this editor or another — and the raw
+	// text, read from the editor only on the way in, kept the body from
+	// before, which an edit there then wrote back over the run's. Edits of
+	// its own stay as they are. Read at once after a quiet spell — with the
+	// change, so whatever made it, a run's end included, renders together
+	// with the body it brought; while changes keep coming, once per
+	// `RAW_VIEW_FOLLOW_MS`.
+	useEffect(() => {
+		if (!editor) {
+			return;
+		}
+		let timer: ReturnType<typeof setTimeout> | null = null;
+		let readAt = Number.NEGATIVE_INFINITY;
+		const follows = () =>
+			viewModeRef.current === "raw" && !rawEditedRef.current;
+		const read = () => {
+			timer = null;
+			if (editor.isDestroyed || !follows()) {
+				return;
+			}
+			readAt = Date.now();
+			const markdown = getEditorMarkdownForSave(editor);
+			if (markdown === null) {
+				return;
+			}
+			showInRawViewRef.current(markdown);
+		};
+		const onTransaction = ({
+			transaction,
+		}: {
+			transaction: { docChanged: boolean };
+		}) => {
+			if (!transaction.docChanged) {
+				return;
+			}
+			editorBodyRevisionRef.current += 1;
+			if (viewModeRef.current !== "raw") {
+				return;
+			}
+			// Nothing types into the editor while the raw view is open, so
+			// edits of its own now sit on an older body.
+			if (rawEditedRef.current) {
+				noteRawEditsStaleRef.current();
+				return;
+			}
+			if (timer) {
+				return;
+			}
+			const wait = readAt + RAW_VIEW_FOLLOW_MS - Date.now();
+			if (wait > 0) {
+				timer = setTimeout(read, wait);
+			} else {
+				read();
+			}
+		};
+		editor.on("transaction", onTransaction);
+		return () => {
+			editor.off("transaction", onTransaction);
+			if (timer) {
+				clearTimeout(timer);
+			}
+		};
+	}, [editor]);
+	useLayoutEffect(() => {
+		const selection = rawSelectionRef.current;
+		const area = rawTextareaRef.current;
+		rawSelectionRef.current = null;
+		if (selection && area) {
+			area.setSelectionRange(selection.start, selection.end);
+		}
+	}, [rawContent]);
+
 	// Handle switching between raw and rich view
 	const handleViewModeToggle = () => {
-		// Not while a Reject is unanswered: switching back writes the raw
-		// edits into the editor its outcome will replace (Fizzy #2946).
-		if (rejectPendingRef.current) {
+		// Not while a Reject is unanswered, nor while the raw view is held
+		// (see `rawViewHeld`): switching back writes the raw edits into the
+		// editor that a run, a proposal under review or the room is writing,
+		// where an Accept would save them (Fizzy #2946).
+		if (rejectPendingRef.current || rawViewHeldRef.current) {
 			return;
 		}
 		if (viewMode === "raw") {
@@ -4862,6 +5264,29 @@ function DocumentEditorInner({
 				return;
 			}
 			rawEditedRef.current = false;
+			// Edits made on a body the editor has since moved past stay out
+			// of it: written back, the older body they were made on would
+			// replace the newer one. They leave with the raw view, offered
+			// back to copy — over the toast that kept them, if there was one
+			// (Fizzy #2946).
+			if (rawEditsStaleRef.current) {
+				rawEditsStaleRef.current = false;
+				const offer = rawOfferRef.current;
+				if (offer?.text !== rawContent || offer?.kept) {
+					offerBackReplacedText(
+						rawContent,
+						offer?.kept ? { id: rawOfferToastId } : {},
+					);
+				}
+				const ed = liveEditorOrNull(editorRef.current);
+				const markdown = ed ? getEditorMarkdownForSave(ed) : null;
+				if (markdown !== null) {
+					setRawContent(markdown);
+				}
+				setViewMode("rich");
+				scheduleDirtyCheck();
+				return;
+			}
 			// Switching from raw to rich - update editor with raw content
 			const normalized = repairMarkdownDocument(rawContent);
 			// What was edited in the raw view was counted as this person's
@@ -5065,6 +5490,9 @@ function DocumentEditorInner({
 		}
 		setRawContent(result.value);
 		setCurrentDocument(result.value);
+		if (rawEditsStaleRef.current) {
+			staleRawTextRef.current = result.value;
+		}
 		// An edit in the raw view is this person's typing, like one in the
 		// rich editor (Fizzy #2946): a saved body the room brings in is
 		// never adopted over it, and in a room it is what this editor saves.
@@ -5082,9 +5510,12 @@ function DocumentEditorInner({
 			clearTimeout(autoSaveTimeoutRef.current);
 			autoSaveTimeoutRef.current = null;
 		}
+		// The latest autosave, not this render's: this render's still reads
+		// the document as saved, and the first edit was never autosaved
+		// (Fizzy #2946).
 		if (isDirty) {
 			autoSaveTimeoutRef.current = setTimeout(() => {
-				triggerAutoSave();
+				triggerAutoSaveRef.current?.();
 			}, DOCUMENT_AUTOSAVE_TIMINGS.delayMs);
 		}
 	};
@@ -5111,6 +5542,16 @@ function DocumentEditorInner({
 	const documentGetQueryKey = orpc.projects.documents.get.queryKey({
 		input: { id: documentId, projectId, organizationId },
 	});
+	// One id for the refusal of this document's save (Fizzy #2946): an
+	// error toast stays until it is closed, so a later refusal replaces
+	// it rather than stacking, and the next save that lands takes it
+	// away. It is the generic refusal's, and a guarded accept's version
+	// conflict's: that one tells to reload, but once a save lands the
+	// accepted text it kept is saved, so it no longer holds. The refusals
+	// that carry a Reload or Copy action — an editor older than the
+	// server, the single-user editor's conflict, a save after the page
+	// was left — keep toasts of their own.
+	const saveFailedToastId = `document-save-failed:${documentId}`;
 	const saveMutation = useMutation(
 		orpc.projects.documents.update.mutationOptions({
 			onMutate: async (variables) => {
@@ -5138,6 +5579,13 @@ function DocumentEditorInner({
 					});
 				}
 				savingEditCountRef.current = localEditCountRef.current;
+				// The body the document holds once this save lands (Fizzy
+				// #2946): leaving with the editor back to another body sends
+				// that one after it.
+				sendingContentRef.current =
+					typeof variables.content === "string"
+						? variables.content
+						: null;
 				// What this save carries, as the editor holds it now: its answer
 				// makes that the saved baseline, not typing that came after.
 				const sent = {
@@ -5145,6 +5593,7 @@ function DocumentEditorInner({
 					text:
 						liveEditorOrNull(editorRef.current)?.state.doc
 							.textContent ?? "",
+					editorRevision: editorBodyRevisionRef.current,
 				};
 				// Cancel outgoing refetches so they don't overwrite our optimistic update
 				await queryClient.cancelQueries({
@@ -5175,11 +5624,19 @@ function DocumentEditorInner({
 						context.previous,
 					);
 				}
+				// A save sent past `handleSave` says it was refused once the
+				// branch below is done, and where its text is now — unless it
+				// is sent once more, whose answer then says it (Fizzy #2946).
+				const onFailed = directSaveOnFailedRef.current;
+				directSaveOnFailedRef.current = null;
+				let sentAgain = false;
+				let failure: DirectSaveFailure = "keptInEditor";
 				if (pageLeft()) {
 					// The page was left: no editor holds the text any more, so
 					// nothing is retried, and the text is offered to copy.
 					// A save the page was left with that waited for this one
 					// does not go after a failure: its text is the one offered.
+					failure = "offeredToCopy";
 					conflictRetriesRef.current = 0;
 					notifyLeaveSaveFailed(
 						leaveContentRef.current ?? variables.content ?? "",
@@ -5249,17 +5706,54 @@ function DocumentEditorInner({
 								shouldRedirectAfterSaveRef.current ||
 								!!held?.redirect,
 						};
+						// What a save sent past `handleSave` says of its
+						// answer goes with it to the save sent again: an
+						// accepted proposal is reported as that answer, not
+						// as this refusal (Fizzy #2946). Held out of this
+						// save's `onSettled`, which runs first.
+						sentAgain = true;
+						const report = {
+							onSaved: directSaveOnSavedRef.current,
+							onFailed,
+							onSettled: directSaveOnSettledRef.current,
+							accepts: inFlightAcceptsRef.current,
+						};
+						directSaveOnSavedRef.current = null;
+						directSaveOnSettledRef.current = null;
 						setTimeout(() => {
 							isManualSaveRef.current = intent.manual;
 							isConfirmSaveRef.current = intent.confirm;
 							shouldRedirectAfterSaveRef.current =
 								intent.redirect;
+							// Never handed to the answer of another save in
+							// flight by then.
+							const idle = !saveInFlightRef.current;
+							if (idle) {
+								directSaveOnSavedRef.current = report.onSaved;
+								directSaveOnFailedRef.current = report.onFailed;
+								directSaveOnSettledRef.current =
+									report.onSettled;
+							}
 							handleSaveRef.current();
+							if (idle && saveInFlightRef.current) {
+								inFlightAcceptsRef.current = report.accepts;
+							}
+							if (!idle || !saveInFlightRef.current) {
+								// It did not go as a save of its own: what it
+								// would have saved stays unsaved in the editor.
+								if (idle) {
+									directSaveOnSavedRef.current = null;
+									directSaveOnFailedRef.current = null;
+									directSaveOnSettledRef.current = null;
+								}
+								report.onSettled?.();
+							}
 						}, 0);
 					} else if (roomStampsOn) {
 						// The room is behind the saved document: it is brought
 						// back to it, and what was typed since the last save is
 						// offered back.
+						failure = "offeredToCopy";
 						conflictRetriesRef.current = 0;
 						roomConvergenceState.noteConflict();
 						if (
@@ -5312,7 +5806,9 @@ function DocumentEditorInner({
 					// overwrite the newer version the guard just protected. The
 					// refetch brings that version to the badge and the history;
 					// the editor's content is left alone.
-					toast.error(ACCEPT_VERSION_CONFLICT_MESSAGE);
+					toast.error(ACCEPT_VERSION_CONFLICT_MESSAGE, {
+						id: saveFailedToastId,
+					});
 					setHasUnsavedChanges(true);
 					void queryClient.invalidateQueries({
 						queryKey: documentGetQueryKey,
@@ -5339,11 +5835,22 @@ function DocumentEditorInner({
 					toast.error(
 						describeDocumentWriteRefusal(error, tWriteRefusal)
 							.message,
+						{ id: saveFailedToastId },
 					);
+				}
+				if (failure === "keptInEditor" && editorClosed()) {
+					failure = "editorClosed";
+				}
+				if (!sentAgain) {
+					onFailed?.(failure);
 				}
 				setIsSaving(false);
 			},
 			onSuccess: (data, variables, context) => {
+				// A refusal said earlier is taken away once a save lands
+				// (Fizzy #2946): saving works again, and the Save button says
+				// whether anything is still unsaved.
+				toast.dismiss(saveFailedToastId);
 				// An explicit Save asks the server to complete a draft (see
 				// `buildDocumentSaveInput`). Say so when this save did: the
 				// editor shows no status of its own, so the toast is the only
@@ -5436,6 +5943,77 @@ function DocumentEditorInner({
 				const typedSinceSent =
 					context !== undefined &&
 					localEditCountRef.current > sentEditCount;
+				// A save of the raw view's edits, with nothing typed there
+				// since: the editor — and the room — take the body saved, and
+				// the raw view follows the editor again (Fizzy #2946). Left
+				// in the raw view alone, the edits kept the raw view from
+				// following: a proposal accepted later was saved, and the
+				// raw text, compared with it, was autosaved back over it.
+				const savedStamp =
+					typeof data?.document?.version === "number" &&
+					typeof savedHash === "string" &&
+					savedHash
+						? {
+								version: data.document.version,
+								contentHash: savedHash,
+							}
+						: null;
+				// Only over the body the editor held when the save was sent: a
+				// run, a review or the room that changed it meanwhile wrote a
+				// newer one, which a late answer must not take back — the raw
+				// edits then stay as they are, offered and not autosaved.
+				const liveEditor = liveEditorOrNull(editorRef.current);
+				const rawSaveLanded =
+					!!liveEditor &&
+					!typedSinceSent &&
+					rawEditPending() &&
+					typeof variables.content === "string" &&
+					variables.content === rawContentRef.current;
+				const roomNamesSave =
+					!roomStampsOn ||
+					(!!ydoc &&
+						!!savedStamp &&
+						sameRoomStamp(readRoomStamp(ydoc), savedStamp));
+				if (
+					liveEditor &&
+					rawSaveLanded &&
+					roomNamesSave &&
+					context?.sent.editorRevision ===
+						editorBodyRevisionRef.current
+				) {
+					rawEditedRef.current = false;
+					rawEditsStaleRef.current = false;
+					applyServerBody(
+						liveEditor,
+						fromMarkdown(repairMarkdownDocument(variables.content)),
+						roomStampsOn ? savedStamp : null,
+					);
+				} else if (
+					liveEditor &&
+					rawSaveLanded &&
+					roomStampsOn &&
+					roomNamesSave
+				) {
+					// The editor moved because the saved body itself reached it
+					// first — a colleague's editor brought the room to it — so
+					// the editor, the room and the document all hold the raw
+					// text: nothing is stale, and the raw view follows again.
+					const held = getEditorMarkdownForSave(liveEditor);
+					if (
+						held !== null &&
+						normalizeForComparison(held) ===
+							normalizeForComparison(
+								repairMarkdownDocument(variables.content ?? ""),
+							)
+					) {
+						rawEditedRef.current = false;
+						if (rawEditsStaleRef.current) {
+							rawEditsStaleRef.current = false;
+							toast.dismiss(rawOfferToastId);
+						}
+						showInRawView(held);
+					}
+				}
 				updateSavedBaseline(
 					variables.content || "",
 					typedSinceSent ? context.sent.text : undefined,
@@ -5444,6 +6022,16 @@ function DocumentEditorInner({
 				// Ensure cache reflects saved content and version without triggering refetch flicker
 				queryClient.setQueryData(documentGetQueryKey, (old: any) => {
 					if (!old?.document) {
+						return old;
+					}
+					// A later write the document already shows — a run's,
+					// another editor's — is not taken back by a late answer
+					// (Fizzy #2946).
+					if (
+						typeof old.document.version === "number" &&
+						typeof data?.document?.version === "number" &&
+						old.document.version > data.document.version
+					) {
 						return old;
 					}
 					return {
@@ -5518,8 +6106,11 @@ function DocumentEditorInner({
 				isConfirmSaveRef.current = false;
 				shouldRedirectAfterSaveRef.current = false;
 				// A failed save says nothing of its own landing (a successful
-				// one has already said it).
+				// one has already said it), and a landed one nothing of a
+				// refusal.
 				directSaveOnSavedRef.current = null;
+				directSaveOnFailedRef.current = null;
+				inFlightAcceptsRef.current = [];
 				// The save asked for meanwhile goes now, from the base this
 				// answer produced. After a failure it does not: the failure
 				// was said, and the text stays unsaved in the editor.
@@ -5534,6 +6125,7 @@ function DocumentEditorInner({
 				pendingDirectSaveRef.current = null;
 				const directSettled = pendingDirectOnSettledRef.current;
 				pendingDirectOnSettledRef.current = null;
+				pendingAcceptsRef.current = [];
 				if (direct && !error) {
 					setTimeout(direct, 0);
 					return;
@@ -5595,6 +6187,81 @@ function DocumentEditorInner({
 		effectiveDiffViewMode,
 		showDiffPreviewPanes,
 	} = useDiffPreview(editor, isDiffReviewActive);
+
+	// The raw view takes no input while the rich editor takes none, nor while
+	// a run holds the document, a proposal — a run's, the assistant's, an
+	// update using context — is under review, or a Reject is unanswered
+	// (Fizzy #2946): the raw view follows the editor, which then holds the
+	// proposal, and an edit made there would save it unanswered, or be
+	// written back over the run's body.
+	const rawViewHeld =
+		isLoading ||
+		isRegenerating ||
+		isRunStillWriting ||
+		showConfirmDialog ||
+		isConfirming ||
+		hasPendingConfirm ||
+		contextUpdate.isActive ||
+		rejectPending ||
+		roomFreezesEditor;
+	// The view switch waits too, but never for a client that may not edit:
+	// it has no edits to write back, and reads the markdown as it likes.
+	const viewSwitchHeld = rawViewHeld && canEdit !== false;
+	rawViewHeldRef.current = viewSwitchHeld;
+	const viewSwitchHeldId = useId();
+
+	// The editor is read-only while any assistant run is under way (Effect
+	// 1), also the short one that answers an Accept, which shows no
+	// "Generating" pill. Said beside Save, unless something else already
+	// says why: that pill, a regeneration or its review, a proposal under
+	// review, a generation run, the room's own state (Fizzy #2946). Shown
+	// once it has held for a moment, hidden as soon as it ends.
+	// Only for the run an answer to a proposal starts: CopilotKit's connect
+	// handshake on a page load holds the chat busy too, for seconds at
+	// times, and is no run anyone waits for. An answer counts until the
+	// next run ends, or for `ASSISTANT_FINISHING_ARM_MS` if none starts.
+	const [assistantAnswered, setAssistantAnswered] = useState(false);
+	const answeredLoadingRef = useRef(isLoading);
+	useEffect(() => {
+		const wasLoading = answeredLoadingRef.current;
+		answeredLoadingRef.current = isLoading;
+		if (wasLoading && !isLoading) {
+			setAssistantAnswered(false);
+		}
+	}, [isLoading]);
+	useEffect(() => {
+		if (!assistantAnswered || isLoading) {
+			return;
+		}
+		const timer = setTimeout(
+			() => setAssistantAnswered(false),
+			ASSISTANT_FINISHING_ARM_MS,
+		);
+		return () => clearTimeout(timer);
+	}, [assistantAnswered, isLoading]);
+	const assistantFinishing =
+		assistantAnswered &&
+		isLoading &&
+		!isUserGenerationActive &&
+		!isRegenerating &&
+		!isGenerationRunning &&
+		!showConfirmDialog &&
+		!isDiffReviewActive &&
+		!rejectPending &&
+		!roomFreezesEditor;
+	const [assistantFinishingShown, setAssistantFinishingShown] =
+		useState(false);
+	useEffect(() => {
+		if (!assistantFinishing) {
+			setAssistantFinishingShown(false);
+			return;
+		}
+		const timer = setTimeout(
+			() => setAssistantFinishingShown(true),
+			ASSISTANT_FINISHING_SHOW_DELAY_MS,
+		);
+		return () => clearTimeout(timer);
+	}, [assistantFinishing]);
 
 	// Auto-save function - skip save if content hasn't actually changed
 	const triggerAutoSave = () => {
@@ -5703,19 +6370,109 @@ function DocumentEditorInner({
 		return !reviewedHash || base.contentHash === reviewedHash;
 	};
 
+	// Whether the editor's text no longer holds an accepted proposal (Fizzy
+	// #2946): it is back to the body the proposal's review started from, or
+	// to the body saved when it was accepted — and is not the accepted text
+	// itself. The saved body is the one from then: a colleague's save
+	// landing since may already hold the accepted text.
+	const acceptUndoneIn = (text: string, accept: AcceptAwaitingSave) => {
+		const held = text.trim();
+		return (
+			held !== accept.accepted.trim() &&
+			(held === accept.acceptedFrom.trim() ||
+				held === accept.savedBody.trim())
+		);
+	};
+
 	// A save sent past `handleSave` keeps to one save at a time as well: while
 	// one is in flight it waits for that answer (see `pendingDirectSaveRef`),
 	// and its base is resolved when it is sent, so it names the body the
 	// answer produced rather than the one that save replaced.
-	sendDirectSaveRef.current = ({
-		build,
-		confirm,
-		onUnavailable,
-		stillApplies,
-		onDeclined,
-		onSettled,
-		onSaved,
-	}) => {
+	sendDirectSaveRef.current = (request) => {
+		const { build, confirm, onUnavailable, stillApplies, onDeclined } =
+			request;
+		// Accepted proposals waiting behind the save in flight are displaced
+		// by a save of what the editor holds — the save on leaving the page,
+		// a later accept (Fizzy #2946). One whose text that save holds rides
+		// on it, and its answer is the proposal's to say as well; otherwise
+		// nobody would. One the editor undid meanwhile says so now, and is
+		// never saved.
+		const waiting =
+			saveInFlightRef.current &&
+			pendingDirectSaveRef.current &&
+			request.savesEditor !== undefined
+				? pendingAcceptsRef.current
+				: [];
+		const carried = waiting.filter(
+			(accept) => !acceptUndoneIn(request.savesEditor ?? "", accept),
+		);
+		for (const accept of waiting) {
+			if (!carried.includes(accept)) {
+				accept.onUndone();
+			}
+		}
+		// The save of the editor's last text — on leaving, or on closing
+		// an editor outside a room — also settles an accepted proposal the
+		// save in flight carries when that text undid it: the proposal says
+		// it was undone, and that save's answer then says nothing of it
+		// (each accept records once). This save, sent behind it, writes the
+		// text the editor holds.
+		if (
+			saveInFlightRef.current &&
+			request.savesEditor !== undefined &&
+			!request.accept
+		) {
+			const editorText = request.savesEditor;
+			const undoneInFlight = inFlightAcceptsRef.current.filter((accept) =>
+				acceptUndoneIn(editorText, accept),
+			);
+			for (const accept of undoneInFlight) {
+				accept.onUndone();
+			}
+			inFlightAcceptsRef.current = inFlightAcceptsRef.current.filter(
+				(accept) => !undoneInFlight.includes(accept),
+			);
+		}
+		// The accepted proposals this save carries: those it displaced and
+		// still holds, and itself when it is one.
+		const riders: AcceptAwaitingSave[] = request.accept
+			? [
+					...carried,
+					{
+						accepted: request.savesEditor ?? "",
+						acceptedFrom: request.accept.from,
+						savedBody: lastSavedContentRef.current,
+						onSaved: request.onSaved,
+						onFailed: request.onFailed,
+						onSettled: request.onSettled,
+						onUndone: request.accept.onUndone,
+					},
+				]
+			: carried;
+		const onSaved = carried.length
+			? (saved: RoomStamp | null) => {
+					for (const accept of carried) {
+						accept.onSaved?.(saved);
+					}
+					return request.onSaved?.(saved);
+				}
+			: request.onSaved;
+		const onFailed = carried.length
+			? (failure: DirectSaveFailure) => {
+					for (const accept of carried) {
+						accept.onFailed?.(failure);
+					}
+					request.onFailed?.(failure);
+				}
+			: request.onFailed;
+		const onSettled = carried.length
+			? () => {
+					for (const accept of carried) {
+						accept.onSettled?.();
+					}
+					request.onSettled?.();
+				}
+			: request.onSettled;
 		const send = () => {
 			const base = resolveSaveBaseRef.current();
 			if (base === "unavailable") {
@@ -5754,13 +6511,16 @@ function DocumentEditorInner({
 			// waited for is never reported as its own.
 			isConfirmSaveRef.current = confirm;
 			directSaveOnSavedRef.current = onSaved ?? null;
+			directSaveOnFailedRef.current = onFailed ?? null;
 			directSaveOnSettledRef.current = onSettled ?? null;
+			inFlightAcceptsRef.current = riders;
 			setIsSaving(true);
 			saveMutation.mutate(build(base));
 		};
 		if (saveInFlightRef.current) {
 			pendingDirectSaveRef.current = send;
 			pendingDirectOnSettledRef.current = onSettled ?? null;
+			pendingAcceptsRef.current = riders;
 			setHasUnsavedChanges(true);
 			return;
 		}
@@ -5770,8 +6530,12 @@ function DocumentEditorInner({
 	// A save that went, or was meant to go, after the page was left within
 	// the app did not land: nobody is in the editor to see the text left
 	// unsaved, so it is said, with the text to copy.
+	// One toast per document: it replaces the warning that kept raw-view
+	// edits, and a second failure after leaving replaces the first.
 	const notifyLeaveSaveFailed = (text: string) => {
+		const id = rawOfferToastId;
 		toast.error(tRoom("leaveSaveFailed"), {
+			id,
 			duration: Number.POSITIVE_INFINITY,
 			...(text.trim()
 				? {
@@ -5796,6 +6560,24 @@ function DocumentEditorInner({
 	// document, or the room is behind the saved one), or when the editor
 	// holds what was last saved.
 	const flushOnLeave = () => {
+		// Raw-view edits on a body the editor moved past are not saved over
+		// it on the way out: nobody asked to. They are said to be unsaved,
+		// with the text as it stands now to copy, in place of the warning
+		// that kept them in the raw view (Fizzy #2946).
+		// Unless the person's own Save of exactly that text is in flight: its
+		// answer says what became of it (Fizzy #2946).
+		if (
+			viewMode === "raw" &&
+			rawEditedRef.current &&
+			rawEditsStaleRef.current &&
+			!(
+				saveInFlightRef.current &&
+				sendingContentRef.current === rawContentRef.current
+			)
+		) {
+			notifyLeaveSaveFailed(rawContentRef.current);
+			return;
+		}
 		if (
 			!roomStampsOn ||
 			!ydoc ||
@@ -5817,9 +6599,26 @@ function DocumentEditorInner({
 			viewMode === "raw"
 				? rawContent
 				: getEditorMarkdownForSave(editorRef.current);
+		// Holding what the document will hold, nothing is left to save
+		// (Fizzy #2946): the body the save in flight carries, else the saved
+		// one. Unless an accepted proposal still waits behind that save: its
+		// save would write text the editor no longer holds, so this one goes
+		// in its place. A regeneration's revert that waits is compared with
+		// the saved body, as before: replaced by this save, it would lose
+		// what makes it a revert.
+		const revertWaits =
+			pendingDirectSaveRef.current !== null &&
+			pendingAcceptsRef.current.length === 0;
+		const heldOnceSaved =
+			saveInFlightRef.current &&
+			!revertWaits &&
+			sendingContentRef.current !== null
+				? sendingContentRef.current
+				: lastSavedContentRef.current;
 		if (
 			content === null ||
-			content.trim() === lastSavedContentRef.current.trim()
+			(pendingAcceptsRef.current.length === 0 &&
+				content.trim() === heldOnceSaved.trim())
 		) {
 			return;
 		}
@@ -5830,6 +6629,10 @@ function DocumentEditorInner({
 		leaveContentRef.current = content;
 		sendDirectSaveRef.current({
 			confirm: false,
+			// What the editor holds now: an accepted proposal still waiting
+			// behind the save in flight is in it, and is said by its answer,
+			// unless the editor undid it.
+			savesEditor: content,
 			build: (base) =>
 				buildDocumentSaveInput({
 					projectId,
@@ -5843,6 +6646,69 @@ function DocumentEditorInner({
 	};
 	const flushOnLeaveRef = useRef(flushOnLeave);
 	flushOnLeaveRef.current = flushOnLeave;
+
+	// Edit with instructions reads Main from the server, so a client-document
+	// Proposal's diagram saves the editor first (Fizzy #2946). `false` when
+	// saving is refused right now (a run owns the document, the room is
+	// behind the saved body, the viewer may not edit) or the save does not
+	// land: the diagram then reads as changed, and nothing is asked.
+	const flushBeforeVisualEdit = (): Promise<boolean> => {
+		if (
+			canEdit !== true ||
+			!document ||
+			saveBlockReason !== null ||
+			viewMode === "raw"
+		) {
+			return Promise.resolve(false);
+		}
+		const content = getEditorMarkdownForSave(editorRef.current);
+		if (content === null) {
+			return Promise.resolve(false);
+		}
+		if (
+			!saveInFlightRef.current &&
+			pendingAcceptsRef.current.length === 0 &&
+			content.trim() === lastSavedContentRef.current.trim()
+		) {
+			return Promise.resolve(true);
+		}
+		if (autoSaveTimeoutRef.current) {
+			clearTimeout(autoSaveTimeoutRef.current);
+			autoSaveTimeoutRef.current = null;
+		}
+		return new Promise((resolve) => {
+			let landed = false;
+			sendDirectSaveRef.current({
+				confirm: false,
+				savesEditor: content,
+				build: (base) =>
+					buildDocumentSaveInput({
+						projectId,
+						documentId,
+						content,
+						isManualSave: false,
+						base,
+					}),
+				onUnavailable: () => {},
+				onSaved: () => {
+					landed = true;
+					return undefined;
+				},
+				onSettled: () =>
+					resolve(
+						landed ||
+							lastSavedContentRef.current.trim() ===
+								content.trim(),
+					),
+			});
+		});
+	};
+	const flushBeforeVisualEditRef = useRef(flushBeforeVisualEdit);
+	flushBeforeVisualEditRef.current = flushBeforeVisualEdit;
+	const flushForVisualEdit = useCallback(
+		() => flushBeforeVisualEditRef.current(),
+		[],
+	);
 	useLayoutEffect(() => {
 		const leave = pageLeaveRef?.current;
 		if (!leave) {
@@ -5857,10 +6723,93 @@ function DocumentEditorInner({
 		};
 	}, [pageLeaveRef]);
 
+	// Closing an editor outside a room sends nothing of its own (Fizzy
+	// #2946): an accepted proposal's save in flight, or waiting behind the
+	// one in flight, still goes after it is closed. When the editor's last
+	// text undid such a proposal, that save would write text the editor no
+	// longer holds. Every waiting one undone, none in flight, and the save
+	// in flight already carrying that last text: the waiting save does not
+	// go, and each says it was undone. Otherwise a save of that last text
+	// goes behind the one in flight, in place of the waiting save, and
+	// settles each proposal by what the text holds.
+	// Read in a layout cleanup, while the editor still exists.
+	const settleUndoneAcceptsOnClose = () => {
+		const waiting = pendingAcceptsRef.current;
+		const inFlight = inFlightAcceptsRef.current;
+		// Outside a room only, as `editorClosed`: a room's editor leaves its
+		// saves to the room, also with the room flag off and on a sync loss.
+		if (
+			ydoc ||
+			!saveInFlightRef.current ||
+			(waiting.length === 0 && inFlight.length === 0)
+		) {
+			return;
+		}
+		const text =
+			viewMode === "raw"
+				? rawContent
+				: getEditorMarkdownForSave(editorRef.current);
+		if (text === null) {
+			return;
+		}
+		const undone = (accept: AcceptAwaitingSave) =>
+			acceptUndoneIn(text, accept);
+		if (!waiting.some(undone) && !inFlight.some(undone)) {
+			return;
+		}
+		// Dropped only when the text the save in flight carries is the
+		// editor's last text: otherwise that save would leave the document
+		// on a body the person undid too.
+		if (
+			waiting.length > 0 &&
+			waiting.every(undone) &&
+			!inFlight.some(undone) &&
+			text.trim() ===
+				(
+					sendingContentRef.current ?? lastSavedContentRef.current
+				).trim()
+		) {
+			pendingDirectSaveRef.current = null;
+			pendingDirectOnSettledRef.current = null;
+			pendingAcceptsRef.current = [];
+			for (const accept of waiting) {
+				accept.onUndone();
+			}
+			return;
+		}
+		sendDirectSaveRef.current({
+			confirm: false,
+			savesEditor: text,
+			build: (base) =>
+				buildDocumentSaveInput({
+					projectId,
+					documentId,
+					content: text,
+					isManualSave: false,
+					base,
+				}),
+			onUnavailable: () => {},
+		});
+	};
+	const settleUndoneAcceptsOnCloseRef = useRef(settleUndoneAcceptsOnClose);
+	settleUndoneAcceptsOnCloseRef.current = settleUndoneAcceptsOnClose;
+	useLayoutEffect(() => () => settleUndoneAcceptsOnCloseRef.current(), []);
+
 	const handleSave = () => {
 		if (!document) {
 			// As below: no save runs, so clear the intent here.
 			isManualSaveRef.current = false;
+			shouldRedirectAfterSaveRef.current = false;
+			return;
+		}
+		// Raw-view edits the editor has moved past are saved only when the
+		// person asks (see `rawEditsStaleRef`): the autosave and the save
+		// before an assistant run stand down, and the edits stay unsaved.
+		if (
+			viewMode === "raw" &&
+			rawEditsStaleRef.current &&
+			!isManualSaveRef.current
+		) {
 			shouldRedirectAfterSaveRef.current = false;
 			return;
 		}
@@ -5951,6 +6900,8 @@ function DocumentEditorInner({
 			manual: isManualSaveRef.current,
 			redirect: shouldRedirectAfterSaveRef.current,
 		};
+		// A save of its own: no accepted proposal is said by its answer.
+		inFlightAcceptsRef.current = [];
 		setIsSaving(true);
 		// Update local state immediately so future streaming diffs compare against saved text
 		setCurrentDocument(content);
@@ -7519,6 +8470,16 @@ function DocumentEditorInner({
 		{
 			name: "confirm_changes",
 			renderAndWaitForResponse: ({ args, respond, status }) => {
+				// Every answer resumes the agent for one more short run, which the
+				// editor waits out read-only: the status beside Save says so (see
+				// `assistantAnswered`, Fizzy #2946).
+				// Says what it answered: the card and the review bar stamp it as
+				// the proposal's outcome.
+				const answer = (result: { accepted: boolean }): boolean => {
+					setAssistantAnswered(true);
+					respond?.(result);
+					return result.accepted;
+				};
 				const handleReject = () => {
 					setHasPendingConfirm(false);
 					confirmCallbacksRef.current = null;
@@ -7541,7 +8502,7 @@ function DocumentEditorInner({
 					// when the captured closure dates back to a pre-lazy-
 					// create render.
 					void recordOutcomeRef.current({ accepted: false });
-					respond?.({ accepted: false });
+					return answer({ accepted: false });
 				};
 
 				const handleAccept = () => {
@@ -7564,8 +8525,7 @@ function DocumentEditorInner({
 						setHasPendingConfirm(false);
 						confirmCallbacksRef.current = null;
 						void recordOutcomeRef.current({ accepted: false });
-						respond?.({ accepted: false });
-						return;
+						return answer({ accepted: false });
 					}
 
 					// Never persist an extraction that came back empty against a
@@ -7586,8 +8546,7 @@ function DocumentEditorInner({
 						setHasPendingConfirm(false);
 						confirmCallbacksRef.current = null;
 						void recordOutcomeRef.current({ accepted: false });
-						respond?.({ accepted: false });
-						return;
+						return answer({ accepted: false });
 					}
 
 					setHasPendingConfirm(false);
@@ -7602,6 +8561,10 @@ function DocumentEditorInner({
 							finalContent,
 							"assistant",
 						) ?? finalContent;
+					// The body the proposal's review started from (Fizzy
+					// #2946): `baselineRef`, which follows the editor until a
+					// proposal arms, and is kept while it is reviewed.
+					const acceptedFrom = baselineRef.current;
 					setCurrentDocument(acceptedContent);
 					baselineRef.current = acceptedContent;
 					setAgentState((prev) => ({
@@ -7630,6 +8593,76 @@ function DocumentEditorInner({
 					localEditCountRef.current += 1;
 					noteTypedSinceSave();
 					setHasUnsavedChanges(true);
+					// Fire-and-forget operation-result persistence (Tier 3),
+					// recorded once the save is answered, never before
+					// (Fizzy #2946): the chat is answered at once, and its
+					// record says what became of the accepted text — saved,
+					// refused, or kept unsaved in the editor. Exactly one
+					// record per accept, under one key made now: the helper
+					// holds back only a call with the same key, so a reject of
+					// another proposal recorded meanwhile never swallows it,
+					// and the server's per-key dedup covers a retried request.
+					// Read via `recordOutcomeRef.current` (latest-ref pattern)
+					// so the helper sees the freshest `conversationId` when
+					// the answer arrives; see the hook-call doc comment above
+					// for the empty-deps caching rationale.
+					const acceptOperationKey = crypto.randomUUID();
+					let outcomeRecorded = false;
+					const recordOutcome = (options: RecordOnResolveOptions) => {
+						if (outcomeRecorded) {
+							return;
+						}
+						outcomeRecorded = true;
+						void recordOutcomeRef.current({
+							...options,
+							operationKey: acceptOperationKey,
+						});
+					};
+					const recordUnsaved = () =>
+						recordOutcome({
+							accepted: true,
+							outcome: "partial",
+							summary: ACCEPT_OUTCOME_SUMMARIES.unsaved,
+						});
+					const recordFailed = (failure: DirectSaveFailure) =>
+						recordOutcome({
+							accepted: true,
+							outcome: "failure",
+							summary:
+								failure === "offeredToCopy"
+									? ACCEPT_OUTCOME_SUMMARIES.failedOfferedToCopy
+									: failure === "editorClosed"
+										? ACCEPT_OUTCOME_SUMMARIES.failedEditorClosed
+										: ACCEPT_OUTCOME_SUMMARIES.failed,
+						});
+					// Taken back in the editor while its save still waited: it
+					// was never sent, and the editor's own text went instead.
+					// Recorded as declined, not as a failure (Fizzy #2946).
+					const recordUndone = () =>
+						recordOutcome({
+							accepted: false,
+							summary: ACCEPT_OUTCOME_SUMMARIES.undone,
+						});
+					// No answer of its own says what became of it — it was
+					// dropped after the save it waited for failed, or not
+					// sent: it is unsaved in the editor, unless the editor is
+					// gone (Fizzy #2946). After the page was left, the save
+					// on leaving carried it and offered it to copy when that
+					// did not land; without one it went nowhere. A closed
+					// single-user editor offers nothing.
+					const recordNotSent = () => {
+						if (pageLeft()) {
+							recordFailed(
+								leaveContentRef.current !== null
+									? "offeredToCopy"
+									: "editorClosed",
+							);
+						} else if (editorClosed()) {
+							recordFailed("editorClosed");
+						} else {
+							recordUnsaved();
+						}
+					};
 					// With the room flag every accept names its whole base
 					// (Fizzy #2946), which covers the slots as well.
 					const base = resolveSaveBaseRef.current();
@@ -7638,12 +8671,8 @@ function DocumentEditorInner({
 						// the editor, unsaved, and the autosave takes it once
 						// the room has one. Never silent.
 						toast.info(tRun("saveBlocked.updatingToLatest"));
-						void recordOutcomeRef.current({
-							accepted: true,
-							summary: "Changes applied.",
-						});
-						respond?.({ accepted: true });
-						return;
+						recordUnsaved();
+						return answer({ accepted: true });
 					}
 
 					// A confirm-initiated save, so its outcome is surfaced
@@ -7653,6 +8682,12 @@ function DocumentEditorInner({
 					startTransition(() => {
 						sendDirectSaveRef.current({
 							confirm: true,
+							// The editor's body with the proposal in it.
+							savesEditor: acceptedContent,
+							accept: {
+								from: acceptedFrom,
+								onUndone: recordUndone,
+							},
 							build: (sendBase) =>
 								buildDocumentSaveInput({
 									projectId,
@@ -7665,27 +8700,34 @@ function DocumentEditorInner({
 											? undefined
 											: editorBodyVersionRef.current,
 								}),
-							onUnavailable: () =>
+							onUnavailable: () => {
 								toast.info(
 									tRun("saveBlocked.updatingToLatest"),
-								),
+								);
+								recordNotSent();
+							},
+							onSaved: () => {
+								recordOutcome({
+									accepted: true,
+									summary: ACCEPT_OUTCOME_SUMMARIES.saved,
+								});
+								// The room takes the saved body's stamp as
+								// for any save.
+								return undefined;
+							},
+							// Refused: the text is still in the editor, or —
+							// the page left, the room brought back to the
+							// saved document — it was offered to copy, or the
+							// single-user editor holding it was closed.
+							onFailed: recordFailed,
+							// Settled without an answer of its own — dropped
+							// after the save it waited for failed, or not sent
+							// again after a CONFLICT. After an answer, this
+							// adds nothing.
+							onSettled: recordNotSent,
 						});
 					});
-					// Fire-and-forget operation-result persistence (Tier 3).
-					// Both reads go through refs (latest-ref pattern):
-					//   - `recordOutcomeRef.current`: freshest helper
-					//     closure with the resolved `conversationId`.
-					//   - `documentRef.current.title`: freshest document
-					//     title so a mid-flow rename produces an accurate
-					//     summary instead of a stale-closure title from
-					//     when the action was registered.
-					// See the hook-call doc comment above for the empty-
-					// deps caching rationale.
-					void recordOutcomeRef.current({
-						accepted: true,
-						summary: "Changes applied.",
-					});
-					respond?.({ accepted: true });
+					return answer({ accepted: true });
 				};
 
 				// Deterministic confirm delivery (RC2). The action render closure
@@ -7698,7 +8740,7 @@ function DocumentEditorInner({
 						const baseline = baselineRef.current;
 						const noOp = isNoOpProposedContent(
 							proposedDoc,
-							baseline,
+							toAgentDocument(baseline),
 						);
 						confirmNoOpRef.current = noOp;
 						if (noOp) {
@@ -7714,7 +8756,7 @@ function DocumentEditorInner({
 								void recordOutcomeRef.current({
 									accepted: false,
 								});
-								respond?.({ accepted: false });
+								answer({ accepted: false });
 							});
 						} else {
 							confirmCallbacksRef.current = {
@@ -7742,7 +8784,7 @@ function DocumentEditorInner({
 										editorMarkdown !== null &&
 										editorMarkdown !== "" &&
 										normalizeForComparison(
-											editorMarkdown,
+											toAgentDocument(editorMarkdown),
 										) ===
 											normalizeForComparison(
 												preserveEditorVisualSlots(
@@ -7790,13 +8832,24 @@ function DocumentEditorInner({
 						args={args}
 						respond={respond}
 						status={status}
-						onMount={() => setHasPendingConfirm(true)}
+						onMount={() => {
+							// Mounted again while its call is executing — the
+							// chat's row was keyed anew — the card's leaving
+							// took the review bar's callbacks with it: they come
+							// back with it (Fizzy #2946).
+							confirmCallbacksRef.current = {
+								accept: handleAccept,
+								reject: handleReject,
+							};
+							setHasPendingConfirm(true);
+						}}
 						onDone={() => {
 							setHasPendingConfirm(false);
 							confirmCallbacksRef.current = null;
 						}}
 						onReject={handleReject}
 						onConfirm={handleAccept}
+						outcomeAuditRef={diffOutcomeAuditRef}
 					/>
 				);
 			},
@@ -8047,6 +9100,9 @@ function DocumentEditorInner({
 															agentName="project_document_generator"
 															documentType={
 																document.type
+															}
+															projectId={
+																projectId
 															}
 															value={
 																selectedPromptId
@@ -9186,18 +10242,9 @@ function DocumentEditorInner({
 														onAfterChange={() => {
 															isDiffReviewEditRef.current = false;
 														}}
-														outcomeAudit={{
-															conversationId:
-																activeAssistantConversationId,
-															projectId,
-															organizationId,
-															messageId:
-																lastWriteDocumentLocalToolCall?.messageId ??
-																null,
-															toolCallId:
-																lastWriteDocumentLocalToolCall?.toolCallId ??
-																null,
-														}}
+														outcomeAudit={
+															diffOutcomeAudit
+														}
 													/>
 												)}
 												{contextUpdate.isLoading && (
@@ -9294,24 +10341,57 @@ function DocumentEditorInner({
 											>
 												{/* While the room is behind the saved document, the
 												    saved body, read-only; the room's editor stays
-												    mounted behind it (Fizzy #2946). */}
-												<EditorContent
-													editor={editor}
-													className={cn(
-														"prose prose-sm max-w-none dark:prose-invert",
-														showsSavedBody &&
-															"hidden",
-													)}
-												/>
-												{showsSavedBody && (
-													<RoomSavedBody
-														markdown={
-															document?.content ??
-															""
-														}
-														statTiles={statTiles}
+												    mounted behind it (Fizzy #2946). Made ready,
+												    hidden, during a second look that froze the
+												    editor at the end of a run, which it may end in;
+												    a second look that keeps the room's body on
+												    screen builds no hidden editor. */}
+												<MermaidVisualProvider
+													enabled={
+														statTiles &&
+														documentRefKind ===
+															"PROJECT_DOCUMENT"
+													}
+													projectId={projectId}
+													documentId={documentId}
+													isMember={
+														proposalVisuals?.isMember ===
+														true
+													}
+													paint={
+														proposalVisuals?.paint
+													}
+													flushSave={
+														flushForVisualEdit
+													}
+												>
+													<EditorContent
+														editor={editor}
+														className={cn(
+															"prose prose-sm max-w-none dark:prose-invert",
+															showsSavedBody &&
+																"hidden",
+														)}
 													/>
-												)}
+													{(showsSavedBody ||
+														(roomStatus ===
+															"checking" &&
+															checkingView !==
+																"room")) && (
+														<RoomSavedBody
+															markdown={
+																document?.content ??
+																""
+															}
+															statTiles={
+																statTiles
+															}
+															shown={
+																showsSavedBody
+															}
+														/>
+													)}
+												</MermaidVisualProvider>
 											</div>
 											{showDiffPreviewPanes &&
 												diffViews && (
@@ -9365,8 +10445,10 @@ function DocumentEditorInner({
 											{/* The raw view holds still with the
 											    room's editor, and shows the saved
 											    body with it unless it holds edits
-											    of its own (Fizzy #2946). */}
+											    of its own; otherwise it follows the
+											    editor's body (Fizzy #2946). */}
 											<Textarea
+												ref={rawTextareaRef}
 												value={
 													showsSavedBody &&
 													!rawEditPending()
@@ -9381,11 +10463,7 @@ function DocumentEditorInner({
 												}
 												placeholder="Enter your document content in markdown format... Type @fabric followed by your question to ask the AI agent."
 												className="font-mono text-sm resize-none min-h-[calc(100vh-300px)] w-full"
-												disabled={
-													isLoading ||
-													rejectPending ||
-													roomFreezesEditor
-												}
+												disabled={rawViewHeld}
 											/>
 											<div className="mt-4 space-y-2">
 												<p className="text-xs text-muted-foreground">
@@ -9606,39 +10684,65 @@ function DocumentEditorInner({
 									<TooltipProvider>
 										<Tooltip>
 											<TooltipTrigger asChild>
-												<Button
-													type="button"
-													variant={
-														viewMode === "raw"
-															? "secondary"
-															: "ghost"
+												{/* Focusable while disabled, so the reason shows. */}
+												<span
+													tabIndex={
+														viewSwitchHeld ? 0 : -1
 													}
-													size="sm"
-													onClick={
-														handleViewModeToggle
-													}
-													disabled={rejectPending}
-													aria-label={
-														viewMode === "rich"
-															? "View raw markdown"
-															: "Switch to rich editor"
-													}
+													className="inline-flex"
 												>
-													{viewMode === "rich" ? (
-														<Code2Icon className="size-4" />
-													) : (
-														<EyeIcon className="size-4" />
-													)}
-												</Button>
+													<Button
+														type="button"
+														variant={
+															viewMode === "raw"
+																? "secondary"
+																: "ghost"
+														}
+														size="sm"
+														onClick={
+															handleViewModeToggle
+														}
+														disabled={
+															rejectPending ||
+															viewSwitchHeld
+														}
+														aria-label={
+															viewMode === "rich"
+																? "View raw markdown"
+																: "Switch to rich editor"
+														}
+														aria-describedby={
+															viewSwitchHeld
+																? viewSwitchHeldId
+																: undefined
+														}
+													>
+														{viewMode === "rich" ? (
+															<Code2Icon className="size-4" />
+														) : (
+															<EyeIcon className="size-4" />
+														)}
+													</Button>
+												</span>
 											</TooltipTrigger>
 											<TooltipContent>
 												<p>
-													{viewMode === "rich"
-														? "Switch to raw markdown view"
-														: "Switch to rich editor"}
+													{viewSwitchHeld
+														? VIEW_SWITCH_HELD_TEXT
+														: viewMode === "rich"
+															? "Switch to raw markdown view"
+															: "Switch to rich editor"}
 												</p>
 											</TooltipContent>
 										</Tooltip>
+										{viewSwitchHeld && (
+											<span
+												id={viewSwitchHeldId}
+												className="sr-only"
+											>
+												{VIEW_SWITCH_HELD_TEXT}
+											</span>
+										)}
 									</TooltipProvider>
 									<TooltipProvider>
 										<Tooltip>
@@ -9755,19 +10859,92 @@ function DocumentEditorInner({
 											? CheckIcon
 											: SaveIcon;
 									return (
-										<div
-											className="inline-flex shrink-0"
-											aria-live="polite"
-										>
-											<Tooltip>
-												<TooltipTrigger asChild>
+										<>
+											<output
+												aria-live="polite"
+												className={
+													assistantFinishingShown
+														? "mr-3 flex items-center gap-1 text-xs text-muted-foreground"
+														: "sr-only"
+												}
+											>
+												{assistantFinishingShown && (
+													<>
+														<Loader2
+															className="h-3 w-3 animate-spin"
+															aria-hidden
+														/>
+														<span>
+															{tRun(
+																"assistantFinishing",
+															)}
+														</span>
+													</>
+												)}
+											</output>
+											<div
+												className="inline-flex shrink-0"
+												aria-live="polite"
+											>
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<span
+															tabIndex={
+																isPrimaryDisabled
+																	? 0
+																	: -1
+															}
+															className="inline-flex"
+														>
+															<Button
+																type="button"
+																size="sm"
+																disabled={
+																	isPrimaryDisabled
+																}
+																aria-label={
+																	primaryAriaLabel
+																}
+																aria-describedby={
+																	saveBlockedText !==
+																	null
+																		? saveBlockedId
+																		: undefined
+																}
+																className="shrink-0 rounded-r-none"
+																onClick={() => {
+																	isManualSaveRef.current = true;
+																	shouldRedirectAfterSaveRef.current = false;
+																	handleSave();
+																}}
+															>
+																<PrimaryIcon
+																	className={`size-4 mr-2 ${
+																		isSaving
+																			? "animate-spin"
+																			: ""
+																	}`}
+																	aria-hidden
+																/>
+																{primaryLabel}
+															</Button>
+														</span>
+													</TooltipTrigger>
+													<TooltipContent>
+														{primaryTooltip}
+													</TooltipContent>
+												</Tooltip>
+												{saveBlockedText !== null && (
 													<span
-														tabIndex={
-															isPrimaryDisabled
-																? 0
-																: -1
-														}
-														className="inline-flex"
+														id={saveBlockedId}
+														className="sr-only"
+													>
+														{saveBlockedText}
+													</span>
+												)}
+												<DropdownMenu modal={false}>
+													<DropdownMenuTrigger
+														asChild
 													>
 														<Button
 															type="button"
@@ -9775,81 +10952,34 @@ function DocumentEditorInner({
 															disabled={
 																isPrimaryDisabled
 															}
-															aria-label={
-																primaryAriaLabel
-															}
-															aria-describedby={
-																saveBlockedText !==
-																null
-																	? saveBlockedId
-																	: undefined
-															}
-															className="shrink-0 rounded-r-none"
-															onClick={() => {
-																isManualSaveRef.current = true;
-																shouldRedirectAfterSaveRef.current = false;
-																handleSave();
-															}}
+															aria-label="More save options"
+															className="shrink-0 rounded-l-none border-l border-primary-foreground/30 px-2"
 														>
-															<PrimaryIcon
-																className={`size-4 mr-2 ${
-																	isSaving
-																		? "animate-spin"
-																		: ""
-																}`}
+															<ChevronDown
+																className="size-4"
 																aria-hidden
 															/>
-															{primaryLabel}
 														</Button>
-													</span>
-												</TooltipTrigger>
-												<TooltipContent>
-													{primaryTooltip}
-												</TooltipContent>
-											</Tooltip>
-											{saveBlockedText !== null && (
-												<span
-													id={saveBlockedId}
-													className="sr-only"
-												>
-													{saveBlockedText}
-												</span>
-											)}
-											<DropdownMenu modal={false}>
-												<DropdownMenuTrigger asChild>
-													<Button
-														type="button"
-														size="sm"
-														disabled={
-															isPrimaryDisabled
-														}
-														aria-label="More save options"
-														className="shrink-0 rounded-l-none border-l border-primary-foreground/30 px-2"
-													>
-														<ChevronDown
-															className="size-4"
-															aria-hidden
-														/>
-													</Button>
-												</DropdownMenuTrigger>
-												<DropdownMenuContent align="end">
-													<DropdownMenuItem
-														onSelect={() => {
-															isManualSaveRef.current = true;
-															shouldRedirectAfterSaveRef.current = true;
-															handleSave();
-														}}
-														className="cursor-pointer rounded-md bg-primary text-primary-foreground focus:bg-primary/90 focus:text-primary-foreground data-[highlighted]:bg-primary/90 data-[highlighted]:text-primary-foreground"
-													>
-														<XIcon
-															className="mr-2 size-4"
-															aria-hidden
-														/>
-														Save & Close
-													</DropdownMenuItem>
-												</DropdownMenuContent>
-											</DropdownMenu>
-										</div>
+													</DropdownMenuTrigger>
+													<DropdownMenuContent align="end">
+														<DropdownMenuItem
+															onSelect={() => {
+																isManualSaveRef.current = true;
+																shouldRedirectAfterSaveRef.current = true;
+																handleSave();
+															}}
+															className="cursor-pointer rounded-md bg-primary text-primary-foreground focus:bg-primary/90 focus:text-primary-foreground data-[highlighted]:bg-primary/90 data-[highlighted]:text-primary-foreground"
+														>
+															<XIcon
+																className="mr-2 size-4"
+																aria-hidden
+															/>
+															Save & Close
+														</DropdownMenuItem>
+													</DropdownMenuContent>
+												</DropdownMenu>
+											</div>
+										</>
 									);
 								})(),
 								saveSlot,
@@ -9972,12 +11102,7 @@ function RegenerationConfirmDialog({
 						<div className="flex flex-col h-full min-h-0">
 							<h4 className="text-sm font-medium mb-2 text-muted-foreground shrink-0">
 								Previous Version (
-								{
-									previousContent
-										.split(/\s+/)
-										.filter((w) => w.length > 0).length
-								}{" "}
-								words)
+								{countDocumentWords(previousContent)} words)
 							</h4>
 							<div className="flex-1 min-h-0 bg-muted/50 rounded-lg p-4 text-sm whitespace-pre-wrap font-mono overflow-y-auto overflow-x-auto">
 								{previousContent}
@@ -9985,12 +11110,7 @@ function RegenerationConfirmDialog({
 						</div>
 						<div className="flex flex-col h-full min-h-0">
 							<h4 className="text-sm font-medium mb-2 text-primary shrink-0">
-								New Version (
-								{
-									newContent
-										.split(/\s+/)
-										.filter((w) => w.length > 0).length
-								}{" "}
+								New Version ({countDocumentWords(newContent)}{" "}
 								words)
 							</h4>
 							<div className="flex-1 min-h-0 bg-primary/5 border border-primary/20 rounded-lg p-4 text-sm whitespace-pre-wrap font-mono overflow-y-auto overflow-x-auto">
@@ -10041,12 +11161,15 @@ interface ConfirmChangesProps {
 	args: any;
 	respond: any;
 	status: any;
-	onConfirm: () => void;
-	onReject: () => void;
+	/** Each says what the proposal was answered with. */
+	onConfirm: () => boolean;
+	onReject: () => boolean;
 	originalLength?: number;
 	newLength?: number;
 	onMount?: () => void;
 	onDone?: () => void;
+	/** Where the person's choice is stamped, read when they make it. */
+	outcomeAuditRef?: { readonly current: DiffOutcomeAudit };
 }
 
 function ConfirmChanges({
@@ -10058,6 +11181,7 @@ function ConfirmChanges({
 	newLength = 0,
 	onMount,
 	onDone,
+	outcomeAuditRef,
 }: ConfirmChangesProps) {
 	// Track user's choice locally, but also derive from status
 	// This handles the case where component is recreated after action re-registration
@@ -10065,6 +11189,18 @@ function ConfirmChanges({
 		"accepted" | "rejected" | null
 	>(null);
 	const [hidden, setHidden] = useState(false);
+	// What the proposal was answered with is stamped on its tool call, as
+	// the review bar stamps it, so the chat's outcome chip shows it rather
+	// than "Pending" (Fizzy #2946): an Accept that could not read the editor
+	// answered that nothing was accepted. Where to stamp is read before the
+	// choice is acted on, while it still names this proposal.
+	const stampDiffOutcome = useDiffOutcomeStamp();
+	const choose = (choice: "accepted" | "rejected") => {
+		const audit = outcomeAuditRef?.current;
+		setUserChoice(choice);
+		const accepted = choice === "accepted" ? onConfirm() : onReject();
+		void stampDiffOutcome(audit, accepted ? "accepted" : "rejected");
+	};
 
 	// Auto-dismiss after user makes a choice
 	useEffect(() => {
@@ -10074,11 +11210,22 @@ function ConfirmChanges({
 		}
 	}, [userChoice]);
 
-	// Signal to parent that generation is done and confirm dialog is active
+	// Signal to parent that generation is done and confirm dialog is active —
+	// only while this card's tool call is executing (Fizzy #2946). The chat
+	// mounts a card again when a message enters the history ahead of it, and
+	// an answered card that said so again held the editor in review: every
+	// later edit went uncounted, and was never saved. Its cleanup runs when
+	// the call is answered, so a card that leaves the chat later cannot close
+	// a newer proposal's review.
+	const executing = status === "executing";
 	useEffect(() => {
+		if (!executing) {
+			return;
+		}
 		onMount?.();
 		return () => onDone?.();
-	}, []);
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [executing]);
 
 	// Calculate content loss percentage
 	const hasContentLoss = originalLength > 0 && newLength < originalLength;
@@ -10154,10 +11301,7 @@ function ConfirmChanges({
 					type="button"
 					data-testid="reject-button"
 					className="bg-muted text-muted-foreground py-2 px-4 rounded cursor-pointer hover:bg-muted/80"
-					onClick={() => {
-						setUserChoice("rejected");
-						onReject();
-					}}
+					onClick={() => choose("rejected")}
 				>
 					Reject
 				</button>
@@ -10165,10 +11309,7 @@ function ConfirmChanges({
 					type="button"
 					data-testid="confirm-button"
 					className="bg-primary text-primary-foreground py-2 px-4 rounded cursor-pointer hover:bg-primary/90"
-					onClick={() => {
-						setUserChoice("accepted");
-						onConfirm();
-					}}
+					onClick={() => choose("accepted")}
 				>
 					Confirm
 				</button>

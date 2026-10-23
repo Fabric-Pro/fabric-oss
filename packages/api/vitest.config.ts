@@ -1,3 +1,4 @@
+import { availableParallelism } from "node:os";
 import path from "node:path";
 import { defineConfig } from "vitest/config";
 
@@ -63,22 +64,21 @@ export default defineConfig({
 		// suite pinned to one core of an 8-core runner while apps/web, which
 		// sets no worker cap, cleared 55% more files in half the wall time.
 		//
-		// Measured: this does NOT reliably shorten CI — see the note in
-		// packages/temporal/vitest.config.ts. The runner is bound by
-		// aggregate CPU, so the cores freed here go to apps/web. This suite
-		// fell from ~513s to ~421s across three full uncached runs a side
-		// while the step as a whole stayed flat. The dependable gain is local.
-		//
-		// A percentage rather than a fixed count so this scales with whatever
-		// it runs on — CI's 8-core runner resolves it to 4, a 2-core box to 1,
-		// a dev machine to half its cores. A hard-coded number tuned for CI
-		// would oversubscribe the small runners and starve the large ones.
 		// Full suite: 491s on CI at one worker against 94s at 10, with
 		// 493 files / 4963 tests passing.
 		//
+		// CI: every core but one, as in packages/temporal/vitest.config.ts,
+		// which has the reasoning. This suite is import-bound (a full CI run:
+		// import 729s against tests 144s over a 255s run, about 3.4 files in
+		// flight on an 8-core runner it had to itself), so idle cores are
+		// what it waits on. Locally: half the cores, since Turbo runs several
+		// packages at once there.
+		//
 		// Leave `isolate` at its default (true). Do NOT set isolate:false —
 		// measured directly, it fails 8 files / 69 tests in this suite.
-		maxWorkers: "50%",
+		maxWorkers: process.env.CI
+			? Math.max(availableParallelism() - 1, 1)
+			: "50%",
 	},
 	resolve: {
 		alias: [

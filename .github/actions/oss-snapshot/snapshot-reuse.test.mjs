@@ -4,6 +4,7 @@ import test from "node:test";
 import { SNAPSHOT_IMAGES } from "./oss-snapshot-manifest.mjs";
 import {
 	componentInputs,
+	dockerignore,
 	fingerprint,
 	INPUTS_LABEL,
 	inputFiles,
@@ -134,6 +135,122 @@ test("submodules and symbolic-link context roots disable reuse", () => {
 	);
 });
 
+test("ignore patterns match a path or its parents as Docker's context filter does", () => {
+	const cases = [
+		// A pattern is anchored at the context root; only `**` crosses `/`.
+		["*.md", "README.md", true],
+		["*.md", "docs/guide.md", false],
+		["**/*.md", "docs/guide.md", true],
+		["**/*.md", "README.md", true],
+		["*.test.ts", "packages/a/x.test.ts", false],
+		["**/*.test.ts", "packages/a/x.test.ts", true],
+		["?.ts", "a.ts", true],
+		["?.ts", "ab.ts", false],
+		// A matched directory excludes everything beneath it.
+		["docs/", "docs/a/b.ts", true],
+		["docs/", "packages/docs/b.ts", false],
+		["**/__tests__/", "packages/a/__tests__/b.ts", true],
+		["**/__tests__/", "__tests__/b.ts", true],
+		["**/tests", "packages/tests2/b.ts", false],
+		["/scripts", "scripts/run.sh", true],
+		["./tooling//x", "tooling/x/y", true],
+		["a/**", "a/b/c", true],
+		["a/**", "a", false],
+		["a/**", "ab/c", false],
+		["a/**/b", "a/b", true],
+		["a/**/b", "a/x/y/b/c", true],
+		["a/**/b", "a/xb", false],
+		["**", "anything/at/all", true],
+		// Regular-expression characters are literal.
+		["a+b(c).ts", "a+b(c).ts", true],
+		["a+b(c).ts", "aab(c).ts", false],
+		["a.ts", "abts", false],
+		// Only a line that starts with `#` is a comment.
+		["# note", "# note", false],
+		["  # note", "# note", true],
+	];
+	for (const [pattern, path, expected] of cases) {
+		assert.equal(
+			dockerignore(pattern)(path),
+			expected,
+			`${pattern} ${path}`,
+		);
+	}
+	const byteOrderMark = String.fromCharCode(0xfeff);
+	const file = dockerignore(`${byteOrderMark}*.log\r\n\r\ndist/\r\n`);
+	assert.ok(file("a.log"));
+	assert.ok(file("dist/x.js"));
+	assert.ok(!file("src/a.ts"));
+});
+
+test("ignore patterns this module cannot evaluate exactly never exclude a path", () => {
+	// An unevaluated exclusion excludes nothing; the others still apply.
+	for (const pattern of [
+		"[ab].ts",
+		"a\\*.ts",
+		"x/../a.ts",
+		"a**.ts",
+		"^a.ts",
+	]) {
+		const ignored = dockerignore(`${pattern}\n*.log`);
+		assert.ok(!ignored("a.ts"), pattern);
+		assert.ok(!ignored("a**.ts"), pattern);
+		assert.ok(ignored("x.log"), pattern);
+	}
+	// An exception keeps its path even where a later line excludes it again.
+	const reExcluded = dockerignore("*.md\n!README.md\nREADME.md");
+	assert.ok(!reExcluded("README.md"));
+	assert.ok(reExcluded("CHANGES.md"));
+	const exception = dockerignore("docs/\n!docs/keep.md");
+	assert.ok(!exception("docs/keep.md"));
+	assert.ok(exception("docs/other.md"));
+	// An exception that cannot be evaluated keeps every path.
+	for (const text of ["docs/\n![k]eep.md", "docs/\n!", "docs/\n!a\\b"]) {
+		assert.ok(!dockerignore(text)("docs/other.md"), text);
+	}
+});
+
+test("the repository's .dockerignore excludes only what Docker leaves out", () => {
+	const ignored = dockerignore(
+		readFileSync(
+			new URL("../../../.dockerignore", import.meta.url),
+			"utf8",
+		),
+	);
+	for (const path of [
+		"packages/temporal/src/__tests__/schedule.test.ts",
+		"packages/ai/src/model.test.ts",
+		"packages/ai/vitest.config.ts",
+		"packages/ai/dist/index.js",
+		"packages/ai/tests/fixture.json",
+		"CHANGES.md",
+		// CI-only tooling must not enter image fingerprints.
+		"tooling/jev-pr-review/main.mjs",
+		"tooling/identifier-guard/terms-sync.mjs",
+		"tooling/some-future-ci-tool/run.mjs",
+	]) {
+		assert.ok(ignored(path), path);
+	}
+	for (const path of [
+		"packages/temporal/src/workflows/schedule.ts",
+		"packages/ai/package.json",
+		// `*.md` matches only at the context root, so Docker copies these.
+		"packages/ai/README.md",
+		"agents/langchain/data-analyst/docs/guide.md",
+		// Exceptions for files the images ship.
+		"THIRD_PARTY_NOTICES.md",
+		"README.md",
+		// Tooling the images install or read.
+		"tooling/typescript/package.json",
+		"tooling/tsgo/package.json",
+		"tooling/scripts/package.json",
+		"tooling/tailwind/package.json",
+		"tooling/tsdown/no-declaration-map-comments.mjs",
+	]) {
+		assert.ok(!ignored(path), path);
+	}
+});
+
 test("parses NUL-separated ls-tree records, including names with spaces", () => {
 	const output = [
 		`100644 blob ${blob("a")}\tpackages/a b.ts`,
@@ -262,6 +379,101 @@ test("reuses an unchanged component from the previous complete snapshot", () => 
 			},
 		],
 	});
+});
+
+test("files the ignore file excludes are not inputs: changing only them reuses, changing a source rebuilds", () => {
+	const TESTS = "packages/a/src/__tests__/index.test.ts";
+	const README = "packages/a/README.md";
+	const SPECIFIC = `${SNAPSHOT_IMAGES[0].dockerfile}.dockerignore`;
+	const base = [
+		...SNAPSHOT_IMAGES.map(({ dockerfile }) => entry(dockerfile)),
+		entry(".dockerignore", blob("1")),
+		entry("packages/a/src/index.ts", blob("2")),
+		entry(TESTS, blob("3")),
+		entry(README, blob("4")),
+	];
+	const edit = (tree, ...paths) =>
+		tree.map((item) =>
+			paths.includes(item.path) ? { ...item, object: blob("9") } : item,
+		);
+	// The first component's inputs with these ignore-file contents.
+	const inputsOf = (tree, ignoreFiles) =>
+		componentInputs(
+			tree,
+			(path) =>
+				ignoreFiles[path] ??
+				"FROM node:22-slim\nCOPY packages ./packages\n",
+			{ "node:22-slim": NODE },
+		)[0];
+	const ignoreTestsAndDocs = { ".dockerignore": "**/__tests__/\n**/*.md\n" };
+	const atBase = inputsOf(base, ignoreTestsAndDocs);
+	const previous = {
+		sourceSha: SHA,
+		run: 42,
+		images: {
+			[atBase.component]: {
+				digest: DIGEST,
+				created: "2026-10-15T09:00:00Z",
+				labels: {
+					[INPUTS_LABEL]: atBase.inputs,
+					"org.opencontainers.image.revision": BUILT,
+				},
+			},
+		},
+	};
+
+	const testsAndDocs = inputsOf(
+		edit(base, TESTS, README),
+		ignoreTestsAndDocs,
+	);
+	assert.equal(testsAndDocs.inputs, atBase.inputs);
+	assert.equal(planSnapshots([testsAndDocs], previous, NOW).reuse.length, 1);
+
+	const source = inputsOf(
+		edit(base, "packages/a/src/index.ts"),
+		ignoreTestsAndDocs,
+	);
+	assert.notEqual(source.inputs, atBase.inputs);
+	assert.match(
+		planSnapshots([source], previous, NOW).build[0].reason,
+		/inputs changed/,
+	);
+
+	// An exception keeps a file Docker would copy as an input.
+	const keepReadme = {
+		".dockerignore": "**/__tests__/\n**/*.md\n!packages/a/README.md\n",
+	};
+	assert.notEqual(
+		inputsOf(edit(base, TESTS, README), keepReadme).inputs,
+		inputsOf(base, keepReadme).inputs,
+	);
+
+	// With a Dockerfile-specific ignore file too, a path is left out only when
+	// both files exclude it.
+	const specific = [...base, entry(SPECIFIC, blob("5"))];
+	const both = { ...ignoreTestsAndDocs, [SPECIFIC]: "**/__tests__/\n" };
+	assert.equal(
+		inputsOf(edit(specific, TESTS), both).inputs,
+		inputsOf(specific, both).inputs,
+	);
+	assert.notEqual(
+		inputsOf(edit(specific, README), both).inputs,
+		inputsOf(specific, both).inputs,
+	);
+
+	// Without an ignore file, or with one that is a symbolic link, every
+	// selected file stays an input.
+	for (const tree of [
+		base.filter((item) => item.path !== ".dockerignore"),
+		base.map((item) =>
+			item.path === ".dockerignore" ? { ...item, mode: "120000" } : item,
+		),
+	]) {
+		assert.notEqual(
+			inputsOf(edit(tree, README), ignoreTestsAndDocs).inputs,
+			inputsOf(tree, ignoreTestsAndDocs).inputs,
+		);
+	}
 });
 
 test("promotion and recovery builds rebuild every component without an inputs label", () => {

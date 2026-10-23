@@ -11,11 +11,13 @@
 
 import { HumanMessage } from "@langchain/core/messages";
 import { ChatOpenAI } from "@langchain/openai";
+import { chatGptPlanSessionId } from "@repo/agent-types/chatgpt-plan-fetch";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { isRetryableError } from "../src/retry";
 import {
 	createProviderModel,
 	getAgentModelAsync,
+	getAgentModelFromConfig,
 } from "../src/services/langchain-models";
 
 const PLAN_CONFIG = {
@@ -68,6 +70,7 @@ function completedStream(text: string): Response {
 
 afterEach(() => {
 	vi.unstubAllGlobals();
+	vi.unstubAllEnvs();
 });
 
 describe("createProviderModel — OPENAI_CHATGPT_PLAN", () => {
@@ -156,6 +159,7 @@ describe("getAgentModelAsync — OPENAI_CHATGPT_PLAN from ai-config", () => {
 		const model = await getAgentModelAsync(
 			{
 				configurable: {
+					thread_id: "thread-123",
 					tenant_user_id: "user-1",
 					tenant_organization_id: "org-1",
 				},
@@ -165,6 +169,13 @@ describe("getAgentModelAsync — OPENAI_CHATGPT_PLAN from ai-config", () => {
 		const reply = await model.invoke([new HumanMessage("Hello")]);
 
 		expect(reply.text).toBe("From the plan");
+		expect(
+			new Headers(
+				fetchSpy.mock.calls.find(([input]) =>
+					String(input).includes("/v1/responses"),
+				)?.[1]?.headers,
+			).get("session_id"),
+		).toBe(await chatGptPlanSessionId("thread-123"));
 		const planCall = fetchSpy.mock.calls.find(([input]) =>
 			String(input instanceof Request ? input.url : input).includes(
 				"/v1/responses",
@@ -202,4 +213,130 @@ describe("isRetryableError — spent ChatGPT plan window", () => {
 		});
 		expect(isRetryableError(rateLimited)).toBe(true);
 	});
+});
+
+describe("plan thread session", () => {
+	it.each(["sync", "async"])(
+		"prefers an explicit session key to the thread in %s models",
+		async (entry) => {
+			const fetchSpy = vi.fn<typeof fetch>(async () =>
+				completedStream("Hi"),
+			);
+			vi.stubGlobal("fetch", fetchSpy);
+			const config = {
+				configurable: {
+					thread_id: "thread-123",
+					ai_provider: PLAN_CONFIG.provider,
+					ai_api_key: PLAN_CONFIG.apiKey,
+					ai_model: PLAN_CONFIG.model,
+				},
+			};
+			const options = { sessionKey: "conversation-123" };
+			const model =
+				entry === "sync"
+					? getAgentModelFromConfig(config, options)
+					: await getAgentModelAsync(config, options);
+			await model.invoke([new HumanMessage("Hello")]);
+			expect(
+				new Headers(fetchSpy.mock.calls[0]?.[1]?.headers).get(
+					"session_id",
+				),
+			).toBe(await chatGptPlanSessionId("conversation-123"));
+		},
+	);
+
+	it.each(["sync", "async"])(
+		"keeps the hashed thread across %s model instances",
+		async (entry) => {
+			const fetchSpy = vi.fn<typeof fetch>(async () =>
+				completedStream("Hi"),
+			);
+			vi.stubGlobal("fetch", fetchSpy);
+			const config = {
+				configurable: {
+					thread_id: "thread-123",
+					ai_provider: PLAN_CONFIG.provider,
+					ai_api_key: PLAN_CONFIG.apiKey,
+					ai_model: PLAN_CONFIG.model,
+				},
+			};
+			for (let i = 0; i < 2; i++) {
+				const model =
+					entry === "sync"
+						? getAgentModelFromConfig(config)
+						: await getAgentModelAsync(config);
+				await model.invoke([new HumanMessage("Hello")]);
+			}
+			const ids = fetchSpy.mock.calls.map(([, init]) =>
+				new Headers(init?.headers).get("session_id"),
+			);
+			expect(ids[0]).toBe(await chatGptPlanSessionId("thread-123"));
+			expect(ids[0]).not.toContain("thread-123");
+			expect(ids[1]).toBe(ids[0]);
+		},
+	);
+
+	it("keeps the thread session when task config replaces runtime config", async () => {
+		vi.stubEnv("FABRIC_API_URL", "https://fabric.example.com");
+		vi.stubEnv(
+			"AGENT_SERVICE_SECRET",
+			"example-service-secret-0123456789abcdef",
+		);
+		const fetchSpy = vi.fn<typeof fetch>(async (input) => {
+			if (String(input).includes("/api/agents/ai-config/task")) {
+				return Response.json(PLAN_CONFIG);
+			}
+			return completedStream("Hi");
+		});
+		vi.stubGlobal("fetch", fetchSpy);
+		const model = await getAgentModelAsync(
+			{
+				configurable: {
+					thread_id: "thread-123",
+					tenant_user_id: "example-user",
+					tenant_organization_id: "example-org",
+					ai_provider: "GROQ",
+					ai_api_key: "example-key",
+					ai_model: "example-model",
+				},
+			},
+			{ taskType: "COMPLEX" },
+		);
+		await model.invoke([new HumanMessage("Hello")]);
+		const planCall = fetchSpy.mock.calls.find(([input]) =>
+			String(input).includes("/v1/responses"),
+		);
+		expect(planCall).toBeDefined();
+		expect(new Headers(planCall?.[1]?.headers).get("session_id")).toBe(
+			await chatGptPlanSessionId("thread-123"),
+		);
+	});
+
+	it.each([undefined, "", "   ", 123])(
+		"uses a random session for invalid thread ID %s",
+		async (threadId) => {
+			const fetchSpy = vi.fn<typeof fetch>(async () =>
+				completedStream("Hi"),
+			);
+			vi.stubGlobal("fetch", fetchSpy);
+			const config = {
+				configurable: {
+					thread_id: threadId,
+					ai_provider: PLAN_CONFIG.provider,
+					ai_api_key: PLAN_CONFIG.apiKey,
+					ai_model: PLAN_CONFIG.model,
+				},
+			};
+			await getAgentModelFromConfig(config).invoke([
+				new HumanMessage("Hello"),
+			]);
+			const model = await getAgentModelAsync(config);
+			await model.invoke([new HumanMessage("Hello")]);
+			const ids = fetchSpy.mock.calls.map(([, init]) =>
+				new Headers(init?.headers).get("session_id"),
+			);
+			expect(ids[0]).toMatch(/^[0-9a-f-]{36}$/);
+			expect(ids[1]).not.toBe(ids[0]);
+		},
+	);
 });

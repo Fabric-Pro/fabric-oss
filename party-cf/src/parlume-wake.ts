@@ -25,7 +25,7 @@ function skeleton(word: string): string {
 		.replace(/(.)\1+/g, "$1");
 }
 
-function isName(word: string): boolean {
+export function isParlumeName(word: string): boolean {
 	const name = skeleton(word);
 	return FABRIC.has(name) || PARLUME.has(name);
 }
@@ -36,7 +36,9 @@ function parseOpeningAddress(text: string): string | null {
 		return null;
 	}
 	const fused = FUSED_GREETING.exec(opening[1]);
-	if (!isName(fused ? opening[1].slice(fused[0].length) : opening[1])) {
+	if (
+		!isParlumeName(fused ? opening[1].slice(fused[0].length) : opening[1])
+	) {
 		return null;
 	}
 	let consumed = opening[0].length;

@@ -1,6 +1,7 @@
 import { SubscriptionPlanExhaustedError } from "@repo/agent-types/chatgpt-plan-fetch";
 import { ChatGptPlanModelNotServedError } from "@repo/ai/lib/chatgpt-plan/models";
 import { ChatGptPlanAuthError } from "@repo/ai/lib/chatgpt-plan/oauth";
+import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
 import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
 import { describe, expect, it } from "vitest";
 import { describeSyncErrorForUser } from "../src/activities/pm-integration/pm-sync-user-error";
@@ -27,12 +28,15 @@ const limit = new AiUsageLimitExceededError({
 });
 
 describe("findAiConfigurationRefusal", () => {
-	it.each([auth, exhausted, model, limit])(
-		"preserves the %s instance",
-		(error) => {
-			expect(findAiConfigurationRefusal(error)).toBe(error);
-		},
-	);
+	it.each([
+		auth,
+		exhausted,
+		model,
+		limit,
+		new UnsupportedEmbeddingModelError("databricks-gte-large-en"),
+	])("preserves the %s instance", (error) => {
+		expect(findAiConfigurationRefusal(error)).toBe(error);
+	});
 	it.each([
 		{ cause: auth },
 		{ error: auth },
@@ -160,4 +164,11 @@ describe("safe refusal formatting", () => {
 			expect(describeSyncErrorForUser(error)).not.toContain("raw");
 		},
 	);
+});
+
+it("preserves a wrapped embedding configuration verdict and its actionable message", () => {
+	const error = new UnsupportedEmbeddingModelError("unknown-embedding");
+	const wrapper = new Error("embedding failed", { cause: error });
+	expect(findAiConfigurationRefusal(wrapper)).toBe(error);
+	expect(aiConfigurationRefusalMessage(wrapper)).toBe(error.message);
 });

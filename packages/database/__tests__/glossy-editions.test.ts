@@ -170,6 +170,9 @@ describe("recipient brand fields", () => {
 		[{ website: "https://user:pw@example.com" }, "invalidWebsite"],
 		[{ website: "https://example.com/?q=1" }, "invalidWebsite"],
 		[{ website: "not a url" }, "invalidWebsite"],
+		[{ website: "https://my_site.example.com" }, "invalidWebsite"],
+		[{ website: "https://[2001:db8::1]" }, "invalidWebsite"],
+		[{ website: "https://192.0.2.10" }, "invalidWebsite"],
 		[
 			{ colors: ["#111111", "#222222", "#333333", "#444444"] },
 			"tooManyColors",
@@ -177,6 +180,8 @@ describe("recipient brand fields", () => {
 		[{ colors: ["#abc"] }, "invalidColor"],
 		[{ colors: ["red"] }, "invalidColor"],
 		[{ name: "x".repeat(201) }, "nameTooLong"],
+		// An astral character is two UTF-16 units: 199 + 2 is 201.
+		[{ name: `${"x".repeat(199)}\u{1F600}` }, "nameTooLong"],
 		[
 			{ logoKey: "project-brand/p2/recipient-brand/current/a.png" },
 			"invalidLogoKey",
@@ -185,6 +190,94 @@ describe("recipient brand fields", () => {
 		expect(() => normalizeRecipientBrandFields("p1", input)).toThrow(
 			expect.objectContaining({ code }),
 		);
+	});
+
+	it("keeps a punycode host and writes an IDN as punycode", () => {
+		for (const website of [
+			"https://xn--bcher-kva.example",
+			"https://bücher.example",
+		]) {
+			expect(
+				normalizeRecipientBrandFields("p1", { website }).website,
+			).toBe("https://xn--bcher-kva.example");
+		}
+	});
+
+	it("counts a name in UTF-16 units, so 200 with an astral character fits", () => {
+		const name = `${"x".repeat(198)}\u{1F600}`;
+		expect(name).toHaveLength(200);
+		expect(normalizeRecipientBrandFields("p1", { name }).name).toBe(name);
+	});
+
+	describe("the logo hash", () => {
+		const LOGO = "project-brand/p1/recipient-brand/current/promo-1.png";
+		const HASH = "ab".repeat(32);
+
+		async function confirmFirst(extra: {
+			logoKey?: string | null;
+			logoHash?: string | null;
+		}) {
+			fake.project.findUnique.mockResolvedValue({
+				organizationId: "org-1",
+			});
+			fake.projectRecipientBrand.createMany.mockResolvedValue({
+				count: 1,
+			});
+			await confirmRecipientBrand({
+				projectId: "p1",
+				expectedVersion: 0,
+				name: "Example Client",
+				updatedById: "u1",
+				...extra,
+			});
+			return fake.projectRecipientBrand.createMany.mock.calls[0][0]
+				.data[0];
+		}
+
+		it("is stored with the logo it describes", async () => {
+			expect(
+				await confirmFirst({ logoKey: LOGO, logoHash: HASH }),
+			).toMatchObject({ logoKey: LOGO, logoHash: HASH });
+		});
+
+		it("is dropped without a logo", async () => {
+			expect(await confirmFirst({ logoHash: HASH })).toMatchObject({
+				logoKey: null,
+				logoHash: null,
+			});
+		});
+
+		it.each([
+			["too short", "ab".repeat(31)],
+			["uppercase", "AB".repeat(32)],
+			["not hex", "zz".repeat(32)],
+		])("is dropped when %s", async (_label, logoHash) => {
+			expect(
+				await confirmFirst({ logoKey: LOGO, logoHash }),
+			).toMatchObject({ logoKey: LOGO, logoHash: null });
+		});
+
+		it("follows the same rules on an update", async () => {
+			fake.project.findUnique.mockResolvedValue({
+				organizationId: "org-1",
+			});
+			fake.projectRecipientBrand.findUnique.mockResolvedValue({
+				version: 2,
+				logoKey: null,
+			});
+			fake.projectRecipientBrand.updateMany.mockResolvedValue({
+				count: 1,
+			});
+			await confirmRecipientBrand({
+				projectId: "p1",
+				expectedVersion: 2,
+				logoHash: HASH,
+				updatedById: "u1",
+			});
+			expect(
+				fake.projectRecipientBrand.updateMany.mock.calls[0][0].data,
+			).toMatchObject({ logoKey: null, logoHash: null });
+		});
 	});
 
 	it("a stale version conflicts without writing", async () => {

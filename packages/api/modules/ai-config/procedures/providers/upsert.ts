@@ -21,6 +21,7 @@ import {
 	readProviderRowCredentials,
 	taskDefaultsSnapshotMutation,
 } from "@repo/database";
+import { disableOrgDecisionPreferenceForProvider } from "@repo/database/prisma/queries/organization-model-preference-write";
 import {
 	type AiProviderPurpose,
 	AiProviderPurposeSchema,
@@ -428,6 +429,11 @@ async function upsertOrganizationProvider({
 			});
 		}
 		if (embeddingsOnly) {
+			await disableOrgDecisionPreferenceForProvider(
+				tx,
+				organizationId,
+				provider,
+			);
 			await tx.organizationModelPreference.deleteMany({
 				where: { organizationId, ...llmPreferencesPinnedTo(provider) },
 			});
@@ -1039,6 +1045,12 @@ export const deleteUserProviderProcedure = tenantProtectedProcedure
 				const existing = await tx.cloudProviderConfig.findFirst({
 					where: { organizationId, provider },
 				});
+				// Preserve an explicit off switch before removing the selected provider.
+				await disableOrgDecisionPreferenceForProvider(
+					tx,
+					organizationId,
+					provider,
+				);
 				// Delete from organization-level config
 				await tx.cloudProviderConfig.deleteMany({
 					where: { organizationId, provider },
@@ -1766,6 +1778,11 @@ export const setEmbeddingProviderProcedure = tenantProtectedProcedure
 						},
 					});
 					if (embeddingsOnly) {
+						await disableOrgDecisionPreferenceForProvider(
+							tx,
+							organizationId,
+							provider,
+						);
 						await tx.organizationModelPreference.deleteMany({
 							where: {
 								organizationId,

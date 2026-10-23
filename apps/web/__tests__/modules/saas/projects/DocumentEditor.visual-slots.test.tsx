@@ -185,7 +185,12 @@ vi.mock("@tiptap/react", () => ({
 }));
 
 vi.mock("sonner", () => ({
-	toast: { error: vi.fn(), success: vi.fn(), info: vi.fn() },
+	toast: {
+		error: vi.fn(),
+		success: vi.fn(),
+		info: vi.fn(),
+		dismiss: vi.fn(),
+	},
 }));
 
 // Scrolling helpers reach for layout jsdom does not have.
@@ -631,5 +636,70 @@ describe("DocumentEditor — visual slots on programmatic applications (KTD17)",
 			expect(getEditorMarkdownForSave(editor)).toBe(PROPOSED);
 		});
 		expect(slotIds(editor)).toEqual([]);
+	});
+
+	// A generated diagram the assistant left unchanged keeps its marker line,
+	// so its stored spec stays referenced (Fizzy #2946).
+	describe("generated diagram markers", () => {
+		const MARKER = "%% fabric-visual: k3v9q2m7x1a8c4d6";
+		const diagram = (marker: boolean, label = "Launch") =>
+			[
+				"```mermaid",
+				...(marker ? [MARKER] : []),
+				"flowchart LR",
+				`  s0["Discovery"] --> s1["${label}"]`,
+				"```",
+			].join("\n");
+		const body = (fence: string, intro = "Phase one, then two.") =>
+			`## Implementation Phases\n\n${intro}\n\n${fence}\n\n## Risks\n\nFew.`;
+
+		async function acceptProposal(proposed: string): Promise<string> {
+			documentPayload.document.content = body(diagram(true));
+			const editor = makeEditor(body(diagram(true)));
+			const { rerender } = await mount(editor);
+
+			await startRun(rerender);
+			mockAgentState = { document: proposed };
+			mockIsLoading = false;
+			rerender(tree());
+			await flush();
+
+			const respond = vi.fn();
+			const confirm = actionConfigs.get("confirm_changes");
+			let card: ReactElement | undefined;
+			await act(async () => {
+				card = confirm?.renderAndWaitForResponse({
+					args: {},
+					respond,
+					status: "executing",
+				});
+				await Promise.resolve();
+			});
+			await flush();
+			await act(async () => {
+				(card?.props as { onConfirm: () => void }).onConfirm();
+			});
+			await flush();
+
+			expect(respond).toHaveBeenCalledWith({ accepted: true });
+			return savedContents.at(-1) ?? "";
+		}
+
+		it("an accepted rewrite puts back the marker of an unchanged diagram", async () => {
+			const saved = await acceptProposal(
+				body(diagram(false), "Phase one, then two, then three."),
+			);
+
+			expect(saved).toContain("Phase one, then two, then three.");
+			expect(saved).toContain(`\`\`\`mermaid\n${MARKER}\nflowchart LR`);
+			expect(saved.split(MARKER)).toHaveLength(2);
+		});
+
+		it("an accepted rewrite adds no marker to a diagram whose body changed", async () => {
+			const saved = await acceptProposal(body(diagram(false, "Go-live")));
+
+			expect(saved).toContain("Go-live");
+			expect(saved).not.toContain(MARKER);
+		});
 	});
 });

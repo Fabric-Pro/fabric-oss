@@ -16,6 +16,8 @@ const { tables, mockRequireOrgMembership, state } = vi.hoisted(() => ({
 	state: {
 		template: "example-current",
 		failDefault: false,
+		failPreference: false,
+		preferenceLocked: false,
 		flipOnReadId: null as string | null,
 		lockedIds: [] as string[],
 		activeTransaction: false,
@@ -51,7 +53,8 @@ vi.mock("@repo/database", async () => {
 		return Object.entries(where).every(([key, condition]) => {
 			if (
 				key === "organizationId_provider" ||
-				key === "userId_provider"
+				key === "userId_provider" ||
+				key === "organizationId_taskType_provider"
 			) {
 				return matches(row, condition as Row);
 			}
@@ -134,6 +137,32 @@ vi.mock("@repo/database", async () => {
 				rows.push(row);
 				return { ...row };
 			}),
+			upsert: vi.fn(
+				async ({
+					where,
+					create,
+					update,
+				}: {
+					where: Row;
+					create: Row;
+					update: Row;
+				}) => {
+					assertTenantLock();
+					expect(state.activeTransaction).toBe(true);
+					expect(state.preferenceLocked).toBe(true);
+					if (state.failPreference) {
+						throw new Error("example-preference-write-failed");
+					}
+					const existing = rows.find((row) => matches(row, where));
+					if (existing) {
+						Object.assign(existing, update);
+						return { ...existing };
+					}
+					rows.push({ id: "example-disabled", ...create });
+					return { ...rows[rows.length - 1] };
+				},
+			),
+
 			deleteMany: vi.fn(async ({ where }: { where: Row }) => {
 				assertTenantLock();
 				const before = rows.length;
@@ -150,8 +179,16 @@ vi.mock("@repo/database", async () => {
 		aiModel: { findFirst: vi.fn(async () => null) },
 		$queryRaw: vi.fn(async (sql: TemplateStringsArray, owner: string) => {
 			expect(state.activeTransaction).toBe(true);
-			expect(state.tenantLocked).toBe(false);
 			const text = sql.join("?").replace(/\s+/g, " ").trim();
+			if (text.includes('FROM "organization"')) {
+				expect(state.tenantLocked).toBe(true);
+				expect(text).toBe(
+					'SELECT id FROM "organization" WHERE id = ? FOR NO KEY UPDATE',
+				);
+				state.preferenceLocked = true;
+				return [{ id: owner }];
+			}
+			expect(state.tenantLocked).toBe(false);
 			const organization = text.includes('"cloud_provider_config"');
 			const table = organization
 				? "cloud_provider_config"
@@ -356,6 +393,8 @@ function seedOrgRow(overrides: Row) {
 beforeEach(() => {
 	state.template = "example-current";
 	state.failDefault = false;
+	state.failPreference = false;
+	state.preferenceLocked = false;
 	state.flipOnReadId = null;
 	state.lockedIds = [];
 	state.activeTransaction = false;
@@ -1325,3 +1364,119 @@ it.each(["organization", "user"] as const)(
 		);
 	},
 );
+
+describe("decision vendor after connection removal", () => {
+	function selectedDatabricks() {
+		seedOrgRow({
+			provider: "DATABRICKS",
+			isDefault: false,
+			config: { baseUrl: "https://example.cloud.databricks.com" },
+		});
+		seedOrgRow({ provider: "VERCEL_GATEWAY", isDefault: true });
+		tables.organizationModelPreference.push({
+			id: "example-openjev-choice",
+			organizationId: ORG,
+			taskType: "DECISION",
+			provider: "DATABRICKS",
+			modelId: "example-openjev",
+		});
+	}
+	function expectDisabled() {
+		expect(
+			tables.organizationModelPreference.filter(
+				(row) => row.taskType === "DECISION",
+			),
+		).toEqual([
+			expect.objectContaining({
+				organizationId: ORG,
+				taskType: "DECISION",
+				provider: "VERCEL_GATEWAY",
+				modelId: null,
+			}),
+		]);
+	}
+	it("deleting the selected Databricks connection leaves Disabled instead of restoring a gateway model", async () => {
+		selectedDatabricks();
+		await call(deleteUserProviderProcedure, { provider: "DATABRICKS" });
+		expect(orgRow("DATABRICKS")).toBeUndefined();
+		expectDisabled();
+		const { recordAuditFromRequest } = await import(
+			"../../../../../lib/audit"
+		);
+		expect(recordAuditFromRequest).toHaveBeenCalledWith(
+			orgContext,
+			expect.objectContaining({
+				action: "org.ai_provider.deleted",
+				metadata: expect.objectContaining({
+					provider: "DATABRICKS",
+					defaultReassignedTo: null,
+				}),
+			}),
+		);
+	});
+	it.each(["upsert", "setEmbedding"])(
+		"converting the selected Databricks connection to embeddings-only leaves Disabled through %s",
+		async (operation) => {
+			selectedDatabricks();
+			await call(
+				operation === "upsert"
+					? upsertUserProviderProcedure
+					: setEmbeddingProviderProcedure,
+				{
+					provider: "DATABRICKS",
+					purpose: "EMBEDDINGS_ONLY",
+					...(operation === "upsert"
+						? { apiKey: "example-token" }
+						: {}),
+				},
+			);
+			expect(orgRow("DATABRICKS")).toMatchObject({
+				purpose: "EMBEDDINGS_ONLY",
+				isEmbeddingProvider: true,
+				isDefault: false,
+			});
+			expectDisabled();
+			const { recordAuditFromRequest } = await import(
+				"../../../../../lib/audit"
+			);
+			expect(recordAuditFromRequest).toHaveBeenCalledWith(
+				orgContext,
+				expect.objectContaining({
+					action:
+						operation === "upsert"
+							? "org.ai_provider.updated"
+							: "org.ai_provider.embedding_changed",
+					metadata: expect.objectContaining({
+						provider: "DATABRICKS",
+						after: expect.objectContaining({
+							purpose: "EMBEDDINGS_ONLY",
+						}),
+					}),
+				}),
+			);
+		},
+	);
+	it("leaves a gateway decision choice untouched when deleting Databricks", async () => {
+		selectedDatabricks();
+		const choice = tables.organizationModelPreference[0];
+		choice.provider = "VERCEL_GATEWAY";
+		choice.modelId = "example-luna";
+		const expectedChoice = { ...choice };
+		await call(deleteUserProviderProcedure, { provider: "DATABRICKS" });
+		expect(tables.organizationModelPreference).toEqual([expectedChoice]);
+	});
+	it("rolls provider deletion back when writing Disabled fails", async () => {
+		selectedDatabricks();
+		state.failPreference = true;
+		await expect(
+			call(deleteUserProviderProcedure, { provider: "DATABRICKS" }),
+		).rejects.toThrow("example-preference-write-failed");
+		expect(orgRow("DATABRICKS")).toBeDefined();
+		expect(tables.organizationModelPreference).toEqual([
+			expect.objectContaining({
+				provider: "DATABRICKS",
+				modelId: "example-openjev",
+			}),
+		]);
+	});
+});

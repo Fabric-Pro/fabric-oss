@@ -1,3 +1,5 @@
+import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
+import { RetryError } from "ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // `createFabricFrame` reaches these via dynamic `await import(...)` rather
@@ -10,7 +12,8 @@ const stubs = vi.hoisted(() => ({
 	uploadFileMock: vi.fn(),
 }));
 
-vi.mock("ai", () => ({
+vi.mock("ai", async (importOriginal) => ({
+	...(await importOriginal<typeof import("ai")>()),
 	generateText: stubs.generateTextMock,
 }));
 vi.mock("@repo/ai", () => ({
@@ -203,6 +206,47 @@ describe("fabric-content-tools", () => {
 			stubs.uploadFileMock.mockResolvedValue(undefined);
 			stubs.generateTextMock.mockResolvedValue({ text: "<html></html>" });
 		});
+
+		it.each(["resolution", "generation", "wrapped"])(
+			"does not upload fallback content on %s refusal",
+			async (phase) => {
+				const refusal = new AiUsageLimitExceededError({
+					message: "Example limit exhausted",
+					limitId: "example-limit",
+					dimension: "TOKENS" as never,
+					window: "MONTHLY" as never,
+					used: 100n,
+					max: 100n,
+					manageLimitsUrl: "https://example.com/limits",
+				});
+				const error =
+					phase === "wrapped"
+						? new RetryError({
+								message: "Retry refused",
+								reason: "errorNotRetryable",
+								errors: [refusal],
+							})
+						: refusal;
+				if (phase === "resolution") {
+					stubs.getAIModelWithMetadataMock.mockRejectedValueOnce(
+						error,
+					);
+				} else {
+					stubs.generateTextMock.mockRejectedValueOnce(error);
+				}
+				await expect(
+					createFabricFrame({
+						title: "Example frame",
+						description: "Example description",
+						components: [],
+						format: "html",
+						userId: "example-user",
+						organizationId: "example-org",
+					}),
+				).rejects.toBe(refusal);
+				expect(stubs.uploadFileMock).not.toHaveBeenCalled();
+			},
+		);
 
 		it("sends the system prompt via `system`, not as a message", async () => {
 			await createFabricFrame({

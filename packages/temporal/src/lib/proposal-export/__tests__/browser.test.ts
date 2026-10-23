@@ -156,7 +156,7 @@ describe("the export browser's launch", () => {
 		expect(exportBrowserEnv()).toEqual(options.env);
 	});
 
-	it("launches headless with --no-sandbox", async () => {
+	it("launches headless with --no-sandbox and without font hinting", async () => {
 		await withExportBrowser(farDeadline(), async () => "done");
 
 		const options = launch.mock.calls[0]?.[0] as {
@@ -166,6 +166,8 @@ describe("the export browser's launch", () => {
 		};
 		expect(options.headless).toBe(true);
 		expect(options.args).toContain("--no-sandbox");
+		// Hinting rounds glyph positions to whole pixels in the Linux print.
+		expect(options.args).toContain("--font-render-hinting=none");
 		expect(options.timeout).toBeGreaterThan(0);
 		expect(options.timeout).toBeLessThanOrEqual(30_000);
 	});

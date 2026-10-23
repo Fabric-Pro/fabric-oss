@@ -125,7 +125,7 @@ function effectiveProviderForTask(
 	if (taskType === "EMBEDDING") {
 		return embeddingProvider;
 	}
-	if (taskType === "IMAGE" || taskType === "DECISION") {
+	if (taskType === "IMAGE") {
 		return "VERCEL_GATEWAY";
 	}
 	if ((TEXT_TASK_IDS as readonly string[]).includes(taskType)) {
@@ -270,8 +270,8 @@ export interface ApiTaskView {
 /** A select value, "GATEWAY:canonicalName" or the decision off sentinel, as a preference change. */
 function parseModelValue(value: string): PendingChange {
 	// "Disabled" is offered for DECISION only and carries no model. It
-	// is pinned to the Vercel gateway because that is the only provider
-	// the server accepts a decision preference for.
+	// stays on the Vercel gateway so one stored off switch covers both
+	// supported decision providers.
 	if (value === DECISION_DISABLED_VALUE) {
 		return { modelCanonicalName: null, provider: "VERCEL_GATEWAY" };
 	}
@@ -378,6 +378,9 @@ export function useOrgApiModelPreferences({
 		taskType: string,
 		provider: string | null,
 	) => {
+		if (taskType === "DECISION") {
+			return provider === "VERCEL_GATEWAY" || provider === "DATABRICKS";
+		}
 		const effective = effectiveProviderForTask(
 			taskType,
 			defaultProvider,

@@ -36,7 +36,7 @@ vi.mock("../../lib", () => ({
 
 import { POST } from "../route";
 
-function request(token = "service") {
+function request(token = "service", overrides: Record<string, unknown> = {}) {
 	return new NextRequest(
 		"https://fabric.example/api/internal/parlume/interrupt",
 		{
@@ -46,6 +46,7 @@ function request(token = "service") {
 				sessionId: "session",
 				botId: "bot",
 				voiceGeneration: 4,
+				...overrides,
 			}),
 		},
 	);
@@ -89,6 +90,40 @@ describe("Parlume generation interruption", () => {
 			}),
 		);
 		expect(mocks.cancel).toHaveBeenCalledOnce();
+	});
+	it("notes a mute on the running turn without cancelling it or its actions", async () => {
+		mocks.session.mockResolvedValue({ activeTurnId: "turn" });
+		mocks.turns.mockResolvedValue({ count: 1 });
+
+		const response = await POST(
+			request("service", { voiceGeneration: 3, kind: "mute" }),
+		);
+
+		expect(await response.json()).toEqual({ accepted: true });
+		expect(mocks.session).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({ voiceGeneration: 3 }),
+			}),
+		);
+		expect(mocks.turns).toHaveBeenCalledWith({
+			where: {
+				id: "turn",
+				status: { in: ["PENDING", "RUNNING"] },
+				interruptedAt: null,
+			},
+			data: { interruptedAt: expect.any(Date) },
+		});
+		expect(mocks.claim).not.toHaveBeenCalled();
+		expect(mocks.actions).not.toHaveBeenCalled();
+		expect(mocks.cancel).not.toHaveBeenCalled();
+	});
+	it("accepts no mute when no turn is running on that generation", async () => {
+		mocks.session.mockResolvedValue(null);
+
+		const response = await POST(request("service", { kind: "mute" }));
+
+		expect(await response.json()).toEqual({ accepted: false });
+		expect(mocks.turns).not.toHaveBeenCalled();
 	});
 	it("does not clear a newer turn when session state changed during interruption", async () => {
 		mocks.claim.mockResolvedValue({ count: 0 });

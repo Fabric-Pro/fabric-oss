@@ -44,7 +44,10 @@ import {
 	attachPendingMediaToStory,
 	formatAttachmentWarningLines,
 } from "../../lib/attach-pending-media-to-story";
-import { isChannelMonitorSource } from "../../lib/channel-monitor-source";
+import {
+	isChannelMonitorSource,
+	reporterSourceForProposal,
+} from "../../lib/channel-monitor-source";
 import {
 	backlogChangeSnapshot,
 	extractDecisionPrecheck,
@@ -264,8 +267,8 @@ function redactErrorName(err: unknown): string {
  * audit trail back to the originating thread/chat (REQ-8, AC13). A chat
  * message has no stored link, so a chat proposal passes the deep link
  * `resolveTeamsChatSourceLink` built for it. Falls back to nulls when the
- * metadata is missing the fields. The reporterSource is always "TEAMS" for
- * this path.
+ * metadata is missing the fields. The reporterSource follows the proposal's
+ * own source (`reporterSourceForProposal`): only a Teams proposal says TEAMS.
  */
 function buildTeamsReporterInfo(
 	sourceMetadata: unknown,
@@ -860,7 +863,7 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 					// we don't pass change.type as a kind hint because the
 					// analyzer's `bug`/`feature`/`story` tag predates the
 					// classifier and may not match its decision.
-					reporterSource: "TEAMS",
+					reporterSource: reporterSourceForProposal(proposal.source),
 					reporterSourceUrl,
 					reporterName,
 					// Record which proposal produced this item so the roadmap
@@ -983,7 +986,9 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 					},
 					metadata: {
 						source: "APPROVED_PROPOSAL",
-						reporterSource: "TEAMS",
+						reporterSource: reporterSourceForProposal(
+							proposal.source,
+						),
 						kind: change.type,
 					},
 				});

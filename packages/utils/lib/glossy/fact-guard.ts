@@ -91,12 +91,39 @@ export type FactGuardViolationKind =
 	/** An org chart edge no sentence or table row states (Fizzy #2589 follow-up). */
 	| "reporting-line";
 
+/**
+ * The category of a fact a presence violation names, for logs that must not
+ * carry the fact itself: money, percentages and other numbers are figures.
+ */
+export type FactGuardFactKind = "date" | "figure" | "name" | "commitment";
+
 export interface FactGuardViolation {
 	kind: FactGuardViolationKind;
 	/** The offending text: from the output, or from the source for must-keep. */
 	text: string;
 	/** One-line explanation, suitable for a retry prompt's violation list. */
 	message: string;
+	/** Presence violations only: what kind of fact is missing from the source. */
+	factKind?: FactGuardFactKind;
+}
+
+/**
+ * A violation as a log code: its kind, and for presence the fact category
+ * (`presence:date`). Never the offending text.
+ */
+export function violationCode(item: FactGuardViolation): string {
+	return item.factKind ? `${item.kind}:${item.factKind}` : item.kind;
+}
+
+function factCategory(kind: FactKind): FactGuardFactKind {
+	switch (kind) {
+		case "date":
+		case "name":
+		case "commitment":
+			return kind;
+		default:
+			return "figure";
+	}
 }
 
 export type FactGuardResult =
@@ -1383,24 +1410,26 @@ function presenceViolations(
 				!outputLowercaseStems.has(stemmed) &&
 				!acronymOfSource
 			) {
-				violations.push(
-					violation(
+				violations.push({
+					...violation(
 						"presence",
 						fact.text,
 						'Name "%s" does not appear in the source.',
 					),
-				);
+					factKind: "name",
+				});
 			}
 		} else if (!fact.weak && !provided.has(fact.key)) {
-			violations.push(
-				violation(
+			violations.push({
+				...violation(
 					"presence",
 					fact.text,
 					fact.kind === "commitment"
 						? 'Commitment term "%s" does not appear in the source.'
 						: '"%s" does not appear in the source; keep figures and dates exactly as written there.',
 				),
-			);
+				factKind: factCategory(fact.kind),
+			});
 		}
 	}
 	return violations;
@@ -2111,13 +2140,14 @@ export function checkVisualFacts(
 		const { facts, work } = scanNumeric(text);
 		for (const fact of facts) {
 			if (!fact.weak && !provided.has(fact.key)) {
-				violations.push(
-					violation(
+				violations.push({
+					...violation(
 						"presence",
 						fact.text,
 						'"%s" does not appear in the source section.',
 					),
-				);
+					factKind: factCategory(fact.kind),
+				});
 			}
 		}
 		const newWords = proseWords(text, work)

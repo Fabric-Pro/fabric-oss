@@ -65,7 +65,12 @@ export type StatTilesParseResult =
 
 /** Any line opening with this is a marker, valid only as the first line. */
 const MARKER_PREFIX = "%%";
-const MARKER_PATTERN = /^%% fabric-visual: ([a-z0-9]{12,32})$/;
+/**
+ * A generated visual's marker line, trimmed, capturing its id. Shared with
+ * the mermaid fences' identity (`visual-identity.ts`), so one rule says what
+ * a marker is.
+ */
+export const VISUAL_MARKER_PATTERN = /^%% fabric-visual: ([a-z0-9]{12,32})$/;
 const ITEM_SEPARATOR = ": ";
 
 function refuse(detail: string): StatTilesParseResult {
@@ -114,7 +119,7 @@ export function parseStatTiles(body: string): StatTilesParseResult {
 					`Only the first line may be the fabric-visual marker (line ${lineNumber}).`,
 				);
 			}
-			const marker = MARKER_PATTERN.exec(line);
+			const marker = VISUAL_MARKER_PATTERN.exec(line);
 			if (!marker) {
 				return refuse(
 					`Line ${lineNumber} is not a valid fabric-visual marker.`,

@@ -1,8 +1,34 @@
 "use client";
 
+import {
+	type ProposalThemePaint,
+	withVisualRoleClassDefs,
+} from "@repo/utils/proposal-artifact/theme-tokens";
+import {
+	cleanDiagramCaption,
+	diagramSectionFingerprint,
+	isFlowchartSource,
+	readDiagramCaption,
+	readVisualMarker,
+	VISUAL_ORIGIN,
+	visualSourceHash,
+	withDiagramCaption,
+} from "@repo/utils/proposal-artifact/visual-identity";
 import { mergeAttributes, Node } from "@tiptap/core";
-import { NodeViewWrapper, ReactNodeViewRenderer } from "@tiptap/react";
+import { TextSelection } from "@tiptap/pm/state";
+import {
+	NodeViewContent,
+	NodeViewWrapper,
+	ReactNodeViewRenderer,
+} from "@tiptap/react";
 import { DestructiveTooltip } from "@ui/components/destructive-tooltip";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuSeparator,
+	DropdownMenuTrigger,
+} from "@ui/components/dropdown-menu";
 import {
 	Tooltip,
 	TooltipContent,
@@ -13,18 +39,39 @@ import {
 	AlertCircle,
 	Check,
 	Code,
+	EllipsisVertical,
 	Eye,
 	Loader2,
 	RefreshCw,
 	Sparkles,
 	TextCursorInput,
 	Trash2,
+	WandSparkles,
 } from "lucide-react";
 import mermaid from "mermaid";
 import { useTranslations } from "next-intl";
 import { useTheme } from "next-themes";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	type CSSProperties,
+	useCallback,
+	useEffect,
+	useId,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
+import { getEditorMarkdownForSave } from "./editor-markdown-save";
+import {
+	diagramEditVisualId,
+	diagramsOf,
+	MERMAID_NODE_NAME,
+	useDiagramOrigin,
+} from "./mermaid-diagram-index";
+import { MermaidEditVisualPanel } from "./mermaid-edit-visual-panel";
 import { withMermaidLock } from "./mermaid-lock";
+import { useMermaidVisualContext } from "./mermaid-visual-context";
+import { useMermaidDiagramSizing } from "./use-mermaid-diagram-sizing";
 
 /**
  * Sanitize rendered diagram markup before it is injected as HTML.
@@ -154,6 +201,69 @@ export async function renderNativeMermaidSvg(
 			mermaid.initialize(previous);
 		}
 	});
+}
+
+/** The colour slots beautiful-mermaid reads, bridged to the page's tokens. */
+const BEAUTIFUL_MERMAID_COLORS = {
+	bg: "var(--mermaid-bg)",
+	fg: "var(--mermaid-fg)",
+	line: "var(--mermaid-line)",
+	accent: "var(--mermaid-accent)",
+	muted: "var(--mermaid-muted)",
+	surface: "var(--mermaid-surface)",
+	border: "var(--mermaid-border)",
+	font: "ui-sans-serif, system-ui, -apple-system, sans-serif",
+	transparent: true,
+} as const;
+
+/**
+ * Draw diagram source as sanitized SVG: beautiful-mermaid first, mermaid.js
+ * for the types it does not support.
+ *
+ * With a theme `paint` (a client-document Proposal's page, Fizzy #2946) a
+ * flowchart gets the theme's role class definitions appended first, so a
+ * generated diagram's `class <id> surface` lines take the brand's colours
+ * and follow a Style change without its text changing. Without one the
+ * source is drawn as written, without its caption line.
+ */
+async function renderDiagramSvg(
+	code: string,
+	{ isDark, paint }: { isDark: boolean; paint?: ProposalThemePaint | null },
+): Promise<string> {
+	// The caption is printed under the diagram, never drawn in it.
+	const drawn = withDiagramCaption(code, null);
+	const source = paint ? withVisualRoleClassDefs(drawn, paint) : drawn;
+	let svg = "";
+	try {
+		const beautifulMermaid = await import("beautiful-mermaid");
+		// Use CSS variables so the SVG adapts to light/dark theme automatically.
+		// The SVG references CSS custom properties defined on .mermaid-diagram-area,
+		// which inherit from the app's design tokens. No re-render needed on theme switch.
+		svg = beautifulMermaid.renderMermaidSVG(
+			source.trim(),
+			BEAUTIFUL_MERMAID_COLORS,
+		);
+	} catch {
+		// Fallback to native mermaid.js for unsupported diagram types
+		// (gantt, pie, mindmap, C4, timeline, etc.)
+		svg = await renderNativeMermaidSvg(source, isDark);
+	}
+	return sanitizeDiagramSvg(svg);
+}
+
+/** A `style`, `classDef` or `linkStyle` line with a literal hex colour. */
+const BAKED_COLOUR_LINE =
+	/^\s*(?:style|classDef|linkStyle)\b.*#[0-9a-f]{3,8}\b/im;
+
+/**
+ * A diagram whose colours are written into its source and that is not a
+ * generated visual: the theme cannot repaint it, and Edit with instructions
+ * is its restyle path.
+ */
+function hasFixedColours(code: string): boolean {
+	return (
+		readVisualMarker(code).visualId === null && BAKED_COLOUR_LINE.test(code)
+	);
 }
 
 /**
@@ -356,31 +466,125 @@ export const MERMAID_LANGUAGES = [
 	"timeline",
 ];
 
+/**
+ * A diagram node's caption: its body's `%% caption:` line, else the caption
+ * attribute an older document set, else empty.
+ */
+function captionOf(node: {
+	attrs: Record<string, unknown>;
+	textContent: string;
+}): string {
+	const legacy = node.attrs.caption;
+	return (
+		readDiagramCaption(node.textContent) ??
+		cleanDiagramCaption(typeof legacy === "string" ? legacy : null) ??
+		""
+	);
+}
+
+/** The diff marks a pending AI edit carries; the node admits only these. */
+const DIFF_MARK_NAMES = new Set(["diffInsert", "diffDelete"]);
+
 interface MermaidNodeViewProps {
 	node: {
 		attrs: Record<string, unknown>;
 		textContent: string;
 		nodeSize: number;
+		forEach: (
+			f: (child: {
+				text?: string | null;
+				marks: readonly { type: { name: string } }[];
+			}) => void,
+		) => void;
 	};
 	updateAttributes: (attrs: Record<string, unknown>) => void;
 	editor: {
 		isEditable: boolean;
+		getHTML: () => string;
 		chain: () => any;
 		state: any;
 		view: any;
+		on: (event: "update", listener: () => void) => unknown;
+		off: (event: "update", listener: () => void) => unknown;
 	};
 	getPos: () => number | undefined;
 }
 
-function MermaidNodeView({
-	node,
-	editor,
-	getPos,
-	updateAttributes,
-}: MermaidNodeViewProps) {
+/** A diagram menu item with a description below its label. */
+function DescribedMenuItem({
+	id,
+	icon: Icon,
+	label,
+	description,
+	onSelect,
+}: {
+	id: string;
+	icon: typeof Sparkles;
+	label: string;
+	description: string;
+	onSelect: () => void;
+}) {
+	return (
+		<DropdownMenuItem
+			className="flex-col items-start gap-0.5"
+			aria-labelledby={id}
+			aria-describedby={`${id}-description`}
+			onSelect={onSelect}
+		>
+			<span id={id} className="flex items-center gap-2">
+				<Icon className="h-4 w-4" aria-hidden="true" />
+				{label}
+			</span>
+			<span
+				id={`${id}-description`}
+				className="text-xs text-muted-foreground"
+			>
+				{description}
+			</span>
+		</DropdownMenuItem>
+	);
+}
+
+/** What a diagram menu item does once the menu has closed. */
+type MenuAction = "instruction" | "ai" | "source" | "caption" | "delete";
+
+/** Where focus goes after a menu item or a panel closes. */
+type FocusTarget = "instruction" | "ai" | "caption" | "code" | "trigger";
+
+/**
+ * The node's text lives in ProseMirror's content element, which TipTap
+ * appends visibly to the node when the view renders no `NodeViewContent`.
+ * The view shows the source in its own editor, so the content element stays
+ * in the document but out of sight.
+ */
+function HiddenSource() {
+	return <NodeViewContent className="hidden" aria-hidden="true" />;
+}
+
+/**
+ * The source a diagram under review would have once its pending AI edit is
+ * accepted: its text without the ranges marked deleted. Each changed line
+ * carries its own line break inside the mark, so dropping a range drops its
+ * line. `null` when nothing in the text is marked: no review is pending.
+ */
+function proposedSourceOf(node: MermaidNodeViewProps["node"]): string | null {
+	let marked = false;
+	let proposed = "";
+	node.forEach((child) => {
+		const names = child.marks.map((mark) => mark.type.name);
+		if (names.some((name) => DIFF_MARK_NAMES.has(name))) {
+			marked = true;
+		}
+		if (!names.includes("diffDelete")) {
+			proposed += child.text ?? "";
+		}
+	});
+	return marked ? proposed : null;
+}
+
+function MermaidNodeView({ node, editor, getPos }: MermaidNodeViewProps) {
 	const tTooltips = useTranslations("tooltips.common");
 	const tEditorTooltips = useTranslations("tooltips.editor");
-	const diagramRef = useRef<HTMLDivElement>(null);
 	const [svg, setSvg] = useState<string>("");
 	const [error, setError] = useState<string | null>(null);
 	const [showCode, setShowCode] = useState(false);
@@ -388,9 +592,14 @@ function MermaidNodeView({
 	const [mounted, setMounted] = useState(false);
 	const [editableCode, setEditableCode] = useState<string | null>(null);
 	const [showCaptionInput, setShowCaptionInput] = useState(false);
-	const [captionValue, setCaptionValue] = useState(
-		(node.attrs.caption as string) || "",
-	);
+	// The caption lives in the body's `%% caption:` line; a caption attribute
+	// from an older document is shown until a new caption replaces it, and
+	// the save writes it into the body.
+	const storedCaption = captionOf(node);
+	const [captionDraft, setCaptionDraft] = useState("");
+	// Cleared by Enter and Escape, so the blur that follows does not commit.
+	const captionOpenRef = useRef(false);
+	const captionValue = showCaptionInput ? captionDraft : storedCaption;
 	const captionInputRef = useRef<HTMLInputElement>(null);
 	const aiPromptInputRef = useRef<HTMLTextAreaElement>(null);
 	const [showAIPrompt, setShowAIPrompt] = useState(false);
@@ -401,6 +610,31 @@ function MermaidNodeView({
 	const [suggestionApplied, setSuggestionApplied] = useState(false);
 	const [useFullDoc, setUseFullDoc] = useState(false);
 	const suggestionAttemptedRef = useRef(false);
+
+	// A client-document Proposal's page (Fizzy #2946): the diagram's actions
+	// sit in one menu, with Edit with instructions and the diagram's origin.
+	// Without the context every diagram keeps its header bar.
+	const visual = useMermaidVisualContext();
+	const paint = visual?.paint ?? null;
+	const tMenu = useTranslations("tooltips.editor.diagramMenu");
+	const tVisuals = useTranslations("projects.proposalArtifact.visuals");
+	const [showInstructionPanel, setShowInstructionPanel] = useState(false);
+	const instructionInputRef = useRef<HTMLTextAreaElement>(null);
+	const triggerRef = useRef<HTMLButtonElement>(null);
+	const codeTextareaRef = useRef<HTMLTextAreaElement>(null);
+	const menuActionRef = useRef<MenuAction | null>(null);
+	const [focusRequest, setFocusRequest] = useState<FocusTarget | null>(null);
+	const [announcement, setAnnouncement] = useState("");
+	const menuIds = useId();
+
+	// While an AI edit of the diagram is under review its text holds the
+	// removed and the added lines together, marked. Drawn as one diagram they
+	// make a picture that is neither version, so the view shows the marked
+	// source and draws the proposed diagram beside it.
+	const tReview = useTranslations("tooltips.editor.diagramReview");
+	const proposedSource = proposedSourceOf(node);
+	const underReview = proposedSource !== null;
+	const [reviewSvg, setReviewSvg] = useState("");
 
 	/**
 	 * Context from the surrounding document used to ground AI generation
@@ -537,7 +771,7 @@ When document context is provided, prefer concrete names, roles, and steps from 
 				}
 
 				if (generated) {
-					saveCode(generated);
+					saveCode(withDiagramCaption(generated, captionOf(node)));
 					setShowAIPrompt(false);
 					setAiPrompt("");
 				}
@@ -551,13 +785,7 @@ When document context is provided, prefer concrete names, roles, and steps from 
 				setIsGenerating(false);
 			}
 		},
-		[
-			node.textContent,
-			node.attrs.diagramType,
-			saveCode,
-			docContext,
-			useFullDoc,
-		],
+		[node, saveCode, docContext, useFullDoc],
 	);
 
 	/**
@@ -641,6 +869,11 @@ Rules:
 	}, [showAIPrompt, aiPrompt, node.textContent, suggestPrompt]);
 
 	const renderDiagram = useCallback(async () => {
+		// Under review the text mixes both versions; the review view draws
+		// the proposed one, and this runs again once the review is resolved.
+		if (underReview) {
+			return;
+		}
 		const code = node.textContent;
 		if (!code.trim()) {
 			setSvg("");
@@ -652,34 +885,12 @@ Rules:
 		setError(null);
 
 		try {
-			let enhancedSvg = "";
-
-			try {
-				const beautifulMermaid = await import("beautiful-mermaid");
-				// Use CSS variables so the SVG adapts to light/dark theme automatically.
-				// The SVG references CSS custom properties defined on .mermaid-diagram-area,
-				// which inherit from the app's design tokens. No re-render needed on theme switch.
-				enhancedSvg = beautifulMermaid.renderMermaidSVG(code.trim(), {
-					bg: "var(--mermaid-bg)",
-					fg: "var(--mermaid-fg)",
-					line: "var(--mermaid-line)",
-					accent: "var(--mermaid-accent)",
-					muted: "var(--mermaid-muted)",
-					surface: "var(--mermaid-surface)",
-					border: "var(--mermaid-border)",
-					font: "ui-sans-serif, system-ui, -apple-system, sans-serif",
-					transparent: true,
-				});
-			} catch {
-				// Fallback to native mermaid.js for unsupported diagram types
-				// (gantt, pie, mindmap, C4, timeline, etc.)
-				enhancedSvg = await renderNativeMermaidSvg(
-					code,
-					resolvedTheme === "dark",
-				);
-			}
-
-			setSvg(sanitizeDiagramSvg(enhancedSvg));
+			setSvg(
+				await renderDiagramSvg(code, {
+					isDark: resolvedTheme === "dark",
+					paint,
+				}),
+			);
 			setError(null);
 		} catch (err) {
 			console.error("Mermaid render error:", err);
@@ -690,7 +901,7 @@ Rules:
 		} finally {
 			setIsRendering(false);
 		}
-	}, [node.textContent, resolvedTheme]);
+	}, [node.textContent, resolvedTheme, paint, underReview]);
 
 	useEffect(() => {
 		setMounted(true);
@@ -703,6 +914,35 @@ Rules:
 		renderDiagram();
 	}, [mounted, renderDiagram]);
 
+	// The proposed diagram under review. One that does not draw leaves the
+	// marked source on its own, without an error: the review is of the
+	// change, and the source shows it either way.
+	useEffect(() => {
+		if (!mounted || !proposedSource?.trim()) {
+			setReviewSvg("");
+			return;
+		}
+		let current = true;
+		renderDiagramSvg(proposedSource, {
+			isDark: resolvedTheme === "dark",
+			paint,
+		}).then(
+			(drawn) => {
+				if (current) {
+					setReviewSvg(drawn);
+				}
+			},
+			() => {
+				if (current) {
+					setReviewSvg("");
+				}
+			},
+		);
+		return () => {
+			current = false;
+		};
+	}, [mounted, proposedSource, resolvedTheme, paint]);
+
 	const code = node.textContent;
 
 	const hasDocContext = Boolean(
@@ -711,6 +951,246 @@ Rules:
 	const showFullDocToggle =
 		hasDocContext &&
 		docContext.estimatedTokens >= FULL_DOC_AUTO_TOKEN_BUDGET;
+
+	// The menu's focus moves: after an item, focus goes to what it opened;
+	// a request waits until that element has mounted.
+	useLayoutEffect(() => {
+		if (!focusRequest) {
+			return;
+		}
+		const target = {
+			instruction: instructionInputRef,
+			ai: aiPromptInputRef,
+			caption: captionInputRef,
+			code: codeTextareaRef,
+			trigger: triggerRef,
+		}[focusRequest].current;
+		if (target) {
+			target.focus();
+			setFocusRequest(null);
+		}
+	});
+
+	/** Delete the node and put the caret where it was. */
+	const deleteNodeKeepingCaret = useCallback(() => {
+		const pos = getPos();
+		if (pos === undefined) {
+			return;
+		}
+		const { state, view } = editor;
+		const current = state.doc.nodeAt(pos);
+		if (!current) {
+			return;
+		}
+		const tr = state.tr.delete(pos, pos + current.nodeSize);
+		tr.setSelection(
+			TextSelection.near(
+				tr.doc.resolve(Math.min(pos, tr.doc.content.size)),
+			),
+		);
+		view.dispatch(tr.scrollIntoView());
+		view.focus();
+	}, [editor, getPos]);
+
+	/** Open the caption field on the caption as it is now. */
+	const openCaptionInput = useCallback(() => {
+		setCaptionDraft(storedCaption);
+		captionOpenRef.current = true;
+		setShowCaptionInput(true);
+		setFocusRequest("caption");
+	}, [storedCaption]);
+
+	/**
+	 * Write `caption` into the node's `%% caption:` line in one transaction,
+	 * dropping a caption attribute an older document carried. Nothing is
+	 * dispatched when neither changes.
+	 */
+	const commitCaption = useCallback(
+		(caption: string) => {
+			captionOpenRef.current = false;
+			setShowCaptionInput(false);
+			const pos = getPos();
+			if (pos === undefined) {
+				return;
+			}
+			const { state, view } = editor;
+			const current = state.doc.nodeAt(pos);
+			if (!current || current.type.name !== MERMAID_NODE_NAME) {
+				return;
+			}
+			const text = withDiagramCaption(current.textContent, caption);
+			if (text === current.textContent && !current.attrs.caption) {
+				return;
+			}
+			const replacement = current.type.create(
+				{ ...current.attrs, caption: null },
+				text ? [state.schema.text(text)] : [],
+			);
+			view.dispatch(
+				state.tr.replaceWith(pos, pos + current.nodeSize, replacement),
+			);
+		},
+		[editor, getPos],
+	);
+
+	const openInstructionPanel = useCallback(() => {
+		setShowAIPrompt(false);
+		setAiError(null);
+		setShowInstructionPanel(true);
+		setFocusRequest("instruction");
+	}, []);
+
+	/** Runs the chosen item once the menu has closed, and moves focus. */
+	const runMenuAction = useCallback(
+		(action: MenuAction) => {
+			switch (action) {
+				case "instruction":
+					openInstructionPanel();
+					return;
+				case "ai":
+					setShowInstructionPanel(false);
+					setShowAIPrompt(true);
+					setFocusRequest("ai");
+					return;
+				case "source":
+					setShowCode(true);
+					setFocusRequest("code");
+					return;
+				case "caption":
+					openCaptionInput();
+					return;
+				case "delete":
+					deleteNodeKeepingCaret();
+					return;
+			}
+		},
+		[openInstructionPanel, openCaptionInput, deleteNodeKeepingCaret],
+	);
+
+	/** The diagram as it is now, with its position among the document's diagrams. */
+	const readEditTarget = useCallback(() => {
+		const pos = getPos();
+		if (pos === undefined) {
+			return null;
+		}
+		const current = editor.state.doc.nodeAt(pos);
+		if (!current || current.type.name !== MERMAID_NODE_NAME) {
+			return null;
+		}
+		const doc = editor.state.doc;
+		const ordinal = diagramsOf(doc).positions.indexOf(pos);
+		if (ordinal === -1) {
+			return null;
+		}
+		const visualId = diagramEditVisualId(doc, visual?.specs, ordinal);
+		return {
+			code: current.textContent,
+			ordinal,
+			...(visualId ? { visualId } : {}),
+		};
+	}, [editor, getPos, visual?.specs]);
+
+	/**
+	 * Replace only this node with the candidate, in one transaction, when it
+	 * still holds the source the candidate was made from, the marker id an
+	 * edit of it names (if any) is the candidate's, and its section, as the
+	 * editor would save it, still has the fingerprint of the section the
+	 * server checked the candidate against. Two diagrams with the same source
+	 * in one section pass the other checks alike.
+	 */
+	const applyCandidate = useCallback(
+		(
+			fence: string,
+			sentHash: string,
+			sectionFingerprint: string,
+			visualId: string,
+		): "applied" | "stale" => {
+			const pos = getPos();
+			if (pos === undefined) {
+				return "stale";
+			}
+			const { state, view } = editor;
+			const current = state.doc.nodeAt(pos);
+			if (
+				!current ||
+				current.type.name !== MERMAID_NODE_NAME ||
+				visualSourceHash(current.textContent) !== sentHash
+			) {
+				return "stale";
+			}
+			const ordinal = diagramsOf(state.doc).positions.indexOf(pos);
+			const saved = getEditorMarkdownForSave(editor);
+			const namedId =
+				ordinal === -1
+					? undefined
+					: diagramEditVisualId(state.doc, visual?.specs, ordinal);
+			if (
+				ordinal === -1 ||
+				saved === null ||
+				(namedId !== undefined && namedId !== visualId) ||
+				diagramSectionFingerprint(saved, ordinal) !== sectionFingerprint
+			) {
+				return "stale";
+			}
+			// The caption is the person's, whatever the candidate carries.
+			const text = withDiagramCaption(fence, captionOf(current));
+			const replacement = current.type.create(
+				{ ...current.attrs, caption: null },
+				text ? [state.schema.text(text)] : [],
+			);
+			view.dispatch(
+				state.tr.replaceWith(pos, pos + current.nodeSize, replacement),
+			);
+			return "applied";
+		},
+		[editor, getPos, visual?.specs],
+	);
+
+	const renderCandidate = useCallback(
+		(candidate: string) =>
+			renderDiagramSvg(candidate, {
+				isDark: resolvedTheme === "dark",
+				paint,
+			}),
+		[resolvedTheme, paint],
+	);
+
+	const closeInstructionPanel = useCallback(() => {
+		setShowInstructionPanel(false);
+		setFocusRequest("trigger");
+	}, []);
+
+	const origin = useDiagramOrigin(editor, getPos, visual?.specs);
+	const originLabel =
+		origin === null
+			? null
+			: tVisuals(
+					origin === VISUAL_ORIGIN.INSTRUCTION
+						? "origin.instruction"
+						: "origin.step",
+				);
+	const canEditWithInstructions =
+		visual !== null &&
+		editor.isEditable &&
+		isFlowchartSource(node.textContent);
+	// Only where Edit with instructions is offered, since the line names it.
+	const fixedColours =
+		visual !== null &&
+		isFlowchartSource(node.textContent) &&
+		hasFixedColours(node.textContent);
+
+	const {
+		areaRef: diagramRef,
+		sizing,
+		scrollEdge,
+		onScroll: onDiagramScroll,
+	} = useMermaidDiagramSizing(svg, {
+		// The review view, like the code view, has no diagram area.
+		showCode: showCode || underReview,
+		error,
+		mounted,
+	});
+	const scrollable = sizing?.scrollable === true;
 
 	/**
 	 * Shared "Build with AI" input panel. Rendered inside both the code view
@@ -814,13 +1294,94 @@ Rules:
 		);
 	};
 
+	/**
+	 * Edit with instructions (Fizzy #2946), on a client-document Proposal's
+	 * flowcharts only. Its candidate shows below the current diagram.
+	 */
+	const renderInstructionPanel = () => {
+		if (!showInstructionPanel || !visual || !canEditWithInstructions) {
+			return null;
+		}
+		return (
+			<MermaidEditVisualPanel
+				visual={visual}
+				readTarget={readEditTarget}
+				applyCandidate={applyCandidate}
+				renderCandidate={renderCandidate}
+				onClose={closeInstructionPanel}
+				announce={setAnnouncement}
+				textareaRef={instructionInputRef}
+			/>
+		);
+	};
+
+	/** The polite live region Edit with instructions speaks through. */
+	const liveRegion =
+		visual !== null ? (
+			<output className="sr-only" aria-live="polite">
+				{announcement}
+			</output>
+		) : null;
+
 	if (!mounted) {
 		return (
 			<NodeViewWrapper className="mermaid-wrapper">
+				<HiddenSource />
 				<div className="my-4 flex min-h-[200px] items-center justify-center rounded-xl border bg-muted/30">
 					<div className="text-sm text-muted-foreground">
 						Loading diagram...
 					</div>
+				</div>
+			</NodeViewWrapper>
+		);
+	}
+
+	// An AI edit under review: the source with its marks, which the review
+	// bar's Accept and Reject act on, and the diagram it proposes. No source
+	// editor or menu here: their saves would write the mixed text unmarked.
+	if (underReview) {
+		const reviewLabelId = `${menuIds}-review`;
+		const previewLabelId = `${menuIds}-review-preview`;
+		return (
+			<NodeViewWrapper className="mermaid-wrapper">
+				{/* biome-ignore lint/a11y/useSemanticElements: a <fieldset> groups form controls; this names the source under review, which ProseMirror edits as document text */}
+				<div
+					role="group"
+					aria-labelledby={reviewLabelId}
+					className="mermaid-container my-4 rounded-lg border bg-card overflow-hidden"
+				>
+					<div
+						id={reviewLabelId}
+						contentEditable={false}
+						className="flex items-center gap-2 px-3 py-2 border-b bg-muted/50 text-xs text-muted-foreground"
+					>
+						<Code className="h-3.5 w-3.5" aria-hidden="true" />
+						{tReview("label")}
+					</div>
+					{/* A div, not a pre: the editor's code block colours would
+					    leave the deletion marks unreadable. */}
+					<NodeViewContent className="px-4 py-3 font-mono text-sm leading-relaxed text-foreground whitespace-pre-wrap break-words" />
+					{reviewSvg && (
+						<figure
+							contentEditable={false}
+							// Named by its caption outright: not every reader
+							// takes a figure's name from its figcaption.
+							aria-labelledby={previewLabelId}
+							className="m-0 border-t"
+						>
+							<figcaption
+								id={previewLabelId}
+								className="px-3 pt-2 text-xs text-muted-foreground"
+							>
+								{tReview("preview")}
+							</figcaption>
+							<div
+								className="mermaid-diagram-area flex items-center justify-center p-6 overflow-auto"
+								// biome-ignore lint/security/noDangerouslySetInnerHtml: run through sanitizeDiagramSvg in renderDiagramSvg, the only writer of this state
+								dangerouslySetInnerHTML={{ __html: reviewSvg }}
+							/>
+						</figure>
+					)}
 				</div>
 			</NodeViewWrapper>
 		);
@@ -834,6 +1395,7 @@ Rules:
 
 		return (
 			<NodeViewWrapper className="mermaid-wrapper">
+				<HiddenSource />
 				<div className="mermaid-container border rounded-lg overflow-hidden my-4 bg-muted/30">
 					{/* Header */}
 					<div className="flex items-center justify-between px-3 py-2 border-b bg-muted/50">
@@ -862,12 +1424,26 @@ Rules:
 									Save
 								</button>
 							)}
+							{error && canEditWithInstructions && (
+								<button
+									type="button"
+									onClick={openInstructionPanel}
+									className="flex items-center gap-1 px-2 py-1 text-xs font-medium rounded text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+								>
+									<WandSparkles
+										className="h-3.5 w-3.5"
+										aria-hidden="true"
+									/>
+									{tMenu("editWithInstructions")}
+								</button>
+							)}
 							{editor.isEditable && (
 								<Tooltip>
 									<TooltipTrigger asChild>
 										<button
 											type="button"
 											onClick={() => {
+												setShowInstructionPanel(false);
 												setShowAIPrompt((v) => !v);
 												requestAnimationFrame(() =>
 													aiPromptInputRef.current?.focus(),
@@ -931,7 +1507,7 @@ Rules:
 										type="button"
 										onClick={deleteNode}
 										className="p-1.5 hover:bg-destructive/10 rounded text-muted-foreground hover:text-destructive transition-colors"
-										aria-label="Delete diagram"
+										aria-label={tMenu("deleteDiagram")}
 									>
 										<Trash2 className="h-4 w-4" />
 									</button>
@@ -950,9 +1526,12 @@ Rules:
 					{/* AI prompt panel */}
 					{renderAIPanel()}
 
+					{error && renderInstructionPanel()}
+
 					{/* Code - editable textarea when editor is editable, read-only pre otherwise */}
 					{editor.isEditable ? (
 						<textarea
+							ref={codeTextareaRef}
 							className="w-full p-4 text-sm font-mono bg-muted/20 border-0 outline-none resize-y min-h-[120px]"
 							value={displayCode}
 							onChange={(e) => setEditableCode(e.target.value)}
@@ -1003,6 +1582,225 @@ Rules:
 							Ctrl+Enter to save changes
 						</div>
 					)}
+					{liveRegion}
+				</div>
+			</NodeViewWrapper>
+		);
+	}
+
+	const scrollRegionLabel = captionValue
+		? `${tMenu("scrollRegion")}: ${captionValue}`
+		: tMenu("scrollRegion");
+	const diagramArea = (
+		<div
+			ref={diagramRef}
+			className="mermaid-diagram-area flex items-center justify-center p-6 overflow-auto"
+			// A diagram wider than its column scrolls sideways (see `sizing`):
+			// it is then a named region a keyboard can reach and scroll.
+			{...(scrollable
+				? {
+						// A scrolling region is reachable by keyboard so it can be scrolled.
+						tabIndex: 0,
+						role: "region",
+						"aria-label": scrollRegionLabel,
+						"data-diagram-scroll": "",
+						"data-scroll-edge": scrollEdge,
+						style: {
+							"--pa-diagram-width": `${sizing?.width ?? 0}px`,
+						} as CSSProperties,
+						onScroll: onDiagramScroll,
+					}
+				: {})}
+			// biome-ignore lint/security/noDangerouslySetInnerHtml: run through sanitizeDiagramSvg above, which is the only writer of this state
+			dangerouslySetInnerHTML={{ __html: svg }}
+		/>
+	);
+
+	// Caption display / edit
+	const captionSection = (
+		<>
+			{(showCaptionInput || captionValue) && (
+				<div
+					className="px-3 py-2 border-t text-center"
+					contentEditable={false}
+				>
+					{showCaptionInput ? (
+						<input
+							ref={captionInputRef}
+							type="text"
+							value={captionDraft}
+							onChange={(e) => setCaptionDraft(e.target.value)}
+							onKeyDown={(e) => {
+								e.stopPropagation();
+								if (e.key === "Enter") {
+									e.preventDefault();
+									commitCaption(captionDraft);
+								}
+								if (e.key === "Escape") {
+									e.preventDefault();
+									captionOpenRef.current = false;
+									setShowCaptionInput(false);
+								}
+							}}
+							onBlur={() => {
+								if (captionOpenRef.current) {
+									commitCaption(captionDraft);
+								}
+							}}
+							placeholder={tMenu("captionPlaceholder")}
+							className="w-full max-w-md mx-auto bg-transparent text-sm text-muted-foreground text-center outline-none border-none"
+							aria-label={tMenu("captionLabel")}
+						/>
+					) : (
+						<button
+							type="button"
+							onClick={() => {
+								if (editor.isEditable) {
+									openCaptionInput();
+								}
+							}}
+							className="text-sm text-muted-foreground hover:text-foreground transition-colors cursor-text"
+						>
+							{captionValue || tMenu("captionPlaceholder")}
+						</button>
+					)}
+				</div>
+			)}
+		</>
+	);
+
+	if (visual !== null) {
+		const selectAction = (action: MenuAction) => () => {
+			menuActionRef.current = action;
+		};
+		return (
+			<NodeViewWrapper className="mermaid-wrapper">
+				<HiddenSource />
+				<div
+					className="mermaid-container mermaid-visual group relative my-4 rounded-lg border bg-card overflow-hidden"
+					data-visual-menu=""
+				>
+					{/* A strip of its own above the scrolling area, so the
+					    menu never covers the diagram or scrolls away. */}
+					{(editor.isEditable || originLabel || fixedColours) && (
+						<div
+							className="mermaid-visual-strip flex min-h-9 items-center justify-between gap-2 px-3 py-1"
+							contentEditable={false}
+						>
+							<div className="min-w-0 text-xs text-muted-foreground">
+								{originLabel && <p>{originLabel}</p>}
+								{fixedColours && (
+									<p>{tVisuals("fixedColours")}</p>
+								)}
+							</div>
+							{editor.isEditable && (
+								// Not modal: a menu inside the document must neither
+								// lock the page's scroll nor hide the rest of the
+								// editor from assistive technology.
+								<DropdownMenu modal={false}>
+									<DropdownMenuTrigger asChild>
+										<button
+											ref={triggerRef}
+											type="button"
+											aria-label={tMenu("trigger")}
+											className="mermaid-visual-trigger ml-auto inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+										>
+											<EllipsisVertical
+												className="h-4 w-4"
+												aria-hidden="true"
+											/>
+										</button>
+									</DropdownMenuTrigger>
+									<DropdownMenuContent
+										align="end"
+										className="w-64"
+										onCloseAutoFocus={(event) => {
+											const action =
+												menuActionRef.current;
+											menuActionRef.current = null;
+											if (action) {
+												// Focus goes where the item says, not
+												// back to the trigger.
+												event.preventDefault();
+												runMenuAction(action);
+											}
+										}}
+									>
+										{canEditWithInstructions && (
+											<>
+												<DescribedMenuItem
+													id={`${menuIds}-instruction`}
+													icon={WandSparkles}
+													label={tMenu(
+														"editWithInstructions",
+													)}
+													description={tMenu(
+														"editWithInstructionsDescription",
+													)}
+													onSelect={selectAction(
+														"instruction",
+													)}
+												/>
+												<DropdownMenuSeparator />
+											</>
+										)}
+										{visual.isMember && (
+											<DescribedMenuItem
+												id={`${menuIds}-ai`}
+												icon={Sparkles}
+												label={tMenu("buildWithAi")}
+												description={tMenu(
+													"buildWithAiDescription",
+												)}
+												onSelect={selectAction("ai")}
+											/>
+										)}
+										<DropdownMenuItem
+											className="gap-2"
+											onSelect={selectAction("source")}
+										>
+											<Code
+												className="h-4 w-4"
+												aria-hidden="true"
+											/>
+											{tMenu("editSource")}
+										</DropdownMenuItem>
+										<DropdownMenuItem
+											className="gap-2"
+											onSelect={selectAction("caption")}
+										>
+											<TextCursorInput
+												className="h-4 w-4"
+												aria-hidden="true"
+											/>
+											{tMenu("caption")}
+										</DropdownMenuItem>
+										<DropdownMenuSeparator />
+										<DropdownMenuItem
+											className="gap-2 text-destructive focus:bg-destructive/10 focus:text-destructive"
+											onSelect={selectAction("delete")}
+										>
+											<Trash2
+												className="h-4 w-4"
+												aria-hidden="true"
+											/>
+											{tMenu("delete")}
+										</DropdownMenuItem>
+									</DropdownMenuContent>
+								</DropdownMenu>
+							)}
+						</div>
+					)}
+
+					{/* Build with AI */}
+					{renderAIPanel()}
+
+					{diagramArea}
+
+					{renderInstructionPanel()}
+
+					{captionSection}
+					{liveRegion}
 				</div>
 			</NodeViewWrapper>
 		);
@@ -1011,6 +1809,7 @@ Rules:
 	// Show rendered diagram
 	return (
 		<NodeViewWrapper className="mermaid-wrapper">
+			<HiddenSource />
 			<div className="mermaid-container group relative my-4 rounded-lg border bg-card overflow-hidden">
 				{/* Header bar */}
 				<div className="flex items-center justify-between px-3 py-2 border-b bg-muted/50">
@@ -1070,12 +1869,7 @@ Rules:
 									<TooltipTrigger asChild>
 										<button
 											type="button"
-											onClick={() => {
-												setShowCaptionInput(true);
-												requestAnimationFrame(() =>
-													captionInputRef.current?.focus(),
-												);
-											}}
+											onClick={openCaptionInput}
 											className="p-1.5 rounded text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
 											aria-label="Add or edit caption"
 										>
@@ -1093,7 +1887,7 @@ Rules:
 										type="button"
 										onClick={deleteNode}
 										className="p-1.5 rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors"
-										aria-label="Delete diagram"
+										aria-label={tMenu("deleteDiagram")}
 									>
 										<Trash2 className="h-4 w-4" />
 									</button>
@@ -1107,74 +1901,9 @@ Rules:
 				{renderAIPanel()}
 
 				{/* Diagram rendering area */}
-				<div
-					ref={diagramRef}
-					className="mermaid-diagram-area flex items-center justify-center p-6 overflow-auto"
-					// biome-ignore lint/security/noDangerouslySetInnerHtml: run through sanitizeDiagramSvg above, which is the only writer of this state
-					dangerouslySetInnerHTML={{ __html: svg }}
-				/>
+				{diagramArea}
 
-				{/* Caption display / edit */}
-				{(showCaptionInput || captionValue) && (
-					<div
-						className="px-3 py-2 border-t text-center"
-						contentEditable={false}
-					>
-						{showCaptionInput ? (
-							<input
-								ref={captionInputRef}
-								type="text"
-								value={captionValue}
-								onChange={(e) =>
-									setCaptionValue(e.target.value)
-								}
-								onKeyDown={(e) => {
-									e.stopPropagation();
-									if (e.key === "Enter") {
-										e.preventDefault();
-										const trimmed =
-											captionValue.trim() || null;
-										updateAttributes({ caption: trimmed });
-										setCaptionValue(trimmed || "");
-										setShowCaptionInput(false);
-									}
-									if (e.key === "Escape") {
-										e.preventDefault();
-										setCaptionValue(
-											(node.attrs.caption as string) ||
-												"",
-										);
-										setShowCaptionInput(false);
-									}
-								}}
-								onBlur={() => {
-									const trimmed = captionValue.trim() || null;
-									updateAttributes({ caption: trimmed });
-									setCaptionValue(trimmed || "");
-									setShowCaptionInput(false);
-								}}
-								placeholder="Add a caption..."
-								className="w-full max-w-md mx-auto bg-transparent text-sm text-muted-foreground text-center outline-none border-none"
-								aria-label="Diagram caption"
-							/>
-						) : (
-							<button
-								type="button"
-								onClick={() => {
-									if (editor.isEditable) {
-										setShowCaptionInput(true);
-										requestAnimationFrame(() =>
-											captionInputRef.current?.focus(),
-										);
-									}
-								}}
-								className="text-sm text-muted-foreground hover:text-foreground transition-colors cursor-text"
-							>
-								{captionValue || "Add a caption..."}
-							</button>
-						)}
-					</div>
-				)}
+				{captionSection}
 			</div>
 		</NodeViewWrapper>
 	);
@@ -1193,7 +1922,7 @@ Rules:
  * - Priority is set higher than CodeBlockLowlight to capture mermaid blocks first
  */
 export const MermaidBlock = Node.create({
-	name: "mermaidBlock",
+	name: MERMAID_NODE_NAME,
 
 	// LOWER priority than CodeBlockLowlight (default is ~100) to capture mermaid blocks first
 	// In TipTap, lower priority = registered first = parseHTML rules checked first
@@ -1220,6 +1949,8 @@ export const MermaidBlock = Node.create({
 				parseHTML: () => "mermaid",
 				renderHTML: () => ({ "data-language": "mermaid" }),
 			},
+			// Read from older documents only: the caption is the body's
+			// `%% caption:` line, and the save folds this one into it.
 			caption: {
 				default: null,
 				parseHTML: (element: HTMLElement) =>

@@ -575,7 +575,7 @@ const SETTINGS_GROUP: GsGroup = {
 			id: "settings-general",
 			label: "General",
 			description:
-				"Your profile — name, avatar, and account basics (org name, logo, slug, and the Brand kit that styles Glossy editions in an organization).",
+				"Your profile — name, avatar, and account basics (org name, logo, slug, and the Brand kit — colours, fonts, hero image and website — that styles Glossy editions and client Proposals in an organization).",
 			icon: SettingsIcon,
 			cluster: "Account & profile",
 			href: settingsHref("general"),
@@ -862,11 +862,12 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				// Fizzy #2801: under the Proposal artifact gate a Proposal is
 				// written client-ready and offers no Glossy entry unless it
 				// already has an edition, so the copy stops promising one.
-				// Fizzy #2946: its Download menu prints it from its theme.
+				// Fizzy #2946: its Download menu prints it from its theme, and
+				// its diagrams' actions sit in one menu.
 				gatedCopy: {
 					runtimeGate: "proposalArtifact",
 					title: "A Glossy edition for stakeholders",
-					body: "A Business Case can also become a Glossy edition — a stakeholder-ready version with internal scaffolding moved to an appendix, text rewritten for an executive reader, and branded visuals. Open it from the card's Download menu, or from Glossy version at the top of the document's editor. Building it never changes the source document. A Proposal needs none: it is written client-ready, with Main Document, Internal Analysis and Style tabs on its page, and its Download menu, on the card or at the top of its page, saves it as a branded PDF or Word file in the same look. One that already has a Glossy edition keeps it.",
+					body: "A Business Case can also become a Glossy edition — a stakeholder-ready version with internal scaffolding moved to an appendix, text rewritten for an executive reader, and branded visuals. Open it from the card's Download menu, or from Glossy version at the top of the document's editor. Building it never changes the source document. A Proposal needs none: it is written client-ready, with Main Document, Internal Analysis and Style tabs on its page (Style shows where each of your brand's and the client's values comes from, and a client brand found on their website applies only once you confirm it), and its Download menu, on the card or at the top of its page, saves it as a branded PDF or Word file in the same look. Each diagram on its page has a Diagram actions menu, shown when you point at or tab to it: Edit with instructions describes a change to a flowchart and shows a fact-checked version to apply or discard, beside editing the source, the caption and deleting it. One that already has a Glossy edition keeps it.",
 				},
 			},
 		],

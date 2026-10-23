@@ -100,3 +100,70 @@ describe("available decision models", () => {
 		);
 	});
 });
+
+it("lists OpenJev through its available Databricks mapping for DECISION", async () => {
+	mockConfiguredProviders.mockResolvedValue({
+		allProviders: [
+			{
+				id: "example-config",
+				provider: "DATABRICKS",
+				purpose: "ALL",
+				source: "org_config",
+			},
+		],
+		defaultProvider: null,
+		defaultProviderType: null,
+		effectiveProviders: ["DATABRICKS"],
+	});
+	mockFindMany.mockResolvedValue([
+		{
+			id: "example-openjev",
+			canonicalName: "openjev-qwen35-4b",
+			displayName: "OpenJev (Qwen3.5 4B)",
+			family: "openjev",
+			vendor: "Databricks",
+			capabilities: ["EVALUATION"],
+			suitableForTasks: ["DECISION"],
+			speedTier: "BALANCED",
+			qualityTier: "STANDARD",
+			contextWindow: 0,
+			providerMappings: [
+				{
+					provider: "DATABRICKS",
+					providerModelId: "system.ai.openjev-qwen35-4b",
+					isAvailable: true,
+				},
+			],
+		},
+	]);
+	const result = await listAvailable._handler({
+		input: { organizationId: "example-org", taskType: "DECISION" },
+		context,
+	});
+	expect(mockFindMany).toHaveBeenCalledWith(
+		expect.objectContaining({
+			where: expect.objectContaining({
+				capabilities: { has: "EVALUATION" },
+				providerMappings: {
+					some: {
+						provider: { in: ["DATABRICKS"] },
+						isAvailable: true,
+					},
+				},
+			}),
+		}),
+	);
+	expect(result).toMatchObject({
+		providerIds: ["DATABRICKS"],
+		models: [{ canonicalName: "openjev-qwen35-4b" }],
+		modelsByGatewayAndProvider: {
+			DATABRICKS: {
+				providers: {
+					DATABRICKS: {
+						models: [{ canonicalName: "openjev-qwen35-4b" }],
+					},
+				},
+			},
+		},
+	});
+});

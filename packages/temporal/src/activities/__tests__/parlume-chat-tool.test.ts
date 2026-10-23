@@ -170,6 +170,7 @@ const context: ParlumeActionContext = {
 	userId: "user-1",
 	speakerId: "speaker-1",
 	speakerName: "Alex",
+	requestText: "put the link in the chat",
 	agentRevision: "revision",
 	voiceGeneration: 1,
 	toolsReadOnly: true,
@@ -218,7 +219,7 @@ beforeEach(() => {
 	];
 	state.access = { organizationId: "org-1" };
 	state.builderFailure = false;
-	state.post.mockResolvedValue(true);
+	state.post.mockResolvedValue({ sent: true, tag: "P1" });
 });
 
 describe("post_to_meeting_chat links", () => {
@@ -248,10 +249,13 @@ describe("post_to_meeting_chat links", () => {
 		);
 		expect(state.post).toHaveBeenCalledWith({
 			sessionId: "session-1",
+			turnId: "turn-1",
 			message: lastMessage(),
 		});
 		expect(result).toEqual({
-			posted: true,
+			sent: true,
+			delivery: "queued",
+			tag: "P1",
 			links: [
 				{
 					ref: "F-123",
@@ -301,7 +305,7 @@ describe("post_to_meeting_chat links", () => {
 
 		expect(state.post).not.toHaveBeenCalled();
 		expect(result).toEqual({
-			posted: false,
+			sent: false,
 			links: [],
 			unresolved: [
 				{ ref: "F-123", reason: "No such work item in this project." },
@@ -323,7 +327,7 @@ describe("post_to_meeting_chat links", () => {
 
 		expect(lastMessage().split("\n")).toHaveLength(1);
 		expect(result).toMatchObject({
-			posted: true,
+			sent: true,
 			unresolved: [{ ref: "F-999" }],
 		});
 	});
@@ -398,7 +402,7 @@ describe("post_to_meeting_chat links", () => {
 
 		expect(state.post).not.toHaveBeenCalled();
 		expect(result).toMatchObject({
-			posted: false,
+			sent: false,
 			unresolved: [{ ref: "billing" }],
 		});
 	});
@@ -429,7 +433,7 @@ describe("post_to_meeting_chat links", () => {
 
 		expect(lastMessage()).toBe("Here you go");
 		expect(result).toMatchObject({
-			posted: true,
+			sent: true,
 			links: [],
 			unresolved: [
 				{ ref: "F-123", reason: "The address could not be built." },
@@ -459,12 +463,12 @@ describe("post_to_meeting_chat text", () => {
 	});
 
 	it("needs some text or a link", async () => {
-		expect(await post({})).toMatchObject({ posted: false });
-		expect(await post({ text: "   " })).toMatchObject({ posted: false });
+		expect(await post({})).toMatchObject({ sent: false });
+		expect(await post({ text: "   " })).toMatchObject({ sent: false });
 		expect(state.post).not.toHaveBeenCalled();
 	});
 
-	it("keeps the whole message inside the chat's 4,000 characters, shortening the text before any link", async () => {
+	it("keeps the whole message, with room for the bridge's tag, inside the chat's 4,000 characters, shortening the text before any link", async () => {
 		state.stories = Array.from({ length: 10 }, (_, index) =>
 			story({
 				id: `story-${index}`,
@@ -483,7 +487,7 @@ describe("post_to_meeting_chat text", () => {
 
 		const message = lastMessage();
 		const [text, links] = message.split("\n\n");
-		expect(message.length).toBeLessThanOrEqual(4_000);
+		expect(message.length).toBeLessThanOrEqual(3_990);
 		expect(text.endsWith("…")).toBe(true);
 		expect(text.length).toBeLessThan(3_500);
 		expect(links.split("\n")).toHaveLength(10);
@@ -506,7 +510,7 @@ describe("post_to_meeting_chat text", () => {
 		});
 
 		const lines = lastMessage().split("\n");
-		expect(lastMessage().length).toBeLessThanOrEqual(4_000);
+		expect(lastMessage().length).toBeLessThanOrEqual(3_990);
 		expect(lines.every((line) => /— https:\/\/\S+$/.test(line))).toBe(true);
 		expect(lines.length).toBeLessThan(10);
 		const unresolved = (result.unresolved as Array<{ reason: string }>).map(
@@ -526,13 +530,13 @@ describe("post_to_meeting_chat limits and failures", () => {
 		for (let index = 0; index < 3; index++) {
 			expect(await post({ text: `Post ${index}` }, poster)).toMatchObject(
 				{
-					posted: true,
+					sent: true,
 				},
 			);
 		}
 		const fourth = await post({ text: "One more" }, poster);
 
-		expect(fourth).toMatchObject({ posted: false });
+		expect(fourth).toMatchObject({ sent: false });
 		expect(state.post).toHaveBeenCalledTimes(3);
 	});
 
@@ -547,7 +551,7 @@ describe("post_to_meeting_chat limits and failures", () => {
 			turnId: "turn-2",
 		});
 
-		expect(await post({ text: "b" }, next)).toMatchObject({ posted: true });
+		expect(await post({ text: "b" }, next)).toMatchObject({ sent: true });
 	});
 
 	it("posts nothing and says so when the project cannot be read", async () => {
@@ -556,19 +560,42 @@ describe("post_to_meeting_chat limits and failures", () => {
 		const result = await post({ text: "Hello" });
 
 		expect(result).toEqual({
-			posted: false,
+			sent: false,
 			error: "Project not found or access denied.",
 		});
 		expect(state.post).not.toHaveBeenCalled();
 	});
 
-	it("reports a chat message the bridge could not deliver", async () => {
-		state.post.mockResolvedValue(false);
+	it("tells the agent to say the content when the meeting's chat is out of reach", async () => {
+		state.post.mockResolvedValue({
+			sent: false,
+			reason: "chat_unavailable",
+		});
+
+		const result = await post({ text: "Hello" });
+
+		expect(result).toEqual({
+			sent: false,
+			delivered: false,
+			reason: "chat_unavailable",
+			error: "This meeting's chat is not available to Parlume. Say the content aloud instead.",
+		});
+	});
+
+	it("never reports a message as delivered, only queued", async () => {
+		const result = await post({ text: "Hello" });
+
+		expect(result).toMatchObject({ sent: true, delivery: "queued" });
+		expect(JSON.stringify(result)).not.toMatch(/posted|delivered/);
+	});
+
+	it("reports a chat message the bridge could not send", async () => {
+		state.post.mockResolvedValue({ sent: false, reason: "failed" });
 
 		const result = await post({ text: "Hello" });
 
 		expect(result).toMatchObject({
-			posted: false,
+			sent: false,
 			error: "The chat message could not be sent.",
 		});
 	});
@@ -592,7 +619,7 @@ describe("post_to_meeting_chat limits and failures", () => {
 			event: "parlume.chat.posted",
 			sessionId: "session-1",
 			turnId: "turn-1",
-			posted: true,
+			sent: true,
 			post: 1,
 			links: 1,
 			unresolved: 1,

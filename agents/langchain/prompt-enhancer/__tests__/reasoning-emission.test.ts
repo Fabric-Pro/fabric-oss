@@ -204,4 +204,40 @@ describe("prompt-enhancer enhanceNode — reasoning emission", () => {
 			(update as Record<string, unknown>).reasoningByTurn,
 		).toBeUndefined();
 	});
+
+	it("acknowledges an accept without claiming the prompt was saved: the page saves it afterwards", async () => {
+		const aiWithConfirm = new AIMessage({
+			content: "",
+			tool_calls: [
+				{
+					id: "call_1",
+					name: "confirm_changes",
+					args: {},
+					type: "tool_call" as const,
+				},
+			],
+		});
+		const toolResponse = {
+			type: "tool",
+			content: JSON.stringify({ accepted: true }),
+			tool_call_id: "call_1",
+			name: "confirm_changes",
+		};
+
+		const command = await enhanceNode({
+			...baseState,
+			messages: [
+				new HumanMessage("accept"),
+				aiWithConfirm,
+				toolResponse,
+			] as never,
+		});
+
+		const update = (command as { update?: Record<string, unknown> })
+			.update as { messages: Array<{ content: unknown }> };
+		const acknowledgment = update.messages.at(-1)?.content;
+		expect(acknowledgment).toBe("Changes accepted.");
+		expect(String(acknowledgment)).not.toMatch(/applied|saved/i);
+		expect(invokeMock).not.toHaveBeenCalled();
+	});
 });

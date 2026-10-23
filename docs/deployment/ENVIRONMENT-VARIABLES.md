@@ -335,6 +335,8 @@ All optional. The first three are observability/memory; the last two are for the
 }
 ```
 
+> A Temporal worker without these two but with `AGENT_SERVICE_SECRET` and the web's base URL (the first set of `FABRIC_INTERNAL_URL`, `RUNTIME_API_URL`, `APP_URL`, `NEXT_PUBLIC_APP_URL`; the Azure worker has `APP_URL`) sends its realtime events to the web's `/api/internal/realtime-emit`, which publishes them; see `packages/utils/lib/realtime-emit.ts`.
+
 ### 3.7 `temporal`
 
 ```json

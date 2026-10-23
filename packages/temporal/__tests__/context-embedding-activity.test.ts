@@ -1,3 +1,4 @@
+import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
 /**
  * Unit tests for `embedSingleContextActivity`.
  *
@@ -240,4 +241,20 @@ describe("embedSingleContextActivity — status writeback", () => {
 			"Search indexing failed: embed boom",
 		);
 	});
+});
+
+it("records an embedding configuration refusal without requesting another attempt", async () => {
+	const error = new UnsupportedEmbeddingModelError("databricks-gte-large-en");
+	mockEmbedProjectContext.mockResolvedValue({
+		success: false,
+		error: error.message,
+		refusal: error,
+	});
+	await expect(embedSingleContextActivity(baseInput)).resolves.toEqual({
+		success: true,
+	});
+	expect(mockRecordContextIndexingFailure).toHaveBeenCalledWith(
+		"ctx-1",
+		error.message,
+	);
 });

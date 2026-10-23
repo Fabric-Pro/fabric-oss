@@ -18,8 +18,7 @@ import {
 } from "../../lib/recipient-brand";
 
 /**
- * Issue a signed PUT for a manually uploaded recipient logo (Fizzy #2589,
- * R33, KTD23).
+ * Issue a signed PUT for a manually uploaded recipient logo (Fizzy #2589).
  *
  * Each call writes to a NEW pending object under a server-generated token,
  * which is all the caller gets back to name it with: the key is built from
@@ -33,8 +32,9 @@ import {
  *
  * AUTHORIZATION: `requireGlossyOrProposalArtifactEnabled` first (GLOSSY_EDITION
  * and PROPOSAL_ARTIFACT both off → NOT_FOUND for every caller), then
- * `requireProjectPermission(DOCUMENT_UPDATE)`, then the shared
- * recipient brand gate including `canEditProject`.
+ * `requireProjectPermission(DOCUMENT_UPDATE)`, then the shared recipient
+ * brand write gate: `canEditProject` and a `member` row in the project's
+ * owning organization, so a project guest editor is FORBIDDEN.
  */
 export const createRecipientLogoUploadUrlProcedure = tenantProtectedProcedure
 	.use(requireGlossyOrProposalArtifactEnabled())

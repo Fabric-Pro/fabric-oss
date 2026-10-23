@@ -341,6 +341,7 @@ describe("generatePublishingNewsletterBlurbWorkflow", () => {
 				// guard only counts that one proxy in this file declares these;
 				// it cannot say WHICH one, so this is the identity assertion.
 				"AIProviderNotConfiguredError",
+				"UnsupportedEmbeddingModelError",
 				"AiUsageLimitExceededError",
 				"SubscriptionPlanExhaustedError",
 				"ChatGptPlanAuthError",

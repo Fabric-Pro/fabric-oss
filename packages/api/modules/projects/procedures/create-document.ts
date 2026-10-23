@@ -41,6 +41,7 @@ import {
 import { logger } from "@repo/logs";
 import { getTemporalClient } from "@repo/temporal";
 import type { AiChatExtractionOutcome } from "@repo/utils/ai-chat-attachment";
+import { contentIdentity } from "@repo/utils/content-identity";
 import { z } from "zod";
 import { emitActivity, emitDocumentChange } from "../../../lib/realtime";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
@@ -79,7 +80,12 @@ const PASTED_VERSION_DESCRIPTION = "Created from pasted source content";
  * these, so a missing one reads as "nothing happened" rather than as an error.
  */
 interface CreateDocumentResult {
-	document: ProjectDocument;
+	/**
+	 * The created row, its `contentHash` the body's identity rather than the
+	 * embed-owned column — see `withBodyIdentity`. Typed non-null so a route
+	 * that returns the row as written does not compile.
+	 */
+	document: ProjectDocument & { contentHash: string };
 	sourceContextId: string | null;
 	/**
 	 * Null when no generation was requested; otherwise the dispatch's own
@@ -487,11 +493,12 @@ export const createDocumentProcedure = tenantProtectedProcedure
 			// keeps its own status. That is a sub-second window and the
 			// client's first poll corrects it; the alternative — reporting
 			// DRAFT for a row that is queued — is wrong for the whole wait.
-			document:
+			document: withBodyIdentity(
 				generation?.outcome === "started" ||
-				generation?.outcome === "statusUnknown"
+					generation?.outcome === "statusUnknown"
 					? { ...document, status: "QUEUED" as const }
 					: document,
+			),
 			sourceContextId: sourceContext?.id ?? null,
 			generation,
 			displacedActive: created.displacedCount > 0,
@@ -572,7 +579,7 @@ async function createDocumentAwaitingFile({
 	});
 
 	return {
-		document,
+		document: withBodyIdentity(document),
 		sourceContextId: null,
 		generation: null,
 		displacedActive: false,
@@ -652,12 +659,25 @@ async function createPlainDocument({
 	});
 
 	return {
-		document,
+		document: withBodyIdentity(document),
 		sourceContextId: null,
 		generation: null,
 		displacedActive: false,
 		suppliedTextOutcome: null,
 	};
+}
+
+/**
+ * The created row with `contentHash` set to its body's identity, as
+ * `projects.documents.get` returns it (Fizzy #2946): the base a first save
+ * names. The embed-owned column it shadows is null until the row is embedded.
+ * Hashes the body as the row stores it, which can differ from the request's
+ * (sanitized, or the neutralized copy of a paste).
+ */
+function withBodyIdentity(
+	document: ProjectDocument,
+): ProjectDocument & { contentHash: string } {
+	return { ...document, contentHash: contentIdentity(document.content) };
 }
 
 /** Real-time events for collaboration, identical on every route. */

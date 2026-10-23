@@ -229,21 +229,38 @@ const TICKET = {
 	createdAt: new Date("2026-01-01"),
 	tasks: [],
 };
+// A second shortlisted ticket, so the evaluation asks the `target` question
+// (a one-ticket shortlist asks only `routing`) and its criteria carry content.
+const TICKET_2 = {
+	...TICKET,
+	id: "story-b",
+	identifier: "F-2",
+	title: `Other ticket title ${SENTINEL}`,
+	description: `Other ticket body ${SENTINEL}`,
+};
 
 async function routeItem(
 	decisionModel: ReturnType<typeof resolvedDecisionModel>,
 ) {
+	const tickets = [TICKET, TICKET_2];
 	return judgeRoutingItem({
 		itemText: `Action item ${SENTINEL}`,
 		analyzerReasoning: `Reasoning ${SENTINEL}`,
 		itemEmbedding: [1, 0],
-		candidateVectors: [
-			{ id: TICKET.id, identifier: TICKET.identifier, embedding: [1, 0] },
-		],
-		storyById: new Map([[TICKET.id, TICKET]]) as never,
-		textByStoryId: new Map([
-			[TICKET.id, `${TICKET.title}\n${TICKET.description}`],
-		]),
+		candidateVectors: tickets.map((ticket) => ({
+			id: ticket.id,
+			identifier: ticket.identifier,
+			embedding: [1, 0],
+		})),
+		storyById: new Map(
+			tickets.map((ticket) => [ticket.id, ticket]),
+		) as never,
+		textByStoryId: new Map(
+			tickets.map((ticket) => [
+				ticket.id,
+				`${ticket.title}\n${ticket.description}`,
+			]),
+		),
 		judge: {
 			model: {} as never,
 			metadata: undefined as never,
@@ -301,7 +318,7 @@ describe("decision telemetry privacy", () => {
 				target: {
 					type: "choice",
 					choice: "F-1",
-					probabilities: { "F-1": 1 },
+					probabilities: { "F-1": 0.99, "F-2": 0.01 },
 				},
 			},
 			usage: { inputTokens: 200, outputTokens: 8 },
@@ -322,7 +339,7 @@ describe("decision telemetry privacy", () => {
 				target: {
 					type: "choice",
 					choice: "F-1",
-					probabilities: { "F-1": 1 },
+					probabilities: { "F-1": 0.99, "F-2": 0.01 },
 				},
 			},
 			usage: { inputTokens: 200, outputTokens: 8 },

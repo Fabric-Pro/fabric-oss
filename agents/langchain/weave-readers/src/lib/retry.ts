@@ -1,3 +1,5 @@
+import { setTimeout as sleep } from "node:timers/promises";
+
 /**
  * Retry with exponential backoff, circuit breaker, and concurrency limiter
  * for resilient LLM calls in weave agent services.
@@ -85,16 +87,28 @@ const MAX_CONCURRENT = Number(process.env.MAX_CONCURRENT_LLM_CALLS || "4");
 let activeCount = 0;
 const waitQueue: Array<() => void> = [];
 
-async function acquireSlot(): Promise<void> {
+async function acquireSlot(signal?: AbortSignal): Promise<void> {
+	signal?.throwIfAborted();
 	if (activeCount < MAX_CONCURRENT) {
 		activeCount++;
 		return;
 	}
-	return new Promise<void>((resolve) => {
-		waitQueue.push(() => {
+	return new Promise<void>((resolve, reject) => {
+		const onAbort = () => {
+			const index = waitQueue.indexOf(admit);
+			if (index >= 0) {
+				waitQueue.splice(index, 1);
+			}
+			signal?.removeEventListener("abort", onAbort);
+			reject(signal?.reason);
+		};
+		const admit = () => {
+			signal?.removeEventListener("abort", onAbort);
 			activeCount++;
 			resolve();
-		});
+		};
+		waitQueue.push(admit);
+		signal?.addEventListener("abort", onAbort, { once: true });
 	});
 }
 
@@ -117,8 +131,11 @@ export async function withRetry<T>(
 		initialDelayMs?: number;
 		label?: string;
 		circuitKey?: string;
+		signal?: AbortSignal;
 	} = {},
 ): Promise<T> {
+	const signal = options.signal;
+	signal?.throwIfAborted();
 	const maxAttempts = options.maxAttempts ?? 3;
 	const initialDelay = options.initialDelayMs ?? 1000;
 	const label = options.label ?? "operation";
@@ -135,14 +152,16 @@ export async function withRetry<T>(
 	let lastError: unknown;
 
 	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-		// Acquire concurrency slot per attempt — released before backoff sleep
-		// so we don't hold a slot while waiting
-		await acquireSlot();
+		// Acquire a slot per attempt; cancellation also removes queued waiters.
+		await acquireSlot(signal);
 		try {
+			signal?.throwIfAborted();
 			const result = await fn();
+			signal?.throwIfAborted();
 			recordSuccess(circuitKey);
 			return result;
 		} catch (error) {
+			signal?.throwIfAborted();
 			lastError = error;
 
 			if (attempt === maxAttempts || !isRetryable(error)) {
@@ -158,7 +177,7 @@ export async function withRetry<T>(
 				`[Retry] ${label} attempt ${attempt}/${maxAttempts} failed (retrying in ${delay}ms):`,
 				error instanceof Error ? error.message : error,
 			);
-			await new Promise((resolve) => setTimeout(resolve, delay));
+			await sleep(delay, undefined, { signal });
 		} finally {
 			releaseSlot();
 		}

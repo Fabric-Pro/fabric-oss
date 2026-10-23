@@ -309,12 +309,11 @@ export async function approvalWorkflow(input: ApprovalInput): Promise<ApprovalOu
 
 ```typescript
 // Bad: Non-deterministic operations
-export async function badWorkflow() {
-  // ❌ Random values change on replay
-  const id = Math.random().toString();
+import { workflowInfo } from "@temporalio/workflow";
 
-  // ❌ Current time changes on replay
-  const now = new Date();
+export async function badWorkflow() {
+  // ❌ Real system time, which differs on replay
+  const now = workflowInfo().unsafe.now();
 
   // ❌ Direct I/O in workflow
   const data = await fetch("https://api.example.com/data");
@@ -323,7 +322,7 @@ export async function badWorkflow() {
   const file = fs.readFileSync("config.json");
 }
 ```
-**Why**: Workflows must be deterministic for replay. Different values on replay cause non-determinism errors.
+**Why**: Workflows must be deterministic for replay. A value that differs on replay and changes which commands the workflow issues causes a non-determinism error. The TypeScript SDK sandbox replaces `Date.now()`, `new Date()` and `Math.random()` with replay-safe versions, so those are fine in workflow code; it does not make I/O or `workflowInfo().unsafe.now()` replay-safe ([Temporal: workflow logic requirements](https://docs.temporal.io/develop/typescript/workflows/basics#workflow-logic-requirements)).
 
 **✅ Better**:
 
@@ -335,8 +334,8 @@ export async function goodWorkflow() {
   // ✅ Deterministic UUID from Temporal
   const id = uuid4();
 
-  // ✅ Get time from activity
-  const { now } = await getServerTime();
+  // ✅ Sandbox time: the start of the current workflow task, identical on replay
+  const now = Date.now();
 
   // ✅ External calls in activities
   const data = await fetchExternalData("https://api.example.com/data");
@@ -591,9 +590,9 @@ run().catch((err) => {
 
 ## Common Mistakes
 
-1. **Using `Date.now()` in workflows**
-   - Problem: Non-deterministic on replay
-   - Solution: Use `Temporal.now()` or get time from activity
+1. **Expecting `Date.now()` to advance inside a workflow task**
+   - Problem: In workflow code it returns the start time of the current workflow task, so it only moves on a later workflow task (for example after `await sleep()`), not after every `await`; `workflowInfo().unsafe.now()` advances but differs on replay
+   - Solution: Use `Date.now()` and `await sleep()` for time to pass; never `unsafe.now()`
 
 2. **Passing large payloads**
    - Problem: Exceeds 4MB limit, slow replays

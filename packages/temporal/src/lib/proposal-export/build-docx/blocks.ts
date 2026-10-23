@@ -26,7 +26,7 @@ import type {
 	RootContent,
 } from "mdast";
 import { rawHtmlFallback, readUploadedImageTag } from "../document-content";
-import { flatText } from "../markdown";
+import { exportDiagramCaption, flatText } from "../markdown";
 import type { ExportDiagram } from "../types";
 import { fitImage, imageRun, inlineChildren, uploadedImageRun } from "./inline";
 import {
@@ -375,6 +375,7 @@ function renderCode(
 		renderDiagram(
 			writer,
 			writer.input.diagrams[diagramIndex],
+			exportDiagramCaption(node.value),
 			out,
 			context,
 		);
@@ -431,12 +432,18 @@ function renderCode(
 	);
 }
 
+/**
+ * A diagram's picture or placeholder, then the fence's `%% caption:` line
+ * as a caption paragraph kept with it, as an uploaded image's caption is.
+ */
 function renderDiagram(
 	writer: Writer,
 	diagram: ExportDiagram | undefined,
+	caption: string | null,
 	out: Out[],
 	context: BlockContext,
 ): void {
+	const captioned = caption !== null;
 	if (diagram?.kind === "svg" && diagram.png) {
 		// Shown at the SVG's own size, as print does, shrunk to the column.
 		const size = fitImage(
@@ -445,31 +452,61 @@ function renderDiagram(
 			context.textWidth - context.indent,
 			MAX_IMAGE_HEIGHT,
 		);
-		const image = imageRun(writer, diagram.png, size, "Diagram");
+		const image = imageRun(writer, diagram.png, size, caption ?? "Diagram");
 		if (image) {
 			pushParagraph(out, writer, context, {
 				alignment: AlignmentType.CENTER,
+				keepNext: captioned,
 				spacing: {
 					before: 120,
-					after: BODY_AFTER + 60,
+					after: captioned ? 80 : BODY_AFTER + 60,
 					line: SINGLE_LINE,
 				},
 				children: [image],
 			});
+			pushDiagramCaption(writer, caption, out, context);
 			return;
 		}
 	}
-	const caption =
+	const placeholder =
 		diagram?.kind === "placeholder" ? diagram.caption : DIAGRAM_UNAVAILABLE;
 	pushParagraph(out, writer, context, {
 		alignment: AlignmentType.CENTER,
-		spacing: { before: 120, after: BODY_AFTER + 60, line: SINGLE_LINE },
+		keepNext: captioned,
+		spacing: {
+			before: 120,
+			after: captioned ? 80 : BODY_AFTER + 60,
+			line: SINGLE_LINE,
+		},
+		children: [
+			textRun(proseText(placeholder), {
+				font: writer.fonts.body,
+				color: writer.colors.muted,
+				size: CAPTION_SIZE,
+				italics: true,
+			}),
+		],
+	});
+	pushDiagramCaption(writer, caption, out, context);
+}
+
+function pushDiagramCaption(
+	writer: Writer,
+	caption: string | null,
+	out: Out[],
+	context: BlockContext,
+): void {
+	if (caption === null) {
+		return;
+	}
+	pushParagraph(out, writer, context, {
+		alignment: AlignmentType.CENTER,
+		spacing: { after: BODY_AFTER + 60, line: SINGLE_LINE },
 		children: [
 			textRun(proseText(caption), {
 				font: writer.fonts.body,
 				color: writer.colors.muted,
 				size: CAPTION_SIZE,
-				italics: true,
 			}),
 		],
 	});

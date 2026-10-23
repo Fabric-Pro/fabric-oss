@@ -18,9 +18,13 @@
  * told in the reader's words, never the server's. A closed-off Restore is
  * `aria-disabled`, not `disabled`: the button itself stays the one tab stop,
  * described by the reason, and pressing it does nothing.
+ *
+ * And a row's word count is the server's (Fizzy #2946): a diagram fence or an
+ * image is no words.
  */
 
 import en from "@repo/i18n/translations/en.json";
+import { countDocumentWords } from "@repo/utils/document-word-count";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -283,6 +287,25 @@ describe("DocumentVersionHistory — author", () => {
 
 		expect(await screen.findByText("Unknown user")).toBeInTheDocument();
 		expect(renderedText()).not.toContain("clxdeleted00000000");
+	});
+});
+
+describe("DocumentVersionHistory — word count (Fizzy #2946)", () => {
+	it("counts a version's words the way the server counts the document's, leaving fences and images out", async () => {
+		const content =
+			"Intro text here.\n\n```mermaid\ngraph TD; A-->B\n```\n\n![diagram](https://example.com/a.png)\n\nClosing words.";
+		const expected = countDocumentWords(content);
+		// The plain whitespace split the row used to count with disagrees,
+		// so the row tells the two apart.
+		expect(expected).not.toBe(content.split(/\s+/).length);
+		listVersions.mockResolvedValue({
+			versions: [version({ version: 2, content })],
+		});
+
+		renderPanel();
+
+		await screen.findByText("v2");
+		expect(screen.getByText(`${expected} words`)).toBeInTheDocument();
 	});
 });
 

@@ -1,22 +1,34 @@
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { ORPCError } from "@orpc/client";
 import { config } from "@repo/config";
 import {
 	canEditProject,
 	db,
+	getRecipientBrand,
 	hasProjectAccess,
+	isOrganizationMember,
 	isRecipientLogoKeyForProject,
 	recipientLogoKeyPrefix,
 } from "@repo/database";
+import {
+	LOGO_MAX_INPUT_BYTES,
+	type NormalizeLogoFailureCode,
+	normalizeLogo,
+} from "@repo/integrations/website-brand";
 import { logger } from "@repo/logs";
 import { getStorageProvider } from "@repo/storage";
+import {
+	LOGO_UPLOAD_CONTENT_TYPES,
+	type LogoUploadContentType,
+} from "@repo/utils/brand-assets";
+import { isRecipientSuggestedLogoKey } from "@repo/utils/proposal-artifact/brand-sources";
 import { z } from "zod";
 import { assertGlossyOrProposalArtifactEnabled } from "./proposal-artifact-feature";
 
 /**
- * Shared plumbing for the recipient brand procedures (Fizzy #2589, KTD19,
- * KTD23): the project gate every one of them runs, and the only place a
- * recipient logo's storage key is ever built.
+ * Shared plumbing for the recipient brand procedures (Fizzy #2589): the
+ * project gate every one of them runs, and the only place a recipient
+ * logo's storage key is ever built.
  *
  * Every key lives under `project-brand/{projectId}/recipient-brand/` in the
  * private `projectContexts` bucket — outside `story-attachments/`, whose daily
@@ -27,13 +39,23 @@ import { assertGlossyOrProposalArtifactEnabled } from "./proposal-artifact-featu
  * workspace file, or a path with `..` in it.
  */
 
-/** Upload types the signed PUT accepts; promotion re-checks the bytes anyway. */
-export const RECIPIENT_LOGO_UPLOAD_CONTENT_TYPES = [
-	"image/png",
-	"image/jpeg",
-	"image/gif",
-	"image/webp",
-] as const;
+/**
+ * The recipient brand fields a website fetch can suggest (Fizzy #2946). The
+ * Style tab confirms them one at a time, so a fetched name is applied only
+ * by itself.
+ */
+export const RECIPIENT_SUGGESTION_FIELDS = ["name", "colors", "logo"] as const;
+
+/**
+ * Upload types the signed PUT accepts; promotion re-checks the bytes anyway.
+ * The shared brand-asset vocabulary, so the picker's `accept` list, the
+ * browser's pre-check and this signer can never disagree.
+ */
+export const RECIPIENT_LOGO_UPLOAD_CONTENT_TYPES =
+	LOGO_UPLOAD_CONTENT_TYPES as readonly [
+		LogoUploadContentType,
+		...LogoUploadContentType[],
+	];
 
 /** A signed PUT is used at once, from the form that asked for it. */
 export const RECIPIENT_LOGO_UPLOAD_URL_TTL_SECONDS = 300;
@@ -86,12 +108,25 @@ export function recipientLogoPendingKey(
 	return `${recipientLogoPendingPrefix(projectId)}${token}.png`;
 }
 
+/** Whether `key` is a pending object of THIS project, as a token names it. */
+function isRecipientLogoPendingKeyForProject(
+	projectId: string,
+	key: string,
+): boolean {
+	const prefix = recipientLogoPendingPrefix(projectId);
+	return (
+		key.startsWith(prefix) &&
+		key.endsWith(".png") &&
+		isRecipientLogoToken(key.slice(prefix.length, -".png".length))
+	);
+}
+
 /**
  * A new immutable key for a promoted logo, with a fresh server-generated id.
  * The shape is exactly what `isRecipientLogoKeyForProject` and the
  * migration's CHECK constraint accept.
  */
-export function newRecipientLogoCurrentKey(projectId: string): string {
+function newRecipientLogoCurrentKey(projectId: string): string {
 	const key = `${recipientLogoKeyPrefix(projectId)}${randomUUID()}.png`;
 	if (!isRecipientLogoKeyForProject(projectId, key)) {
 		// Unreachable unless the two builders drift apart; fail before any
@@ -101,17 +136,120 @@ export function newRecipientLogoCurrentKey(projectId: string): string {
 	return key;
 }
 
+export type RecipientLogoPromotion =
+	| {
+			outcome: "promoted";
+			key: string;
+			/** SHA-256 (hex) of the bytes stored under `key`. */
+			hash: string;
+	  }
+	/**
+	 * The source object is not there: never stored, or cleaned up since,
+	 * before or while it was read.
+	 */
+	| { outcome: "missing" }
+	| { outcome: "rejected"; code: NormalizeLogoFailureCode };
+
+function logoStorageFailure(): ORPCError<"INTERNAL_SERVER_ERROR", unknown> {
+	return new ORPCError("INTERNAL_SERVER_ERROR", {
+		message: "Could not save the logo",
+	});
+}
+
+/**
+ * Step 1 of a logo promotion: normalize one stored logo of THIS
+ * project and copy it to a new immutable `current/{promotionId}.png`, with
+ * the hash of the bytes written. Nothing references the new object yet, so
+ * any failure here changes nothing, and the source object is left where it
+ * is: its owner (a pending upload, a website fetch's suggestion) decides
+ * when it goes.
+ *
+ * `sourceKey` is a pending object a token named or a logo the recipient
+ * website fetch suggested, both of this project; anything else is refused
+ * before storage is touched. The bytes are untrusted whichever way they
+ * arrived, so every source goes through the same hardened pipeline, which
+ * refuses anything that is not a raster PNG, JPEG, GIF or WebP (an SVG or an
+ * HTML page stored as `image/png` included) and re-encodes the rest.
+ */
+export async function promoteRecipientLogo(
+	projectId: string,
+	sourceKey: string,
+): Promise<RecipientLogoPromotion> {
+	if (
+		!isRecipientLogoPendingKeyForProject(projectId, sourceKey) &&
+		!isRecipientSuggestedLogoKey(projectId, sourceKey)
+	) {
+		// Unreachable unless a caller skipped its own key check; fail before
+		// any object is read rather than copy another project's bytes.
+		throw new Error("Recipient logo source is not one of this project's");
+	}
+	const storage = getStorageProvider();
+	const bucket = recipientBrandBucket();
+
+	let metadata: Awaited<ReturnType<typeof storage.getFileMetadata>>;
+	try {
+		metadata = await storage.getFileMetadata(sourceKey, { bucket });
+	} catch {
+		throw logoStorageFailure();
+	}
+	if (!metadata) {
+		return { outcome: "missing" };
+	}
+
+	let normalized: Awaited<ReturnType<typeof normalizeLogo>>;
+	if (metadata.size > LOGO_MAX_INPUT_BYTES) {
+		normalized = { ok: false, code: "too_large" };
+	} else {
+		let bytes: Buffer;
+		try {
+			bytes = (await storage.downloadFile(sourceKey, { bucket })).data;
+		} catch {
+			// Its owner may have deleted it between the two reads (a newer
+			// website fetch replacing its suggestion): that is a missing
+			// object, not a storage failure.
+			const stillThere = await storage
+				.getFileMetadata(sourceKey, { bucket })
+				.catch(() => undefined);
+			if (stillThere === null) {
+				return { outcome: "missing" };
+			}
+			throw logoStorageFailure();
+		}
+		normalized = await normalizeLogo(bytes);
+	}
+	if (!normalized.ok) {
+		return { outcome: "rejected", code: normalized.code };
+	}
+
+	const key = newRecipientLogoCurrentKey(projectId);
+	try {
+		await storage.uploadFile(key, normalized.png, {
+			bucket,
+			contentType: "image/png",
+		});
+	} catch {
+		throw logoStorageFailure();
+	}
+	return {
+		outcome: "promoted",
+		key,
+		hash: createHash("sha256").update(normalized.png).digest("hex"),
+	};
+}
+
 /**
  * The gate every recipient brand procedure runs after
- * `requireProjectPermission` (KTD19), in NOT_FOUND-before-FORBIDDEN order:
+ * `requireProjectPermission`, in NOT_FOUND-before-FORBIDDEN order:
  *   1. the rollout gate, resolved from the project row: GLOSSY_EDITION or
  *      PROPOSAL_ARTIFACT, since the Proposal artifact's Style tab edits the
  *      same recipient brand (Fizzy #2801; NOT_FOUND when both are off);
  *   2. a trashed project, or one outside any organization, is NOT_FOUND;
  *   3. `hasProjectAccess`, the same project access the Glossy page's
  *      document procedures require (FORBIDDEN otherwise);
- *   4. writes also need `canEditProject`, which a project guest with an
- *      editor role holds (FORBIDDEN otherwise).
+ *   4. writes also need `canEditProject` AND a `member` row in the
+ *      project's owning organization (FORBIDDEN otherwise): a project guest
+ *      with an editor role reads the recipient brand but never changes it
+ *      (Fizzy #2946).
  *
  * Returns the project's organization — the one id that drives storage keys
  * and audit. It comes from the project row; no input carries one.
@@ -141,8 +279,35 @@ export async function loadRecipientBrandProject(args: {
 			message: "You don't have permission to edit this project",
 		});
 	}
+	if (
+		args.write &&
+		!(await isOrganizationMember(args.userId, project.organizationId))
+	) {
+		throw new ORPCError("FORBIDDEN", {
+			message:
+				"Only members of the organization that owns this project can change its recipient brand",
+		});
+	}
 
 	return { organizationId: project.organizationId };
+}
+
+/**
+ * Whether `userId` may change the project's recipient brand, as the write
+ * gate in {@link loadRecipientBrandProject} decides it, for a form that must
+ * not offer a Save the server would refuse. The caller has already passed the
+ * read gate; `organizationId` is the project's owning organization.
+ */
+export async function canEditRecipientBrand(args: {
+	projectId: string;
+	organizationId: string;
+	userId: string;
+}): Promise<boolean> {
+	const [canEdit, member] = await Promise.all([
+		canEditProject(args.projectId, args.userId),
+		isOrganizationMember(args.userId, args.organizationId),
+	]);
+	return canEdit && member;
 }
 
 /** A short-lived signed read that renders inline as a PNG. */
@@ -208,9 +373,9 @@ export async function presentRecipientBrand(
 }
 
 /**
- * Best-effort deletion after a commit (KTD23 step 3). A leftover object is
- * unreferenced, stays under the project prefix, and goes when the project
- * does — so a failure here is logged, never thrown.
+ * Best-effort deletion after a commit. A leftover object is unreferenced,
+ * stays under the project prefix, and goes when the project does — so a
+ * failure here is logged, never thrown.
  */
 export async function deleteRecipientBrandObjects(
 	projectId: string,
@@ -235,6 +400,30 @@ export async function deleteRecipientBrandObjects(
 				error instanceof Error ? error.message : String(error)
 			}`,
 		);
+	}
+}
+
+/**
+ * After a confirmation's write failed with an error: delete the logo it
+ * promoted unless the stored recipient brand points at it, since the write
+ * may have committed with only its answer lost. Nothing is deleted when the
+ * row cannot be read back.
+ */
+export async function deleteUnsavedRecipientLogo(
+	projectId: string,
+	promotedKey: string | null,
+): Promise<void> {
+	if (!promotedKey) {
+		return;
+	}
+	let stored: Awaited<ReturnType<typeof getRecipientBrand>>;
+	try {
+		stored = await getRecipientBrand(projectId);
+	} catch {
+		return;
+	}
+	if (stored?.logoKey !== promotedKey) {
+		await deleteRecipientBrandObjects(projectId, [promotedKey]);
 	}
 }
 

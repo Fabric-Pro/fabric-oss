@@ -15,8 +15,10 @@ const bodySchema = z.object({
 });
 
 /**
- * Posts a reply that could not be spoken into the meeting chat. Called by the
- * bridge on the worker's behalf; only an active session's own bot may post.
+ * Sends a Parlume post to the meeting chat. Called by the bridge, which tags
+ * each post and confirms delivery when the post shows up in the chat; only an
+ * active session's own bot may send. Attendee only queues the message, so the
+ * answer here says "queued", never "delivered".
  */
 export async function POST(request: NextRequest) {
 	if (
@@ -69,6 +71,7 @@ export async function POST(request: NextRequest) {
 		sessionId: session.id,
 		botId: session.providerBotId,
 		chars: parsed.data.message.length,
+		delivery: "queued",
 	});
-	return NextResponse.json({ sent: true });
+	return NextResponse.json({ sent: true, delivery: "queued" });
 }

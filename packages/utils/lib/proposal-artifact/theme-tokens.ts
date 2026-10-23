@@ -17,6 +17,7 @@
 import { contrastRatio, rgbToHex } from "../brand-colors";
 import {
 	GRAPHIC_CONTRAST,
+	normalizeHexColorList,
 	strictHexColor as strictHex,
 	TEXT_CONTRAST,
 } from "../glossy/visual-colors";
@@ -26,6 +27,7 @@ import {
 	fnv1a,
 	SECOND_SEED,
 } from "../glossy/visual-spec";
+import { diagramHeaderLine } from "./diagram-header";
 
 /**
  * Where a token's value came from, in precedence order for the proposer:
@@ -54,6 +56,7 @@ export interface SourcedValue<T> {
  */
 export type ThemeAssetRef =
 	| { kind: "organization-logo"; key: string }
+	| { kind: "organization-hero"; key: string }
 	| { kind: "recipient-logo"; key: string };
 
 /** An asset as the live page receives it: a short-lived signed read. */
@@ -65,6 +68,16 @@ export interface ThemeFonts {
 	display: SourcedValue<string>;
 	body: SourcedValue<string>;
 	mono: SourcedValue<string>;
+}
+
+/**
+ * An uploaded font file per family, as the opaque id inside its storage key,
+ * never the key itself. The page asks for the bytes by this id; print does
+ * not use them.
+ */
+export interface ThemeFontFiles {
+	display: SourcedValue<string | null>;
+	body: SourcedValue<string | null>;
 }
 
 /**
@@ -82,6 +95,8 @@ export interface ProposalThemeTokens<TAsset = ThemeAssetRef> {
 		surface: SourcedValue<string>;
 		ink: SourcedValue<string>;
 		fonts: ThemeFonts;
+		/** Absent on tokens built before uploaded fonts existed. */
+		fontFiles?: ThemeFontFiles;
 		hero: SourcedValue<TAsset | null>;
 	};
 	recipient: {
@@ -119,29 +134,33 @@ export function safeFontFamily(value: unknown): string | null {
 	return FONT_FAMILY_PATTERN.test(trimmed) ? trimmed : null;
 }
 
-function validColors(values: readonly unknown[] | null | undefined): string[] {
-	const colors: string[] = [];
-	for (const value of values ?? []) {
-		const color = strictHex(value);
-		if (color && !colors.includes(color)) {
-			colors.push(color);
-		}
-	}
-	return colors.slice(0, MAX_COLORS);
-}
-
 function fromDefault<T>(value: T): SourcedValue<T> {
 	return { value, source: "DEFAULT" };
 }
 
 /**
- * What the part-1 sources hold for one document. The organization logo key
- * must already have passed the trusted-key check of whoever read it.
+ * What each brand source holds for one document. Every key and file id must
+ * already have passed the trusted-key check of whoever read it.
  */
 export interface ProposalThemeSources {
 	organization: { name: string | null; logoKey: string | null } | null;
 	style: { primaryColor: string | null; accentColors: string[] } | null;
-	brandKit: { accentColors: string[] } | null;
+	brandKit: {
+		accentColors: string[];
+		primaryColor?: string | null;
+		displayFontFamily?: string | null;
+		bodyFontFamily?: string | null;
+		/** The id inside a trusted font key, with the family it belongs to. */
+		displayFontFileId?: string | null;
+		bodyFontFileId?: string | null;
+		/** A trusted hero key. */
+		heroKey?: string | null;
+	} | null;
+	/**
+	 * The last successful fetch of the organization's own website, only when
+	 * it fetched the Brand kit's current website.
+	 */
+	vendorSite?: { primaryColor: string | null; accentColors: string[] } | null;
 	recipient: {
 		name: string | null;
 		logoKey: string | null;
@@ -150,23 +169,45 @@ export interface ProposalThemeSources {
 }
 
 /**
- * Tokens from today's sources. The document's Style is a person's choice
- * (MANUAL); the organization's name, logo and Brand kit accents are its own
- * brand settings (BRAND_KIT); the recipient brand on the project was typed or
- * confirmed by a person (MANUAL). Everything else is the neutral default.
- * Invalid colours are dropped rather than repaired.
+ * Tokens from every source, field by field (Fizzy #2946). The document's
+ * Style is a person's choice for this document (MANUAL); the organization's
+ * name, logo and Brand kit are its own brand settings (BRAND_KIT); colours the
+ * organization's website declares come next (VENDOR_SITE); the recipient
+ * brand on the project was typed or confirmed by a person (MANUAL). Anything
+ * else is the neutral default. A recipient value never fills a proposer
+ * field, and the proposer's name is the organization's only, never fetched.
+ * Invalid colours and family names are dropped rather than repaired, so the
+ * next source applies.
  */
 export function buildProposalThemeTokens(
 	sources: ProposalThemeSources,
 ): ProposalThemeTokens {
 	const stylePrimary = strictHex(sources.style?.primaryColor);
-	const styleAccents = validColors(sources.style?.accentColors);
-	const kitAccents = validColors(sources.brandKit?.accentColors);
+	const styleAccents = normalizeHexColorList(
+		sources.style?.accentColors,
+		MAX_COLORS,
+	);
+	const kitPrimary = strictHex(sources.brandKit?.primaryColor);
+	const kitAccents = normalizeHexColorList(
+		sources.brandKit?.accentColors,
+		MAX_COLORS,
+	);
+	const sitePrimary = strictHex(sources.vendorSite?.primaryColor);
+	const siteAccents = normalizeHexColorList(
+		sources.vendorSite?.accentColors,
+		MAX_COLORS,
+	);
+	const displayFamily = safeFontFamily(sources.brandKit?.displayFontFamily);
+	const bodyFamily = safeFontFamily(sources.brandKit?.bodyFontFamily);
+	const heroKey = sources.brandKit?.heroKey ?? null;
 	const organizationName = sources.organization?.name?.trim() || null;
 	const organizationLogo = sources.organization?.logoKey ?? null;
 	const recipientName = sources.recipient?.name?.trim() || null;
 	const recipientLogo = sources.recipient?.logoKey ?? null;
-	const recipientColors = validColors(sources.recipient?.colors);
+	const recipientColors = normalizeHexColorList(
+		sources.recipient?.colors,
+		MAX_COLORS,
+	);
 
 	return {
 		proposer: {
@@ -184,21 +225,53 @@ export function buildProposalThemeTokens(
 				: fromDefault(null),
 			primary: stylePrimary
 				? { value: stylePrimary, source: "MANUAL" }
-				: fromDefault(NEUTRAL_THEME.primary),
+				: kitPrimary
+					? { value: kitPrimary, source: "BRAND_KIT" }
+					: sitePrimary
+						? { value: sitePrimary, source: "VENDOR_SITE" }
+						: fromDefault(NEUTRAL_THEME.primary),
 			accents:
 				styleAccents.length > 0
 					? { value: styleAccents, source: "MANUAL" }
 					: kitAccents.length > 0
 						? { value: kitAccents, source: "BRAND_KIT" }
-						: fromDefault([...NEUTRAL_THEME.accents]),
+						: siteAccents.length > 0
+							? { value: siteAccents, source: "VENDOR_SITE" }
+							: fromDefault([...NEUTRAL_THEME.accents]),
 			surface: fromDefault(NEUTRAL_THEME.surface),
 			ink: fromDefault(NEUTRAL_THEME.ink),
 			fonts: {
-				display: fromDefault(NEUTRAL_THEME.font),
-				body: fromDefault(NEUTRAL_THEME.font),
+				display: displayFamily
+					? { value: displayFamily, source: "BRAND_KIT" }
+					: fromDefault(NEUTRAL_THEME.font),
+				body: bodyFamily
+					? { value: bodyFamily, source: "BRAND_KIT" }
+					: fromDefault(NEUTRAL_THEME.font),
 				mono: fromDefault(NEUTRAL_THEME.font),
 			},
-			hero: fromDefault(null),
+			// A file counts only with the family it is uploaded for.
+			fontFiles: {
+				display:
+					displayFamily && sources.brandKit?.displayFontFileId
+						? {
+								value: sources.brandKit.displayFontFileId,
+								source: "BRAND_KIT",
+							}
+						: fromDefault(null),
+				body:
+					bodyFamily && sources.brandKit?.bodyFontFileId
+						? {
+								value: sources.brandKit.bodyFontFileId,
+								source: "BRAND_KIT",
+							}
+						: fromDefault(null),
+			},
+			hero: heroKey
+				? {
+						value: { kind: "organization-hero", key: heroKey },
+						source: "BRAND_KIT",
+					}
+				: fromDefault(null),
 		},
 		recipient: {
 			name: recipientName
@@ -327,7 +400,7 @@ export function resolveThemePaint(
 			? brandPrimary
 			: ink;
 	const accent =
-		validColors(proposer.accents.value).find(
+		normalizeHexColorList(proposer.accents.value, MAX_COLORS).find(
 			(color) => contrastRatio(color, surface) >= GRAPHIC_CONTRAST,
 		) ?? primary;
 
@@ -353,9 +426,10 @@ export function resolveThemePaint(
 		tint,
 		reviewInsert: mix(REVIEW_INSERT, surface, 0.35),
 		reviewDelete: mix(REVIEW_DELETE, surface, 0.31),
-		recipient: validColors(tokens.recipient.colors.value).filter(
-			(color) => contrastRatio(color, surface) >= GRAPHIC_CONTRAST,
-		),
+		recipient: normalizeHexColorList(
+			tokens.recipient.colors.value,
+			MAX_COLORS,
+		).filter((color) => contrastRatio(color, surface) >= GRAPHIC_CONTRAST),
 		fonts: {
 			display:
 				safeFontFamily(proposer.fonts.display.value) ??
@@ -400,9 +474,11 @@ export function themeCustomProperties(
 		"--pa-font-body": family(paint.fonts.body),
 		"--pa-font-mono": family(paint.fonts.mono),
 	};
-	validColors(paint.recipient).forEach((value, index) => {
-		properties[`--pa-recipient-${index + 1}`] = value;
-	});
+	normalizeHexColorList(paint.recipient, MAX_COLORS).forEach(
+		(value, index) => {
+			properties[`--pa-recipient-${index + 1}`] = value;
+		},
+	);
 	return properties;
 }
 
@@ -453,6 +529,41 @@ export function visualRoleClassDefs(paint: ProposalThemePaint): string[] {
 }
 
 /**
+ * A flowchart's header: `graph` or `flowchart`, with or without a direction
+ * (mermaid.js accepts none; beautiful-mermaid wants one and rejects the
+ * fence itself otherwise).
+ */
+const FLOWCHART_HEADER = /^(?:graph|flowchart)(?:\s+(?:TD|TB|LR|BT|RL))?\s*$/i;
+
+/**
+ * Whether `header` is a flowchart header whose parser takes `classDef`
+ * lines: stricter than `isFlowchartSource`, which accepts any suffix.
+ */
+function isClassDefFlowchartHeader(header: string): boolean {
+	return FLOWCHART_HEADER.test(header);
+}
+
+/**
+ * `source` with the role `classDef` lines appended, so a `class <id> <role>`
+ * node takes the theme's colours, or `source` unchanged when it is not a
+ * flowchart (only a flowchart's parser reads them, and another kind could
+ * fail on them). The header is the first line that is neither blank nor a
+ * `%%` comment, so a generated fence's marker line comes first. The one
+ * place both the live page and the export add the roles, so a diagram
+ * paints the same on both; a node's own `style` line still wins.
+ */
+export function withVisualRoleClassDefs(
+	source: string,
+	paint: ProposalThemePaint,
+): string {
+	const header = diagramHeaderLine(source);
+	if (header === null || !isClassDefFlowchartHeader(header)) {
+		return source;
+	}
+	return [source.trimEnd(), ...visualRoleClassDefs(paint)].join("\n");
+}
+
+/**
  * The seven colour options beautiful-mermaid takes, as hex, so a diagram
  * drawn outside the editor needs no surrounding stylesheet.
  */
@@ -481,8 +592,11 @@ function hashHex(value: string, seed: number): string {
 	return fnv1a(value, seed).toString(16).padStart(8, "0");
 }
 
-/** Version prefix: a later change to what is hashed reads as "unknown". */
-const TOKEN_HASH_VERSION = "t1";
+/**
+ * Version prefix: a later change to what is hashed reads as "unknown". `t2`
+ * added the uploaded font files.
+ */
+const TOKEN_HASH_VERSION = "t2";
 
 /**
  * A stable hash of what the tokens look like (values, not sources), so a
@@ -503,6 +617,10 @@ export function themeTokenHash(tokens: ProposalThemeTokens): string {
 				display: strip(tokens.proposer.fonts.display),
 				body: strip(tokens.proposer.fonts.body),
 				mono: strip(tokens.proposer.fonts.mono),
+			},
+			fontFiles: {
+				display: tokens.proposer.fontFiles?.display.value ?? null,
+				body: tokens.proposer.fontFiles?.body.value ?? null,
 			},
 			hero: strip(tokens.proposer.hero),
 		},

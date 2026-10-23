@@ -18,17 +18,28 @@
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Badge } from "@ui/components/badge";
 import { Card } from "@ui/components/card";
 import { Label } from "@ui/components/label";
 import { Switch } from "@ui/components/switch";
-import {
-	Tooltip,
-	TooltipContent,
-	TooltipTrigger,
-} from "@ui/components/tooltip";
-import { EyeIcon } from "lucide-react";
+import { cn } from "@ui/lib";
+import { EyeIcon, LockIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+
+/** Where the gate stops writes. Kept in step with the gate call sites. */
+const BLOCKED_DESTINATIONS = [
+	"Jira",
+	"Azure DevOps",
+	"GitLab",
+	"Confluence",
+	"Teams/Slack",
+	"Google Docs",
+	"Notion",
+	"Code repositories",
+] as const;
+
+const DISABLED_REASON_ID = "project-read-only-mode-disabled-reason";
 
 type Props = {
 	project: {
@@ -90,85 +101,119 @@ export function ProjectReadOnlyModeSettings({ project, canEdit }: Props) {
 		},
 	});
 
-	// For non-admins the Switch uses aria-disabled (not `disabled`) so it stays
-	// keyboard-focusable — a natively-disabled <button> takes neither focus nor
-	// pointer events, which would make the tooltip and its reason unreachable by
-	// keyboard/AT. The onCheckedChange guard below is what actually blocks the
-	// change; aria-disabled + the dimmed style convey "not operable".
-	const toggle = (
-		<Switch
-			id="project-read-only-mode"
-			checked={checked}
-			aria-disabled={!canEdit}
-			aria-label="Read-only mode"
-			aria-describedby={
-				canEdit ? undefined : "project-read-only-mode-disabled-reason"
-			}
-			className={canEdit ? undefined : "cursor-not-allowed opacity-50"}
-			onCheckedChange={(next) => {
-				// Non-admins can't change it (server enforces too), and a write
-				// in flight is ignored so concurrent PATCHes can't resolve out
-				// of order.
-				if (!canEdit || updateMutation.isPending) {
-					return;
-				}
-				setOverride(next);
-				updateMutation.mutate(next);
-			}}
-		/>
-	);
-
 	return (
-		<Card className="p-6">
-			<div className="space-y-3">
-				<div className="flex items-center justify-between">
-					<div className="flex-1 pr-4">
-						<Label htmlFor="project-read-only-mode">
-							Read-only mode
-						</Label>
-						<p className="text-sm text-muted-foreground mt-1">
-							While enabled, Fabric — including the AI Assistant,
-							automated agents, and coding runs — will not create,
-							update, or delete anything in this project&apos;s
-							connected sources (Jira, Azure DevOps, GitLab,
-							Confluence, Teams/Slack, Google Docs, Notion, code
-							repositories, and others). Reading and syncing data
-							in continues to work. Automations not linked to this
-							project are not affected. Useful while onboarding a
-							project and validating integrations.
+		<Card
+			className={cn(
+				"space-y-3.5 px-4 py-5 sm:px-6",
+				checked && "border-highlight/40",
+			)}
+		>
+			<div className="flex items-start justify-between gap-4">
+				<div className="flex min-w-0 gap-3.5">
+					<div
+						aria-hidden="true"
+						className={cn(
+							"flex size-9 shrink-0 items-center justify-center rounded-lg border bg-background",
+							checked
+								? "text-highlight"
+								: "text-muted-foreground",
+						)}
+					>
+						<EyeIcon className="size-[18px]" />
+					</div>
+					<div className="min-w-0">
+						<div className="flex flex-wrap items-center gap-2">
+							<Label htmlFor="project-read-only-mode">
+								Read-only mode
+							</Label>
+							<Badge
+								variant={checked ? "warning" : "info"}
+								className="bg-transparent"
+							>
+								{checked ? "On" : "Off"}
+							</Badge>
+						</div>
+						<p className="mt-1 max-w-2xl text-pretty text-muted-foreground text-sm">
+							Fabric won&apos;t create, update, or delete anything
+							in this project&apos;s connected sources. Reading
+							and syncing data in continues to work.
 						</p>
 					</div>
-					{canEdit ? (
-						toggle
-					) : (
-						<Tooltip>
-							<TooltipTrigger asChild>{toggle}</TooltipTrigger>
-							<TooltipContent
-								id="project-read-only-mode-disabled-reason"
-								role="note"
-							>
-								Only project admins or owners can change
-								Read-only mode.
-							</TooltipContent>
-						</Tooltip>
-					)}
 				</div>
-				{checked && (
-					<div
-						data-testid="read-only-mode-active"
-						className="flex items-center gap-2 rounded-lg border border-highlight/40 bg-highlight/10 px-3 py-2 text-sm"
-					>
-						<EyeIcon
-							aria-hidden="true"
-							className="size-4 shrink-0 text-highlight"
-						/>
-						<span>
-							Read-only mode is on — outbound writes to connected
-							sources are blocked for this project.
-						</span>
-					</div>
-				)}
+				{/* For non-admins the Switch uses aria-disabled (not `disabled`)
+				    so it stays keyboard-focusable and its reason stays
+				    reachable. The onCheckedChange guard is what actually blocks
+				    the change; aria-disabled + the dimmed style convey "not
+				    operable". */}
+				<Switch
+					id="project-read-only-mode"
+					checked={checked}
+					aria-disabled={!canEdit}
+					aria-label="Read-only mode"
+					aria-describedby={canEdit ? undefined : DISABLED_REASON_ID}
+					className={cn(
+						"mt-1.5",
+						!canEdit && "cursor-not-allowed opacity-50",
+					)}
+					onCheckedChange={(next) => {
+						// Non-admins can't change it (server enforces too), and a
+						// write in flight is ignored so concurrent PATCHes can't
+						// resolve out of order.
+						if (!canEdit || updateMutation.isPending) {
+							return;
+						}
+						setOverride(next);
+						updateMutation.mutate(next);
+					}}
+				/>
 			</div>
+
+			<div className="flex flex-wrap items-center gap-1.5 sm:pl-[50px]">
+				<span className="mr-0.5 text-muted-foreground text-xs">
+					Blocks writes to
+				</span>
+				{BLOCKED_DESTINATIONS.map((name) => (
+					<span
+						key={name}
+						className="inline-flex items-center whitespace-nowrap rounded-full border bg-background px-2.5 py-0.5 text-foreground text-xs"
+					>
+						{name}
+					</span>
+				))}
+				<span className="text-muted-foreground text-xs">
+					and others
+				</span>
+			</div>
+			<p className="text-pretty text-muted-foreground text-xs sm:pl-[50px]">
+				Applies to the AI Assistant, automated agents, and coding runs.
+				Automations not linked to this project are not affected. Useful
+				while onboarding a project and validating integrations.
+			</p>
+
+			{checked && (
+				<div
+					data-testid="read-only-mode-active"
+					className="flex items-center gap-2 rounded-lg border border-highlight/40 bg-highlight/10 px-3 py-2 text-sm"
+				>
+					<EyeIcon
+						aria-hidden="true"
+						className="size-4 shrink-0 text-highlight"
+					/>
+					<span>
+						Read-only mode is on — outbound writes to connected
+						sources are blocked for this project.
+					</span>
+				</div>
+			)}
+			{!canEdit && (
+				<p
+					id={DISABLED_REASON_ID}
+					className="flex items-center gap-1.5 text-muted-foreground text-xs sm:pl-[50px]"
+				>
+					<LockIcon aria-hidden="true" className="size-3" />
+					Only project admins or owners can change Read-only mode.
+				</p>
+			)}
 		</Card>
 	);
 }

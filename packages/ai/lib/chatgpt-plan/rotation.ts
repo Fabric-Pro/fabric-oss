@@ -27,13 +27,33 @@ type PlanStreamPart = PlanStreamResult["stream"] extends ReadableStream<
 const CONTINUE_ON_ANOTHER_PLAN =
 	"The ChatGPT plan ran out mid-reply. Send your message again to continue on another plan.";
 
+const CONTINUE_ON_API_BILLING =
+	"The ChatGPT plans ran out mid-reply. Send your message again to continue on your organization's API billing.";
+
+/**
+ * Every plan is spent and the organization's "Use API billing" policy takes
+ * the work (Fizzy #3048).
+ */
+export const CHATGPT_PLAN_API_BILLING = "api-billing";
+
 export interface ChatGptPlanRotation {
 	/** The source every call starts on. */
 	source: PlanSourceRef;
-	/** The next usable source with `exclude` ruled out, or null when none is. */
-	repick: (exclude: ReadonlySet<string>) => Promise<PlanSourceRef | null>;
+	/**
+	 * The next usable source with `exclude` ruled out, `CHATGPT_PLAN_API_BILLING`
+	 * when none is but the organization's provider takes the work, or null.
+	 */
+	repick: (
+		exclude: ReadonlySet<string>,
+	) => Promise<PlanSourceRef | typeof CHATGPT_PLAN_API_BILLING | null>;
 	/** A plan model for `source`. */
 	build: (source: PlanSourceRef) => LanguageModel;
+	/**
+	 * The organization's provider model a call moves to when `repick` answers
+	 * `CHATGPT_PLAN_API_BILLING`. Without it that answer ends the call as
+	 * spent, as before.
+	 */
+	handOff?: () => Promise<LanguageModel>;
 	/**
 	 * Runs before the call moves to `source`; a throw (a usage limit on that
 	 * account) ends the call there instead.
@@ -61,6 +81,9 @@ interface RotationCall {
  * output started cannot be retried in place: the stream ends with
  * `PlanSourceRotatedError` when another plan remains, for the caller (or
  * Temporal) to retry, and with `SubscriptionPlanExhaustedError` otherwise.
+ * When none remains but the organization's "Use API billing" policy takes the
+ * work, a call before output moves to `handOff`'s model the same way, and one
+ * after output ends with `PlanSourceRotatedError`, whose retry resolves there.
  * Only a spent window rotates; any other failure, a sign-in that needs
  * reconnecting above all, is final.
  *
@@ -90,6 +113,16 @@ export function createChatGptPlanRotationMiddleware(
 		}
 		call.exclude.add(planSourceKey(call.current));
 		const source = await rotation.repick(call.exclude);
+		if (source === CHATGPT_PLAN_API_BILLING) {
+			if (!rotation.handOff) {
+				return null;
+			}
+			logger.info(
+				"[chatgpt-plan] Every plan spent; moving the call to API billing",
+				{ from: planSourceKey(call.current) },
+			);
+			return (await rotation.handOff()) as unknown as PlanResponsesModel;
+		}
 		// A source already ruled out is offered back only when nothing else is
 		// left; trying it again would go round in circles.
 		if (!source || call.exclude.has(planSourceKey(source))) {
@@ -125,14 +158,24 @@ export function createChatGptPlanRotationMiddleware(
 		);
 		call.exclude.add(planSourceKey(call.current));
 		const another = await rotation.repick(call.exclude).catch(() => null);
+		const onApiBilling =
+			another === CHATGPT_PLAN_API_BILLING &&
+			rotation.handOff !== undefined;
 		const remains =
-			another !== null && !call.exclude.has(planSourceKey(another));
+			onApiBilling ||
+			(another !== null &&
+				another !== CHATGPT_PLAN_API_BILLING &&
+				!call.exclude.has(planSourceKey(another)));
 		return {
 			type: "error",
 			error: remains
 				? // Said to the person reading the reply; a Temporal activity
 					// retries this error type on its own, whatever the words.
-					new PlanSourceRotatedError(CONTINUE_ON_ANOTHER_PLAN)
+					new PlanSourceRotatedError(
+						onApiBilling
+							? CONTINUE_ON_API_BILLING
+							: CONTINUE_ON_ANOTHER_PLAN,
+					)
 				: new SubscriptionPlanExhaustedError(
 						chatGptPlanExhaustedMessage(spent.resetAt),
 						spent.resetAt,

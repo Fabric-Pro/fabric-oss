@@ -447,10 +447,13 @@ export type LangGraphExecutor = (
 /**
  * LangGraph streaming executor function type (for A2A protocol)
  */
-export type LangGraphStreamExecutor = (input: {
-	messages: Array<{ role: string; content: string }>;
-	[key: string]: unknown;
-}) => AsyncGenerator<{
+export type LangGraphStreamExecutor = (
+	input: {
+		messages: Array<{ role: string; content: string }>;
+		[key: string]: unknown;
+	},
+	config?: AgentRuntimeConfig,
+) => AsyncGenerator<{
 	type: string;
 	content?: string;
 	[key: string]: unknown;
@@ -484,6 +487,7 @@ export interface LangGraphStreamEvent {
  * Contains AI provider configuration from CopilotKit
  */
 export interface AgentRuntimeConfig {
+	signal?: AbortSignal;
 	configurable?: {
 		ai_api_key?: string;
 		ai_model?: string;
@@ -733,7 +737,7 @@ export function createUnifiedServer(
 
 	// Create A2A executor that wraps the LangGraph agent
 	const a2aExecutor: A2AAgentExecutor = {
-		async execute(message, contextId, metadata) {
+		async execute(message, contextId, metadata, signal) {
 			// Extract text from A2A message
 			const textPart = message.parts.find((p) => p.type === "text");
 			const userMessage =
@@ -743,11 +747,14 @@ export function createUnifiedServer(
 			const messages = [{ role: "user" as const, content: userMessage }];
 
 			// Invoke the agent
-			const result = await invokeAgent({
-				messages,
-				contextId,
-				...metadata,
-			});
+			const result = await invokeAgent(
+				{
+					messages,
+					contextId,
+					...metadata,
+				},
+				{ signal },
+			);
 
 			// Transform output for A2A
 			const output = transformOutput(result);
@@ -757,10 +764,15 @@ export function createUnifiedServer(
 			return output;
 		},
 
-		async *executeStream(message, contextId, metadata) {
+		async *executeStream(message, contextId, metadata, signal) {
 			if (!streamAgent) {
 				// Fall back to non-streaming
-				const result = await this.execute(message, contextId, metadata);
+				const result = await this.execute(
+					message,
+					contextId,
+					metadata,
+					signal,
+				);
 				yield { type: "text", text: result.response };
 				return;
 			}
@@ -771,11 +783,14 @@ export function createUnifiedServer(
 			const messages = [{ role: "user" as const, content: userMessage }];
 
 			// A supplied streamAgent bypasses transformOutput and does not see transform errors.
-			const stream = streamAgent({
-				messages,
-				contextId,
-				...metadata,
-			});
+			const stream = streamAgent(
+				{
+					messages,
+					contextId,
+					...metadata,
+				},
+				{ signal },
+			);
 
 			for await (const chunk of stream) {
 				if (chunk.type === "text" && chunk.content) {
@@ -2459,7 +2474,10 @@ export function createUnifiedServer(
 				},
 			};
 
-			const response = await handlers.sendMessage(enrichedBody);
+			const response = await handlers.sendMessage(
+				enrichedBody,
+				c.req.raw.signal,
+			);
 			const result = await response.json();
 			return c.json(result, response.status as 200);
 		} catch (error) {
@@ -2539,7 +2557,10 @@ export function createUnifiedServer(
 				},
 			};
 
-			const response = handlers.sendMessageStream(enrichedBody);
+			const response = handlers.sendMessageStream(
+				enrichedBody,
+				c.req.raw.signal,
+			);
 			return new Response(response.body, {
 				status: 200,
 				headers: {

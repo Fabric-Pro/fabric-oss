@@ -1,7 +1,7 @@
 /**
  * `projects.proposalArtifact.getStyle` and `updateStyle` (Fizzy #2801): a
- * Proposal's style direction and colours, read and replaced by members of
- * the owning organization. Validation runs at the input schema (BAD_REQUEST
+ * Proposal's style direction, colours and automatic-diagrams switch, read and
+ * replaced by members of the owning organization. Validation runs at the input schema (BAD_REQUEST
  * before anything is read) and again in the query, whose refusal is mapped
  * to BAD_REQUEST too.
  *
@@ -52,6 +52,7 @@ function storedStyle(overrides: Record<string, unknown> = {}) {
 		styleDirection: "Calm and precise.",
 		primaryColor: "#123456",
 		accentColors: ["#abcdef", "#fedcba"],
+		autoVisuals: true,
 		updatedById: USERS.editor,
 		updatedAt: UPDATED_AT,
 		...overrides,
@@ -79,6 +80,8 @@ beforeEach(() => {
 				styleDirection: args.styleDirection,
 				primaryColor: args.primaryColor,
 				accentColors: args.accentColors,
+				// The query keeps the stored switch when none is given.
+				autoVisuals: args.autoVisuals ?? true,
 				updatedById: args.updatedById,
 			}),
 	);
@@ -108,12 +111,27 @@ describe("getStyle", () => {
 			styleDirection: "Calm and precise.",
 			primaryColor: "#123456",
 			accentColors: ["#abcdef", "#fedcba"],
+			autoVisuals: true,
 			updatedAt: UPDATED_AT,
 		});
 		expect(mocks.getDocumentStyle).toHaveBeenCalledWith({
 			documentId: DOC_A,
 			organizationId: ORG_A,
 		});
+	});
+
+	it("returns a stored automatic-diagrams switch that is off", async () => {
+		mocks.getDocumentStyle.mockResolvedValue(
+			storedStyle({ autoVisuals: false }),
+		);
+
+		const style = await call(
+			getProposalStyleProcedure,
+			{ projectId: PROJECT_A, documentId: DOC_A },
+			USERS.editor,
+		);
+
+		expect(style?.autoVisuals).toBe(false);
 	});
 });
 
@@ -134,8 +152,25 @@ describe("updateStyle", () => {
 			styleDirection: "Calm and precise.",
 			primaryColor: "#123456",
 			accentColors: ["#abcdef", "#fedcba"],
+			autoVisuals: true,
 			updatedAt: UPDATED_AT,
 		});
+	});
+
+	it("turns automatic diagrams off and answers with the stored switch", async () => {
+		const style = await updateStyle({ ...VALID, autoVisuals: false });
+
+		expect(mocks.upsertDocumentStyle).toHaveBeenCalledWith(
+			expect.objectContaining({ autoVisuals: false }),
+		);
+		expect(style.autoVisuals).toBe(false);
+	});
+
+	it("passes no switch when the save leaves it out, so the stored one is kept", async () => {
+		await updateStyle();
+
+		const [args] = mocks.upsertDocumentStyle.mock.calls[0] ?? [];
+		expect(args?.autoVisuals).toBeUndefined();
 	});
 
 	it("clears the direction and primary colour with null, and the accents with an empty list", async () => {
@@ -195,6 +230,7 @@ describe("updateStyle", () => {
 			],
 			["a 501-character direction", { styleDirection: "x".repeat(501) }],
 			["a missing accent list", { accentColors: undefined }],
+			["a non-boolean diagrams switch", { autoVisuals: "false" }],
 		])("refuses %s", (_label, override) => {
 			const schema = inputSchema(updateProposalStyleProcedure);
 			expect(schema).toBe(updateProposalStyleInputSchema);

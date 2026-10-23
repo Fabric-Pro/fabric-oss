@@ -62,3 +62,13 @@ it("prefers the exchanged runtime model and tenant on direct-chat fallbacks", as
 	});
 	expect(invoke.mock.calls[0][1].configurable).not.toHaveProperty("ai_token");
 });
+
+it("forwards the runtime abort signal to graph invocation", async () => {
+	const invoke = vi.fn().mockResolvedValue({ messages: [] });
+	const signal = new AbortController().signal;
+	await createInvokeAgent({ invoke })({ messages: [] }, { signal });
+	expect(invoke).toHaveBeenCalledWith(
+		expect.anything(),
+		expect.objectContaining({ signal }),
+	);
+});

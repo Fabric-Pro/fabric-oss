@@ -24,6 +24,7 @@ import {
 } from "@temporalio/workflow";
 import type * as teamsActivities from "../activities/teams-mention";
 import type * as triggerActivities from "../activities/trigger-system/index";
+import { failedAgentMentionReply } from "./agent-mention-reply";
 
 // Re-export shared signals from trigger-system
 import {
@@ -258,7 +259,9 @@ export async function teamsMentionHandlerWorkflow(input: {
 						channelId: event.channelId,
 						chatId: event.chatId,
 						messageId: event.messageId,
-						message: `Sorry, I encountered an error: ${agentResult.error || "Unknown error"}`,
+						message: failedAgentMentionReply(
+							agentResult.usageLimit,
+						),
 						userId: input.userId,
 						organizationId: input.organizationId,
 						projectId: boundProjectId,

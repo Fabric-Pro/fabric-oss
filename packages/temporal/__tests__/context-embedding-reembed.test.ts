@@ -1,3 +1,4 @@
+import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
 /**
  * `reembed` on the context-embedding path (Fizzy #2616).
  *
@@ -509,4 +510,25 @@ describe("contextEmbeddingWorkflow — reembed passes through", () => {
 			metadata: input.metadata,
 		});
 	});
+});
+
+it("consumes a refusal returned from the stored-version re-embedding loop", async () => {
+	const refusal = new UnsupportedEmbeddingModelError(
+		"databricks-gte-large-en",
+	);
+	mocks.embedProjectContext.mockResolvedValue({
+		success: false,
+		error: refusal.message,
+		refusal,
+	});
+	await expect(
+		embedSingleContextActivity({ ...input, reembed: true }),
+	).resolves.toEqual({ success: true });
+	expect(mocks.recordContextIndexingFailure).toHaveBeenCalledWith(
+		"ctx-1",
+		refusal.message,
+		{ pointsRemoved: true },
+	);
+	expect(mocks.embedProjectContext).toHaveBeenCalledTimes(1);
+	expect(mocks.updateMany).not.toHaveBeenCalled();
 });

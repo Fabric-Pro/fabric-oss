@@ -104,6 +104,7 @@ describe("own-plan background denylist", () => {
 			"parlume-meeting-notes",
 			"newsletter-curation",
 			"security-scan",
+			"recurring-error-scan",
 			"batch-document-generation",
 			"project-setup",
 			"atlas-analysis",

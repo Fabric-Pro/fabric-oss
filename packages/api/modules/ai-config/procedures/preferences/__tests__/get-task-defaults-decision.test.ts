@@ -419,3 +419,31 @@ it.each([false, true])(
 		}
 	},
 );
+
+it("keeps Databricks decisions opt-in instead of computing an OpenJev default", async () => {
+	mockOrganizationDefault.mockResolvedValue("DATABRICKS");
+	mockGetProviderByProvider.mockImplementation(async ({ provider }) =>
+		provider === "DATABRICKS"
+			? {
+					provider,
+					source: "organization",
+					apiKey: "example-token",
+					baseUrl: "https://example.cloud.databricks.com",
+				}
+			: { provider: null, source: null, apiKey: null },
+	);
+	mockFindMany.mockResolvedValue([]);
+	mockModels.mockResolvedValue([
+		{
+			...defaultFor("DECISION", "DATABRICKS").model,
+			canonicalName: "openjev-qwen35-4b",
+			capabilities: ["EVALUATION"],
+			suitableForTasks: ["DECISION"],
+		},
+	]);
+	const defaults = await getTaskDefaults._handler({
+		input: { organizationId: "example-org" },
+		context,
+	});
+	expect(defaults.filter((row) => row.taskType === "DECISION")).toEqual([]);
+});

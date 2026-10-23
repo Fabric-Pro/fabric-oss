@@ -104,6 +104,37 @@ describe("getDocumentProcedure — the body's identity", () => {
 		);
 	});
 
+	it("returns the empty body's identity for a draft nothing has embedded", async () => {
+		mockGetDocumentById.mockResolvedValue({
+			id: "doc_1",
+			projectId: "proj_1",
+			organizationId: "org_1",
+			type: "PROPOSAL",
+			title: "Proposal",
+			status: "DRAFT",
+			content: "",
+			liveContent: null,
+			version: 1,
+			// The embed-owned column of a draft that was never embedded.
+			contentHash: null,
+			currentContentHash: "e3b0c44298fc1c14",
+		});
+
+		const result = (await handlers.getDocument({
+			input: {
+				projectId: "proj_1",
+				id: "doc_1",
+				organizationId: "org_1",
+			},
+			context: ctx,
+		})) as {
+			document: { version: number; contentHash: string | null };
+		};
+
+		expect(result.document.version).toBe(1);
+		expect(result.document.contentHash).toBe(sha256(""));
+	});
+
 	it("leaves the decision pre-check's short hash as it was", async () => {
 		const result = (await handlers.getDocument({
 			input: {

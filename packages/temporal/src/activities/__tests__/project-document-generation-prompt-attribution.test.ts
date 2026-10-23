@@ -162,6 +162,19 @@ describe("prompt version attribution", () => {
 		expect(result.resolvedPromptVersionId).toBe("pv_9");
 	});
 
+	it("looks the bound prompt up for the run's project, so its own default applies", async () => {
+		mocks.fetchAndRenderPrompt.mockResolvedValue(null);
+
+		await generate();
+
+		expect(mocks.fetchAndRenderPrompt).toHaveBeenCalledWith(
+			expect.objectContaining({
+				agentName: "project_document_generator",
+				projectId: "project-1",
+			}),
+		);
+	});
+
 	it("leaves attribution open when the explicit prompt fails to render", async () => {
 		mocks.renderPromptWithContext.mockRejectedValue(
 			new Error("Prompt not found: prompt_gone"),

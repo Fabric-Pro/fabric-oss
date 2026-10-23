@@ -188,6 +188,45 @@ beforeEach(() => {
 });
 
 describe("getAIModelWithMetadata — ChatGPT plan routing", () => {
+	it.each([
+		{
+			conversationId: "",
+			workflowExecutionId: "run-123",
+			expected: "run-123",
+		},
+		{
+			conversationId: "   ",
+			workflowExecutionId: "run-123",
+			expected: "run-123",
+		},
+		{
+			conversationId: "conversation-123",
+			workflowExecutionId: "run-123",
+			expected: "conversation-123",
+		},
+		{
+			conversationId: undefined,
+			workflowExecutionId: "run-123",
+			expected: "run-123",
+		},
+		{
+			conversationId: undefined,
+			workflowExecutionId: undefined,
+			expected: undefined,
+		},
+	])(
+		"passes the conversation or workflow session key: $expected",
+		async ({ expected, ...context }) => {
+			await getAIModelWithMetadata(
+				{ taskType: "CHAT" },
+				{ ...ELIGIBLE, ...context },
+			);
+			expect(mocks.createPlanModel).toHaveBeenCalledWith(
+				expect.objectContaining({ sessionKey: expected }),
+			);
+		},
+	);
+
 	it("routes to the member's plan when every condition holds", async () => {
 		const resolved = await getAIModelWithMetadata(
 			{ taskType: "CHAT" },

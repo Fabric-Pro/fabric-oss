@@ -30,8 +30,9 @@
  * holds a mermaid fence gets no visual; a table does not count. A section
  * receives at most one visual, the first given for it.
  *
- * Pure and deterministic, and no Node built-ins: the worker calls it, and
- * a retried activity must write the same body.
+ * Pure and deterministic, and no Node built-ins: the worker calls it. The
+ * same visuals always give the same body; a generated diagram's marker id
+ * (`visual-identity.ts`) is minted by the caller and passed in.
  */
 
 import {
@@ -43,6 +44,7 @@ import {
 } from "../glossy/outline";
 import { stripVisualSlots } from "../glossy/visual-slots";
 import type { ComparisonVisualSpec } from "../glossy/visual-spec";
+import { visualMarkerLine } from "./visual-identity";
 
 /** One visual to place, and the section it belongs to. */
 export interface SectionVisual {
@@ -68,6 +70,8 @@ export interface InsertVisualsResult {
 	/** The body with every inserted visual; the input itself when none was. */
 	markdown: string;
 	inserted: number;
+	/** Indexes into the given visuals of those placed, in order. */
+	insertedIndexes: number[];
 	/**
 	 * Found a section but not placed: the section holds a mermaid fence or
 	 * already received a visual, or the block was blank or left a fence open.
@@ -110,6 +114,7 @@ export function insertVisuals(
 	const result: InsertVisualsResult = {
 		markdown,
 		inserted: 0,
+		insertedIndexes: [],
 		skipped: 0,
 		unmatched: 0,
 	};
@@ -123,7 +128,7 @@ export function insertVisuals(
 
 	const placed = new Set<VisualSection>();
 	const insertions = new Map<number, string[]>();
-	for (const visual of visuals) {
+	for (const [index, visual] of visuals.entries()) {
 		const key = sectionKey(visual.headingPath, visual.occurrenceIndex);
 		const section = byPath.get(key) ?? byTitlelessPath.get(key);
 		if (!section) {
@@ -138,6 +143,7 @@ export function insertVisuals(
 		placed.add(section);
 		insertions.set(section.insertAfter, block);
 		result.inserted++;
+		result.insertedIndexes.push(index);
 	}
 	if (insertions.size === 0) {
 		return result;
@@ -161,10 +167,14 @@ export function insertVisuals(
 
 /**
  * A ```` ```mermaid ```` fence around `source`, its backtick run longer than
- * any fence-shaped run inside, so the source can never close it early.
+ * any fence-shaped run inside, so the source can never close it early. With
+ * `visualId`, the body opens with that visual's `%% fabric-visual:` marker
+ * line; an id of the wrong shape throws.
  */
-export function toMermaidFence(source: string): string {
-	const body = source.replace(/\r\n?/g, "\n").replace(/^\n+|\s+$/g, "");
+export function toMermaidFence(source: string, visualId?: string): string {
+	const marker = visualId === undefined ? null : visualMarkerLine(visualId);
+	const trimmed = source.replace(/\r\n?/g, "\n").replace(/^\n+|\s+$/g, "");
+	const body = marker ? `${marker}\n${trimmed}` : trimmed;
 	let longest = 2;
 	for (const line of body.split("\n")) {
 		const run = line.match(FENCE_MARKER)?.[1];
@@ -174,6 +184,14 @@ export function toMermaidFence(source: string): string {
 	}
 	const fence = "`".repeat(longest + 1);
 	return `${fence}mermaid\n${body}\n${fence}`;
+}
+
+/**
+ * The body of `toMermaidFence(source, visualId)`: the marker line and the
+ * source, without the backtick lines. What a fence's source hash reads.
+ */
+export function toMermaidFenceBody(source: string, visualId?: string): string {
+	return toMermaidFence(source, visualId).split("\n").slice(1, -1).join("\n");
 }
 
 /**

@@ -578,6 +578,12 @@ export interface DirectChatWorkflowOutput {
 	 * to continue (review F25, Fizzy #2166).
 	 */
 	truncated?: ChatTurnTruncation;
+	/**
+	 * Every ChatGPT plan ran out during the turn and the organization's
+	 * "Use API billing" policy finished it on its provider (Fizzy #3048), and
+	 * when the plans reset, if known. The chat says so under the reply.
+	 */
+	apiBilling?: { resetAt: string | null };
 }
 
 /**

@@ -107,13 +107,16 @@ describe("editor markdown round trip: literal hyphen after a hard break", () => 
 
 // The accept path: a completed AI edit is diffed against the baseline with
 // `diffPartialText(baseline, next, true)` (which runs normalizeMarkdownForDiff),
-// rendered with `fromMarkdown`, then saved from the editor.
+// rendered with `fromMarkdown` as StoryWorkspace renders it, then saved from
+// the editor.
 function acceptAiEdit(
 	baseline: string,
 	next: string,
 ): { html: string; saved: string } {
 	return saveEditorContent(
-		fromMarkdown(diffPartialText(baseline, next, true)),
+		fromMarkdown(diffPartialText(baseline, next, true), {
+			repairLegacyBullets: false,
+		}),
 	);
 }
 
@@ -160,6 +163,298 @@ describe("editor markdown round trip: hard breaks through an accepted AI edit", 
 		expect(html).toContain("<br>");
 		expect(html).toContain("- not a bullet");
 		expect(saved.startsWith(baseline)).toBe(true);
+	});
+});
+
+describe("diff review: an AI edit that changes a paragraph's block role", () => {
+	const paragraph =
+		"Provide a repeatable export. Later exports replace the same file.";
+
+	it("shows a paragraph turned into a list item as a visible old/new pair", () => {
+		// Arrange
+		const baseline = `### Overview\n\n${paragraph}\n\nClosing note.`;
+		const next = `### Overview\n\n- ${paragraph} Files are UTF-8.\n\nClosing note.`;
+
+		// Act
+		const html = fromMarkdown(diffPartialText(baseline, next, true));
+		const { saved } = acceptAiEdit(baseline, next);
+
+		// Assert
+		expect(html).not.toContain('<ins class="diff-ins"></ins>');
+		expect(html).toMatch(/<del[^>]*>Provide a repeatable export\./);
+		expect(html).toMatch(/<li><ins class="diff-ins">Provide a repeatable/);
+		expect(saved).toContain(`-   ${paragraph} Files are UTF-8.`);
+		expect(saved.match(/Provide a repeatable/g)).toHaveLength(1);
+	});
+
+	it("shows a paragraph turned into a heading as a visible old/new pair", () => {
+		// Arrange
+		const baseline = "Intro.\n\nExport settings\n\nClosing note.";
+		const next = "Intro.\n\n## Export settings\n\nClosing note.";
+
+		// Act
+		const html = fromMarkdown(diffPartialText(baseline, next, true));
+
+		// Assert
+		expect(html).not.toContain('<ins class="diff-ins"></ins>');
+		expect(html).toMatch(/<del[^>]*>Export settings/);
+		expect(html).toMatch(/<h2><ins class="diff-ins">Export settings/);
+	});
+
+	it("still hoists the prefix of a list item the AI added whole", () => {
+		// Arrange
+		const baseline = "- First item";
+		const next = "- First item\n- Second item";
+
+		// Act
+		const html = fromMarkdown(diffPartialText(baseline, next, true));
+
+		// Assert
+		expect(html).toMatch(/<li><ins class="diff-ins">Second item/);
+		expect(html).not.toContain("<del");
+	});
+});
+
+// What accepting an AI edit must save: exactly what loading the AI's document
+// straight into the editor saves. Stored content loads without the legacy
+// bullet repair, as StoryWorkspace loads it.
+function loadDirect(markdown: string): string {
+	return saveEditorContent(
+		fromMarkdown(markdown, { repairLegacyBullets: false }),
+	).saved;
+}
+
+const RELEASE_NOTE =
+	"If you reject all proposed changes in Thorough mode, the item is removed from the inbox and a note is added to the Decisions tab.";
+const TABLE =
+	"| Field | Type | Notes |\n| --- | --- | --- |\n| id | string | primary key |\n| name | string | display name |";
+
+describe("accepting an AI edit saves the AI's document", () => {
+	it.each([
+		{
+			name: "a bullet added above a horizontal rule keeps the rule",
+			baseline: "- Item one\n- Item two\n\n---\n\n### Steps",
+			next: "- Item one\n- Item two\n- New **important** line.\n\n---\n\n### Steps",
+		},
+		{
+			name: "a sentence appended to a nested item keeps the next item nested",
+			baseline:
+				"- Parent\n  - Nested detail one\n  - Nested detail two\n\n---",
+			next: "- Parent\n  - Nested detail one in Fast mode, added sentence.\n  - Nested detail two\n\n---",
+		},
+		{
+			name: "replacing a hyphenated word leaves no dangling hyphen and keeps the nested list",
+			baseline:
+				"- A re-runnable export that is up-to-date.\n  - Nested detail one\n  - Nested detail two\n\n---",
+			next: "- A re-runnable export that is in Fast mode\n  - Nested detail one\n  - Nested detail two\n\n---",
+		},
+		{
+			name: "two adjacent edited lines are diffed line by line",
+			baseline:
+				"- A re-runnable export that is up-to-date.\n  - Nested detail one\n  - Nested detail two",
+			next: "- A re-runnable export that is **important**\n  - Nested now one\n  - Nested detail two",
+		},
+		{
+			name: "two lines added to one paragraph keep the space between them",
+			baseline: "## Overview\n\nIntro sentence.\n\n### Next",
+			next: "## Overview\n\nIntro sentence.\nNew re-run line.\nNew well-known line.\n\n### Next",
+		},
+		{
+			name: "a release note bullet edited mid-sentence stays one bullet",
+			baseline: `### Release Notes\n\n- ${RELEASE_NOTE}\n\nView in Fabric`,
+			next: `### Release Notes\n\n- ${RELEASE_NOTE.replace(
+				"a note is added to the Decisions tab.",
+				"a note is still added to the Decisions tab confirming no changes were applied.",
+			)}\n\nView in Fabric`,
+		},
+		{
+			name: "an edited table cell",
+			baseline: `Intro.\n\n${TABLE}\n\nOutro.`,
+			next: `Intro.\n\n${TABLE.replace("display name", "human readable name")}\n\nOutro.`,
+		},
+		{
+			name: "an added table row",
+			baseline: `Intro.\n\n${TABLE}\n\nOutro.`,
+			next: `Intro.\n\n${TABLE}\n| email | string | unique |\n\nOutro.`,
+		},
+		{
+			name: "an inline answer next to a bold question in a numbered list",
+			baseline:
+				"### Open Questions\n\n1. **Which format?** TBD\n2. **Who owns it?** TBD",
+			next: "### Open Questions\n\n1. **Which format?** CSV, UTF-8.\n2. **Who owns it?** The PM.",
+		},
+		{
+			name: "an item inserted into a numbered list",
+			baseline: "1. First step\n2. Second step\n3. Third step",
+			next: "1. First step\n2. New step\n3. Second step\n4. Third step",
+		},
+		{
+			name: "an edited H3 heading",
+			baseline:
+				"### Open Questions\n\nSome text.\n\n### Risks\n\nMore text.",
+			next: "### Open Questions\n\nSome text.\n\n### Risks and Mitigations\n\nMore text.",
+		},
+		{
+			name: "a line edited inside a code block",
+			baseline: "Example:\n\n```ts\nconst a = 1;\n```\n\nDone.",
+			next: "Example:\n\n```ts\n- const a = 1;\n```\n\nDone.",
+		},
+		{
+			name: "a whole bullet deleted",
+			baseline: "- One\n- Two\n- Three\n\nAfter.",
+			next: "- One\n- Three\n\nAfter.",
+		},
+		{
+			name: "a nested bullet re-wrapped while the line above changes",
+			baseline:
+				"- A re-runnable export that is up-to-date.\n  - Nested detail one\n  - Nested detail two",
+			next: "- A re-runnable export that is now up-to-date.\n  - Nested detail\n    one\n  - Nested detail two",
+		},
+		{
+			name: "a bullet added next to an edited neighbour",
+			baseline:
+				"- **Owner:** Product\n- A well-known, re-runnable export that is up-to-date.\n  - Nested detail one",
+			next: "- **Owner:** Product\n- A well-known, re-runnable export that is and up-to-date.\n- New CSV, UTF-8. line.\n  - Nested detail one",
+		},
+		{
+			name: "a paragraph between two lists turned into a bullet",
+			baseline: "- One\n- Two\n\nand\n\n- Three",
+			next: "- One\n- Two\n\n- and\n\n- Three",
+		},
+		{
+			name: "a paragraph between two lists deleted",
+			baseline: "- One\n\nMiddle para.\n\n1. First",
+			next: "- One\n\n1. First",
+		},
+		{
+			name: "a parent bullet deleted with its nested items kept",
+			baseline:
+				"- Note one.\n- **Owner:** Product\n  - Nested one\n  - Nested two\n\n### Next",
+			next: "- Note one.\n  - Nested one\n  - Nested two\n\n### Next",
+		},
+		{
+			name: "a parent bullet deleted after an item that has nested items",
+			baseline:
+				"- Note one.\n  - Child a\n- **Owner:** Product\n  - Nested one\n\n### Next",
+			next: "- Note one.\n  - Child a\n  - Nested one\n\n### Next",
+		},
+		{
+			name: "a later numbered item deleted after a paragraph",
+			baseline:
+				"Intro paragraph.\n\n2. Accept or reject each change\n\nOutro.",
+			next: "Intro paragraph.\n\nOutro.",
+		},
+		{
+			name: "the first item of a numbered list deleted",
+			baseline: "1. Open the inbox\n2. Choose a mode\n3. Accept",
+			next: "2. Choose a mode\n3. Accept",
+		},
+		{
+			name: "a YAML line split onto an indented line inside a code block",
+			baseline:
+				"Intro.\n\n```yaml\n- name: build\n- run: test\n```\n\nDone.",
+			next: "Intro.\n\n```yaml\n- name:\n  build\n- run: test\n```\n\nDone.",
+		},
+		{
+			name: "a code line split in two",
+			baseline: "Intro.\n\n```ts\nconst a = 1;\n```\n\nDone.",
+			next: "Intro.\n\n```ts\nconst a =\n1;\n```\n\nDone.",
+		},
+		{
+			name: "a code line starting with a dash deleted",
+			baseline: "Intro.\n\n```ts\nconst x = 1;\n- a\n= b\n```\n\nDone.",
+			next: "Intro.\n\n```ts\nconst x = 1;\n= b\n```\n\nDone.",
+		},
+	])("$name", ({ baseline: raw, next }) => {
+		// Arrange
+		const baseline = loadDirect(raw);
+
+		// Act
+		const { saved } = acceptAiEdit(baseline, next);
+
+		// Assert
+		expect(saved).toBe(loadDirect(next));
+	});
+
+	it("does not degrade a document over repeated accepted edits", () => {
+		// Arrange
+		const document = loadDirect(
+			[
+				"## Overview",
+				"Reviewing an update shows a summary before anything is applied.",
+				"### Release Notes",
+				`- ${RELEASE_NOTE}`,
+				"- **Owner:** Product\n  - Nested detail one\n  - Nested detail two",
+				"---",
+				"1. Open the inbox\n2. Choose **Thorough** mode",
+				TABLE,
+				'> A quoted note about "quotes" and it\'s fine.',
+				"```ts\nconst a = 1;\n```",
+				"Closing paragraph.",
+			].join("\n\n"),
+		);
+
+		// Act
+		let current = document;
+		for (let pass = 1; pass <= 3; pass++) {
+			current = acceptAiEdit(
+				current,
+				`${current}\n\nAdded in pass ${pass}.`,
+			).saved;
+		}
+
+		// Assert
+		expect(current).toBe(
+			`${document}\n\nAdded in pass 1.\n\nAdded in pass 2.\n\nAdded in pass 3.`,
+		);
+		expect(current).not.toMatch(/[​﻿“”‘’]/);
+		expect(backslashCount(current)).toBe(backslashCount(document));
+	});
+
+	it("saves the AI's document on every pass of a long session of mixed edits", () => {
+		// Arrange
+		const edits: Array<(document: string) => string> = [
+			(document) =>
+				document.replace("a note is added", "a note is still added"),
+			(document) =>
+				document.replace(
+					"Nested detail two",
+					"Nested detail\n        two",
+				),
+			(document) => document.replace("| primary key |", "| unique id |"),
+			(document) => document.replace("### Steps", "### Steps to follow"),
+			(document) => document.replace("const a = 1;", "const a =\n1;"),
+			(document) =>
+				document.replace("Closing paragraph.", "- Closing paragraph."),
+			(document) => document.replace("2.  Choose", "2.  Then choose"),
+			(document) =>
+				document.replace(/- {3}\*\*Owner:\*\* Product\n *\n/, ""),
+		];
+		let current = loadDirect(
+			[
+				"## Overview",
+				"### Release Notes",
+				`- ${RELEASE_NOTE}`,
+				"- **Owner:** Product\n  - Nested detail one\n  - Nested detail two",
+				"### Steps",
+				"1. Open the inbox\n2. Choose **Thorough** mode",
+				TABLE,
+				"```ts\nconst a = 1;\n```",
+				"Closing paragraph.",
+			].join("\n\n"),
+		);
+
+		for (const edit of edits) {
+			// Act
+			const next = edit(current);
+			const { saved } = acceptAiEdit(current, next);
+
+			// Assert
+			expect(next).not.toBe(current);
+			expect(saved).toBe(loadDirect(next));
+			current = saved;
+		}
+		expect(current).not.toMatch(/[​﻿“”‘’]/);
 	});
 });
 

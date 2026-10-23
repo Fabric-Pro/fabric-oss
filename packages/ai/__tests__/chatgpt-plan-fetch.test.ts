@@ -10,6 +10,7 @@
 import { createOpenAI } from "@ai-sdk/openai";
 import {
 	CHATGPT_PLAN_EXHAUSTED_CODE,
+	chatGptPlanSessionId,
 	createChatGptPlanFetch,
 	redactChatGptPlanHeaders,
 	SubscriptionPlanExhaustedError,
@@ -573,5 +574,172 @@ describe("response header capture", () => {
 			"x-ratelimit-remaining-requests": "9",
 			"retry-after": "30",
 		});
+	});
+});
+
+describe("plan session header", () => {
+	it("can construct a fetch without accessing crypto", () => {
+		vi.stubGlobal("crypto", undefined);
+		try {
+			expect(() =>
+				createChatGptPlanFetch({ getAccessToken: async () => "token" }),
+			).not.toThrow();
+			expect(() =>
+				createChatGptPlanFetch({
+					sessionKey: "thread-123",
+					getAccessToken: async () => "token",
+				}),
+			).not.toThrow();
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+	it.each(["", "thread-123"])(
+		"creates the session lazily once for concurrent requests with key %j",
+		async (sessionKey) => {
+			const random = vi.spyOn(globalThis.crypto, "randomUUID");
+			const digest = vi.spyOn(globalThis.crypto.subtle, "digest");
+			try {
+				const baseFetch = vi.fn<typeof fetch>(
+					async () => new Response("{}"),
+				);
+				const planFetch = createChatGptPlanFetch({
+					sessionKey,
+					getAccessToken: async () => "token",
+					baseFetch,
+				});
+				expect(random).not.toHaveBeenCalled();
+				expect(digest).not.toHaveBeenCalled();
+				await Promise.all(
+					Array.from({ length: 3 }, () =>
+						planFetch("https://api.openai.com/v1/models"),
+					),
+				);
+				expect(random).toHaveBeenCalledTimes(sessionKey ? 0 : 1);
+				expect(digest).toHaveBeenCalledTimes(sessionKey ? 1 : 0);
+				const ids = baseFetch.mock.calls.map(([, init]) =>
+					new Headers(init?.headers).get("session_id"),
+				);
+				expect(ids[0]).toMatch(/^[0-9a-f-]{36}$/);
+				expect(new Set(ids).size).toBe(1);
+			} finally {
+				random.mockRestore();
+				digest.mockRestore();
+			}
+		},
+	);
+
+	it("reuses a generated session on first send and non-Responses requests", async () => {
+		const baseFetch = vi.fn<typeof fetch>(async () => new Response("{}"));
+		const make = () =>
+			createChatGptPlanFetch({
+				getAccessToken: async () => "token",
+				baseFetch,
+			});
+		const first = make();
+		await first("https://api.openai.com/v1/models");
+		await first("https://api.openai.com/v1/models");
+		await make()("https://api.openai.com/v1/models");
+		const ids = baseFetch.mock.calls.map(([, init]) =>
+			new Headers(init?.headers).get("session_id"),
+		);
+		expect(ids[0]).toMatch(/^[0-9a-f-]{36}$/);
+		expect(ids[1]).toBe(ids[0]);
+		expect(ids[2]).not.toBe(ids[0]);
+	});
+	it.each(["", "   "])(
+		"isolates blank session key %j per fetch instance",
+		async (sessionKey) => {
+			const baseFetch = vi.fn<typeof fetch>(
+				async () => new Response("{}"),
+			);
+			const make = () =>
+				createChatGptPlanFetch({
+					sessionKey,
+					getAccessToken: async () => "token",
+					baseFetch,
+				});
+			const first = make();
+			await first("https://api.openai.com/v1/models");
+			await first("https://api.openai.com/v1/models");
+			await make()("https://api.openai.com/v1/models");
+			const ids = baseFetch.mock.calls.map(([, init]) =>
+				new Headers(init?.headers).get("session_id"),
+			);
+			expect(ids[0]).toMatch(/^[0-9a-f-]{36}$/);
+			expect(ids[1]).toBe(ids[0]);
+			expect(ids[2]).not.toBe(ids[0]);
+		},
+	);
+	it("trims non-blank session keys before hashing", async () => {
+		const baseFetch = vi.fn<typeof fetch>(async () => new Response("{}"));
+		for (const sessionKey of [" thread-123 ", "thread-123"]) {
+			await createChatGptPlanFetch({
+				sessionKey,
+				getAccessToken: async () => "token",
+				baseFetch,
+			})("https://api.openai.com/v1/models");
+		}
+		expect(
+			baseFetch.mock.calls.map(([, init]) =>
+				new Headers(init?.headers).get("session_id"),
+			),
+		).toEqual([
+			await chatGptPlanSessionId("thread-123"),
+			await chatGptPlanSessionId("thread-123"),
+		]);
+	});
+
+	it.each(["unauthorized", "exhausted"])(
+		"keeps the explicit session after %s",
+		async (failure) => {
+			const baseFetch = vi
+				.fn<typeof fetch>()
+				.mockResolvedValueOnce(
+					failure === "unauthorized"
+						? new Response(null, { status: 401 })
+						: new Response(
+								JSON.stringify({
+									error: {
+										code: CHATGPT_PLAN_EXHAUSTED_CODE,
+									},
+								}),
+								{ status: 429 },
+							),
+				)
+				.mockImplementation(async () => textStream("ok"));
+			const planFetch = createChatGptPlanFetch({
+				getAccessToken: async () => "token",
+				sessionKey: "explicit-session",
+				onUnauthorized: async () => "refreshed",
+				onExhausted: async () => "rotated",
+				baseFetch,
+			});
+			await planFetch("https://api.openai.com/v1/responses", {
+				method: "POST",
+				body: JSON.stringify({ model: "gpt-test", input: "hello" }),
+			});
+			expect(baseFetch).toHaveBeenCalledTimes(2);
+			expect(
+				baseFetch.mock.calls.map(([, init]) =>
+					new Headers(init?.headers).get("session_id"),
+				),
+			).toEqual([
+				await chatGptPlanSessionId("explicit-session"),
+				await chatGptPlanSessionId("explicit-session"),
+			]);
+		},
+	);
+
+	it("hashes session keys deterministically into UUID-shaped opaque values", async () => {
+		const key = "thread-123";
+		const id = await chatGptPlanSessionId(key);
+		expect(id).toBe("ef01ba18-3991-bb7c-a546-3b443e8f1fc8");
+		expect(id).toBe(await chatGptPlanSessionId(key));
+		expect(id).not.toBe(await chatGptPlanSessionId("thread-456"));
+		expect(id).toMatch(
+			/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+		);
+		expect(id).not.toContain(key);
 	});
 });

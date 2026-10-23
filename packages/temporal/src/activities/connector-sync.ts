@@ -5,7 +5,12 @@
  * These handle external API calls, database operations, and embedding generation.
  */
 
-import { getSystemEmbeddingRAGProviderConfig } from "@repo/ai";
+import {
+	AIProviderNotConfiguredError,
+	assertEmbeddingModelUsable,
+	getSystemEmbeddingRAGProviderConfig,
+} from "@repo/ai";
+import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
 import {
 	createDocumentChunks,
 	createSyncJob,
@@ -32,6 +37,7 @@ import {
 	storeWorkspaceChunksBatch,
 } from "@repo/rag";
 import { decryptApiKey } from "@repo/utils";
+import { ApplicationFailure } from "@temporalio/activity";
 import type { SyncCursor } from "../workflows/connector-sync/types";
 import {
 	discoverBitbucketResources as discoverCollabBitbucketResources,
@@ -1468,6 +1474,22 @@ export async function generateEmbeddings(_input: {
 	userId: string;
 	organizationId?: string;
 }): Promise<{ created: number; updated: number }> {
+	try {
+		return await embedConnectorDocuments(_input);
+	} catch (error) {
+		if (
+			error instanceof UnsupportedEmbeddingModelError ||
+			error instanceof AIProviderNotConfiguredError
+		) {
+			throw ApplicationFailure.nonRetryable(error.message, error.name);
+		}
+		throw error;
+	}
+}
+
+async function embedConnectorDocuments(
+	_input: Parameters<typeof generateEmbeddings>[0],
+): Promise<{ created: number; updated: number }> {
 	if (_input.workspaceIds.length === 0 || _input.documents.length === 0) {
 		return { created: 0, updated: 0 };
 	}
@@ -1477,10 +1499,9 @@ export async function generateEmbeddings(_input: {
 	const workspaceId = _input.workspaceIds[0];
 	let created = 0;
 	let updated = 0;
-	const providerConfig = await getSystemEmbeddingRAGProviderConfig({
-		userId: _input.userId,
-		organizationId: _input.organizationId,
-	});
+	let providerConfig:
+		| Awaited<ReturnType<typeof getSystemEmbeddingRAGProviderConfig>>
+		| undefined;
 
 	for (const doc of _input.documents) {
 		const existingResource = await getSyncedResourceByExternalId({
@@ -1495,6 +1516,17 @@ export async function generateEmbeddings(_input: {
 			existingResource?.documentId
 		) {
 			continue;
+		}
+
+		if (!providerConfig) {
+			await assertEmbeddingModelUsable({
+				userId: _input.userId,
+				organizationId: _input.organizationId,
+			});
+			providerConfig = await getSystemEmbeddingRAGProviderConfig({
+				userId: _input.userId,
+				organizationId: _input.organizationId,
+			});
 		}
 
 		let documentId = existingResource?.documentId ?? null;

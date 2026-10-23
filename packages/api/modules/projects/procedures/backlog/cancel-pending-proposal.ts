@@ -7,7 +7,10 @@ import {
 	recordAudit,
 	stopApplyingProposal,
 } from "@repo/database";
-import { getTemporalClient } from "@repo/temporal";
+import {
+	BACKLOG_APPLY_USER_CANCEL_REASON,
+	getTemporalClient,
+} from "@repo/temporal";
 import { z } from "zod";
 import {
 	Permissions,
@@ -114,7 +117,7 @@ export const cancelPendingProposalProcedure = tenantProtectedProcedure
 				const client = await getTemporalClient();
 				await client.workflow
 					.getHandle(proposal.applyWorkflowId)
-					.terminate("cancelled_by_user");
+					.terminate(BACKLOG_APPLY_USER_CANCEL_REASON);
 			} catch {
 				// Non-fatal — the DB flip below is the real cancel.
 			}

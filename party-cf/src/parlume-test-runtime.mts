@@ -4,11 +4,20 @@ import ts from "typescript";
 
 const LOCAL_MODULES = new Set([
 	"./parlume-aura",
+	"./parlume-barge-in",
+	"./parlume-chat",
+	"./parlume-chat-channel",
+	"./parlume-chat-commands",
 	"./parlume-pcm",
+	"./parlume-realtime",
+	"./parlume-realtime-bridge",
+	"./parlume-realtime-engine",
 	"./parlume-speakers",
 	"./parlume-stream-auth",
+	"./parlume-suggestions",
 	"./parlume-transcriber",
 	"./parlume-turn-endpoint",
+	"./parlume-voice-floor",
 	"./parlume-wake",
 ]);
 

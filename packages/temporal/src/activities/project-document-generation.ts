@@ -107,6 +107,7 @@ import {
 	PROPOSAL_CLIENT_MAIN_AGENT_KEY,
 } from "@repo/utils/prompt-action-catalog";
 import { completedSections } from "@repo/utils/proposal-artifact/live-sections";
+import { preserveVisualMarkers } from "@repo/utils/proposal-artifact/visual-identity";
 import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
 import { emitDocumentChange } from "@repo/utils/realtime-emit";
 import { ApplicationFailure, Context, heartbeat } from "@temporalio/activity";
@@ -2116,6 +2117,7 @@ export async function generateDocumentWithAgent(params: {
 					agentName: "project_document_generator",
 					userId,
 					organizationId,
+					projectId,
 					documentType: rawDocumentType, // Use raw (uppercase) for database query
 					variables: qaDepthVariables,
 					projectContext: {
@@ -3195,7 +3197,10 @@ ${formattingRules}`;
 		// started from come back, under the same heading. With no slot on either
 		// side this is `documentContent` unchanged.
 		const content = normalizeQuoteArtifacts(
-			preserveVisualSlots(currentDocument, documentContent),
+			preserveVisualMarkers(
+				currentDocument,
+				preserveVisualSlots(currentDocument, documentContent),
+			),
 		);
 		// A Main whose prompt carried settled decisions must not repeat an
 		// answer's or a finding's wording: that text is internal, and Main
@@ -3726,6 +3731,10 @@ const SAVE_COMPLETES_STATUSES: ReadonlySet<string> = new Set([
  * under the version guard alone finds the same version and rewrites the same
  * body; under the run guard it writes nothing when the row already holds
  * exactly what this save writes.
+ *
+ * Resolves with the project id and type of the row it wrote, for the nudge
+ * that announces the write once it has committed, and with nothing when it
+ * wrote nothing.
  */
 async function saveWithGuards(params: {
 	documentId: string;
@@ -3735,7 +3744,7 @@ async function saveWithGuards(params: {
 	liveRunId?: string;
 	baselineContentHash?: string;
 	generationStartedAt?: string;
-}): Promise<void> {
+}): Promise<RunNudgeTarget | undefined> {
 	const {
 		documentId,
 		content,
@@ -3751,13 +3760,15 @@ async function saveWithGuards(params: {
 			: undefined;
 	const wordCount = countDocumentWords(content);
 
-	await db.$transaction(async (tx) => {
+	return await db.$transaction(async (tx) => {
 		const currentDoc = await tx.projectDocument.findUnique({
 			where: { id: documentId },
 			select: {
 				status: true,
 				content: true,
 				version: true,
+				projectId: true,
+				type: true,
 				...(liveRunId !== undefined && {
 					liveRunId: true,
 					liveContent: true,
@@ -3931,6 +3942,7 @@ async function saveWithGuards(params: {
 			liveRunId,
 			generationStartedAt,
 		});
+		return { projectId: currentDoc.projectId, type: currentDoc.type };
 	});
 }
 
@@ -3973,6 +3985,11 @@ function contentAsSaved(rawContent: string): string {
  * {@link saveWithGuards}; without all — every slot-free regeneration outside
  * an artifact run that names no attempt, and any run whose generation
  * finished before the fields existed — the save below is unchanged.
+ *
+ * A save that wrote is announced to the project's open pages once it has
+ * committed (Fizzy #2946; see {@link nudgeRun}): it is the write that ends
+ * the run. A refused save, and a retry that finds its earlier attempt's
+ * commit, announce nothing, as a retried start does not.
  */
 export async function saveProjectDocument(
 	documentId: string,
@@ -4000,7 +4017,7 @@ export async function saveProjectDocument(
 		generationStartedAt !== undefined
 	) {
 		try {
-			await saveWithGuards({
+			const written = await saveWithGuards({
 				documentId,
 				content,
 				userId,
@@ -4011,6 +4028,9 @@ export async function saveProjectDocument(
 					generationStartedAt,
 				}),
 			});
+			if (written) {
+				await nudgeRun("saved", documentId, written);
+			}
 		} catch (error) {
 			// A stale refusal was already logged as the warning it is.
 			const isStale =
@@ -4030,7 +4050,13 @@ export async function saveProjectDocument(
 		// Get current document to preserve status and snapshot existing content
 		const currentDoc = await db.projectDocument.findUnique({
 			where: { id: documentId },
-			select: { status: true, content: true, version: true },
+			select: {
+				status: true,
+				content: true,
+				version: true,
+				projectId: true,
+				type: true,
+			},
 		});
 
 		if (!currentDoc) {
@@ -4111,6 +4137,7 @@ export async function saveProjectDocument(
 			wordCount,
 			status: newStatus,
 		});
+		await nudgeRun("saved", documentId, currentDoc);
 	} catch (error) {
 		activityLogger.error("Failed to save project document", error, {
 			documentId,
@@ -4299,7 +4326,8 @@ class AttemptEndedSinceSave extends Error {
  *
  * Only the run guard's result names the row; under the baseline or the
  * attempt alone the step resolves with nothing, as `createDocumentVersion`
- * does.
+ * does. Apart from that result, it says whether this call bumped the version
+ * itself (see {@link GuardedVersionOutcome}).
  */
 async function createVersionWithGuards(params: {
 	documentId: string;
@@ -4309,7 +4337,7 @@ async function createVersionWithGuards(params: {
 	baselineVersion?: number;
 	liveRunId?: string;
 	generationStartedAt?: string;
-}): Promise<CreatedDocumentVersion | undefined> {
+}): Promise<GuardedVersionOutcome> {
 	const {
 		documentId,
 		content,
@@ -4337,6 +4365,8 @@ async function createVersionWithGuards(params: {
 				select: {
 					content: true,
 					version: true,
+					projectId: true,
+					type: true,
 					...(liveRunId !== undefined && { liveRunId: true }),
 					...(attemptStartedAt !== undefined && {
 						generationStartedAt: true,
@@ -4363,8 +4393,10 @@ async function createVersionWithGuards(params: {
 						},
 					);
 					return {
-						version: committedRow.version,
-						versionId: runRowId,
+						created: {
+							version: committedRow.version,
+							versionId: runRowId,
+						},
 					};
 				}
 			} else {
@@ -4399,7 +4431,7 @@ async function createVersionWithGuards(params: {
 							liveRunId,
 						},
 					);
-					return undefined;
+					return { created: undefined };
 				}
 			}
 
@@ -4534,7 +4566,13 @@ async function createVersionWithGuards(params: {
 				liveRunId,
 				generationStartedAt,
 			});
-			return { version: nextVersion, versionId: row.id };
+			return {
+				created: { version: nextVersion, versionId: row.id },
+				written: {
+					projectId: liveDoc.projectId,
+					type: liveDoc.type,
+				},
+			};
 		});
 	} catch (error) {
 		if (error instanceof ContentChangedSinceSave) {
@@ -4547,7 +4585,7 @@ async function createVersionWithGuards(params: {
 					code: "VERSION_SKIPPED_CONTENT_CHANGED",
 				},
 			);
-			return undefined;
+			return { created: undefined };
 		}
 		if (error instanceof AttemptEndedSinceSave) {
 			activityLogger.info(
@@ -4558,11 +4596,23 @@ async function createVersionWithGuards(params: {
 					code: "VERSION_SKIPPED_ATTEMPT_ENDED",
 				},
 			);
-			return undefined;
+			return { created: undefined };
 		}
 		throw error;
 	}
 }
+
+/**
+ * What {@link createVersionWithGuards} did. `created` is what
+ * `createDocumentVersion` reports for it; `written` carries the row's ids
+ * only when this call bumped the version itself, for the nudge that
+ * announces it, and is absent when a retry found its earlier attempt's row
+ * or the step was skipped.
+ */
+type GuardedVersionOutcome = {
+	created: CreatedDocumentVersion | undefined;
+	written?: RunNudgeTarget;
+};
 
 /**
  * Create document version record for the generated content.
@@ -4583,6 +4633,12 @@ async function createVersionWithGuards(params: {
  * and resolves with nothing when it skipped the row because the document
  * changed after the run's save; every other call resolves with nothing, as
  * it always has.
+ *
+ * A version bump is announced to the project's open pages once it has
+ * committed, like the save before it (Fizzy #2946; see {@link nudgeRun}):
+ * a page that refetched on the save still holds the version before it. A
+ * skipped or refused step, and a retry that finds its earlier attempt's row,
+ * announce nothing.
  */
 export async function createDocumentVersion(
 	documentId: string,
@@ -4623,7 +4679,7 @@ export async function createDocumentVersion(
 		generationStartedAt !== undefined
 	) {
 		try {
-			const created = await createVersionWithGuards({
+			const { created, written } = await createVersionWithGuards({
 				documentId,
 				content,
 				userId,
@@ -4634,6 +4690,9 @@ export async function createDocumentVersion(
 					generationStartedAt,
 				}),
 			});
+			if (written) {
+				await nudgeRun("versioned", documentId, written);
+			}
 			return liveRunId !== undefined ? created : undefined;
 		} catch (error) {
 			// A stale refusal was already logged as the warning it is.
@@ -4680,15 +4739,17 @@ export async function createDocumentVersion(
 		});
 
 		// Keep the document's version field in sync
-		await db.projectDocument.update({
+		const versioned = await db.projectDocument.update({
 			where: { id: documentId },
 			data: { version: nextVersion },
+			select: { projectId: true, type: true },
 		});
 
 		activityLogger.info("Document version created", {
 			documentId,
 			version: nextVersion,
 		});
+		await nudgeRun("versioned", documentId, versioned);
 	} catch (error) {
 		activityLogger.error("Failed to create document version", error, {
 			documentId,
@@ -5757,7 +5818,7 @@ export async function recordGenerationQueueReason(params: {
  * outcome, and it is information rather than an error.
  *
  * A flip that landed is announced to the project's open pages (Fizzy #2946);
- * see {@link nudgeRunStarted}. A retry that finds this attempt's own flip
+ * see {@link nudgeRun}. A retry that finds this attempt's own flip
  * already landed (its first answer was lost) answers `started` too, without
  * announcing it again.
  */
@@ -5792,47 +5853,67 @@ export async function startGenerationRun(params: {
 	if (outcome === "started") {
 		// Nothing after the flip may fail this activity: a retry answers
 		// from the flip already made and does not send the nudge again.
-		await nudgeRunStarted(params.documentId).catch(() => {});
+		await nudgeRun("started", params.documentId).catch(() => {});
 	}
 	return { outcome };
 }
 
 /**
- * `userId` of the nudge a run's start sends. The activity is not handed the
- * requester, and the page reads `userId` only to skip the echo of its own
- * save; a run starting is nobody's save, so the nudge carries an id no member
- * has.
+ * `userId` of the nudges a run sends (see {@link nudgeRun}). The page reads
+ * `userId` only to skip the echo of its own save, and none of these writes is
+ * a person's save: the save and version steps are handed the requester, but
+ * the requester's own tab would skip a nudge carrying their id as its own
+ * echo. So the nudge carries an id no member has.
  */
-const RUN_START_NUDGE_USER_ID = "fabric-generation-run";
+const RUN_NUDGE_USER_ID = "fabric-generation-run";
+
+/** The moments of a run its nudge announces, with the warning each logs. */
+const RUN_NUDGE_FAILURE_MESSAGES = {
+	started: "Could not nudge the page about the run starting",
+	saved: "Could not nudge the page about the run's save",
+	versioned: "Could not nudge the page about the run's version",
+} as const;
+
+/** The row's ids a run's nudge carries besides the document's own. */
+type RunNudgeTarget = { projectId: string; type: string };
 
 /**
- * Tell the project's open pages that the document is now GENERATING, ids
- * only (Fizzy #2946). Nothing else announces the flip: a page already open
- * on the document would otherwise learn of the run only from its first live
- * section, or, for a document that streams none, whenever it next reads the
- * document on its own.
+ * Tell the project's open pages that a run moved the document on, ids only
+ * (Fizzy #2946): the document is now GENERATING, the run's save completed it,
+ * or its version step numbered it. Nothing else announces these writes. A
+ * page already open on the document would otherwise learn of the start only
+ * from its first live section, and of the end only from its own poll, so two
+ * tabs learn of it up to a poll apart, and a background tab, which does not
+ * poll, only once it is shown.
  *
- * The activity is handed no project id, so the row is read for it. Bounded
- * like the live-section nudge and never throws; a nudge that fails or runs
- * out of time is logged and the run carries on.
+ * `document` is what the write already read. Without it (the start, which is
+ * handed no project id) the row is read for it. Bounded like the live-section
+ * nudge and never throws; a nudge that fails or runs out of time is logged
+ * and the run carries on.
  */
-async function nudgeRunStarted(documentId: string): Promise<void> {
+async function nudgeRun(
+	moment: keyof typeof RUN_NUDGE_FAILURE_MESSAGES,
+	documentId: string,
+	document?: RunNudgeTarget,
+): Promise<void> {
 	let failure: string | undefined;
 	const nudged = (async () => {
-		const document = await db.projectDocument.findUnique({
-			where: { id: documentId },
-			select: { projectId: true, type: true },
-		});
-		if (!document) {
+		const target =
+			document ??
+			(await db.projectDocument.findUnique({
+				where: { id: documentId },
+				select: { projectId: true, type: true },
+			}));
+		if (!target) {
 			return;
 		}
 		await emitDocumentChange({
-			projectId: document.projectId,
+			projectId: target.projectId,
 			documentId,
 			action: "updated",
-			userId: RUN_START_NUDGE_USER_ID,
+			userId: RUN_NUDGE_USER_ID,
 			userName: LIVE_SECTIONS_NUDGE_USER_NAME,
-			documentType: document.type,
+			documentType: target.type,
 		});
 	})().catch((error: unknown) => {
 		failure = errorCode(error);
@@ -5841,7 +5922,7 @@ async function nudgeRunStarted(documentId: string): Promise<void> {
 		failure = "TIMEOUT";
 	}
 	if (failure) {
-		activityLogger.warn("Could not nudge the page about the run starting", {
+		activityLogger.warn(RUN_NUDGE_FAILURE_MESSAGES[moment], {
 			documentId,
 			error: failure,
 		});

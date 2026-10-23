@@ -7,7 +7,7 @@
  * Features:
  * - Store execution summaries as vector embeddings
  * - Semantic search for similar past tasks
- * - Hybrid routing suggestions (Letta + Qdrant)
+ * - Routing suggestions from Qdrant
  * - Negative memory (learning from failures)
  * - LLM-powered execution summaries
  * - Multi-tenant isolation
@@ -35,10 +35,6 @@ import {
 	secondaryUsageFields,
 	usageOriginFields,
 } from "../workflows/orchestrator/usage-attribution";
-import {
-	getRoutingSuggestions,
-	type RoutingSuggestion,
-} from "./letta-memory-activities";
 import { getAiModel } from "./orchestrator/utils/model-selector";
 
 // ============================================================================
@@ -549,7 +545,7 @@ function generateFailureWarning(
 }
 
 /**
- * Get routing suggestions combining Letta (keyword) and Qdrant (semantic) sources
+ * Get routing suggestions from Qdrant semantic memory
  * with recency weighting, refined hybrid scoring, and negative memory warnings
  */
 export async function getHybridRoutingSuggestions(
@@ -557,7 +553,6 @@ export async function getHybridRoutingSuggestions(
 ): Promise<HybridRoutingResult> {
 	const {
 		task,
-		lettaAgentId,
 		userId,
 		organizationId,
 		includeFailureWarnings = true,
@@ -569,13 +564,9 @@ export async function getHybridRoutingSuggestions(
 		// Run all searches in parallel (success + failures)
 		// Credentials are fetched internally by searchSemanticMemory()
 		const searchPromises: [
-			Promise<RoutingSuggestion[]>,
 			Promise<SemanticMemoryResult[]>,
 			Promise<SemanticMemoryResult[]>,
 		] = [
-			lettaAgentId
-				? getRoutingSuggestions({ lettaAgentId, task })
-				: Promise.resolve([] as RoutingSuggestion[]),
 			searchSemanticMemory({
 				usageConversationId: input.usageConversationId,
 				usageOrigin: input.usageOrigin,
@@ -601,22 +592,11 @@ export async function getHybridRoutingSuggestions(
 				: Promise.resolve([]),
 		];
 
-		const [lettaSuggestions, semanticResults, failureResults] =
+		const [semanticResults, failureResults] =
 			await Promise.all(searchPromises);
 
 		const suggestions: HybridRoutingSuggestion[] = [];
 		const warnings: FailureWarning[] = [];
-
-		// Add Letta suggestions (already have recency built into pattern matching)
-		for (const letta of lettaSuggestions) {
-			suggestions.push({
-				agents: letta.agents,
-				tools: [],
-				confidence: letta.confidence,
-				source: "letta",
-				pattern: letta.pattern,
-			});
-		}
 
 		// Add semantic suggestions with refined hybrid scoring
 		for (const semantic of semanticResults) {
@@ -624,7 +604,7 @@ export async function getHybridRoutingSuggestions(
 				semantic.execution.timestamp,
 			);
 
-			// Check if this agent combination already exists from Letta
+			// Check if this agent combination already exists in semantic results
 			const existingIdx = suggestions.findIndex(
 				(s) =>
 					s.agents.sort().join(",") ===
@@ -633,9 +613,9 @@ export async function getHybridRoutingSuggestions(
 
 			if (existingIdx >= 0) {
 				// Use weighted hybrid scoring for merged suggestions
-				const lettaConfidence = suggestions[existingIdx].confidence;
+				const existingConfidence = suggestions[existingIdx].confidence;
 				const hybridScore = calculateWeightedHybridScore(
-					lettaConfidence,
+					existingConfidence,
 					semantic.similarity,
 					recencyBoost,
 				);
@@ -675,14 +655,14 @@ export async function getHybridRoutingSuggestions(
 
 		console.log(
 			`[OrchestratorMemory] Generated ${suggestions.length} suggestions, ${warnings.length} warnings ` +
-				`(letta: ${lettaSuggestions.length}, semantic: ${semanticResults.length}, failures: ${failureResults.length})`,
+				`(letta: 0, semantic: ${semanticResults.length}, failures: ${failureResults.length})`,
 		);
 
 		return {
 			suggestions: suggestions.slice(0, 5),
 			warnings: warnings.slice(0, 3),
 			stats: {
-				lettaMatches: lettaSuggestions.length,
+				lettaMatches: 0,
 				semanticMatches: semanticResults.length,
 				failureMatches: failureResults.length,
 			},

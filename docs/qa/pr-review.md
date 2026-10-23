@@ -267,10 +267,29 @@ advisory by construction: not a required check, its review step cannot fail the
 run, and an unresolved comment never blocks a merge. A failure of the tool
 itself is reported in the comment and in the job log.
 
-It asks **no model at all**. There is no model credential in Actions, and the
-reasoning that shaped the architecture lens applies with more force to a gate
-that speaks on every pull request: a reviewer that is confidently wrong costs an
-afternoon, and one that cries wolf gets muted. The rules live in
+That workflow asks **no model at all**. The separate
+[advisory Jev check](../../.github/workflows/jev-pr-review.yml) runs on non-draft
+`staging` pull requests when opened or marked ready for review. It uses the
+workspace AI SDK and AI Gateway credential to ask four decision questions about
+added source lines: tenant scope, record permissions, secret and raw error text
+exposure, and a failure reported as success. They are the defect classes that
+recur in this repository's fix history and show in the diff that introduced
+them. A score of 0.8 or more is a finding (`JEV_PR_REVIEW_CUTOFF` overrides it).
+Findings become file-level review threads; the staging
+thread-resolution ruleset requires developers to resolve them before merging.
+Missing credentials are reported as not run. Incomplete evaluations identify the
+questions and requests not evaluated, while valid findings from other requests
+are still posted. A failure to deliver a finding makes the check red; model and
+git errors exit successfully. A truncated hunk is reported as partially evaluated,
+with the truncated files listed; only the sent content is scored. The review
+sends at most 20 primary requests and makes at most 20 localization calls across
+all findings, with a 30-second timeout per model call and a 25-minute job timeout.
+Primary requests beyond the size cap are marked not evaluated. Findings that
+cannot be localized within the call cap use the largest-file fallback, identified
+in the comment and summary.
+Re-runs skip threads already posted for the same question and head commit.
+
+The deterministic rules live in
 `tooling/pr-review-checks/check.mjs`, and each earns its place by being
 decidable and by not duplicating a gate that already exists.
 

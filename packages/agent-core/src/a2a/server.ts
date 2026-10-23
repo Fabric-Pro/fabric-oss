@@ -46,6 +46,7 @@ export interface A2AAgentExecutor {
 		message: A2AMessage,
 		contextId?: string,
 		metadata?: Record<string, unknown>,
+		signal?: AbortSignal,
 	): Promise<A2AExecutionResult>;
 
 	/**
@@ -56,6 +57,7 @@ export interface A2AAgentExecutor {
 		message: A2AMessage,
 		contextId?: string,
 		metadata?: Record<string, unknown>,
+		signal?: AbortSignal,
 	): AsyncGenerator<A2AStreamEvent>;
 
 	/**
@@ -172,6 +174,59 @@ function createTaskStore(): TaskStore {
 	};
 }
 
+/** Wait for executor work without letting a late result override cancellation. */
+async function withAbort<T>(
+	work: Promise<T>,
+	signal?: AbortSignal,
+): Promise<T> {
+	if (!signal) {
+		return work;
+	}
+	let onAbort!: () => void;
+	const aborted = new Promise<never>((_resolve, reject) => {
+		onAbort = () => reject(signal.reason);
+		signal.addEventListener("abort", onAbort, { once: true });
+		if (signal.aborted) {
+			onAbort();
+		}
+	});
+	try {
+		return await Promise.race([work, aborted]);
+	} finally {
+		signal.removeEventListener("abort", onAbort);
+	}
+}
+
+/** Stop requesting executor events on disconnect, including a pending next(). */
+async function* abortableStream<T>(
+	source: AsyncGenerator<T>,
+	signal?: AbortSignal,
+): AsyncGenerator<T> {
+	if (!signal) {
+		// Without a signal, delegate so cleanup is exactly a plain for-await's.
+		yield* source;
+		return;
+	}
+	let finished = false;
+	try {
+		while (true) {
+			signal?.throwIfAborted();
+			const next = await withAbort(source.next(), signal);
+			signal?.throwIfAborted();
+			if (next.done) {
+				finished = true;
+				return;
+			}
+			yield next.value;
+		}
+	} finally {
+		// A non-cooperative executor can leave next() pending; do not wait on its return().
+		if (!finished) {
+			void source.return(undefined as never).catch(() => {});
+		}
+	}
+}
+
 /**
  * A2A Protocol Server
  *
@@ -235,6 +290,23 @@ export class A2AServer {
 		});
 	}
 
+	private watchCancellation(
+		taskId: string,
+		signal?: AbortSignal,
+	): () => void {
+		const onAbort = () => {
+			const status = this.taskStore.get(taskId)?.status;
+			if (status === "submitted" || status === "working") {
+				this.taskStore.update(taskId, { status: "canceled" });
+			}
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+		if (signal?.aborted) {
+			onAbort();
+		}
+		return () => signal?.removeEventListener("abort", onAbort);
+	}
+
 	/**
 	 * Handle POST /a2a/send
 	 */
@@ -242,6 +314,7 @@ export class A2AServer {
 		message: A2AMessage,
 		contextId?: string,
 		metadata?: Record<string, unknown>,
+		signal?: AbortSignal,
 	): Promise<A2ATask> {
 		const taskId = uuidv4();
 		const now = new Date().toISOString();
@@ -262,13 +335,15 @@ export class A2AServer {
 		// Update to working
 		this.taskStore.update(taskId, { status: "working" });
 
+		const cleanup = this.watchCancellation(taskId, signal);
 		try {
+			signal?.throwIfAborted();
 			// Execute the agent
-			const result = await this.executor.execute(
-				message,
-				contextId,
-				metadata,
+			const result = await withAbort(
+				this.executor.execute(message, contextId, metadata, signal),
+				signal,
 			);
+			signal?.throwIfAborted();
 
 			// Build response message
 			const responseMessage: A2AMessage = {
@@ -286,6 +361,9 @@ export class A2AServer {
 
 			return completedTask || task;
 		} catch (error) {
+			if (signal?.aborted) {
+				return this.taskStore.get(taskId) || task;
+			}
 			// Update task with error
 			const failedTask = this.taskStore.update(taskId, {
 				status: "failed",
@@ -298,6 +376,8 @@ export class A2AServer {
 				}),
 			});
 			return failedTask || task;
+		} finally {
+			cleanup();
 		}
 	}
 
@@ -309,6 +389,7 @@ export class A2AServer {
 		message: A2AMessage,
 		contextId?: string,
 		metadata?: Record<string, unknown>,
+		signal?: AbortSignal,
 	): AsyncGenerator<TaskEvent> {
 		const taskId = uuidv4();
 		const now = new Date().toISOString();
@@ -326,34 +407,42 @@ export class A2AServer {
 		};
 		this.taskStore.set(task);
 
-		// Emit submitted status
-		yield {
-			type: "status",
-			taskId,
-			status: "submitted",
-			timestamp: now,
-		};
-
-		// Update to working
-		this.taskStore.update(taskId, { status: "working" });
-		yield {
-			type: "status",
-			taskId,
-			status: "working",
-			timestamp: new Date().toISOString(),
-		};
-
+		const cleanup = this.watchCancellation(taskId, signal);
 		try {
+			signal?.throwIfAborted();
+			// Emit submitted status
+			yield {
+				type: "status",
+				taskId,
+				status: "submitted",
+				timestamp: now,
+			};
+
+			signal?.throwIfAborted();
+			// Update to working
+			this.taskStore.update(taskId, { status: "working" });
+			yield {
+				type: "status",
+				taskId,
+				status: "working",
+				timestamp: new Date().toISOString(),
+			};
+
+			signal?.throwIfAborted();
 			// Check if streaming is supported
 			if (this.executor.executeStream) {
 				// Use streaming executor
 				let fullText = "";
 				const artifacts: Artifact[] = [];
 
-				for await (const event of this.executor.executeStream(
-					message,
-					contextId,
-					metadata,
+				for await (const event of abortableStream(
+					this.executor.executeStream(
+						message,
+						contextId,
+						metadata,
+						signal,
+					),
+					signal,
 				)) {
 					if (event.type === "text" && event.text) {
 						fullText += event.text;
@@ -385,6 +474,7 @@ export class A2AServer {
 					}
 				}
 
+				signal?.throwIfAborted();
 				// Update task with final result
 				const responseMessage: A2AMessage = {
 					role: "agent",
@@ -397,11 +487,11 @@ export class A2AServer {
 				});
 			} else {
 				// Fall back to non-streaming
-				const result = await this.executor.execute(
-					message,
-					contextId,
-					metadata,
+				const result = await withAbort(
+					this.executor.execute(message, contextId, metadata, signal),
+					signal,
 				);
+				signal?.throwIfAborted();
 
 				// Emit response as message
 				yield {
@@ -417,6 +507,7 @@ export class A2AServer {
 
 				// Emit artifacts
 				for (const artifact of result.artifacts || []) {
+					signal?.throwIfAborted();
 					yield {
 						type: "artifact",
 						taskId,
@@ -425,6 +516,7 @@ export class A2AServer {
 					};
 				}
 
+				signal?.throwIfAborted();
 				// Update task
 				this.taskStore.update(taskId, {
 					status: "completed",
@@ -448,6 +540,15 @@ export class A2AServer {
 				timestamp: new Date().toISOString(),
 			};
 		} catch (error) {
+			if (signal?.aborted) {
+				yield {
+					type: "status",
+					taskId,
+					status: "canceled",
+					timestamp: new Date().toISOString(),
+				};
+				return;
+			}
 			const errorMessage =
 				error instanceof Error ? error.message : "Unknown error";
 
@@ -475,6 +576,8 @@ export class A2AServer {
 				status: "failed",
 				timestamp: new Date().toISOString(),
 			};
+		} finally {
+			cleanup();
 		}
 	}
 
@@ -525,15 +628,19 @@ export class A2AServer {
 			getAgentCard: () => this.handleAgentCardRequest(),
 
 			// POST /a2a/send
-			sendMessage: async (body: {
-				message: A2AMessage;
-				contextId?: string;
-				metadata?: Record<string, unknown>;
-			}) => {
+			sendMessage: async (
+				body: {
+					message: A2AMessage;
+					contextId?: string;
+					metadata?: Record<string, unknown>;
+				},
+				signal?: AbortSignal,
+			) => {
 				const task = await this.handleSendMessage(
 					body.message,
 					body.contextId,
 					body.metadata,
+					signal,
 				);
 				return new Response(JSON.stringify({ task }), {
 					status: 200,
@@ -542,16 +649,20 @@ export class A2AServer {
 			},
 
 			// POST /a2a/send/stream
-			sendMessageStream: (body: {
-				message: A2AMessage;
-				contextId?: string;
-				metadata?: Record<string, unknown>;
-			}) => {
+			sendMessageStream: (
+				body: {
+					message: A2AMessage;
+					contextId?: string;
+					metadata?: Record<string, unknown>;
+				},
+				signal?: AbortSignal,
+			) => {
 				const encoder = new TextEncoder();
 				const generator = this.handleSendMessageStream(
 					body.message,
 					body.contextId,
 					body.metadata,
+					signal,
 				);
 
 				const stream = new ReadableStream({
@@ -640,6 +751,7 @@ export class A2AServer {
 export function createLangGraphA2AExecutor(
 	graphInvoker: (
 		input: Record<string, unknown>,
+		config?: { signal?: AbortSignal },
 	) => Promise<Record<string, unknown>>,
 	options?: {
 		/** Field in the output that contains the response text */
@@ -658,7 +770,7 @@ export function createLangGraphA2AExecutor(
 	const artifactsField = options?.artifactsField || "artifacts";
 
 	return {
-		async execute(message, contextId, metadata) {
+		async execute(message, contextId, metadata, signal) {
 			// Default input transform: extract text from message parts
 			let input: Record<string, unknown>;
 			if (options?.inputTransform) {
@@ -675,7 +787,7 @@ export function createLangGraphA2AExecutor(
 			}
 
 			// Invoke the graph
-			const output = await graphInvoker(input);
+			const output = await graphInvoker(input, { signal });
 
 			// Default output transform
 			if (options?.outputTransform) {
@@ -747,6 +859,7 @@ export function createLangGraphA2AExecutor(
 export function createLangGraphStreamingA2AExecutor(
 	graphStreamer: (
 		input: Record<string, unknown>,
+		config?: { signal?: AbortSignal },
 	) => AsyncGenerator<Record<string, unknown>>,
 	options?: {
 		/** Field in chunks that contains text */
@@ -761,7 +874,7 @@ export function createLangGraphStreamingA2AExecutor(
 	const documentField = options?.documentField || "document";
 
 	return {
-		async execute(message, contextId, metadata) {
+		async execute(message, contextId, metadata, signal) {
 			// Collect all chunks for non-streaming execution
 			let fullText = "";
 			let finalOutput: Record<string, unknown> = {};
@@ -776,7 +889,7 @@ export function createLangGraphStreamingA2AExecutor(
 						...metadata,
 					};
 
-			for await (const chunk of graphStreamer(input)) {
+			for await (const chunk of graphStreamer(input, { signal })) {
 				if (chunk[textField]) {
 					fullText += String(chunk[textField]);
 				}
@@ -801,7 +914,7 @@ export function createLangGraphStreamingA2AExecutor(
 			return { response, artifacts };
 		},
 
-		async *executeStream(message, contextId, metadata) {
+		async *executeStream(message, contextId, metadata, signal) {
 			const textPart = message.parts.find((p) => p.type === "text");
 			const text = textPart && "text" in textPart ? textPart.text : "";
 			const input = options?.inputTransform
@@ -814,7 +927,7 @@ export function createLangGraphStreamingA2AExecutor(
 
 			let fullText = "";
 
-			for await (const chunk of graphStreamer(input)) {
+			for await (const chunk of graphStreamer(input, { signal })) {
 				if (chunk[textField]) {
 					const chunkText = String(chunk[textField]);
 					fullText += chunkText;

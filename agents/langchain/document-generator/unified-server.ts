@@ -206,6 +206,7 @@ const { app, start } = createUnifiedServer(
 			},
 			{
 				// Use both "updates" and "messages" to get node updates AND LLM token streaming
+				signal: config?.signal,
 				streamMode: ["updates", "messages"] as const,
 				// Pass AI provider configuration from CopilotKit
 				configurable: config?.configurable,

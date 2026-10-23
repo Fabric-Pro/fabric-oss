@@ -6,6 +6,7 @@
  */
 
 import { tool } from "@repo/ai";
+import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import {
 	canCreateProjectStory,
 	db,
@@ -1513,6 +1514,10 @@ export async function createFabricTool(
 						};
 					} catch (error) {
 						rethrowIfDispatchStopped(error);
+						const limitError = findAiUsageLimitError(error);
+						if (limitError) {
+							throw limitError;
+						}
 						logger.error("fabric_create_story failed", error);
 						return {
 							error:

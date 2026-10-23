@@ -5,8 +5,9 @@ name: Type Check
 # PR runs restore.
 #
 # Private staging and promotion PRs run the same real checks as public PRs.
-# Private shards use the configured larger runner; public shards keep
-# standard runners. Require the stable type-check aggregate on both branches.
+# Private PR shards and the heavy shard use the configured larger runner;
+# private push `rest` shards and public shards keep standard runners.
+# Require the stable type-check aggregate on both branches.
 #
 # WHY SHARD. The `plan` job resolves the affected package set and buckets it
 # so independent buckets can run in parallel. Heavy packages share one runner:
@@ -41,7 +42,8 @@ name: Type Check
 # master push runs the full sweep, so it seeds every family at once; a PR
 # shard then restores the family holding its own packages' `generate`,
 # `^build` and `type-check` entries (turbo.json makes all three part of this
-# task).
+# task). PR runs restore the Turbo family but do not save it (see `Restore
+# Turbo cache`), so only pushes and dispatches add Turbo entries.
 #
 # The shard families used to avoid sharing a prefix with the staging job's
 # `<os>-turbo-typecheck-` / `<os>-tsbuildinfo-` keys, so a prefix restore
@@ -84,7 +86,11 @@ name: Type Check
 # Turbo task at a time (`TURBO_CONCURRENCY: 1`), so sharing its runner does not
 # increase peak memory. This leaves room for the OS and pnpm on the 16 GB
 # standard runner. Private shards reuse that same ceiling on the bigger
-# `ubuntu-8core-arm` label for headroom, not for extra concurrency.
+# `ubuntu-8core-arm` label for headroom, not for extra concurrency. The one
+# exception is the private push/dispatch `rest` shards, which run on the 8 GB
+# standard arm64 runner (see the shard's runs-on): the three heavy packages are
+# excluded from them by construction, and an out-of-memory failure there would
+# cost a cache seed, not a PR verdict.
 # The heavy-package memory blow-up is tracked for a compiled-packages
 # migration.
 #
@@ -331,9 +337,23 @@ jobs:
     # Free and unlimited on public repositories at 4 CPU / 16 GB. A larger
     # label is billed everywhere and a label that does not exist leaves a job
     # queued for 24 hours rather than failing, so this stays `ubuntu-latest`
-    # — except in the private repo, which uses `ubuntu-8core-arm` for every
-    # event because its standard runner (2 CPU / 7 GB) cannot hold this heap.
-    runs-on: ${{ (github.repository == 'Fabric-Pro/fabric-dev') && 'ubuntu-8core-arm' || 'ubuntu-latest' }}
+    # — except in the private repo, which uses `ubuntu-8core-arm` because its
+    # standard runner (2 CPU / 8 GB) cannot hold the heavy shard's heap: tsgo
+    # peaks near 7.6 GB on @repo/web alone (see MEMORY in the header).
+    #
+    # Private pushes and dispatches run the two `rest` shards on the standard
+    # arm64 runner instead: they exist to seed the caches PRs restore, nobody
+    # waits on them, and the standard label bills about a third of the
+    # 8-core rate per minute. PR shards and every `heavy` shard keep the
+    # 8-core label. Both labels are Linux arm64, and the cache keys below use
+    # only `runner.os` and the shard name, so a PR shard restores exactly the
+    # entries a push shard saved; Turbo's task hashes cover file contents,
+    # the lockfile and the `globalEnv` values, which this job pins at the job
+    # level, not the runner size.
+    runs-on: >-
+      ${{ github.repository != 'Fabric-Pro/fabric-dev' && 'ubuntu-latest'
+      || (github.event_name == 'pull_request' || matrix.slug == 'heavy') && 'ubuntu-8core-arm'
+      || 'ubuntu-24.04-arm' }}
     timeout-minutes: 30
     env:
       # Placeholder so @repo/database's prisma singleton (throws at module
@@ -370,7 +390,6 @@ jobs:
         with:
           node-version: '22'
           check-latest: true
-          cache: 'pnpm'
 
       # Per-shard key family — the non-obvious part of this workflow, spelled
       # out under PER-SHARD CACHE FAMILIES in the header. Short version:
@@ -391,8 +410,18 @@ jobs:
       # staging pushes have seeded the `-tc-shard-heavy-` entries (expected
       # about a week after this layout merges). Until then it only spares the
       # first heavy runs a cold web check; removing it early costs one cold run.
+      #
+      # Restore-only here; `Save Turbo cache` below saves on pushes and
+      # dispatches but not on PRs. Every PR push used to save a ~300 MB heavy
+      # entry under its own merge ref, where no other branch can restore it,
+      # and those entries pushed the repository past its 10 GB cache limit,
+      # past which GitHub evicts the least recently used entries, seeds
+      # included. A PR re-push now
+      # restores the staging seed instead of its own previous push, so a
+      # package the PR changed re-checks once per push rather than replaying.
       - name: Restore Turbo cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: turbo-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .turbo
           key: ${{ runner.os }}-tc-shard-${{ matrix.slug }}-turbo-${{ github.sha }}
@@ -432,8 +461,12 @@ jobs:
             ${{ runner.os }}-tc-shard-${{ matrix.slug }}-tsbuildinfo7-
             ${{ runner.os }}-tc-shard-${{ matrix.slug == 'heavy' && 'web' || matrix.slug }}-tsbuildinfo7-
 
+      # All shards of a run share one architecture, so one of them seeds the
+      # dependency cache on a push; `heavy` is always planned on a full sweep.
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        uses: ./.github/actions/pnpm-install
+        with:
+          save-cache: ${{ matrix.slug == 'heavy' }}
 
       # `generate`, `^generate` and `^build` run as `type-check` dependencies
       # in turbo.json, so @repo/database's Prisma client and every dependency
@@ -454,6 +487,17 @@ jobs:
             filters+=("--filter=$pkg")
           done
           pnpm turbo run type-check --continue=dependencies-successful --concurrency="$TURBO_CONCURRENCY" "${filters[@]}"
+
+      # The save half of `Restore Turbo cache` (see there for why PRs skip
+      # it). The implicit success() keeps a failed check from seeding the
+      # cache, as the combined action's post step did; an exact key hit means
+      # this SHA is already saved.
+      - name: Save Turbo cache
+        if: github.event_name != 'pull_request' && steps.turbo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .turbo
+          key: ${{ runner.os }}-tc-shard-${{ matrix.slug }}-turbo-${{ github.sha }}
 
   # Stable status check name reported on every PR to `master` in the public
   # mirror and private staging repository. Configure THIS

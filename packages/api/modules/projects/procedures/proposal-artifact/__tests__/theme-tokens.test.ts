@@ -2,8 +2,8 @@
  * `projects.proposalArtifact.getThemeTokens` and the client-document loader
  * behind it (Fizzy #2946): a Proposal in artifact mode wears one theme for
  * members and project guests alike, so a guest with project access reads
- * its tokens, with the logos signed, and never the style direction or the
- * Brand kit guidance.
+ * its tokens, with the logos and hero signed and each uploaded font as its
+ * file id, and never the style direction or the Brand kit guidance.
  *
  * The gate middleware, the permission decision and the loader are the real
  * ones, run over the world in `proposal-artifact-harness.ts`. The
@@ -72,6 +72,8 @@ const AVATARS = config.storage.bucketNames.avatars;
 const PROJECT_CONTEXTS = config.storage.bucketNames.projectContexts;
 const ORG_LOGO = `${ORG_A}.png`;
 const RECIPIENT_LOGO = `project-brand/${PROJECT_A}/recipient-brand/current/logo-1.png`;
+const HERO = `organization-brand/${ORG_A}/hero/hero-1.jpg`;
+const FONT_KEY = `organization-brand/${ORG_A}/fonts/font-1.woff2`;
 const DOC_BUSINESS_CASE = "doc-business-case";
 /** An org A member with no row on project A, and not its creator. */
 const MEMBER_WITHOUT_PROJECT = "user-member-without-project";
@@ -267,6 +269,7 @@ describe("getThemeTokens", () => {
 		]);
 		expect(Object.keys(result.tokens.proposer).sort()).toEqual([
 			"accents",
+			"fontFiles",
 			"fonts",
 			"hero",
 			"ink",
@@ -280,6 +283,93 @@ describe("getThemeTokens", () => {
 		expect(keys).not.toContain("guidance");
 		expect(keys).not.toContain("brandGuidance");
 		expect(JSON.stringify(result)).not.toContain("Internal:");
+	});
+
+	it("carries each uploaded font as its file id beside its family, never its key", async () => {
+		theme.resolveGuestSafeProposalThemeTokens.mockResolvedValue(
+			tokensFrom({
+				brandKit: {
+					accentColors: [],
+					displayFontFamily: "Example Serif",
+					displayFontFileId: "font-1",
+					bodyFontFamily: "Example Sans",
+				},
+			}),
+		);
+
+		const { tokens } = await getThemeTokens();
+
+		expect(tokens.proposer.fonts.display).toEqual({
+			value: "Example Serif",
+			source: "BRAND_KIT",
+		});
+		expect(tokens.proposer.fontFiles).toEqual({
+			display: { value: "font-1", source: "BRAND_KIT" },
+			body: { value: null, source: "DEFAULT" },
+		});
+		expect(JSON.stringify(tokens)).not.toContain(FONT_KEY);
+		expect(JSON.stringify(tokens)).not.toContain("organization-brand/");
+	});
+
+	it("signs the organization's own hero inline, in the project contexts bucket", async () => {
+		theme.resolveGuestSafeProposalThemeTokens.mockResolvedValue(
+			tokensFrom({ brandKit: { accentColors: [], heroKey: HERO } }),
+		);
+
+		const { tokens } = await getThemeTokens(USERS.guestViewer);
+
+		expect(tokens.proposer.hero).toEqual({
+			value: { url: signed(PROJECT_CONTEXTS, HERO) },
+			source: "BRAND_KIT",
+		});
+		expect(theme.getSignedUrl).toHaveBeenCalledWith(
+			HERO,
+			expect.objectContaining({
+				bucket: PROJECT_CONTEXTS,
+				responseContentType: "image/jpeg",
+				responseContentDisposition: "inline",
+			}),
+		);
+	});
+
+	it("signs no hero of another organization", async () => {
+		const foreign = `organization-brand/${ORG_B}/hero/hero-1.jpg`;
+		theme.resolveGuestSafeProposalThemeTokens.mockResolvedValue(
+			tokensFrom({ brandKit: { accentColors: [], heroKey: foreign } }),
+		);
+
+		const { tokens } = await getThemeTokens();
+
+		expect(tokens.proposer.hero).toEqual({
+			value: null,
+			source: "BRAND_KIT",
+		});
+		expect(signedKeys()).not.toContain(foreign);
+	});
+
+	it("gives the neutral tokens when no source holds a brand value: no logo, no hero, Inter, every value DEFAULT", async () => {
+		theme.resolveGuestSafeProposalThemeTokens.mockResolvedValue(
+			buildProposalThemeTokens({
+				organization: null,
+				style: null,
+				brandKit: null,
+				recipient: null,
+			}),
+		);
+
+		const { tokens } = await getThemeTokens();
+
+		expect(tokens.proposer.logo.value).toBeNull();
+		expect(tokens.proposer.hero.value).toBeNull();
+		expect(tokens.recipient.logo.value).toBeNull();
+		expect(tokens.proposer.primary.value).toBe("#334155");
+		expect(tokens.proposer.fonts.display.value).toBe("Inter");
+		expect(tokens.proposer.fonts.body.value).toBe("Inter");
+		expect(tokens.proposer.fontFiles?.display.value).toBeNull();
+		expect(tokens.proposer.fontFiles?.body.value).toBeNull();
+		const sources = JSON.stringify(tokens).match(/"source":"[A-Z_]+"/g);
+		expect(new Set(sources)).toEqual(new Set(['"source":"DEFAULT"']));
+		expect(theme.getSignedUrl).not.toHaveBeenCalled();
 	});
 
 	it("refuses a caller without access to the project", async () => {
@@ -575,6 +665,44 @@ describe("signThemeAsset", () => {
 				{ kind: "recipient-logo", key: RECIPIENT_LOGO },
 				{ organizationId: ORG_A, projectId: PROJECT_B },
 			),
+		).toBeNull();
+		expect(theme.getSignedUrl).not.toHaveBeenCalled();
+	});
+
+	it("signs the organization's own hero with the content type its key names", async () => {
+		const png = `organization-brand/${ORG_A}/hero/hero-2.png`;
+
+		expect(
+			await signThemeAsset({ kind: "organization-hero", key: HERO }, ctx),
+		).toEqual({ url: signed(PROJECT_CONTEXTS, HERO) });
+		expect(
+			await signThemeAsset({ kind: "organization-hero", key: png }, ctx),
+		).toEqual({ url: signed(PROJECT_CONTEXTS, png) });
+		expect(
+			theme.getSignedUrl.mock.calls.map(([key, options]) => [
+				key,
+				(options as { responseContentType: string })
+					.responseContentType,
+				(options as { expiresIn: number }).expiresIn,
+			]),
+		).toEqual([
+			[HERO, "image/jpeg", 5 * 60],
+			[png, "image/png", 5 * 60],
+		]);
+	});
+
+	it.each([
+		[
+			"another organization's hero",
+			`organization-brand/${ORG_B}/hero/hero-1.jpg`,
+		],
+		["a pending upload", `organization-brand/${ORG_A}/pending/hero-1`],
+		["a font", FONT_KEY],
+		["a path escape", `organization-brand/${ORG_A}/hero/../hero-1.jpg`],
+		["the organization logo", ORG_LOGO],
+	])("signs no hero key that is %s", async (_case, key) => {
+		expect(
+			await signThemeAsset({ kind: "organization-hero", key }, ctx),
 		).toBeNull();
 		expect(theme.getSignedUrl).not.toHaveBeenCalled();
 	});

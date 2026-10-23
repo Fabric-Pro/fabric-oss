@@ -1,6 +1,7 @@
 /**
  * Brand candidates from a website's `<head>` and web app manifest: icon
- * links, `og:image`, and `theme-color`.
+ * links, `og:image`, `theme-color`, and the name it declares (`og:site_name`
+ * and `<title>`).
  *
  * The page is untrusted, so this is a bounded scan rather than a parser:
  * only the first `HEAD_SCAN_MAX_CHARS` characters are read, the scan stops at
@@ -16,6 +17,9 @@ export const HEAD_SCAN_MAX_CHARS = 256 * 1024;
 
 /** A tag longer than this is skipped rather than scanned. */
 const MAX_TAG_CHARS = 4096;
+
+/** How much of a `<title>` is kept; a name is capped far below this anyway. */
+const MAX_TITLE_CHARS = 1024;
 
 type LogoCandidateSource =
 	| "apple-touch-icon"
@@ -39,6 +43,10 @@ export interface HeadCandidates {
 	manifestUrl: string | null;
 	/** Every valid `theme-color`, normalized to `#rrggbb`, in page order. */
 	themeColors: string[];
+	/** The first `og:site_name`, entities decoded; untrusted text. */
+	siteName: string | null;
+	/** The first `<title>`, entities decoded; untrusted text. */
+	title: string | null;
 }
 
 export interface ManifestCandidates {
@@ -61,7 +69,7 @@ const SKIPPED_EXTENSION = /\.(svgz?|ico)$/i;
 // capped, so a tag with no closing `>` costs at most MAX_TAG_CHARS per
 // attempt instead of a scan to the end of the page.
 const TOKEN = new RegExp(
-	`<!--|<\\/head\\b|<body\\b|<(script|style|noscript|template)\\b[^>]{0,${MAX_TAG_CHARS}}>|<(link|meta)\\b([^>]{0,${MAX_TAG_CHARS}})>`,
+	`<!--|<\\/head\\b|<body\\b|<(script|style|noscript|template|title)\\b[^>]{0,${MAX_TAG_CHARS}}>|<(link|meta)\\b([^>]{0,${MAX_TAG_CHARS}})>`,
 	"gi",
 );
 const ATTRIBUTE =
@@ -75,7 +83,7 @@ const NAMED_ENTITIES: Record<string, string> = {
 	gt: ">",
 };
 
-function decodeEntities(value: string): string {
+export function decodeEntities(value: string): string {
 	return value.replace(ENTITY, (match, entity: string) => {
 		const lower = entity.toLowerCase();
 		if (lower.startsWith("#")) {
@@ -194,6 +202,8 @@ export function extractHeadCandidates(
 	const themeColors: string[] = [];
 	let ogImage: LogoCandidate | null = null;
 	let manifestUrl: string | null = null;
+	let siteName: string | null = null;
+	let title: string | null = null;
 
 	const token = new RegExp(TOKEN.source, TOKEN.flags);
 	let match = token.exec(source);
@@ -215,6 +225,18 @@ export function extractHeadCandidates(
 			const close = closer.exec(source);
 			if (!close) {
 				break;
+			}
+			// A title is text only, so its content is everything up to the closer.
+			if (skippedElement.toLowerCase() === "title" && title === null) {
+				title = decodeEntities(
+					source.slice(
+						token.lastIndex,
+						Math.min(
+							close.index,
+							token.lastIndex + MAX_TITLE_CHARS,
+						),
+					),
+				);
 			}
 			const end = source.indexOf(">", closer.lastIndex);
 			if (end === -1) {
@@ -268,6 +290,8 @@ export function extractHeadCandidates(
 				const content = attributes.get("content");
 				if (name === "theme-color") {
 					pushUnique(themeColors, normalizeHexColor(content));
+				} else if (name === "og:site_name" && siteName === null) {
+					siteName = content ?? null;
 				} else if (name === "og:image" && !ogImage) {
 					ogImage = toRasterCandidate(
 						content,
@@ -288,6 +312,8 @@ export function extractHeadCandidates(
 		ogImage,
 		manifestUrl,
 		themeColors,
+		siteName,
+		title,
 	};
 }
 

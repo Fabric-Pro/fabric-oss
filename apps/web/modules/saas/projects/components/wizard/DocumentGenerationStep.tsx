@@ -860,6 +860,7 @@ export function DocumentGenerationStep({
 								<PromptSelector
 									agentName="project_document_generator"
 									documentType={doc.type}
+									projectId={projectId}
 									value={doc.promptId}
 									onValueChange={(promptId) =>
 										updatePromptId(index, promptId)

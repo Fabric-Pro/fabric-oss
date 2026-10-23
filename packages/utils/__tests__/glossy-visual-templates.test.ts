@@ -8,15 +8,17 @@ import {
 	visualSpecSchema,
 } from "../lib/glossy/visual-spec";
 import {
-	SVG_CARD_FONT_STACK,
-	VISUAL_COLOR_PLACEHOLDERS,
 	comparisonToSvgCard,
+	cutLabelAtWord,
 	escapeMermaidLabel,
 	escapeXmlText,
 	flowToMermaid,
 	orgChartToMermaid,
+	PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
+	SVG_CARD_FONT_STACK,
 	statToSvgCard,
 	timelineToMermaid,
+	VISUAL_COLOR_PLACEHOLDERS,
 	visualSpecToMermaid,
 	visualSpecToSvgCard,
 } from "../lib/glossy/visual-templates";
@@ -808,5 +810,269 @@ describe("visualSpecToSvgCard", () => {
 				steps: [{ label: "A" }, { label: "B" }],
 			}),
 		).toThrow(/does not template/);
+	});
+});
+
+describe("Proposal template options (Fizzy #2946)", () => {
+	const options = PROPOSAL_VISUAL_TEMPLATE_OPTIONS;
+	const timeline = (count: number): TimelineVisualSpec => ({
+		kind: "timeline",
+		items: Array.from({ length: count }, (_, index) => ({
+			date: `Q${index + 1} 2026`,
+			label: `Milestone ${index + 1}`,
+		})),
+	});
+
+	it("assigns every node the surface role and writes no colour", () => {
+		const sources = [
+			timelineToMermaid(timeline(3), options),
+			flowToMermaid(
+				{
+					kind: "flow",
+					steps: [
+						{ label: "Intake", lane: "Sales" },
+						{ label: "Review", lane: "Delivery" },
+						{ label: "Sign-off", lane: "Sales" },
+					],
+				},
+				options,
+			),
+			orgChartToMermaid(
+				{
+					kind: "org_chart",
+					nodes: [
+						{ id: "ceo", label: "CEO", parentId: null },
+						{ id: "cto", label: "CTO", parentId: "ceo" },
+					],
+				},
+				options,
+			),
+		];
+		for (const source of sources) {
+			expect(source).not.toMatch(/^style /m);
+			expect(source).not.toContain("GLOSSY_COLOR_");
+			expect(source).not.toMatch(/#[0-9a-f]{3,6}\b/i);
+		}
+		expect(sources[0]).toContain("class t0 surface\nt1[");
+		expect(sources[0].match(/^class t\d surface$/gm)).toHaveLength(3);
+		expect(sources[2].match(/^class o\d surface$/gm)).toHaveLength(2);
+	});
+
+	it("keeps a flow's lanes as subgraphs in role mode", () => {
+		expect(
+			flowToMermaid(
+				{
+					kind: "flow",
+					steps: [
+						{ label: "Intake", lane: "Sales" },
+						{ label: "Review", lane: "Delivery" },
+					],
+				},
+				options,
+			),
+		).toBe(
+			[
+				"flowchart TD",
+				'subgraph lane0["Sales"]',
+				'f0["Intake"]',
+				"end",
+				'subgraph lane1["Delivery"]',
+				'f1["Review"]',
+				"end",
+				"class f0 surface",
+				"class f1 surface",
+				"f0 --> f1",
+			].join("\n"),
+		);
+	});
+
+	it("draws a Proposal timeline top-down whatever its length", () => {
+		expect(timelineToMermaid(timeline(2), options)).toMatch(
+			/^flowchart TD\n/,
+		);
+		expect(timelineToMermaid(timeline(5), options)).toMatch(
+			/^flowchart TD\n/,
+		);
+		expect(timelineToMermaid(timeline(8), options)).toMatch(
+			/^flowchart TD\n/,
+		);
+		// Glossy keeps its single direction.
+		expect(timelineToMermaid(timeline(8))).toMatch(/^flowchart LR\n/);
+	});
+
+	it("puts a timeline item's date, title and detail on lines of their own", () => {
+		const source = timelineToMermaid(
+			{
+				kind: "timeline",
+				items: [
+					{
+						date: "Q1 2026",
+						label: "Discovery",
+						description: 'Interviews with "core" team',
+					},
+					{ date: "Q2 2026", label: "Build" },
+				],
+			},
+			options,
+		);
+		expect(source).toContain(
+			't0["Q1 2026<br/>Discovery<br/>Interviews with “core” team"]',
+		);
+		expect(source).toContain('t1["Q2 2026<br/>Build"]');
+	});
+
+	/** The label lines of node `id` in `source`, unescaped breaks split. */
+	const nodeLines = (source: string, id: string): string[] =>
+		(new RegExp(`${id}\\["([^"]*)"\\]`).exec(source)?.[1] ?? "").split(
+			"<br/>",
+		);
+	const flowNode = (label: string, description?: string): string[] =>
+		nodeLines(
+			flowToMermaid(
+				{
+					kind: "flow",
+					steps: [{ label, description }, { label: "Next" }],
+				},
+				options,
+			),
+			"f0",
+		);
+
+	it("drops a detail that starts with the title", () => {
+		expect(
+			flowNode(
+				"Map the workflow",
+				"Map the workflow, its users, source material and tools.",
+			),
+		).toEqual(["Map the workflow"]);
+	});
+
+	it("drops a detail that contains the title, ignoring case and punctuation", () => {
+		expect(
+			flowNode("Pilot review", "Run a short PILOT-review with the team"),
+		).toEqual(["Pilot review"]);
+	});
+
+	it("drops a detail the title already contains", () => {
+		expect(
+			flowNode("Kickoff: align on goals and scope", "align on goals"),
+		).toEqual(["Kickoff: align on goals and", "scope"]);
+	});
+
+	it("keeps a detail that adds something to the title", () => {
+		expect(flowNode("Kickoff", "Agree goals and owners")).toEqual([
+			"Kickoff",
+			"Agree goals and owners",
+		]);
+		// Only whole words count as a repeat.
+		expect(flowNode("Plan", "Planning sessions with leads")).toEqual([
+			"Plan",
+			"Planning sessions with leads",
+		]);
+	});
+
+	it("wraps a title at words onto two lines of at most 28 characters", () => {
+		const lines = flowNode("Discovery and alignment with business units");
+		expect(lines).toEqual([
+			"Discovery and alignment with",
+			"business units",
+		]);
+		for (const line of lines) {
+			expect(Array.from(line).length).toBeLessThanOrEqual(28);
+		}
+	});
+
+	it("cuts a title past two lines at a word with an ellipsis", () => {
+		const label =
+			"Discovery and stakeholder alignment across every business unit we serve";
+		const lines = flowNode(label);
+		expect(lines).toHaveLength(2);
+		expect(lines[1]?.endsWith("…")).toBe(true);
+		for (const line of lines) {
+			expect(Array.from(line).length).toBeLessThanOrEqual(28);
+		}
+		const shown = `${lines[0]} ${lines[1]?.slice(0, -1)}`;
+		expect(label.startsWith(shown)).toBe(true);
+	});
+
+	it("shows at most one detail line, cut at a word, so what shows is a prefix of the checked text", () => {
+		const description =
+			"Structured interviews with finance, operations and legal leads";
+		const lines = flowNode("Discovery", description);
+		expect(lines).toHaveLength(2);
+		const detail = lines[1] ?? "";
+		expect(Array.from(detail).length).toBeLessThanOrEqual(28);
+		expect(detail.endsWith("…")).toBe(true);
+		expect(description.startsWith(detail.slice(0, -1))).toBe(true);
+		expect(description[detail.length - 1]).toBe(" ");
+	});
+
+	it("keeps a timeline's date on its own first line", () => {
+		const source = timelineToMermaid(
+			{
+				kind: "timeline",
+				items: [
+					{
+						date: "Weeks 1–4",
+						label: "Discovery and alignment with business units",
+						description: "Discovery and alignment",
+					},
+					{ date: "Weeks 5–8", label: "Build" },
+				],
+			},
+			options,
+		);
+		expect(nodeLines(source, "t0")).toEqual([
+			"Weeks 1–4",
+			"Discovery and alignment with",
+			"business units",
+		]);
+	});
+
+	it("escapes each line on its own and joins them with an unescaped break", () => {
+		const source = flowToMermaid(
+			{
+				kind: "flow",
+				steps: [
+					{ label: "Draft <b>scope</b>", description: "A -> B" },
+					{ label: "Review" },
+				],
+			},
+			options,
+		);
+		expect(source).toContain(
+			`f0["${escapeMermaidLabel("Draft <b>scope</b>")}<br/>${escapeMermaidLabel("A -> B")}"]`,
+		);
+		expect(escapeMermaidLabel("Draft <b>scope</b>")).not.toContain("<b>");
+	});
+
+	it("dispatches the options through visualSpecToMermaid", () => {
+		expect(visualSpecToMermaid(timeline(6), options)).toBe(
+			timelineToMermaid(timeline(6), options),
+		);
+	});
+});
+
+describe("cutLabelAtWord", () => {
+	it("returns a label within the bound as it is, whitespace collapsed", () => {
+		expect(cutLabelAtWord("  Pilot   launch ", 48)).toBe("Pilot launch");
+		expect(cutLabelAtWord("a".repeat(48), 48)).toBe("a".repeat(48));
+	});
+
+	it("cuts at the last word that fits and ends in an ellipsis", () => {
+		expect(cutLabelAtWord("Kickoff, alignment and planning", 20)).toBe(
+			"Kickoff, alignment…",
+		);
+		expect(cutLabelAtWord("One two three four five", 12)).toBe("One two…");
+	});
+
+	it("breaks a single long word rather than showing nothing", () => {
+		expect(cutLabelAtWord("Supercalifragilistic", 10)).toBe("Supercali…");
+	});
+
+	it("never splits a surrogate pair", () => {
+		const cut = cutLabelAtWord("😀".repeat(20), 10);
+		expect(Array.from(cut)).toHaveLength(10);
+		expect(cut.endsWith("…")).toBe(true);
 	});
 });

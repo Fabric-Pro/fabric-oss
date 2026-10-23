@@ -18,6 +18,7 @@ type TurnResult = Pick<
 	| "usageLimit"
 	| "toolsFailedThisTurn"
 	| "truncated"
+	| "apiBilling"
 	| "durationMs"
 	| "usage"
 	| "model"
@@ -88,6 +89,8 @@ export function doneTurnEvent(result: TurnResult) {
 		// The answer stopped on the output ceiling or the step cap; the chat
 		// says so and offers to continue (review F25).
 		...(result.truncated ? { truncated: result.truncated } : {}),
+		// Every plan ran out mid-turn and API billing finished it (Fizzy #3048).
+		...(result.apiBilling ? { apiBilling: result.apiBilling } : {}),
 	};
 }
 

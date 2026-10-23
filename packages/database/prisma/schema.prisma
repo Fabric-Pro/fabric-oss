@@ -391,10 +391,12 @@ model User {
   chatGptPlanOrgUses    ChatGptPlanOrgUse[]
 
   // Glossy editions (Fizzy #2589). Actor columns only; SetNull on delete.
-  glossyBuildsStarted    GlossyBuild[]           @relation("GlossyBuildStartedBy")
-  glossyVisualDecisions  GlossyVisualDecision[]  @relation("GlossyVisualDecisionDecidedBy")
-  recipientBrandsUpdated ProjectRecipientBrand[] @relation("ProjectRecipientBrandUpdatedBy")
-  brandKitsUpdated       OrganizationBrandKit[]  @relation("OrganizationBrandKitUpdatedBy")
+  glossyBuildsStarted                GlossyBuild[]                     @relation("GlossyBuildStartedBy")
+  glossyVisualDecisions              GlossyVisualDecision[]            @relation("GlossyVisualDecisionDecidedBy")
+  recipientBrandsUpdated             ProjectRecipientBrand[]           @relation("ProjectRecipientBrandUpdatedBy")
+  brandKitsUpdated                   OrganizationBrandKit[]            @relation("OrganizationBrandKitUpdatedBy")
+  brandSiteFetchesRequested          OrganizationBrandSiteFetch[]      @relation("OrganizationBrandSiteFetchRequestedBy")
+  recipientBrandSuggestionsRequested ProjectRecipientBrandSuggestion[] @relation("ProjectRecipientBrandSuggestionRequestedBy")
 
   // Company context (Fizzy #2719). Creator provenance only; SetNull on delete,
   // so a departing admin never takes the organization's sources with them.
@@ -404,6 +406,7 @@ model User {
   // so a departing member's answers stay with a null author.
   proposalStylesUpdated    ProjectDocumentStyle[]           @relation("ProjectDocumentStyleUpdatedBy")
   proposalFindingResponses ProjectDocumentFindingResponse[] @relation("ProjectDocumentFindingResponseAuthor")
+  proposalVisualSpecs      ProjectDocumentVisualSpec[]      @relation("ProjectDocumentVisualSpecCreatedBy")
 
   // Brute force protection
   failedLoginAttempts    Int                     @default(0)
@@ -1096,12 +1099,15 @@ model Organization {
   chatGptPlanOrgPolicy   ChatGptPlanOrgPolicy?
 
   // Glossy editions (Fizzy #2589); cascade on org delete (tenant erasure).
-  glossyEditions        GlossyEdition[]
-  glossyBuilds          GlossyBuild[]
-  glossyVisualDecisions GlossyVisualDecision[]
-  glossySegmentCache    GlossySegmentCache[]
-  recipientBrands       ProjectRecipientBrand[]
-  brandKit              OrganizationBrandKit?
+  glossyEditions            GlossyEdition[]
+  glossyBuilds              GlossyBuild[]
+  glossyVisualDecisions     GlossyVisualDecision[]
+  glossySegmentCache        GlossySegmentCache[]
+  recipientBrands           ProjectRecipientBrand[]
+  brandKit                  OrganizationBrandKit?
+  brandSiteFetch            OrganizationBrandSiteFetch?
+  recipientBrandSuggestions ProjectRecipientBrandSuggestion[]
+  documentExportBrands      ProjectDocumentExportBrand[]
 
   // Company context (Fizzy #2719); cascade on org delete (tenant erasure).
   companyContextSources  CompanyContextSource[]
@@ -1112,6 +1118,7 @@ model Organization {
   projectDocumentFindings         ProjectDocumentFinding[]
   projectDocumentStyles           ProjectDocumentStyle[]
   projectDocumentFindingResponses ProjectDocumentFindingResponse[]
+  projectDocumentVisualSpecs      ProjectDocumentVisualSpec[]
   deletedMeetingArchives          DeletedMeetingArchive[]
   nonMemberContacts               NonMemberContact[]
 
@@ -2419,63 +2426,81 @@ model Project {
   // linked test case FAILED opens a BUG (source=PIPELINE_FAILURE) for it, unless
   // one is already open. Default OFF so failures never flood the backlog and
   // existing projects see no behavior change until they opt in.
-  autoCreateBugsFromFailures      Boolean                              @default(false)
-  createdAt                       DateTime                             @default(now())
-  updatedAt                       DateTime                             @updatedAt
-  organization                    Organization?                        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user                            User                                 @relation(fields: [userId], references: [id], onDelete: Cascade)
-  contexts                        ProjectContext[]                     @relation("ProjectContexts")
-  contextPendingVectorCleanups    ProjectContextPendingVectorCleanup[]
-  contextRepositorySync           ProjectContextRepositorySync?        @relation("ProjectContextRepositorySync")
-  contextRepositorySyncRuns       ProjectContextRepositorySyncRun[]    @relation("ProjectContextRepositorySyncRuns")
-  contextWriteTargets             ProjectContextWriteTarget[]          @relation("ProjectContextWriteTargets")
-  memoryWrites                    ProjectMemoryWrite[]                 @relation("ProjectMemoryWrites")
-  contextSummaries                ProjectContextSummary[]
-  prdSourceContext                ProjectContext?                      @relation("PrdSourceContext", fields: [prdSourceContextId], references: [id])
+  autoCreateBugsFromFailures        Boolean                              @default(false)
+  // Recurring-error detection — when ON, a scheduled scan groups this
+  // project's application errors (and its open bug reports) and files a BUG
+  // proposal in the review inbox for any group that recurs at least
+  // `recurringErrorThreshold` times within `recurringErrorWindowHours`. Default
+  // OFF so no project starts reading its logs until an admin opts in. A
+  // project admin can tune the threshold, the window, and the similarity
+  // threshold: the minimum judge confidence (0–1) at which two errors, or an
+  // error and an open bug, count as the same problem.
+  autoDetectRecurringErrors         Boolean                              @default(false)
+  recurringErrorThreshold           Int                                  @default(5)
+  recurringErrorWindowHours         Int                                  @default(24)
+  recurringErrorSimilarityThreshold Float                                @default(0.7)
+  // Outcome of the most recent scan, shown beside the toggle so a scan that
+  // cannot reach its log source is visible rather than silently empty. A
+  // short, credential-free summary — never a raw platform response.
+  recurringErrorLastScanAt          DateTime?
+  recurringErrorLastScanError       String?
+  recurringErrorSignatures          RecurringErrorSignature[]
+  createdAt                         DateTime                             @default(now())
+  updatedAt                         DateTime                             @updatedAt
+  organization                      Organization?                        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user                              User                                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contexts                          ProjectContext[]                     @relation("ProjectContexts")
+  contextPendingVectorCleanups      ProjectContextPendingVectorCleanup[]
+  contextRepositorySync             ProjectContextRepositorySync?        @relation("ProjectContextRepositorySync")
+  contextRepositorySyncRuns         ProjectContextRepositorySyncRun[]    @relation("ProjectContextRepositorySyncRuns")
+  contextWriteTargets               ProjectContextWriteTarget[]          @relation("ProjectContextWriteTargets")
+  memoryWrites                      ProjectMemoryWrite[]                 @relation("ProjectMemoryWrites")
+  contextSummaries                  ProjectContextSummary[]
+  prdSourceContext                  ProjectContext?                      @relation("PrdSourceContext", fields: [prdSourceContextId], references: [id])
   // Engagement profile + delivery-track governance (docs/features/inverted-loop-delivery-tracks.md)
   // Existing rows default to GOVERNED (closest to today's uniform gating); enforcement flags default off.
-  engagementProfile               EngagementProfile                    @default(GOVERNED)
-  engagementProfileUpdatedAt      DateTime?
-  quotedPhases                    String[]                             @default([]) // Phase labels inside the quoted horizon; empty = no horizon configured
-  enforceSpecifyGate              Boolean                              @default(false)
-  enforceSpikeGate                Boolean                              @default(false)
-  enforceDiscoveryGate            Boolean                              @default(false)
-  documentTiersAdvisory           Boolean                              @default(false)
-  visionPurpose                   String?                              @db.Text
-  visionCoreActions               String[]                             @default([])
-  visionCycle                     String?
+  engagementProfile                 EngagementProfile                    @default(GOVERNED)
+  engagementProfileUpdatedAt        DateTime?
+  quotedPhases                      String[]                             @default([]) // Phase labels inside the quoted horizon; empty = no horizon configured
+  enforceSpecifyGate                Boolean                              @default(false)
+  enforceSpikeGate                  Boolean                              @default(false)
+  enforceDiscoveryGate              Boolean                              @default(false)
+  documentTiersAdvisory             Boolean                              @default(false)
+  visionPurpose                     String?                              @db.Text
+  visionCoreActions                 String[]                             @default([])
+  visionCycle                       String?
   // Customer outcomes page (Slice 8): token-scoped read-only route; null = not published
-  outcomesShareToken              String?                              @unique
-  documents                       ProjectDocument[]
-  ragSettings                     ProjectRagSettings?
-  databricksKnowledgeBinding      ProjectDatabricksKnowledgeBinding?
-  scanConfig                      ProjectScanConfig?
-  scans                           ProjectScan[]
-  scanCheckpoints                 ProjectScanCheckpoint[]
-  scanFindings                    ScanFinding[]
-  scanActivities                  ScanActivity[]
-  scanFindingReviews              ScanFindingReview[]
-  scanFindingGroupings            ScanFindingGrouping[]
-  presence                        ProjectPresence[]
-  activities                      ProjectActivity[]
-  userPreferences                 ProjectUserPreference[]
-  functionTags                    ProjectUserFunctionTag[]
-  dailyBriefs                     DailyBrief[]
-  projectBriefCursors             ProjectBriefCursor[]
-  dailyBriefReleaseNoteExclusions DailyBriefReleaseNoteExclusion[]
-  documentAutoRefreshSettings     DocumentAutoRefreshSettings[]
-  newsletterSettings              NewsletterSettings?
-  newsletterSubscribers           NewsletterSubscriber[]
-  newsletterSends                 NewsletterSend[]
-  newsletterDeliveries            NewsletterDelivery[]
-  members                         ProjectMember[]
-  invitations                     ProjectInvitation[]
-  storyStatuses                   ProjectStoryStatus[]
-  stories                         UserStory[]
-  storyPriorityChanges            StoryPriorityChange[]
-  duplicateLinks                  StoryDuplicateLink[]
-  duplicateEmbeddings             StoryDuplicateEmbedding[]
-  routingEmbeddings               StoryRoutingEmbedding[]
+  outcomesShareToken                String?                              @unique
+  documents                         ProjectDocument[]
+  ragSettings                       ProjectRagSettings?
+  databricksKnowledgeBinding        ProjectDatabricksKnowledgeBinding?
+  scanConfig                        ProjectScanConfig?
+  scans                             ProjectScan[]
+  scanCheckpoints                   ProjectScanCheckpoint[]
+  scanFindings                      ScanFinding[]
+  scanActivities                    ScanActivity[]
+  scanFindingReviews                ScanFindingReview[]
+  scanFindingGroupings              ScanFindingGrouping[]
+  presence                          ProjectPresence[]
+  activities                        ProjectActivity[]
+  userPreferences                   ProjectUserPreference[]
+  functionTags                      ProjectUserFunctionTag[]
+  dailyBriefs                       DailyBrief[]
+  projectBriefCursors               ProjectBriefCursor[]
+  dailyBriefReleaseNoteExclusions   DailyBriefReleaseNoteExclusion[]
+  documentAutoRefreshSettings       DocumentAutoRefreshSettings[]
+  newsletterSettings                NewsletterSettings?
+  newsletterSubscribers             NewsletterSubscriber[]
+  newsletterSends                   NewsletterSend[]
+  newsletterDeliveries              NewsletterDelivery[]
+  members                           ProjectMember[]
+  invitations                       ProjectInvitation[]
+  storyStatuses                     ProjectStoryStatus[]
+  stories                           UserStory[]
+  storyPriorityChanges              StoryPriorityChange[]
+  duplicateLinks                    StoryDuplicateLink[]
+  duplicateEmbeddings               StoryDuplicateEmbedding[]
+  routingEmbeddings                 StoryRoutingEmbedding[]
 
   architectureDecisions       ArchitectureDecision[]
   decisionTypes               DecisionType[]
@@ -2578,16 +2603,19 @@ model Project {
   successMetrics          ProjectSuccessMetric[]
 
   // Glossy editions (Fizzy #2589)
-  glossyEditions        GlossyEdition[]
-  glossyBuilds          GlossyBuild[]
-  glossyVisualDecisions GlossyVisualDecision[]
-  glossySegmentCache    GlossySegmentCache[]
-  recipientBrand        ProjectRecipientBrand?
+  glossyEditions           GlossyEdition[]
+  glossyBuilds             GlossyBuild[]
+  glossyVisualDecisions    GlossyVisualDecision[]
+  glossySegmentCache       GlossySegmentCache[]
+  recipientBrand           ProjectRecipientBrand?
+  recipientBrandSuggestion ProjectRecipientBrandSuggestion?
+  documentExportBrands     ProjectDocumentExportBrand[]
 
   // Proposal artifact (Fizzy #2801)
   documentAnalyses         ProjectDocumentAnalysis[]
   documentStyles           ProjectDocumentStyle[]
   documentFindingResponses ProjectDocumentFindingResponse[]
+  documentVisualSpecs      ProjectDocumentVisualSpec[]
 
   // AI Chat (project-scoped conversations)
   aiChats AiChat[]
@@ -2730,7 +2758,9 @@ model ProjectDocument {
   glossyCache      GlossySegmentCache[]
   analyses         ProjectDocumentAnalysis[] // Proposal artifact internal analysis runs (Fizzy #2801)
   style            ProjectDocumentStyle? // Proposal artifact style settings (Fizzy #2801)
+  exportBrand      ProjectDocumentExportBrand? // The brand its last export printed (Fizzy #2946)
   findingResponses ProjectDocumentFindingResponse[] // Proposal artifact answers to findings (Fizzy #2946)
+  visualSpecs      ProjectDocumentVisualSpec[] // Specs of the generated visuals in its body (Fizzy #2946)
   user             User?                            @relation(fields: [userId], references: [id], onDelete: Cascade)
   organization     Organization?                    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
@@ -2982,6 +3012,8 @@ model ProjectDocumentStyle {
   primaryColor   String?
   /// Up to three `#rrggbb` values.
   accentColors   String[] @default([])
+  /// Whether the next generation adds diagrams to Main.
+  autoVisuals    Boolean  @default(true)
   updatedById    String?
 
   createdAt DateTime @default(now())
@@ -2996,6 +3028,45 @@ model ProjectDocumentStyle {
   @@index([organizationId])
   @@index([updatedById])
   @@map("project_document_style")
+}
+
+/// The fact-checked spec behind one generated visual in a Proposal's Main
+/// (Fizzy #2946). The visual's fence opens with `%% fabric-visual: <id>`; one
+/// row per (document, visual id, source hash), append-only, so a restored
+/// version's fence still finds the row it was generated with. `origin` is
+/// STEP (the generation's visuals step) or INSTRUCTION (Edit with
+/// instructions). The spec holds text derived from the section and is never
+/// returned to a client: readers outside the server get ids, hashes, kind
+/// and origin only.
+model ProjectDocumentVisualSpec {
+  id             String   @id @default(cuid())
+  organizationId String
+  projectId      String
+  documentId     String
+  /// `[a-z0-9]{12,32}`: the id on the fence's marker line.
+  visualId       String
+  /// `v1:` plus 16 hex: the fence body's normalised hash, marker excluded.
+  sourceHash     String
+  /// `v1:` plus 16 hex: the spec's own hash.
+  specHash       String
+  /// The visual kind (timeline, flow, org_chart).
+  kind           String
+  /// STEP or INSTRUCTION.
+  origin         String
+  spec           Json
+  createdById    String?
+  createdAt      DateTime @default(now())
+
+  document     ProjectDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy    User?           @relation("ProjectDocumentVisualSpecCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  @@unique([documentId, visualId, sourceHash])
+  @@index([projectId])
+  @@index([organizationId])
+  @@index([createdById])
+  @@map("project_document_visual_spec")
 }
 
 enum ProjectDocumentAnalysisStatus {
@@ -4371,6 +4442,9 @@ model ProjectRecipientBrand {
   /// `project-brand/{projectId}/recipient-brand/current/{promotionId}.png`,
   /// server-issued only; a CHECK pins the prefix to this row's project.
   logoKey        String?
+  /// SHA-256 (hex) of the promoted PNG, so a fetched logo is compared by its
+  /// bytes rather than its key. Null for logos promoted before it existed.
+  logoHash       String?
   /// `#rrggbb` values.
   colors         String[] @default([])
   /// Compare-and-set token: every confirmation names the version it read.
@@ -4389,18 +4463,43 @@ model ProjectRecipientBrand {
   @@map("project_recipient_brand")
 }
 
-/// The preparer's Brand kit: accent colors and guidance text. Its own table,
-/// never organization metadata, because the auth library writes metadata
-/// wholesale and a concurrent update would drop any key stored there. The
-/// existing named brand color stays in metadata and seeds the primary color.
+/// The preparer's Brand kit: its colours, fonts, hero image, website and
+/// guidance text. Its own table, never organization metadata, because the auth
+/// library writes metadata wholesale and a concurrent update would drop any key
+/// stored there. The named brand color stays in metadata and seeds Glossy's
+/// primary color; a Proposal reads `primaryColor` here and never the named one.
+///
+/// Every value here is set by an organization admin. A value fetched from the
+/// organization's website lives in OrganizationBrandSiteFetch instead, so no
+/// automated write can replace one an admin chose (Fizzy #2946).
+///
+/// CHECK constraints (migrations, not visible to Prisma): accents and primary
+/// are lowercase `#rrggbb`; font families are letters, digits, spaces and
+/// hyphens, at most 64 characters; `website` is `https://host`; each key is the
+/// one shape its column's upload writes under `organization-brand/{organizationId}/`;
+/// `version` is at least 1.
 model OrganizationBrandKit {
-  id             String   @id @default(cuid())
-  organizationId String   @unique
+  id                String   @id @default(cuid())
+  organizationId    String   @unique
   /// Up to three `#rrggbb` values.
-  accentColors   String[] @default([])
+  accentColors      String[] @default([])
   /// Up to 2,000 characters.
-  guidance       String?
-  updatedById    String?
+  guidance          String?
+  /// A `#rrggbb` value.
+  primaryColor      String?
+  /// Family names the theme and DOCX write; an uploaded file is optional.
+  displayFontFamily String?
+  bodyFontFamily    String?
+  /// `organization-brand/{organizationId}/fonts/{id}.{woff2|ttf}`, server-issued.
+  displayFontKey    String?
+  bodyFontKey       String?
+  /// `organization-brand/{organizationId}/hero/{id}.{png|jpg}`, server-issued.
+  heroKey           String?
+  /// The organization's own website as `https://host`, a brand source.
+  website           String?
+  /// Compare-and-set token: every save names the version it read.
+  version           Int      @default(1)
+  updatedById       String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -4410,6 +4509,111 @@ model OrganizationBrandKit {
 
   @@index([updatedById])
   @@map("organization_brand_kit")
+}
+
+/// The latest fetch of the organization's own website for brand colours
+/// (Fizzy #2946). Written only by that fetch, never by a person, and read as
+/// the VENDOR_SITE source below the Brand kit.
+///
+/// Two column groups: the attempt (`website` … `requestedAt`) is written when a
+/// fetch starts and when it fails; the result (`resultWebsite` … `fetchedAt`)
+/// only when one succeeds, so a running or failed re-fetch never takes away
+/// colours already applied. A result counts only while `resultWebsite` equals
+/// the Brand kit's website.
+///
+/// CHECK constraints: `status` is RUNNING, SUCCEEDED or FAILED; `failureCode`
+/// is set exactly when FAILED, as a short lowercase code; both websites are
+/// `https://host`; colours are lowercase `#rrggbb`, at most three accents.
+model OrganizationBrandSiteFetch {
+  id             String    @id @default(cuid())
+  organizationId String    @unique
+  website        String
+  requestId      String
+  status         String
+  failureCode    String?
+  requestedById  String?
+  requestedAt    DateTime
+  resultWebsite  String?
+  primaryColor   String?
+  accentColors   String[]  @default([])
+  fetchedAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  requestedBy  User?        @relation("OrganizationBrandSiteFetchRequestedBy", fields: [requestedById], references: [id], onDelete: SetNull)
+
+  @@index([requestedById])
+  @@map("organization_brand_site_fetch")
+}
+
+/// The latest fetch of a project's recipient website (Fizzy #2946): a
+/// suggestion shown in the Style tab and applied to the recipient brand only
+/// when a member confirms a field. Written only by that fetch; organization
+/// members read it, project guests never do.
+///
+/// The same attempt and result groups as OrganizationBrandSiteFetch; a result
+/// counts only while `resultWebsite` equals the recipient brand's website.
+///
+/// CHECK constraints: as OrganizationBrandSiteFetch, plus `name` at most 200
+/// characters and `logoKey` exactly
+/// `project-brand/{projectId}/recipient-brand/suggested/{id}.png`.
+model ProjectRecipientBrandSuggestion {
+  id             String    @id @default(cuid())
+  projectId      String    @unique
+  organizationId String
+  website        String
+  requestId      String
+  status         String
+  failureCode    String?
+  requestedById  String?
+  requestedAt    DateTime
+  resultWebsite  String?
+  name           String?
+  colors         String[]  @default([])
+  logoKey        String?
+  /// SHA-256 (hex) of the suggested PNG.
+  logoHash       String?
+  fetchedAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  requestedBy  User?        @relation("ProjectRecipientBrandSuggestionRequestedBy", fields: [requestedById], references: [id], onDelete: SetNull)
+
+  @@index([organizationId])
+  @@index([requestedById])
+  @@map("project_recipient_brand_suggestion")
+}
+
+/// The brand a client-document Proposal's last export printed (Fizzy #2946):
+/// the token hash of what it printed, so a later change of brand can be told
+/// apart. Written only by the export worker after a successful upload.
+///
+/// CHECK constraints: `format` is PDF or DOCX; `themeTokenHash` carries its
+/// version prefix.
+model ProjectDocumentExportBrand {
+  id             String   @id @default(cuid())
+  documentId     String   @unique
+  projectId      String
+  organizationId String
+  themeTokenHash String
+  format         String
+  exportedAt     DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  document     ProjectDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@index([organizationId])
+  @@map("project_document_export_brand")
 }
 
 /// A company context source (Fizzy #2719): material an organization maintains
@@ -5866,6 +6070,26 @@ enum ParlumeMeetingTurnStatus {
   @@map("parlume_meeting_turn_status")
 }
 
+/// Where a meeting segment was captured.
+enum ParlumeMeetingSegmentSource {
+  /// Transcribed from the meeting audio.
+  SPEECH
+  /// A message in the meeting chat.
+  CHAT
+
+  @@map("parlume_meeting_segment_source")
+}
+
+/// Where Parlume delivers a request's answer.
+enum ParlumeMeetingReplyChannel {
+  /// Spoken into the meeting.
+  VOICE
+  /// Sent to the meeting chat, for a request typed there.
+  CHAT
+
+  @@map("parlume_meeting_reply_channel")
+}
+
 enum ParlumeActionStatus {
   PROPOSED
   AWAITING_CONFIRMATION
@@ -5902,6 +6126,8 @@ model ParlumeMeetingSession {
   status                 ParlumeMeetingSessionStatus @default(PENDING)
   wakePhrase             String                      @default("Hey Fabric")
   toolsReadOnly          Boolean                     @default(true)
+  /// Parlume may offer unprompted suggestions in the meeting chat.
+  suggestionsEnabled     Boolean                     @default(true)
   endReason              ParlumeMeetingEndReason?
   lastError              String?                     @db.Text
   joinedAt               DateTime?
@@ -5935,7 +6161,7 @@ model ParlumeMeetingSession {
 
 /// One bounded response request made from a final meeting utterance.
 model ParlumeMeetingTurn {
-  id              String                   @id @default(cuid())
+  id              String                     @id @default(cuid())
   sessionId       String
   projectId       String
   organizationId  String
@@ -5943,15 +6169,16 @@ model ParlumeMeetingTurn {
   dedupeKey       String
   speakerName     String?
   speakerId       String?
-  requestText     String                   @db.Text
-  responseText    String?                  @db.Text
-  status          ParlumeMeetingTurnStatus @default(PENDING)
-  error           String?                  @db.Text
+  requestText     String                     @db.Text
+  responseText    String?                    @db.Text
+  status          ParlumeMeetingTurnStatus   @default(PENDING)
+  error           String?                    @db.Text
   startedAt       DateTime?
   completedAt     DateTime?
-  createdAt       DateTime                 @default(now())
-  updatedAt       DateTime                 @updatedAt
-  voiceGeneration Int                      @default(0)
+  createdAt       DateTime                   @default(now())
+  updatedAt       DateTime                   @updatedAt
+  voiceGeneration Int                        @default(0)
+  replyChannel    ParlumeMeetingReplyChannel @default(VOICE)
   agentRevision   String?
   firstTextAt     DateTime?
   firstAudioAt    DateTime?
@@ -6007,21 +6234,23 @@ model ParlumeAction {
   @@map("parlume_action")
 }
 
-/// Final live transcript segments emitted by the Parlume transcription bridge.
-/// Partial provider events are intentionally never persisted.
+/// Final live transcript segments emitted by the Parlume transcription bridge,
+/// and the meeting chat's messages. Partial provider events are intentionally
+/// never persisted.
 model ParlumeMeetingSegment {
-  id               String   @id @default(cuid())
+  id               String                      @id @default(cuid())
   sessionId        String
   projectId        String
   organizationId   String
   userId           String
   dedupeKey        String
+  source           ParlumeMeetingSegmentSource @default(SPEECH)
   speakerName      String?
   speakerId        String?
-  text             String   @db.Text
+  text             String                      @db.Text
   utteranceStartMs Int?
   utteranceEndMs   Int?
-  createdAt        DateTime @default(now())
+  createdAt        DateTime                    @default(now())
 
   session      ParlumeMeetingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   project      Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
@@ -6735,6 +6964,12 @@ enum PendingBacklogProposalSource {
   // Roadmap. The row's id is the batch id stamped on every item accepted
   // from it (`UserStory.aiRecommendationBatchId`).
   ROADMAP_RECOMMENDATION
+  // A BUG filed by the recurring-error scan from a group of application log
+  // errors. Deduplicated per project through `RecurringErrorSignature`.
+  LOG_MONITOR
+  // A BUG consolidating several open bug reports the recurring-error scan
+  // found to describe the same problem.
+  INCIDENT_CLUSTER
 }
 
 enum PendingBacklogProposalStatus {
@@ -6832,6 +7067,53 @@ model PendingBacklogProposalApplication {
   @@unique([proposalId, changeIndex])
   @@index([proposalId])
   @@map("pending_backlog_proposal_application")
+}
+
+enum RecurringErrorSource {
+  // A group of application log errors sharing one normalized signature.
+  LOG
+  // A cluster of open in-Fabric bug reports describing the same problem.
+  INCIDENT
+}
+
+// One recurring problem the recurring-error scan has seen in a project, keyed
+// by a stable fingerprint so a rescan updates it instead of filing it again.
+// The proposal and story links are plain scalars, not relations, for the same
+// reason `UserStory.createdFromProposalId` is: proposals are prunable and a
+// story's lifecycle must not depend on this bookkeeping row. Tenancy is the
+// parent project's (no tenant columns of its own; RLS `project_scoped`).
+model RecurringErrorSignature {
+  id                String               @id @default(cuid())
+  projectId         String
+  source            RecurringErrorSource
+  fingerprint       String
+  // Short, redacted headline of the group (a normalized message or exception
+  // type), for logs and the proposal title fallback.
+  title             String
+  // Occurrences in the most recent scan window, and distinct affected users
+  // where the platform reports them.
+  occurrenceCount   Int
+  affectedUsers     Int                  @default(0)
+  components        String[]             @default([])
+  firstSeenAt       DateTime
+  lastSeenAt        DateTime
+  // When the group first crossed the project's threshold.
+  detectedAt        DateTime             @default(now())
+  lastScanAt        DateTime             @default(now())
+  // Redacted sample excerpts, newest first, capped. Never raw log text.
+  sampleExcerpts    Json?
+  // INCIDENT signatures: the open bug reports the cluster consolidates.
+  sourceStoryIds    String[]             @default([])
+  pendingProposalId String?
+  storyId           String?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, source, fingerprint])
+  @@index([projectId])
+  @@map("recurring_error_signature")
 }
 
 // Governed profile: who may approve drafting-stage transitions on a project.
@@ -14290,8 +14572,8 @@ model WorkflowExecution {
   pipelineId     String? // For pipeline executions (PRD → Tasks)
 
   // Relations
-  workflow Workflow?              @relation(fields: [workflowId], references: [id], onDelete: Cascade)
-  logs     WorkflowExecutionLog[]
+  workflow    Workflow?              @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  logs        WorkflowExecutionLog[]
   aiUsageLogs AiUsageLog[]
 
   @@index([workflowId])
@@ -15796,22 +16078,22 @@ model AiUsageLog {
   providerModelId    String // Provider-specific model ID used
 
   // Context
-  taskType        AiTaskType?
-  agentId         String?
-  conversationId  String?
-  frameId         String?
+  taskType            AiTaskType?
+  agentId             String?
+  conversationId      String?
+  frameId             String?
   workflowExecutionId String?
   // Product-feature attribution (Fizzy #2230, Phase 1): which user-facing AI
   // feature made this call, and the resolved prompt version it ran with.
   // Nullable by design — untagged call sites write null and tag coverage
   // grows incrementally; never treat null as "no feature", only as "untagged".
-  featureKey      String?
-  promptVersionId String?
+  featureKey          String?
+  promptVersionId     String?
   // Invocation-source attribution (Fizzy #1894): when set, the call came from
   // a scheduled or background pipeline rather than a user action; the value
   // is the job-type label ("scheduled-report", "meeting-transcript-sync", …).
   // Nullable by design — user-initiated rows stay null.
-  jobType         String?
+  jobType             String?
 
   // Usage metrics
   inputTokens              Int
@@ -15857,9 +16139,9 @@ model AiUsageLog {
 
   createdAt DateTime @default(now())
 
-  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  frame AgentWorkspaceFile? @relation(fields: [frameId], references: [id], onDelete: SetNull)
-  workflowExecution WorkflowExecution? @relation(fields: [workflowExecutionId], references: [id], onDelete: SetNull)
+  project           Project?            @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  frame             AgentWorkspaceFile? @relation(fields: [frameId], references: [id], onDelete: SetNull)
+  workflowExecution WorkflowExecution?  @relation(fields: [workflowExecutionId], references: [id], onDelete: SetNull)
 
   @@index([userId, createdAt])
   @@index([organizationId, createdAt])

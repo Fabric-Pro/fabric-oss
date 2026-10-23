@@ -58,10 +58,13 @@ describe("Parlume meeting chat fallback", () => {
 		expect(mocks.send).not.toHaveBeenCalled();
 	});
 
-	it("posts the reply as the active session's own bot", async () => {
+	it("sends the reply as the active session's own bot, and says it is only queued", async () => {
 		const response = await POST(request(message));
 
-		expect(await response.json()).toEqual({ sent: true });
+		expect(await response.json()).toEqual({
+			sent: true,
+			delivery: "queued",
+		});
 		expect(mocks.findFirst).toHaveBeenCalledWith(
 			expect.objectContaining({
 				where: {

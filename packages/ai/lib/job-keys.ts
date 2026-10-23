@@ -156,6 +156,8 @@ export const AI_JOB_TYPES = [
 	"teams-channel-monitor",
 	/** Security scanning grouping/review/scan model calls. */
 	"security-scan",
+	/** Scheduled recurring-error scan drafting bug reports from error groups. */
+	"recurring-error-scan",
 	/** Weave reader agents (Thread, Spindle, Weft, Warp). */
 	"weave-reader",
 	/** Living Documents scheduled auto-refresh. */

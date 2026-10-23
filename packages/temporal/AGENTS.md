@@ -6,7 +6,9 @@ Apply the root `AGENTS.md` first. Read
 changing workflows or activities.
 
 - Workflows orchestrate deterministic control flow; activities own I/O,
-  environment reads, wall clocks, randomness, and other side effects.
+  network, database and AI calls, environment reads, and other side effects.
+  `Date.now()`, `new Date()` and `Math.random()` are replay-safe in workflow
+  code (the SDK sandbox replaces them); never use `workflowInfo().unsafe.now()`.
 - Activities must be idempotent because retries are normal.
 - Pass `organizationId` through workflow args and every activity/MCP/AI call.
 - Preserve request correlation in workflow memo when a request starts the run.

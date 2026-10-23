@@ -715,6 +715,47 @@ describe("buildProposalDocx", () => {
 		expect(documentXml).not.toContain("flowchart");
 	});
 
+	it("prints a diagram's caption line under its picture and under a placeholder", async () => {
+		const png = await raster("png", 800, 400);
+		const fence = (caption: string) =>
+			[
+				"```mermaid",
+				`%% caption: ${caption}`,
+				"flowchart LR",
+				"  A --> B",
+				"```",
+			].join("\n");
+		const { pkg } = await build(
+			input(
+				[fence("Delivery plan & <scope>"), fence("Launch plan")].join(
+					"\n\n",
+				),
+				{
+					diagrams: [
+						{
+							kind: "svg",
+							svg: "<svg/>",
+							width: 400,
+							height: 200,
+							png,
+						},
+						{ kind: "placeholder", caption: "Not available." },
+					],
+				},
+			),
+		);
+		const documentXml = await pkg.read("word/document.xml");
+
+		expect(documentXml).toContain("Delivery plan &amp; &lt;scope&gt;");
+		expect(documentXml).toContain(
+			'descr="Delivery plan &amp; &lt;scope&gt;"',
+		);
+		expect(documentXml.indexOf("Not available.")).toBeLessThan(
+			documentXml.indexOf("Launch plan"),
+		);
+		expect(documentXml).not.toContain("%% caption");
+	});
+
 	it("never fetches a Markdown image and reports the ones it left out", async () => {
 		const { pkg, warnings } = await build(
 			input(

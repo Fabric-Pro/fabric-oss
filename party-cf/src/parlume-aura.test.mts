@@ -50,6 +50,7 @@ function outlet() {
 	return {
 		events,
 		queued,
+		droppedBytes: 0,
 		bytes: () => queued.reduce((sum, chunk) => sum + chunk.byteLength, 0),
 		enqueue: (bytes: Uint8Array) => {
 			events.push(`enqueue ${bytes.byteLength}`);
@@ -321,6 +322,45 @@ test("barge-in mid-sentence stops playback, clears the outlet and is not a failu
 	assert.ok(sink.bytes() < 400, "stopped before the clip finished");
 	assert.equal(sink.events.at(-1), "clear");
 	assert.ok(!sink.events.includes("end"));
+	assert.equal(result.heard, 0);
+});
+
+test("a silenced reply counts as heard only the sentences played to their end", async () => {
+	let current = true;
+	const { ai } = binding((_text, index) =>
+		pcmResponse(
+			index === 2 ? [pcm(100), pcm(100), pcm(100)] : [pcm(200)],
+			index === 2 ? 40 : 0,
+		),
+	);
+	const sink = outlet();
+
+	const playing = playParlumeAuraSentences({
+		ai,
+		sentences: source("First one.", "Second one.", "Third one."),
+		outlet: sink,
+		isCurrent: () => current,
+	});
+	await sleep(70);
+	// The first sentence went out; the second was queued in full but dropped
+	// with the start of the third.
+	sink.droppedBytes += sink.bytes() - 200;
+	current = false;
+	const result = await playing;
+
+	assert.equal(result.heard, 1);
+});
+
+test("a reply played to the end counts every sentence as heard", async () => {
+	const { ai } = binding(() => pcmResponse([pcm(100)]));
+	const result = await playParlumeAuraSentences({
+		ai,
+		sentences: source("First one.", "Second one."),
+		outlet: outlet(),
+		isCurrent: () => true,
+	});
+
+	assert.equal(result.heard, 2);
 });
 
 test("a reply that is no longer current never asks Aura for anything", async () => {

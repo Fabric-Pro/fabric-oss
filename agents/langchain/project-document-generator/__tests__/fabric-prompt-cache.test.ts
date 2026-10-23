@@ -121,6 +121,40 @@ describe("Fabric AI prompt-fragment cache", () => {
 		vi.useRealTimers();
 	});
 
+	it.each([
+		["custom structure", "Clean Spec: finish with Open Questions", true],
+		["generic structure", "Document Control", false],
+		["methodology structure", "Document Generation Methodology", false],
+	])(
+		"uses only the Clean Spec structure: %s",
+		async (_name, text, present) => {
+			serve({ healthy: true });
+			const { buildSystemPromptAsync } = await loadPrompts();
+			const prompt = await buildSystemPromptAsync(
+				"Clean Spec: finish with Open Questions",
+				"general",
+				projectContext,
+				[],
+				undefined,
+				{ suppressFabricMethodology: true },
+			);
+			expect(prompt.includes(text)).toBe(present);
+		},
+	);
+
+	it("retains methodology for custom prompts without the run opt-out", async () => {
+		serve({ healthy: true });
+		const { buildSystemPromptAsync } = await loadPrompts();
+		const prompt = await buildSystemPromptAsync(
+			"Prompt Library custom instructions",
+			"general",
+			projectContext,
+			[],
+			undefined,
+		);
+		expect(prompt).toContain("Document Generation Methodology");
+	});
+
 	it("fetches once and reuses the fragment for every later turn", async () => {
 		serve({ healthy: true });
 		const { buildSystemPromptAsync } = await loadPrompts();

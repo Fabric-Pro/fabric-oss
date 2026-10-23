@@ -18,6 +18,8 @@ const h = vi.hoisted(() => ({
 	poll: vi.fn(),
 	apply: vi.fn(),
 	applyPoll: vi.fn(),
+	cancelApply: vi.fn(),
+	applyRow: vi.fn(),
 	conversation: vi.fn(),
 	model: vi.fn(),
 	bind: vi.fn(),
@@ -55,6 +57,10 @@ vi.mock("../../../../../shared/lib/orpc-client", () => ({
 				analysisProgress: (...args: unknown[]) => h.poll(...args),
 				applyChanges: (...args: unknown[]) => h.apply(...args),
 				applyProgress: (...args: unknown[]) => h.applyPoll(...args),
+				getPendingProposal: (...args: unknown[]) => h.applyRow(...args),
+				proposals: {
+					cancel: (...args: unknown[]) => h.cancelApply(...args),
+				},
 			},
 		},
 		agents: { conversations: { create: () => h.conversation() } },
@@ -123,7 +129,9 @@ import { BacklogChat } from "../BacklogChat";
 import { BacklogFlowCard } from "../BacklogFlowCard";
 import {
 	BacklogFlowController,
+	pollWorkflowProgress,
 	REVIEW_UNAVAILABLE_RESULT,
+	workflowPollMessage,
 } from "../backlog-flow-controller";
 
 const sources = {
@@ -188,12 +196,11 @@ function entry(name = "select_review_sources", args = {}) {
 	const ui = h.actions
 		.get(name)
 		.render({ status: "complete", result }) as ReactElement;
+	const client = new QueryClient();
 	const card = render(
-		<QueryClientProvider client={new QueryClient()}>
-			{ui}
-		</QueryClientProvider>,
+		<QueryClientProvider client={client}>{ui}</QueryClientProvider>,
 	);
-	return { result, card, ui };
+	return { result, card, ui, client };
 }
 async function tick(ms = 2000) {
 	await act(async () => {
@@ -239,6 +246,8 @@ beforeEach(() => {
 		h.poll,
 		h.apply,
 		h.applyPoll,
+		h.cancelApply,
+		h.applyRow,
 		h.conversation,
 		h.model,
 		h.bind,
@@ -253,6 +262,11 @@ beforeEach(() => {
 			content: "Review Teams and meetings",
 		},
 	];
+	h.cancelApply.mockResolvedValue({ cancelled: true });
+	h.applyRow.mockResolvedValue({
+		status: "APPLYING",
+		applyWorkflowId: "example-apply",
+	});
 	h.start.mockResolvedValue({ workflowId: "example-workflow" });
 	h.conversation.mockResolvedValue({ id: "example-conversation" });
 	h.poll.mockResolvedValue({ progress: { status: "complete" }, proposal });
@@ -412,13 +426,19 @@ describe("BacklogChat application sequencing", () => {
 			mountChat();
 			entry();
 			fireEvent.click(screen.getByText("Confirm sources"));
-			await tick(variant === "timeout" ? 302000 : 2000);
+			await tick(
+				variant === "timeout"
+					? 2702000
+					: variant === "read-error"
+						? 124000
+						: 2000,
+			);
 			expect(screen.queryByTestId("review")).toBeNull();
 			expect(
 				screen.getByText(
 					variant === "zero"
 						? "No Backlog Changes Needed"
-						: variant === "timeout"
+						: variant === "timeout" || variant === "read-error"
 							? "Analysis Timed Out"
 							: "Analysis Failed",
 				),
@@ -696,7 +716,7 @@ it("keeps apply failures in the card instead of importing disappearing toasts", 
 
 it("times out a hung progress read and fences its late result", async () => {
 	let finish!: (value: unknown) => void;
-	h.poll.mockReturnValueOnce(
+	h.poll.mockReturnValue(
 		new Promise((resolve) => {
 			finish = resolve;
 		}),
@@ -757,7 +777,7 @@ describe("round 1 flow lifecycle", () => {
 				workflowId: "example-apply",
 				proposalId: "example-proposal",
 			});
-			h.applyPoll.mockResolvedValue({ status: "running" });
+			h.applyPoll.mockResolvedValue({ status: "applying" });
 			const chat = mountChat();
 			entry();
 			if (phase !== "selecting") {
@@ -869,7 +889,7 @@ describe("round 1 flow lifecycle", () => {
 					}),
 				);
 			} else {
-				h.applyPoll.mockResolvedValue({ status: "running" });
+				h.applyPoll.mockResolvedValue({ status: "applying" });
 			}
 			mountChat();
 			const owner = entry();
@@ -879,9 +899,9 @@ describe("round 1 flow lifecycle", () => {
 			act(() => {
 				done = h.proposal.onApprove(proposal.changes, false);
 			});
-			await tick(variant === "timeout" ? 302000 : 2000);
+			await tick(variant === "timeout" ? 2702000 : 124000);
 			await done;
-			expect(h.proposal.applyResult?.status).toBe("failed");
+			expect(h.proposal.applyResult?.status).toBe("unconfirmed");
 			expect(h.proposal.applyProgressMsg).toBeFalsy();
 			expect(owner.card).toBeDefined();
 			owner.card?.unmount();
@@ -890,7 +910,7 @@ describe("round 1 flow lifecycle", () => {
 					{owner.ui}
 				</QueryClientProvider>,
 			);
-			expect(h.proposal.applyResult?.status).toBe("failed");
+			expect(h.proposal.applyResult?.status).toBe("unconfirmed");
 			h.apply.mockResolvedValue({ workflowId: null });
 			await act(async () => {
 				await h.proposal.onApprove(proposal.changes, false);
@@ -1073,7 +1093,7 @@ describe("round 1 flow lifecycle", () => {
 			expect(screen.getByText("Retry apply")).toBeInTheDocument();
 		},
 	);
-	it("leaves applying on the deadline even when a progress read hangs", async () => {
+	it("marks a hung apply read unconfirmed and admits a new flow", async () => {
 		h.apply.mockResolvedValue({
 			workflowId: "example-apply",
 			proposalId: "example-proposal",
@@ -1087,6 +1107,7 @@ describe("round 1 flow lifecycle", () => {
 			void h.proposal.onApprove(proposal.changes, false);
 		});
 		await tick(302000);
+		expect(h.proposal.applyResult?.status).toBe("unconfirmed");
 		expect(h.proposal.applyResult?.message).toContain("Review proposals");
 		h.messages = [
 			...h.messages,
@@ -1094,7 +1115,7 @@ describe("round 1 flow lifecycle", () => {
 		];
 		chat.refresh();
 		expect(entry().result.flowId).toEqual(expect.any(String));
-		expect(h.applyPoll).toHaveBeenCalledTimes(1);
+		expect(h.applyPoll.mock.calls.length).toBeGreaterThan(1);
 	});
 	it("times out a hung apply start and retries the frozen operation", async () => {
 		h.apply
@@ -1136,7 +1157,7 @@ describe("round 1 flow lifecycle", () => {
 			const chat = mountChat();
 			entry();
 			fireEvent.click(screen.getByText("Confirm sources"));
-			await tick();
+			await tick(known ? 124000 : 2000);
 			expect(
 				screen.getByText(
 					known ? "Check existing analysis" : "Retry analysis",
@@ -1164,7 +1185,7 @@ describe("round 1 flow lifecycle", () => {
 		});
 		h.applyPoll
 			.mockResolvedValueOnce({
-				status: "running",
+				status: "applying",
 				message: "Applying item",
 			})
 			.mockResolvedValue({
@@ -1280,17 +1301,17 @@ describe("round 1 flow lifecycle", () => {
 		);
 	});
 	it("continues reconciling a known workflow and treats missing changes as no changes", async () => {
+		h.poll.mockRejectedValue(new Error("Unavailable"));
+		mountChat();
+		entry();
+		fireEvent.click(screen.getByText("Confirm sources"));
+		await tick(124000);
 		h.poll
-			.mockRejectedValueOnce(new Error("Unavailable"))
 			.mockResolvedValueOnce({ progress: { status: "analyzing" } })
 			.mockResolvedValue({
 				progress: { status: "complete" },
 				proposal: { summary: "None" },
 			});
-		mountChat();
-		entry();
-		fireEvent.click(screen.getByText("Confirm sources"));
-		await tick();
 		fireEvent.click(screen.getByText("Check existing analysis"));
 		await tick(6000);
 		expect(
@@ -1516,3 +1537,757 @@ it("re-seeds a registered agent that replaces the provisional one, keeping its l
 		h.agent = provisional;
 	}
 });
+
+describe("long-running workflow polling", () => {
+	async function beginApply() {
+		h.apply.mockResolvedValue({
+			workflowId: "example-apply",
+			proposalId: "example-proposal",
+		});
+		const onChangesApplied = vi.fn();
+		const chat = mountChat({ onChangesApplied });
+		const owner = entry();
+		if (!owner.client) {
+			throw new Error("Expected a flow card");
+		}
+		fireEvent.click(screen.getByText("Confirm sources"));
+		await tick();
+		const invalidate = vi.spyOn(owner.client, "invalidateQueries");
+		let applyDone!: Promise<unknown>;
+		act(() => {
+			applyDone = h.proposal.onApprove(proposal.changes, false);
+		});
+		await tick(0);
+		return { onChangesApplied, invalidate, chat, owner, applyDone };
+	}
+	it("ends complete analysis without a proposal and displays the skipped reason", async () => {
+		h.poll.mockResolvedValue({
+			progress: {
+				status: "complete",
+				message: "Selected meetings have no transcript.",
+			},
+			proposal: null,
+		});
+		const chat = mountChat();
+		entry("analyze_backlog");
+		await tick(2000);
+		expect(
+			screen.getByText("No Backlog Changes Needed"),
+		).toBeInTheDocument();
+		expect(
+			screen.getByText("Selected meetings have no transcript."),
+		).toBeInTheDocument();
+		const calls = h.poll.mock.calls.length;
+		await tick(20000);
+		expect(h.poll).toHaveBeenCalledTimes(calls);
+		h.messages = [
+			...h.messages,
+			{
+				role: "user",
+				id: "example-after-empty",
+				content: "Review again",
+			},
+		];
+		chat.refresh();
+		expect(entry().result.flowId).toEqual(expect.any(String));
+	});
+	it("ends server-cancelled analysis neutrally and allows a new request", async () => {
+		h.poll.mockResolvedValue({
+			progress: {
+				status: "cancelled",
+				message: "Analysis cancelled by user",
+			},
+			proposal: null,
+		});
+		const chat = mountChat();
+		entry("analyze_backlog");
+		await tick(2000);
+		const message = screen.getByText("Analysis cancelled.");
+		expect(message.closest("[aria-live]")).toHaveAttribute(
+			"aria-live",
+			"polite",
+		);
+		expect(screen.queryByText("Analysis Failed")).toBeNull();
+		const calls = h.poll.mock.calls.length;
+		await tick(20000);
+		expect(h.poll).toHaveBeenCalledTimes(calls);
+		h.messages = [
+			...h.messages,
+			{
+				role: "user",
+				id: "example-after-cancelled",
+				content: "Review again",
+			},
+		];
+		chat.refresh();
+		expect(entry().result.flowId).toEqual(expect.any(String));
+	});
+	it.each(["Cancelled", "TimedOut"])(
+		"uses the matching %s row over terminal failed progress",
+		async (errorClass) => {
+			const { onChangesApplied, applyDone } = await beginApply();
+			h.applyPoll.mockResolvedValue({
+				status: "failed",
+				message: "Workflow terminated",
+			});
+			h.applyRow.mockResolvedValue({
+				status: "FAILED",
+				applyWorkflowId: "example-apply",
+				errorClass,
+				errorMessage: "Example stopped apply",
+			});
+			await tick(2000);
+			await applyDone;
+			expect(h.proposal.applyResult).toMatchObject({
+				status: errorClass === "Cancelled" ? "unconfirmed" : "failed",
+				message:
+					errorClass === "Cancelled"
+						? "Apply cancelled. You can retry it from Review proposals."
+						: "Example stopped apply",
+			});
+			expect(onChangesApplied).toHaveBeenCalledTimes(1);
+		},
+	);
+	it("checks a failed apply row even inside the row-check interval", async () => {
+		const { onChangesApplied } = await beginApply();
+		h.applyPoll
+			.mockResolvedValueOnce({ status: "applying" })
+			.mockResolvedValue({
+				status: "failed",
+				message: "Workflow terminated",
+			});
+		await tick(2000);
+		h.applyRow.mockResolvedValue({
+			status: "FAILED",
+			applyWorkflowId: "example-apply",
+			errorClass: "Cancelled",
+		});
+		await tick(2000);
+		expect(h.proposal.applyResult?.status).toBe("unconfirmed");
+		expect(onChangesApplied).toHaveBeenCalledTimes(1);
+	});
+	it("uses a confirmed banner cancellation after a racing failed read finishes first", async () => {
+		const { onChangesApplied } = await beginApply();
+		let finishCancel!: (value: { cancelled: boolean }) => void;
+		h.cancelApply.mockReturnValue(
+			new Promise((resolve) => {
+				finishCancel = resolve;
+			}),
+		);
+		act(() => {
+			void h.proposal.onCancelApply();
+		});
+		h.applyPoll.mockResolvedValue({
+			status: "failed",
+			message: "Workflow terminated",
+		});
+		await tick(2000);
+		await act(async () => {
+			finishCancel({ cancelled: true });
+		});
+		expect(h.proposal.applyResult?.status).toBe("unconfirmed");
+		expect(h.proposal.applyResult?.message).toBe(
+			"Apply cancelled. You can retry it from Review proposals.",
+		);
+		// The failed progress and subsequent cancel acknowledgement each refresh.
+		expect(onChangesApplied).toHaveBeenCalledTimes(2);
+	});
+
+	it("keeps banner cancellation when a terminal failed row read settles late", async () => {
+		const { onChangesApplied, applyDone } = await beginApply();
+		h.applyPoll.mockResolvedValue({
+			status: "failed",
+			message: "Workflow terminated",
+		});
+		let finishRow!: (row: unknown) => void;
+		h.applyRow.mockReturnValue(
+			new Promise((resolve) => {
+				finishRow = resolve;
+			}),
+		);
+		await tick(2000);
+		expect(h.proposal.onCancelApply).toEqual(expect.any(Function));
+		await act(async () => {
+			await h.proposal.onCancelApply();
+		});
+		await applyDone;
+		await act(async () => {
+			finishRow({
+				status: "FAILED",
+				applyWorkflowId: "example-apply",
+				errorClass: "TimedOut",
+			});
+		});
+		expect(h.proposal.applyResult?.status).toBe("unconfirmed");
+		expect(onChangesApplied).toHaveBeenCalledTimes(1);
+	});
+	it("uses only the slow hint for generic analysis and apply placeholders", async () => {
+		h.poll.mockResolvedValue({ progress: { status: "analyzing" } });
+		mountChat();
+		entry("analyze_backlog");
+		await tick(300000);
+		const message = screen.getByText(/Still analyzing/);
+		expect(message.textContent).not.toMatch(
+			/Analyzing\.\.\.|leave this page/,
+		);
+		h.poll.mockResolvedValue({
+			progress: { status: "complete" },
+			proposal,
+		});
+		await tick(10000);
+		h.apply.mockResolvedValue({
+			workflowId: "example-apply",
+			proposalId: "example-proposal",
+		});
+		h.applyPoll.mockResolvedValue({ status: "applying" });
+		act(() => {
+			void h.proposal.onApprove(proposal.changes, false);
+		});
+		await tick(300000);
+		expect(h.proposal.applyProgressMsg).toMatch(/^Still applying/);
+		expect(h.proposal.applyProgressMsg).not.toContain("Applying...");
+	});
+
+	it("keeps partial success when a syncing read races the workflow's FAILED default row", async () => {
+		const { onChangesApplied } = await beginApply();
+		h.applyPoll
+			.mockResolvedValueOnce({ status: "syncing_pm" })
+			.mockResolvedValue({
+				status: "completed",
+				createdItems: [
+					{
+						identifier: "EX-1",
+						title: "Example feature",
+						type: "feature",
+					},
+				],
+				failedItems: [
+					{
+						title: "Other feature",
+						type: "feature",
+						reason: "Example item error",
+					},
+				],
+			});
+		h.applyRow.mockResolvedValue({
+			status: "FAILED",
+			applyWorkflowId: "example-apply",
+			errorClass: "default",
+			errorMessage: "Example partial apply",
+		});
+		await tick(4000);
+		expect(h.proposal.applyResult).toMatchObject({
+			status: "success",
+			createdCount: 1,
+			failedCount: 1,
+		});
+		expect(onChangesApplied).toHaveBeenCalledTimes(1);
+	});
+	it("removes abort listeners after each wait instead of retaining one across the poll loop", async () => {
+		const abort = new AbortController();
+		const added = vi.spyOn(abort.signal, "addEventListener");
+		const removed = vi.spyOn(abort.signal, "removeEventListener");
+		const polling = pollWorkflowProgress(
+			async () => "example progress",
+			() => {},
+			() => true,
+			true,
+			abort.signal,
+		);
+		expect(await polling.next()).toMatchObject({ done: false });
+		expect(added).toHaveBeenCalledTimes(1);
+		expect(removed).toHaveBeenCalledTimes(1);
+		const waiting = polling.next();
+		abort.abort();
+		expect(await waiting).toMatchObject({ done: true });
+		expect(removed.mock.calls.length).toBe(added.mock.calls.length);
+	});
+	it("ends banner cancellation promptly during a hung read and frees the chat", async () => {
+		const { onChangesApplied, invalidate, chat, applyDone } =
+			await beginApply();
+		h.applyPoll.mockImplementation(() => new Promise(() => {}));
+		await tick(2000);
+		await act(async () => {
+			await h.proposal.onCancelApply();
+		});
+		await applyDone;
+		expect(h.proposal.applyResult).toMatchObject({
+			status: "unconfirmed",
+			message: "Apply cancelled. You can retry it from Review proposals.",
+		});
+		expect(h.proposal.onCancelApply).toBeUndefined();
+		expect(invalidate).toHaveBeenCalledWith({
+			queryKey: [
+				"projects.backlog.proposals.failedCount",
+				"example-project",
+				"example-org",
+			],
+		});
+		expect(onChangesApplied).toHaveBeenCalledTimes(1);
+		const calls = h.applyPoll.mock.calls.length;
+		await tick(32000);
+		expect(h.applyPoll).toHaveBeenCalledTimes(calls);
+		h.messages = [
+			...h.messages,
+			{
+				role: "user",
+				id: "example-after-cancel",
+				content: "Review another batch",
+			},
+		];
+		chat.refresh();
+		expect(entry().result.flowId).toEqual(expect.any(String));
+	});
+	it("ends server cancellation before the proposal row is stamped neutrally", async () => {
+		const { onChangesApplied, invalidate, applyDone } = await beginApply();
+		h.applyRow.mockResolvedValue({
+			status: "APPLYING",
+			applyWorkflowId: "example-apply",
+		});
+		h.applyPoll.mockResolvedValue({
+			status: "cancelled",
+			message: "Apply cancelled.",
+		});
+		await tick(2000);
+		await applyDone;
+		expect(h.proposal.applyResult).toMatchObject({
+			status: "unconfirmed",
+			message: "Apply cancelled. You can retry it from Review proposals.",
+		});
+		expect(onChangesApplied).toHaveBeenCalledTimes(1);
+		expect(invalidate).toHaveBeenCalledTimes(1);
+		expect(h.cancelApply).not.toHaveBeenCalled();
+	});
+	it.each(["watchdog", "unknown stop"])(
+		"refreshes the roadmap for a %s failure before the proposal row is stamped",
+		async (kind) => {
+			const { onChangesApplied, invalidate, applyDone, chat, owner } =
+				await beginApply();
+			h.applyRow.mockResolvedValue({
+				status: "APPLYING",
+				applyWorkflowId: "example-apply",
+			});
+			h.applyPoll.mockResolvedValue({
+				status: "failed",
+				message:
+					kind === "watchdog"
+						? "Apply stopped because it stopped making progress. Open Review proposals to retry it."
+						: "Apply was stopped.",
+			});
+			owner.card?.unmount();
+			chat.unmount();
+			await tick(2000);
+			await applyDone;
+			expect(invalidate).toHaveBeenCalledTimes(1);
+			expect(onChangesApplied).toHaveBeenCalledTimes(1);
+		},
+	);
+
+	it("ends a server cancelled status neutrally and refreshes the roadmap", async () => {
+		const { onChangesApplied, invalidate, applyDone } = await beginApply();
+		h.applyPoll.mockResolvedValue({
+			status: "cancelled",
+			message: "Apply cancelled by user",
+		});
+		await tick(2000);
+		await applyDone;
+		expect(h.proposal.applyResult).toMatchObject({
+			status: "unconfirmed",
+			message: "Apply cancelled. You can retry it from Review proposals.",
+		});
+		expect(invalidate).toHaveBeenCalledTimes(1);
+		expect(onChangesApplied).toHaveBeenCalledTimes(1);
+		expect(screen.queryByText("Retry apply")).toBeNull();
+	});
+	it("does not cancel when the procedure returns cancelled false", async () => {
+		await beginApply();
+		h.cancelApply.mockResolvedValue({ cancelled: false });
+		h.applyPoll.mockResolvedValue({ status: "applying" });
+		await act(async () => {
+			await h.proposal.onCancelApply();
+		});
+		expect(h.proposal.applyResult).toBeNull();
+		h.applyPoll.mockResolvedValue({
+			status: "completed",
+			createdItems: [],
+		});
+		await tick(2000);
+		expect(h.proposal.applyResult?.status).toBe("success");
+	});
+	it("keeps completion when it arrives before the cancel response", async () => {
+		await beginApply();
+		let finishCancel!: (value: { cancelled: boolean }) => void;
+		h.cancelApply.mockReturnValue(
+			new Promise((resolve) => {
+				finishCancel = resolve;
+			}),
+		);
+		act(() => {
+			void h.proposal.onCancelApply();
+		});
+		h.applyPoll.mockResolvedValue({
+			status: "completed",
+			createdItems: [],
+		});
+		await tick(2000);
+		await act(async () => {
+			finishCancel({ cancelled: true });
+		});
+		expect(h.proposal.applyResult?.status).toBe("success");
+	});
+	it("keeps cancellation when a previously dispatched progress read completes late", async () => {
+		await beginApply();
+		let finishRead!: (value: unknown) => void;
+		h.applyPoll.mockReturnValue(
+			new Promise((resolve) => {
+				finishRead = resolve;
+			}),
+		);
+		await tick(2000);
+		await act(async () => {
+			await h.proposal.onCancelApply();
+		});
+		await act(async () => {
+			finishRead({ status: "completed", createdItems: [] });
+		});
+		expect(h.proposal.applyResult?.message).toBe(
+			"Apply cancelled. You can retry it from Review proposals.",
+		);
+	});
+	it("fences a cancelled apply's late read after a newer flow reaches review", async () => {
+		const { chat, onChangesApplied, applyDone } = await beginApply();
+		let finishRead!: (value: unknown) => void;
+		h.applyPoll.mockReturnValue(
+			new Promise((resolve) => {
+				finishRead = resolve;
+			}),
+		);
+		await tick(2000);
+		await act(async () => {
+			await h.proposal.onCancelApply();
+		});
+		await applyDone;
+		h.messages = [
+			...h.messages,
+			{
+				role: "user",
+				id: "example-new-flow",
+				content: "Review next batch",
+			},
+		];
+		chat.refresh();
+		expect(entry("analyze_backlog").result.flowId).toEqual(
+			expect.any(String),
+		);
+		await tick(2000);
+		expect(h.proposal.approval.state).toBe("reviewing");
+		await act(async () => {
+			finishRead({ status: "completed", createdItems: [] });
+		});
+		expect(h.proposal.approval.state).toBe("reviewing");
+		expect(h.proposal.applyResult).toBeNull();
+		expect(onChangesApplied).toHaveBeenCalledTimes(1);
+	});
+
+	it("refreshes the roadmap and failed count when apply completes after panel unmount", async () => {
+		const { onChangesApplied, invalidate, chat, owner } =
+			await beginApply();
+		h.applyPoll
+			.mockResolvedValueOnce({ status: "applying" })
+			.mockResolvedValue({ status: "completed", createdItems: [] });
+		await tick(2000);
+		owner.card?.unmount();
+		chat.unmount();
+		await tick(2000);
+		expect(onChangesApplied).toHaveBeenCalledTimes(1);
+		expect(invalidate).toHaveBeenCalledTimes(1);
+	});
+	it("uses accurate slow and unconfirmed copy and refreshes on give-up", async () => {
+		const { onChangesApplied, invalidate } = await beginApply();
+		h.applyPoll.mockResolvedValue({ status: "applying" });
+		await tick(300000);
+		expect(h.proposal.applyProgressMsg).not.toMatch(
+			/results appear in Review proposals|Failed/,
+		);
+		expect(h.proposal.applyProgressMsg).toContain(
+			"keeps running if you leave this page",
+		);
+		await tick(2400000);
+		expect(h.proposal.applyResult.message).toContain(
+			"new items are on the roadmap",
+		);
+		expect(h.proposal.applyResult.message).not.toMatch(
+			/for its result|Failed/,
+		);
+		expect(onChangesApplied).toHaveBeenCalledTimes(1);
+		expect(invalidate).toHaveBeenCalledTimes(1);
+	});
+	it.each(["Cancelled", "TimedOut"])(
+		"stops stale non-terminal progress when the same workflow's row reports %s",
+		async (errorClass) => {
+			const { onChangesApplied } = await beginApply();
+			h.applyPoll.mockResolvedValue({ status: "applying" });
+			h.applyRow.mockResolvedValue({
+				status: "FAILED",
+				applyWorkflowId: "example-apply",
+				errorClass,
+				errorMessage: "Example stopped apply",
+			});
+			await tick(12000);
+			expect(h.proposal.applyResult?.status).toBe(
+				errorClass === "Cancelled" ? "unconfirmed" : "failed",
+			);
+			expect(h.proposal.applyResult?.message).toBe(
+				errorClass === "Cancelled"
+					? "Apply cancelled. You can retry it from Review proposals."
+					: "Example stopped apply",
+			);
+			expect(onChangesApplied).toHaveBeenCalledTimes(1);
+		},
+	);
+	it("ignores a replacement workflow's failed proposal row", async () => {
+		await beginApply();
+		h.applyPoll.mockResolvedValue({ status: "applying" });
+		h.applyRow.mockResolvedValue({
+			status: "FAILED",
+			applyWorkflowId: "example-new-apply",
+			errorClass: "TimedOut",
+		});
+		await tick(12000);
+		expect(h.proposal.applyResult).toBeNull();
+		h.applyPoll.mockResolvedValue({
+			status: "completed",
+			createdItems: [],
+		});
+		await tick(2000);
+		expect(h.proposal.applyResult?.status).toBe("success");
+	});
+	it("preserves the checking analysis message until its first read settles", async () => {
+		h.poll.mockRejectedValue(new Error("Unavailable"));
+		mountChat();
+		entry("analyze_backlog");
+		await tick(124000);
+		h.poll.mockImplementation(() => new Promise(() => {}));
+		fireEvent.click(screen.getByText("Check existing analysis"));
+		await tick(0);
+		expect(
+			screen.getByText("Checking existing analysis..."),
+		).toBeInTheDocument();
+	});
+	it("completes an apply after six minutes and shows the slow hint with server progress", async () => {
+		const { onChangesApplied } = await beginApply();
+		const began = Date.now();
+		h.applyPoll.mockImplementation(async () =>
+			Date.now() - began >= 360000
+				? { status: "completed", createdItems: [] }
+				: { status: "applying", message: "Applying example batch" },
+		);
+		await tick(300000);
+		expect(h.proposal.applyProgressMsg).toContain(
+			"taking longer than usual",
+		);
+		expect(h.proposal.applyProgressMsg).toContain("Applying example batch");
+		const calls = h.applyPoll.mock.calls.length;
+		await tick(9000);
+		expect(h.applyPoll).toHaveBeenCalledTimes(calls);
+		await tick(61000);
+		expect(h.proposal.applyResult?.status).toBe("success");
+		expect(onChangesApplied).toHaveBeenCalledTimes(1);
+	});
+	it("shows the slow hint even while an individual apply read hangs across five minutes", async () => {
+		await beginApply();
+		const began = Date.now();
+		h.applyPoll.mockImplementation(() =>
+			Date.now() - began >= 298000
+				? new Promise(() => {})
+				: Promise.resolve({
+						status: "applying",
+						message: "Applying example batch",
+					}),
+		);
+		await tick(300000);
+		expect(h.proposal.applyProgressMsg).toContain(
+			"taking longer than usual",
+		);
+		expect(h.proposal.applyProgressMsg).toContain("Applying example batch");
+	});
+	it("recovers from rejected and NOT_FOUND apply reads", async () => {
+		await beginApply();
+		h.applyPoll
+			.mockRejectedValueOnce(new Error("Unavailable"))
+			.mockRejectedValueOnce(
+				Object.assign(new Error("Restarting"), { code: "NOT_FOUND" }),
+			)
+			.mockResolvedValue({ status: "completed", createdItems: [] });
+		await tick(6000);
+		expect(h.proposal.applyResult?.status).toBe("success");
+	});
+	it("stops consecutive failed apply reads with a neutral result and no fresh retry", async () => {
+		const { onChangesApplied, invalidate } = await beginApply();
+		h.applyPoll.mockRejectedValue(
+			Object.assign(new Error("Restarting"), { code: "NOT_FOUND" }),
+		);
+		await tick(124000);
+		expect(h.proposal.applyResult).toMatchObject({
+			status: "unconfirmed",
+			failedCount: 0,
+		});
+		expect(h.proposal.applyResult.message).toContain(
+			"may still be running",
+		);
+		expect(h.proposal.applyResult.message).not.toContain("Failed");
+		expect(h.proposal.approval.state).toBe("approved");
+		expect(screen.queryByText("Retry apply")).toBeNull();
+		expect(onChangesApplied).toHaveBeenCalledTimes(1);
+		expect(invalidate).toHaveBeenCalledTimes(1);
+	});
+	it("keeps an unconfirmed dispatched retry out of apply-failed", async () => {
+		h.apply
+			.mockRejectedValueOnce(new Error("Response lost"))
+			.mockResolvedValue({ workflowId: "example-existing-apply" });
+		h.applyPoll.mockRejectedValue(new Error("Unavailable"));
+		mountChat();
+		entry();
+		fireEvent.click(screen.getByText("Confirm sources"));
+		await tick();
+		await act(async () => {
+			await h.proposal.onApprove(proposal.changes, false);
+		});
+		fireEvent.click(screen.getByText("Retry apply"));
+		await tick(124000);
+		expect(h.proposal.applyResult?.status).toBe("unconfirmed");
+		expect(h.proposal.approval.state).toBe("approved");
+		expect(screen.queryByText("Retry apply")).toBeNull();
+		await act(async () => {
+			await h.proposal.onApprove(proposal.changes, false);
+		});
+		expect(h.apply).toHaveBeenCalledTimes(2);
+		expect(h.apply.mock.calls[1][0]).toEqual(h.apply.mock.calls[0][0]);
+	});
+	it("resets the apply failed-read window after a successful read", async () => {
+		await beginApply();
+		const began = Date.now();
+		let recovered = false;
+		h.applyPoll.mockImplementation(async () => {
+			const elapsed = Date.now() - began;
+			if (elapsed >= 220000) {
+				return { status: "completed", createdItems: [] };
+			}
+			if (!recovered && elapsed >= 100000) {
+				recovered = true;
+				return { status: "applying" };
+			}
+			throw new Error("Unavailable");
+		});
+		await tick(222000);
+		expect(h.proposal.applyResult?.status).toBe("success");
+	});
+	it("bounds hung apply reads and leaves the result unconfirmed", async () => {
+		await beginApply();
+		h.applyPoll.mockImplementation(() => new Promise(() => {}));
+		await tick(160000);
+		expect(h.proposal.applyResult?.status).toBe("unconfirmed");
+		expect(h.applyPoll.mock.calls.length).toBeGreaterThan(1);
+	});
+	it("stops a non-terminal apply after 45 minutes without failing it", async () => {
+		await beginApply();
+		h.applyPoll.mockResolvedValue({ status: "applying" });
+		await tick(2702000);
+		expect(h.proposal.applyResult?.status).toBe("unconfirmed");
+	});
+	it("shows a server apply failure promptly", async () => {
+		await beginApply();
+		h.applyPoll.mockResolvedValue({
+			status: "failed",
+			message: "Example terminal failure",
+		});
+		await tick(2000);
+		expect(h.proposal.applyResult).toMatchObject({
+			status: "failed",
+			message: "Example terminal failure",
+		});
+	});
+	it("reaches review after six minutes of analysis and shows the slow hint", async () => {
+		const began = Date.now();
+		h.poll.mockImplementation(async () =>
+			Date.now() - began >= 360000
+				? { progress: { status: "complete" }, proposal }
+				: {
+						progress: {
+							status: "analyzing",
+							message: "Reading example context",
+						},
+					},
+		);
+		mountChat();
+		entry("analyze_backlog");
+		await tick(300000);
+		expect(screen.getByText(/taking longer than usual/)).toHaveTextContent(
+			"Reading example context",
+		);
+		await tick(70000);
+		expect(screen.getByTestId("review")).toBeInTheDocument();
+	});
+	it("recovers analysis from a hung read followed by completion", async () => {
+		h.poll
+			.mockImplementationOnce(() => new Promise(() => {}))
+			.mockRejectedValueOnce(
+				Object.assign(new Error("Restarting"), { code: "NOT_FOUND" }),
+			)
+			.mockResolvedValue({ progress: { status: "complete" }, proposal });
+		mountChat();
+		entry("analyze_backlog");
+		await tick(36000);
+		expect(screen.getByTestId("review")).toBeInTheDocument();
+	});
+	it("reconciles a sustained analysis read outage to a terminal server failure", async () => {
+		h.poll.mockRejectedValue(new Error("Unavailable"));
+		mountChat();
+		entry("analyze_backlog");
+		await tick(124000);
+		expect(screen.getByText(/may still be running/)).toBeInTheDocument();
+		expect(screen.queryByText("Analysis Failed")).toBeNull();
+		h.poll.mockResolvedValue({
+			progress: { status: "failed", message: "Example terminal failure" },
+		});
+		fireEvent.click(screen.getByText("Check existing analysis"));
+		await tick(0);
+		expect(screen.getByText("Analysis Failed")).toBeInTheDocument();
+		expect(
+			screen.getByText("Example terminal failure"),
+		).toBeInTheDocument();
+		expect(h.start).toHaveBeenCalledTimes(1);
+	});
+	it("tolerates transient analysis reads and still fails promptly on server failure", async () => {
+		h.poll
+			.mockRejectedValueOnce(
+				Object.assign(new Error("Restarting"), { code: "NOT_FOUND" }),
+			)
+			.mockResolvedValue({
+				progress: {
+					status: "failed",
+					message: "Example analysis failure",
+				},
+			});
+		mountChat();
+		entry("analyze_backlog");
+		await tick(4000);
+		expect(screen.getByText("Analysis Failed")).toBeInTheDocument();
+		expect(
+			screen.getByText("Example analysis failure"),
+		).toBeInTheDocument();
+	});
+});
+
+it.each(["apply", "analysis"] as const)(
+	"does not double the generic %s slow message",
+	(operation) => {
+		const message = workflowPollMessage(
+			operation === "apply" ? "Applying..." : "Analyzing...",
+			true,
+			operation,
+		);
+		expect(message).toMatch(/^Still /);
+		expect(message).not.toMatch(/Applying\.\.\.|Analyzing\.\.\./);
+	},
+);

@@ -14,10 +14,15 @@ import {
 const ROUTED_METHODS = [
 	"list_projects",
 	"get_project",
-	"list_issues",
 	"get_issue",
 	"list_merge_requests",
 	"get_merge_request",
+] as const;
+
+/** Methods GitLab's official MCP server has no tool for: REST only. */
+const REST_ONLY_METHODS = [
+	"list_issues",
+	"list_issue_notes",
 	"get_file_contents",
 	"update_issue",
 ] as const;
@@ -158,6 +163,23 @@ describe("GitLab routing parity (MCP <> REST)", () => {
 			});
 			expect(out).toEqual({ method, fromRest: true });
 			expect(restFallback).toHaveBeenCalledOnce();
+		},
+	);
+
+	it.each(REST_ONLY_METHODS)(
+		"sends %s to REST without calling the official MCP endpoint",
+		async (method) => {
+			const source = await resolveGitLabSource(makeResolverArgs());
+			expect(source?.kind).toBe("official-mcp");
+
+			const out = await callMcpWithRestFallback({
+				source: source!,
+				method,
+				args: {},
+				restFallback: async () => ({ method, fromRest: true }),
+			});
+			expect(out).toEqual({ method, fromRest: true });
+			expect(fetchSpy).not.toHaveBeenCalled();
 		},
 	);
 });

@@ -1,5 +1,11 @@
 # @fabricorg/sdk-mcp
 
+## 0.1.15
+
+### Patch Changes
+
+- afb2038: Validation built on zod 4 now requires zod 4.6.7, which rejects a list over its size limit before checking each item, so an oversized input no longer drives memory use up through those schemas.
+
 ## 0.1.14
 
 ### Patch Changes

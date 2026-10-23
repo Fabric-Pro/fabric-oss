@@ -19,7 +19,9 @@
  *   - a CONFLICT shows the conflict toast, reports no success, leaves the
  *     proposal in the editor, reads as unsaved, and refetches the document;
  *     a CONFLICT because a generation run holds the document says a run is
- *     writing instead (Fizzy #2946).
+ *     writing instead (Fizzy #2946);
+ *   - the regeneration review counts both bodies' words as the server counts
+ *     a document's, a diagram fence or an image being no words (Fizzy #2946).
  *
  * Mocking harness copied from `DocumentEditor.visual-slots.test.tsx`. Changed
  * here: a small fake server behind `documents.get` and `documents.update`
@@ -31,6 +33,7 @@
  * be switched on over a fake room.
  */
 
+import { countDocumentWords } from "@repo/utils/document-word-count";
 import { serializeVisualSlot } from "@repo/utils/glossy/visual-slots";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -59,6 +62,8 @@ let documentGetCalls = 0;
 const saveCalls: Array<Record<string, unknown>> = [];
 /** The next save is refused with this error, writing nothing. */
 let refuseNextSave: Error | null = null;
+/** What the editor records of a confirm in the chat. */
+const recordOutcome = vi.fn();
 
 function serverDocument() {
 	return {
@@ -247,11 +252,12 @@ vi.mock("@saas/projects/lib/tiptap-extensions", async (importOriginal) => ({
 // test can walk a run; every action config is recorded.
 let mockIsLoading = false;
 let mockAgentState: Record<string, unknown> = {};
+const coAgentSetState = vi.fn();
 const actionConfigs = new Map<string, Record<string, any>>();
 vi.mock("@copilotkit/react-core", () => ({
 	useCoAgent: () => ({
 		state: mockAgentState,
-		setState: vi.fn(),
+		setState: coAgentSetState,
 		nodeName: undefined,
 	}),
 	useCopilotAction: (config: Record<string, any>) => {
@@ -356,7 +362,12 @@ vi.mock("@tiptap/react", () => ({
 }));
 
 vi.mock("sonner", () => ({
-	toast: { error: vi.fn(), success: vi.fn(), info: vi.fn() },
+	toast: {
+		error: vi.fn(),
+		success: vi.fn(),
+		info: vi.fn(),
+		dismiss: vi.fn(),
+	},
 }));
 
 // Scrolling helpers reach for layout jsdom does not have.
@@ -389,7 +400,7 @@ vi.mock("@saas/agents/components/FabricAgentLauncher", () => ({
 	useRegisterFabricAgentContext: vi.fn(),
 }));
 vi.mock("@saas/agents/copilot/useConfirmChangesOperationResult", () => ({
-	useConfirmChangesOperationResult: () => vi.fn(),
+	useConfirmChangesOperationResult: () => recordOutcome,
 }));
 vi.mock("@saas/agents/hooks/useCodeContextLauncher", () => ({
 	useCodeContextLauncher: () => ({
@@ -476,7 +487,7 @@ vi.mock(
 
 import { DocumentEditor } from "@saas/projects/components/DocumentEditor";
 import { GENERATION_RUN_AWARENESS_FIELD } from "@saas/projects/components/proposal-artifact/generation-run-awareness";
-import { fromMarkdown } from "@saas/projects/lib/diff-utils";
+import { fromMarkdown, toAgentDocument } from "@saas/projects/lib/diff-utils";
 import { getEditorMarkdownForSave } from "@saas/projects/lib/editor-markdown-save";
 import { createAdvancedExtensions } from "@saas/projects/lib/tiptap-extensions-advanced";
 import { toast } from "sonner";
@@ -548,20 +559,22 @@ async function nextFrames() {
 
 /**
  * One assistant run that proposes `proposed`, reviewed and accepted through
- * the confirm card, then resolved so a later run can arm again.
+ * the confirm card, then resolved so a later run can arm again. `settle`
+ * lets each step land; a test on a fake clock passes one that steps it.
  */
 async function acceptProposal(
 	rerender: (ui: ReactElement) => void,
 	proposed: string,
+	settle: () => Promise<void> = flush,
 ) {
 	mockAgentState = {};
 	mockIsLoading = true;
 	rerender(tree());
-	await flush();
+	await settle();
 	mockAgentState = { document: proposed };
 	mockIsLoading = false;
 	rerender(tree());
-	await flush();
+	await settle();
 
 	const respond = vi.fn();
 	let card: ReactElement | undefined;
@@ -573,11 +586,11 @@ async function acceptProposal(
 		});
 		await Promise.resolve();
 	});
-	await flush();
+	await settle();
 	await act(async () => {
 		(card?.props as { onConfirm: () => void }).onConfirm();
 	});
-	await flush();
+	await settle();
 	await act(async () => {
 		actionConfigs.get("confirm_changes")?.renderAndWaitForResponse({
 			args: {},
@@ -709,6 +722,73 @@ describe("DocumentEditor — the assistant accept's version guard (KTD17)", () =
 		expect(toast.success).toHaveBeenCalledWith(
 			"Changes applied — saved as v8",
 		);
+		// Recorded in the chat once its save has landed (Fizzy #2946).
+		expect(recordOutcome).toHaveBeenCalledTimes(1);
+		expect(recordOutcome).toHaveBeenCalledWith({
+			accepted: true,
+			summary: "Changes applied.",
+			operationKey: expect.any(String),
+		});
+	});
+
+	it("hands the agent the document without Turndown's escapes", async () => {
+		// Arrange
+		const escaped = "## Notes\n\nSources \\[S1\\] and a path C:\\\\Users.";
+
+		// Act
+		await mount(escaped);
+		const sent = coAgentSetState.mock.calls
+			.map(([update]) =>
+				typeof update === "function" ? update({}) : update,
+			)
+			.map((state) => state?.document)
+			.filter(
+				(document): document is string => typeof document === "string",
+			)
+			.filter((document) => document.length > 0);
+
+		// Assert
+		expect(sent.length).toBeGreaterThan(0);
+		expect(sent.at(-1)).toContain("Sources [S1] and a path C:\\\\Users.");
+		for (const document of sent) {
+			expect(document).not.toContain("\\[");
+		}
+	});
+
+	it("treats a proposal that only drops the editor's escapes as unchanged", async () => {
+		// Arrange
+		const { rerender, editor } = await mount(
+			"## Notes\n\nSources \\[S1\\] and \\[S2\\].",
+		);
+		const baseline = getEditorMarkdownForSave(editor) ?? "";
+		mockAgentState = {};
+		mockIsLoading = true;
+		rerender(tree());
+		await flush();
+		mockAgentState = { document: toAgentDocument(baseline) };
+		mockIsLoading = false;
+		rerender(tree());
+		await flush();
+		const respond = vi.fn();
+
+		// Act
+		await act(async () => {
+			actionConfigs.get("confirm_changes")?.renderAndWaitForResponse({
+				args: {},
+				respond,
+				status: "executing",
+			});
+			await Promise.resolve();
+		});
+		await flush();
+
+		// Assert
+		expect(baseline).toContain("\\[S1\\]");
+		expect(respond).toHaveBeenCalledWith({ accepted: false });
+		expect(toast.info).toHaveBeenCalledWith(
+			"No updates found — the document is unchanged.",
+		);
+		expect(saveCalls).toHaveLength(0);
 	});
 
 	it("a later slotted accept is guarded with the version the previous save answered with", async () => {
@@ -842,12 +922,24 @@ describe("DocumentEditor — the assistant accept's version guard (KTD17)", () =
 		expect(saveCalls[0].expectedVersion).toBe(7);
 		expect(server).toEqual({ content: elsewhere, version: 8 });
 
-		// Told plainly, never told it worked.
+		// Told plainly, never told it worked — in the document's one
+		// refused-save toast, which the next save that lands takes away
+		// (Fizzy #2946).
 		expect(toast.error).toHaveBeenCalledWith(
 			expect.stringMatching(
 				/^Your accepted changes were not saved: the document changed in the meantime\./,
 			),
+			{ id: "document-save-failed:doc-1" },
 		);
+		// The chat records the refusal once, never that it was applied.
+		expect(recordOutcome).toHaveBeenCalledTimes(1);
+		expect(recordOutcome).toHaveBeenCalledWith({
+			accepted: true,
+			outcome: "failure",
+			summary:
+				"The accepted changes could not be saved; they are still in the editor.",
+			operationKey: expect.any(String),
+		});
 		// Not the generic refusal either (translations echo their keys).
 		expect(toast.error).not.toHaveBeenCalledWith("failed");
 		expect(toast.error).not.toHaveBeenCalledWith("changedMeanwhile");
@@ -904,6 +996,83 @@ describe("DocumentEditor — the assistant accept's version guard (KTD17)", () =
 		await waitFor(() => {
 			expect(documentGetCalls).toBeGreaterThan(getCallsBeforeAccept);
 		});
+	});
+
+	it("says beside Save that the assistant is finishing while the run that answers an accepted proposal keeps the editor read-only, and nothing once it ends (Fizzy #2946)", async () => {
+		const { rerender, editor } = await mount(STORED);
+		await acceptProposal(rerender, PROPOSED);
+		expect(within(saveSlot).queryByText("assistantFinishing")).toBeNull();
+		expect(editor.isEditable).toBe(true);
+
+		// The short run CopilotKit starts after an Accept: the chat is busy,
+		// and no message was sent, so no Generating pill.
+		mockIsLoading = true;
+		rerender(tree());
+		await flush();
+		expect(editor.isEditable).toBe(false);
+		const status = await within(saveSlot).findByText("assistantFinishing");
+		expect(status.closest("output")).toHaveAttribute("aria-live", "polite");
+
+		mockIsLoading = false;
+		rerender(tree());
+		await flush();
+		expect(within(saveSlot).queryByText("assistantFinishing")).toBeNull();
+		expect(editor.isEditable).toBe(true);
+	});
+
+	it("says nothing while the chat is busy with no proposal answered — the connect handshake on a page load — however long it lasts, and says it once the run an accept starts has held the editor for its delay (Fizzy #2946)", async () => {
+		const { rerender } = await mount(STORED);
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const shown = () =>
+				within(saveSlot).queryByText("assistantFinishing");
+			const step = (ms: number) =>
+				act(async () => {
+					await vi.advanceTimersByTimeAsync(ms);
+				});
+
+			// Busy for a second with nothing answered: never shown.
+			mockIsLoading = true;
+			rerender(tree());
+			await step(1000);
+			expect(shown()).toBeNull();
+			mockIsLoading = false;
+			rerender(tree());
+			await step(0);
+
+			// The run an accept starts: shown once its delay has passed, and
+			// gone when it ends.
+			await acceptProposal(rerender, PROPOSED, () => step(0));
+			mockIsLoading = true;
+			rerender(tree());
+			await step(250);
+			expect(shown()).toBeNull();
+			await step(100);
+			expect(shown()).not.toBeNull();
+			mockIsLoading = false;
+			rerender(tree());
+			await step(0);
+			expect(shown()).toBeNull();
+
+			// That answer was for that run: the next busy spell says nothing.
+			mockIsLoading = true;
+			rerender(tree());
+			await step(1000);
+			expect(shown()).toBeNull();
+			mockIsLoading = false;
+			rerender(tree());
+			await step(0);
+
+			// Nor does an answer whose run never came, once it is long past.
+			await acceptProposal(rerender, PROPOSED_AGAIN, () => step(0));
+			await step(10_000);
+			mockIsLoading = true;
+			rerender(tree());
+			await step(1000);
+			expect(shown()).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	/**
@@ -983,6 +1152,24 @@ describe("DocumentEditor — the assistant accept's version guard (KTD17)", () =
 		function progressOverlay() {
 			return screen.queryByTestId("generation-progress-overlay");
 		}
+
+		it("while it regenerates, shows the run's progress and not that the assistant is finishing, though the chat is busy too (Fizzy #2946)", async () => {
+			const { rerender } = await mount(STORED);
+			await serverStartsRun(rerender, true);
+
+			mockIsLoading = true;
+			rerender(tree({ attachToServerRun: true }));
+			await flush();
+			// Past the delay the status waits for before it shows.
+			await act(async () => {
+				await new Promise((resolve) => setTimeout(resolve, 400));
+			});
+
+			expect(progressOverlay()).not.toBeNull();
+			expect(
+				within(saveSlot).queryByText("assistantFinishing"),
+			).toBeNull();
+		});
 
 		it("without attaching, keeps the body it loaded when another run regenerates the document", async () => {
 			const { rerender, editor } = await mount(STORED);
@@ -1132,6 +1319,51 @@ describe("DocumentEditor — the assistant accept's version guard (KTD17)", () =
 					"regenerated",
 				);
 			});
+		});
+
+		it("counts both bodies under review the way the server counts the document's words (Fizzy #2946)", async () => {
+			// Prose around a diagram fence and an image, which are no words.
+			const previous =
+				"Intro text here.\n\n```mermaid\ngraph TD; A-->B\n```\n\n![diagram](https://example.com/a.png)\n\nClosing words.";
+			const regenerated =
+				"Intro text here, regenerated.\n\n```mermaid\ngraph LR; C-->D-->E\n```\n\n![chart](https://example.com/b.png)\n\nThe closing words were rewritten too.";
+			const previousWords = countDocumentWords(previous);
+			const regeneratedWords = countDocumentWords(regenerated);
+			// The whitespace split the headings used to count with disagrees,
+			// so the headings tell the two apart.
+			const rawSplitCount = (text: string) =>
+				text.split(/\s+/).filter((w) => w.length > 0).length;
+			expect(previousWords).not.toBe(rawSplitCount(previous));
+			expect(regeneratedWords).not.toBe(rawSplitCount(regenerated));
+
+			const view = await mount(previous);
+
+			await act(async () => {
+				actionConfigs
+					.get("regenerate_document")
+					?.renderAndWaitForResponse({
+						args: { prompt: "Rewrite it" },
+						respond: vi.fn(),
+						status: "executing",
+					});
+				await new Promise((resolve) => setTimeout(resolve, 0));
+			});
+			await serverStartsRun(view.rerender, true);
+			await serverReports(view.rerender, {
+				content: regenerated,
+				version: 8,
+				status: "COMPLETE",
+			});
+
+			const review = within(
+				await view.findByTestId("regeneration-confirm-modal"),
+			);
+			expect(
+				await review.findByText(/Previous Version \(\d+ words\)/),
+			).toHaveTextContent(`Previous Version (${previousWords} words)`);
+			expect(
+				review.getByText(/New Version \(\d+ words\)/),
+			).toHaveTextContent(`New Version (${regeneratedWords} words)`);
 		});
 
 		it("stops regenerating with the failure toast when the attached run fails", async () => {

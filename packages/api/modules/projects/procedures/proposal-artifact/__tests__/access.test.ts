@@ -73,6 +73,9 @@ const STYLE_INPUT = {
 	styleDirection: "Calm and precise.",
 	primaryColor: "#123456",
 	accentColors: ["#abcdef"],
+	// The automatic-diagrams switch rides the same save, so a guest can no
+	// more turn it off than change a colour.
+	autoVisuals: false,
 };
 
 const RESPOND_INPUT = {
@@ -241,6 +244,7 @@ beforeEach(() => {
 		styleDirection: "Calm and precise.",
 		primaryColor: "#123456",
 		accentColors: ["#abcdef"],
+		autoVisuals: false,
 		updatedById: USERS.editor,
 		updatedAt: new Date("2026-10-07T10:00:00.000Z"),
 	});

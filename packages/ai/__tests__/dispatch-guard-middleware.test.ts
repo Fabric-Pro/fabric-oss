@@ -521,6 +521,11 @@ describe("factory entry points", () => {
 	);
 
 	it("getAIEmbeddingModelWithMetadata checks the guard per request", async () => {
+		factory.getModelForTask.mockResolvedValue({
+			model: { canonicalName: "text-embedding-3-small" },
+			providerModelId: "openai/text-embedding-3-small",
+			source: "system_default",
+		});
 		const { model } = await getAIEmbeddingModelWithMetadata(CONTEXT);
 		const { guard, assertDispatchable } = makeGuard({ allowed: 0 });
 

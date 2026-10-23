@@ -21,11 +21,13 @@ vi.mock("../../lib", () => ({
 	isParlumeServiceRequestAuthorized: () => true,
 	MAX_PARLUME_SEGMENT_CHARS: 20_000,
 	segmentDedupeKey: () => "segment-1",
+	chatMessageDedupeKey: (sessionId: string, id: string) =>
+		`chat-${sessionId}-${id}`,
 }));
 
 import { POST } from "../route";
 
-function request() {
+function request(overrides: Record<string, unknown> = {}) {
 	return new NextRequest(
 		"https://fabric.example/api/internal/parlume/segments",
 		{
@@ -39,6 +41,7 @@ function request() {
 				speakerId: null,
 				utteranceStartMs: null,
 				utteranceEndMs: null,
+				...overrides,
 			}),
 		},
 	);
@@ -90,6 +93,47 @@ describe("Parlume segment drain", () => {
 				where: expect.objectContaining({ finalizedAt: null }),
 			}),
 		);
+		expect(mocks.createMany).not.toHaveBeenCalled();
+	});
+
+	it("stores speech by default", async () => {
+		await POST(request());
+
+		expect(mocks.createMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					source: "SPEECH",
+					dedupeKey: "segment-1",
+				}),
+			}),
+		);
+	});
+
+	it("stores a chat message once per message id", async () => {
+		await POST(
+			request({
+				text: "Here is the plan",
+				speakerName: "Dev One",
+				source: "CHAT",
+				chatMessageId: "msg_1",
+			}),
+		);
+
+		expect(mocks.createMany).toHaveBeenCalledWith({
+			data: expect.objectContaining({
+				source: "CHAT",
+				dedupeKey: "chat-session-1-msg_1",
+				text: "Here is the plan",
+				speakerName: "Dev One",
+			}),
+			skipDuplicates: true,
+		});
+	});
+
+	it("refuses an unknown segment source", async () => {
+		const response = await POST(request({ source: "EMAIL" }));
+
+		expect(response.status).toBe(400);
 		expect(mocks.createMany).not.toHaveBeenCalled();
 	});
 });

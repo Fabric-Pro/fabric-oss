@@ -1,3 +1,4 @@
+import { guardToolsAgainstRepeatedCalls } from "@repo/agent-types/repeated-tool-call-guard";
 import { makeStepCacheBreakpoint } from "@repo/ai/prompt-cache";
 import { generateText, isStepCount } from "ai";
 import type { Context } from "hono";
@@ -7,6 +8,7 @@ import { withRetry } from "../lib/retry.js";
 import {
 	extractText,
 	getVerifiedTenant,
+	guardToolsAgainstCancellation,
 	normalizeMetadata,
 	sseTextResponse,
 } from "../lib/route-utils.js";
@@ -56,20 +58,39 @@ async function buildSpindleResponse(
 	const tools = createWebSearchTools();
 
 	const result = await withRetry(
-		() =>
-			generateText({
+		() => {
+			const attemptTools = { ...tools };
+			guardToolsAgainstRepeatedCalls(attemptTools, {
+				onRepeat: (toolName, count) => {
+					console.warn(
+						"Weave spindle tool returned a repeated result",
+						{ toolName, count },
+					);
+				},
+			});
+			guardToolsAgainstCancellation(
+				attemptTools,
+				honoCtx?.req.raw.signal,
+			);
+			return generateText({
+				abortSignal: honoCtx?.req.raw.signal,
 				model,
 				instructions: SPINDLE_SYSTEM_PROMPT,
 				messages: [{ role: "user", content: contextParts.join("\n") }],
-				tools,
+				tools: attemptTools,
 				stopWhen: isStepCount(MAX_TOOL_STEPS),
 				prepareStep: makeStepCacheBreakpoint({
 					provider,
 					modelString,
 					hasTools: true,
 				}),
-			}),
-		{ label: "spindle-generateText", circuitKey: "spindle" },
+			});
+		},
+		{
+			label: "spindle-generateText",
+			circuitKey: "spindle",
+			signal: honoCtx?.req.raw.signal,
+		},
 	);
 
 	return result.text;

@@ -21,6 +21,7 @@ import {
 	workflowInfo,
 } from "@temporalio/workflow";
 import type * as triggerActivities from "../../activities/trigger-system/index";
+import { failedAgentMentionReply } from "../agent-mention-reply";
 
 import type {
 	ScheduledTriggerInput,
@@ -161,6 +162,14 @@ export async function triggerEventWorkflow(
 				"Cancelled during execution",
 				"TRIGGER_SYSTEM_FAILED",
 			);
+		}
+
+		// The activity returns failures instead of throwing (Fizzy #3267).
+		if (
+			!agentResult.success &&
+			patched("trigger-event-agent-failure-2026-10")
+		) {
+			throw new Error(agentResult.error || "Agent invocation failed");
 		}
 
 		// Handle output
@@ -683,7 +692,9 @@ export async function slackMentionHandlerWorkflow(input: {
 					// Post error message to Slack
 					await activities.postToSlack({
 						channel: event.channel,
-						message: `Sorry, I encountered an error: ${agentResult.error || "Unknown error"}`,
+						message: failedAgentMentionReply(
+							agentResult.usageLimit,
+						),
 						threadTs: event.threadTs || event.ts,
 						slackTeamId: input.workspaceId,
 						userId: input.userId,

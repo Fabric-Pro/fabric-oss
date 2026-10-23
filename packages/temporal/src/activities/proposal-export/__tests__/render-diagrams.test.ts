@@ -5,9 +5,16 @@
  */
 
 import {
+	flowToMermaid,
+	PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
+	timelineToMermaid,
+} from "@repo/utils/glossy/visual-templates";
+import {
 	buildProposalThemeTokens,
 	resolveThemePaint,
 } from "@repo/utils/proposal-artifact/theme-tokens";
+import { toMermaidFence } from "@repo/utils/proposal-artifact/visual-insert";
+import { renderMermaidSVG } from "beautiful-mermaid";
 import type { Page } from "playwright";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -21,6 +28,9 @@ import {
 } from "../../../lib/proposal-export/types";
 import {
 	DIAGRAM_PLACEHOLDER_CAPTION,
+	PRINT_COLUMN_PX,
+	PRINT_LABEL_FLOOR_PT,
+	printedNodeLabelPt,
 	type RenderDiagramsInput,
 	renderExportDiagrams,
 } from "../render-diagrams";
@@ -524,10 +534,11 @@ describe("renderExportDiagrams with PNGs", () => {
 
 	it("sizes the screenshot explicitly, never past the image edge", async () => {
 		const fake = fakeBrowser();
-		const wide = `flowchart LR\n  ${Array.from(
+		// Thirty siblings side by side: wide whichever way the header points.
+		const wide = `flowchart TD\n  ${Array.from(
 			{ length: 30 },
-			(_, index) => `s${index}[Stage number ${index}]`,
-		).join(" --> ")}`;
+			(_, index) => `r[Start] --> s${index}[Stage number ${index}]`,
+		).join("\n  ")}`;
 		const { diagrams } = await renderExportDiagrams(
 			input([wide, FLOW], { browser: fake.browser, withPng: true }),
 		);
@@ -575,5 +586,392 @@ describe("renderExportDiagrams with PNGs", () => {
 			{ diagram: 1, error: "Error" },
 		);
 		expect(fake.contextsClosed()).toBe(1);
+	});
+});
+
+/** A generated fence's body, marker line first, as Main holds it. */
+function generatedFenceBody(source: string): string {
+	return toMermaidFence(source, "abcdefgh12345678")
+		.split("\n")
+		.slice(1, -1)
+		.join("\n");
+}
+
+/** The smallest label a printed diagram shows, in points. */
+function smallestPrintedLabelPt(diagram: ExportDiagram | undefined): number {
+	if (diagram?.kind !== "svg") {
+		throw new Error("expected a drawn diagram");
+	}
+	const sizes = Array.from(
+		diagram.svg.matchAll(/<text [^>]*font-size="([\d.]+)"/g),
+		(match) => Number(match[1]),
+	);
+	expect(sizes.length).toBeGreaterThan(0);
+	const scale = Math.min(1, PRINT_COLUMN_PX / diagram.width);
+	return Math.min(...sizes) * scale * 0.75;
+}
+
+/** The real engine in this thread, recording every source it is handed. */
+function recordingLayout(): DiagramLayout & { sources: string[] } {
+	const sources: string[] = [];
+	return {
+		sources,
+		render: async (source, options) => {
+			sources.push(source);
+			try {
+				return renderMermaidSVG(source, options);
+			} catch {
+				return null;
+			}
+		},
+		close: async () => undefined,
+	};
+}
+
+/** The width the real engine lays `source` out at, in CSS pixels. */
+function viewBoxWidth(source: string): number {
+	return Number(
+		/viewBox="0 0 ([\d.]+)/.exec(renderMermaidSVG(source, {}))?.[1],
+	);
+}
+
+describe("the print legibility floor (Fizzy #2946)", () => {
+	/** Four steps left to right, each a whole sentence on one line. */
+	const SIDEWAYS_CHAIN = [
+		"flowchart LR",
+		'  a["Discovery — agree on goals, users, the workflow and success measures."]',
+		'  b["Definition — confirm the pilot scope, integrations and acceptance criteria."]',
+		'  c["Pilot — configure the agreed scope with example data"]',
+		'  d["Review — assess the pilot against the agreed measures"]',
+		"  a --> b",
+		"  b --> c",
+		"  c --> d",
+	].join("\n");
+
+	it("measures the print column as the portrait page less its side margins", () => {
+		expect(PRINT_COLUMN_PX).toBeCloseTo((8.5 - 2 * 0.8) * 96, 5);
+		expect(printedNodeLabelPt(PRINT_COLUMN_PX)).toBeCloseTo(9.75, 5);
+	});
+
+	it("lays a sideways chain of sentence labels out top-down once, so it prints at 9 pt or more", async () => {
+		const sideways = renderMermaidSVG(SIDEWAYS_CHAIN, {});
+		const sidewaysWidth = Number(
+			/viewBox="0 0 ([\d.]+)/.exec(sideways)?.[1],
+		);
+		expect(printedNodeLabelPt(sidewaysWidth)).toBeLessThan(
+			PRINT_LABEL_FLOOR_PT,
+		);
+
+		const layout = recordingLayout();
+		const sources = [SIDEWAYS_CHAIN];
+		const { diagrams, warnings } = await renderExportDiagrams(
+			input(sources, { layout }),
+		);
+		expect(layout.sources).toHaveLength(2);
+		expect(layout.sources[0]?.split("\n")[0]).toBe("flowchart LR");
+		expect(layout.sources[1]?.split("\n")[0]).toBe("flowchart TD");
+		// Only the header turned; Main's fence is untouched.
+		expect(layout.sources[1]?.split("\n").slice(1)).toEqual(
+			layout.sources[0]?.split("\n").slice(1),
+		);
+		expect(sources).toEqual([SIDEWAYS_CHAIN]);
+		const diagram = diagrams[0];
+		if (diagram?.kind !== "svg") {
+			throw new Error("expected a drawn diagram");
+		}
+		expect(diagram.width).toBeLessThan(sidewaysWidth);
+		expect(printedNodeLabelPt(diagram.width)).toBeGreaterThanOrEqual(
+			PRINT_LABEL_FLOOR_PT,
+		);
+		expect(smallestPrintedLabelPt(diagram)).toBeGreaterThanOrEqual(9);
+		expect(warnings).toEqual([]);
+	});
+
+	it("draws a narrow sideways diagram once, as written", async () => {
+		const layout = recordingLayout();
+		const { diagrams, warnings } = await renderExportDiagrams(
+			input(["flowchart LR\n  a[Plan] --> b[Build]"], { layout }),
+		);
+		expect(layout.sources).toHaveLength(1);
+		expect(diagrams[0]?.kind).toBe("svg");
+		expect(warnings).toEqual([]);
+	});
+
+	it("breaks a label too long even top-down into lines, so it prints at 9 pt or more", async () => {
+		const long = Array.from(
+			{ length: 12 },
+			(_, index) => `requirement ${index + 1} of the example programme`,
+		).join(", ");
+		const fence = `flowchart LR\n  a["${long}"] --> b[Done]`;
+		const layout = recordingLayout();
+		const { diagrams, warnings } = await renderExportDiagrams(
+			input([fence, FLOW], { layout }),
+		);
+		// Sideways, top-down, broken; then the narrow flow once.
+		expect(layout.sources).toHaveLength(4);
+		// Top-down alone is still below the floor.
+		expect(
+			printedNodeLabelPt(viewBoxWidth(fence.replace("LR", "TD"))),
+		).toBeLessThan(PRINT_LABEL_FLOOR_PT);
+		const [wide, narrow] = diagrams;
+		if (wide?.kind !== "svg" || narrow?.kind !== "svg") {
+			throw new Error("expected drawn diagrams");
+		}
+		expect(smallestPrintedLabelPt(wide)).toBeGreaterThanOrEqual(9);
+		expect(warnings).toEqual([]);
+	});
+
+	it("keeps the better render and warns when even broken labels are too wide", async () => {
+		const siblings = Array.from(
+			{ length: 40 },
+			(_, index) =>
+				`  r[Start] --> s${index}["Workstream ${index + 1} — prepare the example data, the agreed integrations and the review notes"]`,
+		).join("\n");
+		const fence = `flowchart LR\n${siblings}`;
+		const layout = recordingLayout();
+		const { diagrams, warnings } = await renderExportDiagrams(
+			input([fence], { layout }),
+		);
+		expect(layout.sources).toHaveLength(3);
+		expect(layout.sources[2]?.split("\n")[0]).toBe("flowchart TD");
+		expect(layout.sources[2]).toContain("<br/>");
+		const diagram = diagrams[0];
+		if (diagram?.kind !== "svg") {
+			throw new Error("expected a drawn diagram");
+		}
+		expect(printedNodeLabelPt(diagram.width)).toBeLessThan(
+			PRINT_LABEL_FLOOR_PT,
+		);
+		const widths = layout.sources.map(viewBoxWidth);
+		expect(diagram.width).toBeCloseTo(Math.min(...widths), 0);
+		expect(warnings).toEqual([
+			{ code: "DIAGRAM_BELOW_PRINT_FLOOR", count: 1 },
+		]);
+	});
+
+	it("warns for a top-down diagram too wide to turn", async () => {
+		const layout = recordingLayout();
+		const siblings = Array.from(
+			{ length: 12 },
+			(_, index) => `  r[Start] --> s${index}[Workstream ${index + 1}]`,
+		).join("\n");
+		const { diagrams, warnings } = await renderExportDiagrams(
+			input([`flowchart TD\n${siblings}`], { layout }),
+		);
+		expect(layout.sources).toHaveLength(1);
+		expect(diagrams[0]?.kind).toBe("svg");
+		expect(warnings).toEqual([
+			{ code: "DIAGRAM_BELOW_PRINT_FLOOR", count: 1 },
+		]);
+	});
+});
+
+describe("long node labels broken for print (Fizzy #2946)", () => {
+	/** Four stages left to right, each label a title, a sentence and a note on one line. */
+	const STAGES = [
+		{
+			title: "Scope alignment",
+			sentence:
+				"Select the example workflow, its stakeholders, the success measures and the pilot sites",
+			note: "(Agreed pilot boundaries and the validation criteria)",
+		},
+		{
+			title: "Data preparation",
+			sentence:
+				"Collect the sample records, map the source fields and clean the reference data with owners",
+			note: "(A reviewed data set ready for the first pilot run)",
+		},
+		{
+			title: "Pilot delivery",
+			sentence:
+				"Configure the agreed scope, run the pilot with example users and record every open question",
+			note: "(A working pilot and a list of the open questions)",
+		},
+		{
+			title: "Outcome review",
+			sentence:
+				"Assess the pilot against the agreed measures and decide the next phase with the sponsors",
+			note: "(A written recommendation for the next delivery phase)",
+		},
+	];
+	const STAGE_LABELS = STAGES.map(
+		({ title, sentence, note }) => `${title} — ${sentence} ${note}`,
+	);
+	const LONG_CHAIN = [
+		"flowchart LR",
+		...STAGE_LABELS.map((label, index) => `  n${index}["${label}"]`),
+		"  n0 --> n1",
+		"  n1 --> n2",
+		"  n2 --> n3",
+	].join("\n");
+
+	it("prints labels of 130 and more characters at 9 pt or more, every word kept", async () => {
+		for (const { sentence, note } of STAGES) {
+			expect(sentence.length).toBeGreaterThanOrEqual(85);
+			expect(note.length).toBeGreaterThanOrEqual(48);
+		}
+		expect(printedNodeLabelPt(viewBoxWidth(LONG_CHAIN))).toBeLessThan(
+			PRINT_LABEL_FLOOR_PT,
+		);
+		expect(
+			printedNodeLabelPt(viewBoxWidth(LONG_CHAIN.replace("LR", "TD"))),
+		).toBeLessThan(PRINT_LABEL_FLOOR_PT);
+
+		const layout = recordingLayout();
+		const sources = [LONG_CHAIN];
+		const { diagrams, warnings } = await renderExportDiagrams(
+			input(sources, { layout }),
+		);
+		expect(layout.sources).toHaveLength(3);
+		const broken = String(layout.sources[2]);
+		expect(broken.split("\n")[0]).toBe("flowchart TD");
+		for (const [index, { title, note }] of STAGES.entries()) {
+			const lines = /\["(.*)"\]/
+				.exec(
+					broken
+						.split("\n")
+						.find((line) => line.trim().startsWith(`n${index}[`)) ??
+						"",
+				)?.[1]
+				?.split("<br/>");
+			expect(lines?.[0]).toBe(`${title} —`);
+			expect(lines?.some((line) => line.startsWith("("))).toBe(true);
+			expect(lines?.at(-1)?.endsWith(")")).toBe(true);
+			expect(lines?.join(" ")).toBe(STAGE_LABELS[index]);
+			expect(lines?.filter((line) => line.startsWith("("))).toHaveLength(
+				1,
+			);
+			expect(lines?.join(" ")).toContain(note);
+		}
+		for (const word of STAGE_LABELS.join(" ").split(" ")) {
+			expect(broken).toContain(word);
+		}
+		expect(broken).not.toContain("…");
+		expect(sources).toEqual([LONG_CHAIN]);
+		const diagram = diagrams[0];
+		if (diagram?.kind !== "svg") {
+			throw new Error("expected a drawn diagram");
+		}
+		expect(smallestPrintedLabelPt(diagram)).toBeGreaterThanOrEqual(9);
+		expect(warnings).toEqual([]);
+	});
+
+	it("leaves a label that already has line breaks, and one it cannot read safely, as written", async () => {
+		const brokenAlready = `Already broken<br/>${STAGE_LABELS[0]}`;
+		const formatted = `**Formatted** ${STAGE_LABELS[1]}`;
+		const fence = [
+			"flowchart LR",
+			`  a["${brokenAlready}"] --> b["${formatted}"]`,
+			`  b --> c["${STAGE_LABELS[2]}"]`,
+		].join("\n");
+		const layout = recordingLayout();
+		await renderExportDiagrams(input([fence], { layout }));
+		const last = String(layout.sources.at(-1));
+		expect(last).toContain(`a["${brokenAlready}"]`);
+		expect(last).toContain(`b["${formatted}"]`);
+		expect(last).not.toContain(`c["${STAGE_LABELS[2]}"]`);
+		expect(last).toContain("Pilot delivery —<br/>");
+	});
+
+	it("breaks labels of every common shape, quoted or not", async () => {
+		const label = STAGE_LABELS[3] ?? "";
+		const fence = [
+			"flowchart TD",
+			`  a[${label}] --> b(${label.replace(/[()]/g, "")})`,
+			`  b --> c{${label.replace(/[()]/g, "")}}`,
+			`  c --> d(["${label}"])`,
+			`  d --> e[["${label}"]] & f{{"${label}"}}`,
+			"  e -- yes --> g[Short label]",
+		].join("\n");
+		const layout = recordingLayout();
+		await renderExportDiagrams(input([fence], { layout }));
+		const last = String(layout.sources.at(-1));
+		expect(last.match(/Outcome review —<br\/>/g)).toHaveLength(6);
+		expect(last).toContain("g[Short label]");
+		expect(last).toContain("e -- yes --> g");
+	});
+});
+
+describe("generated Proposal diagrams in print (Fizzy #2946)", () => {
+	/**
+	 * Labels longer than the Proposal extraction asks for, so the template's
+	 * wrapping and cutting are what keep them legible.
+	 */
+	const TITLE = "Discovery workshops with every business unit ok";
+	const DETAIL =
+		"Interviews, process mapping and one written summary of gaps";
+
+	it("paints a generated fence's role classes with the brand's tint and border", async () => {
+		const source = generatedFenceBody(
+			timelineToMermaid(
+				{
+					kind: "timeline",
+					items: [
+						{ date: "Q1 2026", label: "Kickoff" },
+						{ date: "Q2 2026", label: "Launch" },
+					],
+				},
+				PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
+			),
+		);
+		expect(source.startsWith("%% fabric-visual: ")).toBe(true);
+		const { diagrams, warnings } = await renderExportDiagrams(
+			input([source]),
+		);
+		const svg = svgOf(diagrams[0]);
+		const rect =
+			/(<rect [^>]*\/>)\s*<text [^>]*>(?:<tspan[^>]*>Q1 2026<\/tspan>)/.exec(
+				svg,
+			)?.[1];
+		expect(rect).toContain(`fill="${paint.tint}"`);
+		expect(rect).toContain(`stroke="${paint.border}"`);
+		expect(warnings).toEqual([]);
+	});
+
+	it("prints a six-item timeline and a six-step flow with labels at 9 pt or more", async () => {
+		expect(TITLE.length).toBeGreaterThan(32);
+		expect(DETAIL.length).toBeLessThanOrEqual(60);
+		const timeline = timelineToMermaid(
+			{
+				kind: "timeline",
+				items: Array.from({ length: 6 }, (_, index) => ({
+					date: `Phase ${index + 1}: weeks ${index * 4 + 1}–${index * 4 + 4}`,
+					label: TITLE,
+					description: DETAIL,
+				})),
+			},
+			PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
+		);
+		const flow = flowToMermaid(
+			{
+				kind: "flow",
+				steps: Array.from({ length: 6 }, (_, index) => ({
+					label: `${index + 1}. ${TITLE}`,
+					description: DETAIL,
+				})),
+			},
+			PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
+		);
+		expect(timeline.startsWith("flowchart TD")).toBe(true);
+		const { diagrams } = await renderExportDiagrams(
+			input([generatedFenceBody(timeline), generatedFenceBody(flow)]),
+		);
+		for (const diagram of diagrams) {
+			expect(smallestPrintedLabelPt(diagram)).toBeGreaterThanOrEqual(9);
+		}
+	});
+
+	it("would print the same six items far below that in the Glossy layout, until the export breaks their labels", async () => {
+		const glossy = timelineToMermaid({
+			kind: "timeline",
+			items: Array.from({ length: 6 }, (_, index) => ({
+				date: `Phase ${index + 1}`,
+				label: TITLE,
+				description: DETAIL,
+			})),
+		});
+		expect(printedNodeLabelPt(viewBoxWidth(glossy))).toBeLessThan(9);
+		const { diagrams } = await renderExportDiagrams(input([glossy]));
+		expect(smallestPrintedLabelPt(diagrams[0])).toBeGreaterThanOrEqual(9);
 	});
 });

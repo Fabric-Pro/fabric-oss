@@ -100,6 +100,7 @@ describe("A2A HTTP metadata redaction", () => {
 					ai_api_key: providerKey,
 					ai_token: aiToken,
 				}),
+				expect.objectContaining({ signal: expect.any(AbortSignal) }),
 			);
 			expect(JSON.parse(storedRaw).metadata.reasoning).toBe(
 				"keep reasoning",

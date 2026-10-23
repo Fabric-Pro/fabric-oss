@@ -3,6 +3,7 @@ import {
 	DEFAULT_DIFF_VIEW_MODE,
 	deriveDiffViews,
 	normalizeDiffViewMode,
+	withoutDiagramDiffMarks,
 } from "../diff-view-modes";
 
 // Representative inline diff: "Hello old world" -> "Hello new world".
@@ -168,5 +169,90 @@ describe("deriveDiffViews — robustness", () => {
 		const a = deriveDiffViews(INLINE_DIFF);
 		const b = deriveDiffViews(INLINE_DIFF);
 		expect(a).toEqual(b);
+	});
+});
+
+describe("deriveDiffViews — whole fenced blocks", () => {
+	const DELETED_FENCE =
+		'<p>Intro</p><pre><code class="language-mermaid"><del class="diff-del">flowchart TB\nA --> B</del></code></pre>';
+	const ADDED_FENCE =
+		'<p>Intro</p><pre><code class="language-ts"><ins class="diff-ins">const a = 1;</ins></code></pre>';
+
+	it("drops a deleted fence's code block from the proposed and clean panes", () => {
+		const { originalHtml, proposedHtml, cleanProposedHtml } =
+			deriveDiffViews(DELETED_FENCE);
+		expect(originalHtml).toContain("<pre>");
+		expect(proposedHtml).not.toContain("<pre>");
+		expect(cleanProposedHtml).not.toContain("<pre>");
+	});
+
+	it("drops an added fence's code block from the original pane", () => {
+		const { originalHtml, proposedHtml } = deriveDiffViews(ADDED_FENCE);
+		expect(originalHtml).not.toContain("<pre>");
+		expect(proposedHtml).toContain("const a = 1;");
+	});
+
+	it("keeps an empty code block the document already had", () => {
+		const { proposedHtml } = deriveDiffViews(
+			'<pre><code class="language-ts"></code></pre><p>Hello <del class="diff-del">old</del></p>',
+		);
+		expect(proposedHtml).toContain("<pre>");
+	});
+});
+
+describe("deriveDiffViews — a changed diagram", () => {
+	// A diagram whose text is marked is drawn as an edit under review, so a
+	// pane that shows one side of the edit keeps that side's text unmarked
+	// and draws it as that version.
+	const CHANGED_DIAGRAM =
+		'<p>Intro <del class="diff-del">old</del><ins class="diff-ins">new</ins></p>' +
+		'<pre data-language="mermaid" class="mermaid-block"><code class="language-mermaid">flowchart LR\n' +
+		'<del class="diff-del">A --> B\n</del><ins class="diff-ins">A --> C\n</ins></code></pre>' +
+		'<pre><code class="language-ts"><del class="diff-del">let a = 1</del><ins class="diff-ins">let a = 2</ins></code></pre>';
+
+	const diagramOf = (html: string) =>
+		new DOMParser()
+			.parseFromString(html, "text/html")
+			.querySelector("pre.mermaid-block");
+
+	it("the original pane holds the old diagram, unmarked", () => {
+		const diagram = diagramOf(
+			deriveDiffViews(CHANGED_DIAGRAM).originalHtml,
+		);
+		expect(diagram?.textContent).toBe("flowchart LR\nA --> B\n");
+		expect(diagram?.querySelector("ins, del")).toBeNull();
+	});
+
+	it("the proposed pane holds the new diagram, unmarked", () => {
+		const diagram = diagramOf(
+			deriveDiffViews(CHANGED_DIAGRAM).proposedHtml,
+		);
+		expect(diagram?.textContent).toBe("flowchart LR\nA --> C\n");
+		expect(diagram?.querySelector("ins, del")).toBeNull();
+	});
+
+	it("keeps the marks of prose and of a code fence", () => {
+		const { originalHtml, proposedHtml } = deriveDiffViews(CHANGED_DIAGRAM);
+		expect(originalHtml).toContain('<del class="diff-del">old</del>');
+		expect(originalHtml).toContain('<del class="diff-del">let a = 1</del>');
+		expect(proposedHtml).toContain('<ins class="diff-ins">new</ins>');
+		expect(proposedHtml).toContain('<ins class="diff-ins">let a = 2</ins>');
+	});
+});
+
+describe("withoutDiagramDiffMarks", () => {
+	it("drops the marks inside a diagram fence as fromMarkdown writes it, keeping their text", () => {
+		const html =
+			'<p><ins class="diff-ins">Added</ins></p>' +
+			'<pre><code class="language-mermaid">flowchart LR\n<ins class="diff-ins">A --> C\n</ins></code></pre>';
+		expect(withoutDiagramDiffMarks(html)).toBe(
+			'<p><ins class="diff-ins">Added</ins></p>' +
+				'<pre><code class="language-mermaid">flowchart LR\nA --&gt; C\n</code></pre>',
+		);
+	});
+
+	it("leaves a document without diagrams as it was", () => {
+		const html = '<p>Hello <del class="diff-del">old</del> world</p>';
+		expect(withoutDiagramDiffMarks(html)).toBe(html);
 	});
 });

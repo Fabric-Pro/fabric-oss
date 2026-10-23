@@ -19,9 +19,16 @@
  *
  * The per-user rate limit is applied by the calling procedure
  * (`WEBSITE_BRAND_RATE_LIMIT`), which owns the shared rate-limit store.
+ *
+ * The hop machinery here is shared with the vendor-site fetch
+ * (`vendor-brand.ts`), which pins every hop to HTTPS on one host.
  */
 import { isIP } from "node:net";
 import { normalizeHexColor, relativeLuminance } from "@repo/utils/brand-colors";
+import {
+	isBrandWebsiteHost,
+	neutralizeBrandName,
+} from "@repo/utils/proposal-artifact/brand-sources";
 import {
 	getUnsafeUrlReason,
 	isPrivateIp,
@@ -47,6 +54,9 @@ export const WEBSITE_BRAND_FAILURE_CODES = [
 export type WebsiteBrandFailureCode =
 	(typeof WEBSITE_BRAND_FAILURE_CODES)[number];
 
+/** What a single hop can fail with; `no_logo` is decided by the caller. */
+type HopFailureCode = Exclude<WebsiteBrandFailureCode, "no_logo">;
+
 export type WebsiteBrandResult =
 	| {
 			ok: true;
@@ -56,12 +66,16 @@ export type WebsiteBrandResult =
 			colors: string[];
 			/** Host of the page after redirects. */
 			finalHost: string;
+			/** The name the page declares, neutralized; a suggestion only. */
+			name: string | null;
 	  }
 	| {
 			ok: false;
 			code: WebsiteBrandFailureCode;
 			/** Colours found before the failure (a `no_logo` site may have some). */
 			colors: string[];
+			/** The page's declared name, or null when no page was read. */
+			name: string | null;
 	  };
 
 /** One deadline for the page, the manifest and every logo candidate. */
@@ -83,7 +97,7 @@ export function websiteBrandRateLimitKey(userId: string): string {
 	return `website-brand:${userId}`;
 }
 
-type HopKind = "page" | "manifest" | "logo";
+export type HopKind = "page" | "manifest" | "logo" | "llms";
 
 /**
  * What each kind of hop may receive. The pinned fetch's default allowlist
@@ -108,6 +122,12 @@ const HOP_POLICY: Record<
 		maxBytes: LOGO_MAX_INPUT_BYTES,
 		accept: "image/png,image/webp,image/jpeg,image/gif;q=0.9",
 	},
+	// A site's `/llms.txt`, read for its links only.
+	llms: {
+		contentTypes: ["text/plain", "text/markdown"],
+		maxBytes: 64 * 1024,
+		accept: "text/markdown,text/plain;q=0.9",
+	},
 };
 
 const USER_AGENT = "Mozilla/5.0 (compatible; Fabric-BrandFetch/1.0)";
@@ -123,19 +143,42 @@ export interface FetchWebsiteBrandOptions {
 	fetch?: PinnedFetch;
 }
 
-interface ExtractionContext {
+export interface ExtractionContext {
 	fetch: PinnedFetch;
 	signal: AbortSignal;
 	deadlineAt: number;
+	/**
+	 * When set, every hop must be HTTPS on exactly this host, redirects
+	 * included; any other hop is refused as `blocked` without being fetched.
+	 */
+	pinnedHost?: string;
 }
 
-type HopResult =
+/** One deadline for every hop, tied to the caller's signal. */
+export function createExtractionContext(
+	options: FetchWebsiteBrandOptions,
+	pinnedHost?: string,
+): ExtractionContext {
+	const timeoutMs = options.timeoutMs ?? WEBSITE_BRAND_DEADLINE_MS;
+	const signals = [AbortSignal.timeout(timeoutMs)];
+	if (options.signal) {
+		signals.push(options.signal);
+	}
+	return {
+		fetch: options.fetch ?? safeFetchOutboundPinned,
+		signal: AbortSignal.any(signals),
+		deadlineAt: Date.now() + timeoutMs,
+		pinnedHost,
+	};
+}
+
+export type HopResult =
 	| { ok: true; bytes: Uint8Array; finalUrl: URL }
-	| { ok: false; code: WebsiteBrandFailureCode };
+	| { ok: false; code: HopFailureCode };
 
 type ParsedWebsite =
 	| { ok: true; url: string }
-	| { ok: false; code: WebsiteBrandFailureCode };
+	| { ok: false; code: HopFailureCode };
 
 function isAllowedPort(url: URL): boolean {
 	// The URL parser drops a scheme's default port, so "" is 80 or 443.
@@ -151,7 +194,7 @@ function isFetchableUrl(url: URL): boolean {
 	);
 }
 
-function parseWebsite(input: string): ParsedWebsite {
+export function parseWebsite(input: string): ParsedWebsite {
 	const trimmed = input.trim();
 	if (!trimmed || trimmed.length > 2048) {
 		return { ok: false, code: "unreachable" };
@@ -176,13 +219,19 @@ function parseWebsite(input: string): ParsedWebsite {
 	if (!hostname) {
 		return { ok: false, code: "unreachable" };
 	}
+	// The stored shape: a DNS name in lowercase letters, digits, dots and
+	// hyphens (an IDN arrives as punycode), never an IP address.
+	if (!isBrandWebsiteHost(hostname)) {
+		return { ok: false, code: "blocked" };
+	}
 	return { ok: true, url: `https://${hostname}` };
 }
 
 /**
  * The website as it is fetched, stored and audited: `https://host`, with no
  * path, query, port or credentials. `null` when the input cannot name a
- * public website (another scheme, credentials, a port other than 80/443).
+ * public website (another scheme, credentials, a port other than 80/443, an
+ * IP address or a host with characters a DNS name does not use).
  */
 export function normalizeWebsiteUrl(input: string): string | null {
 	const parsed = parseWebsite(input);
@@ -225,7 +274,7 @@ function isRefusedWithoutDns(url: URL): boolean {
 	return isIP(host) !== 0 && isPrivateIp(host);
 }
 
-function classifyFetchError(error: unknown): WebsiteBrandFailureCode {
+function classifyFetchError(error: unknown): HopFailureCode {
 	const { code } = (error ?? {}) as { code?: unknown };
 	if (code === "RESPONSE_TOO_LARGE") {
 		return "too_large";
@@ -242,6 +291,30 @@ function classifyFetchError(error: unknown): WebsiteBrandFailureCode {
 	return "unreachable";
 }
 
+/**
+ * Whether `hostname` is the pinned website's own host: the same host, or the
+ * same host with or without a leading `www.`, since a site commonly redirects
+ * one to the other. Any other host, a subdomain included, is not.
+ */
+export function isPinnedSiteHost(
+	hostname: string,
+	pinnedHost: string,
+): boolean {
+	const host = hostname.toLowerCase();
+	const pinned = pinnedHost.toLowerCase();
+	return (
+		host === pinned || host === `www.${pinned}` || `www.${host}` === pinned
+	);
+}
+
+function isOnPinnedHost(url: URL, context: ExtractionContext): boolean {
+	return (
+		context.pinnedHost === undefined ||
+		(url.protocol === "https:" &&
+			isPinnedSiteHost(url.hostname, context.pinnedHost))
+	);
+}
+
 function isRedirect(status: number): boolean {
 	return (
 		status === 301 ||
@@ -254,11 +327,12 @@ function isRedirect(status: number): boolean {
 
 /**
  * GET `startUrl`, following at most `WEBSITE_BRAND_MAX_REDIRECTS` redirects.
- * Each hop is checked for scheme, port, credentials and a refusal decided
- * without DNS, and then fetched through the pinned guard with redirects
- * disabled, so the guard re-resolves and re-validates every host along the way.
+ * Each hop is checked for scheme, port, credentials, the context's pinned
+ * host and a refusal decided without DNS, and then fetched through the pinned
+ * guard with redirects disabled, so the guard re-resolves and re-validates
+ * every host along the way.
  */
-async function fetchFollowingRedirects(
+export async function fetchFollowingRedirects(
 	startUrl: string,
 	kind: HopKind,
 	context: ExtractionContext,
@@ -272,7 +346,11 @@ async function fetchFollowingRedirects(
 		} catch {
 			return { ok: false, code: "unreachable" };
 		}
-		if (!isFetchableUrl(url) || isRefusedWithoutDns(url)) {
+		if (
+			!isFetchableUrl(url) ||
+			!isOnPinnedHost(url, context) ||
+			isRefusedWithoutDns(url)
+		) {
 			return { ok: false, code: "blocked" };
 		}
 		const remainingMs = context.deadlineAt - Date.now();
@@ -352,7 +430,7 @@ function collectColors(...groups: string[][]): string[] {
 	return colors.slice(0, MAX_COLORS);
 }
 
-async function readManifest(
+export async function readManifest(
 	manifestUrl: string,
 	context: ExtractionContext,
 ): Promise<{ icon: LogoCandidate | null; themeColors: string[] }> {
@@ -382,6 +460,8 @@ async function readManifest(
  * logo's dominant colour. Logo candidates are tried in order — the
  * apple-touch-icon, the largest sized icon, the largest manifest icon, then
  * `og:image`, skipping SVG and ICO — and the first that normalizes wins.
+ * The name is the page's `og:site_name`, else its `<title>`, neutralized: a
+ * suggestion for a person to confirm, never a value applied on its own.
  */
 export async function fetchWebsiteBrand(
 	website: string,
@@ -389,23 +469,14 @@ export async function fetchWebsiteBrand(
 ): Promise<WebsiteBrandResult> {
 	const parsed = parseWebsite(website);
 	if (!parsed.ok) {
-		return { ok: false, code: parsed.code, colors: [] };
+		return { ok: false, code: parsed.code, colors: [], name: null };
 	}
 
-	const timeoutMs = options.timeoutMs ?? WEBSITE_BRAND_DEADLINE_MS;
-	const signals = [AbortSignal.timeout(timeoutMs)];
-	if (options.signal) {
-		signals.push(options.signal);
-	}
-	const context: ExtractionContext = {
-		fetch: options.fetch ?? safeFetchOutboundPinned,
-		signal: AbortSignal.any(signals),
-		deadlineAt: Date.now() + timeoutMs,
-	};
+	const context = createExtractionContext(options);
 
 	const page = await fetchFollowingRedirects(parsed.url, "page", context);
 	if (!page.ok) {
-		return { ok: false, code: page.code, colors: [] };
+		return { ok: false, code: page.code, colors: [], name: null };
 	}
 	// Only the head matters, so only the leading bytes are decoded. Icon URLs
 	// and hex colours are ASCII, so UTF-8 reads them in any ASCII-compatible
@@ -414,6 +485,8 @@ export async function fetchWebsiteBrand(
 		page.bytes.subarray(0, HEAD_SCAN_MAX_CHARS),
 	);
 	const head = extractHeadCandidates(html, page.finalUrl);
+	const name =
+		neutralizeBrandName(head.siteName) ?? neutralizeBrandName(head.title);
 	const manifest = head.manifestUrl
 		? await readManifest(head.manifestUrl, context)
 		: { icon: null, themeColors: [] };
@@ -456,7 +529,8 @@ export async function fetchWebsiteBrand(
 							logo.dominantColor ? [logo.dominantColor] : [],
 						),
 			finalHost: page.finalUrl.hostname,
+			name,
 		};
 	}
-	return { ok: false, code: firstFailure ?? "no_logo", colors };
+	return { ok: false, code: firstFailure ?? "no_logo", colors, name };
 }

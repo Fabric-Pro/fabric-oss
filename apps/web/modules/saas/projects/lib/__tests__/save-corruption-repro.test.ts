@@ -267,7 +267,9 @@ Outro.`;
 			// extracted to its own placeholder and surrounding prose gets
 			// its own DEL_START/DEL_END pairs, so each deletion is a
 			// well-formed `<p><del class="diff-del">...</del></p>` that
-			// `stripDiffTags` removes cleanly on save.
+			// `stripDiffTags` removes cleanly on save. The fence stays a code
+			// block whose whole content is one deletion, opened and closed
+			// inside it.
 			const diffed = `Intro.
 
 \u200B\u200BDEL_START\u200B\u00A0Deleted prose line.
@@ -282,13 +284,12 @@ Outro.`;
 			// No crossed tags: every <del class="diff-del"> is closed
 			// inside the same <p> it opened in.
 			expect(html).not.toMatch(/<del[^>]*><\/p>/);
-			expect(html).not.toMatch(/<pre[^>]*>[\s\S]*<\/del>[\s\S]*<\/pre>/);
 			// Deleted content must be properly wrapped.
 			expect(html).toMatch(
 				/<del[^>]*class="[^"]*diff-del[^"]*"[^>]*>Deleted prose line\.<\/del>/,
 			);
 			expect(html).toMatch(
-				/<del[^>]*class="[^"]*diff-del[^"]*"[^>]*>old command<\/del>/,
+				/<pre[^>]*><code[^>]*><del[^>]*class="[^"]*diff-del[^"]*"[^>]*>old command\nsecond line<\/del><\/code><\/pre>/,
 			);
 			expect(html).toMatch(
 				/<del[^>]*class="[^"]*diff-del[^"]*"[^>]*>More deleted prose\.<\/del>/,

@@ -234,8 +234,23 @@ export async function recordGitLabMcpCapabilityLoss(
 }
 
 /**
+ * Tool names Fabric calls that GitLab's official MCP server does not serve.
+ * Its registry (gitlab-org/gitlab `app/services/mcp/tools/manager.rb` and the
+ * `route_setting :mcp` routes, master as of 2026-10-22) has no such tool or
+ * alias, and an unknown tool is answered with HTTP 400 / JSON-RPC -32602,
+ * which the fallback below cannot tell apart from a bad argument. These go straight to REST, before
+ * any request is sent, so even a write cannot run twice.
+ */
+const GITLAB_OFFICIAL_MCP_UNSERVED_TOOLS: ReadonlySet<string> = new Set([
+	"list_issues",
+	"list_issue_notes",
+	"update_issue",
+	"get_file_contents",
+]);
+
+/**
  * Call the official GitLab MCP server, falling back to the REST adapter on
- * failure.
+ * failure. A tool the server does not serve goes to REST directly.
  *
  * `idempotent` (default `true`) controls the write-safety of the fallback.
  * For reads, an ambiguous network/parse error after the request was sent is
@@ -254,7 +269,10 @@ export async function callMcpWithRestFallback<T>(args: {
 	restFallback: () => Promise<T>;
 	idempotent?: boolean;
 }): Promise<T> {
-	if (args.source.kind === "rest-adapter") {
+	if (
+		args.source.kind === "rest-adapter" ||
+		GITLAB_OFFICIAL_MCP_UNSERVED_TOOLS.has(args.method)
+	) {
 		return args.restFallback();
 	}
 	const idempotent = args.idempotent ?? true;

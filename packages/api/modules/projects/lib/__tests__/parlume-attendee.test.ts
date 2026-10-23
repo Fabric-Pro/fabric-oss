@@ -6,6 +6,7 @@ import {
 	getParlumeBridgeSettings,
 	isTeamsMeetingUrl,
 	leaveParlumeMeetingBot,
+	sendParlumeChatMessage,
 	sendParlumeMeetingChat,
 	sendParlumeSpeakerUpdates,
 	startParlumeMeetingBot,
@@ -133,6 +134,7 @@ describe("startParlumeMeetingBot", () => {
 					triggers: [
 						"bot.state_change",
 						"participant_events.speech_start_stop",
+						"chat_messages.update",
 					],
 				},
 			],
@@ -143,6 +145,44 @@ describe("startParlumeMeetingBot", () => {
 				max_uptime_seconds: 4 * 60 * 60 + 120,
 			},
 		});
+	});
+
+	it.each(["always", "only_if_required"] as const)(
+		"signs the bot in to Teams when the operator sets %s",
+		async (mode) => {
+			vi.stubEnv("PARLUME_ATTENDEE_TEAMS_LOGIN", mode);
+			fetchMock.mockResolvedValue(
+				new Response(JSON.stringify({ id: "bot_abc123" }), {
+					status: 201,
+				}),
+			);
+
+			await start();
+
+			expect(requestBody(0)).toMatchObject({
+				teams_settings: { use_login: true, login_mode: mode },
+			});
+		},
+	);
+
+	it("joins as an anonymous guest when no Teams login is configured", async () => {
+		vi.stubEnv("PARLUME_ATTENDEE_TEAMS_LOGIN", "");
+		fetchMock.mockResolvedValue(
+			new Response(JSON.stringify({ id: "bot_abc123" }), { status: 201 }),
+		);
+
+		await start();
+
+		expect(requestBody(0)).not.toHaveProperty("teams_settings");
+	});
+
+	it("refuses an unknown Teams login mode before creating a bot", async () => {
+		vi.stubEnv("PARLUME_ATTENDEE_TEAMS_LOGIN", "sometimes");
+
+		await expect(start()).rejects.toThrow(
+			"PARLUME_ATTENDEE_TEAMS_LOGIN must be always or only_if_required.",
+		);
+		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
 	it("never asks Attendee for a non-positive uptime", async () => {
@@ -284,6 +324,52 @@ describe("media bridge control", () => {
 				settings,
 				sessionId: "session-1",
 				updates: [],
+			}),
+		).rejects.toThrow("Parlume media bridge is unavailable.");
+	});
+
+	it("hands the bridge a meeting chat message", async () => {
+		fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+		const message = {
+			id: "msg_1",
+			text: "@Fabric Parlume what changed?",
+			senderName: "Dev One",
+			senderId: "participant-1",
+			toBot: false,
+			timestampMs: 1_700_000_000_000,
+		};
+
+		await sendParlumeChatMessage({
+			settings,
+			sessionId: "session-1",
+			message,
+		});
+
+		const [url, init] = fetchMock.mock.calls[0] ?? [];
+		expect(String(url)).toBe(
+			"https://bridge.fabric.example/live/session-1?action=chat-message",
+		);
+		expect(init.headers).toMatchObject({
+			Authorization: "Bearer service-secret",
+		});
+		expect(requestBody(0)).toEqual(message);
+	});
+
+	it("reports a bridge that refuses a chat message", async () => {
+		fetchMock.mockResolvedValue(new Response(null, { status: 409 }));
+
+		await expect(
+			sendParlumeChatMessage({
+				settings,
+				sessionId: "session-1",
+				message: {
+					id: "msg_1",
+					text: "hello",
+					senderName: null,
+					senderId: null,
+					toBot: false,
+					timestampMs: 0,
+				},
 			}),
 		).rejects.toThrow("Parlume media bridge is unavailable.");
 	});

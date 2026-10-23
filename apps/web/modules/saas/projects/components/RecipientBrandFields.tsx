@@ -1,5 +1,10 @@
 "use client";
 
+import {
+	brandAssetAcceptAttribute,
+	checkBrandAssetFile,
+	type LogoUploadContentType,
+} from "@repo/utils/brand-assets";
 import { BrandColorListField } from "@saas/shared/components/BrandColorListField";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation } from "@tanstack/react-query";
@@ -18,27 +23,40 @@ import {
 } from "react";
 
 // The server's limits, restated for the browser: `RECIPIENT_BRAND_MAX_*` live
-// in `@repo/database` (which pulls the Prisma client into a bundle) and
-// `LOGO_MAX_INPUT_BYTES` in `@repo/integrations/website-brand` (which pulls
-// `sharp`). Checking here only spares a round trip; the server re-checks.
+// in `@repo/database`, which pulls the Prisma client into a bundle. Checking
+// here only spares a round trip; the server re-checks. The logo's types and
+// size come from the shared upload vocabulary the server signs against.
 const MAX_COLORS = 3;
 const MAX_NAME_LENGTH = 200;
-const LOGO_MAX_INPUT_BYTES = 5 * 1024 * 1024;
-const LOGO_CONTENT_TYPES = [
-	"image/png",
-	"image/jpeg",
-	"image/gif",
-	"image/webp",
-] as const;
-type LogoContentType = (typeof LOGO_CONTENT_TYPES)[number];
+const LOGO_ACCEPT = brandAssetAcceptAttribute("logo");
 
-function isLogoContentType(type: string): type is LogoContentType {
-	return (LOGO_CONTENT_TYPES as readonly string[]).includes(type);
+/** A field of the recipient brand, as these fields lay it out. */
+export type RecipientBrandField = "name" | "website" | "logo" | "colors";
+
+/**
+ * The id of the element that holds a field, for an owner that moves focus to
+ * it: the name and website inputs, the logo preview, the first colour.
+ */
+export function recipientBrandFieldId(
+	idPrefix: string,
+	field: RecipientBrandField,
+): string {
+	switch (field) {
+		case "name":
+			return `${idPrefix}-name`;
+		case "website":
+			return `${idPrefix}-website`;
+		case "logo":
+			return `${idPrefix}-logo-preview`;
+		case "colors":
+			// `BrandColorListField` ids its hex inputs `${id}-${index}`.
+			return `${idPrefix}-color-0`;
+	}
 }
 
 /**
  * What confirmation does with the logo. `keep` shows the saved logo;
- * `replace` names the pending object a fetch or an upload returned (KTD23).
+ * `replace` names the pending object a fetch or an upload returned.
  */
 type RecipientLogoDraft =
 	| { action: "keep" }
@@ -99,6 +117,11 @@ type RecipientBrandFieldsProps = {
 	currentLogoUrl: string | null;
 	/** Read-only, for someone who cannot edit the project. */
 	disabled?: boolean;
+	/**
+	 * Why the fields are read-only, said beside them: `membersOnly` for a
+	 * project guest who edits the project but not its recipient brand.
+	 */
+	readOnlyReason?: "membersOnly" | null;
 	/** A confirmation is in flight: hold every control still. */
 	busy?: boolean;
 	/** Set by the owner when confirmation refused the logo. */
@@ -107,10 +130,12 @@ type RecipientBrandFieldsProps = {
 	idPrefix?: string;
 	/** Told whenever a fetch or an upload starts or settles, to hold a save. */
 	onPendingChange?: (pending: boolean) => void;
+	/** Told the website a Fetch filled the fields from, as it will be stored. */
+	onFetched?: (website: string) => void;
 };
 
 /**
- * The recipient brand's fields (Fizzy #2589, R32–R34): name, website with a
+ * The recipient brand's fields (Fizzy #2589): name, website with a
  * Fetch that proposes a logo and colors, a manual logo upload, and colors.
  *
  * Owns the two side effects that yield a logo token — the website fetch and
@@ -119,7 +144,7 @@ type RecipientBrandFieldsProps = {
  * So the project settings card and the Glossy Align-first panel share every
  * field and every failure message, and differ only in how they save.
  *
- * Nothing about a fetch blocks anything (R34, AE9): a failure, including the
+ * Nothing about a fetch blocks anything: a failure, including the
  * per-user rate limit, is a message beside the website and the manual fields
  * stay right here. A fetch's proposal lands in the fields themselves, where
  * the editor reviews and edits it before confirming.
@@ -133,10 +158,12 @@ export function RecipientBrandFields({
 	onChange,
 	currentLogoUrl,
 	disabled = false,
+	readOnlyReason = null,
 	busy = false,
 	logoError = null,
 	idPrefix = "recipient-brand",
 	onPendingChange,
+	onFetched,
 }: RecipientBrandFieldsProps) {
 	const t = useTranslations("projects.glossy.recipientBrand");
 	const [fetchStatus, setFetchStatus] = useState<FetchStatus>({
@@ -172,11 +199,17 @@ export function RecipientBrandFields({
 	});
 
 	const uploadMutation = useMutation({
-		mutationFn: async (file: File & { type: LogoContentType }) => {
+		mutationFn: async ({
+			file,
+			contentType: declared,
+		}: {
+			file: File;
+			contentType: LogoUploadContentType;
+		}) => {
 			const { token, signedUploadUrl, contentType } =
 				await orpcClient.projects.recipientBrand.createLogoUploadUrl({
 					projectId,
-					contentType: file.type,
+					contentType: declared,
 					size: file.size,
 				});
 			const response = await fetch(signedUploadUrl, {
@@ -228,6 +261,7 @@ export function RecipientBrandFields({
 						status: "fetched",
 						website: result.website,
 					});
+					onFetched?.(result.website);
 					return;
 				}
 				// Colors found without a usable logo are still worth offering.
@@ -253,29 +287,29 @@ export function RecipientBrandFields({
 
 	const upload = (file: File) => {
 		setUploadError(null);
-		if (!isLogoContentType(file.type)) {
-			setUploadError("unsupported");
+		const check = checkBrandAssetFile("logo", file);
+		if (!check.ok) {
+			setUploadError(check.code);
 			return;
 		}
-		if (file.size > LOGO_MAX_INPUT_BYTES) {
-			setUploadError("too_large");
-			return;
-		}
-		uploadMutation.mutate(file as File & { type: LogoContentType }, {
-			onSuccess: (token) => {
-				releaseObjectUrl();
-				const previewUrl =
-					typeof URL.createObjectURL === "function"
-						? URL.createObjectURL(file)
-						: null;
-				objectUrlRef.current = previewUrl;
-				onChange((prev) => ({
-					...prev,
-					logo: { action: "replace", token, previewUrl },
-				}));
+		uploadMutation.mutate(
+			{ file, contentType: check.contentType },
+			{
+				onSuccess: (token) => {
+					releaseObjectUrl();
+					const previewUrl =
+						typeof URL.createObjectURL === "function"
+							? URL.createObjectURL(file)
+							: null;
+					objectUrlRef.current = previewUrl;
+					onChange((prev) => ({
+						...prev,
+						logo: { action: "replace", token, previewUrl },
+					}));
+				},
+				onError: () => setUploadError("uploadFailed"),
 			},
-			onError: () => setUploadError("uploadFailed"),
-		});
+		);
 	};
 
 	const logoPreviewUrl =
@@ -292,9 +326,10 @@ export function RecipientBrandFields({
 		uploadError ?? (value.logo.action === "replace" ? null : logoError);
 
 	const ids = {
-		name: `${idPrefix}-name`,
-		website: `${idPrefix}-website`,
+		name: recipientBrandFieldId(idPrefix, "name"),
+		website: recipientBrandFieldId(idPrefix, "website"),
 		websiteHelp: `${idPrefix}-website-help`,
+		logoPreview: recipientBrandFieldId(idPrefix, "logo"),
 		logoHelp: `${idPrefix}-logo-help`,
 		logoInput: `${idPrefix}-logo-file`,
 		colors: `${idPrefix}-color`,
@@ -302,6 +337,11 @@ export function RecipientBrandFields({
 
 	return (
 		<div className="space-y-5">
+			{disabled && readOnlyReason === "membersOnly" && (
+				<p className="text-muted-foreground text-sm">
+					{t("membersOnly")}
+				</p>
+			)}
 			<div className="space-y-2">
 				<Label htmlFor={ids.name}>{t("name")}</Label>
 				<Input
@@ -387,7 +427,13 @@ export function RecipientBrandFields({
 					{t("logo")}
 				</legend>
 				<div className="flex flex-wrap items-center gap-4">
-					<div className="flex size-20 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border bg-muted">
+					{/* Focusable only from script: an owner that applies a logo
+					    moves focus here, where the new one shows. */}
+					<div
+						id={ids.logoPreview}
+						tabIndex={-1}
+						className="flex size-20 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					>
 						{logoPreviewUrl ? (
 							// biome-ignore lint/performance/noImgElement: a short-lived signed read or a local object URL, neither of which next/image can optimize
 							<img
@@ -414,7 +460,7 @@ export function RecipientBrandFields({
 								id={ids.logoInput}
 								type="file"
 								hidden
-								accept={LOGO_CONTENT_TYPES.join(",")}
+								accept={LOGO_ACCEPT}
 								aria-label={t("uploadLogo")}
 								onChange={(e) => {
 									const file = e.target.files?.[0];

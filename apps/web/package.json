@@ -175,7 +175,7 @@
 		"uuid": "^14.0.2",
 		"y-partykit": "^0.0.33",
 		"yjs": "^13.6.28",
-		"zod": "^4.1.12"
+		"zod": "^4.6.7"
 	},
 	"devDependencies": {
 		"@content-collections/core": "^0.12.0",

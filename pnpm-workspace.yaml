@@ -175,10 +175,15 @@ overrides:
   "fast-xml-builder@^1.0.0": "^1.1.7"
   "fastify@^5.0.0": "^5.8.5"
   "tar@^7.0.0": "^7.5.21"
-  "undici@^5.0.0": "^6.28.1"
-  "undici@^6.0.0": "^6.28.1"
-  "undici@^7.0.0": "^7.29.1"
-  "undici@^8.0.0": "^8.11.2"
+  "undici@^5.0.0": "^6.29.1"
+  "undici@^6.0.0": "^6.29.1"
+  "undici@^7.0.0": "^7.30.1"
+  "undici@^8.0.0": "^8.12.2"
+  # `@tiptap/html` declares happy-dom `^20.8.9` as a peer, but every 20.x is
+  # affected by GHSA-834v-8h66-3h79 and the fix is only in 21.0.4. 21.0.0's one
+  # breaking change turns CSS and iframe loading off by default, which
+  # `generateHTML` never relies on.
+  "happy-dom@^20.0.0": "^21.0.4"
   "underscore@^1.0.0": "^1.13.8"
   "socket.io-parser@^4.0.0": "^4.2.7"
   "@modelcontextprotocol/sdk": "^1.32.1"
@@ -207,6 +212,15 @@ overrides:
   # only breaking change for google-auth-library 8 is that `.p12` key files are
   # no longer read, and nothing here authenticates with one.
   "gtoken@^6.0.0": "^7.1.0"
+  # GHSA-mrhx-c7xc-m3w5 (zod < 4.6.6: `.max()` on an array, map or set still
+  # parses every element of an oversized input). Catches the 4.x copies that
+  # bumping the first-party declarations cannot reach: exact pins in
+  # @scalar/types, @scalar/openapi-types and @vercel/cli-config. pnpm applies
+  # it only where the declared range is a subset of the selector, so wider
+  # ranges (better-auth's ^4.5.4) are held at >= 4.6.6 by the lockfile check in
+  # dependency-security.node-test.mjs instead. zod 3 has no fixed release; it is
+  # dismissed in osv-scanner.toml — see SECURITY.md § Documented dismissals.
+  "zod@>=4.0.0 <4.6.6": "^4.6.7"
   # ProseMirror single-copy floors — dedupe, not an advisory. `@tiptap/pm` pins
   # prosemirror-model/-view/-transform at its own release line, while the other
   # prosemirror packages (state, commands, tables, schema-list, …) declare
@@ -241,8 +255,8 @@ overrides:
   "qs@^6.0.0": "^6.16.0"
   "ajv@^6.0.0": "^6.14.0"
   "ajv@^8.0.0": "^8.18.0"
-  "body-parser@^1.0.0": "^1.20.6"
-  "body-parser@^2.0.0": "^2.3.0"
+  "body-parser@^1.0.0": "^1.20.9"
+  "body-parser@^2.0.0": "^2.4.0"
   "joi@^18.0.0": "^18.2.1"
   "ip-address@^10.0.0": "^10.7.2"
   "prismjs@^1.0.0": "^1.30.0"

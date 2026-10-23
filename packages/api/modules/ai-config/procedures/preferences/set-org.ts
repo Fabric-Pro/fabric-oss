@@ -1,4 +1,5 @@
 import { ORPCError } from "@orpc/server";
+import { hasProviderCredentials } from "@repo/ai/lib/databricks-oauth";
 import type { AIProvider, AiTaskType } from "@repo/database";
 import {
 	deleteOrgModelPreferencesByTaskType,
@@ -6,7 +7,7 @@ import {
 	getModelByCanonicalName,
 	getOrganizationDefaultProvider,
 	isGatewayProvider,
-	setOrgModelPreference,
+	replaceOrgModelPreferenceForTask,
 } from "@repo/database";
 import { z } from "zod";
 import {
@@ -121,7 +122,7 @@ export const setOrgModelPreferenceProcedure = tenantProtectedProcedure
 
 		// Use the override provider if specified (for specialized tasks like IMAGE, AUDIO, or DECISION),
 		// otherwise fall back to the org's default provider
-		const provider =
+		let provider =
 			(input.overrideProvider as AIProvider) ||
 			(organizationDefaultProvider as AIProvider);
 		const taskType = input.taskType as AiTaskType;
@@ -142,35 +143,72 @@ export const setOrgModelPreferenceProcedure = tenantProtectedProcedure
 				message: "Image tasks require Vercel AI Gateway.",
 			});
 		}
-		if (taskType === "DECISION" || taskType === "IMAGE") {
+		if (taskType === "DECISION") {
+			if (
+				!isDisableRequest &&
+				provider !== "VERCEL_GATEWAY" &&
+				provider !== "DATABRICKS"
+			) {
+				throw new ORPCError("PRECONDITION_FAILED", {
+					message:
+						"Decision models require an organization Vercel AI Gateway or Databricks configuration",
+				});
+			}
+			const candidateProviders: AIProvider[] = isDisableRequest
+				? ["VERCEL_GATEWAY", "DATABRICKS"]
+				: [provider];
+			let hasDecisionProvider = false;
+			for (const candidate of candidateProviders) {
+				const config = await getAiProviderApiKeyByProvider({
+					userId: context.user.id,
+					organizationId,
+					provider: candidate,
+				});
+				if (
+					config?.provider === candidate &&
+					config.source === "organization" &&
+					(candidate === "DATABRICKS"
+						? hasProviderCredentials(config) && !!config.baseUrl
+						: !!config.apiKey)
+				) {
+					hasDecisionProvider = true;
+					break;
+				}
+			}
+			if (!hasDecisionProvider) {
+				throw new ORPCError("PRECONDITION_FAILED", {
+					message:
+						"Decision models require an organization Vercel AI Gateway or Databricks configuration",
+				});
+			}
+			if (isDisableRequest) {
+				provider = "VERCEL_GATEWAY";
+			}
+		} else if (taskType === "IMAGE") {
 			const gateway = await getAiProviderApiKeyByProvider({
 				userId: context.user.id,
 				organizationId,
 				provider: "VERCEL_GATEWAY",
 			});
 			if (
-				provider !== "VERCEL_GATEWAY" ||
-				gateway?.source !== "organization" ||
+				gateway?.provider !== "VERCEL_GATEWAY" ||
+				gateway.source !== "organization" ||
 				!gateway.apiKey
 			) {
 				throw new ORPCError("PRECONDITION_FAILED", {
 					message:
-						taskType === "DECISION"
-							? "Decision models require an organization Vercel AI Gateway configuration"
-							: "Image models require an organization Vercel AI Gateway configuration",
+						"Image models require an organization Vercel AI Gateway configuration",
 				});
 			}
 		}
 
-		// Switching decisions off. The organization-owned Vercel gateway
+		// Switching decisions off. The organization-owned decision provider
 		// precondition above already ran, so this is an admin of an org that
 		// could have chosen a decision model deciding not to use one. Stored
 		// as a row with no model rather than as an absent row, because an
 		// absent row means "use the seeded default".
 		if (isDisableRequest) {
-			await deleteOrgModelPreferencesByTaskType(organizationId, taskType);
-
-			const preference = await setOrgModelPreference({
+			const preference = await replaceOrgModelPreferenceForTask({
 				organizationId,
 				provider,
 				taskType,
@@ -200,15 +238,17 @@ export const setOrgModelPreferenceProcedure = tenantProtectedProcedure
 		if (taskType === "DECISION") {
 			if (
 				!model.suitableForTasks.includes("DECISION") ||
-				provider !== "VERCEL_GATEWAY" ||
 				!model.capabilities.includes("EVALUATION") ||
 				!model.providerMappings.some(
-					(mapping) => mapping.provider === "VERCEL_GATEWAY",
+					(mapping) =>
+						mapping.provider === provider &&
+						mapping.isAvailable &&
+						!!mapping.providerModelId,
 				)
 			) {
 				throw new ORPCError("BAD_REQUEST", {
 					message:
-						"Decision tasks require an evaluation model through Vercel AI Gateway.",
+						"Decision tasks require an available evaluation model through Vercel AI Gateway or Databricks.",
 				});
 			}
 		} else if (model.capabilities.includes("EVALUATION")) {
@@ -240,11 +280,9 @@ export const setOrgModelPreferenceProcedure = tenantProtectedProcedure
 			}
 		}
 
-		// Delete any existing preferences for this task type (regardless of provider)
-		// This prevents duplicates when org switches between providers for the same task
-		await deleteOrgModelPreferencesByTaskType(organizationId, taskType);
+		// Replace the task choice atomically across API providers.
 
-		const preference = await setOrgModelPreference({
+		const preference = await replaceOrgModelPreferenceForTask({
 			organizationId,
 			provider,
 			taskType,

@@ -911,6 +911,9 @@ export const CHANGE_SOURCE_CONTEXTS = [
 	"scope_document",
 	"security_findings",
 	"architecture_decisions",
+	// Set by the recurring-error scan, never by the analyzer.
+	"application_logs",
+	"bug_reports",
 	"multiple",
 ] as const;
 

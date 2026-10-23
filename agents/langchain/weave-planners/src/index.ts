@@ -75,13 +75,17 @@ app.post("/a2a/send", async (c) => {
 
 		const text = message?.parts?.[0]?.text || "";
 
-		const result = await patternGraph.invoke({
-			messages: [new HumanMessage(text)],
-			projectContext,
-			tenantContext,
-			planId,
-		});
+		const result = await patternGraph.invoke(
+			{
+				messages: [new HumanMessage(text)],
+				projectContext,
+				tenantContext,
+				planId,
+			},
+			{ signal: c.req.raw.signal },
+		);
 
+		c.req.raw.signal.throwIfAborted();
 		return c.json({
 			success: true,
 			planId: result.planId,

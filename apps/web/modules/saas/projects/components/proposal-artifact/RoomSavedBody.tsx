@@ -9,14 +9,18 @@ import { createAdvancedExtensions } from "../../lib/tiptap-extensions-advanced";
  * The saved body, read-only, outside the room (Fizzy #2946): what a client
  * shows while its room is behind the saved document — a client that may not
  * edit, which never writes the room, or any editor while the room is brought
- * up to date.
+ * up to date. Its editor is created after the first render, so it is mounted
+ * hidden (`shown` false) ahead of the moment it may take over: shown then, it
+ * is drawn with its text from the first frame.
  */
 export function RoomSavedBody({
 	markdown,
 	statTiles,
+	shown = true,
 }: {
 	markdown: string;
 	statTiles: boolean;
+	shown?: boolean;
 }) {
 	const extensions = useMemo(
 		() =>
@@ -37,7 +41,10 @@ export function RoomSavedBody({
 		[extensions, markdown],
 	);
 	return (
-		<div data-testid="room-saved-body">
+		<div
+			data-testid={shown ? "room-saved-body" : "room-saved-body-ready"}
+			className={shown ? undefined : "hidden"}
+		>
 			<EditorContent
 				editor={savedBodyEditor}
 				className="prose prose-sm max-w-none dark:prose-invert"

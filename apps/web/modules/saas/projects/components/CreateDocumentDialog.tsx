@@ -838,6 +838,7 @@ export function CreateDocumentDialog({ projectId, open, onOpenChange }: Props) {
 				key={type}
 				agentName="project_document_generator"
 				documentType={type}
+				projectId={projectId}
 				value={promptId}
 				onValueChange={setPromptId}
 				onPromptVersionChange={setPromptVersionId}

@@ -67,3 +67,37 @@ it("opts both research reader calls into service authentication without using pl
 	expect(plainFetch).not.toHaveBeenCalled();
 	expect(getAgentModelAsync).not.toHaveBeenCalled();
 });
+
+it("cancels reader delegation without starting fallback research or model calls", async () => {
+	const controller = new AbortController();
+	let received: AbortSignal | undefined;
+	sendMessageSecure.mockImplementation(
+		async (_url, _message, _tenant, options) => {
+			received = options.signal;
+			controller.abort();
+			throw new Error("503 request aborted");
+		},
+	);
+	const plainFetch = vi.fn(async () => Response.json({ response: "unused" }));
+	vi.stubGlobal("fetch", plainFetch);
+	await expect(
+		patternGraph.invoke(
+			{
+				messages: [],
+				projectContext: {
+					projectId: "example-project",
+					projectName: "Example",
+				},
+				tenantContext: {
+					userId: "example-user",
+					organizationId: "example-org",
+				},
+			},
+			{ signal: controller.signal },
+		),
+	).rejects.toBeDefined();
+	expect(received?.aborted).toBe(true);
+	expect(sendMessageSecure).toHaveBeenCalledTimes(1);
+	expect(plainFetch).not.toHaveBeenCalled();
+	expect(getAgentModelAsync).not.toHaveBeenCalled();
+});

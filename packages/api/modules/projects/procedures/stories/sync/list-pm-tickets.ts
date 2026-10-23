@@ -936,6 +936,7 @@ export const listPMTicketsProcedure = tenantProtectedProcedure
 					// Generic fetch loop (non-Fizzy, or Fizzy fallback when per-column failed)
 					if (allRaw.length === 0) {
 						let fetchPage = 1;
+						let rowsReceived = 0;
 						const keepFetching = true;
 						let effectivePageSize: number | undefined;
 
@@ -953,8 +954,10 @@ export const listPMTicketsProcedure = tenantProtectedProcedure
 									project.organizationId ?? undefined,
 								page: fetchPage,
 								pageSize: PM_FETCH_PAGE_SIZE,
+								offset: rowsReceived,
 							});
 							const { items, total, hasNextPage } = result;
+							rowsReceived += result.rawCount ?? items.length;
 
 							if (items.length === 0) {
 								break;

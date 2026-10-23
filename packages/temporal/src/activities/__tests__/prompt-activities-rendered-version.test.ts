@@ -65,11 +65,30 @@ describe("fetchAndRenderPrompt", () => {
 			agentName: "project_document_generator",
 			userId: "user_1",
 			organizationId: "org_example",
+			projectId: "project_example",
 			documentType: "PROPOSAL",
 		});
 
 		expect(result?.rendered).toContain(CURRENT);
 		expect(result?.rendered).not.toContain(OLDER);
 		expect(result?.promptVersionId).toBe("pv_9");
+	});
+
+	it("resolves the binding for the project, so a project default outranks the organization's", async () => {
+		await fetchAndRenderPrompt({
+			agentName: "project_document_generator",
+			userId: "user_1",
+			organizationId: "org_example",
+			projectId: "project_example",
+			documentType: "PRD",
+		});
+
+		expect(promptQueries.getBoundPromptForAgent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				organizationId: "org_example",
+				projectId: "project_example",
+				documentType: "PRD",
+			}),
+		);
 	});
 });

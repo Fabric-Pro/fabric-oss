@@ -30,6 +30,7 @@ vi.mock("@repo/database", async (importOriginal) => ({
 	...(await importOriginal<typeof import("@repo/database")>()),
 	trustedOrganizationLogoKey: vi.fn(() => null),
 	isRecipientLogoKeyForProject: vi.fn(() => false),
+	recordProposalExportBrand: vi.fn(async () => true),
 }));
 vi.mock("@repo/storage", () => ({
 	downloadFile: vi.fn(async () => {

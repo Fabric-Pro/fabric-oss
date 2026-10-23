@@ -19,23 +19,28 @@ name: Unit Tests
 #
 # SHARDING. A 4-core runner must give each package four cores (see the tuning
 # history below), which means one Turbo task at a time — a serial sweep of the
-# whole monorepo. So the sweep is split across several free standard runners
-# instead: the `plan` job resolves the affected package set and buckets it,
-# and `vitest` fans out over that bucketing. Buckets, deterministic so a
-# re-run reproduces them exactly:
+# whole monorepo. So the sweep is split across several runners instead (free
+# standard runners in the public repository, `ubuntu-8core-arm` in the private
+# one; see the note above the vitest job's runs-on). The `plan` job resolves
+# the affected package set and buckets it, and `vitest` fans out over that
+# bucketing. Buckets, deterministic so a re-run reproduces them exactly:
 #
-#   @repo/web       2 shards, via Vitest's own `--shard=N/2` file splitting
+#   @repo/web       3 shards, via Vitest's own `--shard=N/3` file splitting
+#                   (at 2 shards each ran ~240s of tests, October 2026, which
+#                   leaves web as the expected critical path once api and
+#                   temporal use every core but one in CI)
 #   @repo/api       1 shard
-#   @repo/temporal  1 shard
+#   @repo/temporal  2 shards, the same way (its single shard was the
+#                   critical path at ~620s, against ~340s for @repo/api)
 #   everything else 1 "rest" shard, 2 when more than 15 packages land in it
 #
 # Those three are the heavy packages (~1758 test files between them, each
 # `vitest run`); the other ~33 are small. A bucket only exists when the plan
 # actually contains its package, so a PR touching one leaf package runs one
-# short shard rather than six.
+# short shard rather than eight.
 #
 # Vitest shard args reach the suite as Turbo pass-through (`-- --shard=1/2`),
-# and Turbo folds pass-through args into the task hash, so the two web shards
+# and Turbo folds pass-through args into the task hash, so the split shards
 # get distinct cache entries and cannot alias each other. Turbo also hands
 # those args to the `generate` task the tests depend on and hashes them there,
 # which made each web shard miss the shared Prisma entry and pay a cold
@@ -54,7 +59,7 @@ name: Unit Tests
 #
 # Pushes to master run a cache-warming job, not the tests: GitHub only lets a
 # run restore caches saved on its own branch or on the base branch, so a PR's
-# first run finds a warm pnpm store and Turbo cache only if a run on master
+# first run finds warm dependencies and a warm Turbo cache only if a run on master
 # saved one. Nothing did before this trigger existed, and the one-shot relay
 # PRs in the public repo never get a second push, so they paid for a cold pnpm
 # install and a cold Prisma generate on every run. Running the suite on master
@@ -251,13 +256,13 @@ jobs:
             ),
           ].sort();
 
-          // Heavy packages get dedicated runners; @repo/web is split further
-          // by Vitest's own file sharding. Keep this table and the SHARDING
-          // note in the header in step.
+          // Heavy packages get dedicated runners; @repo/web and
+          // @repo/temporal are split further by Vitest's own file sharding.
+          // Keep this table and the SHARDING note in the header in step.
           const HEAVY = [
-            ["@repo/web", 2],
+            ["@repo/web", 3],
             ["@repo/api", 1],
-            ["@repo/temporal", 1],
+            ["@repo/temporal", 2],
           ];
           // Above this many small packages the rest bucket is split in two.
           const REST_SPLIT_ABOVE = 15;
@@ -372,9 +377,13 @@ jobs:
     # So 4 was never a conservative cap, it was the ceiling, and starving a
     # package below four cores is what makes the suite flaky rather than slow.
     #
-    # Also settled, and not worth another round: vitest maxWorkers 1 -> "50%"
-    # (645s -> 617s, parallelism 0.9x -> 3.5x, no wall-clock gain); a
-    # node/jsdom environment split (616s -> 621s; `environment` itself fell
+    # vitest maxWorkers 1 -> "50%" bought no wall clock (645s -> 617s,
+    # parallelism 0.9x -> 3.5x) when it was measured, but that was on one
+    # runner shared by every package, where cores one suite freed went to
+    # another. Each heavy package now has a shard to itself, so @repo/api and
+    # @repo/temporal use every core but one in CI, as apps/web already did
+    # (see their vitest.config.ts). Still settled, and not worth another round:
+    # a node/jsdom environment split (616s -> 621s; `environment` itself fell
     # 938s -> 686s and the wall clock did not move); pool: "threads" (249s ->
     # 415s locally, a jsdom realm per thread, 67% slower); deps.optimizer (-21s
     # locally, 24 files failed, breaks module mocking).
@@ -427,10 +436,10 @@ jobs:
     #
     # Runner labels: larger runners are billed on public repositories too, and
     # a label that does not exist leaves a job queued for 24 hours rather than
-    # failing, so this job stays on `ubuntu-latest` — free and unlimited here
-    # at 4 CPU / 16 GB. The private staging repo used to run the same sweep on
-    # a paid 16-core arm64 label; it no longer runs this workflow at all (see
-    # the header), so no job in this file needs a provisioned label.
+    # failing, so the public repository stays on `ubuntu-latest` — free and
+    # unlimited there at 4 CPU / 16 GB. The private repository runs every
+    # shard on its provisioned `ubuntu-8core-arm` label: its standard runner
+    # has 2 CPU / 8 GB, below the four cores per package described above.
     runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && 'ubuntu-8core-arm' || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
@@ -467,7 +476,6 @@ jobs:
         with:
           node-version: '22'
           check-latest: true
-          cache: 'pnpm'
 
       # Persist Turbo's local cache (.turbo/cache) across runs — the
       # official Turborepo GitHub Actions recipe. Re-pushes to a PR (and
@@ -509,7 +517,7 @@ jobs:
             ${{ runner.os }}-turbo-vitest-
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        uses: ./.github/actions/pnpm-install
 
       # Hard gate: fail PRs that introduce Prisma queries without explicit
       # organizationId coercion (tenant-isolation foot-gun). It is a
@@ -601,6 +609,10 @@ jobs:
   # Runs whenever the shards could run (a code change, or a dispatch), not
   # only when @repo/temporal is affected: the relay depends on
   # @repo/utils/url-security, and a one-file run is cheap.
+  #
+  # The same job prints a synthetic Proposal PDF with this Chromium
+  # (`packages/temporal/__tests__/proposal-export-print.e2e.test.ts`): font
+  # hinting and the cover's page geometry only show in a real Linux print.
   browser-security:
     name: Browser relay security (real Chromium)
     needs: [plan, promotion_policy]
@@ -630,10 +642,9 @@ jobs:
         with:
           node-version: '22'
           check-latest: true
-          cache: 'pnpm'
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        uses: ./.github/actions/pnpm-install
 
       # The browser build must match the Playwright @repo/temporal resolves,
       # so the cache key is that version, read from the installed package.
@@ -654,13 +665,40 @@ jobs:
         if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: pnpm --filter @repo/temporal exec playwright install chromium
 
-      # System libraries are not in the browser cache, so they are installed
-      # on every run.
+      # System libraries are not in the browser cache, so apt installs them on
+      # every run. Their .deb files come from the Azure Ubuntu mirror, which
+      # sometimes serves them at ~35 kB/s: 22.7 MB of fonts took 10.5 min on
+      # 2026-10-23 and held the required unit-tests check for it. warm-caches
+      # publishes those archives from staging pushes; restoring them into
+      # apt's archive directory leaves apt nothing to download. apt still
+      # checks each file against the hash in the signed package index and
+      # fetches any file that does not match, so a stale or wrong cache only
+      # costs the download it would have made anyway.
+      - name: Resolve runner image
+        id: runner-image
+        run: echo "image=${ImageOS:-unknown}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Chromium system packages
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/playwright-apt-archives
+          key: ${{ runner.os }}-${{ runner.arch }}-playwright-apt-${{ steps.playwright.outputs.version }}-${{ steps.runner-image.outputs.image }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-playwright-apt-${{ steps.playwright.outputs.version }}-
+            ${{ runner.os }}-${{ runner.arch }}-playwright-apt-
+
       - name: Install Chromium system dependencies
-        run: pnpm --filter @repo/temporal exec playwright install-deps chromium
+        run: |
+          shopt -s nullglob
+          debs=("$HOME"/playwright-apt-archives/*.deb)
+          echo "restored ${#debs[@]} cached package archives"
+          if ((${#debs[@]})); then
+            sudo cp -- "${debs[@]}" /var/cache/apt/archives/
+          fi
+          pnpm --filter @repo/temporal exec playwright install-deps chromium
 
       - name: Run browser relay security suite
-        run: pnpm --filter @repo/temporal exec vitest run __tests__/browser-automation-redirect-credentials.e2e.test.ts __tests__/qa-agentic-browser-security.e2e.test.ts
+        run: pnpm --filter @repo/temporal exec vitest run __tests__/browser-automation-redirect-credentials.e2e.test.ts __tests__/qa-agentic-browser-security.e2e.test.ts __tests__/proposal-export-print.e2e.test.ts
 
   # The migration chain, replayed into an empty database, must match
   # schema.prisma exactly (Fizzy #2268). `prisma migrate dev` diffs that
@@ -715,10 +753,9 @@ jobs:
         with:
           node-version: '22'
           check-latest: true
-          cache: 'pnpm'
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        uses: ./.github/actions/pnpm-install
 
       - name: Apply the migration chain to an empty database
         working-directory: packages/database
@@ -751,6 +788,8 @@ jobs:
   # Seeds the caches a relay PR's one and only run restores (see header).
   # Installs and generates; runs no tests, so it takes minutes rather than
   # the sweep's wall clock. Private staging pushes also seed their own cache.
+  # It is also the x64 seed for .github/actions/pnpm-install, which the x64
+  # jobs here and in db-integration.yml restore; Type Check's push seeds arm64.
   # workflow_dispatch needs no exemption
   # here — a dispatch is never a push, so this job is not part of the manual
   # validation path.
@@ -786,7 +825,6 @@ jobs:
         with:
           node-version: '22'
           check-latest: true
-          cache: 'pnpm'
 
       - name: Restore Turbo cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -797,7 +835,7 @@ jobs:
             ${{ runner.os }}-turbo-vitest-
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        uses: ./.github/actions/pnpm-install
 
       # The same generate + barrel comparison the primary shard runs on PRs.
       # Here it warms Turbo and verifies the output before publishing the
@@ -815,6 +853,51 @@ jobs:
         with:
           path: packages/database/prisma/generated
           key: prisma-client-${{ runner.os }}-${{ hashFiles('packages/database/prisma/schema.prisma', 'packages/database/prisma/zod-generator.config.json', 'packages/database/prisma/tsconfig.generated.json', 'packages/database/scripts/generate-client.mts', 'packages/database/scripts/fix-zod-imports.ts', 'packages/database/tsconfig.json', 'packages/database/package.json', 'tooling/typescript/base.json', 'tooling/typescript/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml') }}
+
+      # Publishes the apt archives browser-security restores (see there), once
+      # per Playwright version and runner image. Same runner label as that
+      # job, so the archives match its architecture and Ubuntu release. A slow
+      # mirror delays only this push run, which nobody waits on.
+      - name: Resolve Playwright version
+        id: playwright
+        run: |
+          version="$(pnpm --filter @repo/temporal exec node -p "require('playwright/package.json').version")"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "image=${ImageOS:-unknown}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+
+      - name: Check published Chromium system packages
+        id: playwright-apt
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/playwright-apt-archives
+          key: ${{ runner.os }}-${{ runner.arch }}-playwright-apt-${{ steps.playwright.outputs.version }}-${{ steps.playwright.outputs.image }}
+          lookup-only: true
+
+      - name: Download Chromium system packages
+        id: playwright-apt-download
+        if: steps.playwright-apt.outputs.cache-hit != 'true'
+        run: |
+          shopt -s nullglob
+          # apt-get keeps downloaded archives unless an image config cleans
+          # them; say so explicitly so the copy below sees them.
+          echo 'APT::Keep-Downloaded-Packages "true";' | sudo tee /etc/apt/apt.conf.d/99-keep-downloaded-packages >/dev/null
+          pnpm --filter @repo/temporal exec playwright install-deps chromium
+          mkdir -p "$HOME/playwright-apt-archives"
+          debs=(/var/cache/apt/archives/*.deb)
+          echo "downloaded ${#debs[@]} package archives"
+          if ((${#debs[@]})); then
+            cp -- "${debs[@]}" "$HOME/playwright-apt-archives/"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::apt kept no archives to publish; browser-security will download them from the mirror."
+          fi
+
+      - name: Publish Chromium system packages
+        if: steps.playwright-apt-download.outputs.publish == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/playwright-apt-archives
+          key: ${{ runner.os }}-${{ runner.arch }}-playwright-apt-${{ steps.playwright.outputs.version }}-${{ steps.playwright.outputs.image }}
 
   # Stable status check name reported on every PR to the canonical branch
   # (`master`). Configure this as the required check in branch protection —

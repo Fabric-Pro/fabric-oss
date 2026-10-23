@@ -127,6 +127,122 @@ describe("createGitLabMcpClient", () => {
 		expect(idOf(calls[3])).toBe(1);
 	});
 
+	it("throws GitLabMcpError when the tool result is an error", async () => {
+		fetchSpy.mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					jsonrpc: "2.0",
+					id: 1,
+					result: {
+						isError: true,
+						content: [
+							{ type: "text", text: "404 Project Not Found" },
+						],
+					},
+				}),
+				{
+					status: 200,
+					headers: { "content-type": "application/json" },
+				},
+			),
+		);
+
+		const client = createGitLabMcpClient({
+			serverUrl: "https://gitlab.example.com/api/mcp",
+			token: "test-token",
+		});
+
+		const error = await client
+			.callTool("list_issues", { project_id: "1" })
+			.catch((e) => e);
+		expect(error).toBeInstanceOf(GitLabMcpError);
+		expect(error).not.toBeInstanceOf(GitLabMcpMethodNotFoundError);
+		expect(error.message).toBe(
+			"GitLab MCP tool list_issues failed: 404 Project Not Found",
+		);
+		expect(error.httpStatus).toBeUndefined();
+	});
+
+	it("throws GitLabMcpError for an error result even when it carries structured content", async () => {
+		fetchSpy.mockResolvedValue(
+			new Response(
+				JSON.stringify({
+					jsonrpc: "2.0",
+					id: 1,
+					result: { isError: true, structuredContent: [] },
+				}),
+				{
+					status: 200,
+					headers: { "content-type": "application/json" },
+				},
+			),
+		);
+
+		const client = createGitLabMcpClient({
+			serverUrl: "https://gitlab.example.com/api/mcp",
+			token: "test-token",
+		});
+
+		const error = await client
+			.callTool("list_issues", { project_id: "1" })
+			.catch((e) => e);
+		expect(error).toBeInstanceOf(GitLabMcpError);
+		expect(error.message).toBe(
+			"GitLab MCP tool list_issues failed: no error detail",
+		);
+	});
+
+	it("redacts the request token from tool error and HTTP error text", async () => {
+		const token = "glpat-example-secret-token";
+		fetchSpy
+			.mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						jsonrpc: "2.0",
+						id: 1,
+						result: {
+							isError: true,
+							content: [
+								{
+									type: "text",
+									text: `rejected token ${token} (Authorization: Bearer ${token})`,
+								},
+							],
+						},
+					}),
+					{
+						status: 200,
+						headers: { "content-type": "application/json" },
+					},
+				),
+			)
+			.mockResolvedValueOnce(
+				new Response(`upstream echoed PRIVATE-TOKEN: ${token}`, {
+					status: 502,
+					headers: { "content-type": "text/plain" },
+				}),
+			);
+
+		const client = createGitLabMcpClient({
+			serverUrl: "https://gitlab.example.com/api/mcp",
+			token,
+		});
+
+		const toolError = await client
+			.callTool("list_issues", {})
+			.catch((e) => e);
+		expect(toolError).toBeInstanceOf(GitLabMcpError);
+		expect(toolError.message).not.toContain(token);
+		expect(toolError.message).toContain("[REDACTED]");
+
+		const httpError = await client
+			.callTool("list_issues", {})
+			.catch((e) => e);
+		expect(httpError).toBeInstanceOf(GitLabMcpError);
+		expect(httpError.message).not.toContain(token);
+		expect(httpError.message).toContain("GitLab MCP HTTP 502");
+	});
+
 	it("throws GitLabMcpError on non-2xx HTTP response", async () => {
 		fetchSpy.mockImplementation(() =>
 			Promise.resolve(

@@ -371,6 +371,7 @@ export function createInvokeAgent(
 			},
 			{
 				recursionLimit: DEFAULT_RECURSION_LIMIT,
+				signal: runtimeConfig?.signal,
 				configurable: buildAgentConfigurable(
 					input,
 					runtimeConfig?.configurable,

@@ -2,6 +2,7 @@ import { db } from "@repo/database";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
+	chatMessageDedupeKey,
 	isParlumeServiceRequestAuthorized,
 	MAX_PARLUME_SEGMENT_CHARS,
 	segmentDedupeKey,
@@ -15,6 +16,8 @@ const bodySchema = z.object({
 	speakerId: z.string().trim().min(1).max(256).nullable(),
 	utteranceStartMs: z.number().int().min(0).max(14_400_000).nullable(),
 	utteranceEndMs: z.number().int().min(0).max(14_400_000).nullable(),
+	source: z.enum(["SPEECH", "CHAT"]).default("SPEECH"),
+	chatMessageId: z.string().min(1).max(128).optional(),
 });
 
 export async function POST(request: NextRequest) {
@@ -53,7 +56,9 @@ export async function POST(request: NextRequest) {
 		// Durable Object can drain without retaining unauthorized capture.
 		return NextResponse.json({ accepted: true, discarded: true });
 	}
-	const dedupeKey = segmentDedupeKey(parsed.data);
+	const dedupeKey = parsed.data.chatMessageId
+		? chatMessageDedupeKey(session.id, parsed.data.chatMessageId)
+		: segmentDedupeKey(parsed.data);
 	const created = await db.parlumeMeetingSegment.createMany({
 		data: {
 			sessionId: session.id,
@@ -61,6 +66,7 @@ export async function POST(request: NextRequest) {
 			organizationId: session.organizationId,
 			userId: session.userId,
 			dedupeKey,
+			source: parsed.data.source,
 			text: parsed.data.text,
 			speakerName: parsed.data.speakerName,
 			speakerId: parsed.data.speakerId,

@@ -1,3 +1,5 @@
+import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
+
 const VALID_FILE_TYPES = new Set([
 	"DOCUMENT",
 	"CODE",
@@ -384,7 +386,11 @@ export async function createFabricFrame(input: {
 			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
 		});
 		content = result.text?.trim() || "";
-	} catch {
+	} catch (error) {
+		const limitError = findAiUsageLimitError(error);
+		if (limitError) {
+			throw limitError;
+		}
 		content = "";
 	}
 

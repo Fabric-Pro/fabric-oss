@@ -9,6 +9,7 @@ import {
 	extractAtlassianSiteId,
 	extractPMListArray,
 	findBacklogsListTool,
+	readPMListPagingEvidence,
 	unwrapDataEnvelope,
 } from "@repo/utils";
 import { descriptionToText } from "@repo/utils/adf-text";
@@ -678,31 +679,12 @@ function parseListPage(
 	// `count` often describes only this page, so it cannot establish completeness.
 	const total =
 		typeof rawTotal === "number" && rawTotal >= 0 ? rawTotal : undefined;
-	const hasMoreMarker = (value: unknown): boolean => {
-		if (!value || typeof value !== "object") {
-			return false;
-		}
-		const record = value as Record<string, unknown>;
-		return (
-			record.hasNextPage === true ||
-			record.hasMore === true ||
-			record.has_more === true ||
-			record.isLast === false ||
-			record.last_page === false ||
-			[
-				record.nextCursor,
-				record.next_cursor,
-				record.nextPageToken,
-				record.next_page_token,
-			].some((token) => typeof token === "string" && token.length > 0)
-		);
-	};
+
 	return {
 		items,
 		total,
 		rawCount: arr?.length ?? 0,
-		hasNextPage:
-			hasMoreMarker(envelope) || hasMoreMarker(envelope?.pageInfo),
+		hasNextPage: readPMListPagingEvidence(envelope).hasMore,
 		recognized: !!extracted,
 	};
 }

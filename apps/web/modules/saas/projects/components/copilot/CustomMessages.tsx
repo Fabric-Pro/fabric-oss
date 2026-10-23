@@ -306,6 +306,35 @@ export const CustomMessages = ({
 	const { messagesContainerRef, messagesEndRef } =
 		useScrollToBottom(messages);
 
+	// Each row keeps its identity by its message's id, not its place in the
+	// list (Fizzy #2946). A message entering the history ahead of a live
+	// one — an accept's operation result, a persisted reply — moved every
+	// row after it, and React mounted those rows again: a confirm card for a
+	// tool call answered long ago said once more that a proposal was under
+	// review. CopilotKit's `RenderMessage` keys the message it renders by
+	// the `index` it is handed, and uses it for nothing else, so a row with
+	// an id is handed the number its id was first given, which never moves.
+	// A row without an id, or one whose id is already on screen, keeps its
+	// place as its identity.
+	const rowOrdinalsRef = useRef(new Map<string, number>());
+	const rowIdentities = useMemo(() => {
+		const ordinals = rowOrdinalsRef.current;
+		const seen = new Set<string>();
+		return messages.map((message, index) => {
+			const id = (message as { id?: unknown }).id;
+			if (typeof id !== "string" || seen.has(id)) {
+				return { key: `index:${index}`, index };
+			}
+			seen.add(id);
+			let ordinal = ordinals.get(id);
+			if (ordinal === undefined) {
+				ordinal = ordinals.size;
+				ordinals.set(id, ordinal);
+			}
+			return { key: `id:${id}`, index: ordinal };
+		});
+	}, [messages]);
+
 	const LoadingIcon = () => <span>{icons.activityIcon}</span>;
 
 	return (
@@ -320,7 +349,7 @@ export const CustomMessages = ({
 						const { outcome, artifact } = message.metadata;
 						// Suppress only the redundant SUCCESS card with no
 						// artifact link — the agent's own conversational
-						// confirmation ("Changes have been applied…") already
+						// confirmation ("Changes accepted.") already
 						// covers it. Keep the card for failure / partial /
 						// cancelled (durable status the success-phrased agent
 						// line won't convey) and for any row carrying an
@@ -330,8 +359,7 @@ export const CustomMessages = ({
 						}
 						return (
 							<SystemMessage
-								// biome-ignore lint/suspicious/noArrayIndexKey: same array-order identity rule as the default RenderMessage path below
-								key={index}
+								key={rowIdentities[index]?.key}
 								outcome={outcome}
 								content={message.content}
 								artifact={artifact}
@@ -340,12 +368,11 @@ export const CustomMessages = ({
 					}
 					return (
 						<RenderMessage
-							// biome-ignore lint/suspicious/noArrayIndexKey: matches CopilotKit's default Messages component — keeps stable per-index identity for the same reasons (messages array order is the identity contract)
-							key={index}
+							key={rowIdentities[index]?.key}
 							message={message as never}
 							messages={messages as never}
 							inProgress={inProgress}
-							index={index}
+							index={rowIdentities[index]?.index ?? index}
 							isCurrentMessage={isCurrentMessage}
 							AssistantMessage={AssistantMessage}
 							UserMessage={UserMessage}

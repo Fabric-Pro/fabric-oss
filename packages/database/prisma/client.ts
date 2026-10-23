@@ -199,6 +199,9 @@ export type {
 	// User Stories & Tasks types
 	ProjectStoryStatus,
 	QaRunMode,
+	// Recurring-error scan bookkeeping.
+	RecurringErrorSignature,
+	RecurringErrorSource,
 	Session,
 	StorySubtask,
 	StoryTask,

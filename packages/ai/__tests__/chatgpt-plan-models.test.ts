@@ -7,6 +7,7 @@
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { chatGptPlanSessionId } from "@repo/agent-types/chatgpt-plan-fetch";
 import { generateText } from "ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -556,5 +557,26 @@ describe("unsupported-model fallback (F10)", () => {
 		});
 		const body = JSON.parse(String(baseFetch.mock.calls[0]?.[1]?.body));
 		expect(body.reasoning?.effort).toBe("high");
+	});
+
+	it("sends the hashed session key through the plan provider", async () => {
+		const fetchImpl = vi.fn<typeof fetch>(async () =>
+			sseText("ok", "gpt-6.1-sol"),
+		);
+		await generateText({
+			model: createChatGptPlanModel({
+				userId: "example-user",
+				modelId: "gpt-6.1-sol",
+				sessionKey: "thread-123",
+				fetchImpl,
+			}),
+			prompt: "hello",
+			maxRetries: 0,
+		});
+		expect(
+			new Headers(fetchImpl.mock.calls[0]?.[1]?.headers).get(
+				"session_id",
+			),
+		).toBe(await chatGptPlanSessionId("thread-123"));
 	});
 });

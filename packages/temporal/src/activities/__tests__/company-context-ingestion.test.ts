@@ -1,3 +1,4 @@
+import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
 /**
  * Company context ingestion through the shared activities (Fizzy #2719).
  *
@@ -1490,4 +1491,30 @@ describe("deleteSingleContextActivity with a company owner", () => {
 		expect(result.dbDeleted).toBe(true);
 		expect(mocks.deleteFile).not.toHaveBeenCalled();
 	});
+});
+
+it("records a returned company embedding refusal without another attempt", async () => {
+	mocks.getCompanyContextSource.mockResolvedValue(textSource());
+	const refusal = new UnsupportedEmbeddingModelError(
+		"databricks-gte-large-en",
+	);
+	mocks.embedCompanyContext.mockResolvedValue({
+		success: false,
+		error: refusal.message,
+		refusal,
+	});
+	await expect(
+		embedSingleContextActivity({
+			contextId: SOURCE,
+			userId: USER,
+			type: "TEXT",
+			owner: COMPANY,
+		}),
+	).resolves.toEqual({ success: true });
+	expect(
+		mocks.recordCompanyContextSourceIndexingFailure,
+	).toHaveBeenCalledWith(SOURCE, ORG, refusal.message, {
+		pointsRemoved: true,
+	});
+	expect(mocks.markCompanyContextSourceEmbedded).not.toHaveBeenCalled();
 });

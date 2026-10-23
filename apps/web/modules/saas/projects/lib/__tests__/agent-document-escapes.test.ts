@@ -145,6 +145,59 @@ describe("AI Assistant document input escapes", () => {
 	});
 });
 
+describe("review diff against an agent edit", () => {
+	it("does not strike through the escape at the end of a removed run", () => {
+		// Arrange
+		const baseline = saveFromMarkdown(
+			"- Reference link: \\[S1\\] — [Docs](https://example.com/docs).",
+		);
+		const agentEdit = toAgentDocument(baseline).replace(
+			"Reference link: [S1] —",
+			"[S1] is documented in",
+		);
+
+		// Act
+		const html = fromMarkdown(diffPartialText(baseline, agentEdit, true));
+		const saved = acceptAgentEdit(baseline, agentEdit);
+
+		// Assert
+		const struck = [...html.matchAll(/<del\b[^>]*>([\s\S]*?)<\/del>/g)]
+			.map((match) => match[1])
+			.join("");
+		expect(struck).toContain("Reference link:");
+		expect(struck).not.toContain("\\");
+		expect(saved).toContain(
+			"\\[S1\\] is documented in [Docs](https://example.com/docs).",
+		);
+	});
+});
+
+describe("review diff when the rewrite inserts text before an escape", () => {
+	it("keeps the escape out of the struck-through text", () => {
+		// Arrange
+		const baseline = saveFromMarkdown(
+			"- Recording the source labels \\[S1\\] and \\[S2\\] as support for the plan.",
+		);
+		const agentEdit = toAgentDocument(baseline)
+			.replace("Recording the source labels", "The plan cites")
+			.replace("support for the plan", "supporting sources");
+
+		// Act
+		const html = fromMarkdown(diffPartialText(baseline, agentEdit, true));
+		const saved = acceptAgentEdit(baseline, agentEdit);
+
+		// Assert
+		const struck = [...html.matchAll(/<del\b[^>]*>([\s\S]*?)<\/del>/g)]
+			.map((match) => match[1])
+			.join("");
+		expect(struck).toContain("Recording the source labels");
+		expect(struck).not.toContain("\\");
+		expect(saved).toContain(
+			"The plan cites \\[S1\\] and \\[S2\\] as supporting sources.",
+		);
+	});
+});
+
 describe("toAgentDocument", () => {
 	it("removes the escapes the diff restores", () => {
 		// Arrange
@@ -216,6 +269,20 @@ describe("toAgentDocument", () => {
 				"</table>",
 				"After [y].",
 			].join("\n"),
+		);
+	});
+
+	it("leaves visual slot tags byte-identical", () => {
+		// Arrange
+		const markdown =
+			'<visual-slot data-slot-id="slot-a" data-hint="Show \\[phases\\]"></visual-slot>\nAfter \\[y\\].';
+
+		// Act
+		const result = toAgentDocument(markdown);
+
+		// Assert
+		expect(result).toBe(
+			'<visual-slot data-slot-id="slot-a" data-hint="Show \\[phases\\]"></visual-slot>\nAfter [y].',
 		);
 	});
 

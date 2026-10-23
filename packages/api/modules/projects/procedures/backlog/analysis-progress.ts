@@ -1,4 +1,5 @@
 import { ORPCError } from "@orpc/client";
+import type { BacklogContextAnalysisProgress } from "@repo/temporal";
 import { z } from "zod";
 import {
 	Permissions,
@@ -6,6 +7,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { isBacklogAnalysisWorkflowIdFor } from "./workflow-id";
+import { workflowProgressFailure } from "./workflow-progress-failure";
 
 /**
  * Get backlog analysis workflow progress and result.
@@ -62,15 +64,26 @@ export const analysisProgressProcedure = tenantProtectedProcedure
 			// Query progress
 			const progress = await handle.query(analysisProgressQuery);
 
-			// If complete, also query the result
-			let proposal = null;
-			if (progress.status === "complete") {
-				try {
-					proposal = await handle.query(analysisResultQuery);
-				} catch {
-					// Result query may fail if workflow already cleaned up
-				}
+			if (
+				progress.status !== "complete" &&
+				progress.status !== "failed" &&
+				progress.status !== "cancelled" &&
+				[
+					"COMPLETED",
+					"FAILED",
+					"TERMINATED",
+					"CANCELLED",
+					"TIMED_OUT",
+					"CONTINUED_AS_NEW",
+				].includes((await handle.describe()).status.name)
+			) {
+				throw new Error("Analysis workflow closed; read its result");
 			}
+			// A throwing result query must reach the fallback, not imply an empty proposal.
+			const proposal =
+				progress.status === "complete"
+					? await handle.query(analysisResultQuery)
+					: null;
 
 			return { progress, proposal };
 		} catch (_queryError) {
@@ -90,7 +103,10 @@ export const analysisProgressProcedure = tenantProtectedProcedure
 				return {
 					progress: {
 						status: result.success ? "complete" : "failed",
-						message: result.error ?? "Analysis complete",
+						message:
+							result.error ??
+							result.skippedReason ??
+							"Analysis complete",
 						// This path rebuilds `progress` by hand rather than
 						// returning the query's own object, so anything the
 						// workflow puts on it has to be carried across
@@ -117,67 +133,13 @@ export const analysisProgressProcedure = tenantProtectedProcedure
 					});
 				}
 
-				// Workflow ended in a terminal state we couldn't query (Failed,
-				// Terminated, Canceled, TimedOut, ContinuedAsNew).
-				// `handle.result()` rejects with a SDK error whose `cause`
-				// carries the underlying failure. Fall back to `describe()`
-				// to get the canonical execution status + termination reason
-				// when the error itself doesn't carry a useful message — this
-				// covers the BadScheduleActivityAttributes case, where the
-				// workflow is Terminated by history-service with a reason
-				// like "Input exceeds size limit" but no thrown error
-				// includes that text.
-				let message = err.cause?.message ?? err.message;
-				try {
-					const handle = client.workflow.getHandle(input.workflowId);
-					const desc = await handle.describe();
-					// `desc.status.name` is one of FAILED, TERMINATED,
-					// CANCELED, TIMED_OUT, CONTINUED_AS_NEW (for terminal
-					// states). For TERMINATED, the only place the reason
-					// lives is on the WorkflowExecutionTerminated event in
-					// history. The SDK surfaces it inconsistently across
-					// versions, so we fetch the most recent history event
-					// directly when needed.
-					if (desc.status.name === "TERMINATED") {
-						const history = await handle.fetchHistory();
-						// `eventType` is a numeric enum from
-						// @temporalio/proto; identify the termination event
-						// by its attributes payload (which is only populated
-						// for the matching type) so we don't need to import
-						// the enum just to compare.
-						const terminated = history.events?.find(
-							(e) =>
-								e.workflowExecutionTerminatedEventAttributes !=
-								null,
-						);
-						const reason =
-							terminated
-								?.workflowExecutionTerminatedEventAttributes
-								?.reason;
-						if (reason) {
-							message = `Analysis terminated: ${reason}`;
-						}
-					}
-				} catch {
-					// describe() / fetchHistory() failure is non-fatal —
-					// fall through with whatever `message` we already have.
-				}
-
-				// No `logContextNote` or `pmContextNote` here, and it is not an oversight: this
-				// branch is reached only when the workflow ended in a hard
-				// terminal state (FAILED / TERMINATED), which means it THREW
-				// rather than returning. The note lived in workflow state that
-				// no longer exists, so there is nothing to carry across.
-				// Fizzy #1234 FR3's guarantee therefore covers a completed
-				// analysis, not one that died — a user in this branch has a
-				// failure message to act on instead.
-				return {
-					progress: {
-						status: "failed",
-						message: message ?? "Analysis failed",
-					},
-					proposal: null,
-				};
+				const failure: BacklogContextAnalysisProgress =
+					await workflowProgressFailure(
+						client.workflow.getHandle(input.workflowId),
+						resultError,
+						"Analysis",
+					);
+				return { progress: failure, proposal: null };
 			}
 		}
 	});

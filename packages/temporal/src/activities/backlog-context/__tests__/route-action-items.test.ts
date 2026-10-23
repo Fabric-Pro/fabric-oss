@@ -159,11 +159,20 @@ const TICKET = {
 	description: "Exports need a queue.",
 	acceptanceCriteria: "GIVEN a large export THEN it is queued.",
 };
+// A second candidate on the same vector, for tests of the decision model's
+// `target` question: a one-ticket shortlist asks only `routing`.
+const TICKET_2 = {
+	id: "story-2",
+	identifier: "F-13",
+	title: "Export retries",
+	description: "Failed exports need a retry.",
+	acceptanceCriteria: "GIVEN a failed export THEN it retries.",
+};
 
 /**
- * Wire the mocks so the single action item and the single candidate embed to
- * identical vectors (cosine 1.0), clearing any floor. The judge returns
- * `verdict`.
+ * Wire the mocks so the single action item and every candidate in `tickets`
+ * (one by default) embed to identical vectors (cosine 1.0), clearing any
+ * floor. The judge returns `verdict`.
  */
 function arrange(
 	verdict: {
@@ -985,7 +994,7 @@ describe("typed decision model fast path", () => {
 	});
 
 	it("evaluates against the operator's bound judge prompt and the shortlist identifiers", async () => {
-		arrange({ decision: "create", confidence: 1 });
+		arrange({ decision: "create", confidence: 1 }, [TICKET, TICKET_2]);
 		mockGetBoundPrompt.mockResolvedValue({
 			format: "HANDLEBARS",
 			version: {
@@ -1017,7 +1026,10 @@ describe("typed decision model fast path", () => {
 		expect(call.state.analyzerReasoning).toBe(
 			"Raised twice in the meeting",
 		);
-		expect(Object.keys(call.questions.target.criteria)).toEqual(["F-12"]);
+		expect(Object.keys(call.questions.target.criteria)).toEqual([
+			"F-12",
+			"F-13",
+		]);
 		expect(
 			call.questions.target.criteria["F-12"].length,
 		).toBeLessThanOrEqual(500);
@@ -1058,7 +1070,7 @@ describe("typed decision model fast path", () => {
 	});
 
 	it("falls through when the decision model names a target that was not on the shortlist", async () => {
-		arrange({ decision: "create", confidence: 1 });
+		arrange({ decision: "create", confidence: 1 }, [TICKET, TICKET_2]);
 		arrangeDecision({
 			routing: {
 				type: "choice",
@@ -1084,7 +1096,7 @@ describe("typed decision model fast path", () => {
 	});
 
 	it("falls through when the decision model's target answer is itself uncertain", async () => {
-		arrange({ decision: "create", confidence: 1 });
+		arrange({ decision: "create", confidence: 1 }, [TICKET, TICKET_2]);
 		arrangeDecision({
 			routing: {
 				type: "choice",

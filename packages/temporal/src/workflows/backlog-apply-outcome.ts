@@ -54,8 +54,13 @@ export function isPmTicketMissingError(
 export function computeAppliedProposalIndexes(args: {
 	/** Positions (in the approved set) whose Fabric create/update succeeded. */
 	fabricSucceededPositions: Iterable<number>;
-	/** position -> original proposal.changes[] index. */
-	approvedChangeIndexes: number[];
+	/**
+	 * position -> original proposal.changes[] index. Absent for an AI Update
+	 * chat apply, whose proposal row stores the approved changes in order, so
+	 * each position is its own proposal index (the same fallback
+	 * `applyBacklogChanges` uses for its application records).
+	 */
+	approvedChangeIndexes?: number[];
 	syncToPM: boolean;
 	pmSucceededPositions: ReadonlySet<number>;
 	pmNotNeededPositions: ReadonlySet<number>;
@@ -72,7 +77,9 @@ export function computeAppliedProposalIndexes(args: {
 }): number[] {
 	const out: number[] = [];
 	for (const position of args.fabricSucceededPositions) {
-		const proposalIndex = args.approvedChangeIndexes[position];
+		const proposalIndex = args.approvedChangeIndexes
+			? args.approvedChangeIndexes[position]
+			: position;
 		if (typeof proposalIndex !== "number") {
 			continue;
 		}

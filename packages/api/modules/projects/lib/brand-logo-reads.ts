@@ -4,6 +4,7 @@ import {
 	trustedOrganizationLogoKey,
 } from "@repo/database";
 import { getStorageProvider } from "@repo/storage";
+import { isOrganizationHeroKey } from "@repo/utils/proposal-artifact/brand-sources";
 import type {
 	ThemeAssetRef,
 	ThemeAssetUrl,
@@ -11,10 +12,11 @@ import type {
 import { signRecipientLogoRead } from "./recipient-brand";
 
 /**
- * Signed reads of the two brand logos a document can wear (Fizzy #2946): the
- * organization's own logo and the recipient brand's logo. The Glossy edition
- * and the Proposal theme both sign through here, so the bucket, the inline
- * PNG response and the key checks stay one implementation.
+ * Signed reads of the brand images a document can wear (Fizzy #2946): the
+ * organization's own logo, its Brand kit hero and the recipient brand's logo.
+ * The Glossy edition and the Proposal theme both sign through here, so the
+ * buckets, the inline image responses and the key checks stay one
+ * implementation.
  *
  * A signed URL is handed to whoever may read the document, project guests
  * included, so every key is checked again here against the one prefix its
@@ -49,12 +51,30 @@ export async function signOrganizationLogoRead(
 }
 
 /**
+ * A signed read of the organization's Brand kit hero, rendered inline as the
+ * PNG or JPEG its promoted key names. The caller has already passed the key
+ * through `isOrganizationHeroKey`.
+ */
+async function signOrganizationHeroRead(
+	key: string,
+	expiresIn: number,
+): Promise<string> {
+	return getStorageProvider().getSignedUrl(key, {
+		bucket: config.storage.bucketNames.projectContexts,
+		expiresIn,
+		responseContentType: key.endsWith(".png") ? "image/png" : "image/jpeg",
+		responseContentDisposition: "inline",
+	});
+}
+
+/**
  * One theme asset as a signed read, or null. The key is checked for its kind
  * first: an organization logo must be exactly that organization's upload key,
- * a recipient logo a promoted logo of this very project. A key that fails is
- * null before storage is touched. Best-effort like the recipient brand's own
- * read: a storage failure leaves the page without that logo rather than
- * failing the read that carries it.
+ * the hero a promoted Brand kit hero of that organization, a recipient logo a
+ * promoted logo of this very project. A key that fails is null before storage
+ * is touched. Best-effort like the recipient brand's own read: a storage
+ * failure leaves the page without that image rather than failing the read
+ * that carries it.
  *
  * `organizationId` must be the project's OWNING organization.
  */
@@ -74,6 +94,15 @@ export async function signThemeAsset(
 					? { url: await signOrganizationLogoRead(key, expiresIn) }
 					: null;
 			}
+			case "organization-hero":
+				return isOrganizationHeroKey(ctx.organizationId, ref.key)
+					? {
+							url: await signOrganizationHeroRead(
+								ref.key,
+								expiresIn,
+							),
+						}
+					: null;
 			case "recipient-logo":
 				return isRecipientLogoKeyForProject(ctx.projectId, ref.key)
 					? { url: await signRecipientLogoRead(ref.key, expiresIn) }

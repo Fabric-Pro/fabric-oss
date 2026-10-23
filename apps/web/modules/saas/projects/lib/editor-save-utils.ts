@@ -277,6 +277,105 @@ const DIFF_DEL_PAIR_RE =
 	/<del\b[^>]*\bclass=(?:"[^"]*\bdiff-del\b[^"]*"|'[^']*\bdiff-del\b[^']*')[^>]*>[\s\S]*?<\/del>/gi;
 const DIFF_INS_PAIR_RE =
 	/<ins\b[^>]*\bclass=(?:"[^"]*\bdiff-ins\b[^"]*"|'[^']*\bdiff-ins\b[^']*')[^>]*>([\s\S]*?)<\/ins>/gi;
+// A list item whose only content is a diff deletion (a whole deleted bullet).
+// Removing just the deletion would leave an empty item, which saves as a
+// blank line that turns the surrounding list loose.
+const DELETED_PARAGRAPH_SOURCE =
+	"<p\\b[^>]*>\\s*(?:<del\\b[^>]*\\bclass=(?:\"[^\"]*\\bdiff-del\\b[^\"]*\"|'[^']*\\bdiff-del\\b[^']*')[^>]*>(?:(?!</del>)[\\s\\S])*</del>\\s*)+</p>";
+const DELETED_LIST_ITEM_RE = new RegExp(
+	`<li\\b[^>]*>\\s*(?:${DELETED_PARAGRAPH_SOURCE}\\s*)+</li>`,
+	"gi",
+);
+// A deleted paragraph between two lists (the AI turned it into a bullet of
+// the list below): with the paragraph gone the lists are one list again.
+const LISTS_AROUND_DELETED_PARAGRAPH_RE = new RegExp(
+	`</(ul|ol)>\\s*${DELETED_PARAGRAPH_SOURCE}\\s*<\\1>`,
+	"gi",
+);
+// Leading deleted items of a numbered list: the AI's list starts at the
+// first number it kept, so the start moves past the removed items.
+const ORDERED_LIST_LEADING_DELETED_RE = new RegExp(
+	`<ol\\b([^>]*)>((?:\\s*${DELETED_LIST_ITEM_RE.source})+)`,
+	"gi",
+);
+
+function keepOrderedListStart(html: string): string {
+	return html.replace(
+		ORDERED_LIST_LEADING_DELETED_RE,
+		(_match, attributes: string, deleted: string) => {
+			const start = Number(attributes.match(/\bstart="(\d+)"/)?.[1] ?? 1);
+			const removed = deleted.match(/<li\b/gi)?.length ?? 0;
+			const rest = attributes.replace(/\s*\bstart="\d+"/, "");
+			return `<ol start="${start + removed}"${rest}>${deleted}`;
+		},
+	);
+}
+
+// A deleted list item that still holds nested items: the AI removed the
+// parent line and kept its children.
+const DELETED_PARENT_ITEM_RE = new RegExp(
+	`<li\\b[^>]*>\\s*(?:${DELETED_PARAGRAPH_SOURCE}\\s*)+(?=<(?:ul|ol)\\b)`,
+	"i",
+);
+const LIST_TAG_RE = /<(\/?)(ul|ol|li)\b[^>]*>/gi;
+
+/** Index just past the tag that closes the `tag` element open at `from`. */
+function matchingCloseEnd(html: string, from: number, tag: string): number {
+	const scan = new RegExp(LIST_TAG_RE.source, "gi");
+	scan.lastIndex = from;
+	let depth = 1;
+	for (let found = scan.exec(html); found; found = scan.exec(html)) {
+		if (found[2].toLowerCase() !== tag) {
+			continue;
+		}
+		depth += found[1] ? -1 : 1;
+		if (depth === 0) {
+			return found.index + found[0].length;
+		}
+	}
+	return html.length;
+}
+
+/**
+ * Hand the children of a deleted parent item to the item before it, which
+ * is where loading the AI's document nests them; with no item before it the
+ * children move up a level. Removing only the parent's text would leave an
+ * empty item holding the children, saved as `-   -   child`.
+ */
+function handOverDeletedParentChildren(html: string): string {
+	let result = html;
+	for (
+		let found = DELETED_PARENT_ITEM_RE.exec(result);
+		found;
+		found = DELETED_PARENT_ITEM_RE.exec(result)
+	) {
+		const itemStart = found.index;
+		const childrenStart = itemStart + found[0].length;
+		const itemEnd = matchingCloseEnd(result, childrenStart, "li");
+		const children = result
+			.slice(childrenStart, itemEnd)
+			.replace(/<\/li>$/i, "");
+		const before = result.slice(0, itemStart).replace(/\s+$/, "");
+		const after = result.slice(itemEnd);
+		if (/<\/li>$/i.test(before)) {
+			const previous = before.slice(0, -"</li>".length);
+			const previousList = previous.match(/<\/(ul|ol)>$/i)?.[1];
+			const firstList = children.match(/^<(ul|ol)\b[^>]*>/i);
+			// Two lists of one kind side by side load back as one list.
+			const merged =
+				previousList && firstList && previousList === firstList[1]
+					? `${previous.slice(0, -`</${previousList}>`.length)}${children.slice(firstList[0].length)}`
+					: `${previous}${children}`;
+			result = `${merged}</li>${after}`;
+		} else {
+			const items = children
+				.replace(/^<(?:ul|ol)\b[^>]*>/i, "")
+				.replace(/<\/(?:ul|ol)>$/i, "");
+			result = `${before}${items}${after}`;
+		}
+	}
+	return result;
+}
 
 // After stripping diff tags, we sometimes end up with two adjacent same-type
 // formatting tags where there used to be ONE continuous mark broken by a diff
@@ -445,6 +544,10 @@ export function stripDiffTags(html: string): string {
 
 	// Remove class-marked diff deletions entirely. Bare <del> from pasted
 	// HTML is left alone so it can round-trip as user strikethrough.
+	result = handOverDeletedParentChildren(result);
+	result = keepOrderedListStart(result);
+	result = result.replace(DELETED_LIST_ITEM_RE, "");
+	result = result.replace(LISTS_AROUND_DELETED_PARAGRAPH_RE, "");
 	result = result.replace(DIFF_DEL_PAIR_RE, "");
 
 	// Unwrap class-marked diff additions, keeping their content.

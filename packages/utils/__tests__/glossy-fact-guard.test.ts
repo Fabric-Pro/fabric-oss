@@ -7,6 +7,7 @@ import {
 	type FactGuardResult,
 	isKeySection,
 	normalizeFact,
+	violationCode,
 } from "../lib/glossy/fact-guard";
 import { type VisualSpec, visualSpecFacts } from "../lib/glossy/visual-spec";
 
@@ -185,6 +186,38 @@ describe("checkRewrite", () => {
 			expect(violationsOf(rewrite(source, output))).toEqual([
 				expect.objectContaining({ kind: "presence", text: "Q4 2026" }),
 			]);
+		});
+
+		it("names the missing fact's category, for logs that must not carry the fact (Fizzy #2946)", () => {
+			const codesOf = (output: string) =>
+				violationsOf(rewrite(source, output)).map(violationCode);
+
+			expect(
+				codesOf(
+					"The budget is 240k, with the platform live in Q4 2026.",
+				),
+			).toEqual(["presence:date"]);
+			expect(
+				codesOf(
+					"The budget is 250k, with the platform live in Q3 2026.",
+				),
+			).toEqual(["presence:figure"]);
+			expect(
+				codesOf(
+					"The budget is 240k, with the platform live in Q3 2026. Snowflake will host the new pipeline.",
+				),
+			).toEqual(["presence:name"]);
+			expect(
+				codesOf(
+					"The budget is 240k, guaranteed, with the platform live in Q3 2026.",
+				),
+			).toEqual(["presence:commitment"]);
+		});
+
+		it("gives no fact category to a violation other than presence", () => {
+			expect(
+				violationCode({ kind: "label", text: "x", message: "m" }),
+			).toBe("label");
 		});
 
 		it("passes an equivalent form of a source figure", () => {
@@ -1329,6 +1362,21 @@ describe("checkVisualFacts (covers AE4)", () => {
 		).toEqual([
 			expect.objectContaining({ kind: "presence", text: "Q2 2027" }),
 		]);
+	});
+
+	it("names the category of a missing date or figure, for logs (Fizzy #2946)", () => {
+		expect(
+			violationsOf(
+				checkVisualFacts(
+					{
+						kind: "timeline",
+						labels: ["Migration", "Retirement"],
+						figures: ["Q2 2027", "$250k"],
+					},
+					section,
+				),
+			).map(violationCode),
+		).toEqual(["presence:date", "presence:figure"]);
 	});
 
 	it('passes "Migration" for "Databricks migration phase"', () => {

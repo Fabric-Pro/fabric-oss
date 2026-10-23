@@ -15,6 +15,11 @@ export const proposalStyleSchema = z.object({
 	primaryColor: z.string().nullable(),
 	/** Lowercase `#rrggbb`, at most three. */
 	accentColors: z.array(z.string()),
+	/**
+	 * Whether Fabric adds diagrams after each generation. With no saved
+	 * Style (a null read) they are added.
+	 */
+	autoVisuals: z.boolean(),
 	updatedAt: z.date(),
 });
 
@@ -26,13 +31,15 @@ export function presentProposalStyle(
 		styleDirection: style.styleDirection,
 		primaryColor: style.primaryColor,
 		accentColors: style.accentColors,
+		autoVisuals: style.autoVisuals,
 		updatedAt: style.updatedAt,
 	};
 }
 
 /**
  * The Style of a Proposal (Fizzy #2801): the style direction and colours the
- * next generation's visuals use. Null until someone saves one. The recipient
+ * next generation's visuals use, and whether diagrams are added
+ * automatically. Null until someone saves one; a null Style adds diagrams. The recipient
  * brand is the project's and keeps its own procedures
  * (`projects.recipientBrand.*`).
  *
@@ -52,7 +59,7 @@ export const getProposalStyleProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Proposal artifact"],
 		summary: "Get the Proposal style",
 		description:
-			"The style direction and colours a Proposal's next generation uses for its visuals. Organization members only.",
+			"The style direction and colours a Proposal's next generation uses for its visuals, and whether diagrams are added automatically. Null until a Style is saved, which means diagrams are added. Organization members only.",
 	})
 	.input(z.object({ projectId: z.string(), documentId: z.string() }))
 	.output(proposalStyleSchema.nullable())

@@ -813,3 +813,34 @@ describe("Atlassian Rovo MCP capability detection", () => {
 		});
 	});
 });
+
+describe("cursor token pagination", () => {
+	it.each([
+		"nextPageToken",
+		"next_page_token",
+		"pageToken",
+		"page_token",
+		"NEXTPAGETOKEN",
+	])("detects %s with maxResults as cursor pagination", (token) => {
+		const capabilities = analyzePMToolCapabilities({
+			jira_search_issues: {
+				name: "jira_search_issues",
+				description: "List issues",
+				inputSchema: {
+					type: "object",
+					properties: {
+						project: { type: "string" },
+						maxResults: { type: "number" },
+						[token]: { type: "string" },
+					},
+					required: ["project"],
+				},
+			},
+		});
+		expect(capabilities.taskList?.paginationInfo).toEqual({
+			style: "cursor",
+			cursorParam: token,
+			pageSizeParam: "maxResults",
+		});
+	});
+});

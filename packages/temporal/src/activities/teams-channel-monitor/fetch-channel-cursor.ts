@@ -250,25 +250,25 @@ async function mirrorProposalOutcomeOntoSession(
 					? "PARTIALLY_APPLIED"
 					: "FAILED";
 		// `appliedChangeIndexes` counts conflicts as applied (idempotency), so
-		// subtract them back out for the session's "fully synced" applied count;
-		// the remainder surfaces as the "need review" split.
+		// subtract them back out for the session's "fully synced" applied count
+		// on either outcome; the remainder surfaces as the "need review" split.
 		const sessionAppliedCount =
 			sessionStatus !== "PARTIALLY_APPLIED"
 				? undefined
-				: input.outcome === "applied"
-					? Math.max(0, appliedIndexCount - conflictCount)
-					: appliedIndexCount;
+				: Math.max(0, appliedIndexCount - conflictCount);
+		const sessionErrors = [
+			...(input.errorMessage ? [input.errorMessage] : []),
+			...(conflictCount > 0
+				? [
+						`${conflictCount} item(s) changed in the PM tool — resolve in the Review Center.`,
+					]
+				: []),
+		];
 		await finalizeBacklogUpdateSession({
 			pendingProposalId: input.proposalId,
 			status: sessionStatus,
 			appliedCount: sessionAppliedCount,
-			errors: input.errorMessage
-				? [input.errorMessage]
-				: conflictCount > 0
-					? [
-							`${conflictCount} item(s) changed in the PM tool — resolve in the Review Center.`,
-						]
-					: undefined,
+			errors: sessionErrors.length > 0 ? sessionErrors : undefined,
 		});
 	} catch (error) {
 		logger.warn("[BacklogUpdateSession] finalize failed (non-fatal)", {

@@ -47,6 +47,45 @@ interface FluxEvent {
 	transcript: string;
 	windowStart: number | null;
 	windowEnd: number | null;
+	wordBounds: { start: number; end: number } | null;
+}
+
+function readWordBounds(
+	words: unknown,
+	windowEnd: number | null,
+): FluxEvent["wordBounds"] {
+	if (!Array.isArray(words) || words.length === 0) {
+		return null;
+	}
+	const values: unknown[] = words;
+	let start: number | null = null;
+	let end = 0;
+	let previousStart = 0;
+	for (const word of values) {
+		if (
+			typeof word !== "object" ||
+			word === null ||
+			!("start" in word) ||
+			!("end" in word) ||
+			typeof word.start !== "number" ||
+			typeof word.end !== "number" ||
+			!Number.isFinite(word.start) ||
+			!Number.isFinite(word.end) ||
+			word.start < previousStart ||
+			word.end < word.start ||
+			word.end > Number.MAX_SAFE_INTEGER / 1000 ||
+			word.end < end ||
+			(windowEnd !== null &&
+				Number.isFinite(windowEnd) &&
+				word.end > windowEnd)
+		) {
+			return null;
+		}
+		previousStart = word.start;
+		start ??= word.start;
+		end = word.end;
+	}
+	return start === null ? null : { start, end };
 }
 
 function readFluxEvent(data: unknown): FluxEvent | null {
@@ -68,6 +107,10 @@ function readFluxEvent(data: unknown): FluxEvent | null {
 		return null;
 	}
 	const fields: Record<string, unknown> = { ...value };
+	const windowEnd =
+		typeof fields.audio_window_end === "number"
+			? fields.audio_window_end
+			: null;
 	return {
 		event: value.event,
 		turnIndex:
@@ -80,10 +123,8 @@ function readFluxEvent(data: unknown): FluxEvent | null {
 			typeof fields.audio_window_start === "number"
 				? fields.audio_window_start
 				: null,
-		windowEnd:
-			typeof fields.audio_window_end === "number"
-				? fields.audio_window_end
-				: null,
+		windowEnd,
+		wordBounds: readWordBounds(fields.words, windowEnd),
 	};
 }
 
@@ -259,18 +300,21 @@ export class ParlumeTranscriber {
 		}
 		const at = (seconds: number | null) =>
 			epoch + Math.max(0, seconds ?? 0) * 1000;
+		const wordBounds = event.transcript ? event.wordBounds : null;
+		const startMs = wordBounds
+			? at(wordBounds.start)
+			: (this.turnStarts.get(event.turnIndex) ?? at(event.windowStart));
+		const endMs = at(wordBounds?.end ?? event.windowEnd);
 		if (event.event === "StartOfTurn" || event.event === "Update") {
-			if (!this.turnStarts.has(event.turnIndex)) {
-				this.turnStarts.set(event.turnIndex, at(event.windowStart));
+			if (wordBounds || !this.turnStarts.has(event.turnIndex)) {
+				this.turnStarts.set(event.turnIndex, startMs);
 			}
 			if (event.event === "StartOfTurn" || event.transcript) {
 				this.options.onTranscript({
 					text: event.transcript,
 					isFinal: false,
-					startMs:
-						this.turnStarts.get(event.turnIndex) ??
-						at(event.windowStart),
-					endMs: at(event.windowEnd),
+					startMs,
+					endMs,
 				});
 			}
 			return;
@@ -278,15 +322,13 @@ export class ParlumeTranscriber {
 		if (event.event !== "EndOfTurn") {
 			return;
 		}
-		const startMs =
-			this.turnStarts.get(event.turnIndex) ?? at(event.windowStart);
 		this.turnStarts.delete(event.turnIndex);
 		if (event.transcript) {
 			this.options.onTranscript({
 				text: event.transcript,
 				isFinal: true,
 				startMs,
-				endMs: at(event.windowEnd),
+				endMs,
 			});
 		}
 	}

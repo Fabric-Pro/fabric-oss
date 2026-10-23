@@ -13,6 +13,7 @@
  */
 
 import { closeMcpClientSafe, getMcpClient } from "@repo/agent-core/backend";
+import { guardToolsAgainstRepeatedCalls } from "@repo/agent-types/repeated-tool-call-guard";
 import type { AggregateUsageRecord } from "@repo/ai";
 import {
 	convertToModelMessages,
@@ -142,7 +143,6 @@ import {
 	DIRECT_CHAT_CACHEABLE_SYSTEM_PROMPT,
 } from "./prompt-cache";
 import { extractReasoningText } from "./reasoning-stream";
-import { guardToolsAgainstRepeatedCalls } from "./repeated-tool-call-guard";
 import { extractStreamErrorMessage } from "./stream-error";
 import { resolveStreamOutcome } from "./stream-outcome";
 import { describeToolAvailability } from "./tool-availability-line";
@@ -851,6 +851,7 @@ async function runDirectChatTurnBody(
 	// The raw error part, kept for limit classification: its status code and
 	// headers are what tell a 429 from a context overflow.
 	let streamErrorRaw: unknown;
+	let toolLimitError: ReturnType<typeof findAiUsageLimitError>;
 	let streamFinishReason: string | undefined;
 	let aggregateUsageRecorded = false;
 	let recordAggregateUsage:
@@ -1765,10 +1766,21 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 		(promptCacheEnabled ? DIRECT_CHAT_CACHEABLE_SYSTEM_PROMPT.length : 0) +
 		fullSystemContext.length;
 
+	// Where a turn's input goes, in characters; tool schemas are counted by
+	// tool, as they are sent separately from the prompt.
 	logger.info("System context constructed", {
+		featureKey: input.featureKey,
 		systemContextLength: fullSystemContextLength,
+		systemInstructionsLength: systemInstructions.length,
+		contextSectionLengths: contextSections.map((section) => section.length),
 		hasRagContext: !!ragContext && ragContext.length > 0,
 		ragContextLength: ragContext?.length ?? 0,
+		memoryContextLength: memoryContext.length,
+		historyLength: history.reduce(
+			(sum, entry) => sum + entry.content.length,
+			0,
+		),
+		toolCount: Object.keys(allTools).length,
 		messageCount: uiMessages.length,
 	});
 
@@ -2173,6 +2185,8 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 					input?: unknown;
 					error?: unknown;
 				};
+				// A tool can exhaust COMPLEX while the CHAT model remains available.
+				toolLimitError ??= findAiUsageLimitError(errorPart.error);
 				const errorText =
 					errorPart.error instanceof Error
 						? errorPart.error.message
@@ -2308,6 +2322,12 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 		// carrying the refusal (inside the SDK's RetryError when it refused a
 		// retry). Its own message replaces the wrapper's below.
 		const streamLimitError = findAiUsageLimitError(streamErrorRaw);
+		const usageLimitError = streamLimitError ?? toolLimitError;
+		// CHAT's stream failure explains the interrupted answer. A tool refusal
+		// supplies that explanation only when CHAT completed without an error.
+		const refusalMessage =
+			streamLimitError?.message ??
+			(!streamErrorMessage ? toolLimitError?.message : undefined);
 
 		// Get token usage.
 		//
@@ -2382,7 +2402,7 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 		const streamOutcome = resolveStreamOutcome({
 			responseText,
 			toolCalls,
-			streamErrorMessage: streamLimitError?.message ?? streamErrorMessage,
+			streamErrorMessage: refusalMessage ?? streamErrorMessage,
 			pendingConfirmation,
 			finishReason: streamFinishReason,
 			stepCount: steps.length,
@@ -2441,10 +2461,10 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 				// A limit refusal before any answer fails the turn with the
 				// limit itself: the workflow does not rerun it without tools,
 				// and the route sends the structured limit event.
-				...(streamLimitError
+				...(usageLimitError
 					? {
-							error: streamLimitError.message,
-							usageLimit: toUsageLimitRefusal(streamLimitError),
+							error: refusalMessage ?? streamOutcome.error,
+							usageLimit: toUsageLimitRefusal(usageLimitError),
 						}
 					: {
 							error: streamOutcome.error,
@@ -2517,10 +2537,10 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 						// success, so no tools-off rerun) and carries the
 						// limit, for the same event a refusal at resolution
 						// gets.
-						...(streamLimitError
+						...(usageLimitError
 							? {
 									usageLimit:
-										toUsageLimitRefusal(streamLimitError),
+										toUsageLimitRefusal(usageLimitError),
 								}
 							: limitSignalFor(
 									streamErrorRaw ?? streamErrorMessage,
@@ -2543,27 +2563,36 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 				provider: String(metadata.provider),
 				contextWindow: metadata.contextWindow,
 			},
+			...(metadata.planSpentApiBilling && {
+				apiBilling: {
+					resetAt:
+						metadata.planSpentApiBilling.resetAt?.toISOString() ??
+						null,
+				},
+			}),
 		};
 	} catch (error) {
 		// Keep thrown refusals and the SDK's "No output generated" envelope
-		// on the failure-accounting path before passing the refusal to the
-		// outer activity catch, which returns structured usageLimit data.
+		// on the failure-accounting path, retaining the CHAT error separately
+		// from a tool's structured usage-limit outcome.
+		const thrownLimitError = findAiUsageLimitError(error);
+		const streamLimitError = findAiUsageLimitError(streamErrorRaw);
 		const limitError =
-			findAiUsageLimitError(error) ??
-			(NoOutputGeneratedError.isInstance(error)
-				? findAiUsageLimitError(streamErrorRaw)
-				: undefined);
+			thrownLimitError ?? streamLimitError ?? toolLimitError;
 		const rawMessage =
 			error instanceof Error ? error.message : "Unknown error";
-		// The AI SDK throws a generic "No output generated..." when the stream
-		// errored; in that case the real provider error is in streamErrorMessage.
-		// For any other thrown error, prefer the actual exception over a stale
-		// stream-error captured earlier in the loop.
+		const streamFailureMessage =
+			streamLimitError?.message ?? streamErrorMessage;
+		// The SDK can throw its no-output envelope after emitting an error part.
+		// A concrete CHAT failure keeps its message even when a tool was refused.
 		const surfacedError =
-			limitError?.message ??
-			(rawMessage.includes("No output generated") && streamErrorMessage
-				? streamErrorMessage
+			thrownLimitError?.message ??
+			(NoOutputGeneratedError.isInstance(error)
+				? (streamFailureMessage ??
+					toolLimitError?.message ??
+					rawMessage)
 				: rawMessage);
+
 		if (recordAggregateUsage && !aggregateUsageRecorded) {
 			const partialAggregate = aggregateUsage.partialAggregate();
 			// Do not create an empty usage row for a limit refusal. Keep
@@ -2596,9 +2625,6 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 			logger.info("Direct chat turn cancelled", { executionId });
 			throw cancellationError(cancellation);
 		}
-		if (limitError) {
-			throw limitError;
-		}
 		logger.error("Failed to execute direct chat", {
 			error,
 			surfacedError,
@@ -2609,6 +2635,9 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 			success: false,
 			error: surfacedError,
 			durationMs: Date.now() - startTime,
+			...(limitError
+				? { usageLimit: toUsageLimitRefusal(limitError) }
+				: {}),
 			...limitSignalFor(
 				rawMessage.includes("No output generated") && streamErrorRaw
 					? streamErrorRaw

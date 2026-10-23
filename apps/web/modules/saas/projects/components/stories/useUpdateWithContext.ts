@@ -127,7 +127,9 @@ export function useUpdateWithContext({
 			// in ProseMirror, so fall back to plain proposed content on error
 			const diff = diffPartialText(baseline, proposedDoc, true);
 			try {
-				const html = fromMarkdown(diff);
+				// The repair already skips text with diff markers, so it could
+				// only ever touch an unchanged diff — the user's own baseline.
+				const html = fromMarkdown(diff, { repairLegacyBullets: false });
 				editor.commands.setContent(html);
 			} catch {
 				// Table/structural error from diff markers — show proposed

@@ -36,6 +36,44 @@ export function callbackSecret(sessionId: string): string | null {
 		.digest("base64url");
 }
 
+/**
+ * A meeting chat message is one segment and at most one request, whatever its
+ * text: Attendee redelivers webhooks and reports an edited message again
+ * under the same id.
+ */
+export function chatMessageDedupeKey(
+	sessionId: string,
+	chatMessageId: string,
+): string {
+	return createHash("sha256")
+		.update(JSON.stringify(["chat", sessionId, chatMessageId]))
+		.digest("hex");
+}
+
+/**
+ * A realtime voice job is one request, however often it is delivered. Job
+ * numbers restart with the bridge, so the request itself keeps a new job
+ * apart from an earlier one that had the same number.
+ */
+export function realtimeJobDedupeKey(input: {
+	sessionId: string;
+	voiceGeneration: number;
+	job: string;
+	text: string;
+}): string {
+	return createHash("sha256")
+		.update(
+			JSON.stringify([
+				"realtime",
+				input.sessionId,
+				input.voiceGeneration,
+				input.job,
+				input.text,
+			]),
+		)
+		.digest("hex");
+}
+
 export function segmentDedupeKey(input: {
 	sessionId: string;
 	text: string;

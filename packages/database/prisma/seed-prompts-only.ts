@@ -26,6 +26,14 @@ import {
 	PAGE_ASK_PROMPT_AGENT_KEY,
 } from "@repo/utils/page-ask-prompt";
 import {
+	PARLUME_REALTIME_VOICE_FALLBACK_BODY,
+	PARLUME_REALTIME_VOICE_PROMPT_AGENT_KEY,
+} from "@repo/utils/parlume-realtime-voice-prompt";
+import {
+	PARLUME_SUGGESTION_FALLBACK_BODY,
+	PARLUME_SUGGESTION_PROMPT_AGENT_KEY,
+} from "@repo/utils/parlume-suggestion-prompt";
+import {
 	PUBLISHING_BLOG_POST_AGENT_KEY,
 	PUBLISHING_BLOG_POST_FALLBACK_BODY,
 } from "@repo/utils/publishing-blog-post-prompt";
@@ -65,6 +73,10 @@ import {
 	PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY,
 	PUBLISHING_WEBINAR_SCRIPT_FALLBACK_BODY,
 } from "@repo/utils/publishing-webinar-script-prompt";
+import {
+	RECURRING_ERROR_BUG_FALLBACK_BODY,
+	RECURRING_ERROR_BUG_PROMPT_AGENT_KEY,
+} from "@repo/utils/recurring-error-bug-prompt";
 import { db } from "../prisma/client";
 import { isDirectRun } from "./lib/is-direct-run";
 // The retirement guard every SYSTEM-scope insert goes through, and the batched
@@ -409,6 +421,37 @@ const PROMPT_DOCUMENT_TYPE_BINDINGS: Record<string, SeedBindingSpec> = {
 		documentTypes: ["GENERAL"],
 		storyKind: null as null,
 		targetKey: PAGE_ASK_PROMPT_AGENT_KEY,
+	},
+	// parlume_meeting_suggestion: whether Parlume offers an unprompted
+	// suggestion in a live meeting's chat. Dedicated agent key so the service
+	// resolves a prompt distinct from every document prompt at the same
+	// documentType/storyKind. GENERAL + null: one prompt per tenant covers
+	// every meeting. The meeting material is fenced as untrusted data
+	// code-side, and the output contract is the service's.
+	[PARLUME_SUGGESTION_PROMPT_AGENT_KEY]: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: PARLUME_SUGGESTION_PROMPT_AGENT_KEY,
+	},
+	// parlume_realtime_voice: how Parlume's realtime voice answers in a live
+	// meeting. Dedicated agent key, GENERAL + null: one prompt per tenant
+	// covers every meeting. The meeting data is fenced code-side, and when
+	// the voice speaks is decided by the bridge.
+	[PARLUME_REALTIME_VOICE_PROMPT_AGENT_KEY]: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: PARLUME_REALTIME_VOICE_PROMPT_AGENT_KEY,
+	},
+	// recurring_error_bug_reporter: the bug report the recurring-error scan
+	// files for a recurring error group or a cluster of open bug reports.
+	// Dedicated agent key so the scan resolves a prompt distinct from every
+	// document prompt at the same documentType/storyKind. GENERAL + null: one
+	// prompt per tenant covers every project. The evidence is fenced as
+	// untrusted data code-side, so an override cannot drop that.
+	[RECURRING_ERROR_BUG_PROMPT_AGENT_KEY]: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: RECURRING_ERROR_BUG_PROMPT_AGENT_KEY,
 	},
 	// orchestrator_memory_context / direct_chat_memory_context: how each
 	// assistant engine reads what it recalls from earlier conversations and
@@ -6498,6 +6541,82 @@ Rules:
 		format: "HANDLEBARS" as const,
 		isPublic: true,
 		content: PAGE_ASK_FALLBACK_BODY,
+	},
+	{
+		// parlume_meeting_suggestion: Parlume's passive suggestions. Every pass,
+		// a fast model reads the last few minutes of a live meeting and decides
+		// whether one short contribution is worth offering in the chat.
+		//
+		// The body lives in @repo/utils (PARLUME_SUGGESTION_FALLBACK_BODY) so
+		// this seed and the service that resolves the binding share ONE
+		// definition. No variables; the transcript, chat and project passages
+		// are fenced as untrusted data code-side, and the structured output
+		// contract (suggest, text) is the service's.
+		//
+		// INSERT-ONLY: once this seeds, changing the text does nothing on an
+		// environment that already ran the seed. Ship wording changes as an
+		// explicit UPDATE migration.
+		key: PARLUME_SUGGESTION_PROMPT_AGENT_KEY,
+		name: "Parlume Meeting Suggestions",
+		description:
+			"Decides whether Parlume offers one short, unprompted suggestion in a live meeting's chat, from the last few minutes of the meeting and the project's knowledge, and words it.",
+		category: "meetings",
+		tags: ["meetings", "parlume", "ai-generation"],
+		format: "HANDLEBARS" as const,
+		promptType: "STRUCTURED" as const,
+		structuredFormat: "JSON" as const,
+		isPublic: true,
+		content: PARLUME_SUGGESTION_FALLBACK_BODY,
+	},
+	{
+		// parlume_realtime_voice: Parlume's realtime voice in a live meeting.
+		// The session hears the meeting and answers whoever addresses Parlume,
+		// handing anything that needs Fabric to an ordinary meeting turn.
+		//
+		// The body lives in @repo/utils (PARLUME_REALTIME_VOICE_FALLBACK_BODY)
+		// so this seed and the service that mints the session share ONE
+		// definition. No variables and no promptType/structuredFormat: the
+		// project, mode and participants are fenced as meeting data code-side,
+		// and the tools are the service's.
+		//
+		// INSERT-ONLY: once this seeds, changing the text does nothing on an
+		// environment that already ran the seed. Ship wording changes as an
+		// explicit UPDATE migration.
+		key: PARLUME_REALTIME_VOICE_PROMPT_AGENT_KEY,
+		name: "Parlume Realtime Voice",
+		description:
+			"How Parlume's realtime voice answers in a live meeting: briefly, to whoever addressed it, handing project questions and changes to Fabric and links to the meeting chat.",
+		category: "meetings",
+		tags: ["meetings", "parlume", "voice"],
+		format: "HANDLEBARS" as const,
+		isPublic: true,
+		content: PARLUME_REALTIME_VOICE_FALLBACK_BODY,
+	},
+	{
+		// recurring_error_bug_reporter: the bug report the recurring-error scan
+		// files when an application error group, or a cluster of open bug
+		// reports, keeps recurring.
+		//
+		// The body lives in @repo/utils (RECURRING_ERROR_BUG_FALLBACK_BODY) so
+		// this seed and the activity that resolves the binding share ONE
+		// definition. It takes the group's figures as HANDLEBARS variables; the
+		// evidence itself is fenced as untrusted data code-side, and the
+		// structured output contract is the activity's.
+		//
+		// INSERT-ONLY: once this seeds, changing the text does nothing on an
+		// environment that already ran the seed. Ship wording changes as an
+		// explicit UPDATE migration.
+		key: RECURRING_ERROR_BUG_PROMPT_AGENT_KEY,
+		name: "Recurring Error Bug Report",
+		description:
+			"Writes the bug report Fabric files when an application error, or a group of open bug reports describing the same problem, keeps recurring: title, Markdown description with the evidence, and a priority.",
+		category: "bug-lifecycle",
+		tags: ["bugs", "recurring-errors", "ai-generation"],
+		format: "HANDLEBARS" as const,
+		promptType: "STRUCTURED" as const,
+		structuredFormat: "JSON" as const,
+		isPublic: true,
+		content: RECURRING_ERROR_BUG_FALLBACK_BODY,
 	},
 	{
 		// orchestrator_memory_context: how the Orchestrator assistant reads what

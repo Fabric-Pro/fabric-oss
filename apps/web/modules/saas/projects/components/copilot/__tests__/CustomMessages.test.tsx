@@ -25,9 +25,15 @@ function render(ui: Parameters<typeof rtlRender>[0]) {
 	return rtlRender(ui, { wrapper: CopilotChatSessionProvider });
 }
 
-import { describe, expect, it, vi } from "vitest";
+import { useEffect } from "react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const liveMessages: unknown[] = [];
+/** The persisted conversation, as `HydratedMessagesProvider` hands it. */
+let hydrated: {
+	historicalMessages: unknown[];
+	historicalIdSet: Set<string>;
+} | null = null;
 
 vi.mock("@copilotkit/react-core", () => ({
 	useCopilotChatInternal: () => ({ messages: liveMessages, interrupt: null }),
@@ -36,7 +42,7 @@ vi.mock("@copilotkit/react-ui", () => ({
 	useChatContext: () => ({ labels: {}, icons: {} }),
 }));
 vi.mock("../HydratedMessagesContext", () => ({
-	useHydratedMessages: () => null,
+	useHydratedMessages: () => hydrated,
 }));
 
 import { CustomMessages } from "../CustomMessages";
@@ -134,5 +140,130 @@ describe("CustomMessages — operation-result SYSTEM card", () => {
 			document.querySelector('[data-message-kind="operation_result"]'),
 		).not.toBeNull();
 		expect(screen.getByText("View saved version")).toBeInTheDocument();
+	});
+});
+
+/**
+ * A row keeps its identity when a message enters the history ahead of it
+ * (Fizzy #2946): an accept's operation result, or its persisted reply, moved
+ * the live tool call's row, React mounted it again, and the confirm card of
+ * a tool call answered long before said once more that a proposal was under
+ * review.
+ */
+describe("CustomMessages — a row's identity", () => {
+	afterEach(() => {
+		hydrated = null;
+		liveMessages.length = 0;
+	});
+
+	it("does not mount a live tool call's card again when the history grows ahead of it, and still marks the last row current", () => {
+		let mounts = 0;
+		let unmounts = 0;
+		function Card() {
+			useEffect(() => {
+				mounts += 1;
+				return () => {
+					unmounts += 1;
+				};
+			}, []);
+			return <span data-testid="card" />;
+		}
+		const current = new Map<string, boolean>();
+		// As CopilotKit's own `RenderMessage` (react-ui dist/index.mjs): the
+		// message it renders is keyed by the `index` it is handed, and an
+		// assistant message renders its `generativeUI` inside it.
+		function RenderMessage({
+			message,
+			index,
+			isCurrentMessage,
+			AssistantMessage,
+		}: Record<string, any>) {
+			current.set(message.id, isCurrentMessage);
+			if (message.role !== "assistant") {
+				return <div key={index}>{message.content}</div>;
+			}
+			return (
+				<AssistantMessage
+					key={index}
+					message={message}
+					subComponent={message.generativeUI?.()}
+				/>
+			);
+		}
+		function AssistantMessage({
+			message,
+			subComponent,
+		}: Record<string, any>) {
+			return (
+				<div>
+					{message.content}
+					<div>{subComponent}</div>
+				</div>
+			);
+		}
+		const user = { id: "u1", role: "user", content: "Add a sentence." };
+		const text = { id: "a1", role: "assistant", content: "Proposed." };
+		// The tool calls' own row, which is never persisted under its id: its
+		// calls are persisted on the text message before it.
+		const toolCalls = {
+			id: "a1-tools",
+			role: "assistant",
+			content: "",
+			toolCalls: [{ id: "tc1", function: { name: "confirm_changes" } }],
+			generativeUI: () => <Card />,
+		};
+		const reply = {
+			id: "a2",
+			role: "assistant",
+			content: "Changes accepted.",
+		};
+		liveMessages.push(user, text, toolCalls, reply);
+		const props = {
+			inProgress: false,
+			RenderMessage,
+			AssistantMessage,
+			UserMessage: () => null,
+		} as any;
+		const view = render(<CustomMessages {...props} />);
+		expect(mounts).toBe(1);
+
+		// The turn is persisted, then the accept's operation result enters
+		// the history ahead of the live rows, then a saved accept's, which
+		// renders nothing but has its place too.
+		const persisted = [
+			{ id: "u1", role: "user", content: "Add a sentence." },
+			{ id: "a1", role: "assistant", content: "Proposed." },
+		];
+		const failure = {
+			id: "s1",
+			role: "system",
+			content:
+				"The accepted changes could not be saved; they are still in the editor.",
+			metadata: { kind: "operation_result", outcome: "failure" },
+		};
+		const success = {
+			id: "s2",
+			role: "system",
+			content: "Changes applied.",
+			metadata: { kind: "operation_result", outcome: "success" },
+		};
+		for (const history of [
+			persisted,
+			[...persisted, failure],
+			[...persisted, failure, success],
+		]) {
+			hydrated = {
+				historicalMessages: history,
+				historicalIdSet: new Set(history.map((message) => message.id)),
+			};
+			view.rerender(<CustomMessages {...props} />);
+		}
+
+		expect(mounts).toBe(1);
+		expect(unmounts).toBe(0);
+		expect(screen.getAllByTestId("card")).toHaveLength(1);
+		expect(current.get("a2")).toBe(true);
+		expect(current.get("a1-tools")).toBe(false);
+		view.unmount();
 	});
 });

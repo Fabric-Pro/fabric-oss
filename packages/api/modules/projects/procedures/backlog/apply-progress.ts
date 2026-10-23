@@ -6,6 +6,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { isBacklogApplyWorkflowIdFor } from "./workflow-id";
+import { workflowProgressFailure } from "./workflow-progress-failure";
 
 /**
  * Get backlog apply changes workflow progress.
@@ -53,6 +54,22 @@ export const applyProgressProcedure = tenantProtectedProcedure
 		try {
 			const handle = client.workflow.getHandle(input.workflowId);
 			const progress = await handle.query(applyProgressQuery);
+			if (
+				progress.status !== "completed" &&
+				progress.status !== "failed" &&
+				progress.status !== "cancelled" &&
+				[
+					"COMPLETED",
+					"FAILED",
+					"TERMINATED",
+					"CANCELLED",
+					"TIMED_OUT",
+					"CONTINUED_AS_NEW",
+				].includes((await handle.describe()).status.name)
+			) {
+				// A terminated execution can retain its last nonterminal query value.
+				throw new Error("Apply workflow closed; read its result");
+			}
 			return progress;
 		} catch (_queryError) {
 			// Query may fail when workflow completed — try getting final result
@@ -84,26 +101,26 @@ export const applyProgressProcedure = tenantProtectedProcedure
 					pmSyncOutage: result.pmSyncOutage,
 				};
 			} catch (resultError) {
-				const err = resultError as Error & { cause?: Error };
-				const isWorkflowFailed =
-					err.name === "WorkflowFailedError" ||
-					err.message?.includes("WorkflowFailed");
-				const errorMessage =
-					err.cause?.message ?? err.message ?? "Apply failed";
-
-				if (isWorkflowFailed || errorMessage !== "Result timeout") {
-					return {
-						status: "failed",
-						completedCount: 0,
-						totalCount: 0,
-						message: errorMessage,
-						errors: [errorMessage],
-					};
+				if (
+					resultError instanceof Error &&
+					resultError.message === "Result timeout"
+				) {
+					throw new ORPCError("NOT_FOUND", {
+						message:
+							"Apply workflow not found or already completed",
+					});
 				}
-
-				throw new ORPCError("NOT_FOUND", {
-					message: "Apply workflow not found or already completed",
-				});
+				const failure = await workflowProgressFailure(
+					client.workflow.getHandle(input.workflowId),
+					resultError,
+					"Apply",
+				);
+				return {
+					...failure,
+					completedCount: 0,
+					totalCount: 0,
+					errors: [failure.message],
+				};
 			}
 		}
 	});

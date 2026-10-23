@@ -1,3 +1,4 @@
+import { guardToolsAgainstRepeatedCalls } from "@repo/agent-types/repeated-tool-call-guard";
 import { isStepCount, jsonSchema, streamText, tool } from "ai";
 import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 import { describe, expect, it, vi } from "vitest";
@@ -5,7 +6,6 @@ import {
 	prepareAgentTools,
 	withAgentToolRuntime,
 } from "../../shared/agent-tool-runtime";
-import { guardToolsAgainstRepeatedCalls } from "../repeated-tool-call-guard";
 
 const USAGE = {
 	inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },

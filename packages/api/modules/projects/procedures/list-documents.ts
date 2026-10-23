@@ -9,6 +9,7 @@ import {
 	ProjectDocumentTypeSchema,
 } from "@repo/database/prisma/zod";
 import { logger } from "@repo/logs";
+import { contentIdentity } from "@repo/utils/content-identity";
 import { classifyContext } from "@repo/utils/context-download-class";
 import { z } from "zod";
 import {
@@ -70,11 +71,21 @@ export const listDocumentsProcedure = tenantProtectedProcedure
 
 		return {
 			...result,
-			documents: await withSourceFiles(result.documents, {
-				projectId: input.projectId,
-				userId: user.id,
-				organizationId,
-			}),
+			documents: await withSourceFiles(
+				// Each body's identity, as `projects.documents.get` returns it
+				// (Fizzy #2946): the base a save names. It shadows the
+				// embed-owned `contentHash` column, which is null on a draft
+				// nothing has embedded and can be the hash of an older body.
+				result.documents.map((document) => ({
+					...document,
+					contentHash: contentIdentity(document.content),
+				})),
+				{
+					projectId: input.projectId,
+					userId: user.id,
+					organizationId,
+				},
+			),
 		};
 	});
 

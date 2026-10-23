@@ -14,7 +14,11 @@
  *   - Generator falls back (description-fallback) → story still created.
  */
 
+import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
+import { RetryError, streamText } from "ai";
+import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 const { mocks } = vi.hoisted(() => ({
 	mocks: {
@@ -501,3 +505,88 @@ describe("fabric_create_story executor", () => {
 		);
 	});
 });
+
+it.each([false, true])(
+	"emits a tool-error when story drafting refuses usage (wrapped: %s)",
+	async (wrapped) => {
+		const refusal = new AiUsageLimitExceededError({
+			message: "Example usage limit exhausted",
+			limitId: "example-limit",
+			dimension: "TOKENS" as never,
+			window: "MONTHLY" as never,
+			used: 100n,
+			max: 100n,
+			manageLimitsUrl: "https://example.com/limits",
+		});
+		mocks.createStoryFromProposal.mockRejectedValueOnce(
+			wrapped
+				? new RetryError({
+						message: "Retry refused",
+						reason: "errorNotRetryable",
+						errors: [refusal],
+					})
+				: refusal,
+		);
+		const execute = await getExecute();
+		const result = streamText({
+			model: new MockLanguageModelV4({
+				doStream: async () => ({
+					stream: simulateReadableStream({
+						chunks: [
+							{ type: "stream-start", warnings: [] },
+							{
+								type: "tool-call",
+								toolCallId: "example-call",
+								toolName: "fabric_create_story",
+								input: JSON.stringify({
+									title: "Example title",
+									request: "Example request",
+									kind: "FEATURE",
+								}),
+							},
+							{
+								type: "finish",
+								finishReason: {
+									unified: "tool-calls",
+									raw: undefined,
+								},
+								usage: {
+									inputTokens: {
+										total: 10,
+										noCache: 10,
+										cacheRead: 0,
+										cacheWrite: 0,
+									},
+									outputTokens: {
+										total: 5,
+										text: 5,
+										reasoning: 0,
+									},
+								},
+							},
+						],
+					}),
+				}),
+			}),
+			prompt: "Create an example story",
+			tools: {
+				fabric_create_story: {
+					inputSchema: z.object({
+						title: z.string(),
+						request: z.string(),
+						kind: z.string(),
+					}),
+					execute,
+				},
+			},
+		});
+		const parts = [];
+		for await (const part of result.fullStream) {
+			parts.push(part);
+		}
+		expect(parts.find((part) => part.type === "tool-error")).toMatchObject({
+			error: refusal,
+		});
+		expect(parts.some((part) => part.type === "tool-result")).toBe(false);
+	},
+);

@@ -432,7 +432,11 @@ export async function testCaseSyncWorkflow(
 			if (!selectiveFastPathAttempted && allPmItems.length === 0) {
 				let currentPage = 1;
 				let fetchMore = true;
+				let rowsReceived = 0;
 				let effectivePageSize: number | undefined;
+				const useListingEvidence = patched(
+					"pm-listing-completeness-v1",
+				);
 				while (fetchMore && currentPage <= MAX_PAGES) {
 					progress.message = `Fetching PM work items (page ${currentPage})...`;
 					const pageResult = await listWorkItemsFromPM({
@@ -444,22 +448,29 @@ export async function testCaseSyncWorkflow(
 						organizationId,
 						page: currentPage,
 						pageSize: FETCH_PAGE_SIZE,
+						...(useListingEvidence ? { offset: rowsReceived } : {}),
 					});
 					allPmItems.push(...pageResult.items);
-					if (pageResult.items.length === 0) {
+					const rawCount = useListingEvidence
+						? (pageResult.rawCount ?? pageResult.items.length)
+						: pageResult.items.length;
+					rowsReceived += rawCount;
+					if (rawCount === 0) {
 						fetchMore = false;
 					} else if (pageResult.total != null) {
-						fetchMore = allPmItems.length < pageResult.total;
+						fetchMore =
+							(useListingEvidence
+								? rowsReceived
+								: allPmItems.length) < pageResult.total;
 					} else {
 						if (
 							effectivePageSize == null &&
-							pageResult.items.length < FETCH_PAGE_SIZE
+							rawCount < FETCH_PAGE_SIZE
 						) {
-							effectivePageSize = pageResult.items.length;
+							effectivePageSize = rawCount;
 						}
 						fetchMore =
-							pageResult.items.length >=
-							(effectivePageSize ?? FETCH_PAGE_SIZE);
+							rawCount >= (effectivePageSize ?? FETCH_PAGE_SIZE);
 					}
 					currentPage++;
 				}

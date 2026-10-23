@@ -701,6 +701,12 @@ export function DocumentEditorPage({
 		documentId,
 		enabled: isArtifactProposal,
 	});
+	// A client-document Proposal's diagrams take their role colours from the
+	// theme, and offer Build with AI to members only (Fizzy #2946).
+	const proposalVisuals = useMemo(
+		() => ({ paint: proposalTheme.paint, isMember: !isGuestInOrg }),
+		[proposalTheme.paint, isGuestInOrg],
+	);
 	// Between a generation's end and its run being recorded, what the tab
 	// holds is the previous Main's run; a failed generation records none.
 	const awaitingNewAnalysis =
@@ -932,8 +938,9 @@ export function DocumentEditorPage({
 					documentId,
 				)
 			: null;
-	// Who may edit the document: the title, the Style tab and the Retry of a
-	// stalled run all follow it.
+	// Who may edit the document: the title and the Retry of a stalled run
+	// follow it. The Style tab follows the server's `canUpdateProject`
+	// instead, so a project admin edits the style too.
 	const canEdit =
 		project.userRole === "owner" || project.userRole === "editor";
 	const tabId = (tab: ProposalArtifactTab) => `${tabIdBase}-tab-${tab}`;
@@ -1396,6 +1403,7 @@ export function DocumentEditorPage({
 											proposalTheme.rootProps
 										}
 										statTiles={isArtifactProposal}
+										proposalVisuals={proposalVisuals}
 									/>
 								</CopilotChatSessionProvider>
 							</CopilotKit>
@@ -1431,7 +1439,10 @@ export function DocumentEditorPage({
 								<ProposalStylePanel
 									projectId={projectId}
 									documentId={documentId}
-									canEdit={canEdit}
+									// The server's own rule for a Style save
+									// (`canEditProject`), so a project admin
+									// edits it too; the title keeps `canEdit`.
+									canEdit={project.canUpdateProject ?? false}
 									isGenerating={isGenerationRunning}
 								/>
 							</div>

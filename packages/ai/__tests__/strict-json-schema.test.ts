@@ -11,6 +11,8 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
 	createStrictJsonSchemaMiddleware,
+	isStrictJsonSchemaCompatible,
+	strictJsonSchemaSize,
 	toStrictJsonSchema,
 } from "../lib/strict-json-schema-middleware";
 import {
@@ -25,6 +27,26 @@ const capability = structuredOutputCapabilityFor(
 );
 const simple = z.object({ title: z.string(), note: z.string().optional() });
 const json = async (schema: z.ZodType) => await zodSchema(schema).jsonSchema;
+// Recreate the nullable primitive representation emitted before zod 4.6.
+function legacyNullablePrimitives(value: unknown): unknown {
+	if (Array.isArray(value)) {
+		return value.map(legacyNullablePrimitives);
+	}
+	if (!value || typeof value !== "object") {
+		return value;
+	}
+	const node = Object.fromEntries(
+		Object.entries(value).map(([key, child]) => [
+			key,
+			legacyNullablePrimitives(child),
+		]),
+	);
+	if (Array.isArray(node.type) && node.type.includes("null")) {
+		const { type, ...rest } = node;
+		return { ...rest, anyOf: type.map((type) => ({ type })) };
+	}
+	return node;
+}
 const mock = (text: string) =>
 	new MockLanguageModelV4({
 		doGenerate: {
@@ -43,6 +65,78 @@ const wrapped = (model: MockLanguageModelV4, provider = "OPENAI_DIRECT") =>
 	});
 
 describe("conversion from the AI SDK's real Zod JSON schemas", () => {
+	it("keeps nullable type arrays equivalent for strict conversion, limits and repair", async () => {
+		const compact = await json(
+			z.object({
+				text: z.string().nullable().optional(),
+				count: z.number().nullable().optional(),
+				flag: z.boolean().nullable().optional(),
+				meta: z
+					.object({ note: z.string().optional() })
+					.nullable()
+					.optional(),
+				rows: z
+					.array(z.object({ note: z.string().optional() }))
+					.nullable()
+					.optional(),
+				choice: z.enum(["a", "b"]).nullable().optional(),
+			}),
+		);
+		const legacy = legacyNullablePrimitives(compact);
+		const converted = toStrictJsonSchema(compact);
+		const oldConverted = toStrictJsonSchema(legacy);
+		expect(converted).toBeDefined();
+		expect(oldConverted).toBeDefined();
+		if (!converted || !oldConverted) {
+			throw new Error("Expected both nullable forms to convert");
+		}
+		expect(legacyNullablePrimitives(converted)).toEqual(oldConverted);
+		for (const schema of [converted, oldConverted]) {
+			expect(isStrictJsonSchemaCompatible(schema)).toBe(true);
+			expect(schema?.required).toEqual([
+				"text",
+				"count",
+				"flag",
+				"meta",
+				"rows",
+				"choice",
+			]);
+		}
+		expect(strictJsonSchemaSize(converted)).toEqual(
+			strictJsonSchemaSize(oldConverted),
+		);
+		for (const schema of [compact, legacy]) {
+			const result = await wrapped(
+				mock(
+					JSON.stringify({
+						text: null,
+						count: null,
+						flag: null,
+						meta: { note: null },
+						rows: [{ note: null }],
+						choice: null,
+					}),
+				),
+			).doGenerate({
+				prompt: [],
+				responseFormat: { type: "json", schema: schema as never },
+			});
+			expect(result.content).toEqual([
+				{
+					type: "text",
+					text: JSON.stringify({
+						text: null,
+						count: null,
+						flag: null,
+						meta: {},
+						rows: [{}],
+						choice: null,
+					}),
+				},
+			]);
+		}
+	});
+
 	it("requires optional strings as nullable without mutating the original", async () => {
 		const original = await json(simple);
 		const snapshot = structuredClone(original);
@@ -83,7 +177,7 @@ describe("conversion from the AI SDK's real Zod JSON schemas", () => {
 				),
 			),
 		).toHaveProperty("properties.note", {
-			anyOf: [{ type: "string" }, { type: "null" }],
+			type: ["string", "null"],
 		});
 	});
 

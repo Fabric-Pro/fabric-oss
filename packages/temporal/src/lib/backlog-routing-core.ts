@@ -186,6 +186,17 @@ function acceptDecisionEvaluation(
 		return null;
 	}
 
+	// A one-ticket shortlist asks no `target` question (see `evaluateRouting`):
+	// enrich can only mean that ticket.
+	if (shortlistIdentifiers.size === 1) {
+		const [only] = shortlistIdentifiers;
+		return {
+			decision: "enrich",
+			confidence: routing.probability,
+			targetIdentifier: only,
+		};
+	}
+
 	const target = readChoiceAnswer(result, "target");
 	if (
 		!target ||
@@ -244,6 +255,15 @@ async function evaluateRouting(params: {
 				DECISION_CRITERION_CHARS,
 			);
 	}
+	// A choice needs at least two options: a one-ticket `target` question is
+	// rejected outright by some decision models (gpt-6-luna-decisions: "array
+	// too short"), which failed the whole evaluation. With one ticket the
+	// target is implied, so only the routing question is asked. One Set feeds
+	// both this and `acceptDecisionEvaluation`, so the two cannot disagree.
+	const shortlistIdentifiers = new Set(
+		candidates.map((candidate) => candidate.identifier),
+	);
+	const asksTarget = shortlistIdentifiers.size > 1;
 
 	let result: Awaited<ReturnType<typeof experimental_decide>>;
 	const capture = createDecisionCapture();
@@ -266,12 +286,16 @@ async function evaluateRouting(params: {
 							enrich: "The action item is additional detail on one of the candidate tickets, which should absorb it rather than a new ticket being opened.",
 						},
 					},
-					target: {
-						type: "choice",
-						instructions:
-							"Choose the candidate ticket the action item belongs to, by its identifier. Answer as if enrich were the correct routing, even when create is the better one.",
-						criteria: targetCriteria,
-					},
+					...(asksTarget
+						? {
+								target: {
+									type: "choice" as const,
+									instructions:
+										"Choose the candidate ticket the action item belongs to, by its identifier. Answer as if enrich were the correct routing, even when create is the better one.",
+									criteria: targetCriteria,
+								},
+							}
+						: {}),
 				},
 				maxRetries: DECISION_MAX_RETRIES,
 				abortSignal: params.abortSignal
@@ -313,12 +337,12 @@ async function evaluateRouting(params: {
 
 	const verdict = acceptDecisionEvaluation(
 		result,
-		new Set(candidates.map((candidate) => candidate.identifier)),
+		shortlistIdentifiers,
 		params.threshold,
 	);
 	// One outcome per item. Confidence is sampled for the routing answer and,
-	// when the routing answer chose enrich, the target answer too: those are the
-	// answers the acceptance rule above consults.
+	// when the routing answer chose enrich and a target was asked, the target
+	// answer too: those are the answers the acceptance rule above consults.
 	const answers = (result as { answers?: Record<string, unknown> }).answers;
 	recordDecisionOutcome({
 		site: DECISION_SITE,
@@ -327,8 +351,9 @@ async function evaluateRouting(params: {
 		result,
 		capture,
 		answers:
+			asksTarget &&
 			(answers?.routing as { choice?: unknown } | undefined)?.choice ===
-			"enrich"
+				"enrich"
 				? [answers?.routing, answers?.target]
 				: [answers?.routing],
 	});
@@ -870,7 +895,8 @@ export async function judgeRoutingItem(
 		// language judge would have received, so an operator's bound judge
 		// wording still governs the verdict, and asks both questions in one
 		// evaluation over one shared state so the target is chosen against the
-		// same reading of the item as the create/enrich call.
+		// same reading of the item as the create/enrich call. A one-ticket
+		// shortlist asks only the routing question.
 		if (decisionModel) {
 			const fastPath = await evaluateRouting({
 				decisionModel,

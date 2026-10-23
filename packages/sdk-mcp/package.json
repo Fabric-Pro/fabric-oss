@@ -1,6 +1,6 @@
 {
 	"name": "@fabricorg/sdk-mcp",
-	"version": "0.1.14",
+	"version": "0.1.15",
 	"description": "MCP server adapter for @fabricorg/sdk — expose a Fabric workspace as MCP tools",
 	"keywords": [
 		"fabric",
@@ -47,7 +47,7 @@
 	},
 	"dependencies": {
 		"@modelcontextprotocol/sdk": "^1.32.1",
-		"zod": "^4.3.6"
+		"zod": "^4.6.7"
 	},
 	"devDependencies": {
 		"@fabricorg/sdk": "workspace:*",

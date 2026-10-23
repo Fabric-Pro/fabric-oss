@@ -34,7 +34,11 @@ vi.mock("../shared/read-only-gate", () => ({
 	guardToolWriteForReadOnly: mocks.guardToolWriteForReadOnly,
 }));
 vi.mock("../parlume-voice", () => ({
-	verifyParlumeVoiceGeneration: vi.fn(async () => true),
+	readParlumeVoiceState: vi.fn(async () => ({
+		current: true,
+		muted: false,
+		chatAvailable: true,
+	})),
 }));
 vi.mock("@repo/database", async (original) => {
 	const actual = await original<typeof import("@repo/database")>();
@@ -195,6 +199,7 @@ const context: ParlumeActionContext = {
 	userId: "user",
 	speakerId: "speaker-a",
 	speakerName: "Alex",
+	requestText: "what is on the roadmap",
 	agentRevision: "revision",
 	voiceGeneration: 3,
 	toolsReadOnly: false,

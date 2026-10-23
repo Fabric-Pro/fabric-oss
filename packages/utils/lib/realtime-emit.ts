@@ -23,14 +23,46 @@
  *   - `UPSTASH_REDIS_REST_TOKEN`
  *
  * When either is missing, `getRealtimeClient()` returns `null` and every
- * emit helper becomes a no-op. This keeps local dev + CI green without
+ * emit helper falls back to the web relay below, or becomes a no-op when
+ * that is not configured either. This keeps local dev + CI green without
  * Redis credentials.
+ *
+ * # Fallback: relay through the web app
+ *
+ * The Azure worker container apps get `REDIS_URL` but not the Upstash REST
+ * variables, so on their own no worker event would reach an open page
+ * (Fizzy #2946). They do get `AGENT_SERVICE_SECRET` and the web app's base
+ * URL, which the Weave coding-run bridge already calls the web with. So a
+ * process without Upstash but with `AGENT_SERVICE_SECRET` and a base URL
+ * (`FABRIC_INTERNAL_URL`, `RUNTIME_API_URL`, `APP_URL`, `NEXT_PUBLIC_APP_URL`,
+ * first set wins: the bridge's chain in
+ * `packages/temporal/src/activities/weave/shuttle-execution.ts`, minus its
+ * localhost default) POSTs each event to the web's
+ * `/api/internal/realtime-emit` with the secret in `X-Agent-Service-Token`.
+ * The route checks the body against `realtimeRelayRequestSchema` (built from
+ * the schemas below) and publishes with the web's own client, the one its
+ * SSE routes subscribe through. It never calls these emitters, so a relayed
+ * event cannot be relayed again.
+ *
+ * - Upstash configured: direct publish, as before; the relay is not used.
+ * - Upstash absent, relay configured: one POST per emit, bounded by
+ *   `RELAY_TIMEOUT_MS`.
+ * - Neither: no-op.
+ *
+ * A caller that hands in its own client never relays, `null` included. The
+ * API's wrappers for all four events pass theirs, so a web process (local
+ * dev, a preview) emits nothing without Upstash rather than POSTing to
+ * itself or to whatever app URL it was given; only the worker, which calls
+ * these emitters with the default client, relays. Repeated relay failures
+ * are logged once per kind at warn, then at debug.
  *
  * # Error handling
  *
- * No emit helper here ever throws. A Redis outage degrades to "next
- * polling refresh", not "the operation result is lost" — the persistence
- * write already landed before the helper was called.
+ * No emit helper here ever throws. A Redis outage, or a relay call that is
+ * refused, fails or times out, degrades to "next polling refresh", not "the
+ * operation result is lost" — the persistence write already landed before
+ * the helper was called. A failure is logged by event name and status only,
+ * never with the payload or the secret.
  *
  * # Schema scope
  *
@@ -149,6 +181,172 @@ const realtimeEmitSchema = {
 	document_change: documentChangeSchema,
 };
 
+/** One event of `realtimeEmitSchema` with its payload, as `emit` takes them. */
+type RelayedEventArgs =
+	| [event: "message_appended", data: MessageAppendedPayload]
+	| [event: "context_change", data: ContextChangePayload]
+	| [event: "activity", data: ActivityPayload]
+	| [event: "document_change", data: DocumentChangePayload];
+
+const relayChannelId = z.string().min(1);
+
+/**
+ * The body the web relay accepts (see the header): one event of
+ * `realtimeEmitSchema`, its channel and that channel's id, with `data`
+ * checked against the same schema a direct publish uses. One entry per
+ * `realtimeEmitSchema` event. The id must be the payload's own project or
+ * conversation, so a relayed event lands on the channel a direct publish
+ * would have used.
+ */
+export const realtimeRelayRequestSchema = z
+	.discriminatedUnion("event", [
+		z.object({
+			channel: z.literal("conversation"),
+			id: relayChannelId,
+			event: z.literal("message_appended"),
+			data: conversationMessageAppendedSchema,
+		}),
+		z.object({
+			channel: z.literal("project"),
+			id: relayChannelId,
+			event: z.literal("context_change"),
+			data: contextChangeSchema,
+		}),
+		z.object({
+			channel: z.literal("project"),
+			id: relayChannelId,
+			event: z.literal("activity"),
+			data: activitySchema,
+		}),
+		z.object({
+			channel: z.literal("project"),
+			id: relayChannelId,
+			event: z.literal("document_change"),
+			data: documentChangeSchema,
+		}),
+	])
+	.refine(
+		(request) =>
+			request.id ===
+			(request.event === "message_appended"
+				? request.data.conversationId
+				: request.data.projectId),
+		{ message: "id must be the payload's own channel id", path: ["id"] },
+	);
+
+export type RealtimeRelayRequest = z.infer<typeof realtimeRelayRequestSchema>;
+
+/** The web route the relay POSTs to. */
+const REALTIME_RELAY_PATH = "/api/internal/realtime-emit";
+
+/**
+ * How long one relay POST may take. An activity awaits each emit, so a slow
+ * or unreachable web app costs it a few seconds at most, never a hang.
+ */
+const RELAY_TIMEOUT_MS = 3_000;
+
+/** Where the relay POSTs and with what, or null when either is unset. */
+function getRelayConfig(): { url: string; secret: string } | null {
+	const secret = process.env.AGENT_SERVICE_SECRET;
+	const baseUrl =
+		process.env.FABRIC_INTERNAL_URL ||
+		process.env.RUNTIME_API_URL ||
+		process.env.APP_URL ||
+		process.env.NEXT_PUBLIC_APP_URL;
+	if (!secret || !baseUrl) {
+		return null;
+	}
+	return {
+		url: `${baseUrl.replace(/\/+$/, "")}${REALTIME_RELAY_PATH}`,
+		secret,
+	};
+}
+
+// The kinds of relay failure this process has already warned about.
+let reportedRelayFailures = new Set<string>();
+
+/**
+ * Log a relay failure: the first of each kind (an HTTP status, `network`,
+ * `timeout`) at warn, repeats at debug, so a worker whose web keeps
+ * answering 503 says so once rather than on every emit.
+ */
+function reportRelayFailure(kind: string, message: string): void {
+	if (reportedRelayFailures.has(kind)) {
+		console.debug(message);
+		return;
+	}
+	reportedRelayFailures.add(kind);
+	console.warn(
+		`${message}; further ${kind} failures are logged at debug level`,
+	);
+}
+
+/**
+ * POST one event to the web relay. Never throws: a refusal, a network error
+ * or the timeout is logged by event name and status only.
+ */
+async function relayEmit(
+	relay: { url: string; secret: string },
+	...[event, data]: RelayedEventArgs
+): Promise<void> {
+	const target =
+		event === "message_appended"
+			? { channel: "conversation", id: data.conversationId }
+			: { channel: "project", id: data.projectId };
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), RELAY_TIMEOUT_MS);
+	try {
+		const response = await fetch(relay.url, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				"X-Agent-Service-Token": relay.secret,
+			},
+			body: JSON.stringify({ ...target, event, data }),
+			signal: controller.signal,
+		});
+		if (!response.ok) {
+			reportRelayFailure(
+				`HTTP ${response.status}`,
+				`[realtime-emit] The web relay refused ${event} (${response.status})`,
+			);
+		}
+		await response.body?.cancel().catch(() => undefined);
+	} catch (error) {
+		reportRelayFailure(
+			controller.signal.aborted ? "timeout" : "network",
+			`[realtime-emit] Failed to relay ${event}: ${
+				error instanceof Error ? error.message : "unknown error"
+			}`,
+		);
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
+interface RelayClient {
+	channel(name: string): {
+		emit(...args: RelayedEventArgs): Promise<void>;
+	};
+}
+
+/**
+ * A client shaped like the Upstash one whose emit goes through the web
+ * relay, or null when the relay is not configured. The channel name itself
+ * is not sent: the body carries the payload's own channel kind and id, and
+ * the route rebuilds the name from them, as the emitters here build it.
+ */
+function getRelayClient(): RelayClient | null {
+	const relay = getRelayConfig();
+	if (!relay) {
+		return null;
+	}
+	const channel = {
+		emit: (...args: RelayedEventArgs) => relayEmit(relay, ...args),
+	};
+	return { channel: () => channel };
+}
+
 type RealtimeEmitOptions = {
 	schema: typeof realtimeEmitSchema;
 	redis: Redis;
@@ -216,17 +414,43 @@ export function getRealtimeClient(): Realtime<RealtimeEmitOptions> | null {
 }
 
 /**
+ * The client an emit uses when its caller hands in none: this module's
+ * Upstash client, else the web relay (see the header), else null.
+ */
+function getDefaultClient():
+	| Realtime<RealtimeEmitOptions>
+	| RelayClient
+	| null {
+	return getRealtimeClient() ?? getRelayClient();
+}
+
+/**
+ * The part of a client `emitConversationMessageAppended` uses: this
+ * module's client, the relay, or (through `RelayedEventRealtime`) the API's.
+ */
+export interface ConversationEventRealtime {
+	channel(name: string): {
+		emit(
+			event: "message_appended",
+			data: MessageAppendedPayload,
+		): Promise<void>;
+	};
+}
+
+/**
  * Emit a `message_appended` event onto the conversation's channel.
  * Called by the operation-result code paths (Temporal activity + oRPC
- * handler) AFTER the row is persisted.
+ * handler) AFTER the row is persisted. `realtime` defaults to this
+ * module's client, or the web relay without one (the worker); the API
+ * passes its own, so the web never relays; `null` emits nothing.
  *
  * Never throws — a Redis outage degrades realtime delivery to the next
  * polling refresh, not "the operation result is lost".
  */
 export async function emitConversationMessageAppended(
 	payload: MessageAppendedPayload,
+	realtime: ConversationEventRealtime | null = getDefaultClient(),
 ): Promise<void> {
-	const realtime = getRealtimeClient();
 	if (!realtime) {
 		return;
 	}
@@ -265,12 +489,36 @@ export interface ProjectEventRealtime {
 }
 
 /**
+ * The part of a `Realtime` client that publishes every event the web relay
+ * accepts. The API's `getProjectRealtime()` client satisfies it, which is how
+ * the relay route publishes a `realtimeRelayRequestSchema` event.
+ */
+export interface RelayedEventRealtime {
+	channel(name: string): {
+		emit(
+			event: "message_appended",
+			data: MessageAppendedPayload,
+		): Promise<void>;
+		emit(
+			event: "context_change",
+			data: ContextChangePayload,
+		): Promise<void>;
+		emit(event: "activity", data: ActivityPayload): Promise<void>;
+		emit(
+			event: "document_change",
+			data: DocumentChangePayload,
+		): Promise<void>;
+	};
+}
+
+/**
  * Emit a `context_change` event onto the project's channel. Never throws.
- * `realtime` defaults to this module's client; `null` emits nothing.
+ * `realtime` defaults to this module's client, or the web relay without
+ * one; `null` emits nothing.
  */
 export async function emitContextChange(
 	payload: ContextChangePayload,
-	realtime: ProjectEventRealtime | null = getRealtimeClient(),
+	realtime: ProjectEventRealtime | null = getDefaultClient(),
 ): Promise<void> {
 	if (!realtime) {
 		return;
@@ -288,11 +536,12 @@ export async function emitContextChange(
 
 /**
  * Emit an `activity` event onto the project's channel. Never throws.
- * `realtime` defaults to this module's client; `null` emits nothing.
+ * `realtime` defaults to this module's client, or the web relay without
+ * one; `null` emits nothing.
  */
 export async function emitActivity(
 	payload: ActivityPayload,
-	realtime: ProjectEventRealtime | null = getRealtimeClient(),
+	realtime: ProjectEventRealtime | null = getDefaultClient(),
 ): Promise<void> {
 	if (!realtime) {
 		return;
@@ -310,11 +559,12 @@ export async function emitActivity(
 
 /**
  * Emit a `document_change` event onto the project's channel. Never throws.
- * `realtime` defaults to this module's client; `null` emits nothing.
+ * `realtime` defaults to this module's client, or the web relay without
+ * one; `null` emits nothing.
  */
 export async function emitDocumentChange(
 	payload: DocumentChangePayload,
-	realtime: ProjectEventRealtime | null = getRealtimeClient(),
+	realtime: ProjectEventRealtime | null = getDefaultClient(),
 ): Promise<void> {
 	if (!realtime) {
 		return;
@@ -341,4 +591,5 @@ export function __resetRealtimeClientForTest(): void {
 	redisClient = null;
 	realtimeInstance = null;
 	initializationAttempted = false;
+	reportedRelayFailures = new Set();
 }

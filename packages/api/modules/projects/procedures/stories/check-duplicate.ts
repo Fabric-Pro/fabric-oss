@@ -4,6 +4,7 @@ import {
 	hasProviderCredentials,
 	resolveModelWithProvider,
 } from "@repo/ai";
+import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
 import {
 	buildDetectionText,
 	getProjectTenantId,
@@ -287,6 +288,9 @@ export const checkDuplicateProcedure = tenantProtectedProcedure
 
 			if (corpusOutcome.status === "rejected") {
 				const error = corpusOutcome.reason;
+				if (error instanceof UnsupportedEmbeddingModelError) {
+					return unavailable(error.message);
+				}
 				if (error instanceof AIProviderNotConfiguredError) {
 					return unavailable(UNAVAILABLE_MESSAGE);
 				}

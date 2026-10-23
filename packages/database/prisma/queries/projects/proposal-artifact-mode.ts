@@ -31,13 +31,27 @@
  */
 
 import {
+	isOrganizationHeroKey,
+	organizationBrandAssetId,
+} from "@repo/utils/proposal-artifact/brand-sources";
+import {
 	buildProposalThemeTokens,
+	type ProposalThemeSources,
 	type ProposalThemeTokens,
+	type SourcedValue,
 } from "@repo/utils/proposal-artifact/theme-tokens";
 import { db } from "../../client";
+import {
+	type BrandSiteFetchView,
+	getBrandSiteFetch,
+} from "../brand-site-fetch";
 import { isFeatureEnabled } from "../feature-flags";
 import { isOrganizationMember } from "../verify-organization-membership";
 import { isRecipientLogoKeyForProject } from "./recipient-brand";
+import {
+	getRecipientBrandSuggestion,
+	type RecipientBrandSuggestionView,
+} from "./recipient-brand-suggestion";
 
 /** The one document type that becomes a client document. */
 export const PROPOSAL_DOCUMENT_TYPE = "PROPOSAL";
@@ -134,7 +148,23 @@ const GUEST_SAFE_STYLE_SELECT = {
 	accentColors: true,
 } as const;
 
-const GUEST_SAFE_BRAND_KIT_SELECT = { accentColors: true } as const;
+const GUEST_SAFE_BRAND_KIT_SELECT = {
+	accentColors: true,
+	primaryColor: true,
+	displayFontFamily: true,
+	bodyFontFamily: true,
+	displayFontKey: true,
+	bodyFontKey: true,
+	heroKey: true,
+	website: true,
+} as const;
+
+/** Only the result of the organization's website fetch, never the attempt. */
+const GUEST_SAFE_SITE_FETCH_SELECT = {
+	resultWebsite: true,
+	primaryColor: true,
+	accentColors: true,
+} as const;
 
 const GUEST_SAFE_RECIPIENT_SELECT = {
 	organizationId: true,
@@ -153,45 +183,47 @@ interface ProposalThemeScope {
 }
 
 /**
- * The document's brand tokens as any reader of the client document may see
- * them, guests included: the Style's colours, the Brand kit's accents, the
- * recipient brand and the organization's name and logo, every one read in
- * the owning organization.
+ * Every brand row a guest may see the effect of, read in the owning
+ * organization, and the sources the resolver builds the tokens from:
  *
  * - the Style is read by document AND organization, so a row left behind in
  *   another organization reads as no Style;
+ * - the Brand kit's keys count only in the one shape their upload writes for
+ *   this organization; a font file only as the id inside its key;
+ * - the website fetch counts only with its last result, and only while that
+ *   result is for the Brand kit's current website;
  * - the recipient brand is keyed on the project alone, so its row counts only
  *   when it is in the same organization, and its logo only when the key is a
  *   promoted logo of this very project;
  * - the organization logo counts only as {@link trustedOrganizationLogoKey}.
- *
- * Assets come back as storage references; the caller signs or inlines them
- * and checks each key again.
  */
-export async function resolveGuestSafeProposalThemeTokens(
-	args: ProposalThemeScope,
-): Promise<ProposalThemeTokens> {
-	const [style, brandKit, recipient, organization] = await Promise.all([
-		db.projectDocumentStyle.findFirst({
-			where: {
-				documentId: args.documentId,
-				organizationId: args.organizationId,
-			},
-			select: GUEST_SAFE_STYLE_SELECT,
-		}),
-		db.organizationBrandKit.findUnique({
-			where: { organizationId: args.organizationId },
-			select: GUEST_SAFE_BRAND_KIT_SELECT,
-		}),
-		db.projectRecipientBrand.findUnique({
-			where: { projectId: args.projectId },
-			select: GUEST_SAFE_RECIPIENT_SELECT,
-		}),
-		db.organization.findUnique({
-			where: { id: args.organizationId },
-			select: GUEST_SAFE_ORGANIZATION_SELECT,
-		}),
-	]);
+async function readGuestSafeBrandRows(args: ProposalThemeScope) {
+	const [style, brandKit, siteFetch, recipient, organization] =
+		await Promise.all([
+			db.projectDocumentStyle.findFirst({
+				where: {
+					documentId: args.documentId,
+					organizationId: args.organizationId,
+				},
+				select: GUEST_SAFE_STYLE_SELECT,
+			}),
+			db.organizationBrandKit.findUnique({
+				where: { organizationId: args.organizationId },
+				select: GUEST_SAFE_BRAND_KIT_SELECT,
+			}),
+			db.organizationBrandSiteFetch.findUnique({
+				where: { organizationId: args.organizationId },
+				select: GUEST_SAFE_SITE_FETCH_SELECT,
+			}),
+			db.projectRecipientBrand.findUnique({
+				where: { projectId: args.projectId },
+				select: GUEST_SAFE_RECIPIENT_SELECT,
+			}),
+			db.organization.findUnique({
+				where: { id: args.organizationId },
+				select: GUEST_SAFE_ORGANIZATION_SELECT,
+			}),
+		]);
 
 	const sameOrganizationRecipient =
 		recipient && recipient.organizationId === args.organizationId
@@ -205,8 +237,15 @@ export async function resolveGuestSafeProposalThemeTokens(
 		)
 			? sameOrganizationRecipient.logoKey
 			: null;
+	const vendorSite =
+		brandKit?.website && siteFetch?.resultWebsite === brandKit.website
+			? {
+					primaryColor: siteFetch.primaryColor,
+					accentColors: siteFetch.accentColors,
+				}
+			: null;
 
-	return buildProposalThemeTokens({
+	const sources: ProposalThemeSources = {
 		organization: organization
 			? {
 					name: organization.name,
@@ -222,7 +261,31 @@ export async function resolveGuestSafeProposalThemeTokens(
 					accentColors: style.accentColors,
 				}
 			: null,
-		brandKit: brandKit ? { accentColors: brandKit.accentColors } : null,
+		brandKit: brandKit
+			? {
+					accentColors: brandKit.accentColors,
+					primaryColor: brandKit.primaryColor,
+					displayFontFamily: brandKit.displayFontFamily,
+					bodyFontFamily: brandKit.bodyFontFamily,
+					displayFontFileId: organizationBrandAssetId(
+						args.organizationId,
+						"fonts",
+						brandKit.displayFontKey,
+					),
+					bodyFontFileId: organizationBrandAssetId(
+						args.organizationId,
+						"fonts",
+						brandKit.bodyFontKey,
+					),
+					heroKey: isOrganizationHeroKey(
+						args.organizationId,
+						brandKit.heroKey,
+					)
+						? brandKit.heroKey
+						: null,
+				}
+			: null,
+		vendorSite,
 		recipient: sameOrganizationRecipient
 			? {
 					name: sameOrganizationRecipient.name,
@@ -230,7 +293,98 @@ export async function resolveGuestSafeProposalThemeTokens(
 					colors: sameOrganizationRecipient.colors,
 				}
 			: null,
-	});
+	};
+	return { sources, brandKitWebsite: brandKit?.website ?? null };
+}
+
+/**
+ * The document's brand tokens as any reader of the client document may see
+ * them, guests included: the Style's colours, the Brand kit's colours, fonts
+ * and hero, the colours the organization's website declared, the recipient
+ * brand and the organization's name and logo, every one read in the owning
+ * organization (see {@link readGuestSafeBrandRows}).
+ *
+ * Assets come back as storage references; the caller signs or inlines them
+ * and checks each key again.
+ */
+export async function resolveGuestSafeProposalThemeTokens(
+	args: ProposalThemeScope,
+): Promise<ProposalThemeTokens> {
+	const { sources } = await readGuestSafeBrandRows(args);
+	return buildProposalThemeTokens(sources);
+}
+
+/**
+ * Every source's value for the Style tab (Fizzy #2946): the resolved tokens,
+ * what the Style, the Brand kit and the website fetch each hold for the
+ * proposer's colours, what the document would wear without its Style, the
+ * Brand kit's website with its latest fetch attempt, and the recipient's
+ * latest website fetch as a suggestion. Organization members only: call it
+ * after the internal predicate passed for the reader.
+ */
+export interface ProposalBrandSources {
+	tokens: ProposalThemeTokens;
+	proposer: {
+		primary: {
+			style: string | null;
+			brandKit: string | null;
+			vendorSite: string | null;
+		};
+		accents: {
+			style: string[];
+			brandKit: string[];
+			vendorSite: string[];
+		};
+		/**
+		 * The colours the document inherits when its Style sets none, by the
+		 * same precedence the tokens use, so a "reset to inherited" shows
+		 * exactly what the reset would apply.
+		 */
+		inherited: {
+			primary: SourcedValue<string>;
+			accents: SourcedValue<string[]>;
+		};
+	};
+	brandKitWebsite: string | null;
+	siteFetch: BrandSiteFetchView | null;
+	suggestion: RecipientBrandSuggestionView | null;
+}
+
+export async function resolveProposalBrandSources(
+	args: ProposalThemeScope,
+): Promise<ProposalBrandSources> {
+	const [{ sources, brandKitWebsite }, siteFetch, suggestion] =
+		await Promise.all([
+			readGuestSafeBrandRows(args),
+			getBrandSiteFetch(args.organizationId),
+			getRecipientBrandSuggestion({
+				projectId: args.projectId,
+				organizationId: args.organizationId,
+			}),
+		]);
+	const inherited = buildProposalThemeTokens({ ...sources, style: null });
+	return {
+		tokens: buildProposalThemeTokens(sources),
+		proposer: {
+			primary: {
+				style: sources.style?.primaryColor ?? null,
+				brandKit: sources.brandKit?.primaryColor ?? null,
+				vendorSite: sources.vendorSite?.primaryColor ?? null,
+			},
+			accents: {
+				style: sources.style?.accentColors ?? [],
+				brandKit: sources.brandKit?.accentColors ?? [],
+				vendorSite: sources.vendorSite?.accentColors ?? [],
+			},
+			inherited: {
+				primary: inherited.proposer.primary,
+				accents: inherited.proposer.accents,
+			},
+		},
+		brandKitWebsite,
+		siteFetch,
+		suggestion,
+	};
 }
 
 export interface MemberProposalTheme {
@@ -239,11 +393,16 @@ export interface MemberProposalTheme {
 	styleDirection: string | null;
 	/** The Brand kit's guidance text; null when none. */
 	brandGuidance: string | null;
+	/**
+	 * Whether Fabric adds diagrams after each generation; true when the
+	 * document has no saved Style.
+	 */
+	autoVisuals: boolean;
 }
 
 /**
  * The tokens plus what only the organization's members may read: the style
- * direction and the Brand kit guidance. Call it only after the internal
+ * direction, the automatic-diagrams switch and the Brand kit guidance. Call it only after the internal
  * predicate passed for the reader ({@link isProposalInternalReader}).
  *
  * The tokens come from {@link resolveGuestSafeProposalThemeTokens} itself and
@@ -261,7 +420,7 @@ export async function resolveProposalThemeTokens(
 				documentId: args.documentId,
 				organizationId: args.organizationId,
 			},
-			select: { styleDirection: true },
+			select: { styleDirection: true, autoVisuals: true },
 		}),
 		db.organizationBrandKit.findUnique({
 			where: { organizationId: args.organizationId },
@@ -272,5 +431,6 @@ export async function resolveProposalThemeTokens(
 		tokens,
 		styleDirection: style?.styleDirection ?? null,
 		brandGuidance: brandKit?.guidance ?? null,
+		autoVisuals: style?.autoVisuals ?? true,
 	};
 }

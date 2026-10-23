@@ -206,6 +206,7 @@ function stillActivated(clickedAt: number): boolean {
 const EXPORT_WARNING_KEYS = {
 	DIAGRAM_PLACEHOLDER: "exportWarningDiagramPlaceholder",
 	DIAGRAM_LIMIT: "exportWarningDiagramLimit",
+	DIAGRAM_BELOW_PRINT_FLOOR: "exportWarningDiagramBelowPrintFloor",
 	IMAGE_DROPPED: "exportWarningImageDropped",
 	IMAGE_LIMIT: "exportWarningImageLimit",
 	EXTERNAL_IMAGE_DROPPED: "exportWarningExternalImageDropped",

@@ -328,7 +328,9 @@ export async function breakdownNode(
 		}
 
 		// Create model with provider config (required by createModel)
+		const threadId = config?.configurable?.thread_id;
 		const model = getAgentModel(providerConfig, {
+			sessionKey: typeof threadId === "string" ? threadId : undefined,
 			temperature: 0.3,
 			maxTokens: 8000,
 			retryCount: state.retryCount,

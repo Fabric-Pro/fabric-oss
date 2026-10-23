@@ -27,9 +27,15 @@ export function normalizeDiffViewMode(value: unknown): DiffViewMode {
 }
 
 export interface DerivedDiffViews {
-	/** Side-by-side left ("before"): additions dropped, deletions kept (marked). */
+	/**
+	 * Side-by-side left ("before"): additions dropped, deletions kept (marked;
+	 * inside a diagram, unmarked so it draws the old version).
+	 */
 	originalHtml: string;
-	/** Side-by-side right ("after"): deletions dropped, additions kept (marked). */
+	/**
+	 * Side-by-side right ("after"): deletions dropped, additions kept (marked;
+	 * inside a diagram, unmarked so it draws the new version).
+	 */
 	proposedHtml: string;
 	/** Full preview: deletions dropped, additions unwrapped — no diff markup. */
 	cleanProposedHtml: string;
@@ -53,9 +59,24 @@ const ADDITION_SELECTOR = `${ADDITION_WRAPPER_SELECTOR}, ${ADDITION_TABLE_SELECT
 const DELETION_SELECTOR =
 	'del.diff-del, .diff-table-deleted, .diff-block-deleted, table[data-diff="deleted"]';
 
-function removeAll(root: ParentNode, selector: string): void {
+/**
+ * Remove the matched marks, then drop any code block that only held them: a
+ * whole fence added or deleted by the edit is one marked run inside its
+ * `<pre>`, so the pane that hides that run would otherwise show an empty box.
+ */
+function removeMarks(root: ParentNode, selector: string): void {
+	const touched = new Set<Element>();
 	for (const el of Array.from(root.querySelectorAll(selector))) {
+		const pre = el.closest("pre");
+		if (pre) {
+			touched.add(pre);
+		}
 		el.remove();
+	}
+	for (const pre of touched) {
+		if (!pre.textContent?.trim()) {
+			pre.remove();
+		}
 	}
 }
 
@@ -74,6 +95,48 @@ function unwrapAll(root: ParentNode, selector: string): void {
 }
 
 /**
+ * A diagram fence as the editor (`data-language`) or `fromMarkdown` (the
+ * `<code>` class) writes it.
+ */
+function isDiagramPre(pre: Element): boolean {
+	return (
+		pre.getAttribute("data-language") === "mermaid" ||
+		pre.querySelector("code")?.classList.contains("language-mermaid") ===
+			true
+	);
+}
+
+/**
+ * Keep the text of the diff marks inside every diagram fence and drop the
+ * marks. A pane that shows one side of an edit holds only that side's marks,
+ * and a diagram whose text is marked is drawn as an edit under review: its
+ * source with the marks, and the diagram without the deleted text — in the
+ * original pane, neither version. Unmarked, each pane draws its own version.
+ */
+function unwrapDiagramMarks(root: ParentNode): void {
+	for (const pre of Array.from(root.querySelectorAll("pre"))) {
+		if (isDiagramPre(pre)) {
+			unwrapAll(pre, "ins.diff-ins, del.diff-del");
+		}
+	}
+}
+
+/**
+ * `html` with the diff marks inside its diagram fences dropped and their text
+ * kept, for a pane that shows one side of an edit (see `unwrapDiagramMarks`).
+ * Never throws: on a parse failure the input comes back as it was.
+ */
+export function withoutDiagramDiffMarks(html: string): string {
+	try {
+		const parsed = new DOMParser().parseFromString(html, "text/html");
+		unwrapDiagramMarks(parsed.body);
+		return parsed.body.innerHTML;
+	} catch {
+		return html;
+	}
+}
+
+/**
  * Derive the three preview renderings from the live diff-marked editor HTML.
  *
  * Uses `DOMParser` (never regex) so nested tables/lists are handled safely.
@@ -86,13 +149,15 @@ export function deriveDiffViews(html: string): DerivedDiffViews {
 		const parser = new DOMParser();
 
 		const original = parser.parseFromString(safe, "text/html");
-		removeAll(original.body, ADDITION_SELECTOR);
+		removeMarks(original.body, ADDITION_SELECTOR);
+		unwrapDiagramMarks(original.body);
 
 		const proposed = parser.parseFromString(safe, "text/html");
-		removeAll(proposed.body, DELETION_SELECTOR);
+		removeMarks(proposed.body, DELETION_SELECTOR);
+		unwrapDiagramMarks(proposed.body);
 
 		const clean = parser.parseFromString(safe, "text/html");
-		removeAll(clean.body, DELETION_SELECTOR);
+		removeMarks(clean.body, DELETION_SELECTOR);
 		for (const table of Array.from(
 			clean.body.querySelectorAll(ADDITION_TABLE_SELECTOR),
 		)) {

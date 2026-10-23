@@ -15,6 +15,7 @@ import { createConnection, getTemporalConfig } from "./client";
 import { ensureAiUsageSchedules } from "./scripts/ensure-ai-usage-schedules";
 import { ensureContextSummarizationSchedules } from "./scripts/ensure-context-summarization-schedules";
 import { ensureMonitoringSchedules } from "./scripts/ensure-monitoring-schedules";
+import { ensureRecurringErrorSchedules } from "./scripts/ensure-recurring-error-schedules";
 
 const PROJECT_DELETE_SCHEDULE_ID = "project-delete-cleanup";
 const PROJECT_DELETE_WORKFLOW_NAME = "projectDeleteCleanupWorkflow";
@@ -507,6 +508,7 @@ export async function registerSystemSchedules(): Promise<void> {
 		// Monitoring schedules
 		await ensureMonitoringSchedules(scheduleClient);
 		await ensureAiUsageSchedules(scheduleClient);
+		await ensureRecurringErrorSchedules(scheduleClient);
 	} finally {
 		await connection.close();
 	}

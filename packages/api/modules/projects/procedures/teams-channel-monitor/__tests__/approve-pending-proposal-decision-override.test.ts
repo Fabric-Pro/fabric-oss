@@ -87,7 +87,10 @@ vi.mock("../../../lib/attach-pending-media-to-story", () => ({
 	formatAttachmentWarningLines: () => [],
 }));
 
-vi.mock("../../../lib/channel-monitor-source", () => ({
+vi.mock("../../../lib/channel-monitor-source", async (importOriginal) => ({
+	...(await importOriginal<
+		typeof import("../../../lib/channel-monitor-source")
+	>()),
 	isChannelMonitorSource: () => true,
 }));
 

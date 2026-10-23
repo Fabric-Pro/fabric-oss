@@ -11,6 +11,7 @@
  * It also publishes events to PartyKit for instant UI updates without polling.
  */
 
+import { guardToolsAgainstRepeatedCalls } from "@repo/agent-types/repeated-tool-call-guard";
 import {
 	generateObject,
 	generateText,
@@ -842,6 +843,14 @@ export class McpToolHandler implements StepHandler {
 		// Track OAuth errors that occur during tool execution (mid-session token expiry)
 		const oauthErrorContext: OAuthErrorContext = { hasError: false };
 
+		guardToolsAgainstRepeatedCalls(toolsWithChart, {
+			onRepeat: (toolName, count) => {
+				console.warn(
+					"MCP tool handler tool returned a repeated result",
+					{ toolName, count },
+				);
+			},
+		});
 		// Wrap tools to send tool_start notifications when they begin executing
 		// This enables real-time UI updates showing tools as they start, not just after they complete
 		const wrappedTools = wrapToolsWithStartNotification(

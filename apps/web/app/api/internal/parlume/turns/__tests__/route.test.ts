@@ -44,7 +44,7 @@ vi.mock("@repo/api/modules/projects/lib/parlume-attendee", () => ({
 
 import { POST } from "../route";
 
-function request(): NextRequest {
+function request(overrides: Record<string, unknown> = {}): NextRequest {
 	return new NextRequest(
 		"https://fabric.example/api/internal/parlume/turns",
 		{
@@ -61,6 +61,7 @@ function request(): NextRequest {
 				speakerId: "1",
 				utteranceStartMs: 1_000,
 				utteranceEndMs: 2_000,
+				...overrides,
 			}),
 		},
 	);
@@ -205,5 +206,138 @@ describe("Parlume interrupted turn dispatch", () => {
 				workflowId: "parlume-turn-turn-2",
 			}),
 		);
+	});
+});
+
+describe("Parlume chat requests", () => {
+	beforeEach(() => {
+		mocks.turnCreateMany.mockResolvedValue({ count: 1 });
+		mocks.turnFindUnique.mockResolvedValue({
+			id: "turn-1",
+			status: "PENDING",
+			error: null,
+		});
+	});
+
+	function createdTurn() {
+		return mocks.turnCreateMany.mock.calls[0]?.[0].data;
+	}
+
+	it("answers a spoken request by voice", async () => {
+		await POST(request());
+
+		expect(createdTurn()).toMatchObject({ replyChannel: "VOICE" });
+	});
+
+	it("records where a typed request is answered", async () => {
+		await POST(
+			request({
+				utteranceStartMs: null,
+				utteranceEndMs: null,
+				replyChannel: "CHAT",
+				chatMessageId: "msg_1",
+			}),
+		);
+
+		expect(createdTurn()).toMatchObject({
+			replyChannel: "CHAT",
+			requestText: "What was decided?",
+		});
+	});
+
+	it("keeps two identical chat messages as two requests, and one message as one", async () => {
+		const chat = {
+			utteranceStartMs: null,
+			utteranceEndMs: null,
+			replyChannel: "CHAT",
+		};
+		await POST(request({ ...chat, chatMessageId: "msg_1" }));
+		await POST(request({ ...chat, chatMessageId: "msg_2" }));
+		await POST(request({ ...chat, chatMessageId: "msg_1" }));
+
+		const keys = mocks.turnCreateMany.mock.calls.map(
+			([args]) => args.data.dedupeKey,
+		);
+		expect(keys[0]).not.toBe(keys[1]);
+		expect(keys[2]).toBe(keys[0]);
+	});
+
+	it("refuses an unknown reply channel", async () => {
+		const response = await POST(request({ replyChannel: "EMAIL" }));
+
+		expect(response.status).toBe(400);
+		expect(mocks.turnCreateMany).not.toHaveBeenCalled();
+	});
+});
+
+describe("Parlume realtime voice jobs", () => {
+	beforeEach(() => {
+		mocks.turnCreateMany.mockResolvedValue({ count: 1 });
+		mocks.turnFindUnique.mockResolvedValue({
+			id: "turn-1",
+			status: "PENDING",
+			error: null,
+		});
+	});
+
+	const job = {
+		speakerId: null,
+		utteranceStartMs: null,
+		utteranceEndMs: null,
+		delivery: "realtime",
+		job: "J3",
+	};
+
+	it("records the job as a meeting turn and tells the worker which job it answers", async () => {
+		const response = await POST(request(job));
+
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ accepted: true });
+		expect(mocks.turnCreateMany.mock.calls[0]?.[0].data).toMatchObject({
+			replyChannel: "VOICE",
+			requestText: "What was decided?",
+		});
+		expect(mocks.workflowStart).toHaveBeenCalledWith(
+			"parlumeMeetingTurnWorkflow",
+			expect.objectContaining({
+				args: [
+					expect.objectContaining({
+						turnId: "turn-1",
+						realtimeJob: "J3",
+					}),
+				],
+			}),
+		);
+	});
+
+	it("keeps a later job with the same number apart unless it is the same request", async () => {
+		await POST(request(job));
+		await POST(request({ ...job, text: "Something else?" }));
+		await POST(request(job));
+
+		const keys = mocks.turnCreateMany.mock.calls.map(
+			([args]) => args.data.dedupeKey,
+		);
+		expect(keys[0]).not.toBe(keys[1]);
+		expect(keys[2]).toBe(keys[0]);
+	});
+
+	it("starts a spoken turn without a job", async () => {
+		await POST(request());
+
+		expect(
+			mocks.workflowStart.mock.calls[0]?.[1].args[0],
+		).not.toHaveProperty("realtimeJob");
+	});
+
+	it.each([
+		{ delivery: "realtime" },
+		{ job: "J3" },
+		{ delivery: "realtime", job: "3" },
+	])("refuses a realtime delivery without its job: %j", async (body) => {
+		const response = await POST(request(body));
+
+		expect(response.status).toBe(400);
+		expect(mocks.turnCreateMany).not.toHaveBeenCalled();
 	});
 });

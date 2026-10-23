@@ -1,32 +1,41 @@
 /**
- * `generateProposalVisuals` (Fizzy #2801): detection over the Main sections,
- * one extraction per detected opportunity, mermaid fences with their colors
- * filled from the document's Style and the recipient brand, comparisons as
- * tables, stat never produced, and the content returned unchanged on any
- * failure.
+ * `generateProposalVisuals` (Fizzy #2801, Fizzy #2946): detection over the
+ * Main sections, one extraction per detected opportunity, mermaid fences
+ * that assign colour roles and hold no colour (the page and the export paint
+ * the roles from the theme), comparisons as tables, stat never produced, the
+ * step off when the document's Style says so, and the content returned
+ * unchanged on any failure.
  *
  * The Glossy library calls are mocked here; their model attribution is
- * pinned against the real calls in `visuals-attribution.test.ts`.
+ * pinned against the real calls in `visuals-attribution.test.ts`. The brand
+ * resolver is a mock answering with the real token builder over the sources
+ * each test gives, so the precedence under test is the shipped one.
  */
 
 import {
-	deriveGlossyPalette,
-	fillVisualColors,
-} from "@repo/utils/glossy/visual-colors";
-import { visualSpecToMermaid } from "@repo/utils/glossy/visual-templates";
+	PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
+	visualSpecToMermaid,
+} from "@repo/utils/glossy/visual-templates";
+import {
+	buildProposalThemeTokens,
+	type ProposalThemeSources,
+} from "@repo/utils/proposal-artifact/theme-tokens";
+import { visualSourceHash } from "@repo/utils/proposal-artifact/visual-identity";
 import { toMermaidFence } from "@repo/utils/proposal-artifact/visual-insert";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const database = vi.hoisted(() => ({
 	db: { projectDocument: { updateMany: vi.fn() } },
-	getDocumentStyle: vi.fn(),
-	getRecipientBrand: vi.fn(),
+	resolveProposalThemeTokens: vi.fn(),
+	appendProposalVisualSpec: vi.fn(),
 }));
 const detect = vi.hoisted(() => ({ detectGlossyOpportunities: vi.fn() }));
 const extract = vi.hoisted(() => ({ extractGlossyVisual: vi.fn() }));
 const activity = vi.hoisted(() => ({
 	/** The attempt's cancellation signal; none outside an activity. */
 	cancellation: undefined as AbortController | undefined,
+	/** The attempt's deadline; none outside an activity. */
+	deadline: undefined as Date | undefined,
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
@@ -39,6 +48,10 @@ vi.mock("../../../lib/glossy/extract-visual", () => extract);
 vi.mock("../../glossy-edition/shared", async (importOriginal) => ({
 	...(await importOriginal<typeof import("../../glossy-edition/shared")>()),
 	currentCancellationSignal: () => activity.cancellation?.signal,
+}));
+vi.mock("../../lib/activity-liveness", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../lib/activity-liveness")>()),
+	currentActivityAttemptDeadline: () => activity.deadline,
 }));
 vi.mock("../../lib/activity-logger", () => ({
 	activityLogger: activity.logger,
@@ -104,16 +117,44 @@ const COMPARISON = {
 	],
 };
 
+/** The resolver's answer over `sources`, the rest of them empty. */
+function brand(
+	sources: Partial<ProposalThemeSources> = {},
+	styleDirection: string | null = null,
+	autoVisuals = true,
+) {
+	return {
+		autoVisuals,
+		tokens: buildProposalThemeTokens({
+			organization: null,
+			style: null,
+			brandKit: null,
+			recipient: null,
+			...sources,
+		}),
+		styleDirection,
+		brandGuidance: null,
+	};
+}
+
+/** The timeline's fence body as the step draws it: roles, no colour. */
+const TIMELINE_SOURCE = visualSpecToMermaid(
+	TIMELINE,
+	PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
+);
+
 type DetectionCall = {
 	featureKey?: string;
 	planEligible?: boolean;
 	documentType: string;
+	proposalArtifact?: boolean;
 	limit?: number;
 	sections: Array<{
 		sectionKey: string;
 		heading: string | null;
 		markdown: string;
 		reservedKinds?: readonly string[];
+		appendix?: boolean;
 	}>;
 };
 
@@ -123,6 +164,31 @@ function detectionCall(): DetectionCall {
 		throw new Error("detection was not called");
 	}
 	return call as DetectionCall;
+}
+
+type StoredSpec = {
+	organizationId: string;
+	projectId: string;
+	documentId: string;
+	visualId: string;
+	sourceHash: string;
+	kind: string;
+	origin: string;
+	spec: unknown;
+	createdById?: string | null;
+};
+
+function storedSpecs(): StoredSpec[] {
+	return database.appendProposalVisualSpec.mock.calls.map(
+		([row]) => row as StoredSpec,
+	);
+}
+
+/** Every mermaid fence body in `markdown`, without its fence lines. */
+function mermaidBodies(markdown: string): string[] {
+	return [...markdown.matchAll(/^```mermaid\n([\s\S]*?)\n```$/gm)].map(
+		(match) => match[1],
+	);
 }
 
 function keyOf(heading: string): string {
@@ -158,9 +224,10 @@ function detects(entries: Array<[heading: string, kind: string]>) {
 beforeEach(() => {
 	vi.clearAllMocks();
 	activity.cancellation = undefined;
+	activity.deadline = undefined;
 	database.db.projectDocument.updateMany.mockResolvedValue({ count: 1 });
-	database.getDocumentStyle.mockResolvedValue(null);
-	database.getRecipientBrand.mockResolvedValue(null);
+	database.resolveProposalThemeTokens.mockResolvedValue(brand());
+	database.appendProposalVisualSpec.mockResolvedValue({ created: true });
 	extract.extractGlossyVisual.mockImplementation(
 		async ({ kind }: { kind: string }) =>
 			kind === "comparison"
@@ -209,26 +276,21 @@ describe("generateProposalVisuals — sections", () => {
 });
 
 describe("generateProposalVisuals — rendering and placement", () => {
-	it("puts a timeline after its section's first paragraph as a mermaid fence, colors filled", async () => {
+	it("puts a timeline after its section's first paragraph as a mermaid fence of colour roles", async () => {
 		detects([["Timeline and Milestones", "timeline"]]);
 
 		const result = await generateProposalVisuals(INPUT);
 
 		expect(result.insertedCount).toBe(1);
-		const fence = toMermaidFence(
-			fillVisualColors(
-				visualSpecToMermaid(TIMELINE),
-				deriveGlossyPalette(),
-			),
-		);
+		const [{ visualId }] = storedSpecs();
+		const fence = toMermaidFence(TIMELINE_SOURCE, visualId);
 		expect(result.content).toContain(
 			`Discovery runs in March, build in April and launch in May.\n\n${fence}\n\n- Discovery: March\n- Build: April\n\n## Options`,
 		);
+		expect(fence).toContain('t0["March<br/>Discovery"]\nclass t0 surface');
 		expect(result.content).not.toMatch(/GLOSSY_COLOR_/);
-		// Every color is a #rrggbb value.
-		for (const color of result.content.match(/#[0-9a-zA-Z]+/g) ?? []) {
-			expect(color).toMatch(/^#[0-9a-f]{6}$/);
-		}
+		expect(result.content).not.toMatch(/^style /m);
+		expect(result.content).not.toMatch(/#[0-9a-f]{6}/i);
 	});
 
 	it("renders a comparison as a markdown table", async () => {
@@ -264,11 +326,9 @@ describe("generateProposalVisuals — rendering and placement", () => {
 	});
 
 	it("extracts each opportunity as detected, from its own section, with the style direction", async () => {
-		database.getDocumentStyle.mockResolvedValue({
-			styleDirection: "  Calm and   executive ",
-			primaryColor: null,
-			accentColors: [],
-		});
+		database.resolveProposalThemeTokens.mockResolvedValue(
+			brand({}, "  Calm and   executive "),
+		);
 		detects([["Timeline and Milestones", "timeline"]]);
 
 		await generateProposalVisuals(INPUT);
@@ -317,65 +377,498 @@ describe("generateProposalVisuals — rendering and placement", () => {
 	});
 });
 
-describe("generateProposalVisuals — palette", () => {
-	it("colors from the document's Style first, then the recipient brand", async () => {
-		database.getDocumentStyle.mockResolvedValue({
-			styleDirection: null,
-			primaryColor: "#1d4ed8",
-			accentColors: ["#f59e0b"],
-		});
-		database.getRecipientBrand.mockResolvedValue({
-			organizationId: "org-1",
-			colors: ["#10b981"],
-		});
+describe("generateProposalVisuals — visual identity (Fizzy #2946)", () => {
+	it("opens each diagram's fence with a minted marker and stores its spec, origin STEP, under the fence's source hash", async () => {
 		detects([["Timeline and Milestones", "timeline"]]);
 
 		const result = await generateProposalVisuals(INPUT);
 
-		const palette = deriveGlossyPalette({
-			overrides: { primary: "#1d4ed8", accents: ["#f59e0b"] },
-			recipientColors: ["#10b981"],
-		});
-		expect(result.content).toContain(
-			fillVisualColors(visualSpecToMermaid(TIMELINE), palette),
-		);
-		expect(database.getDocumentStyle).toHaveBeenCalledWith({
+		expect(result.insertedCount).toBe(1);
+		const rows = storedSpecs();
+		expect(rows).toHaveLength(1);
+		const [row] = rows;
+		expect(row).toEqual({
+			organizationId: "org-1",
+			projectId: "project-1",
 			documentId: "doc-1",
-			organizationId: "org-1",
+			visualId: expect.stringMatching(/^[a-z0-9]{16}$/),
+			sourceHash: expect.stringMatching(/^v1:[0-9a-f]{16}$/),
+			kind: "timeline",
+			origin: "STEP",
+			spec: TIMELINE,
+			createdById: "user-1",
 		});
+		const inserted = mermaidBodies(result.content).find((body) =>
+			body.startsWith("%% fabric-visual:"),
+		);
+		expect(inserted?.split("\n")[0]).toBe(
+			`%% fabric-visual: ${row.visualId}`,
+		);
+		expect(visualSourceHash(inserted ?? "")).toBe(row.sourceHash);
 	});
 
-	it("takes the recipient's color as primary when the Style sets none", async () => {
-		database.getRecipientBrand.mockResolvedValue({
-			organizationId: "org-1",
-			colors: ["#10b981"],
-		});
-		detects([["Timeline and Milestones", "timeline"]]);
+	it("mints a new id for every diagram", async () => {
+		detects([
+			["Timeline and Milestones", "timeline"],
+			["Payment Schedule", "timeline"],
+		]);
+
+		await generateProposalVisuals(INPUT);
+
+		const ids = storedSpecs().map((row) => row.visualId);
+		expect(ids).toHaveLength(2);
+		expect(new Set(ids).size).toBe(2);
+	});
+
+	it("stores no spec for a comparison table, which has no fence to mark", async () => {
+		detects([["Options", "comparison"]]);
 
 		const result = await generateProposalVisuals(INPUT);
 
-		const palette = deriveGlossyPalette({ recipientColors: ["#10b981"] });
-		expect(palette.primary).toBe("#10b981");
-		expect(result.content).toContain(
-			fillVisualColors(visualSpecToMermaid(TIMELINE), palette),
+		expect(result.insertedCount).toBe(1);
+		expect(database.appendProposalVisualSpec).not.toHaveBeenCalled();
+		expect(result.content).not.toContain("fabric-visual");
+	});
+
+	it("drops only the visual whose spec cannot be stored, and still returns Main with the others", async () => {
+		detects([
+			["Timeline and Milestones", "timeline"],
+			["Options", "comparison"],
+		]);
+		database.appendProposalVisualSpec.mockRejectedValue(
+			new Error("connection reset"),
+		);
+
+		const result = await generateProposalVisuals(INPUT);
+
+		expect(result.insertedCount).toBe(1);
+		expect(result.content).toContain("| Option A |");
+		expect(result.content).not.toContain("fabric-visual");
+		expect(activity.logger.warn).toHaveBeenCalledWith(
+			"Proposal visual spec write failed; dropped",
+			expect.objectContaining({ kind: "timeline", errorName: "Error" }),
+		);
+		expect(activity.logger.info).toHaveBeenCalledWith(
+			"Proposal visuals generated",
+			expect.objectContaining({
+				dropped: { specWrite: 1 },
+				insertedKinds: ["comparison"],
+			}),
 		);
 	});
+});
 
-	it("ignores a recipient brand from another organization", async () => {
-		database.getRecipientBrand.mockResolvedValue({
-			organizationId: "org-other",
-			colors: ["#10b981"],
-		});
+describe("generateProposalVisuals — health check logging (Fizzy #2946)", () => {
+	it("logs the inserted kinds, drops by reason and each drop's violation codes, never section or fact text", async () => {
+		detects([
+			["Timeline and Milestones", "timeline"],
+			["Options", "comparison"],
+		]);
+		extract.extractGlossyVisual.mockImplementation(
+			async ({ kind }: { kind: string }) =>
+				kind === "comparison"
+					? {
+							status: "dropped",
+							reason: "factCheck",
+							message: "",
+							violations: [
+								{
+									kind: "presence",
+									text: "Q2 2027",
+									message:
+										'"Q2 2027" does not appear in the source.',
+									factKind: "date",
+								},
+							],
+						}
+					: { status: "extracted", spec: TIMELINE },
+		);
+
+		await generateProposalVisuals(INPUT);
+
+		expect(activity.logger.info).toHaveBeenCalledWith(
+			"Proposal visuals generated",
+			expect.objectContaining({
+				insertedKinds: ["timeline"],
+				dropped: { factCheck: 1 },
+				inserted: 1,
+			}),
+		);
+		expect(activity.logger.info).toHaveBeenCalledWith(
+			"Proposal visual dropped",
+			{
+				projectId: "project-1",
+				documentId: "doc-1",
+				liveRunId: "live-run-1",
+				kind: "comparison",
+				reason: "factCheck",
+				violations: ["presence:date"],
+			},
+		);
+		const logged = JSON.stringify([
+			...activity.logger.info.mock.calls,
+			...activity.logger.warn.mock.calls,
+		]);
+		expect(logged).not.toContain("Q2 2027");
+		expect(logged).not.toContain("Option A is faster");
+		expect(logged).not.toContain("Discovery runs in March");
+	});
+});
+
+describe("generateProposalVisuals — fact-check retry (Fizzy #2946)", () => {
+	const REFUSED = {
+		status: "dropped",
+		reason: "factCheck",
+		message: "",
+		violations: [
+			{
+				kind: "presence",
+				text: "Q2 2027",
+				message: '"Q2 2027" does not appear in the source.',
+				factKind: "date",
+			},
+		],
+	};
+	const RETRY_SPEC = {
+		kind: "timeline" as const,
+		items: [
+			{ date: "March", label: "Discovery" },
+			{ date: "April", label: "Build" },
+		],
+	};
+
+	function nonces(): unknown[] {
+		return extract.extractGlossyVisual.mock.calls.map(
+			([call]) => (call as { variantNonce?: string }).variantNonce,
+		);
+	}
+
+	it("inserts the visual when the retry passes, storing the retry's spec once, and counts it", async () => {
 		detects([["Timeline and Milestones", "timeline"]]);
+		extract.extractGlossyVisual
+			.mockResolvedValueOnce(REFUSED)
+			.mockResolvedValueOnce({ status: "extracted", spec: RETRY_SPEC });
 
 		const result = await generateProposalVisuals(INPUT);
 
+		expect(extract.extractGlossyVisual).toHaveBeenCalledTimes(2);
+		expect(result.insertedCount).toBe(1);
+		const rows = storedSpecs();
+		expect(rows).toHaveLength(1);
+		expect(rows[0].spec).toEqual(RETRY_SPEC);
 		expect(result.content).toContain(
-			fillVisualColors(
-				visualSpecToMermaid(TIMELINE),
-				deriveGlossyPalette(),
+			toMermaidFence(
+				visualSpecToMermaid(
+					RETRY_SPEC,
+					PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
+				),
+				rows[0].visualId,
 			),
 		);
+		expect(activity.logger.info).toHaveBeenCalledWith(
+			"Proposal visuals generated",
+			expect.objectContaining({
+				dropped: {},
+				retried: 1,
+				recoveredByRetry: 1,
+				inserted: 1,
+			}),
+		);
+	});
+
+	it("asks the retry for a fresh variant nonce", async () => {
+		detects([["Timeline and Milestones", "timeline"]]);
+		extract.extractGlossyVisual
+			.mockResolvedValueOnce(REFUSED)
+			.mockResolvedValueOnce({ status: "extracted", spec: TIMELINE });
+
+		await generateProposalVisuals(INPUT);
+
+		const [first, second] = nonces();
+		expect(first).toBeUndefined();
+		expect(second).toEqual(expect.any(String));
+		expect(second).not.toBe(first);
+		// Otherwise the same request.
+		const [firstCall, secondCall] =
+			extract.extractGlossyVisual.mock.calls.map(
+				([call]) => call as Record<string, unknown>,
+			);
+		const { variantNonce: _nonce, ...rest } = secondCall;
+		expect(rest).toEqual(firstCall);
+	});
+
+	it("drops the visual as a fact-check drop after two refusals, with two model calls", async () => {
+		detects([["Timeline and Milestones", "timeline"]]);
+		extract.extractGlossyVisual.mockResolvedValue(REFUSED);
+
+		const result = await generateProposalVisuals(INPUT);
+
+		expect(extract.extractGlossyVisual).toHaveBeenCalledTimes(2);
+		expect(result).toEqual({ content: MAIN, insertedCount: 0 });
+		expect(database.appendProposalVisualSpec).not.toHaveBeenCalled();
+		expect(activity.logger.info).toHaveBeenCalledWith(
+			"Proposal visual dropped",
+			{
+				projectId: "project-1",
+				documentId: "doc-1",
+				liveRunId: "live-run-1",
+				kind: "timeline",
+				reason: "factCheck",
+				violations: ["presence:date"],
+				attempt: 2,
+			},
+		);
+		expect(activity.logger.info).toHaveBeenCalledWith(
+			"Proposal visuals generated",
+			expect.objectContaining({
+				dropped: { factCheck: 1 },
+				retried: 1,
+				recoveredByRetry: 0,
+			}),
+		);
+		expect(JSON.stringify(activity.logger.info.mock.calls)).not.toContain(
+			"Q2 2027",
+		);
+	});
+
+	it.each([
+		[
+			"truncated",
+			{
+				status: "dropped",
+				reason: "truncated",
+				message: "",
+				violations: [],
+			},
+		],
+		[
+			"invalidSpec",
+			{
+				status: "dropped",
+				reason: "invalidSpec",
+				message: "",
+				violations: [],
+			},
+		],
+		[
+			"kindMismatch",
+			{
+				status: "dropped",
+				reason: "kindMismatch",
+				message: "",
+				violations: [],
+			},
+		],
+	])("does not retry a %s drop", async (reason, outcome) => {
+		detects([["Timeline and Milestones", "timeline"]]);
+		extract.extractGlossyVisual.mockResolvedValue(outcome);
+
+		await generateProposalVisuals(INPUT);
+
+		expect(extract.extractGlossyVisual).toHaveBeenCalledTimes(1);
+		expect(activity.logger.info).toHaveBeenCalledWith(
+			"Proposal visuals generated",
+			expect.objectContaining({
+				dropped: { [reason]: 1 },
+				retried: 0,
+			}),
+		);
+	});
+
+	it("does not retry an extraction that threw", async () => {
+		detects([["Timeline and Milestones", "timeline"]]);
+		extract.extractGlossyVisual.mockRejectedValue(
+			new Error("provider outage"),
+		);
+
+		await generateProposalVisuals(INPUT);
+
+		expect(extract.extractGlossyVisual).toHaveBeenCalledTimes(1);
+	});
+
+	it("skips the retry once too little of the attempt is left to start an extraction", async () => {
+		activity.deadline = new Date(Date.now() + 10 * 60_000);
+		detects([["Timeline and Milestones", "timeline"]]);
+		extract.extractGlossyVisual.mockImplementation(async () => {
+			// The first extraction uses up the attempt's time.
+			activity.deadline?.setTime(Date.now() + 1_000);
+			return REFUSED;
+		});
+
+		const result = await generateProposalVisuals(INPUT);
+
+		expect(extract.extractGlossyVisual).toHaveBeenCalledTimes(1);
+		expect(result.insertedCount).toBe(0);
+		expect(activity.logger.info).toHaveBeenCalledWith(
+			"Proposal visuals generated",
+			expect.objectContaining({
+				dropped: { factCheck: 1 },
+				retried: 0,
+			}),
+		);
+	});
+});
+
+describe("generateProposalVisuals — colour roles", () => {
+	const RECIPIENT = {
+		name: "Example Client",
+		logoKey: null,
+		colors: ["#10b981"],
+	};
+
+	it("reads the theme in the run's organization, for this project and document", async () => {
+		detects([["Timeline and Milestones", "timeline"]]);
+
+		await generateProposalVisuals(INPUT);
+
+		expect(database.resolveProposalThemeTokens).toHaveBeenCalledWith({
+			organizationId: "org-1",
+			projectId: "project-1",
+			documentId: "doc-1",
+		});
+	});
+
+	it.each([
+		["no brand source", {}],
+		[
+			"a Style, Brand kit and recipient that all set colours",
+			{
+				style: { primaryColor: "#1d4ed8", accentColors: ["#f59e0b"] },
+				brandKit: {
+					primaryColor: "#0f766e",
+					accentColors: ["#be123c"],
+				},
+				recipient: RECIPIENT,
+			},
+		],
+		[
+			"the organization's website colours",
+			{ vendorSite: { primaryColor: "#7c3aed", accentColors: [] } },
+		],
+	] as Array<[string, Partial<ProposalThemeSources>]>)(
+		"writes the same colourless fence whatever the brand: %s",
+		async (_, sources) => {
+			database.resolveProposalThemeTokens.mockResolvedValue(
+				brand(sources),
+			);
+			detects([["Timeline and Milestones", "timeline"]]);
+
+			const result = await generateProposalVisuals(INPUT);
+
+			const [{ visualId }] = storedSpecs();
+			expect(result.content).toContain(
+				toMermaidFence(TIMELINE_SOURCE, visualId),
+			);
+			expect(result.content).not.toMatch(/#[0-9a-f]{6}/i);
+		},
+	);
+});
+
+describe("generateProposalVisuals — audience (Fizzy #2946)", () => {
+	const WITH_APPENDIX = [
+		MAIN,
+		"",
+		"## 7. Appendix A: Architecture",
+		"",
+		"The gateway calls the service, then the queue.",
+		"",
+		"## Anhang B – Datenfluss",
+		"",
+		"Der Dienst schreibt in die Warteschlange.",
+		"",
+		"## Appendices are not this",
+		"",
+		"Narrative.",
+		"",
+		"## The appendix",
+		"",
+		"Narrative.",
+	].join("\n");
+
+	it("marks appendix sections, numbering aside, and asks for Proposal guidance", async () => {
+		detects([]);
+
+		await generateProposalVisuals({ ...INPUT, content: WITH_APPENDIX });
+
+		const call = detectionCall();
+		expect(call.proposalArtifact).toBe(true);
+		expect(
+			call.sections.map((section) => [
+				section.heading,
+				section.appendix === true,
+			]),
+		).toEqual([
+			["Timeline and Milestones", false],
+			["Options", false],
+			["Payment Schedule", false],
+			["7. Appendix A: Architecture", true],
+			["Anhang B – Datenfluss", true],
+			["Appendices are not this", false],
+			["The appendix", false],
+		]);
+	});
+
+	it("asks extraction for Proposal labels", async () => {
+		detects([["Timeline and Milestones", "timeline"]]);
+
+		await generateProposalVisuals(INPUT);
+
+		expect(extract.extractGlossyVisual).toHaveBeenCalledWith(
+			expect.objectContaining({
+				documentType: "PROPOSAL",
+				proposalArtifact: true,
+			}),
+		);
+	});
+});
+
+describe("generateProposalVisuals — turned off in Style (Fizzy #2946)", () => {
+	it("returns the content unchanged without a model call and logs why", async () => {
+		database.resolveProposalThemeTokens.mockResolvedValue(
+			brand({}, null, false),
+		);
+		detects([["Timeline and Milestones", "timeline"]]);
+
+		const result = await generateProposalVisuals(INPUT);
+
+		expect(result).toEqual({ content: MAIN, insertedCount: 0 });
+		expect(detect.detectGlossyOpportunities).not.toHaveBeenCalled();
+		expect(extract.extractGlossyVisual).not.toHaveBeenCalled();
+		expect(database.appendProposalVisualSpec).not.toHaveBeenCalled();
+		expect(activity.logger.info).toHaveBeenCalledWith(
+			"Proposal visuals skipped",
+			{
+				projectId: "project-1",
+				documentId: "doc-1",
+				liveRunId: "live-run-1",
+				reason: "disabled",
+			},
+		);
+	});
+
+	it("keeps every diagram already in Main byte for byte", async () => {
+		database.resolveProposalThemeTokens.mockResolvedValue(
+			brand({}, null, false),
+		);
+		const withGenerated = MAIN.replace(
+			"## Options",
+			`${toMermaidFence(TIMELINE_SOURCE, "abcdefgh12345678")}\n\n## Options`,
+		);
+
+		const result = await generateProposalVisuals({
+			...INPUT,
+			content: withGenerated,
+		});
+
+		expect(result.content).toBe(withGenerated);
+	});
+
+	it("runs as before when the theme reads it as on, as it does without a Style row", async () => {
+		detects([["Timeline and Milestones", "timeline"]]);
+
+		const result = await generateProposalVisuals(INPUT);
+
+		expect(result.insertedCount).toBe(1);
 	});
 });
 
@@ -460,10 +953,10 @@ describe("generateProposalVisuals — fails open", () => {
 			},
 		],
 		[
-			"the style cannot be read",
+			"the brand cannot be read",
 			() => {
 				detects([["Timeline and Milestones", "timeline"]]);
-				database.getDocumentStyle.mockRejectedValue(
+				database.resolveProposalThemeTokens.mockRejectedValue(
 					new Error("connection reset"),
 				);
 			},
@@ -508,7 +1001,7 @@ describe("generateProposalVisuals — fails open", () => {
 		expect(logged).not.toContain("Upstream 503");
 		expect(activity.logger.info).toHaveBeenCalledWith(
 			"Proposal visuals generated",
-			expect.objectContaining({ dropped: 1, inserted: 2 }),
+			expect.objectContaining({ dropped: { error: 1 }, inserted: 2 }),
 		);
 	});
 

@@ -41,7 +41,7 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
 
-function decodeBase64(encoded: string): Uint8Array<ArrayBuffer> | null {
+export function decodeBase64(encoded: string): Uint8Array<ArrayBuffer> | null {
 	let binary: string;
 	try {
 		binary = atob(encoded);

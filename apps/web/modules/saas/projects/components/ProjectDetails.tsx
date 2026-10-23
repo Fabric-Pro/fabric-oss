@@ -67,11 +67,8 @@ import {
 	useState,
 } from "react";
 import { toast } from "sonner";
-import {
-	type ContextChangeEvent,
-	type DocumentChangeEvent,
-	useProjectPresence,
-} from "../hooks";
+import { type ContextChangeEvent, useProjectPresence } from "../hooks";
+import { useDocumentChangeRefresh } from "../hooks/use-document-change-refresh";
 import { useProjectTabWarmup } from "../hooks/use-project-tab-warmup";
 import { defaultProjectTabForProfile } from "../lib/default-project-tab";
 import { AgentActivityTab } from "./AgentActivityTab";
@@ -820,14 +817,14 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 
 	useRegisterFabricAgentContext(fabricAgentContext);
 
-	// Handle real-time document and context changes
-	const handleDocumentChange = useCallback(
-		(_event: DocumentChangeEvent) => {
-			// Refetch project data when documents change
-			refetch();
-		},
-		[refetch],
-	);
+	// Handle real-time document and context changes. A document change reads
+	// the project and its documents list again once per short gather, not per
+	// event: a generation run nudges every section it writes (Fizzy #2946).
+	// The handler keeps one identity, so the realtime connection stays put.
+	const handleDocumentChange = useDocumentChangeRefresh({
+		projectId,
+		organizationId,
+	});
 
 	const handleContextChange = useCallback(
 		(_event: ContextChangeEvent) => {

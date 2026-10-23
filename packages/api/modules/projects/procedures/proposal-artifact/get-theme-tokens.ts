@@ -45,6 +45,16 @@ const proposalThemeTokensSchema = z.object({
 			body: sourced(z.string()),
 			mono: sourced(z.string()),
 		}),
+		/**
+		 * The opaque id of each family's uploaded file, never its key; the
+		 * page reads the bytes through `getThemeFont`.
+		 */
+		fontFiles: z
+			.object({
+				display: sourced(z.string().nullable()),
+				body: sourced(z.string().nullable()),
+			})
+			.optional(),
 		hero: sourced(themeAssetUrlSchema),
 	}),
 	recipient: z.object({
@@ -57,15 +67,17 @@ const proposalThemeTokensSchema = z.object({
 
 /**
  * The brand tokens of a Proposal in artifact mode (Fizzy #2946): the colours,
- * names and logos its live page and exports wear. Members and project guests
- * read the same tokens, since the document is written for the client.
+ * names, fonts, logos and hero its live page and exports wear. Members and
+ * project guests read the same tokens, since the document is written for the
+ * client.
  *
  * Only what a guest may see is read: the Style's colours, the Brand kit's
- * accents, the recipient brand and the organization's name and logo. The
- * style direction and the Brand kit guidance stay with the members' Style
- * tab and are never selected here. Logos are signed after their keys are
- * checked again; one that fails the check, or cannot be signed, is null.
- * A read, so no audit row.
+ * colours, fonts and hero, the colours the organization's website declared,
+ * the recipient brand and the organization's name and logo. The style
+ * direction and the Brand kit guidance stay with the members' Style tab and
+ * are never selected here. Logos and the hero are signed after their keys
+ * are checked again; one that fails the check, or cannot be signed, is null.
+ * An uploaded font travels as its file id only. A read, so no audit row.
  *
  * AUTHORIZATION: `requireProposalArtifactEnabled` first (gate off → NOT_FOUND
  * for every caller), then `requireProjectPermission(DOCUMENT_READ)`, then
@@ -82,7 +94,7 @@ export const getProposalThemeTokensProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Proposal artifact"],
 		summary: "Get the Proposal theme tokens",
 		description:
-			"The colours, names and signed logo reads a Proposal's live page and exports wear. Readable by anyone with access to the project.",
+			"The colours, names, fonts and signed logo and hero reads a Proposal's live page and exports wear. Readable by anyone with access to the project.",
 	})
 	.input(z.object({ projectId: z.string(), documentId: z.string() }))
 	.output(z.object({ tokens: proposalThemeTokensSchema }))

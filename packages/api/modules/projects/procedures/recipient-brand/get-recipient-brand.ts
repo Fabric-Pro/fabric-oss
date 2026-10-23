@@ -7,6 +7,7 @@ import {
 } from "../../../../orpc/procedures";
 import { requireGlossyOrProposalArtifactEnabled } from "../../lib/proposal-artifact-feature";
 import {
+	canEditRecipientBrand,
 	loadRecipientBrandProject,
 	presentRecipientBrand,
 	recipientBrandOutputSchema,
@@ -19,6 +20,11 @@ import {
  * `version` is what the editor sends back to confirm a change — 0 when the
  * project has none yet — so a confirmation made against a stale read comes
  * back as `conflict` instead of overwriting someone else's (KTD23).
+ *
+ * `canEdit` is the write gate's own answer for the caller, so a form never
+ * offers a Save the server would refuse: a project guest with an editor role
+ * reads the recipient brand but only organization members change it
+ * (Fizzy #2946).
  *
  * AUTHORIZATION: `requireGlossyOrProposalArtifactEnabled` first (GLOSSY_EDITION
  * and PROPOSAL_ARTIFACT both off → NOT_FOUND for every caller), then
@@ -40,22 +46,34 @@ export const getRecipientBrandProcedure = tenantProtectedProcedure
 	.output(
 		z.object({
 			version: z.number().int(),
+			/** Whether the caller may change the recipient brand. */
+			canEdit: z.boolean(),
 			recipientBrand: recipientBrandOutputSchema.nullable(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		await loadRecipientBrandProject({
+		const { organizationId } = await loadRecipientBrandProject({
 			projectId: input.projectId,
 			userId: context.user.id,
 			write: false,
 		});
 
-		const brand = await getRecipientBrand(input.projectId);
+		const [row, canEdit] = await Promise.all([
+			getRecipientBrand(input.projectId),
+			canEditRecipientBrand({
+				projectId: input.projectId,
+				organizationId,
+				userId: context.user.id,
+			}),
+		]);
+		// A row left behind in another organization is no recipient brand.
+		const brand = row?.organizationId === organizationId ? row : null;
 		if (!brand) {
-			return { version: 0, recipientBrand: null };
+			return { version: 0, canEdit, recipientBrand: null };
 		}
 		return {
 			version: brand.version,
+			canEdit,
 			recipientBrand: await presentRecipientBrand(brand),
 		};
 	});

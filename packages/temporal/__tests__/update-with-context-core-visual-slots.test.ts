@@ -198,6 +198,61 @@ describe("runContextUpdate — visual slots", () => {
 	});
 });
 
+// A generated diagram the model left unchanged keeps its marker line, so its
+// stored spec stays referenced (Fizzy #2946).
+describe("runContextUpdate — generated diagram markers", () => {
+	const MARKER = "%% fabric-visual: k3v9q2m7x1a8c4d6";
+	const diagram = (marker: boolean, label = "Launch") =>
+		[
+			"```mermaid",
+			...(marker ? [MARKER] : []),
+			"flowchart LR",
+			`  s0["Discovery"] --> s1["${label}"]`,
+			"```",
+		].join("\n");
+	const body = (fence: string, intro = "Phase one covers discovery.") =>
+		["# Proposal", "", "## Delivery", "", intro, "", fence, ""].join("\n");
+
+	it("puts back the marker of an unchanged diagram and keeps the rest as returned", async () => {
+		modelReturns(
+			body(diagram(false), "Phase one covers discovery and design."),
+		);
+
+		const result = await runContextUpdate({
+			...baseArgs,
+			documentMarkdown: body(diagram(true)),
+		});
+
+		expect(result?.hasRelevantContext).toBe(true);
+		expect(result?.updatedDocument).toBe(
+			body(diagram(true), "Phase one covers discovery and design."),
+		);
+	});
+
+	it("does not report a rewrite whose only difference is a dropped marker as a change", async () => {
+		modelReturns(body(diagram(false)));
+
+		const result = await runContextUpdate({
+			...baseArgs,
+			documentMarkdown: body(diagram(true)),
+		});
+
+		expect(result?.hasRelevantContext).toBe(false);
+		expect(result?.updatedDocument).toBe(body(diagram(true)));
+	});
+
+	it("adds no marker to a diagram whose body changed", async () => {
+		modelReturns(body(diagram(false, "Go-live")));
+
+		const result = await runContextUpdate({
+			...baseArgs,
+			documentMarkdown: body(diagram(true)),
+		});
+
+		expect(result?.updatedDocument).toBe(body(diagram(false, "Go-live")));
+	});
+});
+
 describe("runContextUpdate — no slot on either side is byte-identical", () => {
 	it("returns the model's document string untouched, whitespace and all", async () => {
 		// Trailing spaces, CRLF, and a triple newline: anything the splice might

@@ -4,6 +4,7 @@
  * #2801). Only the model layer and the database are mocked.
  */
 
+import { buildProposalThemeTokens } from "@repo/utils/proposal-artifact/theme-tokens";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -14,8 +15,8 @@ const mocks = vi.hoisted(() => ({
 
 const database = vi.hoisted(() => ({
 	db: { projectDocument: { updateMany: vi.fn() } },
-	getDocumentStyle: vi.fn(),
-	getRecipientBrand: vi.fn(),
+	resolveProposalThemeTokens: vi.fn(),
+	appendProposalVisualSpec: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => database);
@@ -55,8 +56,18 @@ const INPUT = {
 beforeEach(() => {
 	vi.clearAllMocks();
 	database.db.projectDocument.updateMany.mockResolvedValue({ count: 1 });
-	database.getDocumentStyle.mockResolvedValue(null);
-	database.getRecipientBrand.mockResolvedValue(null);
+	database.appendProposalVisualSpec.mockResolvedValue({ created: true });
+	database.resolveProposalThemeTokens.mockResolvedValue({
+		autoVisuals: true,
+		tokens: buildProposalThemeTokens({
+			organization: null,
+			style: null,
+			brandKit: null,
+			recipient: null,
+		}),
+		styleDirection: null,
+		brandGuidance: null,
+	});
 	mocks.getAIModelWithMetadata.mockResolvedValue({
 		model: {},
 		metadata: { provider: "OPENAI" },

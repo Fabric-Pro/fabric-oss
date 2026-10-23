@@ -53,7 +53,11 @@ export async function analyzeNode(
 			}
 		}
 
-		const model = getAgentModelSync(providerConfig, { temperature: 0.3 });
+		const threadId = config?.configurable?.thread_id;
+		const model = getAgentModelSync(providerConfig, {
+			sessionKey: typeof threadId === "string" ? threadId : undefined,
+			temperature: 0.3,
+		});
 		console.log(
 			"[Task Planner] Using model:",
 			providerConfig?.model || "unconfigured (provider config required)",

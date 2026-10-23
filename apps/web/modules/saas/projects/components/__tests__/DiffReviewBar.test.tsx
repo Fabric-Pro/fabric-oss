@@ -7,9 +7,9 @@
  * Accept All / Reject All, and surface a muted "use Inline for per-change" hint.
  */
 import en from "@repo/i18n/translations/en.json";
+import { fireEvent, render, screen } from "@testing-library/react";
 import type { Editor } from "@tiptap/react";
-import { render, screen } from "@testing-library/react";
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Radix Tooltip reaches for pointer-capture on mount; jsdom lacks it.
 beforeAll(() => {
@@ -30,9 +30,10 @@ vi.mock("next-intl", () => ({
 	useTranslations: () => (key: string) => docEditor[key] ?? key,
 }));
 // The diff-outcome audit hook uses TanStack Query (needs a QueryClient); stub it
-// at the module boundary since these tests exercise rendering, not the audit.
+// at the module boundary, recording what is stamped.
+const stamped = vi.hoisted(() => vi.fn());
 vi.mock("../../hooks/useDocumentAssistantHistory", () => ({
-	useRecordDocumentAssistantDiffOutcome: () => ({ mutateAsync: vi.fn() }),
+	useRecordDocumentAssistantDiffOutcome: () => ({ mutateAsync: stamped }),
 }));
 
 import { DiffReviewBar } from "../DiffReviewBar";
@@ -140,5 +141,75 @@ describe("DiffReviewBar — review-mode control matrix", () => {
 		expect(
 			screen.queryByText(docEditor.diffPerChangeInInlineHint),
 		).not.toBeInTheDocument();
+	});
+});
+
+/**
+ * Accept All / Reject All stamp the outcome their handler answered the
+ * proposal with (Fizzy #2946): an Accept that could not apply it answers
+ * that nothing was accepted, and a handler with no proposal left to answer
+ * says nothing, and nothing is stamped.
+ */
+describe("DiffReviewBar — the outcome Accept All and Reject All stamp", () => {
+	const AUDIT = {
+		conversationId: "conversation-example",
+		projectId: "proj-1",
+		organizationId: "org-example",
+		messageId: "text-1",
+		toolCallId: "call-1",
+	};
+
+	beforeEach(() => {
+		stamped.mockReset();
+	});
+
+	function bar(answers: {
+		accept?: boolean | undefined;
+		reject?: boolean | undefined;
+	}) {
+		render(
+			<DiffReviewBar
+				editor={fakeDiffEditor()}
+				onAcceptAll={() => answers.accept}
+				onRejectAll={() => answers.reject}
+				outcomeAudit={AUDIT}
+			/>,
+		);
+	}
+
+	it.each([
+		[true, "accepted"],
+		[false, "rejected"],
+	])("Accept All answered %s stamps %s", (accepted, outcome) => {
+		bar({ accept: accepted });
+		fireEvent.click(
+			screen.getByRole("button", { name: docEditor.approveAll }),
+		);
+		expect(stamped).toHaveBeenCalledTimes(1);
+		expect(stamped).toHaveBeenCalledWith(
+			expect.objectContaining({ ...AUDIT, outcome }),
+		);
+	});
+
+	it("Reject All stamps rejected", () => {
+		bar({ reject: false });
+		fireEvent.click(
+			screen.getByRole("button", { name: docEditor.rejectAll }),
+		);
+		expect(stamped).toHaveBeenCalledTimes(1);
+		expect(stamped).toHaveBeenCalledWith(
+			expect.objectContaining({ outcome: "rejected" }),
+		);
+	});
+
+	it("stamps nothing when there was no proposal to answer", () => {
+		bar({});
+		fireEvent.click(
+			screen.getByRole("button", { name: docEditor.approveAll }),
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: docEditor.rejectAll }),
+		);
+		expect(stamped).not.toHaveBeenCalled();
 	});
 });

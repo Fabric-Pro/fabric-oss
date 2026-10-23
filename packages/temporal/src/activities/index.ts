@@ -1059,6 +1059,14 @@ export {
 	type ProjectDueForPipelineSync,
 	reapStaleAgenticRunsActivity,
 } from "./pipeline-results/list-projects-due-for-sync";
+// Recurring-error detection — the scheduled sweep's enumeration and the
+// per-project scan that files BUG proposals in the review inbox.
+export { listProjectsDueForRecurringErrorScanActivity } from "./recurring-errors/list-projects";
+export {
+	type ScanRecurringErrorsInput,
+	type ScanRecurringErrorsResult,
+	scanRecurringErrorsForProject,
+} from "./recurring-errors/scan-project";
 // Fabric-orchestrated test runs — the "run" verb. The browser half drives one
 // case; the lifecycle half resolves what to run and records the outcome through
 // the SAME ingestion helpers CI results use.

@@ -83,6 +83,7 @@ const sessionSelect = {
 	status: true,
 	wakePhrase: true,
 	toolsReadOnly: true,
+	suggestionsEnabled: true,
 	endReason: true,
 	lastError: true,
 	joinedAt: true,
@@ -158,6 +159,7 @@ const startSessionInput = projectInput
 		agentInstanceSId: z.string().optional(),
 		meetingUrl: z.string().url(),
 		toolsReadOnly: z.boolean().default(true),
+		suggestionsEnabled: z.boolean().default(true),
 	})
 	.superRefine((input, context) => {
 		const agentKind = input.agentKind ?? TEMPLATE_INSTANCE_KIND;
@@ -457,6 +459,7 @@ export const startParlumeSessionProcedure = tenantProtectedProcedure
 				agentInstanceVersion: agent.agentInstanceVersion,
 				streamTokenDigest: digestStreamToken(streamToken),
 				toolsReadOnly: input.toolsReadOnly,
+				suggestionsEnabled: input.suggestionsEnabled,
 				hardStopAt,
 			},
 			select: { id: true },
@@ -536,6 +539,7 @@ export const startParlumeSessionProcedure = tenantProtectedProcedure
 							}
 						: {}),
 					toolsReadOnly: input.toolsReadOnly,
+					suggestionsEnabled: input.suggestionsEnabled,
 					hardStopAt: hardStopAt.toISOString(),
 				},
 			});

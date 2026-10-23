@@ -22,6 +22,10 @@ import { collectMcpToolsActivity } from "./direct-chat/mcp-tools";
 import { generateMemoryContextActivity } from "./direct-chat/memory-context";
 import { retrieveWorkspaceDocumentsActivity } from "./direct-chat/rag-retrieval";
 import { parlumeFingerprint } from "./parlume-action-policy";
+import {
+	PARLUME_WORKSPACE_RAG_CHUNKS,
+	trimParlumeMemory,
+} from "./parlume-voice-context";
 import { timeTurnStep } from "./shared/turn-timing";
 
 interface ParlumeAgentSession {
@@ -268,6 +272,8 @@ export async function executeParlumeAgent(input: {
 							session.userId,
 							session.organizationId,
 							agent.workspaceIds,
+							undefined,
+							PARLUME_WORKSPACE_RAG_CHUNKS,
 						),
 					),
 				]),
@@ -300,7 +306,7 @@ export async function executeParlumeAgent(input: {
 					.join("\n\n"),
 			},
 			mcpToolInfo,
-			memory.context ?? "",
+			trimParlumeMemory(memory.context ?? ""),
 			"",
 		);
 		return {

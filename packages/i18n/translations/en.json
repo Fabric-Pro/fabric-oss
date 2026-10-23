@@ -7,6 +7,14 @@
 			"action": "Refresh now"
 		}
 	},
+	"parlume": {
+		"invite": {
+			"suggestions": {
+				"label": "Chat suggestions",
+				"description": "Parlume may offer a short suggestion in the meeting chat now and then. It speaks one only when someone replies “go”."
+			}
+		}
+	},
 	"changePassword": {
 		"title": "Update your password",
 		"subtitle": "Your account was created with a temporary password. Please set a new one to continue.",
@@ -974,7 +982,7 @@
 					"title": "Hand stakeholders a Glossy edition"
 				},
 				"glossyProposalArtifact": {
-					"body": "A Business Case can also become a Glossy edition — a stakeholder-ready version with executive text and branded visuals. Open it from the document's Download menu or the Glossy version link in its editor. Building it never changes the source document. A Proposal needs none: it is written client-ready, its page has Main Document, Internal Analysis and Style tabs, and its Download menu saves a branded PDF or Word file in the same look.",
+					"body": "A Business Case can also become a Glossy edition — a stakeholder-ready version with executive text and branded visuals. Open it from the document's Download menu or the Glossy version link in its editor. Building it never changes the source document. A Proposal needs none: it is written client-ready, its page has Main Document, Internal Analysis and Style tabs, and its Download menu saves a branded PDF or Word file in the same look. On the Style tab, Your brand and Recipient brand label each value with where it comes from: your colors are set for this document or come from your Brand kit, your website or a neutral default, and the client's values are set by a person. What is found on the client's website stays not applied until you confirm each value.",
 					"title": "Hand stakeholders a Glossy edition"
 				},
 				"overview": {
@@ -1631,7 +1639,8 @@
 						"redacted": "Contact erased"
 					},
 					"brand_kit": {
-						"updated": "Brand kit updated"
+						"updated": "Brand kit updated",
+						"site_fetched": "Brand kit website fetched"
 					},
 					"company_context": {
 						"metadata_updated": "Company context source details updated"
@@ -1914,6 +1923,9 @@
 					"proposal": {
 						"cancelled": "Backlog proposal cancelled",
 						"timed_out": "Backlog proposal timed out"
+					},
+					"recurring_errors": {
+						"scan_failed": "Recurring-error scan failed"
 					}
 				},
 				"mcp": {
@@ -2910,7 +2922,7 @@
 				"otherWorkDescription": "Manage image, audio, decision and embedding models separately from text tasks.",
 				"textTasks": "Text tasks",
 				"unsaved": "Unsaved",
-				"decisionUnavailable": "Decision models require Vercel AI Gateway. Work items use your regular AI model when no decision model is available.",
+				"decisionUnavailable": "Decision models require Vercel AI Gateway or Databricks. Work items use your regular AI model when no decision model is available.",
 				"unsavedRemoved": "Unsaved model choices will also be discarded.",
 				"embeddingsChangeTitle": "Change the embeddings model?",
 				"embeddingsChangeBody": "Changing the embeddings model makes company context unavailable until affected content is re-indexed. Changing the model does not start re-indexing.",
@@ -2979,12 +2991,12 @@
 		},
 		"brandKit": {
 			"title": "Brand kit",
-			"description": "Accent colors and brand guidance for Glossy editions. The logo and theme color above are part of the kit too. Without a theme color or accent colors, Glossy visuals stay neutral or use the recipient's brand colors.",
+			"description": "The colors, fonts, cover image, website and brand guidance your Glossy editions and Proposals use. The organization logo above is the logo the Brand kit uses. Glossy editions also use the theme color above; Proposals use the primary color here instead.",
 			"loading": "Loading…",
 			"loadFailed": "Couldn't load the Brand kit",
 			"readOnly": "Only organization admins and owners can change the Brand kit.",
 			"accentColors": "Accent colors",
-			"accentColorsHelp": "Up to 3 colors used beside your theme color in visuals and headings. Without a theme color, the first accent becomes the primary color.",
+			"accentColorsHelp": "Up to 3 colors used beside the primary color in visuals and highlights. In a Glossy edition without a theme color, the first accent becomes its primary color.",
 			"accentHex": "Accent color {position} (hex)",
 			"accentPicker": "Pick accent color {position}",
 			"removeAccent": "Remove accent color {position}",
@@ -2998,7 +3010,90 @@
 			"save": "Save Brand kit",
 			"saved": "Brand kit saved",
 			"saveFailed": "Couldn't save the Brand kit",
-			"fixColors": "Fix the highlighted colors before saving."
+			"fixColors": "Fix the highlighted colors before saving.",
+			"fixFields": "Fix the highlighted fields before saving.",
+			"proposerBrand": "Proposer brand",
+			"proposerBrandHelp": "How your organization appears on the Proposals it sends. The organization logo above is the Brand kit's logo; there's no separate one here.",
+			"primaryColor": "Primary color",
+			"primaryColorHelp": "The main color of your Proposals. Without one, they use the colors found on your website, or a neutral color. The dashboard theme color above isn't used here.",
+			"primaryHex": "Primary color (hex)",
+			"primaryPicker": "Pick the primary color",
+			"removePrimary": "Remove the primary color",
+			"addPrimary": "Add a primary color",
+			"noPrimary": "No primary color yet.",
+			"displayFont": "Display font",
+			"displayFontHelp": "Used for titles and headings.",
+			"displayFontFamily": "Display font family",
+			"displayFontPlaceholder": "For example, Merriweather",
+			"bodyFont": "Body font",
+			"bodyFontHelp": "Used for paragraphs, lists and tables.",
+			"bodyFontFamily": "Body font family",
+			"bodyFontPlaceholder": "For example, Open Sans",
+			"fontFamilyHelp": "The family name as it's published: letters, digits, spaces and hyphens, 2 to 64 characters. Without one, Proposals use Inter.",
+			"fontFamilyRequired": "Enter the family name this font file belongs to.",
+			"fontFamilyInvalid": "Use only letters, digits, spaces and hyphens, 2 to 64 characters.",
+			"fontFileHelp": "Optional. A WOFF2 or TTF file up to {size}, so every reader sees the font. Without one, the font shows only where it's installed.",
+			"fontFileStored": "Font file uploaded",
+			"noFontFile": "No font file",
+			"uploadDisplayFont": "Upload display font file",
+			"removeDisplayFont": "Remove display font file",
+			"uploadBodyFont": "Upload body font file",
+			"removeBodyFont": "Remove body font file",
+			"fontError": {
+				"too_large": "That font file is larger than {size}. Choose a smaller file.",
+				"unsupported": "That file isn't a WOFF2 or TTF font.",
+				"uploadFailed": "The font file couldn't be uploaded. Try again."
+			},
+			"hero": "Cover image",
+			"heroHelp": "Shown on the cover of your Proposals. A PNG, JPEG or WebP image up to {size}.",
+			"heroAlt": "Cover image preview",
+			"noHero": "No cover image",
+			"uploadHero": "Upload cover image",
+			"removeHero": "Remove cover image",
+			"heroError": {
+				"too_large": "That image is too large. Use one up to {size} and {megapixels} megapixels.",
+				"unsupported": "That file isn't a PNG, JPEG or WebP image.",
+				"uploadFailed": "The image couldn't be uploaded. Try again."
+			},
+			"uploading": "Uploading {name}…",
+			"uploaded": "{name} uploaded. Save the Brand kit to use it.",
+			"website": "Website",
+			"websitePlaceholder": "example.com",
+			"websiteHelp": "Your organization's public website. After you save it, the brand colors it declares are looked up for Proposals to use where the Brand kit sets none.",
+			"siteFetch": {
+				"running": "Looking for brand colors on {host}…",
+				"found": "Colors found on {host}",
+				"foundColors": "Colors from your website",
+				"foundColorsHelp": "Proposals use these where the Brand kit sets no color. They never replace the colors above.",
+				"foundHex": "Website color {position} (hex)",
+				"foundPicker": "Website color {position}",
+				"notFetched": "{host} hasn't been checked for brand colors yet.",
+				"fetchAgain": "Fetch again",
+				"failed": {
+					"unreachable": "Couldn't reach {host}. Check the website address.",
+					"blocked": "{host} can't be fetched. Use your organization's public website.",
+					"too_large": "{host} sent a page too large to read.",
+					"unsupported": "{host} didn't answer with a web page.",
+					"no_logo": "No brand colors were found on {host}.",
+					"no_colors": "No brand colors were found on {host}. Set the primary and accent colors above instead.",
+					"rate_limited": "Websites were fetched several times in a short while. Try again in a few minutes.",
+					"not_member": "The fetch of {host} stopped because whoever started it can no longer change the Brand kit.",
+					"timed_out": "Looking for colors on {host} took too long.",
+					"failed": "Couldn't read brand colors from {host}."
+				}
+			},
+			"conflict": "Someone else changed the Brand kit. Your edits are still here; reload to see their version, then make your changes again.",
+			"reload": "Reload",
+			"saveError": {
+				"tooManyAccents": "Use no more than 3 accent colors.",
+				"invalidAccent": "One of the accent colors isn't a valid color.",
+				"guidanceTooLong": "The brand guidance is too long.",
+				"invalidPrimary": "The primary color isn't a valid color.",
+				"invalidFontFamily": "A font family name can use only letters, digits, spaces and hyphens, 2 to 64 characters.",
+				"fontWithoutFamily": "Enter the family name of each font that has a file.",
+				"invalidWebsite": "Enter your organization's public website, like example.com.",
+				"invalidAssetKey": "A file couldn't be saved. Upload it again."
+			}
 		},
 		"companyContext": {
 			"title": "Company context",
@@ -5047,6 +5142,45 @@
 			"generatedDescription": "Accept the ones you want. Any you don't accept stay in the Proposal Inbox.",
 			"noRecommendations": "Fabric didn't find new features to recommend from the current project context, so no recommendations were created.",
 			"generationFailed": "Fabric couldn’t generate feature recommendations. Please try again. If the problem continues, check project context, connected sources, or background job status before retrying."
+		},
+		"recurringErrors": {
+			"toggleLabel": "Propose bugs for recurring errors",
+			"toggleDescription": "Twice a day, Fabric groups this project's application errors and its open bug reports. A problem that recurs {threshold} or more times within {windowHours} hours is proposed as a bug in the review inbox once; later occurrences are added to that proposal or bug. Reads the log source configured for this project. Off by default.",
+			"updated": "Recurring-error detection updated",
+			"updateFailed": "Failed to update recurring-error detection",
+			"lastScan": "Last scanned {when}",
+			"neverScanned": "Not scanned yet. The first scan runs within 12 hours.",
+			"lastScanFailed": "The last scan did not complete: {reason}",
+			"adminOnly": "Only project admins can change this setting.",
+			"tuning": {
+				"title": "Detection thresholds",
+				"description": "How often an error must recur, and within how many hours, before it is proposed as a bug; and how sure Fabric must be that two errors are the same problem before it groups them.",
+				"thresholdLabel": "Occurrences",
+				"windowLabel": "Within (hours)",
+				"similarityLabel": "Similarity threshold",
+				"similarityHelp": "From 0.5 to 1. Higher keeps more errors apart; lower groups more of them into one proposal or onto an existing bug. Grouping open bug reports also needs the duplicate detector's own confidence of 0.7.",
+				"invalid": "Occurrences must be a whole number from {thresholdMin} to {thresholdMax}, hours from 1 to {windowMax}, and the similarity threshold from {similarityMin} to 1.",
+				"saveThresholds": "Save thresholds",
+				"saved": "Detection thresholds saved",
+				"saveFailed": "Failed to update the detection thresholds"
+			},
+			"logSource": {
+				"title": "Log source",
+				"description": "Where the scan and bug analysis read this project's application logs. Without one, the project uses this deployment's default log source, if one is configured.",
+				"current": "Currently reading the {provider} workspace",
+				"noWorkspace": "(no workspace set)",
+				"none": "No log source is set for this project.",
+				"providerLabel": "Provider",
+				"providerAzureMonitor": "Azure Monitor",
+				"workspaceIdLabel": "Log Analytics workspace ID",
+				"workspaceIdInvalid": "Enter the workspace ID as a GUID, for example 00000000-0000-0000-0000-000000000000.",
+				"identityHelp": "Fabric's worker reads this workspace with its own managed identity, which needs the Log Analytics Reader role on it. No secret is stored.",
+				"save": "Save log source",
+				"clear": "Clear",
+				"saved": "Log source saved",
+				"cleared": "Log source cleared",
+				"saveFailed": "Failed to update the log source"
+			}
 		},
 		"decisionPrecheck": {
 			"proposalBanner": "This proposal contradicts {count, plural, one {# logged decision} other {# logged decisions}}",
@@ -7773,6 +7907,7 @@
 			"exportLeftOut": "Some content was left out of the {format}",
 			"exportWarningDiagramPlaceholder": "{count, plural, one {# diagram is} other {# diagrams are}} shown as a placeholder.",
 			"exportWarningDiagramLimit": "{count, plural, one {# diagram} other {# diagrams}} over the limit {count, plural, one {is} other {are}} shown as a placeholder.",
+			"exportWarningDiagramBelowPrintFloor": "{count, plural, one {# diagram is} other {# diagrams are}} too wide for the page, so {count, plural, one {its} other {their}} labels print small.",
 			"exportWarningImageDropped": "{count, plural, one {# image} other {# images}} could not be included.",
 			"exportWarningImageLimit": "{count, plural, one {# image} other {# images}} over the limit {count, plural, one {was} other {were}} left out.",
 			"exportWarningExternalImageDropped": "{count, plural, one {# linked image was} other {# linked images were}} left out.",
@@ -8026,6 +8161,42 @@
 			}
 		},
 		"proposalArtifact": {
+			"visuals": {
+				"origin": {
+					"step": "Added automatically",
+					"instruction": "Updated with instructions"
+				},
+				"fixedColours": "Colours are fixed in this diagram. Use Edit with instructions to restyle it.",
+				"panel": {
+					"title": "Edit with instructions",
+					"instructionLabel": "What should change in this diagram?",
+					"placeholder": "For example: merge the last two steps and shorten the labels",
+					"counter": "{count} / {max}",
+					"tooLong": "Use at most {max} characters.",
+					"generate": "Generate",
+					"generating": "Generating a proposed diagram…",
+					"cancel": "Cancel",
+					"proposed": "Proposed",
+					"apply": "Apply",
+					"discard": "Discard",
+					"candidateReady": "A proposed diagram is ready. Review it below the current one, then apply or discard it.",
+					"candidateRenderFailed": "The proposed diagram could not be drawn, so it cannot be applied.",
+					"applied": "The diagram was updated.",
+					"discarded": "The proposed diagram was discarded.",
+					"tryAgain": "Try again",
+					"retry": "Retry"
+				},
+				"states": {
+					"stale": "The diagram changed. Try again on the current version.",
+					"refused": "The change would add facts the section does not state.",
+					"unsupported": "Only flowchart diagrams can be edited this way.",
+					"providerMissingMember": "Set up an AI provider for your organization",
+					"providerMissingGuest": "AI editing is not available for this project",
+					"rateLimited": "Too many AI requests right now. Wait a moment, then try again.",
+					"forbidden": "You do not have permission to edit this diagram.",
+					"error": "The proposed diagram could not be generated."
+				}
+			},
 			"analysis": {
 				"title": "Internal Analysis",
 				"description": "Review notes on this Proposal for your team. Project guests never see them, and they are never part of the Main Document or its downloads.",
@@ -8212,8 +8383,11 @@
 				"styleDirectionHelp": "Optional guidance for the visuals.",
 				"characterCount": "{count} / {max} characters",
 				"directionTooLong": "Keep the style direction to {max} characters or fewer.",
+				"diagrams": "Diagrams",
+				"autoVisuals": "Add diagrams automatically",
+				"autoVisualsHelp": "Fabric adds diagrams after each generation. Diagrams written by the prompt or by a person are left alone. A change applies from the next time diagrams are added; diagrams already in the document stay.",
 				"colors": "Colors",
-				"colorsHelp": "Your colors for the diagrams in the next generation.",
+				"colorsHelp": "Your colors for this document and its diagrams.",
 				"primaryColor": "Primary color",
 				"primaryHex": "Primary color (hex)",
 				"primaryPicker": "Pick the primary color",
@@ -8242,7 +8416,81 @@
 					"tooManyAccentColors": "Use at most {max} accent colors."
 				},
 				"styleFailed": "The style couldn't be saved. Try again.",
-				"recipientFailed": "The recipient brand couldn't be saved. Try again."
+				"recipientFailed": "The recipient brand couldn't be saved. Try again.",
+				"proposer": "Your brand",
+				"proposerHelp": "How your organization appears in this Proposal. Colors you set here apply to this document only; everything else comes from your Brand kit.",
+				"sourcePrefix": "Source:",
+				"sources": {
+					"document": "Set for this document",
+					"brandKit": "Brand kit",
+					"vendorSite": "Your website",
+					"default": "Neutral default",
+					"suggested": "Found, not applied",
+					"person": "Set by a person",
+					"notSet": "Not set"
+				},
+				"sourcesLoading": "Loading where each value comes from…",
+				"sourcesFailed": "Where these values come from couldn't be loaded. You can still change the style.",
+				"fields": {
+					"primary": "primary color",
+					"accents": "accent colors"
+				},
+				"inherited": "Uses {value}",
+				"useInherited": "Use inherited value",
+				"useInheritedLabel": "Use inherited value for the {field}: {value} from {source}",
+				"alternative": "{source} has {value}",
+				"useAlternative": "Use this",
+				"useAlternativeLabel": "Use this for the {field}: {value} from {source}",
+				"brandKitValues": "From your Brand kit",
+				"logo": "Logo",
+				"logoPresent": "Your organization's logo",
+				"logoMissing": "No logo",
+				"displayFont": "Heading font",
+				"bodyFont": "Body font",
+				"fontWithFile": "{family}, with its uploaded font file",
+				"hero": "Cover image",
+				"heroPresent": "Your Brand kit's cover image",
+				"heroMissing": "No cover image",
+				"changeInBrandKit": "Change in Brand kit",
+				"askAdmin": "Ask an organization admin to change this.",
+				"recipientSources": "Where the recipient brand comes from",
+				"recipientFields": {
+					"name": "Name",
+					"website": "Website",
+					"logo": "Logo",
+					"colors": "Colors"
+				},
+				"suggestion": {
+					"running": "Looking for the recipient's brand on {host}…",
+					"nothingFound": "Nothing to suggest was found on {host}.",
+					"found": "Found on {host} — not applied",
+					"foundHelp": "Confirm each value you want to use. Nothing changes until you do.",
+					"name": "Name",
+					"colors": "Colors",
+					"logo": "Logo",
+					"logoAlt": "Logo found on {host}",
+					"confirm": "Confirm",
+					"confirmName": "Confirm the name {value}",
+					"confirmColors": "Confirm the colors {value}",
+					"confirmLogo": "Confirm the logo found on {host}",
+					"fetchAgain": "Fetch again",
+					"saveFirst": "Save or discard your changes to the recipient brand before you confirm a value.",
+					"applied": "Applied from {host}.",
+					"conflict": "The recipient brand changed since you read it. Review the current values, then confirm again.",
+					"stale": "This suggestion is out of date. Fetch again to see what the website has now.",
+					"logoRejected": "The logo found on the website can't be used. Upload one below instead.",
+					"unavailable": "Fetching isn't available right now. Try again later, or add the brand by hand below.",
+					"failure": {
+						"unreachable": "We couldn't reach {host}. Check the address, or add the brand by hand below.",
+						"blocked": "{host} can't be fetched. Use the recipient's public website, or add the brand by hand below.",
+						"too_large": "The logo on {host} is too large to use. Upload a smaller one below.",
+						"unsupported": "The logo on {host} is in a format we can't use. Upload a PNG, JPEG, GIF, or WebP logo below.",
+						"rate_limited": "Several websites were fetched in a short time. Try again in a minute.",
+						"not_member": "Only organization members fetch the recipient's website.",
+						"timed_out": "Taking longer than expected to read {host}.",
+						"failed": "{host} couldn't be read. Try again, or add the brand by hand below."
+					}
+				}
 			},
 			"generationFeedback": {
 				"promptNotBound": "A Proposal can't be generated until a prompt is bound to Client proposal (Main). An organization admin binds one in the Prompt Library, or a project admin in the project's prompt defaults.",
@@ -8256,6 +8504,9 @@
 				"nominationDeclineOnly": "A nomination for this action alone can be declined, not approved.",
 				"projectGroupTitle": "No longer used",
 				"projectGroupDescription": "Project defaults saved for actions the Proposal artifact replaces. Client proposal (Main) writes Proposals while it is on, so these are not used; clear them to tidy up."
+			},
+			"promptBinding": {
+				"diagramsNote": "Diagrams are added by Fabric after generation; a section that already has its own diagram is left alone."
 			}
 		},
 		"proposalArtifactPage": {
@@ -8331,7 +8582,8 @@
 				"saved": "Recipient brand saved",
 				"saveFailed": "Couldn't save the recipient brand",
 				"fixColors": "Fix the highlighted colors before saving.",
-				"conflict": "Someone else changed the recipient brand while you were editing. Their version is shown below — review it and make your change again."
+				"conflict": "Someone else changed the recipient brand while you were editing. Their version is shown below — review it and make your change again.",
+				"membersOnly": "Only organization members edit the recipient brand."
 			},
 			"page": {
 				"title": "Glossy version",
@@ -8563,6 +8815,7 @@
 			"saveBlocked": {
 				"regenerating": "Saving is paused while this document is being regenerated.",
 				"review": "Accept or reject the regenerated version before saving.",
+				"proposal": "Accept or reject the assistant's proposed changes before saving.",
 				"runLive": "Saving is paused while a generation run writes this document. It resumes when the run finishes.",
 				"reconnecting": "Saving is paused until the editor is reconnected to the collaboration server.",
 				"updatingToLatest": "Saving is paused while the editor updates to the latest saved version.",
@@ -8577,6 +8830,7 @@
 				"hint": "This is the last saved version, read-only, and saving is paused. Editing resumes once the connection is back."
 			},
 			"staleRunSave": "This document's generation has not reported for ten minutes. Saving now ends that run.",
+			"assistantFinishing": "The assistant is finishing…",
 			"rejectEmptyBody": "There is no earlier version to go back to, so the regenerated version was kept and nothing was changed.",
 			"rejectRunLive": "A new generation of this document has started, so the regenerated version was kept and nothing was changed.",
 			"rejectReviewStale": "This document changed after this review opened, so nothing was reverted. The latest version is kept.",
@@ -8594,6 +8848,9 @@
 			"saveConflictRoom": "Your changes were not saved: the document changed in the meantime. The editor is updating to the latest version.",
 			"saveConflictSolo": "Your changes were not saved: the document changed in the meantime. Copy your text, then reload to see the latest version.",
 			"leaveSaveFailed": "Your last changes to this document were not saved after you left it. Copy them to keep them.",
+			"rawEditsStale": {
+				"message": "The document changed while you were editing its markdown. Your edits here are not saved, and they will not be saved on their own: copy them to keep them."
+			},
 			"offerBack": {
 				"message": "The editor was updated to the latest saved version, which replaced text typed since the last save. Copy it to keep it.",
 				"copy": "Copy my unsaved text",
@@ -9510,6 +9767,24 @@
 			"templateCategory": "Categorised as {category}."
 		},
 		"editor": {
+			"diagramMenu": {
+				"trigger": "Diagram actions",
+				"editWithInstructions": "Edit with instructions",
+				"editWithInstructionsDescription": "Describe a change and review it before it applies.",
+				"buildWithAi": "Build with AI",
+				"buildWithAiDescription": "Rewrite the diagram from a description.",
+				"editSource": "Edit source",
+				"caption": "Caption",
+				"delete": "Delete",
+				"deleteDiagram": "Delete diagram",
+				"captionLabel": "Diagram caption",
+				"captionPlaceholder": "Add a caption...",
+				"scrollRegion": "Diagram, scrolls sideways"
+			},
+			"diagramReview": {
+				"label": "Proposed changes to this diagram",
+				"preview": "The diagram with these changes"
+			},
 			"buildDiagramWithAi": "Open a prompt panel where you describe the diagram in plain language. The assistant rewrites the Mermaid source from your description.",
 			"showDiagram": "Return to the rendered diagram. Any unsaved edits to the source are discarded.",
 			"editDiagramSource": "Open the Mermaid source in an editable panel. Ctrl+Enter saves.",

@@ -44,6 +44,16 @@ vi.mock("@repo/logs", () => ({
 vi.mock("@temporalio/activity", () => ({
 	heartbeat: vi.fn(),
 }));
+// After a fresh extraction the activity starts the to-do owner matcher and
+// swallows a failed start. Left real, the client dialled a Temporal server
+// that is not there and every extraction test waited out the 10 s connect
+// timeout before taking that same path. A plain function, not a vi.fn, so
+// `vi.resetAllMocks()` below cannot strip the rejection.
+vi.mock("../src/client", () => ({
+	getTemporalClient: async () => {
+		throw new Error("Temporal is not reachable in this test");
+	},
+}));
 
 import { generateObject, getAIModelWithMetadata } from "@repo/ai";
 import { db } from "@repo/database";

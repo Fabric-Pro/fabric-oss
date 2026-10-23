@@ -463,6 +463,7 @@ describe("without the live-run guard — the writes are today's", () => {
 		expect(mocks.projectDocument.update).toHaveBeenCalledWith({
 			where: { id: "doc-1" },
 			data: { version: 4 },
+			select: { projectId: true, type: true },
 		});
 		expect(mocks.transaction).not.toHaveBeenCalled();
 		expect(mocks.projectDocument.updateMany).not.toHaveBeenCalled();

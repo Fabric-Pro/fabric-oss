@@ -54,6 +54,9 @@ export const VISUAL_COLOR_PLACEHOLDERS = {
 export const SVG_CARD_FONT_STACK =
 	"system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
 
+/** Ends a label or line that was cut short. */
+const ELLIPSIS = "…";
+
 // ---------------------------------------------------------------------------
 // Mermaid label escaping
 // ---------------------------------------------------------------------------
@@ -190,24 +193,177 @@ export function escapeMermaidLabel(text: string): string {
 // ---------------------------------------------------------------------------
 
 /**
+ * How a Mermaid template draws (Fizzy #2946). Both default to Glossy's own
+ * output, which stays exactly as it was; a Proposal passes
+ * `PROPOSAL_VISUAL_TEMPLATE_OPTIONS`.
+ * - `colorMode`: `"style"` writes a `style` line of colour placeholders per
+ *   node; `"roles"` writes `class <id> surface` instead, so the fence holds
+ *   no colour and the renderer paints the role from the theme at draw time.
+ * - `layout`: `"proposal"` keeps labels short enough to read at page width
+ *   (see `proposalNodeLabel`) and always draws a timeline top-down.
+ */
+export interface VisualTemplateOptions {
+	colorMode?: "style" | "roles";
+	layout?: "glossy" | "proposal";
+}
+
+export const PROPOSAL_VISUAL_TEMPLATE_OPTIONS = {
+	colorMode: "roles",
+	layout: "proposal",
+} as const satisfies VisualTemplateOptions;
+
+/** The longest line a Proposal diagram node shows, in characters. */
+export const PROPOSAL_VISUAL_LINE_MAX_CHARS = 28;
+
+/** How many lines a Proposal diagram node's title wraps to at most. */
+export const PROPOSAL_VISUAL_TITLE_MAX_LINES = 2;
+
+/**
+ * A line break inside a quoted node label, which beautiful-mermaid and
+ * mermaid.js both draw as a second line. Joined between labels that are
+ * each escaped first, so the escaper never sees (and never breaks) it.
+ */
+const MERMAID_LABEL_BREAK = "<br/>";
+
+/**
+ * `text` cut to at most `max` characters: whitespace collapsed, and when
+ * longer, cut back to the last word that fits, with an ellipsis. A fallback
+ * only: the Proposal extraction asks for short labels, and what a cut shows
+ * is still a prefix of what was fact-checked. Counts code points.
+ */
+export function cutLabelAtWord(text: string, max: number): string {
+	const collapsed = text.replace(/\s+/g, " ").trim();
+	const chars = Array.from(collapsed);
+	if (chars.length <= max) {
+		return collapsed;
+	}
+	const room = chars.slice(0, max - 1).join("");
+	// Cut at a word only when one ends in the latter half; otherwise the
+	// first word alone is longer than the room and is broken.
+	const lastSpace = room.lastIndexOf(" ");
+	const kept =
+		lastSpace >= Math.floor(room.length / 2)
+			? room.slice(0, lastSpace)
+			: room;
+	return `${kept.replace(/[\s,;:.\-–—]+$/, "")}${ELLIPSIS}`;
+}
+
+/** Escaped label parts joined as lines; empty parts are left out. */
+function multilineLabel(parts: ReadonlyArray<string | undefined>): string {
+	return parts
+		.filter((part): part is string => Boolean(part?.trim()))
+		.map(escapeMermaidLabel)
+		.join(MERMAID_LABEL_BREAK);
+}
+
+/**
+ * `text` wrapped at word boundaries into lines of at most `width`
+ * characters, at most `maxLines` of them; the last line is cut with
+ * `cutLabelAtWord` when words remain. A word longer than a line is broken.
+ * Counts code points.
+ */
+function wrapLabelAtWords(
+	text: string,
+	width: number,
+	maxLines: number,
+): string[] {
+	const lines: string[] = [];
+	let rest = text.replace(/\s+/g, " ").trim();
+	while (rest && lines.length < maxLines - 1) {
+		const chars = Array.from(rest);
+		if (chars.length <= width) {
+			break;
+		}
+		const room = chars.slice(0, width + 1).join("");
+		const lastSpace = room.lastIndexOf(" ");
+		const line =
+			lastSpace > 0
+				? room.slice(0, lastSpace)
+				: chars.slice(0, width).join("");
+		lines.push(line.trimEnd());
+		rest = rest.slice(line.length).trim();
+	}
+	if (rest) {
+		lines.push(cutLabelAtWord(rest, width));
+	}
+	return lines;
+}
+
+/** Lower case, letters and digits only, single spaces: for comparing labels. */
+function normaliseForComparison(text: string): string {
+	return text
+		.toLowerCase()
+		.replace(/[^\p{L}\p{N}]+/gu, " ")
+		.trim();
+}
+
+/**
+ * Whether a detail only repeats its title: one contains the other as whole
+ * words once case, punctuation and spacing are ignored. Models often put the
+ * source bullet in the detail and a shortened copy of it in the title.
+ */
+function detailRepeatsTitle(title: string, detail: string): boolean {
+	// Padded so only whole words match: "plan" is not found in "planning".
+	const normalTitle = ` ${normaliseForComparison(title)} `;
+	const normalDetail = ` ${normaliseForComparison(detail)} `;
+	if (!normalTitle.trim() || !normalDetail.trim()) {
+		return false;
+	}
+	return (
+		normalDetail.includes(normalTitle) || normalTitle.includes(normalDetail)
+	);
+}
+
+/**
+ * A Proposal node's label lines (Fizzy #2946), each at most
+ * `PROPOSAL_VISUAL_LINE_MAX_CHARS`: a timeline's date on its own line, the
+ * title wrapped at words to at most two lines, then at most one detail line.
+ * A detail that repeats the title is left out. A longer detail is cut at a
+ * word with an ellipsis rather than dropped, so what it adds still shows;
+ * the extraction asks for one that needs no cut. Every line shown is a
+ * prefix of the text that was checked.
+ */
+function proposalNodeLabel(
+	title: string,
+	detail: string | undefined,
+	date?: string,
+): string {
+	const width = PROPOSAL_VISUAL_LINE_MAX_CHARS;
+	const lines = date ? [cutLabelAtWord(date, width)] : [];
+	lines.push(
+		...wrapLabelAtWords(title, width, PROPOSAL_VISUAL_TITLE_MAX_LINES),
+	);
+	if (detail?.trim() && !detailRepeatsTitle(title, detail)) {
+		lines.push(cutLabelAtWord(detail, width));
+	}
+	return multilineLabel(lines);
+}
+
+/** A node's colour line: placeholder `style`, or its role class. */
+function nodeColorLine(id: string, options: VisualTemplateOptions): string {
+	return options.colorMode === "roles"
+		? `class ${id} surface`
+		: `style ${id} fill:${VISUAL_COLOR_PLACEHOLDERS.surface},stroke:${VISUAL_COLOR_PLACEHOLDERS.border}`;
+}
+
+/**
  * A chain of rectangle nodes, one per item, in order, each linked to the
  * next. Node ids are `<idPrefix><index>`, never text from the spec.
+ * `labelOf` returns the label already escaped.
  */
 function chainToMermaid<T>(
 	direction: "LR" | "TD",
 	idPrefix: string,
 	items: readonly T[],
 	labelOf: (item: T) => string,
+	options: VisualTemplateOptions,
 ): string {
 	const lines = [`flowchart ${direction}`];
 	let previousId: string | null = null;
 	items.forEach((item, index) => {
 		const id = `${idPrefix}${index}`;
-		const label = escapeMermaidLabel(labelOf(item));
-		lines.push(`${id}["${label}"]`);
-		lines.push(
-			`style ${id} fill:${VISUAL_COLOR_PLACEHOLDERS.surface},stroke:${VISUAL_COLOR_PLACEHOLDERS.border}`,
-		);
+		lines.push(`${id}["${labelOf(item)}"]`);
+		lines.push(nodeColorLine(id, options));
 		if (previousId) {
 			lines.push(`${previousId} --> ${id}`);
 		}
@@ -216,20 +372,49 @@ function chainToMermaid<T>(
 	return lines.join("\n");
 }
 
-function timelineItemLabel(item: TimelineVisualSpec["items"][number]): string {
+function timelineItemLabel(
+	item: TimelineVisualSpec["items"][number],
+	options: VisualTemplateOptions,
+): string {
+	if (options.layout === "proposal") {
+		return proposalNodeLabel(item.label, item.description, item.date);
+	}
 	const base = `${item.date} — ${item.label}`;
-	return item.description ? `${base} (${item.description})` : base;
+	return escapeMermaidLabel(
+		item.description ? `${base} (${item.description})` : base,
+	);
 }
 
-/** A left-to-right chain of rectangle nodes, one per timeline item, in order. */
-export function timelineToMermaid(spec: TimelineVisualSpec): string {
-	return chainToMermaid("LR", "t", spec.items, timelineItemLabel);
+/**
+ * A chain of rectangle nodes, one per timeline item, in order: left to
+ * right, or for a Proposal always top-down.
+ */
+export function timelineToMermaid(
+	spec: TimelineVisualSpec,
+	options: VisualTemplateOptions = {},
+): string {
+	// A Proposal timeline is always drawn top-down: printed at the page column,
+	// even four short items left to right fall below a readable label size.
+	const direction = options.layout === "proposal" ? "TD" : "LR";
+	return chainToMermaid(
+		direction,
+		"t",
+		spec.items,
+		(item) => timelineItemLabel(item, options),
+		options,
+	);
 }
 
-function flowStepLabel(step: FlowVisualSpec["steps"][number]): string {
-	return step.description
-		? `${step.label} (${step.description})`
-		: step.label;
+function flowStepLabel(
+	step: FlowVisualSpec["steps"][number],
+	options: VisualTemplateOptions,
+): string {
+	if (options.layout === "proposal") {
+		return proposalNodeLabel(step.label, step.description);
+	}
+	return escapeMermaidLabel(
+		step.description ? `${step.label} (${step.description})` : step.label,
+	);
 }
 
 function stepLane(step: FlowVisualSpec["steps"][number]): string {
@@ -258,10 +443,19 @@ function flowLanes(steps: FlowVisualSpec["steps"]): string[] | null {
  * `lane<index>` tokens, never text from the spec, and a lane's title is
  * escaped and quoted exactly as a node label is.
  */
-export function flowToMermaid(spec: FlowVisualSpec): string {
+export function flowToMermaid(
+	spec: FlowVisualSpec,
+	options: VisualTemplateOptions = {},
+): string {
 	const lanes = flowLanes(spec.steps);
 	if (!lanes) {
-		return chainToMermaid("TD", "f", spec.steps, flowStepLabel);
+		return chainToMermaid(
+			"TD",
+			"f",
+			spec.steps,
+			(step) => flowStepLabel(step, options),
+			options,
+		);
 	}
 	const lines = ["flowchart TD"];
 	// Every node is declared inside its lane before any edge names it: Mermaid
@@ -270,17 +464,13 @@ export function flowToMermaid(spec: FlowVisualSpec): string {
 		lines.push(`subgraph lane${laneIndex}["${escapeMermaidLabel(lane)}"]`);
 		spec.steps.forEach((step, index) => {
 			if (stepLane(step) === lane) {
-				lines.push(
-					`f${index}["${escapeMermaidLabel(flowStepLabel(step))}"]`,
-				);
+				lines.push(`f${index}["${flowStepLabel(step, options)}"]`);
 			}
 		});
 		lines.push("end");
 	});
 	spec.steps.forEach((_, index) => {
-		lines.push(
-			`style f${index} fill:${VISUAL_COLOR_PLACEHOLDERS.surface},stroke:${VISUAL_COLOR_PLACEHOLDERS.border}`,
-		);
+		lines.push(nodeColorLine(`f${index}`, options));
 		if (index > 0) {
 			lines.push(`f${index - 1} --> f${index}`);
 		}
@@ -298,7 +488,10 @@ export function flowToMermaid(spec: FlowVisualSpec): string {
  * cycle, so the lookups below cannot miss for a spec that passed
  * `visualSpecSchema`.
  */
-export function orgChartToMermaid(spec: OrgChartVisualSpec): string {
+export function orgChartToMermaid(
+	spec: OrgChartVisualSpec,
+	options: VisualTemplateOptions = {},
+): string {
 	const idByNodeId = new Map(
 		spec.nodes.map((node, index) => [node.id, `o${index}`]),
 	);
@@ -309,9 +502,7 @@ export function orgChartToMermaid(spec: OrgChartVisualSpec): string {
 			continue;
 		}
 		lines.push(`${id}["${escapeMermaidLabel(node.label)}"]`);
-		lines.push(
-			`style ${id} fill:${VISUAL_COLOR_PLACEHOLDERS.surface},stroke:${VISUAL_COLOR_PLACEHOLDERS.border}`,
-		);
+		lines.push(nodeColorLine(id, options));
 	}
 	for (const node of spec.nodes) {
 		if (node.parentId === null) {
@@ -327,14 +518,17 @@ export function orgChartToMermaid(spec: OrgChartVisualSpec): string {
 }
 
 /** Dispatch a spec to the matching Mermaid template. Throws for a kind this module does not template (`stat`, `comparison`, `existing_mermaid`, `auto`). */
-export function visualSpecToMermaid(spec: VisualSpec): string {
+export function visualSpecToMermaid(
+	spec: VisualSpec,
+	options: VisualTemplateOptions = {},
+): string {
 	switch (spec.kind) {
 		case "timeline":
-			return timelineToMermaid(spec);
+			return timelineToMermaid(spec, options);
 		case "flow":
-			return flowToMermaid(spec);
+			return flowToMermaid(spec, options);
 		case "org_chart":
-			return orgChartToMermaid(spec);
+			return orgChartToMermaid(spec, options);
 		default:
 			throw new Error(
 				`visualSpecToMermaid does not template the "${spec.kind}" kind (timeline, flow, and org_chart only).`,
@@ -366,8 +560,6 @@ const GLYPH_WIDTH_EM = 0.6;
 
 /** Baseline-to-baseline distance of wrapped lines, as a multiple of the font size. */
 const LINE_HEIGHT_EM = 1.3;
-
-const ELLIPSIS = "…";
 
 /** How one text element wraps: its font size, and the lines it may use. */
 interface WrapStyle {

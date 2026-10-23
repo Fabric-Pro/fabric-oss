@@ -16,6 +16,27 @@
  * `proposal.source` here is the backend counterpart of the inbox's
  * `isChannelMonitorSource` gate (`PendingBacklogProposalsInbox`).
  */
+/**
+ * The reporter source stamped on a work item the Teams approve procedure
+ * creates. The inbox routes every source without an endpoint of its own here
+ * too (meetings, AI Update, scope documents, recommendations, the
+ * recurring-error scan), and none of those was reported from a Teams or Slack
+ * conversation: they carry no reporter source rather than a wrong one.
+ */
+export function reporterSourceForProposal(
+	source: string | null | undefined,
+): "TEAMS" | "SLACK" | null {
+	switch (source) {
+		case "TEAMS_CHANNEL":
+		case "TEAMS_CHAT":
+			return "TEAMS";
+		case "SLACK_CHANNEL":
+			return "SLACK";
+		default:
+			return null;
+	}
+}
+
 export function isChannelMonitorSource(
 	source: string | null | undefined,
 ): boolean {

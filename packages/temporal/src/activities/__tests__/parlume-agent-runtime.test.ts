@@ -153,6 +153,42 @@ describe("Parlume canonical agent adapters", () => {
 			});
 		},
 	);
+	it("reads two workspace passages and a bounded memory for a spoken turn", async () => {
+		mocks.preferences.mockResolvedValue({
+			enabledMcpConfigIds: [],
+			enabledWorkspaceIds: ["workspace"],
+		});
+		mocks.workspaces.mockResolvedValue({
+			allowed: ["workspace"],
+			dropped: [],
+		});
+		mocks.memory.mockResolvedValue({
+			context: `- ${"Remembered fact. ".repeat(10)}\n`.repeat(20),
+		});
+		const agent = await loadParlumeAgent(session);
+
+		await executeParlumeAgent({
+			agent,
+			session,
+			turnId: "turn",
+			message: "Question",
+			voiceInstructions: "",
+			knowledgeContext: "",
+			history: [],
+		});
+
+		expect(mocks.workspaceKnowledge).toHaveBeenCalledWith(
+			"Question",
+			"user",
+			"org",
+			["workspace"],
+			undefined,
+			2,
+		);
+		const memory = mocks.builtin.mock.calls[0]?.[2] as string;
+		expect(memory.length).toBeLessThanOrEqual(1_500);
+		expect(memory.endsWith("Remembered fact.")).toBe(true);
+	});
 	it("hands an explicit empty server list, not an unset one, to the chat engine", async () => {
 		const agent = await loadParlumeAgent(session);
 		await executeParlumeAgent({

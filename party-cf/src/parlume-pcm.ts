@@ -61,18 +61,22 @@ export async function readParlumeSpeech(input: {
 	}
 }
 
+export function encodeParlumeBase64(bytes: Uint8Array): string {
+	let binary = "";
+	for (const byte of bytes) {
+		binary += String.fromCharCode(byte);
+	}
+	return btoa(binary);
+}
+
 /** One frame of speech as the message Attendee plays into the meeting. */
 export function parlumeBotOutputMessage(
 	frame: Uint8Array,
 	sampleRate: number,
 ): string {
-	let binary = "";
-	for (const byte of frame) {
-		binary += String.fromCharCode(byte);
-	}
 	return JSON.stringify({
 		trigger: "realtime_audio.bot_output",
-		data: { chunk: btoa(binary), sample_rate: sampleRate },
+		data: { chunk: encodeParlumeBase64(frame), sample_rate: sampleRate },
 	});
 }
 
@@ -94,6 +98,7 @@ export class ParlumeAudioOutlet {
 	private queue: Uint8Array[] = [];
 	private offset = 0;
 	private queuedBytes = 0;
+	private dropped = 0;
 	private anchor = 0;
 	private sent = 0;
 	private speaking = false;
@@ -149,8 +154,14 @@ export class ParlumeAudioOutlet {
 		this.ending = true;
 	}
 
+	/** Bytes ever dropped by `clear` before they were sent. */
+	get droppedBytes(): number {
+		return this.dropped;
+	}
+
 	/** Drops queued speech; anything waiting for it to drain is released. */
 	clear(): void {
+		this.dropped += this.queuedBytes;
 		this.queue = [];
 		this.offset = 0;
 		this.queuedBytes = 0;

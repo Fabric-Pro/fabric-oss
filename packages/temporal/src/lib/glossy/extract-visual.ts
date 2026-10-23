@@ -1,7 +1,10 @@
 import {
+	boundGlossyField,
 	buildGlossyExtractInstructions,
 	buildGlossyExtractPrompt,
 	GLOSSY_DETECTABLE_KINDS,
+	GLOSSY_EDIT_INSTRUCTION_MAX_CHARS,
+	GLOSSY_EDITABLE_KINDS,
 	type GlossyDetectableKind,
 } from "@repo/agent-prompts/glossy";
 import { generateObject, NoObjectGeneratedError, zodSchema } from "@repo/ai";
@@ -13,6 +16,7 @@ import {
 	checkVisualFacts,
 	type FactGuardViolation,
 	type VisualFactsInput,
+	violationCode,
 } from "@repo/utils/glossy/fact-guard";
 import {
 	type VisualKind,
@@ -20,6 +24,7 @@ import {
 	visualSpecFacts,
 	visualSpecSchema,
 } from "@repo/utils/glossy/visual-spec";
+import { diagramFences } from "@repo/utils/proposal-artifact/visual-identity";
 import { z } from "zod";
 import {
 	type GlossyAiProviderNotConfigured,
@@ -42,6 +47,12 @@ import {
  * A visual that fails any step, or whose response was truncated, is
  * `dropped` with its reason and never shown (R18). Slot callers report the
  * same outcome as an unfilled slot (R22).
+ *
+ * Edit with instructions (Fizzy #2946) runs the same call with the editor's
+ * request and the diagram's current source. The section the model reads and
+ * the fact check reads then has every diagram fence removed, so a wrong
+ * date in the old diagram cannot justify itself, and `auto` offers only the
+ * kinds drawn as a diagram.
  *
  * The model-facing schema below is deliberately lenient — no bounds, every
  * optional field nullable — and built with this package's zod: bounds are
@@ -147,7 +158,19 @@ const OUTPUT_SPEC_SCHEMAS = {
 /** Structured-output providers want an object at the root, so the spec is a property. */
 function outputSchemaFor(
 	kind: GlossyExtractableKind,
+	editing: boolean,
 ): z.ZodType<{ spec: unknown }> {
+	if (kind === "auto" && editing) {
+		return z.object({
+			spec: z
+				.union([
+					OUTPUT_SPEC_SCHEMAS.timeline,
+					OUTPUT_SPEC_SCHEMAS.flow,
+					OUTPUT_SPEC_SCHEMAS.org_chart,
+				])
+				.describe("The spec, of the kind the current diagram shows."),
+		});
+	}
 	if (kind === "auto") {
 		return z.object({
 			spec: z
@@ -180,6 +203,22 @@ export interface ExtractGlossyVisualInput extends GlossyModelContext {
 	 * follow-up). Unset means detected: the stricter check.
 	 */
 	source?: "slot" | "detected";
+	/**
+	 * The Proposal artifact's visuals step: asks for labels short enough to
+	 * read at page width (Fizzy #2946). Unset for Glossy, whose prompt is
+	 * unchanged.
+	 */
+	proposalArtifact?: boolean;
+	/**
+	 * Edit with instructions on a Proposal (Fizzy #2946): the editor's
+	 * request for a change to one diagram. Read only with
+	 * `proposalArtifact`; with it, `currentSource` is the diagram's source
+	 * and every diagram fence leaves the section first. A request that
+	 * bounds to nothing is dropped as `invalidSpec` before any model call.
+	 */
+	instruction?: string | null;
+	/** The diagram's current Mermaid source, marker line excluded. */
+	currentSource?: string | null;
 }
 
 export type GlossyExtractionDropReason =
@@ -309,13 +348,39 @@ function toSpecCandidate(value: unknown): unknown {
 function isExtractedKind(
 	spec: VisualSpec,
 	requested: GlossyExtractableKind,
+	editing: boolean,
 ): spec is GlossyExtractedVisualSpec {
 	if (requested === "auto") {
-		return (GLOSSY_DETECTABLE_KINDS as readonly string[]).includes(
-			spec.kind,
-		);
+		return (
+			(editing
+				? GLOSSY_EDITABLE_KINDS
+				: GLOSSY_DETECTABLE_KINDS) as readonly string[]
+		).includes(spec.kind);
 	}
 	return spec.kind === requested;
+}
+
+/**
+ * `markdown` without its diagram fences: every fence `diagramFences` finds,
+ * nested ones (in a blockquote or a list item) included, loses its whole
+ * line range. An unclosed fence runs to the end of its container, as a
+ * Markdown reader takes it.
+ */
+function withoutDiagramFences(markdown: string): string {
+	const normalised = markdown.replace(/\r\n?/g, "\n");
+	const lines = normalised.split("\n");
+	const fences = diagramFences(normalised);
+	for (let index = fences.length - 1; index >= 0; index--) {
+		const position = fences[index].position;
+		if (!position) {
+			continue;
+		}
+		lines.splice(
+			position.start.line - 1,
+			position.end.line - position.start.line + 1,
+		);
+	}
+	return lines.join("\n").replace(/\n{3,}/g, "\n\n");
 }
 
 export async function extractGlossyVisual(
@@ -327,14 +392,44 @@ export async function extractGlossyVisual(
 	}
 	const { model, metadata, trackUsage } = resolved;
 
-	const instructions = buildGlossyExtractInstructions(input.documentType);
+	// An edit is a Proposal call that carries a request at all, so a request
+	// that bounds to nothing (only whitespace or control characters) is
+	// refused rather than run as a plain extraction over the old diagram.
+	const editing =
+		input.proposalArtifact === true && input.instruction != null;
+	const instruction = editing
+		? boundGlossyField(input.instruction, GLOSSY_EDIT_INSTRUCTION_MAX_CHARS)
+		: null;
+	if (editing && instruction === null) {
+		console.warn(`${EXTRACTION_LOG} Visual dropped`, {
+			reason: "invalidSpec",
+			cause: "emptyInstruction",
+			kind: input.kind,
+			projectId: input.projectId,
+		});
+		return dropped("invalidSpec");
+	}
+	const section: Pick<GlossySection, "heading" | "markdown"> = editing
+		? {
+				heading: input.section.heading,
+				markdown: withoutDiagramFences(input.section.markdown),
+			}
+		: input.section;
+
+	const instructions = buildGlossyExtractInstructions(input.documentType, {
+		proposalArtifact: input.proposalArtifact,
+		...(editing ? { editInstruction: true } : {}),
+	});
 	const prompt = buildGlossyExtractPrompt({
 		kind: input.kind,
-		heading: input.section.heading,
-		markdown: input.section.markdown,
+		heading: section.heading,
+		markdown: section.markdown,
 		slotHint: input.slotHint,
 		styleDirection: input.styleDirection,
 		variantNonce: input.variantNonce,
+		...(editing
+			? { instruction, currentSource: input.currentSource ?? "" }
+			: {}),
 	});
 	// A spec is bounded (at most 16 short entries), so the floor suffices.
 	const maxOutputTokens = computeScaledOutputTokenBudget(metadata, {
@@ -346,7 +441,7 @@ export async function extractGlossyVisual(
 	try {
 		const { object } = await generateObject({
 			model,
-			schema: zodSchema(outputSchemaFor(input.kind)),
+			schema: zodSchema(outputSchemaFor(input.kind, editing)),
 			instructions,
 			prompt,
 			...(maxOutputTokens !== undefined ? { maxOutputTokens } : {}),
@@ -380,7 +475,7 @@ export async function extractGlossyVisual(
 		return dropped("invalidSpec");
 	}
 	const spec = parsed.data;
-	if (!isExtractedKind(spec, input.kind)) {
+	if (!isExtractedKind(spec, input.kind, editing)) {
 		console.warn(`${EXTRACTION_LOG} Visual dropped`, {
 			reason: "kindMismatch",
 			kind: input.kind,
@@ -391,15 +486,16 @@ export async function extractGlossyVisual(
 	}
 
 	const facts = checkVisualFacts(
-		visualFactsOf(spec, input.section, isAuthorRequestedFlow(input)),
-		factSource(input.section),
+		visualFactsOf(spec, section, isAuthorRequestedFlow(input)),
+		factSource(section),
 	);
 	if (!facts.pass) {
+		// Codes only (`presence:date`), never the fact or section text.
 		console.warn(`${EXTRACTION_LOG} Visual dropped`, {
 			reason: "factCheck",
 			kind: spec.kind,
 			projectId: input.projectId,
-			violations: facts.violations.map((violation) => violation.kind),
+			violations: facts.violations.map(violationCode),
 		});
 		return dropped("factCheck", facts.violations);
 	}

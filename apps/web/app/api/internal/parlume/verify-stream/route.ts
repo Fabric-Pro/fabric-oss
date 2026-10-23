@@ -29,6 +29,7 @@ export async function POST(request: NextRequest) {
 			streamTokenDigest: true,
 			status: true,
 			hardStopAt: true,
+			suggestionsEnabled: true,
 		},
 	});
 	if (
@@ -86,5 +87,6 @@ export async function POST(request: NextRequest) {
 		valid: true,
 		hardStopAt: session.hardStopAt,
 		streamGeneration: verified.streamGeneration,
+		suggestionsEnabled: session.suggestionsEnabled,
 	});
 }

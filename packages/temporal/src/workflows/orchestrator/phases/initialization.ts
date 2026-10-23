@@ -928,7 +928,12 @@ async function getHybridRoutingSuggestionsAndUpdate(
 	if (hybridRouting.suggestions.length > 0) {
 		log.info("Hybrid routing suggestions available", {
 			count: hybridRouting.suggestions.length,
-			topSuggestion: hybridRouting.suggestions[0],
+			topSuggestion: {
+				source: hybridRouting.suggestions[0].source,
+				confidence: hybridRouting.suggestions[0].confidence,
+				agents: hybridRouting.suggestions[0].agents,
+				tools: hybridRouting.suggestions[0].tools,
+			},
 			sources: hybridRouting.suggestions.map((s) => s.source),
 			stats: hybridRouting.stats,
 		});

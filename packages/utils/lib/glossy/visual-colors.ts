@@ -109,6 +109,24 @@ export function strictHexColor(value: unknown): string | null {
 	return normalizeHexColor(value);
 }
 
+/**
+ * Up to `max` colours that pass {@link strictHexColor}, each once, in order;
+ * anything else is dropped.
+ */
+export function normalizeHexColorList(
+	values: readonly unknown[] | null | undefined,
+	max = 3,
+): string[] {
+	const colors: string[] = [];
+	for (const value of values ?? []) {
+		const color = strictHexColor(value);
+		if (color && !colors.includes(color)) {
+			colors.push(color);
+		}
+	}
+	return colors.slice(0, max);
+}
+
 /** `weight` of `color` over white, as `#rrggbb`. */
 function tint(color: string, weight: number): string {
 	const channel = (offset: number) =>

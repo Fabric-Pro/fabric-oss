@@ -12,6 +12,8 @@
  *   - leaving the action gives the user back the tier they chose.
  */
 
+import deMessages from "@repo/i18n/translations/de.json";
+import enMessages from "@repo/i18n/translations/en.json";
 import { PROPOSAL_CLIENT_MAIN_AGENT_KEY } from "@repo/utils/prompt-action-catalog";
 import { SetAsDefaultDialog } from "@saas/prompts/components/SetAsDefaultDialog";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -452,5 +454,72 @@ describe("SetAsDefaultDialog — the Proposal artifact gate (Fizzy #2946)", () =
 			}),
 		);
 		expect(note()).not.toBeInTheDocument();
+	});
+});
+
+describe("SetAsDefaultDialog — where a Proposal's diagrams come from (Fizzy #2946)", () => {
+	// The global next-intl mock renders the key itself.
+	const note = () => screen.queryByTestId("set-default-diagrams-note");
+
+	beforeEach(() => {
+		bindSet.mockReset();
+		bindSetMany.mockReset();
+		listForPrompt.mockReset();
+		listForPrompt.mockResolvedValue({ actions: [] });
+		nominate.mockReset();
+		orgAdmin.current = true;
+	});
+
+	it("says Fabric adds the diagrams when binding Client proposal (Main)", async () => {
+		const user = userEvent.setup();
+		openDialog();
+		await chooseClientProposal(user);
+
+		expect(note()).toHaveTextContent("diagramsNote");
+	});
+
+	it("says so when Client proposal (Main) rides along under Also apply to", async () => {
+		listForPrompt.mockResolvedValue({
+			actions: [
+				{
+					targetKey: PROPOSAL_CLIENT_MAIN_AGENT_KEY,
+					documentType: "PROPOSAL",
+					storyKind: null,
+				},
+			],
+		});
+		const user = userEvent.setup();
+		openDialog();
+		await waitFor(() => expect(listForPrompt).toHaveBeenCalledTimes(1));
+		await pick(user, /agent/i, /^document generator$/i);
+		await pick(user, /document type/i, /^prd$/i);
+
+		await waitFor(() => expect(note()).toBeInTheDocument());
+	});
+
+	it("says nothing for any other action, and stops once it is left", async () => {
+		const user = userEvent.setup();
+		openDialog();
+		await waitFor(() => expect(listForPrompt).toHaveBeenCalledTimes(1));
+		expect(note()).not.toBeInTheDocument();
+
+		await chooseClientProposal(user);
+		expect(note()).toBeInTheDocument();
+		await pick(user, /agent/i, /^document generator$/i);
+		expect(note()).not.toBeInTheDocument();
+	});
+
+	it("has the note in English and German", () => {
+		expect(
+			enMessages.projects.proposalArtifact.promptBinding.diagramsNote,
+		).toBe(
+			"Diagrams are added by Fabric after generation; a section that already has its own diagram is left alone.",
+		);
+		const german =
+			deMessages.projects.proposalArtifact.promptBinding.diagramsNote;
+		expect(german).toMatch(/Diagramm/);
+		expect(german).not.toBe(
+			enMessages.projects.proposalArtifact.promptBinding.diagramsNote,
+		);
 	});
 });

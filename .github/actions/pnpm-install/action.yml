@@ -1,0 +1,153 @@
+name: Install workspace dependencies
+description: >-
+  Restores the installed workspace tree and pnpm's lockfile verification log,
+  runs a frozen pnpm install over them, and seeds both caches from pushes to
+  the default branch. Call it after pnpm/action-setup and actions/setup-node,
+  with no `cache:` on setup-node: this action replaces the pnpm store cache.
+
+inputs:
+  save-cache:
+    description: >-
+      Whether this job may seed the caches on a push to the default branch.
+      Pass false from every job of a matrix but one, so parallel jobs on the
+      same architecture do not each upload the same entry.
+    required: false
+    default: 'true'
+
+# WHERE AN INSTALL SPENDS ITS TIME. With the ~880 MB pnpm store restored, a
+# full install still took 53 s on ubuntu-8core-arm and 100 s on the standard
+# x64 runner (October 2026). Two parts dominated:
+#
+#   * Supply-chain verification. pnpm 11 re-checks every lockfile entry
+#     against `minimumReleaseAge` and `trustPolicy` (pnpm-workspace.yaml) on
+#     each install, one registry request per entry: 50.6 s for 3,348 entries
+#     on arm64, 85 s on x64. pnpm records each lockfile that passed, keyed by
+#     its content hash and the policy it passed under, in
+#     `<pnpm cache path>/lockfile-verified.jsonl`, and skips the check when a
+#     record covers the current lockfile and policy. pnpm's CI documentation
+#     recommends restoring that log for this reason.
+#   * Linking about 3,000 packages from the store into node_modules: 14 s on
+#     arm64, and it runs alongside the verification.
+#
+# Restoring node_modules itself instead of the store removes the link phase:
+# the restore downloads and extracts about the same bytes as the store did,
+# and `pnpm install` then finds the tree already matching the lockfile.
+#
+# CORRECTNESS. The install below always runs. It is what turns a restored
+# tree into the lockfile's tree: an exact hit leaves it nothing to do, and a
+# fallback hit (an older lockfile) is updated in place the way a developer's
+# `pnpm install` after a pull updates theirs. A tree that pnpm judges
+# incompatible is purged and reinstalled; pnpm skips the confirmation prompt
+# for that in CI. Native addons built during install (isolated-vm, allowed in
+# `allowBuilds`) are compiled against the running Node, so the Node and pnpm
+# versions are part of every key and of the fallback prefix: a fallback only
+# ever crosses lockfile changes, never a runtime change.
+#
+# The verification log is safe to share for the same reason it exists: a
+# record only vouches for the exact lockfile content it hashed, and pnpm
+# re-checks the record's policy against the current pnpm-workspace.yaml.
+#
+# WHO WRITES. Only pushes to the repository's default branch save, so every
+# entry comes from merged code; pull requests restore those entries and never
+# save. A pull_request_target job must not use this action at all: it resolves
+# from the pull request's checkout, and such a job saves into the base branch's
+# cache scope. Jobs that install a filtered subset (`--filter`) do not use it
+# either, because the cached tree is the whole workspace.
+#
+# BUDGET. One node_modules entry per runner architecture and dependency set
+# (about the size of the store entry it replaces, ~880 MB) and one log entry
+# of a few kilobytes per architecture and lockfile. The repository's Actions
+# cache is capped at 10 GB.
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve dependency cache keys
+      id: keys
+      shell: bash
+      run: |
+        set -euo pipefail
+        node_version="$(node --version)"
+        pnpm_version="$(pnpm --version)"
+        cache_dir="$(pnpm cache path)"
+        [[ "$cache_dir" == /* ]] \
+          || { echo "::error::pnpm cache path returned '$cache_dir', not an absolute path"; exit 1; }
+        {
+          echo "runtime=node-${node_version}-pnpm-${pnpm_version}"
+          echo "verification-log=${cache_dir}/lockfile-verified.jsonl"
+          # Every node_modules a workspace install creates, one per workspace
+          # glob in pnpm-workspace.yaml. Listed rather than globbed as
+          # `**/node_modules`, which would also match the package directories
+          # inside node_modules/.pnpm and archive them twice.
+          echo 'modules<<PATHS'
+          printf '%s\n' \
+            node_modules \
+            config/node_modules \
+            'apps/*/node_modules' \
+            'packages/*/node_modules' \
+            'tooling/*/node_modules' \
+            'services/*/node_modules' \
+            'agents/*/*/node_modules' \
+            'agents/*/*/*/node_modules' \
+            party/node_modules \
+            party-cf/node_modules
+          echo 'PATHS'
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Restore installed node_modules
+      id: modules
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.keys.outputs.modules }}
+        key: pnpm-modules-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.keys.outputs.runtime }}-${{ hashFiles('pnpm-lock.yaml', 'pnpm-workspace.yaml', 'patches/**') }}
+        restore-keys: |
+          pnpm-modules-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.keys.outputs.runtime }}-
+
+    # The newest log under the prefix also carries every older lockfile's
+    # record, so a pull request based on an earlier staging commit still finds
+    # the record for its own lockfile.
+    - name: Restore lockfile verification log
+      id: verification
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.keys.outputs.verification-log }}
+        key: pnpm-lockfile-verified-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml') }}
+        restore-keys: |
+          pnpm-lockfile-verified-v1-${{ runner.os }}-${{ runner.arch }}-
+
+    - name: Install dependencies
+      id: install
+      shell: bash
+      env:
+        VERIFICATION_LOG: ${{ steps.keys.outputs.verification-log }}
+      run: |
+        set -euo pipefail
+        pnpm install --frozen-lockfile --prefer-offline
+        if [[ -f "$VERIFICATION_LOG" ]]; then
+          echo "verification-log=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    # Saved straight after the install, before any later step writes build
+    # caches into node_modules. An exact hit means this tree is already saved.
+    - name: Save installed node_modules
+      if: >-
+        inputs.save-cache == 'true' &&
+        github.event_name == 'push' &&
+        github.ref_name == github.event.repository.default_branch &&
+        steps.modules.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.keys.outputs.modules }}
+        key: ${{ steps.modules.outputs.cache-primary-key }}
+
+    - name: Save lockfile verification log
+      if: >-
+        inputs.save-cache == 'true' &&
+        github.event_name == 'push' &&
+        github.ref_name == github.event.repository.default_branch &&
+        steps.verification.outputs.cache-hit != 'true' &&
+        steps.install.outputs.verification-log == 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ steps.keys.outputs.verification-log }}
+        key: ${{ steps.verification.outputs.cache-primary-key }}

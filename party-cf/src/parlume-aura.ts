@@ -31,6 +31,8 @@ export interface ParlumeAuraOutlet {
 	end(): void;
 	clear(): void;
 	drained(): Promise<void>;
+	/** Bytes ever dropped by `clear` before they were sent: speech nobody heard. */
+	readonly droppedBytes: number;
 }
 
 /** What one sentence cost; times are milliseconds. */
@@ -56,6 +58,12 @@ export interface ParlumeAuraPlayback {
 	failedAt?: number;
 	error?: string;
 	firstAudioAt?: number;
+	/**
+	 * How many sentences, from the first, were heard to their end. Speech the
+	 * outlet dropped when the reply was silenced counts as unheard, and so
+	 * does the sentence it cut into.
+	 */
+	heard: number;
 	sentences: ParlumeAuraSentence[];
 }
 
@@ -179,6 +187,10 @@ export async function playParlumeAuraSentences(input: {
 	const timings: ParlumeAuraSentence[] = [];
 	const clips: Array<Promise<ReadableStream<Uint8Array>>> = [];
 	const played: boolean[] = [];
+	// Bytes handed to the outlet up to the end of each fully played sentence.
+	const sentenceEnds: number[] = [];
+	let enqueuedBytes = 0;
+	const droppedAtStart = outlet.droppedBytes;
 	let firstAudioAt: number | undefined;
 	let failedAt: number | undefined;
 	let error: string | undefined;
@@ -221,6 +233,7 @@ export async function playParlumeAuraSentences(input: {
 					timing.totalMs = at - begun;
 					if (chunk.byteLength > 0) {
 						firstAudioAt ??= at;
+						enqueuedBytes += chunk.byteLength;
 						outlet.enqueue(chunk);
 						timing.ok = true;
 					}
@@ -230,6 +243,7 @@ export async function playParlumeAuraSentences(input: {
 						throw new Error("Aura returned no audio");
 					}
 					played[index] = true;
+					sentenceEnds[index] = enqueuedBytes;
 					return true;
 				}
 			}
@@ -287,11 +301,20 @@ export async function playParlumeAuraSentences(input: {
 	} else {
 		outlet.clear();
 	}
+	const heardBytes = enqueuedBytes - (outlet.droppedBytes - droppedAtStart);
+	let heard = 0;
+	while (
+		sentenceEnds[heard] !== undefined &&
+		sentenceEnds[heard] <= heardBytes
+	) {
+		heard++;
+	}
 	return {
 		complete: complete && failedAt === undefined && isCurrent(),
 		failedAt,
 		error,
 		firstAudioAt,
+		heard,
 		sentences: timings,
 	};
 }

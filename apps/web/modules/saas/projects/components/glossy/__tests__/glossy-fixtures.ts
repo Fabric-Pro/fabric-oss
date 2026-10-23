@@ -194,6 +194,7 @@ export function glossyEdition(overrides: EditionOverrides = {}): GlossyEdition {
 			},
 			recipient: null,
 			recipientVersion: 0,
+			recipientCanEdit: true,
 			...brand,
 		},
 	};

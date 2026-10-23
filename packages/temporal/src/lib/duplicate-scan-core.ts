@@ -44,6 +44,7 @@ import {
 	getAIModelWithMetadata,
 	resolveModelWithProvider,
 } from "@repo/ai";
+import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
 import {
 	baseModelName,
 	buildVerifierPrompt,
@@ -78,7 +79,7 @@ import { z } from "zod";
  * discarded just because the model was verbose. (A tight `.max(400)` here
  * previously meant an over-long reasoning would fail the *whole*
  * `generateObject` schema with `NoObjectGeneratedError`.) */
-const VerdictSchema = z.object({
+export const VerdictSchema = z.object({
 	// Declared FIRST on purpose. Structured output is generated in field order,
 	// so making the model write each item's own problem before it reaches
 	// `relationship` forces it to ground the verdict in both items. Without
@@ -285,6 +286,12 @@ export async function runDuplicateScanCore(
 				embedding: embeddings[i],
 			}));
 		} catch (err) {
+			if (
+				err instanceof AIProviderNotConfiguredError ||
+				err instanceof UnsupportedEmbeddingModelError
+			) {
+				throw err;
+			}
 			logger.error(`${logPrefix} embedding failed`, {
 				projectId,
 				texts: staleItems.length,

@@ -104,6 +104,7 @@ export function SetAsDefaultDialog({
 	const tSuperseded = useTranslations(
 		"projects.proposalArtifact.supersededAction",
 	);
+	const tBinding = useTranslations("projects.proposalArtifact.promptBinding");
 	// Fizzy #2946: with the Proposal artifact on, the legacy Proposal actions
 	// are neither offered nor submitted from here.
 	const offered = useOfferedPromptActions();
@@ -287,6 +288,15 @@ export function SetAsDefaultDialog({
 				? PERSONAL_DEFAULT_REFUSED_AGENTS.has(action.targetKey)
 				: false;
 		});
+	// Fizzy #2946: a Proposal's diagrams come from Fabric's own step after
+	// generation, not from this prompt, so binding it says so.
+	const coversClientMain =
+		selectedAgent === PROPOSAL_CLIENT_MAIN_AGENT_KEY ||
+		alsoApplyTo.some(
+			(id) =>
+				ALL_ACTIONS.find((a) => a.id === id)?.targetKey ===
+				PROPOSAL_CLIENT_MAIN_AGENT_KEY,
+		);
 	const scope: BindingScope =
 		personalScopeRefused && selectedScope === "USER"
 			? isOrgContext
@@ -473,6 +483,14 @@ export function SetAsDefaultDialog({
 								))}
 							</SelectContent>
 						</Select>
+						{coversClientMain && (
+							<p
+								data-testid="set-default-diagrams-note"
+								className="text-xs text-muted-foreground"
+							>
+								{tBinding("diagramsNote")}
+							</p>
+						)}
 					</div>
 
 					<div className="space-y-2">

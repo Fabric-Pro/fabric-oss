@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { ParlumeSentenceQueue, toSpokenText } from "../parlume-spoken-text";
+import {
+	PARLUME_MORE_LINE,
+	ParlumeSentenceQueue,
+	ParlumeSpokenReply,
+	toSpokenText,
+} from "../parlume-spoken-text";
 
 async function collect(queue: ParlumeSentenceQueue): Promise<string[]> {
 	const sentences: string[] = [];
@@ -123,5 +128,139 @@ describe("Parlume spoken sentences", () => {
 		expect(queue.received).toBe(false);
 		queue.push("Partial answer");
 		expect(queue.received).toBe(true);
+	});
+});
+
+const HEADLINE = "F-12 ships on Friday, and the export work is done.";
+const DETAIL =
+	"The two open items are the CSV header fix and the release note.\nBoth are assigned.";
+
+function reply(maxChars = 350) {
+	const queue = new ParlumeSentenceQueue(maxChars);
+	return { queue, reply: new ParlumeSpokenReply(queue) };
+}
+
+/** Pushes `text` cut into pieces of `size` characters. */
+function pushInPieces(target: ParlumeSpokenReply, text: string, size: number) {
+	for (let index = 0; index < text.length; index += size) {
+		target.push(text.slice(index, index + size));
+	}
+}
+
+describe("Parlume headline and detail", () => {
+	it.each([1, 2, 3, 4, 5, 7, 11, 64])(
+		"speaks the headline and keeps the detail for the chat, with the text cut every %i characters",
+		async (size) => {
+			const { queue, reply: spoken } = reply();
+			const speaking = collect(queue);
+
+			pushInPieces(spoken, `${HEADLINE}\n---\n${DETAIL}`, size);
+			spoken.end();
+
+			await expect(speaking).resolves.toEqual([HEADLINE]);
+			expect(spoken.chatText).toBe(DETAIL);
+		},
+	);
+
+	it("treats a marker on the last line as the end of the headline", async () => {
+		const { queue, reply: spoken } = reply();
+		const speaking = collect(queue);
+		pushInPieces(spoken, `${HEADLINE}\n--`, 3);
+		spoken.push("-");
+		spoken.end();
+
+		await expect(speaking).resolves.toEqual([HEADLINE]);
+		expect(spoken.chatText).toBe("");
+	});
+
+	it("speaks dashes that are not a marker line of their own", async () => {
+		const { queue, reply: spoken } = reply();
+		const speaking = collect(queue);
+		spoken.push("The range is 3---5 days, as planned last week.\n----\n");
+		spoken.end();
+
+		const sentences = await speaking;
+		expect(sentences.join(" ")).toContain("3---5 days");
+		expect(spoken.chatText).toBe("");
+	});
+
+	it("never takes dashes that end a line for the marker", async () => {
+		const { queue, reply: spoken } = reply();
+		const speaking = collect(queue);
+		spoken.push("Sprint total is 12");
+		spoken.push("---");
+		spoken.push("\nand that is everything for today.");
+		spoken.end();
+
+		const sentences = await speaking;
+		expect(sentences.join(" ")).toContain("everything for today");
+		expect(spoken.chatText).toBe("");
+	});
+
+	it("sends the chat what did not fit when there is no marker, instead of dropping it", async () => {
+		const { queue, reply: spoken } = reply(60);
+		const speaking = collect(queue);
+		const second =
+			"The second sentence would take the reply past the limit.";
+		const third = "So would the third one.";
+		spoken.push(`${HEADLINE} ${second} ${third}`);
+		spoken.end();
+
+		await expect(speaking).resolves.toEqual([HEADLINE]);
+		expect(spoken.chatText).toBe(`${second} ${third}`);
+	});
+
+	it("speaks the detail too, up to the longer limit, and says there is more when the chat is out of reach", async () => {
+		const { queue, reply: spoken } = reply(60);
+		const speaking = collect(queue);
+		spoken.speakEverything(130);
+		spoken.push(
+			`${HEADLINE}\n---\n${DETAIL}\nA third sentence that no longer fits.`,
+		);
+		spoken.end();
+
+		const sentences = await speaking;
+		expect(sentences[0]).toBe(HEADLINE);
+		expect(sentences.join(" ")).toContain("CSV header fix");
+		expect(sentences.at(-1)).toBe(PARLUME_MORE_LINE);
+	});
+
+	it("keeps detail written before the chat was found out of reach, and speaks it", async () => {
+		const { queue, reply: spoken } = reply();
+		const speaking = collect(queue);
+		spoken.push(`${HEADLINE}\n---\nThe export ships on Friday too.`);
+		spoken.speakEverything(800);
+		spoken.end();
+
+		await expect(speaking).resolves.toEqual([
+			HEADLINE,
+			"The export ships on Friday too.",
+		]);
+		expect(spoken.chatText).toBe("");
+	});
+
+	it("gives the chat everything not heard to its end, as written, without narration", async () => {
+		const { queue, reply: spoken } = reply();
+		const speaking = collect(queue);
+		queue.narrate("Let me check.");
+		spoken.push(
+			"**F-12** ships on Friday, as the roadmap says. The export is done, see https://example.com/f/12 for it.\n---\nDetail here.",
+		);
+		spoken.end();
+		await speaking;
+
+		expect(spoken.unheardText(2)).toBe(
+			"The export is done, see https://example.com/f/12 for it.\n\nDetail here.",
+		);
+		expect(spoken.unheardText(0)).toContain("**F-12** ships on Friday");
+		expect(spoken.unheardText(0)).not.toContain("Let me check");
+	});
+
+	it("counts only the answer as received, not narration", () => {
+		const { queue, reply: spoken } = reply();
+		queue.narrate("Let me check.");
+		expect(spoken.received).toBe(false);
+		spoken.push("Done.");
+		expect(spoken.received).toBe(true);
 	});
 });

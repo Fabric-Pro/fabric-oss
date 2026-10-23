@@ -1100,6 +1100,7 @@ export async function storySyncWorkflow(
 			if (!selectiveFastPathAttempted && allPmItems.length === 0) {
 				let currentPage = 1;
 				let fetchMore = true;
+				let rowsReceived = 0;
 
 				// Some PM tools (e.g. Fizzy) silently cap `per_page` to a value lower
 				// than what we request, causing hasNextPage to incorrectly return false.
@@ -1109,6 +1110,9 @@ export async function storySyncWorkflow(
 				//   3. Fall back to hasNextPage for well-behaved tools.
 				let effectivePageSize: number | undefined;
 
+				const useListingEvidence = patched(
+					"pm-listing-completeness-v1",
+				);
 				while (fetchMore && currentPage <= MAX_PAGES) {
 					progress.message = `Fetching PM work items (page ${currentPage})...`;
 					const pageResult = await listWorkItemsFromPM({
@@ -1120,31 +1124,65 @@ export async function storySyncWorkflow(
 						organizationId,
 						page: currentPage,
 						pageSize: FETCH_PAGE_SIZE,
+						...(useListingEvidence ? { offset: rowsReceived } : {}),
 						capabilities,
 					});
 					if (pageResult.listingComplete === false) {
 						pmListingComplete = false;
 					}
 					allPmItems.push(...pageResult.items);
+					const rawCount = useListingEvidence
+						? (pageResult.rawCount ?? pageResult.items.length)
+						: pageResult.items.length;
+					rowsReceived += rawCount;
 
-					if (pageResult.items.length === 0) {
+					if (rawCount === 0) {
 						fetchMore = false;
 					} else if (pageResult.total != null) {
 						// PM tool returned a total count — trust it.
-						fetchMore = allPmItems.length < pageResult.total;
+						fetchMore =
+							(useListingEvidence
+								? rowsReceived
+								: allPmItems.length) < pageResult.total;
 					} else {
 						// No total: detect effective page-size cap.
 						if (
 							effectivePageSize == null &&
-							pageResult.items.length < FETCH_PAGE_SIZE
+							rawCount < FETCH_PAGE_SIZE
 						) {
-							effectivePageSize = pageResult.items.length;
+							effectivePageSize = rawCount;
 						}
 						fetchMore =
-							pageResult.items.length >=
-							(effectivePageSize ?? FETCH_PAGE_SIZE);
+							rawCount >= (effectivePageSize ?? FETCH_PAGE_SIZE);
+					}
+					if (
+						useListingEvidence &&
+						!fetchMore &&
+						rawCount > 0 &&
+						pageResult.hasMore === true
+					) {
+						pmListingComplete = false;
+						log.warn(
+							"PM listing stopped on a page reporting more results",
+							{ projectId, page: currentPage, rowsReceived },
+						);
 					}
 					currentPage++;
+				}
+				if (
+					useListingEvidence &&
+					currentPage > MAX_PAGES &&
+					fetchMore
+				) {
+					pmListingComplete = false;
+					log.warn(
+						"PM listing reached the page cap before completion",
+						{
+							projectId,
+							maxPages: MAX_PAGES,
+							rowsReceived,
+						},
+					);
 				}
 			}
 			if (!pmListingComplete && !isSelectivePull) {

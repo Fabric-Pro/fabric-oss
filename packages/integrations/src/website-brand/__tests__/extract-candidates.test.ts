@@ -105,6 +105,31 @@ describe("extractHeadCandidates", () => {
 		expect(performance.now() - started).toBeLessThan(2_000);
 		expect(head.icon).toBeNull();
 	});
+
+	it("reads the first og:site_name and the first title, entities decoded", () => {
+		const head = extractHeadCandidates(
+			`<head>
+				<!-- <title>Commented</title> -->
+				<title>Example &amp; Co</title>
+				<title>Second</title>
+				<meta property="og:site_name" content="Example &quot;Studio&quot;">
+				<meta property="og:site_name" content="Other">
+			</head><body><title>Body</title></body>`,
+			BASE,
+		);
+		expect(head.title).toBe("Example & Co");
+		expect(head.siteName).toBe('Example "Studio"');
+	});
+
+	it("reads no title or site name when the head declares none", () => {
+		const head = extractHeadCandidates(
+			`<head><script>document.title = "<title>Scripted</title>"</script></head>
+			<body><title>Body</title><meta property="og:site_name" content="Late"></body>`,
+			BASE,
+		);
+		expect(head.title).toBeNull();
+		expect(head.siteName).toBeNull();
+	});
 });
 
 describe("extractManifestCandidates", () => {

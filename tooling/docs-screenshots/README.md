@@ -1,7 +1,9 @@
 # Docs screenshots
 
 Renders the screenshots used by the public documentation under
-`apps/web/content/docs`, writing PNGs into `apps/web/public/images/docs/qa/`.
+`apps/web/content/docs`, writing PNGs into `apps/web/public/images/docs/qa/`, or
+into the folder a mock names in `OUTPUT_FOLDERS` in `render.mjs` (the Parlume
+images go to `images/docs/parlume/`).
 
 ```bash
 node tooling/docs-screenshots/render.mjs             # all of them
@@ -41,7 +43,8 @@ fallback would ship a screenshot that looks subtly unlike the app.
 2. Wrap each shot in an element with an `id` (`<div id="shot-thing">`).
 3. Register it in `SHOTS` in `render.mjs`. The filename is referenced from an
    `.mdx` page, so treat it as part of the published contract: don't rename one
-   without updating the page.
+   without updating the page. To write a mock's images somewhere other than
+   `qa/`, add the mock to `OUTPUT_FOLDERS`.
 4. Render, look at the PNG, and reference it from the page with a **descriptive
    alt text** — the docs site zooms images, and a screen-reader user gets only
    the alt.

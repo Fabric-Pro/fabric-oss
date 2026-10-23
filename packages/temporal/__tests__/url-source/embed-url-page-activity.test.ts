@@ -10,12 +10,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@repo/database/prisma/client", () => ({
 	db: {
 		projectContextUrlPage: {
-			update: vi.fn(),
+			update: vi.fn().mockResolvedValue(undefined),
 		},
 	},
 }));
 
 vi.mock("@repo/ai", () => ({
+	assertEmbeddingModelUsable: vi.fn(),
+	AIProviderNotConfiguredError: class AIProviderNotConfiguredError extends Error {
+		name = "AIProviderNotConfiguredError";
+	},
 	getSystemEmbeddingRAGProviderConfig: vi.fn().mockResolvedValue({
 		apiKey: "test-api-key",
 		provider: "OPENAI_DIRECT",
@@ -26,19 +30,11 @@ vi.mock("@repo/rag", () => ({
 	embedProjectContext: vi.fn(),
 }));
 
-vi.mock("@temporalio/activity", () => ({
+vi.mock("@temporalio/activity", async () => ({
+	...(await vi.importActual<typeof import("@temporalio/activity")>(
+		"@temporalio/activity",
+	)),
 	heartbeat: vi.fn(),
-	ApplicationFailure: {
-		retryable: (message: string, type: string) => {
-			const err = new Error(message) as Error & {
-				type: string;
-				nonRetryable: boolean;
-			};
-			err.type = type;
-			err.nonRetryable = false;
-			return err;
-		},
-	},
 }));
 
 vi.mock("../../src/activities/lib/activity-logger", () => ({
@@ -50,8 +46,15 @@ vi.mock("../../src/activities/lib/activity-logger", () => ({
 	},
 }));
 
+import {
+	AIProviderNotConfiguredError,
+	assertEmbeddingModelUsable,
+	getSystemEmbeddingRAGProviderConfig,
+} from "@repo/ai";
+import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
 import { db } from "@repo/database/prisma/client";
 import { embedProjectContext } from "@repo/rag";
+import { ApplicationFailure } from "@temporalio/activity";
 import { embedUrlPageActivity } from "../../src/activities/url-source/embed-url-page-activity";
 
 const mockUpdate = db.projectContextUrlPage.update as ReturnType<typeof vi.fn>;
@@ -71,6 +74,15 @@ const baseInput = {
 describe("embedUrlPageActivity", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		vi.mocked(assertEmbeddingModelUsable)
+			.mockReset()
+			.mockResolvedValue(undefined);
+		vi.mocked(getSystemEmbeddingRAGProviderConfig)
+			.mockReset()
+			.mockResolvedValue({
+				apiKey: "test-api-key",
+				provider: "OPENAI_DIRECT",
+			} as never);
 	});
 
 	it("stamps spec §8.1 metadata onto the embed call", async () => {
@@ -122,6 +134,7 @@ describe("embedUrlPageActivity", () => {
 
 		await expect(embedUrlPageActivity(baseInput)).rejects.toMatchObject({
 			type: "EMBED_URL_PAGE_FAILED",
+			nonRetryable: false,
 		});
 
 		expect(mockUpdate).toHaveBeenCalledOnce();
@@ -158,4 +171,207 @@ describe("embedUrlPageActivity", () => {
 
 		expect(mockEmbed.mock.calls[0][0].metadata.sourceTitle).toBeUndefined();
 	});
+
+	it("marks a refused project page FAILED before throwing a non-retryable failure", async () => {
+		const refusal = new UnsupportedEmbeddingModelError(
+			"text-embedding-3-large",
+		);
+		mockEmbed.mockResolvedValue({
+			success: false,
+			error: refusal.message,
+			refusal,
+		});
+		const error = await embedUrlPageActivity(baseInput).catch(
+			(error: unknown) => error,
+		);
+		expect(error).toBeInstanceOf(ApplicationFailure);
+		expect(error).toMatchObject({
+			type: "UnsupportedEmbeddingModelError",
+			nonRetryable: true,
+			message: refusal.message,
+		});
+		expect(mockUpdate).toHaveBeenCalledWith({
+			where: { id: "page-1" },
+			data: {
+				extractionStatus: "FAILED",
+				extractionError: refusal.message,
+			},
+		});
+	});
 });
+
+it.each(["precheck", "provider"] as const)(
+	"a project page missing its embedding provider at %s fails non-retryably",
+	async (stage) => {
+		vi.clearAllMocks();
+		const refusal = new AIProviderNotConfiguredError(
+			"Configure an embedding provider in Settings.",
+		);
+		vi.mocked(assertEmbeddingModelUsable)
+			.mockReset()
+			.mockResolvedValue(undefined);
+		vi.mocked(getSystemEmbeddingRAGProviderConfig)
+			.mockReset()
+			.mockResolvedValue({ apiKey: "example-key" } as never);
+		mockEmbed
+			.mockReset()
+			.mockResolvedValue({ success: false, error: refusal.message });
+		if (stage === "precheck") {
+			vi.mocked(assertEmbeddingModelUsable).mockRejectedValueOnce(
+				refusal,
+			);
+		}
+		if (stage === "provider") {
+			vi.mocked(
+				getSystemEmbeddingRAGProviderConfig,
+			).mockRejectedValueOnce(refusal);
+		}
+		const error = await embedUrlPageActivity(baseInput).catch(
+			(error: unknown) => error,
+		);
+		expect(error).toBeInstanceOf(ApplicationFailure);
+		expect(error).toMatchObject({
+			nonRetryable: true,
+			type: "AIProviderNotConfiguredError",
+			message: refusal.message,
+		});
+		expect(mockUpdate).toHaveBeenCalledWith({
+			where: { id: "page-1" },
+			data: {
+				extractionStatus: "FAILED",
+				extractionError: refusal.message,
+			},
+		});
+	},
+);
+
+it("reports a project page's unsupported model from the precheck with its class name", async () => {
+	vi.clearAllMocks();
+	const refusal = new UnsupportedEmbeddingModelError(
+		"text-embedding-3-large",
+	);
+	vi.mocked(assertEmbeddingModelUsable)
+		.mockReset()
+		.mockRejectedValueOnce(refusal);
+	vi.mocked(getSystemEmbeddingRAGProviderConfig)
+		.mockReset()
+		.mockResolvedValue({ apiKey: "example-key" } as never);
+	mockEmbed
+		.mockReset()
+		.mockResolvedValue({ success: false, error: refusal.message });
+	const error = await embedUrlPageActivity(baseInput).catch(
+		(error: unknown) => error,
+	);
+	expect(error).toBeInstanceOf(ApplicationFailure);
+	expect(error).toMatchObject({
+		nonRetryable: true,
+		type: "UnsupportedEmbeddingModelError",
+		message: refusal.message,
+	});
+	expect(mockEmbed).not.toHaveBeenCalled();
+	expect(mockUpdate).toHaveBeenCalledWith({
+		where: { id: "page-1" },
+		data: { extractionStatus: "FAILED", extractionError: refusal.message },
+	});
+});
+
+it("keeps an ordinary project page provider-resolution failure retryable", async () => {
+	vi.clearAllMocks();
+	vi.mocked(assertEmbeddingModelUsable)
+		.mockReset()
+		.mockResolvedValue(undefined);
+	const failure = new Error("Provider temporarily unavailable");
+	vi.mocked(getSystemEmbeddingRAGProviderConfig)
+		.mockReset()
+		.mockRejectedValueOnce(failure);
+	const error = await embedUrlPageActivity(baseInput).catch(
+		(error: unknown) => error,
+	);
+	expect(error).toBe(failure);
+	const { ensureApplicationFailure } = await import("@temporalio/common");
+	expect(ensureApplicationFailure(error)).toMatchObject({
+		type: "Error",
+		nonRetryable: false,
+		message: failure.message,
+	});
+});
+
+it("keeps a missing provider returned by the embed retryable after a successful precheck", async () => {
+	vi.clearAllMocks();
+	vi.mocked(assertEmbeddingModelUsable)
+		.mockReset()
+		.mockResolvedValue(undefined);
+	vi.mocked(getSystemEmbeddingRAGProviderConfig)
+		.mockReset()
+		.mockResolvedValue({ apiKey: "example-key" } as never);
+	mockUpdate.mockReset().mockResolvedValue(undefined);
+	const refusal = new AIProviderNotConfiguredError(
+		"Configure an embedding provider.",
+	);
+	mockEmbed
+		.mockReset()
+		.mockResolvedValue({ success: false, error: refusal.message });
+	await expect(embedUrlPageActivity(baseInput)).rejects.toMatchObject({
+		nonRetryable: false,
+		type: "EMBED_URL_PAGE_FAILED",
+		message: refusal.message,
+	});
+	expect(mockUpdate).toHaveBeenCalledWith({
+		where: { id: "page-1" },
+		data: { extractionStatus: "FAILED", extractionError: refusal.message },
+	});
+});
+
+it.each([
+	[
+		"thrown width",
+		new UnsupportedEmbeddingModelError("text-embedding-3-large"),
+		false,
+	],
+	[
+		"thrown provider",
+		new AIProviderNotConfiguredError("Configure an embedding provider."),
+		false,
+	],
+	[
+		"returned width",
+		new UnsupportedEmbeddingModelError("text-embedding-3-large"),
+		true,
+	],
+] as const)(
+	"preserves %s refusal when recording FAILED fails",
+	async (_label, refusal, returned) => {
+		vi.clearAllMocks();
+		vi.mocked(assertEmbeddingModelUsable)
+			.mockReset()
+			.mockResolvedValue(undefined);
+		vi.mocked(getSystemEmbeddingRAGProviderConfig)
+			.mockReset()
+			.mockResolvedValue({ apiKey: "example-key" } as never);
+		mockEmbed.mockReset().mockResolvedValue({
+			success: false,
+			error: refusal.message,
+			refusal,
+		});
+		if (!returned) {
+			vi.mocked(assertEmbeddingModelUsable).mockRejectedValueOnce(
+				refusal,
+			);
+		}
+		mockUpdate
+			.mockReset()
+			.mockRejectedValueOnce(
+				new Error("Database temporarily unavailable"),
+			);
+		const error = await embedUrlPageActivity(baseInput).catch(
+			(error: unknown) => error,
+		);
+		expect(error).toBeInstanceOf(ApplicationFailure);
+		expect(error).toMatchObject({
+			nonRetryable: true,
+			type: refusal.name,
+			message: refusal.message,
+		});
+		expect(mockUpdate).toHaveBeenCalledTimes(1);
+	},
+);

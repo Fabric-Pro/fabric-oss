@@ -47,6 +47,8 @@ vi.mock("@temporalio/workflow", () => ({
 	},
 }));
 
+import { log } from "@temporalio/workflow";
+
 import { orchestratorCompletionWorkflow } from "../src/workflows/orchestrator/phases/completion";
 import { executeInitializationPhase } from "../src/workflows/orchestrator/phases/initialization";
 import { executePlanningPhase } from "../src/workflows/orchestrator/phases/planning";
@@ -154,6 +156,56 @@ describe("orchestrator memory regression", () => {
 			patternsLearned: [],
 		});
 	});
+
+	it.each(["letta", "qdrant"])(
+		"logs suggestion metadata without pattern text for %s",
+		async (source) => {
+			const suggestion = {
+				source,
+				confidence: 80,
+				agents: ["agent-example"],
+				tools: ["tool-example"],
+				pattern: "distinctive private pattern",
+				executionId: "execution-example",
+			};
+			activityStubs.getHybridRoutingSuggestions.mockResolvedValue({
+				suggestions: [suggestion],
+				warnings: [],
+				stats: {
+					lettaMatches: 0,
+					semanticMatches: 1,
+					failureMatches: 0,
+				},
+			});
+			const input = {
+				executionId: "exec-example",
+				message: "Inspect an example",
+				userId: "user-example",
+				organizationId: "org-example",
+				executionMode: "default",
+				history: [],
+			} as any;
+			const result = await executeInitializationPhase(
+				createInitialState(input),
+				input,
+				vi.fn(),
+			);
+			expect(result.success).toBe(true);
+			const entry = vi
+				.mocked(log.info)
+				.mock.calls.find(
+					([message]) =>
+						message === "Hybrid routing suggestions available",
+				);
+			expect(entry?.[1]?.topSuggestion).toEqual({
+				source,
+				confidence: 80,
+				agents: ["agent-example"],
+				tools: ["tool-example"],
+			});
+			expect(JSON.stringify(entry)).not.toContain(suggestion.pattern);
+		},
+	);
 
 	it("loads orchestrator memory during initialization and passes it into routing", async () => {
 		const input = {

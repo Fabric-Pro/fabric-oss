@@ -37,6 +37,7 @@ patternRoute.post("/", async (c) => {
 				planId,
 			},
 			{
+				signal: c.req.raw.signal,
 				configurable: {
 					ai_token:
 						typeof metadata.aiToken === "string"
@@ -50,6 +51,7 @@ patternRoute.post("/", async (c) => {
 			},
 		);
 
+		c.req.raw.signal.throwIfAborted();
 		return c.json({
 			success: true,
 			planId: result.planId,

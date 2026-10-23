@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ParlumeSentenceQueue } from "../parlume-spoken-text";
 import {
+	postParlumeHeldChange,
 	postParlumeMeetingChat,
+	readParlumeVoiceState,
 	requestParlumeMeetingStop,
 	speakParlumeResponse,
-	verifyParlumeVoiceGeneration,
 } from "../parlume-voice";
 
 const resolveOpenAiApiKey = vi.hoisted(() => vi.fn());
@@ -199,26 +200,53 @@ describe("Parlume speech through the organization's AI Gateway", () => {
 	});
 });
 
-describe("Parlume meeting chat fallback", () => {
-	it("asks the bridge to post the reply into the meeting chat", async () => {
+describe("Parlume meeting chat", () => {
+	it("asks the bridge to send the message and returns the post's tag", async () => {
 		const fetchMock = vi
 			.fn()
-			.mockResolvedValue(Response.json({ sent: true }));
+			.mockResolvedValue(
+				Response.json({ sent: true, tag: "P4", delivery: "queued" }),
+			);
 		stubPcmFetch(fetchMock);
 
 		await expect(
 			postParlumeMeetingChat({
 				sessionId: "session-1",
 				message: "Answer",
+				turnId: "turn-1",
+				voiceGeneration: 3,
+				final: true,
 			}),
-		).resolves.toBe(true);
+		).resolves.toEqual({ sent: true, tag: "P4" });
 		expect(fetchMock).toHaveBeenCalledWith(
 			"https://bridge.example.com/parties/parlume/session-1?action=chat",
 			expect.objectContaining({
 				method: "POST",
-				body: JSON.stringify({ message: "Answer" }),
+				body: JSON.stringify({
+					message: "Answer",
+					turnId: "turn-1",
+					voiceGeneration: 3,
+					final: true,
+				}),
 			}),
 		);
+	});
+
+	it("passes on a chat the bridge has found out of reach", async () => {
+		stubPcmFetch(
+			vi
+				.fn()
+				.mockResolvedValue(
+					Response.json({ sent: false, reason: "chat_unavailable" }),
+				),
+		);
+
+		await expect(
+			postParlumeMeetingChat({
+				sessionId: "session-1",
+				message: "Answer",
+			}),
+		).resolves.toEqual({ sent: false, reason: "chat_unavailable" });
 	});
 
 	it("reports failure instead of throwing when the bridge is unreachable", async () => {
@@ -229,7 +257,7 @@ describe("Parlume meeting chat fallback", () => {
 				sessionId: "session-1",
 				message: "Answer",
 			}),
-		).resolves.toBe(false);
+		).resolves.toEqual({ sent: false, reason: "failed" });
 	});
 });
 
@@ -257,11 +285,11 @@ describe("Parlume dispatch generation", () => {
 				.mockResolvedValue(Response.json({ current }));
 			stubPcmFetch(fetchMock);
 			await expect(
-				verifyParlumeVoiceGeneration({
+				readParlumeVoiceState({
 					sessionId: "session",
 					voiceGeneration: 7,
 				}),
-			).resolves.toBe(current);
+			).resolves.toEqual({ current, muted: false, chatAvailable: true });
 			expect(fetchMock).toHaveBeenCalledWith(
 				"https://bridge.example.com/parties/parlume/session?action=verify-generation",
 				expect.objectContaining({
@@ -272,30 +300,72 @@ describe("Parlume dispatch generation", () => {
 		},
 	);
 
+	it("reports a muted turn and a chat out of reach", async () => {
+		stubPcmFetch(
+			vi.fn().mockResolvedValue(
+				Response.json({
+					current: true,
+					muted: true,
+					chatAvailable: false,
+				}),
+			),
+		);
+		await expect(
+			readParlumeVoiceState({ sessionId: "session", voiceGeneration: 7 }),
+		).resolves.toEqual({
+			current: true,
+			muted: true,
+			chatAvailable: false,
+		});
+	});
+
 	it("blocks dispatch when the bridge cannot verify the generation", async () => {
 		vi.stubGlobal(
 			"fetch",
 			vi.fn().mockRejectedValue(new Error("Connection lost")),
 		);
 		await expect(
-			verifyParlumeVoiceGeneration({
+			readParlumeVoiceState({
 				sessionId: "session",
 				voiceGeneration: 7,
 			}),
-		).resolves.toBe(false);
+		).resolves.toMatchObject({ current: false });
 	});
 
 	it("does not contact the bridge after cancellation", async () => {
 		const fetchMock = vi.fn();
 		stubPcmFetch(fetchMock);
 		await expect(
-			verifyParlumeVoiceGeneration({
+			readParlumeVoiceState({
 				sessionId: "session",
 				voiceGeneration: 7,
 				signal: AbortSignal.abort(),
 			}),
-		).resolves.toBe(false);
+		).resolves.toMatchObject({ current: false });
 		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("sends a held change for the bridge to word and tag", async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValue(Response.json({ sent: true, tag: "P4" }));
+		stubPcmFetch(fetchMock);
+
+		await expect(
+			postParlumeHeldChange({
+				sessionId: "session",
+				turnId: "turn",
+				action: "create work item “Export”",
+				request: "create a work item called Export",
+			}),
+		).resolves.toEqual({ sent: true, tag: "P4" });
+		expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+			turnId: "turn",
+			held: {
+				action: "create work item “Export”",
+				request: "create a work item called Export",
+			},
+		});
 	});
 });
 

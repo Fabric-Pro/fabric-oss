@@ -951,6 +951,18 @@ describe("proposalThemeCss: print", () => {
 		for (const box of ["@top-left", "@bottom-left", "@bottom-right"]) {
 			expect(cover.map((block) => block.prelude)).toContain(box);
 		}
+		// The first page repeats it, so page 1 is painted without margins or
+		// furniture whatever the browser takes its geometry from.
+		const first = parseCss(print).filter(
+			(block) => block.path.join("|") === "@page :first",
+		);
+		expect(
+			new Map(atBlock(print, "@page :first").declarations).get("margin"),
+		).toBe("0");
+		expect(first).toHaveLength(16);
+		for (const box of first) {
+			expect(box.declarations).toEqual([["content", "none"]]);
+		}
 
 		const coverRule = declarationsFor(
 			print,

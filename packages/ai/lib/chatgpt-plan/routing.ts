@@ -37,6 +37,7 @@ export const OWN_PLAN_BACKGROUND_DENYLIST: readonly AiJobKey[] = [
 	"parlume-meeting-notes",
 	"newsletter-curation",
 	"security-scan",
+	"recurring-error-scan",
 	// Bulk runs a person clicks: one run can spend a whole window
 	// (product decision, 2026-10-09).
 	"batch-document-generation",

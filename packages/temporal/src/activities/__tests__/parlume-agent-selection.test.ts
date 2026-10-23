@@ -25,6 +25,7 @@ const mocks = vi.hoisted(() => ({
 	chat: vi.fn(),
 	stop: vi.fn(),
 	actions: vi.fn(),
+	voiceState: vi.fn(),
 }));
 vi.mock("@repo/database", () => ({
 	db: {
@@ -59,8 +60,11 @@ vi.mock("../parlume-actions", () => ({
 }));
 vi.mock("../parlume-voice", () => ({
 	PARLUME_MAX_SPOKEN_CHARS: 800,
+	PARLUME_HEADLINE_SPOKEN_CHARS: 350,
+	readParlumeVoiceState: mocks.voiceState,
 	speakParlumeResponse: mocks.speak,
 	postParlumeMeetingChat: mocks.chat,
+	postParlumeRealtimeResult: vi.fn(),
 	requestParlumeMeetingStop: mocks.stop,
 }));
 vi.mock("../project-metadata", () => ({
@@ -86,6 +90,7 @@ function turn(agentKind = "FABRIC_AGENT", toolsReadOnly = true) {
 		speakerId: "speaker",
 		speakerName: "Alex",
 		requestText: "What is the plan?",
+		replyChannel: "VOICE",
 		session: {
 			id: "session",
 			projectId: "project",
@@ -109,14 +114,21 @@ beforeEach(() => {
 	});
 	mocks.execute.mockResolvedValue({ success: true, response: "The plan." });
 	mocks.retrieve.mockResolvedValue({ context: "Project knowledge" });
-	mocks.segments.mockResolvedValue([
-		{ text: "Meeting context", speakerName: "Alex" },
-	]);
+	mocks.segments.mockImplementation(async ({ where }) =>
+		where.source === "CHAT"
+			? []
+			: [{ text: "Meeting context", speakerName: "Alex" }],
+	);
 	mocks.history.mockResolvedValue([]);
 	mocks.speak.mockResolvedValue({
 		played: true,
 		interrupted: false,
 		firstAudioAt: new Date().toISOString(),
+	});
+	mocks.voiceState.mockResolvedValue({
+		current: true,
+		muted: false,
+		chatAvailable: true,
 	});
 });
 
@@ -279,10 +291,13 @@ describe("Parlume meeting turns", () => {
 		mocks.speak.mockRejectedValue(
 			new Error("Parlume speech generation failed (HTTP 401)."),
 		);
-		mocks.chat.mockResolvedValue(true);
+		mocks.chat.mockResolvedValue({ sent: true, tag: "P2" });
 		await executeParlumeMeetingTurn({ turnId: "turn" });
 		expect(mocks.chat).toHaveBeenCalledWith({
 			sessionId: "session",
+			turnId: "turn",
+			voiceGeneration: 3,
+			final: true,
 			message: "The plan.",
 		});
 		expect(mocks.updateMany).toHaveBeenLastCalledWith(
@@ -291,7 +306,7 @@ describe("Parlume meeting turns", () => {
 					status: "COMPLETED",
 					spokenAt: null,
 					error: expect.stringContaining(
-						"posted to the meeting chat",
+						"sent to the meeting chat as P2",
 					),
 				}),
 			}),
@@ -302,11 +317,94 @@ describe("Parlume meeting turns", () => {
 			}),
 		);
 	});
+	it("speaks the headline and posts the detail to the meeting chat once the reply was heard", async () => {
+		mocks.chat.mockResolvedValue({ sent: true, tag: "P3" });
+		mocks.execute.mockImplementation(async () => {
+			observeAgentText("Two items are open on the roadmap.\n--");
+			observeAgentText("-\nThe CSV header fix and the release note.");
+			return { success: true, response: "Ignored when streamed." };
+		});
+
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+
+		await expect(spokenSentences()).resolves.toEqual([
+			"Two items are open on the roadmap.",
+		]);
+		expect(mocks.chat).toHaveBeenCalledTimes(1);
+		expect(mocks.chat).toHaveBeenCalledWith({
+			sessionId: "session",
+			turnId: "turn",
+			voiceGeneration: 3,
+			final: true,
+			message: "The CSV header fix and the release note.",
+		});
+	});
+	it("posts nothing more when the whole answer was spoken", async () => {
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+
+		expect(mocks.chat).not.toHaveBeenCalled();
+	});
+	it("posts what the meeting did not hear when someone spoke over the reply", async () => {
+		mocks.chat.mockResolvedValue({ sent: true, tag: "P4" });
+		mocks.speak.mockResolvedValue({
+			played: false,
+			interrupted: true,
+			muted: true,
+			heard: 1,
+		});
+		mocks.execute.mockImplementation(async () => {
+			observeAgentText("Two items are open on the roadmap. ");
+			observeAgentText("The CSV header fix is the first of them.\n---\n");
+			observeAgentText("The release note is the other.");
+			return { success: true, response: "Ignored when streamed." };
+		});
+
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+
+		expect(mocks.chat).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message:
+					"The CSV header fix is the first of them.\n\nThe release note is the other.",
+				final: true,
+			}),
+		);
+		expect(mocks.updateMany).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					status: "COMPLETED",
+					interruptedAt: expect.any(Date),
+				}),
+			}),
+		);
+	});
+	it("speaks the detail too, and says there is more, when the meeting chat is out of reach", async () => {
+		mocks.voiceState.mockResolvedValue({
+			current: true,
+			muted: false,
+			chatAvailable: false,
+		});
+		const long = "This sentence is here only to fill the reply. ".repeat(
+			20,
+		);
+		mocks.execute.mockImplementation(async () => {
+			observeAgentText("Two items are open on the roadmap.\n---\n");
+			observeAgentText(`The CSV header fix is one. ${long}`);
+			return { success: true, response: "Ignored when streamed." };
+		});
+
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+
+		const spoken = await spokenSentences();
+		expect(spoken[1]).toBe("The CSV header fix is one.");
+		expect(spoken.at(-1)).toBe("There's more; ask me to continue.");
+		expect(spoken.join(" ").length).toBeLessThan(900);
+		expect(mocks.chat).not.toHaveBeenCalled();
+	});
 	it("fails the turn with its cause when neither voice nor chat can deliver it", async () => {
 		mocks.speak.mockRejectedValue(
 			new Error("Parlume speech generation failed (HTTP 401)."),
 		);
-		mocks.chat.mockResolvedValue(false);
+		mocks.chat.mockResolvedValue({ sent: false, reason: "failed" });
 		await executeParlumeMeetingTurn({ turnId: "turn" });
 		expect(mocks.updateMany).not.toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -401,6 +499,7 @@ describe("Parlume meeting turns", () => {
 				"agentLoadMs",
 				"agentRevisionWriteMs",
 				"agentRunMs",
+				"chatQueryMs",
 				"contextGatherMs",
 				"historyQueryMs",
 				"llm.firstTextMs",
@@ -445,6 +544,109 @@ describe("Parlume meeting turns", () => {
 		expect(voiceInstructions).toContain("takes effect as soon as you call");
 		expect(voiceInstructions).not.toMatch(/confirm|awaiting/i);
 	});
+	it("answers a request typed in the chat in the chat, without speaking", async () => {
+		mocks.turn.mockResolvedValue({ ...turn(), replyChannel: "CHAT" });
+		mocks.chat.mockResolvedValue({ sent: true, tag: "P5" });
+
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+
+		expect(mocks.speak).not.toHaveBeenCalled();
+		expect(mocks.chat).toHaveBeenCalledWith({
+			sessionId: "session",
+			turnId: "turn",
+			voiceGeneration: 3,
+			final: true,
+			message: "The plan.",
+		});
+		const completed = mocks.updateMany.mock.calls.at(-1)?.[0];
+		expect(completed.data).toMatchObject({ status: "COMPLETED" });
+		expect(completed.data).not.toHaveProperty("error");
+		expect(completed.data).not.toHaveProperty("spokenAt");
+	});
+
+	it("tells the agent of a chat request to write a chat message, not a spoken answer", async () => {
+		mocks.turn.mockResolvedValue({ ...turn(), replyChannel: "CHAT" });
+		mocks.chat.mockResolvedValue({ sent: true, tag: "P5" });
+
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+
+		const { voiceInstructions } = mocks.execute.mock.calls[0]?.[0] as {
+			voiceInstructions: string;
+		};
+		expect(voiceInstructions).toContain("typed in the meeting chat");
+		expect(voiceInstructions).toContain("cannot make changes");
+		expect(voiceInstructions).not.toContain("Before you call any tool");
+		expect(voiceInstructions).not.toContain("one or two short");
+	});
+
+	it("splits a long chat answer into tagged posts within the chat's limit", async () => {
+		mocks.turn.mockResolvedValue({ ...turn(), replyChannel: "CHAT" });
+		const paragraph = `${"word ".repeat(700).trim()}.`;
+		mocks.execute.mockResolvedValue({
+			success: true,
+			response: `${paragraph}\n\n${paragraph}`,
+		});
+		mocks.chat
+			.mockResolvedValueOnce({ sent: true, tag: "P1" })
+			.mockResolvedValueOnce({ sent: true, tag: "P2" });
+
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+
+		const posts = mocks.chat.mock.calls.map(([input]) => input);
+		expect(posts).toHaveLength(2);
+		expect(posts.map((post) => post.final)).toEqual([false, true]);
+		for (const post of posts) {
+			expect(post.message.length).toBeLessThanOrEqual(3_990);
+		}
+	});
+
+	it("records a chat answer the chat could not take", async () => {
+		mocks.turn.mockResolvedValue({ ...turn(), replyChannel: "CHAT" });
+		mocks.chat.mockResolvedValue({
+			sent: false,
+			reason: "chat_unavailable",
+		});
+
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+
+		expect(mocks.updateMany).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					status: "COMPLETED",
+					error: "The answer was not sent: this meeting's chat is unavailable to Parlume.",
+				}),
+			}),
+		);
+	});
+
+	it("gives the agent the recent meeting chat, labelled as chat, apart from the spoken transcript", async () => {
+		mocks.segments.mockImplementation(async ({ where }) =>
+			where.source === "CHAT"
+				? [{ text: "Here is the doc", speakerName: "Sam" }]
+				: [{ text: "Meeting context", speakerName: "Alex" }],
+		);
+
+		await executeParlumeMeetingTurn({ turnId: "turn" });
+
+		const [speech, chat] = mocks.segments.mock.calls.map(
+			([query]) => query,
+		);
+		expect(speech.where.source).toBe("SPEECH");
+		expect(chat).toMatchObject({
+			where: { sessionId: "session", source: "CHAT" },
+			take: 20,
+		});
+		const { knowledgeContext } = mocks.execute.mock.calls[0]?.[0] as {
+			knowledgeContext: string;
+		};
+		expect(knowledgeContext).toContain(
+			"Recent meeting chat:\nSam: Here is the doc",
+		);
+		expect(knowledgeContext).toContain(
+			"Recent meeting transcript:\nAlex: Meeting context",
+		);
+	});
+
 	it("tells a read-only meeting's agent it cannot make changes", async () => {
 		await executeParlumeMeetingTurn({ turnId: "turn" });
 		const { voiceInstructions } = mocks.execute.mock.calls[0]?.[0] as {

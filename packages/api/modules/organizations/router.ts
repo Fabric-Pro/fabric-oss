@@ -12,6 +12,8 @@ import {
 	updateOrganizationBrandColorProcedure,
 } from "./procedures/brand-color";
 import {
+	createBrandAssetUploadUrlProcedure,
+	fetchBrandSiteProcedure,
 	getBrandKitProcedure,
 	updateBrandKitProcedure,
 } from "./procedures/brand-kit";
@@ -87,11 +89,15 @@ export const organizationsRouter = {
 		get: getOrganizationBrandColorProcedure,
 		update: updateOrganizationBrandColorProcedure,
 	},
-	// Glossy Version Export (Fizzy #2589): accent colors and brand guidance,
-	// in their own table rather than organization metadata (KTD2).
+	// The preparer's Brand kit (Fizzy #2589, extended in Fizzy #2946): its
+	// colours, fonts, hero image, website and guidance, in their own table
+	// rather than organization metadata. Behind GLOSSY_EDITION or
+	// PROPOSAL_ARTIFACT; members read, admins and owners write.
 	brandKit: {
 		get: getBrandKitProcedure,
 		update: updateBrandKitProcedure,
+		createAssetUploadUrl: createBrandAssetUploadUrlProcedure,
+		fetchSite: fetchBrandSiteProcedure,
 	},
 	// Company context (Fizzy #2719): the material an organization maintains
 	// once about itself for Proposals and Business Cases. Brand kit

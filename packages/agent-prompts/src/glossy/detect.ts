@@ -60,7 +60,32 @@ export const GLOSSY_KIND_DEFINITIONS: Readonly<
 		"reporting lines the section states outright (who reports to whom) that form one hierarchy under a single top role. Roles, owners, or stakeholders listed without stated reporting lines are not an org chart.",
 };
 
-export function buildGlossyDetectInstructions(documentType: string): string {
+/**
+ * Options for the Proposal artifact's visuals step, which reuses these
+ * prompts for a client-facing Proposal (Fizzy #2946). Unset, every prompt is
+ * Glossy's own, unchanged.
+ */
+export interface GlossyPromptOptions {
+	/** The visuals go into a Proposal's Main document. */
+	proposalArtifact?: boolean;
+}
+
+/**
+ * Who a Proposal's diagrams are for. Guidance, not a filter: detection may
+ * still propose a technical diagram for a body section where nothing else
+ * fits.
+ */
+const PROPOSAL_AUDIENCE_RULES = [
+	"## Audience",
+	"- The visuals sit inline in a client-facing Proposal. Inline visuals are for executive readers: non-technical, glanceable, a few short labels a reader takes in at once.",
+	'- Technical diagrams (system architecture, data flows, detailed processes) fit sections marked appendix="true", where a plainer, more detailed look is fine.',
+	"- Prefer the kind an executive reads fastest: a timeline for phases, a comparison for options, a flow only for a short process.",
+];
+
+export function buildGlossyDetectInstructions(
+	documentType: string,
+	options: GlossyPromptOptions = {},
+): string {
 	const label = glossyDocumentLabel(documentType);
 	return [
 		`You are preparing a stakeholder edition of a ${label}. Find the sections where one visual would help an executive reader grasp the content faster.`,
@@ -78,6 +103,7 @@ export function buildGlossyDetectInstructions(documentType: string): string {
 		"- Name each section only by its ref, exactly as given.",
 		`- reason: one short plain-text sentence (at most ${GLOSSY_REASON_MAX_CHARS} characters) saying what in the section suits the kind. No markdown, links, or long quotes.`,
 		"",
+		...(options.proposalArtifact ? [...PROPOSAL_AUDIENCE_RULES, ""] : []),
 		GLOSSY_UNTRUSTED_GUIDANCE,
 	].join("\n");
 }
@@ -90,6 +116,22 @@ export interface GlossyDetectPromptSection {
 	markdown: string;
 	/** Kinds the section already shows (a slot or an existing diagram). */
 	reservedKinds?: readonly string[];
+	/** A Proposal's appendix section, where a technical diagram fits. */
+	appendix?: boolean;
+}
+
+/** A section's trusted attributes, or undefined when it has none. */
+function sectionAttributes(
+	section: GlossyDetectPromptSection,
+): Record<string, string> | undefined {
+	const attributes: Record<string, string> = {};
+	if (section.reservedKinds?.length) {
+		attributes.already_shows = section.reservedKinds.join(", ");
+	}
+	if (section.appendix) {
+		attributes.appendix = "true";
+	}
+	return Object.keys(attributes).length > 0 ? attributes : undefined;
 }
 
 export function buildGlossyDetectPrompt(input: {
@@ -104,9 +146,7 @@ export function buildGlossyDetectPrompt(input: {
 			section.markdown.trim(),
 			GLOSSY_DETECTION_SECTION_MAX_CHARS,
 		),
-		attributes: section.reservedKinds?.length
-			? { already_shows: section.reservedKinds.join(", ") }
-			: undefined,
+		attributes: sectionAttributes(section),
 	}));
 	return [
 		`Propose at most ${input.limit} visual${input.limit === 1 ? "" : "s"} across the sections below.`,

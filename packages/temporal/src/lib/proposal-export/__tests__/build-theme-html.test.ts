@@ -712,6 +712,91 @@ describe("buildThemeHtml: fences", () => {
 		expect(bodyOf(html)).not.toContain("pa-stat-tiles");
 	});
 
+	it("prints a diagram's caption line under its figure, escaped, and never in the drawing's source", () => {
+		const svg: ExportDiagram = {
+			kind: "svg",
+			svg: '<svg viewBox="0 0 10 10"><text>drawn</text></svg>',
+			width: 10,
+			height: 10,
+			png: null,
+		};
+		const fence = (caption: string) =>
+			[
+				"```mermaid",
+				"%% fabric-visual: k3v9q2m7x1a8c4d6",
+				`%% caption: ${caption}`,
+				"flowchart LR",
+				"  A --> B",
+				"```",
+			].join("\n");
+		const markdown = [
+			"## Delivery",
+			"",
+			fence("Plan <b>for</b> Acme & partners"),
+			"",
+			fence("Not drawn"),
+		].join("\n");
+		const prepared = prepareExportMarkdown(markdown);
+
+		expect(prepared.diagramSources).toEqual([
+			"%% fabric-visual: k3v9q2m7x1a8c4d6\nflowchart LR\n  A --> B",
+			"%% fabric-visual: k3v9q2m7x1a8c4d6\nflowchart LR\n  A --> B",
+		]);
+		const body = bodyOf(
+			build(markdown, {
+				diagrams: [
+					svg,
+					{ kind: "placeholder", caption: "Not available." },
+				],
+			}).html,
+		);
+		expect(body).toContain(
+			'<figure class="pa-figure pa-diagram"><svg viewBox="0 0 10 10"><text>drawn</text></svg><figcaption class="pa-caption">Plan &lt;b&gt;for&lt;/b&gt; Acme &amp; partners</figcaption></figure>',
+		);
+		expect(body).toContain(
+			'<p class="pa-caption">Not available.</p><figcaption class="pa-caption">Not drawn</figcaption></figure>',
+		);
+		expect(body).not.toContain("%% caption");
+	});
+
+	it("drops citation markers from a diagram's caption, and the caption when nothing else is left", () => {
+		const svg: ExportDiagram = {
+			kind: "svg",
+			svg: '<svg viewBox="0 0 10 10"></svg>',
+			width: 10,
+			height: 10,
+			png: null,
+		};
+		const fence = (caption: string) =>
+			`\`\`\`mermaid\n%% caption: ${caption}\nflowchart LR\n  A --> B\n\`\`\``;
+		const body = bodyOf(
+			build([fence("Rollout plan [S2]"), "", fence("[S3]")].join("\n"), {
+				diagrams: [svg, svg],
+			}).html,
+		);
+		expect(body).toContain(
+			'<figcaption class="pa-caption">Rollout plan</figcaption>',
+		);
+		expect(body).not.toContain("[S");
+		expect(body.match(/<figcaption/g)).toHaveLength(1);
+	});
+
+	it("prints no caption for a diagram without one", () => {
+		const svg: ExportDiagram = {
+			kind: "svg",
+			svg: '<svg viewBox="0 0 10 10"></svg>',
+			width: 10,
+			height: 10,
+			png: null,
+		};
+		const body = bodyOf(
+			build("```mermaid\nflowchart LR\n  A --> B\n```", {
+				diagrams: [svg],
+			}).html,
+		);
+		expect(body).not.toContain("<figcaption");
+	});
+
 	it("takes each diagram by its fence, nested ones included", () => {
 		const svg = (label: string): ExportDiagram => ({
 			kind: "svg",

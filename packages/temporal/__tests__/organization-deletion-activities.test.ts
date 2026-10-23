@@ -578,8 +578,8 @@ describe("deleteOrganizationObjectsFromStorageActivity", () => {
 			organizationId: "org-1",
 		});
 
-		// Four prefix sweeps, one page each.
-		expect(result.pages).toBe(4);
+		// Five prefix sweeps, one page each.
+		expect(result.pages).toBe(5);
 		expect(storageMocks.listObjects).toHaveBeenCalledWith(
 			expect.objectContaining({
 				bucket: "chat-documents",
@@ -607,6 +607,13 @@ describe("deleteOrganizationObjectsFromStorageActivity", () => {
 			expect.objectContaining({
 				bucket: "project-contexts",
 				prefix: "org-1/company-context/",
+			}),
+		);
+		// The Brand kit's hero, font files and pending uploads (Fizzy #2946).
+		expect(storageMocks.listObjects).toHaveBeenCalledWith(
+			expect.objectContaining({
+				bucket: "project-contexts",
+				prefix: "organization-brand/org-1/",
 			}),
 		);
 		expect(storageMocks.listObjects).not.toHaveBeenCalledWith(

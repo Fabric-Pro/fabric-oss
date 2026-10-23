@@ -31,6 +31,7 @@ import {
 	ParlumeAgentPicker,
 } from "./ParlumeAgentPicker";
 import { ParlumeModePicker } from "./ParlumeModePicker";
+import { ParlumeSuggestionsToggle } from "./ParlumeSuggestionsToggle";
 
 function UrlHint({ url, valid }: { url: string; valid: boolean }) {
 	if (url === "") {
@@ -65,6 +66,7 @@ export function ParlumeInviteCard({ projectId }: { projectId: string }) {
 	const [agentSelection, setAgentSelection] = useState(FABRIC_AGENT_KIND);
 	const [meetingUrl, setMeetingUrl] = useState("");
 	const [toolsReadOnly, setToolsReadOnly] = useState(true);
+	const [suggestionsEnabled, setSuggestionsEnabled] = useState(true);
 	const [error, setError] = useState<string | null>(null);
 	const [isInviting, setIsInviting] = useState(false);
 	const agentsQuery = useQuery({
@@ -107,9 +109,11 @@ export function ParlumeInviteCard({ projectId }: { projectId: string }) {
 					: {}),
 				meetingUrl: url,
 				toolsReadOnly,
+				suggestionsEnabled,
 			});
 			setMeetingUrl("");
 			setToolsReadOnly(true);
+			setSuggestionsEnabled(true);
 			await Promise.all([
 				queryClient.invalidateQueries({
 					queryKey: [SESSIONS_QUERY_KEY, projectId],
@@ -236,6 +240,12 @@ export function ParlumeInviteCard({ projectId }: { projectId: string }) {
 						disabled={isInviting}
 					/>
 				</div>
+
+				<ParlumeSuggestionsToggle
+					checked={suggestionsEnabled}
+					onChange={setSuggestionsEnabled}
+					disabled={isInviting}
+				/>
 
 				<div className="flex flex-wrap items-center justify-between gap-3 border-t border-border pt-5">
 					<p className="text-sm leading-5 text-muted-foreground">

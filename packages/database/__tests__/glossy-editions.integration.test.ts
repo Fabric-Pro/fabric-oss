@@ -1104,12 +1104,20 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 
 		describe("Brand kit", () => {
 			it("keeps one row per organization, updates it in place, validates accents, and leaves organization metadata alone", async () => {
-				const created = await upsertBrandKit({
-					organizationId: ORG_A,
-					accentColors: ["#AABBCC"],
-					guidance: "  Calm, factual tone.  ",
-					updatedById: USERS.owner,
-				});
+				const applied = <T extends { outcome: string }>(result: T) => {
+					if (result.outcome !== "applied") {
+						throw new Error("The Brand kit save conflicted");
+					}
+					return result as Extract<T, { outcome: "applied" }>;
+				};
+				const created = applied(
+					await upsertBrandKit({
+						organizationId: ORG_A,
+						accentColors: ["#AABBCC"],
+						guidance: "  Calm, factual tone.  ",
+						updatedById: USERS.owner,
+					}),
+				);
 				expect(created.brandKit).toMatchObject({
 					organizationId: ORG_A,
 					accentColors: ["#aabbcc"],
@@ -1120,12 +1128,14 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					"guidance",
 				]);
 
-				const updated = await upsertBrandKit({
-					organizationId: ORG_A,
-					accentColors: ["#112233", "#445566"],
-					guidance: "Calm, factual tone.",
-					updatedById: USERS.owner,
-				});
+				const updated = applied(
+					await upsertBrandKit({
+						organizationId: ORG_A,
+						accentColors: ["#112233", "#445566"],
+						guidance: "Calm, factual tone.",
+						updatedById: USERS.owner,
+					}),
+				);
 				expect(updated.changedFields).toEqual(["accentColors"]);
 				expect(
 					await db.organizationBrandKit.count({

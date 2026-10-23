@@ -28,6 +28,23 @@ scripts/
 !aspire.sh
 
 # =============================================================================
+# Tooling: only what image builds install or read
+# =============================================================================
+# Dockerfiles `COPY tooling ./tooling`, so every file under tooling/ is an
+# input of every image that does. A change to a CI-only tool (PR review, relay
+# preflight, identifier guard, screenshots) then rebuilt all agent images with
+# no change to their contents. Allow-list the workspace packages the filtered
+# installs link (@repo/tsconfig, @repo/tsgo, @repo/scripts,
+# @repo/tailwind-config) and the shared tsdown config; anything new under
+# tooling/ stays out until an image needs it.
+tooling/*
+!tooling/scripts
+!tooling/tailwind
+!tooling/tsdown
+!tooling/tsgo
+!tooling/typescript
+
+# =============================================================================
 # Development Files
 # =============================================================================
 .git/

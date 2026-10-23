@@ -36,7 +36,7 @@ import { FieldMappingPanel } from "./field-mapping/FieldMappingPanel";
 import { GoogleDocsSelectorDialog } from "./GoogleDocsSelectorDialog";
 import { MeetingTranscriptSyncSettings } from "./MeetingTranscriptSyncSettings";
 import { PrdSourceSettings } from "./PrdSourceSettings";
-import { ProjectAiAssistantSettings } from "./ProjectAiAssistantSettings";
+import { ProjectAiAssistantTab } from "./ProjectAiAssistantTab";
 import { ProjectDatabricksKnowledgeSettings } from "./ProjectDatabricksKnowledgeSettings";
 import { ProjectEngagementSettings } from "./ProjectEngagementSettings";
 import { ProjectGeneralSettings } from "./ProjectGeneralSettings";
@@ -44,8 +44,6 @@ import { ProjectImplementationDefaultsSettings } from "./ProjectImplementationDe
 import { ProjectManagementSettings } from "./ProjectManagementSettings";
 import { ProjectMembersSettings } from "./ProjectMembersSettings";
 import { ProjectNewsletterSettings } from "./ProjectNewsletterSettings";
-import { ProjectPromptDefaultsSettings } from "./ProjectPromptDefaultsSettings";
-import { ProjectReadOnlyModeSettings } from "./ProjectReadOnlyModeSettings";
 import { ProjectRepositoryIntegrationSettings } from "./ProjectRepositoryIntegrationSettings";
 import { ProjectSettingsNav, type SettingsTab } from "./ProjectSettingsNav";
 import { ProjectStageVisibilitySettings } from "./ProjectStageVisibilitySettings";
@@ -398,6 +396,11 @@ export function ProjectSettings({
 				activeTab={settingsTab}
 				onTabChange={setSettingsTab}
 				status={navStatus}
+				attention={
+					project.readOnlyMode
+						? { "ai-assistant": "Read-only mode is on" }
+						: undefined
+				}
 				showDanger={canDelete}
 				showProjectManagement={pmFieldMappingEnabled}
 				showQa={QA_SETTINGS_ENABLED}
@@ -423,20 +426,19 @@ export function ProjectSettings({
 						<ProjectEngagementSettings project={project} />
 					</div>
 				)}
-				{/* Behaviour rather than identity: how the assistant asks,
-				    how deep QA goes, and whether the project is read-only. */}
+				{/* Behaviour rather than identity: whether the project is
+				    read-only, how the assistant asks, how deep QA goes, and
+				    which prompt each action runs. */}
 				{settingsTab === "ai-assistant" && (
-					<div className="space-y-6">
-						<ProjectAiAssistantSettings
-							project={project}
-							canEdit={canEditSettings}
-						/>
-						<ProjectPromptDefaultsSettings projectId={project.id} />
-						<ProjectReadOnlyModeSettings
-							project={project}
-							canEdit={canEditSettings}
-						/>
-					</div>
+					<ProjectAiAssistantTab
+						project={project}
+						canEdit={canEditSettings}
+						onOpenTestingSettings={
+							QA_SETTINGS_ENABLED
+								? () => setSettingsTab("testing")
+								: undefined
+						}
+					/>
 				)}
 				{/* What the project shows: which tabs exist for members and
 				    which feature stages appear in the dropdown. */}

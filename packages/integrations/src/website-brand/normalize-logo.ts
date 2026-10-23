@@ -1,14 +1,22 @@
+import {
+	BRAND_ASSET_MAX_BYTES,
+	type BrandAssetRejectionCode,
+	HERO_MAX_INPUT_PIXELS,
+	HERO_MAX_OUTPUT_EDGE,
+} from "@repo/utils/brand-assets";
 import { rgbToHex } from "@repo/utils/brand-colors";
 import sharp, { type Metadata, type SharpOptions } from "sharp";
 
 /**
- * Turn untrusted logo bytes — fetched from a website or uploaded by an
- * editor — into a small PNG, or refuse them with a fixed code.
+ * Turn untrusted image bytes — a logo fetched from a website or uploaded by
+ * an editor, or a Brand kit hero — into a re-encoded image, or refuse them
+ * with a fixed code.
  *
  * Defense in depth, cheapest check first:
  *   1. a byte cap;
- *   2. a magic-byte check, so only PNG, JPEG, GIF and WebP reach the decoder
- *      whatever the declared content type said (SVG and ICO never do);
+ *   2. a magic-byte check, so only the raster formats a kind accepts reach
+ *      the decoder whatever the declared content type said (SVG and ICO
+ *      never do);
  *   3. a header-only dimension check, so an image declaring huge dimensions
  *      is refused before any pixel is decoded;
  *   4. the decode itself, with sharp's input pixel limit, fail-on-error, and
@@ -17,16 +25,21 @@ import sharp, { type Metadata, type SharpOptions } from "sharp";
  * the image data.
  */
 
-export const LOGO_MAX_INPUT_BYTES = 5 * 1024 * 1024;
+export const LOGO_MAX_INPUT_BYTES = BRAND_ASSET_MAX_BYTES.logo;
 const LOGO_MAX_INPUT_PIXELS = 4096 * 4096;
 export const LOGO_MAX_OUTPUT_EDGE = 512;
+
+const HERO_MAX_INPUT_BYTES = BRAND_ASSET_MAX_BYTES.hero;
+
+/** JPEG quality of a hero without transparency: a cover photo, kept sharp. */
+const HERO_JPEG_QUALITY = 85;
 
 /** Edge of the thumbnail the dominant colour is measured on. */
 const DOMINANT_SAMPLE_EDGE = 64;
 
 export type LogoFormat = "png" | "jpeg" | "gif" | "webp";
 
-export type NormalizeLogoFailureCode = "too_large" | "unsupported";
+export type NormalizeLogoFailureCode = BrandAssetRejectionCode;
 
 export type NormalizeLogoResult =
 	| {
@@ -39,6 +52,17 @@ export type NormalizeLogoResult =
 	  }
 	| { ok: false; code: NormalizeLogoFailureCode };
 
+export type NormalizeHeroResult =
+	| {
+			ok: true;
+			bytes: Buffer;
+			/** PNG when the source has an alpha channel, else JPEG. */
+			format: "png" | "jpeg";
+			width: number;
+			height: number;
+	  }
+	| { ok: false; code: NormalizeLogoFailureCode };
+
 const INPUT_OPTIONS = {
 	limitInputPixels: LOGO_MAX_INPUT_PIXELS,
 	failOn: "error",
@@ -47,6 +71,14 @@ const INPUT_OPTIONS = {
 	animated: false,
 	autoOrient: true,
 } satisfies SharpOptions;
+
+const HERO_INPUT_OPTIONS = {
+	...INPUT_OPTIONS,
+	limitInputPixels: HERO_MAX_INPUT_PIXELS,
+} satisfies SharpOptions;
+
+/** A hero is a photograph or an illustration; an animation has no place. */
+const HERO_FORMATS: readonly LogoFormat[] = ["png", "jpeg", "webp"];
 
 /** Identify a raster logo format from its leading bytes. */
 export function sniffLogoFormat(bytes: Uint8Array): LogoFormat | null {
@@ -137,14 +169,28 @@ async function dominantColorOf(png: Buffer): Promise<string | null> {
 	);
 }
 
-export async function normalizeLogo(
+type CheckedInput =
+	| { ok: true; buffer: Buffer; metadata: Metadata }
+	| { ok: false; code: NormalizeLogoFailureCode };
+
+/**
+ * Steps 1–3 for one kind's caps: the byte cap, the magic bytes against the
+ * formats the kind takes, and the header's dimensions. No pixel is decoded.
+ */
+async function checkInput(
 	input: Uint8Array,
-): Promise<NormalizeLogoResult> {
-	if (input.byteLength > LOGO_MAX_INPUT_BYTES) {
+	caps: {
+		maxBytes: number;
+		maxPixels: number;
+		formats: readonly LogoFormat[] | null;
+		options: SharpOptions;
+	},
+): Promise<CheckedInput> {
+	if (input.byteLength > caps.maxBytes) {
 		return { ok: false, code: "too_large" };
 	}
 	const format = sniffLogoFormat(input);
-	if (!format) {
+	if (!format || (caps.formats && !caps.formats.includes(format))) {
 		return { ok: false, code: "unsupported" };
 	}
 	const buffer = Buffer.from(
@@ -158,7 +204,7 @@ export async function normalizeLogo(
 	let metadata: Metadata;
 	try {
 		metadata = await sharp(buffer, {
-			...INPUT_OPTIONS,
+			...caps.options,
 			limitInputPixels: false,
 		}).metadata();
 	} catch {
@@ -167,9 +213,25 @@ export async function normalizeLogo(
 	if (metadata.format !== format || !metadata.width || !metadata.height) {
 		return { ok: false, code: "unsupported" };
 	}
-	if (metadata.width * metadata.height > LOGO_MAX_INPUT_PIXELS) {
+	if (metadata.width * metadata.height > caps.maxPixels) {
 		return { ok: false, code: "too_large" };
 	}
+	return { ok: true, buffer, metadata };
+}
+
+export async function normalizeLogo(
+	input: Uint8Array,
+): Promise<NormalizeLogoResult> {
+	const checked = await checkInput(input, {
+		maxBytes: LOGO_MAX_INPUT_BYTES,
+		maxPixels: LOGO_MAX_INPUT_PIXELS,
+		formats: null,
+		options: INPUT_OPTIONS,
+	});
+	if (!checked.ok) {
+		return checked;
+	}
+	const { buffer } = checked;
 
 	try {
 		const { data, info } = await sharp(buffer, INPUT_OPTIONS)
@@ -187,6 +249,53 @@ export async function normalizeLogo(
 			width: info.width,
 			height: info.height,
 			dominantColor: await dominantColorOf(data),
+		};
+	} catch (error) {
+		return {
+			ok: false,
+			code: isPixelLimitError(error) ? "too_large" : "unsupported",
+		};
+	}
+}
+
+/**
+ * Turn untrusted Brand kit hero bytes into a cover image: PNG, JPEG or WebP
+ * of at most {@link HERO_MAX_INPUT_BYTES} and {@link HERO_MAX_INPUT_PIXELS},
+ * re-encoded with its longest edge at most {@link HERO_MAX_OUTPUT_EDGE} and
+ * every metadata block dropped. A source with an alpha channel stays PNG so
+ * its transparency survives; anything else becomes JPEG.
+ */
+export async function normalizeHeroImage(
+	input: Uint8Array,
+): Promise<NormalizeHeroResult> {
+	const checked = await checkInput(input, {
+		maxBytes: HERO_MAX_INPUT_BYTES,
+		maxPixels: HERO_MAX_INPUT_PIXELS,
+		formats: HERO_FORMATS,
+		options: HERO_INPUT_OPTIONS,
+	});
+	if (!checked.ok) {
+		return checked;
+	}
+	const format = checked.metadata.hasAlpha ? "png" : "jpeg";
+
+	try {
+		const pipeline = sharp(checked.buffer, HERO_INPUT_OPTIONS).resize({
+			width: HERO_MAX_OUTPUT_EDGE,
+			height: HERO_MAX_OUTPUT_EDGE,
+			fit: "inside",
+			withoutEnlargement: true,
+		});
+		const { data, info } = await (format === "png"
+			? pipeline.png()
+			: pipeline.jpeg({ quality: HERO_JPEG_QUALITY })
+		).toBuffer({ resolveWithObject: true });
+		return {
+			ok: true,
+			bytes: data,
+			format,
+			width: info.width,
+			height: info.height,
 		};
 	} catch (error) {
 		return {

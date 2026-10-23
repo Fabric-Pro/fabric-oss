@@ -882,27 +882,27 @@ export async function backlogApplyChangesWorkflow(
 		// re-attempts only what is missing.
 		if (pendingProposalId) {
 			const hadErrors = progress.errors.length > 0;
-			let appliedIndexes: number[] | undefined;
-			if (approvedChangeIndexes) {
-				// Map Fabric-applied positions (create + update) to fully-
-				// applied proposal indexes. A change whose PM ticket was
-				// deleted counts as applied (the Fabric change landed; the
-				// ticket is flagged for re-link), while a genuine PM-sync
-				// failure is left out so a retry re-attempts its sync.
-				const fabricSucceededPositions = new Set<number>([
-					...Object.keys(applyResult.createdItemMap).map(Number),
-					...Object.keys(applyResult.updatedItemMap).map(Number),
-				]);
-				appliedIndexes = computeAppliedProposalIndexes({
-					fabricSucceededPositions,
-					approvedChangeIndexes,
-					syncToPM,
-					pmSucceededPositions,
-					pmNotNeededPositions,
-					pmTicketMissingPositions,
-					pmConflictPositions,
-				});
-			}
+			// Map Fabric-applied positions (create + update) to fully-applied
+			// proposal indexes. A change whose PM ticket was deleted counts as
+			// applied (the Fabric change landed; the ticket is flagged for
+			// re-link), while a genuine PM-sync failure is left out so a retry
+			// re-attempts its sync. An AI Update chat apply carries no
+			// `approvedChangeIndexes`; its positions are its proposal indexes,
+			// so the session history still gets a real applied count (Fizzy
+			// #3238).
+			const fabricSucceededPositions = new Set<number>([
+				...Object.keys(applyResult.createdItemMap).map(Number),
+				...Object.keys(applyResult.updatedItemMap).map(Number),
+			]);
+			const appliedIndexes = computeAppliedProposalIndexes({
+				fabricSucceededPositions,
+				approvedChangeIndexes,
+				syncToPM,
+				pmSucceededPositions,
+				pmNotNeededPositions,
+				pmTicketMissingPositions,
+				pmConflictPositions,
+			});
 			// Codex PR3 round-1 fix #2 (success-path symmetry with catch
 			// branch) — isolate the finalize from the downstream Step 6
 			// dispatch. A throw here would skip Step 6 entirely and the

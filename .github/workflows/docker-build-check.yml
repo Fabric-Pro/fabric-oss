@@ -22,7 +22,9 @@ name: Docker Build Check
 #     is why the browser binaries were never downloaded in the first place. It
 #     also carries the overrides and hoist patterns the install resolves with;
 #   * the root `package.json` — the pnpm version pin and the root dependencies;
-#   * `pnpm-lock.yaml` — resolution changes under any of the above.
+#   * `pnpm-lock.yaml` — resolution changes under any of the above;
+#   * `.dockerignore` — it decides which files reach every build context, so an
+#     over-broad exclusion breaks a COPY or an install with every check green.
 #
 # Deliberately NOT the deploy pipeline's full shared-package set. That fires on
 # most PRs in the repo; this gate is for changes to how the image is BUILT, not
@@ -42,6 +44,30 @@ name: Docker Build Check
 # assertion worth having. Its context is `services/sandbox-worker` alone: the
 # image installs its own tools globally with npm and depends on nothing in the
 # pnpm workspace, which is why the workspace paths above are not in its filter.
+#
+# WHY A LOCKFILE-ONLY CHANGE STILL BUILDS
+# It is tempting to drop `pnpm-lock.yaml` so Dependabot and lockfile refreshes
+# skip this check, since every required PR check also runs a frozen install of
+# the same lockfile. That covers resolution and the supply-chain policies, not
+# the image. The temporal image installs on `node:22-slim` (Debian) and runs
+# `playwright install-deps chromium` and `install chromium` for whichever
+# Playwright the lockfile resolves, then launches it; the unit-tests browser
+# job does the same on the Ubuntu runner, whose package set differs. A
+# lockfile-only Playwright bump can therefore break the image with every
+# required check green, and the post-merge build would only catch it after
+# the merge, failing the staging deploy: the failure this check exists for.
+#
+# WHY A READ-ONLY REGISTRY CACHE
+# private-staging-images.yml exports a mode=max layer cache for the temporal
+# worker, mcp stdio wrapper and migration runner images to
+# ghcr.io/fabric-pro/fabric-dev-buildcache/<component>:staging after each
+# staging merge. Those three jobs import it with the run's read-only token
+# (`packages: read`), so the layers a pull request does not change — the base
+# images' apt installs above all — come from the last staging build instead of
+# being rebuilt. They never export: a pull request must not write a cache that
+# staging builds trust. The web and sandbox worker images have no staging
+# build, so they still build cold. A missing or unreadable cache makes BuildKit
+# warn and build cold, not fail; the import is skipped outside fabric-dev.
 
 on:
   pull_request:
@@ -57,6 +83,7 @@ on:
       - 'packages/mcp-stdio-wrapper/Dockerfile'
       - 'apps/web/Dockerfile'
       - 'packages/database/Dockerfile.migrate'
+      - '.dockerignore'
       - '.github/workflows/docker-build-check.yml'
   workflow_dispatch:
 
@@ -87,6 +114,9 @@ jobs:
     needs: [promotion_policy]
     name: build temporal worker image
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -94,16 +124,26 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
+      # Read-only import of the layer cache private-staging-images.yml exports
+      # for this image (see WHY A READ-ONLY REGISTRY CACHE in the header).
+      - name: Log in to GHCR for the staging layer cache
+        if: github.repository == 'Fabric-Pro/fabric-dev'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build (no push)
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: packages/temporal/Dockerfile
           push: false
-          # No external layer-cache import or export in any job of this
-          # workflow. A GitHub Actions cache written by a pull_request run is
-          # confined to that PR's merge ref, and nothing seeds a shared branch
-          # cache here: every BuildKit entry measured was PR-scoped. Observed
+          cache-from: ${{ github.repository == 'Fabric-Pro/fabric-dev' && 'type=registry,ref=ghcr.io/fabric-pro/fabric-dev-buildcache/temporal-worker:staging' || '' }}
+          # Never a `cache-to`, in any job of this workflow. A GitHub Actions
+          # cache written by a pull_request run is confined to that PR's merge
+          # ref, so nothing it exports is ever restored by another PR. Observed
           # cold builds spent 4.5-10 minutes exporting mode=max caches, and one
           # PR's export (7.9 GB) took the repository over its 10 GB cache
           # budget, risking eviction of the base-branch Type Check caches that
@@ -148,12 +188,23 @@ jobs:
     needs: [promotion_policy]
     name: build mcp stdio wrapper image
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GHCR for the staging layer cache
+        if: github.repository == 'Fabric-Pro/fabric-dev'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build (no push)
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -161,6 +212,7 @@ jobs:
           context: .
           file: packages/mcp-stdio-wrapper/Dockerfile
           push: false
+          cache-from: ${{ github.repository == 'Fabric-Pro/fabric-dev' && 'type=registry,ref=ghcr.io/fabric-pro/fabric-dev-buildcache/mcp-stdio-wrapper:staging' || '' }}
 
   migration-runner:
     if: >-
@@ -168,6 +220,9 @@ jobs:
     needs: [promotion_policy]
     name: build migration runner image
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -175,12 +230,21 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
+      - name: Log in to GHCR for the staging layer cache
+        if: github.repository == 'Fabric-Pro/fabric-dev'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build (no push)
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           file: packages/database/Dockerfile.migrate
           push: false
+          cache-from: ${{ github.repository == 'Fabric-Pro/fabric-dev' && 'type=registry,ref=ghcr.io/fabric-pro/fabric-dev-buildcache/migration-runner:staging' || '' }}
 
   web:
     if: >-

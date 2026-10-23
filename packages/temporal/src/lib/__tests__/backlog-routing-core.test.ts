@@ -682,16 +682,30 @@ describe("judgeRoutingItem", () => {
 		async function judge(
 			decisionModel: Awaited<ReturnType<typeof withDecisionModel>>,
 			embedding = [1, 0],
+			stories = [TICKET_A],
+			threshold = 0.7,
 		) {
 			return judgeRoutingItem({
 				itemText: "Export throttling detail",
 				itemEmbedding: embedding,
-				...corpusOf([1, 0]),
+				...corpusOf([1, 0], stories),
 				judge: await getJudge(),
 				decisionModel,
-				threshold: 0.7,
+				threshold,
 				...BASE,
 			});
+		}
+
+		/** The questions object the decision model was asked, by call index. */
+		function questionsAsked(call = 0) {
+			return (
+				mockDecide.mock.calls[call]?.[0] as {
+					questions: Record<
+						string,
+						{ criteria?: Record<string, string> }
+					>;
+				}
+			).questions;
 		}
 
 		function answers(routing: unknown, target?: unknown) {
@@ -744,7 +758,7 @@ describe("judgeRoutingItem", () => {
 				response: { modelId: "typesafe-ai/jev" },
 			});
 
-			await judge(decisionModel);
+			await judge(decisionModel, [1, 0], [TICKET_A, TICKET_B]);
 
 			expect(capturedDecisionOutcomes).toEqual([
 				{
@@ -769,7 +783,7 @@ describe("judgeRoutingItem", () => {
 				const decisionModel = await withDecisionModel();
 				mockDecide.mockResolvedValue(decideResult);
 
-				await judge(decisionModel);
+				await judge(decisionModel, [1, 0], [TICKET_A, TICKET_B]);
 
 				expect(mockGenerateObject).toHaveBeenCalledOnce();
 				expect(capturedDecisionOutcomes).toEqual([
@@ -782,6 +796,72 @@ describe("judgeRoutingItem", () => {
 				]);
 			},
 		);
+
+		it("asks the target question, keyed by identifier, when the shortlist has two tickets", async () => {
+			const decisionModel = await withDecisionModel();
+			mockDecide.mockResolvedValue(answers(create(0.95)));
+
+			await judge(decisionModel, [1, 0], [TICKET_A, TICKET_B]);
+
+			expect(Object.keys(questionsAsked())).toEqual([
+				"routing",
+				"target",
+			]);
+			expect(Object.keys(questionsAsked().target.criteria ?? {})).toEqual(
+				["F-1", "F-2"],
+			);
+		});
+
+		describe("one-ticket shortlist (Fizzy #3291)", () => {
+			it("asks only the routing question, since a one-option choice is rejected by some decision models", async () => {
+				const decisionModel = await withDecisionModel();
+				mockDecide.mockResolvedValue(answers(create(0.95)));
+
+				await judge(decisionModel);
+
+				expect(Object.keys(questionsAsked())).toEqual(["routing"]);
+			});
+
+			it("enriches the only ticket from a confident routing answer, without the language judge", async () => {
+				const decisionModel = await withDecisionModel();
+				mockDecide.mockResolvedValue(answers(enrich(0.95)));
+
+				const judgement = await judge(decisionModel);
+
+				expect(judgement.kind).toBe("enrich");
+				if (judgement.kind === "enrich") {
+					expect(judgement.target.identifier).toBe("F-1");
+					expect(judgement.source).toBe("decision_evaluation");
+				}
+				expect(mockGenerateObject).not.toHaveBeenCalled();
+				expect(capturedDecisionOutcomes).toEqual([
+					{
+						site: SITE,
+						outcome: "accepted",
+						model: "example-decider",
+						confidences: [0.95],
+					},
+				]);
+			});
+
+			it.each([
+				["below the 0.9 decision floor", enrich(0.89), 0.7],
+				["below the operator's threshold", enrich(0.93), 0.95],
+			])(
+				"falls through to the language judge for an enrich %s",
+				async (_name, routing, threshold) => {
+					const decisionModel = await withDecisionModel();
+					mockDecide.mockResolvedValue(answers(routing));
+
+					await judge(decisionModel, [1, 0], [TICKET_A], threshold);
+
+					expect(mockGenerateObject).toHaveBeenCalledOnce();
+					expect(capturedDecisionOutcomes).toEqual([
+						expect.objectContaining({ outcome: "below_threshold" }),
+					]);
+				},
+			);
+		});
 
 		it("records malformed when the routing answer carries no readable probability", async () => {
 			const decisionModel = await withDecisionModel();

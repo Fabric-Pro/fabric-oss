@@ -14,6 +14,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../organizations/lib/membership";
+import { fetchNotionBlocksAsText } from "../lib/notion-content";
 
 interface NotionSearchResult {
 	object: string;
@@ -52,7 +53,8 @@ function extractNotionPageTitle(page: NotionSearchResult): string {
 async function fetchNotionPages(
 	accessToken: string,
 	query: string,
-): Promise<NotionSearchResult[]> {
+	initialCursor?: string,
+): Promise<{ results: NotionSearchResult[]; nextCursor: string | null }> {
 	const headers = {
 		Authorization: `Bearer ${accessToken}`,
 		"Content-Type": "application/json",
@@ -60,7 +62,9 @@ async function fetchNotionPages(
 	};
 
 	const allResults: NotionSearchResult[] = [];
-	let cursor: string | undefined;
+	let cursor: string | undefined = initialCursor;
+	let hasMore = false;
+	let lastCursor: string | null = null;
 
 	for (let i = 0; i < 2; i++) {
 		const body: Record<string, unknown> = {
@@ -80,6 +84,11 @@ async function fetchNotionPages(
 		});
 
 		if (!response.ok) {
+			if (response.status === 401) {
+				throw new ORPCError("UNAUTHORIZED", {
+					message: "Notion connection expired. Reconnect Notion.",
+				});
+			}
 			const errorText = await response
 				.text()
 				.catch(() => "unknown error");
@@ -90,6 +99,8 @@ async function fetchNotionPages(
 
 		const data = (await response.json()) as NotionSearchResponse;
 		allResults.push(...data.results);
+		hasMore = data.has_more;
+		lastCursor = data.next_cursor;
 
 		if (!data.has_more || !data.next_cursor) {
 			break;
@@ -98,7 +109,10 @@ async function fetchNotionPages(
 		cursor = data.next_cursor;
 	}
 
-	return allResults;
+	return {
+		results: allResults,
+		nextCursor: hasMore ? lastCursor : null,
+	};
 }
 
 /**
@@ -120,6 +134,7 @@ const listNotionPagesProcedure = tenantProtectedProcedure
 			id: z.string(),
 			organizationId: z.string().nullable().optional(),
 			query: z.string().optional(),
+			cursor: z.string().optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -166,9 +181,10 @@ const listNotionPagesProcedure = tenantProtectedProcedure
 			});
 		}
 
-		const rawPages = await fetchNotionPages(
+		const { results: rawPages, nextCursor } = await fetchNotionPages(
 			connection.accessToken,
 			input.query ?? "",
+			input.cursor,
 		);
 
 		const pages = rawPages.map((page) => ({
@@ -182,9 +198,83 @@ const listNotionPagesProcedure = tenantProtectedProcedure
 					: null,
 		}));
 
-		return { pages };
+		return { pages, nextCursor };
+	});
+
+/**
+ * Get Notion page content directly from the Notion API.
+ * AUTHORIZATION: Verifies connection belongs to the tenant.
+ */
+const getNotionPageContentProcedure = tenantProtectedProcedure
+	.use(requirePermission(Permissions.ORG_DATA_CONNECTIONS_READ))
+	.route({
+		method: "GET",
+		path: "/data-connections/:id/notion/pages/:pageId/content",
+		tags: ["DataConnections", "Notion"],
+		summary: "Get Notion page content",
+		description:
+			"Fetch Notion page blocks and return them as plain text/markdown.",
+	})
+	.input(
+		z.object({
+			id: z.string(),
+			pageId: z.string().regex(/^[0-9a-f]{32}$|^[0-9a-f-]{36}$/i),
+			organizationId: z.string().nullable().optional(),
+		}),
+	)
+	.handler(async ({ input, context }) => {
+		const user = context.user;
+		const organizationId = resolveOrganizationId(
+			input.organizationId,
+			context.session,
+		);
+
+		if (organizationId) {
+			const membership = await verifyOrganizationMembership(
+				organizationId,
+				user.id,
+			);
+
+			if (!membership) {
+				throw new ORPCError("FORBIDDEN", {
+					message: "You are not a member of this organization",
+				});
+			}
+		}
+
+		const connection = await getDataConnectionById({
+			id: input.id,
+			userId: user.id,
+			organizationId,
+		});
+
+		if (!connection) {
+			throw new ORPCError("NOT_FOUND", {
+				message: "Connection not found",
+			});
+		}
+
+		if (connection.provider !== "NOTION") {
+			throw new ORPCError("BAD_REQUEST", {
+				message: "This connection is not a Notion connection",
+			});
+		}
+
+		if (!connection.accessToken) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: "Notion connection is missing an access token",
+			});
+		}
+
+		const content = await fetchNotionBlocksAsText(
+			input.pageId,
+			connection.accessToken,
+		);
+
+		return { content };
 	});
 
 export const notionProcedures = {
 	pages: listNotionPagesProcedure,
+	pageContent: getNotionPageContentProcedure,
 };
