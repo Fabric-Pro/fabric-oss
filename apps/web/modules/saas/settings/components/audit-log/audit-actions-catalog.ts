@@ -1609,6 +1609,14 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"An AI backlog proposal was abandoned by the watchdog after running too long. Nothing was applied.",
 	},
 	{
+		key: "backlog.recurring_errors.scan_failed",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.backlog.recurring_errors.scan_failed",
+		description:
+			"The scheduled recurring-error scan could not read the project's log source, or could not file a bug proposal for a recurring error.",
+	},
+	{
 		key: "newsletter.widget.enabled",
 		categoryId: "newsletter",
 		labelKey: "settings.auditLog.actions.newsletter.widget.enabled",
@@ -1794,6 +1802,13 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		labelKey: "settings.auditLog.actions.org.brand_kit.updated",
 		description:
 			"An organization's brand kit — its accent colors and guidance text for Glossy exports — was changed.",
+	},
+	{
+		key: "org.brand_kit.site_fetched",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.brand_kit.site_fetched",
+		description:
+			"Fabric fetched the brand colors an organization's own website declares, for its Proposals — the host and outcome only, never page content.",
 	},
 	{
 		key: "project.document_analysis.responded",

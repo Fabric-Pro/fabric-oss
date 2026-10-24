@@ -145,6 +145,14 @@ describe("doneTurnEvent", () => {
 			truncated: "output_limit",
 		});
 	});
+
+	it("says when every plan ran out mid-turn and API billing finished it (Fizzy #3048)", () => {
+		expect(doneTurnEvent({ apiBilling: { resetAt: null } })).toMatchObject({
+			type: "done",
+			apiBilling: { resetAt: null },
+		});
+		expect(doneTurnEvent({})).not.toHaveProperty("apiBilling");
+	});
 });
 
 describe("windowHistory total size (review F38)", () => {

@@ -31,7 +31,11 @@ export type GlossyUntrustedSource =
 	/** Editor-authored presentation preference (Align first). */
 	| "style_direction"
 	/** Editor-authored hint on a visual slot. */
-	| "slot_hint";
+	| "slot_hint"
+	/** An editor's requested change to one diagram (Edit with instructions). */
+	| "instruction"
+	/** The current source of the diagram an edit changes. */
+	| "current_diagram";
 
 /** Instruction text shared by every Glossy prompt. */
 export const GLOSSY_UNTRUSTED_GUIDANCE = [

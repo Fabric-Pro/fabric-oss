@@ -11,6 +11,16 @@
  * single module — the same code path every editor saves through.
  */
 
+import {
+	deriveGlossyPalette,
+	fillVisualColors,
+} from "@repo/utils/glossy/visual-colors";
+import { visualSpecToMermaid } from "@repo/utils/glossy/visual-templates";
+import {
+	classifyVisualFences,
+	visualSourceHash,
+} from "@repo/utils/proposal-artifact/visual-identity";
+import { toMermaidFence } from "@repo/utils/proposal-artifact/visual-insert";
 import { Editor } from "@tiptap/core";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -399,6 +409,125 @@ describe("editor-markdown-save: stat tiles fences (Fizzy #2946)", () => {
 		editor.destroy();
 
 		expect(saved).toBe("```stat-tiles\nPilot sites: 3\n```");
+	});
+});
+
+describe("editor-markdown-save: generated diagram marker (Fizzy #2946)", () => {
+	// A diagram the visuals step writes opens its fence with a
+	// `%% fabric-visual: <id>` line; the spec stored for it is found again by
+	// that id and the body's source hash, so both must survive a load and
+	// save through the editor.
+	const VISUAL_ID = "k3v9q2m7x1a8c4d6";
+	const SOURCE = fillVisualColors(
+		visualSpecToMermaid({
+			kind: "timeline",
+			items: [
+				{ date: "Q1 2026", label: "Discovery" },
+				{ date: "Q2 2026", label: "Launch", description: "Go live" },
+			],
+		}),
+		deriveGlossyPalette({
+			overrides: { primary: "#334155", accents: ["#475569"] },
+		}),
+	);
+	const FENCE = toMermaidFence(SOURCE, VISUAL_ID);
+	const DOCUMENT = `## Delivery\n\nWe start in Q1 2026 and launch in Q2 2026.\n\n${FENCE}\n\nNext steps follow.`;
+
+	const bodyOf = (markdown: string) =>
+		/```mermaid\n([\s\S]*?)\n```/.exec(markdown)?.[1] ?? "";
+
+	function roundTrip(
+		markdown: string,
+		statTiles: boolean,
+	): {
+		types: string[];
+		saved: string;
+	} {
+		const editor = new Editor({
+			extensions: createAdvancedExtensions({
+				projectId: null,
+				documentId: null,
+				statTiles,
+			}),
+			content: fromMarkdown(markdown),
+		});
+		const types: string[] = [];
+		editor.state.doc.forEach((node) => {
+			types.push(node.type.name);
+		});
+		const saved = getEditorMarkdownForSave(editor);
+		editor.destroy();
+		return { types, saved };
+	}
+
+	it("keeps the marker as the fence's first line, and the source hash, through load and save", () => {
+		const { types, saved } = roundTrip(DOCUMENT, true);
+
+		expect(types).toContain("mermaidBlock");
+		const body = bodyOf(saved);
+		expect(body.split("\n")[0]).toBe(`%% fabric-visual: ${VISUAL_ID}`);
+		expect(visualSourceHash(body)).toBe(visualSourceHash(bodyOf(FENCE)));
+		expect(body).toBe(bodyOf(FENCE));
+	});
+
+	it("keeps an indented body's indentation, so its hash holds too", () => {
+		const indented = [
+			"```mermaid",
+			`%% fabric-visual: ${VISUAL_ID}`,
+			"flowchart LR",
+			'    a["Discovery"] --> b["Launch"]',
+			"    style a fill:#e7e8eb",
+			"```",
+		].join("\n");
+		const { saved } = roundTrip(`## Delivery\n\n${indented}`, true);
+
+		expect(bodyOf(saved)).toBe(bodyOf(indented));
+		expect(visualSourceHash(bodyOf(saved))).toBe(
+			visualSourceHash(bodyOf(indented)),
+		);
+	});
+
+	it("keeps a label's <br/> line break, and so the fence and its hash, byte-identical", () => {
+		const withBreaks = [
+			"```mermaid",
+			`%% fabric-visual: ${VISUAL_ID}`,
+			"flowchart LR",
+			'  t0["Q1 2026<br/>Discovery"]',
+			'  t1["Q2 2026<br/>Launch<br/>Go live"]',
+			"  t0 --> t1",
+			"  class t0 surface",
+			"  class t1 surface",
+			"```",
+		].join("\n");
+		const document = `## Delivery\n\nWe start in Q1 2026.\n\n${withBreaks}\n\nNext steps follow.`;
+
+		const { types, saved } = roundTrip(document, true);
+
+		expect(types).toContain("mermaidBlock");
+		expect(saved).toBe(document);
+		expect(bodyOf(saved)).toBe(bodyOf(withBreaks));
+		expect(visualSourceHash(bodyOf(saved))).toBe(
+			visualSourceHash(bodyOf(withBreaks)),
+		);
+		// Twice through, as a reopened document is.
+		expect(roundTrip(saved, true).saved).toBe(document);
+	});
+
+	it("classifies the saved fence as the generated visual it was", () => {
+		const row = {
+			visualId: VISUAL_ID,
+			sourceHash: visualSourceHash(bodyOf(FENCE)),
+			kind: "timeline",
+			origin: "STEP" as const,
+		};
+		const { saved } = roundTrip(roundTrip(DOCUMENT, true).saved, false);
+
+		expect(classifyVisualFences(saved, [row])).toEqual([
+			expect.objectContaining({
+				state: "generated",
+				visualId: VISUAL_ID,
+			}),
+		]);
 	});
 });
 

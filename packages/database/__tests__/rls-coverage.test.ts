@@ -452,6 +452,9 @@ describe("Glossy editions registration (Fizzy #2589)", () => {
 		["GlossyVisualDecision", "glossy_visual_decision"],
 		["GlossySegmentCache", "glossy_segment_cache"],
 		["ProjectRecipientBrand", "project_recipient_brand"],
+		// Generated visuals' specs (Fizzy #2946): a guest with edit rights
+		// writes them through Edit with instructions, so the Glossy class.
+		["ProjectDocumentVisualSpec", "project_document_visual_spec"],
 	] as const;
 
 	const allTables: readonly (readonly [string, string])[] = [
@@ -573,6 +576,13 @@ describe("Proposal artifact registration (Fizzy #2801)", () => {
 		["ProjectDocumentFinding", "project_document_finding"],
 		["ProjectDocumentFindingResponse", "project_document_finding_response"],
 		["ProjectDocumentStyle", "project_document_style"],
+		// Brand sources (Fizzy #2946): written only by automation.
+		["OrganizationBrandSiteFetch", "organization_brand_site_fetch"],
+		[
+			"ProjectRecipientBrandSuggestion",
+			"project_recipient_brand_suggestion",
+		],
+		["ProjectDocumentExportBrand", "project_document_export_brand"],
 	] as const;
 
 	it("sanity: the tenant-db table sets parsed", () => {

@@ -25,7 +25,11 @@ vi.mock("@repo/database", async () => {
 	};
 });
 vi.mock("../parlume-voice", () => ({
-	verifyParlumeVoiceGeneration: async () => true,
+	readParlumeVoiceState: async () => ({
+		current: true,
+		muted: false,
+		chatAvailable: true,
+	}),
 }));
 
 const prefix = `parlume-claim-${randomUUID()}`;
@@ -42,6 +46,7 @@ const context = {
 	userId,
 	speakerId: "speaker",
 	speakerName: "Requester",
+	requestText: "create a ticket",
 	agentRevision: "revision",
 	voiceGeneration: 1,
 	toolsReadOnly: false,

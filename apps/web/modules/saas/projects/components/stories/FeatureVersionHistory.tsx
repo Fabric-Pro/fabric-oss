@@ -6,6 +6,7 @@
  * Clicking a version opens a fullscreen diff viewer (VersionDiffViewer).
  */
 
+import { countDocumentWords } from "@repo/utils/document-word-count";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
@@ -466,7 +467,7 @@ export function FeatureVersionHistory({
 																		version.description,
 																		version.acceptanceCriteria,
 																	);
-																return `${content.split(/\s+/).length} words`;
+																return `${countDocumentWords(content)} words`;
 															})()}
 														</span>
 													</div>

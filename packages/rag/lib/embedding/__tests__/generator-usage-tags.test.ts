@@ -48,6 +48,7 @@ beforeEach(() => {
 	getAIEmbeddingModelWithMetadataMock.mockResolvedValue({
 		model: { id: "text-embedding-3-small" },
 		metadata: {
+			canonicalName: "text-embedding-3-small",
 			modelString: "openai/text-embedding-3-small",
 			provider: "VERCEL_GATEWAY",
 			selectionSource: "system_default",

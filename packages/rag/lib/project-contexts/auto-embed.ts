@@ -20,6 +20,9 @@
  * @see https://weaviate.io/blog/chunking-strategies-for-rag
  */
 
+import { assertEmbeddingModelUsable } from "@repo/ai";
+import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
+
 import {
 	getDefaultRagSettings,
 	getOrganizationRagSettings,
@@ -106,6 +109,8 @@ function normalizeProviderConfig(
 
 export interface EmbedResult {
 	success: boolean;
+	/** Configuration verdict for callers that distinguish refusal from transient failure. */
+	refusal?: UnsupportedEmbeddingModelError;
 	qdrantId?: string;
 	error?: string;
 	chunksCreated?: number;
@@ -572,6 +577,9 @@ async function embedContext(
 		return {
 			success: false,
 			error: errorMessage,
+			...(error instanceof UnsupportedEmbeddingModelError
+				? { refusal: error }
+				: {}),
 		};
 	}
 }
@@ -668,6 +676,11 @@ async function embedWithChunking(
 		});
 	}
 	let enrichmentDeferral: EnrichmentDeferral | null = null;
+	await assertEmbeddingModelUsable({
+		userId,
+		organizationId,
+		...(owner.kind === "company" ? COMPANY_EMBEDDING_RESOLUTION : {}),
+	});
 	const enrichedChunks = await enrichChunksWithTenantContext(chunks, {
 		documentContent: content,
 		documentTitle: metadata?.filename || contextId,
@@ -777,6 +790,9 @@ async function embedWithChunking(
 			pointIds.push(qdrantId);
 			successCount++;
 		} catch (error) {
+			if (error instanceof UnsupportedEmbeddingModelError) {
+				return { success: false, error: error.message, refusal: error };
+			}
 			const errorMsg =
 				error instanceof Error ? error.message : String(error);
 			logger.error(
@@ -861,6 +877,9 @@ export async function reembedProjectContext(
 		return {
 			success: false,
 			error: errorMessage,
+			...(error instanceof UnsupportedEmbeddingModelError
+				? { refusal: error }
+				: {}),
 		};
 	}
 }

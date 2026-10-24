@@ -2,7 +2,7 @@ name: Knip
 
 # Runs the full knip suite — unused files, unused/unlisted dependencies and
 # binaries, unresolved imports, unused exports/types, and duplicate exports —
-# on every PR to the canonical branch (`master`).
+# on every PR to `master` and `staging`.
 #
 # Rationale: the baselines were cleaned tier by tier (dependencies, files,
 # exports) and `pnpm knip` now exits 0 across all issue types. Without a CI
@@ -15,8 +15,10 @@ name: Knip
 # .env.local or generated artifacts: the generated Prisma zod barrel it treats
 # as an entry is tracked in git.
 #
-# This job starts out NOT in the required-checks set; promote it via branch
-# protection once it has proven quiet on real PRs.
+# `Knip (dead code and dependencies)` is a required check for merges into
+# `staging`. The ops promotion verifier models each staging-required check by
+# name and workflow path, so renaming this job or moving it to another
+# workflow file needs a matching change there.
 #
 # Security: no user-controlled fields are interpolated into run: blocks.
 
@@ -74,10 +76,9 @@ jobs:
         with:
           node-version: '22'
           check-latest: true
-          cache: 'pnpm'
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        uses: ./.github/actions/pnpm-install
 
       - name: Knip
         run: pnpm knip

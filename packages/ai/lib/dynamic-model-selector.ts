@@ -12,6 +12,10 @@
  * 7. Hardcoded fallback (if database is empty)
  */
 
+import {
+	embeddingModelFitsVectorStore,
+	UnsupportedEmbeddingModelError,
+} from "./embedding-dimensions";
 import { buildProviderModelString } from "./provider-model-string";
 
 export { buildProviderModelString } from "./provider-model-string";
@@ -25,6 +29,7 @@ import {
 	getEmbeddingProviderConfig,
 	getModelForTask,
 	getOrganizationSystemAiProviderApiKey,
+	getOrgDecisionProvider,
 	getPlanSpentPersonalProviderConfig,
 	getProviderModelIdForCanonical,
 	getProviderModelMappingForCanonical,
@@ -1044,7 +1049,10 @@ import {
 	sharedPlansSkipMembersMessage,
 } from "./chatgpt-plan/pool";
 import { createChatGptPlanModel } from "./chatgpt-plan/provider";
-import { createChatGptPlanRotationMiddleware } from "./chatgpt-plan/rotation";
+import {
+	CHATGPT_PLAN_API_BILLING,
+	createChatGptPlanRotationMiddleware,
+} from "./chatgpt-plan/rotation";
 import type { PlanSourceRef } from "./chatgpt-plan/sources";
 import { isReasoningModelName } from "./databricks-compat";
 import {
@@ -1256,6 +1264,12 @@ export interface AIModelMetadata {
 	 * when the plans reset. Never the key itself.
 	 */
 	planSpentPersonalKey?: { provider: string; resetAt: Date | null };
+	/**
+	 * Set once a call that started on a ChatGPT plan moved to the
+	 * organization's provider because every plan ran out mid-turn and its
+	 * "Use API billing" policy takes the work (Fizzy #3048).
+	 */
+	planSpentApiBilling?: { resetAt: Date | null };
 }
 
 /**
@@ -1309,7 +1323,7 @@ export interface AIDecisionModelResult {
 class DecisionModelDeferredToChatGptPlanError extends AIProviderNotConfiguredError {
 	constructor() {
 		super(
-			"A ChatGPT plan serves this call; deciding with the language model instead of the organization's Vercel AI Gateway.",
+			"A ChatGPT plan serves this call; deciding with the language model instead of the organization's decision provider.",
 		);
 		this.name = "DecisionModelDeferredToChatGptPlanError";
 	}
@@ -1319,9 +1333,9 @@ class DecisionModelDeferredToChatGptPlanError extends AIProviderNotConfiguredErr
  * Whether a ChatGPT plan serves this call's language model, by the same
  * rules as that model (Fizzy #3033). When every plan is spent the call
  * follows the policy for its kind of work: under "Use API billing" (audited)
- * the gateway decides, otherwise the plan's refusal with its reset time is
- * thrown — never a quiet move to API billing. A plan that needs reconnecting,
- * or a fault, reads as no: the gateway decides, as before.
+ * the configured decision provider runs, otherwise the plan's refusal is
+ * thrown, without moving to API billing. A plan that needs reconnecting,
+ * or a fault, reads as no: the configured decision provider runs.
  *
  * @throws SubscriptionPlanExhaustedError when every plan is spent and the
  *   policy stops the work.
@@ -1349,16 +1363,15 @@ async function chatGptPlanCanServeDecision(
 /**
  * Resolve the organization-configured typed decision model.
  *
- * Decision models (Luna Decisions, Jev) are AI SDK decision models rather
+ * Decision models are AI SDK decision models rather
  * than language models, so this cannot use `getAIModelWithMetadata`. It
- * refuses every credential fallback source, to keep a missing organization
- * gateway from using a personal or platform key.
+ * rejects credential fallback sources, to keep a missing organization
+ * decision provider from using a personal or platform key.
  *
  * A ChatGPT plan that can serve the same call comes first (Fizzy #2770): the
  * call is refused with {@link DecisionModelDeferredToChatGptPlanError}, so the
  * caller decides with its language model on the plan instead of billing the
- * gateway. While every plan is spent the gateway decides only where the
- * spend policy for that work allows API billing; otherwise the plan's
+ * decision provider. While plans are spent it runs only where the spend policy for that work allows API billing; otherwise the plan's
  * refusal is thrown. Pass the same `jobType` and `planEligible` the caller's
  * language model gets.
  */
@@ -1368,41 +1381,44 @@ export async function getAIDecisionModelWithMetadata(
 	const context = withAmbientJobType(callerContext);
 	if (!context.organizationId) {
 		throw new AIProviderNotConfiguredError(
-			"Decision evaluation requires an organization context and a configured Vercel AI Gateway provider.",
+			"Decision evaluation requires an organization context and a configured decision provider.",
 		);
 	}
 	if (await chatGptPlanCanServeDecision(context)) {
 		throw new DecisionModelDeferredToChatGptPlanError();
 	}
 
+	const provider =
+		(await getOrgDecisionProvider(context.organizationId)) === "DATABRICKS"
+			? "DATABRICKS"
+			: "VERCEL_GATEWAY";
 	const providerConfig = await getAiProviderApiKeyByProvider({
 		userId: context.userId,
 		organizationId: context.organizationId,
-		provider: "VERCEL_GATEWAY",
+		provider,
 	});
-
+	const baseUrl = providerConfig.baseUrl ?? "";
 	if (
-		providerConfig.provider !== "VERCEL_GATEWAY" ||
+		providerConfig.provider !== provider ||
 		providerConfig.source !== "organization" ||
-		!providerConfig.apiKey
+		(provider === "DATABRICKS"
+			? !hasProviderCredentials(providerConfig) || !baseUrl
+			: !providerConfig.apiKey)
 	) {
 		throw new AIProviderNotConfiguredError(
-			"Decision evaluation requires this organization's configured Vercel AI Gateway provider.",
+			`Decision evaluation requires this organization's configured ${provider === "DATABRICKS" ? "Databricks" : "Vercel AI Gateway"} provider.`,
 		);
 	}
-
 	const selection = await getModelForTask(
 		context.userId,
-		"VERCEL_GATEWAY" as DbAIProvider,
-		"DECISION" as DbAiTaskType,
+		provider,
+		"DECISION",
 		context.organizationId,
 	);
 	const model = selection?.model;
 	const providerMapping = model?.providerMappings?.find(
-		(mapping) =>
-			mapping.provider === "VERCEL_GATEWAY" && mapping.isAvailable,
+		(mapping) => mapping.provider === provider && mapping.isAvailable,
 	);
-
 	if (
 		!model ||
 		!providerMapping?.providerModelId ||
@@ -1410,7 +1426,7 @@ export async function getAIDecisionModelWithMetadata(
 		!model.suitableForTasks.includes("DECISION")
 	) {
 		throw new AIProviderNotConfiguredError(
-			"No typed decision model is available for this organization's Vercel AI Gateway provider.",
+			"No typed decision model is available for this organization's decision provider.",
 		);
 	}
 
@@ -1435,27 +1451,33 @@ export async function getAIDecisionModelWithMetadata(
 	// model for many decisions, so `withDecisionUsageLimits` below repeats the
 	// primary check, and checks each fallback, immediately before every
 	// dispatch.
-	const fallbacks = getDecisionModelFallbacks({
-		selectionSource: selection.source,
-		canonicalName: model.canonicalName,
-	});
+	const fallbacks =
+		provider === "VERCEL_GATEWAY"
+			? getDecisionModelFallbacks({
+					selectionSource: selection.source,
+					canonicalName: model.canonicalName,
+				})
+			: [];
 
 	const apiKey = await resolveProviderApiKey(providerConfig);
 	const billingState = getTenantAiGatewayBillingState({
-		provider: "VERCEL_GATEWAY" as DbAIProvider,
+		provider,
 		configSource: providerConfig.source,
 	});
 	const evaluationModel = getEvaluationModel(
 		providerMapping.providerModelId,
-		{
-			apiKey,
-			provider: "VERCEL_GATEWAY",
-			headers: billingState.headers ?? undefined,
-		},
+		provider === "DATABRICKS"
+			? {
+					provider,
+					apiKey,
+					baseUrl,
+				}
+			: { provider, apiKey, headers: billingState.headers ?? undefined },
 	);
+
 	const metadata: AIModelMetadata = {
 		modelString: providerMapping.providerModelId,
-		provider: "VERCEL_GATEWAY" as DbAIProvider,
+		provider,
 		configId: providerConfig.configId,
 		configSource: providerConfig.source,
 		selectionSource: selection.source,
@@ -1468,7 +1490,7 @@ export async function getAIDecisionModelWithMetadata(
 	const organizationId = context.organizationId;
 	// The limit wrapper sits outside the usage-logging wrapper, so a call
 	// refused by a limit writes no usage row. The telemetry span wraps the
-	// gateway model directly, so it measures exactly one `doDecide` network
+	// provider model directly, so it measures exactly one `doDecide` network
 	// round trip (and one span per SDK retry); a refused call has no span.
 	//
 	// The same two gates as every language and embedding model above, placed
@@ -2042,13 +2064,50 @@ async function getChatGptPlanModelWithMetadata(
 		agentId: context.agentId,
 		costUsd: 0,
 	};
-	type PlanUsageContext = typeof usageLoggingContext;
+	type PlanUsageContext = Omit<
+		typeof usageLoggingContext,
+		"costUsd" | "billingCustomerId"
+	> & { costUsd?: number; billingCustomerId: string | null };
+	// Every plan is spent and the organization's "Use API billing" policy
+	// takes the work (Fizzy #3048): the turn moves to its provider for the
+	// rest of the turn, resolved once, rather than ending on the spent plan.
+	// Resolved unlogged, because the usage row stays this model's, now naming
+	// that provider at its own price.
+	let apiBilling: Promise<AggregateAIModelResult> | undefined;
+	let apiBillingModel: AggregateAIModelResult | undefined;
+	const servedOnApiBilling = (served: PlanUsageContext) => {
+		if (!apiBillingModel) {
+			return;
+		}
+		const api = apiBillingModel.metadata;
+		Object.assign(served, {
+			provider: api.provider,
+			providerModelId: api.modelString,
+			modelCanonicalName: api.canonicalName,
+			providerConfigId: api.configId ?? undefined,
+			billingCategory: getAiBillingCategory(api),
+			billingCustomerId: api.billingCustomerId,
+		});
+		delete served.costUsd;
+	};
+	const handOff = async (served: PlanUsageContext) => {
+		apiBilling ??= getAIModelWithMetadata(
+			{ ...options, usageLogging: "aggregate" },
+			{ ...context, excludeChatGptPlan: true },
+		);
+		apiBillingModel = await apiBilling;
+		metadata.planSpentApiBilling = { resetAt: null };
+		servedOnApiBilling(served);
+		return apiBillingModel.model;
+	};
 	const build = (
 		current: PlanSourceRef,
 		served: PlanUsageContext,
 		requestedOutputTokens?: number,
 	) =>
 		createChatGptPlanModel({
+			sessionKey:
+				context.conversationId?.trim() || context.workflowExecutionId,
 			userId: context.userId,
 			source: current,
 			modelId,
@@ -2092,37 +2151,52 @@ async function getChatGptPlanModelWithMetadata(
 	// alongside it (Fizzy #3025).
 	const forRequest = (requestedOutputTokens: number | undefined) => {
 		const served: PlanUsageContext = { ...usageLoggingContext };
-		const rotating = wrapLanguageModel({
-			model: build(source, served, requestedOutputTokens) as Parameters<
-				typeof wrapLanguageModel
-			>[0]["model"],
-			middleware: createChatGptPlanRotationMiddleware({
-				source,
-				build: (next) => build(next, served, requestedOutputTokens),
-				repick: async (exclude) => {
-					const next = await chatGptPlanSourceForCall(context, {
-						exclude: [
-							...(context.excludePlanSources ?? []),
-							...exclude,
-						],
-					});
-					// A personal key cannot take over a request already sent
-					// on a plan; the next call resolves it (Fizzy #3085).
-					return next && "source" in next ? next.source : null;
-				},
-				// The account's own token limits apply to the call it takes over.
-				beforeRotate: (next) =>
-					assertWithinAiUsageLimits({
-						...limitScope,
-						providerConfigId:
-							next.kind === "org" ? next.accountId : null,
+		servedOnApiBilling(served);
+		const rotating = apiBillingModel
+			? (apiBillingModel.model as ReturnType<typeof wrapLanguageModel>)
+			: wrapLanguageModel({
+					model: build(
+						source,
+						served,
+						requestedOutputTokens,
+					) as Parameters<typeof wrapLanguageModel>[0]["model"],
+					middleware: createChatGptPlanRotationMiddleware({
+						source,
+						build: (next) =>
+							build(next, served, requestedOutputTokens),
+						repick: async (exclude) => {
+							const next = await chatGptPlanSourceForCall(
+								context,
+								{
+									exclude: [
+										...(context.excludePlanSources ?? []),
+										...exclude,
+									],
+								},
+							);
+							if (next === null) {
+								return CHATGPT_PLAN_API_BILLING;
+							}
+							// A personal key cannot take over a request already sent
+							// on a plan; the next call resolves it (Fizzy #3085).
+							return "source" in next ? next.source : null;
+						},
+						handOff: () => handOff(served),
+						// The account's own token limits apply to the call it takes over.
+						beforeRotate: (next) =>
+							assertWithinAiUsageLimits({
+								...limitScope,
+								providerConfigId:
+									next.kind === "org" ? next.accountId : null,
+							}),
+						onRotated: (next) => {
+							served.providerConfigId =
+								next.kind === "org"
+									? next.accountId
+									: undefined;
+						},
 					}),
-				onRotated: (next) => {
-					served.providerConfigId =
-						next.kind === "org" ? next.accountId : undefined;
-				},
-			}),
-		});
+				});
 		const model =
 			options.usageLogging === "aggregate"
 				? rotating
@@ -2135,6 +2209,12 @@ async function getChatGptPlanModelWithMetadata(
 	// The turn's aggregate row names the account and model of its latest
 	// request.
 	const aggregateContext: PlanUsageContext = { ...usageLoggingContext };
+	const settleAggregate = (served: PlanUsageContext) => {
+		Object.assign(aggregateContext, served);
+		if (served.costUsd === undefined) {
+			delete aggregateContext.costUsd;
+		}
+	};
 	const perRequest: LanguageModelMiddleware = {
 		specificationVersion: "v4",
 		wrapGenerate: async ({ params }) => {
@@ -2142,7 +2222,7 @@ async function getChatGptPlanModelWithMetadata(
 			try {
 				return await request.model.doGenerate(params);
 			} finally {
-				Object.assign(aggregateContext, request.served);
+				settleAggregate(request.served);
 			}
 		},
 		wrapStream: async ({ params }) => {
@@ -2150,7 +2230,7 @@ async function getChatGptPlanModelWithMetadata(
 			try {
 				return await request.model.doStream(params);
 			} finally {
-				Object.assign(aggregateContext, request.served);
+				settleAggregate(request.served);
 			}
 		},
 	};
@@ -2208,6 +2288,58 @@ export async function getAIEmbeddingModel(
 	return result.model;
 }
 
+type EmbeddingResolutionContext = Pick<
+	AIOperationContext,
+	"userId" | "organizationId" | "organizationOnly"
+>;
+
+async function resolveUsableEmbeddingConfig(
+	context: EmbeddingResolutionContext,
+	logSelection = false,
+) {
+	// Use EMBEDDING task type
+	const config = await resolveModelWithProvider("EMBEDDING", {
+		userId: context.userId,
+		organizationId: context.organizationId,
+		...(context.organizationOnly ? { organizationOnly: true } : {}),
+	});
+
+	if (logSelection) {
+		// Log embedding model selection for debugging
+		console.log("[AI:Embedding] Model resolution:", {
+			provider: config.provider,
+			modelString: config.modelString,
+			canonicalName: config.canonicalName,
+			selectionSource: config.selectionSource,
+			hasApiKey: !!config.apiKey,
+			hasServicePrincipal: hasServicePrincipalCredentials(config),
+		});
+	}
+
+	// Validate configuration. A Databricks service-principal config has no
+	// apiKey — check for either credential shape.
+	if (!hasProviderCredentials(config)) {
+		const errorMessage =
+			config._error ||
+			"No embedding provider configured. Please configure an AI provider with embedding support in Settings → AI Providers.";
+		throw new AIProviderNotConfiguredError(errorMessage);
+	}
+
+	// Use catalog identity, not the provider ID or an arbitrary Azure deployment.
+	if (!embeddingModelFitsVectorStore(config.canonicalName)) {
+		throw new UnsupportedEmbeddingModelError(config.canonicalName);
+	}
+
+	return config;
+}
+
+/** Check embedding credentials and vector width without gating usage or creating a model. */
+export async function assertEmbeddingModelUsable(
+	context: EmbeddingResolutionContext,
+): Promise<void> {
+	await resolveUsableEmbeddingConfig(context);
+}
+
 /**
  * GET EMBEDDING MODEL WITH METADATA - For cases that need tracking or logging
  * Returns the embedding model instance along with metadata about the configuration.
@@ -2228,31 +2360,7 @@ export async function getAIEmbeddingModelWithMetadata(
 	// No credit/payment pre-check — see `getAIModelWithMetadata`. A missing
 	// provider surfaces as `AIProviderNotConfiguredError` below.
 
-	// Use EMBEDDING task type
-	const config = await resolveModelWithProvider("EMBEDDING", {
-		userId: context.userId,
-		organizationId: context.organizationId,
-		...(context.organizationOnly ? { organizationOnly: true } : {}),
-	});
-
-	// Log embedding model selection for debugging
-	console.log("[AI:Embedding] Model resolution:", {
-		provider: config.provider,
-		modelString: config.modelString,
-		canonicalName: config.canonicalName,
-		selectionSource: config.selectionSource,
-		hasApiKey: !!config.apiKey,
-		hasServicePrincipal: hasServicePrincipalCredentials(config),
-	});
-
-	// Validate configuration. A Databricks service-principal config has no
-	// apiKey — check for either credential shape.
-	if (!hasProviderCredentials(config)) {
-		const errorMessage =
-			config._error ||
-			"No embedding provider configured. Please configure an AI provider with embedding support in Settings → AI Providers.";
-		throw new AIProviderNotConfiguredError(errorMessage);
-	}
+	const config = await resolveUsableEmbeddingConfig(context, true);
 
 	// AI usage limits chokepoint for the embedding entry point (;
 	// [ai/llm-integration.md]). Embeddings don't thread `providerConfigId` /

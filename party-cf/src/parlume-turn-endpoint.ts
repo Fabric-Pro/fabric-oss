@@ -11,7 +11,14 @@ const PARLUME_ARMED_QUIET_MS = 300;
  * the segment that holds it is queued for Fabric first.
  */
 export const PARLUME_COMPLETE_REQUEST_QUIET_MS = 0;
+const PARLUME_DICTATION_QUIET_MS = 2_500;
 const PARLUME_MAX_TURN_MS = 8_000;
+
+export function isIncompleteParlumeDictation(text: string): boolean {
+	return /^(?:(?:can|could) you\s+)?(?:please\s+)?(?:write|post|put|send|share)\s+(?:(?:a message|the following)\s+)?(?:in|into|to)\s+(?:the\s+)?(?:meeting\s+)?chat[\s.!?:,]*$/i.test(
+		text.trim(),
+	);
+}
 
 interface EndpointedTurn {
 	text: string;
@@ -19,7 +26,7 @@ interface EndpointedTurn {
 }
 
 interface Draft<T> {
-	speakerKey: string;
+	speakerKey: string | null;
 	turn: T;
 	deadline: number;
 	quietMs: number;
@@ -48,15 +55,18 @@ export class ParlumeTurnEndpoint<T extends EndpointedTurn> {
 	}
 
 	/** `quietMs` is how long the speaker must stay quiet; it defaults to the constructor's. */
-	begin(speakerKey: string, turn: T, quietMs = this.quietMs): void {
+	begin(speakerKey: string | null, turn: T, quietMs = this.quietMs): void {
 		this.cancel();
 		const deadline = Date.now() + this.maxMs;
+		const requestQuietMs = isIncompleteParlumeDictation(turn.text)
+			? PARLUME_DICTATION_QUIET_MS
+			: quietMs;
 		this.draft = {
 			speakerKey,
 			turn,
 			deadline,
-			quietMs,
-			timer: this.schedule(deadline, quietMs),
+			quietMs: requestQuietMs,
+			timer: this.schedule(deadline, requestQuietMs),
 		};
 	}
 

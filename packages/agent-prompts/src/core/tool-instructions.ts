@@ -204,7 +204,7 @@ ${
 
 **CRITICAL: After Confirmation**
 When the user CONFIRMS or ACCEPTS changes (responds to a confirm_changes action),
-DO NOT call any tools. Simply respond with a brief text acknowledgment like "Changes have been applied to the document."
+DO NOT call any tools. Simply respond with a brief text acknowledgment like "Changes accepted."
 
 For document changes, use write_document_local with the document in the "document" parameter.
 `;
@@ -528,7 +528,7 @@ ${
 
 **CRITICAL: After Confirmation**
 When the user CONFIRMS or ACCEPTS changes (responds to a confirm_changes action),
-DO NOT call any tools. Simply respond with a brief text acknowledgment like "Changes have been applied to the document."
+DO NOT call any tools. Simply respond with a brief text acknowledgment like "Changes accepted."
 
 For document changes, use write_document_local with the document in the "document" parameter.
 `;

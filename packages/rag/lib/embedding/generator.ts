@@ -55,7 +55,7 @@ export { getEmbeddingDimensions } from "./dimensions";
 export const MAX_TOKENS_PER_REQUEST = 250_000;
 export const MAX_INPUTS_PER_REQUEST = 2048;
 // The per-input ceiling, matching what `ai-model-catalog.ts` records as the
-// context window for all three models this file prices. An input above it is
+// context window for the three OpenAI embedding models. An input above it is
 // SPLIT and its pieces recombined (see `combineChunkEmbeddings`), never
 // truncated: truncation silently discards text the caller believed was
 // embedded, and for duplicate detection that is actively harmful — two long
@@ -175,7 +175,7 @@ export async function generateEmbedding(
 	// Track usage (fire-and-forget)
 	trackUsage();
 
-	const dimensions = getEmbeddingDimensions(metadata.modelString);
+	const dimensions = getEmbeddingDimensions(metadata.canonicalName);
 
 	// Extract base model name for logging
 	const baseModelName = metadata.modelString.includes("/")
@@ -353,7 +353,7 @@ export async function generateEmbeddings(
 	// Track usage (fire-and-forget)
 	trackUsage();
 
-	const dimensions = getEmbeddingDimensions(metadata.modelString);
+	const dimensions = getEmbeddingDimensions(metadata.canonicalName);
 	const costPerMillion = getEmbeddingCostPerMillion(metadata.modelString);
 
 	// Extract base model name for logging

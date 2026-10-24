@@ -5,6 +5,7 @@
 		"@ai-sdk/deepseek": "^3.0.61",
 		"@ai-sdk/groq": "^4.0.57",
 		"@ai-sdk/openai": "^4.0.87",
+		"@ai-sdk/typesafe-ai": "^3.0.24",
 		"@repo/agent-prompts": "workspace:*",
 		"@repo/agent-types": "workspace:*",
 		"@repo/config": "workspace:*",
@@ -19,7 +20,7 @@
 		"@vercel/functions": "^3.6.2",
 		"ai": "^7.0.140",
 		"undici": "^8.5.0",
-		"zod": "^4.3.6"
+		"zod": "^4.6.7"
 	},
 	"devDependencies": {
 		"@opentelemetry/api": "1.9.1",

@@ -25,8 +25,10 @@
  */
 import {
 	AIProviderNotConfiguredError,
+	assertEmbeddingModelUsable,
 	getSystemEmbeddingRAGProviderConfig,
 } from "@repo/ai";
+import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
 import { db } from "@repo/database/prisma/client";
 import {
 	deleteCompanyContextRowPoints,
@@ -100,11 +102,6 @@ export async function embedUrlPageActivity(
 		return { success: true, chunkCount: 0 };
 	}
 
-	const providerConfig = await getSystemEmbeddingRAGProviderConfig({
-		userId,
-		organizationId,
-	});
-
 	// Heartbeat every 10s so the 30s workflow heartbeatTimeout has headroom
 	// during the embedding loop (each chunk = one provider HTTP call).
 	const heartbeatInterval = setInterval(() => {
@@ -116,6 +113,11 @@ export async function embedUrlPageActivity(
 	}, 10_000);
 
 	try {
+		await assertEmbeddingModelUsable({ userId, organizationId });
+		const providerConfig = await getSystemEmbeddingRAGProviderConfig({
+			userId,
+			organizationId,
+		});
 		const result = await embedProjectContext({
 			contextId: pageId,
 			projectId,
@@ -148,6 +150,27 @@ export async function embedUrlPageActivity(
 				new Error(result.error ?? "unknown"),
 				{ pageId, pageUrl },
 			);
+			if (result.refusal) {
+				await db.projectContextUrlPage
+					.update({
+						where: { id: pageId },
+						data: {
+							extractionStatus: "FAILED",
+							extractionError:
+								result.error ?? result.refusal.message,
+						},
+					})
+					.catch((writeError) => {
+						activityLogger.warn(
+							"Failed to flag project url page as FAILED",
+							{ pageId, writeError },
+						);
+					});
+				throw ApplicationFailure.nonRetryable(
+					result.refusal.message,
+					result.refusal.name,
+				);
+			}
 			await db.projectContextUrlPage.update({
 				where: { id: pageId },
 				data: {
@@ -183,6 +206,28 @@ export async function embedUrlPageActivity(
 			qdrantId: result.qdrantId,
 			chunkCount: result.chunksCreated ?? 0,
 		};
+	} catch (error) {
+		if (
+			error instanceof UnsupportedEmbeddingModelError ||
+			error instanceof AIProviderNotConfiguredError
+		) {
+			await db.projectContextUrlPage
+				.update({
+					where: { id: pageId },
+					data: {
+						extractionStatus: "FAILED",
+						extractionError: error.message,
+					},
+				})
+				.catch((writeError) => {
+					activityLogger.warn(
+						"Failed to flag project url page as FAILED",
+						{ pageId, writeError },
+					);
+				});
+			throw ApplicationFailure.nonRetryable(error.message, error.name);
+		}
+		throw error;
 	} finally {
 		clearInterval(heartbeatInterval);
 	}

@@ -38,7 +38,11 @@ import {
 	useFabricAgentLauncher,
 	useRegisterFabricAgentContext,
 } from "@saas/agents/components/FabricAgentLauncher";
-import { useConfirmChangesOperationResult } from "@saas/agents/copilot/useConfirmChangesOperationResult";
+import { ACCEPT_OUTCOME_SUMMARIES } from "@saas/agents/copilot/accept-outcome-summaries";
+import {
+	type RecordOnResolveOptions,
+	useConfirmChangesOperationResult,
+} from "@saas/agents/copilot/useConfirmChangesOperationResult";
 import { useCodeContextLauncher } from "@saas/agents/hooks/useCodeContextLauncher";
 import { useDefaultMcpInlineRender } from "@saas/agents/hooks/useDefaultMcpInlineRender";
 import { useFabricMention } from "@saas/agents/hooks/useFabricMention";
@@ -289,6 +293,8 @@ interface AgentState {
 	 * `initialAgentState` or `useCoAgent` filters it out of the state snapshot.
 	 */
 	refreshSpecContexts?: string[];
+	systemPrompt?: string;
+	suppressFabricMethodology?: boolean;
 	// Per-turn reasoning trace surfaced via ReasoningCollapsible (PR #1023).
 	// Mirrors DocumentEditor.AgentState — declaring these keys here is
 	// REQUIRED because `useCoAgent` filters out STATE_SNAPSHOT keys that
@@ -1850,8 +1856,40 @@ export function StoryWorkspace({
 		queryClient.invalidateQueries({ queryKey: storiesListQueryKey });
 	}, [queryClient, storyGetQueryKey, storiesListQueryKey]);
 
+	// Both programmatic document runs use this scope. flushSync supplies the
+	// outgoing snapshot; finally clears overrides on success, failure, or abort.
+	const withDocumentRunPrompt = useCallback(
+		async (
+			systemPrompt: string,
+			refreshSpecContexts: string[],
+			run: () => Promise<void>,
+		) => {
+			try {
+				flushSync(() => {
+					setAgentStateRef.current({
+						systemPrompt,
+						suppressFabricMethodology: true,
+						refreshSpecContexts,
+					} as AgentState);
+				});
+				await run();
+			} finally {
+				// CopilotKit merges setState into browser agent.state across runs;
+				// clear the prompt here so a later chat turn does not inherit it.
+				flushSync(() => {
+					setAgentStateRef.current({
+						systemPrompt: "",
+						suppressFabricMethodology: false,
+						refreshSpecContexts: [] as string[],
+					} as AgentState);
+				});
+			}
+		},
+		[],
+	);
+
 	// "Refresh Clean Spec" / "Update" (#1/#4b/#B) — ask the SERVER for the Clean
-	// Spec prompt this work item should run and post it into the AI Feature
+	// Spec prompt this work item should run and supply it to the AI Feature
 	// Assistant chat (same path as stage Enhance) so the agent rebuilds the spec
 	// via write_document_local with the normal diff review, batching all pending
 	// decisions in one run. Shared by the toolbar button and the "X New
@@ -1920,60 +1958,40 @@ export function StoryWorkspace({
 				isRefreshCleanSpecPendingRef.current = false;
 				return;
 			}
-			// Route the connected context to the model out-of-band on the dedicated
-			// `refreshSpecContexts` agent-state field — NOT the visible chat message,
-			// which previously showed the PO a wall of raw transcript and read as "the
-			// clean spec is using the wrong prompt". The unified-server
-			// merges this field into the agent's `ragContexts`. `flushSync` commits it
-			// synchronously so CopilotKit's outgoing state snapshot carries it on this
-			// exact turn (same mechanism as `syncDocumentBeforeSend`) — no readable
-			// timing, no race. Partial-update form (never spread a stale `agentState`).
-			flushSync(() => {
-				setAgentStateRef.current({
-					refreshSpecContexts: contexts,
-				} as AgentState);
+			await withDocumentRunPrompt(promptContent, contexts, async () => {
+				// Late recheck (post-flush, belt-and-braces): a run may have started
+				// from the chat input itself during the awaits above (the input only
+				// consults `agent.isRunning`, not our latch), so `isAgentRunActive()`
+				// can have flipped true after we set the latch above and after the
+				// pre-flush check ran. Re-checking right before `appendMessage`
+				// catches that race (GH #2526).
+				if (isAgentRunActive()) {
+					isRefreshCleanSpecPendingRef.current = false;
+					// The shared scope rolls back the committed run state.
+					return;
+				}
+				// `appendMessage` awaits the full agent run, so the latch stays held
+				// (via the outer `finally`) until the run actually completes.
+				markUserRunInitiated();
+				try {
+					await appendMessage(
+						new TextMessage({
+							role: MessageRole.User,
+							content: buildCleanSpecRefreshMessage(kindWord),
+						}),
+					);
+				} catch (error) {
+					// The user-run signal is shared across every send surface on
+					// this thread, so this handler may only clear a mark it set
+					// itself — a broad clear (e.g. in the outer `catch` below)
+					// could wipe an unrelated, concurrently-active chat send's
+					// mark. Scoping the clear to this narrow try/catch, right
+					// after the `markUserRunInitiated()` above, keeps it tied to
+					// the run THIS handler started.
+					clearUserRunMark();
+					throw error;
+				}
 			});
-			// Late recheck (post-flush, belt-and-braces): a run may have started
-			// from the chat input itself during the awaits above (the input only
-			// consults `agent.isRunning`, not our latch), so `isAgentRunActive()`
-			// can have flipped true after we set the latch above and after the
-			// pre-flush check ran. Re-checking right before `appendMessage`
-			// catches that race (GH #2526).
-			if (isAgentRunActive()) {
-				isRefreshCleanSpecPendingRef.current = false;
-				// Roll back: the contexts were committed for a refresh we are now
-				// aborting and would otherwise ride along on a later, unrelated run.
-				flushSync(() => {
-					setAgentStateRef.current({
-						refreshSpecContexts: [] as string[],
-					} as AgentState);
-				});
-				return;
-			}
-			// `appendMessage` awaits the full agent run, so the latch stays held
-			// (via the outer `finally`) until the run actually completes.
-			markUserRunInitiated();
-			try {
-				await appendMessage(
-					new TextMessage({
-						role: MessageRole.User,
-						content: buildCleanSpecRefreshMessage(
-							kindWord,
-							promptContent,
-						),
-					}),
-				);
-			} catch (error) {
-				// The user-run signal is shared across every send surface on
-				// this thread, so this handler may only clear a mark it set
-				// itself — a broad clear (e.g. in the outer `catch` below)
-				// could wipe an unrelated, concurrently-active chat send's
-				// mark. Scoping the clear to this narrow try/catch, right
-				// after the `markUserRunInitiated()` above, keeps it tied to
-				// the run THIS handler started.
-				clearUserRunMark();
-				throw error;
-			}
 		} catch {
 			isRefreshCleanSpecPendingRef.current = false;
 			toast.error(tMaturationToasts("cleanSpecRefreshError"));
@@ -1991,6 +2009,7 @@ export function StoryWorkspace({
 		appendMessage,
 		markUserRunInitiated,
 		clearUserRunMark,
+		withDocumentRunPrompt,
 		tMaturationToasts,
 		invalidateStoryAfterKindDrift,
 	]);
@@ -2021,6 +2040,8 @@ export function StoryWorkspace({
 			// Declare so the outgoing state snapshot always carries
 			// the key; the "Update Clean Spec" refresh flushSyncs it just before send.
 			refreshSpecContexts: [],
+			systemPrompt: "",
+			suppressFabricMethodology: false,
 			// Declare reasoningByTurn / toolCallsByTurn in initialState so
 			// CopilotKit's useCoAgent doesn't filter them out of React state
 			// updates. Mirrors DocumentEditor — without these keys, the
@@ -2511,7 +2532,7 @@ export function StoryWorkspace({
 				toAgentDocument(baseline) !== newDocument
 			) {
 				const diff = diffPartialText(baseline, newDocument, true);
-				const markdown = fromMarkdown(diff);
+				const markdown = fromMarkdown(diff, USER_CONTENT_MD_OPTIONS);
 				// Guard so the diff injection doesn't trigger onUpdate → auto-save
 				isSyncingFromPropRef.current = true;
 				editor?.commands.setContent(markdown);
@@ -2548,7 +2569,7 @@ export function StoryWorkspace({
 			}
 
 			const diff = diffPartialText(baseline, newDocument);
-			const markdown = fromMarkdown(diff);
+			const markdown = fromMarkdown(diff, USER_CONTENT_MD_OPTIONS);
 			editor?.commands.setContent(markdown);
 
 			// Follow the last diff element during streaming
@@ -4120,7 +4141,9 @@ export function StoryWorkspace({
 							true,
 						);
 						isSyncingFromPropRef.current = true;
-						editor.commands.setContent(fromMarkdown(diff));
+						editor.commands.setContent(
+							fromMarkdown(diff, USER_CONTENT_MD_OPTIONS),
+						);
 						isSyncingFromPropRef.current = false;
 					}
 
@@ -4217,15 +4240,75 @@ export function StoryWorkspace({
 					// new open questions surface immediately, no reopen needed.
 					postAgentApplySeedRef.current = true;
 
+					// Fire-and-forget operation-result persistence, recorded
+					// once the save this accept sends is answered, never
+					// before (Fizzy #2946): the chat used to say "Changes
+					// applied." while the write was still in flight, and kept
+					// saying it when the write was refused. The agent is still
+					// answered at once (`respond` below); only the record
+					// waits. Each exit below records exactly once — the stage
+					// write and the ordinary write from their own answer, the
+					// deferred write at once, since no save of its own answers
+					// it. The Decision Log change note further down is
+					// best-effort and decides nothing here. Read via
+					// `recordOutcomeRef.current` (Copilot round-3 latest-ref
+					// fix) so the helper sees the freshest `conversationId`
+					// when the answer arrives. See
+					// `useConfirmChangesOperationResult.ts` for the full
+					// integration design. Every record of this accept carries
+					// one key, made now: the helper dedupes per operation, so
+					// a reject of another proposal recorded meanwhile never
+					// swallows it, and the server's per-key dedup covers a
+					// retried request.
+					const acceptOperationKey = crypto.randomUUID();
+					const recordOutcome = (options: RecordOnResolveOptions) => {
+						void recordOutcomeRef.current({
+							...options,
+							operationKey: acceptOperationKey,
+						});
+					};
+					// A workspace closed before the refusal holds the text no
+					// more, and nothing offers it to copy.
+					const recordFailed = () =>
+						recordOutcome({
+							accepted: true,
+							outcome: "failure",
+							summary: isMountedRef.current
+								? ACCEPT_OUTCOME_SUMMARIES.failed
+								: ACCEPT_OUTCOME_SUMMARIES.failedEditorClosed,
+						});
+
 					if (pendingTargetStage) {
 						// CopilotKit enhance flow: save content + update stage + create version
 						isRefreshCleanSpecPendingRef.current = false;
-						updateStageWithVersionMutation.mutate({
-							targetStage: pendingTargetStage,
-							description: parsed.description || null,
-							acceptanceCriteria:
-								parsed.acceptanceCriteria || null,
-						});
+						// `mutateAsync` so the record hears this write's answer
+						// even after the workspace has closed: callbacks passed
+						// to `mutate` do not run once it has unmounted. The
+						// rejection is handled here; the mutation's own
+						// `onError` still says what went wrong.
+						const saveAnswer =
+							updateStageWithVersionMutation.mutateAsync({
+								targetStage: pendingTargetStage,
+								description: parsed.description || null,
+								acceptanceCriteria:
+									parsed.acceptanceCriteria || null,
+							});
+						void saveAnswer.then(
+							(data) =>
+								recordOutcome({
+									accepted: true,
+									// Under governed review the content lands and the
+									// stage is held for a reviewer.
+									summary: getPendingStageRequest(data)
+										? ACCEPT_OUTCOME_SUMMARIES.stageRequested(
+												pendingTargetStage,
+											)
+										: ACCEPT_OUTCOME_SUMMARIES.advanced(
+												pendingTargetStage,
+											),
+								}),
+							recordFailed,
+						);
 						setPendingTargetStage(null);
 					} else if (isSavingRef.current) {
 						// Same re-entrancy guard `handleSave` applies above, for
@@ -4234,16 +4317,11 @@ export function StoryWorkspace({
 						// loser is rejected as a version conflict.
 						//
 						// This closes the gap on THIS branch only. The sibling
-						// `pendingTargetStage` branch above still races, and more
-						// dangerously: it writes through
-						// `update-drafting-stage-with-version`, whose
-						// `db.userStory.update` names no `version` in its WHERE
-						// clause and sets `version: newVersion` outright — so a
-						// concurrent autosave there is silently overwritten
-						// rather than rejected. Fixing that means giving that
-						// procedure an optimistic-concurrency write of its own,
-						// which is a larger change than this one; it is
-						// deliberately left alone here rather than half-done.
+						// `pendingTargetStage` branch above still races, but
+						// safely: `update-drafting-stage-with-version` writes
+						// under the version it read, so a concurrent autosave
+						// makes it answer CONFLICT rather than be overwritten,
+						// and the accept records that failure.
 						//
 						// Nothing is dropped. The confirmed content is already in
 						// the editor, and the autosave re-armed here reads it back
@@ -4253,6 +4331,14 @@ export function StoryWorkspace({
 						// racing it.
 						isRefreshCleanSpecPendingRef.current = false;
 						setHasUnsavedChanges(true);
+						// The write that takes it is the autosave below, shared
+						// with every other edit, so no answer of this accept's
+						// own comes back: say what is true now.
+						recordOutcome({
+							accepted: true,
+							outcome: "partial",
+							summary: ACCEPT_OUTCOME_SUMMARIES.unsaved,
+						});
 						if (deferredAcceptSaveTimeoutRef.current) {
 							clearTimeout(deferredAcceptSaveTimeoutRef.current);
 						}
@@ -4296,7 +4382,10 @@ export function StoryWorkspace({
 							const isContextUpdate = true;
 							isRefreshCleanSpecPendingRef.current = false; // Reset for future edits
 
-							updateMutation.mutate(
+							// `mutateAsync` for the same reason as the stage
+							// write above; the per-call `onSuccess` still runs
+							// first while the workspace is mounted.
+							const saveAnswer = updateMutation.mutateAsync(
 								{
 									description: parsed.description || null,
 									acceptanceCriteria:
@@ -4330,6 +4419,14 @@ export function StoryWorkspace({
 									},
 								},
 							);
+							void saveAnswer.then(
+								() =>
+									recordOutcome({
+										accepted: true,
+										summary: ACCEPT_OUTCOME_SUMMARIES.saved,
+									}),
+								recordFailed,
+							);
 						});
 					}
 					// D3: persist this run's confirm-time change summary as a
@@ -4350,24 +4447,6 @@ export function StoryWorkspace({
 					pendingChangeBulletsRef.current = null;
 					setPendingChangeBullets(null);
 
-					// Fire-and-forget operation-result persistence.
-					// Summary names the story being edited so the persisted
-					// system message gives the chat history meaningful
-					// context. Both flows (stage transition + normal AI
-					// edit) land here at the same point; the persisted
-					// message describes the user-visible action regardless
-					// of which downstream mutation runs. See
-					// `useConfirmChangesOperationResult.ts` for the full
-					// integration design. Read via `recordOutcomeRef.current`
-					// (Copilot round-3 latest-ref fix) so the helper sees
-					// the freshest `conversationId` even when the captured
-					// closure dates back to a pre-lazy-create render.
-					void recordOutcomeRef.current({
-						accepted: true,
-						summary: pendingTargetStage
-							? `Changes applied — advanced to stage ${pendingTargetStage}.`
-							: "Changes applied.",
-					});
 					respond?.({ accepted: true });
 				};
 
@@ -5124,13 +5203,14 @@ export function StoryWorkspace({
 	// short-circuit gets its own state field instead — see `refreshSpecContexts`
 	// below, which is state-only by design for exactly that reason.
 
-	// Drop stale refresh context on story switch so a previous
-	// story's transcript never bleeds into a different story's chat. The field
-	// otherwise persists on agent state across turns (invisible, replaced by the
-	// next refresh); clearing it here bounds it to the story it was fetched for.
+	// Reset run overrides on story switch as well as in the refresh finally
+	// block, so the newly selected story starts without the previous prompt
+	// or connected context.
 	useEffect(() => {
 		setAgentStateRef.current({
 			refreshSpecContexts: [] as string[],
+			systemPrompt: "",
+			suppressFabricMethodology: false,
 		} as AgentState);
 	}, [story.id]);
 
@@ -8350,42 +8430,60 @@ export function StoryWorkspace({
 												if (isAgentRunActive()) {
 													return;
 												}
-												// CopilotKit streaming flow: wrap prompt with tool instructions
-												setPendingTargetStage(stage);
-												setShowTransitionDialog(false);
-												setTargetStage("");
-												const stageLabel = stage
-													.toLowerCase()
-													.replace(/_/g, " ");
-												// Display word only — the template was already
-												// chosen server-side. It still has to agree with
-												// that choice: this message travels to the model
-												// beside the prompt, and calling a bug a "feature"
-												// there contradicts the instructions being sent.
-												const kindNoun =
-													(resolvedKind ??
-														story.kind) === "BUG"
-														? "bug"
-														: "feature";
-												markUserRunInitiated();
-												try {
-													await appendMessage(
-														new TextMessage({
-															role: MessageRole.User,
-															content: `Enhance this ${kindNoun} to the "${stageLabel}" stage. Apply all changes using the write_document_local tool.\n\nFollow these instructions:\n\n${promptContent}`,
-														}),
-													);
-												} catch (error) {
-													// A rejection before the run ever starts
-													// streaming would otherwise leave the mark
-													// stuck "on" for a later unmarked handshake
-													// to surface as a false pill. Rethrow
-													// preserves this handler's existing (lack of)
-													// error handling — the outer `finally` below
-													// still resets the in-flight latch.
-													clearUserRunMark();
-													throw error;
-												}
+												await withDocumentRunPrompt(
+													promptContent,
+													[],
+													async () => {
+														if (
+															isAgentRunActive()
+														) {
+															return;
+														}
+														// Commit dialog changes only after the post-flush run check.
+														setPendingTargetStage(
+															stage,
+														);
+														setShowTransitionDialog(
+															false,
+														);
+														setTargetStage("");
+														const stageLabel = stage
+															.toLowerCase()
+															.replace(/_/g, " ");
+														// Display word only — the template was already
+														// chosen server-side. It still has to agree with
+														// that choice: this message travels to the model
+														// beside the prompt, and calling a bug a "feature"
+														// there contradicts the instructions being sent.
+														const kindNoun =
+															(resolvedKind ??
+																story.kind) ===
+															"BUG"
+																? "bug"
+																: "feature";
+														markUserRunInitiated();
+														try {
+															await appendMessage(
+																new TextMessage(
+																	{
+																		role: MessageRole.User,
+																		content: `Enhance this ${kindNoun} to the "${stageLabel}" stage. Apply all changes using the write_document_local tool.`,
+																	},
+																),
+															);
+														} catch (error) {
+															// A rejection before the run ever starts
+															// streaming would otherwise leave the mark
+															// stuck "on" for a later unmarked handshake
+															// to surface as a false pill. Rethrow
+															// preserves this handler's existing (lack of)
+															// error handling — the outer `finally` below
+															// still resets the in-flight latch.
+															clearUserRunMark();
+															throw error;
+														}
+													},
+												);
 											} else {
 												// Sync flow: no prompt configured → just update stage
 												enhanceMutation.mutate({

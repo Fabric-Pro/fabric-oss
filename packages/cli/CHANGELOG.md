@@ -1,5 +1,12 @@
 # @fabricorg/cli
 
+## 0.7.4
+
+### Patch Changes
+
+- Updated dependencies [afb2038]
+  - @fabricorg/sdk-mcp@0.1.15
+
 ## 0.7.3
 
 ### Patch Changes

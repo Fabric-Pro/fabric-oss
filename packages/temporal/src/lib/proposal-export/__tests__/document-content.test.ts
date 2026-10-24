@@ -40,6 +40,7 @@ describe("safeLinkHref", () => {
 		"https://storage.example.com/document-media/p/d/x.png?X-Amz-Signature=abc",
 		"https://storage.example.com/document-media/p/d/x.png",
 		"https://storage.example.com/project-brand/project-example/recipient-brand/current/logo.png",
+		"https://storage.example.com/organization-brand/org-example/hero/hero.png",
 		"https://storage.example.com/x.pdf?x-amz-credential=abc&x-amz-signature=def",
 		"#bad fragment",
 		"",

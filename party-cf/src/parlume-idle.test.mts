@@ -46,7 +46,7 @@ function harness(now: number) {
 			onStart(): Promise<void>;
 			onAlarm(): Promise<void>;
 			lastActivityAt: number;
-			playbackActive: boolean;
+			floor: { playbackActive: boolean };
 		};
 	};
 	const instance = new Parlume(
@@ -112,7 +112,7 @@ test("does not report an attended or speaking meeting", async () => {
 	assert.equal(requests.filter((r) => r.path.endsWith("/idle")).length, 0);
 
 	instance.lastActivityAt = now - 10 * 60 * 1000;
-	instance.playbackActive = true;
+	instance.floor.playbackActive = true;
 	await instance.onAlarm();
 	assert.equal(requests.filter((r) => r.path.endsWith("/idle")).length, 0);
 });

@@ -77,6 +77,7 @@ import {
 	PM_ITEM_FIELDS,
 	parseWorkItemTypeMapping,
 	READ_ONLY_MODE_MESSAGE,
+	readPMListPagingEvidence,
 	resolveKindFromPmType,
 	resolveWorkItemType,
 	type StoryKindValue,
@@ -5097,10 +5098,14 @@ export interface PMAvailableState {
 /** Result returned by listWorkItemsFromPM, including pagination metadata. */
 export interface ListWorkItemsResult {
 	items: PMWorkItemSummary[];
+	/** Rows returned by the tool before filtering or enrichment. */
+	rawCount?: number;
 	/** Total number of items available in the PM tool for this query (may be undefined if the tool does not return a total). */
 	total?: number;
 	/** Whether there are more pages available. */
 	hasNextPage: boolean;
+	/** Continuation evidence reported by the PM envelope. */
+	hasMore?: boolean;
 	/** False when the listing is unrecognised or a single-page tool omitted further results. */
 	listingComplete?: boolean;
 	/** IDs that were requested but could not be fetched (tool error or exception). */
@@ -5948,6 +5953,8 @@ export async function listWorkItemsFromPM(input: {
 	page?: number;
 	/** Number of items per page to request from the PM tool. Default: 50 */
 	pageSize?: number;
+	/** Rows received before this page, used by skip-based pagination. */
+	offset?: number;
 	/** Pre-discovered capabilities, supplied by a workflow that already ran discovery. */
 	capabilities?: PMToolCapabilities;
 }): Promise<ListWorkItemsResult> {
@@ -5961,6 +5968,7 @@ export async function listWorkItemsFromPM(input: {
 		organizationId,
 		page = 1,
 		pageSize = 50,
+		offset,
 	} = input;
 
 	// REST-GitLab branch: when mcpConfigId is null, dispatch through the REST
@@ -6228,7 +6236,8 @@ export async function listWorkItemsFromPM(input: {
 		}
 	} else if (paginationInfo.style === "offset-skip") {
 		if (paginationInfo.skipParam) {
-			listArgs[paginationInfo.skipParam] = (page - 1) * pageSize;
+			listArgs[paginationInfo.skipParam] =
+				offset ?? (page - 1) * pageSize;
 		}
 		if (paginationInfo.pageSizeParam) {
 			listArgs[paginationInfo.pageSizeParam] = pageSize;
@@ -6669,38 +6678,30 @@ export async function listWorkItemsFromPM(input: {
 		}
 	}
 
-	// For tools without numbered pagination (style "none" or "cursor"), only the
-	// first response is returned; cursor traversal is not implemented.
-	// For paginated calls the PM tool already scoped the page.
-	//
-	// PM tools may silently cap page size below what we requested (e.g. Fizzy
-	// returns max ~15 items even when we ask for 100). Two strategies:
-	//
-	// 1. When responseTotal is available: compare cumulative items actually
-	//    received against responseTotal (not the requested pageSize).
-	// 2. When responseTotal is NOT available (Fizzy, etc.): keep fetching as
-	//    long as the page returned any items. This costs one extra empty-page
-	//    call at the end but guarantees we collect all items regardless of
-	//    the tool's internal page-size cap.
-	const pageInfo = d?.pageInfo;
-	const listingComplete =
-		!extracted ||
-		((paginationInfo.style === "cursor" ||
-			paginationInfo.style === "none") &&
-			((responseTotal != null && responseTotal > items.length) ||
-				(pageInfo != null &&
-					typeof pageInfo === "object" &&
-					(pageInfo as Record<string, unknown>).hasNextPage ===
-						true)))
-			? false
-			: undefined;
-	const itemsFetchedSoFar = (page - 1) * items.length + items.length;
+	// Cursor tools return only their first response and need explicit end evidence
+	// or a total covered by that response, with no contradictory continuation.
+	// Unpaged arrays retain their complete-list contract. Numbered pagination
+	// compares received rows with the total, or probes until an empty page;
+	// the workflow checks stopping-page evidence and its page limit.
+	const { hasMore, ended } = readPMListPagingEvidence(d);
+	const rawCount = arr.length;
+	const listingComplete = !extracted
+		? false
+		: paginationInfo.style === "cursor"
+			? !hasMore &&
+				!(responseTotal != null && responseTotal > rawCount) &&
+				(ended || responseTotal != null)
+			: paginationInfo.style === "none"
+				? !hasMore &&
+					!(responseTotal != null && responseTotal > rawCount)
+				: true;
+	const itemsFetchedSoFar = (offset ?? (page - 1) * pageSize) + rawCount;
 	const hasNextPage =
 		paginationInfo.style === "none" || paginationInfo.style === "cursor"
 			? false // numbered page requests stop before another tool call
 			: responseTotal != null
-				? items.length > 0 && itemsFetchedSoFar < responseTotal
-				: items.length > 0; // no total available — keep going until an empty page
+				? rawCount > 0 && itemsFetchedSoFar < responseTotal
+				: rawCount > 0; // no total available — keep going until an empty page
 
 	logger.info("[List Work Items] Fetched from PM", {
 		tool: listTool.toolName,
@@ -6740,8 +6741,10 @@ export async function listWorkItemsFromPM(input: {
 
 	return {
 		items: boundedItems,
+		rawCount,
 		total: responseTotal,
 		hasNextPage,
+		...(extracted ? { hasMore } : {}),
 		...(listingComplete === false ? { listingComplete } : {}),
 		availableWorkItemTypes,
 		availableStates,

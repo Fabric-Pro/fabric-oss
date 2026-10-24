@@ -915,6 +915,10 @@ const PRINT_RULES: readonly ThemeRule[] = [
 	rule(`${dot(PRINT.diagramPlaceholder)} ${dot(THEME.caption)}`, {
 		margin: "0",
 	}),
+	// The diagram's own caption under the "could not be drawn" note.
+	rule(`${dot(PRINT.diagramPlaceholder)} figcaption${dot(THEME.caption)}`, {
+		"margin-top": "0.75em",
+	}),
 	rule(dot(PRINT.footnotes), {
 		"margin-top": "2.5em",
 		"font-size": "0.86em",
@@ -1107,6 +1111,10 @@ function printLayer(root: string, options: ProposalPrintThemeOptions): string {
 			},
 		),
 		pageRule("cover", { margin: "0" }, blank),
+		// The cover is always the first page. Chromium 143 lays it out on the
+		// cover page's geometry but paints page 1 with the default page's
+		// margins and furniture unless the first page carries them itself.
+		pageRule(":first", { margin: "0" }, blank),
 		pageRule("landscape", { size: PROPOSAL_PAGE_SIZE_LANDSCAPE }, {}),
 	].join("\n");
 }

@@ -27,6 +27,8 @@ import {
 import { DIRECT_CHAT_MEMORY_PROMPT_AGENT_KEY } from "@repo/utils/direct-chat-memory-prompt";
 import { ORCHESTRATOR_MEMORY_PROMPT_AGENT_KEY } from "@repo/utils/orchestrator-memory-prompt";
 import { PAGE_ASK_PROMPT_AGENT_KEY } from "@repo/utils/page-ask-prompt";
+import { PARLUME_REALTIME_VOICE_PROMPT_AGENT_KEY } from "@repo/utils/parlume-realtime-voice-prompt";
+import { PARLUME_SUGGESTION_PROMPT_AGENT_KEY } from "@repo/utils/parlume-suggestion-prompt";
 import {
 	listPromptActions,
 	PROMPT_AGENT_TARGETS,
@@ -42,6 +44,7 @@ import { PUBLISHING_SHORT_POST_AGENT_KEY } from "@repo/utils/publishing-short-po
 import { PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY } from "@repo/utils/publishing-stakeholder-email-prompt";
 import { PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY } from "@repo/utils/publishing-suggestion-prompt";
 import { PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY } from "@repo/utils/publishing-webinar-script-prompt";
+import { RECURRING_ERROR_BUG_PROMPT_AGENT_KEY } from "@repo/utils/recurring-error-bug-prompt";
 import { describe, expect, it } from "vitest";
 
 const SEED = readFileSync(
@@ -84,6 +87,8 @@ const KEY_CONSTANTS: Record<string, string> = {
 	COMPLETION_CLAIM_JUDGE_AGENT_KEY,
 	COMPLETION_CLAIM_CORRECTION_AGENT_KEY,
 	PAGE_ASK_PROMPT_AGENT_KEY,
+	PARLUME_SUGGESTION_PROMPT_AGENT_KEY,
+	PARLUME_REALTIME_VOICE_PROMPT_AGENT_KEY,
 	PUBLISHING_TOPIC_SUGGESTION_AGENT_KEY,
 	PUBLISHING_PLANNING_ANALYSIS_AGENT_KEY,
 	PUBLISHING_REFINE_AGENT_KEY,
@@ -94,6 +99,7 @@ const KEY_CONSTANTS: Record<string, string> = {
 	PUBLISHING_STAKEHOLDER_EMAIL_AGENT_KEY,
 	PUBLISHING_WEBINAR_SCRIPT_AGENT_KEY,
 	PUBLISHING_NEWSLETTER_BLURB_AGENT_KEY,
+	RECURRING_ERROR_BUG_PROMPT_AGENT_KEY,
 };
 
 function resolveKeyConstant(name: string): string {

@@ -409,6 +409,11 @@ export {
 	backlogApplyChangesWorkflow,
 	cancelApplySignal,
 } from "./src/workflows/backlog-apply-changes-workflow";
+// Pure backlog constants; these are not worker activity registrations.
+export {
+	BACKLOG_APPLY_USER_CANCEL_REASON,
+	BACKLOG_APPLY_WATCHDOG_STOP_REASON,
+} from "./src/workflows/backlog-constants";
 // Backlog Context Analysis Workflow (contextual backlog updater)
 export type {
 	AnalysisStatus,

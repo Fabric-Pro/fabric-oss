@@ -1,3 +1,4 @@
+import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
 /**
  * `reembedProjectContext`: the new points are written before any old one is
  * removed.
@@ -12,6 +13,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+	assertEmbeddingModelUsable: vi.fn(),
 	storeProjectContext: vi.fn(),
 	listProjectContextPointIds: vi.fn(),
 	deleteProjectContextPoints: vi.fn(),
@@ -23,6 +25,10 @@ const mocks = vi.hoisted(() => ({
 	getProjectRagSettings: vi.fn(),
 	markContextAsEmbedded: vi.fn(),
 	setContextEnrichmentRetryAt: vi.fn(),
+}));
+
+vi.mock("@repo/ai", () => ({
+	assertEmbeddingModelUsable: mocks.assertEmbeddingModelUsable,
 }));
 
 vi.mock("../store", () => ({
@@ -61,7 +67,11 @@ vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-import { reembedProjectContext } from "../auto-embed";
+import {
+	batchEmbedContexts,
+	embedProjectContext,
+	reembedProjectContext,
+} from "../auto-embed";
 
 const ORG = "org-1";
 const SHORT = "A short context.";
@@ -94,6 +104,7 @@ function pointFor(storedContextId: string) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.assertEmbeddingModelUsable.mockResolvedValue(undefined);
 	mocks.routeContentForChunking.mockResolvedValue({ kind: "text" });
 	mocks.getProjectRagSettings.mockResolvedValue({
 		chunkSize: 3000,
@@ -303,4 +314,63 @@ describe("embedProjectContext — enrichment owed after a spent ChatGPT plan (Fi
 
 		expect(mocks.setContextEnrichmentRetryAt).not.toHaveBeenCalled();
 	});
+});
+
+it.each([
+	["single", SHORT],
+	["chunked", LONG],
+])("preserves a refusal through %s re-embedding", async (_label, content) => {
+	const error = new UnsupportedEmbeddingModelError("databricks-gte-large-en");
+	mocks.generateEmbedding.mockRejectedValue(error);
+	await expect(reembedProjectContext(options(content))).resolves.toEqual({
+		success: false,
+		error: error.message,
+		refusal: error,
+	});
+	expect(mocks.deleteProjectContextPoints).not.toHaveBeenCalled();
+});
+
+it.each([
+	["single", SHORT],
+	["chunked", LONG],
+])(
+	"returns a typed refusal from %s embedding without throwing",
+	async (_label, content) => {
+		const error = new UnsupportedEmbeddingModelError(
+			"databricks-gte-large-en",
+		);
+		mocks.generateEmbedding.mockRejectedValue(error);
+		const result = await embedProjectContext(options(content));
+		expect(result).toEqual({
+			success: false,
+			error: error.message,
+			refusal: error,
+		});
+		expect(result.refusal).toBe(error);
+		expect(mocks.storeProjectContext).not.toHaveBeenCalled();
+	},
+);
+it("returns refusal results from a batch without rejecting the batch", async () => {
+	const error = new UnsupportedEmbeddingModelError("unknown-embedding");
+	mocks.generateEmbedding.mockRejectedValue(error);
+	await expect(
+		batchEmbedContexts([options(SHORT), options(SHORT)]),
+	).resolves.toEqual([
+		{ success: false, error: error.message, refusal: error },
+		{ success: false, error: error.message, refusal: error },
+	]);
+});
+
+it("a refused chunked re-embed returns refusal and preserves previous points without enrichment", async () => {
+	const refusal = new UnsupportedEmbeddingModelError(
+		"text-embedding-3-large",
+	);
+	mocks.assertEmbeddingModelUsable.mockRejectedValue(refusal);
+	mocks.generateEmbedding.mockRejectedValue(refusal);
+	mocks.listProjectContextPointIds.mockResolvedValue([pointFor("ctx-1")]);
+	mocks.chunkText.mockReturnValue(chunks(2));
+	const result = await reembedProjectContext(options(LONG));
+	expect(result).toEqual({ success: false, error: refusal.message, refusal });
+	expect(mocks.enrichChunksWithTenantContext).not.toHaveBeenCalled();
+	expect(mocks.deleteProjectContextPoints).not.toHaveBeenCalled();
 });

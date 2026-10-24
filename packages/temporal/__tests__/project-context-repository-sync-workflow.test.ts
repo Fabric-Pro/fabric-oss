@@ -445,6 +445,12 @@ describe("projectContextRepositorySyncWorkflow", () => {
 			connection: env.nativeConnection,
 			taskQueue: CONTEXT_SYNC_ACTIVITY_TASK_QUEUE,
 			activities: mocks,
+			// The cancel reaches the activity only in the reply to a heartbeat
+			// the worker sends, and the worker throttles those to 80% of the
+			// 60 s heartbeat timeout: 48 s of real time, since the test server
+			// does not skip time while an activity runs. A short throttle
+			// delivers the same cancel within a second.
+			maxHeartbeatThrottleInterval: "1s",
 		});
 		const outcome = await workflowWorker.runUntil(
 			activityWorker.runUntil(

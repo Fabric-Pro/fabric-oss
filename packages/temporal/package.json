@@ -20,6 +20,9 @@
 		"./duplicate-scan-core": "./src/lib/duplicate-scan-core.ts",
 		"./enqueue-pm-sync-core": "./src/lib/enqueue-pm-sync-core.ts",
 		"./meeting-todo-matcher": "./src/lib/meeting-todo-matcher.ts",
+		"./parlume-aura-usage": "./src/activities/parlume-aura-usage.ts",
+		"./parlume-realtime-usage": "./src/activities/parlume-realtime-usage.ts",
+		"./parlume-voice-context": "./src/activities/parlume-voice-context.ts",
 		"./payload-size-guard": "./src/lib/payload-size-guard.ts",
 		"./pm-sync-user-error": "./src/activities/pm-integration/pm-sync-user-error.ts",
 		"./pm-sync-start": "./src/lib/pm-sync-start.ts",
@@ -150,7 +153,7 @@
 		"simple-git": "4.0.2",
 		"unified": "^11.0.5",
 		"yauzl": "^2.10.0",
-		"zod": "4.3.6"
+		"zod": "4.6.7"
 	},
 	"devDependencies": {
 		"@prisma/adapter-pg": "^6.19.3",

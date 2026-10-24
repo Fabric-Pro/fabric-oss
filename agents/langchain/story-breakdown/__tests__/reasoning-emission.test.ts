@@ -36,6 +36,7 @@ vi.mock("../utils", async (importOriginal) => {
 
 // Import AFTER vi.mock so the breakdownNode sees the stubbed util.
 const { breakdownNode } = await import("../nodes/breakdown-node");
+const { getAgentModel } = await import("../utils");
 
 const baseState = {
 	projectName: "Test Project",
@@ -85,10 +86,17 @@ describe("story-breakdown breakdownNode — reasoning emission", () => {
 			}),
 		);
 
-		const command = await breakdownNode({
-			...baseState,
-			messages: [new HumanMessage("Break down the PRD")] as never,
-		});
+		const command = await breakdownNode(
+			{
+				...baseState,
+				messages: [new HumanMessage("Break down the PRD")] as never,
+			},
+			{ configurable: { thread_id: "thread-123" } },
+		);
+		expect(getAgentModel).toHaveBeenCalledWith(
+			undefined,
+			expect.objectContaining({ sessionKey: "thread-123" }),
+		);
 
 		const update = (command as { update?: Record<string, unknown> }).update;
 		expect(update).toBeDefined();

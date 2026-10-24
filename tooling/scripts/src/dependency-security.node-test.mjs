@@ -202,6 +202,309 @@ function verifyParentRange(semver, manifest, dependency, version) {
 	);
 }
 
+function isReviewedZodVersion(version, semver) {
+	return (
+		semver.valid(version) !== null &&
+		(version === "3.25.75" ||
+			version === "3.25.76" ||
+			semver.gte(version, "4.6.6"))
+	);
+}
+
+function verifyZodLockfile(text, yaml, semver) {
+	assert.equal(typeof text, "string", "Missing readable lockfile text");
+	const lockfile = yaml.parse(text);
+	for (const section of ["packages", "snapshots"]) {
+		assert.ok(
+			lockfile?.[section] && typeof lockfile[section] === "object",
+			`Missing lockfile ${section}`,
+		);
+		const entries = Object.keys(lockfile[section]).filter((key) =>
+			key.startsWith("zod@"),
+		);
+		assert.ok(entries.length > 0, `No zod entries in lockfile ${section}`);
+		for (const key of entries) {
+			const version = key.slice("zod@".length).split("(")[0];
+			assert.ok(
+				isReviewedZodVersion(version, semver),
+				`Unreviewed or vulnerable zod resolution: ${key} (${section}); GHSA-mrhx-c7xc-m3w5 permits only reviewed 3.25.75/3.25.76 or >=4.6.6`,
+			);
+		}
+	}
+}
+
+test("zod advisory exception accepts only reviewed v3 or versions at least 4.6.6", () => {
+	const semver = installedConsumers("@changesets/cli", "3.0.1")[0].require(
+		"semver",
+	);
+	for (const version of [
+		"3.25.75",
+		"3.25.76",
+		"4.6.6",
+		"4.6.7",
+		"4.7.0",
+		"5.0.0",
+	]) {
+		assert.equal(isReviewedZodVersion(version, semver), true, version);
+	}
+	for (const version of [
+		"3.25.74",
+		"3.25.77",
+		"4.6.5",
+		"4.6.6-rc.1",
+		"invalid",
+	]) {
+		assert.equal(isReviewedZodVersion(version, semver), false, version);
+	}
+});
+
+test("zod lockfile guard rejects vulnerable and unreviewed resolutions", () => {
+	const yaml = installedConsumers("@changesets/parse", "1.0.0")[0].require(
+		"yaml",
+	);
+	const semver = installedConsumers("@changesets/cli", "3.0.1")[0].require(
+		"semver",
+	);
+	const snippet = (version) =>
+		`packages:\n  zod@${version}: {}\nsnapshots:\n  zod@${version}: {}\n`;
+	assert.doesNotThrow(() =>
+		verifyZodLockfile(snippet("4.6.6"), yaml, semver),
+	);
+	for (const version of ["4.6.5", "3.25.77"]) {
+		assert.throws(
+			() => verifyZodLockfile(snippet(version), yaml, semver),
+			/Unreviewed or vulnerable zod resolution/,
+		);
+	}
+	for (const text of [
+		"packages: [",
+		"",
+		"packages: {}\nsnapshots: {}",
+		"packages: {}",
+		"packages: null\nsnapshots: null",
+	]) {
+		assert.throws(() => verifyZodLockfile(text, yaml, semver));
+	}
+});
+
+test("zod advisory exception is limited to reviewed versions in the real lockfile", () => {
+	const yaml = installedConsumers("@changesets/parse", "1.0.0")[0].require(
+		"yaml",
+	);
+	const semver = installedConsumers("@changesets/cli", "3.0.1")[0].require(
+		"semver",
+	);
+	// An unreadable lockfile throws here instead of silently skipping the guard.
+	const lockfile = readFileSync(join(root, "pnpm-lock.yaml"), "utf8");
+	verifyZodLockfile(lockfile, yaml, semver);
+	for (const section of ["packages", "snapshots"]) {
+		const mutated = yaml.parse(lockfile);
+		const current = Object.keys(mutated[section]).find((key) =>
+			key.startsWith("zod@4."),
+		);
+		assert.ok(current, `Missing zod 4 resolution in ${section}`);
+		mutated[section]["zod@4.6.5"] = mutated[section][current];
+		delete mutated[section][current];
+		assert.throws(
+			() => verifyZodLockfile(yaml.stringify(mutated), yaml, semver),
+			/Unreviewed or vulnerable zod resolution: zod@4\.6\.5/,
+		);
+	}
+});
+
+// GHSA-xcx6-jx8p-x3h5 is fixed only in @azure/msal-node 7.1.0, which neither
+// @azure/identity 4.x (^6 at most) nor @microsoft/agents-hosting (exact 5.x
+// pin) accepts. The OSV exception rests on two facts this file enforces: only
+// the two reviewed 5.x copies (or a fixed release) are locked, and no
+// first-party code reaches the authorization-code flow the advisory affects.
+function isReviewedMsalNodeVersion(version, semver) {
+	return (
+		semver.valid(version) !== null &&
+		(version === "5.1.5" ||
+			version === "5.2.1" ||
+			semver.gte(version, "7.1.0"))
+	);
+}
+
+function verifyMsalNodeLockfile(text, yaml, semver) {
+	assert.equal(typeof text, "string", "Missing readable lockfile text");
+	const lockfile = yaml.parse(text);
+	for (const section of ["packages", "snapshots"]) {
+		assert.ok(
+			lockfile?.[section] && typeof lockfile[section] === "object",
+			`Missing lockfile ${section}`,
+		);
+		const entries = Object.keys(lockfile[section]).filter((key) =>
+			key.startsWith("@azure/msal-node@"),
+		);
+		assert.ok(
+			entries.length > 0,
+			`No @azure/msal-node entries in lockfile ${section}`,
+		);
+		for (const key of entries) {
+			const version = key.slice("@azure/msal-node@".length).split("(")[0];
+			assert.ok(
+				isReviewedMsalNodeVersion(version, semver),
+				`Unreviewed or vulnerable @azure/msal-node resolution: ${key} (${section}); GHSA-xcx6-jx8p-x3h5 permits only reviewed 5.1.5/5.2.1 or >=7.1.0`,
+			);
+		}
+	}
+}
+
+// The authorization-code entry points found in the installed packages:
+// msal-node's own calls, the @azure/identity credentials that drive them, and
+// the plugins that turn on the VS Code and broker credentials (which reach
+// acquireTokenInteractive without naming it). DefaultAzureCredential is not
+// listed; SECURITY.md records why its chain does not reach this flow while
+// neither plugin is registered.
+const msalAuthCodeEntryPoints =
+	"acquireTokenByCode|acquireTokenInteractive|AuthorizationCodeCredential|InteractiveBrowserCredential|@azure/msal-node|@azure/identity-broker|@azure/identity-vscode|useIdentityPlugin";
+
+// git grep exits 1 for "no match", but can also exit 1 after failing to read
+// some files, so a clean "no match" needs an empty stderr too.
+function callSiteSearchHits(result) {
+	assert.ifError(result.error);
+	assert.ok(
+		(result.status === 0 || result.status === 1) && result.stderr === "",
+		`git grep failed (${result.status}${result.signal ? `, ${result.signal}` : ""}): ${result.stderr}`,
+	);
+	return result.stdout.split("\n").filter(Boolean);
+}
+
+function firstPartyMsalAuthCodeHits(pattern = msalAuthCodeEntryPoints) {
+	return callSiteSearchHits(
+		spawnSync(
+			"git",
+			[
+				"grep",
+				"-nE",
+				pattern,
+				"--",
+				"*.ts",
+				"*.tsx",
+				"*.mts",
+				"*.cts",
+				"*.js",
+				"*.jsx",
+				"*.mjs",
+				"*.cjs",
+				":!tooling/scripts/src/dependency-security.node-test.mjs",
+			],
+			{ cwd: root, encoding: "utf8", maxBuffer: 1 << 20 },
+		),
+	);
+}
+
+test("msal-node call-site search treats failed or partial searches as failures", () => {
+	const ok = { error: undefined, signal: null, stderr: "" };
+	assert.deepEqual(callSiteSearchHits({ ...ok, status: 1, stdout: "" }), []);
+	assert.deepEqual(
+		callSiteSearchHits({ ...ok, status: 0, stdout: "a.ts:1:x\n" }),
+		["a.ts:1:x"],
+	);
+	for (const bad of [
+		{ ...ok, status: 1, stdout: "", stderr: "fatal: unable to read a.ts" },
+		{ ...ok, status: 0, stdout: "a.ts:1:x\n", stderr: "warning" },
+		{ ...ok, status: 128, stdout: "" },
+		{ ...ok, status: null, signal: "SIGTERM", stdout: "" },
+		{
+			...ok,
+			status: null,
+			stdout: "",
+			error: new Error("spawn git ENOENT"),
+		},
+	]) {
+		assert.throws(() => callSiteSearchHits(bad));
+	}
+});
+
+test("msal-node advisory exception accepts only reviewed 5.x or versions at least 7.1.0", () => {
+	const semver = installedConsumers("@changesets/cli", "3.0.1")[0].require(
+		"semver",
+	);
+	for (const version of ["5.1.5", "5.2.1", "7.1.0", "7.1.1", "8.0.0"]) {
+		assert.equal(isReviewedMsalNodeVersion(version, semver), true, version);
+	}
+	for (const version of [
+		"5.1.4",
+		"5.6.0",
+		"6.0.0",
+		"7.0.2",
+		"7.1.0-beta.1",
+		"invalid",
+	]) {
+		assert.equal(
+			isReviewedMsalNodeVersion(version, semver),
+			false,
+			version,
+		);
+	}
+});
+
+test("msal-node lockfile guard rejects vulnerable and unreviewed resolutions", () => {
+	const yaml = installedConsumers("@changesets/parse", "1.0.0")[0].require(
+		"yaml",
+	);
+	const semver = installedConsumers("@changesets/cli", "3.0.1")[0].require(
+		"semver",
+	);
+	const snippet = (version) =>
+		`packages:\n  '@azure/msal-node@${version}': {}\nsnapshots:\n  '@azure/msal-node@${version}': {}\n`;
+	assert.doesNotThrow(() =>
+		verifyMsalNodeLockfile(snippet("7.1.0"), yaml, semver),
+	);
+	for (const version of ["5.6.0", "6.0.0", "7.0.2"]) {
+		assert.throws(
+			() => verifyMsalNodeLockfile(snippet(version), yaml, semver),
+			/Unreviewed or vulnerable @azure\/msal-node resolution/,
+		);
+	}
+	for (const text of [
+		"packages: [",
+		"",
+		"packages: {}\nsnapshots: {}",
+		"packages: {}",
+		"packages: null\nsnapshots: null",
+	]) {
+		assert.throws(() => verifyMsalNodeLockfile(text, yaml, semver));
+	}
+});
+
+test("msal-node advisory exception is limited to reviewed versions in the real lockfile", () => {
+	const yaml = installedConsumers("@changesets/parse", "1.0.0")[0].require(
+		"yaml",
+	);
+	const semver = installedConsumers("@changesets/cli", "3.0.1")[0].require(
+		"semver",
+	);
+	// An unreadable lockfile throws here instead of silently skipping the guard.
+	const lockfile = readFileSync(join(root, "pnpm-lock.yaml"), "utf8");
+	verifyMsalNodeLockfile(lockfile, yaml, semver);
+	for (const section of ["packages", "snapshots"]) {
+		const mutated = yaml.parse(lockfile);
+		const current = Object.keys(mutated[section]).find((key) =>
+			key.startsWith("@azure/msal-node@"),
+		);
+		assert.ok(current, `Missing @azure/msal-node resolution in ${section}`);
+		mutated[section]["@azure/msal-node@6.0.0"] = mutated[section][current];
+		delete mutated[section][current];
+		assert.throws(
+			() => verifyMsalNodeLockfile(yaml.stringify(mutated), yaml, semver),
+			/Unreviewed or vulnerable @azure\/msal-node resolution: @azure\/msal-node@6\.0\.0/,
+		);
+	}
+});
+
+test("no first-party code reaches the msal-node authorization-code flow", () => {
+	assert.deepEqual(firstPartyMsalAuthCodeHits(), []);
+	// The search itself must be able to find a call site: the one in
+	// @azure/identity's DefaultAzureCredential import proves it reads sources.
+	assert.ok(
+		firstPartyMsalAuthCodeHits("DefaultAzureCredential").length > 0,
+		"git grep found no DefaultAzureCredential import; the call-site search is not reading first-party sources",
+	);
+});
+
 test("each immediate parent's original range accepts the locked security version", () => {
 	const semver = installedConsumers("@changesets/cli", "3.0.1")[0].require(
 		"semver",

@@ -293,7 +293,18 @@ jobs:
     # checkout. replay-eligibility.test.mjs pins this expression to the policy.
     if: >-
       always() && !cancelled() && (needs.promotion_policy.result != 'success' || needs.promotion_policy.outputs.reduced != 'true') && needs.initialize_status.result == 'success' && needs.authorize.result == 'success' && (needs.initialize_status.result == 'success' && needs.authorize.result == 'success' && needs.authorize.outputs.secret_eligible == 'true' && (github.event_name == 'workflow_dispatch' || needs.authorize.outputs.workflows == 'true'))
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.repository == 'Fabric-Pro/fabric-dev' && 'ubuntu-8core-arm' || 'ubuntu-latest' }}
+    # arm64 in the private repo, as unit-tests.yml's Vitest shards already
+    # run there. Node setup plus install took 124-163 s here on the 2-vCPU
+    # x64 standard runner (October 2026); on that label Node setup takes
+    # about 16 s and a full, unfiltered install 51 s. The replay loads the
+    # Temporal native core bridge, which @temporalio/core-bridge ships
+    # prebuilt for aarch64-unknown-linux-gnu, and the @repo/temporal shard
+    # already runs Worker.create and TestWorkflowEnvironment on this label.
+    # Elsewhere a missing label would queue for 24 hours, so other
+    # repositories keep the standard runner.
+    # (Kept below runs-on: the eligibility pin test reads the `if:` block as
+    # everything up to the runs-on line.)
     environment: dev
     timeout-minutes: 20
     permissions:
@@ -342,10 +353,36 @@ jobs:
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        # No `cache: 'pnpm'`. On a miss its post step saves the store this job
+        # filled from the pull request's lockfile, and a pull_request_target
+        # run saves into the base branch's cache scope, which every other job
+        # restores from. Nothing seeds that store key any more either
+        # (.github/actions/pnpm-install caches node_modules instead), and the
+        # filtered install below fetches its ~1,700 packages directly.
         with:
           node-version: '22'
           check-latest: true
-          cache: 'pnpm'
+
+      # Most of this install used to be pnpm re-verifying all 3,348 lockfile
+      # entries against the supply-chain policies (76 s of 80 s, October
+      # 2026). Default-branch pushes save pnpm's record of verified lockfiles
+      # through .github/actions/pnpm-install; this mirrors that action's log
+      # key and only restores it. The action itself is not used here: a local
+      # action resolves from this job's pull request checkout, and this job
+      # must not save anything into the base branch's scope. A record only
+      # covers a lockfile with identical content, so a pull request that
+      # changes the lockfile is still verified in full.
+      - name: Locate pnpm's cache directory
+        id: pnpm-cache
+        run: echo "dir=$(pnpm cache path)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore lockfile verification log
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.pnpm-cache.outputs.dir }}/lockfile-verified.jsonl
+          key: pnpm-lockfile-verified-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-lockfile-verified-v1-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Install dependencies
         # Scoped to @repo/temporal and its workspace dependency graph — the

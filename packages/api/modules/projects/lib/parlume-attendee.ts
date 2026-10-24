@@ -25,6 +25,44 @@ interface ParlumeSpeakerUpdate {
 	isSpeaking: boolean;
 }
 
+/** One meeting chat message, relayed from Attendee's webhook to the bridge. */
+export interface ParlumeChatMessageRelay {
+	id: string;
+	text: string;
+	senderName: string | null;
+	senderId: string | null;
+	toBot: boolean;
+	timestampMs: number;
+}
+
+const TEAMS_LOGIN_MODES = ["always", "only_if_required"] as const;
+type ParlumeTeamsLoginMode = (typeof TEAMS_LOGIN_MODES)[number];
+
+function isTeamsLoginMode(value: string): value is ParlumeTeamsLoginMode {
+	return TEAMS_LOGIN_MODES.some((mode) => mode === value);
+}
+
+/**
+ * `PARLUME_ATTENDEE_TEAMS_LOGIN` signs the bot in with the Microsoft 365
+ * account set up on the Attendee project, so it can join meetings and chat
+ * that anonymous guests cannot. Unset keeps the anonymous guest. Any other
+ * value refuses the invite rather than join in a mode nobody configured.
+ */
+function parlumeTeamsSettings(
+	value: string | undefined,
+): { use_login: true; login_mode: ParlumeTeamsLoginMode } | null {
+	const mode = configured(value);
+	if (!mode) {
+		return null;
+	}
+	if (!isTeamsLoginMode(mode)) {
+		throw new Error(
+			"PARLUME_ATTENDEE_TEAMS_LOGIN must be always or only_if_required.",
+		);
+	}
+	return { use_login: true, login_mode: mode };
+}
+
 function configured(value: string | undefined): string | null {
 	const trimmed = value?.trim();
 	return trimmed ? trimmed : null;
@@ -183,6 +221,9 @@ export async function startParlumeMeetingBot(input: {
 			1,
 			Math.ceil((input.hardStopAt.getTime() - Date.now()) / 1_000),
 		) + MAX_UPTIME_BACKSTOP_SECONDS;
+	const teamsSettings = parlumeTeamsSettings(
+		process.env.PARLUME_ATTENDEE_TEAMS_LOGIN,
+	);
 	const response = await fetch(ATTENDEE_BOTS_URL, {
 		method: "POST",
 		headers: attendeeHeaders(input.settings.apiKey, true),
@@ -219,12 +260,16 @@ export async function startParlumeMeetingBot(input: {
 						input.sessionId,
 						input.callbackSecret,
 					),
+					// The meeting chat comes back too: participants can type to
+					// Parlume, and its own posts showing up confirm delivery.
 					triggers: [
 						"bot.state_change",
 						"participant_events.speech_start_stop",
+						"chat_messages.update",
 					],
 				},
 			],
+			...(teamsSettings ? { teams_settings: teamsSettings } : {}),
 			// Three minutes unadmitted or alone is the floor for a meeting that
 			// never happened. Attendee's default silence timeout stays; the
 			// bridge's own idle rule leaves a silent meeting at three minutes.
@@ -327,9 +372,40 @@ export async function sendParlumeSpeakerUpdates(input: {
 }
 
 /**
- * Posts a message into the meeting chat as the bot. Attendee accepts it only
- * while the bot is in the call, and refuses when the meeting has chat disabled;
- * both surface as errors for the caller to report.
+ * Hands the bridge one message from the meeting chat. The bridge stores it
+ * with the transcript, matches it against Parlume's own posts, and acts on a
+ * request typed to Parlume.
+ */
+export async function sendParlumeChatMessage(input: {
+	settings: ParlumeBridgeSettings;
+	sessionId: string;
+	message: ParlumeChatMessageRelay;
+}): Promise<void> {
+	const url = new URL(
+		bridgeControlUrlForSession(input.settings.bridgeUrl, input.sessionId),
+	);
+	url.searchParams.set("action", "chat-message");
+	const response = await fetch(url, {
+		method: "POST",
+		headers: {
+			"content-type": "application/json",
+			Authorization: `Bearer ${input.settings.serviceSecret}`,
+		},
+		body: JSON.stringify(input.message),
+		signal: AbortSignal.timeout(10_000),
+	});
+	if (!response.ok) {
+		throw new Error("Parlume media bridge is unavailable.");
+	}
+}
+
+/**
+ * Sends a message to the meeting chat as the bot. Attendee only queues it: its
+ * Teams bot drops a message silently when the meeting gives it no chat box
+ * (an anonymous guest in a channel meeting, or where chat excludes anonymous
+ * users), so success here is not delivery. The bridge confirms delivery when
+ * the message shows up in the chat. Attendee refuses outright only while the
+ * bot is not in the call.
  */
 export async function sendParlumeMeetingChat(input: {
 	settings: ParlumeBridgeSettings;

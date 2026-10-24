@@ -1,6 +1,5 @@
 /**
- * `projects.glossy.get` (Fizzy #2589, R4, R5, R7, R9, KTD5, KTD6, KTD16,
- * KTD19, AE7, AE10).
+ * `projects.glossy.get` (Fizzy #2589).
  *
  * The permission decision and the Glossy gate are real, over the world in
  * `glossy-harness.ts`; the edition query, Temporal, and storage are mocks.
@@ -244,7 +243,7 @@ beforeEach(() => {
 	mocks.getGlossyEdition.mockResolvedValue(publishedEdition());
 });
 
-describe("projects.glossy.get — a project guest with read access (AE7)", () => {
+describe("projects.glossy.get — a project guest with read access", () => {
 	it("reads the edition, its decisions, the preparer Brand kit and the recipient logo, and cannot edit", async () => {
 		world.recipientBrands.set(PROJECT_A, {
 			version: 3,
@@ -288,6 +287,7 @@ describe("projects.glossy.get — a project guest with read access (AE7)", () =>
 			preparer: Record<string, unknown>;
 			recipient: Record<string, unknown>;
 			recipientVersion: number;
+			recipientCanEdit: boolean;
 		};
 		// The host organization's kit, not the guest's own organization's.
 		expect(brand.preparer).toEqual({
@@ -302,12 +302,53 @@ describe("projects.glossy.get — a project guest with read access (AE7)", () =>
 			`https://storage.example.com/${PROJECT_CONTEXTS}/project-brand/${PROJECT_A}/recipient-brand/current/logo-1.png?signed`,
 		);
 		expect(brand.recipientVersion).toBe(3);
+		expect(brand.recipientCanEdit).toBe(false);
 		expect(result.build).toEqual({ status: "idle" });
+	});
+
+	// The row carries its own organization: one left behind under another
+	// organization is not this project's recipient, and nothing of it is
+	// shown or signed.
+	it("reads a recipient row left in another organization as none", async () => {
+		world.recipientBrands.set(PROJECT_A, {
+			organizationId: "org-former",
+			version: 3,
+			name: "Former Client",
+			website: "https://former.example.com",
+			colors: ["#224466"],
+			logoKey: `project-brand/${PROJECT_A}/recipient-brand/current/logo-1.png`,
+			updatedAt: new Date("2026-09-20T09:00:00.000Z"),
+		});
+
+		const brand = (await get(USERS.owner)).brand as {
+			recipient: unknown;
+			recipientVersion: number;
+		};
+
+		expect(brand.recipient).toBeNull();
+		expect(brand.recipientVersion).toBe(0);
+		expect(JSON.stringify(brand)).not.toContain("Former Client");
 	});
 
 	it("an organization editor on the same document can edit", async () => {
 		expect((await get(USERS.editor)).canEdit).toBe(true);
 		expect((await get(USERS.guestEditor)).canEdit).toBe(true);
+	});
+
+	// Only members of the owning organization change the recipient brand
+	// (Fizzy #2946): a guest editor builds the edition, but the page must not
+	// offer them a recipient Save the server would refuse.
+	it("reports who may change the recipient brand: members who can edit, never a guest", async () => {
+		const recipientCanEdit = async (userId: string) =>
+			((await get(userId)).brand as { recipientCanEdit: boolean })
+				.recipientCanEdit;
+
+		expect(await recipientCanEdit(USERS.owner)).toBe(true);
+		expect(await recipientCanEdit(USERS.editor)).toBe(true);
+		expect(await recipientCanEdit(USERS.guestEditor)).toBe(false);
+		expect(await recipientCanEdit(USERS.guestViewer)).toBe(false);
+		// A member whose project row makes them a viewer cannot edit it.
+		expect(await recipientCanEdit(USERS.memberViewer)).toBe(false);
 	});
 });
 
@@ -392,7 +433,7 @@ describe("projects.glossy.get — NOT_FOUND", () => {
 		expect(mocks.getGlossyEdition).not.toHaveBeenCalled();
 	});
 
-	it("covers AE10: the rollout gate off, for editors and viewers alike", async () => {
+	it("the rollout gate off, for editors and viewers alike", async () => {
 		world.flags.set(ORG_A, false);
 		expect(await errorCode(get(USERS.editor))).toBe("NOT_FOUND");
 		expect(await errorCode(get(USERS.guestViewer))).toBe("NOT_FOUND");
@@ -427,7 +468,7 @@ describe("projects.glossy.get — eligibility", () => {
 	});
 });
 
-describe("projects.glossy.get — out of date (R7, KTD6)", () => {
+describe("projects.glossy.get — out of date", () => {
 	it("reports out of date after a revert that leaves the version unchanged", async () => {
 		const document = world.documents.get(DOC_A);
 		world.documents.set(DOC_A, {
@@ -458,7 +499,7 @@ describe("projects.glossy.get — out of date (R7, KTD6)", () => {
 	});
 });
 
-describe("projects.glossy.get — build state (R9)", () => {
+describe("projects.glossy.get — build state", () => {
 	it("a running build reports its step, progress and starter without asking Temporal", async () => {
 		mocks.getGlossyEdition.mockResolvedValue(
 			publishedEdition({
@@ -552,7 +593,7 @@ describe("projects.glossy.get — build state (R9)", () => {
 	});
 });
 
-describe("projects.glossy.get — signed reads (KTD16)", () => {
+describe("projects.glossy.get — signed reads", () => {
 	it("signs only the document's own uploads under this project's prefix", async () => {
 		const result = await get(USERS.guestViewer);
 

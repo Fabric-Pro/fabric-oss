@@ -1,5 +1,68 @@
 # fabric-app
 
+## 1.16.29
+
+### Patch Changes
+
+- afb2038: Stopping a chat turn now also stops most built-in agents the assistant had delegated to, instead of letting them finish in the background.
+- afb2038: Agents, research, triggers, Sidekick, and Weave readers now tell the model when a tool call repeats an identical earlier result so it can answer without spending its remaining steps on the same call.
+- afb2038: Slack and Teams agent mention replies now show a neutral failure message or an AI usage limit notice without exposing internal error details.
+- afb2038: Project Settings ▸ AI assistant is redesigned: option cards for each level, a grouped and searchable prompt list, and prompt names that open the prompt.
+- afb2038: Accepting an AI Assistant edit now saves exactly the AI's document when it deletes bullets or numbered items, turns paragraphs into bullets, or edits code blocks.
+- afb2038: AI Assistant edits no longer swap in curly quotes; quotes the AI adds are saved straight, and curly quotes already in the document are kept.
+- afb2038: AI Update session history now counts the changes that applied when some items conflict with the PM tool, instead of reporting 0 applied and every change failed.
+- afb2038: While the assistant finishes its reply after you accept a proposal, the document editor now says "The assistant is finishing…" instead of silently not taking input for a few seconds.
+- afb2038: AI Update no longer reports an apply or analysis as failed while it is still running: the page keeps waiting for the server's result, says when a run is taking longer than usual, and shows a neutral "may still be running" note instead of a failure when it loses track of one.
+- afb2038: When only one existing ticket is close to a new item, the duplicate check and action-item routing can now use decision models that reject a single-option choice, instead of falling back to the slower language model.
+- afb2038: Upgrade body-parser to 1.20.9 and 2.4.0, fixing a high-severity denial of service from trailing bytes after a compressed request body.
+- afb2038: ChatGPT plan model calls now send a stable session header so repeated prompts in the same conversation or run can be served from the prompt cache.
+- afb2038: Server requests now use undici 6.29.1, 7.30.1 and 8.12.3 or later, which fix a denial of service from responses with too many content encodings.
+- afb2038: Accepting an AI edit no longer drops horizontal rules, un-nests list items, leaves stray hyphens or glues added lines together.
+- afb2038: AI edits that turn a paragraph into a list item or heading now show as a visible change in the review instead of being applied silently on accept.
+- afb2038: Project documents no longer gain stray backslashes from AI Assistant edits, and AI review diffs no longer show a struck-through backslash.
+- afb2038: Documents, synced pages and crawled web pages no longer spend AI calls on chunk enrichment, or retry, when the organization's embedding model cannot be used.
+- afb2038: Fabric now refuses an embeddings model whose vectors the document index cannot store, such as the 1024-dimension Databricks, Mistral and Cohere models, and shows a message to choose a compatible model instead of failing on every index and search.
+- afb2038: Show the AI usage-limit notice when a usage limit stops a chat from generating a frame or slideshow, instead of saving placeholder content as a finished frame.
+- afb2038: Update Full Spec and stage Enhance on a feature or bug now give the AI assistant the Clean Spec prompt as its own instructions, so the refreshed spec keeps the Clean Spec layout instead of gaining generic Document Control and Revision History sections and losing its closing sections.
+- afb2038: You can now add Notion pages as project context using your Notion connection from Integrations, without setting up a Notion MCP server.
+- afb2038: GitLab imports routed through GitLab's official MCP server now report a failed tool call as an error, instead of showing an empty ticket list or overwriting a re-imported story with a placeholder title.
+- afb2038: GitLab connections that use GitLab's official MCP server can again list issues for import, read issue comments for AI Update, update an existing issue from a story, and read repository files, because Fabric now sends those requests over the GitLab REST API instead of asking the MCP server for tools it does not provide.
+- afb2038: The assistant's shared organization memory no longer keeps a history of members' requests and plan steps or logs them as routing suggestions, and history already stored there is emptied the next time the organization uses the assistant.
+- afb2038: Organizations can select OpenJev on Databricks as their decision model in AI Models settings.
+- afb2038: Parlume stays in a meeting while people use its chat, and leaves cleanly after the provider reconnects its stream.
+- afb2038: Parlume confirms its meeting chat posts, reads and answers the chat, offers occasional suggestions there, and can join Teams signed in.
+- afb2038: Parlume meeting transcripts and notes now retain recorded Fabric responses and individual action receipt statuses, including failed or unconfirmed changes.
+- afb2038: With an OpenAI key, Parlume speaks through OpenAI's realtime voice: faster replies, natural barge-in, and Fabric work in the background.
+- afb2038: Keep continuations of a payload-free meeting-chat instruction together for the same identified speaker, waiting for 2.5 seconds of quiet within an eight-second total cap while complete inline requests retain no extra delay.
+- afb2038: Use spoken-word timestamps for Parlume speaker attribution so preceding silence and earlier speakers do not skew transcript ownership.
+- afb2038: Parlume ignores "yeah" and "mm-hmm", goes quiet instead of giving up when spoken over, and sends the detail of an answer to the meeting chat.
+- afb2038: A chat reply whose ChatGPT plans run out mid-turn now continues on API billing when the organization chose "Use API billing", instead of stopping.
+- afb2038: A full pull from a project management tool no longer removes Fabric stories when the listing reports unread results or reaches its page limit before completion.
+- afb2038: Project admins can now choose the Azure Monitor workspace a project's recurring-error scan reads, under Settings › Testing.
+- afb2038: Document generation (PRD and other project documents) now uses the project's own prompt default when one is set, before the organization's.
+- afb2038: Client proposals now take their brand from the right place and show where each value comes from: the document's own choice first, then the organization's Brand kit, then the colours the organization's own website declares, then a neutral style, while the client's brand found on their website is only a suggestion until a member confirms it.
+- afb2038: Diagram captions are now saved with the diagram, so they survive reloads, AI edits and exports, where they print under the figure. Client proposals get more of their automatic diagrams, because a diagram refused for stating something the section does not say is drafted once more, and exported proposals break long diagram labels into lines so they print at a readable size. While an AI edit to a diagram is under review, the diagram shows its marked source and a drawing of the proposed version instead of a picture mixing old and new lines.
+- afb2038: Diagrams in a client proposal now have a Diagram actions menu with Edit with instructions, which redraws one diagram from a request and changes nothing else; they take the brand's colours when drawn, so a Style or brand change recolours them without rewriting the text; they stay readable at page width, with short labels that no longer repeat themselves, and a diagram that would print too small is drawn top-down in the PDF, with a warning when one still cannot be read; and Fabric's automatic diagrams can be turned off per document in the Style tab. Accepting or rejecting an AI edit to any diagram or code block now keeps its lines and indentation, highlighting changed lines whole, and a diagram's source no longer shows as plain text above the drawn diagram.
+- afb2038: Proposal PDF downloads no longer print gaps between letters, and the cover prints on its own full page again instead of shifted onto the page margins with a running header and page number.
+- afb2038: After you accept an assistant proposal in the document, story or prompt editor, the assistant no longer says the changes were applied before they are saved: its reply only confirms the acceptance, and the chat shows when the accepted changes could not be saved. A save error now goes away once the document saves. Undoing an edit in a shared document (Ctrl+Z or Cmd+Z) is now saved like any other edit, and an accepted proposal you undo before it is saved is no longer saved when you leave.
+- afb2038: Projects can opt in to recurring-error detection, which proposes a bug in the review inbox for each error or bug-report cluster that keeps recurring.
+- afb2038: Recurring-error scans finish within their time limit on projects with many open bugs, and the proposal inbox names recurring errors as a source.
+- afb2038: Project admins can now set the recurring-error scan's occurrence threshold, time window and similarity threshold in QA settings.
+- afb2038: Recurring-error scans now file one proposal and one bug note per problem, and work items from meetings or AI Update no longer say they were reported via Teams.
+- afb2038: Recurring-error detection now adds new occurrences to an open bug someone already filed instead of proposing a duplicate, and reads Container Apps platform events.
+- afb2038: Recurring-error scans now find the open bug someone filed by hand for a log error, and follow approved scan bugs on later scans.
+- afb2038: Recurring-error evidence no longer shows raw Markdown code fences in bug notes or the inbox: sample log lines are indented instead.
+- afb2038: When the recurring-error scan adds errors to an open bug or pending proposal, it now records how confident the match was and the project's similarity threshold.
+- afb2038: The recurring-error detection thresholds in QA settings no longer overlap or clip their values in the narrow settings card.
+- afb2038: AI Assistant text edits no longer add an indent that the edited text did not have.
+- afb2038: AI Assistant text edits no longer strip the indent of the first edited line or join the last edited line onto the next one.
+- afb2038: AI review diffs no longer show a struck-through backslash when the rewrite inserts new words before a bracketed reference.
+- afb2038: The AI change review now highlights a table the AI edited, added or removed, counts it as a change, and lets you accept or reject it on its own.
+- afb2038: Edits made after accepting an assistant proposal are saved again: a confirm card shown again in the chat no longer leaves the editor treating the proposal as still under review. Open document pages and the documents list now hear about a generation's progress and end from the server as they happen, also on deployments whose workers publish through the web app. The raw markdown view follows the document while it has no edits of its own and stays read-only while a generation runs, the "The assistant is finishing…" status shows only after you answer a proposal, the proposal's chip records whether you accepted or rejected it, and a documents list brought back to the front refreshes.
+- afb2038: Static artifacts and workspaces now open in about a second, and pages still loading show a clear centered spinner instead of an empty panel.
+- afb2038: Scheduled and event-driven agent triggers no longer send an empty response to their configured outputs when the agent run fails, and the failure is now recorded in the trigger's stats instead of being counted as a success.
+- afb2038: Validation built on zod 4 now requires zod 4.6.7, which rejects a list over its size limit before checking each item, so an oversized input no longer drives memory use up through those schemas.
+
 ## 1.16.28
 
 ### Patch Changes

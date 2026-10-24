@@ -11,8 +11,8 @@
  * looks exactly like a gate and enforces nothing: the statement resolves in
  * the background, any rejection becomes an unhandled promise rejection
  * instead of stopping the caller, and the procedure runs as though the
- * feature were always on. Per KTD20 there is no companion kill switch for
- * this feature — `assertGlossyEnabled` and the prepare-time re-read of
+ * feature were always on. There is no companion kill switch for this
+ * feature — `assertGlossyEnabled` and the prepare-time re-read of
  * `GLOSSY_EDITION` ARE the switch — so a missed `await` here does not degrade
  * the gate, it removes it.
  *
@@ -27,7 +27,8 @@
  *
  * The Proposal artifact gate (Fizzy #2801) is held to the same rule: the
  * recipient brand procedures now pass on GLOSSY_EDITION OR PROPOSAL_ARTIFACT,
- * so an un-awaited Proposal artifact gate would open them just as surely.
+ * and so does the Brand kit (Fizzy #2946), so an un-awaited either-or gate
+ * would open them just as surely.
  *
  * If this fails on your new call site, add the `await` — do not relax the
  * pattern. The gate is a gate only when it is awaited.
@@ -68,7 +69,7 @@ const SKIP_DIRS = new Set([
  * other flag too.
  */
 const GATE_CALL_RE =
-	/assertGlossyEnabled(?:ForOrganization)?\s*\(|assertProposalArtifactEnabled(?:ForOrganization)?\s*\(|assertGlossyOrProposalArtifactEnabled\s*\(|isFeatureEnabled\s*\(\s*["'](?:GLOSSY_EDITION|PROPOSAL_ARTIFACT)["']/g;
+	/assertGlossyEnabled(?:ForOrganization)?\s*\(|assertProposalArtifactEnabled(?:ForOrganization)?\s*\(|assertGlossyOrProposalArtifactEnabled(?:ForOrganization)?\s*\(|isFeatureEnabled\s*\(\s*["'](?:GLOSSY_EDITION|PROPOSAL_ARTIFACT)["']/g;
 
 /** The gate's own definition — `export async function assert…(` — is not a call. */
 const DECLARATION_BEFORE_RE = /\bfunction\s+$/;
@@ -209,7 +210,7 @@ describe("Glossy Version Export gate — await guard", () => {
 		expect(offenders.length).toBe(0);
 	});
 
-	// AE10: with the gate off every Glossy procedure answers NOT_FOUND. The
+	// With the gate off every Glossy procedure answers NOT_FOUND. The
 	// permission middleware would answer a viewer's write FORBIDDEN first,
 	// so the gate middleware must come before it in every procedure chain.
 	//
@@ -315,7 +316,9 @@ describe("Glossy Version Export gate — await guard", () => {
 	// still on GLOSSY_EDITION alone would refuse what its middleware let in,
 	// and a Glossy loader on the wider gate would open every Glossy handler.
 	// The Brand kit has no project and gates on the organization in its
-	// handler; it stays on GLOSSY_EDITION alone.
+	// handler, after the membership check. It styles client-document
+	// Proposals as well as Glossy editions, so it passes on GLOSSY_EDITION
+	// or PROPOSAL_ARTIFACT (Fizzy #2946), never on GLOSSY_EDITION alone.
 	it.each([
 		{
 			file: "packages/api/modules/projects/lib/glossy-access.ts",
@@ -329,13 +332,23 @@ describe("Glossy Version Export gate — await guard", () => {
 		},
 		{
 			file: "packages/api/modules/organizations/procedures/brand-kit/get-brand-kit.ts",
-			gate: "await assertGlossyEnabledForOrganization(",
-			forbidden: ["ProposalArtifact"],
+			gate: "await assertGlossyOrProposalArtifactEnabledForOrganization(",
+			forbidden: ["assertGlossyEnabledForOrganization"],
 		},
 		{
 			file: "packages/api/modules/organizations/procedures/brand-kit/update-brand-kit.ts",
-			gate: "await assertGlossyEnabledForOrganization(",
-			forbidden: ["ProposalArtifact"],
+			gate: "await assertGlossyOrProposalArtifactEnabledForOrganization(",
+			forbidden: ["assertGlossyEnabledForOrganization"],
+		},
+		{
+			file: "packages/api/modules/organizations/procedures/brand-kit/create-brand-asset-upload-url.ts",
+			gate: "await assertGlossyOrProposalArtifactEnabledForOrganization(",
+			forbidden: ["assertGlossyEnabledForOrganization"],
+		},
+		{
+			file: "packages/api/modules/organizations/procedures/brand-kit/fetch-brand-site.ts",
+			gate: "await assertGlossyOrProposalArtifactEnabledForOrganization(",
+			forbidden: ["assertGlossyEnabledForOrganization"],
 		},
 		{
 			file: "packages/api/modules/projects/lib/recipient-brand.ts",
@@ -382,6 +395,9 @@ describe("Glossy Version Export gate — await guard", () => {
 		expect(source).toContain(
 			"export async function assertGlossyOrProposalArtifactEnabled(",
 		);
+		expect(source).toContain(
+			"export async function assertGlossyOrProposalArtifactEnabledForOrganization(",
+		);
 	});
 
 	// The scan must actually see the wider gate: zero references found would
@@ -393,6 +409,9 @@ describe("Glossy Version Export gate — await guard", () => {
 		);
 		expect(files).toContain(
 			"packages/api/modules/projects/lib/recipient-brand.ts",
+		);
+		expect(files).toContain(
+			"packages/api/modules/organizations/procedures/brand-kit/update-brand-kit.ts",
 		);
 	});
 });

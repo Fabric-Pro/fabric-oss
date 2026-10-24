@@ -474,10 +474,10 @@ async function delegateViaA2A(
 	// before its `fetch`, the guard's latched stops; the activity's
 	// cancellation and the guard's stop abort the send and the polling.
 	//
-	// Aborting stops OUR request only. The remote agent is not told to stop:
-	// a synchronous agent runs its work inside the send and returns no task id
-	// until it finishes, and an asynchronous agent's task is simply no longer
-	// polled. Either may keep working (and spending) after the Stop.
+	// Aborting the send closes the request. SYSTEM agents on the unified server,
+	// and the Weave readers and planners, abort their run on that disconnect.
+	// Weave Shuttle's coding run (Fizzy #3295) and external or custom agents
+	// may keep working after Stop.
 	const turnControl = input.turnScope
 		? {
 				// The activity's cancellation and the turn guard's own stop

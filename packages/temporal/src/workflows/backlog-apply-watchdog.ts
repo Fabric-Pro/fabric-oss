@@ -14,6 +14,7 @@
 
 import { log, proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
+import { BACKLOG_APPLY_WATCHDOG_STOP_REASON } from "./backlog-constants";
 
 const {
 	findStaleApplyingProposalsActivity,
@@ -74,7 +75,7 @@ export async function backlogApplyWatchdogWorkflow(
 			if (row.workflowId) {
 				await terminateBacklogApplyWorkflowActivity({
 					workflowId: row.workflowId,
-					reason: "backlog_apply_watchdog_stale",
+					reason: BACKLOG_APPLY_WATCHDOG_STOP_REASON,
 				});
 			}
 

@@ -379,6 +379,17 @@ describe("getAIModelWithMetadata — aggregate usage logging", () => {
 });
 
 describe("embedding conversation sink", () => {
+	beforeEach(() => {
+		getModelForTaskMock.mockResolvedValue({
+			...SELECTION,
+			model: {
+				...SELECTION.model,
+				canonicalName: "text-embedding-3-small",
+				suitableForTasks: ["EMBEDDING"],
+			},
+			providerModelId: "openai/text-embedding-3-small",
+		});
+	});
 	it.each(["conversation-example", undefined])(
 		"records the resolver's explicit conversation (%s)",
 		async (conversationId) => {

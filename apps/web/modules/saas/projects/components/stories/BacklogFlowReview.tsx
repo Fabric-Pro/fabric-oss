@@ -7,7 +7,62 @@ import {
 	type BacklogFlow,
 	type BacklogFlowController,
 	beforeDeadline,
+	pollWorkflowProgress,
+	workflowPollMessage,
 } from "./backlog-flow-controller";
+
+const APPLY_PROPOSAL_CHECK_INTERVAL_MS = 10000;
+
+async function readApplyProgress(
+	input: {
+		projectId: string;
+		organizationId: string | null;
+		workflowId: string;
+		proposalId?: string | null;
+	},
+	checkProposal: boolean,
+) {
+	const progress = await orpcClient.projects.backlog.applyProgress({
+		projectId: input.projectId,
+		workflowId: input.workflowId,
+	});
+	if (
+		(!checkProposal && progress.status !== "failed") ||
+		!input.proposalId ||
+		(progress.status !== "applying" &&
+			progress.status !== "syncing_pm" &&
+			progress.status !== "failed")
+	) {
+		return progress;
+	}
+	try {
+		const row = await orpcClient.projects.backlog.getPendingProposal({
+			projectId: input.projectId,
+			organizationId: input.organizationId,
+			proposalId: input.proposalId,
+		});
+		if (
+			row.applyWorkflowId === input.workflowId &&
+			row.status === "FAILED" &&
+			(row.errorClass === "Cancelled" || row.errorClass === "TimedOut")
+		) {
+			return {
+				...progress,
+				status:
+					row.errorClass === "Cancelled"
+						? ("cancelled" as const)
+						: ("failed" as const),
+				message:
+					row.errorMessage ??
+					row.applyError ??
+					"Apply stopped. Open Review proposals to retry.",
+			};
+		}
+	} catch {
+		// The workflow read remains usable if the optional row read fails.
+	}
+	return progress;
+}
 
 export type ReviewSettings = {
 	projectId: string;
@@ -81,20 +136,30 @@ export function BacklogFlowReview({
 		controller.patchApply(flow.flowId, { progress });
 	const setApplyResult = (result: NonNullable<typeof applyResult>) =>
 		controller.patchApply(flow.flowId, { result });
+	const invalidateFailedCount = () =>
+		queryClient.invalidateQueries({
+			queryKey: [
+				"projects.backlog.proposals.failedCount",
+				projectId,
+				organizationId ?? null,
+			],
+		});
+	const finishCancelledApply = () => {
+		if (controller.finishCancelledApply(flow.flowId)) {
+			(settingsRef?.current.onChangesApplied ?? onChangesApplied)();
+			void invalidateFailedCount();
+		}
+	};
 	const cancelApply = async (proposalId: string) => {
 		try {
-			await orpcClient.projects.backlog.proposals.cancel({
+			const result = await orpcClient.projects.backlog.proposals.cancel({
 				projectId,
 				organizationId,
 				proposalId,
 			});
-			void queryClient.invalidateQueries({
-				queryKey: [
-					"projects.backlog.proposals.failedCount",
-					projectId,
-					organizationId,
-				],
-			});
+			if (result.cancelled) {
+				finishCancelledApply();
+			}
 		} catch (error) {
 			console.warn("[BacklogChat] Cancel apply failed", error);
 		}
@@ -256,207 +321,274 @@ export function BacklogFlowReview({
 								proposalId: result.proposalId ?? undefined,
 							});
 
-							const maxPollTime = 300000;
-							const pollInterval = 2000;
-							const startTime = Date.now();
-
-							while (Date.now() - startTime < maxPollTime) {
-								await new Promise((resolve) =>
-									setTimeout(resolve, pollInterval),
-								);
-								const progress = await beforeDeadline(
-									orpcClient.projects.backlog.applyProgress({
-										projectId,
-										workflowId: result.workflowId,
-									}),
-									startTime + maxPollTime,
-									"Apply timed out after 5 minutes",
-								).catch((error: unknown) => {
-									// Progress errors cannot establish that the apply was refused before writing.
-									// Preserve the message without classifying a read's code as an apply refusal.
-									throw new Error(
-										error instanceof Error
-											? error.message
-											: "Could not read apply progress",
+							const workflowId = result.workflowId;
+							let message = "Applying...";
+							let nextProposalCheckAt = Date.now();
+							const observation = new AbortController();
+							const unsubscribe = controller.subscribe(() => {
+								if (!controller.canObserveApply(flow.flowId)) {
+									observation.abort();
+								}
+							});
+							try {
+								for await (const {
+									progress,
+									slow,
+								} of pollWorkflowProgress(
+									() => {
+										const checkProposal =
+											Date.now() >= nextProposalCheckAt;
+										if (checkProposal) {
+											nextProposalCheckAt =
+												Date.now() +
+												APPLY_PROPOSAL_CHECK_INTERVAL_MS;
+										}
+										return readApplyProgress(
+											{
+												projectId,
+												organizationId,
+												workflowId,
+												proposalId: result.proposalId,
+											},
+											checkProposal,
+										);
+									},
+									(slow) =>
+										setApplyProgressMsg(
+											workflowPollMessage(
+												message,
+												slow,
+												"apply",
+											),
+										),
+									() =>
+										controller.canObserveApply(flow.flowId),
+									false,
+									observation.signal,
+								)) {
+									message = progress.message ?? "Applying...";
+									setApplyProgressMsg(
+										workflowPollMessage(
+											message,
+											slow,
+											"apply",
+										),
 									);
-								});
 
-								setApplyProgressMsg(
-									progress.message ?? "Applying...",
-								);
+									if (progress.status === "cancelled") {
+										finishCancelledApply();
+										return;
+									}
 
-								if (progress.status === "completed") {
-									const created = progress.createdItems ?? [];
-									const updated = progress.updatedItems ?? [];
-									const appliedTotal =
-										created.length + updated.length;
-									const progressErrors =
-										(
-											progress as {
-												errors?: string[];
-											}
-										).errors ?? [];
-									const skipped =
-										(
-											progress as {
-												skippedItems?: Array<{
-													type: string;
-													title: string;
-													identifier: string;
-													reason: string;
-												}>;
-											}
-										).skippedItems ?? [];
-									const failed =
-										(
-											progress as {
-												failedItems?: Array<{
-													type: string;
-													title: string;
-													reason: string;
-												}>;
-											}
-										).failedItems ?? [];
-									// Skipping creates that already existed is
-									// not a failure; a non-apply with at least one
-									// hard failure counts as "nothing applied".
-									const nothingApplied =
-										appliedTotal === 0 && failed.length > 0;
+									if (progress.status === "completed") {
+										const created =
+											progress.createdItems ?? [];
+										const updated =
+											progress.updatedItems ?? [];
+										const appliedTotal =
+											created.length + updated.length;
+										const progressErrors =
+											(
+												progress as {
+													errors?: string[];
+												}
+											).errors ?? [];
+										const skipped =
+											(
+												progress as {
+													skippedItems?: Array<{
+														type: string;
+														title: string;
+														identifier: string;
+														reason: string;
+													}>;
+												}
+											).skippedItems ?? [];
+										const failed =
+											(
+												progress as {
+													failedItems?: Array<{
+														type: string;
+														title: string;
+														reason: string;
+													}>;
+												}
+											).failedItems ?? [];
+										// Skipping creates that already existed is
+										// not a failure; a non-apply with at least one
+										// hard failure counts as "nothing applied".
+										const nothingApplied =
+											appliedTotal === 0 &&
+											failed.length > 0;
 
-									if (!nothingApplied) {
+										if (!nothingApplied) {
+											(
+												settingsRef?.current
+													.onChangesApplied ??
+												onChangesApplied
+											)();
+										}
+
+										const allItems = [
+											...created.map(
+												(
+													i: Record<string, unknown>,
+												) => ({
+													...i,
+													_action: "created",
+												}),
+											),
+											...updated.map(
+												(
+													i: Record<string, unknown>,
+												) => ({
+													...i,
+													_action: "updated",
+												}),
+											),
+											...skipped.map((sk) => ({
+												type: sk.type,
+												identifier: sk.identifier,
+												title: sk.title,
+												_action: "skipped",
+												reason: sk.reason,
+											})),
+											...failed.map((fl) => ({
+												type: fl.type,
+												identifier: "",
+												title: fl.title,
+												_action: "failed",
+												reason: fl.reason,
+											})),
+										];
+
+										const batchTotal =
+											approvedSnapshot.length;
+										const failedCount = failed.length;
+										const skippedCount = skipped.length;
+										const partialFailure =
+											!nothingApplied && failedCount > 0;
+										const allSkipped =
+											appliedTotal === 0 &&
+											failedCount === 0 &&
+											skippedCount > 0;
+										setApplyResult({
+											status: nothingApplied
+												? "failed"
+												: "success",
+											createdCount: created.length,
+											updatedCount: updated.length,
+											failedCount,
+											skippedCount,
+											batchTotal,
+											syncedToPM: shouldSync,
+											items: allItems,
+											message: nothingApplied
+												? progressErrors.length > 0
+													? progressErrors.join("; ")
+													: "No items were applied — they may not have been found in the backlog"
+												: allSkipped
+													? `All ${skippedCount} item(s) already existed in the backlog — nothing new to add`
+													: partialFailure
+														? `${appliedTotal} of ${batchTotal} added to roadmap${skippedCount > 0 ? `, ${skippedCount} skipped` : ""} — ${failedCount} failed, open Review proposals to retry`
+														: skippedCount > 0
+															? `${appliedTotal} item(s) applied, ${skippedCount} skipped (already existed)`
+															: `${appliedTotal} item(s) applied`,
+											pmSyncOutage:
+												(
+													progress as {
+														pmSyncOutage?: {
+															tool: string;
+															errorClass: string;
+															count: number;
+															items: Array<{
+																id: string;
+																itemType:
+																	| "epic"
+																	| "feature"
+																	| "story"
+																	| "bug";
+															}>;
+														};
+													}
+												).pmSyncOutage ?? undefined,
+										});
+
+										// Failed-count refetch so any failed-count
+										// consumer picks up the just-stamped
+										// FAILED row (per-item errors land on the
+										// up-front PendingBacklogProposal row
+										// written by the apply procedure; it
+										// shows in the Review proposals inbox's
+										// Failed group).
+										queryClient.invalidateQueries({
+											queryKey: [
+												"projects.backlog.proposals.failedCount",
+												projectId,
+												organizationId ?? null,
+											],
+										});
+
+										return;
+									}
+									if (progress.status === "failed") {
 										(
 											settingsRef?.current
 												.onChangesApplied ??
 											onChangesApplied
 										)();
+										setApplyResult({
+											status: "failed",
+											createdCount: 0,
+											updatedCount: 0,
+											failedCount:
+												approvedSnapshot.length,
+											batchTotal: approvedSnapshot.length,
+											syncedToPM: false,
+											items: [],
+											message:
+												progress.message ??
+												"Unknown error",
+										});
+
+										// Workflow-level failure also needs to
+										// refetch the banner count — the apply
+										// procedure wrote the proposal row
+										// up-front and the workflow's terminal
+										// branch will stamp it FAILED.
+										queryClient.invalidateQueries({
+											queryKey: [
+												"projects.backlog.proposals.failedCount",
+												projectId,
+												organizationId ?? null,
+											],
+										});
+										return;
 									}
-
-									const allItems = [
-										...created.map(
-											(i: Record<string, unknown>) => ({
-												...i,
-												_action: "created",
-											}),
-										),
-										...updated.map(
-											(i: Record<string, unknown>) => ({
-												...i,
-												_action: "updated",
-											}),
-										),
-										...skipped.map((sk) => ({
-											type: sk.type,
-											identifier: sk.identifier,
-											title: sk.title,
-											_action: "skipped",
-											reason: sk.reason,
-										})),
-										...failed.map((fl) => ({
-											type: fl.type,
-											identifier: "",
-											title: fl.title,
-											_action: "failed",
-											reason: fl.reason,
-										})),
-									];
-
-									const batchTotal = approvedSnapshot.length;
-									const failedCount = failed.length;
-									const skippedCount = skipped.length;
-									const partialFailure =
-										!nothingApplied && failedCount > 0;
-									const allSkipped =
-										appliedTotal === 0 &&
-										failedCount === 0 &&
-										skippedCount > 0;
-									setApplyResult({
-										status: nothingApplied
-											? "failed"
-											: "success",
-										createdCount: created.length,
-										updatedCount: updated.length,
-										failedCount,
-										skippedCount,
-										batchTotal,
-										syncedToPM: shouldSync,
-										items: allItems,
-										message: nothingApplied
-											? progressErrors.length > 0
-												? progressErrors.join("; ")
-												: "No items were applied — they may not have been found in the backlog"
-											: allSkipped
-												? `All ${skippedCount} item(s) already existed in the backlog — nothing new to add`
-												: partialFailure
-													? `${appliedTotal} of ${batchTotal} added to roadmap${skippedCount > 0 ? `, ${skippedCount} skipped` : ""} — ${failedCount} failed, open Review proposals to retry`
-													: skippedCount > 0
-														? `${appliedTotal} item(s) applied, ${skippedCount} skipped (already existed)`
-														: `${appliedTotal} item(s) applied`,
-										pmSyncOutage:
-											(
-												progress as {
-													pmSyncOutage?: {
-														tool: string;
-														errorClass: string;
-														count: number;
-														items: Array<{
-															id: string;
-															itemType:
-																| "epic"
-																| "feature"
-																| "story"
-																| "bug";
-														}>;
-													};
-												}
-											).pmSyncOutage ?? undefined,
-									});
-
-									// Failed-count refetch so any failed-count
-									// consumer picks up the just-stamped
-									// FAILED row (per-item errors land on the
-									// up-front PendingBacklogProposal row
-									// written by the apply procedure; it
-									// shows in the Review proposals inbox's
-									// Failed group).
-									queryClient.invalidateQueries({
-										queryKey: [
-											"projects.backlog.proposals.failedCount",
-											projectId,
-											organizationId ?? null,
-										],
-									});
-
+								}
+								if (!controller.canObserveApply(flow.flowId)) {
 									return;
 								}
-								if (progress.status === "failed") {
-									setApplyResult({
-										status: "failed",
-										createdCount: 0,
-										updatedCount: 0,
-										failedCount: approvedSnapshot.length,
-										batchTotal: approvedSnapshot.length,
-										syncedToPM: false,
-										items: [],
-										message:
-											progress.message ?? "Unknown error",
-									});
-
-									// Workflow-level failure also needs to
-									// refetch the banner count — the apply
-									// procedure wrote the proposal row
-									// up-front and the workflow's terminal
-									// branch will stamp it FAILED.
-									queryClient.invalidateQueries({
-										queryKey: [
-											"projects.backlog.proposals.failedCount",
-											projectId,
-											organizationId ?? null,
-										],
-									});
-									return;
-								}
+								setApplyProgressMsg("");
+								setApplyResult({
+									status: "unconfirmed",
+									createdCount: 0,
+									updatedCount: 0,
+									failedCount: 0,
+									batchTotal: approvedSnapshot.length,
+									syncedToPM: false,
+									items: [],
+									message:
+										"Lost track of this apply. It may still be running. If it finished, the new items are on the roadmap; anything that failed appears in Review proposals.",
+								});
+								(
+									settingsRef?.current.onChangesApplied ??
+									onChangesApplied
+								)();
+								void invalidateFailedCount();
+							} finally {
+								unsubscribe();
 							}
-							throw new Error("Apply timed out after 5 minutes");
 						},
 					);
 				}}

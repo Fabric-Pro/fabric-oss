@@ -129,6 +129,7 @@ describe("ParlumePage invitation", () => {
 				agentKind: "FABRIC_AGENT",
 				meetingUrl,
 				toolsReadOnly: true,
+				suggestionsEnabled: true,
 			}),
 		);
 	});
@@ -256,6 +257,7 @@ describe("ParlumePage invitation", () => {
 				agentInstanceSId: "agent-stable-1",
 				meetingUrl,
 				toolsReadOnly: true,
+				suggestionsEnabled: true,
 			}),
 		);
 	});
@@ -287,6 +289,18 @@ describe("ParlumePage invitation", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Retry agents" }));
 		await screen.findByRole("combobox", { name: "Agent" });
 		expect(inviteButton()).toBeEnabled();
+	});
+
+	it("invites without chat suggestions when the inviter turns them off", async () => {
+		showPage();
+		await readyToInvite();
+		fireEvent.click(screen.getByRole("switch", { name: "label" }));
+		fireEvent.click(inviteButton());
+		await waitFor(() =>
+			expect(mocks.start).toHaveBeenCalledWith(
+				expect.objectContaining({ suggestionsEnabled: false }),
+			),
+		);
 	});
 
 	it("reports a failed invitation", async () => {

@@ -40,6 +40,7 @@ const activityStubs = vi.hoisted(() => ({
 	executeMcpTool: vi.fn(),
 	createStoryInPmWithClaim: vi.fn(),
 	closeStorySyncJob: vi.fn(),
+	createOrUpdateTestCaseFromPMItem: vi.fn(),
 }));
 
 const patchedMock = vi.hoisted(() => vi.fn((_patchId: string) => true));
@@ -71,6 +72,7 @@ vi.mock("@temporalio/workflow", async () => {
 import { log, setHandler } from "@temporalio/workflow";
 
 import { closeArgsFrom, storySyncWorkflow } from "../story-sync-workflow";
+import { testCaseSyncWorkflow } from "../test-case-sync-workflow";
 
 // =============================================================================
 // Capability fixtures
@@ -222,6 +224,304 @@ describe("storySyncWorkflow — pull orchestration", () => {
 		activityStubs.updateStoryExternalRefs.mockResolvedValue(undefined);
 		activityStubs.listAllFizzyCards.mockResolvedValue(null);
 	});
+
+	it.each([true, false])(
+		"handles the page cap with patch enabled=%s",
+		async (enabled) => {
+			patchedMock.mockImplementation((id) =>
+				id === "pm-listing-completeness-v1" ? enabled : true,
+			);
+			activityStubs.discoverPMToolCapabilities.mockResolvedValue(
+				MCP_GITHUB_CAPABILITIES,
+			);
+			activityStubs.listWorkItemsFromPM.mockResolvedValue({
+				items: Array.from({ length: 50 }, (_, index) => ({
+					id: `example-issue-${index}`,
+					title: "Example issue",
+				})),
+				hasNextPage: true,
+			});
+			activityStubs.createOrUpdateStoryFromPMItem
+				.mockReset()
+				.mockResolvedValue({
+					created: false,
+					storyId: "example-story",
+					externalId: "example-issue",
+				});
+			try {
+				await storySyncWorkflow({
+					projectId: "example-project",
+					mcpServerId: "example-server",
+					mcpConfigId: "example-config",
+					containerId: "example-repo",
+					userId: "example-user",
+					organizationId: "example-org",
+					direction: "pull",
+				});
+				expect(activityStubs.listWorkItemsFromPM).toHaveBeenCalledTimes(
+					200,
+				);
+				if (enabled) {
+					expect(
+						activityStubs.deleteStoriesNotInPMList,
+					).not.toHaveBeenCalled();
+					expect(log.warn).toHaveBeenCalledWith(
+						"PM listing reached the page cap before completion",
+						expect.any(Object),
+					);
+				} else {
+					expect(
+						activityStubs.deleteStoriesNotInPMList,
+					).toHaveBeenCalledTimes(1);
+				}
+				expect(patchedMock).toHaveBeenCalledWith(
+					"pm-listing-completeness-v1",
+				);
+			} finally {
+				patchedMock.mockImplementation(() => true);
+			}
+		},
+	);
+
+	it("passes cumulative raw rows as the offset and deletes after a short listing", async () => {
+		activityStubs.discoverPMToolCapabilities.mockResolvedValue(
+			MCP_GITHUB_CAPABILITIES,
+		);
+		activityStubs.listWorkItemsFromPM
+			.mockResolvedValueOnce({
+				items: [{ id: "example-issue", title: "Example issue" }],
+				rawCount: 2,
+				total: 3,
+				hasNextPage: true,
+			})
+			.mockResolvedValueOnce({
+				items: [],
+				rawCount: 1,
+				total: 3,
+				hasNextPage: false,
+			});
+		await storySyncWorkflow({
+			projectId: "example-project",
+			mcpServerId: "example-server",
+			mcpConfigId: "example-config",
+			containerId: "example-repo",
+			userId: "example-user",
+			organizationId: "example-org",
+			direction: "pull",
+		});
+		expect(activityStubs.listWorkItemsFromPM).toHaveBeenNthCalledWith(
+			1,
+			expect.objectContaining({ offset: 0 }),
+		);
+		expect(activityStubs.listWorkItemsFromPM).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({ offset: 2 }),
+		);
+		expect(activityStubs.deleteStoriesNotInPMList).toHaveBeenCalledTimes(1);
+		expect(
+			patchedMock.mock.calls.filter(
+				([id]) => id === "pm-listing-completeness-v1",
+			),
+		).toHaveLength(1);
+	});
+
+	it.each([
+		{ count: 20, hasMore: true, deletes: false },
+		{ count: 20, hasMore: false, deletes: true },
+		{ count: 20, hasMore: undefined, deletes: true },
+		{ count: 0, hasMore: true, deletes: true },
+	])(
+		"handles a stopping offset page: $count rows, hasMore=$hasMore",
+		async ({ count, hasMore, deletes }) => {
+			activityStubs.discoverPMToolCapabilities.mockResolvedValue({
+				...MCP_GITHUB_CAPABILITIES,
+				taskList: {
+					...MCP_GITHUB_CAPABILITIES.taskList,
+					paginationInfo: { style: "offset-skip", skipParam: "skip" },
+				},
+			});
+			const items = (length: number) =>
+				Array.from({ length }, (_, index) => ({
+					id: `example-issue-${index}`,
+					title: "Example issue",
+				}));
+			activityStubs.listWorkItemsFromPM
+				.mockReset()
+				.mockResolvedValueOnce({
+					items: items(50),
+					rawCount: 50,
+					hasMore: true,
+				})
+				.mockResolvedValueOnce({
+					items: items(37),
+					rawCount: 37,
+				})
+				.mockResolvedValueOnce({
+					items: items(count),
+					rawCount: count,
+					hasMore,
+				});
+			activityStubs.createOrUpdateStoryFromPMItem
+				.mockReset()
+				.mockResolvedValue({
+					storyId: "example-story",
+					externalId: "example-issue",
+				});
+			await storySyncWorkflow({
+				projectId: "example-project",
+				mcpServerId: "example-server",
+				mcpConfigId: "example-config",
+				containerId: "example-repo",
+				userId: "example-user",
+				organizationId: "example-org",
+				direction: "pull",
+			});
+			expect(activityStubs.listWorkItemsFromPM).toHaveBeenCalledTimes(3);
+			expect(
+				activityStubs.deleteStoriesNotInPMList,
+			).toHaveBeenCalledTimes(deletes ? 1 : 0);
+			if (!deletes) {
+				expect(log.warn).toHaveBeenCalledWith(
+					"PM listing stopped on a page reporting more results",
+					expect.any(Object),
+				);
+			}
+		},
+	);
+
+	it.each([
+		{ kind: "story", enabled: true },
+		{ kind: "story", enabled: false },
+		{ kind: "test-case", enabled: true },
+		{ kind: "test-case", enabled: false },
+	])(
+		"continues after a mid-board short page: $kind, patch=$enabled",
+		async ({ kind, enabled }) => {
+			patchedMock.mockImplementation((id) =>
+				id === "pm-listing-completeness-v1" ? enabled : true,
+			);
+			activityStubs.discoverPMToolCapabilities.mockResolvedValue(
+				MCP_GITHUB_CAPABILITIES,
+			);
+			const items = (page: number, length: number) =>
+				Array.from({ length }, (_, index) => ({
+					id: `example-issue-${page}-${index}`,
+					title: "Example issue",
+				}));
+			activityStubs.listWorkItemsFromPM
+				.mockReset()
+				.mockResolvedValueOnce({ items: items(1, 50), rawCount: 50 })
+				.mockResolvedValueOnce({ items: items(2, 37), rawCount: 37 })
+				.mockResolvedValueOnce({ items: items(3, 37), rawCount: 37 })
+				.mockResolvedValueOnce({ items: [], rawCount: 0 });
+			activityStubs.createOrUpdateStoryFromPMItem
+				.mockReset()
+				.mockResolvedValue({
+					storyId: "example-story",
+					externalId: "example-issue",
+				});
+			activityStubs.createOrUpdateTestCaseFromPMItem.mockResolvedValue({
+				testCaseId: "example-case",
+				externalId: "example-issue",
+			});
+			try {
+				const workflow =
+					kind === "story" ? storySyncWorkflow : testCaseSyncWorkflow;
+				const output = await workflow({
+					projectId: "example-project",
+					mcpServerId: "example-server",
+					mcpConfigId: "example-config",
+					containerId: "example-repo",
+					userId: "example-user",
+					organizationId: "example-org",
+					direction: "pull",
+				});
+				expect(activityStubs.listWorkItemsFromPM).toHaveBeenCalledTimes(
+					4,
+				);
+				expect(
+					activityStubs.listWorkItemsFromPM,
+				).toHaveBeenNthCalledWith(
+					4,
+					expect.objectContaining({ page: 4 }),
+				);
+				expect(output.syncedCount).toBe(124);
+				if (kind === "story") {
+					expect(
+						activityStubs.deleteStoriesNotInPMList,
+					).toHaveBeenCalledWith(
+						expect.objectContaining({
+							pmExternalIds: expect.arrayContaining([
+								"example-issue-3-36",
+							]),
+						}),
+					);
+				}
+			} finally {
+				patchedMock.mockImplementation(() => true);
+			}
+		},
+	);
+
+	it.each(["story", "test-case"])(
+		"keeps legacy %s loop decisions despite rawCount",
+		async (kind) => {
+			patchedMock.mockImplementation(
+				(id) => id !== "pm-listing-completeness-v1",
+			);
+			activityStubs.discoverPMToolCapabilities.mockResolvedValue(
+				MCP_GITHUB_CAPABILITIES,
+			);
+			activityStubs.listWorkItemsFromPM
+				.mockResolvedValueOnce({
+					items: [{ id: "example-issue", title: "Example issue" }],
+					rawCount: 50,
+					total: 2,
+				})
+				.mockResolvedValue({
+					items: [],
+					rawCount: 37,
+					total: 2,
+					hasMore: true,
+				});
+			activityStubs.createOrUpdateTestCaseFromPMItem.mockResolvedValue({
+				testCaseId: "example-case",
+				externalId: "example-issue",
+			});
+			try {
+				const workflow =
+					kind === "story" ? storySyncWorkflow : testCaseSyncWorkflow;
+				await workflow({
+					projectId: "example-project",
+					mcpServerId: "example-server",
+					mcpConfigId: "example-config",
+					containerId: "example-repo",
+					userId: "example-user",
+					organizationId: "example-org",
+					direction: "pull",
+				});
+				expect(activityStubs.listWorkItemsFromPM).toHaveBeenCalledTimes(
+					2,
+				);
+				for (const [args] of activityStubs.listWorkItemsFromPM.mock
+					.calls) {
+					expect(args).not.toHaveProperty("offset");
+				}
+				if (kind === "story") {
+					expect(
+						activityStubs.deleteStoriesNotInPMList,
+					).toHaveBeenCalledTimes(1);
+				}
+				expect(
+					patchedMock.mock.calls.filter(
+						([id]) => id === "pm-listing-completeness-v1",
+					),
+				).toHaveLength(1);
+			} finally {
+				patchedMock.mockImplementation(() => true);
+			}
+		},
+	);
 
 	it.each([0, 1])(
 		"skips both delete paths for incomplete listings with %i items",
@@ -457,6 +757,9 @@ describe("storySyncWorkflow — pull orchestration", () => {
 		).toHaveBeenCalledWith(
 			expect.objectContaining({ mcpConfigId: "cfg-1" }),
 		);
+		expect(patchedMock).not.toHaveBeenCalledWith(
+			"pm-listing-completeness-v1",
+		);
 	});
 
 	it("MCP generic pull forwards the discovered capabilities to pagination", async () => {
@@ -507,6 +810,9 @@ describe("storySyncWorkflow — pull orchestration", () => {
 		// must NOT be called (otherwise we'd re-introduce the backlog-
 		// pagination failure mode the fast path exists to bypass).
 		expect(activityStubs.listWorkItemsFromPM).not.toHaveBeenCalled();
+		expect(patchedMock).not.toHaveBeenCalledWith(
+			"pm-listing-completeness-v1",
+		);
 		expect(activityStubs.fetchPMItemsByIds).toHaveBeenCalledWith(
 			expect.objectContaining({
 				mcpConfigId: null,
@@ -1262,5 +1568,51 @@ describe("closeArgsFrom", () => {
 				message: "Syncing...",
 			}),
 		).toMatchObject({ outcome: "FAILED", errorClass: "SyncFailed" });
+	});
+});
+
+describe("testCaseSyncWorkflow — listing offsets", () => {
+	it("advances by raw rows when the tool caps the requested page size", async () => {
+		vi.clearAllMocks();
+		patchedMock.mockImplementation(() => true);
+		activityStubs.discoverPMToolCapabilities.mockResolvedValue(
+			MCP_GITHUB_CAPABILITIES,
+		);
+		activityStubs.listWorkItemsFromPM
+			.mockReset()
+			.mockResolvedValueOnce({
+				items: [{ id: "example-issue", title: "Example issue" }],
+				rawCount: 2,
+				total: 3,
+				hasNextPage: true,
+			})
+			.mockResolvedValueOnce({
+				items: [],
+				rawCount: 1,
+				total: 3,
+				hasNextPage: false,
+			});
+		activityStubs.createOrUpdateTestCaseFromPMItem.mockResolvedValue({
+			testCaseId: "example-case",
+			identifier: "EXAMPLE-1",
+			externalId: "example-issue",
+		});
+		const output = await testCaseSyncWorkflow({
+			projectId: "example-project",
+			mcpServerId: "example-server",
+			mcpConfigId: "example-config",
+			containerId: "example-repo",
+			userId: "example-user",
+			organizationId: "example-org",
+			direction: "pull",
+		});
+		expect(output.success).toBe(true);
+		expect(output.syncedCount).toBe(1);
+		expect(activityStubs.listWorkItemsFromPM).toHaveBeenCalledTimes(2);
+		expect(activityStubs.listWorkItemsFromPM).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({ offset: 2 }),
+		);
+		expect(activityStubs.deleteStoriesNotInPMList).not.toHaveBeenCalled();
 	});
 });

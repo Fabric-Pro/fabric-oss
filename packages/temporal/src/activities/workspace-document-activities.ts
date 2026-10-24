@@ -3,7 +3,12 @@
  * Activities are non-deterministic operations that can fail and be retried
  */
 
-import { getSystemEmbeddingRAGProviderConfig } from "@repo/ai";
+import {
+	AIProviderNotConfiguredError,
+	assertEmbeddingModelUsable,
+	getSystemEmbeddingRAGProviderConfig,
+} from "@repo/ai";
+import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
 import {
 	createDocumentChunks,
 	db,
@@ -129,6 +134,8 @@ export async function processWorkspaceDocument(
 				"DOCUMENT_NOT_FOUND",
 			);
 		}
+
+		await assertEmbeddingModelUsable({ userId, organizationId });
 
 		// Step 2: Get workspace RAG settings
 		const ragSettings = await getOrCreateRagSettings(workspaceId);
@@ -335,6 +342,12 @@ export async function processWorkspaceDocument(
 		if (error instanceof ApplicationFailure) {
 			throw error;
 		}
+		if (
+			error instanceof UnsupportedEmbeddingModelError ||
+			error instanceof AIProviderNotConfiguredError
+		) {
+			throw ApplicationFailure.nonRetryable(error.message, error.name);
+		}
 		// Transient errors (S3, DB, embedding API) remain retryable
 		throw new Error(
 			`Failed to process workspace document: ${error instanceof Error ? error.message : "Unknown error"}`,
@@ -389,6 +402,8 @@ export async function reprocessWorkspaceDocument(
 	console.log(`[Activity] Reprocessing workspace document: ${documentId}`);
 
 	try {
+		await assertEmbeddingModelUsable({ userId, organizationId });
+
 		// Clean up any existing Qdrant data
 		try {
 			await deleteWorkspaceDocumentFromQdrant(documentId, workspaceId);
@@ -434,6 +449,12 @@ export async function reprocessWorkspaceDocument(
 		// Preserve ApplicationFailure (non-retryable errors) - don't re-wrap them
 		if (error instanceof ApplicationFailure) {
 			throw error;
+		}
+		if (
+			error instanceof UnsupportedEmbeddingModelError ||
+			error instanceof AIProviderNotConfiguredError
+		) {
+			throw ApplicationFailure.nonRetryable(error.message, error.name);
 		}
 		throw new Error(
 			`Failed to reprocess workspace document: ${error instanceof Error ? error.message : "Unknown error"}`,

@@ -20,7 +20,8 @@
  * Every metric label value, and `gen_ai.response.model`, comes from a finite
  * set Fabric controls: fixed site names, a closed outcome enum, the requested
  * model from the catalog, and the answering model only when it is the
- * requested model or a known gateway fallback (anything else is `unknown`). A
+ * requested model, its Databricks endpoint alias, or a known gateway fallback
+ * (anything else is `unknown`). A
  * string a provider supplies is never passed through.
  */
 
@@ -60,11 +61,12 @@ interface AnsweringModel {
 
 /**
  * Map the model id a response names onto the finite set Fabric controls: the
- * requested model, or a known gateway fallback. Anything else, including any
+ * requested model, its Databricks endpoint alias, or a known gateway fallback.
+ * Anything else, including any
  * string a provider echoes into the field, becomes `unknown`.
  */
 function allowedAnsweringModel(
-	requested: { id?: string | null; label: string },
+	requested: { id?: string | null; label: string; provider?: string },
 	answeringId: unknown,
 ): AnsweringModel | undefined {
 	if (typeof answeringId !== "string" || !answeringId) {
@@ -72,6 +74,17 @@ function allowedAnsweringModel(
 	}
 	if (requested.id && answeringId === requested.id) {
 		return { id: requested.id, label: requested.label };
+	}
+	if (requested.provider === "DATABRICKS") {
+		// Unity returns the serving endpoint for the exact requested UC service.
+		if (
+			requested.id?.startsWith("system.ai.") &&
+			answeringId ===
+				`databricks-${requested.id.slice("system.ai.".length)}`
+		) {
+			return { id: answeringId, label: requested.label };
+		}
+		return { id: UNKNOWN_MODEL, label: UNKNOWN_MODEL };
 	}
 	for (const fallbacks of Object.values(SYSTEM_DEFAULT_DECISION_FALLBACKS)) {
 		const match = fallbacks.find(
@@ -202,6 +215,7 @@ export function wrapDecisionModelWithTelemetry(
 				const answering = allowedAnsweringModel(
 					{
 						id: context.requestModelId,
+						provider: context.provider,
 						label:
 							context.requestModelLabel ?? context.requestModelId,
 					},
@@ -273,6 +287,7 @@ const NO_DECISION_MODEL_LABEL = "none";
 type DecisionModelRef = {
 	metadata?: {
 		modelString?: string | null;
+		provider?: string;
 		canonicalName?: string | null;
 	} | null;
 };
@@ -301,7 +316,11 @@ export function decisionModelLabel(
 		decisionModel.metadata?.canonicalName ?? requestedId ?? UNKNOWN_MODEL;
 	return (
 		allowedAnsweringModel(
-			{ id: requestedId, label: requestedLabel },
+			{
+				id: requestedId,
+				label: requestedLabel,
+				provider: decisionModel.metadata?.provider,
+			},
 			result?.response?.modelId,
 		)?.label ?? requestedLabel
 	);

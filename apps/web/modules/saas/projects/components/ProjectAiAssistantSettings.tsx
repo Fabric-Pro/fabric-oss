@@ -10,6 +10,9 @@
  * Also exposes `Project.qaStrategyLevel`, which controls the depth of QA
  * Strategy documents generated for this project.
  *
+ * Both are radio groups of option cards, so every level's meaning is on the
+ * page rather than behind a dropdown.
+ *
  * Admin-editable (owner / project admin); read-only for everyone else. Writes go
  * through `projects.update`, which enforces PROJECT_UPDATE server-side. Copy
  * follows standards/ai/ai-copy-tone.md (calm, advisory; no "best/optimal/
@@ -22,53 +25,45 @@ import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card } from "@ui/components/card";
-import { Label } from "@ui/components/label";
 import {
-	Select,
-	SelectContent,
-	SelectItem,
-	SelectTrigger,
-	SelectValue,
-} from "@ui/components/select";
-import {
-	Tooltip,
-	TooltipContent,
-	TooltipTrigger,
-} from "@ui/components/tooltip";
-import { ArrowUpRightIcon, InfoIcon } from "lucide-react";
+	ArrowDownIcon,
+	ArrowRightIcon,
+	ArrowUpRightIcon,
+	LockIcon,
+	TriangleAlertIcon,
+} from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import {
+	type OptionCard,
+	OptionCardRadioGroup,
+} from "./ai-assistant/OptionCardRadioGroup";
 
 type QaStrategyLevel = "LIGHT" | "STANDARD" | "STRICT";
 
-const QA_STRATEGY_OPTIONS: Array<{
-	value: QaStrategyLevel;
-	label: string;
-	hint: string;
-}> = [
+const QA_STRATEGY_OPTIONS: ReadonlyArray<OptionCard<QaStrategyLevel>> = [
 	{
 		value: "LIGHT",
-		label: "Early-stage (functional & acceptance only)",
-		hint: "Covers functional and acceptance tests only — suitable for early-stage or prototype projects.",
+		label: "Early-stage",
+		hint: "Functional and acceptance tests only — suitable for early-stage or prototype projects.",
 	},
 	{
 		value: "STANDARD",
-		label: "Standard (+ regression, security, browser matrix)",
-		hint: "Adds regression, security, and browser matrix testing on top of functional coverage (default).",
+		label: "Standard",
+		hint: "Adds regression, security, and browser matrix testing on top of functional coverage.",
+		isDefault: true,
 	},
 	{
 		value: "STRICT",
-		label: "Production/Enterprise (+ performance, WCAG 2.1 AA)",
-		hint: "Full coverage including performance benchmarks and WCAG 2.1 AA accessibility — suited for production or enterprise projects.",
+		label: "Production/Enterprise",
+		hint: "Full coverage including performance benchmarks and WCAG 2.1 AA accessibility.",
 	},
 ];
 
-const FREQUENCY_OPTIONS: Array<{
-	value: ClarifyingQuestionFrequency;
-	label: string;
-	hint: string;
-}> = [
+const FREQUENCY_OPTIONS: ReadonlyArray<
+	OptionCard<ClarifyingQuestionFrequency>
+> = [
 	{
 		value: "MINIMAL",
 		label: "Minimal",
@@ -76,8 +71,9 @@ const FREQUENCY_OPTIONS: Array<{
 	},
 	{
 		value: "BALANCED",
-		label: "Balanced (default)",
+		label: "Balanced",
 		hint: "Asks when there is material ambiguity that would change the result.",
+		isDefault: true,
 	},
 	{
 		value: "THOROUGH",
@@ -85,6 +81,9 @@ const FREQUENCY_OPTIONS: Array<{
 		hint: "Asks proactively whenever extra detail would help refine the work.",
 	},
 ];
+
+const linkClassName =
+	"inline-flex items-center gap-1 text-foreground/90 text-xs underline-offset-2 hover:text-foreground hover:underline";
 
 type Props = {
 	project: {
@@ -95,12 +94,21 @@ type Props = {
 	};
 	/** Whether the current user may change the setting (admins). */
 	canEdit: boolean;
+	/** Show the Clarifying Questions prompts in this page's prompt list. Absent
+	 *  where the page has no list (personal context), and the link goes to the
+	 *  Prompt Library instead. */
+	onShowClarifyingPrompts?: () => void;
+	/** Open Settings ▸ Testing. Absent while that sub-tab is gated off. */
+	onOpenTestingSettings?: () => void;
 };
 
-export function ProjectAiAssistantSettings({ project, canEdit }: Props) {
+export function ProjectAiAssistantSettings({
+	project,
+	canEdit,
+	onShowClarifyingPrompts,
+	onOpenTestingSettings,
+}: Props) {
 	const queryClient = useQueryClient();
-	// Context-aware path to the Prompt Library (org or personal), used for the
-	// "customize these prompts" deep link below.
 	const promptsPath = useContextPath("/prompts");
 	const initial = project.clarifyingQuestionFrequency ?? "BALANCED";
 	const [value, setValue] = useState<ClarifyingQuestionFrequency>(initial);
@@ -173,238 +181,139 @@ export function ProjectAiAssistantSettings({ project, canEdit }: Props) {
 		},
 	});
 
-	const handleChange = (next: string) => {
-		const typed = next as ClarifyingQuestionFrequency;
+	const handleChange = (next: ClarifyingQuestionFrequency) => {
 		const previous = value;
 		// Optimistic select; revert to the prior value if the write fails.
-		setValue(typed);
-		updateMutation.mutate(typed, {
+		setValue(next);
+		updateMutation.mutate(next, {
 			onError: () => setValue(previous),
 		});
 	};
 
-	const handleQaLevelChange = (next: string) => {
-		const typed = next as QaStrategyLevel;
+	const handleQaLevelChange = (next: QaStrategyLevel) => {
 		const previous = qaLevel;
 		// Optimistic select; revert to the prior value if the write fails.
-		setQaLevel(typed);
-		qaStrategyMutation.mutate(typed, {
+		setQaLevel(next);
+		qaStrategyMutation.mutate(next, {
 			onError: () => setQaLevel(previous),
 		});
 	};
 
-	const activeHint =
-		FREQUENCY_OPTIONS.find((o) => o.value === value)?.hint ?? "";
-	const activeQaHint =
-		QA_STRATEGY_OPTIONS.find((o) => o.value === qaLevel)?.hint ?? "";
-
 	return (
-		<Card className="p-6">
-			<div className="space-y-4">
-				<div>
-					<span className="inline-flex items-center gap-2 text-[0.6875rem] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
-						<span
-							className="h-3 w-0.5 rounded-full bg-primary"
+		<Card className="overflow-hidden p-0">
+			<div className="space-y-3.5 px-4 py-5 sm:px-6">
+				<div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+					<div className="min-w-0">
+						<h3
+							id="clarifying-frequency-label"
+							className="font-semibold text-base"
+						>
+							Clarifying questions
+						</h3>
+						<p className="mt-1 text-muted-foreground text-sm">
+							How often the assistant pauses to ask before it
+							proceeds.
+						</p>
+					</div>
+					{onShowClarifyingPrompts ? (
+						<button
+							type="button"
+							onClick={onShowClarifyingPrompts}
+							className={`${linkClassName} mt-1 whitespace-nowrap`}
+						>
+							See the prompt behind each level
+							<ArrowDownIcon
+								aria-hidden="true"
+								className="size-3"
+							/>
+						</button>
+					) : (
+						<Link
+							href={`${promptsPath}?search=${encodeURIComponent(
+								"Clarifying Questions",
+							)}`}
+							className={`${linkClassName} mt-1 whitespace-nowrap`}
+						>
+							See the prompt behind each level
+							<ArrowUpRightIcon
+								aria-hidden="true"
+								className="size-3"
+							/>
+						</Link>
+					)}
+				</div>
+				<OptionCardRadioGroup
+					labelledBy="clarifying-frequency-label"
+					options={FREQUENCY_OPTIONS}
+					value={value}
+					onValueChange={handleChange}
+					disabled={!canEdit}
+				/>
+				{value === "MINIMAL" && (
+					<p className="flex items-center gap-1.5 text-highlight-ink text-xs">
+						<TriangleAlertIcon
 							aria-hidden="true"
+							className="size-3 shrink-0"
 						/>
-						AI Assistant
-					</span>
-					<h3 className="mt-2 text-base font-semibold text-foreground">
-						Clarifying questions
-					</h3>
-					<p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-						How often the assistant pauses to ask, and how much test
-						coverage it plans for.
+						The assistant will rarely ask — it may proceed on
+						assumptions you can revise later.
 					</p>
-				</div>
-				<div className="grid gap-6 sm:grid-cols-2">
-					<div className="space-y-2">
-						<div className="flex items-center gap-1.5">
-							<Label htmlFor="clarifying-frequency">
-								Frequency
-							</Label>
-							<Tooltip>
-								<TooltipTrigger asChild>
-									<button
-										type="button"
-										className="rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-										aria-label="How clarifying-question frequency works"
-									>
-										<InfoIcon className="size-3.5" />
-									</button>
-								</TooltipTrigger>
-								<TooltipContent className="max-w-xs">
-									<p className="font-medium">
-										How often the assistant pauses to ask:
-									</p>
-									<ul className="mt-1 space-y-1">
-										<li>
-											<span className="font-medium">
-												Minimal
-											</span>{" "}
-											— rarely; proceeds on reasonable
-											assumptions, asks only when truly
-											blocked.
-										</li>
-										<li>
-											<span className="font-medium">
-												Balanced
-											</span>{" "}
-											— asks when there is material
-											ambiguity (default).
-										</li>
-										<li>
-											<span className="font-medium">
-												Thorough
-											</span>{" "}
-											— asks proactively to refine
-											details.
-										</li>
-									</ul>
-									<p className="mt-1 text-muted-foreground">
-										Questions appear as an in-chat card with
-										clickable options; dismissing records
-										them as open items.
-									</p>
-								</TooltipContent>
-							</Tooltip>
-						</div>
-						<Select
-							value={value}
-							onValueChange={handleChange}
-							disabled={!canEdit || updateMutation.isPending}
-						>
-							<SelectTrigger id="clarifying-frequency">
-								<SelectValue />
-							</SelectTrigger>
-							<SelectContent>
-								{FREQUENCY_OPTIONS.map((option) => (
-									<SelectItem
-										key={option.value}
-										value={option.value}
-									>
-										{option.label}
-									</SelectItem>
-								))}
-							</SelectContent>
-						</Select>
-						{activeHint && (
-							<p className="text-xs text-muted-foreground">
-								{activeHint}
-							</p>
-						)}
-						{value === "MINIMAL" && (
-							<p className="text-xs text-highlight-ink">
-								The assistant will rarely ask — it may proceed
-								on assumptions you can revise later.
-							</p>
-						)}
-						{!canEdit && (
-							<p className="text-xs text-muted-foreground">
-								Only project admins can change this setting.
-							</p>
-						)}
-						{canEdit && (
-							<Link
-								href={`${promptsPath}?search=${encodeURIComponent(
-									"Clarifying Questions",
-								)}`}
-								className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
-							>
-								Customize these prompts in the Prompt Library
-								<ArrowUpRightIcon
-									className="size-3"
-									aria-hidden="true"
-								/>
-							</Link>
-						)}
-					</div>
-
-					<div className="space-y-2">
-						<div className="flex items-center gap-1.5">
-							<Label htmlFor="qa-strategy-level">
-								Testing Strategy depth
-							</Label>
-							<Tooltip>
-								<TooltipTrigger asChild>
-									<button
-										type="button"
-										className="rounded-full text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-										aria-label="How Testing Strategy depth works"
-									>
-										<InfoIcon className="size-3.5" />
-									</button>
-								</TooltipTrigger>
-								<TooltipContent className="max-w-xs">
-									<p className="font-medium">
-										How much QA coverage the assistant
-										generates:
-									</p>
-									<ul className="mt-1 space-y-1">
-										<li>
-											<span className="font-medium">
-												Early-stage
-											</span>{" "}
-											— functional and acceptance tests
-											only.
-										</li>
-										<li>
-											<span className="font-medium">
-												Standard
-											</span>{" "}
-											— adds regression, security, and
-											browser matrix coverage (default).
-										</li>
-										<li>
-											<span className="font-medium">
-												Production/Enterprise
-											</span>{" "}
-											— full coverage including
-											performance and WCAG 2.1 AA
-											accessibility.
-										</li>
-									</ul>
-								</TooltipContent>
-							</Tooltip>
-						</div>
-						<Select
-							value={qaLevel}
-							onValueChange={handleQaLevelChange}
-							disabled={!canEdit || qaStrategyMutation.isPending}
-						>
-							<SelectTrigger id="qa-strategy-level">
-								<SelectValue />
-							</SelectTrigger>
-							<SelectContent>
-								{QA_STRATEGY_OPTIONS.map((option) => (
-									<SelectItem
-										key={option.value}
-										value={option.value}
-									>
-										{option.label}
-									</SelectItem>
-								))}
-							</SelectContent>
-						</Select>
-						{activeQaHint && (
-							<p className="text-xs text-muted-foreground">
-								{activeQaHint}
-							</p>
-						)}
-						{!canEdit && (
-							<p className="text-xs text-muted-foreground">
-								Only project admins can change this setting.
-							</p>
-						)}
-					</div>
-				</div>
-				{/* The test-case toggles moved to Settings ▸ Testing; one line
-				    says where, so the move never reads as a removal. */}
+				)}
 				<p className="text-muted-foreground text-xs">
-					Test-case generation, TDD ordering and automatic bugs for
-					failing tests now live in Settings ▸ Testing.
+					Questions appear as an in-chat card with clickable options;
+					dismissing records them as open items.
 				</p>
 			</div>
+
+			<div className="space-y-3.5 border-t px-4 py-5 sm:px-6">
+				<div>
+					<h3
+						id="qa-strategy-level-label"
+						className="font-semibold text-base"
+					>
+						Testing Strategy depth
+					</h3>
+					<p className="mt-1 text-muted-foreground text-sm">
+						How much QA coverage the assistant plans for this
+						project.
+					</p>
+				</div>
+				<OptionCardRadioGroup
+					labelledBy="qa-strategy-level-label"
+					options={QA_STRATEGY_OPTIONS}
+					value={qaLevel}
+					onValueChange={handleQaLevelChange}
+					disabled={!canEdit}
+				/>
+				{/* The test-case toggles moved to Settings ▸ Testing; one line
+				    says where, so the move never reads as a removal. */}
+				<p className="flex flex-wrap items-center gap-1 text-muted-foreground text-xs">
+					Test-case generation, TDD ordering and automatic bugs for
+					failing tests live in
+					{onOpenTestingSettings ? (
+						<button
+							type="button"
+							onClick={onOpenTestingSettings}
+							className={linkClassName}
+						>
+							Settings ▸ Testing
+							<ArrowRightIcon
+								aria-hidden="true"
+								className="size-3"
+							/>
+						</button>
+					) : (
+						<span>Settings ▸ Testing.</span>
+					)}
+				</p>
+			</div>
+
+			{!canEdit && (
+				<p className="flex items-center gap-1.5 border-t px-4 py-3 text-muted-foreground text-xs sm:px-6">
+					<LockIcon aria-hidden="true" className="size-3" />
+					Only project admins can change these settings.
+				</p>
+			)}
 		</Card>
 	);
 }

@@ -484,11 +484,17 @@ A marker an editor places in a document body to say *a visual belongs here*, wit
 
 A slot is the editor's own work inside text that AI and API writers replace wholesale, so every such writer must carry it through — lifted out before the rewrite and returned under the same section heading. A slot whose section no longer exists is moved to the end with a note rather than dropped. Slots carried through from an earlier read are only right for the version that read saw, so a writer that returns them refuses to overwrite a newer version rather than drop a slot added since or restore one deleted since; a body with no slot on either side is written exactly as before.
 
+### Generated visual
+A diagram Fabric's visuals step added to a client-document Proposal, or one a person redrew with Edit with instructions. Its fence opens with a `%% fabric-visual: <id>` line, and Fabric keeps the fact-checked spec it was drawn from beside the document. A diagram reads as generated while its body still matches a stored spec; once a person or a writer changes the body it reads as edited, and a diagram with no marker, or with an id repeated or foreign to the document, is treated as a person's own. Losing the marker deletes nothing: the spec simply stops applying. Writers that replace the whole body restore the marker of a diagram they left unchanged.
+
 ### Brand kit
-The organization's own branding as a preparer of documents — logo, brand color, accent colors and guidance text. It belongs to the organization and applies to every project's editions.
+The organization's own branding as a preparer of documents — its logo, primary and accent colours, fonts, hero image, website and guidance text. It belongs to the organization, applies to every project's Glossy editions and client-document Proposals, and only its admins change it. A colour fetched from the organization's website is a separate Brand source below it, never written into it.
 
 ### Recipient brand
-The branding of the party a project's documents are prepared for, held on the project because a project is normally one engagement with one recipient. Distinct from the Brand kit: the Brand kit says who wrote the edition, the recipient brand says who it is for, and an edition can carry both.
+The branding of the party a project's documents are prepared for, held on the project because a project is normally one engagement with one recipient. Distinct from the Brand kit: the Brand kit says who wrote the edition, the recipient brand says who it is for, and an edition can carry both. Only members of the organization that owns the project change it; a project guest reads it. A fetch of the recipient's website is a suggestion, applied one field at a time after a member confirms it.
+
+### Brand source
+Where a brand value comes from: a person's choice for the document, the Brand kit, the organization's website, or the neutral default for the proposer; a person's entry or confirmation for the recipient, with a fetched, unconfirmed suggestion shown but never applied. A source is the store a value lives in, not a label beside it, so an automated fetch can never replace a value a person chose, and a person's override never erases what a fetch found.
 
 ## Proposal artifact
 

@@ -138,7 +138,7 @@ const { app, start } = createUnifiedServer(
 		supportsStreaming: false,
 	},
 	// Invoke function - wraps the LangGraph graph
-	async (input) => {
+	async (input, runtimeConfig) => {
 		const messages = input.messages as Array<{
 			role: string;
 			content: string;
@@ -176,7 +176,7 @@ const { app, start } = createUnifiedServer(
 					| undefined,
 				availableTools: [],
 			},
-			{ configurable },
+			{ configurable, signal: runtimeConfig?.signal },
 		);
 
 		// Cast to access properties
@@ -277,7 +277,7 @@ const { app, start } = createUnifiedServer(
 					| undefined,
 				availableTools: [],
 			},
-			{ configurable },
+			{ configurable, signal: config?.signal },
 		)) as Record<string, unknown>;
 
 		yield {

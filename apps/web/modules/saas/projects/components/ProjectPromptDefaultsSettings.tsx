@@ -16,10 +16,9 @@
  * organization before writing, so this component adds a surface, never a
  * permission. Everyone else reads.
  *
- * Grouped the way the organization overview groups (Fizzy #2068 F7): what this
- * project has overridden, and what it inherits. An admin deciding where to
- * spend effort wants the second list, and thirty expanded rows is how it does
- * not get read.
+ * What this project has chosen is pulled out on top; everything else is
+ * grouped by product area, searchable and filterable by tier, with the first
+ * area open. Seventy-odd expanded rows is how a list does not get read.
  *
  * Only the actions this organization is offered are grouped and counted. With
  * the Proposal artifact on, a project default saved at a legacy Proposal action
@@ -29,6 +28,7 @@
 
 import {
 	listPromptActions,
+	PROMPT_FEATURE_TYPE_OPTIONS,
 	PROMPT_FEATURE_TYPES,
 	type PromptAction,
 	type PromptFeatureTypeKey,
@@ -39,59 +39,74 @@ import { useOrganizationContext } from "@saas/organizations/hooks/use-organizati
 import { useOfferedPromptActions } from "@saas/prompts/hooks/use-offered-prompt-actions";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Card } from "@ui/components/card";
-import { Input } from "@ui/components/input";
+import { SearchInput } from "@ui/components/search-input";
+import { cn } from "@ui/lib";
 import {
-	Select,
-	SelectContent,
-	SelectItem,
-	SelectTrigger,
-	SelectValue,
-} from "@ui/components/select";
+	ArrowUpRightIcon,
+	ChevronRightIcon,
+	LockIcon,
+	SearchIcon,
+} from "lucide-react";
+import Link from "next/link";
 import { useTranslations } from "next-intl";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-
-type CatalogBinding = {
-	promptId: string;
-	promptName: string;
-	promptVersionId: string;
-	scope: "SYSTEM" | "ORG" | "USER";
-	projectId: string | null;
-	isDefault: boolean;
-	isEffective: boolean;
-};
-
-type CatalogEntry = {
-	targetKey: string;
-	documentType: string;
-	storyKind: "FEATURE" | "BUG" | null;
-	effectiveScope: "SYSTEM" | "ORG" | "PROJECT" | "USER" | null;
-	prompts: CatalogBinding[];
-};
+import { PromptDefaultRow } from "./prompt-defaults/PromptDefaultRow";
+import { PromptDefaultsGroups } from "./prompt-defaults/PromptDefaultsGroups";
+import { PromptTierBadge } from "./prompt-defaults/PromptTierBadge";
+import {
+	buildRow,
+	type CatalogBinding,
+	type CatalogEntry,
+	countTiers,
+	groupRows,
+	PROMPT_DEFAULTS_ANCHOR_ID,
+	type PromptDefaultRowModel,
+	type PromptDefaultsFocusRequest,
+	type PromptTier,
+	projectDefaultOf,
+	rowMatches,
+	TIER_LABEL,
+	TIER_ORDER,
+	type TierFilter,
+} from "./prompt-defaults/prompt-default-model";
 
 const ALL_ACTIONS_BY_ID = new Map(
 	listPromptActions().map((action) => [action.id, action]),
 );
 
-const TIER_LABEL: Record<string, string> = {
-	// The same word PromptDefaultBadge uses. Two names for one tier read as two
-	// concepts once you have seen both screens.
-	PROJECT: "Project",
-	ORG: "Organization",
-	SYSTEM: "System",
-	USER: "Personal",
-	NONE: "Built-in",
-};
+const PRECEDENCE: ReadonlyArray<{
+	tier: PromptTier;
+	label: string;
+}> = [
+	{ tier: "USER", label: "Personal" },
+	{ tier: "PROJECT", label: "Project · set here" },
+	{ tier: "ORG", label: "Organization" },
+	{ tier: "SYSTEM", label: "System" },
+	{ tier: "NONE", label: "Built-in" },
+];
+
+const FIRST_GROUP = PROMPT_FEATURE_TYPE_OPTIONS[0].key;
+
+function MemberLockNote() {
+	return (
+		<p className="flex items-center gap-1.5 text-muted-foreground text-xs">
+			<LockIcon aria-hidden="true" className="size-3" />
+			Organization admins and owners can change these.
+		</p>
+	);
+}
 
 export function ProjectPromptDefaultsSettings({
 	projectId,
+	focusRequest,
 }: {
 	projectId: string;
+	focusRequest?: PromptDefaultsFocusRequest | null;
 }) {
-	const { organizationId } = useOrganizationContext();
+	const { organizationId, basePath } = useOrganizationContext();
 	const offered = useOfferedPromptActions();
 	const tSuperseded = useTranslations(
 		"projects.proposalArtifact.supersededAction",
@@ -102,15 +117,19 @@ export function ProjectPromptDefaultsSettings({
 	// server refuses. Gate the affordance on the same thing the write gates on.
 	const { isOrganizationAdmin } = useActiveOrganization();
 	const canEdit = isOrganizationAdmin;
-	const [overriddenOpen, setOverriddenOpen] = useState(true);
-	// null = follow the project's state. A project that has overridden nothing
-	// would otherwise open on two lists it cannot act on, with the only thing
-	// worth doing hidden behind a collapsed section.
-	const [inheritedOpenChoice, setInheritedOpen] = useState<boolean | null>(
-		null,
-	);
 	const [pending, setPending] = useState<string | null>(null);
-	const [filter, setFilter] = useState("");
+	const [search, setSearch] = useState("");
+	const [tierFilter, setTierFilter] = useState<TierFilter>("ALL");
+	const [openGroups, setOpenGroups] = useState<
+		ReadonlySet<PromptFeatureTypeKey>
+	>(() => new Set([FIRST_GROUP]));
+
+	useEffect(() => {
+		if (focusRequest) {
+			setSearch(focusRequest.search);
+			setTierFilter("ALL");
+		}
+	}, [focusRequest]);
 
 	const { data, isLoading, error, refetch } = useQuery({
 		queryKey: ["project-prompt-catalog", organizationId, projectId],
@@ -206,63 +225,39 @@ export function ProjectPromptDefaultsSettings({
 		onSettled: () => setPending(null),
 	});
 
-	// What this project has chosen is a property of the project, not of whoever
-	// is looking. `effectiveScope` answers "what runs for ME", and a personal
-	// override outranks the project tier (SCOPE_RANK: USER 0, PROJECT 1) — so
-	// keying off it would file an admin's own project default under "inherited",
-	// show it as "Personal", and hide the control to clear it.
-	const projectDefaultOf = (action: PromptAction) =>
-		byAction
-			.get(action.id)
-			?.prompts.find(
-				(p) =>
-					p.scope === "ORG" &&
-					p.projectId === projectId &&
-					p.isDefault,
-			);
-
-	const { overridden, inherited } = useMemo(() => {
-		const overridden: Array<PromptAction> = [];
-		const inherited: Array<PromptAction> = [];
-		for (const action of offered.actions) {
-			const own = byAction
-				.get(action.id)
-				?.prompts.find(
-					(p) =>
-						p.scope === "ORG" &&
-						p.projectId === projectId &&
-						p.isDefault,
-				);
-			(own ? overridden : inherited).push(action);
-		}
-		return { overridden, inherited };
-	}, [byAction, projectId, offered.actions]);
+	const rows = useMemo(
+		() =>
+			offered.actions.map((action) =>
+				buildRow(action, byAction.get(action.id), projectId),
+			),
+		[byAction, projectId, offered.actions],
+	);
 
 	// Project defaults at an action the Proposal artifact supersedes. Named
 	// from the full catalog, so the row reads as the action it was saved at.
 	const noLongerUsed = useMemo(() => {
-		const rows: Array<PromptAction> = [];
+		const result: PromptDefaultRowModel[] = [];
 		for (const [id, entry] of byAction) {
 			if (
 				!offered.isSuperseded(entry.targetKey, entry.documentType) ||
-				!entry.prompts.some(
-					(p) =>
-						p.scope === "ORG" &&
-						p.projectId === projectId &&
-						p.isDefault,
-				)
+				!projectDefaultOf(entry, projectId)
 			) {
 				continue;
 			}
 			const action = ALL_ACTIONS_BY_ID.get(id);
 			if (action) {
-				rows.push(action);
+				result.push(buildRow(action, entry, projectId));
 			}
 		}
-		return rows;
+		return result;
 	}, [byAction, projectId, offered]);
 
-	const inheritedOpen = inheritedOpenChoice ?? overridden.length === 0;
+	const overridden = rows.filter((row) => row.own);
+	const tierCounts = countTiers(rows);
+	const filtering = search.trim() !== "" || tierFilter !== "ALL";
+	const groups = groupRows(rows, (row) =>
+		rowMatches(row, search, tierFilter),
+	).filter((group) => !filtering || group.items.length > 0);
 
 	if (!organizationId) {
 		return null;
@@ -270,10 +265,8 @@ export function ProjectPromptDefaultsSettings({
 
 	if (isLoading) {
 		return (
-			<Card className="space-y-2 p-6">
-				<h3 className="font-medium text-base">
-					Prompt defaults for this project
-				</h3>
+			<Card id={PROMPT_DEFAULTS_ANCHOR_ID} className="space-y-2 p-6">
+				<h3 className="font-semibold text-base">Prompt defaults</h3>
 				<p className="text-muted-foreground text-sm">
 					Checking every action…
 				</p>
@@ -285,10 +278,12 @@ export function ProjectPromptDefaultsSettings({
 	// which is a claim rather than an answer.
 	if (error) {
 		return (
-			<Card className="space-y-4 p-6" role="alert">
-				<h3 className="font-medium text-base">
-					Prompt defaults for this project
-				</h3>
+			<Card
+				id={PROMPT_DEFAULTS_ANCHOR_ID}
+				className="space-y-4 p-6"
+				role="alert"
+			>
+				<h3 className="font-semibold text-base">Prompt defaults</h3>
 				<p className="text-muted-foreground text-sm">
 					Could not load which prompts this project uses.
 				</p>
@@ -299,213 +294,246 @@ export function ProjectPromptDefaultsSettings({
 		);
 	}
 
-	const row = (action: PromptAction, superseded = false) => {
-		const entry = byAction.get(action.id);
-		const own = projectDefaultOf(action);
-		const isProject = !!own;
-		// The tier badge reports the project's own choice when it has one, even
-		// if the reader's personal override is what actually runs for them.
-		const tier = isProject ? "PROJECT" : (entry?.effectiveScope ?? "NONE");
-		const inForce = entry?.prompts.find((p) => p.isEffective);
-		// Said plainly rather than left as a contradiction between the badge and
-		// what the reader gets.
-		const shadowed = isProject && entry?.effectiveScope === "USER";
-		// Candidates a project can be pointed at: anything already available for
-		// this action that is not already this project's own binding.
-		const candidates = (entry?.prompts ?? []).filter(
-			(p) => !(p.scope === "ORG" && p.projectId === projectId),
-		);
-		const busy = pending === action.id;
-
-		return (
-			<li
-				key={action.id}
-				className="flex flex-wrap items-center justify-between gap-3 px-4 py-3"
-			>
-				<div className="min-w-0">
-					<p className="truncate font-medium text-sm">
-						{action.label}
-					</p>
-					<p className="truncate text-muted-foreground text-xs">
-						{
-							PROMPT_FEATURE_TYPES[
-								action.featureType as PromptFeatureTypeKey
-							].label
-						}
-						{isProject && own
-							? ` · ${own.promptName}`
-							: inForce
-								? ` · ${inForce.promptName}`
-								: " · built-in text"}
-						{shadowed && " · your personal default runs instead"}
-					</p>
-					{superseded && (
-						<p className="text-muted-foreground text-xs">
-							{tSuperseded("actionNote")}
-						</p>
-					)}
-				</div>
-
-				<div className="flex shrink-0 items-center gap-2">
-					<Badge
-						variant="outline"
-						className={
-							isProject
-								? "border-primary/40 text-primary-ink"
-								: undefined
-						}
-					>
-						{TIER_LABEL[tier]}
-					</Badge>
-
-					{canEdit && isProject && (
-						<Button
-							variant="outline"
-							size="sm"
-							disabled={busy}
-							aria-label={`Clear the project override for ${action.label}`}
-							onClick={() => {
-								setPending(action.id);
-								clearForProject.mutate(action);
-							}}
-						>
-							Clear
-						</Button>
-					)}
-
-					{canEdit && !isProject && candidates.length > 0 && (
-						<Select
-							disabled={busy}
-							onValueChange={(promptVersionId) => {
-								setPending(action.id);
-								setForProject.mutate({
-									action,
-									promptVersionId,
-									clearsOwnPersonal:
-										entry?.effectiveScope === "USER",
-								});
-							}}
-						>
-							<SelectTrigger
-								className="w-[190px]"
-								aria-label={`Set the prompt this project uses for ${action.label}`}
-							>
-								<SelectValue placeholder="Use a different prompt" />
-							</SelectTrigger>
-							<SelectContent>
-								{candidates.map((p) => (
-									<SelectItem
-										key={p.promptVersionId}
-										value={p.promptVersionId}
-									>
-										{p.promptName}
-									</SelectItem>
-								))}
-							</SelectContent>
-						</Select>
-					)}
-				</div>
-			</li>
-		);
+	const rowActions = {
+		basePath,
+		canEdit,
+		onSet: (row: PromptDefaultRowModel, binding: CatalogBinding) => {
+			setPending(row.action.id);
+			setForProject.mutate({
+				action: row.action,
+				promptVersionId: binding.promptVersionId,
+				clearsOwnPersonal: row.clearsOwnPersonal,
+			});
+		},
+		onClear: (row: PromptDefaultRowModel) => {
+			setPending(row.action.id);
+			clearForProject.mutate(row.action);
+		},
 	};
 
+	const tierChips: ReadonlyArray<{
+		key: TierFilter;
+		label: string;
+		count: number;
+	}> = [
+		{ key: "ALL", label: "All", count: rows.length },
+		// Personal only when someone has one: an empty chip for a tier this
+		// card never sets reads as something to set.
+		...TIER_ORDER.filter(
+			(tier) => tier !== "USER" || tierCounts.USER > 0,
+		).map((tier) => ({
+			key: tier,
+			label: TIER_LABEL[tier],
+			count: tierCounts[tier],
+		})),
+	];
+
+	const query = search.trim();
+
 	return (
-		<Card className="space-y-4 p-6">
-			<div>
-				<h3 className="font-medium text-base">
-					Prompt defaults for this project
-				</h3>
-				<p className="mt-1 text-muted-foreground text-sm">
-					{isLoading
-						? "Checking every action…"
-						: `${overridden.length} of ${offered.actions.length} actions use a prompt chosen for this project. The rest follow the organization, then the system default. Anyone who has set their own prompt for an action keeps it here.`}
+		<Card
+			id={PROMPT_DEFAULTS_ANCHOR_ID}
+			className="scroll-mt-6 overflow-hidden p-0"
+		>
+			<div className="space-y-3 px-4 pt-5 pb-4 sm:px-6">
+				<div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+					<div className="min-w-0">
+						<h3 className="font-semibold text-base">
+							Prompt defaults
+						</h3>
+						<p className="mt-1 text-pretty text-muted-foreground text-sm">
+							{`${overridden.length} of ${rows.length} actions use a prompt chosen for this project. The rest follow the organization, then the system default.`}
+						</p>
+					</div>
+					<Link
+						href={`${basePath}/prompts/catalog`}
+						className="mt-1 inline-flex items-center gap-1 whitespace-nowrap text-foreground/90 text-xs hover:text-foreground hover:underline"
+					>
+						Open Prompt Library
+						<ArrowUpRightIcon
+							aria-hidden="true"
+							className="size-3"
+						/>
+					</Link>
+				</div>
+				<div className="flex flex-wrap items-center gap-1.5 text-muted-foreground text-xs">
+					<span className="mr-1">First one set wins</span>
+					{PRECEDENCE.map(({ tier, label }, i) => (
+						<span
+							key={tier}
+							className="inline-flex items-center gap-1.5"
+						>
+							{i > 0 && (
+								<>
+									<ChevronRightIcon
+										aria-hidden="true"
+										className="size-3"
+									/>
+									<span className="sr-only">then</span>
+								</>
+							)}
+							<PromptTierBadge tier={tier}>
+								{label}
+							</PromptTierBadge>
+						</span>
+					))}
+				</div>
+				<p className="text-muted-foreground text-xs">
+					Anyone who has set their own prompt for an action keeps it
+					here.
 				</p>
-				{!canEdit && (
-					<p className="mt-1 text-muted-foreground text-xs">
-						Organization admins and owners can change these.
-					</p>
-				)}
+				{!canEdit && <MemberLockNote />}
 			</div>
 
-			<section>
-				<button
-					type="button"
-					onClick={() => setOverriddenOpen((v) => !v)}
-					aria-expanded={overriddenOpen}
-					className="flex w-full items-center justify-between gap-3 rounded-md px-1 py-2 text-left hover:bg-muted/40"
+			{overridden.length > 0 && (
+				<section
+					aria-labelledby="project-prompt-defaults-chosen"
+					className="mx-4 mb-4 rounded-lg border border-primary/30 bg-primary/5 sm:mx-6"
 				>
-					<span className="font-medium text-sm">
-						Chosen for this project
-					</span>
-					<span className="flex items-center gap-2">
-						<Badge variant="outline">{overridden.length}</Badge>
-						<span className="text-muted-foreground text-xs">
-							{overriddenOpen ? "Hide" : "Show"}
+					<div className="flex items-center justify-between gap-3 border-primary/20 border-b px-4 py-2.5">
+						<span
+							id="project-prompt-defaults-chosen"
+							className="font-medium text-[13px]"
+						>
+							Chosen for this project
 						</span>
-					</span>
-				</button>
-				{overriddenOpen &&
-					(overridden.length > 0 ? (
-						<ul className="divide-y rounded-lg border">
-							{overridden.map((action) => row(action))}
-						</ul>
-					) : (
-						<p className="px-1 py-2 text-muted-foreground text-sm">
-							Nothing yet. This project follows the organization's
-							prompts.
-						</p>
-					))}
-			</section>
-
-			<section>
-				<button
-					type="button"
-					onClick={() => setInheritedOpen(!inheritedOpen)}
-					aria-expanded={inheritedOpen}
-					className="flex w-full items-center justify-between gap-3 rounded-md px-1 py-2 text-left hover:bg-muted/40"
-				>
-					<span className="font-medium text-sm">Inherited</span>
-					<span className="flex items-center gap-2">
-						<Badge variant="outline">{inherited.length}</Badge>
-						<span className="text-muted-foreground text-xs">
-							{inheritedOpen ? "Hide" : "Show"}
-						</span>
-					</span>
-				</button>
-				{inheritedOpen && (
-					<div className="space-y-2">
-						<Input
-							value={filter}
-							onChange={(e) => setFilter(e.target.value)}
-							placeholder="Search actions…"
-							aria-label="Search actions this project inherits"
-						/>
-						<ul className="divide-y rounded-lg border">
-							{inherited
-								.filter((a) =>
-									a.label
-										.toLowerCase()
-										.includes(filter.trim().toLowerCase()),
-								)
-								.map((action) => row(action))}
-						</ul>
+						<PromptTierBadge tier="PROJECT">
+							{overridden.length}
+						</PromptTierBadge>
 					</div>
-				)}
-			</section>
+					<ul className="p-1">
+						{overridden.map((row) => (
+							<PromptDefaultRow
+								key={row.action.id}
+								row={row}
+								title={row.action.label}
+								subtitle={
+									PROMPT_FEATURE_TYPES[row.action.featureType]
+										.label
+								}
+								busy={pending === row.action.id}
+								{...rowActions}
+							/>
+						))}
+					</ul>
+				</section>
+			)}
+
+			<div className="flex flex-wrap items-center gap-2 px-4 pb-3.5 sm:px-6">
+				<div className="relative min-w-0 flex-[1_1_240px]">
+					<SearchIcon
+						aria-hidden="true"
+						className="pointer-events-none absolute top-2.5 left-2.5 size-4 text-muted-foreground"
+					/>
+					<SearchInput
+						value={search}
+						onChange={(e) => setSearch(e.target.value)}
+						placeholder="Search actions or prompts…"
+						aria-label="Search prompt actions"
+						className="pl-9"
+					/>
+				</div>
+				<fieldset className="m-0 flex min-w-0 flex-wrap gap-1.5 border-0 p-0">
+					<legend className="sr-only">
+						Filter by where the prompt comes from
+					</legend>
+					{tierChips.map((chip) => {
+						const active = tierFilter === chip.key;
+						return (
+							<button
+								key={chip.key}
+								type="button"
+								aria-pressed={active}
+								onClick={() =>
+									setTierFilter(
+										active && chip.key !== "ALL"
+											? "ALL"
+											: chip.key,
+									)
+								}
+								className={cn(
+									"inline-flex h-[30px] items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 font-medium text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+									active
+										? "border-foreground/30 bg-muted text-foreground"
+										: "border-border text-muted-foreground hover:text-foreground",
+								)}
+							>
+								{chip.label}{" "}
+								<span className="font-mono text-[10.5px] text-muted-foreground">
+									{chip.count}
+								</span>
+							</button>
+						);
+					})}
+				</fieldset>
+			</div>
+
+			{groups.length > 0 ? (
+				<PromptDefaultsGroups
+					groups={groups}
+					filtering={filtering}
+					openGroups={openGroups}
+					onToggleGroup={(key) => {
+						if (filtering) {
+							return;
+						}
+						setOpenGroups((current) => {
+							const next = new Set(current);
+							if (!next.delete(key)) {
+								next.add(key);
+							}
+							return next;
+						});
+					}}
+					pendingActionId={pending}
+					{...rowActions}
+				/>
+			) : (
+				<div className="flex flex-col items-center gap-2.5 border-t px-6 py-8 text-center">
+					<p className="text-muted-foreground text-sm">
+						{query
+							? `No actions match “${query}”.`
+							: "No actions in this tier."}
+					</p>
+					<Button
+						variant="outline"
+						size="sm"
+						onClick={() => {
+							setSearch("");
+							setTierFilter("ALL");
+						}}
+					>
+						Clear filters
+					</Button>
+				</div>
+			)}
 
 			{noLongerUsed.length > 0 && (
-				<section aria-labelledby="project-prompt-defaults-no-longer-used">
+				<section
+					aria-labelledby="project-prompt-defaults-no-longer-used"
+					className="border-t px-4 py-4 sm:px-6"
+				>
 					<p
 						id="project-prompt-defaults-no-longer-used"
-						className="px-1 py-2 font-medium text-sm"
+						className="font-medium text-sm"
 					>
 						{tSuperseded("projectGroupTitle")}
 					</p>
-					<p className="px-1 pb-2 text-muted-foreground text-sm">
+					<p className="pb-2 text-muted-foreground text-sm">
 						{tSuperseded("projectGroupDescription")}
 					</p>
-					<ul className="divide-y rounded-lg border">
-						{noLongerUsed.map((action) => row(action, true))}
+					<ul>
+						{noLongerUsed.map((row) => (
+							<PromptDefaultRow
+								key={row.action.id}
+								row={row}
+								title={row.action.label}
+								subtitle={null}
+								note={tSuperseded("actionNote")}
+								busy={pending === row.action.id}
+								{...rowActions}
+							/>
+						))}
 					</ul>
 				</section>
 			)}

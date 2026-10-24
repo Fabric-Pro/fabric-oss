@@ -755,6 +755,71 @@
   height: auto;
 }
 
+/* A client-document Proposal's diagram (Fizzy #2946): its actions sit in one
+   menu in a strip above the diagram, not in a header bar. Revealed by
+   opacity only, so the trigger stays in the tab order; always shown where
+   there is no hover. Under the theme root only (its attribute: the theme's
+   own rules live in its stylesheet): elsewhere it stays visible. */
+.mermaid-container > div.mermaid-visual-strip {
+  background-color: transparent;
+  border-bottom: 0;
+}
+
+[data-proposal-theme="live"] .mermaid-visual-trigger {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+[data-proposal-theme="live"] .mermaid-container:hover .mermaid-visual-trigger,
+[data-proposal-theme="live"] .mermaid-container:focus-within .mermaid-visual-trigger,
+[data-proposal-theme="live"] .ProseMirror-selectednode .mermaid-visual-trigger,
+[data-proposal-theme="live"] .mermaid-visual-trigger[data-state="open"] {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  [data-proposal-theme="live"] .mermaid-visual-trigger {
+    opacity: 1;
+  }
+}
+
+/* A diagram that would shrink its labels below the minimum keeps the width
+   its sizing gives it and scrolls sideways, with a fade at each edge that
+   still has more to show (Fizzy #2946). */
+[data-proposal-theme="live"] .mermaid-diagram-area[data-diagram-scroll] {
+  justify-content: flex-start;
+}
+
+[data-proposal-theme="live"] .mermaid-diagram-area[data-diagram-scroll] > svg {
+  flex: none;
+  max-width: none;
+  width: var(--pa-diagram-width);
+  height: auto;
+}
+
+[data-proposal-theme="live"] .mermaid-diagram-area[data-diagram-scroll][data-scroll-edge="start"] {
+  mask-image: linear-gradient(to right, #000 calc(100% - 2rem), transparent);
+}
+
+[data-proposal-theme="live"] .mermaid-diagram-area[data-diagram-scroll][data-scroll-edge="middle"] {
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    #000 2rem,
+    #000 calc(100% - 2rem),
+    transparent
+  );
+}
+
+[data-proposal-theme="live"] .mermaid-diagram-area[data-diagram-scroll][data-scroll-edge="end"] {
+  mask-image: linear-gradient(to right, transparent, #000 2rem);
+}
+
+[data-proposal-theme="live"] .mermaid-diagram-area[data-diagram-scroll]:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
 /* Mermaid.js fallback — force text/line colors via CSS when native mermaid is used */
 .mermaid-diagram-area .edge-pattern-solid,
 .mermaid-diagram-area .flowchart-link {

@@ -71,6 +71,8 @@ export interface GlossyDetectionSection {
 	markdown: string;
 	/** Kinds the section already shows through a slot or existing diagram. */
 	reservedKinds?: readonly GlossyDetectableKind[];
+	/** A Proposal's appendix section (Fizzy #2946); Glossy never sets it. */
+	appendix?: boolean;
 }
 
 export interface DetectGlossyOpportunitiesInput extends GlossyModelContext {
@@ -79,6 +81,11 @@ export interface DetectGlossyOpportunitiesInput extends GlossyModelContext {
 	sections: readonly GlossyDetectionSection[];
 	/** Remaining opportunity budget; clamped to 0–8, default 8. */
 	limit?: number;
+	/**
+	 * The Proposal artifact's visuals step: adds audience guidance to the
+	 * instructions (Fizzy #2946). Unset for Glossy, whose prompt is unchanged.
+	 */
+	proposalArtifact?: boolean;
 }
 
 export interface GlossyOpportunity {
@@ -130,7 +137,9 @@ export async function detectGlossyOpportunities(
 	}
 	const { model, metadata, trackUsage } = resolved;
 
-	const instructions = buildGlossyDetectInstructions(input.documentType);
+	const instructions = buildGlossyDetectInstructions(input.documentType, {
+		proposalArtifact: input.proposalArtifact,
+	});
 	const prompt = buildGlossyDetectPrompt({
 		limit,
 		sections: input.sections.map((section, index) => ({
@@ -138,6 +147,7 @@ export async function detectGlossyOpportunities(
 			heading: section.heading,
 			markdown: section.markdown,
 			reservedKinds: section.reservedKinds,
+			appendix: section.appendix,
 		})),
 	});
 	// The answer is a short list regardless of document size, so scaled mode

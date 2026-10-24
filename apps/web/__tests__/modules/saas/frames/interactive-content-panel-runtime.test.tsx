@@ -374,11 +374,19 @@ describe("chat preview runtime authority", () => {
 			isSuccess: true,
 			data: { ...saved, sourceRunType: "workflow" },
 		});
+		// The unattended page is drawn inline from its document, which mounts
+		// once the lazily loaded renderer arrives, rather than through the embed
+		// route. Loading it first keeps the wait off module transform time.
+		await import("@saas/frames/components/FrameRenderer");
 		const view = render(panel());
-		const iframe = view.container.querySelector("iframe");
-		if (!iframe) {
-			throw new Error("Expected the static preview iframe");
-		}
+		const iframe = await waitFor(() => {
+			const drawn = view.container.querySelector("iframe");
+			if (!drawn) {
+				throw new Error("Expected the static preview iframe");
+			}
+			return drawn;
+		});
+		expect(iframe.getAttribute("src")).toBeNull();
 		call(iframe, TOOLS[0]);
 		await act(() => new Promise((resolve) => setTimeout(resolve, 20)));
 		expect(mocks.listTools).not.toHaveBeenCalled();

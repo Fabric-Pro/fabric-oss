@@ -1,3 +1,5 @@
+import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
+import { RetryError } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
@@ -20,7 +22,8 @@ const {
 	mockLoggerWarn: vi.fn(),
 }));
 
-vi.mock("ai", () => ({
+vi.mock("ai", async (importOriginal) => ({
+	...(await importOriginal<typeof import("ai")>()),
 	generateText: (args: unknown) => mockGenerateText(args),
 	generateObject: (args: unknown) => mockGenerateObject(args),
 }));
@@ -276,6 +279,43 @@ describe("formatTimestamp", () => {
 });
 
 describe("generateStoryTitleFromDescription — generateObject primary path", () => {
+	it.each(["resolution", "object", "text"])(
+		"rethrows wrapped %s usage refusal without an untitled fallback",
+		async (phase) => {
+			const refusal = new AiUsageLimitExceededError({
+				message: "Example limit exhausted",
+				limitId: "example-limit",
+				dimension: "TOKENS" as never,
+				window: "MONTHLY" as never,
+				used: 100n,
+				max: 100n,
+				manageLimitsUrl: "https://example.com/limits",
+			});
+			const error = new RetryError({
+				message: "Retry refused",
+				reason: "errorNotRetryable",
+				errors: [refusal],
+			});
+			if (phase === "resolution") {
+				mockGetAIModelWithMetadata.mockRejectedValueOnce(error);
+			} else if (phase === "object") {
+				mockGenerateObject.mockRejectedValueOnce(error);
+			} else {
+				mockGenerateObject.mockRejectedValueOnce(
+					new Error("Malformed object"),
+				);
+				mockGenerateText.mockRejectedValueOnce(error);
+			}
+			await expect(
+				generateStoryTitleFromDescription(
+					"Build an example dashboard for the project",
+					"FEATURE",
+					{ userId: "example-user", organizationId: "example-org" },
+				),
+			).rejects.toBe(refusal);
+		},
+	);
+
 	it("uses generateObject when the provider supports structured outputs", async () => {
 		mockGenerateObject.mockResolvedValue({
 			object: { title: "Add login flow", is_insufficient: false },

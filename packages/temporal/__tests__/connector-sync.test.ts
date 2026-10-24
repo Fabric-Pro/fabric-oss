@@ -28,6 +28,8 @@ vi.mock("@repo/database", () => ({
 	createDocumentChunks: vi.fn(),
 	db: {
 		workspaceDocument: {
+			findFirst: vi.fn().mockResolvedValue(null),
+			deleteMany: vi.fn(),
 			create: vi.fn(),
 		},
 		workspaceDocumentChunk: {
@@ -47,7 +49,11 @@ vi.mock("@repo/database", () => ({
 }));
 
 vi.mock("@repo/ai", () => ({
-	getSystemRAGProviderConfig: vi.fn().mockResolvedValue({
+	AIProviderNotConfiguredError: class AIProviderNotConfiguredError extends Error {
+		name = "AIProviderNotConfiguredError";
+	},
+	assertEmbeddingModelUsable: vi.fn(),
+	getSystemEmbeddingRAGProviderConfig: vi.fn().mockResolvedValue({
 		apiKey: "test-key",
 		provider: "OPENAI_DIRECT",
 	}),
@@ -85,13 +91,32 @@ vi.mock("@repo/integrations/gitlab", async () => ({
 }));
 
 import {
+	AIProviderNotConfiguredError,
+	assertEmbeddingModelUsable,
+	getSystemEmbeddingRAGProviderConfig,
+} from "@repo/ai";
+import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
+import {
+	db,
 	getConnectionWithCredentials,
 	getDataConnectionSyncMetadata,
+	getSyncedResourceByExternalId,
+	updateWorkspaceDocument,
 } from "@repo/database";
 import { getGitLabConnectionToken } from "@repo/integrations/gitlab";
 import {
+	deleteWorkspaceDocumentChunks,
+	generateEmbeddings as embedTexts,
+	enrichChunksWithTenantContext,
+} from "@repo/rag";
+import {
+	ApplicationFailure,
+	ensureApplicationFailure,
+} from "@temporalio/common";
+import {
 	discoverResources,
 	fetchResourceDocuments,
+	generateEmbeddings,
 	loadConnectorConfig,
 } from "../src/activities/connector-sync";
 
@@ -3502,5 +3527,155 @@ describe("connector sync ClickUp provider", () => {
 			}),
 		);
 		expect(result.newCursor?.lastSyncedAt).toBe("2026-04-03T13:00:00.000Z");
+	});
+});
+
+describe("connector embedding configuration verdicts", () => {
+	const input = {
+		connectorId: "conn-1",
+		documents: [
+			{
+				id: "doc-example",
+				externalId: "external-1",
+				title: "Example",
+				content: "Example content",
+				metadata: {},
+			},
+		],
+		workspaceIds: ["workspace-1"],
+		model: "unused",
+		userId: "user-1",
+		organizationId: "org-1",
+	};
+	beforeEach(() => {
+		vi.clearAllMocks();
+		vi.mocked(assertEmbeddingModelUsable)
+			.mockReset()
+			.mockResolvedValue(undefined);
+		vi.mocked(getSystemEmbeddingRAGProviderConfig)
+			.mockReset()
+			.mockResolvedValue({ apiKey: "example-key" } as never);
+		vi.mocked(embedTexts)
+			.mockReset()
+			.mockResolvedValue({ embeddings: [[0.1]] } as never);
+		vi.mocked(getSyncedResourceByExternalId).mockResolvedValue(null);
+		vi.mocked(db.workspaceDocument.create).mockResolvedValue({
+			id: "doc-1",
+		} as never);
+	});
+	for (const stage of ["precheck", "provider", "embed"] as const) {
+		it.each([
+			new UnsupportedEmbeddingModelError("text-embedding-3-large"),
+			new AIProviderNotConfiguredError(
+				"Configure an embedding provider in Settings.",
+			),
+		])(`fails non-retryably for $name from ${stage}`, async (refusal) => {
+			const target =
+				stage === "precheck"
+					? assertEmbeddingModelUsable
+					: stage === "provider"
+						? getSystemEmbeddingRAGProviderConfig
+						: embedTexts;
+			vi.mocked(target).mockRejectedValueOnce(refusal);
+			const error = await generateEmbeddings(input).catch(
+				(error: unknown) => error,
+			);
+			expect(error).toBeInstanceOf(ApplicationFailure);
+			expect(error).toMatchObject({
+				nonRetryable: true,
+				type: refusal.name,
+				message: refusal.message,
+			});
+			if (stage === "precheck" || stage === "provider") {
+				expect(enrichChunksWithTenantContext).not.toHaveBeenCalled();
+			}
+		});
+	}
+	it.each([
+		new UnsupportedEmbeddingModelError("text-embedding-3-large"),
+		new AIProviderNotConfiguredError("Configure an embedding provider."),
+	])(
+		"preserves a changed existing document when $name refuses the batch",
+		async (refusal) => {
+			vi.mocked(getSyncedResourceByExternalId).mockResolvedValue({
+				documentId: "existing-doc",
+				contentHash: "old",
+			} as never);
+			vi.mocked(assertEmbeddingModelUsable).mockRejectedValueOnce(
+				refusal,
+			);
+			const error = await generateEmbeddings({
+				...input,
+				documents: input.documents.map((doc) => ({
+					...doc,
+					contentHash: "new",
+				})),
+			}).catch((error: unknown) => error);
+			expect(error).toMatchObject({
+				nonRetryable: true,
+				type: refusal.name,
+			});
+			expect(db.workspaceDocument.deleteMany).not.toHaveBeenCalled();
+			expect(deleteWorkspaceDocumentChunks).not.toHaveBeenCalled();
+			expect(db.workspaceDocumentChunk.deleteMany).not.toHaveBeenCalled();
+			expect(updateWorkspaceDocument).not.toHaveBeenCalled();
+			expect(db.workspaceDocument.create).not.toHaveBeenCalled();
+		},
+	);
+	it("checks embedding usability once across several changed documents", async () => {
+		await generateEmbeddings({
+			...input,
+			documents: [0, 1, 2].map((index) => ({
+				...input.documents[0],
+				externalId: `external-${index}`,
+			})),
+		});
+		expect(assertEmbeddingModelUsable).toHaveBeenCalledTimes(1);
+		expect(assertEmbeddingModelUsable).toHaveBeenCalledWith({
+			userId: "user-1",
+			organizationId: "org-1",
+		});
+		expect(embedTexts).toHaveBeenCalledTimes(3);
+	});
+	it("skips model resolution when the batch has only unchanged documents", async () => {
+		vi.mocked(getSyncedResourceByExternalId).mockResolvedValue({
+			documentId: "existing-doc",
+			contentHash: "same",
+		} as never);
+		vi.mocked(assertEmbeddingModelUsable).mockRejectedValue(
+			new UnsupportedEmbeddingModelError("text-embedding-3-large"),
+		);
+		vi.mocked(getSystemEmbeddingRAGProviderConfig).mockRejectedValue(
+			new AIProviderNotConfiguredError(
+				"Configure an embedding provider.",
+			),
+		);
+		await expect(
+			generateEmbeddings({
+				...input,
+				documents: [0, 1].map((index) => ({
+					...input.documents[0],
+					externalId: `external-${index}`,
+					contentHash: "same",
+				})),
+			}),
+		).resolves.toEqual({ created: 0, updated: 0 });
+		expect(assertEmbeddingModelUsable).not.toHaveBeenCalled();
+		expect(getSystemEmbeddingRAGProviderConfig).not.toHaveBeenCalled();
+		expect(db.workspaceDocument.create).not.toHaveBeenCalled();
+	});
+
+	it("keeps an ordinary embedding failure retryable", async () => {
+		const failure = new Error("Provider temporarily unavailable");
+		vi.mocked(embedTexts).mockRejectedValueOnce(failure);
+		const error = await generateEmbeddings(input).catch(
+			(error: unknown) => error,
+		);
+		expect(error).toBe(failure);
+		expect(ensureApplicationFailure(error)).toMatchObject({
+			nonRetryable: false,
+			type: "Error",
+			message: failure.message,
+		});
 	});
 });

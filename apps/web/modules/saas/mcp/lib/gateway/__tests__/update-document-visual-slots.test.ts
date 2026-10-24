@@ -339,6 +339,53 @@ describe("fabric_update_document nudges open editors", () => {
 	});
 });
 
+// A generated diagram the agent left unchanged keeps its marker line, so its
+// stored spec stays referenced (Fizzy #2946).
+describe("fabric_update_document preserves generated diagram markers", () => {
+	const MARKER = "%% fabric-visual: k3v9q2m7x1a8c4d6";
+	const diagram = (marker: boolean, label = "Launch") =>
+		[
+			"```mermaid",
+			...(marker ? [MARKER] : []),
+			"flowchart LR",
+			`  s0["Discovery"] --> s1["${label}"]`,
+			"```",
+		].join("\n");
+	const body = (fence: string, intro = "Phase one covers discovery.") =>
+		[
+			"# Proposal",
+			"",
+			"## Implementation Phases",
+			"",
+			intro,
+			"",
+			fence,
+			"",
+		].join("\n");
+
+	beforeEach(() => {
+		mocks.getDocumentById.mockResolvedValue(
+			storedDocument(body(diagram(true))),
+		);
+	});
+
+	it("puts back the marker of an unchanged diagram and keeps the rest as sent", async () => {
+		const written = await updateContent(
+			body(diagram(false), "Phase one covers discovery and design."),
+		);
+
+		expect(written).toBe(
+			body(diagram(true), "Phase one covers discovery and design."),
+		);
+	});
+
+	it("adds no marker to a diagram whose body changed", async () => {
+		const incoming = body(diagram(false, "Go-live"));
+
+		expect(await updateContent(incoming)).toBe(incoming);
+	});
+});
+
 describe("fabric_get_document description", () => {
 	it("tells agents a visual slot is a placeholder marker, not prose", () => {
 		const tool = PLATFORM_TOOL_DEFINITIONS.find(
@@ -365,6 +412,22 @@ describe("fabric_update_document content description", () => {
 		expect(content).toContain("<visual-slot");
 		expect(content).toMatch(/kept in place/);
 		expect(content).toMatch(/ignored/);
+	});
+
+	it("tells agents a generated diagram's marker survives only an unchanged body", () => {
+		const tool = PLATFORM_TOOL_DEFINITIONS.find(
+			(definition) => definition.name === "fabric_update_document",
+		);
+		const content = (
+			tool?.inputSchema as {
+				properties: { content: { description: string } };
+			}
+		).properties.content.description;
+
+		expect(tool?.description).toContain("%% fabric-visual:");
+		expect(tool?.description).toMatch(/never invent or copy/);
+		expect(tool?.description).toMatch(/body is unchanged/);
+		expect(content).toMatch(/changed mermaid body loses its marker/);
 	});
 });
 

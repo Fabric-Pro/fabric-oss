@@ -81,6 +81,12 @@ export const AgentStateAnnotation = Annotation.Root({
 		default: () => undefined,
 	}),
 
+	/** Run-scoped opt-out of the supplemental Fabric structure. */
+	suppressFabricMethodology: Annotation<boolean>({
+		reducer: (x, y) => y ?? x,
+		default: () => false,
+	}),
+
 	/**
 	 * Retry count for error recovery
 	 */

@@ -482,6 +482,10 @@ export const AUDIT_ACTIONS = [
 	// Both reuse the proposal's FAILED state so it stays retryable.
 	"backlog.proposal.cancelled",
 	"backlog.proposal.timed_out",
+	// The scheduled recurring-error scan failed for a project: its log source
+	// could not be read, or a proposal for a recurring error could not be
+	// filed. System actor; stage and a short reason, never log content.
+	"backlog.recurring_errors.scan_failed",
 	// newsletter (3) — per-project embeddable release-notes widget owner actions.
 	// A project OWNER turning the public widget on/off or rotating its embed
 	// token is a public-exposure change, so each writes a row IN the same
@@ -592,9 +596,11 @@ export const AUDIT_ACTIONS = [
 	// brand pair covers fetching a prospective client's brand from their own
 	// website (host and outcome code only, never page content) and confirming
 	// a pending upload or fetch as the project's current recipient brand.
-	// `org.brand_kit.updated` is the one organization-scoped action: the
-	// accent colors and guidance text an organization sets for its own Glossy
-	// exports, stored outside organization metadata (KTD1, KTD2).
+	// `org.brand_kit.updated` is organization-scoped: the colours, fonts, hero
+	// image, website and guidance an organization sets for its own documents,
+	// stored outside organization metadata. `org.brand_kit.site_fetched`
+	// is the fetch of the organization's own website for the colours it
+	// declares (Fizzy #2946): host and outcome code only, never page content.
 	"project.glossy_edition.build_started",
 	"project.glossy_edition.built",
 	"project.glossy_edition.build_failed",
@@ -604,6 +610,7 @@ export const AUDIT_ACTIONS = [
 	"project.recipient_brand.fetched",
 	"project.recipient_brand.updated",
 	"org.brand_kit.updated",
+	"org.brand_kit.site_fetched",
 	// Proposal Internal Analysis review (Fizzy #2946): a member confirmed or
 	// answered a finding, cleared an answer, or started a re-run of the
 	// analysis. An answer feeds later generations of the client document as a

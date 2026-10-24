@@ -1330,7 +1330,8 @@
 						"redacted": "Kontakt gelöscht"
 					},
 					"brand_kit": {
-						"updated": "Markenkit aktualisiert"
+						"updated": "Markenkit aktualisiert",
+						"site_fetched": "Markenkit-Website abgerufen"
 					},
 					"company_context": {
 						"metadata_updated": "Details einer Unternehmenskontext-Quelle aktualisiert"
@@ -1576,6 +1577,9 @@
 					"proposal": {
 						"cancelled": "Backlog proposal cancelled",
 						"timed_out": "Backlog proposal timed out"
+					},
+					"recurring_errors": {
+						"scan_failed": "Scan wiederkehrender Fehler fehlgeschlagen"
 					}
 				},
 				"mcp": {
@@ -2089,12 +2093,12 @@
 		"save": "Speichern",
 		"brandKit": {
 			"title": "Markenkit",
-			"description": "Akzentfarben und Markenrichtlinien für Glossy-Editionen. Logo und Designfarbe oben gehören ebenfalls zum Kit. Ohne Designfarbe und Akzentfarben bleiben Glossy-Visuals neutral oder übernehmen die Farben der Empfängermarke.",
+			"description": "Farben, Schriften, Titelbild, Website und Markenrichtlinien, die Ihre Glossy-Editionen und Angebote verwenden. Das Organisationslogo oben ist das Logo des Markenkits. Glossy-Editionen verwenden außerdem die Designfarbe oben; Angebote verwenden stattdessen die Hauptfarbe hier.",
 			"loading": "Wird geladen…",
 			"loadFailed": "Das Markenkit konnte nicht geladen werden",
 			"readOnly": "Nur Administratoren und Inhaber der Organisation können das Markenkit ändern.",
 			"accentColors": "Akzentfarben",
-			"accentColorsHelp": "Bis zu 3 Farben, die neben Ihrer Designfarbe in Visuals und Überschriften verwendet werden. Ohne Designfarbe wird die erste Akzentfarbe zur Hauptfarbe.",
+			"accentColorsHelp": "Bis zu 3 Farben neben der Primärfarbe in Grafiken und Hervorhebungen. In einer Glossy-Edition ohne Designfarbe wird die erste Akzentfarbe zu ihrer Primärfarbe.",
 			"accentHex": "Akzentfarbe {position} (Hex)",
 			"accentPicker": "Akzentfarbe {position} auswählen",
 			"removeAccent": "Akzentfarbe {position} entfernen",
@@ -2108,7 +2112,90 @@
 			"save": "Markenkit speichern",
 			"saved": "Markenkit gespeichert",
 			"saveFailed": "Das Markenkit konnte nicht gespeichert werden",
-			"fixColors": "Korrigieren Sie die markierten Farben vor dem Speichern."
+			"fixColors": "Korrigieren Sie die markierten Farben vor dem Speichern.",
+			"fixFields": "Korrigieren Sie die markierten Felder vor dem Speichern.",
+			"proposerBrand": "Absendermarke",
+			"proposerBrandHelp": "So erscheint Ihre Organisation in den Angeboten, die sie versendet. Das Organisationslogo oben ist das Logo des Markenkits; ein eigenes gibt es hier nicht.",
+			"primaryColor": "Hauptfarbe",
+			"primaryColorHelp": "Die Hauptfarbe Ihrer Angebote. Ohne sie verwenden Angebote die auf Ihrer Website gefundenen Farben oder eine neutrale Farbe. Die Designfarbe des Dashboards oben wird hier nicht verwendet.",
+			"primaryHex": "Hauptfarbe (Hex)",
+			"primaryPicker": "Hauptfarbe auswählen",
+			"removePrimary": "Hauptfarbe entfernen",
+			"addPrimary": "Hauptfarbe hinzufügen",
+			"noPrimary": "Noch keine Hauptfarbe.",
+			"displayFont": "Überschriftenschrift",
+			"displayFontHelp": "Für Titel und Überschriften.",
+			"displayFontFamily": "Schriftfamilie für Überschriften",
+			"displayFontPlaceholder": "Zum Beispiel Merriweather",
+			"bodyFont": "Fließtextschrift",
+			"bodyFontHelp": "Für Absätze, Listen und Tabellen.",
+			"bodyFontFamily": "Schriftfamilie für Fließtext",
+			"bodyFontPlaceholder": "Zum Beispiel Open Sans",
+			"fontFamilyHelp": "Der veröffentlichte Name der Schriftfamilie: Buchstaben, Ziffern, Leerzeichen und Bindestriche, 2 bis 64 Zeichen. Ohne Angabe verwenden Angebote Inter.",
+			"fontFamilyRequired": "Geben Sie den Namen der Schriftfamilie ein, zu der diese Schriftdatei gehört.",
+			"fontFamilyInvalid": "Verwenden Sie nur Buchstaben, Ziffern, Leerzeichen und Bindestriche, 2 bis 64 Zeichen.",
+			"fontFileHelp": "Optional. Eine WOFF2- oder TTF-Datei bis {size}, damit alle Lesenden die Schrift sehen. Ohne Datei erscheint die Schrift nur dort, wo sie installiert ist.",
+			"fontFileStored": "Schriftdatei hochgeladen",
+			"noFontFile": "Keine Schriftdatei",
+			"uploadDisplayFont": "Schriftdatei für Überschriften hochladen",
+			"removeDisplayFont": "Schriftdatei für Überschriften entfernen",
+			"uploadBodyFont": "Schriftdatei für Fließtext hochladen",
+			"removeBodyFont": "Schriftdatei für Fließtext entfernen",
+			"fontError": {
+				"too_large": "Diese Schriftdatei ist größer als {size}. Wählen Sie eine kleinere Datei.",
+				"unsupported": "Diese Datei ist keine WOFF2- oder TTF-Schrift.",
+				"uploadFailed": "Die Schriftdatei konnte nicht hochgeladen werden. Versuchen Sie es erneut."
+			},
+			"hero": "Titelbild",
+			"heroHelp": "Erscheint auf dem Deckblatt Ihrer Angebote. Ein PNG-, JPEG- oder WebP-Bild bis {size}.",
+			"heroAlt": "Vorschau des Titelbilds",
+			"noHero": "Kein Titelbild",
+			"uploadHero": "Titelbild hochladen",
+			"removeHero": "Titelbild entfernen",
+			"heroError": {
+				"too_large": "Dieses Bild ist zu groß. Verwenden Sie eines mit höchstens {size} und {megapixels} Megapixeln.",
+				"unsupported": "Diese Datei ist kein PNG-, JPEG- oder WebP-Bild.",
+				"uploadFailed": "Das Bild konnte nicht hochgeladen werden. Versuchen Sie es erneut."
+			},
+			"uploading": "{name} wird hochgeladen…",
+			"uploaded": "{name} hochgeladen. Speichern Sie das Markenkit, um die Datei zu verwenden.",
+			"website": "Website",
+			"websitePlaceholder": "example.com",
+			"websiteHelp": "Die öffentliche Website Ihrer Organisation. Nach dem Speichern werden die dort angegebenen Markenfarben gesucht, damit Angebote sie verwenden, wo das Markenkit keine festlegt.",
+			"siteFetch": {
+				"running": "Markenfarben auf {host} werden gesucht…",
+				"found": "Farben auf {host} gefunden",
+				"foundColors": "Farben Ihrer Website",
+				"foundColorsHelp": "Angebote verwenden sie, wo das Markenkit keine Farbe festlegt. Sie ersetzen nie die Farben oben.",
+				"foundHex": "Website-Farbe {position} (Hex)",
+				"foundPicker": "Website-Farbe {position}",
+				"notFetched": "{host} wurde noch nicht nach Markenfarben durchsucht.",
+				"fetchAgain": "Erneut abrufen",
+				"failed": {
+					"unreachable": "{host} war nicht erreichbar. Prüfen Sie die Adresse der Website.",
+					"blocked": "{host} kann nicht abgerufen werden. Verwenden Sie die öffentliche Website Ihrer Organisation.",
+					"too_large": "{host} hat eine zu große Seite gesendet.",
+					"unsupported": "{host} hat keine Webseite geliefert.",
+					"no_logo": "Auf {host} wurden keine Markenfarben gefunden.",
+					"no_colors": "Auf {host} wurden keine Markenfarben gefunden. Legen Sie stattdessen oben Haupt- und Akzentfarben fest.",
+					"rate_limited": "Websites wurden in kurzer Zeit mehrmals abgerufen. Versuchen Sie es in einigen Minuten erneut.",
+					"not_member": "Der Abruf von {host} wurde beendet, weil die Person, die ihn gestartet hat, das Markenkit nicht mehr ändern kann.",
+					"timed_out": "Die Suche nach Farben auf {host} hat zu lange gedauert.",
+					"failed": "Markenfarben von {host} konnten nicht gelesen werden."
+				}
+			},
+			"conflict": "Jemand anderes hat das Markenkit geändert. Ihre Änderungen sind noch da; laden Sie neu, um die andere Version zu sehen, und nehmen Sie Ihre Änderungen dann erneut vor.",
+			"reload": "Neu laden",
+			"saveError": {
+				"tooManyAccents": "Verwenden Sie höchstens 3 Akzentfarben.",
+				"invalidAccent": "Eine der Akzentfarben ist keine gültige Farbe.",
+				"guidanceTooLong": "Die Markenrichtlinien sind zu lang.",
+				"invalidPrimary": "Die Hauptfarbe ist keine gültige Farbe.",
+				"invalidFontFamily": "Der Name einer Schriftfamilie darf nur Buchstaben, Ziffern, Leerzeichen und Bindestriche enthalten, 2 bis 64 Zeichen.",
+				"fontWithoutFamily": "Geben Sie für jede Schrift mit Datei den Namen ihrer Schriftfamilie ein.",
+				"invalidWebsite": "Geben Sie die öffentliche Website Ihrer Organisation ein, zum Beispiel example.com.",
+				"invalidAssetKey": "Eine Datei konnte nicht gespeichert werden. Laden Sie sie erneut hoch."
+			}
 		},
 		"companyContext": {
 			"title": "Unternehmenskontext",
@@ -5329,6 +5416,7 @@
 			"exportLeftOut": "Einige Inhalte fehlen ({format})",
 			"exportWarningDiagramPlaceholder": "{count, plural, one {# Diagramm wird} other {# Diagramme werden}} als Platzhalter angezeigt.",
 			"exportWarningDiagramLimit": "{count, plural, one {# Diagramm über dem Limit wird} other {# Diagramme über dem Limit werden}} als Platzhalter angezeigt.",
+			"exportWarningDiagramBelowPrintFloor": "{count, plural, one {# Diagramm ist} other {# Diagramme sind}} zu breit für die Seite, daher {count, plural, one {wird seine} other {wird ihre}} Beschriftung klein gedruckt.",
 			"exportWarningImageDropped": "{count, plural, one {# Bild konnte} other {# Bilder konnten}} nicht übernommen werden.",
 			"exportWarningImageLimit": "{count, plural, one {# Bild über dem Limit wurde} other {# Bilder über dem Limit wurden}} weggelassen.",
 			"exportWarningExternalImageDropped": "{count, plural, one {# verlinktes Bild wurde} other {# verlinkte Bilder wurden}} weggelassen.",
@@ -5370,6 +5458,42 @@
 			"openSettings": "Unternehmenskontext öffnen"
 		},
 		"proposalArtifact": {
+			"visuals": {
+				"origin": {
+					"step": "Automatisch hinzugefügt",
+					"instruction": "Mit Anweisungen aktualisiert"
+				},
+				"fixedColours": "Die Farben dieses Diagramms sind fest vorgegeben. Verwenden Sie „Mit Anweisungen bearbeiten“, um es neu zu gestalten.",
+				"panel": {
+					"title": "Mit Anweisungen bearbeiten",
+					"instructionLabel": "Was soll sich an diesem Diagramm ändern?",
+					"placeholder": "Zum Beispiel: die letzten beiden Schritte zusammenfassen und die Beschriftungen kürzen",
+					"counter": "{count} / {max}",
+					"tooLong": "Verwenden Sie höchstens {max} Zeichen.",
+					"generate": "Erzeugen",
+					"generating": "Ein Diagrammvorschlag wird erzeugt…",
+					"cancel": "Abbrechen",
+					"proposed": "Vorschlag",
+					"apply": "Übernehmen",
+					"discard": "Verwerfen",
+					"candidateReady": "Ein Diagrammvorschlag liegt vor. Prüfen Sie ihn unter dem aktuellen Diagramm und übernehmen oder verwerfen Sie ihn.",
+					"candidateRenderFailed": "Der Diagrammvorschlag konnte nicht dargestellt werden und kann daher nicht übernommen werden.",
+					"applied": "Das Diagramm wurde aktualisiert.",
+					"discarded": "Der Diagrammvorschlag wurde verworfen.",
+					"tryAgain": "Erneut versuchen",
+					"retry": "Wiederholen"
+				},
+				"states": {
+					"stale": "Das Diagramm hat sich geändert. Versuchen Sie es mit der aktuellen Fassung erneut.",
+					"refused": "Die Änderung würde Fakten hinzufügen, die der Abschnitt nicht enthält.",
+					"unsupported": "Nur Flussdiagramme können auf diese Weise bearbeitet werden.",
+					"providerMissingMember": "Richten Sie einen KI-Anbieter für Ihre Organisation ein",
+					"providerMissingGuest": "KI-Bearbeitung ist für dieses Projekt nicht verfügbar",
+					"rateLimited": "Gerade zu viele KI-Anfragen. Warten Sie einen Moment und versuchen Sie es dann erneut.",
+					"forbidden": "Sie haben keine Berechtigung, dieses Diagramm zu bearbeiten.",
+					"error": "Der Diagrammvorschlag konnte nicht erzeugt werden."
+				}
+			},
 			"analysis": {
 				"title": "Interne Analyse",
 				"description": "Prüfhinweise zu diesem Angebot für Ihr Team. Projektgäste sehen sie nie, und sie sind nie Teil des Hauptdokuments oder seiner Downloads.",
@@ -5556,8 +5680,11 @@
 				"styleDirectionHelp": "Optionale Vorgabe für die Visuals.",
 				"characterCount": "{count} / {max} Zeichen",
 				"directionTooLong": "Die Stilvorgabe darf höchstens {max} Zeichen lang sein.",
+				"diagrams": "Diagramme",
+				"autoVisuals": "Diagramme automatisch hinzufügen",
+				"autoVisualsHelp": "Fabric fügt nach jeder Generierung Diagramme hinzu. Diagramme, die der Prompt oder eine Person geschrieben hat, bleiben unverändert. Eine Änderung gilt ab dem nächsten Hinzufügen von Diagrammen; Diagramme, die bereits im Dokument sind, bleiben erhalten.",
 				"colors": "Farben",
-				"colorsHelp": "Ihre Farben für die Diagramme der nächsten Generierung.",
+				"colorsHelp": "Ihre Farben für dieses Dokument und seine Diagramme.",
 				"primaryColor": "Hauptfarbe",
 				"primaryHex": "Hauptfarbe (Hex)",
 				"primaryPicker": "Hauptfarbe auswählen",
@@ -5586,7 +5713,81 @@
 					"tooManyAccentColors": "Verwenden Sie höchstens {max} Akzentfarben."
 				},
 				"styleFailed": "Der Stil konnte nicht gespeichert werden. Versuchen Sie es erneut.",
-				"recipientFailed": "Die Empfängermarke konnte nicht gespeichert werden. Versuchen Sie es erneut."
+				"recipientFailed": "Die Empfängermarke konnte nicht gespeichert werden. Versuchen Sie es erneut.",
+				"proposer": "Ihre Marke",
+				"proposerHelp": "Wie Ihre Organisation in diesem Angebot erscheint. Farben, die Sie hier festlegen, gelten nur für dieses Dokument; alles andere stammt aus Ihrem Markenkit.",
+				"sourcePrefix": "Quelle:",
+				"sources": {
+					"document": "Für dieses Dokument festgelegt",
+					"brandKit": "Markenkit",
+					"vendorSite": "Ihre Website",
+					"default": "Neutraler Standard",
+					"suggested": "Gefunden, nicht übernommen",
+					"person": "Von einer Person festgelegt",
+					"notSet": "Nicht festgelegt"
+				},
+				"sourcesLoading": "Herkunft der Werte wird geladen…",
+				"sourcesFailed": "Woher diese Werte stammen, konnte nicht geladen werden. Sie können den Stil trotzdem ändern.",
+				"fields": {
+					"primary": "Hauptfarbe",
+					"accents": "Akzentfarben"
+				},
+				"inherited": "Verwendet {value}",
+				"useInherited": "Geerbten Wert verwenden",
+				"useInheritedLabel": "Geerbten Wert verwenden für {field}: {value} aus {source}",
+				"alternative": "{source} hat {value}",
+				"useAlternative": "Diesen verwenden",
+				"useAlternativeLabel": "Diesen verwenden für {field}: {value} aus {source}",
+				"brandKitValues": "Aus Ihrem Markenkit",
+				"logo": "Logo",
+				"logoPresent": "Das Logo Ihrer Organisation",
+				"logoMissing": "Kein Logo",
+				"displayFont": "Schrift für Überschriften",
+				"bodyFont": "Schrift für Fließtext",
+				"fontWithFile": "{family}, mit hochgeladener Schriftdatei",
+				"hero": "Titelbild",
+				"heroPresent": "Das Titelbild Ihres Markenkits",
+				"heroMissing": "Kein Titelbild",
+				"changeInBrandKit": "Im Markenkit ändern",
+				"askAdmin": "Bitten Sie einen Administrator der Organisation, dies zu ändern.",
+				"recipientSources": "Woher die Empfängermarke stammt",
+				"recipientFields": {
+					"name": "Name",
+					"website": "Website",
+					"logo": "Logo",
+					"colors": "Farben"
+				},
+				"suggestion": {
+					"running": "Die Marke des Empfängers wird auf {host} gesucht…",
+					"nothingFound": "Auf {host} wurde nichts gefunden, das sich vorschlagen ließe.",
+					"found": "Auf {host} gefunden — nicht übernommen",
+					"foundHelp": "Bestätigen Sie jeden Wert, den Sie verwenden möchten. Bis dahin ändert sich nichts.",
+					"name": "Name",
+					"colors": "Farben",
+					"logo": "Logo",
+					"logoAlt": "Auf {host} gefundenes Logo",
+					"confirm": "Bestätigen",
+					"confirmName": "Bestätigen: den Namen {value}",
+					"confirmColors": "Bestätigen: die Farben {value}",
+					"confirmLogo": "Bestätigen: das auf {host} gefundene Logo",
+					"fetchAgain": "Erneut abrufen",
+					"saveFirst": "Speichern oder verwerfen Sie Ihre Änderungen an der Empfängermarke, bevor Sie einen Wert bestätigen.",
+					"applied": "Von {host} übernommen.",
+					"conflict": "Die Empfängermarke wurde geändert, seit Sie sie gelesen haben. Prüfen Sie die aktuellen Werte und bestätigen Sie erneut.",
+					"stale": "Dieser Vorschlag ist veraltet. Rufen Sie die Website erneut ab, um ihren aktuellen Stand zu sehen.",
+					"logoRejected": "Das auf der Website gefundene Logo kann nicht verwendet werden. Laden Sie stattdessen unten eines hoch.",
+					"unavailable": "Das Abrufen ist gerade nicht verfügbar. Versuchen Sie es später erneut oder geben Sie die Marke unten von Hand ein.",
+					"failure": {
+						"unreachable": "{host} war nicht erreichbar. Prüfen Sie die Adresse oder geben Sie die Marke unten von Hand ein.",
+						"blocked": "{host} kann nicht abgerufen werden. Verwenden Sie die öffentliche Website des Empfängers oder geben Sie die Marke unten von Hand ein.",
+						"too_large": "Das Logo auf {host} ist zu groß. Laden Sie unten ein kleineres hoch.",
+						"unsupported": "Das Logo auf {host} hat ein Format, das wir nicht verwenden können. Laden Sie unten ein PNG-, JPEG-, GIF- oder WebP-Logo hoch.",
+						"rate_limited": "In kurzer Zeit wurden mehrere Websites abgerufen. Versuchen Sie es in einer Minute erneut.",
+						"not_member": "Nur Mitglieder der Organisation rufen die Website des Empfängers ab.",
+						"timed_out": "Das Lesen von {host} dauert länger als erwartet.",
+						"failed": "{host} konnte nicht gelesen werden. Versuchen Sie es erneut oder geben Sie die Marke unten von Hand ein."
+					}
+				}
 			},
 			"generationFeedback": {
 				"promptNotBound": "Ein Angebot kann erst generiert werden, wenn der Aktion „Client proposal (Main)“ ein Prompt zugeordnet ist. Ein Administrator der Organisation ordnet ihn in der Prompt-Bibliothek zu, ein Projektadministrator in den Prompt-Standards des Projekts.",
@@ -5600,6 +5801,9 @@
 				"nominationDeclineOnly": "Ein Vorschlag nur für diese Aktion kann abgelehnt, aber nicht angenommen werden.",
 				"projectGroupTitle": "Nicht mehr verwendet",
 				"projectGroupDescription": "Projektstandards für Aktionen, die das Proposal-Artefakt ersetzt. Solange es aktiviert ist, schreibt „Client proposal (Main)“ die Angebote, daher werden diese nicht verwendet. Entfernen Sie sie, um aufzuräumen."
+			},
+			"promptBinding": {
+				"diagramsNote": "Diagramme fügt Fabric nach der Generierung hinzu; ein Abschnitt, der bereits ein eigenes Diagramm hat, bleibt unverändert."
 			}
 		},
 		"proposalArtifactPage": {
@@ -5675,7 +5879,8 @@
 				"saved": "Empfängermarke gespeichert",
 				"saveFailed": "Die Empfängermarke konnte nicht gespeichert werden",
 				"fixColors": "Korrigieren Sie die markierten Farben vor dem Speichern.",
-				"conflict": "Jemand anderes hat die Empfängermarke geändert, während Sie sie bearbeitet haben. Unten sehen Sie die neue Fassung — prüfen Sie sie und nehmen Sie Ihre Änderung erneut vor."
+				"conflict": "Jemand anderes hat die Empfängermarke geändert, während Sie sie bearbeitet haben. Unten sehen Sie die neue Fassung — prüfen Sie sie und nehmen Sie Ihre Änderung erneut vor.",
+				"membersOnly": "Nur Mitglieder der Organisation bearbeiten die Empfängermarke."
 			},
 			"page": {
 				"title": "Glossy-Version",
@@ -5907,6 +6112,7 @@
 			"saveBlocked": {
 				"regenerating": "Speichern ist pausiert, während dieses Dokument neu generiert wird.",
 				"review": "Übernehmen oder verwerfen Sie die neu generierte Version, bevor Sie speichern.",
+				"proposal": "Übernehmen oder verwerfen Sie die vom Assistenten vorgeschlagenen Änderungen, bevor Sie speichern.",
 				"runLive": "Speichern ist pausiert, während ein Generierungslauf dieses Dokument schreibt. Es ist wieder möglich, sobald der Lauf abgeschlossen ist.",
 				"reconnecting": "Speichern ist pausiert, bis der Editor wieder mit dem Kollaborationsserver verbunden ist.",
 				"updatingToLatest": "Speichern ist pausiert, während der Editor auf die zuletzt gespeicherte Version aktualisiert wird.",
@@ -5921,6 +6127,7 @@
 				"hint": "Angezeigt wird die zuletzt gespeicherte Version, schreibgeschützt; das Speichern ist pausiert. Sie können weiter bearbeiten, sobald die Verbindung wieder steht."
 			},
 			"staleRunSave": "Die Generierung dieses Dokuments hat sich seit zehn Minuten nicht gemeldet. Wenn Sie jetzt speichern, wird dieser Lauf beendet.",
+			"assistantFinishing": "Der Assistent schließt ab …",
 			"rejectEmptyBody": "Es gibt keine frühere Version, zu der zurückgekehrt werden kann. Die neu generierte Version wurde beibehalten, und nichts wurde geändert.",
 			"rejectRunLive": "Eine neue Generierung dieses Dokuments hat begonnen. Die neu generierte Version wurde beibehalten, und nichts wurde geändert.",
 			"rejectReviewStale": "Dieses Dokument wurde geändert, nachdem diese Überprüfung geöffnet wurde. Es wurde nichts zurückgesetzt, die neueste Version bleibt erhalten.",
@@ -5938,6 +6145,9 @@
 			"saveConflictRoom": "Ihre Änderungen wurden nicht gespeichert: Das Dokument wurde zwischenzeitlich geändert. Der Editor wird auf die neueste Version aktualisiert.",
 			"saveConflictSolo": "Ihre Änderungen wurden nicht gespeichert: Das Dokument wurde zwischenzeitlich geändert. Kopieren Sie Ihren Text und laden Sie die Seite neu, um die neueste Version zu sehen.",
 			"leaveSaveFailed": "Ihre letzten Änderungen an diesem Dokument wurden nach dem Verlassen nicht gespeichert. Kopieren Sie sie, um sie zu behalten.",
+			"rawEditsStale": {
+				"message": "Das Dokument wurde geändert, während Sie sein Markdown bearbeitet haben. Ihre Änderungen hier sind nicht gespeichert und werden nicht von selbst gespeichert: Kopieren Sie sie, um sie zu behalten."
+			},
 			"offerBack": {
 				"message": "Der Editor wurde auf die zuletzt gespeicherte Version aktualisiert. Dabei wurde Text ersetzt, der seit dem letzten Speichern eingegeben wurde. Kopieren Sie ihn, um ihn zu behalten.",
 				"copy": "Meinen ungespeicherten Text kopieren",
@@ -6043,6 +6253,28 @@
 			}
 		},
 		"editor": {
+			"diagramMenu": {
+				"trigger": "Diagrammaktionen",
+				"editWithInstructions": "Mit Anweisungen bearbeiten",
+				"editWithInstructionsDescription": "Beschreiben Sie eine Änderung und prüfen Sie sie, bevor sie übernommen wird.",
+				"buildWithAi": "Mit KI erstellen",
+				"buildWithAiDescription": "Das Diagramm aus einer Beschreibung neu schreiben.",
+				"editSource": "Quelltext bearbeiten",
+				"caption": "Bildunterschrift",
+				"delete": "Löschen",
+				"deleteDiagram": "Diagramm löschen",
+				"captionLabel": "Bildunterschrift des Diagramms",
+				"captionPlaceholder": "Bildunterschrift hinzufügen...",
+				"scrollRegion": "Diagramm, seitlich scrollbar"
+			},
+			"diagramReview": {
+				"label": "Vorgeschlagene Änderungen an diesem Diagramm",
+				"preview": "Das Diagramm mit diesen Änderungen"
+			},
+			"buildDiagramWithAi": "Öffnet ein Eingabefeld, in dem Sie das Diagramm in einfachen Worten beschreiben. Der Assistent schreibt den Mermaid-Quelltext anhand Ihrer Beschreibung neu.",
+			"showDiagram": "Zurück zum gerenderten Diagramm. Nicht gespeicherte Änderungen am Quelltext werden verworfen.",
+			"editDiagramSource": "Öffnet den Mermaid-Quelltext in einem bearbeitbaren Feld. Strg+Enter speichert.",
+			"addCaption": "Fügt unter dem Diagramm eine kurze Bildunterschrift hinzu. Sie bleibt beim Speichern des Dokuments mit dem Diagramm verbunden.",
 			"editStatTilesSource": "Quelltext bearbeiten"
 		},
 		"stories": {

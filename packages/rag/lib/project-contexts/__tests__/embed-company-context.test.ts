@@ -12,9 +12,11 @@
  * project's settings, writes the project store and marks the project row.
  */
 
+import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+	assertEmbeddingModelUsable: vi.fn(),
 	storeCompanyContextPoints: vi.fn(),
 	storeProjectContext: vi.fn(),
 	generateEmbedding: vi.fn(),
@@ -29,6 +31,10 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../../company-contexts/store", () => ({
 	storeCompanyContextPoints: mocks.storeCompanyContextPoints,
+}));
+
+vi.mock("@repo/ai", () => ({
+	assertEmbeddingModelUsable: mocks.assertEmbeddingModelUsable,
 }));
 
 vi.mock("../store", () => ({
@@ -113,6 +119,7 @@ function chunk(index: number, text: string) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.assertEmbeddingModelUsable.mockResolvedValue(undefined);
 	mocks.routeContentForChunking.mockResolvedValue({ kind: "text" });
 	mocks.generateEmbedding.mockResolvedValue({
 		embedding: [0.1, 0.2],
@@ -528,3 +535,60 @@ describe("getCompanyChunkSettings", () => {
 		expect(mocks.getOrganizationRagSettings).not.toHaveBeenCalled();
 	});
 });
+
+it("returns a company embedding refusal as a failure result", async () => {
+	const refusal = new UnsupportedEmbeddingModelError(
+		"databricks-gte-large-en",
+	);
+	mocks.generateEmbeddings.mockRejectedValue(refusal);
+	await expect(
+		embedCompanyContext({
+			contextId: "src-1",
+			userId: "user-1",
+			content: SHORT,
+			type: "TEXT",
+			company,
+		}),
+	).resolves.toEqual({ success: false, error: refusal.message, refusal });
+	expect(mocks.storeCompanyContextPoints).not.toHaveBeenCalled();
+});
+
+it.each(["project", "company"] as const)(
+	"a refused %s chunked embed skips enrichment and returns refusal",
+	async (kind) => {
+		const refusal = new UnsupportedEmbeddingModelError(
+			"text-embedding-3-large",
+		);
+		mocks.assertEmbeddingModelUsable.mockRejectedValue(refusal);
+		mocks.generateEmbedding.mockRejectedValue(refusal);
+		mocks.generateEmbeddings.mockRejectedValue(refusal);
+		const common = {
+			contextId: "src-1",
+			userId: "user-1",
+			content: LONG,
+			type: "TEXT",
+		};
+		const result =
+			kind === "company"
+				? await embedCompanyContext({ ...common, company })
+				: await embedProjectContext({
+						...common,
+						projectId: "proj-1",
+						organizationId: ORG,
+						apiKey: "key",
+					});
+		expect(result).toEqual({
+			success: false,
+			error: refusal.message,
+			refusal,
+		});
+		expect(mocks.enrichChunksWithTenantContext).not.toHaveBeenCalled();
+		expect(mocks.assertEmbeddingModelUsable).toHaveBeenCalledWith({
+			userId: "user-1",
+			organizationId: ORG,
+			...(kind === "company" ? { organizationOnly: true } : {}),
+		});
+		expect(mocks.generateEmbedding).not.toHaveBeenCalled();
+		expect(mocks.generateEmbeddings).not.toHaveBeenCalled();
+	},
+);

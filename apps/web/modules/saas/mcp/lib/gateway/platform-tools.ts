@@ -71,6 +71,7 @@ import {
 	hasVisualSlots,
 	preserveVisualSlots,
 } from "@repo/utils/glossy/visual-slots";
+import { preserveVisualMarkers } from "@repo/utils/proposal-artifact/visual-identity";
 import {
 	CHECKOUT_INPUT_SCHEMA,
 	instructionCheckoutCheck,
@@ -700,7 +701,9 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		name: "fabric_get_document",
 		description:
 			"Reads a project document's full markdown with its title, type, status, version and contentHash. " +
-			"A `<visual-slot …></visual-slot>` line is a placeholder marker for a visual, not prose: do not quote, summarize or rewrite it.",
+			"A `<visual-slot …></visual-slot>` line is a placeholder marker for a visual, not prose: do not quote, summarize or rewrite it. " +
+			"A mermaid fence opening with `%% fabric-visual: <id>` is a generated diagram; that line is its id. " +
+			"A `%% caption: <text>` line is a diagram's caption.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -759,7 +762,10 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 		name: "fabric_update_document",
 		description:
 			"Updates a document's title, content or status; omitted fields are unchanged. A content change replaces the whole body and saves a version. " +
-			"Send the version and contentHash you read as expectedVersion and expectedContentHash (both or neither).",
+			"Send the version and contentHash you read as expectedVersion and expectedContentHash (both or neither). " +
+			"Keep a mermaid fence's `%% fabric-visual: <id>` first line; never invent or copy one. " +
+			"A `%% caption: <text>` line after it is the diagram's caption. " +
+			"Fabric restores it only while the diagram's body is unchanged; a changed body leaves it a person's diagram, its saved spec unused.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -772,7 +778,7 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 				content: {
 					type: "string",
 					description:
-						"The whole new markdown body. `<visual-slot …></visual-slot>` lines are managed by Fabric: stored slots are kept in place and any slot tag sent here is ignored, so omit them.",
+						"The whole new markdown body. `<visual-slot …></visual-slot>` lines are managed by Fabric: stored slots are kept in place and any slot tag sent here is ignored, so omit them. A changed mermaid body loses its marker.",
 				},
 				status: {
 					type: "string",
@@ -4163,7 +4169,10 @@ async function handleUpdateDocument(
 	// read (KTD17). A body with no slot on either side passes through as is.
 	const content =
 		typeof args.content === "string"
-			? preserveVisualSlots(doc.content, args.content)
+			? preserveVisualMarkers(
+					doc.content,
+					preserveVisualSlots(doc.content, args.content),
+				)
 			: (args.content as string | undefined);
 	// The spliced body is only right for the version its slots were lifted
 	// from: when a slot is involved, guard the write with it so a slot added
@@ -5975,7 +5984,9 @@ async function handleGetInstructionChecks(
 				errorResult,
 			},
 		});
-		if (direct !== null) return direct;
+		if (direct !== null) {
+			return direct;
+		}
 		resolved = await resolvePublishedInstructionSnapshot(
 			{ projectId },
 			session,
@@ -6801,7 +6812,9 @@ async function handleAddInstructionLesson(
 					(await resolveInstructionProjectAccess(projectId, session))
 				),
 		});
-		if (native !== null) return jsonResult(native);
+		if (native !== null) {
+			return jsonResult(native);
+		}
 		const resolved = await resolvePublishedInstructionSnapshot(
 			args,
 			session,
@@ -7142,7 +7155,8 @@ async function handleQueryWorkspace(
 		const message =
 			name === "AiUsageLimitExceededError"
 				? `Semantic search is unavailable: ${reason}`
-				: name === "AIProviderNotConfiguredError"
+				: name === "AIProviderNotConfiguredError" ||
+						name === "UnsupportedEmbeddingModelError"
 					? reason
 					: "Semantic search is not configured for this workspace. RAG provider may not be set up.";
 		return jsonResult({

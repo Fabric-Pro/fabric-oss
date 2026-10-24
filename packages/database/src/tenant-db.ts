@@ -301,6 +301,11 @@ const ORG_ONLY_TABLES = new Set([
 	"GlossySegmentCache",
 	"ProjectRecipientBrand",
 	"OrganizationBrandKit",
+	// Brand sources (Fizzy #2946): written only by automation, never
+	// project-scoped, so a project guest never reaches them.
+	"OrganizationBrandSiteFetch",
+	"ProjectRecipientBrandSuggestion",
+	"ProjectDocumentExportBrand",
 	// Company context (Fizzy #2719). Organization-owned with no userId, and
 	// NOT project-scoped: a project guest never reaches these rows.
 	"CompanyContextSource",
@@ -315,6 +320,10 @@ const ORG_ONLY_TABLES = new Set([
 	"ProjectDocumentFinding",
 	"ProjectDocumentFindingResponse",
 	"ProjectDocumentStyle",
+	// Generated visuals' specs (Fizzy #2946): no userId (`createdById` is
+	// attribution), and project-scoped below, because a guest with edit
+	// rights generates visuals through Edit with instructions.
+	"ProjectDocumentVisualSpec",
 	// ChatGPT plan pooling (Fizzy #2770): the organization's shared plan
 	// accounts and its pooling policy. `connectedByUserId` and
 	// `termsAcknowledgedById` are audit fields, not owners.
@@ -426,6 +435,7 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	GlossyVisualDecision: "projectId",
 	GlossySegmentCache: "projectId",
 	ProjectRecipientBrand: "projectId",
+	ProjectDocumentVisualSpec: "projectId",
 };
 
 /**

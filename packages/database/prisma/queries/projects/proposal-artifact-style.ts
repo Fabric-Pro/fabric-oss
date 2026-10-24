@@ -71,6 +71,7 @@ const STYLE_VIEW_SELECT = {
 	styleDirection: true,
 	primaryColor: true,
 	accentColors: true,
+	autoVisuals: true,
 	updatedById: true,
 	updatedAt: true,
 } as const satisfies Prisma.ProjectDocumentStyleSelect;
@@ -94,7 +95,10 @@ export async function getDocumentStyle(input: {
 }
 
 /**
- * Save the document's style, replacing every field. Fields are validated
+ * Save the document's style, replacing the direction and colours. The
+ * automatic-diagrams switch is replaced only when `autoVisuals` is given, so a
+ * save that leaves it out keeps the stored value (a new row starts on). Fields
+ * are validated
  * before anything is read. The tenant columns come from the document's
  * project; the document must belong to `projectId`, and `organizationId`,
  * when given, is only checked against the project's.
@@ -106,6 +110,7 @@ export async function upsertDocumentStyle(input: {
 	styleDirection: string | null;
 	primaryColor: string | null;
 	accentColors: string[];
+	autoVisuals?: boolean;
 	updatedById: string | null;
 }): Promise<DocumentStyleView> {
 	const fields = normalizeDocumentStyleFields(input);
@@ -127,9 +132,16 @@ export async function upsertDocumentStyle(input: {
 			projectId: input.projectId,
 			organizationId,
 			...fields,
+			autoVisuals: input.autoVisuals ?? true,
 			updatedById: input.updatedById,
 		},
-		update: { ...fields, updatedById: input.updatedById },
+		update: {
+			...fields,
+			...(input.autoVisuals === undefined
+				? {}
+				: { autoVisuals: input.autoVisuals }),
+			updatedById: input.updatedById,
+		},
 		select: STYLE_VIEW_SELECT,
 	});
 }

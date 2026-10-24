@@ -5,6 +5,8 @@ const mocks = vi.hoisted(() => ({
 	sessionUpdateMany: vi.fn(),
 	sessionUpdate: vi.fn(),
 	segmentFindMany: vi.fn(),
+	turnFindMany: vi.fn(),
+	actionFindMany: vi.fn(),
 	contextCreate: vi.fn(),
 	workflowStart: vi.fn(),
 	deleteProviderData: vi.fn(),
@@ -23,6 +25,8 @@ vi.mock("@repo/database", () => {
 			parlumeMeetingSegment: {
 				findMany: mocks.segmentFindMany,
 			},
+			parlumeMeetingTurn: { findMany: mocks.turnFindMany },
+			parlumeAction: { findMany: mocks.actionFindMany },
 			$transaction: (
 				run: (tx: {
 					projectContext: { create: typeof mocks.contextCreate };
@@ -65,6 +69,8 @@ beforeEach(() => {
 	});
 	mocks.sessionUpdateMany.mockResolvedValue({ count: 1 });
 	mocks.segmentFindMany.mockResolvedValue([]);
+	mocks.turnFindMany.mockResolvedValue([]);
+	mocks.actionFindMany.mockResolvedValue([]);
 	mocks.getSettings.mockReturnValue({ apiKey: "test-key" });
 	mocks.deleteProviderData.mockResolvedValue(undefined);
 });
@@ -73,6 +79,8 @@ describe("Parlume empty transcript finalization", () => {
 	it("ends an empty meeting and deletes provider artifacts", async () => {
 		await finalizeParlumeSession("session-1");
 
+		expect(mocks.contextCreate).not.toHaveBeenCalled();
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
 		expect(mocks.sessionUpdate).toHaveBeenCalledWith(
 			expect.objectContaining({
 				data: expect.objectContaining({
@@ -113,7 +121,8 @@ describe("Parlume transcript finalization", () => {
 			expect.objectContaining({
 				data: expect.objectContaining({
 					type: "MEETING_TRANSCRIPT",
-					content: "Dev One: We decided to ship the draft.\n",
+					content:
+						"Captured incoming speech:\nDev One: We decided to ship the draft.\n",
 					metadata: {
 						provider: "attendee",
 						parlumeSessionId: "session-1",
@@ -132,6 +141,83 @@ describe("Parlume transcript finalization", () => {
 							provider: "attendee",
 						}),
 					}),
+				],
+			}),
+		);
+	});
+
+	it("saves scoped responses and individual receipts without treating generated success as proof", async () => {
+		mocks.turnFindMany.mockResolvedValue([
+			{
+				id: "turn-1",
+				requestText: "Create the feature and update its task.",
+				responseText: "Both changes succeeded.",
+				status: "COMPLETED",
+				interruptedAt: null,
+			},
+		]);
+		mocks.actionFindMany.mockResolvedValue([
+			{
+				turnId: "turn-1",
+				toolName: "fabric_create_story",
+				status: "COMPLETED",
+			},
+			{
+				turnId: "turn-1",
+				toolName: "fabric_update_task",
+				status: "FAILED",
+			},
+		]);
+		mocks.contextCreate.mockResolvedValue({ id: "context-1" });
+
+		await finalizeParlumeSession("session-1");
+
+		const where = {
+			sessionId: "session-1",
+			projectId: "project-1",
+			organizationId: "org-1",
+		};
+		expect(mocks.turnFindMany).toHaveBeenCalledWith({
+			where,
+			select: {
+				id: true,
+				requestText: true,
+				responseText: true,
+				status: true,
+				interruptedAt: true,
+			},
+			orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+			take: 10_001,
+		});
+		expect(mocks.actionFindMany).toHaveBeenCalledWith({
+			where,
+			select: { turnId: true, toolName: true, status: true },
+			orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+			take: 10_001,
+		});
+		const content = mocks.contextCreate.mock.calls[0][0].data.content;
+		expect(content).toContain("Response: Both changes succeeded.");
+		expect(content).toContain(
+			"Action receipt: fabric_create_story — COMPLETED",
+		);
+		expect(content).toContain(
+			"Action receipt: fabric_update_task — FAILED",
+		);
+		expect(content).toContain(
+			"A COMPLETED request does not prove action success or audio delivery.",
+		);
+		expect(content).toContain(
+			"Only COMPLETED action receipts confirm success; all other action statuses are unsuccessful or unconfirmed.",
+		);
+		expect(mocks.workflowStart).toHaveBeenCalledWith(
+			"parlumeNotesWorkflow",
+			expect.objectContaining({
+				args: [
+					{
+						sessionId: "session-1",
+						organizationId: "org-1",
+						userId: "user-1",
+					},
 				],
 			}),
 		);

@@ -21,9 +21,18 @@ import {
 const recipientBrandQueryKey = (projectId: string) =>
 	["projectRecipientBrand", projectId] as const;
 
+/** What `projects.recipientBrand.get` returns. */
+type RecipientBrandRead = Awaited<
+	ReturnType<typeof orpcClient.projects.recipientBrand.get>
+>;
+
 type Props = {
 	projectId: string;
-	/** `canUpdateProject`: editors change it, everyone else reads it. */
+	/**
+	 * `canUpdateProject`: editors change it, everyone else reads it. The
+	 * server's recipient `canEdit` narrows it further (organization members
+	 * only, Fizzy #2946).
+	 */
 	canEdit: boolean;
 };
 
@@ -31,7 +40,7 @@ type Props = {
 type RecipientBrandAudience = "glossy" | "proposalArtifact";
 
 /**
- * The project's recipient brand in project settings (Fizzy #2589, R32): the
+ * The project's recipient brand in project settings (Fizzy #2589): the
  * party this project's Glossy editions are prepared for. Coordinated
  * Proposals color their visuals from it too (Fizzy #2801), so the card shows
  * behind either rollout gate, `GLOSSY_EDITION` or `PROPOSAL_ARTIFACT` — the
@@ -68,32 +77,57 @@ function RecipientBrandCard({
 		retry: 1,
 	});
 
-	// The draft is confirmed against the version it was read at; a newer
+	// The draft is confirmed against the version it was read at. A newer
 	// version replaces it (and remounts the fields, dropping any message that
-	// described the old one). A background refetch at the same version keeps
-	// what the editor is typing.
+	// described the old one) only while it holds no edits and no fetch or
+	// upload is in flight: a background read never wipes what the editor is
+	// typing, and their save meets the conflict instead.
 	const loadedVersion = query.data?.version;
 	const [draft, setDraft] = useState<RecipientBrandDraft>(() =>
 		recipientBrandDraftFrom(null),
 	);
 	const [initial, setInitial] = useState<RecipientBrandDraft>(draft);
+	const [baseVersion, setBaseVersion] = useState<number | null>(null);
 	const [fieldsPending, setFieldsPending] = useState(false);
 	const [logoError, setLogoError] = useState<RecipientLogoErrorCode | null>(
 		null,
 	);
 	const [conflict, setConflict] = useState(false);
 	const [colorsInvalid, setColorsInvalid] = useState(false);
+	const hasChanges = JSON.stringify(draft) !== JSON.stringify(initial);
+
+	const resetFrom = (read: RecipientBrandRead) => {
+		const next = recipientBrandDraftFrom(read.recipientBrand);
+		setBaseVersion(read.version);
+		setDraft(next);
+		setInitial(next);
+		setLogoError(null);
+		setColorsInvalid(false);
+	};
 
 	useEffect(() => {
 		if (!query.data) {
 			return;
 		}
-		const next = recipientBrandDraftFrom(query.data.recipientBrand);
-		setDraft(next);
-		setInitial(next);
-		setLogoError(null);
-		setColorsInvalid(false);
+		if (
+			baseVersion === null ||
+			(query.data.version !== baseVersion &&
+				!hasChanges &&
+				!fieldsPending)
+		) {
+			resetFrom(query.data);
+		}
 	}, [loadedVersion]);
+
+	// This editor's own save, or one that lost the version race, reloads the
+	// draft from what is stored now, which the guard above would keep out.
+	const reload = async (expectedVersion: number) => {
+		await queryClient.invalidateQueries({ queryKey });
+		const stored = queryClient.getQueryData<RecipientBrandRead>(queryKey);
+		if (stored && stored.version !== expectedVersion) {
+			resetFrom(stored);
+		}
+	};
 
 	const saveMutation = useMutation({
 		mutationFn: (input: {
@@ -112,11 +146,11 @@ function RecipientBrandCard({
 						? { action: "replace", token: input.draft.logo.token }
 						: { action: input.draft.logo.action },
 			}),
-		onSuccess: async (result) => {
+		onSuccess: async (result, input) => {
 			if (result.outcome === "applied") {
 				setConflict(false);
 				toast.success(t("saved"));
-				await queryClient.invalidateQueries({ queryKey });
+				await reload(input.expectedVersion);
 				return;
 			}
 			if (result.outcome === "conflict") {
@@ -124,7 +158,7 @@ function RecipientBrandCard({
 				// the new version replaces the draft — and say so, rather
 				// than let a retry overwrite a change this editor never saw.
 				setConflict(true);
-				await queryClient.invalidateQueries({ queryKey });
+				await reload(input.expectedVersion);
 				return;
 			}
 			// The server discarded the pending object it refused, so the
@@ -158,8 +192,14 @@ function RecipientBrandCard({
 		);
 	}
 
-	const { version, recipientBrand } = query.data;
-	const hasChanges = JSON.stringify(draft) !== JSON.stringify(initial);
+	const read = query.data;
+	const { recipientBrand } = read;
+	// The version the draft was read at, which may be older than the one a
+	// background read just brought.
+	const version = baseVersion ?? read.version;
+	// The server's own answer on top of the project rule: a project guest
+	// who edits the project still only reads its recipient brand.
+	const editable = canEdit && read.canEdit;
 	const saving = saveMutation.isPending;
 
 	const save = () => {
@@ -193,13 +233,14 @@ function RecipientBrandCard({
 				value={draft}
 				onChange={setDraft}
 				currentLogoUrl={recipientBrand?.logoUrl ?? null}
-				disabled={!canEdit}
+				disabled={!editable}
+				readOnlyReason={canEdit && !editable ? "membersOnly" : null}
 				busy={saving}
 				logoError={logoError}
 				idPrefix="project-recipient-brand"
 				onPendingChange={setFieldsPending}
 			/>
-			{canEdit && (
+			{editable && (
 				<div className="flex flex-wrap items-center gap-3">
 					<Button
 						type="button"
@@ -216,9 +257,9 @@ function RecipientBrandCard({
 							variant="outline"
 							size="sm"
 							onClick={() => {
-								setDraft(initial);
-								setColorsInvalid(false);
-								setLogoError(null);
+								// Back to the brand as stored now, which may be a
+								// newer version than these edits started from.
+								resetFrom(read);
 							}}
 						>
 							{t("discard")}

@@ -289,7 +289,16 @@ describe("audit.taxonomy handler", () => {
 		// guest started a PDF or Word export of a client-document Proposal;
 		// format, export id and the guest flag, never content, Fizzy #2946)
 		// = 214.
-		expect(result.actions).toHaveLength(214);
+		// + 1 backlog.recurring_errors.scan_failed (the scheduled recurring-error
+		// scan could not read a project's log source or could not file a
+		// proposal; stage and a short reason, never log content) = 215.
+		// + 1 org.brand_kit.site_fetched (the organization's own website
+		// fetched for the colours it declares; host and outcome code only,
+		// never page content, Fizzy #2946) = 216.
+		expect(result.actions).toHaveLength(216);
+		expect(result.actions).toContain(
+			"backlog.recurring_errors.scan_failed",
+		);
 		expect(result.actions).toContain(
 			"project.proposal_artifact.export_started",
 		);
@@ -560,6 +569,7 @@ describe("audit.taxonomy handler", () => {
 		expect(result.actions).toContain("project.recipient_brand.fetched");
 		expect(result.actions).toContain("project.recipient_brand.updated");
 		expect(result.actions).toContain("org.brand_kit.updated");
+		expect(result.actions).toContain("org.brand_kit.site_fetched");
 		expect(result.actions).toContain(
 			"org.company_context.metadata_updated",
 		);

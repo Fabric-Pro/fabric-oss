@@ -8,6 +8,7 @@
  * a synchronous one-shot.
  */
 
+import { scrubAndTrim } from "@repo/utils/scrub-secrets";
 import { gitlabOutboundFetch } from "./outbound";
 
 export class GitLabMcpError extends Error {
@@ -44,13 +45,34 @@ export interface GitLabMcpClient {
 interface JsonRpcSuccess {
 	jsonrpc: "2.0";
 	id: number;
-	result: { structuredContent?: unknown; content?: unknown };
+	result: {
+		structuredContent?: unknown;
+		content?: unknown;
+		isError?: boolean;
+	};
 }
 
 interface JsonRpcError {
 	jsonrpc: "2.0";
 	id: number;
 	error: { code: number; message: string; data?: unknown };
+}
+
+/** The text parts of a tool error result, unscrubbed. */
+function toolErrorText(content: unknown): string {
+	if (!Array.isArray(content)) {
+		return "";
+	}
+	return content
+		.filter(
+			(part): part is { type: "text"; text: string } =>
+				typeof part === "object" &&
+				part !== null &&
+				part.type === "text" &&
+				typeof part.text === "string",
+		)
+		.map((part) => part.text)
+		.join(" ");
 }
 
 function sameUrl(a: string, b: string): boolean {
@@ -70,6 +92,9 @@ export function createGitLabMcpClient(opts: {
 	// every client created in the same process, causing id collisions
 	// under concurrency from multiple users.
 	let nextId = 1;
+	// Server text goes into error messages that are logged and shown to the
+	// user; an endpoint that echoes the request's credential must not leak it.
+	const quote = (text: string) => scrubAndTrim(text, [opts.token]);
 	return {
 		async callTool(name, args) {
 			const id = nextId++;
@@ -107,7 +132,7 @@ export function createGitLabMcpClient(opts: {
 				throw new GitLabMcpError(
 					isRedirect
 						? `GitLab MCP HTTP ${response.status}: the endpoint redirected; not followed`
-						: `GitLab MCP HTTP ${response.status}: ${await response.text().catch(() => "")}`,
+						: `GitLab MCP HTTP ${response.status}: ${quote(await response.text().catch(() => ""))}`,
 					undefined, // no JSON-RPC error code on HTTP non-OK
 					response.status, // capture the HTTP status for downstream classification
 					answeredByEndpoint,
@@ -119,9 +144,23 @@ export function createGitLabMcpClient(opts: {
 				| JsonRpcError;
 			if ("error" in body) {
 				if (body.error.code === -32601) {
-					throw new GitLabMcpMethodNotFoundError(body.error.message);
+					throw new GitLabMcpMethodNotFoundError(
+						quote(body.error.message),
+					);
 				}
-				throw new GitLabMcpError(body.error.message, body.error.code);
+				throw new GitLabMcpError(
+					quote(body.error.message),
+					body.error.code,
+				);
+			}
+			// A tool that ran and failed answers with a result, not a JSON-RPC
+			// error. Returned as data, it would read as an empty listing or a
+			// blank issue, so it fails the call like any other MCP error.
+			if (body.result.isError === true) {
+				const detail = quote(toolErrorText(body.result.content));
+				throw new GitLabMcpError(
+					`GitLab MCP tool ${name} failed: ${detail || "no error detail"}`,
+				);
 			}
 			return body.result.structuredContent ?? body.result.content;
 		},

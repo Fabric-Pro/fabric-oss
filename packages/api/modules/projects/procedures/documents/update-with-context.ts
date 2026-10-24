@@ -16,6 +16,7 @@ import {
 } from "@repo/temporal";
 import { DOCUMENT_SAVE_BASE_REQUIRED } from "@repo/utils/document-save-base";
 import { preserveVisualSlots } from "@repo/utils/glossy/visual-slots";
+import { preserveVisualMarkers } from "@repo/utils/proposal-artifact/visual-identity";
 import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
 import { z } from "zod";
 import { applyDocumentUpdateSideEffects } from "../../../../lib/document-side-effects";
@@ -195,7 +196,13 @@ export const updateDocumentWithContextProcedure = tenantProtectedProcedure
 			try {
 				updated = await updateDocument(input.id, {
 					content: normalizeQuoteArtifacts(
-						preserveVisualSlots(document.content, confirmedContent),
+						preserveVisualMarkers(
+							document.content,
+							preserveVisualSlots(
+								document.content,
+								confirmedContent,
+							),
+						),
 					),
 					lastEditedBy: user.id,
 					changeDescription: "Updated with latest context",

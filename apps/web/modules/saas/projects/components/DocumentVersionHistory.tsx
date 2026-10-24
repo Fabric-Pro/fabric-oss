@@ -7,6 +7,7 @@
  */
 
 import type { DocumentVersionAuthor } from "@repo/utils/document-version-author";
+import { countDocumentWords } from "@repo/utils/document-word-count";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -617,7 +618,7 @@ export function DocumentVersionHistory({
 														/>
 														<span className="text-muted-foreground/60">
 															{version.content
-																? `${version.content.split(/\s+/).length} words`
+																? `${countDocumentWords(version.content)} words`
 																: ""}
 														</span>
 													</div>

@@ -14,7 +14,12 @@ import { createCerebras } from "@ai-sdk/cerebras";
 import { createDeepSeek } from "@ai-sdk/deepseek";
 import { createGroq } from "@ai-sdk/groq";
 import { createOpenAI } from "@ai-sdk/openai";
-import type { EmbeddingModel, LanguageModel } from "ai";
+import { createTypeSafeAi } from "@ai-sdk/typesafe-ai";
+import type {
+	EmbeddingModel,
+	Experimental_DecisionModel,
+	LanguageModel,
+} from "ai";
 import {
 	createGateway,
 	extractReasoningMiddleware,
@@ -27,7 +32,10 @@ import {
 } from "./lib/adaptive-claude-sampling-middleware";
 import { resolveAzureDeploymentTarget } from "./lib/azure-foundry-url";
 import { createDatabricksFetch } from "./lib/databricks-compat";
-import { toDatabricksServingBaseUrl } from "./lib/databricks-url";
+import {
+	toDatabricksServingBaseUrl,
+	toDatabricksWorkspaceHost,
+} from "./lib/databricks-url";
 import { createEmptyToolInputRepairMiddleware } from "./lib/empty-tool-input-middleware";
 import { createLLMTelemetryMiddleware } from "./lib/llm-telemetry-middleware";
 import {
@@ -1029,32 +1037,70 @@ export function getModel(
 	);
 }
 
+type EvaluationModelInstance = Extract<
+	Experimental_DecisionModel,
+	{ doDecide: unknown }
+>;
+
 /**
  * Create a typed decision model for the AI SDK decision API
  * (`experimental_decide`).
  *
- * Decision models are a separate SDK surface from language models. They must
- * stay on Vercel AI Gateway and use `gateway.decisionModel` directly. The
+ * Decision models use the gateway decision API or Databricks System One,
+ * separately from the language-model SDK surface. The
  * Fabric name keeps "evaluation" because the catalog capability is still
  * `EVALUATION`.
  */
 export function getEvaluationModel(
 	modelName: string,
-	context: {
-		apiKey: string;
-		provider: "VERCEL_GATEWAY";
-		headers?: Record<string, string>;
-	},
-) {
+	context:
+		| {
+				provider: "VERCEL_GATEWAY";
+				apiKey: string;
+				headers?: Record<string, string>;
+		  }
+		| { provider: "DATABRICKS"; apiKey: string; baseUrl: string },
+): EvaluationModelInstance {
 	if (!modelName) {
 		throw new Error(
 			"Evaluation model name is required. Configure a decision model in Settings → AI Models.",
 		);
 	}
 
+	if (context.provider === "DATABRICKS") {
+		const model = createTypeSafeAi({
+			apiKey: context.apiKey,
+			baseURL: `${toDatabricksWorkspaceHost(context.baseUrl)}/ai-gateway/typesafe/v1`,
+		}).decisionModel(modelName);
+		// TypeSafe uses a newer experimental provider contract with box questions.
+		// Fabric's AI SDK accepts choice, score and boolean; retain that contract.
+		return {
+			specificationVersion: model.specificationVersion,
+			provider: model.provider,
+			modelId: model.modelId,
+			supportedQuestionTypes: model.supportedQuestionTypes.filter(
+				(type) => type !== "box",
+			),
+			async doDecide(options) {
+				const result = await model.doDecide(options);
+				const answers: Awaited<
+					ReturnType<EvaluationModelInstance["doDecide"]>
+				>["answers"] = {};
+				for (const [id, answer] of Object.entries(result.answers)) {
+					if (answer.type === "box") {
+						throw new Error(
+							"The decision provider returned an unsupported box answer.",
+						);
+					}
+					answers[id] = answer;
+				}
+				return { ...result, answers };
+			},
+		};
+	}
 	if (context.provider !== "VERCEL_GATEWAY") {
 		throw new Error(
-			"Evaluation models require Vercel AI Gateway. Configure a Vercel AI Gateway provider for this organization.",
+			"Evaluation models require Vercel AI Gateway or Databricks. Configure a supported provider for this organization.",
 		);
 	}
 
@@ -1064,9 +1110,8 @@ export function getEvaluationModel(
 }
 
 /**
- * Get a speech (text-to-speech) model through Vercel AI Gateway. Same shape as
- * `getEvaluationModel`: speech models exist only on the gateway's typed
- * surface, so the tenant's gateway credential and billing headers are reused.
+ * Get a speech (text-to-speech) model through Vercel AI Gateway. Speech models
+ * use the gateway's typed surface, so the tenant's gateway credential and billing headers are reused.
  */
 export function getGatewaySpeechModel(
 	modelName: string,

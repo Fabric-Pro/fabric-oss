@@ -104,3 +104,28 @@ export function normalizeMetadata(input: unknown): RouteMetadata {
 				: undefined,
 	};
 }
+
+/** Refuse tool calls the SDK dispatches after Stop; a call already running continues. */
+export function guardToolsAgainstCancellation(
+	tools: Record<string, unknown>,
+	signal?: AbortSignal,
+): void {
+	for (const [name, definition] of Object.entries(tools)) {
+		if (
+			typeof definition !== "object" ||
+			definition === null ||
+			!("execute" in definition) ||
+			typeof definition.execute !== "function"
+		) {
+			continue;
+		}
+		const execute = definition.execute;
+		tools[name] = {
+			...definition,
+			execute: (...args: unknown[]) => {
+				signal?.throwIfAborted();
+				return execute(...args);
+			},
+		};
+	}
+}

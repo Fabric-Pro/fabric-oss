@@ -201,3 +201,186 @@ describe("one Realtime client for every API emit", () => {
 		expect(RealtimeMock).not.toHaveBeenCalled();
 	});
 });
+
+/**
+ * `message_appended` from an API caller (`record-operation-result`) goes out
+ * on the API's client like the project events, and never through the worker
+ * relay (Fizzy #2946): a web process without Upstash must not POST it to
+ * itself, or to whatever app URL it was given.
+ */
+describe("emitConversationMessageAppended (API)", () => {
+	const messageAppended = {
+		conversationId: "conv-1",
+		messageId: "msg-1",
+		appendedAt: "2026-10-23T10:00:00.000Z",
+	};
+
+	it("publishes on the API's client, on the conversation's channel", async () => {
+		const emits: Array<{ channel: string; event: string }> = [];
+		// biome-ignore lint/complexity/useArrowFunction: must stay constructable for `new Realtime()`
+		const RealtimeMock = vi.fn(function () {
+			return {
+				channel: (channel: string) => ({
+					emit: async (event: string) => {
+						emits.push({ channel, event });
+					},
+				}),
+			};
+		});
+		vi.doMock("@upstash/realtime", () => ({ Realtime: RealtimeMock }));
+		// biome-ignore lint/complexity/useArrowFunction: must stay constructable for `new Redis()`
+		vi.doMock("@upstash/redis", () => ({ Redis: vi.fn(function () {}) }));
+		process.env.UPSTASH_REDIS_REST_URL = "https://example.upstash.io";
+		process.env.UPSTASH_REDIS_REST_TOKEN = "test-token";
+
+		const mod = await import("../realtime");
+		await mod.emitConversationMessageAppended(messageAppended);
+
+		expect(RealtimeMock).toHaveBeenCalledTimes(1);
+		expect(RealtimeMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				maxDurationSecs: mod.REALTIME_STREAM_MAX_DURATION_SECS,
+			}),
+		);
+		expect(emits).toEqual([
+			{ channel: "conversation:conv-1", event: "message_appended" },
+		]);
+	});
+
+	it("never relays: without Upstash it emits nothing, even with the relay env set", async () => {
+		const RealtimeMock = vi.fn();
+		vi.doMock("@upstash/realtime", () => ({ Realtime: RealtimeMock }));
+		delete process.env.UPSTASH_REDIS_REST_URL;
+		delete process.env.UPSTASH_REDIS_REST_TOKEN;
+		process.env.AGENT_SERVICE_SECRET = "synthetic-relay-secret";
+		process.env.NEXT_PUBLIC_APP_URL = "https://staging.example.com";
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+
+		try {
+			const mod = await import("../realtime");
+			await expect(
+				mod.emitConversationMessageAppended(messageAppended),
+			).resolves.toBeUndefined();
+
+			expect(RealtimeMock).not.toHaveBeenCalled();
+			expect(fetchMock).not.toHaveBeenCalled();
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+});
+
+/**
+ * The web half of the worker relay (Fizzy #2946): the route at
+ * `/api/internal/realtime-emit` hands a validated event here, and it goes out
+ * on the API's client, on the channel the SSE routes subscribe to.
+ */
+describe("publishRelayedEvent", () => {
+	function apiRealtime(emit = vi.fn().mockResolvedValue(undefined)) {
+		const channel = vi.fn(() => ({ emit }));
+		// biome-ignore lint/complexity/useArrowFunction: must stay constructable for `new Realtime()`
+		const RealtimeMock = vi.fn(function () {
+			return { channel };
+		});
+		vi.doMock("@upstash/realtime", () => ({ Realtime: RealtimeMock }));
+		// biome-ignore lint/complexity/useArrowFunction: must stay constructable for `new Redis()`
+		vi.doMock("@upstash/redis", () => ({ Redis: vi.fn(function () {}) }));
+		process.env.UPSTASH_REDIS_REST_URL = "https://example.upstash.io";
+		process.env.UPSTASH_REDIS_REST_TOKEN = "test-token";
+		return { channel, emit, RealtimeMock };
+	}
+
+	const documentChange = {
+		projectId: "project-1",
+		documentId: "doc-1",
+		action: "updated" as const,
+		userId: "user-1",
+		userName: "Example Dev",
+	};
+
+	it("publishes a project event on the project's channel with the API's client", async () => {
+		const { channel, emit, RealtimeMock } = apiRealtime();
+
+		const mod = await import("../realtime");
+		await expect(
+			mod.publishRelayedEvent({
+				channel: "project",
+				id: "project-1",
+				event: "document_change",
+				data: documentChange,
+			}),
+		).resolves.toBe(true);
+
+		expect(RealtimeMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				maxDurationSecs: mod.REALTIME_STREAM_MAX_DURATION_SECS,
+			}),
+		);
+		expect(channel).toHaveBeenCalledWith("project:project-1");
+		expect(emit).toHaveBeenCalledTimes(1);
+		expect(emit).toHaveBeenCalledWith("document_change", documentChange);
+	});
+
+	it("publishes message_appended on the conversation's channel", async () => {
+		const { channel, emit } = apiRealtime();
+		const data = {
+			conversationId: "conv-1",
+			messageId: "msg-1",
+			appendedAt: "2026-10-23T10:00:00.000Z",
+		};
+
+		const mod = await import("../realtime");
+		await mod.publishRelayedEvent({
+			channel: "conversation",
+			id: "conv-1",
+			event: "message_appended",
+			data,
+		});
+
+		expect(channel).toHaveBeenCalledWith("conversation:conv-1");
+		expect(emit).toHaveBeenCalledWith("message_appended", data);
+	});
+
+	it("answers false, and relays nothing on, when realtime is not configured here", async () => {
+		const RealtimeMock = vi.fn();
+		vi.doMock("@upstash/realtime", () => ({ Realtime: RealtimeMock }));
+		delete process.env.UPSTASH_REDIS_REST_URL;
+		delete process.env.UPSTASH_REDIS_REST_TOKEN;
+		process.env.AGENT_SERVICE_SECRET = "synthetic-relay-secret";
+		process.env.APP_URL = "https://app.example.com";
+		const fetchMock = vi.fn();
+		vi.stubGlobal("fetch", fetchMock);
+
+		try {
+			const mod = await import("../realtime");
+			await expect(
+				mod.publishRelayedEvent({
+					channel: "project",
+					id: "project-1",
+					event: "document_change",
+					data: documentChange,
+				}),
+			).resolves.toBe(false);
+
+			expect(RealtimeMock).not.toHaveBeenCalled();
+			expect(fetchMock).not.toHaveBeenCalled();
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	it("lets a failed publish throw, so the route can answer with an error", async () => {
+		apiRealtime(vi.fn().mockRejectedValue(new Error("Redis down")));
+
+		const mod = await import("../realtime");
+		await expect(
+			mod.publishRelayedEvent({
+				channel: "project",
+				id: "project-1",
+				event: "document_change",
+				data: documentChange,
+			}),
+		).rejects.toThrow("Redis down");
+	});
+});

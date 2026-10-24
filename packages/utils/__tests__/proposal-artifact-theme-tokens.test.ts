@@ -17,6 +17,7 @@ import {
 	themeTokenHash,
 	VISUAL_ROLES,
 	visualRoleClassDefs,
+	withVisualRoleClassDefs,
 } from "../lib/proposal-artifact/theme-tokens";
 
 const NO_SOURCES: ProposalThemeSources = {
@@ -82,9 +83,13 @@ describe("buildProposalThemeTokens", () => {
 		expect(tokens.recipient.logo.value).toBeNull();
 		expect(tokens.recipient.colors.value).toEqual([]);
 
-		// Ten proposer values (three of them fonts) and three recipient ones.
+		expect(tokens.proposer.fontFiles?.display.value).toBeNull();
+		expect(tokens.proposer.fontFiles?.body.value).toBeNull();
+
+		// Twelve proposer values (three fonts, two font files) and three
+		// recipient ones.
 		const values = sourcedValues(tokens);
-		expect(values).toHaveLength(13);
+		expect(values).toHaveLength(15);
 		for (const [path, token] of values) {
 			expect({ path, source: token.source }).toEqual({
 				path,
@@ -149,6 +154,139 @@ describe("buildProposalThemeTokens", () => {
 			value: ["#b91c1c", "#0f766e"],
 			source: "BRAND_KIT",
 		});
+	});
+
+	it("resolves the primary by Style, then Brand kit, then the vendor's website, then neutral", () => {
+		const site = { primaryColor: "#0A2540", accentColors: ["#635BFF"] };
+		const kit = { accentColors: [], primaryColor: "#7C3AED" };
+
+		expect(
+			buildProposalThemeTokens(
+				sources({
+					style: { primaryColor: "#1d4ed8", accentColors: [] },
+					brandKit: kit,
+					vendorSite: site,
+				}),
+			).proposer.primary,
+		).toEqual({ value: "#1d4ed8", source: "MANUAL" });
+		expect(
+			buildProposalThemeTokens(
+				sources({
+					style: { primaryColor: null, accentColors: [] },
+					brandKit: kit,
+					vendorSite: site,
+				}),
+			).proposer.primary,
+		).toEqual({ value: "#7c3aed", source: "BRAND_KIT" });
+		expect(
+			buildProposalThemeTokens(
+				sources({ brandKit: { accentColors: [] }, vendorSite: site }),
+			).proposer.primary,
+		).toEqual({ value: "#0a2540", source: "VENDOR_SITE" });
+		expect(
+			buildProposalThemeTokens(sources({ vendorSite: null })).proposer
+				.primary,
+		).toEqual({ value: NEUTRAL_THEME.primary, source: "DEFAULT" });
+	});
+
+	it("takes the vendor's accents only when neither the Style nor the Brand kit has any", () => {
+		const tokens = buildProposalThemeTokens(
+			sources({
+				style: { primaryColor: null, accentColors: [] },
+				brandKit: { accentColors: [] },
+				vendorSite: { primaryColor: null, accentColors: ["#635BFF"] },
+			}),
+		);
+
+		expect(tokens.proposer.accents).toEqual({
+			value: ["#635bff"],
+			source: "VENDOR_SITE",
+		});
+	});
+
+	it("never lets a recipient colour fill a proposer value", () => {
+		const tokens = buildProposalThemeTokens(
+			sources({
+				recipient: {
+					name: "Example Client",
+					logoKey: null,
+					colors: ["#b91c1c"],
+				},
+			}),
+		);
+
+		expect(tokens.proposer.primary.source).toBe("DEFAULT");
+		expect(tokens.proposer.accents.source).toBe("DEFAULT");
+		expect(tokens.recipient.colors.value).toEqual(["#b91c1c"]);
+	});
+
+	it("drops a vendor colour that is not #rrggbb, so the next source applies", () => {
+		const tokens = buildProposalThemeTokens(
+			sources({
+				vendorSite: {
+					primaryColor: "red;} body{display:none",
+					accentColors: ["url(x)", "#0f766e"],
+				},
+			}),
+		);
+
+		expect(tokens.proposer.primary.source).toBe("DEFAULT");
+		expect(tokens.proposer.accents.value).toEqual(["#0f766e"]);
+	});
+
+	it("takes the Brand kit fonts, files and hero as the organization's own settings", () => {
+		const tokens = buildProposalThemeTokens(
+			sources({
+				brandKit: {
+					accentColors: [],
+					displayFontFamily: "Example Display",
+					bodyFontFamily: "Example Text",
+					displayFontFileId: "font-display-id",
+					bodyFontFileId: null,
+					heroKey: "organization-brand/org-1/hero/hero-id.png",
+				},
+			}),
+		);
+
+		expect(tokens.proposer.fonts.display).toEqual({
+			value: "Example Display",
+			source: "BRAND_KIT",
+		});
+		expect(tokens.proposer.fonts.body).toEqual({
+			value: "Example Text",
+			source: "BRAND_KIT",
+		});
+		expect(tokens.proposer.fonts.mono.source).toBe("DEFAULT");
+		expect(tokens.proposer.fontFiles?.display).toEqual({
+			value: "font-display-id",
+			source: "BRAND_KIT",
+		});
+		expect(tokens.proposer.fontFiles?.body.value).toBeNull();
+		expect(tokens.proposer.hero).toEqual({
+			value: {
+				kind: "organization-hero",
+				key: "organization-brand/org-1/hero/hero-id.png",
+			},
+			source: "BRAND_KIT",
+		});
+	});
+
+	it("ignores a font file without its family and a family the theme may not write", () => {
+		const tokens = buildProposalThemeTokens(
+			sources({
+				brandKit: {
+					accentColors: [],
+					displayFontFamily: 'Evil"; } body {',
+					displayFontFileId: "font-display-id",
+				},
+			}),
+		);
+
+		expect(tokens.proposer.fonts.display).toEqual({
+			value: NEUTRAL_THEME.font,
+			source: "DEFAULT",
+		});
+		expect(tokens.proposer.fontFiles?.display.value).toBeNull();
 	});
 
 	it("treats a Style whose accents are all invalid as having none", () => {
@@ -628,7 +766,7 @@ describe("themeTokenHash", () => {
 		const hash = themeTokenHash(branded());
 
 		expect(themeTokenHash(branded())).toBe(hash);
-		expect(hash).toMatch(/^t1:[0-9a-f]{16}$/);
+		expect(hash).toMatch(/^t2:[0-9a-f]{16}$/);
 	});
 
 	it("does not depend on key order", () => {
@@ -645,6 +783,32 @@ describe("themeTokenHash", () => {
 		};
 
 		expect(themeTokenHash(reordered)).toBe(themeTokenHash(tokens));
+	});
+
+	it("changes when an uploaded font file or the hero is replaced", () => {
+		const withAssets = (fileId: string, heroKey: string) =>
+			buildProposalThemeTokens(
+				sources({
+					brandKit: {
+						accentColors: [],
+						displayFontFamily: "Example Display",
+						displayFontFileId: fileId,
+						heroKey,
+					},
+				}),
+			);
+		const hero = "organization-brand/org-1/hero/first.png";
+		const base = themeTokenHash(withAssets("font-a", hero));
+
+		expect(themeTokenHash(withAssets("font-b", hero))).not.toBe(base);
+		expect(
+			themeTokenHash(
+				withAssets(
+					"font-a",
+					"organization-brand/org-1/hero/second.png",
+				),
+			),
+		).not.toBe(base);
 	});
 
 	it("changes when a colour changes", () => {
@@ -790,6 +954,34 @@ describe("diagram colours", () => {
 			expect(
 				contrastRatio(roles[role].color, roles[role].fill),
 			).toBeGreaterThanOrEqual(TEXT_CONTRAST);
+		}
+	});
+
+	it("appends the role classDefs to a flowchart, after a marker line", () => {
+		const source =
+			'%% fabric-visual: abcdefgh12345678\nflowchart TD\nf0["Intake"]\nclass f0 surface\n';
+		expect(withVisualRoleClassDefs(source, paint)).toBe(
+			[source.trimEnd(), ...visualRoleClassDefs(paint)].join("\n"),
+		);
+		for (const header of ["graph LR", "flowchart", "  Flowchart TB  "]) {
+			expect(
+				withVisualRoleClassDefs(`${header}\nA --> B`, paint),
+			).toContain("classDef surface ");
+		}
+	});
+
+	it("leaves every other kind of diagram as it is", () => {
+		for (const source of [
+			"gantt\n  title Plan\n  Build :a1, 2026-01-01, 30d",
+			"timeline\n  2026 : Kickoff",
+			"stateDiagram-v2\n  [*] --> Draft",
+			"sequenceDiagram\n  A->>B: hi",
+			"---\ntitle: x\n---\nflowchart TD\nA --> B",
+			"flowchartish TD\nA --> B",
+			"",
+			"%% only a comment",
+		]) {
+			expect(withVisualRoleClassDefs(source, paint)).toBe(source);
 		}
 	});
 

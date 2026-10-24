@@ -5,12 +5,14 @@
  * Reuses infrastructure from orchestrator for MCP tool loading and execution.
  */
 
+import { guardToolsAgainstRepeatedCalls } from "@repo/agent-types/repeated-tool-call-guard";
 import {
 	type AIOperationContext,
 	isStepCount,
 	streamText,
 	tool,
 } from "@repo/ai";
+import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import { makeStepCacheBreakpoint } from "@repo/ai/prompt-cache";
 import {
 	db,
@@ -29,8 +31,8 @@ import { Context, heartbeat } from "@temporalio/activity";
 import { publishExecutionEvent } from "../../lib/redis-publisher";
 import { synthesizeToolSpeech } from "../../lib/text-to-speech";
 import {
-	type UsageOrigin,
 	secondaryUsageFields,
+	type UsageOrigin,
 	usageOriginFields,
 } from "../../workflows/orchestrator/usage-attribution";
 import { getAgentMemoryTools } from "../agent-memory";
@@ -193,6 +195,7 @@ export async function executeAgentTurn(
 
 	const startTime = Date.now();
 	const toolCalls: ToolCallRecord[] = [];
+	let toolLimitError: ReturnType<typeof findAiUsageLimitError>;
 
 	try {
 		// Load MCP tools if configured
@@ -391,6 +394,14 @@ export async function executeAgentTurn(
 			});
 		}
 
+		guardToolsAgainstRepeatedCalls(tools, {
+			onRepeat: (toolName, count) => {
+				logger.warn("Agent executor tool returned a repeated result", {
+					toolName,
+					count,
+				});
+			},
+		});
 		const preparedResponse = await prepareAgentTools(tools, toolToConfig);
 		if (preparedResponse !== undefined) {
 			return { response: preparedResponse, toolCalls: [], success: true };
@@ -499,8 +510,13 @@ export async function executeAgentTurn(
 				onChunk: ({
 					chunk,
 				}: {
-					chunk: { type: string; text?: string };
+					chunk: { type: string; text?: string; error?: unknown };
 				}) => {
+					// Tool refusals are stream parts; throwing inside execute alone
+					// does not fail the agent turn.
+					if (chunk.type === "tool-error") {
+						toolLimitError ??= findAiUsageLimitError(chunk.error);
+					}
 					if (chunk.type !== "text-delta" || !chunk.text) {
 						return;
 					}
@@ -628,6 +644,10 @@ export async function executeAgentTurn(
 			tokenUsage = extractTokenUsage({ usage });
 		}
 
+		if (toolLimitError) {
+			throw toolLimitError;
+		}
+
 		const durationMs = Date.now() - startTime;
 		recordTurnValue("llm.toolCalls", toolCalls.length);
 
@@ -645,8 +665,10 @@ export async function executeAgentTurn(
 			success: true,
 		};
 	} catch (error) {
+		const limitError = toolLimitError ?? findAiUsageLimitError(error);
 		const errorMessage =
-			error instanceof Error ? error.message : String(error);
+			limitError?.message ??
+			(error instanceof Error ? error.message : String(error));
 		logger.error("[AgentExecutor] Agent turn failed", {
 			error: errorMessage,
 		});
@@ -1660,6 +1682,14 @@ export async function previewAgentTurn(
 			}
 		}
 
+		guardToolsAgainstRepeatedCalls(tools, {
+			onRepeat: (toolName, count) => {
+				logger.warn("Agent preview tool returned a repeated result", {
+					toolName,
+					count,
+				});
+			},
+		});
 		const hasTools = Object.keys(tools).length > 0;
 		const fullSystemPrompt = buildFullSystemPrompt(systemPrompt);
 		const messages = await buildConversationMessages([], userMessage);

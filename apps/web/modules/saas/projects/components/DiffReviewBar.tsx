@@ -1,5 +1,6 @@
 "use client";
 
+import type { Transaction } from "@tiptap/pm/state";
 import type { Editor } from "@tiptap/react";
 import { Button } from "@ui/components/button";
 import {
@@ -10,21 +11,26 @@ import {
 import { Check, ChevronDown, ChevronUp, Keyboard, X } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { toast } from "sonner";
-import { useRecordDocumentAssistantDiffOutcome } from "../hooks/useDocumentAssistantHistory";
+import {
+	type DiffOutcomeAudit,
+	useDiffOutcomeStamp,
+} from "../hooks/use-diff-outcome-stamp";
 import type { DiffViewMode } from "../lib/diff-view-modes";
 
 interface DiffRange {
 	from: number;
 	to: number;
 	type: "addition" | "deletion";
+	/** A whole table the AI added or removed, carried as the table's `diff` attribute. */
+	table?: boolean;
 }
 
 /**
  * Scan the editor document for diff-specific marks only.
  * Uses diffInsert/diffDelete (rendered as <ins>/<del>) so that
  * ordinary italic and strikethrough formatting is never mistaken
- * for a pending AI change.
+ * for a pending AI change. Added and removed tables carry no marks,
+ * so they are found by the table node's `diff` attribute.
  */
 function findDiffRanges(editor: Editor): DiffRange[] {
 	const ranges: DiffRange[] = [];
@@ -32,7 +38,17 @@ function findDiffRanges(editor: Editor): DiffRange[] {
 
 	doc.descendants((node, pos) => {
 		if (!node.isText) {
-			return;
+			const diff = node.type.name === "table" ? node.attrs.diff : null;
+			if (diff !== "added" && diff !== "deleted") {
+				return;
+			}
+			ranges.push({
+				from: pos,
+				to: pos + node.nodeSize,
+				type: diff === "added" ? "addition" : "deletion",
+				table: true,
+			});
+			return false;
 		}
 		for (const mark of node.marks) {
 			if (mark.type.name === "diffInsert") {
@@ -55,7 +71,13 @@ function findDiffRanges(editor: Editor): DiffRange[] {
 	const merged: DiffRange[] = [];
 	for (const range of ranges) {
 		const prev = merged[merged.length - 1];
-		if (prev && prev.type === range.type && prev.to === range.from) {
+		if (
+			prev &&
+			!prev.table &&
+			!range.table &&
+			prev.type === range.type &&
+			prev.to === range.from
+		) {
 			prev.to = range.to;
 		} else {
 			merged.push({ ...range });
@@ -70,15 +92,44 @@ function findDiffRanges(editor: Editor): DiffRange[] {
  * - Addition (diffInsert / <ins>): remove the mark, keep the text
  * - Deletion (diffDelete / <del>): delete the text entirely
  */
+/**
+ * Delete a change's text. A code block or diagram that held nothing else goes
+ * with it: a removed or added fence is reviewed as one mark over its whole
+ * content, and accepting its removal or rejecting its addition would otherwise
+ * leave an empty block in the editor.
+ */
+function deleteChangeText(tr: Transaction, from: number, to: number) {
+	const $from = tr.doc.resolve(from);
+	const block = $from.parent;
+	const codeLike =
+		block.type.spec.code === true || block.type.name === "mermaidBlock";
+	if (
+		codeLike &&
+		$from.depth > 0 &&
+		from === $from.start() &&
+		to === $from.end()
+	) {
+		tr.delete($from.before(), $from.after());
+	} else {
+		tr.delete(from, to);
+	}
+}
+
 function acceptChange(editor: Editor, range: DiffRange) {
 	const { tr } = editor.state;
-	if (range.type === "addition") {
+	if (range.table) {
+		if (range.type === "addition") {
+			tr.setNodeAttribute(range.from, "diff", null);
+		} else {
+			tr.delete(range.from, range.to);
+		}
+	} else if (range.type === "addition") {
 		const mark = editor.schema.marks.diffInsert;
 		if (mark) {
 			tr.removeMark(range.from, range.to, mark);
 		}
 	} else {
-		tr.delete(range.from, range.to);
+		deleteChangeText(tr, range.from, range.to);
 	}
 	editor.view.dispatch(tr);
 }
@@ -90,8 +141,14 @@ function acceptChange(editor: Editor, range: DiffRange) {
  */
 function rejectChange(editor: Editor, range: DiffRange) {
 	const { tr } = editor.state;
-	if (range.type === "addition") {
-		tr.delete(range.from, range.to);
+	if (range.table) {
+		if (range.type === "addition") {
+			tr.delete(range.from, range.to);
+		} else {
+			tr.setNodeAttribute(range.from, "diff", null);
+		}
+	} else if (range.type === "addition") {
+		deleteChangeText(tr, range.from, range.to);
 	} else {
 		const mark = editor.schema.marks.diffDelete;
 		if (mark) {
@@ -103,17 +160,23 @@ function rejectChange(editor: Editor, range: DiffRange) {
 
 interface DiffReviewBarProps {
 	editor: Editor | null;
-	onAcceptAll: () => void;
-	onRejectAll: () => void;
+	/**
+	 * Accept / reject the whole pending diff. A handler that answers a
+	 * proposal says what it answered with — an Accept that could not apply
+	 * the proposal answers `false` — and that is the outcome stamped (see
+	 * `outcomeAudit`); one that says nothing has nothing stamped.
+	 */
+	onAcceptAll: () => unknown;
+	onRejectAll: () => unknown;
 	/** Called before a per-change transaction so the parent can suppress auto-save */
 	onBeforeChange?: () => void;
 	/** Called after a per-change transaction so the parent can re-enable auto-save */
 	onAfterChange?: () => void;
 	/**
-	 * Diff-outcome audit context (Group G — spec §3.8 FR-23). When provided,
-	 * every successful accept / reject (per-change OR bulk) additionally
-	 * fires `agents.conversations.recordDiffOutcome` so the History
-	 * drawer's outcome chip reflects what the user did. All three fields
+	 * Diff-outcome audit context. When provided, every accept / reject
+	 * (per-change, or bulk with the outcome its handler answered)
+	 * additionally fires `agents.conversations.recordDiffOutcome` so the
+	 * History drawer's outcome chip reflects what the user did. All three fields
 	 * MUST be present together; passing only some is treated as "no
 	 * audit context" (skipped) so callers can opt in atomically.
 	 *
@@ -121,13 +184,7 @@ interface DiffReviewBarProps {
 	 * failure we surface a quiet sonner toast but the editor's diff state
 	 * is already the source of truth.
 	 */
-	outcomeAudit?: {
-		conversationId: string | null;
-		projectId: string;
-		organizationId: string | null;
-		messageId: string | null;
-		toolCallId: string | null;
-	};
+	outcomeAudit?: DiffOutcomeAudit;
 	/**
 	 * Active diff review presentation. Absent / "inline" keeps the full bar.
 	 * In "sideBySide" / "fullPreview" the live editor is hidden behind read-only
@@ -157,59 +214,13 @@ export function DiffReviewBar({
 	const [revision, setRevision] = useState(0);
 	const barRef = useRef<HTMLDivElement>(null);
 
-	// Group G — spec §3.8 FR-23. The mutation fires fire-and-forget AFTER the
-	// editor's diff transaction succeeds; it MUST NEVER block the user's path
-	// nor roll back the editor on failure. The diff in the editor IS the
-	// source of truth; the audit trail on the conversation is a nice-to-have.
-	const recordDiffOutcomeMutation = useRecordDocumentAssistantDiffOutcome();
-
-	/**
-	 * Stamp acceptedAt / rejectedAt on the (messageId, toolCallId) entry in
-	 * the persisted messages blob. Quiet failure path: surface a sonner
-	 * `error` toast and continue. Skips entirely when the audit context is
-	 * incomplete (e.g. the diff is from `useUpdateDocumentWithContext`,
-	 * which is NOT a `write_document_local` tool call and is therefore
-	 * out of scope for FR-23).
-	 */
+	// The outcome is stamped fire-and-forget AFTER the editor's diff
+	// transaction succeeds (see `useDiffOutcomeStamp`).
+	const stampDiffOutcome = useDiffOutcomeStamp();
 	const recordOutcome = useCallback(
-		async (outcome: "accepted" | "rejected") => {
-			if (!outcomeAudit) {
-				return;
-			}
-			const {
-				conversationId,
-				projectId,
-				organizationId,
-				messageId,
-				toolCallId,
-			} = outcomeAudit;
-			if (!conversationId || !messageId || !toolCallId) {
-				if (process.env.NODE_ENV !== "production") {
-					// eslint-disable-next-line no-console
-					console.debug(
-						"[DiffReviewBar] skipping recordDiffOutcome — incomplete audit context",
-						{ conversationId, messageId, toolCallId },
-					);
-				}
-				return;
-			}
-			try {
-				await recordDiffOutcomeMutation.mutateAsync({
-					conversationId,
-					projectId,
-					organizationId,
-					messageId,
-					toolCallId,
-					outcome,
-					at: new Date().toISOString(),
-				});
-			} catch {
-				toast.error(
-					"Couldn't record diff outcome — your accept/reject was still applied.",
-				);
-			}
-		},
-		[outcomeAudit, recordDiffOutcomeMutation],
+		(outcome: "accepted" | "rejected") =>
+			stampDiffOutcome(outcomeAudit, outcome),
+		[outcomeAudit, stampDiffOutcome],
 	);
 
 	const ranges = useMemo(() => {
@@ -306,17 +317,26 @@ export function DiffReviewBar({
 	}, [editor, currentIndex, onBeforeChange, onAfterChange, recordOutcome]);
 
 	// Bulk accept / reject — wrap the parent's existing callback so the
-	// audit fires AFTER the parent handler completes. We don't await the
-	// parent because it may be sync (and the audit MUST NOT block).
+	// audit fires AFTER the parent handler completes, with what it answered
+	// (Fizzy #2946): stamped "accepted", an Accept that applied nothing read
+	// as applied, and one with no proposal left to answer stamped one all
+	// the same. We don't await the parent because it may be sync (and the
+	// audit MUST NOT block).
+	const stampAnswered = useCallback(
+		(answered: unknown) => {
+			if (typeof answered === "boolean") {
+				void recordOutcome(answered ? "accepted" : "rejected");
+			}
+		},
+		[recordOutcome],
+	);
 	const handleAcceptAll = useCallback(() => {
-		onAcceptAll();
-		void recordOutcome("accepted");
-	}, [onAcceptAll, recordOutcome]);
+		stampAnswered(onAcceptAll());
+	}, [onAcceptAll, stampAnswered]);
 
 	const handleRejectAll = useCallback(() => {
-		onRejectAll();
-		void recordOutcome("rejected");
-	}, [onRejectAll, recordOutcome]);
+		stampAnswered(onRejectAll());
+	}, [onRejectAll, stampAnswered]);
 
 	// Keyboard shortcuts — scoped to the editor container and the bar itself.
 	// Only fires when the active element is inside the editor's DOM or this bar,

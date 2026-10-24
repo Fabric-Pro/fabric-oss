@@ -382,6 +382,41 @@ function nearestByTrigram(
 		.map((x) => x.c);
 }
 
+/**
+ * Sanitize a `replace_text` fragment without losing its edges. Content
+ * sanitizers are written for whole sections and trim their result, but a
+ * fragment's leading indent and trailing newline are part of the edit:
+ * trimming them dedents the first replaced line (a YAML key falls out of
+ * its block) and joins the last one onto the next line.
+ *
+ * An edge is kept only where `find` has whitespace on that side too. The
+ * matched text keeps whatever surrounds it, so an edge `find` lacks would be
+ * added on top: a trailing newline splits a table or loosens a list, and a
+ * leading indent doubles the existing one.
+ */
+function sanitizeFragment(
+	fragment: string,
+	find: string,
+	sanitize: (content: string) => string,
+): string {
+	const core = fragment.trim();
+	if (core.length === 0) {
+		return fragment;
+	}
+	const cleaned = sanitize(core);
+	if (cleaned.length === 0) {
+		return "";
+	}
+	const leading = fragment.length - fragment.trimStart().length;
+	const keepLeading = find.trimStart().length < find.length;
+	const keepTrailing = find.trimEnd().length < find.length;
+	return (
+		(keepLeading ? fragment.slice(0, leading) : "") +
+		cleaned +
+		(keepTrailing ? fragment.slice(leading + core.length) : "")
+	);
+}
+
 /** Normalize a body of text for whitespace-insensitive indexOf. */
 function normalizeWhitespace(text: string): string {
 	return text.replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ");
@@ -1903,7 +1938,11 @@ function buildResolvedPatch(
 						_lines: string[],
 						sanitize: (c: string) => string,
 					) => {
-						const replacement = sanitize(rawReplace);
+						const replacement = sanitizeFragment(
+							rawReplace,
+							rawFind,
+							sanitize,
+						);
 						// Splice right-to-left so earlier offsets stay valid.
 						let merged = clusterText;
 						for (

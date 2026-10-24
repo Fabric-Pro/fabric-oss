@@ -1,3 +1,4 @@
+import { guardToolsAgainstRepeatedCalls } from "@repo/agent-types/repeated-tool-call-guard";
 import { makeStepCacheBreakpoint } from "@repo/ai/prompt-cache";
 import { generateText, isStepCount } from "ai";
 import { Hono } from "hono";
@@ -166,19 +167,29 @@ async function buildWarpResponse(
 
 	// Run LLM with enhanced context
 	const result = await withRetry(
-		() =>
-			generateText({
+		() => {
+			const attemptTools = { ...tools };
+			guardToolsAgainstRepeatedCalls(attemptTools, {
+				onRepeat: (toolName, count) => {
+					console.warn("Weave warp tool returned a repeated result", {
+						toolName,
+						count,
+					});
+				},
+			});
+			return generateText({
 				model: model,
 				instructions: WARP_SYSTEM_PROMPT,
 				messages: [{ role: "user", content: contextHint }],
-				tools,
+				tools: attemptTools,
 				stopWhen: isStepCount(MAX_TOOL_STEPS),
 				prepareStep: makeStepCacheBreakpoint({
 					provider,
 					modelString,
 					hasTools: true,
 				}),
-			}),
+			});
+		},
 		{ label: "warp-generateText", circuitKey: "warp" },
 	);
 

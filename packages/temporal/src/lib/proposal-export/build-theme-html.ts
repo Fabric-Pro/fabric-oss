@@ -63,8 +63,13 @@ import {
 	type UploadedImageTag,
 } from "./document-content";
 import { exportFailure } from "./failures";
-import { interFontFaceCss, PRINT_FONT_FAMILY } from "./fonts";
-import { eachNode, flatText, type PreparedExportMarkdown } from "./markdown";
+import { interFontFaceCss, PRINT_FONT_FAMILY, printTokensOf } from "./fonts";
+import {
+	eachNode,
+	exportDiagramCaption,
+	flatText,
+	type PreparedExportMarkdown,
+} from "./markdown";
 import type {
 	ExportDiagram,
 	ExportDocumentImages,
@@ -207,22 +212,6 @@ function dataUrl(raster: ExportRaster): string | null {
 /** A node's text with all markup dropped, whitespace collapsed. */
 function plainText(node: Nodes): string {
 	return flatText(node).replace(/\s+/g, " ").trim();
-}
-
-/**
- * Print never embeds an uploaded or brand font yet: Chromium runs without
- * its sandbox, so the committed Inter is the only font a print page loads.
- * Every font token is Inter before the paint is resolved.
- */
-function printTokensOf(tokens: ExportThemeTokens): ExportThemeTokens {
-	const inter = { value: PRINT_FONT_FAMILY, source: "DEFAULT" } as const;
-	return {
-		...tokens,
-		proposer: {
-			...tokens.proposer,
-			fonts: { display: inter, body: inter, mono: inter },
-		},
-	};
 }
 
 /** The tree walk, with what it collects on the way. */
@@ -450,7 +439,10 @@ class BodyRenderer {
 	private code(node: Code): string {
 		const diagramIndex = this.input.prepared.diagramIndex.get(node);
 		if (diagramIndex !== undefined) {
-			return this.diagram(this.input.diagrams[diagramIndex]);
+			return this.diagram(
+				this.input.diagrams[diagramIndex],
+				exportDiagramCaption(node.value),
+			);
 		}
 		if (node.lang === STAT_TILES_LANGUAGE) {
 			const parsed = parseStatTiles(node.value);
@@ -472,16 +464,26 @@ class BodyRenderer {
 		return `<pre><code${language}>${escapeHtml(node.value)}</code></pre>`;
 	}
 
-	private diagram(diagram: ExportDiagram | undefined): string {
+	/**
+	 * A diagram's figure, with the fence's `%% caption:` line, as plain
+	 * text, under it.
+	 */
+	private diagram(
+		diagram: ExportDiagram | undefined,
+		caption: string | null,
+	): string {
+		const figcaption = caption
+			? `<figcaption class="${THEME.caption}">${escapeHtml(caption)}</figcaption>`
+			: "";
 		if (diagram?.kind === "svg") {
 			// Allowlisted by the diagram step, which owns its safety.
-			return `<figure class="${THEME.figure} ${PRINT.diagram}">${diagram.svg}</figure>`;
+			return `<figure class="${THEME.figure} ${PRINT.diagram}">${diagram.svg}${figcaption}</figure>`;
 		}
 		if (!diagram) {
 			this.count("DIAGRAM_PLACEHOLDER");
 		}
-		const caption = diagram?.caption ?? MISSING_DIAGRAM_CAPTION;
-		return `<figure class="${THEME.figure} ${PRINT.diagramPlaceholder}"><p class="${THEME.caption}">${escapeHtml(caption)}</p></figure>`;
+		const placeholder = diagram?.caption ?? MISSING_DIAGRAM_CAPTION;
+		return `<figure class="${THEME.figure} ${PRINT.diagramPlaceholder}"><p class="${THEME.caption}">${escapeHtml(placeholder)}</p>${figcaption}</figure>`;
 	}
 
 	private table(node: Table): string {

@@ -11,12 +11,14 @@
  */
 
 import { HEX_COLOR_PATTERN } from "@repo/utils/brand-colors";
+import { isBrandWebsiteHost } from "@repo/utils/proposal-artifact/brand-sources";
 import { db } from "../../client";
 
 export const RECIPIENT_BRAND_MAX_COLORS = 3;
 export const RECIPIENT_BRAND_MAX_NAME_LENGTH = 200;
 
 const PROMOTION_ID = /^[A-Za-z0-9_-]+$/;
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 /** The only key a confirmed recipient logo may have, for this project. */
 export function recipientLogoKeyPrefix(projectId: string): string {
@@ -62,8 +64,9 @@ export interface RecipientBrandFields {
 
 /**
  * Validate and normalize recipient brand fields: trimmed name (empty becomes
- * null), website as `https://host`, a logo key under this project's current
- * prefix, and up to three lowercase `#rrggbb` colors.
+ * null) of at most 200 UTF-16 code units, website as `https://host` with a
+ * host of lowercase letters, digits, dots and hyphens, a logo key under this
+ * project's current prefix, and up to three lowercase `#rrggbb` colors.
  */
 export function normalizeRecipientBrandFields(
 	projectId: string,
@@ -113,6 +116,9 @@ function normalizeWebsite(website: string | null | undefined): string | null {
 	} catch {
 		throw new RecipientBrandValidationError("invalidWebsite");
 	}
+	// The host as the parser writes it (an IDN as punycode); an IP literal or
+	// a name with any other character is refused, as the fetch rows' CHECK
+	// constraints would refuse it.
 	if (
 		url.protocol !== "https:" ||
 		url.username ||
@@ -120,7 +126,8 @@ function normalizeWebsite(website: string | null | undefined): string | null {
 		url.port ||
 		url.pathname !== "/" ||
 		url.search ||
-		url.hash
+		url.hash ||
+		!isBrandWebsiteHost(url.hostname)
 	) {
 		throw new RecipientBrandValidationError("invalidWebsite");
 	}
@@ -130,6 +137,8 @@ function normalizeWebsite(website: string | null | undefined): string | null {
 export interface RecipientBrandView extends RecipientBrandFields {
 	projectId: string;
 	organizationId: string;
+	/** SHA-256 of the promoted logo; null for a logo promoted before it existed. */
+	logoHash: string | null;
 	version: number;
 	updatedById: string | null;
 	updatedAt: Date;
@@ -141,6 +150,7 @@ const RECIPIENT_BRAND_SELECT = {
 	name: true,
 	website: true,
 	logoKey: true,
+	logoHash: true,
 	colors: true,
 	version: true,
 	updatedById: true,
@@ -165,10 +175,20 @@ export interface ConfirmRecipientBrandInput {
 	website?: string | null;
 	/** The promoted key, `project-brand/{projectId}/recipient-brand/current/…`. */
 	logoKey?: string | null;
+	/** SHA-256 (hex) of the promoted logo's bytes; kept only with a logo. */
+	logoHash?: string | null;
 	colors?: string[];
 	updatedById: string;
 	/** The organization the gate resolved; checked against the project's. */
 	organizationId?: string;
+	/**
+	 * When the values come from a website fetch's suggestion: the attempt the
+	 * editor saw. The write applies only while that attempt is still the
+	 * stored, successful one for the row's current website, checked under the
+	 * same row lock a new fetch takes, so a fetch that replaced the
+	 * suggestion meanwhile turns the confirmation `stale`.
+	 */
+	suggestion?: { requestId: string };
 }
 
 export type ConfirmRecipientBrandResult =
@@ -178,7 +198,8 @@ export type ConfirmRecipientBrandResult =
 			/** The logo key this confirmation replaced, for best-effort cleanup. */
 			previousLogoKey: string | null;
 	  }
-	| { outcome: "conflict" };
+	| { outcome: "conflict" }
+	| { outcome: "stale" };
 
 /**
  * Save the recipient brand if nobody changed it since `expectedVersion` was
@@ -189,6 +210,10 @@ export async function confirmRecipientBrand(
 	input: ConfirmRecipientBrandInput,
 ): Promise<ConfirmRecipientBrandResult> {
 	const fields = normalizeRecipientBrandFields(input.projectId, input);
+	const logoHash =
+		fields.logoKey && input.logoHash && SHA256_HEX.test(input.logoHash)
+			? input.logoHash
+			: null;
 	const project = await db.project.findUnique({
 		where: { id: input.projectId },
 		select: { organizationId: true },
@@ -201,7 +226,7 @@ export async function confirmRecipientBrand(
 		throw new Error("The project belongs to another organization");
 	}
 
-	if (input.expectedVersion === 0) {
+	if (input.expectedVersion === 0 && !input.suggestion) {
 		// ON CONFLICT DO NOTHING: of two first confirmations, one inserts and
 		// the other sees a row it did not read, which is a conflict.
 		const { count } = await db.projectRecipientBrand.createMany({
@@ -210,6 +235,7 @@ export async function confirmRecipientBrand(
 					projectId: input.projectId,
 					organizationId,
 					...fields,
+					logoHash,
 					version: 1,
 					updatedById: input.updatedById,
 				},
@@ -222,10 +248,37 @@ export async function confirmRecipientBrand(
 	}
 
 	return db.$transaction(async (tx) => {
+		if (input.suggestion) {
+			// The lock a fetch's start takes before it replaces the suggestion,
+			// so the check below and that replacement cannot interleave.
+			await tx.$queryRaw`
+				SELECT 1 FROM "project_recipient_brand"
+				WHERE "projectId" = ${input.projectId}
+				FOR UPDATE`;
+		}
 		const current = await tx.projectRecipientBrand.findUnique({
 			where: { projectId: input.projectId },
-			select: { version: true, logoKey: true },
+			select: { version: true, logoKey: true, website: true },
 		});
+		if (input.suggestion) {
+			const suggestion =
+				await tx.projectRecipientBrandSuggestion.findUnique({
+					where: { projectId: input.projectId },
+					select: {
+						requestId: true,
+						status: true,
+						resultWebsite: true,
+					},
+				});
+			if (
+				!current?.website ||
+				suggestion?.requestId !== input.suggestion.requestId ||
+				suggestion.status !== "SUCCEEDED" ||
+				suggestion.resultWebsite !== current.website
+			) {
+				return { outcome: "stale" as const };
+			}
+		}
 		if (!current || current.version !== input.expectedVersion) {
 			return { outcome: "conflict" as const };
 		}
@@ -236,6 +289,7 @@ export async function confirmRecipientBrand(
 			},
 			data: {
 				...fields,
+				logoHash,
 				version: { increment: 1 },
 				updatedById: input.updatedById,
 			},

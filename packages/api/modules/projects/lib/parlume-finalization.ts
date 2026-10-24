@@ -11,6 +11,7 @@ import {
 } from "./parlume-usage";
 
 const MAX_PARLUME_TRANSCRIPT_CHARS = 1_000_000;
+const MAX_PARLUME_TRANSCRIPT_RECORDS = 10_000;
 
 const finalizableStatuses: ParlumeMeetingSessionStatus[] = [
 	"JOINING",
@@ -109,23 +110,59 @@ export async function finalizeParlumeSession(
 		}
 		finalizedNow = true;
 
-		const segments = await db.parlumeMeetingSegment.findMany({
-			where: { sessionId: session.id },
-			select: {
-				text: true,
-				speakerName: true,
-				utteranceStartMs: true,
-				utteranceEndMs: true,
-				createdAt: true,
-			},
-			orderBy: [{ utteranceStartMs: "asc" }, { createdAt: "asc" }],
-			take: 10_000,
-		});
+		const where = {
+			sessionId: session.id,
+			projectId: session.projectId,
+			organizationId: session.organizationId,
+		};
+		const [segments, turns, actions] = await Promise.all([
+			db.parlumeMeetingSegment.findMany({
+				where,
+				select: { text: true, speakerName: true, source: true },
+				orderBy: [{ utteranceStartMs: "asc" }, { createdAt: "asc" }],
+				take: MAX_PARLUME_TRANSCRIPT_RECORDS + 1,
+			}),
+			db.parlumeMeetingTurn.findMany({
+				where,
+				select: {
+					id: true,
+					requestText: true,
+					responseText: true,
+					status: true,
+					interruptedAt: true,
+				},
+				orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+				take: MAX_PARLUME_TRANSCRIPT_RECORDS + 1,
+			}),
+			db.parlumeAction.findMany({
+				where,
+				select: { turnId: true, toolName: true, status: true },
+				orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+				take: MAX_PARLUME_TRANSCRIPT_RECORDS + 1,
+			}),
+		]);
+		if (
+			[segments, turns, actions].some(
+				(records) => records.length > MAX_PARLUME_TRANSCRIPT_RECORDS,
+			)
+		) {
+			throw new Error("Parlume transcript exceeds the record limit.");
+		}
+		const actionsByTurn = new Map<string, typeof actions>();
+		for (const turn of turns) {
+			actionsByTurn.set(turn.id, []);
+		}
+		for (const action of actions) {
+			const turnActions = actionsByTurn.get(action.turnId);
+			if (!turnActions) {
+				throw new Error(
+					"Parlume action has no matching scoped request.",
+				);
+			}
+			turnActions.push(action);
+		}
 		let content = "";
-		for (const segment of segments) {
-			const line = segment.speakerName
-				? `${segment.speakerName}: ${segment.text}`
-				: segment.text;
+		const append = (line: string) => {
 			if (
 				content.length + line.length + 1 >
 				MAX_PARLUME_TRANSCRIPT_CHARS
@@ -135,6 +172,46 @@ export async function finalizeParlumeSession(
 				);
 			}
 			content += `${line}\n`;
+		};
+		if (segments.length) {
+			append("Captured incoming speech:");
+		}
+		for (const segment of segments) {
+			const line = segment.speakerName
+				? `${segment.speakerName}: ${segment.text}`
+				: segment.text;
+			append(segment.source === "CHAT" ? `[chat] ${line}` : line);
+		}
+		if (turns.length) {
+			append("\nRecorded Fabric responses and action receipts:");
+			append(
+				"Responses are generated text. A COMPLETED request does not prove action success or audio delivery. PENDING/RUNNING requests are incomplete. Playback interruption does not determine action success.",
+			);
+			append(
+				"Only COMPLETED action receipts confirm success; all other action statuses are unsuccessful or unconfirmed.",
+			);
+			for (const [index, turn] of turns.entries()) {
+				append(`\nRequest ${index + 1}: ${turn.requestText}`);
+				append(`Request status: ${turn.status}`);
+				append(
+					`Playback interrupted: ${turn.interruptedAt ? "yes" : "not recorded"}`,
+				);
+				append(
+					`Response: ${turn.responseText || "No response text recorded."}`,
+				);
+				const turnActions = actionsByTurn.get(turn.id);
+				if (turnActions?.length) {
+					for (const action of turnActions) {
+						append(
+							`Action receipt: ${action.toolName} — ${action.status}`,
+						);
+					}
+				} else {
+					append(
+						"Action receipts: none recorded (action success unconfirmed).",
+					);
+				}
+			}
 		}
 		if (!content) {
 			await db.parlumeMeetingSession.update({

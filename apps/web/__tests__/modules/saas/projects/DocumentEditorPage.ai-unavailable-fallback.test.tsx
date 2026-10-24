@@ -43,6 +43,8 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 vi.mock("@tanstack/react-query", () => ({
 	// The page invalidates on document nudges in a Proposal's artifact mode.
 	useQueryClient: () => ({ invalidateQueries: vi.fn() }),
+	// The Proposal theme skips its font read without an uploaded file.
+	skipToken: Symbol("skipToken"),
 	useQuery: ({ queryKey }: { queryKey: [string, unknown] }) => {
 		if (queryKey[0] === "documents.get") {
 			return {

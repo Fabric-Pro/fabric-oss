@@ -30,6 +30,7 @@ export * from "./authority-providers";
 export * from "./background-jobs";
 export * from "./brand-color";
 export * from "./brand-kit";
+export * from "./brand-site-fetch";
 export * from "./bulk-run-pause";
 export * from "./chat-agent-selection";
 export * from "./chat-artifacts";
@@ -111,6 +112,7 @@ export * from "./orchestrator-memory";
 export * from "./orchestrator-memory-evaluation";
 export * from "./orchestrator-preferences";
 export * from "./organization-api-keys";
+export * from "./organization-model-preference-write";
 export * from "./organization-permissions";
 export * from "./organization-security";
 // `./organizations` resolves to the FILE `organizations.ts`, which shadows the

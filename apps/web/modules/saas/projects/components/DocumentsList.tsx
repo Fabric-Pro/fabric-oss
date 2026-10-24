@@ -76,6 +76,14 @@ import {
 
 export { resolveRegenerateToastKey };
 
+/**
+ * How old the list's answer may be when its tab comes back before the list
+ * asks again (Fizzy #2946): the widest the list's own polling gets. A tab in
+ * the background is not polled, so a run that started and ended meanwhile was
+ * never seen under way, and the card kept its version number for minutes.
+ */
+const DOCUMENTS_FOCUS_REFRESH_MS = 30_000;
+
 type Props = {
 	projectId: string;
 	enableDelete?: boolean;
@@ -463,8 +471,9 @@ export function DocumentsList({
 	const [editingDocId, setEditingDocId] = useState<string | null>(null);
 
 	// The list also asks for a short while after a run it saw under way ends,
-	// so the version step the run sends no nudge for reaches the card's
-	// version number (Fizzy #2946). The watches belong to one query key.
+	// so the run's version step reaches the card's version number even where
+	// its nudge does not arrive (Fizzy #2946). The watches belong to one query
+	// key.
 	const versionStepWatchRef = useRef<{
 		queryHash: string;
 		watches: Record<string, VersionStepWatch>;
@@ -492,10 +501,14 @@ export function DocumentsList({
 				interval,
 			);
 		},
+		// Back from the background: asked again when a run was under way, or
+		// when the answer is older than `DOCUMENTS_FOCUS_REFRESH_MS`, whatever
+		// the app's minute of freshness says (Fizzy #2946).
 		refetchOnWindowFocus: (query) =>
 			query.state.data?.documents?.some((d) =>
 				isDocumentGenerationRunning(d.status),
-			)
+			) ||
+			Date.now() - query.state.dataUpdatedAt > DOCUMENTS_FOCUS_REFRESH_MS
 				? "always"
 				: true,
 	});

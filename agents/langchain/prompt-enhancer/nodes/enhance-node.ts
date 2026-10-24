@@ -289,9 +289,11 @@ export async function enhanceNode(
 				accepted: confirmationStatus.accepted,
 			});
 
-			// Create a simple acknowledgment message (no tool calls!)
+			// Create a simple acknowledgment message (no tool calls!). It
+			// goes out before the page has saved the accepted prompt, so it
+			// says only that the changes were accepted (Fizzy #2946).
 			const acknowledgment = confirmationStatus.accepted
-				? "Changes have been applied to your prompt."
+				? "Changes accepted."
 				: "Changes have been discarded. Your prompt remains unchanged.";
 
 			const ackMessage = new AIMessage({ content: acknowledgment });

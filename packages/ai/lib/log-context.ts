@@ -142,6 +142,57 @@ export interface LogSourceAdapter {
 	 */
 	readonly sharedStore: boolean;
 	fetchLogExcerpts(scope: LogQueryScope): Promise<RawLogEntry[]>;
+	/**
+	 * Aggregate errors into recurring groups ON THE PLATFORM, for the
+	 * recurring-error scan. Optional: a source that cannot aggregate (an MCP
+	 * log tool returns rows, not groups) simply does not offer the scan, which
+	 * then treats the project as not configured. Same tenant rule as
+	 * `fetchLogExcerpts`: a shared store constrains the query to
+	 * `scope.organizationId`, unless the adapter was built for the deployment's
+	 * designated operator project.
+	 */
+	summarizeErrorGroups?(scope: ErrorGroupScope): Promise<RawErrorGroup[]>;
+}
+
+/** What the recurring-error scan asks a log source for. Hard bounds. */
+export interface ErrorGroupScope {
+	/** How far back to look, in minutes. */
+	lookbackMinutes: number;
+	/** Groups seen fewer times than this inside the window are not returned. */
+	minOccurrences: number;
+	/** Hard cap on groups returned, most frequent first. */
+	maxGroups: number;
+	/** Same meaning as `LogQueryScope.organizationId`. */
+	organizationId?: string;
+}
+
+/**
+ * One recurring group as the platform reports it, BEFORE redaction. Every
+ * free-text field here is untrusted log content: it passes through
+ * `applyPropertyPolicy` and `redactLogEntries` before it is stored or shown
+ * to a model.
+ */
+export interface RawErrorGroup {
+	/**
+	 * `exception` groups key on the platform's own problem id; `trace` groups on
+	 * a normalized message; `platform` groups key on the hosting platform's
+	 * event reason (a failed probe, a killed container), which no application
+	 * log records.
+	 */
+	kind: "exception" | "trace" | "platform";
+	/** The platform-side grouping key. */
+	key: string;
+	occurrences: number;
+	/** ISO timestamps of the first and last occurrence inside the window. */
+	firstSeen: string;
+	lastSeen: string;
+	/** Distinct users the platform attributed occurrences to; 0 when unknown. */
+	affectedUsers: number;
+	/** Emitting services or roles, capped by the adapter. */
+	components: string[];
+	/** A few raw messages from the group, capped by the adapter. */
+	sampleMessages: string[];
+	exceptionType?: string;
 }
 
 export type LogContextStatus =

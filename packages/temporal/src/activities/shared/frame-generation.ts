@@ -1,6 +1,8 @@
 import { getAIModelWithMetadata } from "@repo/ai";
+import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import { computeMaxOutputTokenBudget } from "@repo/ai/lib/output-token-budget";
 import type { FrameBlock } from "@repo/database";
+import { logger } from "@repo/logs";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { Context, heartbeat } from "@temporalio/activity";
 import { streamText } from "ai";
@@ -149,9 +151,19 @@ async function streamCompleteText(input: {
 		: timeoutSignal;
 
 	let accumulated = "";
+	let limitError: ReturnType<typeof findAiUsageLimitError>;
 	let lastHeartbeatAt = 0;
 	const result = streamText({
 		model,
+		// textStream omits error parts, including HARD usage-limit refusals.
+		onError: ({ error }) => {
+			const refusal = findAiUsageLimitError(error);
+			if (refusal) {
+				limitError ??= refusal;
+			} else {
+				logger.error("Frame generation stream failed", { error });
+			}
+		},
 		instructions: input.systemPrompt,
 		messages: [{ role: "user", content: input.userPrompt }],
 		abortSignal,
@@ -177,6 +189,9 @@ async function streamCompleteText(input: {
 		chars: accumulated.length,
 	});
 
+	if (limitError) {
+		throw limitError;
+	}
 	return accumulated;
 }
 
@@ -224,6 +239,10 @@ async function generateSlideOutline(input: {
 		// Inside a chat turn, a stop or a token-allowance refusal is not a
 		// failed outline to replace with defaults (a no-op outside a turn).
 		rethrowIfDispatchStopped(error);
+		const limitError = findAiUsageLimitError(error);
+		if (limitError) {
+			throw limitError;
+		}
 		// fall through to defaults
 	}
 
@@ -291,6 +310,10 @@ async function generateFrameBlock(input: {
 		// Inside a chat turn, a stop or a token-allowance refusal is not a
 		// failed block to replace with placeholder content.
 		rethrowIfDispatchStopped(error);
+		const limitError = findAiUsageLimitError(error);
+		if (limitError) {
+			throw limitError;
+		}
 		content = "";
 	}
 

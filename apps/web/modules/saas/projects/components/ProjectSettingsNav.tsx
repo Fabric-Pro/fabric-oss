@@ -137,6 +137,9 @@ type Props = {
 	activeTab: SettingsTab;
 	onTabChange: (tab: SettingsTab) => void;
 	status?: StatusMap;
+	/** An amber dot on a tab whose state deserves a second look, with the
+	 *  reason as its screen-reader text. */
+	attention?: Partial<Record<SettingsTab, string>>;
 	showDanger?: boolean;
 	/** Gates the new Project Management tab behind the per-project
 	 *  `pmFieldMappingEnabled` flag. When off, the PM card lives on Development. */
@@ -155,6 +158,7 @@ export function ProjectSettingsNav({
 	activeTab,
 	onTabChange,
 	status,
+	attention,
 	showDanger = false,
 	showProjectManagement = false,
 	showQa = false,
@@ -186,6 +190,7 @@ export function ProjectSettingsNav({
 				const Icon = tab.icon;
 				const isActive = activeTab === tab.id;
 				const isConfigured = status?.[tab.id];
+				const attentionLabel = attention?.[tab.id];
 
 				return (
 					<button
@@ -219,6 +224,12 @@ export function ProjectSettingsNav({
 								{isConfigured && !tab.destructive && (
 									<span className="size-1.5 rounded-full bg-emerald-500" />
 								)}
+								{attentionLabel && (
+									<span
+										className="size-1.5 rounded-full bg-highlight"
+										aria-hidden="true"
+									/>
+								)}
 							</div>
 							<p
 								className={cn(
@@ -232,6 +243,17 @@ export function ProjectSettingsNav({
 						{/* Mobile: show dot inline */}
 						{isConfigured && !tab.destructive && (
 							<span className="size-1.5 rounded-full bg-emerald-500 lg:hidden" />
+						)}
+						{attentionLabel && (
+							<>
+								<span
+									className="size-1.5 rounded-full bg-highlight lg:hidden"
+									aria-hidden="true"
+								/>
+								<span className="sr-only">
+									{attentionLabel}
+								</span>
+							</>
 						)}
 					</button>
 				);

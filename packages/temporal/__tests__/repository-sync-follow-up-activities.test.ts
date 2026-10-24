@@ -39,6 +39,17 @@ vi.mock("@repo/database", async () => {
 vi.mock("@temporalio/activity", () => ({
 	heartbeat: (...a: unknown[]) => m.heartbeat(...a),
 }));
+// The activity sleeps between polls with `node:timers/promises`, which
+// `vi.useFakeTimers()` does not replace, so the two fake-clock tests below
+// waited the real 5 s per poll. This sleep goes through the global timer,
+// looked up at call time, which the fake clock owns while it is installed.
+vi.mock("node:timers/promises", async (importOriginal) => ({
+	...(await importOriginal<typeof import("node:timers/promises")>()),
+	setTimeout: <T>(ms?: number, value?: T) =>
+		new Promise<T | undefined>((resolve) => {
+			globalThis.setTimeout(() => resolve(value), ms);
+		}),
+}));
 
 import {
 	awaitRepositorySyncClosed,

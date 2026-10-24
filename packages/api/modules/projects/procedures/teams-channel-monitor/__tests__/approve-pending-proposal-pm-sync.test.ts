@@ -537,6 +537,61 @@ describe("approvePendingProposal (Teams) — source link on the created work ite
 		);
 	});
 
+	it.each(["AI_UPDATE_SIDEBAR", "SCOPE_DOCUMENT"])(
+		"does not label a %s item as reported via Teams",
+		async (source) => {
+			mocks.getPendingBacklogProposal.mockResolvedValueOnce({
+				...makeProposalRow({ changes: [CHANGE_BUG] }),
+				source,
+			});
+
+			await handlers.approve?.({
+				input: {
+					projectId: PROJECT_ID,
+					organizationId: ORG_ID,
+					proposalId: PROPOSAL_ID,
+					approvedChanges: [CHANGE_BUG],
+				},
+				context: APPROVAL_CTX,
+			});
+
+			expect(mocks.createStoryFromProposal).toHaveBeenCalledWith(
+				expect.objectContaining({ reporterSource: null }),
+			);
+		},
+	);
+
+	it.each(["LOG_MONITOR", "INCIDENT_CLUSTER"])(
+		"does not label a %s bug as reported via Teams, and names the scan as its reporter",
+		async (source) => {
+			mocks.getPendingBacklogProposal.mockResolvedValueOnce({
+				...makeProposalRow({ changes: [CHANGE_BUG] }),
+				source,
+				sourceMetadata: {
+					transcript: "Occurrences: 8 in the last 24 hours",
+					reporterName: "Fabric recurring-error scan",
+				},
+			});
+
+			await handlers.approve?.({
+				input: {
+					projectId: PROJECT_ID,
+					organizationId: ORG_ID,
+					proposalId: PROPOSAL_ID,
+					approvedChanges: [CHANGE_BUG],
+				},
+				context: APPROVAL_CTX,
+			});
+
+			expect(mocks.createStoryFromProposal).toHaveBeenCalledWith(
+				expect.objectContaining({
+					reporterSource: null,
+					reporterName: "Fabric recurring-error scan",
+				}),
+			);
+		},
+	);
+
 	it("keeps a Teams channel proposal's stored thread link, without a chat lookup", async () => {
 		mocks.getPendingBacklogProposal.mockResolvedValueOnce({
 			...makeProposalRow({ changes: [CHANGE_FEATURE] }),

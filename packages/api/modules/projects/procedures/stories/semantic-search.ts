@@ -5,6 +5,7 @@ import {
 	hasProviderCredentials,
 	resolveModelWithProvider,
 } from "@repo/ai";
+import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
 import {
 	baseModelName,
 	cosineSimilarity,
@@ -73,7 +74,10 @@ const EMBEDDING_UNAVAILABLE_MESSAGE =
  * fix it) told the user their search had broken when nothing had.
  */
 function refuseWhenProviderNotConfigured(error: unknown): never {
-	if (error instanceof AIProviderNotConfiguredError) {
+	if (
+		error instanceof AIProviderNotConfiguredError ||
+		error instanceof UnsupportedEmbeddingModelError
+	) {
 		throw new ORPCError("PRECONDITION_FAILED", { message: error.message });
 	}
 	throw new ORPCError("INTERNAL_SERVER_ERROR", {
@@ -127,7 +131,9 @@ function storeCorpusInCache(
 		}
 		while (corpusCache.size >= CORPUS_CACHE_MAX_PROJECTS) {
 			const oldest = corpusCache.keys().next().value;
-			if (oldest === undefined) break;
+			if (oldest === undefined) {
+				break;
+			}
 			corpusCache.delete(oldest);
 		}
 	}

@@ -4,15 +4,15 @@ import { buildCleanSpecRefreshMessage } from "../clean-spec-refresh-message";
 describe("buildCleanSpecRefreshMessage (#1794, #1864)", () => {
 	const PROMPT = "PROMPT_BODY_HERE";
 
-	it("includes the instruction and the bound prompt content", () => {
-		const msg = buildCleanSpecRefreshMessage("feature", PROMPT);
+	it("includes the instruction without the bound prompt content", () => {
+		const msg = buildCleanSpecRefreshMessage("feature");
 		expect(msg).toContain("Refresh the Full Spec for this feature");
 		expect(msg).toContain("write_document_local");
-		expect(msg).toContain(PROMPT);
+		expect(msg).not.toContain(PROMPT);
 	});
 
 	it("reflects the work-item kind word", () => {
-		expect(buildCleanSpecRefreshMessage("bug", PROMPT)).toContain(
+		expect(buildCleanSpecRefreshMessage("bug")).toContain(
 			"Refresh the Full Spec for this bug",
 		);
 	});
@@ -21,13 +21,13 @@ describe("buildCleanSpecRefreshMessage (#1794, #1864)", () => {
 	// readable, never inlined into the visible chat message — so no raw
 	// transcript is ever posted for the product owner to see.
 	it("never embeds a raw context block in the message", () => {
-		const msg = buildCleanSpecRefreshMessage("feature", PROMPT);
+		const msg = buildCleanSpecRefreshMessage("feature");
 		expect(msg).not.toContain("--- Context 1 ---");
 		expect(msg).not.toContain("has been retrieved for you below");
 	});
 
 	it("tells the agent the context was provided out-of-band", () => {
-		const msg = buildCleanSpecRefreshMessage("feature", PROMPT);
+		const msg = buildCleanSpecRefreshMessage("feature");
 		expect(msg).toContain("connected project context");
 	});
 });

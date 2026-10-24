@@ -310,6 +310,36 @@ describe("controller-owned approval rendering", () => {
 			screen.queryByRole("button", { name: /apply selected/i }),
 		).not.toBeInTheDocument();
 	});
+	it("renders an unconfirmed apply neutrally in the live region without offering approval", () => {
+		render(
+			<BacklogChangeProposal
+				{...base}
+				approval={{ state: "approved", count: 1 }}
+				applyResult={{
+					status: "unconfirmed",
+					createdCount: 0,
+					updatedCount: 0,
+					failedCount: 0,
+					syncedToPM: false,
+					items: [],
+					message:
+						"Lost track of this apply. It may still be running. If it finished, the new items are on the roadmap; anything that failed appears in Review proposals.",
+				}}
+			/>,
+		);
+		const message = screen.getByText(/may still be running/);
+		expect(message).toHaveClass("text-muted-foreground");
+		expect(message.parentElement).toHaveClass("bg-muted");
+		expect(message.closest("[aria-live]")).toHaveAttribute(
+			"aria-live",
+			"polite",
+		);
+		expect(screen.queryByText(/Failed:/)).not.toBeInTheDocument();
+		expect(screen.queryByText(/Applied 0/)).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /apply selected/i }),
+		).not.toBeInTheDocument();
+	});
 	it("restores a failed result as an error rather than pending progress", () => {
 		render(
 			<BacklogChangeProposal

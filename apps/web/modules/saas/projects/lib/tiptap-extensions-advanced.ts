@@ -10,7 +10,7 @@ import { Color } from "@tiptap/extension-color";
 import { Highlight } from "@tiptap/extension-highlight";
 import { Link } from "@tiptap/extension-link";
 import { Placeholder } from "@tiptap/extension-placeholder";
-import { Table } from "@tiptap/extension-table";
+import { Table, TableView } from "@tiptap/extension-table";
 import { TableCell } from "@tiptap/extension-table-cell";
 import { TableHeader } from "@tiptap/extension-table-header";
 import { TableRow } from "@tiptap/extension-table-row";
@@ -351,6 +351,36 @@ const MarkUserTypedAsDiffInsert = Extension.create({
  * toolbar doesn't expose those combinations in normal use, and the diff
  * round-trip correctness is the higher-priority guarantee here.
  */
+/**
+ * A resizable table is drawn by prosemirror-tables' column-resizing plugin,
+ * which builds the `<table>` without the node's rendered attributes, so
+ * `data-diff` never reaches the DOM and the review shows a replaced table as
+ * two unmarked tables. Mirror the attribute onto the table element.
+ */
+class DiffAwareTableView extends TableView {
+	constructor(...args: ConstructorParameters<typeof TableView>) {
+		super(...args);
+		this.showDiff();
+	}
+
+	update(...args: Parameters<TableView["update"]>): boolean {
+		const updated = super.update(...args);
+		if (updated) {
+			this.showDiff();
+		}
+		return updated;
+	}
+
+	private showDiff(): void {
+		const diff = this.node.attrs.diff;
+		if (typeof diff === "string") {
+			this.table.setAttribute("data-diff", diff);
+		} else {
+			this.table.removeAttribute("data-diff");
+		}
+	}
+}
+
 const codeInputRegex = /(^|[^`])`([^`]+)`(?!`)$/;
 const codePasteRegex = /(^|[^`])`([^`]+)`(?!`)/g;
 
@@ -647,6 +677,7 @@ function buildSharedRichDocumentExtensions(
 			},
 		}).configure({
 			resizable: true,
+			View: DiffAwareTableView,
 			HTMLAttributes: {
 				class: "tiptap-table",
 			},

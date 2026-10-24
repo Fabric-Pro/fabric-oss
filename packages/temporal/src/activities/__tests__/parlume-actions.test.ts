@@ -16,18 +16,27 @@ const state = vi.hoisted(() => {
 		actions: Array<Record<string, unknown>>;
 		access: boolean;
 		generationCurrent: boolean;
+		muted: boolean;
+		held: ReturnType<typeof vi.fn>;
 		audit: ReturnType<typeof vi.fn>;
 	} = {
 		session: {},
 		actions: [],
 		access: true,
 		generationCurrent: true,
+		muted: false,
+		held: vi.fn(),
 		audit: vi.fn(),
 	};
 	return initial;
 });
 vi.mock("../parlume-voice", () => ({
-	verifyParlumeVoiceGeneration: vi.fn(async () => state.generationCurrent),
+	readParlumeVoiceState: vi.fn(async () => ({
+		current: state.generationCurrent,
+		muted: state.muted,
+		chatAvailable: true,
+	})),
+	postParlumeHeldChange: state.held,
 }));
 
 function matches(
@@ -114,6 +123,7 @@ const context: ParlumeActionContext = {
 	userId: "user",
 	speakerId: "speaker-a",
 	speakerName: "Alex",
+	requestText: "create a ticket called Review",
 	agentRevision: "revision",
 	voiceGeneration: 3,
 	toolsReadOnly: false,
@@ -148,6 +158,8 @@ beforeEach(() => {
 	state.actions = [];
 	state.access = true;
 	state.generationCurrent = true;
+	state.muted = false;
+	state.held.mockResolvedValue({ sent: true, tag: "P7" });
 	state.session = {
 		id: "session",
 		projectId: "project",
@@ -288,6 +300,44 @@ describe("Parlume actions without confirmation", () => {
 		});
 		expect(execute).not.toHaveBeenCalled();
 		expect(actionRow()?.status).toBe("CANCELLED");
+	});
+	it("holds a change the agent asked for after the meeting spoke over Parlume, and offers it in the chat", async () => {
+		state.muted = true;
+
+		const result = await createParlumeToolRuntime(context).invoke(call());
+
+		expect(execute).not.toHaveBeenCalled();
+		expect(result).toMatchObject({
+			held: true,
+			changed: false,
+			instruction: expect.stringContaining('"go P7"'),
+		});
+		expect(state.held).toHaveBeenCalledWith({
+			sessionId: "session",
+			turnId: "request",
+			action: "connection b create ticket “Review”",
+			request: "create a ticket called Review",
+		});
+		expect(actionRow()).toMatchObject({
+			status: "CANCELLED",
+			outcome: expect.stringContaining("Held before dispatch"),
+		});
+	});
+	it("still runs a read after the meeting spoke over Parlume", async () => {
+		state.muted = true;
+
+		await createParlumeToolRuntime(context).invoke(
+			call({
+				name: "connection_b_list_tickets",
+				source: {
+					configId: "connection-b",
+					originalName: "list_tickets",
+				},
+			}),
+		);
+
+		expect(execute).toHaveBeenCalledTimes(1);
+		expect(state.held).not.toHaveBeenCalled();
 	});
 	it("does not run a change when the inviter's access changed", async () => {
 		state.access = false;

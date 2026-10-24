@@ -1,3 +1,5 @@
+import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
+
 /**
  * Tests for `semanticSearchProcedure` — roadmap AI search (Fizzy #1937).
  *
@@ -455,4 +457,15 @@ describe("semanticSearchProcedure — no provider configured", () => {
 		expect(err.code).toBe("PRECONDITION_FAILED");
 		expect(err.message).toBe(REFUSAL);
 	});
+});
+
+it("returns an embedding width refusal as an actionable precondition", async () => {
+	const error = new UnsupportedEmbeddingModelError("databricks-gte-large-en");
+	mockListSearchableStories.mockResolvedValue([
+		makeStory({ id: "example-story" }),
+	]);
+	mockGenerateEmbeddings.mockRejectedValue(error);
+	const result = await errorFrom(runSearch());
+	expect(result.code).toBe("PRECONDITION_FAILED");
+	expect(result.message).toBe(error.message);
 });

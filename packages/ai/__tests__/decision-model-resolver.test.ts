@@ -16,6 +16,7 @@ const {
 	getLanguageModelMock,
 	getEvaluationModelMock,
 	getModelForTaskMock,
+	getOrgDecisionProviderMock,
 	getTenantAiGatewayBillingStateMock,
 	planSourceForCallMock,
 	resolveProviderApiKeyMock,
@@ -27,6 +28,7 @@ const {
 	getLanguageModelMock: vi.fn(),
 	getEvaluationModelMock: vi.fn(),
 	getModelForTaskMock: vi.fn(),
+	getOrgDecisionProviderMock: vi.fn(),
 	getTenantAiGatewayBillingStateMock: vi.fn(),
 	resolveProviderApiKeyMock: vi.fn(),
 	wrapEvaluationModelWithUsageLoggingMock: vi.fn((model: unknown) => model),
@@ -39,10 +41,11 @@ vi.mock("@repo/database", () => ({
 	getAiProviderApiKeyByProvider: getAiProviderApiKeyByProviderMock,
 	getEmbeddingProviderConfig: vi.fn(),
 	getModelForTask: getModelForTaskMock,
+	getOrgDecisionProvider: getOrgDecisionProviderMock,
 	getProviderModelIdForCanonical: vi.fn(),
 	getSystemAiProviderApiKey: vi.fn(),
 	getTaskDefaultModel: vi.fn(),
-	updateProviderLastUsed: vi.fn(),
+	updateProviderLastUsed: vi.fn(async () => undefined),
 }));
 
 vi.mock("@repo/payments", () => ({
@@ -57,7 +60,14 @@ vi.mock("../model-factory", () => ({
 }));
 
 vi.mock("../lib/databricks-oauth", () => ({
-	hasProviderCredentials: vi.fn(),
+	hasProviderCredentials: (config: {
+		apiKey?: string;
+		clientId?: string;
+		encryptedClientSecret?: string;
+	}) =>
+		Boolean(
+			config.apiKey || (config.clientId && config.encryptedClientSecret),
+		),
 	hasServicePrincipalCredentials: vi.fn(),
 	resolveProviderApiKey: resolveProviderApiKeyMock,
 }));
@@ -117,6 +127,7 @@ const JEV_SELECTION = {
 describe("getAIDecisionModelWithMetadata", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		getOrgDecisionProviderMock.mockResolvedValue(null);
 		planSourceForCallMock.mockResolvedValue(null);
 		getAiProviderApiKeyByProviderMock.mockResolvedValue(
 			ORGANIZATION_GATEWAY,
@@ -201,6 +212,22 @@ describe("getAIDecisionModelWithMetadata", () => {
 		});
 	});
 
+	it.each([null, "VERCEL_GATEWAY", "OPENAI_DIRECT"])(
+		"keeps gateway routing for preference provider %s",
+		async (provider) => {
+			getOrgDecisionProviderMock.mockResolvedValue(provider);
+			const resolved = await getAIDecisionModelWithMetadata({
+				userId: "example-user",
+				organizationId: "example-org",
+			});
+			expect(resolved.metadata.provider).toBe("VERCEL_GATEWAY");
+			expect(getAiProviderApiKeyByProviderMock).toHaveBeenCalledWith({
+				userId: "example-user",
+				organizationId: "example-org",
+				provider: "VERCEL_GATEWAY",
+			});
+		},
+	);
 	it("refuses to resolve without an organization context", async () => {
 		await expect(
 			getAIDecisionModelWithMetadata({ userId: "user-1" }),
@@ -400,6 +427,7 @@ describe("getAIDecisionModelWithMetadata — gateway fallback from Luna to Jev",
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		getOrgDecisionProviderMock.mockResolvedValue(null);
 		getAiProviderApiKeyByProviderMock.mockResolvedValue(
 			ORGANIZATION_GATEWAY,
 		);
@@ -697,6 +725,7 @@ describe("getAIDecisionModelWithMetadata — decision-call telemetry", () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		getOrgDecisionProviderMock.mockResolvedValue(null);
 		trace.disable();
 		spanExporter = new InMemorySpanExporter();
 		tracerProvider = new BasicTracerProvider({
@@ -856,4 +885,229 @@ describe("getAIDecisionModelWithMetadata — decision-call telemetry", () => {
 			"unknown",
 		]);
 	});
+});
+
+const OPENJEV_SELECTION = {
+	...JEV_SELECTION,
+	model: {
+		...JEV_SELECTION.model,
+		canonicalName: "openjev-qwen35-4b",
+		providerMappings: [
+			{
+				provider: "DATABRICKS",
+				providerModelId: "system.ai.openjev-qwen35-4b",
+				isAvailable: true,
+			},
+		],
+	},
+};
+const DATABRICKS_CONFIG = {
+	...ORGANIZATION_GATEWAY,
+	provider: "DATABRICKS",
+	baseUrl: "https://example.cloud.databricks.com/serving-endpoints",
+};
+const decisionContext = {
+	userId: "example-user",
+	organizationId: "example-org",
+};
+describe("explicit Databricks decisions", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		getOrgDecisionProviderMock.mockResolvedValue("DATABRICKS");
+		planSourceForCallMock.mockResolvedValue(null);
+		getAiProviderApiKeyByProviderMock.mockResolvedValue(DATABRICKS_CONFIG);
+		getModelForTaskMock.mockResolvedValue(OPENJEV_SELECTION);
+		resolveProviderApiKeyMock.mockResolvedValue("example-token");
+		getTenantAiGatewayBillingStateMock.mockReturnValue({
+			mode: "external_provider",
+			headers: null,
+		});
+		getEvaluationModelMock.mockImplementation((modelId: string) => ({
+			modelId,
+			specificationVersion: "v4",
+			provider: "typesafe-ai",
+			supportedQuestionTypes: ["boolean"],
+			doDecide: vi.fn(async () => ({
+				answers: {},
+				warnings: [],
+				usage: { inputTokens: 173, outputTokens: 0 },
+			})),
+		}));
+	});
+	it.each([false, true])(
+		"resolves organization Databricks credentials (OAuth=%s) without gateway access",
+		async (oauth) => {
+			const config = oauth
+				? {
+						...DATABRICKS_CONFIG,
+						apiKey: null,
+						clientId: "example-client",
+						encryptedClientSecret: "encrypted:example-secret",
+					}
+				: DATABRICKS_CONFIG;
+			getAiProviderApiKeyByProviderMock.mockResolvedValue(config);
+			const resolved =
+				await getAIDecisionModelWithMetadata(decisionContext);
+			expect(resolved.metadata).toMatchObject({
+				provider: "DATABRICKS",
+				canonicalName: "openjev-qwen35-4b",
+				billingMode: "external_provider",
+			});
+			expect(getAiProviderApiKeyByProviderMock.mock.calls).toEqual([
+				[{ ...decisionContext, provider: "DATABRICKS" }],
+			]);
+			expect(getModelForTaskMock).toHaveBeenCalledWith(
+				"example-user",
+				"DATABRICKS",
+				"DECISION",
+				"example-org",
+			);
+			expect(resolveProviderApiKeyMock).toHaveBeenCalledWith(config);
+			expect(getEvaluationModelMock).toHaveBeenCalledWith(
+				"system.ai.openjev-qwen35-4b",
+				{
+					apiKey: "example-token",
+					provider: "DATABRICKS",
+					baseUrl: config.baseUrl,
+				},
+			);
+			expect(
+				wrapEvaluationModelWithUsageLoggingMock,
+			).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.objectContaining({ provider: "DATABRICKS" }),
+				{ answeringModelCanonicalNames: {} },
+			);
+		},
+	);
+	it.each([
+		["personal", { ...DATABRICKS_CONFIG, source: "user" }],
+		[
+			"missing",
+			{
+				...DATABRICKS_CONFIG,
+				provider: null,
+				source: null,
+				apiKey: null,
+			},
+		],
+		[
+			"wrong provider",
+			{ ...DATABRICKS_CONFIG, provider: "VERCEL_GATEWAY" },
+		],
+		["no credentials", { ...DATABRICKS_CONFIG, apiKey: null }],
+		["no workspace", { ...DATABRICKS_CONFIG, baseUrl: null }],
+	])(
+		"refuses %s Databricks configuration without gateway fallback",
+		async (_label, config) => {
+			getAiProviderApiKeyByProviderMock.mockResolvedValue(config);
+			await expect(
+				getAIDecisionModelWithMetadata(decisionContext),
+			).rejects.toBeInstanceOf(AIProviderNotConfiguredError);
+			expect(getAiProviderApiKeyByProviderMock).toHaveBeenCalledTimes(1);
+			expect(getAiProviderApiKeyByProviderMock).toHaveBeenCalledWith({
+				...decisionContext,
+				provider: "DATABRICKS",
+			});
+			expect(getModelForTaskMock).not.toHaveBeenCalled();
+			expect(getEvaluationModelMock).not.toHaveBeenCalled();
+		},
+	);
+	it.each([
+		[
+			"missing mapping",
+			{ ...OPENJEV_SELECTION.model, providerMappings: [] },
+		],
+		[
+			"wrong provider mapping",
+			{
+				...OPENJEV_SELECTION.model,
+				providerMappings: JEV_SELECTION.model.providerMappings,
+			},
+		],
+		[
+			"unavailable mapping",
+			{
+				...OPENJEV_SELECTION.model,
+				providerMappings: [
+					{
+						...OPENJEV_SELECTION.model.providerMappings[0],
+						isAvailable: false,
+					},
+				],
+			},
+		],
+		[
+			"missing evaluation",
+			{ ...OPENJEV_SELECTION.model, capabilities: [] },
+		],
+		[
+			"wrong task",
+			{ ...OPENJEV_SELECTION.model, suitableForTasks: ["CHAT"] },
+		],
+	])("refuses a decision model with %s", async (_label, model) => {
+		getModelForTaskMock.mockResolvedValue({ ...OPENJEV_SELECTION, model });
+		await expect(
+			getAIDecisionModelWithMetadata(decisionContext),
+		).rejects.toBeInstanceOf(AIProviderNotConfiguredError);
+		expect(getEvaluationModelMock).not.toHaveBeenCalled();
+	});
+	it("defers to ChatGPT before reading the Databricks preference", async () => {
+		planSourceForCallMock.mockResolvedValue({ source: { kind: "org" } });
+		await expect(
+			getAIDecisionModelWithMetadata(decisionContext),
+		).rejects.toBeInstanceOf(AIProviderNotConfiguredError);
+		expect(getOrgDecisionProviderMock).not.toHaveBeenCalled();
+		expect(getAiProviderApiKeyByProviderMock).not.toHaveBeenCalled();
+	});
+	it("sends no gateway fallbacks even for a Databricks selection marked system default", async () => {
+		getModelForTaskMock.mockResolvedValue({
+			...OPENJEV_SELECTION,
+			source: "system_default",
+			model: {
+				...OPENJEV_SELECTION.model,
+				canonicalName: "gpt-6-luna-decisions",
+			},
+		});
+		const resolved = await getAIDecisionModelWithMetadata(decisionContext);
+		const call = { state: [], questions: {} };
+		assertWithinAiUsageLimitsMock.mockClear();
+		await resolved.model.doDecide(call);
+		expect(assertWithinAiUsageLimitsMock).toHaveBeenCalledWith(
+			expect.objectContaining({
+				organizationId: "example-org",
+				taskType: "DECISION",
+				modelCanonicalName: "gpt-6-luna-decisions",
+			}),
+		);
+		expect(
+			getEvaluationModelMock.mock.results[0].value.doDecide,
+		).toHaveBeenCalledWith(
+			expect.not.objectContaining({
+				providerOptions: expect.objectContaining({
+					gateway: expect.anything(),
+				}),
+			}),
+		);
+		expect(wrapEvaluationModelWithUsageLoggingMock).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.anything(),
+			{ answeringModelCanonicalNames: {} },
+		);
+	});
+});
+
+it("applies usage limits before constructing an explicitly selected Databricks model", async () => {
+	getOrgDecisionProviderMock.mockResolvedValue("DATABRICKS");
+	planSourceForCallMock.mockResolvedValue(null);
+	getAiProviderApiKeyByProviderMock.mockResolvedValue(DATABRICKS_CONFIG);
+	getModelForTaskMock.mockResolvedValue(OPENJEV_SELECTION);
+	getEvaluationModelMock.mockClear();
+	assertWithinAiUsageLimitsMock.mockRejectedValueOnce(
+		new Error("example-limit-rejection"),
+	);
+	await expect(
+		getAIDecisionModelWithMetadata(decisionContext),
+	).rejects.toThrow("example-limit-rejection");
+	expect(getEvaluationModelMock).not.toHaveBeenCalled();
 });

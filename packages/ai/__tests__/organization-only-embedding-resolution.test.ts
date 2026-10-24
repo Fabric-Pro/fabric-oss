@@ -145,7 +145,10 @@ beforeEach(() => {
 		async (_userId: string, provider: string) => ({
 			model: {
 				id: `model-${provider}`,
-				canonicalName: EMBEDDING_MODELS[provider],
+				canonicalName: EMBEDDING_MODELS[provider]?.replace(
+					"openai/",
+					"",
+				),
 				displayName: EMBEDDING_MODELS[provider],
 			},
 			providerModelId: EMBEDDING_MODELS[provider],
@@ -305,5 +308,64 @@ describe("embedding usage tags", () => {
 				taskType: "EMBEDDING",
 			}),
 		);
+	});
+});
+
+describe("embedding vector store compatibility", () => {
+	it.each([
+		["databricks-gte-large-en", "system.ai.gte-large-en", 1024],
+		["text-embedding-3-large", "custom-deployment", 3072],
+		["unknown-embedding", "text-embedding-3-small", null],
+	])(
+		"refuses canonical %s before creating a provider model",
+		async (canonicalName, providerModelId, dimensions) => {
+			db.getModelForTask.mockResolvedValue({
+				model: {
+					id: "model-example",
+					canonicalName,
+					displayName: canonicalName,
+				},
+				providerModelId,
+				source: "system_default",
+			});
+			const { getEmbeddingModel } = await import("../model-factory");
+			const { assertWithinAiUsageLimits } = await import(
+				"@repo/payments"
+			);
+			const credentials = await import("../lib/databricks-oauth");
+			const resolveKey = vi.spyOn(credentials, "resolveProviderApiKey");
+			await expect(
+				getAIEmbeddingModelWithMetadata({
+					userId: ADMIN,
+					organizationId: ORG,
+				}),
+			).rejects.toMatchObject({
+				name: "UnsupportedEmbeddingModelError",
+				canonicalName,
+				dimensions,
+				message: expect.stringContaining(
+					dimensions === null ? "unknown" : String(dimensions),
+				),
+			});
+			expect(getEmbeddingModel).not.toHaveBeenCalled();
+			expect.soft(assertWithinAiUsageLimits).not.toHaveBeenCalled();
+			expect.soft(resolveKey).not.toHaveBeenCalled();
+		},
+	);
+	it("accepts a known canonical model behind an arbitrary deployment name", async () => {
+		db.getModelForTask.mockResolvedValue({
+			model: {
+				id: "model-example",
+				canonicalName: "text-embedding-3-small",
+				displayName: "Embedding",
+			},
+			providerModelId: "custom-deployment",
+			source: "system_default",
+		});
+		const result = await getAIEmbeddingModelWithMetadata({
+			userId: ADMIN,
+			organizationId: ORG,
+		});
+		expect(result.metadata.modelString).toBe("custom-deployment");
 	});
 });

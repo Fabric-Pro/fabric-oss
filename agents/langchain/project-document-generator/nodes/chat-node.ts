@@ -54,6 +54,7 @@ import {
 } from "@repo/agent-tools";
 import { logger } from "@repo/logs";
 import { classifyLimitError } from "@repo/utils/classify-limit-error";
+import { straightenIntroducedQuotes } from "@repo/utils/introduced-quotes";
 import { normalizeForComparison } from "@repo/utils/normalize-for-comparison";
 import { v4 as uuidv4 } from "uuid";
 import { buildSystemPromptAsync, getPredictStateConfig } from "../prompts";
@@ -589,6 +590,20 @@ const NO_DOCUMENT_CHANGES_NOTICE =
 	"I reviewed the document but found no changes to make — it already reflects the requested update.";
 
 /**
+ * Final hygiene for a document the model produced from `preEditDocument`,
+ * whether by a full rewrite or by patches. Runs on the whole document because
+ * telling the model's curly quotes from the author's needs both texts aligned.
+ */
+export function finalizeEditedDocument(
+	document: string,
+	preEditDocument: string,
+): string {
+	return repairDegradedMarkdown(
+		straightenIntroducedQuotes(document, preEditDocument),
+	);
+}
+
+/**
  * Strip tool definitions and system instructions that may have leaked into document content.
  *
  * CopilotKit's internal tool format and system prompt instructions sometimes get echoed by the model.
@@ -1034,8 +1049,7 @@ function buildConfirmChangesCommand(params: {
 		);
 	}
 
-	// AC2: append the partial-completion warning so the user sees, on the confirm
-	// card, which section(s) the AI couldn't fully update after its retries.
+	// Append the section-change or partial-completion warning to the confirm card.
 	if (sectionWarning) {
 		followUpMessage = `${followUpMessage}\n\n${sectionWarning}`;
 	}
@@ -1188,8 +1202,8 @@ function buildInvalidToolArgsRetry(params: {
 
 /**
  * Outcome of the section-preservation guard: either retry with the model, or
- * proceed to the confirm card — optionally carrying a partial-completion
- * `warning` when the retry budget was spent and sections are still dropped.
+ * proceed to the confirm card — optionally carrying a section-change warning
+ * for a bound spec restructure or a partial-completion warning after retries.
  */
 type SectionGuardOutcome =
 	| { action: "retry"; command: Command }
@@ -1204,8 +1218,10 @@ type SectionGuardOutcome =
  * well-formedness and the patch content-loss guard only fires below 20% of the
  * WHOLE document.
  *
- * Returns `{ action: "retry" }` when a section was dropped and the retry budget
- * remains; `{ action: "proceed" }` otherwise (nothing dropped, guard not
+ * Bound spec runs proceed with a warning on first detection so the guard does
+ * not compete with their bound structure. Other applicable runs return
+ * `{ action: "retry" }` when a section was dropped and the retry budget remains;
+ * `{ action: "proceed" }` otherwise (nothing dropped, guard not
  * applicable, or the retry budget is spent). When the budget is spent but a
  * section is still dropped, `proceed` carries a `warning` so the confirm card
  * can flag the partial completion rather than hard-blocking a genuinely-intended
@@ -1227,9 +1243,11 @@ function evaluateSectionPreservation(params: {
 	// Skip when there's nothing to preserve or a full rewrite is intended:
 	// custom prompts intentionally produce non-default structures, regeneration
 	// is an explicit full rewrite, and a first-generation document has no
-	// baseline sections to protect.
+	// baseline sections to protect. Bound spec runs suppress Fabric methodology
+	// and may intentionally restructure sections, so they proceed to detection
+	// below for a review warning rather than corrective retries.
 	if (
-		state.systemPrompt?.trim() ||
+		(state.systemPrompt?.trim() && !state.suppressFabricMethodology) ||
 		state.isRegeneration ||
 		baselineDocument.trim().length === 0
 	) {
@@ -1254,6 +1272,17 @@ function evaluateSectionPreservation(params: {
 			})),
 		},
 	);
+
+	if (state.suppressFabricMethodology) {
+		const names = dropped.map((d) => `"${d.heading}"`).join(", ");
+		const one = dropped.length === 1;
+		return {
+			action: "proceed",
+			warning:
+				`⚠️ This update removed or shortened ${one ? "this section" : "these sections"}: ${names}. ` +
+				`Review ${one ? "it" : "them"} before accepting and restore anything you still need.`,
+		};
+	}
 
 	if (state.retryCount >= MAX_RETRIES) {
 		logger.warn(
@@ -2176,8 +2205,12 @@ export async function chatNode(
 			}
 
 			// Create a simple acknowledgment message (no tool calls!)
+			// An accept is answered before the editor's save of it is: the
+			// acknowledgment never says the changes were saved, and the
+			// editor records what became of them once that save is answered
+			// (Fizzy #2946).
 			const acknowledgment = confirmationStatus.accepted
-				? "Changes have been applied to the document."
+				? "Changes accepted."
 				: "Changes have been discarded. The document remains unchanged.";
 
 			const ackMessage = new AIMessage({ content: acknowledgment });
@@ -2261,6 +2294,7 @@ export async function chatNode(
 				excludeDocumentBody: isEditing,
 				toolMode: patchModeAvailable ? "patch" : "write",
 				activeSkill: state.activeSkill,
+				suppressFabricMethodology: state.suppressFabricMethodology,
 			},
 		);
 
@@ -4298,8 +4332,9 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 				// Open Questions. Deterministic and behaviour-preserving; runs
 				// before validation so the model isn't retried for damage the
 				// repair already fixed.
-				const document = repairDegradedMarkdown(
+				const document = finalizeEditedDocument(
 					stripToolDefinitions(rawDocument, preEditDocument),
+					preEditDocument,
 				);
 
 				// Structural sanity check on the whole document, backed by an
@@ -4350,8 +4385,8 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 
 				// Reject-and-retry if the rewrite dropped or gutted a section the
 				// user didn't ask to remove (whole-document guards above miss a
-				// single collapsed section). On retry-exhaustion it proceeds with
-				// a partial-completion warning.
+				// single collapsed section). Bound spec runs warn without retrying;
+				// other runs warn after retry exhaustion.
 				const writeSectionGuard = evaluateSectionPreservation({
 					state,
 					messages,
@@ -4543,7 +4578,10 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 				// carry (flattened sub-bullets, split bold/questions, glued
 				// labels) before it reaches the confirm card. Deterministic and
 				// behaviour-preserving.
-				const document = repairDegradedMarkdown(result);
+				const document = finalizeEditedDocument(
+					result,
+					preEditDocument,
+				);
 
 				logger.info("[Project Document Generator] Patches applied", {
 					patchCount: patches.length,
@@ -4571,7 +4609,7 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 				// Reject-and-retry if the patches dropped or gutted a section the
 				// user didn't ask to remove (a replace_section/delete_section can
 				// collapse one section while total loss stays under the 20% floor).
-				// On retry-exhaustion it proceeds with a partial-completion warning.
+				// Bound spec runs warn without retrying; other runs warn after retry exhaustion.
 				const patchSectionGuard = evaluateSectionPreservation({
 					state,
 					messages,

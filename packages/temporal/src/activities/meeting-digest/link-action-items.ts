@@ -39,27 +39,21 @@ import {
 	getAIDecisionModelWithMetadata,
 	getAIModelWithMetadata,
 	recordDecisionOutcome,
-	resolveModelWithProvider,
 } from "@repo/ai";
 import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import {
 	ACTION_ITEM_LINK_VERSION,
 	type AutoLinkRow,
-	baseModelName,
 	computeActionItemKey,
 	db,
 	detectionTextForStory,
-	hashDetectionText,
 	insertAutoLinks,
 	isFeatureEnabled,
 	linkStateKey,
 	listActiveStoriesForDetection,
 	listDecidedLinkKeys,
-	listStoryDuplicateEmbeddingMetadata,
-	listStoryDuplicateEmbeddings,
 	markActionItemsLinked,
 	resolveMeetingDisplayName,
-	upsertStoryDuplicateEmbeddings,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
@@ -76,6 +70,7 @@ import {
 	type SelectedCandidate,
 	selectCandidates,
 } from "../../lib/action-item-link-core";
+import { loadStoryVectors } from "../../lib/story-vectors";
 
 const LOG_PREFIX = "[MeetingDigest/linkActionItems]";
 
@@ -259,90 +254,18 @@ export async function linkMeetingActionItemsActivity(
 	}
 
 	// --- Story vectors: shared cache first, embed only the misses -----------
-	heartbeat("linkActionItems: resolving embedding model");
-
-	let currentModel: string;
-	try {
-		const resolved = await resolveModelWithProvider("EMBEDDING", {
-			userId,
-			organizationId: organizationId ?? undefined,
-		});
-		currentModel = baseModelName(resolved.modelString);
-	} catch (err) {
-		// No embedding model configured is an environment problem, not a data
-		// one. Surface it so the activity retries (and the failure is visible)
-		// rather than silently producing zero links forever.
-		logger.error(`${LOG_PREFIX} embedding model resolution failed`, {
-			projectId,
-			err: err instanceof Error ? err.message : String(err),
-		});
-		throw err;
-	}
-
-	const hashById = new Map(
-		storiesWithText.map((s) => [s.id, hashDetectionText(s.text)]),
-	);
-	const cacheMeta = await listStoryDuplicateEmbeddingMetadata(projectId);
-	const cacheMetaByStoryId = new Map(cacheMeta.map((r) => [r.storyId, r]));
-	const staleStories = storiesWithText.filter((s) => {
-		const cached = cacheMetaByStoryId.get(s.id);
-		return (
-			!cached ||
-			cached.contentHash !== hashById.get(s.id) ||
-			cached.model !== currentModel
-		);
-	});
-	const staleIds = new Set(staleStories.map((s) => s.id));
-
-	const embeddingByStoryId = new Map<string, number[]>();
-	if (staleIds.size < storiesWithText.length) {
-		for (const row of await listStoryDuplicateEmbeddings(projectId)) {
-			if (!staleIds.has(row.storyId)) {
-				embeddingByStoryId.set(row.storyId, row.embedding);
-			}
-		}
-	}
-
+	// No embedding model is an environment problem, not a data one: it throws,
+	// so the activity retries (and the failure is visible) rather than
+	// silently producing zero links forever.
 	heartbeat("linkActionItems: embedding");
-
-	if (staleStories.length > 0) {
-		const { embeddings, model } = await generateEmbeddings(
-			staleStories.map((s) => s.text),
-			{
-				userId,
-				organizationId: organizationId ?? undefined,
-				projectId,
-				featureKey: "knowledge-search",
-				jobType: "meeting-transcript-sync",
-			},
-		);
-		staleStories.forEach((s, i) => {
-			embeddingByStoryId.set(s.id, embeddings[i]);
-		});
-		// Write back to the SHARED cache so the duplicate scan reuses this work.
-		// Best-effort: a cache write failure must not fail a run whose matching
-		// work already succeeded — the next run simply re-embeds.
-		try {
-			await upsertStoryDuplicateEmbeddings(
-				projectId,
-				staleStories.map((s, i) => ({
-					storyId: s.id,
-					contentHash: hashById.get(s.id) ?? "",
-					model,
-					embedding: embeddings[i],
-				})),
-			);
-		} catch (err) {
-			logger.warn(
-				`${LOG_PREFIX} embedding cache write failed — continuing`,
-				{
-					projectId,
-					rows: staleStories.length,
-					err: err instanceof Error ? err.message : String(err),
-				},
-			);
-		}
-	}
+	const { vectors: embeddingByStoryId, embedded } = await loadStoryVectors({
+		projectId,
+		userId,
+		organizationId,
+		stories: storiesWithText,
+		jobType: "meeting-transcript-sync",
+		logPrefix: LOG_PREFIX,
+	});
 
 	const candidateStories = storiesWithText
 		.map((s) => {
@@ -788,8 +711,8 @@ export async function linkMeetingActionItemsActivity(
 		transcriptCuid,
 		items: items.length,
 		stories: candidateStories.length,
-		embedded: staleStories.length,
-		reused: candidateStories.length - staleStories.length,
+		embedded,
+		reused: candidateStories.length - embedded,
 		linksCreated,
 		verifierFailures,
 		minConfidence,

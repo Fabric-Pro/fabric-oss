@@ -6,6 +6,7 @@
  * is raised before any socket would open.
  */
 import { crc32 } from "node:zlib";
+import { isBrandWebsite } from "@repo/utils/proposal-artifact/brand-sources";
 import {
 	OutboundResponseRejectedError,
 	PINNED_FETCH_DEFAULT_CONTENT_TYPES,
@@ -19,6 +20,7 @@ import {
 	fetchWebsiteBrand,
 	normalizeWebsiteUrl,
 	type PinnedFetch,
+	parseWebsite,
 	WEBSITE_BRAND_FAILURE_CODES,
 } from "../fetch-website-brand";
 
@@ -143,6 +145,8 @@ describe("normalizeWebsiteUrl", () => {
 		["http://www.example.com./path", "https://www.example.com"],
 		["https://example.com:443/", "https://example.com"],
 		["example.com:80", "https://example.com"],
+		["https://xn--bcher-kva.example", "https://xn--bcher-kva.example"],
+		["bücher.example", "https://xn--bcher-kva.example"],
 	])("normalizes %j to %j", (input, expected) => {
 		expect(normalizeWebsiteUrl(input)).toBe(expected);
 	});
@@ -156,8 +160,32 @@ describe("normalizeWebsiteUrl", () => {
 		["example.com:8080"],
 		["not a url at all"],
 		[""],
+		["https://my_site.example.com"],
+		["my_site.example.com"],
+		["https://[2001:db8::1]"],
+		["https://192.0.2.10"],
 	])("refuses %j", (input) => {
 		expect(normalizeWebsiteUrl(input)).toBeNull();
+	});
+
+	it("gives every website it accepts the one stored shape", () => {
+		for (const input of [
+			"Example.com/about",
+			"http://www.example.com./path",
+			"bücher.example",
+		]) {
+			expect(isBrandWebsite(normalizeWebsiteUrl(input))).toBe(true);
+		}
+	});
+
+	it("refuses an IP address or a host outside the DNS characters as blocked", () => {
+		for (const input of [
+			"https://my_site.example.com",
+			"https://[2001:db8::1]",
+			"https://192.0.2.10",
+		]) {
+			expect(parseWebsite(input)).toEqual({ ok: false, code: "blocked" });
+		}
 	});
 });
 
@@ -264,6 +292,7 @@ describe("fetchWebsiteBrand", () => {
 			ok: false,
 			code: "too_large",
 			colors: ["#0d9488"],
+			name: null,
 		});
 		expect(calls.map((c) => c.url)).not.toContain(
 			"https://example.com/og.png",
@@ -305,7 +334,12 @@ describe("fetchWebsiteBrand", () => {
 
 		const result = await fetchWebsiteBrand("example.com", { fetch });
 
-		expect(result).toEqual({ ok: false, code: "unreachable", colors: [] });
+		expect(result).toEqual({
+			ok: false,
+			code: "unreachable",
+			colors: [],
+			name: null,
+		});
 		expect(calls).toHaveLength(2);
 	});
 
@@ -323,6 +357,7 @@ describe("fetchWebsiteBrand", () => {
 				ok: false,
 				code: "blocked",
 				colors: [],
+				name: null,
 			});
 			expect(calls).toHaveLength(1);
 		}
@@ -341,7 +376,7 @@ describe("fetchWebsiteBrand", () => {
 			await fetchWebsiteBrand("example.com", {
 				fetch: privateLogo.fetch,
 			}),
-		).toEqual({ ok: false, code: "unreachable", colors: [] });
+		).toEqual({ ok: false, code: "unreachable", colors: [], name: null });
 	});
 
 	// The server's resolver may know private names (a private zone, say). A
@@ -399,6 +434,7 @@ describe("fetchWebsiteBrand", () => {
 				ok: false,
 				code: "blocked",
 				colors: [],
+				name: null,
 			});
 			expect(calls).toHaveLength(1);
 		}
@@ -406,8 +442,25 @@ describe("fetchWebsiteBrand", () => {
 		const { fetch, calls } = site({});
 		expect(
 			await fetchWebsiteBrand("https://example.com:8443", { fetch }),
-		).toEqual({ ok: false, code: "blocked", colors: [] });
+		).toEqual({ ok: false, code: "blocked", colors: [], name: null });
 		expect(calls).toHaveLength(0);
+	});
+
+	it("refuses an IP address or an underscore host as the website without fetching it", async () => {
+		for (const website of [
+			"https://192.0.2.10",
+			"https://[2001:db8::1]",
+			"https://my_site.example.com",
+		]) {
+			const { fetch, calls } = site({});
+			expect(await fetchWebsiteBrand(website, { fetch })).toEqual({
+				ok: false,
+				code: "blocked",
+				colors: [],
+				name: null,
+			});
+			expect(calls).toHaveLength(0);
+		}
 	});
 
 	it("follows at most three redirects", async () => {
@@ -421,7 +474,12 @@ describe("fetchWebsiteBrand", () => {
 
 		const result = await fetchWebsiteBrand("example.com", { fetch });
 
-		expect(result).toEqual({ ok: false, code: "unreachable", colors: [] });
+		expect(result).toEqual({
+			ok: false,
+			code: "unreachable",
+			colors: [],
+			name: null,
+		});
 		expect(calls).toHaveLength(4);
 	});
 
@@ -440,7 +498,12 @@ describe("fetchWebsiteBrand", () => {
 
 		const result = await fetchWebsiteBrand("example.com", { fetch });
 
-		expect(result).toEqual({ ok: false, code: "unsupported", colors: [] });
+		expect(result).toEqual({
+			ok: false,
+			code: "unsupported",
+			colors: [],
+			name: null,
+		});
 		expect(calls[0]?.opts.allowedContentTypes).toEqual([
 			"text/html",
 			"application/xhtml+xml",
@@ -465,7 +528,12 @@ describe("fetchWebsiteBrand", () => {
 
 		const result = await fetchWebsiteBrand("example.com", { fetch });
 
-		expect(result).toEqual({ ok: false, code: "too_large", colors: [] });
+		expect(result).toEqual({
+			ok: false,
+			code: "too_large",
+			colors: [],
+			name: null,
+		});
 		expect(performance.now() - started).toBeLessThan(1_000);
 	});
 
@@ -484,6 +552,7 @@ describe("fetchWebsiteBrand", () => {
 			ok: false,
 			code: "unsupported",
 			colors: [],
+			name: null,
 		});
 	});
 
@@ -503,6 +572,7 @@ describe("fetchWebsiteBrand", () => {
 			ok: false,
 			code: "no_logo",
 			colors: ["#0d9488"],
+			name: null,
 		});
 		expect(calls).toHaveLength(1);
 	});
@@ -541,7 +611,12 @@ describe("fetchWebsiteBrand", () => {
 			timeoutMs: 50,
 		});
 
-		expect(result).toEqual({ ok: false, code: "unreachable", colors: [] });
+		expect(result).toEqual({
+			ok: false,
+			code: "unreachable",
+			colors: [],
+			name: null,
+		});
 		expect(performance.now() - started).toBeLessThan(2_000);
 	});
 
@@ -555,7 +630,56 @@ describe("fetchWebsiteBrand", () => {
 			timeoutMs: 50,
 		});
 
-		expect(result).toEqual({ ok: false, code: "unreachable", colors: [] });
+		expect(result).toEqual({
+			ok: false,
+			code: "unreachable",
+			colors: [],
+			name: null,
+		});
+	});
+
+	it("returns the declared name, og:site_name before the title, neutralized", async () => {
+		const { fetch } = site({
+			"https://example.com/": page(
+				`<title>Home | Example</title>
+				<meta property="og:site_name" content="  Example\u202e Co\u200b  ">
+				<link rel="apple-touch-icon" href="/touch.png">`,
+			),
+			"https://example.com/touch.png": {
+				type: "image/png",
+				body: bluePng,
+			},
+		});
+
+		expect(await fetchWebsiteBrand("example.com", { fetch })).toMatchObject(
+			{ ok: true, name: "Example Co" },
+		);
+	});
+
+	it("falls back to the title for the name, also when no logo is found", async () => {
+		const { fetch } = site({
+			"https://example.com/": page(
+				`<title>Example &amp; Partners</title>
+				<meta name="theme-color" content="#0d9488">`,
+			),
+		});
+
+		expect(await fetchWebsiteBrand("example.com", { fetch })).toEqual({
+			ok: false,
+			code: "no_logo",
+			colors: ["#0d9488"],
+			name: "Example & Partners",
+		});
+	});
+
+	it("caps the name at 200 characters", async () => {
+		const { fetch } = site({
+			"https://example.com/": page(`<title>${"a".repeat(600)}</title>`),
+		});
+
+		const result = await fetchWebsiteBrand("example.com", { fetch });
+
+		expect(result.name).toBe("a".repeat(200));
 	});
 
 	describe("failure payloads", () => {
@@ -610,6 +734,7 @@ describe("fetchWebsiteBrand", () => {
 				expect(Object.keys(result).sort()).toEqual([
 					"code",
 					"colors",
+					"name",
 					"ok",
 				]);
 				expect(WEBSITE_BRAND_FAILURE_CODES).toContain(
@@ -631,6 +756,7 @@ describe("fetchWebsiteBrand", () => {
 				ok: false,
 				code: "unreachable",
 				colors: [],
+				name: null,
 			});
 		});
 	});

@@ -13,15 +13,21 @@
  *   4. diagrams rendered with the live page's engine and cleaned;
  *   5. the theme page printed twice for the contents page's numbers, or the
  *      Word file written from the same tree;
- *   6. the file uploaded under the project's export prefix.
+ *   6. the file uploaded under the project's export prefix;
+ *   7. the brand it printed recorded against the document, best-effort.
  *
  * The whole run has a time budget: past it the browser closes and the export
  * fails for good. A heartbeat ticks throughout, and the browser, when one is
  * needed, is this run's alone.
  */
 
+import { recordProposalExportBrand } from "@repo/database";
 import { logger } from "@repo/logs";
-import { resolveThemePaint } from "@repo/utils/proposal-artifact/theme-tokens";
+import {
+	type ProposalThemeTokens,
+	resolveThemePaint,
+	themeTokenHash,
+} from "@repo/utils/proposal-artifact/theme-tokens";
 import {
 	type ExportBrowser,
 	withExportBrowser,
@@ -33,6 +39,7 @@ import {
 	extractDocumentImages,
 } from "../../lib/proposal-export/extract-document-images";
 import { exportFailure } from "../../lib/proposal-export/failures";
+import { printTokensOf } from "../../lib/proposal-export/fonts";
 import { prepareExportMarkdown } from "../../lib/proposal-export/markdown";
 import {
 	PROPOSAL_EXPORT_LIMITS,
@@ -76,12 +83,66 @@ export function mergeExportWarnings(
 	return tally.warnings();
 }
 
+/**
+ * The hash of the brand as `format` printed it. Neither format embeds an
+ * uploaded font file, so the files never count, and print sets every family
+ * in Inter, so a PDF's families do not count either: a font-only change to
+ * the Brand kit leaves a PDF's record as it was.
+ */
+function printedBrandHash(
+	printed: ProposalThemeTokens,
+	format: ProposalExportFormat,
+): string {
+	const shown = format === "pdf" ? printTokensOf(printed) : printed;
+	const { fontFiles: _notPrinted, ...proposer } = shown.proposer;
+	return themeTokenHash({ ...shown, proposer });
+}
+
+/**
+ * Record the brand an uploaded export printed, unless an export that
+ * resolved its tokens later already did. `exportedAt` is when this one
+ * resolved them, not when it finished, so of two overlapping exports the one
+ * that read the newer brand keeps the record. Only after the upload, and
+ * never fatal: the file is there either way, so a failed write is logged
+ * with ids and the error's name, and the export still succeeds.
+ */
+async function recordPrintedBrand(
+	input: ProposalExportWorkflowInput,
+	printed: ProposalThemeTokens,
+	exportedAt: Date,
+): Promise<void> {
+	try {
+		await recordProposalExportBrand({
+			documentId: input.documentId,
+			projectId: input.projectId,
+			organizationId: input.organizationId,
+			themeTokenHash: printedBrandHash(printed, input.format),
+			format: input.format === "pdf" ? "PDF" : "DOCX",
+			exportedAt,
+		});
+	} catch (error) {
+		logger.warn(
+			{
+				event: "proposal_export.brand_not_recorded",
+				organizationId: input.organizationId,
+				projectId: input.projectId,
+				documentId: input.documentId,
+				exportId: input.exportId,
+				errorName: error instanceof Error ? error.name : typeof error,
+			},
+			"[ProposalExport] Export brand not recorded",
+		);
+	}
+}
+
 export async function exportProposalDocumentActivity(
 	input: ProposalExportWorkflowInput,
 ): Promise<ProposalExportResult> {
 	const deadline = Date.now() + PROPOSAL_EXPORT_LIMITS.totalTimeMs;
 	return await withHeartbeatTicker(
 		async () => {
+			// Taken before the tokens are read, so it never postdates them.
+			const exportedAt = new Date();
 			const loaded = await loadExportInput(input);
 			const dateLabel = exportDateLabel(new Date());
 			const prepared = prepareExportMarkdown(loaded.content);
@@ -183,6 +244,7 @@ export async function exportProposalDocumentActivity(
 				format: input.format,
 				bytes: rendered.bytes,
 			});
+			await recordPrintedBrand(input, assets.printed, exportedAt);
 			const warnings = mergeExportWarnings([
 				...assets.warnings,
 				...images.warnings,

@@ -61,7 +61,7 @@ const AGENT_SKILLS: AgentSkill[] = [
 
 // Create A2A executor that wraps the LangGraph graph
 const a2aExecutor = createLangGraphA2AExecutor(
-	async (input) => {
+	async (input, runtimeConfig) => {
 		// Transform A2A input to LangGraph state
 		const messages = input.messages as Array<{
 			role: string;
@@ -83,6 +83,7 @@ const a2aExecutor = createLangGraphA2AExecutor(
 				context: input.context as string | undefined,
 			},
 			{
+				signal: runtimeConfig?.signal,
 				configurable: {
 					fabric_api_url: FABRIC_API_URL,
 					openapi_tools: input.openapi_tools,
@@ -195,7 +196,7 @@ app.get("/.well-known/agent.json", (c) => {
 app.post("/a2a/send", async (c) => {
 	try {
 		const body = await c.req.json();
-		const response = await handlers.sendMessage(body);
+		const response = await handlers.sendMessage(body, c.req.raw.signal);
 		const result = await response.json();
 		return c.json(result, response.status as 200);
 	} catch (error) {
@@ -211,7 +212,7 @@ app.post("/a2a/send", async (c) => {
 app.post("/a2a/send/stream", async (c) => {
 	try {
 		const body = await c.req.json();
-		const response = handlers.sendMessageStream(body);
+		const response = handlers.sendMessageStream(body, c.req.raw.signal);
 		return new Response(response.body, {
 			status: 200,
 			headers: {

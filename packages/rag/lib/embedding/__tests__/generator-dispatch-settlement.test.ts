@@ -29,6 +29,7 @@ vi.mock("@repo/ai", () => ({
 	getAIEmbeddingModelWithMetadata: vi.fn(async () => ({
 		model: hoisted.model.current,
 		metadata: {
+			canonicalName: "text-embedding-3-small",
 			modelString: "openai/text-embedding-3-small",
 			selectionSource: "test",
 		},

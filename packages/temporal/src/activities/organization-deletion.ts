@@ -55,6 +55,7 @@ import { cancelSubscription } from "@repo/payments";
 import { deleteOrganizationCollections } from "@repo/rag/lib/collection-manager";
 import { deleteObjects, listObjects } from "@repo/storage";
 import { getBaseUrl } from "@repo/utils";
+import { organizationBrandPrefix } from "@repo/utils/proposal-artifact/brand-sources";
 import { heartbeat } from "@temporalio/activity";
 import type { ScheduleClient } from "@temporalio/client";
 import { getScheduleClient } from "../client";
@@ -713,7 +714,7 @@ function safeStorageHeartbeat(): void {
  * drawn from the same cuid space and never collide, so a key under this prefix
  * belongs to this organization and to nothing else.
  *
- * Four prefixes and one exact key, which is every org-scoped path that exists:
+ * Five prefixes and one exact key, which is every org-scoped path that exists:
  *   - chat-documents: `{orgId}/workspace-files/...`
  *   - qa-run-evidence: `{orgId}/qa-runs/...`
  *   - workspace-documents: `{orgId}/frames/{frameId}/files/...`, the files
@@ -723,6 +724,8 @@ function safeStorageHeartbeat(): void {
  *     company context files (Fizzy #2719). Only that sub-prefix: project
  *     context files share the bucket under `projects/{projectId}/`, which is
  *     the project purge's job.
+ *   - project-contexts: `organization-brand/{orgId}/...`, the Brand kit's
+ *     uploaded hero, font files and uploads still pending (Fizzy #2946).
  *   - avatars: `{orgId}.png`, the organization logo — a single object, not a
  *     prefix, because that is how the logo upload URL is minted.
  *
@@ -770,6 +773,10 @@ export async function deleteOrganizationObjectsFromStorageActivity(
 		{
 			bucket: config.storage.bucketNames.projectContexts,
 			prefix: companyContextStoragePrefix(organizationId),
+		},
+		{
+			bucket: config.storage.bucketNames.projectContexts,
+			prefix: organizationBrandPrefix(organizationId),
 		},
 	];
 

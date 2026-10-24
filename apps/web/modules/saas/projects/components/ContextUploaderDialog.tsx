@@ -52,6 +52,7 @@ import { isConfluenceMcpConfig } from "../lib/confluence-mcp-config";
 import { DOCUMENT_TAG_OPTIONS } from "../lib/document-tag-options";
 import { ConfluenceResourceBrowser } from "./ConfluenceResourceBrowser";
 import { GoogleDocsSelectorDialog } from "./GoogleDocsSelectorDialog";
+import { NotionIntegrationPageBrowser } from "./NotionIntegrationPageBrowser";
 import { NotionResourceBrowser } from "./NotionResourceBrowser";
 import { SlackChannelSelectorDialog } from "./SlackChannelSelectorDialog";
 import { TeamsChatSelectorDialog } from "./TeamsChatSelectorDialog";
@@ -198,6 +199,8 @@ export function ContextUploaderDialog({
 	const [selectedNotionMcpConfigId, setSelectedNotionMcpConfigId] = useState<
 		string | null
 	>(null);
+	const [notionIntegrationDialogOpen, setNotionIntegrationDialogOpen] =
+		useState(false);
 
 	// Confluence dialog state
 	const [confluenceDialogOpen, setConfluenceDialogOpen] = useState(false);
@@ -363,6 +366,25 @@ export function ContextUploaderDialog({
 				);
 			},
 		});
+
+	// Fetch Notion data connections
+	const { data: notionConnections, isLoading: notionConnectionsLoading } =
+		useQuery({
+			queryKey: ["data-connections-notion", organizationId],
+			enabled:
+				!notionConfigsLoading && (notionMcpConfigs?.length ?? 0) === 0,
+			queryFn: async () => {
+				const res = await orpcClient.dataConnections.list({
+					organizationId: organizationId ?? undefined,
+					provider: "NOTION",
+				});
+				return res?.connections || [];
+			},
+		});
+
+	const connectedNotionConnection = useMemo(() => {
+		return notionConnections?.find((c) => c.status === "CONNECTED") ?? null;
+	}, [notionConnections]);
 
 	// Fetch existing Notion contexts for this project (to pass syncedPageIds)
 	const { data: notionContexts } = useQuery({
@@ -720,35 +742,13 @@ export function ContextUploaderDialog({
 								Sync Notion pages to include as context for
 								document generation.
 							</p>
-							{notionConfigsLoading ? (
+							{notionConfigsLoading ||
+							notionConnectionsLoading ? (
 								<div className="flex items-center gap-2 text-muted-foreground">
 									<LoaderIcon className="size-4 motion-safe:animate-spin" />
 									<span>Loading...</span>
 								</div>
-							) : (notionMcpConfigs?.length ?? 0) === 0 ? (
-								<>
-									<p className="mb-4 text-sm text-muted-foreground">
-										No Notion MCP server configured
-									</p>
-									<Tooltip>
-										<TooltipTrigger asChild>
-											<Button variant="outline" asChild>
-												<Link
-													href={buildReturnUrl(
-														`${basePath}/mcp-servers`,
-													)}
-												>
-													<SettingsIcon className="size-4 mr-2" />
-													Configure MCP
-												</Link>
-											</Button>
-										</TooltipTrigger>
-										<TooltipContent>
-											{t("configureMcp")}
-										</TooltipContent>
-									</Tooltip>
-								</>
-							) : (
+							) : (notionMcpConfigs?.length ?? 0) > 0 ? (
 								<Tooltip>
 									<TooltipTrigger asChild>
 										<Button
@@ -770,6 +770,64 @@ export function ContextUploaderDialog({
 										{t("browseNotionPages")}
 									</TooltipContent>
 								</Tooltip>
+							) : connectedNotionConnection ? (
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<Button
+											onClick={() => {
+												setNotionIntegrationDialogOpen(
+													true,
+												);
+											}}
+											className="gap-2"
+										>
+											<NotionIcon className="size-4" />
+											Browse Notion Pages
+										</Button>
+									</TooltipTrigger>
+									<TooltipContent>
+										{t("browseNotionPages")}
+									</TooltipContent>
+								</Tooltip>
+							) : (
+								<>
+									<p className="mb-4 text-sm text-muted-foreground text-center max-w-sm">
+										Connect Notion under Integrations to add
+										pages
+									</p>
+									<div className="flex items-center gap-2">
+										<Button asChild>
+											<Link
+												href={buildReturnUrl(
+													`${basePath}/settings/integrations/providers/NOTION`,
+												)}
+											>
+												<NotionIcon className="size-4 mr-2" />
+												Connect Notion
+											</Link>
+										</Button>
+										<Tooltip>
+											<TooltipTrigger asChild>
+												<Button
+													variant="outline"
+													asChild
+												>
+													<Link
+														href={buildReturnUrl(
+															`${basePath}/mcp-servers`,
+														)}
+													>
+														<SettingsIcon className="size-4 mr-2" />
+														Configure MCP
+													</Link>
+												</Button>
+											</TooltipTrigger>
+											<TooltipContent>
+												{t("configureMcp")}
+											</TooltipContent>
+										</Tooltip>
+									</div>
+								</>
 							)}
 						</div>
 					)}
@@ -946,6 +1004,42 @@ export function ContextUploaderDialog({
 						integrationKind: "NOTION",
 					});
 					// Invalidate contexts and close dialog
+					queryClient.invalidateQueries({
+						queryKey: ["project-notion-contexts", projectId],
+					});
+					queryClient.invalidateQueries({
+						queryKey: orpc.projects.contexts.list.queryKey({
+							input: { projectId },
+						}),
+					});
+					onOpenChange(false);
+				}}
+			/>
+			{/* Notion integration page browser dialog */}
+			<NotionIntegrationPageBrowser
+				open={notionIntegrationDialogOpen}
+				onOpenChange={setNotionIntegrationDialogOpen}
+				connectionId={connectedNotionConnection?.id ?? null}
+				projectId={projectId}
+				organizationId={organizationId ?? null}
+				syncedPageIds={
+					notionContexts
+						?.map(
+							(ctx) =>
+								(ctx.metadata as Record<string, unknown>)
+									?.notionPageId as string,
+						)
+						.filter(Boolean) ?? []
+				}
+				reconnectUrl={buildReturnUrl(
+					`${basePath}/settings/integrations/providers/NOTION`,
+				)}
+				onResourcesAdded={() => {
+					trackEvent("project_context_added_during_wizard", {
+						surface,
+						contextType: "INTEGRATION",
+						integrationKind: "NOTION",
+					});
 					queryClient.invalidateQueries({
 						queryKey: ["project-notion-contexts", projectId],
 					});

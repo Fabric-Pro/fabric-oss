@@ -131,6 +131,33 @@ export const MODELS: ModelSeedData[] = [
 		],
 	},
 
+	{
+		canonicalName: "openjev-qwen35-4b",
+		displayName: "OpenJev (Qwen3.5 4B)",
+		description:
+			"Typed choice, score, and boolean decisions through Databricks System One",
+		family: "openjev",
+		vendor: "Databricks",
+		capabilities: ["EVALUATION"],
+		suitableForTasks: ["DECISION"],
+		contextWindow: 0,
+		// Databricks publishes no OpenJev price. Workspace billing on 2026-10-17:
+		// 173 input tokens cost 0.000002858 DBU at the $0.07/DBU serverless
+		// real-time inference list price, about $0.0012 per 1M input tokens.
+		// No output tokens were recorded.
+		inputCostPer1M: 0.0012,
+		outputCostPer1M: 0,
+		// Match Jev's conservative tiers until comparative benchmarks are available.
+		speedTier: "BALANCED",
+		qualityTier: "STANDARD",
+		providerMappings: [
+			{
+				provider: "DATABRICKS",
+				providerModelId: "system.ai.openjev-qwen35-4b",
+			},
+		],
+	},
+
 	// ============================================================================
 	// OpenAI Models
 	// ============================================================================

@@ -89,6 +89,13 @@ jobs:
     name: Wake the private relay
     # arm64: actions/create-github-app-token is a JS action, and every other
     # step is `gh api` / `jq` — architecture-neutral throughout.
+    #
+    # A completed check run wakes the job only when the payload names a pull
+    # request based on master. Staging pull requests are never relayed, and
+    # their check completions used to allocate a runner each just to resolve
+    # nothing. A run the payload attributes to no pull request (a fork, or a
+    # run GitHub did not link) is skipped too; the `/relay` comment and the
+    # label event still name the pull request and still wake the relay.
     if: >-
       github.repository == 'Fabric-Pro/fabric-dev' &&
       ((github.event_name == 'pull_request_target' &&
@@ -102,6 +109,7 @@ jobs:
         startsWith(github.event.comment.body, '/relay ')) ||
        (github.event_name == 'workflow_run' &&
         github.event.workflow_run.event == 'pull_request' &&
+        contains(github.event.workflow_run.pull_requests.*.base.ref, 'master') &&
         !startsWith(github.event.workflow_run.head_branch, 'promotion/')))
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5

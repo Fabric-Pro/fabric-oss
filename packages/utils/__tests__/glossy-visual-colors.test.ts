@@ -6,6 +6,7 @@ import {
 	type GlossyPaletteInput,
 	glossyMermaidThemeVariables,
 	NEUTRAL_GLOSSY_COLORS,
+	normalizeHexColorList,
 	strictHexColor,
 } from "../lib/glossy/visual-colors";
 import type { VisualSpec } from "../lib/glossy/visual-spec";
@@ -190,5 +191,27 @@ describe("strictHexColor", () => {
 		expect(strictHexColor("blue")).toBeNull();
 		expect(strictHexColor(0xabcdef)).toBeNull();
 		expect(strictHexColor(null)).toBeNull();
+	});
+});
+
+describe("normalizeHexColorList", () => {
+	it("keeps strict colours once each, in order, up to the cap", () => {
+		expect(
+			normalizeHexColorList([
+				"#AABBCC",
+				"#abc",
+				"#aabbcc",
+				"red",
+				null,
+				" #112233 ",
+				"#445566",
+				"#778899",
+			]),
+		).toEqual(["#aabbcc", "#112233", "#445566"]);
+		expect(normalizeHexColorList(["#112233", "#445566"], 1)).toEqual([
+			"#112233",
+		]);
+		expect(normalizeHexColorList(null)).toEqual([]);
+		expect(normalizeHexColorList(undefined)).toEqual([]);
 	});
 });

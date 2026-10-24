@@ -19,7 +19,7 @@ export const TESTING_SECTIONS = [
 		label: "Generation",
 		icon: "sparkles",
 		title: "Generation",
-		blurb: "Whether Fabric drafts test cases at all, when it drafts them, and what happens when CI reports a failure. These apply the moment you change them — there is nothing to save.",
+		blurb: "Whether Fabric drafts test cases at all, when it drafts them, and what happens when CI reports a failure or an error keeps recurring. These apply the moment you change them — there is nothing to save.",
 	},
 	{
 		id: "depth",

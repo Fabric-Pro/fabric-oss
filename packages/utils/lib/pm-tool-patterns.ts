@@ -1073,6 +1073,55 @@ export function extractPMListArray(data: unknown):
 	return undefined;
 }
 
+/** Read continuation and positive end evidence from a PM list envelope. */
+export function readPMListPagingEvidence(envelope: unknown): {
+	hasMore: boolean;
+	ended: boolean;
+} {
+	const nextKeys = [
+		"nextCursor",
+		"next_cursor",
+		"nextPageToken",
+		"next_page_token",
+	];
+	const record =
+		envelope && typeof envelope === "object"
+			? (envelope as Record<string, unknown>)
+			: undefined;
+	const records = [record, record?.pageInfo].filter(
+		(value): value is Record<string, unknown> =>
+			!!value && typeof value === "object",
+	);
+	const hasMore = records.some(
+		(value) =>
+			value.hasNextPage === true ||
+			value.hasMore === true ||
+			value.has_more === true ||
+			value.isLast === false ||
+			value.last_page === false ||
+			nextKeys.some(
+				(key) =>
+					typeof value[key] === "string" && value[key].length > 0,
+			),
+	);
+	const ended =
+		!hasMore &&
+		records.some(
+			(value) =>
+				value.hasNextPage === false ||
+				value.hasMore === false ||
+				value.has_more === false ||
+				value.isLast === true ||
+				value.last_page === true ||
+				nextKeys.some(
+					(key) =>
+						Object.hasOwn(value, key) &&
+						(value[key] === null || value[key] === ""),
+				),
+		);
+	return { hasMore, ended };
+}
+
 /**
  * Rovo v2 wraps tool results as `{ data: { … } }`. Returns the inner object
  * when none of `fields` is set at the top level, otherwise `value` unchanged.

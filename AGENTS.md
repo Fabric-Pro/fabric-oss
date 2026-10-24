@@ -163,9 +163,11 @@ long-running data backfills from blocking schema changes.
 
 ## Durable and paired surfaces
 
-Temporal workflows must remain deterministic. Put I/O, clocks, random values,
-and environment reads in activities. Make activities idempotent because retries
-are normal. Changes to workflow control flow require replay validation against
+Temporal workflows must remain deterministic. Put I/O, network, database and
+AI calls, and environment reads in activities. In workflow code, `Date.now()`,
+`new Date()` and `Math.random()` are replay-safe because the TypeScript SDK
+sandbox replaces them; `workflowInfo().unsafe.now()` is not. Make activities
+idempotent because retries are normal. Changes to workflow control flow require replay validation against
 representative histories.
 
 When changing one side of an intentionally paired surface, inspect and test the

@@ -112,6 +112,33 @@ describe("useConfirmChangesOperationResult", () => {
 		expect(args?.summary).toBe("Changes rejected.");
 	});
 
+	it.each(["failure", "partial"] as const)(
+		"posts outcome='%s' for an accepted change whose save did not land (Fizzy #2946)",
+		async (outcome) => {
+			const { result } = renderHook(() =>
+				useConfirmChangesOperationResult({
+					conversationId: CONV_ID,
+					projectId: PROJECT_ID,
+					organizationId: ORG_ID,
+				}),
+			);
+
+			await result.current({
+				accepted: true,
+				outcome,
+				summary: "The accepted changes are still in the editor.",
+			});
+
+			expect(mocks.recordOperationResult).toHaveBeenCalledTimes(1);
+			expect(
+				mocks.recordOperationResult.mock.calls[0]?.[0],
+			).toMatchObject({
+				outcome,
+				summary: "The accepted changes are still in the editor.",
+			});
+		},
+	);
+
 	it("falls back to default summary when caller omits one (accepted=true)", async () => {
 		const { result } = renderHook(() =>
 			useConfirmChangesOperationResult({
@@ -198,7 +225,7 @@ describe("useConfirmChangesOperationResult", () => {
 		// in the same render cycle. Without the in-flight guard, they'd
 		// use different operationKey UUIDs and the server's per-key
 		// dedup would NOT catch the duplicate → two persisted rows.
-		// The helper's inFlightPromiseRef should make the second call
+		// The helper's in-flight guard should make the second call
 		// share the first's Promise → exactly ONE orpcClient invocation.
 		let resolveFirst: (() => void) | undefined;
 		mocks.recordOperationResult.mockImplementationOnce(
@@ -246,6 +273,144 @@ describe("useConfirmChangesOperationResult", () => {
 		});
 		await result.current({ accepted: false });
 		expect(mocks.recordOperationResult).toHaveBeenCalledTimes(2);
+	});
+
+	describe("per-operation keys (Fizzy #2946)", () => {
+		/** The server call, held until the test answers it. */
+		function holdServerCalls() {
+			const answers: Array<() => void> = [];
+			mocks.recordOperationResult.mockImplementation(
+				() =>
+					new Promise<{ messageId: string; deduplicated: boolean }>(
+						(resolve) => {
+							answers.push(() =>
+								resolve({
+									messageId: "msg-held",
+									deduplicated: false,
+								}),
+							);
+						},
+					),
+			);
+			return () => {
+				for (const answer of answers.splice(0)) {
+					answer();
+				}
+			};
+		}
+
+		function renderRecorder() {
+			return renderHook(() =>
+				useConfirmChangesOperationResult({
+					conversationId: CONV_ID,
+					projectId: PROJECT_ID,
+					organizationId: ORG_ID,
+				}),
+			).result;
+		}
+
+		it("posts two overlapping calls with different keys, each under its own key", async () => {
+			const answerAll = holdServerCalls();
+			const result = renderRecorder();
+
+			// An accept recorded when its save answers, while the reject of
+			// another proposal is still being recorded.
+			const reject = result.current({ accepted: false });
+			const accept = result.current({
+				accepted: true,
+				operationKey: "accept-key-1",
+			});
+
+			expect(accept).not.toBe(reject);
+			expect(mocks.recordOperationResult).toHaveBeenCalledTimes(2);
+			const [rejectArgs, acceptArgs] =
+				mocks.recordOperationResult.mock.calls.map((call) => call[0]);
+			expect(rejectArgs).toMatchObject({ outcome: "cancelled" });
+			expect(rejectArgs?.operationKey).toBeTruthy();
+			expect(rejectArgs?.operationKey).not.toBe("accept-key-1");
+			expect(acceptArgs).toMatchObject({
+				outcome: "success",
+				operationKey: "accept-key-1",
+			});
+
+			answerAll();
+			await Promise.all([reject, accept]);
+		});
+
+		it("still shares one call between overlapping calls with the same key", async () => {
+			const answerAll = holdServerCalls();
+			const result = renderRecorder();
+
+			const first = result.current({
+				accepted: true,
+				operationKey: "accept-key-1",
+			});
+			const second = result.current({
+				accepted: true,
+				outcome: "failure",
+				operationKey: "accept-key-1",
+			});
+
+			expect(second).toBe(first);
+			expect(mocks.recordOperationResult).toHaveBeenCalledTimes(1);
+
+			answerAll();
+			await first;
+			// Settled: the same key posts again, and the server's per-key
+			// dedup is what holds it to one row.
+			mocks.recordOperationResult.mockResolvedValueOnce({
+				messageId: "msg-1",
+				deduplicated: true,
+			});
+			await result.current({
+				accepted: true,
+				operationKey: "accept-key-1",
+			});
+			expect(mocks.recordOperationResult).toHaveBeenCalledTimes(2);
+			expect(
+				mocks.recordOperationResult.mock.calls[1]?.[0]?.operationKey,
+			).toBe("accept-key-1");
+		});
+
+		it("takes an empty key for none: it shares the keyless call and sends a key of its own", async () => {
+			const answerAll = holdServerCalls();
+			const result = renderRecorder();
+
+			const first = result.current({ accepted: false });
+			const second = result.current({
+				accepted: false,
+				operationKey: "",
+			});
+
+			expect(second).toBe(first);
+			expect(mocks.recordOperationResult).toHaveBeenCalledTimes(1);
+			expect(
+				mocks.recordOperationResult.mock.calls[0]?.[0]?.operationKey,
+			).not.toBe("");
+
+			answerAll();
+			await first;
+			const third = result.current({ accepted: true, operationKey: "" });
+			expect(
+				mocks.recordOperationResult.mock.calls[1]?.[0]?.operationKey,
+			).toMatch(/\S/);
+			answerAll();
+			await third;
+		});
+
+		it("still shares one call between overlapping calls without a key", async () => {
+			const answerAll = holdServerCalls();
+			const result = renderRecorder();
+
+			const first = result.current({ accepted: false });
+			const second = result.current({ accepted: false });
+
+			expect(second).toBe(first);
+			expect(mocks.recordOperationResult).toHaveBeenCalledTimes(1);
+
+			answerAll();
+			await first;
+		});
 	});
 
 	it("generates a UNIQUE operationKey per call (no client-side dedup)", async () => {

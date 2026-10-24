@@ -5,6 +5,7 @@
  * tool-calling loops for iterative exploration.
  */
 
+import { guardToolsAgainstRepeatedCalls } from "@repo/agent-types/repeated-tool-call-guard";
 import { makeStepCacheBreakpoint } from "@repo/ai/prompt-cache";
 import { generateText, isStepCount } from "ai";
 import { Hono } from "hono";
@@ -13,6 +14,7 @@ import { withRetry } from "../lib/retry.js";
 import {
 	extractText,
 	getVerifiedTenant,
+	guardToolsAgainstCancellation,
 	normalizeMetadata,
 } from "../lib/route-utils.js";
 import { createSandboxClient } from "../lib/sandbox-client.js";
@@ -246,20 +248,43 @@ a2aRoute.post("/send", async (c) => {
 			hasTools: tools !== undefined,
 		});
 		const result = await withRetry(
-			() =>
-				generateText({
+			() => {
+				const attemptTools = tools ? { ...tools } : undefined;
+				if (attemptTools) {
+					guardToolsAgainstRepeatedCalls(attemptTools, {
+						onRepeat: (toolName, count) => {
+							console.warn(
+								"Weave a2a tool returned a repeated result",
+								{ toolName, count },
+							);
+						},
+					});
+				}
+				if (attemptTools) {
+					guardToolsAgainstCancellation(
+						attemptTools,
+						c.req.raw.signal,
+					);
+				}
+				return generateText({
+					abortSignal: c.req.raw.signal,
 					model,
 					instructions: systemPrompt,
 					messages: [{ role: "user", content: userContent }],
 					...(tools
 						? {
-								tools,
+								tools: attemptTools,
 								stopWhen: isStepCount(maxSteps),
 								prepareStep,
 							}
 						: {}),
-				}),
-			{ label: `${agent}-a2a-generateText`, circuitKey: agent },
+				});
+			},
+			{
+				label: `${agent}-a2a-generateText`,
+				circuitKey: agent,
+				signal: c.req.raw.signal,
+			},
 		);
 
 		// Fix 8: Append degradation notice if sandbox was expected but not available
@@ -286,6 +311,11 @@ a2aRoute.post("/send", async (c) => {
 			},
 		});
 	} catch (error) {
+		if (c.req.raw.signal.aborted) {
+			return c.json({
+				task: { id: taskId, status: "canceled", messages: [] },
+			});
+		}
 		return c.json(
 			{
 				task: {

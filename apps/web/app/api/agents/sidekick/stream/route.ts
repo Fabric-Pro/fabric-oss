@@ -8,6 +8,7 @@
  */
 
 import { ORPCError } from "@orpc/client";
+import { guardToolsAgainstRepeatedCalls } from "@repo/agent-types/repeated-tool-call-guard";
 import {
 	convertToModelMessages,
 	createUIMessageStreamResponse,
@@ -315,6 +316,14 @@ export async function POST(request: NextRequest) {
 			entityType: isNewAgent ? "new" : entityType,
 			userId,
 			organizationId: effectiveOrganizationId,
+		});
+		guardToolsAgainstRepeatedCalls(tools, {
+			onRepeat: (toolName, count) => {
+				console.warn("Sidekick tool returned a repeated result", {
+					toolName,
+					count,
+				});
+			},
 		});
 
 		// Stream the response using the full message history from the client

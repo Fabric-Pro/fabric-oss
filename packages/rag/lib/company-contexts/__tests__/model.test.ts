@@ -54,6 +54,7 @@ import {
 function resolved(overrides: Record<string, unknown> = {}) {
 	return {
 		modelString: "text-embedding-3-small",
+		canonicalName: "text-embedding-3-small",
 		provider: "OPENAI_DIRECT",
 		apiKey: "encrypted-key",
 		clientId: null,
@@ -132,7 +133,7 @@ describe("resolveCompanyEmbeddingModel", () => {
 		});
 	});
 
-	it("reads a gateway model's dimensions through its provider prefix", async () => {
+	it("reads a gateway model's dimensions from its canonical name", async () => {
 		resolveModelWithProviderMock.mockResolvedValue(
 			resolved({
 				provider: "VERCEL_GATEWAY",
@@ -154,7 +155,10 @@ describe("resolveCompanyEmbeddingModel", () => {
 
 	it("reports a model whose vectors do not fit the collection as unsupported", async () => {
 		resolveModelWithProviderMock.mockResolvedValue(
-			resolved({ modelString: "text-embedding-3-large" }),
+			resolved({
+				modelString: "text-embedding-3-large",
+				canonicalName: "text-embedding-3-large",
+			}),
 		);
 
 		const model = await resolveCompanyEmbeddingModel({
@@ -246,4 +250,30 @@ describe("companyEmbeddingIdentity", () => {
 			}),
 		).toThrow(/provider and model string/);
 	});
+});
+
+describe("company embedding canonical widths", () => {
+	it.each([
+		["databricks-gte-large-en", "system.ai.gte-large-en", 1024, false],
+		["unknown-embedding", "text-embedding-3-small", null, false],
+		["text-embedding-3-large", "custom-deployment", 3072, false],
+		["text-embedding-3-small", "custom-deployment", 1536, true],
+	])(
+		"reports canonical %s support",
+		async (canonicalName, modelString, dimensions, supported) => {
+			resolveModelWithProviderMock.mockResolvedValue(
+				resolved({ canonicalName, modelString }),
+			);
+			const model = await resolveCompanyEmbeddingModel({
+				organizationId: "org-1",
+				userId: "user-1",
+			});
+			expect(model).toMatchObject({ dimensions, supported });
+			if (dimensions === null) {
+				expect(unsupportedEmbeddingModelMessage(model)).toContain(
+					"unknown",
+				);
+			}
+		},
+	);
 });

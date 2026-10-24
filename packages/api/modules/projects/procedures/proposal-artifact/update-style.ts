@@ -34,10 +34,16 @@ export const updateProposalStyleInputSchema = z.object({
 		.nullable(),
 	primaryColor: hexColorSchema.nullable(),
 	accentColors: z.array(hexColorSchema).max(PROPOSAL_STYLE_MAX_ACCENT_COLORS),
+	/**
+	 * Whether Fabric adds diagrams after each generation. Left out, the
+	 * stored value is kept, so an older client's save never resets it.
+	 */
+	autoVisuals: z.boolean().optional(),
 });
 
 /**
- * Save the Style of a Proposal (Fizzy #2801), replacing every field. The
+ * Save the Style of a Proposal (Fizzy #2801), replacing every field given;
+ * a missing `autoVisuals` keeps the stored switch. The
  * saved settings shape the NEXT generation's visuals; nothing already
  * generated is re-rendered. The recipient brand is the project's and keeps
  * its own procedures (`projects.recipientBrand.*`).
@@ -65,7 +71,7 @@ export const updateProposalStyleProcedure = tenantProtectedProcedure
 		tags: ["Projects", "Proposal artifact"],
 		summary: "Save the Proposal style",
 		description:
-			"Replaces the style direction, primary colour and up to three accent colours a Proposal's next generation uses for its visuals. Organization members with edit access only.",
+			"Replaces the style direction, primary colour and up to three accent colours a Proposal's next generation uses for its visuals and, when given, whether diagrams are added automatically (left out, the stored setting is kept). Organization members with edit access only.",
 	})
 	.input(updateProposalStyleInputSchema)
 	.output(proposalStyleSchema)
@@ -87,6 +93,7 @@ export const updateProposalStyleProcedure = tenantProtectedProcedure
 				styleDirection: input.styleDirection,
 				primaryColor: input.primaryColor,
 				accentColors: input.accentColors,
+				autoVisuals: input.autoVisuals,
 				updatedById: context.user.id,
 			});
 			return presentProposalStyle(style);

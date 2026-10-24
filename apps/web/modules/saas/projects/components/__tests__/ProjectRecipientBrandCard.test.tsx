@@ -1,13 +1,17 @@
 /**
  * `ProjectRecipientBrandCard` and the `RecipientBrandFields` it shares with
- * the Glossy Align-first panel (Fizzy #2589, R32–R34, AE9): the party a
- * project's Glossy editions are prepared for.
+ * the Glossy Align-first panel (Fizzy #2589): the party a project's Glossy
+ * editions are prepared for.
  *
  * Pinned here: a website fetch proposes a logo and colors that the editor
  * confirms by saving; any failure — an answered code or the thrown rate
- * limit — leaves manual entry in place (R34); a manual upload goes through
- * the signed URL; a confirmation that lost the version race reloads and says
- * so; and non-editors read without controls.
+ * limit — leaves manual entry in place; a manual upload goes through the
+ * signed URL; a confirmation that lost the version race reloads and says so,
+ * while a newer version read in the background never replaces unsaved
+ * edits; and non-editors read without controls. Since Fizzy #2946 the server's
+ * recipient `canEdit` narrows the project rule (a project guest editor reads
+ * with the reason), and the picker and its pre-check use the shared upload
+ * vocabulary.
  *
  * `@tanstack/react-query` is real rather than mocked, so the fetch, the
  * upload and the confirmation all run through the components' own hooks.
@@ -15,12 +19,17 @@
  */
 
 import {
+	BRAND_ASSET_MAX_BYTES,
+	brandAssetAcceptAttribute,
+} from "@repo/utils/brand-assets";
+import {
 	FEATURE_FLAG_REGISTRY,
 	type FeatureFlagKey,
 } from "@repo/utils/feature-flag-registry";
 import { FeatureFlagProvider } from "@saas/shared/components/FeatureFlagProvider";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
+	act,
 	fireEvent,
 	render,
 	screen,
@@ -95,7 +104,7 @@ function renderCard({
 			mutations: { retry: false },
 		},
 	});
-	return render(
+	const view = render(
 		<FeatureFlagProvider
 			value={flags({
 				GLOSSY_EDITION: gate,
@@ -110,6 +119,7 @@ function renderCard({
 			</QueryClientProvider>
 		</FeatureFlagProvider>,
 	);
+	return { ...view, client };
 }
 
 function savedBrand(
@@ -120,9 +130,11 @@ function savedBrand(
 		colors: string[];
 		logoUrl: string | null;
 	}> = {},
+	canEdit = true,
 ) {
 	return {
 		version,
+		canEdit,
 		recipientBrand: {
 			name: "Example Corp",
 			website: "https://example.com",
@@ -147,7 +159,11 @@ const fetchSpy = vi.fn();
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	api.get.mockResolvedValue({ version: 0, recipientBrand: null });
+	api.get.mockResolvedValue({
+		version: 0,
+		canEdit: true,
+		recipientBrand: null,
+	});
 	api.update.mockResolvedValue({ outcome: "applied", version: 1 });
 	fetchSpy.mockResolvedValue({ ok: true });
 	vi.stubGlobal("fetch", fetchSpy);
@@ -303,7 +319,7 @@ describe("ProjectRecipientBrandCard", () => {
 		expect(screen.getByRole("status")).not.toHaveTextContent("fetching");
 	});
 
-	it("covers AE9: a failed fetch leaves manual logo and color entry", async () => {
+	it("a failed fetch leaves manual logo and color entry", async () => {
 		api.fetch.mockResolvedValue({
 			outcome: "failed",
 			code: "unreachable",
@@ -473,6 +489,71 @@ describe("ProjectRecipientBrandCard", () => {
 		expect(api.toastSuccess).not.toHaveBeenCalled();
 	});
 
+	it("keeps unsaved edits through a newer version read in the background, and meets the conflict on save", async () => {
+		api.get
+			.mockResolvedValueOnce(savedBrand(1))
+			.mockResolvedValue(savedBrand(2, { colors: ["#16a34a"] }));
+		api.update.mockResolvedValue({ outcome: "conflict" });
+		const { client } = renderCard();
+		const user = userEvent.setup();
+
+		const name = await screen.findByLabelText("name");
+		await user.clear(name);
+		await user.type(name, "My Corp");
+		// Someone else confirmed a value meanwhile.
+		await act(() =>
+			client.invalidateQueries({
+				queryKey: ["projectRecipientBrand", PROJECT_ID],
+			}),
+		);
+		await waitFor(() => expect(api.get).toHaveBeenCalledTimes(2));
+		expect(screen.getByLabelText("name")).toHaveValue("My Corp");
+		expect(screen.getByRole("textbox", { name: "colorHex" })).toHaveValue(
+			"#1a73e8",
+		);
+
+		await user.click(screen.getByRole("button", { name: "save" }));
+
+		await waitFor(() =>
+			expect(api.update).toHaveBeenCalledWith(
+				expect.objectContaining({
+					expectedVersion: 1,
+					name: "My Corp",
+				}),
+			),
+		);
+		expect(await screen.findByText("conflict")).toBeInTheDocument();
+		await waitFor(() =>
+			expect(screen.getByLabelText("name")).toHaveValue("Example Corp"),
+		);
+		expect(screen.getByRole("textbox", { name: "colorHex" })).toHaveValue(
+			"#16a34a",
+		);
+	});
+
+	it("takes a newer version read in the background while the fields hold no edits", async () => {
+		api.get
+			.mockResolvedValueOnce(savedBrand(1))
+			.mockResolvedValue(savedBrand(2, { name: "Other Corp" }));
+		const { client } = renderCard();
+
+		expect(await screen.findByLabelText("name")).toHaveValue(
+			"Example Corp",
+		);
+		await act(() =>
+			client.invalidateQueries({
+				queryKey: ["projectRecipientBrand", PROJECT_ID],
+			}),
+		);
+
+		await waitFor(() =>
+			expect(screen.getByLabelText("name")).toHaveValue("Other Corp"),
+		);
+		expect(
+			screen.queryByRole("button", { name: "discard" }),
+		).not.toBeInTheDocument();
+	});
+
 	it("shows why a confirmation refused the logo and falls back to the saved one", async () => {
 		api.get.mockResolvedValue(savedBrand(4));
 		api.fetch.mockResolvedValue({
@@ -592,6 +673,87 @@ describe("ProjectRecipientBrandCard", () => {
 				screen.queryByRole("button", { name }),
 			).not.toBeInTheDocument();
 		}
+	});
+
+	// Fizzy #2946: only organization members write the recipient brand, so a
+	// project guest with an editor role reads it, told why, and is never
+	// offered a Save the server would refuse.
+	it("shows a project guest editor the brand read-only with the reason", async () => {
+		api.get.mockResolvedValue(savedBrand(2, {}, false));
+		renderCard({ canEdit: true });
+
+		expect(await screen.findByLabelText("name")).toBeDisabled();
+		expect(screen.getByLabelText("website")).toBeDisabled();
+		expect(screen.getByText("membersOnly")).toBeInTheDocument();
+		// The project-editor line is for someone who cannot edit the project.
+		expect(screen.queryByText("readOnly")).not.toBeInTheDocument();
+		for (const name of ["fetch", "uploadLogo", "removeLogo", "save"]) {
+			expect(
+				screen.queryByRole("button", { name }),
+			).not.toBeInTheDocument();
+		}
+		expect(api.update).not.toHaveBeenCalled();
+	});
+
+	it("gives a non-editor the project line, not the members-only one", async () => {
+		api.get.mockResolvedValue(savedBrand(2, {}, false));
+		renderCard({ canEdit: false });
+
+		expect(await screen.findByText("readOnly")).toBeInTheDocument();
+		expect(screen.queryByText("membersOnly")).not.toBeInTheDocument();
+	});
+
+	describe("the shared upload vocabulary (Fizzy #2946)", () => {
+		it("offers the picker exactly the logo types and extensions the server signs", async () => {
+			renderCard();
+
+			expect(await screen.findByLabelText("uploadLogo")).toHaveAttribute(
+				"accept",
+				brandAssetAcceptAttribute("logo"),
+			);
+		});
+
+		it("refuses a logo over the size limit before asking for an upload URL", async () => {
+			renderCard();
+
+			const file = new File([new Uint8Array(8)], "logo.png", {
+				type: "image/png",
+			});
+			Object.defineProperty(file, "size", {
+				value: BRAND_ASSET_MAX_BYTES.logo + 1,
+			});
+			fireEvent.change(await screen.findByLabelText("uploadLogo"), {
+				target: { files: [file] },
+			});
+
+			expect(await screen.findByRole("alert")).toHaveTextContent(
+				"logoError.too_large",
+			);
+			expect(api.createLogoUploadUrl).not.toHaveBeenCalled();
+		});
+
+		it("signs a file that carries no type for the type its name says", async () => {
+			api.createLogoUploadUrl.mockResolvedValue({
+				token: UPLOAD_TOKEN,
+				signedUploadUrl: "https://storage.example.com/upload?sig=3",
+				contentType: "image/webp",
+			});
+			renderCard();
+
+			fireEvent.change(await screen.findByLabelText("uploadLogo"), {
+				target: {
+					files: [new File([new Uint8Array(32)], "logo.webp")],
+				},
+			});
+
+			await waitFor(() =>
+				expect(api.createLogoUploadUrl).toHaveBeenCalledWith({
+					projectId: PROJECT_ID,
+					contentType: "image/webp",
+					size: 32,
+				}),
+			);
+		});
 	});
 
 	it("has no axe violations — editable, after a failed fetch, and read-only", async () => {

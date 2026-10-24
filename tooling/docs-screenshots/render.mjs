@@ -44,7 +44,12 @@ const webRequire = createRequire(path.join(repoRoot, "apps/web/package.json"));
 const { chromium } = webRequire("@playwright/test");
 const mocksDir = path.join(here, "mocks");
 const fontsDir = path.join(here, ".fonts");
-const outDir = path.join(repoRoot, "apps/web/public/images/docs/qa");
+const imagesDir = path.join(repoRoot, "apps/web/public/images/docs");
+
+/** The folder under `images/docs/` a mock's images go to, when it is not `qa`. */
+const OUTPUT_FOLDERS = {
+	parlume: "parlume",
+};
 
 /**
  * Which element of which mock becomes which image. Explicit rather than derived
@@ -80,6 +85,11 @@ const SHOTS = {
 		["#shot-revise", "qa-revise-cases.png"],
 		["#shot-covers-ac", "qa-covers-ac.png"],
 		["#shot-testfirst-evidence", "qa-test-first-evidence.png"],
+	],
+	parlume: [
+		["#shot-invite", "parlume-invite.png"],
+		["#shot-live", "parlume-live-session.png"],
+		["#shot-chat", "parlume-meeting-chat.png"],
 	],
 };
 
@@ -147,7 +157,6 @@ for (const file of readdirSync(mocksDir)) {
 }
 
 await ensureFonts();
-mkdirSync(outDir, { recursive: true });
 
 const browser = await chromium.launch({
 	// Set DOCS_SHOT_CHROME when Playwright's own browser revision is not
@@ -169,13 +178,15 @@ for (const name of names) {
 			`${name}: Inter did not load — the shot would use a fallback face`,
 		);
 	}
+	const folder = OUTPUT_FOLDERS[name] ?? "qa";
+	mkdirSync(path.join(imagesDir, folder), { recursive: true });
 	for (const [selector, file] of SHOTS[name]) {
 		const el = await page.$(selector);
 		if (!el) {
 			throw new Error(`${name}: no element matches ${selector}`);
 		}
-		await el.screenshot({ path: path.join(outDir, file) });
-		console.log(`wrote images/docs/qa/${file}`);
+		await el.screenshot({ path: path.join(imagesDir, folder, file) });
+		console.log(`wrote images/docs/${folder}/${file}`);
 	}
 }
 

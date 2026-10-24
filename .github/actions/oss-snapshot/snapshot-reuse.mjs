@@ -7,14 +7,17 @@ import { SNAPSHOT_IMAGES } from "./oss-snapshot-manifest.mjs";
 // A component whose build inputs are unchanged since the previous complete
 // staging snapshot reuses that snapshot's digest instead of rebuilding it. The
 // inputs are everything BuildKit keys its layer cache on: the Dockerfile, every
-// tracked file under each context path it copies or mounts, and the digests of
-// the external images (frontend and bases) it pulls. Equal inputs are a full
-// cache hit, so a rebuild would reproduce the same layers. Anything this parser
-// cannot account for disables reuse for that component; it never narrows inputs.
+// tracked file under each context path it copies or mounts that the ignore
+// file lets into the build context, and the digests of the external images
+// (frontend and bases) it pulls. Equal inputs are a full cache hit, so a
+// rebuild would reproduce the same layers. Anything this parser cannot account
+// for disables reuse for that component, and an ignore pattern it cannot
+// evaluate exactly as Docker does excludes nothing: it never narrows inputs
+// beyond what Docker itself leaves out.
 
 export const INPUTS_LABEL = "pro.fabric.snapshot.inputs";
-export const INPUTS_SCHEMA = "fabric-snapshot-inputs/v1";
-export const PLATFORM = "linux/amd64";
+const INPUTS_SCHEMA = "fabric-snapshot-inputs/v2";
+const PLATFORM = "linux/amd64";
 // Every reuse adds two attestations to the reused digest, and admission reads
 // all of them. Rebuilding daily bounds that growth and the age of the image.
 export const MAX_REUSE_AGE_HOURS = 24;
@@ -274,7 +277,123 @@ export function parseTree(output) {
 		});
 }
 
-export function inputFiles(tree, dockerfile, sources) {
+// One ignore-file pattern as a test of a context path, matching exactly when
+// moby/patternmatcher (BuildKit's context filter) matches the path or one of
+// its parent directories. Character classes, escapes, `^` (which that matcher
+// passes to its regular expression unescaped), `..` and `**` inside a path
+// segment are not evaluated: they return null.
+function ignorePattern(pattern) {
+	const segments = pattern
+		.split("/")
+		.filter((segment) => segment !== "" && segment !== ".");
+	if (
+		segments.length === 0 ||
+		segments.some(
+			(segment) =>
+				segment === ".." ||
+				/[[\]\\^]/.test(segment) ||
+				(segment !== "**" && segment.includes("**")),
+		)
+	) {
+		return null;
+	}
+	const source = segments
+		.map((segment, index) => {
+			const last = index === segments.length - 1;
+			if (segment === "**") {
+				return last ? ".*" : "(.*/)?";
+			}
+			const glob = segment
+				.split("")
+				.map((character) => {
+					if (character === "*") {
+						return "[^/]*";
+					}
+					if (character === "?") {
+						return "[^/]";
+					}
+					return /[.+()|{}$]/.test(character)
+						? `\\${character}`
+						: character;
+				})
+				.join("");
+			return last ? glob : `${glob}/`;
+		})
+		.join("");
+	const regex = new RegExp(`^${source}$`);
+	return (path) => {
+		const parts = path.split("/");
+		return parts.some((_, index) =>
+			regex.test(parts.slice(0, index + 1).join("/")),
+		);
+	};
+}
+
+// Whether a .dockerignore keeps a path out of the build context. Lines are
+// read as moby/patternmatcher/ignorefile reads them. A path counts as excluded
+// only when an exclusion matches it and no exception (`!pattern`) can match
+// it, so an exception keeps its path even where a later line would exclude it
+// again; an exception this module cannot evaluate keeps every path.
+export function dockerignore(text) {
+	const exclusions = [];
+	const exceptions = [];
+	let opaque = false;
+	const withoutMark = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+	for (const line of withoutMark.split("\n")) {
+		if (line.startsWith("#")) {
+			continue;
+		}
+		let pattern = line.trim();
+		if (pattern === "") {
+			continue;
+		}
+		const exception = pattern.startsWith("!");
+		if (exception) {
+			pattern = pattern.slice(1).trim();
+		}
+		const matches = ignorePattern(pattern);
+		if (exception) {
+			if (matches) {
+				exceptions.push(matches);
+			} else {
+				opaque = true;
+			}
+		} else if (matches) {
+			exclusions.push(matches);
+		}
+	}
+	return (path) =>
+		!opaque &&
+		exclusions.some((matches) => matches(path)) &&
+		!exceptions.some((matches) => matches(path));
+}
+
+// BuildKit reads `<Dockerfile>.dockerignore` when it exists and the context's
+// `.dockerignore` otherwise. A path is excluded only when every ignore file
+// that exists excludes it, so the choice between them never matters here.
+function contextIgnore(tree, dockerfile, readBlob) {
+	const ignoreFiles = tree.filter(
+		(entry) =>
+			entry.path === `${dockerfile}.dockerignore` ||
+			entry.path === ".dockerignore",
+	);
+	if (
+		ignoreFiles.length === 0 ||
+		ignoreFiles.some(
+			(entry) =>
+				entry.type !== "blob" ||
+				(entry.mode !== "100644" && entry.mode !== "100755"),
+		)
+	) {
+		return () => false;
+	}
+	const excluders = ignoreFiles.map((entry) =>
+		dockerignore(readBlob(entry.path)),
+	);
+	return (path) => excluders.every((excluded) => excluded(path));
+}
+
+export function inputFiles(tree, dockerfile, sources, ignored = () => false) {
 	const patterns = sources.map(sourcePattern);
 	const named = new Set([
 		dockerfile,
@@ -286,7 +405,8 @@ export function inputFiles(tree, dockerfile, sources) {
 	const files = tree.filter(
 		(entry) =>
 			named.has(entry.path) ||
-			patterns.some((pattern) => pattern.test(entry.path)),
+			(patterns.some((pattern) => pattern.test(entry.path)) &&
+				!ignored(entry.path)),
 	);
 	for (const entry of files) {
 		if (entry.type !== "blob") {
@@ -332,7 +452,12 @@ export function componentInputs(tree, readBlob, resolved) {
 				}
 				images[image] = resolved[image];
 			}
-			const files = inputFiles(tree, dockerfile, parsed.sources);
+			const files = inputFiles(
+				tree,
+				dockerfile,
+				parsed.sources,
+				contextIgnore(tree, dockerfile, readBlob),
+			);
 			return {
 				component,
 				dockerfile,

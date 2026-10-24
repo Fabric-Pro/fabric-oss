@@ -61,6 +61,8 @@ vi.mock("../../chunking", () => ({
 	routeContentForChunking: routeContentForChunkingMock,
 }));
 
+vi.mock("@repo/ai", () => ({ assertEmbeddingModelUsable: vi.fn() }));
+
 vi.mock("@repo/database", () => ({
 	getProjectRagSettings: getProjectRagSettingsMock,
 	markContextAsEmbedded: markContextAsEmbeddedMock,

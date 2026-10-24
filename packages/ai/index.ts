@@ -150,6 +150,7 @@ export type {
 // --- Model selection and provider configuration (from lib/dynamic-model-selector) ---
 export {
 	AIProviderNotConfiguredError,
+	assertEmbeddingModelUsable,
 	buildProviderModelString,
 	chatGptPlanServesCall,
 	getAIDecisionModel,
@@ -172,6 +173,7 @@ export {
 	resolveModelWithProvider,
 	selectModelDynamic,
 } from "./lib/dynamic-model-selector";
+export { UnsupportedEmbeddingModelError } from "./lib/embedding-dimensions";
 // --- Fabric prompt enhancement (from lib/fabric-prompt-enhancer) ---
 export {
 	enhancePromptWithFabric,

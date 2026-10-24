@@ -627,6 +627,7 @@ export async function buildSystemPromptAsync(
 	ragContexts: string[],
 	existingDocument: string | undefined,
 	options?: {
+		suppressFabricMethodology?: boolean;
 		excludeDocumentBody?: boolean;
 		toolMode?: "write" | "patch";
 		activeSkill?: ActiveSkillInput;
@@ -637,10 +638,12 @@ export async function buildSystemPromptAsync(
 
 	// Try to get Fabric AI enhancement. Cached per (pattern, context) — this
 	// runs once per tool round and the answer cannot change within a run.
-	const fabricPattern = await getFabricPromptFragment(
-		fabricConfig.pattern,
-		fabricConfig.context,
-	);
+	const fabricPattern = options?.suppressFabricMethodology
+		? null
+		: await getFabricPromptFragment(
+				fabricConfig.pattern,
+				fabricConfig.context,
+			);
 
 	// Use unified prompt builder with Fabric AI pattern
 	logger.info(

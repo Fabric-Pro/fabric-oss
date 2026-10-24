@@ -653,6 +653,59 @@ describe("applyDocumentAutoRefreshProposalProcedure — visual slots", () => {
 	});
 });
 
+// A generated diagram the proposal left unchanged keeps its marker line, so
+// its stored spec stays referenced (Fizzy #2946).
+describe("applyDocumentAutoRefreshProposalProcedure — generated diagram markers", () => {
+	const MARKER = "%% fabric-visual: k3v9q2m7x1a8c4d6";
+	const diagram = (marker: boolean, label = "Launch") =>
+		[
+			"```mermaid",
+			...(marker ? [MARKER] : []),
+			"flowchart LR",
+			`  s0["Discovery"] --> s1["${label}"]`,
+			"```",
+		].join("\n");
+	const body = (fence: string, intro = "Phase one covers discovery.") =>
+		["# Proposal", "", "## Delivery", "", intro, "", fence, ""].join("\n");
+
+	const writtenContent = () =>
+		(mocks.updateDocument.mock.calls[0] as [string, { content: string }])[1]
+			.content;
+
+	it("puts back the marker of an unchanged diagram and keeps the rest as proposed", async () => {
+		mocks.getDocumentById.mockResolvedValue(
+			makeDocument({ content: body(diagram(true)) }),
+		);
+		mocks.getAutoRefreshSettings.mockResolvedValue(
+			makeSettings({
+				pendingContent: body(
+					diagram(false),
+					"Phase one covers discovery and design.",
+				),
+			}),
+		);
+
+		await applyHandler({ input: input(), context: ctx() });
+
+		expect(writtenContent()).toBe(
+			body(diagram(true), "Phase one covers discovery and design."),
+		);
+	});
+
+	it("adds no marker to a diagram whose body changed", async () => {
+		mocks.getDocumentById.mockResolvedValue(
+			makeDocument({ content: body(diagram(true)) }),
+		);
+		mocks.getAutoRefreshSettings.mockResolvedValue(
+			makeSettings({ pendingContent: body(diagram(false, "Go-live")) }),
+		);
+
+		await applyHandler({ input: input(), context: ctx() });
+
+		expect(writtenContent()).toBe(body(diagram(false, "Go-live")));
+	});
+});
+
 describe("discardDocumentAutoRefreshProposalProcedure", () => {
 	it("clears the proposal and never touches the document", async () => {
 		const result = await discardHandler({

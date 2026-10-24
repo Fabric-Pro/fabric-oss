@@ -1302,9 +1302,11 @@ function detectTaskListCapability(
 		/^(offset|skip|\$skip|startAt)$/i.test(p),
 	);
 
-	// Cursor param: cursor | after | before | next_cursor
+	// Cursor or page-token param.
 	const cursorParam = paramNames.find((p) =>
-		/^(cursor|after|before|next_cursor|nextCursor)$/i.test(p),
+		/^(cursor|after|before|next_cursor|nextCursor|nextPageToken|next_page_token|pageToken|page_token)$/i.test(
+			p,
+		),
 	);
 
 	// Page-size param: per_page | limit | pageSize | page_size | maxResults | $top | first

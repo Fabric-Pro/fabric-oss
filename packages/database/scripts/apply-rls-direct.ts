@@ -588,6 +588,12 @@ async function applyRLS() {
 				name: "story_priority_change",
 				policy: "project_scoped",
 			},
+			// Recurring-error scan bookkeeping. Carries projectId but no tenant
+			// columns of its own — inherits the parent project's tenancy.
+			{
+				name: "recurring_error_signature",
+				policy: "project_scoped",
+			},
 			{
 				name: "stage_transition_request",
 				policy: "project_member_or_tenant",
@@ -617,6 +623,13 @@ async function applyRLS() {
 				name: "project_recipient_brand",
 				policy: "project_member_or_tenant_consistent",
 			},
+			// Generated visuals' specs (Fizzy #2946): the visuals step and Edit
+			// with instructions write them, and a guest with edit rights may use
+			// the latter, so the Glossy tables' class.
+			{
+				name: "project_document_visual_spec",
+				policy: "project_member_or_tenant_consistent",
+			},
 			// The preparer's Brand kit: written by the organization only, read
 			// also by guests of any of its projects, who see it on the editions
 			// they are invited to.
@@ -624,6 +637,15 @@ async function applyRLS() {
 				name: "organization_brand_kit",
 				policy: "org_only_with_project_guest_read",
 			},
+			// Brand sources (Fizzy #2946): the organization's website fetch, a
+			// project's recipient suggestion and the brand an export printed.
+			// Written only by automation; a project guest never reads them
+			// (guest-safe tokens are resolved server-side), so plain `org_only`.
+			// None has a userId (`requestedById` is attribution); organizationId
+			// is NOT NULL on all three.
+			{ name: "organization_brand_site_fetch", policy: "org_only" },
+			{ name: "project_recipient_brand_suggestion", policy: "org_only" },
+			{ name: "project_document_export_brand", policy: "org_only" },
 			// Company context (Fizzy #2719). Organization-owned material a
 			// project guest must never read, so plain `org_only` — deliberately
 			// NOT the Brand kit's guest-read policy above. Neither table has a

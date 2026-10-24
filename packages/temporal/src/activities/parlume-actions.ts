@@ -16,7 +16,8 @@ import {
 	summarizeParlumeAction,
 } from "./parlume-action-policy";
 import { createParlumeMeetingChatTool } from "./parlume-chat-tool";
-import { verifyParlumeVoiceGeneration } from "./parlume-voice";
+import { offerHeldChange } from "./parlume-held-change";
+import { readParlumeVoiceState } from "./parlume-voice";
 import {
 	type AgentToolInvocation,
 	type AgentToolRuntime,
@@ -33,6 +34,8 @@ export interface ParlumeActionContext {
 	userId: string;
 	speakerId: string | null;
 	speakerName: string | null;
+	/** The request as asked: what a held change's `go` asks for again. */
+	requestText: string;
 	agentRevision: string;
 	voiceGeneration: number;
 	toolsReadOnly: boolean;
@@ -225,15 +228,21 @@ async function runParlumeAction(
 		};
 	}
 	try {
-		if (!(await verifyParlumeVoiceGeneration(context))) {
+		const voice = await readParlumeVoiceState(context);
+		if (!voice.current || voice.muted) {
 			await db.parlumeAction.update({
 				where: { id: actionId },
 				data: {
 					status: "CANCELLED",
 					completedAt: new Date(),
-					outcome: "Interrupted before dispatch.",
+					outcome: voice.current
+						? "Held before dispatch: the meeting spoke over Parlume. Offered again in the meeting chat."
+						: "Interrupted before dispatch.",
 				},
 			});
+			if (voice.current) {
+				return offerHeldChange(context, invocation.name, args);
+			}
 			return {
 				error: "The request was interrupted before dispatch. No change was made.",
 			};

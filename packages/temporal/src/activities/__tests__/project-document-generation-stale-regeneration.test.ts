@@ -354,9 +354,16 @@ describe("saveProjectDocument — slot-free save is unchanged", () => {
 
 		await saveProjectDocument("doc-1", "# New", "user-1");
 
+		// The project id and type are for the nudge that announces the save.
 		expect(mocks.projectDocument.findUnique).toHaveBeenCalledWith({
 			where: { id: "doc-1" },
-			select: { status: true, content: true, version: true },
+			select: {
+				status: true,
+				content: true,
+				version: true,
+				projectId: true,
+				type: true,
+			},
 		});
 		expect(mocks.documentVersion.findFirst).toHaveBeenCalledWith({
 			where: { documentId: "doc-1", version: 3 },
@@ -540,9 +547,12 @@ describe("createDocumentVersion — slot-free version step is unchanged", () => 
 			},
 		});
 		expect(mocks.projectDocument.update).toHaveBeenCalledTimes(1);
+		// The bump hands back the project id and type, for the nudge that
+		// announces it.
 		expect(mocks.projectDocument.update).toHaveBeenCalledWith({
 			where: { id: "doc-1" },
 			data: { version: 4 },
+			select: { projectId: true, type: true },
 		});
 		// No read of the live document, no transaction, no conditional write.
 		expect(mocks.projectDocument.findUnique).not.toHaveBeenCalled();

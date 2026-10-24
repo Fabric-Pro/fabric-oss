@@ -1,3 +1,4 @@
+import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
 /**
  * Tests for `checkDuplicateProcedure` — the roadmap "Add" dialog's
  * duplicate-detection warning on manual create (Fizzy #2180), NOT the
@@ -649,4 +650,13 @@ describe("checkDuplicateProcedure — never blocks creation", () => {
 		expect(result.decision).toBe("create");
 		expect(result.error).toBeTruthy();
 	});
+});
+
+it("keeps the manual-create fallback and explains an incompatible embedding model", async () => {
+	const error = new UnsupportedEmbeddingModelError("databricks-gte-large-en");
+	mockListActiveStories.mockResolvedValue([TICKET]);
+	mockGenerateEmbeddings.mockRejectedValue(error);
+	const result = await runCheck();
+	expect(result.decision).toBe("create");
+	expect(result.error).toBe(error.message);
 });

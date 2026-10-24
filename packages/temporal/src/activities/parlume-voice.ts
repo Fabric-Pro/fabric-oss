@@ -7,6 +7,7 @@ import { logAiUsageAsync } from "@repo/database";
 import { generateSpeech } from "ai";
 import { z } from "zod";
 import { PARLUME_PCM_SAMPLE_RATE, pcmFromWav } from "./parlume-audio";
+import { recordParlumeAuraUsage } from "./parlume-aura-usage";
 import { parlumeActivityLog } from "./parlume-log";
 import { ReplayableSentences } from "./parlume-spoken-text";
 import {
@@ -14,8 +15,10 @@ import {
 	type SpeechSentenceTiming,
 } from "./shared/turn-timing";
 
+/** The most a reply speaks when the meeting chat cannot take the rest. */
 export const PARLUME_MAX_SPOKEN_CHARS = 800;
-const PARLUME_AURA_MODEL_ID = "@cf/deepgram/aura-2-en";
+/** The spoken headline of a reply whose detail goes to the meeting chat. */
+export const PARLUME_HEADLINE_SPOKEN_CHARS = 350;
 const NOTHING_TO_SAY = "Parlume had nothing to say.";
 const MAX_PCM_BYTES = 6 * 1024 * 1024;
 const MAX_CHAT_CHARS = 4_000;
@@ -104,7 +107,13 @@ function errorMessage(error: unknown): string {
 
 function bridgeControlUrl(
 	sessionId: string,
-	action: "speak" | "say" | "stop" | "verify-generation" | "chat",
+	action:
+		| "speak"
+		| "say"
+		| "stop"
+		| "verify-generation"
+		| "chat"
+		| "fabric-result",
 ): string {
 	const host = process.env.NEXT_PUBLIC_PARTYKIT_HOST;
 	if (!host) {
@@ -123,14 +132,38 @@ function bridgeControlUrl(
 	return base.toString();
 }
 
-export async function verifyParlumeVoiceGeneration(input: {
+/**
+ * What the bridge knows about a turn's voice generation. `current`: the turn
+ * is still the one being answered. `muted`: someone spoke over it, so it
+ * answers in the chat and makes no change it had not started. `chatAvailable`:
+ * Parlume's posts can still be expected to reach the meeting chat.
+ */
+export type ParlumeVoiceState = {
+	current: boolean;
+	muted: boolean;
+	chatAvailable: boolean;
+};
+
+const UNREACHABLE_VOICE_STATE: ParlumeVoiceState = {
+	current: false,
+	muted: false,
+	chatAvailable: true,
+};
+
+const voiceStateResponse = z.object({
+	current: z.boolean(),
+	muted: z.boolean().default(false),
+	chatAvailable: z.boolean().default(true),
+});
+
+export async function readParlumeVoiceState(input: {
 	sessionId: string;
 	voiceGeneration: number;
 	signal?: AbortSignal;
-}): Promise<boolean> {
+}): Promise<ParlumeVoiceState> {
 	const secret = process.env.AGENT_SERVICE_SECRET;
 	if (!secret || input.signal?.aborted) {
-		return false;
+		return UNREACHABLE_VOICE_STATE;
 	}
 	try {
 		const response = await fetch(
@@ -153,12 +186,11 @@ export async function verifyParlumeVoiceGeneration(input: {
 			},
 		);
 		if (!response.ok) {
-			return false;
+			return UNREACHABLE_VOICE_STATE;
 		}
-		return z.object({ current: z.boolean() }).parse(await response.json())
-			.current;
+		return voiceStateResponse.parse(await response.json());
 	} catch {
-		return false;
+		return UNREACHABLE_VOICE_STATE;
 	}
 }
 
@@ -464,12 +496,18 @@ type SpeakInput = SpeechContext & {
 type Playback = {
 	played: boolean;
 	interrupted: boolean;
+	/** Someone spoke over the reply: its turn goes on in the meeting chat. */
+	muted?: boolean;
+	/** How many sentences, from the first, were heard to their end. */
+	heard?: number;
 	firstAudioAt?: number;
 };
 
 const auraResultSchema = z.object({
 	played: z.boolean(),
 	interrupted: z.boolean().default(false),
+	muted: z.boolean().default(false),
+	heard: z.number().int().min(0).optional(),
 	firstAudioAt: z.number().optional(),
 	failedAt: z.number().int().min(0).optional(),
 	error: z.string().optional(),
@@ -485,32 +523,6 @@ const auraResultSchema = z.object({
 		)
 		.default([]),
 });
-
-// Workers AI prices @cf/deepgram/aura-2-en per input character: $0.03 per
-// 1,000 characters.
-const AURA_USD_PER_CHAR = 0.03 / 1_000;
-
-function recordAuraUsage(
-	context: SpeechContext,
-	sentence: { chars: number; totalMs: number | null },
-): void {
-	logAiUsageAsync({
-		userId: context.userId,
-		organizationId: context.organizationId,
-		projectId: context.projectId,
-		taskType: "AUDIO",
-		featureKey: "parlume",
-		conversationId: context.sessionId,
-		provider: "CLOUDFLARE_AI",
-		providerModelId: PARLUME_AURA_MODEL_ID,
-		inputTokens: 0,
-		outputTokens: 0,
-		totalTokens: 0,
-		costUsd: sentence.chars * AURA_USD_PER_CHAR,
-		latencyMs: sentence.totalMs ?? 0,
-		success: true,
-	});
-}
 
 function ndjsonSentences(
 	sentences: AsyncGenerator<string>,
@@ -568,7 +580,7 @@ async function speakThroughAura(
 		const result = auraResultSchema.parse(await response.json());
 		for (const sentence of result.sentences) {
 			if (sentence.ok) {
-				recordAuraUsage(input, sentence);
+				recordParlumeAuraUsage(input, sentence);
 				recordTurnSpeechSentence({
 					chars: sentence.chars,
 					route: "aura",
@@ -588,6 +600,8 @@ async function speakThroughAura(
 			),
 			played: result.played,
 			interrupted: result.interrupted,
+			muted: result.muted,
+			heard: result.heard ?? null,
 			failedAt: result.failedAt ?? null,
 			totalMs: Date.now() - startedAt,
 			firstAudioMs: result.firstAudioAt
@@ -599,6 +613,8 @@ async function speakThroughAura(
 				done: {
 					played: result.played,
 					interrupted: result.interrupted,
+					muted: result.muted,
+					heard: result.heard,
 					firstAudioAt: result.firstAudioAt,
 				},
 			};
@@ -649,8 +665,11 @@ export async function speakParlumeResponse(
 		secret,
 		aura.resumeAt > 0,
 	);
+	// The fallback route cannot tell how much of its own audio was heard, so a
+	// reply spoken over there counts only what Aura played before it.
 	return {
 		...rest,
+		...(rest.muted ? { heard: aura.resumeAt } : {}),
 		firstAudioAt: aura.firstAudioAt ?? rest.firstAudioAt,
 	};
 }
@@ -699,6 +718,7 @@ async function speakThroughPcm(
 		.object({
 			played: z.boolean(),
 			interrupted: z.boolean().default(false),
+			muted: z.boolean().optional(),
 			firstAudioAt: z.number().optional(),
 		})
 		.parse(await playback.json());
@@ -721,15 +741,104 @@ async function speakThroughPcm(
 	return result;
 }
 
+export type ParlumeChatSendResult =
+	| { sent: true; tag: string }
+	| { sent: false; reason: "chat_unavailable" | "failed" };
+
+const chatSendResponse = z.object({
+	sent: z.boolean(),
+	tag: z.string().optional(),
+	reason: z.string().optional(),
+});
+
 /**
- * Posts a reply into the meeting chat when it could not be spoken, so the
- * question is still answered. Goes through the bridge, which already holds the
- * session's provider bot id and Fabric's internal route; the meeting
- * provider's key stays in the web app.
+ * Sends a message to the meeting chat. Goes through the bridge, which holds
+ * the session's provider bot id, tags the post ("[P7] …") and later confirms
+ * it appeared; the meeting provider's key stays in the web app. `sent` means
+ * the provider queued it, not that anyone has seen it. A chat the bridge has
+ * found out of reach answers `chat_unavailable` at once. `final` marks the
+ * last post of a reply typed in the chat, which ends that request.
  */
 export async function postParlumeMeetingChat(input: {
 	sessionId: string;
 	message: string;
+	turnId?: string;
+	voiceGeneration?: number;
+	final?: boolean;
+}): Promise<ParlumeChatSendResult> {
+	return sendBridgeChat(input.sessionId, {
+		message: input.message.slice(0, MAX_CHAT_CHARS),
+		turnId: input.turnId,
+		voiceGeneration: input.voiceGeneration,
+		final: input.final,
+	});
+}
+
+/**
+ * Tells the meeting a change was held back because someone spoke over
+ * Parlume before it ran. The bridge words and tags the post ("[P7] I did not
+ * … Reply "go P7" to do it.") and keeps the request, which `go P7` runs again.
+ */
+export async function postParlumeHeldChange(input: {
+	sessionId: string;
+	turnId: string;
+	/** What the change would have done, as a verb phrase. */
+	action: string;
+	request: string;
+}): Promise<ParlumeChatSendResult> {
+	return sendBridgeChat(input.sessionId, {
+		turnId: input.turnId,
+		held: { action: input.action, request: input.request },
+	});
+}
+
+async function sendBridgeChat(
+	sessionId: string,
+	body: Record<string, unknown>,
+): Promise<ParlumeChatSendResult> {
+	const failed = { sent: false, reason: "failed" } as const;
+	const secret = process.env.AGENT_SERVICE_SECRET;
+	if (!secret) {
+		return failed;
+	}
+	try {
+		const response = await fetch(bridgeControlUrl(sessionId, "chat"), {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${secret}`,
+				"content-type": "application/json",
+			},
+			body: JSON.stringify(body),
+			signal: AbortSignal.timeout(15_000),
+		});
+		if (!response.ok) {
+			return failed;
+		}
+		const result = chatSendResponse.parse(await response.json());
+		if (result.sent && result.tag) {
+			return { sent: true, tag: result.tag };
+		}
+		return result.reason === "chat_unavailable"
+			? { sent: false, reason: "chat_unavailable" }
+			: failed;
+	} catch {
+		return failed;
+	}
+}
+
+const realtimeResultResponse = z.object({ accepted: z.boolean() });
+
+/**
+ * Hands a realtime voice job's outcome to the bridge, which speaks it once
+ * the voice is free. False when the bridge did not take it: the job was
+ * cancelled, or the meeting's voice is no longer realtime.
+ */
+export async function postParlumeRealtimeResult(input: {
+	sessionId: string;
+	job: string;
+	status: "completed" | "failed";
+	text: string;
+	chatTags: string[];
 }): Promise<boolean> {
 	const secret = process.env.AGENT_SERVICE_SECRET;
 	if (!secret) {
@@ -737,7 +846,7 @@ export async function postParlumeMeetingChat(input: {
 	}
 	try {
 		const response = await fetch(
-			bridgeControlUrl(input.sessionId, "chat"),
+			bridgeControlUrl(input.sessionId, "fabric-result"),
 			{
 				method: "POST",
 				headers: {
@@ -745,7 +854,10 @@ export async function postParlumeMeetingChat(input: {
 					"content-type": "application/json",
 				},
 				body: JSON.stringify({
-					message: input.message.slice(0, MAX_CHAT_CHARS),
+					job: input.job,
+					status: input.status,
+					text: input.text.slice(0, MAX_CHAT_CHARS),
+					chatTags: input.chatTags,
 				}),
 				signal: AbortSignal.timeout(15_000),
 			},
@@ -753,8 +865,10 @@ export async function postParlumeMeetingChat(input: {
 		if (!response.ok) {
 			return false;
 		}
-		return z.object({ sent: z.boolean() }).parse(await response.json())
-			.sent;
+		return (
+			realtimeResultResponse.safeParse(await response.json()).data
+				?.accepted === true
+		);
 	} catch {
 		return false;
 	}

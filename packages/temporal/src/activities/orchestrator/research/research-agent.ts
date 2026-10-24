@@ -5,6 +5,7 @@
  * Uses tool-calling to search the web, query workspaces, and consult agents.
  */
 
+import { guardToolsAgainstRepeatedCalls } from "@repo/agent-types/repeated-tool-call-guard";
 import { generateText, isStepCount } from "@repo/ai";
 import { makeStepCacheBreakpoint } from "@repo/ai/prompt-cache";
 import type {
@@ -64,6 +65,15 @@ export async function executeResearchAgent(
 	for (const query of input.researchQueries) {
 		console.log(`[Research] Researching query: "${query}"`);
 
+		const queryTools = { ...researchTools };
+		guardToolsAgainstRepeatedCalls(queryTools, {
+			onRepeat: (toolName, count) => {
+				console.warn("Research agent tool returned a repeated result", {
+					toolName,
+					count,
+				});
+			},
+		});
 		try {
 			const result = await generateText({
 				model,
@@ -75,7 +85,7 @@ This research is for the task: "${input.originalTask}"
 Use the available tools to gather comprehensive information. Search the web, scrape relevant pages, and query agents as needed.
 
 After gathering information, provide a summary of your findings.`,
-				tools: researchTools as any,
+				tools: queryTools as any,
 				stopWhen: isStepCount(maxSteps),
 				prepareStep: makeStepCacheBreakpoint({
 					provider: modelProvider,

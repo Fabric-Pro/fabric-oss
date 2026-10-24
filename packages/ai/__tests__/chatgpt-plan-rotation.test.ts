@@ -49,6 +49,9 @@ const state = vi.hoisted(() => ({
 	limits: vi.fn(),
 	authFailure: null as Error | null,
 	fallbackModel: null as string | null,
+	apiFallbackInteractive: "ASK" as "ASK" | "AUTO",
+	orgHasLlm: false,
+	apiModel: null as MockLanguageModelV4 | null,
 }));
 
 vi.mock("@repo/logs", () => ({
@@ -66,7 +69,8 @@ vi.mock("@repo/payments", () => ({
 vi.mock("@repo/database", () => ({
 	GATEWAY_PROVIDERS: ["VERCEL_GATEWAY", "OPENROUTER", "CLOUDFLARE_AI"],
 	getActiveModels: vi.fn(),
-	getAiProviderApiKey: vi.fn(),
+	getAiProviderApiKey: async () =>
+		state.orgHasLlm ? ORG_PROVIDER : { provider: null },
 	getAiProviderApiKeyByProvider: vi.fn(),
 	getEmbeddingProviderConfig: vi.fn(),
 	getProviderModelIdForCanonical: vi.fn(),
@@ -84,7 +88,7 @@ vi.mock("@repo/database", () => ({
 		termsAcknowledgedAt: new Date("2026-10-01T00:00:00Z"),
 	}),
 	getCachedChatGptPlanOrgPolicy: async () => ({
-		apiFallbackInteractive: "ASK",
+		apiFallbackInteractive: state.apiFallbackInteractive,
 		apiFallbackBackground: "NEVER",
 		headroomPct: 40,
 		termsAcknowledgedById: "owner_1",
@@ -138,12 +142,32 @@ vi.mock("@repo/database", () => ({
 	},
 	markChatGptPlanSourceAnswered: async () => true,
 	getUserModelPreference: async () => null,
-	getModelForTask: async () => null,
+	getModelForTask: async (_userId: string, provider: string) =>
+		state.orgHasLlm && provider === ORG_PROVIDER.provider
+			? ORG_SELECTION
+			: null,
+	organizationHasLlmApiProvider: async () => state.orgHasLlm,
 	touchChatGptPlanCredential: async () => {},
 	touchChatGptPlanOrgAccount: async () => {},
 	logAiUsageAsync: state.logUsage,
 	recordAudit: vi.fn(),
 }));
+
+vi.mock("@repo/utils", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@repo/utils")>()),
+	decryptApiKey: (value: string) => value.replace("encrypted:", ""),
+}));
+
+// The organization's own provider, standing in for every plan once its
+// "Use API billing" policy takes over (Fizzy #3048).
+vi.mock("../model-factory", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../model-factory")>();
+	return {
+		...actual,
+		getModel: (...args: Parameters<typeof actual.getModel>) =>
+			state.apiModel ?? actual.getModel(...args),
+	};
+});
 
 // The re-read of a plan's model list after it refuses one never reaches
 // OpenAI here.
@@ -336,6 +360,69 @@ const account = (id: string): Account => ({
 	serveBackground: true,
 });
 
+const ORG_PROVIDER = {
+	apiKey: "encrypted:example-org-key",
+	baseUrl: null,
+	clientId: null,
+	configId: "cfg_org",
+	deploymentName: null,
+	enabledProviders: [],
+	encryptedClientSecret: null,
+	provider: "OPENAI_DIRECT",
+	source: "organization" as const,
+};
+
+const ORG_SELECTION = {
+	model: {
+		id: "model_api",
+		canonicalName: "gpt-api-model",
+		displayName: "GPT API model",
+		contextWindow: 128_000,
+		maxOutputTokens: 16_384,
+	},
+	providerModelId: "gpt-api-model",
+	source: "org_preference",
+};
+
+const usage = {
+	inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 },
+	outputTokens: { total: 5, text: 5, reasoning: 0 },
+};
+
+/** The organization's provider, answering `text`. */
+function apiModel(text: string) {
+	return new MockLanguageModelV4({
+		provider: "openai",
+		modelId: "gpt-api-model",
+		doGenerate: async () => ({
+			content: [{ type: "text" as const, text }],
+			finishReason: { unified: "stop" as const, raw: undefined },
+			usage,
+			warnings: [],
+		}),
+		doStream: async () => ({
+			stream: new ReadableStream({
+				start(controller) {
+					for (const part of [
+						{ type: "stream-start", warnings: [] },
+						{ type: "text-start", id: "t1" },
+						{ type: "text-delta", id: "t1", delta: text },
+						{ type: "text-end", id: "t1" },
+						{
+							type: "finish",
+							finishReason: { unified: "stop", raw: undefined },
+							usage,
+						},
+					]) {
+						controller.enqueue(part);
+					}
+					controller.close();
+				},
+			}),
+		}),
+	});
+}
+
 const ELIGIBLE = {
 	userId: "user_1",
 	organizationId: "org_a",
@@ -355,6 +442,9 @@ beforeEach(() => {
 	state.rows = new Map();
 	state.authFailure = null;
 	state.fallbackModel = null;
+	state.apiFallbackInteractive = "ASK";
+	state.orgHasLlm = false;
+	state.apiModel = null;
 	state.limits.mockReset();
 });
 
@@ -913,5 +1003,174 @@ describe("the plan's fallback model (Fizzy #3026)", () => {
 			"gpt-6-astra",
 			"gpt-6.1-sol",
 		]);
+	});
+});
+
+describe('every plan spent mid-turn under "Use API billing" (Fizzy #3048)', () => {
+	beforeEach(() => {
+		state.accounts = [account("acc_A")];
+		state.apiFallbackInteractive = "AUTO";
+		state.orgHasLlm = true;
+		state.apiModel = apiModel("From the API");
+	});
+
+	it("moves a call the last plan refused before any output to the organization's provider, billed there", async () => {
+		const calls = openai({ "org:acc_A": refusedSpent });
+		const resolved = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			ELIGIBLE,
+		);
+		const result = await generateText({
+			model: resolved.model,
+			prompt: "Hi",
+		});
+
+		expect(result.text).toBe("From the API");
+		expect(calls).toEqual(["org:acc_A"]);
+		expect(resolved.metadata.planSpentApiBilling).toEqual({
+			resetAt: null,
+		});
+		expect(state.logUsage).toHaveBeenCalledTimes(1);
+		const row = state.logUsage.mock.calls[0]?.[0] as Record<
+			string,
+			unknown
+		>;
+		expect(row).toMatchObject({
+			provider: "OPENAI_DIRECT",
+			providerConfigId: "cfg_org",
+			modelCanonicalName: "gpt-api-model",
+		});
+		// Priced as the API call it was, not as a plan's free one.
+		expect(row.costUsd).toBeUndefined();
+	});
+
+	it("sends the turn's later requests straight to the organization's provider", async () => {
+		const calls = openai({ "org:acc_A": refusedSpent });
+		const resolved = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			ELIGIBLE,
+		);
+		await generateText({ model: resolved.model, prompt: "first" });
+		await expect(
+			generateText({ model: resolved.model, prompt: "second" }),
+		).resolves.toMatchObject({ text: "From the API" });
+
+		expect(calls).toEqual(["org:acc_A"]);
+		expect(
+			state.logUsage.mock.calls.map(
+				(call: unknown[]) => (call[0] as { provider: string }).provider,
+			),
+		).toEqual(["OPENAI_DIRECT", "OPENAI_DIRECT"]);
+	});
+
+	it("names the organization's provider on the turn's aggregate row", async () => {
+		openai({ "org:acc_A": refusedSpent });
+		const resolved = await getAIModelWithMetadata(
+			{ taskType: "CHAT", usageLogging: "aggregate" },
+			ELIGIBLE,
+		);
+		const result = streamText({ model: resolved.model, prompt: "Hi" });
+		await expect(result.text).resolves.toBe("From the API");
+		expect(state.logUsage).not.toHaveBeenCalled();
+
+		resolved.recordAggregateUsage({
+			usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
+			latencyMs: 1,
+			success: true,
+		});
+		const row = state.logUsage.mock.calls[0]?.[0] as Record<
+			string,
+			unknown
+		>;
+		expect(row).toMatchObject({
+			provider: "OPENAI_DIRECT",
+			providerConfigId: "cfg_org",
+		});
+		expect(row.costUsd).toBeUndefined();
+	});
+
+	it("ends a reply cut off mid-output with PlanSourceRotatedError that points at API billing", async () => {
+		openai({ "org:acc_A": spentMidReply });
+		const resolved = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			ELIGIBLE,
+		);
+		const errors: unknown[] = [];
+		await streamText({
+			model: resolved.model,
+			prompt: "Hi",
+			onError: ({ error }) => {
+				errors.push(error);
+			},
+		}).consumeStream();
+
+		const rotated = errors.find(
+			(error) => error instanceof PlanSourceRotatedError,
+		);
+		expect((rotated as Error | undefined)?.message).toBe(
+			"The ChatGPT plans ran out mid-reply. Send your message again to continue on your organization's API billing.",
+		);
+	});
+
+	it('still stops the call under "Stop and show the reset time"', async () => {
+		state.apiFallbackInteractive = "ASK";
+		openai({ "org:acc_A": refusedSpent });
+		const resolved = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			ELIGIBLE,
+		);
+		await expect(
+			generateText({
+				model: resolved.model,
+				prompt: "Hi",
+				maxRetries: 0,
+			}),
+		).rejects.toBeInstanceOf(SubscriptionPlanExhaustedError);
+		expect(resolved.metadata.planSpentApiBilling).toBeUndefined();
+	});
+
+	it("keeps a member's own spent plan off the organization's provider under \"Stop and show the reset time\"", async () => {
+		state.apiFallbackInteractive = "ASK";
+		state.accounts = [];
+		state.ownUse = {
+			includeBackgroundJobs: false,
+			credentialStatus: "ACTIVE",
+		};
+		const calls = openai({ "user:user_1": refusedSpent });
+		const resolved = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			ELIGIBLE,
+		);
+		await expect(
+			generateText({
+				model: resolved.model,
+				prompt: "Hi",
+				maxRetries: 0,
+			}),
+		).rejects.toBeInstanceOf(SubscriptionPlanExhaustedError);
+		expect(calls).toEqual(["user:user_1"]);
+		expect(
+			state.logUsage.mock.calls.some(
+				(call: unknown[]) =>
+					(call[0] as { provider: string }).provider ===
+					"OPENAI_DIRECT",
+			),
+		).toBe(false);
+	});
+
+	it("moves a member's own spent plan to the organization's provider under \"Use API billing\"", async () => {
+		state.accounts = [];
+		state.ownUse = {
+			includeBackgroundJobs: false,
+			credentialStatus: "ACTIVE",
+		};
+		openai({ "user:user_1": refusedSpent });
+		const resolved = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			ELIGIBLE,
+		);
+		await expect(
+			generateText({ model: resolved.model, prompt: "Hi" }),
+		).resolves.toMatchObject({ text: "From the API" });
 	});
 });

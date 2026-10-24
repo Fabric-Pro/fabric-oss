@@ -5,6 +5,7 @@
  * Each sub-agent runs in its own context window for focused investigation.
  */
 
+import { guardToolsAgainstRepeatedCalls } from "@repo/agent-types/repeated-tool-call-guard";
 import { generateText, isStepCount } from "@repo/ai";
 import { makeStepCacheBreakpoint } from "@repo/ai/prompt-cache";
 import { db } from "@repo/database";
@@ -238,6 +239,14 @@ async function buildWebSearchTools(
 		);
 	}
 
+	guardToolsAgainstRepeatedCalls(tools, {
+		onRepeat: (toolName, count) => {
+			console.warn("Deep researcher tool returned a repeated result", {
+				toolName,
+				count,
+			});
+		},
+	});
 	return tools;
 }
 

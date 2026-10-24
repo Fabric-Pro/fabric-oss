@@ -5,6 +5,8 @@ const mocks = vi.hoisted(() => ({
 	sessionUpdateMany: vi.fn(),
 	sessionUpdate: vi.fn(),
 	segmentFindMany: vi.fn(),
+	turnFindMany: vi.fn(),
+	actionFindMany: vi.fn(),
 	contextCreate: vi.fn(),
 	workflowStart: vi.fn(),
 	recordUsage: vi.fn(),
@@ -22,6 +24,8 @@ vi.mock("@repo/database", () => {
 		db: {
 			parlumeMeetingSession,
 			parlumeMeetingSegment: { findMany: mocks.segmentFindMany },
+			parlumeMeetingTurn: { findMany: mocks.turnFindMany },
+			parlumeAction: { findMany: mocks.actionFindMany },
 			$transaction: (
 				run: (tx: {
 					projectContext: { create: typeof mocks.contextCreate };
@@ -83,8 +87,338 @@ beforeEach(() => {
 	mocks.sessionUpdateMany.mockResolvedValue({ count: 1 });
 	mocks.sessionUpdate.mockResolvedValue(undefined);
 	mocks.segmentFindMany.mockResolvedValue([]);
+	mocks.turnFindMany.mockResolvedValue([]);
+	mocks.actionFindMany.mockResolvedValue([]);
+	mocks.contextCreate.mockResolvedValue({ id: "context-1" });
 	mocks.getSettings.mockReturnValue({ apiKey: "test-key" });
 	mocks.deleteProviderData.mockResolvedValue(undefined);
+});
+
+function storedTurn(overrides: Record<string, unknown> = {}) {
+	return {
+		id: "turn-1",
+		requestText: "Create a feature for the release notes.",
+		responseText: "The release notes feature is ready.",
+		status: "COMPLETED",
+		interruptedAt: null,
+		...overrides,
+	};
+}
+
+function savedContent(): string {
+	return mocks.contextCreate.mock.calls[0][0].data.content;
+}
+
+describe("finalizeParlumeSession conversation records", () => {
+	it("marks meeting chat lines among the speech they were sent during", async () => {
+		mocks.segmentFindMany.mockResolvedValue([
+			{
+				text: "Where is the plan?",
+				speakerName: "Alex",
+				source: "SPEECH",
+			},
+			{
+				text: "Here: https://example.com/plan",
+				speakerName: "Sam",
+				source: "CHAT",
+			},
+		]);
+		mocks.turnFindMany.mockResolvedValue([]);
+		mocks.actionFindMany.mockResolvedValue([]);
+
+		await finalizeParlumeSession("session-1");
+
+		expect(savedContent()).toContain(
+			"Alex: Where is the plan?\n[chat] Sam: Here: https://example.com/plan\n",
+		);
+		expect(mocks.segmentFindMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				select: { text: true, speakerName: true, source: true },
+			}),
+		);
+	});
+
+	it("saves generated answers and completed receipts alongside incoming speech for notes", async () => {
+		mocks.segmentFindMany.mockResolvedValue([
+			{
+				text: "Create a feature for the release notes.",
+				speakerName: "Alex",
+			},
+			{ text: "Thank you.", speakerName: "Sam" },
+		]);
+		mocks.turnFindMany.mockResolvedValue([storedTurn()]);
+		mocks.actionFindMany.mockResolvedValue([
+			{
+				turnId: "turn-1",
+				toolName: "fabric_create_story",
+				status: "COMPLETED",
+			},
+		]);
+
+		await finalizeParlumeSession("session-1");
+
+		const content = savedContent();
+		expect(content).toContain("Captured incoming speech:\nAlex: Create");
+		expect(content).toContain("\nSam: Thank you.\n");
+		expect(content).toContain(
+			"Recorded Fabric responses and action receipts:",
+		);
+		expect(content).toContain(
+			"Request 1: Create a feature for the release notes.",
+		);
+		expect(content).toContain(
+			"Response: The release notes feature is ready.",
+		);
+		expect(content).toContain(
+			"Action receipt: fabric_create_story — COMPLETED",
+		);
+		expect(content.indexOf("Sam: Thank you.")).toBeLessThan(
+			content.indexOf("Request 1:"),
+		);
+		expect(mocks.workflowStart).toHaveBeenCalledWith(
+			"parlumeNotesWorkflow",
+			expect.objectContaining({
+				args: [expect.objectContaining({ sessionId: "session-1" })],
+			}),
+		);
+	});
+
+	it("keeps failed, incomplete and interrupted records distinct from a generated success claim", async () => {
+		mocks.turnFindMany.mockResolvedValue([
+			storedTurn({ responseText: "All changes succeeded." }),
+			storedTurn({
+				id: "turn-2",
+				requestText: "Next question?",
+				status: "RUNNING",
+				responseText: null,
+				interruptedAt: new Date("2026-10-01T18:00:00Z"),
+			}),
+			storedTurn({
+				id: "turn-3",
+				requestText: "Last question?",
+				status: "FAILED",
+				responseText: "Partial reply.",
+			}),
+			storedTurn({ id: "turn-4", status: "PENDING", responseText: null }),
+		]);
+		const statuses = [
+			"FAILED",
+			"COMPLETED",
+			"PROPOSED",
+			"AWAITING_CONFIRMATION",
+			"EXECUTING",
+			"CANCELLED",
+			"EXPIRED",
+			"INVALIDATED",
+			"OUTCOME_UNKNOWN",
+		];
+		mocks.actionFindMany.mockResolvedValue(
+			statuses.map((status) => ({
+				turnId: "turn-1",
+				toolName: "fabric_update_task",
+				status,
+			})),
+		);
+
+		await finalizeParlumeSession("session-1");
+
+		const content = savedContent();
+		expect(content).toContain("Response: All changes succeeded.");
+		for (const status of statuses) {
+			expect(content).toContain(
+				`Action receipt: fabric_update_task — ${status}`,
+			);
+		}
+		expect(content).toContain(
+			"A COMPLETED request does not prove action success or audio delivery.",
+		);
+		expect(content).toContain(
+			"Only COMPLETED action receipts confirm success; all other action statuses are unsuccessful or unconfirmed.",
+		);
+		expect(content).toContain(
+			"Request status: RUNNING\nPlayback interrupted: yes\nResponse: No response text recorded.",
+		);
+		expect(content).toContain("Request status: FAILED");
+		expect(content).toContain("Request status: PENDING");
+		expect(content.indexOf("Request 1:")).toBeLessThan(
+			content.indexOf("Request 2:"),
+		);
+		expect(content.indexOf("Request 2:")).toBeLessThan(
+			content.indexOf("Request 3:"),
+		);
+		expect(content.indexOf("— FAILED")).toBeLessThan(
+			content.indexOf("— COMPLETED"),
+		);
+		expect(content).toContain(
+			"Action receipts: none recorded (action success unconfirmed).",
+		);
+	});
+
+	it("loads only bounded session, project and organization records without raw tool payloads", async () => {
+		mocks.turnFindMany.mockResolvedValue([storedTurn()]);
+		mocks.actionFindMany.mockResolvedValue([
+			{
+				turnId: "turn-1",
+				toolName: "fabric_create_story",
+				status: "FAILED",
+				arguments: { privatePayload: "synthetic-argument-marker" },
+				outcome: "synthetic-outcome-marker",
+			},
+		]);
+
+		await finalizeParlumeSession("session-1");
+
+		const where = {
+			sessionId: "session-1",
+			projectId: "project-1",
+			organizationId: "org-1",
+		};
+		for (const query of [
+			mocks.segmentFindMany,
+			mocks.turnFindMany,
+			mocks.actionFindMany,
+		]) {
+			expect(query).toHaveBeenCalledWith(
+				expect.objectContaining({ where, take: 10_001 }),
+			);
+		}
+		expect(mocks.turnFindMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+			}),
+		);
+		expect(mocks.actionFindMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				select: { turnId: true, toolName: true, status: true },
+				orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+			}),
+		);
+		expect(mocks.turnFindMany.mock.calls[0][0].select).toEqual({
+			id: true,
+			requestText: true,
+			responseText: true,
+			status: true,
+			interruptedAt: true,
+		});
+		expect(savedContent()).not.toContain("synthetic-argument-marker");
+		expect(savedContent()).not.toContain("synthetic-outcome-marker");
+	});
+
+	it("associates receipts with their own request even when action creation order differs", async () => {
+		mocks.turnFindMany.mockResolvedValue([
+			storedTurn(),
+			storedTurn({ id: "turn-2", requestText: "Update the task." }),
+		]);
+		mocks.actionFindMany.mockResolvedValue([
+			{
+				turnId: "turn-2",
+				toolName: "fabric_update_task",
+				status: "FAILED",
+			},
+			{
+				turnId: "turn-1",
+				toolName: "fabric_create_story",
+				status: "COMPLETED",
+			},
+		]);
+
+		await finalizeParlumeSession("session-1");
+
+		const content = savedContent();
+		const secondRequest = content.indexOf("Request 2:");
+		expect(content.indexOf("fabric_create_story — COMPLETED")).toBeLessThan(
+			secondRequest,
+		);
+		expect(content.indexOf("fabric_update_task — FAILED")).toBeGreaterThan(
+			secondRequest,
+		);
+	});
+
+	it("refuses to drop a receipt without a matching scoped request", async () => {
+		mocks.actionFindMany.mockResolvedValue([
+			{
+				turnId: "turn-1",
+				toolName: "fabric_update_task",
+				status: "FAILED",
+			},
+		]);
+
+		await expect(finalizeParlumeSession("session-1")).rejects.toThrow(
+			"no matching scoped request",
+		);
+		expect(mocks.contextCreate).not.toHaveBeenCalled();
+		expect(mocks.deleteProviderData).not.toHaveBeenCalled();
+	});
+
+	it("retains an answered request when no incoming segments remain, without saving it twice", async () => {
+		mocks.turnFindMany.mockResolvedValue([storedTurn()]);
+		await finalizeParlumeSession("session-1");
+		expect(savedContent()).toContain("The release notes feature is ready.");
+		mocks.sessionFindUnique.mockResolvedValue(
+			storedSession({
+				status: "ENDED",
+				transcriptContextId: "context-1",
+				finalizedAt: new Date("2026-10-01T18:00:05Z"),
+				providerDataDeletedAt: new Date("2026-10-01T18:00:06Z"),
+			}),
+		);
+		await finalizeParlumeSession("session-1");
+		expect(mocks.contextCreate).toHaveBeenCalledOnce();
+		expect(mocks.turnFindMany).toHaveBeenCalledOnce();
+		expect(mocks.recordUsage).toHaveBeenCalledOnce();
+		expect(mocks.deleteProviderData).toHaveBeenCalledOnce();
+	});
+
+	it("preserves the empty-session path", async () => {
+		await finalizeParlumeSession("session-1");
+		expect(mocks.contextCreate).not.toHaveBeenCalled();
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
+		expect(mocks.sessionUpdate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					lastError: "No final speech segments were received.",
+				}),
+			}),
+		);
+		expect(mocks.recordUsage).toHaveBeenCalledOnce();
+		expect(mocks.deleteProviderData).toHaveBeenCalledOnce();
+	});
+
+	it("applies the Context size limit to incoming speech and appended records together", async () => {
+		mocks.segmentFindMany.mockResolvedValue([
+			{ text: "x".repeat(999_900), speakerName: null },
+		]);
+		mocks.turnFindMany.mockResolvedValue([storedTurn()]);
+		await expect(finalizeParlumeSession("session-1")).rejects.toThrow(
+			"exceeds the storage limit",
+		);
+		expect(mocks.contextCreate).not.toHaveBeenCalled();
+		expect(mocks.deleteProviderData).not.toHaveBeenCalled();
+	});
+
+	it.each(["segments", "turns", "actions"])(
+		"refuses to silently truncate excess %s",
+		async (kind) => {
+			const query = {
+				segments: mocks.segmentFindMany,
+				turns: mocks.turnFindMany,
+				actions: mocks.actionFindMany,
+			}[kind];
+			query.mockResolvedValue(
+				Array.from({ length: 10_001 }, () => ({
+					text: "hello",
+					...storedTurn(),
+					turnId: "turn-1",
+					toolName: "fabric_create_story",
+				})),
+			);
+			await expect(finalizeParlumeSession("session-1")).rejects.toThrow(
+				"record limit",
+			);
+			expect(mocks.contextCreate).not.toHaveBeenCalled();
+			expect(mocks.recordUsage).not.toHaveBeenCalled();
+		},
+	);
 });
 
 describe("finalizeParlumeSession provider usage", () => {

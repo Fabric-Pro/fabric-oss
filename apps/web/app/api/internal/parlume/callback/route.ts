@@ -1,6 +1,7 @@
 import {
 	closeParlumeMeetingBridge,
 	getParlumeBridgeSettings,
+	sendParlumeChatMessage,
 	sendParlumeSpeakerUpdates,
 } from "@repo/api/modules/projects/lib/parlume-attendee";
 import {
@@ -11,7 +12,11 @@ import { parlumeLog } from "@repo/api/modules/projects/lib/parlume-log";
 import { db } from "@repo/database";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { callbackSecret, constantTimeEqual } from "../lib";
+import {
+	callbackSecret,
+	constantTimeEqual,
+	MAX_PARLUME_SEGMENT_CHARS,
+} from "../lib";
 
 const envelopeSchema = z.object({
 	trigger: z.string().max(128),
@@ -30,6 +35,17 @@ const speechEventSchema = z.object({
 	participant_uuid: z.string().min(1).max(256),
 	event_type: z.enum(["speech_start", "speech_stop"]),
 	timestamp_ms: z.number(),
+});
+
+// Attendee's `chat_messages.update` data. Only the fields Parlume uses are
+// read, each bounded; `to` is "only_bot" for a private message to the bot.
+const chatMessageSchema = z.object({
+	id: z.string().min(1).max(128),
+	text: z.string().max(MAX_PARLUME_SEGMENT_CHARS),
+	timestamp_ms: z.number().finite(),
+	to: z.string().max(32).nullish(),
+	sender_name: z.string().max(256).nullish(),
+	sender_uuid: z.string().max(256).nullish(),
 });
 
 type TerminalOutcome = "completed" | "failed";
@@ -109,6 +125,56 @@ async function forwardSpeechEvent(
 			error: error instanceof Error ? error.message : String(error),
 		});
 	}
+}
+
+/**
+ * Relays one meeting chat message to the bridge, which stores it and acts on
+ * it. Unlike a speech event, a lost message can be a participant's request or
+ * Parlume's own delivery receipt, so a failed relay asks Attendee to redeliver;
+ * the bridge ignores a message id it has already seen.
+ */
+async function forwardChatMessage(
+	sessionId: string,
+	botId: string,
+	message: z.infer<typeof chatMessageSchema>,
+): Promise<NextResponse> {
+	const session = await db.parlumeMeetingSession.findFirst({
+		where: {
+			id: sessionId,
+			providerBotId: botId,
+			status: { in: ["JOINING", "ACTIVE", "LEAVING"] },
+		},
+		select: { id: true },
+	});
+	const settings = getParlumeBridgeSettings();
+	if (!session || !settings) {
+		return NextResponse.json({ accepted: true });
+	}
+	try {
+		await sendParlumeChatMessage({
+			settings,
+			sessionId: session.id,
+			message: {
+				id: message.id,
+				text: message.text,
+				senderName: message.sender_name ?? null,
+				senderId: message.sender_uuid ?? null,
+				toBot: message.to === "only_bot",
+				timestampMs: message.timestamp_ms,
+			},
+		});
+	} catch (error) {
+		parlumeLog("warn", "callback.chat_forward_failed", {
+			sessionId: session.id,
+			botId,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return NextResponse.json(
+			{ error: "Chat relay retry required" },
+			{ status: 503 },
+		);
+	}
+	return NextResponse.json({ accepted: true });
 }
 
 async function handleTerminalState(input: {
@@ -305,6 +371,14 @@ export async function POST(request: NextRequest) {
 			await forwardSpeechEvent(sessionId, botId, event.data);
 		}
 		return NextResponse.json({ accepted: true });
+	}
+	if (trigger === "chat_messages.update") {
+		const message = chatMessageSchema.safeParse(data);
+		if (!message.success) {
+			parlumeLog("warn", "callback.invalid", { sessionId, trigger });
+			return NextResponse.json({ accepted: true });
+		}
+		return forwardChatMessage(sessionId, botId, message.data);
 	}
 	if (trigger !== "bot.state_change") {
 		return NextResponse.json({ accepted: true });

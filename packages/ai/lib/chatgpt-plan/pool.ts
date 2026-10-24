@@ -74,6 +74,7 @@ export const PLAN_POOL_BACKGROUND_JOB_TYPES: readonly AiJobKey[] = [
 	"external-agent",
 	"public-api",
 	"security-scan",
+	"recurring-error-scan",
 	"batch-document-generation",
 	"project-setup",
 	"atlas-analysis",

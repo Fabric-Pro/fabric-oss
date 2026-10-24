@@ -44,6 +44,7 @@ import {
 } from "../../lib/glossy-access";
 import { requireGlossyEnabled } from "../../lib/glossy-feature";
 import {
+	canEditRecipientBrand,
 	presentRecipientBrand,
 	recipientBrandBucket,
 	recipientBrandOutputSchema,
@@ -163,6 +164,13 @@ const outputSchema = z.object({
 		recipient: recipientBrandOutputSchema.nullable(),
 		/** What a recipient brand confirmation sends back (KTD23). */
 		recipientVersion: z.number().int(),
+		/**
+		 * Whether the caller may change the recipient brand: the recipient
+		 * brand's own write gate, so a project guest with an editor role
+		 * builds the edition but is not offered a recipient Save
+		 * (Fizzy #2946).
+		 */
+		recipientCanEdit: z.boolean(),
 	}),
 	/** Signed reads of the document's own uploaded images, by S3 key (KTD16). */
 	imageUrls: z.record(z.string(), z.string()),
@@ -231,16 +239,27 @@ export const getGlossyEditionProcedure = tenantProtectedProcedure
 
 		const now = new Date();
 		const inlineLogos = input.inlineLogos === true;
-		const [edition, canEdit, preparer, recipientBrand] = await Promise.all([
-			getGlossyEdition({
-				documentId: input.documentId,
-				projectId: input.projectId,
-			}),
-			canEditProject(input.projectId, context.user.id),
-			loadPreparer(input.projectId, organizationId, inlineLogos),
-			getRecipientBrand(input.projectId),
-		]);
+		const [edition, canEdit, preparer, recipientRow, recipientCanEdit] =
+			await Promise.all([
+				getGlossyEdition({
+					documentId: input.documentId,
+					projectId: input.projectId,
+				}),
+				canEditProject(input.projectId, context.user.id),
+				loadPreparer(input.projectId, organizationId, inlineLogos),
+				getRecipientBrand(input.projectId),
+				canEditRecipientBrand({
+					projectId: input.projectId,
+					organizationId,
+					userId: context.user.id,
+				}),
+			]);
 
+		// A row left behind in another organization is no recipient brand.
+		const recipientBrand =
+			recipientRow?.organizationId === organizationId
+				? recipientRow
+				: null;
 		const content = parseContent(edition);
 		const [build, recipient, imageUrls] = await Promise.all([
 			readBuildState(edition, now),
@@ -287,6 +306,7 @@ export const getGlossyEditionProcedure = tenantProtectedProcedure
 				preparer,
 				recipient,
 				recipientVersion: recipientBrand?.version ?? 0,
+				recipientCanEdit,
 			},
 			imageUrls,
 		};

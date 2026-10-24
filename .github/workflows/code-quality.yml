@@ -74,10 +74,9 @@ jobs:
         with:
           node-version: '22'
           check-latest: true
-          cache: 'pnpm'
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        uses: ./.github/actions/pnpm-install
 
       # The temporary OSV exception is valid only while the reviewed patch is
       # locked, installed for every consumer, and copied into Docker installs.
@@ -105,6 +104,7 @@ jobs:
           python3 .github/scripts/staging/test_workflows.py
           node --test .github/actions/oss-snapshot/*manifest.test.mjs
           node --test .github/scripts/staging/promotion-*.test.mjs .github/scripts/staging/public-relay-changeset.test.mjs
+          node --test .github/scripts/auto-merge/eligible.test.mjs
 
       - name: Agent guidance
         run: pnpm guidance:check

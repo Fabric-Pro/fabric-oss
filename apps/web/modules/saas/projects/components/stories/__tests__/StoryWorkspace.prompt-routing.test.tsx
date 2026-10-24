@@ -45,6 +45,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // ---------------------------------------------------------------------------
 
 const {
+	mockEnhanceError,
+	mockSetState,
 	mockResolvePrompt,
 	mockPromptById,
 	mockBoundPrompt,
@@ -55,6 +57,8 @@ const {
 	mockEnhanceMutate,
 	agentRef,
 } = vi.hoisted(() => ({
+	mockEnhanceError: vi.fn(),
+	mockSetState: vi.fn(),
 	mockResolvePrompt: vi.fn(),
 	mockPromptById: vi.fn(),
 	mockBoundPrompt: vi.fn(),
@@ -76,7 +80,7 @@ const {
 vi.mock("@copilotkit/react-core", () => ({
 	useCoAgent: () => ({
 		state: { document: "" },
-		setState: vi.fn(),
+		setState: mockSetState,
 		running: false,
 		nodeName: undefined,
 	}),
@@ -154,24 +158,36 @@ vi.mock("@saas/projects/hooks/useDocumentAssistantHistoryEnabled", () => ({
 // reviewer-picked-a-prompt path directly.
 vi.mock("../FeatureTransitionDialog", () => ({
 	FeatureTransitionDialog: ({
+		open,
 		targetStage,
 		onEnhance,
 	}: {
+		open: boolean;
 		targetStage: string;
-		onEnhance: (stage: string, promptId?: string) => void;
+		onEnhance: (stage: string, promptId?: string) => Promise<void>;
 	}) => (
-		<div>
+		<div
+			data-testid="transition-dialog"
+			data-open={open}
+			data-target-stage={targetStage}
+		>
 			<button
 				type="button"
 				data-testid="enhance-default"
-				onClick={() => onEnhance(targetStage)}
+				onClick={() => {
+					void onEnhance(targetStage).catch(mockEnhanceError);
+				}}
 			>
 				enhance
 			</button>
 			<button
 				type="button"
 				data-testid="enhance-picked-prompt"
-				onClick={() => onEnhance(targetStage, "prompt-picked-1")}
+				onClick={() => {
+					void onEnhance(targetStage, "prompt-picked-1").catch(
+						mockEnhanceError,
+					);
+				}}
 			>
 				enhance with chosen prompt
 			</button>
@@ -538,6 +554,7 @@ async function runStageEnhance(testId: string) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mockSetState.mockReset();
 	agentRef.current.isRunning = false;
 	mockSpecContext.mockResolvedValue({ contexts: [] });
 	mockAppendMessage.mockResolvedValue(undefined);
@@ -553,12 +570,63 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("StoryWorkspace — Clean Spec refresh resolves its prompt server-side", () => {
+	it.each(["complete", "fail", "post-flush abort"])(
+		"clears the run prompt on %s",
+		async (outcome) => {
+			renderWorkspace(true);
+			mockSetState.mockClear();
+			let finish: () => void = () => {};
+			mockAppendMessage.mockImplementation(
+				() =>
+					new Promise<void>((resolve, reject) => {
+						finish = () =>
+							outcome === "fail"
+								? reject(new Error("run failed"))
+								: resolve();
+					}),
+			);
+			if (outcome === "post-flush abort") {
+				mockSetState.mockImplementation((patch) => {
+					if (patch.systemPrompt === BUG_PROMPT) {
+						agentRef.current.isRunning = true;
+					}
+				});
+			}
+			await clickUpdateFullSpec();
+			expect(mockSetState).toHaveBeenCalledWith(
+				expect.objectContaining({
+					systemPrompt: BUG_PROMPT,
+					suppressFabricMethodology: true,
+				}),
+			);
+			if (outcome !== "post-flush abort") {
+				expect(mockSetState.mock.calls.at(-1)?.[0].systemPrompt).toBe(
+					BUG_PROMPT,
+				);
+				await act(async () => finish());
+			} else {
+				expect(mockAppendMessage).not.toHaveBeenCalled();
+			}
+			expect(mockSetState.mock.calls.at(-1)?.[0]).toMatchObject({
+				systemPrompt: "",
+				suppressFabricMethodology: false,
+				refreshSpecContexts: [],
+			});
+		},
+	);
+
 	it("sends the server's prompt when the cached kind disagrees (AE1)", async () => {
 		renderWorkspace(true);
 		await clickUpdateFullSpec();
 
 		await waitFor(() => expect(mockAppendMessage).toHaveBeenCalled());
-		expect(postedMessage()).toContain(BUG_PROMPT);
+		expect(postedMessage()).not.toContain(BUG_PROMPT);
+		expect(mockSetState).toHaveBeenCalledWith(
+			expect.objectContaining({
+				systemPrompt: BUG_PROMPT,
+				suppressFabricMethodology: true,
+			}),
+		);
 		expect(postedMessage()).not.toContain(FEATURE_PROMPT);
 	});
 
@@ -701,6 +769,81 @@ describe("StoryWorkspace — Clean Spec refresh resolves its prompt server-side"
 // ---------------------------------------------------------------------------
 
 describe("StoryWorkspace — stage Enhance resolves its prompt server-side", () => {
+	it.each(["complete", "fail", "pre-flush abort", "post-flush abort"])(
+		"scopes the stage prompt to the run on %s",
+		async (outcome) => {
+			renderWorkspace(false);
+			mockSetState.mockClear();
+			let finish: () => void = () => {};
+			mockAppendMessage.mockImplementation(
+				() =>
+					new Promise<void>((resolve, reject) => {
+						finish = () =>
+							outcome === "fail"
+								? reject(new Error("stage run failed"))
+								: resolve();
+					}),
+			);
+			if (outcome === "pre-flush abort") {
+				mockResolvePrompt.mockImplementation(async () => {
+					agentRef.current.isRunning = true;
+					return serverSaysBug(BUG_PROMPT);
+				});
+			}
+			if (outcome === "post-flush abort") {
+				mockSetState.mockImplementation((patch) => {
+					if (patch.systemPrompt === BUG_PROMPT) {
+						agentRef.current.isRunning = true;
+					}
+				});
+			}
+			await runStageEnhance("enhance-default");
+			if (outcome.endsWith("abort")) {
+				expect.soft(mockAppendMessage).not.toHaveBeenCalled();
+				expect
+					.soft(screen.getByTestId("transition-dialog"))
+					.toHaveAttribute("data-open", "true");
+				expect
+					.soft(screen.getByTestId("transition-dialog"))
+					.toHaveAttribute("data-target-stage", "DRAFT");
+				expect(mockEnhanceMutate).not.toHaveBeenCalled();
+			}
+			if (outcome === "pre-flush abort") {
+				expect(mockSetState).not.toHaveBeenCalledWith(
+					expect.objectContaining({ systemPrompt: BUG_PROMPT }),
+				);
+				return;
+			}
+			expect.soft(mockSetState).toHaveBeenCalledWith(
+				expect.objectContaining({
+					systemPrompt: BUG_PROMPT,
+					suppressFabricMethodology: true,
+				}),
+			);
+			if (!outcome.endsWith("abort")) {
+				expect
+					.soft(mockSetState.mock.calls.at(-1)?.[0].systemPrompt)
+					.toBe(BUG_PROMPT);
+				expect(
+					screen.queryByTestId("transition-dialog"),
+				).not.toBeInTheDocument();
+				await act(async () => finish());
+				if (outcome === "fail") {
+					expect(mockEnhanceError).toHaveBeenCalledWith(
+						expect.objectContaining({
+							message: "stage run failed",
+						}),
+					);
+				}
+			}
+			expect(mockSetState.mock.calls.at(-1)?.[0]).toMatchObject({
+				systemPrompt: "",
+				suppressFabricMethodology: false,
+				refreshSpecContexts: [],
+			});
+		},
+	);
+
 	it("sends the server's prompt when the cached kind disagrees (AE1)", async () => {
 		renderWorkspace(false);
 		await runStageEnhance("enhance-default");
@@ -718,7 +861,13 @@ describe("StoryWorkspace — stage Enhance resolves its prompt server-side", () 
 		expect(Object.keys(input)).not.toContain("storyKind");
 		expect(Object.keys(input)).not.toContain("agentName");
 		expect(mockBoundPrompt).not.toHaveBeenCalled();
-		expect(postedMessage()).toContain(BUG_PROMPT);
+		expect.soft(postedMessage()).not.toContain(BUG_PROMPT);
+		expect(mockSetState).toHaveBeenCalledWith(
+			expect.objectContaining({
+				systemPrompt: BUG_PROMPT,
+				suppressFabricMethodology: true,
+			}),
+		);
 		expect(postedMessage()).not.toContain(FEATURE_PROMPT);
 	});
 
@@ -736,7 +885,13 @@ describe("StoryWorkspace — stage Enhance resolves its prompt server-side", () 
 			promptId: "prompt-picked-1",
 			targetStage: "DRAFT",
 		});
-		expect(postedMessage()).toContain(PICKED_PROMPT);
+		expect.soft(postedMessage()).not.toContain(PICKED_PROMPT);
+		expect(mockSetState).toHaveBeenCalledWith(
+			expect.objectContaining({
+				systemPrompt: PICKED_PROMPT,
+				suppressFabricMethodology: true,
+			}),
+		);
 	});
 
 	it("invalidates the work item query before posting when the kind drifted", async () => {

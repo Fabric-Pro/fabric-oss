@@ -78,6 +78,11 @@ import {
 } from "./BacklogChangeProposal";
 import { failureClassToCopy } from "./lib/failure-class-copy";
 import { isApplyInFlight } from "./proposal-status";
+import {
+	isRecurringErrorSource,
+	RecurringErrorSourceBadge,
+	RecurringErrorSourcePanel,
+} from "./RecurringErrorSource";
 
 type Props = {
 	projectId: string;
@@ -514,6 +519,15 @@ function ProposalSourceBadge({
 }) {
 	const channelName = channelNameFromMetadata(sourceMetadata);
 
+	if (isRecurringErrorSource(source)) {
+		return (
+			<RecurringErrorSourceBadge
+				source={source}
+				sourceMetadata={sourceMetadata}
+			/>
+		);
+	}
+
 	if (source === "AI_UPDATE_SIDEBAR") {
 		// The AI Update flow has no channel — the badge is a compact
 		// product-label so the user can tell sidebar-originated rows
@@ -604,6 +618,10 @@ function providerLabel(source: ProposalSource): string {
 			return "Microsoft Teams";
 		case "MONITORED_MEETING":
 			return "a monitored meeting";
+		case "LOG_MONITOR":
+			return "the application logs";
+		case "INCIDENT_CLUSTER":
+			return "the related bug reports";
 		default:
 			return "the source channel";
 	}
@@ -1222,7 +1240,7 @@ export function PendingBacklogProposalsInbox({
 								eyebrow: "From monitored sources",
 								title: "Proposal Inbox",
 								description:
-									"Review and approve proposals surfaced from your monitored meeting transcripts, Teams, and Slack channels.",
+									"Review and approve proposals surfaced from your monitored meeting transcripts, Teams, and Slack channels, and from recurring errors.",
 							};
 	const HeaderIcon = isBacklogView
 		? ArchiveIcon
@@ -1702,6 +1720,11 @@ export function PendingBacklogProposalsInbox({
 						)}
 					</div>
 				)}
+
+				<RecurringErrorSourcePanel
+					source={detail.source}
+					sourceMetadata={metadata}
+				/>
 
 				{isFailed && (
 					<div className="rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs space-y-2">

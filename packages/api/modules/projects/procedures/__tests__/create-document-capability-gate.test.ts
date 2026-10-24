@@ -147,7 +147,11 @@ beforeEach(() => {
 	mocks.createDocumentWithContent.mockImplementation(async () => {
 		state.architectureActive = false;
 		return {
-			document: { id: "document_new", type: "ARCHITECTURE" },
+			document: {
+				id: "document_new",
+				type: "ARCHITECTURE",
+				content: "",
+			},
 			context: null,
 			displacedCount: 1,
 		};
@@ -206,7 +210,7 @@ describe("createDocument with AI — pasted source on the default project shape"
 			}),
 		);
 		mocks.createDocumentWithContent.mockResolvedValue({
-			document: { id: "document_new", type: "API_SPEC" },
+			document: { id: "document_new", type: "API_SPEC", content: "" },
 			context: { id: "context_new" },
 			displacedCount: 0,
 		});

@@ -767,6 +767,7 @@ describe("PLAN_POOL_BACKGROUND_JOB_TYPES", () => {
 			"external-agent",
 			"public-api",
 			"security-scan",
+			"recurring-error-scan",
 			"batch-document-generation",
 			"project-setup",
 			"atlas-analysis",

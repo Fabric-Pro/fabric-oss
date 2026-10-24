@@ -3452,6 +3452,43 @@ describe("document style", () => {
 		).toBeNull();
 	});
 
+	it("starts automatic diagrams on, and keeps a stored switch a save leaves out", async () => {
+		seedDocument({ status: "COMPLETE" });
+		const base = {
+			documentId: DOC,
+			projectId: PROJECT,
+			styleDirection: null,
+			primaryColor: null,
+			accentColors: [],
+			updatedById: "user-example",
+		};
+
+		expect((await upsertDocumentStyle(base)).autoVisuals).toBe(true);
+		expect(
+			(await upsertDocumentStyle({ ...base, autoVisuals: false }))
+				.autoVisuals,
+		).toBe(false);
+
+		const kept = await upsertDocumentStyle({
+			...base,
+			primaryColor: "#112233",
+		});
+		expect(kept).toMatchObject({
+			primaryColor: "#112233",
+			autoVisuals: false,
+		});
+		expect(fake.projectDocumentStyle.upsert).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				update: expect.not.objectContaining({
+					autoVisuals: expect.anything(),
+				}),
+			}),
+		);
+		expect(
+			await getDocumentStyle({ documentId: DOC, organizationId: ORG }),
+		).toMatchObject({ autoVisuals: false });
+	});
+
 	it("validates before reading anything", async () => {
 		seedDocument();
 		await expect(

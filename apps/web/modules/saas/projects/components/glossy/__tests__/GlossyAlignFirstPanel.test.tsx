@@ -10,13 +10,14 @@
  * picker starts empty rather than crimson; a failed website fetch
  * leaves manual entry and still allows the build (AE9); a changed recipient
  * brand is saved to the project against the version read before the build
- * starts, and a conflict stops the build; reasons are plain text.
+ * starts, and a conflict stops the build; reasons are plain text; a project
+ * guest editor (the edition's `recipientCanEdit` false, Fizzy #2946) reads
+ * the recipient brand with the reason and builds without saving it.
  *
  * `@tanstack/react-query` is real (the shared recipient fields run their own
  * mutations); the oRPC client is faked. `next-intl` echoes keys with values.
  */
 
-import type { GlossyEdition } from "../../../hooks/use-glossy-edition";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -24,6 +25,7 @@ import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { axe } from "vitest-axe";
 import * as axeMatchers from "vitest-axe/matchers";
+import type { GlossyEdition } from "../../../hooks/use-glossy-edition";
 
 expect.extend(axeMatchers);
 
@@ -557,6 +559,67 @@ describe("GlossyAlignFirstPanel", () => {
 		expect(screen.getByLabelText("website")).toHaveValue(
 			"https://example.com",
 		);
+	});
+
+	// Fizzy #2946: only organization members write the recipient brand. A
+	// project guest with an editor role still builds the edition, but reads
+	// the recipient brand with the reason and saves nothing to it.
+	it("shows a project guest editor the recipient brand read-only and builds without saving it", async () => {
+		const user = userEvent.setup();
+		const { onBuild } = renderPanel({
+			state: {
+				status: "detected",
+				result: detection({
+					recipientWebsiteSuggestions: ["https://example.com"],
+				}),
+			},
+			brand: {
+				recipient: {
+					name: "Example Client",
+					website: "https://example.com",
+					colors: ["#1a73e8"],
+					logoUrl: null,
+					updatedAt: new Date("2026-09-01T10:00:00.000Z"),
+				},
+				recipientVersion: 2,
+				recipientCanEdit: false,
+			},
+		});
+
+		expect(screen.getByLabelText("name")).toBeDisabled();
+		expect(screen.getByLabelText("website")).toBeDisabled();
+		expect(screen.getByText("membersOnly")).toBeInTheDocument();
+		for (const name of ["fetch", "uploadLogo", "removeLogo"]) {
+			expect(
+				screen.queryByRole("button", { name }),
+			).not.toBeInTheDocument();
+		}
+		expect(
+			screen.queryByRole("button", { name: /^useWebsite/ }),
+		).not.toBeInTheDocument();
+
+		await user.click(screen.getByRole("button", { name: "build" }));
+		await waitFor(() => expect(onBuild).toHaveBeenCalledTimes(1));
+		expect(api.update).not.toHaveBeenCalled();
+	});
+
+	it("offers no website suggestions to a guest editor without a recipient brand", () => {
+		renderPanel({
+			state: {
+				status: "detected",
+				result: detection({
+					recipientWebsiteSuggestions: ["https://example.com"],
+				}),
+			},
+			brand: { recipientCanEdit: false },
+		});
+
+		expect(
+			screen.queryByRole("button", {
+				name: "useWebsite(website=https://example.com)",
+			}),
+		).not.toBeInTheDocument();
+		expect(screen.getByText("membersOnly")).toBeInTheDocument();
 	});
 
 	it("says so when detection found nothing, or did not finish, and still builds (R21)", async () => {

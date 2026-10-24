@@ -23,6 +23,7 @@ import {
 } from "@repo/rag/lib/project-contexts/live-integration-context";
 import { preserveVisualSlots } from "@repo/utils/glossy/visual-slots";
 import { normalizeForComparison } from "@repo/utils/normalize-for-comparison";
+import { preserveVisualMarkers } from "@repo/utils/proposal-artifact/visual-identity";
 import { z } from "zod";
 
 /**
@@ -359,9 +360,9 @@ ${formatContextItems(contextItems)}`;
 		// byte-identical to before.
 		const result: ContextUpdateResult = {
 			...object,
-			updatedDocument: preserveVisualSlots(
+			updatedDocument: preserveVisualMarkers(
 				documentMarkdown,
-				object.updatedDocument,
+				preserveVisualSlots(documentMarkdown, object.updatedDocument),
 			),
 		};
 

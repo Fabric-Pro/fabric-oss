@@ -8,6 +8,7 @@
  */
 
 import type { DocumentVersionAuthor } from "@repo/utils/document-version-author";
+import { countDocumentWords } from "@repo/utils/document-word-count";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
@@ -33,6 +34,7 @@ import {
 	stripDiffAdditions,
 	stripDiffDeletions,
 } from "../lib/diff-utils";
+import { withoutDiagramDiffMarks } from "../lib/diff-view-modes";
 import { advancedExtensions } from "../lib/tiptap-extensions-advanced";
 import { VersionAuthorBadge } from "./VersionAuthorBadge";
 import "./DocumentEditor.css";
@@ -141,13 +143,11 @@ export function VersionDiffViewer({
 
 	// Word count stats
 	const currentWords = useMemo(
-		() => currentContent.split(/\s+/).filter((w) => w.length > 0).length,
+		() => countDocumentWords(currentContent),
 		[currentContent],
 	);
 	const versionWords = useMemo(
-		() =>
-			selectedVersion.content.split(/\s+/).filter((w) => w.length > 0)
-				.length,
+		() => countDocumentWords(selectedVersion.content),
 		[selectedVersion.content],
 	);
 	const wordDelta = versionWords - currentWords;
@@ -161,20 +161,26 @@ export function VersionDiffViewer({
 		return diffPartialText(selectedVersion.content, currentContent, true);
 	}, [currentContent, selectedVersion.content, isIdentical]);
 
-	// Left panel (current): strip DEL markers (version-unique text), keep ADD (green)
+	// Left panel (current): strip DEL markers (version-unique text), keep ADD
+	// (green). A diagram drops its marks too, so it draws the current version.
 	const currentDiffHtml = useMemo(() => {
 		if (!sideBySideDiffText) {
 			return fromMarkdown(currentContent);
 		}
-		return fromMarkdown(stripDiffDeletions(sideBySideDiffText));
+		return withoutDiagramDiffMarks(
+			fromMarkdown(stripDiffDeletions(sideBySideDiffText)),
+		);
 	}, [sideBySideDiffText, currentContent]);
 
-	// Right panel (version): strip ADD markers (current-unique text), keep DEL (red)
+	// Right panel (version): strip ADD markers (current-unique text), keep DEL
+	// (red). A diagram drops its marks too, so it draws the older version.
 	const versionDiffHtml = useMemo(() => {
 		if (!sideBySideDiffText) {
 			return fromMarkdown(selectedVersion.content);
 		}
-		return fromMarkdown(stripDiffAdditions(sideBySideDiffText));
+		return withoutDiagramDiffMarks(
+			fromMarkdown(stripDiffAdditions(sideBySideDiffText)),
+		);
 	}, [sideBySideDiffText, selectedVersion.content]);
 
 	// Unified diff editor (read-only)

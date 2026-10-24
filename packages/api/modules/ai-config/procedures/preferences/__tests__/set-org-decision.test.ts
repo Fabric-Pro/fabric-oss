@@ -27,7 +27,8 @@ vi.mock("@repo/database", () => ({
 		mockGetProviderByProvider(...args),
 	getModelByCanonicalName: (...args: unknown[]) => mockGetModel(...args),
 	isGatewayProvider: (provider: string) => provider === "VERCEL_GATEWAY",
-	setOrgModelPreference: (...args: unknown[]) => mockSetPreference(...args),
+	replaceOrgModelPreferenceForTask: (...args: unknown[]) =>
+		mockSetPreference(...args),
 }));
 
 vi.mock("../../../../../orpc/procedures", () => {
@@ -71,6 +72,7 @@ const decisionModel = {
 		{
 			provider: "VERCEL_GATEWAY",
 			providerModelId: "typesafe-ai/jev",
+			isAvailable: true,
 		},
 	],
 };
@@ -120,6 +122,7 @@ describe("set organization decision model preference", () => {
 			organizationId: "org-1",
 			provider: "VERCEL_GATEWAY",
 		});
+		expect(mockDeleteByTask).not.toHaveBeenCalled();
 		expect(mockSetPreference).toHaveBeenCalledWith(
 			expect.objectContaining({
 				organizationId: "org-1",
@@ -149,7 +152,7 @@ describe("set organization decision model preference", () => {
 			}),
 		).rejects.toMatchObject({
 			message:
-				"Decision models require an organization Vercel AI Gateway configuration",
+				"Decision models require an organization Vercel AI Gateway or Databricks configuration",
 		});
 		expect(mockSetPreference).not.toHaveBeenCalled();
 	});
@@ -177,7 +180,7 @@ describe("set organization decision model preference", () => {
 			}),
 		).rejects.toMatchObject({
 			message:
-				"Decision tasks require an evaluation model through Vercel AI Gateway.",
+				"Decision tasks require an available evaluation model through Vercel AI Gateway or Databricks.",
 		});
 		expect(mockSetPreference).not.toHaveBeenCalled();
 	});
@@ -208,6 +211,7 @@ describe("set organization decision model preference", () => {
 			context,
 		});
 
+		expect(mockDeleteByTask).not.toHaveBeenCalled();
 		expect(mockSetPreference).toHaveBeenCalledWith(
 			expect.objectContaining({
 				provider: "OPENAI_DIRECT",
@@ -240,6 +244,7 @@ describe("set organization decision model preference", () => {
 			context,
 		});
 
+		expect(mockDeleteByTask).not.toHaveBeenCalled();
 		expect(mockSetPreference).toHaveBeenCalledWith(
 			expect.objectContaining({
 				organizationId: "org-1",
@@ -274,7 +279,7 @@ describe("set organization decision model preference", () => {
 			}),
 		).rejects.toMatchObject({
 			message:
-				"Decision models require an organization Vercel AI Gateway configuration",
+				"Decision models require an organization Vercel AI Gateway or Databricks configuration",
 		});
 		expect(mockSetPreference).not.toHaveBeenCalled();
 	});
@@ -350,6 +355,7 @@ it.each(["SIMPLE", "COMPLEX", "REASONING", "CHAT", "TOOL_CALLING", "EVAL"])(
 			},
 			context,
 		});
+		expect(mockDeleteByTask).not.toHaveBeenCalled();
 		expect(mockSetPreference).toHaveBeenCalledWith(
 			expect.objectContaining({ provider: "OPENAI_DIRECT", taskType }),
 		);
@@ -367,6 +373,7 @@ it.each(["SIMPLE", "COMPLEX", "REASONING", "CHAT", "TOOL_CALLING", "EVAL"])(
 			},
 			context,
 		});
+		expect(mockDeleteByTask).not.toHaveBeenCalled();
 		expect(mockSetPreference).toHaveBeenCalledWith(
 			expect.objectContaining({
 				provider: "VERCEL_GATEWAY",
@@ -429,6 +436,7 @@ it("saves text against the organization default when the caller's fallback provi
 		},
 		context,
 	});
+	expect(mockDeleteByTask).not.toHaveBeenCalled();
 	expect(mockSetPreference).toHaveBeenCalledWith(
 		expect.objectContaining({
 			organizationId: "example-org",
@@ -485,5 +493,168 @@ it("refuses IMAGE when the organization gateway lacks a usable key", async () =>
 		}),
 	).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 	expect(mockDeleteByTask).not.toHaveBeenCalled();
+	expect(mockSetPreference).not.toHaveBeenCalled();
+});
+
+const openjevModel = {
+	...decisionModel,
+	id: "model-openjev",
+	canonicalName: "openjev-qwen35-4b",
+	providerMappings: [
+		{
+			provider: "DATABRICKS",
+			providerModelId: "system.ai.openjev-qwen35-4b",
+			isAvailable: true,
+		},
+	],
+};
+const databricksConfig = {
+	provider: "DATABRICKS",
+	source: "organization",
+	apiKey: "example-token",
+	baseUrl: "https://example.cloud.databricks.com",
+};
+const openjevInput = {
+	organizationId: "example-org",
+	taskType: "DECISION",
+	modelCanonicalName: "openjev-qwen35-4b",
+	overrideProvider: "DATABRICKS",
+};
+describe("Databricks decision settings", () => {
+	beforeEach(() => {
+		mockGetModel.mockResolvedValue(openjevModel);
+		mockGetProviderByProvider.mockResolvedValue(databricksConfig);
+	});
+	it.each([false, true])(
+		"saves OpenJev with organization credentials (OAuth=%s)",
+		async (oauth) => {
+			if (oauth) {
+				mockGetProviderByProvider.mockResolvedValue({
+					...databricksConfig,
+					apiKey: null,
+					clientId: "example-client",
+					encryptedClientSecret: "encrypted:example-secret",
+				});
+			}
+			await setPreference._handler({ input: openjevInput, context });
+			expect(mockDeleteByTask).not.toHaveBeenCalled();
+			expect(mockSetPreference).toHaveBeenCalledWith(
+				expect.objectContaining({
+					organizationId: "example-org",
+					provider: "DATABRICKS",
+					modelId: "model-openjev",
+				}),
+			);
+		},
+	);
+	it.each([
+		["personal", { ...databricksConfig, source: "user" }],
+		["missing", { provider: null, source: null, apiKey: null }],
+		["wrong provider", { ...databricksConfig, provider: "VERCEL_GATEWAY" }],
+		["credentials missing", { ...databricksConfig, apiKey: null }],
+		["workspace missing", { ...databricksConfig, baseUrl: null }],
+	])("refuses %s Databricks configuration", async (_label, config) => {
+		mockGetProviderByProvider.mockResolvedValue(config);
+		await expect(
+			setPreference._handler({ input: openjevInput, context }),
+		).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+		expect(mockSetPreference).not.toHaveBeenCalled();
+		expect(mockDeleteByTask).not.toHaveBeenCalled();
+	});
+	it.each([
+		[
+			"unavailable mapping",
+			{
+				...openjevModel,
+				providerMappings: [
+					{ ...openjevModel.providerMappings[0], isAvailable: false },
+				],
+			},
+		],
+		["missing mapping", { ...openjevModel, providerMappings: [] }],
+		[
+			"wrong provider mapping",
+			{
+				...openjevModel,
+				providerMappings: decisionModel.providerMappings,
+			},
+		],
+		[
+			"empty mapping id",
+			{
+				...openjevModel,
+				providerMappings: [
+					{
+						...openjevModel.providerMappings[0],
+						providerModelId: "",
+					},
+				],
+			},
+		],
+		["missing evaluation", { ...openjevModel, capabilities: [] }],
+		["wrong task", { ...openjevModel, suitableForTasks: ["CHAT"] }],
+	])("refuses a model with %s", async (_label, model) => {
+		mockGetModel.mockResolvedValue(model);
+		await expect(
+			setPreference._handler({ input: openjevInput, context }),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message:
+				"Decision tasks require an available evaluation model through Vercel AI Gateway or Databricks.",
+		});
+		expect(mockSetPreference).not.toHaveBeenCalled();
+	});
+	it.each(["VERCEL_GATEWAY", "DATABRICKS"])(
+		"stores Disabled on the gateway for a Databricks-only organization (override=%s)",
+		async (overrideProvider) => {
+			mockOrganizationDefault.mockResolvedValue(null);
+			mockGetProviderByProvider.mockImplementation(
+				async ({ provider }) =>
+					provider === "DATABRICKS"
+						? {
+								...databricksConfig,
+								apiKey: null,
+								clientId: "example-client",
+								encryptedClientSecret:
+									"encrypted:example-secret",
+							}
+						: { provider: null, source: null, apiKey: null },
+			);
+			await setPreference._handler({
+				input: {
+					...openjevInput,
+					overrideProvider,
+					modelCanonicalName: null,
+				},
+				context,
+			});
+			expect(mockDeleteByTask).not.toHaveBeenCalled();
+			expect(mockSetPreference).toHaveBeenCalledWith(
+				expect.objectContaining({
+					provider: "VERCEL_GATEWAY",
+					modelId: null,
+				}),
+			);
+		},
+	);
+	it("keeps IMAGE restricted to the gateway", async () => {
+		await expect(
+			setPreference._handler({
+				input: { ...openjevInput, taskType: "IMAGE" },
+				context,
+			}),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+		expect(mockSetPreference).not.toHaveBeenCalled();
+	});
+});
+
+it("rejects an unsupported decision provider before reading credentials", async () => {
+	await expect(
+		setPreference._handler({
+			input: { ...openjevInput, overrideProvider: "OPENAI_DIRECT" },
+			context,
+		}),
+	).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+	expect(mockGetProviderByProvider).not.toHaveBeenCalled();
 	expect(mockSetPreference).not.toHaveBeenCalled();
 });

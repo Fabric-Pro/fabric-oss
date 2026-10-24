@@ -21,14 +21,15 @@
  */
 
 import { type AgentCapability, globalAgentRegistry } from "@repo/agent-core";
+import { guardToolsAgainstRepeatedCalls } from "@repo/agent-types/repeated-tool-call-guard";
 import { getAIModelWithMetadata } from "@repo/ai";
 import { db } from "@repo/database";
 import { generateText, isStepCount, type ModelMessage, tool } from "ai";
 import { z } from "zod";
 import {
 	type SecondaryUsageInput,
-	type UsageOrigin,
 	secondaryUsageFields,
+	type UsageOrigin,
 } from "../../workflows/orchestrator/usage-attribution";
 import { loadMcpToolsForAgent } from "../agent-execution-core";
 import {
@@ -565,6 +566,14 @@ async function buildSubAgentTools(
 		toolSources = toolToConfig;
 	}
 
+	guardToolsAgainstRepeatedCalls(tools, {
+		onRepeat: (toolName, count) => {
+			console.warn("Sub-agent tool returned a repeated result", {
+				toolName,
+				count,
+			});
+		},
+	});
 	await prepareAgentTools(tools, toolSources);
 	return tools;
 }

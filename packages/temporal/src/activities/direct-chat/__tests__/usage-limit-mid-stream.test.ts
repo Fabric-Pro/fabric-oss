@@ -28,6 +28,8 @@ const state = vi.hoisted(() => ({
 	resolutionError: undefined as Error | undefined,
 	conversionError: undefined as Error | undefined,
 	streamErrorAfterStep: undefined as Error | undefined,
+	toolErrorBeforeStreamFailure: undefined as Error | undefined,
+	streamErrorPartBeforeThrow: undefined as Error | undefined,
 	builtInTools: {} as Record<string, unknown>,
 	recordAggregateUsage: vi.fn(),
 }));
@@ -88,6 +90,21 @@ vi.mock("@repo/ai", async () => {
 			return {
 				stream: (async function* () {
 					yield { type: "start-step" };
+					if (state.toolErrorBeforeStreamFailure) {
+						yield {
+							type: "tool-error",
+							toolCallId: "example-tool",
+							toolName: "lookup",
+							input: {},
+							error: state.toolErrorBeforeStreamFailure,
+						};
+					}
+					if (state.streamErrorPartBeforeThrow) {
+						yield {
+							type: "error",
+							error: state.streamErrorPartBeforeThrow,
+						};
+					}
 					yield {
 						type: "finish-step",
 						usage: {
@@ -163,7 +180,7 @@ vi.mock("../../shared/read-only-gate", () => ({
 }));
 
 import { wrapModelWithUsageLimits } from "@repo/ai/lib/usage-limit-middleware";
-import { APICallError, RetryError, tool } from "ai";
+import { APICallError, NoOutputGeneratedError, RetryError, tool } from "ai";
 import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 import { z } from "zod";
 import { executeDirectChatActivity } from "../ai-execution";
@@ -209,10 +226,10 @@ function firstStep(text: string | null) {
 	};
 }
 
-function limitError() {
+function limitError(limitId = "limit-1") {
 	return new AiUsageLimitExceededError({
-		message: "AI usage limit exceeded: limit-1 (TOKENS, MONTHLY)",
-		limitId: "limit-1",
+		message: `AI usage limit exceeded: ${limitId} (TOKENS, MONTHLY)`,
+		limitId,
 		dimension: "TOKENS" as never,
 		window: "MONTHLY" as never,
 		used: BigInt(100),
@@ -273,6 +290,8 @@ beforeEach(() => {
 	state.resolutionError = undefined;
 	state.conversionError = undefined;
 	state.streamErrorAfterStep = undefined;
+	state.toolErrorBeforeStreamFailure = undefined;
+	state.streamErrorPartBeforeThrow = undefined;
 	state.recordAggregateUsage.mockReset();
 	state.builtInTools = {
 		lookup: tool({
@@ -544,6 +563,199 @@ describe("direct chat — provider error after Anthropic message_start", () => {
 				cacheCreationInputTokens: 20,
 			});
 			expect(row.steps).toHaveLength(completedFirstStep ? 2 : 1);
+		},
+	);
+});
+
+describe("direct chat — COMPLEX tool refusal while CHAT succeeds", () => {
+	it.each([
+		[false, true],
+		[true, true],
+		[false, false],
+		[true, false],
+	])(
+		"reports the tool limit (wrapped: %s, CHAT answers: %s)",
+		async (wrapped, answers) => {
+			const refusal = limitError();
+			const complexModel = wrapModelWithUsageLimits(
+				new MockLanguageModelV4() as unknown as LanguageModel,
+				async () => {
+					throw refusal;
+				},
+			);
+			state.builtInTools = {
+				lookup: tool({
+					inputSchema: z.object({}),
+					execute: async () => {
+						try {
+							await (await import("ai")).generateText({
+								model: complexModel,
+								prompt: "Generate a frame",
+							});
+						} catch (error) {
+							throw wrapped
+								? new RetryError({
+										message: "Retry refused",
+										reason: "errorNotRetryable",
+										errors: [error],
+									})
+								: error;
+						}
+					},
+				}),
+			};
+			let step = 0;
+			const provider = new MockLanguageModelV4({
+				doStream: async () => {
+					if (step++ === 0) {
+						return firstStep(null);
+					}
+					if (!answers) {
+						return {
+							stream: simulateReadableStream({
+								chunks: [
+									{
+										type: "stream-start" as const,
+										warnings: [],
+									},
+									{
+										type: "error" as const,
+										error: new Error("CHAT stream failed"),
+									},
+								],
+							}),
+						};
+					}
+					return {
+						stream: simulateReadableStream({
+							chunks: [
+								{ type: "stream-start" as const, warnings: [] },
+								{ type: "text-start" as const, id: "answer" },
+								{
+									type: "text-delta" as const,
+									id: "answer",
+									delta: "The frame could not be generated.",
+								},
+								{ type: "text-end" as const, id: "answer" },
+								{
+									type: "finish" as const,
+									finishReason: {
+										unified: "stop" as const,
+										raw: undefined,
+									},
+									usage: USAGE,
+								},
+							],
+						}),
+					};
+				},
+			});
+			state.model = provider;
+			const result = await runTurn();
+			expect(provider.doStreamCalls).toHaveLength(2);
+			if (answers) {
+				expect(result).toMatchObject({
+					success: true,
+					responseText: "The frame could not be generated.",
+					partialError: refusal.message,
+					usageLimit: { limitId: "limit-1" },
+					toolCalls: [{ status: "error" }],
+				});
+			} else {
+				expect(result).toMatchObject({
+					success: false,
+					error: expect.stringContaining("CHAT stream failed"),
+					usageLimit: { limitId: "limit-1" },
+				});
+			}
+		},
+	);
+});
+
+describe("CHAT error precedence after a tool usage refusal", () => {
+	it.each([
+		[false, false],
+		[false, true],
+		[true, false],
+		[true, true],
+	])(
+		"preserves the CHAT stream failure (CHAT limit: %s, partial text: %s)",
+		async (chatLimit, partialText) => {
+			const toolRefusal = limitError("example-tool-limit");
+			const chatError = chatLimit
+				? limitError("example-chat-limit")
+				: new Error("Example CHAT provider failure");
+			state.builtInTools = {
+				lookup: tool({
+					inputSchema: z.object({}),
+					execute: async (): Promise<unknown> => {
+						throw toolRefusal;
+					},
+				}),
+			};
+			let step = 0;
+			state.model = new MockLanguageModelV4({
+				doStream: async () => {
+					if (step++ === 0) {
+						return firstStep(
+							partialText ? "Partial CHAT answer." : null,
+						);
+					}
+					return {
+						stream: simulateReadableStream({
+							chunks: [
+								{ type: "stream-start", warnings: [] },
+								{ type: "error", error: chatError },
+							],
+						}),
+					};
+				},
+			});
+			const result = await runTurn();
+			expect(result.usageLimit?.limitId).toBe(
+				chatLimit ? "example-chat-limit" : "example-tool-limit",
+			);
+			if (partialText) {
+				expect(result).toMatchObject({
+					success: true,
+					responseText: "Partial CHAT answer.",
+					partialError: chatError.message,
+				});
+			} else {
+				expect(result).toMatchObject({
+					success: false,
+					error: expect.stringContaining(chatError.message),
+				});
+			}
+		},
+	);
+	it.each([
+		[false, false],
+		[true, false],
+		[false, true],
+		[true, true],
+	])(
+		"preserves a thrown CHAT failure in the catch path (CHAT limit: %s, no-output envelope: %s)",
+		async (chatLimit, envelope) => {
+			const chatError = chatLimit
+				? limitError("example-chat-limit")
+				: new Error("Example CHAT iterator failure");
+			state.toolErrorBeforeStreamFailure =
+				limitError("example-tool-limit");
+			state.streamErrorPartBeforeThrow = envelope ? chatError : undefined;
+			state.streamErrorAfterStep = envelope
+				? new NoOutputGeneratedError()
+				: chatError;
+			const result = await runTurn();
+			expect(result).toMatchObject({
+				success: false,
+				error: chatError.message,
+				usageLimit: {
+					limitId: chatLimit
+						? "example-chat-limit"
+						: "example-tool-limit",
+				},
+			});
 		},
 	);
 });

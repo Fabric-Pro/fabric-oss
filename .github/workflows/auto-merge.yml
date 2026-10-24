@@ -1,0 +1,169 @@
+# Opt-in auto-merge for pull requests into staging.
+#
+# When a listed author opens a pull request into staging, this workflow arms
+# GitHub's native auto-merge (squash, pinned to the current head). GitHub then
+# merges it once every required check passes and every conversation is
+# resolved, exactly as if someone had pressed "Enable auto-merge".
+#
+# Settings (Settings > Secrets and variables > Actions > Variables):
+#   AUTO_MERGE_ENABLED  The global toggle. 'true' turns auto-merge on; any
+#                       other value, or no variable, turns it off.
+#   AUTO_MERGE_AUTHORS  GitHub logins whose pull requests are auto-merged,
+#                       separated by commas and/or whitespace and compared
+#                       case-insensitively, e.g. "example-user, other-user".
+#                       Bot accounts are skipped unless listed by full login
+#                       (e.g. "example-app[bot]").
+# Per pull request: adding the `no-auto-merge` label disarms auto-merge;
+# removing it re-arms it when the pull request is otherwise eligible.
+#
+# Turning the toggle off, or removing an author, stops new arming but does
+# not disarm pull requests that are already armed. Disarm those with the
+# label or the "Disable auto-merge" button.
+#
+# Credentials (environment `auto-merge`): AUTO_MERGE_APP_ID and
+# AUTO_MERGE_APP_PRIVATE_KEY, a GitHub App installed on this repository with
+# Contents, Pull requests and Workflows read/write. Without them the job
+# only warns.
+#
+# Why a GitHub App and never GITHUB_TOKEN: GitHub performs the eventual merge
+# as whoever armed auto-merge, and "events triggered by the GITHUB_TOKEN will
+# not create a new workflow run" (workflow_dispatch and repository_dispatch
+# excepted):
+# https://docs.github.com/en/actions/concepts/security/github_token
+# A merge armed with GITHUB_TOKEN would push to staging without starting
+# Private Staging Images, so staging would silently never deploy. A missing
+# App credential therefore stops this job; it never falls back.
+#
+# Why pull_request_target: the workflow definition and GITHUB_SHA come from
+# the default branch, not from the pull request, so a pull request cannot
+# rewrite this file to obtain the App token:
+# https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request_target
+# Nothing here checks out, builds or executes pull request content; the only
+# checkout is the eligibility script at GITHUB_SHA.
+#
+# The repository guard keeps this workflow inert in any other repository the
+# tree is mirrored to.
+name: Auto-merge
+
+on:
+  pull_request_target:
+    # `edited` matters only for a base-branch change (filtered below); GitHub
+    # disarms auto-merge itself when the base changes.
+    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled, edited]
+    branches: [staging]
+
+permissions: {}
+
+jobs:
+  arm:
+    name: Arm auto-merge
+    if: >-
+      github.repository == 'Fabric-Pro/fabric-dev' &&
+      github.event.pull_request.base.ref == 'staging' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.draft == false &&
+      vars.AUTO_MERGE_ENABLED == 'true' &&
+      ((github.event.action != 'labeled' && github.event.action != 'unlabeled') ||
+       github.event.label.name == 'no-auto-merge') &&
+      (github.event.action != 'edited' || github.event.changes.base != null)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    environment: auto-merge
+    # Job-level, so an event the `if` skips never cancels a live run. Every run
+    # re-reads the live pull request, so the newest one alone is correct.
+    concurrency:
+      group: auto-merge-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    # GITHUB_TOKEN only reads the eligibility script; the App token writes.
+    permissions:
+      contents: read
+    steps:
+      - name: Check the App credentials
+        id: credentials
+        env:
+          APP_ID: ${{ secrets.AUTO_MERGE_APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.AUTO_MERGE_APP_PRIVATE_KEY }}
+        run: |
+          if [[ -n "$APP_ID" && -n "$APP_PRIVATE_KEY" ]]; then
+            echo "present=true" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          MESSAGE="AUTO_MERGE_ENABLED is on, but the auto-merge environment has no AUTO_MERGE_APP_ID / AUTO_MERGE_APP_PRIVATE_KEY. Auto-merge was not armed; it never falls back to GITHUB_TOKEN, whose merges do not start the staging image build."
+          echo "::warning title=Auto-merge not configured::$MESSAGE"
+          echo "$MESSAGE" >>"$GITHUB_STEP_SUMMARY"
+          echo "present=false" >>"$GITHUB_OUTPUT"
+
+      - name: Check out the trusted eligibility script
+        if: steps.credentials.outputs.present == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts/auto-merge
+
+      # Workflows: write, because GitHub refuses an App-authored commit that
+      # changes .github/workflows without it, and the squash merge is one.
+      - name: Mint the auto-merge App token
+        id: app-token
+        if: steps.credentials.outputs.present == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ secrets.AUTO_MERGE_APP_ID }}
+          private-key: ${{ secrets.AUTO_MERGE_APP_PRIVATE_KEY }}
+          owner: Fabric-Pro
+          repositories: fabric-dev
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+
+      - name: Decide from the live pull request
+        id: decide
+        if: steps.credentials.outputs.present == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_ACTION: ${{ github.event.action }}
+          AUTO_MERGE_ENABLED: ${{ vars.AUTO_MERGE_ENABLED }}
+          AUTO_MERGE_AUTHORS: ${{ vars.AUTO_MERGE_AUTHORS }}
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] \
+            || { echo "::error::GitHub supplied an invalid pull request number"; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" >"$RUNNER_TEMP/pull-request.json"
+          PULL_REQUEST_JSON="$RUNNER_TEMP/pull-request.json" node .github/scripts/auto-merge/eligible.mjs
+
+      # --match-head-commit makes GitHub reject the call if the head moved
+      # after it was read; the newer push's own run then arms the new head.
+      # gh merges at once instead of arming when the pull request is already
+      # mergeable, which is still a merge by the App.
+      - name: Apply the decision
+        if: >-
+          steps.credentials.outputs.present == 'true' &&
+          steps.decide.outputs.action != 'none'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          ACTION: ${{ steps.decide.outputs.action }}
+          HEAD_SHA: ${{ steps.decide.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          : "${GH_TOKEN:?the auto-merge App token was not minted}"
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] \
+            || { echo "::error::invalid head SHA from the decision step"; exit 1; }
+          case "$ACTION" in
+            enable)
+              gh pr merge "$PR_NUMBER" --auto --squash --match-head-commit "$HEAD_SHA"
+              ;;
+            rearm)
+              gh pr merge "$PR_NUMBER" --disable-auto
+              gh pr merge "$PR_NUMBER" --auto --squash --match-head-commit "$HEAD_SHA"
+              ;;
+            disable)
+              gh pr merge "$PR_NUMBER" --disable-auto
+              ;;
+            *)
+              echo "::error::unknown auto-merge decision '$ACTION'"
+              exit 1
+              ;;
+          esac

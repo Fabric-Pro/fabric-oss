@@ -1249,6 +1249,81 @@ describe("listWorkItemsFromPM: availableWorkItemTypes + availableStates", () => 
 	);
 
 	it.each([
+		...[
+			{
+				label: "cursor next token",
+				style: "cursor",
+				envelope: {
+					issues: [{ id: "example-issue", title: "Example issue" }],
+					nextPageToken: "example-next",
+				},
+				complete: false,
+			},
+			{
+				label: "cursor last page",
+				style: "cursor",
+				envelope: {
+					issues: [{ id: "example-issue", title: "Example issue" }],
+					isLast: true,
+				},
+				complete: true,
+			},
+			{
+				label: "cursor without end evidence",
+				style: "cursor",
+				envelope: {
+					issues: [{ id: "example-issue", title: "Example issue" }],
+				},
+				complete: false,
+			},
+			{
+				label: "unpaged plain array",
+				style: "none",
+				envelope: [{ id: "example-issue", title: "Example issue" }],
+				complete: true,
+			},
+			{
+				label: "unpaged has_more",
+				style: "none",
+				envelope: {
+					issues: [{ id: "example-issue", title: "Example issue" }],
+					has_more: true,
+				},
+				complete: false,
+			},
+			{
+				label: "cursor raw total includes filtered rows",
+				style: "cursor",
+				envelope: {
+					issues: [
+						{ id: "example-issue", title: "Example issue" },
+						null,
+					],
+					total: 2,
+				},
+				complete: true,
+			},
+		],
+		{
+			label: "cursor end marker contradicted by total",
+			style: "cursor",
+			envelope: {
+				issues: [{ id: "example-issue", title: "Example issue" }],
+				pageInfo: { hasNextPage: false },
+				totalCount: 120,
+			},
+			complete: false,
+		},
+		{
+			label: "cursor total contradicted by continuation",
+			style: "cursor",
+			envelope: {
+				issues: [{ id: "example-issue", title: "Example issue" }],
+				has_more: true,
+				totalCount: 1,
+			},
+			complete: false,
+		},
 		{
 			label: "cursor total exceeds page",
 			style: "cursor",
@@ -1355,6 +1430,101 @@ describe("listWorkItemsFromPM: availableWorkItemTypes + availableStates", () => 
 			}
 		},
 	);
+	it.each([true, false])(
+		"surfaces offset continuation evidence: %s",
+		async (hasMore) => {
+			setupToolsMock({
+				github_list_issues: {
+					description: "List issues",
+					inputSchema: {
+						type: "object",
+						properties: {
+							project: { type: "string" },
+							skip: { type: "number" },
+							limit: { type: "number" },
+						},
+						required: ["project"],
+					},
+				},
+			});
+			vi.mocked(executeMcpTool).mockResolvedValue({
+				success: true,
+				output: wrapMcpJson({
+					issues: [{ id: "example-issue", title: "Example issue" }],
+					has_more: hasMore,
+				}),
+				durationMs: 10,
+			});
+			const result = await listWorkItemsFromPM({
+				mcpConfigId: "example-config",
+				containerId: "example-project",
+				userId: "example-user",
+			});
+			expect(result.hasMore).toBe(hasMore);
+		},
+	);
+
+	it("advances skip by raw rows received with a capped page size", async () => {
+		setupToolsMock({
+			github_list_issues: {
+				description: "List issues",
+				inputSchema: {
+					type: "object",
+					properties: {
+						project: { type: "string" },
+						skip: { type: "number" },
+						limit: { type: "number" },
+					},
+					required: ["project"],
+				},
+			},
+		});
+		vi.mocked(executeMcpTool)
+			.mockResolvedValueOnce({
+				success: true,
+				output: wrapMcpJson({
+					issues: [
+						{ id: "example-first", title: "Example first" },
+						null,
+					],
+					total: 3,
+				}),
+				durationMs: 10,
+			})
+			.mockResolvedValueOnce({
+				success: true,
+				output: wrapMcpJson({
+					issues: [{ id: "example-last", title: "Example last" }],
+					total: 3,
+				}),
+				durationMs: 10,
+			});
+		const input = {
+			mcpConfigId: "example-config",
+			containerId: "example-project",
+			userId: "example-user",
+			pageSize: 50,
+		};
+		const first = await listWorkItemsFromPM({
+			...input,
+			page: 1,
+			offset: 0,
+		});
+		const second = await listWorkItemsFromPM({
+			...input,
+			page: 2,
+			offset: first.rawCount ?? 2,
+		});
+		expect(executeMcpTool).toHaveBeenNthCalledWith(
+			2,
+			expect.objectContaining({
+				args: expect.objectContaining({ skip: 2, limit: 50 }),
+			}),
+		);
+		expect(first.rawCount).toBe(2);
+		expect(second.hasNextPage).toBe(false);
+	});
+
 	it("uses supplied capabilities without rediscovering them", async () => {
 		const capabilities = {
 			hasPMCapabilities: true,

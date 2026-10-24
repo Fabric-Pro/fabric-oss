@@ -7,6 +7,8 @@
  * - slackMentionHandlerWorkflow
  */
 
+import { guardToolsAgainstRepeatedCalls } from "@repo/agent-types/repeated-tool-call-guard";
+import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import { runWithDefaultAiJobType } from "@repo/ai/lib/job-context";
 import {
 	db,
@@ -18,8 +20,10 @@ import { channelRegistry } from "@repo/integrations";
 import { sendSlackMessage } from "@repo/integrations/slack";
 import { decryptApiKey } from "@repo/utils";
 import { heartbeat } from "@temporalio/activity";
+import type { DirectChatUsageLimitRefusal } from "../../types";
 import type { TriggerEvent } from "../../workflows/trigger-system/types";
 import { makeToolLoopPrepareStep } from "../agentic-loop/step-cache-breakpoint";
+import { toUsageLimitRefusal } from "../direct-chat/usage-limit-refusal";
 
 // =============================================================================
 // Types
@@ -263,6 +267,7 @@ async function invokeAgentInJob({
 	response: string;
 	executionId?: string;
 	error?: string;
+	usageLimit?: DirectChatUsageLimitRefusal;
 	/**
 	 * The agent's bound project (toolConnections["project-context"]), surfaced
 	 * so the calling workflow can thread it into reply activities for the
@@ -426,6 +431,14 @@ async function invokeAgentInJob({
 
 		const systemPrompt = parts.join("\n\n");
 
+		guardToolsAgainstRepeatedCalls(tools, {
+			onRepeat: (toolName, count) => {
+				console.warn("Trigger agent tool returned a repeated result", {
+					toolName,
+					count,
+				});
+			},
+		});
 		const toolNames = Object.keys(tools);
 
 		// Build messages array with conversation history
@@ -492,12 +505,16 @@ async function invokeAgentInJob({
 		};
 	} catch (error) {
 		console.error("[TriggerSystem] Agent invocation failed:", error);
+		const usageLimitError = findAiUsageLimitError(error);
 		return {
 			success: false,
 			response: "",
 			executionId,
 			error: error instanceof Error ? error.message : "Unknown error",
 			projectId: boundProjectId,
+			...(usageLimitError
+				? { usageLimit: toUsageLimitRefusal(usageLimitError) }
+				: {}),
 		};
 	}
 }

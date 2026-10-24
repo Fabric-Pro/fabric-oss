@@ -1,6 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { ParlumeTurnEndpoint } from "./parlume-turn-endpoint.ts";
+import {
+	isIncompleteParlumeDictation,
+	ParlumeTurnEndpoint,
+} from "./parlume-turn-endpoint.ts";
+
+test("only payload-free chat instructions use the dictation window", () => {
+	for (const text of [
+		"Write in the chat.",
+		"Please post the following in chat:",
+		"Could you please send a message to the meeting chat?",
+	]) {
+		assert.equal(isIncompleteParlumeDictation(text), true, text);
+	}
+	for (const text of [
+		"Write in the chat: Meeting notes will be shared tomorrow.",
+		"Post that summary in the chat.",
+		"Write a message to the chat about the roadmap.",
+		"How do I write in the chat?",
+		"What is the project status?",
+	]) {
+		assert.equal(isIncompleteParlumeDictation(text), false, text);
+	}
+});
 
 interface Turn {
 	text: string;

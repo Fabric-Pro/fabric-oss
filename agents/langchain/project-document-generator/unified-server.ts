@@ -396,7 +396,7 @@ const { app, start } = createUnifiedServer(
 		supportsStreaming: true, // Enable streaming for CopilotKit
 	},
 	// Invoke function - wraps the LangGraph graph
-	async (input) => {
+	async (input, runtimeConfig) => {
 		const rawMessages = input.messages as Array<Record<string, unknown>>;
 		// Normalize messages from CopilotKit format to LangChain format
 		const messages = normalizeMessages(rawMessages);
@@ -530,6 +530,8 @@ const { app, start } = createUnifiedServer(
 			(copilotKitState?.systemPrompt as string) ||
 			(input.systemPrompt as string) ||
 			undefined;
+		const suppressFabricMethodology =
+			copilotKitState?.suppressFabricMethodology === true;
 
 		// Extract current document for editing/regeneration context
 		// PRIORITY: state > readable context > direct input
@@ -659,6 +661,7 @@ const { app, start } = createUnifiedServer(
 				} as ProjectContext,
 				ragContexts: ragContexts,
 				systemPrompt, // Pass custom system prompt from Temporal workflow or Prompt Library
+				suppressFabricMethodology,
 				document: currentDocument, // Pass current document for regeneration context
 				copilotkit, // Pass CopilotKit state (frontend actions) to the graph
 				// Teams integration state for server-side tool execution
@@ -691,6 +694,7 @@ const { app, start } = createUnifiedServer(
 			},
 			// Pass AI config in configurable so graph nodes can access it
 			{
+				signal: runtimeConfig?.signal,
 				recursionLimit: DEFAULT_RECURSION_LIMIT,
 				...(Object.keys(configurable).length > 0
 					? { configurable }
@@ -913,6 +917,8 @@ const { app, start } = createUnifiedServer(
 			(copilotKitState?.systemPrompt as string) ||
 			(input.systemPrompt as string) ||
 			undefined;
+		const suppressFabricMethodology =
+			copilotKitState?.suppressFabricMethodology === true;
 
 		// Extract current document for editing/regeneration context
 		// PRIORITY: state > readable context > direct input
@@ -1032,6 +1038,7 @@ const { app, start } = createUnifiedServer(
 				} as ProjectContext,
 				ragContexts: ragContexts,
 				systemPrompt, // Pass custom system prompt from Temporal workflow or Prompt Library
+				suppressFabricMethodology,
 				document: currentDocument, // Pass current document for regeneration context
 				copilotkit, // Pass CopilotKit state (frontend actions) to the graph
 				// Teams integration state for server-side tool execution
@@ -1086,6 +1093,7 @@ const { app, start } = createUnifiedServer(
 			},
 			{
 				// Use both "updates" and "messages" to get node updates AND LLM token streaming
+				signal: config?.signal,
 				streamMode: ["updates", "messages"] as const,
 				// Pass AI provider configuration from CopilotKit
 				configurable: config?.configurable,

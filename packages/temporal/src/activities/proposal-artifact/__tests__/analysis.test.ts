@@ -1088,37 +1088,25 @@ describe("runProposalAnalysis", () => {
 				            "type": "string",
 				          },
 				          "recommendation": {
-				            "anyOf": [
-				              {
-				                "type": "string",
-				              },
-				              {
-				                "type": "null",
-				              },
-				            ],
 				            "description": "What the team should change; null when nothing.",
+				            "type": [
+				              "string",
+				              "null",
+				            ],
 				          },
 				          "sectionHeading": {
-				            "anyOf": [
-				              {
-				                "type": "string",
-				              },
-				              {
-				                "type": "null",
-				              },
-				            ],
 				            "description": "The heading of the proposal section the finding concerns, exactly as written; null when none.",
+				            "type": [
+				              "string",
+				              "null",
+				            ],
 				          },
 				          "sectionIndex": {
-				            "anyOf": [
-				              {
-				                "type": "number",
-				              },
-				              {
-				                "type": "null",
-				              },
-				            ],
 				            "description": "The number of the proposal section the finding concerns, from the numbered list of the proposal's sections; null when it concerns the whole proposal.",
+				            "type": [
+				              "number",
+				              "null",
+				            ],
 				          },
 				          "severity": {
 				            "description": "How much the finding matters before sending.",
@@ -1144,15 +1132,11 @@ describe("runProposalAnalysis", () => {
 				            "description": "The numbers N of the outer '### Source N' blocks of the source material that support the finding; empty or null when none.",
 				          },
 				          "subject": {
-				            "anyOf": [
-				              {
-				                "type": "string",
-				              },
-				              {
-				                "type": "null",
-				              },
-				            ],
 				            "description": "A short noun phrase naming what the finding is about, the same phrase whenever the same issue comes up however it is worded; null when none.",
+				            "type": [
+				              "string",
+				              "null",
+				            ],
 				          },
 				          "title": {
 				            "description": "One short line naming the issue.",

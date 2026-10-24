@@ -245,6 +245,41 @@ describe("detectGlossyOpportunities", () => {
 		expect(mocks.trackUsage).toHaveBeenCalledOnce();
 	});
 
+	it("adds audience guidance and the appendix attribute only for a Proposal's visuals step (Fizzy #2946)", async () => {
+		modelReturns([]);
+		modelReturns([]);
+		const input = {
+			...context,
+			documentType: "PROPOSAL",
+			sections: [
+				{
+					sectionKey: "key-0",
+					heading: "Phases",
+					markdown: "Two phases.",
+				},
+				{
+					sectionKey: "key-1",
+					heading: "Appendix A",
+					markdown: "The gateway calls the service.",
+					appendix: true,
+				},
+			],
+		};
+
+		await detectGlossyOpportunities(input);
+		await detectGlossyOpportunities({ ...input, proposalArtifact: true });
+
+		const [glossy, proposal] = mocks.generateObject.mock.calls.map(
+			([call]) => call,
+		);
+		expect(glossy.instructions).not.toContain("## Audience");
+		expect(proposal.instructions).toContain("## Audience");
+		expect(proposal.prompt).toContain(
+			'<glossy_section ref="sec-2" appendix="true">',
+		);
+		expect(proposal.prompt).toContain('<glossy_section ref="sec-1">');
+	});
+
 	it("degrades to no opportunities when the response is truncated", async () => {
 		mocks.generateObject.mockRejectedValueOnce(noObjectError("length"));
 

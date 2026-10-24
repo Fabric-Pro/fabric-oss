@@ -401,7 +401,7 @@ export function normalizeChange(raw: any, forbidEpics = false): ChangeItem {
 }
 
 export type ApplyResult = {
-	status: "success" | "failed";
+	status: "success" | "failed" | "unconfirmed";
 	createdCount: number;
 	updatedCount: number;
 	// `failedCount` + `batchTotal` are populated by BacklogChat from the
@@ -1458,9 +1458,12 @@ export function BacklogChangeProposal({
 											"rounded-md p-2",
 											applyResult.status === "failed"
 												? "bg-red-50 dark:bg-red-950/30"
-												: partialFailure
-													? "bg-amber-50 dark:bg-amber-950/30"
-													: "bg-green-50 dark:bg-green-950/30",
+												: applyResult.status ===
+														"unconfirmed"
+													? "bg-muted"
+													: partialFailure
+														? "bg-amber-50 dark:bg-amber-950/30"
+														: "bg-green-50 dark:bg-green-950/30",
 										)}
 									>
 										<p
@@ -1468,16 +1471,22 @@ export function BacklogChangeProposal({
 												"text-xs font-medium",
 												applyResult.status === "failed"
 													? "text-destructive/80"
-													: partialFailure
-														? "text-amber-700 dark:text-amber-300"
-														: "text-green-700 dark:text-green-300",
+													: applyResult.status ===
+															"unconfirmed"
+														? "text-muted-foreground"
+														: partialFailure
+															? "text-amber-700 dark:text-amber-300"
+															: "text-green-700 dark:text-green-300",
 											)}
 										>
 											{applyResult.status === "failed"
 												? `Failed: ${applyResult.message}`
-												: partialFailure
-													? `${appliedTotal} of ${batchTotal} proposals added to roadmap — ${failedCount} failed, open Review proposals to retry`
-													: `Applied ${appliedTotal} item(s)`}
+												: applyResult.status ===
+														"unconfirmed"
+													? applyResult.message
+													: partialFailure
+														? `${appliedTotal} of ${batchTotal} proposals added to roadmap — ${failedCount} failed, open Review proposals to retry`
+														: `Applied ${appliedTotal} item(s)`}
 										</p>
 										{applyResult.items.length > 0 && (
 											<ul className="mt-1 space-y-0.5">

@@ -85,7 +85,10 @@ vi.mock("@repo/database", async () => {
 		recordAudit: vi.fn(),
 	};
 });
-vi.mock("@repo/temporal", () => ({
+vi.mock("@repo/temporal", async () => ({
+	...(await import(
+		"../../../../../../temporal/src/workflows/backlog-constants"
+	)),
 	getTemporalClient: () => h.client(),
 	runDecisionPrecheck: async () => ({ status: "ok", findings: [] }),
 }));

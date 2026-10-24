@@ -1,3 +1,4 @@
+import { guardToolsAgainstRepeatedCalls } from "@repo/agent-types/repeated-tool-call-guard";
 import { makeStepCacheBreakpoint } from "@repo/ai/prompt-cache";
 import { generateText, isStepCount } from "ai";
 import { Hono } from "hono";
@@ -107,8 +108,17 @@ Focus on:
 
 		// Run LLM with enhanced context
 		const result = await withRetry(
-			() =>
-				generateText({
+			() => {
+				const attemptTools = { ...tools };
+				guardToolsAgainstRepeatedCalls(attemptTools, {
+					onRepeat: (toolName, count) => {
+						console.warn(
+							"Weave weft tool returned a repeated result",
+							{ toolName, count },
+						);
+					},
+				});
+				return generateText({
 					model: model,
 					instructions: WEFT_SYSTEM_PROMPT,
 					messages: [
@@ -117,14 +127,15 @@ Focus on:
 							content: `${userContent}${modeContext}`,
 						},
 					],
-					tools,
+					tools: attemptTools,
 					stopWhen: isStepCount(MAX_TOOL_STEPS),
 					prepareStep: makeStepCacheBreakpoint({
 						provider,
 						modelString,
 						hasTools: true,
 					}),
-				}),
+				});
+			},
 			{ label: "weft-generateText", circuitKey: "weft" },
 		);
 

@@ -15,9 +15,29 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import type { ProposalThemeTokens } from "@repo/utils/proposal-artifact/theme-tokens";
 
 /** The family name the print page and the diagrams are set in. */
 export const PRINT_FONT_FAMILY = "Inter";
+
+/**
+ * The tokens as print sets them: every font token is Inter, whatever the
+ * Brand kit names, since print never embeds an uploaded or brand font yet.
+ * The page applies it before the paint is resolved, and the export's brand
+ * record before it hashes what printed.
+ */
+export function printTokensOf<TAsset>(
+	tokens: ProposalThemeTokens<TAsset>,
+): ProposalThemeTokens<TAsset> {
+	const inter = { value: PRINT_FONT_FAMILY, source: "DEFAULT" } as const;
+	return {
+		...tokens,
+		proposer: {
+			...tokens.proposer,
+			fonts: { display: inter, body: inter, mono: inter },
+		},
+	};
+}
 
 const FONT_DIR = join(__dirname, "fonts");
 

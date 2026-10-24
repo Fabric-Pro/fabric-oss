@@ -266,6 +266,7 @@ function logChatGptPlanHeaders(status: number, headers: Headers): void {
 }
 
 export interface ChatGptPlanModelOptions {
+	sessionKey?: string;
 	userId: string;
 	/** The plan that serves the call; the member's own plan when omitted. */
 	source?: PlanSourceRef;
@@ -304,6 +305,7 @@ export interface ChatGptPlanModelOptions {
  * sources.
  */
 export function createChatGptPlanModel({
+	sessionKey,
 	userId,
 	source = { kind: "user", userId },
 	modelId,
@@ -359,6 +361,7 @@ export function createChatGptPlanModel({
 		// Pinned: OPENAI_BASE_URL must never redirect a plan token.
 		baseURL: `${CHATGPT_PLAN_ORIGIN}/v1`,
 		fetch: createChatGptPlanFetch({
+			sessionKey,
 			getAccessToken: async () => used(await tokens.get()),
 			onUnauthorized: async (failedToken) =>
 				used(await tokens.refresh(failedToken)),

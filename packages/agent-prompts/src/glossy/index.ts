@@ -27,10 +27,14 @@ export {
 	GLOSSY_REASON_MAX_CHARS,
 	type GlossyDetectableKind,
 	type GlossyDetectPromptSection,
+	type GlossyPromptOptions,
 } from "./detect";
 export {
 	buildGlossyExtractInstructions,
 	buildGlossyExtractPrompt,
+	GLOSSY_EDIT_INSTRUCTION_MAX_CHARS,
+	GLOSSY_EDIT_SOURCE_MAX_CHARS,
+	GLOSSY_EDITABLE_KINDS,
 	GLOSSY_EXTRACTION_SECTION_MAX_CHARS,
 	GLOSSY_KIND_FIELD_RULES,
 	GLOSSY_SLOT_HINT_MAX_CHARS,

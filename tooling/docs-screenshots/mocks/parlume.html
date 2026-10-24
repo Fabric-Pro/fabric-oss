@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fabric Parlume (documentation examples)</title>
+<link rel="stylesheet" href="../.fonts/fonts.css">
+<style>
+/* Tokens copied verbatim from tooling/tailwind/theme.css :root (light). */
+:root {
+		--border: #e5e5e5;
+		--input: #e5e5e5;
+		--ring: #0d0d0d;
+		--background: #ffffff;
+		--foreground: #0d0d0d;
+		--primary: #0d0d0d;
+		--primary-foreground: #ffffff;
+		--primary-ink: var(--primary-ink-light, #b30000);
+		--secondary: #f4f4f4;
+		--secondary-foreground: #1a1a1a;
+		--destructive: #b3261e;
+		--destructive-foreground: #ffffff;
+		--success: #1d6b3f;
+		--success-foreground: #ffffff;
+		--muted: #f4f4f4;
+		--muted-foreground: #5d5d5d;
+		--accent: #ececec;
+		--accent-foreground: #1a1a1a;
+		--popover: #ffffff;
+		--popover-foreground: #1a1a1a;
+		--card: #ffffff;
+		--card-foreground: #1a1a1a;
+		--highlight: #8a5e12;
+		--highlight-foreground: #ffffff;
+		--highlight-ink: #8a5e12;
+		--radius: 0.625rem;
+		--sidebar: #f9f9f9;
+		--fab-accent: #b30000;
+		--fab-accent-fill: #eb0600;
+		--fab-accent-wash: rgba(235, 6, 0, 0.08);
+		--fab-composer-shadow: 0 0 0 1px rgba(0, 0, 0, 0.04), 0 2px 12px rgba(0, 0, 0, 0.06);
+		--fab-warn: #8a5e12;
+		--fab-bad: #b3261e;
+		--fab-good: #1d6b3f;
+		--bg-texture: none;
+}
+/* globals.css: --font-serif maps to --font-sans in the app. */
+:root{
+  --font-sans:Inter,-apple-system,"Helvetica Neue",Arial,sans-serif;
+  --font-mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
+  --radius-md:calc(var(--radius) - 2px);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{width:1096px;padding:24px;background:var(--background);color:var(--foreground);font-family:var(--font-sans);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.shot{background:var(--background);padding:24px;width:852px}
+.shot + .shot{margin-top:40px}
+svg.i{width:16px;height:16px;flex-shrink:0;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+svg.i.s35{width:14px;height:14px}
+.mono{font-family:var(--font-mono)}
+.muted{color:var(--muted-foreground)}
+.xs{font-size:12px;line-height:16px}
+.sm{font-size:14px;line-height:20px}
+.medium{font-weight:500}
+.tabular{font-variant-numeric:tabular-nums}
+/* MONO_LABEL / CARD_TITLE from lib/parlume-styles.ts */
+.mono-label{font-family:var(--font-mono);font-size:11px;letter-spacing:.1em;color:var(--muted-foreground)}
+.card-title{font-size:17px;font-weight:400;line-height:24px;letter-spacing:-.025em}
+/* .app-editorial-label from apps/web/app/globals.css */
+.editorial{display:inline-flex;align-items:center;gap:10px;font-family:var(--font-mono);font-size:11px;letter-spacing:.1em;color:var(--muted-foreground)}
+.editorial::before{content:"";display:block;width:6px;height:6px;background:var(--fab-accent-fill)}
+.page-h1{font-family:var(--font-sans);font-size:30px;font-weight:400;line-height:1.25;letter-spacing:-.025em}
+.card{border:1px solid var(--border);border-radius:var(--radius);background:var(--card);color:var(--card-foreground)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;border-radius:4px;font:inherit;font-size:14px;font-weight:500;border:0;cursor:default}
+.btn-primary{background:var(--primary);color:var(--primary-foreground);height:40px;padding:0 16px}
+.btn-outline{border:1px solid var(--input);background:transparent;color:var(--foreground);height:36px;padding:0 12px}
+.btn-danger{border-color:color-mix(in srgb,var(--destructive) 35%,transparent);color:var(--destructive)}
+.btn-ghost-icon{width:32px;height:32px;background:transparent;color:var(--muted-foreground)}
+.field-input{display:flex;align-items:center;height:40px;width:100%;border-radius:var(--radius-md);background:var(--background);border:1px solid var(--input);padding:0 12px 0 36px;font-size:16px;position:relative;white-space:nowrap;overflow:hidden}
+.field-input svg{position:absolute;left:12px;top:12px;color:var(--muted-foreground)}
+.select{display:flex;align-items:center;justify-content:space-between;gap:8px;height:40px;width:100%;border-radius:var(--radius-md);background:var(--background);border:1px solid var(--input);padding:8px 12px;font-size:16px}
+.select svg{opacity:.5}
+.label{font-size:14px;font-weight:500;line-height:1}
+.badge{display:inline-flex;align-items:center;border-radius:4px;border:1px solid var(--border);padding:2px 8px;font-family:var(--font-mono);font-size:10.5px;line-height:15px;color:var(--muted-foreground);white-space:nowrap}
+.badge-success{border-color:color-mix(in srgb,var(--success) 35%,transparent);color:var(--success)}
+.radio-card{display:flex;align-items:flex-start;gap:10px;border:1px solid var(--border);border-radius:var(--radius);padding:12px;flex:1}
+.radio-card.on{border-color:var(--foreground)}
+.radio{width:16px;height:16px;border-radius:50%;border:1px solid var(--primary);flex-shrink:0;margin-top:2px;display:flex;align-items:center;justify-content:center}
+.radio.on::after{content:"";width:8px;height:8px;border-radius:50%;background:var(--primary)}
+.switch{width:44px;height:24px;border-radius:999px;border:2px solid transparent;background:var(--primary);flex-shrink:0;margin-top:2px;position:relative}
+.switch::after{content:"";position:absolute;top:0;left:20px;width:20px;height:20px;border-radius:50%;background:var(--background);box-shadow:0 2px 6px rgba(0,0,0,.18)}
+.avatar{display:flex;align-items:center;justify-content:center;border-radius:50%;background:var(--muted);font-family:var(--font-mono);flex-shrink:0}
+.logo-tile{display:flex;align-items:center;justify-content:center;flex-shrink:0;border-radius:4px;background:var(--foreground)}
+.success{color:var(--success)}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--success);flex-shrink:0;box-shadow:0 0 0 4px color-mix(in srgb,var(--success) 14%,transparent)}
+.row{display:flex;align-items:center}
+</style>
+</head>
+<body>
+
+<!-- ParlumePage header + ParlumeInviteCard (ParlumeAgentPicker, ParlumeModePicker, ParlumeSuggestionsToggle). Synthetic data. -->
+<section id="shot-invite" class="shot" style="width:1048px">
+  <header style="display:flex;flex-direction:column;gap:10px;margin-bottom:24px">
+    <p class="editorial">Voice agent · Microsoft Teams</p>
+    <h1 class="page-h1">Fabric Parlume</h1>
+    <p class="sm muted" style="max-width:576px">Your project's voice agent for Microsoft Teams meetings.</p>
+  </header>
+  <div class="card">
+    <div style="padding:24px 24px 20px;display:flex;flex-direction:column;gap:6px">
+      <h3 class="card-title">Invite Parlume to a meeting</h3>
+      <p class="sm muted">Parlume joins as an external AI guest. The organizer may need to admit it from the lobby.</p>
+    </div>
+    <div style="padding:0 24px 24px;display:flex;flex-direction:column;gap:24px">
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <span class="label">Teams meeting link</span>
+        <div style="display:flex;gap:8px">
+          <div class="field-input" style="flex:1">
+            <svg class="i" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            https://teams.microsoft.com/meet/1234567890123?p=AbCdEfGh
+          </div>
+          <button class="btn btn-primary">Invite Parlume <svg class="i" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></button>
+        </div>
+        <p class="xs success row" style="gap:6px"><svg class="i s35" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/></svg>Teams meeting link</p>
+      </div>
+      <div style="display:flex;gap:20px">
+        <div style="flex:1 1 224px;min-width:0;display:flex;flex-direction:column;gap:8px">
+          <span class="label">Agent</span>
+          <div class="select"><span class="row" style="gap:6px;white-space:nowrap;min-width:0"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis">Fabric Agent — this project</span><span class="badge" style="flex-shrink:0">Built-in</span></span><svg class="i" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></div>
+          <p class="xs muted">Uses this project's current knowledge and Fabric Agent behavior.</p>
+        </div>
+        <div style="flex:2 1 352px;min-width:0;display:flex;flex-direction:column;gap:8px">
+          <span class="label">What Parlume can do</span>
+          <div style="display:flex;gap:8px">
+            <div class="radio-card on"><span class="radio on"></span><span style="display:flex;flex-direction:column;gap:2px"><span class="sm medium">Read-only</span><span class="xs muted">Answers questions and looks up information. It cannot make changes.</span></span></div>
+            <div class="radio-card"><span class="radio"></span><span style="display:flex;flex-direction:column;gap:2px"><span class="sm medium">Actions</span><span class="xs muted">Makes the changes attendees ask for, with your permissions, as soon as they ask.</span></span></div>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;align-items:flex-start;gap:12px">
+        <span class="switch" aria-hidden="true"></span>
+        <div style="display:flex;flex-direction:column;gap:2px">
+          <span class="sm medium">Chat suggestions</span>
+          <span class="xs muted">Parlume may offer a short suggestion in the meeting chat now and then. It speaks one only when someone replies “go”.</span>
+        </div>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid var(--border);padding-top:20px">
+        <p class="sm muted">Parlume records and transcribes the meeting. Tell participants before you invite it.</p>
+        <span class="muted" style="font-size:13px;text-decoration:underline;text-underline-offset:4px;white-space:nowrap">What Parlume does in a meeting</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ParlumeLiveCard above ParlumeActivityPanel's Requests tab (ParlumeRequestsPanel, ParlumeRequestItem). Synthetic data. -->
+<section id="shot-live" class="shot">
+  <div class="card" style="border-color:color-mix(in srgb,var(--success) 35%,transparent)">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:24px 24px 20px">
+      <div style="display:flex;align-items:flex-start;gap:14px">
+        <span style="padding-top:8px;display:flex"><span class="dot"></span></span>
+        <div style="display:flex;flex-direction:column;gap:4px">
+          <h3 class="card-title">Live in meeting</h3>
+          <p class="row" style="gap:8px;font-size:13px;line-height:18px"><span class="mono tabular success">31:08</span><span class="muted">Joined 10:02 AM</span></p>
+        </div>
+      </div>
+      <button class="btn btn-outline btn-danger"><svg class="i" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/></svg>Remove from meeting</button>
+    </div>
+    <dl style="display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid var(--border);border-bottom:1px solid var(--border)">
+      <div style="padding:14px 24px"><dt class="mono-label">Agent</dt><dd class="sm" style="margin-top:2px">Fabric Agent — this project</dd></div>
+      <div style="padding:14px 24px;border-left:1px solid var(--border)"><dt class="mono-label">Mode</dt><dd class="sm" style="margin-top:2px">Actions</dd></div>
+      <div style="padding:14px 24px;border-left:1px solid var(--border)"><dt class="mono-label">Spend so far</dt><dd class="sm tabular" style="margin-top:2px">$0.38</dd><dd class="xs muted" style="margin-top:2px">Bot time is added after the meeting.</dd></div>
+    </dl>
+    <div style="padding:18px 24px 22px;display:flex;flex-direction:column;gap:12px">
+      <div class="row" style="justify-content:space-between">
+        <span class="mono-label">Live activity</span>
+        <span class="xs muted row" style="gap:6px"><svg class="i s35" viewBox="0 0 24 24"><path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/></svg>Listening for “Hey Fabric”</span>
+      </div>
+      <div style="display:flex;gap:12px">
+        <span class="avatar" style="width:28px;height:28px;font-size:10.5px">P</span>
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px">
+          <div style="display:flex;justify-content:space-between;font-size:13px;line-height:18px"><span class="medium">Priya</span><span class="muted">10:31 AM</span></div>
+          <p class="sm">Hey Parlume, who owns F-142?</p>
+          <p class="muted" style="font-size:13px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Jonas owns F-142. It is in progress, with three of five tasks done.</p>
+        </div>
+      </div>
+      <div style="display:flex;gap:12px">
+        <span class="avatar" style="width:28px;height:28px;font-size:10.5px">J</span>
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px">
+          <div style="display:flex;justify-content:space-between;font-size:13px;line-height:18px"><span class="medium">Jonas</span><span class="muted">10:27 AM</span></div>
+          <p class="sm">put the link to F-142 in the chat</p>
+          <p class="muted" style="font-size:13px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">I've sent the link to F-142 to the meeting chat as P3.</p>
+        </div>
+      </div>
+      <div style="display:flex;gap:12px">
+        <span class="avatar" style="width:28px;height:28px;font-size:10.5px">M</span>
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:4px">
+          <div style="display:flex;justify-content:space-between;font-size:13px;line-height:18px"><span class="medium">Maya</span><span class="muted">10:24 AM</span></div>
+          <p class="sm">Hey Fabric, create a feature for exporting invoices to CSV.</p>
+          <p class="muted" style="font-size:13px;line-height:18px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">I didn't create it because I was interrupted. Reply "go P2" in the chat to do it.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:24px;overflow:hidden">
+    <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:12px;border-bottom:1px solid var(--border);padding:0 24px">
+      <div style="display:flex;gap:24px;align-items:flex-end">
+        <span class="row muted" style="height:52px;font-size:15px;border-bottom:2px solid transparent;margin-bottom:-1px">Sessions<span class="mono-label tabular" style="margin-left:8px">6</span></span>
+        <span class="row medium" style="height:52px;font-size:15px;border-bottom:2px solid var(--foreground);margin-bottom:-1px">Requests<span class="mono-label tabular" style="margin-left:8px">41</span></span>
+      </div>
+      <button class="btn btn-ghost-icon" style="margin-bottom:10px" aria-label="Refresh"><svg class="i" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg></button>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid var(--border);background:color-mix(in srgb,var(--muted) 40%,transparent);padding:14px 24px">
+      <div class="select" style="height:32px;width:300px;font-size:13px;padding:6px 12px"><span style="min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Oct 23, 2026, 10:02 AM · Fabric Agent — this project (live)</span><svg class="i" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></div>
+      <div style="display:inline-flex;gap:2px;border-radius:var(--radius-md);background:var(--muted);padding:2px">
+        <span class="row muted" style="height:28px;padding:0 12px;font-size:13px;border:1px solid transparent">All</span>
+        <span class="row muted" style="height:28px;padding:0 12px;font-size:13px;border:1px solid transparent">Questions</span>
+        <span class="row" style="height:28px;padding:0 12px;font-size:13px;border:1px solid var(--border);border-radius:5px;background:var(--card)">Actions</span>
+      </div>
+    </div>
+    <ol style="list-style:none">
+      <li style="display:flex;gap:14px;padding:18px 24px">
+        <span class="avatar" style="width:32px;height:32px;font-size:11px">M</span>
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:10px">
+          <div style="display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:4px 12px">
+            <span class="sm medium">Maya</span>
+            <span class="xs muted">Oct 23, 2026, 10:24 AM · Actions</span>
+          </div>
+          <p class="sm" style="line-height:21px">Hey Fabric, create a feature for exporting invoices to CSV.</p>
+          <div style="display:flex;gap:10px">
+            <span class="logo-tile" style="width:20px;height:20px"><img src="../../../apps/web/public/images/fabric-icon-white.svg" alt="" style="width:12px;height:12px"></span>
+            <p class="sm muted" style="line-height:21px">I didn't create it because I was interrupted. Reply "go P2" in the chat to do it.</p>
+          </div>
+          <div style="margin-left:30px;border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;display:flex;flex-direction:column;gap:10px">
+            <div class="row" style="justify-content:space-between">
+              <span class="mono-label row" style="gap:6px"><svg class="i" style="width:13px;height:13px" viewBox="0 0 24 24"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg>Action</span>
+              <span class="badge">Cancelled</span>
+            </div>
+            <p class="sm">Create feature “Export invoices to CSV”</p>
+            <ol class="xs muted row" style="list-style:none;gap:6px">
+              <li class="row" style="gap:6px"><span style="width:6px;height:6px;border-radius:50%;background:var(--muted-foreground)"></span>Requested <span class="tabular" style="color:var(--foreground)">10:24 AM</span> <span style="color:var(--border);margin-left:2px">—</span></li>
+              <li class="row" style="gap:6px"><span style="width:6px;height:6px;border-radius:50%;background:var(--muted-foreground)"></span>Finished <span class="tabular" style="color:var(--foreground)">10:24 AM</span></li>
+            </ol>
+            <p style="font-size:13px;line-height:18px">Held before dispatch: the meeting spoke over Parlume. Offered again in the meeting chat.</p>
+            <p class="xs muted">▸ Exact action details</p>
+          </div>
+        </div>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<!-- A neutral meeting chat panel in Fabric's own styling: no meeting-provider branding or chrome. Synthetic data. -->
+<section id="shot-chat" class="shot" style="width:620px">
+  <div class="card" style="overflow:hidden">
+    <div class="row" style="justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border)">
+      <span class="row" style="gap:8px"><svg class="i" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span class="card-title" style="font-size:15px">Meeting chat</span></span>
+      <span class="mono-label">Atlas Billing · weekly sync</span>
+    </div>
+    <ol style="list-style:none;padding:8px 0">
+      <li style="display:flex;gap:12px;padding:10px 20px">
+        <span class="avatar" style="width:28px;height:28px;font-size:10.5px">J</span>
+        <div style="flex:1;min-width:0">
+          <div class="row" style="gap:8px;font-size:13px;line-height:18px"><span class="medium">Jonas</span><span class="muted">10:27 AM</span></div>
+          <p class="sm" style="margin-top:2px">@Fabric Parlume put the link to F-142 in the chat</p>
+        </div>
+      </li>
+      <li style="display:flex;gap:12px;padding:10px 20px;background:color-mix(in srgb,var(--muted) 55%,transparent)">
+        <span class="logo-tile" style="width:28px;height:28px;border-radius:50%"><img src="../../../apps/web/public/images/fabric-icon-white.svg" alt="" style="width:14px;height:14px"></span>
+        <div style="flex:1;min-width:0">
+          <div class="row" style="gap:8px;font-size:13px;line-height:18px"><span class="medium">Fabric Parlume</span><span class="muted">10:27 AM</span></div>
+          <p class="sm" style="margin-top:2px">[P3] F-142 · Usage-based invoice line items — <span style="text-decoration:underline;text-underline-offset:3px">https://fabric.example.com/example-org/atlas-billing/F-142</span></p>
+        </div>
+      </li>
+      <li style="display:flex;gap:12px;padding:10px 20px">
+        <span class="avatar" style="width:28px;height:28px;font-size:10.5px">P</span>
+        <div style="flex:1;min-width:0">
+          <div class="row" style="gap:8px;font-size:13px;line-height:18px"><span class="medium">Priya</span><span class="muted">10:28 AM</span></div>
+          <p class="sm" style="margin-top:2px">say P3</p>
+        </div>
+      </li>
+      <li style="display:flex;gap:12px;padding:10px 20px;background:color-mix(in srgb,var(--muted) 55%,transparent)">
+        <span class="logo-tile" style="width:28px;height:28px;border-radius:50%"><img src="../../../apps/web/public/images/fabric-icon-white.svg" alt="" style="width:14px;height:14px"></span>
+        <div style="flex:1;min-width:0">
+          <div class="row" style="gap:8px;font-size:13px;line-height:18px"><span class="medium">Fabric Parlume</span><span class="muted">10:33 AM</span></div>
+          <p class="sm" style="margin-top:2px">[P4] Suggestion: F-142 has no acceptance criterion for invoices that span two billing cycles, which Jonas just described. (reply "go P4" and I'll say it)</p>
+        </div>
+      </li>
+      <li style="display:flex;gap:12px;padding:10px 20px">
+        <span class="avatar" style="width:28px;height:28px;font-size:10.5px">M</span>
+        <div style="flex:1;min-width:0">
+          <div class="row" style="gap:8px;font-size:13px;line-height:18px"><span class="medium">Maya</span><span class="muted">10:33 AM</span></div>
+          <p class="sm" style="margin-top:2px">go P4</p>
+        </div>
+      </li>
+    </ol>
+    <div style="padding:12px 20px 16px;border-top:1px solid var(--border)">
+      <div class="row" style="justify-content:space-between;height:40px;border:1px solid var(--input);border-radius:var(--radius-md);padding:0 12px">
+        <span class="sm" style="color:color-mix(in srgb,var(--foreground) 40%,transparent)">Type a message</span>
+        <svg class="i muted" viewBox="0 0 24 24"><path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/><path d="m21.854 2.147-10.94 10.939"/></svg>
+      </div>
+    </div>
+  </div>
+</section>
+</body>
+</html>

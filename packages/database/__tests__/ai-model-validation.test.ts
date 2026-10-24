@@ -567,6 +567,8 @@ const AWS_BEDROCK_OFFICIAL_MODELS = new Set([
 // Unity AI Gateway model-service names (system.ai schema). Custom per-workspace
 // services are discovered dynamically and intentionally not enumerated here.
 const DATABRICKS_OFFICIAL_MODELS = new Set([
+	// Decisions
+	"system.ai.openjev-qwen35-4b",
 	// Chat
 	"system.ai.claude-sonnet-5-5",
 	"system.ai.claude-sonnet-5",
@@ -816,7 +818,39 @@ describe("AI Model Name Validation", () => {
 			)
 				.map((model) => model.canonicalName)
 				.sort(),
-		).toEqual(["gpt-6-luna-decisions", "typesafe-ai-jev"]);
+		).toEqual([
+			"gpt-6-luna-decisions",
+			"openjev-qwen35-4b",
+			"typesafe-ai-jev",
+		]);
+	});
+
+	it("catalogs OpenJev for opt-in Databricks decisions with a nonzero input estimate", () => {
+		expect(
+			MODELS.find((model) => model.canonicalName === "openjev-qwen35-4b"),
+		).toMatchObject({
+			displayName: "OpenJev (Qwen3.5 4B)",
+			family: "openjev",
+			vendor: "Databricks",
+			capabilities: ["EVALUATION"],
+			suitableForTasks: ["DECISION"],
+			contextWindow: 0,
+			inputCostPer1M: 0.0012,
+			outputCostPer1M: 0,
+			providerMappings: [
+				{
+					provider: "DATABRICKS",
+					providerModelId: "system.ai.openjev-qwen35-4b",
+				},
+			],
+		});
+		expect(
+			TASK_DEFAULTS.some(
+				(row) =>
+					row.taskType === "DECISION" &&
+					row.provider === "DATABRICKS",
+			),
+		).toBe(false);
 	});
 
 	// A usage row's insert-time cost estimate, which spending-limit counters

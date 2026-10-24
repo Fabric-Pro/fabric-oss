@@ -38,6 +38,7 @@ import {
 	PM_TOOL_TYPES,
 	pmDetectedTypeDisplayName,
 	pmServerKeyToDetectedType,
+	readPMListPagingEvidence,
 	TASK_ID_PARAM_PATTERNS,
 	unwrapDataEnvelope,
 } from "../lib/pm-tool-patterns";
@@ -1416,5 +1417,78 @@ describe("extractPMListArray", () => {
 		"unknown",
 	])("rejects an unrecognised response %j", (data) => {
 		expect(extractPMListArray(data)).toBeUndefined();
+	});
+});
+
+describe("readPMListPagingEvidence", () => {
+	const more = [
+		{ hasNextPage: true },
+		{ hasMore: true },
+		{ has_more: true },
+		{ isLast: false },
+		{ last_page: false },
+		...[
+			"nextCursor",
+			"next_cursor",
+			"nextPageToken",
+			"next_page_token",
+		].map((key) => ({ [key]: "example-next" })),
+	];
+	const ended = [
+		{ hasNextPage: false },
+		{ hasMore: false },
+		{ has_more: false },
+		{ isLast: true },
+		{ last_page: true },
+		...[
+			"nextCursor",
+			"next_cursor",
+			"nextPageToken",
+			"next_page_token",
+		].flatMap((key) => [{ [key]: null }, { [key]: "" }]),
+	];
+	it.each(more)("reads more-results evidence %j", (marker) => {
+		for (const envelope of [marker, { pageInfo: marker }]) {
+			expect(readPMListPagingEvidence(envelope)).toEqual({
+				hasMore: true,
+				ended: false,
+			});
+		}
+	});
+	it.each(ended)("reads end evidence %j", (marker) => {
+		for (const envelope of [marker, { pageInfo: marker }]) {
+			expect(readPMListPagingEvidence(envelope)).toEqual({
+				hasMore: false,
+				ended: true,
+			});
+		}
+	});
+	it.each([
+		null,
+		undefined,
+		[],
+		{},
+		{ nextCursor: undefined },
+		{ hasMore: "false" },
+		{ pageInfo: { nextCursor: 0 } },
+	])("requires explicit evidence for %j", (envelope) => {
+		expect(readPMListPagingEvidence(envelope)).toEqual({
+			hasMore: false,
+			ended: false,
+		});
+	});
+	it("lets more-results evidence override end evidence across envelopes", () => {
+		expect(
+			readPMListPagingEvidence({
+				isLast: true,
+				pageInfo: { nextCursor: "example-next" },
+			}),
+		).toEqual({ hasMore: true, ended: false });
+		expect(
+			readPMListPagingEvidence({
+				hasMore: true,
+				pageInfo: { nextCursor: null },
+			}),
+		).toEqual({ hasMore: true, ended: false });
 	});
 });

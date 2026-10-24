@@ -1,5 +1,5 @@
 /**
- * Recipient brand confirmation (Fizzy #2589, KTD19, KTD23).
+ * Recipient brand confirmation (Fizzy #2589).
  *
  * These run the procedures against a small in-memory world rather than a
  * stub per call:
@@ -14,6 +14,7 @@
  *     PNG is refused by the code that will refuse it in production.
  * Only the outbound website fetch is replaced.
  */
+import { createHash } from "node:crypto";
 import { crc32, deflateSync } from "node:zlib";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -182,6 +183,8 @@ vi.mock("@repo/database", async () => {
 				? row.userId === userId || member(projectId, userId) !== null
 				: member(projectId, userId) !== null;
 		},
+		isOrganizationMember: async (userId: string, organizationId: string) =>
+			world.orgMembers.has(`${organizationId}:${userId}`),
 		// Same precedence as the gate: an active project member row decides,
 		// otherwise the organization role.
 		canEditProject: async (projectId: string, userId: string) => {
@@ -293,6 +296,8 @@ const EDITOR_A = "user_editor_a";
 const EDITOR_B = "user_editor_b";
 const GUEST_EDITOR = "user_guest_editor";
 const GUEST_VIEWER = "user_guest_viewer";
+/** An organization member whose project row makes them a VIEWER only. */
+const MEMBER_VIEWER = "user_member_viewer";
 const OTHER_GUEST = "user_other_guest";
 
 const PENDING = `project-brand/${PROJECT}/recipient-brand/pending/`;
@@ -462,6 +467,7 @@ function compareAndSet(input: Record<string, unknown>) {
 		projectId,
 		organizationId: ORG,
 		...fields,
+		logoHash: fields.logoKey ? (input.logoHash ?? null) : null,
 		version: version + 1,
 		updatedById: input.updatedById,
 		updatedAt: new Date(),
@@ -509,6 +515,11 @@ beforeEach(() => {
 		role: "VIEWER",
 		...accepted,
 	});
+	world.orgMembers.set(`${ORG}:${MEMBER_VIEWER}`, "member");
+	world.projectMembers.set(`${PROJECT}:${MEMBER_VIEWER}`, {
+		role: "VIEWER",
+		...accepted,
+	});
 	world.projectMembers.set(`${OTHER_PROJECT}:${OTHER_GUEST}`, {
 		role: "EDITOR",
 		...accepted,
@@ -527,7 +538,7 @@ beforeEach(() => {
 
 // --- tests ----------------------------------------------------------------
 
-describe("updateRecipientBrandProcedure — promotion (KTD23)", () => {
+describe("updateRecipientBrandProcedure — promotion", () => {
 	it("declares DOCUMENT_UPDATE", () => {
 		expect(
 			(updateRecipientBrandProcedure as unknown as Wired).__permission,
@@ -613,6 +624,36 @@ describe("updateRecipientBrandProcedure — promotion (KTD23)", () => {
 		expect(objects.get(oldKey)?.data).toEqual(RED_LOGO);
 		expect(storage.deleteObjects).not.toHaveBeenCalled();
 		expect(mocks.recordAudit).not.toHaveBeenCalled();
+	});
+
+	it("an error before the commit deletes the object it promoted", async () => {
+		const token = await uploadAs(EDITOR_A, BLUE_LOGO);
+		mocks.confirmRecipientBrand.mockRejectedValueOnce(
+			new Error("connection reset"),
+		);
+
+		await rejection(confirm({ logo: { action: "replace", token } }));
+
+		const promoted = storage.uploadFile.mock.calls
+			.map((c) => c[0] as string)
+			.filter((key) => key.startsWith(CURRENT));
+		expect(promoted).toHaveLength(1);
+		expect(objects.has(promoted[0] as string)).toBe(false);
+		expect(world.brands.has(PROJECT)).toBe(false);
+	});
+
+	it("a lost commit answer keeps the logo the saved row points at", async () => {
+		const token = await uploadAs(EDITOR_A, BLUE_LOGO);
+		mocks.confirmRecipientBrand.mockImplementationOnce(async (input) => {
+			compareAndSet(input);
+			throw new Error("connection reset");
+		});
+
+		await rejection(confirm({ logo: { action: "replace", token } }));
+
+		const saved = world.brands.get(PROJECT)?.logoKey as string;
+		expect(saved).toMatch(CURRENT_KEY);
+		expect(objects.has(saved)).toBe(true);
 	});
 
 	it("two confirmations racing on the same version: one applies, the loser's object is deleted", async () => {
@@ -821,6 +862,37 @@ describe("updateRecipientBrandProcedure — promotion (KTD23)", () => {
 		expect(objects.has(logoKey)).toBe(false);
 	});
 
+	it("records the hash of the promoted bytes, and keep carries it over", async () => {
+		const token = await uploadAs(EDITOR_A, RED_LOGO);
+		await confirm({ logo: { action: "replace", token } });
+		const saved = world.brands.get(PROJECT);
+		const stored = objects.get(saved?.logoKey as string)?.data as Buffer;
+		const hash = createHash("sha256").update(stored).digest("hex");
+		expect(mocks.confirmRecipientBrand).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				logoKey: saved?.logoKey,
+				logoHash: hash,
+			}),
+		);
+		expect(saved?.logoHash).toBe(hash);
+
+		await confirm({
+			expectedVersion: 1,
+			colors: ["#654321"],
+			logo: { action: "keep" },
+		});
+		expect(world.brands.get(PROJECT)).toMatchObject({
+			logoKey: saved?.logoKey,
+			logoHash: hash,
+			colors: ["#654321"],
+		});
+
+		await confirm({ expectedVersion: 2, logo: { action: "remove" } });
+		expect(mocks.confirmRecipientBrand).toHaveBeenLastCalledWith(
+			expect.objectContaining({ logoKey: null, logoHash: null }),
+		);
+	});
+
 	it("refuses a website that is not a public address before promoting anything", async () => {
 		const token = await uploadAs(EDITOR_A, RED_LOGO);
 
@@ -837,7 +909,7 @@ describe("updateRecipientBrandProcedure — promotion (KTD23)", () => {
 	});
 });
 
-describe("recipient brand gate (KTD19)", () => {
+describe("recipient brand gate", () => {
 	it("a trashed project is NOT_FOUND", async () => {
 		const project = world.projects.get(PROJECT);
 		world.projects.set(PROJECT, {
@@ -913,16 +985,40 @@ describe("recipient brand gate (KTD19)", () => {
 		expect(mocks.confirmRecipientBrand).not.toHaveBeenCalled();
 	});
 
-	it("an invited guest editor of the project can confirm", async () => {
-		const token = await uploadAs(GUEST_EDITOR, RED_LOGO);
-
-		const result = await confirm(
-			{ logo: { action: "replace", token } },
-			GUEST_EDITOR,
-		);
-
-		expect(result).toEqual({ outcome: "applied", version: 1 });
-		expect(world.brands.get(PROJECT)?.updatedById).toBe(GUEST_EDITOR);
+	// Only members of the owning organization change the recipient brand
+	// (Fizzy #2946): an invited guest editor reads it, and every write path
+	// refuses them before anything is stored.
+	it("an invited guest editor of the project can read but not upload, fetch or confirm", async () => {
+		await expect(
+			call(
+				getRecipientBrandProcedure,
+				{ projectId: PROJECT },
+				GUEST_EDITOR,
+			),
+		).resolves.toBeDefined();
+		expect(
+			await rejection(
+				call(
+					createRecipientLogoUploadUrlProcedure,
+					{ projectId: PROJECT, contentType: "image/png", size: 10 },
+					GUEST_EDITOR,
+				),
+			),
+		).toBe("FORBIDDEN");
+		expect(
+			await rejection(
+				call(
+					fetchRecipientBrandProcedure,
+					{ projectId: PROJECT, website: "example.com" },
+					GUEST_EDITOR,
+				),
+			),
+		).toBe("FORBIDDEN");
+		expect(await rejection(confirm({}, GUEST_EDITOR))).toBe("FORBIDDEN");
+		expect(storage.getSignedUploadUrl).not.toHaveBeenCalled();
+		expect(mocks.fetchWebsiteBrand).not.toHaveBeenCalled();
+		expect(mocks.confirmRecipientBrand).not.toHaveBeenCalled();
+		expect(world.brands.has(PROJECT)).toBe(false);
 	});
 
 	it("a guest of another project gets NOT_FOUND", async () => {
@@ -945,7 +1041,11 @@ describe("recipient brand gate (KTD19)", () => {
 				{ projectId: PROJECT },
 				GUEST_VIEWER,
 			),
-		).resolves.toEqual({ version: 0, recipientBrand: null });
+		).resolves.toEqual({
+			version: 0,
+			canEdit: false,
+			recipientBrand: null,
+		});
 		expect(await rejection(confirm({}, GUEST_VIEWER))).toBe("FORBIDDEN");
 	});
 
@@ -976,7 +1076,58 @@ describe("getRecipientBrandProcedure", () => {
 		).toBe("document:read");
 		await expect(
 			call(getRecipientBrandProcedure, { projectId: PROJECT }),
-		).resolves.toEqual({ version: 0, recipientBrand: null });
+		).resolves.toEqual({ version: 0, canEdit: true, recipientBrand: null });
+	});
+
+	// Only members of the owning organization change the recipient brand
+	// (Fizzy #2946): the read says so for the caller, so the form never
+	// offers a guest editor a Save the write gate refuses.
+	it("reports canEdit as the write gate decides it", async () => {
+		const canEdit = async (userId: string) =>
+			(
+				await call(
+					getRecipientBrandProcedure,
+					{ projectId: PROJECT },
+					userId,
+				)
+			).canEdit;
+
+		expect(await canEdit(EDITOR_A)).toBe(true);
+		expect(await canEdit(EDITOR_B)).toBe(true);
+		expect(await canEdit(GUEST_EDITOR)).toBe(false);
+		expect(await canEdit(GUEST_VIEWER)).toBe(false);
+		// Membership alone is not enough: the project row makes them a viewer.
+		expect(await canEdit(MEMBER_VIEWER)).toBe(false);
+		expect(await rejection(confirm({}, MEMBER_VIEWER))).toBe("FORBIDDEN");
+	});
+
+	// The row carries its own organization. One left behind under another
+	// organization is not this project's recipient brand: the read shows
+	// none, signs nothing, and a save never keeps its logo.
+	it("reads a row left in another organization as no recipient brand", async () => {
+		const formerLogo = `project-brand/${PROJECT}/recipient-brand/current/former.png`;
+		world.brands.set(PROJECT, {
+			projectId: PROJECT,
+			organizationId: "org_former",
+			name: "Former Client",
+			website: "https://former.example.com",
+			colors: ["#abcdef"],
+			logoKey: formerLogo,
+			logoHash: "a".repeat(64),
+			version: 3,
+			updatedById: EDITOR_A,
+			updatedAt: new Date(),
+		});
+
+		await expect(
+			call(getRecipientBrandProcedure, { projectId: PROJECT }),
+		).resolves.toEqual({ version: 0, canEdit: true, recipientBrand: null });
+		expect(storage.getSignedUrl).not.toHaveBeenCalled();
+
+		expect(await confirm({ expectedVersion: 3 })).toEqual({
+			outcome: "conflict",
+		});
+		expect(mocks.confirmRecipientBrand).not.toHaveBeenCalled();
 	});
 
 	it("signs the logo as a short-lived inline PNG and never returns its key", async () => {

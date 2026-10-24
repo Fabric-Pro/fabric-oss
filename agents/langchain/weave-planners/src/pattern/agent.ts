@@ -75,7 +75,9 @@ async function fetchReaderSummary(
 	path: string,
 	payload: ReaderPayload,
 	tenantContext?: { userId: string; organizationId: string | null },
+	signal?: AbortSignal,
 ) {
+	signal?.throwIfAborted();
 	const readersUrl = process.env.WEAVE_READERS_URL || "http://localhost:8140";
 
 	// Use SecureA2AClient for HMAC-signed requests when tenant context is available
@@ -105,7 +107,7 @@ async function fetchReaderSummary(
 					metadata: payload.metadata,
 				},
 				tenantContext,
-				{ trustedDestination: true },
+				{ trustedDestination: true, signal },
 			);
 
 			// Extract text from A2A task response
@@ -123,6 +125,7 @@ async function fetchReaderSummary(
 
 			return { response: responseText, success: true };
 		} catch (error) {
+			signal?.throwIfAborted();
 			console.warn(
 				`[Pattern] SecureA2AClient failed for ${path}, falling back to direct fetch:`,
 				error instanceof Error ? error.message : error,
@@ -135,6 +138,7 @@ async function fetchReaderSummary(
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(payload),
+		signal,
 	});
 
 	if (!response.ok) {
@@ -148,7 +152,11 @@ async function fetchReaderSummary(
 	}>;
 }
 
-async function researchNode(state: typeof PatternState.State) {
+async function researchNode(
+	state: typeof PatternState.State,
+	config: RunnableConfig,
+) {
+	config.signal?.throwIfAborted();
 	console.log("[Pattern] Step 1: Researching...");
 	await updatePlanProgress(
 		state.planId,
@@ -183,6 +191,7 @@ Focus on:
 
 		const userMessage =
 			state.messages[state.messages.length - 1]?.content || "";
+		config.signal?.throwIfAborted();
 		const results = await retrieveProjectContexts({
 			projectId: state.projectContext.projectId,
 			query:
@@ -219,6 +228,7 @@ Focus on:
 			sections.push(`## Project context (RAG)\n${ragContent}`);
 		}
 	} catch {
+		config.signal?.throwIfAborted();
 		// RAG is best-effort — embedding model may not be configured
 	}
 
@@ -227,11 +237,13 @@ Focus on:
 			"/spindle/research",
 			payload,
 			state.tenantContext,
+			config.signal,
 		);
 		if (spindle.response) {
 			sections.push(`## External research\n${spindle.response}`);
 		}
 	} catch (error) {
+		config.signal?.throwIfAborted();
 		sections.push(
 			`## External research\nUnavailable: ${error instanceof Error ? error.message : "Unknown error"}`,
 		);
@@ -242,11 +254,13 @@ Focus on:
 			"/thread/inspect",
 			payload,
 			state.tenantContext,
+			config.signal,
 		);
 		if (thread.response) {
 			sections.push(`## Codebase grounding\n${thread.response}`);
 		}
 	} catch (error) {
+		config.signal?.throwIfAborted();
 		sections.push(
 			`## Codebase grounding\nUnavailable: ${error instanceof Error ? error.message : "Unknown error"}`,
 		);
@@ -274,11 +288,13 @@ async function analyzeNode(
 		state.messages[state.messages.length - 1]?.content || "";
 
 	const generationStart = Date.now();
-	const response = await model.invoke([
-		["system", ANALYSIS_PROMPT],
+	config.signal?.throwIfAborted();
+	const response = await model.invoke(
 		[
-			"human",
-			`User Request: ${userMessage}
+			["system", ANALYSIS_PROMPT],
+			[
+				"human",
+				`User Request: ${userMessage}
 
 Project Context:
 - Name: ${state.projectContext.projectName}
@@ -293,8 +309,10 @@ Analyze this request and break down what's needed. Be specific about:
 2. Components/modules needed
 3. Dependencies
 4. Complexity assessment`,
+			],
 		],
-	]);
+		config,
+	);
 	await logAgentUsageFromRunnableConfig(config, response, {
 		model,
 		taskType: "COMPLEX",
@@ -319,11 +337,13 @@ async function createCheckboxesNode(
 
 	const model = await getAgentModelAsync(config);
 	const generationStart = Date.now();
-	const response = await model.invoke([
-		["system", PLAN_CREATION_PROMPT],
+	config.signal?.throwIfAborted();
+	const response = await model.invoke(
 		[
-			"human",
-			`Analysis:
+			["system", PLAN_CREATION_PROMPT],
+			[
+				"human",
+				`Analysis:
 ${state.analysis}
 
 Create a detailed execution plan with checkboxes. Each checkbox should:
@@ -343,8 +363,10 @@ Format as JSON array:
     "reviewType": "weft|warp|both" (if requiresReview)
   }
 ]`,
+			],
 		],
-	]);
+		config,
+	);
 	await logAgentUsageFromRunnableConfig(config, response, {
 		model,
 		taskType: "COMPLEX",

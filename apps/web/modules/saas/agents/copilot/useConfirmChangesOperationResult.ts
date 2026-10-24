@@ -76,7 +76,9 @@
  *     so duplicate-click protection doesn't need to also live in the
  *     operation key. If the network retries the SAME call internally
  *     (e.g. browser-level retry), the server's `appendConversationMessage`
- *     SELECT FOR UPDATE + operationKey dedup catches it.
+ *     SELECT FOR UPDATE + operationKey dedup catches it. A caller that
+ *     records one operation later than the click — an accept, once its
+ *     save answers (Fizzy #2946) — passes its own key, made at the click.
  */
 
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -142,6 +144,13 @@ export interface RecordOnResolveOptions {
 	 */
 	accepted: boolean;
 	/**
+	 * What became of an accepted change, when it is not a plain success
+	 * (Fizzy #2946): `"failure"` — the save of the accepted text was
+	 * refused; `"partial"` — the accepted text stays in the editor, not
+	 * saved yet. Overrides the outcome `accepted` maps to.
+	 */
+	outcome?: "failure" | "partial";
+	/**
 	 * Short summary surfaced in the persisted system message body.
 	 * Falls back to a default ("Changes accepted." / "Changes rejected.")
 	 * if omitted.
@@ -152,15 +161,21 @@ export interface RecordOnResolveOptions {
 	 * (e.g. the persisted document version URL on accept).
 	 */
 	artifact?: { label: string; url: string };
+	/**
+	 * One key per operation, sent as the server's `operationKey` (Fizzy
+	 * #2946). An accept is recorded when its save answers, so its record
+	 * can overlap the record of another proposal: calls are held back
+	 * only while one with the same key is in flight. Calls without a key
+	 * share one slot (the double-click guard below) and get a fresh key
+	 * each.
+	 */
+	operationKey?: string;
 	// NOTE: `errorCode` is deliberately NOT part of this interface.
-	// This hook only emits `outcome: "success"` (accepted) or
-	// `outcome: "cancelled"` (rejected). `errorCode` is a server-
-	// schema field meaningful only for `outcome: "failure"`, which
-	// is not reachable through the accept/reject flow this helper
-	// targets. If a future hook handles tool-level failures it
-	// should expose its own interface — exposing errorCode here
-	// would suggest a semantic the helper cannot fulfil (Codex
-	// round-2 Minor #2).
+	// A `"failure"` reaches this helper only through `outcome`, for an
+	// accepted change whose save was refused (Fizzy #2946); the
+	// `summary` says so in the reader's words, and no caller has a
+	// stable code to give. Exposing errorCode here would suggest a
+	// semantic the helper cannot fulfil (Codex round-2 Minor #2).
 }
 
 /**
@@ -188,10 +203,15 @@ export function useConfirmChangesOperationResult({
 	// catch the duplicate — two operation-result messages would land
 	// in the DB. With the ref, the second call returns the in-flight
 	// Promise from the first, so only one server roundtrip happens.
-	// Ref is cleared on `finally` so a later (post-state-commit) click
-	// gets a fresh attempt — e.g. a re-attempted confirmation after a
-	// transient error doesn't get blocked forever.
-	const inFlightPromiseRef = useRef<Promise<void> | null>(null);
+	// The entry is cleared once the call settles so a later (post-state-
+	// commit) click gets a fresh attempt — e.g. a re-attempted
+	// confirmation after a transient error doesn't get blocked forever.
+	//
+	// Per operation (Fizzy #2946): keyed by `options.operationKey`, so an
+	// accept recorded when its save answers is never swallowed by the
+	// record of another proposal in flight at that moment. Calls without
+	// a key share the `null` slot, as every call shared one before.
+	const inFlightRef = useRef(new Map<string | null, Promise<void>>());
 
 	// Non-async callback so the in-flight Promise dedup (Codex round-2
 	// Important #2) returns identity-equal Promises across rapid calls.
@@ -211,27 +231,32 @@ export function useConfirmChangesOperationResult({
 			// very first turn of a brand-new chat session — subsequent
 			// turns always have a resolved `conversationId` from SSR or
 			// the previous append).
+			const outcome: Outcome =
+				options.outcome ?? (options.accepted ? "success" : "cancelled");
 			if (!conversationId) {
 				console.info(
 					"[useConfirmChangesOperationResult] Skipping operation-result persistence: conversationId is null. This is expected for the first turn of a fresh session before <CopilotPersistenceHook> lazy-creates the AgentConversation.",
-					{ outcome: options.accepted ? "success" : "cancelled" },
+					{ outcome },
 				);
 				return Promise.resolve();
 			}
 
 			// Dedup gate: share an in-flight Promise across rapid double-
-			// clicks. See `inFlightPromiseRef` doc-comment above.
-			if (inFlightPromiseRef.current) {
-				return inFlightPromiseRef.current;
+			// clicks of one operation. See `inFlightRef` doc-comment above.
+			// An empty key is none.
+			const inFlightKey = options.operationKey || null;
+			const inFlight = inFlightRef.current.get(inFlightKey);
+			if (inFlight) {
+				return inFlight;
 			}
 
-			const outcome: Outcome = options.accepted ? "success" : "cancelled";
-			// Fresh UUID per call. Combined with the in-flight guard above,
-			// this means: one click → one key → one persisted row. Network-
-			// level retries inside oRPC use the same call so the same key
-			// → server-side `appendConversationMessage` SELECT FOR UPDATE
-			// dedup catches HTTP-level retries.
-			const operationKey = crypto.randomUUID();
+			// The caller's key, or a fresh UUID per call. Combined with the
+			// in-flight guard above, this means: one operation → one key →
+			// one persisted row. Network-level retries inside oRPC use the
+			// same call so the same key → server-side
+			// `appendConversationMessage` SELECT FOR UPDATE dedup catches
+			// HTTP-level retries.
+			const operationKey = options.operationKey || crypto.randomUUID();
 			const summary =
 				options.summary ??
 				(options.accepted ? "Changes accepted." : "Changes rejected.");
@@ -261,12 +286,18 @@ export function useConfirmChangesOperationResult({
 						"[useConfirmChangesOperationResult] Failed to record operation result",
 						{ conversationId, outcome, error },
 					);
-				} finally {
-					inFlightPromiseRef.current = null;
 				}
 			})();
 
-			inFlightPromiseRef.current = promise;
+			// Cleared after it settles, and only if it is still the one
+			// held: registered once it is stored, so even a call that
+			// settles at once never leaves its entry behind.
+			inFlightRef.current.set(inFlightKey, promise);
+			void promise.then(() => {
+				if (inFlightRef.current.get(inFlightKey) === promise) {
+					inFlightRef.current.delete(inFlightKey);
+				}
+			});
 			return promise;
 		},
 		[conversationId, projectId, organizationId, operationLabel],

@@ -14,6 +14,8 @@ interface FetchPromptForAgentInput {
 	agentName: string;
 	userId: string;
 	organizationId?: string;
+	/** The project the prompt is for, so its own prompt defaults apply. */
+	projectId: string;
 	documentType: string;
 }
 
@@ -49,13 +51,14 @@ interface RenderPromptWithContextOutput {
 }
 
 /**
- * Fetch the bound prompt for an agent based on user/org/system precedence
+ * Fetch the bound prompt for an agent based on user/project/org/system precedence
  * Returns null if no prompt is bound (caller should use fallback)
  */
 export async function fetchPromptForAgent(
 	input: FetchPromptForAgentInput,
 ): Promise<FetchPromptForAgentOutput | null> {
-	const { agentName, userId, organizationId, documentType } = input;
+	const { agentName, userId, organizationId, projectId, documentType } =
+		input;
 
 	// Use direct database query instead of API client (Temporal worker doesn't have access to @repo/api)
 	const { getBoundPromptForAgent } = await import(
@@ -68,6 +71,7 @@ export async function fetchPromptForAgent(
 			agentName,
 			userId,
 			organizationId,
+			projectId,
 			documentType,
 		});
 
@@ -244,6 +248,7 @@ export async function fetchAndRenderPrompt(input: {
 	agentName: string;
 	userId: string;
 	organizationId?: string;
+	projectId: string;
 	documentType: string;
 	variables?: Record<string, any>;
 	projectContext?: ProjectContext;
@@ -261,6 +266,7 @@ export async function fetchAndRenderPrompt(input: {
 		agentName: input.agentName,
 		userId: input.userId,
 		organizationId: input.organizationId,
+		projectId: input.projectId,
 		documentType: input.documentType,
 	});
 

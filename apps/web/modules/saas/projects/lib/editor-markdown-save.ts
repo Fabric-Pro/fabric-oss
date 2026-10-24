@@ -14,6 +14,10 @@
  * of drift — a fix here applies everywhere.
  */
 
+import {
+	readDiagramCaption,
+	withDiagramCaption,
+} from "@repo/utils/proposal-artifact/visual-identity";
 import type { Editor } from "@tiptap/core";
 import TurndownService from "turndown";
 // @ts-expect-error - turndown-plugin-gfm has no types
@@ -199,7 +203,18 @@ export function createTurndownService(): TurndownService {
 			const className = codeEl.getAttribute("class") || "";
 			const match = className.match(/language-([a-z0-9+-]+)/i);
 			const lang = match ? match[1] : "";
-			const code = (codeEl.textContent || "").replace(/\s+$/g, "");
+			let code = (codeEl.textContent || "").replace(/\s+$/g, "");
+			// A diagram's caption is its `%% caption:` line. One an older
+			// document kept as the node's attribute is written into the
+			// body here, unless the body already has one.
+			const legacyCaption = node.getAttribute?.("data-caption");
+			if (
+				lang === "mermaid" &&
+				legacyCaption &&
+				!readDiagramCaption(code)
+			) {
+				code = withDiagramCaption(code, legacyCaption);
+			}
 			return `\n\`\`\`${lang}\n${code}\n\`\`\`\n\n`;
 		},
 	});
@@ -295,7 +310,9 @@ export function getTurndownService(): TurndownService {
  * still returned for a genuinely empty document; callers MUST distinguish the
  * two and refuse to save on `null`.
  */
-export function getEditorMarkdownForSave(editor: Editor | null): string | null {
+export function getEditorMarkdownForSave(
+	editor: Pick<Editor, "getHTML"> | null,
+): string | null {
 	if (!editor) {
 		return null;
 	}

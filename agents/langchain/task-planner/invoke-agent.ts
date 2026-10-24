@@ -37,6 +37,7 @@ export function createInvokeAgent(
 				tools: [],
 			},
 			{
+				signal: runtimeConfig?.signal,
 				configurable: buildAgentConfigurable(
 					input,
 					runtimeConfig?.configurable,

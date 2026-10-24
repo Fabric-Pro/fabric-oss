@@ -9,7 +9,8 @@
  * itself is NOT altered, so any message-based detection downstream (route
  * layer, `classifyBacklogAnalysisError`) keeps working unchanged.
  *
- * The first two are verdicts about CONFIGURATION, not about the provider call:
+ * These include configuration and availability verdicts rather than transient
+ * provider failures:
  *
  *  - `AIProviderNotConfiguredError` — the tenant configured no provider, so
  *    model resolution refuses (`packages/ai/lib/dynamic-model-selector.ts`).
@@ -18,6 +19,10 @@
  *    run for every provider-less tenant burns its whole retry budget — five
  *    attempts and several minutes of backoff — to arrive at the same refusal
  *    it had in the first millisecond.
+ *  - `UnsupportedEmbeddingModelError` — the selected embedding model has an
+ *    unknown vector width or one the document index cannot store. Only choosing
+ *    a compatible model changes this verdict
+ *    (`packages/ai/lib/embedding-dimensions.ts`).
  *  - `AiUsageLimitExceededError` — a HARD `AiUsageLimit` is exhausted. Limits
  *    are windowed in hours or days; a retry ladder measured in seconds cannot
  *    outlast one. A refusal the AI SDK wrapped in its `RetryError` leaves the
@@ -50,6 +55,7 @@
  */
 export const AI_NON_RETRYABLE_ERROR_TYPES = [
 	"AIProviderNotConfiguredError",
+	"UnsupportedEmbeddingModelError",
 	"AiUsageLimitExceededError",
 	"SubscriptionPlanExhaustedError",
 	"ChatGptPlanAuthError",

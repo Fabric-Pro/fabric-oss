@@ -7,7 +7,9 @@
  * real executors run and the `streamText` request is captured.
  */
 
+import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
 import type { ModelMessage } from "ai";
+import { RetryError } from "ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -305,4 +307,40 @@ describe("executeAgentTurn without tools", () => {
 		expect(call.tools).toBeUndefined();
 		expect(call.prepareStep).toBeUndefined();
 	});
+});
+
+it("reports a wrapped frame tool refusal instead of a successful agent turn", async () => {
+	const refusal = new AiUsageLimitExceededError({
+		message: "Example limit exhausted",
+		limitId: "example-limit",
+		dimension: "TOKENS" as never,
+		window: "MONTHLY" as never,
+		used: 100n,
+		max: 100n,
+		manageLimitsUrl: "https://example.com/limits",
+	});
+	mocks.getAiModelWithSelection.mockResolvedValue({
+		model: {},
+		provider: "OPENAI",
+		modelString: "example-model",
+	});
+	mocks.streamText.mockImplementation((options) => {
+		options.onChunk({
+			chunk: {
+				type: "tool-error",
+				error: new RetryError({
+					message: "Retry refused",
+					reason: "errorNotRetryable",
+					errors: [refusal],
+				}),
+			},
+		});
+		return {
+			text: Promise.resolve("Could not create frame."),
+			usage: Promise.resolve({ inputTokens: 10, outputTokens: 5 }),
+		};
+	});
+	await expect(
+		runners.executeAgentTurn({ builtInToolNames: ["create-frames"] }),
+	).resolves.toMatchObject({ success: false, error: refusal.message });
 });

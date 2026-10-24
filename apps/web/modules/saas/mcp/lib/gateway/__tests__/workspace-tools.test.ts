@@ -1,3 +1,4 @@
+import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
 /**
  * `fabric_get_workspace` / `fabric_query_workspace`: an `org_` key reaches only
  * its own organization's workspaces (Fizzy #2629).
@@ -300,4 +301,17 @@ describe("fabric_query_workspace binds an organization key to the workspace's or
 		expect(mocks.generateEmbedding).not.toHaveBeenCalled();
 		expect(mocks.searchWorkspaceChunks).not.toHaveBeenCalled();
 	});
+});
+
+it("shows the embedding width refusal in the knowledge search message", async () => {
+	workspaceHostedBy("org-a");
+	const error = new UnsupportedEmbeddingModelError("databricks-gte-large-en");
+	mocks.generateEmbedding.mockRejectedValue(error);
+	const result = await executePlatformTool(
+		"fabric_query_workspace",
+		{ workspaceId: "ws-1", query: "onboarding" },
+		orgKeyInA,
+	);
+	expect(payload(result).message).toBe(error.message);
+	expect(mocks.searchWorkspaceChunks).not.toHaveBeenCalled();
 });

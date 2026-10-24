@@ -18,7 +18,8 @@
  *   run already going, could not confirm its state, or refused with a code,
  *   told in the reader's words with the link that resolves it;
  * - switching tabs never unmounts the editor, and hidden panels are out of
- *   the tab order;
+ *   the tab order; the Style tab follows the server's `canUpdateProject`,
+ *   not the project role the title follows;
  * - a `document_change` nudge for this document refetches the document, and
  *   the analysis too unless a run is still writing; the end of a run
  *   refetches the analysis without one; a nudge for another document does
@@ -77,6 +78,8 @@ const fixtures = vi.hoisted(() => ({
 	>,
 	isGuest: false,
 	userRole: "editor" as string | null,
+	/** The server's project write rule; unset unless a test says. */
+	canUpdateProject: undefined as boolean | undefined,
 	aiSidebarExpanded: false,
 	presence: {
 		onDocumentChange: undefined as undefined | ((event: unknown) => void),
@@ -98,6 +101,7 @@ const fixtures = vi.hoisted(() => ({
 		info: vi.fn(),
 		warning: vi.fn(),
 		error: vi.fn(),
+		dismiss: vi.fn(),
 	},
 	router: { push: vi.fn() },
 }));
@@ -150,6 +154,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => {
 								name: "Example project",
 								organizationId: "org-1",
 								userRole: fixtures.userRole,
+								canUpdateProject: fixtures.canUpdateProject,
 							},
 						}),
 					}),
@@ -544,6 +549,7 @@ beforeEach(() => {
 	fixtures.flags = { PROPOSAL_ARTIFACT: true, GLOSSY_EDITION: false };
 	fixtures.isGuest = false;
 	fixtures.userRole = "editor";
+	fixtures.canUpdateProject = undefined;
 	fixtures.aiSidebarExpanded = false;
 	fixtures.presence.onDocumentChange = undefined;
 	fixtures.editor = { mounts: 0, unmounts: 0, lastProps: {} };
@@ -1024,6 +1030,34 @@ describe("DocumentEditorPage — tabs", () => {
 			expect(panel).toHaveAttribute("aria-labelledby", tab.id);
 		}
 	});
+
+	it.each([
+		[true, "editable"],
+		[false, "read-only"],
+	] as const)(
+		"follows the server's canUpdateProject (%s) on the Style tab, not the project role: %s for a project admin",
+		async (canUpdateProject, expected) => {
+			const user = userEvent.setup();
+			// A project admin is neither owner nor editor, so the title and
+			// the Retry of a stalled run stay read-only for them.
+			fixtures.userRole = "project_admin";
+			fixtures.canUpdateProject = canUpdateProject;
+			renderPage();
+			await pageReady();
+
+			await user.click(
+				screen.getByRole("tab", { name: pageCopy.tabs.style }),
+			);
+			const direction = screen.getByLabelText("Style direction", {
+				selector: "input",
+			});
+			if (expected === "editable") {
+				expect(direction).not.toHaveAttribute("readonly");
+			} else {
+				expect(direction).toHaveAttribute("readonly");
+			}
+		},
+	);
 
 	it("keeps hidden panels out of the tab order and moves between tabs with the arrow keys", async () => {
 		const user = userEvent.setup();

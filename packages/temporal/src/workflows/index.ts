@@ -657,6 +657,12 @@ export {
 	type ReconcileWorkflowSchedulesWorkflowOutput,
 	reconcileWorkflowBuilderSchedulesWorkflow,
 } from "./reconcile-workflow-builder-schedules";
+// Recurring-error detection — scheduled sweep + per-project scan.
+export {
+	type RecurringErrorSweepResult,
+	recurringErrorScanProjectWorkflow,
+	recurringErrorSweepWorkflow,
+} from "./recurring-error-scan";
 // Publishing Suite working-draft refinement (fire-and-forget — ONE revised
 // document for one saved draft, for every content type). It writes a proposal on
 // the working draft rather than a candidate, so a refinement consumes no version

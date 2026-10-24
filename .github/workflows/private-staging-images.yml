@@ -40,6 +40,8 @@ env:
   # The image label that records a build's input fingerprint; see
   # .github/actions/oss-snapshot/snapshot-reuse.mjs.
   INPUTS_LABEL: pro.fabric.snapshot.inputs
+  # Reused components per reuse job; see the reuse job.
+  REUSE_SLOTS: 4
 
 jobs:
   policy-tests:
@@ -157,26 +159,32 @@ jobs:
                   | sort_by(.created_at) | last // empty')
             if [[ -n "$RUN" ]]; then
               PREVIOUS_SHA=$(jq -r '.head_sha' <<<"$RUN")
-              jq -n --arg sha "$PREVIOUS_SHA" --arg run "$(jq -r '.id' <<<"$RUN")" \
-                '{sourceSha: $sha, run: $run, images: {}}' >"$PREVIOUS"
+              INSPECTED="$RUNNER_TEMP/inspected"
+              mkdir -p "$INSPECTED"
+              # All tags at once. A tag that cannot be read rebuilds that
+              # component.
               for component in $(node "$MODULE" components); do
-                # A tag that cannot be read rebuilds that component.
-                if image=$(docker buildx imagetools inspect "$SNAPSHOT_NAMESPACE/$component:$PREVIOUS_SHA" --format '{{json .}}'); then
-                  jq --arg component "$component" --argjson image "$image" \
-                    '.images[$component] = {digest: $image.manifest.digest, labels: ($image.image.config.Labels // {}), created: $image.image.created}' \
-                    "$PREVIOUS" >"$PREVIOUS.next"
-                  mv "$PREVIOUS.next" "$PREVIOUS"
-                fi
+                docker buildx imagetools inspect "$SNAPSHOT_NAMESPACE/$component:$PREVIOUS_SHA" --format '{{json .}}' \
+                  >"$INSPECTED/$component.json" || rm -f "$INSPECTED/$component.json" &
               done
+              wait
+              shopt -s nullglob
+              jq -n --arg sha "$PREVIOUS_SHA" --arg run "$(jq -r '.id' <<<"$RUN")" '
+                  {sourceSha: $sha, run: $run, images: (reduce inputs as $image ({};
+                    .[input_filename | split("/") | last | rtrimstr(".json")] =
+                      {digest: $image.manifest.digest, labels: ($image.image.config.Labels // {}), created: $image.image.created}))}' \
+                "$INSPECTED"/*.json </dev/null >"$PREVIOUS"
             fi
             PLAN=$(node "$MODULE" plan --reuse true --sha "$GITHUB_SHA" --images "$IMAGES" --previous "$PREVIOUS")
           else
             PLAN=$(node "$MODULE" plan --reuse false)
           fi
+          # Reused components go to the reuse job in chunks of REUSE_SLOTS.
           {
             echo "build=$(jq -c '{include: .build}' <<<"$PLAN")"
             echo "build_count=$(jq '.build | length' <<<"$PLAN")"
-            echo "reuse=$(jq -c '{include: .reuse}' <<<"$PLAN")"
+            echo "reuse=$(jq -c --argjson slots "$REUSE_SLOTS" '{include: [.reuse | range(0; length; $slots) as $start
+                | .[$start:$start + $slots] | {chunk: ($start / $slots + 1), names: (map(.component) | join(", ")), components: .}]}' <<<"$PLAN")"
             echo "reuse_count=$(jq '.reuse | length' <<<"$PLAN")"
           } >>"$GITHUB_OUTPUT"
           {
@@ -190,7 +198,12 @@ jobs:
     name: Build and attest ${{ matrix.component }}
     needs: [policy-tests, plan]
     if: needs.policy-tests.outputs.build == 'true' && needs.plan.outputs.build_count != '0' && github.repository == 'Fabric-Pro/fabric-dev' && vars.STAGING_RELEASE_ENABLED == 'true' && (github.ref == 'refs/heads/staging' || startsWith(github.ref, 'refs/heads/promotion/'))
-    runs-on: ubuntu-latest
+    # Automatic staging pushes build on the GitHub-hosted 8-core x64 runner:
+    # the build and SBOM scan are faster and its disk needs no reclaim (see
+    # the first step). It costs more per run; the owner chose delivery speed
+    # on 2026-10-23 (the contract test records the measurement). Promotion and
+    # manual recovery builds keep the standard runner.
+    runs-on: ${{ github.event_name == 'push' && github.ref == 'refs/heads/staging' && 'ubuntu-8core' || 'ubuntu-latest' }}
     timeout-minutes: 90
     permissions:
       contents: read
@@ -203,7 +216,59 @@ jobs:
     env:
       IMAGE_NAME: ghcr.io/fabric-pro/fabric-dev-snapshots/${{ matrix.component }}
       SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
+      # Above the standard runner's 31 GB after a reclaim, so that runner keeps
+      # reclaiming and pruning exactly as before.
+      MIN_FREE_GB: 40
     steps:
+      # The standard runner's root disk can run out while an image rebuilds its
+      # dependency layer (any lockfile change) and exports its cache, as
+      # data-analyst did with "No space left on device". These preinstalled
+      # toolchains are not used by this job; removing them takes free space
+      # from about 13 GB to about 31 GB.
+      #
+      # Unlinking them is slow (50-255 s per job in October 2026) and used to
+      # block every step after it. It now starts first, one `rm` per directory
+      # in parallel, in the background, while checkout, Buildx setup, the
+      # package checks and the GHCR login run. "Wait for runner disk reclaim"
+      # then blocks the build until every removal has finished, so the build
+      # still starts with exactly the free space it had before. The runner
+      # only reaps background processes when the job ends, not between steps.
+      #
+      # It runs only below MIN_FREE_GB. The standard runner (13 GB) always
+      # reclaims, as before; the 8-core runner had 371 GB free in every
+      # measured job, including full dependency-layer rebuilds, and skips it.
+      - name: Start freeing runner disk for the image build
+        run: |
+          set -euo pipefail
+          df -h /
+          reclaim="$RUNNER_TEMP/disk-reclaim"
+          mkdir -p "$reclaim"
+          free=$(df --output=avail -B1G / | tail -1)
+          if (( free >= MIN_FREE_GB )); then
+            echo "${free// /} GB free, at least $MIN_FREE_GB GB: nothing to reclaim" >"$reclaim/log"
+            echo 0 >"$reclaim/status"
+            exit 0
+          fi
+          nohup bash -c '
+            pids=()
+            for dir in /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL; do
+              (
+                start=$SECONDS
+                status=0
+                sudo rm -rf "$dir" || status=$?
+                echo "$dir: exit $status after $((SECONDS - start))s"
+                exit "$status"
+              ) &
+              pids+=("$!")
+            done
+            status=0
+            for pid in "${pids[@]}"; do
+              wait "$pid" || status=1
+            done
+            echo "$status" >"$1/status.partial"
+            mv "$1/status.partial" "$1/status"
+          ' disk-reclaim "$reclaim" </dev/null >"$reclaim/log" 2>&1 &
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
@@ -217,16 +282,6 @@ jobs:
           ACTUAL_SHA=$(git rev-parse HEAD)
           [[ "$ACTUAL_SHA" == "$GITHUB_SHA" ]] \
             || { echo "::error::checkout is $ACTUAL_SHA, expected $GITHUB_SHA"; exit 1; }
-
-      # The hosted runner's root disk can run out while an image rebuilds its
-      # dependency layer (any lockfile change) and exports its cache, as
-      # data-analyst did with "No space left on device". These preinstalled
-      # toolchains are not used by this job.
-      - name: Free runner disk for the image build
-        run: |
-          df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h /
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -253,6 +308,23 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The build must not start before the disk is reclaimed (see the first
+      # step). A failed removal fails the job, as it did when it ran inline.
+      - name: Wait for runner disk reclaim
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          reclaim="$RUNNER_TEMP/disk-reclaim"
+          until [[ -f "$reclaim/status" ]]; do
+            sleep 2
+          done
+          cat "$reclaim/log"
+          df -h /
+          if [[ "$(cat "$reclaim/status")" != "0" ]]; then
+            echo "::error::Freeing runner disk failed; see the removal log above."
+            exit 1
+          fi
 
       - name: Build and push full-SHA snapshot
         id: build
@@ -284,8 +356,16 @@ jobs:
           cache-from: type=registry,ref=${{ env.CACHE_NAMESPACE }}/${{ matrix.component }}:staging
           cache-to: type=registry,ref=${{ env.CACHE_NAMESPACE }}/${{ matrix.component }}:staging,mode=max,ignore-error=true
 
+      # `df` records what the build left free: the evidence any later change
+      # to the disk reclaim above should be sized against. Syft reads the
+      # pushed image onto the same disk, so a runner below MIN_FREE_GB prunes.
       - name: Reclaim BuildKit space before SBOM scan
-        run: docker buildx prune --all --force
+        run: |
+          set -euo pipefail
+          df -h /
+          if (( $(df --output=avail -B1G / | tail -1) < MIN_FREE_GB )); then
+            docker buildx prune --all --force
+          fi
 
       - name: Generate SPDX SBOM from pushed digest
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
@@ -301,6 +381,26 @@ jobs:
           upload-artifact: false
           registry-username: ${{ github.actor }}
           registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The SBOM must describe the digest both attestations name. Syft records
+      # the SHA-256 of the manifest it read as the checksum of the package the
+      # document DESCRIBES, so any other subject fails before anything is
+      # attested.
+      - name: Verify the SBOM describes the built digest
+        env:
+          COMPONENT: ${{ matrix.component }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] \
+            || { echo "::error::build returned an invalid digest: $DIGEST"; exit 1; }
+          jq -e --arg hex "${DIGEST#sha256:}" '
+              [.relationships[]? | select(.spdxElementId == "SPDXRef-DOCUMENT" and .relationshipType == "DESCRIBES")
+                | .relatedSpdxElement] as $roots
+              | ($roots | length) == 1
+                and ([.packages[]? | select(.SPDXID == $roots[0]) | .checksums[]? | select(.algorithm == "SHA256")
+                      | .checksumValue] == [$hex])' "${COMPONENT}.spdx.json" >/dev/null \
+            || { echo "::error::${COMPONENT}.spdx.json does not describe ${IMAGE_NAME}@${DIGEST}"; exit 1; }
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
@@ -400,8 +500,15 @@ jobs:
           # complete evidence artifact below retains the same files for 90 days.
           retention-days: 1
 
+  # One job per chunk of up to REUSE_SLOTS reused components, rather than one
+  # per component: each of those spent about a minute and was billed two. The
+  # per-component checks are unchanged and run for every component at once
+  # (.github/actions/oss-snapshot/reuse-snapshots.sh); a component that fails
+  # fails its job and the run, and is named in the job, step and error.
+  # Attestation is still one action call per subject, so those steps are
+  # written out once per slot, and the chunk size keeps the job short.
   reuse:
-    name: Reuse and attest ${{ matrix.component }}
+    name: Reuse and attest ${{ matrix.names }}
     needs: [policy-tests, plan]
     if: needs.policy-tests.outputs.build == 'true' && needs.plan.outputs.reuse_count != '0' && github.repository == 'Fabric-Pro/fabric-dev' && vars.STAGING_RELEASE_ENABLED == 'true' && github.ref == 'refs/heads/staging'
     runs-on: ubuntu-latest
@@ -415,7 +522,8 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.reuse) }}
     env:
-      IMAGE_NAME: ghcr.io/fabric-pro/fabric-dev-snapshots/${{ matrix.component }}
+      REUSED: ${{ toJSON(matrix.components) }}
+      EVIDENCE_DIR: reused-evidence
       SOURCE_URL: ${{ github.server_url }}/${{ github.repository }}
       SIGNER_WORKFLOW: ${{ github.repository }}/.github/workflows/private-staging-images.yml
     steps:
@@ -437,16 +545,18 @@ jobs:
       - name: Verify private package identity and visibility
         env:
           GH_TOKEN: ${{ github.token }}
-          COMPONENT: ${{ matrix.component }}
           PRIVATE_STAGING_PACKAGE_BINDINGS: ${{ vars.PRIVATE_STAGING_PACKAGE_BINDINGS }}
           SOURCE_REPOSITORY: ${{ github.repository }}
           SOURCE_REPOSITORY_ID: ${{ github.repository_id }}
         run: |
           set -euo pipefail
-          for namespace in fabric-dev-snapshots fabric-dev-buildcache; do
-            PACKAGE=$(gh api "orgs/Fabric-Pro/packages/container/${namespace}%2F${COMPONENT}")
-            node .github/actions/oss-snapshot/package-registry-manifest.mjs \
-              "${namespace}/${COMPONENT}" <<<"$PACKAGE"
+          COMPONENTS=$(jq -er '.[].component' <<<"$REUSED")
+          for COMPONENT in $COMPONENTS; do
+            for namespace in fabric-dev-snapshots fabric-dev-buildcache; do
+              PACKAGE=$(gh api "orgs/Fabric-Pro/packages/container/${namespace}%2F${COMPONENT}")
+              node .github/actions/oss-snapshot/package-registry-manifest.mjs \
+                "${namespace}/${COMPONENT}" <<<"$PACKAGE"
+            done
           done
 
       - name: Log in to GHCR
@@ -458,166 +568,117 @@ jobs:
 
       # Only a digest that ops admission already accepted for the previous SHA
       # is reused: the same verification, bound to that SHA. Its image is
-      # unchanged, so its verified SBOM is carried forward unchanged.
-      - name: Verify the reused snapshot
+      # unchanged, so its verified SBOM is carried forward unchanged. Nothing
+      # is attested unless every component in the job verified.
+      - name: Verify the reused snapshots
+        id: verify
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          COMPONENT: ${{ matrix.component }}
-          DIGEST: ${{ matrix.digest }}
-          INPUTS: ${{ matrix.inputs }}
-          REUSED_SHA: ${{ matrix.reusedSourceSha }}
-          REUSED_RUN: ${{ matrix.reusedRun }}
-          BUILT_SHA: ${{ matrix.builtSourceSha }}
           REPOSITORY: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ && "$REUSED_SHA" =~ ^[0-9a-f]{40}$ && "$BUILT_SHA" =~ ^[0-9a-f]{40}$ ]] \
-            || { echo "::error::malformed reuse plan"; exit 1; }
-          COMMON_ARGS=(
-            --bundle-from-oci
-            --repo "$REPOSITORY"
-            --signer-workflow "$SIGNER_WORKFLOW"
-            --source-digest "$REUSED_SHA"
-            --source-ref "$GITHUB_REF"
-            --deny-self-hosted-runners
-          )
-          gh attestation verify "oci://${IMAGE_NAME}@${DIGEST}" "${COMMON_ARGS[@]}" >/dev/null
-          # Compact: the worker's SBOM pretty-printed exceeds the 16 MiB
-          # attestation limit that the original file stays under.
-          gh attestation verify "oci://${IMAGE_NAME}@${DIGEST}" "${COMMON_ARGS[@]}" \
-            --predicate-type https://spdx.dev/Document/v2.3 --format json \
-            | jq -ce '.[0].verificationResult.statement.predicate' >"${COMPONENT}.spdx.json"
-          IMAGE=$(docker buildx imagetools inspect "${IMAGE_NAME}@${DIGEST}" --format '{{json .}}')
-          jq -e --arg digest "$DIGEST" --arg label "$INPUTS_LABEL" --arg inputs "$INPUTS" --arg built "$BUILT_SHA" '
-              .manifest.digest == $digest
-              and .image.config.Labels[$label] == $inputs
-              and .image.config.Labels["org.opencontainers.image.revision"] == $built' <<<"$IMAGE" >/dev/null \
-            || { echo "::error::${IMAGE_NAME}@${DIGEST} does not carry the planned inputs"; exit 1; }
-          jq -n --arg image "$IMAGE_NAME" --arg digest "$DIGEST" --arg inputs "$INPUTS" \
-            --arg reusedSourceSha "$REUSED_SHA" --arg reusedRun "$REUSED_RUN" --arg builtSourceSha "$BUILT_SHA" \
-            '$ARGS.named' >reused.json
-          node .github/actions/oss-snapshot/snapshot-reuse.mjs provenance --reused "$(cat reused.json)" >provenance.json
+        run: bash .github/actions/oss-snapshot/reuse-snapshots.sh verify
 
-      - name: Attest build provenance
+      # An attestation action takes one subject, so each slot has its own pair
+      # of steps; the verify step refuses more components than slots.
+      - name: Attest build provenance for ${{ steps.verify.outputs.component_0 }}
+        if: steps.verify.outputs.digest_0 != ''
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-name: ${{ env.IMAGE_NAME }}
-          subject-digest: ${{ matrix.digest }}
+          subject-name: ${{ steps.verify.outputs.image_0 }}
+          subject-digest: ${{ steps.verify.outputs.digest_0 }}
           predicate-type: https://slsa.dev/provenance/v1
-          predicate-path: provenance.json
+          predicate-path: ${{ steps.verify.outputs.provenance_0 }}
           push-to-registry: true
           create-storage-record: false
 
-      - name: Attest SPDX SBOM
+      - name: Attest SPDX SBOM for ${{ steps.verify.outputs.component_0 }}
+        if: steps.verify.outputs.digest_0 != ''
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-name: ${{ env.IMAGE_NAME }}
-          subject-digest: ${{ matrix.digest }}
-          sbom-path: ${{ matrix.component }}.spdx.json
+          subject-name: ${{ steps.verify.outputs.image_0 }}
+          subject-digest: ${{ steps.verify.outputs.digest_0 }}
+          sbom-path: ${{ steps.verify.outputs.sbom_0 }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest build provenance for ${{ steps.verify.outputs.component_1 }}
+        if: steps.verify.outputs.digest_1 != ''
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.verify.outputs.image_1 }}
+          subject-digest: ${{ steps.verify.outputs.digest_1 }}
+          predicate-type: https://slsa.dev/provenance/v1
+          predicate-path: ${{ steps.verify.outputs.provenance_1 }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest SPDX SBOM for ${{ steps.verify.outputs.component_1 }}
+        if: steps.verify.outputs.digest_1 != ''
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.verify.outputs.image_1 }}
+          subject-digest: ${{ steps.verify.outputs.digest_1 }}
+          sbom-path: ${{ steps.verify.outputs.sbom_1 }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest build provenance for ${{ steps.verify.outputs.component_2 }}
+        if: steps.verify.outputs.digest_2 != ''
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.verify.outputs.image_2 }}
+          subject-digest: ${{ steps.verify.outputs.digest_2 }}
+          predicate-type: https://slsa.dev/provenance/v1
+          predicate-path: ${{ steps.verify.outputs.provenance_2 }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest SPDX SBOM for ${{ steps.verify.outputs.component_2 }}
+        if: steps.verify.outputs.digest_2 != ''
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.verify.outputs.image_2 }}
+          subject-digest: ${{ steps.verify.outputs.digest_2 }}
+          sbom-path: ${{ steps.verify.outputs.sbom_2 }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest build provenance for ${{ steps.verify.outputs.component_3 }}
+        if: steps.verify.outputs.digest_3 != ''
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.verify.outputs.image_3 }}
+          subject-digest: ${{ steps.verify.outputs.digest_3 }}
+          predicate-type: https://slsa.dev/provenance/v1
+          predicate-path: ${{ steps.verify.outputs.provenance_3 }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest SPDX SBOM for ${{ steps.verify.outputs.component_3 }}
+        if: steps.verify.outputs.digest_3 != ''
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.verify.outputs.image_3 }}
+          subject-digest: ${{ steps.verify.outputs.digest_3 }}
+          sbom-path: ${{ steps.verify.outputs.sbom_3 }}
           push-to-registry: true
           create-storage-record: false
 
       # Tagged only after both attestations exist. Admission waits for a tag
       # that is not there yet, but would refuse a tagged digest whose only
-      # attestations name the previous SHA.
-      - name: Tag the reused digest with the full SHA
-        env:
-          DIGEST: ${{ matrix.digest }}
-        run: |
-          set -euo pipefail
-          docker buildx imagetools create --prefer-index=false \
-            --tag "${IMAGE_NAME}:${GITHUB_SHA}" "${IMAGE_NAME}@${DIGEST}"
-          TAGGED=$(docker buildx imagetools inspect "${IMAGE_NAME}:${GITHUB_SHA}" --format '{{json .Manifest}}' | jq -r '.digest')
-          [[ "$TAGGED" == "$DIGEST" ]] \
-            || { echo "::error::${IMAGE_NAME}:${GITHUB_SHA} resolves to $TAGGED, expected $DIGEST"; exit 1; }
-
-      - name: Verify source- and workflow-bound attestations
+      # attestations name the previous SHA. Each tag is then verified with
+      # exactly admission's arguments and its manifest fragment written.
+      - name: Tag the reused digests with the full SHA
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DIGEST: ${{ matrix.digest }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          # Exactly the arguments ops admission uses, including registry-held
-          # bundles: the digest now also carries the reused run's attestations.
-          COMMON_ARGS=(
-            --bundle-from-oci
-            --repo "$REPOSITORY"
-            --signer-workflow "$SIGNER_WORKFLOW"
-            --source-digest "$GITHUB_SHA"
-            --source-ref "$GITHUB_REF"
-            --deny-self-hosted-runners
-          )
-          gh attestation verify "oci://${IMAGE_NAME}@${DIGEST}" "${COMMON_ARGS[@]}"
-          gh attestation verify "oci://${IMAGE_NAME}@${DIGEST}" \
-            "${COMMON_ARGS[@]}" \
-            --predicate-type https://spdx.dev/Document/v2.3
-
-      - name: Emit manifest fragment
-        env:
-          COMPONENT: ${{ matrix.component }}
-          DOCKERFILE: ${{ matrix.dockerfile }}
-          DIGEST: ${{ matrix.digest }}
-          INPUTS: ${{ matrix.inputs }}
-          REUSED_SHA: ${{ matrix.reusedSourceSha }}
-          REUSED_RUN: ${{ matrix.reusedRun }}
-          BUILT_SHA: ${{ matrix.builtSourceSha }}
           REPOSITORY: ${{ github.repository }}
           WORKFLOW_REF: ${{ github.workflow_ref }}
-        run: |
-          set -euo pipefail
-          jq -n \
-            --arg component "$COMPONENT" \
-            --arg dockerfile "$DOCKERFILE" \
-            --arg image "$IMAGE_NAME" \
-            --arg tag "$GITHUB_SHA" \
-            --arg digest "$DIGEST" \
-            --arg inputs "$INPUTS" \
-            --arg sourceSha "$GITHUB_SHA" \
-            --arg sourceRef "$GITHUB_REF" \
-            --arg sourceRepository "$REPOSITORY" \
-            --arg buildWorkflow "$WORKFLOW_REF" \
-            --arg signerWorkflow "$SIGNER_WORKFLOW" \
-            --arg sourceUrl "$SOURCE_URL" \
-            --arg reusedSha "$REUSED_SHA" \
-            --arg reusedRun "$REUSED_RUN" \
-            --arg builtSha "$BUILT_SHA" \
-            '{
-              schemaVersion: "1.0.0",
-              component: $component,
-              dockerfile: $dockerfile,
-              context: ".",
-              image: $image,
-              tag: $tag,
-              digest: $digest,
-              inputs: $inputs,
-              sourceSha: $sourceSha,
-              sourceRef: $sourceRef,
-              sourceRepository: $sourceRepository,
-              buildWorkflow: $buildWorkflow,
-              signerWorkflow: $signerWorkflow,
-              labels: {
-                "org.opencontainers.image.source": $sourceUrl,
-                "org.opencontainers.image.revision": $builtSha
-              },
-              attestations: {
-                provenance: "https://slsa.dev/provenance/v1",
-                sbom: "https://spdx.dev/Document/v2.3"
-              },
-              reuse: {
-                reusedFromSourceSha: $reusedSha,
-                reusedFromRun: $reusedRun,
-                builtFromSourceSha: $builtSha
-              }
-            }' > "${COMPONENT}.manifest.json"
+        run: bash .github/actions/oss-snapshot/reuse-snapshots.sh publish
 
       - name: Upload component evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: oss-snapshot-part-${{ matrix.component }}
-          path: |
-            ${{ matrix.component }}.manifest.json
-            ${{ matrix.component }}.spdx.json
+          name: oss-snapshot-part-reused-${{ matrix.chunk }}
+          path: ${{ env.EVIDENCE_DIR }}/
           if-no-files-found: error
           retention-days: 1
 

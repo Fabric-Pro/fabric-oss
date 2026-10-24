@@ -17,8 +17,9 @@
  *
  * The two block-boundary cases are fixed: a fence delimiter is no longer
  * marker-wrapped, so the fence survives and each mark opens and closes inside
- * one block. The placeholder leak is a separate, still-open defect and stays
- * marked `it.fails`, so it turns RED the moment someone fixes it.
+ * one block. The placeholder leak is fixed too: a marker that opens inside a
+ * fence is no longer extracted as a whole fence, so the closer and the next
+ * opener are never read as one empty fence.
  */
 
 import { diffPartialText, fromMarkdown } from "@saas/projects/lib/diff-utils";
@@ -72,7 +73,7 @@ describe("deletion spanning a fence boundary", () => {
 		expect(marksAreBlockBalanced(html)).toBe(true);
 	});
 
-	it.fails("does not leak the internal fence placeholder into output", () => {
+	it("does not leak the internal fence placeholder into output", () => {
 		const oldDoc = [
 			`${FENCE}ts`,
 			"a;",
@@ -86,7 +87,6 @@ describe("deletion spanning a fence boundary", () => {
 
 		const html = fromMarkdown(diffPartialText(oldDoc, newDoc, true));
 
-		// Today the placeholder is rendered literally inside the code block.
 		expect(html).not.toContain("DIFF_FENCE_");
 	});
 });

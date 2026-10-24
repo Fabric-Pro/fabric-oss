@@ -644,6 +644,7 @@ type Wired = {
 	__handler: (args: {
 		input: Record<string, unknown>;
 		context: unknown;
+		signal?: AbortSignal;
 	}) => Promise<unknown>;
 	__chain: unknown[];
 	__route: { method?: string; path?: string } | undefined;
@@ -695,6 +696,7 @@ export async function call(
 	procedure: unknown,
 	rawInput: Record<string, unknown>,
 	userId: string = USERS.editor,
+	{ signal }: { signal?: AbortSignal } = {},
 ): Promise<unknown> {
 	if (!assertProjectPermission) {
 		throw new Error(
@@ -729,7 +731,9 @@ export async function call(
 			input = parsed.data as Record<string, unknown>;
 		}
 		if (index === wired.__chain.length) {
-			return { output: await wired.__handler({ input, context }) };
+			return {
+				output: await wired.__handler({ input, context, signal }),
+			};
 		}
 		const middleware = wired.__chain[index];
 		if (

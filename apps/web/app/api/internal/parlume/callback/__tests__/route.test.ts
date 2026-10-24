@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
 	settings: vi.fn(),
 	closeBridge: vi.fn(),
 	sendSpeakers: vi.fn(),
+	sendChat: vi.fn(),
 	log: vi.fn(),
 }));
 
@@ -27,6 +28,7 @@ vi.mock("../../lib", () => ({
 	callbackSecret: () => "callback-secret",
 	constantTimeEqual: (provided: string | null, expected: string) =>
 		provided === expected,
+	MAX_PARLUME_SEGMENT_CHARS: 20_000,
 }));
 
 vi.mock("@repo/api/modules/projects/lib/parlume-finalization", () => ({
@@ -40,6 +42,7 @@ vi.mock("@repo/api/modules/projects/lib/parlume-attendee", () => ({
 		mocks.closeBridge(...args),
 	sendParlumeSpeakerUpdates: (...args: unknown[]) =>
 		mocks.sendSpeakers(...args),
+	sendParlumeChatMessage: (...args: unknown[]) => mocks.sendChat(...args),
 }));
 
 vi.mock("@repo/api/modules/projects/lib/parlume-log", () => ({
@@ -596,5 +599,120 @@ describe("Parlume speech events", () => {
 
 		expect(response.status).toBe(401);
 		expect(mocks.sendSpeakers).not.toHaveBeenCalled();
+	});
+});
+
+function chatMessage(
+	overrides: Record<string, unknown> = {},
+	token: string | null = "callback-secret",
+) {
+	return webhook(
+		{
+			trigger: "chat_messages.update",
+			data: {
+				id: "msg_1",
+				to: "everyone",
+				text: "@Fabric Parlume what changed?",
+				timestamp: 1_700_000_000,
+				timestamp_ms: 1_700_000_000_000,
+				sender_name: "Dev One",
+				sender_uuid: "participant-1",
+				sender_user_uuid: null,
+				additional_data: {},
+				...overrides,
+			},
+		},
+		token,
+	);
+}
+
+describe("Parlume meeting chat messages", () => {
+	beforeEach(() => {
+		mocks.sendChat.mockResolvedValue(undefined);
+	});
+
+	it("relays a chat message to the session's bridge", async () => {
+		const response = await POST(chatMessage());
+
+		expect(response.status).toBe(200);
+		expect(mocks.findFirst).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: {
+					id: "session-1",
+					providerBotId: "bot-1",
+					status: { in: ["JOINING", "ACTIVE", "LEAVING"] },
+				},
+			}),
+		);
+		expect(mocks.sendChat).toHaveBeenCalledWith({
+			settings: { bridgeUrl: "wss://bridge.example" },
+			sessionId: "session-1",
+			message: {
+				id: "msg_1",
+				text: "@Fabric Parlume what changed?",
+				senderName: "Dev One",
+				senderId: "participant-1",
+				toBot: false,
+				timestampMs: 1_700_000_000_000,
+			},
+		});
+	});
+
+	it("marks a private message to the bot", async () => {
+		await POST(chatMessage({ to: "only_bot" }));
+
+		expect(mocks.sendChat).toHaveBeenCalledWith(
+			expect.objectContaining({
+				message: expect.objectContaining({ toBot: true }),
+			}),
+		);
+	});
+
+	it.each([
+		["no id", { id: "" }],
+		["an over-long text", { text: "x".repeat(20_001) }],
+		["no timestamp", { timestamp_ms: "soon" }],
+		["an over-long sender", { sender_name: "x".repeat(257) }],
+	])("accepts and drops a message with %s", async (_label, overrides) => {
+		const response = await POST(chatMessage(overrides));
+
+		expect(response.status).toBe(200);
+		expect(mocks.sendChat).not.toHaveBeenCalled();
+		expect(mocks.log).toHaveBeenCalledWith("warn", "callback.invalid", {
+			sessionId: "session-1",
+			trigger: "chat_messages.update",
+		});
+	});
+
+	it("asks Attendee to redeliver when the bridge cannot take it, without logging the text", async () => {
+		mocks.sendChat.mockRejectedValue(new Error("bridge down"));
+
+		const response = await POST(chatMessage());
+
+		expect(response.status).toBe(503);
+		expect(mocks.log).toHaveBeenCalledWith(
+			"warn",
+			"callback.chat_forward_failed",
+			expect.objectContaining({ sessionId: "session-1" }),
+		);
+		expect(JSON.stringify(mocks.log.mock.calls)).not.toContain(
+			"what changed",
+		);
+	});
+
+	it("drops a message for a session that is over", async () => {
+		mocks.findFirst.mockResolvedValue(null);
+
+		const response = await POST(chatMessage());
+
+		expect(response.status).toBe(200);
+		expect(mocks.sendChat).not.toHaveBeenCalled();
+	});
+
+	it("rejects a chat message with the wrong token", async () => {
+		const response = await POST(chatMessage({}, "stale-token"));
+
+		expect(response.status).toBe(401);
+		expect(mocks.sendChat).not.toHaveBeenCalled();
 	});
 });

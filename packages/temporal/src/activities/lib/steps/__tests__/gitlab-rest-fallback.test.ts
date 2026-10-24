@@ -48,7 +48,7 @@ function officialMcpThatThrowsMethodNotFound(method: string) {
 	};
 }
 
-describe("GitLab Temporal steps — REST fallback after official MCP -32601", () => {
+describe("GitLab Temporal steps — REST from an official MCP source", () => {
 	it("gitlab-search-issues falls back to REST instead of throwing 'REST fallback requires a REST source'", async () => {
 		mockedResolver.mockResolvedValueOnce(
 			officialMcpThatThrowsMethodNotFound("list_issues"),
@@ -104,10 +104,8 @@ describe("GitLab Temporal steps — REST fallback after official MCP -32601", ()
 			organizationId: undefined,
 		});
 
-		expect(source.callTool).toHaveBeenCalledWith(
-			"get_file_contents",
-			expect.objectContaining({ ref: "HEAD" }),
-		);
+		// GitLab's official MCP server has no get_file_contents tool.
+		expect(source.callTool).not.toHaveBeenCalled();
 		expect(vi.mocked(gitlabFetch)).toHaveBeenCalledWith(
 			expect.anything(),
 			expect.stringContaining("/repository/files/"),

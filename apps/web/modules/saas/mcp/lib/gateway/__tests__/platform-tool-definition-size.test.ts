@@ -30,7 +30,14 @@ import { PLATFORM_TOOL_DEFINITIONS } from "../platform-tools";
 // Keep that exact combined allowance, with no extra headroom.
 // A step-built workflow's `projectId` on create adds 31: without it a graph
 // workflow could not belong to a project, so no project rule reached its runs.
-const TOTAL_BUDGET = 53_244 + 2_118 + 31;
+// The generated-diagram marker (Fizzy #2946) adds 172 to the document read and
+// write: an agent rewriting a body must know before the call to keep a
+// diagram's `%% fabric-visual:` line. 9 of them fit the slack left above.
+// The marker's limits add 188 to the write: Fabric restores it only for an
+// unchanged diagram body, and an agent must not invent or copy one.
+// A diagram's `%% caption:` line (Fizzy #2946) adds 52 to the read and 63 to
+// the write: an agent rewriting a body must know the line is the caption.
+const TOTAL_BUDGET = 53_244 + 2_118 + 31 + 163 + 188 + 115;
 // The complete bounded sprint config makes configure-story-review the largest
 // pre-call schema at 2,334 characters. Other tools retain the original cap below.
 const PER_TOOL_BUDGET = 2_190;

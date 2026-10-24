@@ -26,6 +26,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { computeAppliedProposalIndexes } from "../../../workflows/backlog-apply-outcome";
 import { unwrapPmSyncError } from "../../../workflows/pm-sync-error-unwrap";
 
 const { mocks } = vi.hoisted(() => ({
@@ -132,6 +133,63 @@ describe("finalizePendingProposalActivity — terminal-state writes", () => {
 		expect(call.appliedCount).toBe(2);
 		expect(call.errors).toEqual([
 			"3 item(s) changed in the PM tool — resolve in the Review Center.",
+		]);
+	});
+
+	it("AI Update chat apply with one Fizzy conflict → session counts the rest as applied", async () => {
+		// Fizzy #3238: a chat apply carries no `approvedChangeIndexes`, so the
+		// workflow derives the applied indexes from positions. Before the fix it
+		// sent none, and the session read "0 applied" with every change failed.
+		const appliedChangeIndexes = computeAppliedProposalIndexes({
+			fabricSucceededPositions: [0, 1, 2],
+			syncToPM: true,
+			pmSucceededPositions: new Set([0, 2]),
+			pmNotNeededPositions: new Set<number>(),
+			pmTicketMissingPositions: new Set<number>(),
+			pmConflictPositions: new Set([1]),
+		});
+		await finalizePendingProposalActivity({
+			proposalId: "p-chat",
+			outcome: "applied",
+			appliedChangeIndexes,
+			pmConflictCount: 1,
+		});
+		expect(mocks.appendAppliedChangeIndexes).toHaveBeenCalledWith(
+			"p-chat",
+			[0, 1, 2],
+		);
+		const call = mocks.finalizeBacklogUpdateSession.mock.calls[0][0];
+		expect(call.status).toBe("PARTIALLY_APPLIED");
+		expect(call.appliedCount).toBe(2);
+		expect(call.errors).toEqual([
+			"1 item(s) changed in the PM tool — resolve in the Review Center.",
+		]);
+	});
+
+	it("failed outcome with a conflict → conflict is not counted applied and both notes are kept", async () => {
+		// Item 0 applied and synced, item 1 applied but conflicted, item 2
+		// failed in Fabric. Only item 0 is fully done.
+		const appliedChangeIndexes = computeAppliedProposalIndexes({
+			fabricSucceededPositions: [0, 1],
+			syncToPM: true,
+			pmSucceededPositions: new Set([0]),
+			pmNotNeededPositions: new Set<number>(),
+			pmTicketMissingPositions: new Set<number>(),
+			pmConflictPositions: new Set([1]),
+		});
+		await finalizePendingProposalActivity({
+			proposalId: "p-mixed",
+			outcome: "failed",
+			appliedChangeIndexes,
+			pmConflictCount: 1,
+			errorMessage: "item 2 failed",
+		});
+		const call = mocks.finalizeBacklogUpdateSession.mock.calls[0][0];
+		expect(call.status).toBe("PARTIALLY_APPLIED");
+		expect(call.appliedCount).toBe(1);
+		expect(call.errors).toEqual([
+			"item 2 failed",
+			"1 item(s) changed in the PM tool — resolve in the Review Center.",
 		]);
 	});
 

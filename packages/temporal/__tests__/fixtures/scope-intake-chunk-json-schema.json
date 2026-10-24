@@ -74,50 +74,22 @@
 							},
 							"existingId": {
 								"description": "Fabric DB ID of the existing item (for updates)",
-								"anyOf": [
-									{
-										"type": "string"
-									},
-									{
-										"type": "null"
-									}
-								]
+								"type": ["string", "null"]
 							},
 							"existingIdentifier": {
 								"description": "Fabric identifier like EPIC-001, FEAT-002, F-003 (for updates)",
-								"anyOf": [
-									{
-										"type": "string"
-									},
-									{
-										"type": "null"
-									}
-								]
+								"type": ["string", "null"]
 							},
 							"existingExternalId": {
 								"description": "External PM tool ID (for updates)",
-								"anyOf": [
-									{
-										"type": "string"
-									},
-									{
-										"type": "null"
-									}
-								]
+								"type": ["string", "null"]
 							},
 							"title": {
 								"type": "object",
 								"properties": {
 									"from": {
 										"description": "Current title (for updates)",
-										"anyOf": [
-											{
-												"type": "string"
-											},
-											{
-												"type": "null"
-											}
-										]
+										"type": ["string", "null"]
 									},
 									"to": {
 										"type": "string",
@@ -132,14 +104,7 @@
 								"properties": {
 									"from": {
 										"description": "Current description",
-										"anyOf": [
-											{
-												"type": "string"
-											},
-											{
-												"type": "null"
-											}
-										]
+										"type": ["string", "null"]
 									},
 									"to": {
 										"type": "string",
@@ -154,14 +119,7 @@
 								"properties": {
 									"from": {
 										"description": "Current acceptance criteria",
-										"anyOf": [
-											{
-												"type": "string"
-											},
-											{
-												"type": "null"
-											}
-										]
+										"type": ["string", "null"]
 									},
 									"to": {
 										"type": "string",
@@ -176,14 +134,7 @@
 								"properties": {
 									"from": {
 										"description": "Current value",
-										"anyOf": [
-											{
-												"type": "string"
-											},
-											{
-												"type": "null"
-											}
-										]
+										"type": ["string", "null"]
 									},
 									"to": {
 										"type": "string",
@@ -198,14 +149,7 @@
 								"properties": {
 									"from": {
 										"description": "Current value",
-										"anyOf": [
-											{
-												"type": "string"
-											},
-											{
-												"type": "null"
-											}
-										]
+										"type": ["string", "null"]
 									},
 									"to": {
 										"type": "string",
@@ -217,80 +161,31 @@
 							},
 							"parentEpicIdentifier": {
 								"description": "Identifier of the parent epic (e.g. EPIC-001) for features",
-								"anyOf": [
-									{
-										"type": "string"
-									},
-									{
-										"type": "null"
-									}
-								]
+								"type": ["string", "null"]
 							},
 							"parentFeatureIdentifier": {
 								"description": "Identifier of the parent feature (e.g. FEAT-001) for stories",
-								"anyOf": [
-									{
-										"type": "string"
-									},
-									{
-										"type": "null"
-									}
-								]
+								"type": ["string", "null"]
 							},
 							"parentEpicTitle": {
 								"description": "Title of the parent epic (used when creating new epics inline)",
-								"anyOf": [
-									{
-										"type": "string"
-									},
-									{
-										"type": "null"
-									}
-								]
+								"type": ["string", "null"]
 							},
 							"parentFeatureTitle": {
 								"description": "Title of the parent feature (used when creating new features inline)",
-								"anyOf": [
-									{
-										"type": "string"
-									},
-									{
-										"type": "null"
-									}
-								]
+								"type": ["string", "null"]
 							},
 							"reasoning": {
 								"description": "Why this change is proposed, referencing specific context",
-								"anyOf": [
-									{
-										"type": "string"
-									},
-									{
-										"type": "null"
-									}
-								]
+								"type": ["string", "null"]
 							},
 							"sourceContext": {
 								"description": "Which context source(s) informed this change (e.g. teams_messages, meeting_transcript, notion_page, or multiple)",
-								"anyOf": [
-									{
-										"type": "string"
-									},
-									{
-										"type": "null"
-									}
-								]
+								"type": ["string", "null"]
 							},
 							"sourceRef": {
 								"description": "Customer's own line id from the scope document (e.g. VIS-02). Not a PM-tool id.",
-								"anyOf": [
-									{
-										"type": "string"
-									},
-									{
-										"type": "null"
-									}
-								]
+								"type": ["string", "null"]
 							},
 							"labels": {
 								"description": "Labels to apply on create, e.g. [\"phase:1\", \"area:VIS\"]",
@@ -308,14 +203,7 @@
 							},
 							"sourceDependencyRaw": {
 								"description": "Raw dependency cell from the source table, e.g. P1–2",
-								"anyOf": [
-									{
-										"type": "string"
-									},
-									{
-										"type": "null"
-									}
-								]
+								"type": ["string", "null"]
 							},
 							"dependsOnRefs": {
 								"description": "Explicit prerequisite line ids named in the document, e.g. [INT-01, INT-02]",
@@ -347,14 +235,7 @@
 							},
 							"sourceChangeKey": {
 								"description": "Stable idempotency key for this change: the context id and the sourceRef joined by a colon",
-								"anyOf": [
-									{
-										"type": "string"
-									},
-									{
-										"type": "null"
-									}
-								]
+								"type": ["string", "null"]
 							},
 							"deliveryTrack": {
 								"description": "Delivery track preset, when the source states one",
@@ -386,14 +267,7 @@
 							"properties": {
 								"purpose": {
 									"description": "One sentence: what the product is for",
-									"anyOf": [
-										{
-											"type": "string"
-										},
-										{
-											"type": "null"
-										}
-									]
+									"type": ["string", "null"]
 								},
 								"coreActions": {
 									"description": "2–5 verbs: the core actions a user takes",
@@ -411,14 +285,7 @@
 								},
 								"cycle": {
 									"description": "The repeating loop the product supports (e.g. plan → build → review)",
-									"anyOf": [
-										{
-											"type": "string"
-										},
-										{
-											"type": "null"
-										}
-									]
+									"type": ["string", "null"]
 								}
 							},
 							"additionalProperties": false

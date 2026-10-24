@@ -25,7 +25,7 @@ vi.mock("@repo/database", () => ({
 	getAiProviderApiKeyByProvider: vi.fn(),
 	getModelByCanonicalName: mocks.getModel,
 	isGatewayProvider: (provider: string) => provider === "VERCEL_GATEWAY",
-	setOrgModelPreference: mocks.setOrg,
+	replaceOrgModelPreferenceForTask: mocks.setOrg,
 	setUserModelPreference: mocks.setUser,
 }));
 
@@ -52,7 +52,10 @@ vi.mock("../../../../organizations/lib/membership", () => ({
 	requireOrgMembership: vi.fn(async () => ({ id: "member-1" })),
 }));
 
-import { assertEmbeddingPreferenceFitsVectorStore } from "../../../lib/embedding-model-guard";
+import {
+	assertEmbeddingModelFitsVectorStore,
+	assertEmbeddingPreferenceFitsVectorStore,
+} from "../../../lib/embedding-model-guard";
 import { setOrgModelPreferenceProcedure } from "../set-org";
 import { setUserModelPreferenceProcedure } from "../set-user";
 
@@ -188,4 +191,18 @@ describe("making a provider the documents provider", () => {
 			}),
 		);
 	});
+});
+
+describe("canonical embedding width guard", () => {
+	it.each(["databricks-gte-large-en", "unknown-embedding"])(
+		"refuses %s",
+		(canonicalName) => {
+			expect(() =>
+				assertEmbeddingModelFitsVectorStore("EMBEDDING", {
+					canonicalName,
+					displayName: canonicalName,
+				}),
+			).toThrow(expect.objectContaining({ code: "BAD_REQUEST" }));
+		},
+	);
 });

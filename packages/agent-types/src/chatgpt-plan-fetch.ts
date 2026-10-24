@@ -460,7 +460,26 @@ export function redactChatGptPlanHeaders(
 	return redacted;
 }
 
+/** Hash a conversation, workflow execution, or thread key without disclosing it. */
+export async function chatGptPlanSessionId(key: string): Promise<string> {
+	const digest = await globalThis.crypto.subtle.digest(
+		"SHA-256",
+		new TextEncoder().encode(`fabric:chatgpt-plan-session:v1:${key}`),
+	);
+	const hex = Array.from(new Uint8Array(digest), (byte) =>
+		byte.toString(16).padStart(2, "0"),
+	)
+		.join("")
+		.slice(0, 32);
+	return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 export interface ChatGptPlanFetchOptions {
+	/**
+	 * Opaque per-conversation key, hashed before sending. Omitted or blank keys
+	 * use a random session per fetch instance. Never a user or organization ID.
+	 */
+	sessionKey?: string;
 	getAccessToken: () => Promise<string>;
 	/** Forces a refresh when the server rejects `failedToken`; see token manager. */
 	onUnauthorized?: (failedToken: string) => Promise<string>;
@@ -523,6 +542,7 @@ function isExhaustedReply(response: Response): boolean {
  * non-streaming calls by aggregating the stream.
  */
 export function createChatGptPlanFetch({
+	sessionKey,
 	getAccessToken,
 	onUnauthorized,
 	onResponseHeaders,
@@ -531,7 +551,13 @@ export function createChatGptPlanFetch({
 	beforeResend,
 	baseFetch = fetch,
 }: ChatGptPlanFetchOptions): typeof fetch {
+	const key = sessionKey?.trim();
+	let sessionIdPromise: Promise<string> | undefined;
 	return (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+		sessionIdPromise ??= key
+			? chatGptPlanSessionId(key)
+			: Promise.resolve(globalThis.crypto.randomUUID());
+		const sessionId = await sessionIdPromise;
 		const url =
 			typeof input === "string"
 				? input
@@ -560,6 +586,8 @@ export function createChatGptPlanFetch({
 		const send = (token: string) => {
 			const headers = new Headers(init?.headers);
 			headers.set("authorization", `Bearer ${token}`);
+			// The plan backend cached prompts only with session_id in the measured probe; tests cover header propagation.
+			headers.set("session_id", sessionId);
 			const signal = beforeSend
 				? beforeSend(init?.signal ?? undefined)
 				: init?.signal;

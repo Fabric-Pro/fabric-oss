@@ -15,9 +15,14 @@ import {
 	conversationMessageAppendedSchema,
 	type DocumentChangePayload,
 	documentChangeSchema,
+	getConversationChannelName,
 	getProjectChannelName,
+	type MessageAppendedPayload,
+	type RealtimeRelayRequest,
+	type RelayedEventRealtime,
 	emitActivity as sharedEmitActivity,
 	emitContextChange as sharedEmitContextChange,
+	emitConversationMessageAppended as sharedEmitConversationMessageAppended,
 	emitDocumentChange as sharedEmitDocumentChange,
 } from "@repo/utils/realtime-emit";
 import { Realtime } from "@upstash/realtime";
@@ -26,8 +31,9 @@ import { z } from "zod";
 
 // Conversation-channel emit helpers live in `@repo/utils` (since
 // `@repo/temporal` static-imports them and cannot depend on `@repo/api`).
-// We re-export them here so existing callers that import from
-// `@repo/api/lib/realtime` keep working without changes.
+// The channel-name helpers are re-exported here; `emitConversationMessageAppended`
+// is wrapped (below) to hand the shared emitter this module's client, so an
+// API caller never takes the worker's relay path (Fizzy #2946).
 //
 // `emitContextChange` and `emitActivity` are implemented there too since the
 // synced-file deletion workflow publishes its deletes itself (Fizzy #2636),
@@ -42,7 +48,6 @@ export type {
 	DocumentChangePayload,
 } from "@repo/utils/realtime-emit";
 export {
-	emitConversationMessageAppended,
 	getConversationChannelName,
 	getProjectChannelName,
 } from "@repo/utils/realtime-emit";
@@ -221,10 +226,24 @@ export function getProjectRealtime(): Realtime<RealtimeOptions> | null {
 	}
 }
 
-// `getConversationChannelName`, `getProjectChannelName` and
-// `emitConversationMessageAppended` are re-exported from
-// `@repo/utils/realtime-emit` at the top of this file. See the comment block
-// there for the rationale (Temporal worker cannot reach @repo/api).
+// `getConversationChannelName` and `getProjectChannelName` are re-exported
+// from `@repo/utils/realtime-emit` at the top of this file. See the comment
+// block there for the rationale (Temporal worker cannot reach @repo/api).
+
+/**
+ * Emit a `message_appended` event, through this module's Realtime client.
+ * Never throws. Passing the client keeps the API off the shared emitter's
+ * default, which relays through the web without Upstash: a web process
+ * must not POST its own events to itself, or to another app URL.
+ */
+export function emitConversationMessageAppended(
+	payload: MessageAppendedPayload,
+): Promise<void> {
+	// Typed through the shared interface, for the zod-copy reason
+	// `publishRelayedEvent` gives.
+	const client: RelayedEventRealtime | null = getProjectRealtime();
+	return sharedEmitConversationMessageAppended(payload, client);
+}
 
 /**
  * Emit a context change event, through this module's Realtime client (the
@@ -242,6 +261,52 @@ export function emitContextChange(
  */
 export function emitActivity(payload: ActivityPayload): Promise<void> {
 	return sharedEmitActivity(payload, getProjectRealtime());
+}
+
+/**
+ * Publish one event a worker relayed to the web
+ * (`apps/web/app/api/internal/realtime-emit`; the relay is described in
+ * `@repo/utils/realtime-emit`) on this module's client, the one the SSE
+ * routes subscribe through. Returns false when realtime is not configured
+ * here. Unlike the emit helpers it lets a failed publish throw, so the route
+ * can answer with an error, and it never relays the event on.
+ */
+export async function publishRelayedEvent(
+	relayed: RealtimeRelayRequest,
+): Promise<boolean> {
+	const realtime = getProjectRealtime();
+	if (!realtime) {
+		return false;
+	}
+
+	// Typed through the shared interface, as the shared emitters take this
+	// client: the shared schemas come from another zod copy than the one this
+	// module's `Realtime` type resolves event names with. One case per
+	// event, since `emit` takes one event name at a time.
+	const client: RelayedEventRealtime = realtime;
+	switch (relayed.event) {
+		case "message_appended":
+			await client
+				.channel(getConversationChannelName(relayed.id))
+				.emit("message_appended", relayed.data);
+			break;
+		case "context_change":
+			await client
+				.channel(getProjectChannelName(relayed.id))
+				.emit("context_change", relayed.data);
+			break;
+		case "activity":
+			await client
+				.channel(getProjectChannelName(relayed.id))
+				.emit("activity", relayed.data);
+			break;
+		case "document_change":
+			await client
+				.channel(getProjectChannelName(relayed.id))
+				.emit("document_change", relayed.data);
+			break;
+	}
+	return true;
 }
 
 /**

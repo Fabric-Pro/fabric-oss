@@ -1,3 +1,4 @@
+import { guardToolsAgainstRepeatedCalls } from "@repo/agent-types/repeated-tool-call-guard";
 import { makeStepCacheBreakpoint } from "@repo/ai/prompt-cache";
 import { generateText, isStepCount } from "ai";
 import { Hono } from "hono";
@@ -6,6 +7,7 @@ import { withRetry } from "../lib/retry.js";
 import {
 	extractText,
 	getVerifiedTenant,
+	guardToolsAgainstCancellation,
 	normalizeMetadata,
 	sseTextResponse,
 } from "../lib/route-utils.js";
@@ -55,22 +57,41 @@ async function buildThreadResponse(
 		const tools = createReadOnlySandboxTools(sandbox);
 
 		const result = await withRetry(
-			() =>
-				generateText({
+			() => {
+				const attemptTools = { ...tools };
+				guardToolsAgainstRepeatedCalls(attemptTools, {
+					onRepeat: (toolName, count) => {
+						console.warn(
+							"Weave thread tool returned a repeated result",
+							{ toolName, count },
+						);
+					},
+				});
+				guardToolsAgainstCancellation(
+					attemptTools,
+					honoCtx?.req.raw.signal,
+				);
+				return generateText({
+					abortSignal: honoCtx?.req.raw.signal,
 					model,
 					instructions: THREAD_SYSTEM_PROMPT,
 					messages: [
 						{ role: "user", content: contextParts.join("\n") },
 					],
-					tools,
+					tools: attemptTools,
 					stopWhen: isStepCount(MAX_TOOL_STEPS),
 					prepareStep: makeStepCacheBreakpoint({
 						provider,
 						modelString,
 						hasTools: true,
 					}),
-				}),
-			{ label: "thread-generateText", circuitKey: "thread" },
+				});
+			},
+			{
+				label: "thread-generateText",
+				circuitKey: "thread",
+				signal: honoCtx?.req.raw.signal,
+			},
 		);
 
 		return result.text;
@@ -85,11 +106,16 @@ async function buildThreadResponse(
 	const result = await withRetry(
 		() =>
 			generateText({
+				abortSignal: honoCtx?.req.raw.signal,
 				model,
 				instructions: THREAD_SYSTEM_PROMPT,
 				messages: [{ role: "user", content: contextParts.join("\n") }],
 			}),
-		{ label: "thread-generateText", circuitKey: "thread" },
+		{
+			label: "thread-generateText",
+			circuitKey: "thread",
+			signal: honoCtx?.req.raw.signal,
+		},
 	);
 
 	return `${result.text}\n\n> **Note:** This analysis was performed without sandbox access. Results may be less thorough than a full codebase inspection.`;
@@ -124,8 +150,6 @@ threadRoute.post("/inspect", async (c) => {
 		);
 	}
 });
-
-threadRoute.post("/a2a/send", async (c) => threadRoute.fetch(c.req.raw));
 
 threadRoute.get("/health", (c) =>
 	c.json({

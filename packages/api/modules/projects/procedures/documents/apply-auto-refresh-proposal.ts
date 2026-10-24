@@ -8,6 +8,7 @@ import {
 } from "@repo/database";
 import { isRunGuardedDocumentType } from "@repo/utils/generation-run-guard";
 import { preserveVisualSlots } from "@repo/utils/glossy/visual-slots";
+import { preserveVisualMarkers } from "@repo/utils/proposal-artifact/visual-identity";
 import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
 import { z } from "zod";
 import { applyDocumentUpdateSideEffects } from "../../../../lib/document-side-effects";
@@ -136,7 +137,13 @@ export const applyDocumentAutoRefreshProposalProcedure =
 				// the proposal is written unchanged.
 				document = await updateDocument(input.id, {
 					content: normalizeQuoteArtifacts(
-						preserveVisualSlots(current.content, pendingContent),
+						preserveVisualMarkers(
+							current.content,
+							preserveVisualSlots(
+								current.content,
+								pendingContent,
+							),
+						),
 					),
 					changeDescription: settings.pendingSummary ?? undefined,
 					// The accepting human, NOT the agent that drafted this.

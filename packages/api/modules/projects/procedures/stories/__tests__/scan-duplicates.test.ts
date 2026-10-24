@@ -1,3 +1,4 @@
+import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
 /**
  * Tests for `scanDuplicatesProcedure` — the manual roadmap scan, now a thin
  * wrapper (auth → shared core → bookkeeping) around `runDuplicateScanCore`.
@@ -998,4 +999,49 @@ describe("scanDuplicatesProcedure — embedding cache + verdict-driven verificat
 		expect(persistedRows.length).toBeGreaterThan(0);
 		expect(persistedRows.length).toBeLessThan(12);
 	});
+});
+
+describe("configuration refusal HTTP mapping", () => {
+	it.each(["incompatible model", "missing provider"])(
+		"returns the actionable precondition for %s",
+		async (kind) => {
+			const { AIProviderNotConfiguredError } = await import("@repo/ai");
+			const refusal =
+				kind === "incompatible model"
+					? new UnsupportedEmbeddingModelError(
+							"databricks-gte-large-en",
+						)
+					: new AIProviderNotConfiguredError(
+							"No embedding provider configured. Add one in Settings → AI Providers.",
+						);
+			mockListActiveStoriesForDetection.mockResolvedValue([
+				{
+					id: "example-one",
+					identifier: "F-1",
+					title: "Example one",
+					description: null,
+				},
+				{
+					id: "example-two",
+					identifier: "F-2",
+					title: "Example two",
+					description: null,
+				},
+			]);
+			if (kind === "incompatible model") {
+				mockGenerateEmbeddings.mockRejectedValue(refusal);
+			} else {
+				mockResolveModelWithProvider.mockResolvedValue({
+					apiKey: null,
+					modelString: "",
+					_error: refusal.message,
+				});
+			}
+			await expect(runScan()).rejects.toMatchObject({
+				code: "PRECONDITION_FAILED",
+				message: refusal.message,
+			});
+			expect(mockSetProjectLastDuplicateScanAt).not.toHaveBeenCalled();
+		},
+	);
 });

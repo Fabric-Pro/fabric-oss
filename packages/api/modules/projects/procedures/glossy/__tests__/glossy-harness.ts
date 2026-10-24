@@ -1,23 +1,24 @@
 /**
- * Shared world for the Glossy procedure tests (Fizzy #2589, U11).
+ * Shared world for the Glossy procedure tests (Fizzy #2589).
  *
  * Two organizations, two projects, and one user per access path:
  *
- *  - `owner`       — org A owner, creator of project A;
- *  - `editor`      — org A member with an EDITOR row on project A;
- *  - `guestViewer` — a VIEWER row on project A, no org A membership (AE7);
- *  - `guestEditor` — an EDITOR row on project A, no org A membership;
- *  - `outsider`    — org B owner, creator of project B.
+ *  - `owner`        — org A owner, creator of project A;
+ *  - `editor`       — org A member with an EDITOR row on project A;
+ *  - `memberViewer` — org A member with a VIEWER row on project A;
+ *  - `guestViewer`  — a VIEWER row on project A, no org A membership;
+ *  - `guestEditor`  — an EDITOR row on project A, no org A membership;
+ *  - `outsider`     — org B owner, creator of project B.
  *
  * The permission decision is the real one: `assertProjectPermission` and the
  * shared Glossy gate run against this world through a fake `db`. The Glossy
  * queries, Temporal, the model, storage, and the audit writer are mocks the
  * tests drive. `planGlossyKeys` and `resolveGlossyModel` are the real ones —
  * the latter over a fake `getAIModelWithMetadata` that honours an
- * organization key or the requesting editor's personal key (KTD21).
+ * organization key or the requesting editor's personal key.
  * `extractGlossyVisual` is the real one too, behind a spy, over a mocked
  * `generateObject`: a regenerate runs the real spec validation and label
- * guard against what the "model" returned (U20).
+ * guard against what the "model" returned.
  *
  * `useEditionStore` backs the edition queries with one in-memory edition
  * that applies the same guards as the real queries, for tests that chain
@@ -47,6 +48,7 @@ export const DOC_PRD = "doc-prd";
 export const USERS = {
 	owner: "user-owner",
 	editor: "user-editor",
+	memberViewer: "user-member-viewer",
 	guestViewer: "user-guest-viewer",
 	guestEditor: "user-guest-editor",
 	outsider: "user-outsider",
@@ -106,6 +108,8 @@ interface World {
 	recipientBrands: Map<
 		string,
 		{
+			/** The project's organization unless a test sets another. */
+			organizationId?: string;
 			version: number;
 			name: string | null;
 			website: string | null;
@@ -174,16 +178,19 @@ function createWorld(): World {
 		orgMembers: new Map([
 			[`${ORG_A}:${USERS.owner}`, "owner"],
 			[`${ORG_A}:${USERS.editor}`, "member"],
+			[`${ORG_A}:${USERS.memberViewer}`, "member"],
 			[`${ORG_B}:${USERS.outsider}`, "owner"],
 		]),
 		projectMembers: new Map([
 			[`${PROJECT_A}:${USERS.editor}`, "EDITOR"],
+			[`${PROJECT_A}:${USERS.memberViewer}`, "VIEWER"],
 			[`${PROJECT_A}:${USERS.guestViewer}`, "VIEWER"],
 			[`${PROJECT_A}:${USERS.guestEditor}`, "EDITOR"],
 		]),
 		users: new Map([
 			[USERS.owner, "Olivia Owner"],
 			[USERS.editor, "Eddie Editor"],
+			[USERS.memberViewer, "Vic Viewer"],
 			[USERS.guestViewer, "Gina Guest"],
 			[USERS.guestEditor, "Gus Guest"],
 			[USERS.outsider, "Otto Outsider"],
@@ -450,6 +457,8 @@ export async function databaseModule() {
 			}
 			return Boolean(member);
 		},
+		isOrganizationMember: async (userId: string, organizationId: string) =>
+			orgMemberRole(organizationId, userId) !== undefined,
 		// PROJECT_UPDATE by the same precedence the middleware uses.
 		canEditProject: async (projectId: string, userId: string) => {
 			const project = world.projects.get(projectId);
@@ -488,8 +497,17 @@ export async function databaseModule() {
 					}
 				: null;
 		},
-		getRecipientBrand: async (projectId: string) =>
-			world.recipientBrands.get(projectId) ?? null,
+		getRecipientBrand: async (projectId: string) => {
+			const row = world.recipientBrands.get(projectId);
+			return row
+				? {
+						organizationId:
+							world.projects.get(projectId)?.organizationId ??
+							null,
+						...row,
+					}
+				: null;
+		},
 		getOrganizationBrandColor: async (organizationId: string) =>
 			world.organizations.get(organizationId)?.brandColor ?? null,
 	};
@@ -512,7 +530,7 @@ export async function temporalModule() {
 /** The resolver's own error class, so `resolveGlossyModel` recognizes it. */
 let ProviderNotConfigured: new (message: string) => Error = Error;
 
-/** An organization key, or the requesting editor's personal key (KTD21). */
+/** An organization key, or the requesting editor's personal key. */
 async function fakeResolver(
 	_options: unknown,
 	context: { userId?: string; organizationId?: string },
@@ -723,7 +741,7 @@ export function editionView(overrides: Record<string, unknown> = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// One in-memory edition (U20)
+// One in-memory edition
 // ---------------------------------------------------------------------------
 
 export interface StoredDecision {

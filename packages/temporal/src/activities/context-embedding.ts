@@ -14,6 +14,7 @@ import {
 	AIProviderNotConfiguredError,
 	getSystemEmbeddingRAGProviderConfig,
 } from "@repo/ai";
+import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
 import {
 	db,
 	recordContextIndexingFailure,
@@ -177,6 +178,9 @@ async function reembedStoredVersion(params: {
 			content: version.content,
 			skipDbUpdate: true,
 		});
+		if (result.refusal) {
+			throw result.refusal;
+		}
 		if (!result.success) {
 			return result;
 		}
@@ -395,6 +399,9 @@ export async function embedSingleContextActivity(
 			// the row in a truthful FAILED state. Qdrant writes are idempotent
 			// (deterministic point id from contextId) so retries can't
 			// duplicate vectors.
+			if (result.refusal) {
+				throw result.refusal;
+			}
 			if (!result.success) {
 				throw new Error(result.error || "Embedding generation failed");
 			}
@@ -443,9 +450,12 @@ export async function embedSingleContextActivity(
 			clearInterval(heartbeatInterval);
 		}
 	} catch (error) {
-		if (error instanceof AIProviderNotConfiguredError) {
+		if (
+			error instanceof AIProviderNotConfiguredError ||
+			error instanceof UnsupportedEmbeddingModelError
+		) {
 			activityLogger.warn(
-				"No AI provider configured, skipping context embedding",
+				"Embedding configuration refused, skipping context embedding",
 				{
 					contextId,
 				},
@@ -459,7 +469,9 @@ export async function embedSingleContextActivity(
 			// Best-effort: swallow any error here so the activity itself
 			// stays a success — the workflow caller is fire-and-forget.
 			await recordFailure(
-				"AI provider not configured. Configure an embedding provider in Settings → AI to enable retrieval for this context.",
+				error instanceof UnsupportedEmbeddingModelError
+					? error.message
+					: "AI provider not configured. Configure an embedding provider in Settings → AI to enable retrieval for this context.",
 			).catch((writeError) => {
 				activityLogger.warn(
 					"Failed to flag context as FAILED (AIProviderNotConfigured)",
@@ -648,6 +660,9 @@ async function embedCompanySource(
 			});
 			// `embedCompanyContext` resolves `{ success: false }` rather than
 			// throwing; throw so Temporal retries, as the project path does.
+			if (result.refusal) {
+				throw result.refusal;
+			}
 			if (!result.success || !result.embeddingModel) {
 				throw new Error(result.error || "Embedding generation failed");
 			}
@@ -694,13 +709,18 @@ async function embedCompanySource(
 			clearInterval(heartbeatInterval);
 		}
 	} catch (error) {
-		if (error instanceof AIProviderNotConfiguredError) {
+		if (
+			error instanceof AIProviderNotConfiguredError ||
+			error instanceof UnsupportedEmbeddingModelError
+		) {
 			activityLogger.warn(
-				"No AI provider configured, skipping company context embedding",
+				"Embedding configuration refused, skipping company context embedding",
 				{ contextId },
 			);
 			await recordFailure(
-				"AI provider not configured. Configure an embedding provider in Settings → AI to enable retrieval for this context.",
+				error instanceof UnsupportedEmbeddingModelError
+					? error.message
+					: "AI provider not configured. Configure an embedding provider in Settings → AI to enable retrieval for this context.",
 			).catch((writeError) => {
 				activityLogger.warn(
 					"Failed to flag company context source as FAILED (AIProviderNotConfigured)",

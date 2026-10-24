@@ -1,4 +1,6 @@
 import { ORPCError } from "@orpc/client";
+import { AIProviderNotConfiguredError } from "@repo/ai";
+import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimensions";
 import {
 	countItemsWithPendingDuplicateLinks,
 	hasProjectAccess,
@@ -83,6 +85,14 @@ export const scanDuplicatesProcedure = tenantProtectedProcedure
 				throwOnWholesaleVerifierFailure: false,
 			});
 		} catch (err) {
+			if (
+				err instanceof UnsupportedEmbeddingModelError ||
+				err instanceof AIProviderNotConfiguredError
+			) {
+				throw new ORPCError("PRECONDITION_FAILED", {
+					message: err.message,
+				});
+			}
 			if (err instanceof EmbeddingUnavailableError) {
 				throw new ORPCError("INTERNAL_SERVER_ERROR", {
 					message:

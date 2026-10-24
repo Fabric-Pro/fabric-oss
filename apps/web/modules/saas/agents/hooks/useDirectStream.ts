@@ -29,6 +29,7 @@ import {
 } from "../lib/chat-turn-truncation";
 import {
 	type ChatGptPlanApiBilling,
+	parseChatGptPlanApiBilling,
 	readChatGptPlanApiBilling,
 } from "../lib/chatgpt-plan-api-billing";
 import {
@@ -1298,6 +1299,10 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 								}
 							: undefined;
 					const truncated = parseTurnTruncation(data.truncated);
+					// The turn moved to API billing mid-way (Fizzy #3048).
+					const apiBilling = data.apiBilling
+						? parseChatGptPlanApiBilling(data.apiBilling)
+						: undefined;
 					setMessages((prev) =>
 						prev.map((m) =>
 							m.id === assistantMessageId
@@ -1305,6 +1310,7 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 										...m,
 										...(toolsFailed ? { toolsFailed } : {}),
 										...(truncated ? { truncated } : {}),
+										...(apiBilling ? { apiBilling } : {}),
 										toolCalls: settleUnfinishedToolCalls(
 											m.toolCalls,
 										),

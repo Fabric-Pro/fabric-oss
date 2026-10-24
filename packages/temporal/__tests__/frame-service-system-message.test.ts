@@ -15,6 +15,7 @@
  * Run with: pnpm --filter @repo/temporal test __tests__/frame-service-system-message
  */
 
+import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const stubs = vi.hoisted(() => ({
@@ -103,4 +104,25 @@ describe("createFirstClassFrame — system prompt placement", () => {
 			{ role: "user", content: expect.any(String) },
 		]);
 	});
+});
+
+it("does not create a frame after generation is refused", async () => {
+	const refusal = new AiUsageLimitExceededError({
+		message: "Example limit exhausted",
+		limitId: "example-limit",
+		dimension: "TOKENS" as never,
+		window: "MONTHLY" as never,
+		used: 100n,
+		max: 100n,
+		manageLimitsUrl: "https://example.com/limits",
+	});
+	stubs.getAIModelWithMetadataMock.mockRejectedValueOnce(refusal);
+	await expect(
+		createFirstClassFrame({
+			args: { title: "Example frame", description: "Generate a page" },
+			userId: USER,
+			organizationId: ORG,
+		}),
+	).rejects.toBe(refusal);
+	expect(stubs.createFrame).not.toHaveBeenCalled();
 });

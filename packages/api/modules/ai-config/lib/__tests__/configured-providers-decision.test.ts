@@ -135,3 +135,40 @@ it.each([false, true])(
 		expect(mockDefault).toHaveBeenCalledWith("example-org");
 	},
 );
+
+it("lists both configured decision providers with tenant-scoped discovery", async () => {
+	mockDb.cloudProviderConfig.findMany.mockResolvedValue(
+		["VERCEL_GATEWAY", "DATABRICKS"].map((provider) => ({
+			id: `example-${provider}`,
+			provider,
+			isDefault: false,
+			config: {},
+			purpose: "ALL",
+		})),
+	);
+	const result = await getConfiguredProviders(
+		"example-user",
+		"example-org",
+		"DECISION",
+	);
+	expect(result.effectiveProviders).toEqual(["VERCEL_GATEWAY", "DATABRICKS"]);
+	expect(mockDb.userCloudProviderConfig.findMany).not.toHaveBeenCalled();
+});
+it("lists Databricks decisions without a gateway configuration", async () => {
+	mockDefault.mockResolvedValue(null);
+	mockDb.cloudProviderConfig.findMany.mockResolvedValue([
+		{
+			id: "example-config",
+			provider: "DATABRICKS",
+			isDefault: false,
+			config: {},
+			purpose: "ALL",
+		},
+	]);
+	const result = await getConfiguredProviders(
+		"example-user",
+		"example-org",
+		"DECISION",
+	);
+	expect(result.effectiveProviders).toEqual(["DATABRICKS"]);
+});

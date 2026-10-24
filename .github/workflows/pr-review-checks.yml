@@ -4,10 +4,9 @@ name: PR review checks
 # comment. Deliberately ADVISORY: this job is not a required check, the review
 # step cannot fail the job, and an unresolved comment never blocks a merge.
 #
-# Every rule it applies is decidable by reading the changed lines. Nothing here
-# asks a model — partly because no model credential exists in Actions, and
-# mostly because a review that is confidently wrong costs more than one that
-# says less. The model-backed lenses are a product feature and run in the app.
+# Every rule here is computed from the changed lines without asking a model.
+# jev-pr-review.yml is the separate advisory model-backed check for staging PRs;
+# its findings use review threads that developers must resolve before merging.
 
 on:
   pull_request:

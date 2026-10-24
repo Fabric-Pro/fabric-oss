@@ -420,11 +420,15 @@ import {
 } from "./procedures/project-tabs";
 // Proposal artifact: Internal Analysis and Style (Fizzy #2801)
 import { clearFindingResponseProcedure } from "./procedures/proposal-artifact/clear-finding-response";
+import { editProposalVisualProcedure } from "./procedures/proposal-artifact/edit-visual";
 import { exportProposalProcedure } from "./procedures/proposal-artifact/export";
 import { getProposalExportStatusProcedure } from "./procedures/proposal-artifact/export-status";
 import { getProposalAnalysisProcedure } from "./procedures/proposal-artifact/get-analysis";
 import { getProposalStyleProcedure } from "./procedures/proposal-artifact/get-style";
+import { getProposalBrandSourcesProcedure } from "./procedures/proposal-artifact/get-brand-sources";
+import { getProposalThemeFontProcedure } from "./procedures/proposal-artifact/get-theme-font";
 import { getProposalThemeTokensProcedure } from "./procedures/proposal-artifact/get-theme-tokens";
+import { listProposalVisualSpecsProcedure } from "./procedures/proposal-artifact/list-visual-specs";
 import { rerunProposalAnalysisProcedure } from "./procedures/proposal-artifact/rerun-analysis";
 import { respondToFindingProcedure } from "./procedures/proposal-artifact/respond-to-finding";
 import { updateProposalStyleProcedure } from "./procedures/proposal-artifact/update-style";
@@ -525,9 +529,11 @@ import {
 } from "./procedures/readiness";
 // Glossy Version Export recipient brand (Fizzy #2589)
 import {
+	confirmRecipientSuggestionProcedure,
 	createRecipientLogoUploadUrlProcedure,
 	fetchRecipientBrandProcedure,
 	getRecipientBrandProcedure,
+	requestRecipientBrandFetchProcedure,
 	updateRecipientBrandProcedure,
 } from "./procedures/recipient-brand";
 import { recordProjectVisitProcedure } from "./procedures/record-project-visit";
@@ -2262,6 +2268,10 @@ export const projectsRouter = {
 		update: updateRecipientBrandProcedure,
 		fetch: fetchRecipientBrandProcedure,
 		createLogoUploadUrl: createRecipientLogoUploadUrlProcedure,
+		// Fizzy #2946: apply one field of a website fetch's suggestion,
+		// copied server-side from the attempt the editor saw.
+		confirmSuggestion: confirmRecipientSuggestionProcedure,
+		requestFetch: requestRecipientBrandFetchProcedure,
 	},
 
 	// Proposal artifact (Fizzy #2801): a Proposal's Internal Analysis and
@@ -2284,8 +2294,19 @@ export const projectsRouter = {
 		getStyle: getProposalStyleProcedure,
 		updateStyle: updateProposalStyleProcedure,
 		getThemeTokens: getProposalThemeTokensProcedure,
+		// Fizzy #2946: an uploaded Brand kit font for the live page, under the
+		// same guest-safe gate as the tokens; and, for members, where each
+		// brand value comes from.
+		getThemeFont: getProposalThemeFontProcedure,
+		getBrandSources: getProposalBrandSourcesProcedure,
 		export: exportProposalProcedure,
 		exportStatus: getProposalExportStatusProcedure,
+		// Fizzy #2946: the generated diagrams' ids, hashes, kind and origin
+		// (never their specs) under the same guest-safe gate as the tokens;
+		// and Edit with instructions, which also needs edit rights and is
+		// open to a project guest who holds them, as chat is.
+		listVisualSpecs: listProposalVisualSpecsProcedure,
+		editVisual: editProposalVisualProcedure,
 	},
 
 	// @mentions autocomplete search

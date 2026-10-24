@@ -9,6 +9,7 @@ import {
 	AIProviderNotConfiguredError,
 	getAIModelWithMetadata,
 } from "./dynamic-model-selector";
+import { findAiUsageLimitError } from "./find-usage-limit-error";
 import {
 	promptGenerateStoryTitle,
 	STORY_TITLE_GENERATOR_PROMPT_FALLBACK_BODY,
@@ -395,6 +396,10 @@ export async function generateStoryTitleFromDescription(
 			// A turn stop or a token-allowance refusal is not a malformed
 			// answer to retry another way.
 			rethrowIfDispatchStopped(generateObjectError);
+			const limitError = findAiUsageLimitError(generateObjectError);
+			if (limitError) {
+				throw limitError;
+			}
 			logger.warn(
 				"[story-title-generator] generateObject failed; falling back to generateText + manual JSON parse",
 				generateObjectError,
@@ -499,6 +504,10 @@ export async function generateStoryTitleFromDescription(
 		// Inside a chat turn a stop or a token-allowance refusal must not
 		// become an untitled story the caller goes on to create.
 		rethrowIfDispatchStopped(error);
+		const limitError = findAiUsageLimitError(error);
+		if (limitError) {
+			throw limitError;
+		}
 		if (error instanceof AIProviderNotConfiguredError) {
 			logger.info(
 				"[story-title-generator] no AI provider configured, using untitled fallback",

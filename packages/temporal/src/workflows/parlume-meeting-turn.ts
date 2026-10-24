@@ -11,6 +11,8 @@ const { executeParlumeMeetingTurn, failParlumeMeetingTurn } = proxyActivities<
 export async function parlumeMeetingTurnWorkflow(input: {
 	turnId: string;
 	actingGrant?: string;
+	/** The realtime voice's job this turn answers; its result is spoken there. */
+	realtimeJob?: string;
 }): Promise<void> {
 	try {
 		await executeParlumeMeetingTurn(input);

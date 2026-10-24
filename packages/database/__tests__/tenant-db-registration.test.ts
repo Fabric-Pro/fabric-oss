@@ -223,6 +223,9 @@ describe("Glossy edition tables are registered on the tenant path", () => {
 		["GlossyVisualDecision", "glossy_visual_decision"],
 		["GlossySegmentCache", "glossy_segment_cache"],
 		["ProjectRecipientBrand", "project_recipient_brand"],
+		// Generated visuals' specs (Fizzy #2946): a guest with edit rights
+		// writes them through Edit with instructions, so the Glossy class.
+		["ProjectDocumentVisualSpec", "project_document_visual_spec"],
 	])(
 		"%s is organization-only, project-scoped, and tenant-consistent under RLS",
 		(model, table) => {
@@ -307,6 +310,13 @@ describe("Proposal artifact tables are registered on the tenant path", () => {
 		["ProjectDocumentFinding", "project_document_finding"],
 		["ProjectDocumentFindingResponse", "project_document_finding_response"],
 		["ProjectDocumentStyle", "project_document_style"],
+		// Brand sources (Fizzy #2946): written only by automation.
+		["OrganizationBrandSiteFetch", "organization_brand_site_fetch"],
+		[
+			"ProjectRecipientBrandSuggestion",
+			"project_recipient_brand_suggestion",
+		],
+		["ProjectDocumentExportBrand", "project_document_export_brand"],
 	])(
 		"%s is organization-only and never project-scoped, under org_only RLS",
 		(model, table) => {

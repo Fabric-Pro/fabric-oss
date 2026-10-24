@@ -42,6 +42,7 @@ vi.mock("@repo/logs", () => ({
 	logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 vi.mock("@repo/database", () => ({
+	getOrgDecisionProvider: vi.fn(async () => null),
 	GATEWAY_PROVIDERS: ["VERCEL_GATEWAY", "OPENROUTER", "CLOUDFLARE_AI"],
 	getActiveModels: vi.fn(),
 	getAiProviderApiKey: vi.fn(),

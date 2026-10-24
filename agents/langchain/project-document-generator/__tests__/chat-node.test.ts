@@ -2198,9 +2198,31 @@ describe("Project Document Generator Chat Node - Post-confirmation reconciler", 
 		// so the user sees a response (graceful degradation).
 		expect(update.messages).toBeDefined();
 		const lastMsg = update.messages[update.messages.length - 1];
-		expect((lastMsg as AIMessage).content).toContain(
-			"Changes have been applied",
-		);
+		expect((lastMsg as AIMessage).content).toBe("Changes accepted.");
+	});
+
+	it("acknowledges an accept without saying the changes were applied or saved (Fizzy #2946)", async () => {
+		// The editor answers the confirm before its save of the accepted
+		// text is answered, and that save can fail: the acknowledgment must
+		// not claim it landed.
+		const state = createMockState({
+			messages: buildPostConfirmMessages({
+				accepted: true,
+				inlineToolId: "call_ack_accept",
+				inlineToolName: "apply_document_patches",
+				withMarker: true,
+			}),
+			toolCallsByTurn: {},
+		} as Partial<AgentState>);
+
+		const command = await chatNode(state);
+		const update = (command as any).update;
+		const lastMsg = update.messages[update.messages.length - 1];
+		const content = String((lastMsg as AIMessage).content);
+
+		expect(content).toBe("Changes accepted.");
+		expect(content).not.toMatch(/applied|saved/i);
+		expect(mockInvoke).not.toHaveBeenCalled();
 	});
 
 	it("reconstruct correlates by tool_call_id when multiple confirm_changes exist (no wrong-trace corruption)", async () => {
@@ -2712,6 +2734,96 @@ describe("Project Document Generator Chat Node - Section preservation guard", ()
 		"- Bob (Engineering)",
 	].join("\n");
 	const guttedRewrite = () => baselineDoc.replace(AC_BODY, "TBD");
+
+	it.each([
+		["bound prompt, removed section", true, true, false, false],
+		["bound prompt, gutted section", true, true, true, false],
+		["custom prompt without flag", undefined, true, false, false],
+		["no system prompt", undefined, false, false, false],
+		[
+			"bound prompt, removes legacy template sections",
+			true,
+			true,
+			false,
+			true,
+		],
+	] as const)(
+		"warns for a bound restructure, skips ordinary custom prompts, and retries ordinary edits: %s",
+		async (
+			_name,
+			suppressFabricMethodology,
+			hasCustomPrompt,
+			gutSection,
+			legacySections,
+		) => {
+			const baseline = legacySections
+				? `${baselineDoc}\n\n## Document Control\n\n${"Historical metadata for an obsolete document template. ".repeat(7)}\n\n## Revision History\n\n${"Historical revision notes for an obsolete document template. ".repeat(7)}`
+				: baselineDoc;
+			const rewrite = legacySections
+				? baselineDoc
+				: gutSection
+					? guttedRewrite()
+					: baselineDoc.replace(
+							`## Acceptance Criteria\n\n${AC_BODY}\n\n`,
+							"",
+						);
+			mockInvoke.mockResolvedValueOnce(
+				new AIMessage({
+					content: "Refreshed the spec.",
+					tool_calls: [
+						{
+							id: "call_spec_refresh",
+							name: "write_document_local",
+							args: { document: rewrite },
+						},
+					],
+				}),
+			);
+			const command = await chatNode(
+				createMockState({
+					documentType: "general",
+					document: baseline,
+					systemPrompt: hasCustomPrompt
+						? "Clean Spec: use the bound section structure."
+						: undefined,
+					suppressFabricMethodology,
+					messages: [new HumanMessage("Refresh the Full Spec")],
+				}),
+			);
+			const goto = (command as any).goto;
+			const update = (command as any).update;
+			expect
+				.soft(
+					(Array.isArray(goto) ? goto : [goto]).includes("chat_node"),
+				)
+				.toBe(!hasCustomPrompt);
+			const text = update.messages
+				.map((message: { content: unknown }) =>
+					typeof message.content === "string" ? message.content : "",
+				)
+				.join("\n");
+			expect
+				.soft(text.includes("Re-emit the document preserving"))
+				.toBe(!hasCustomPrompt);
+			expect.soft(update.retryCount).toBe(hasCustomPrompt ? 0 : 1);
+			if (suppressFabricMethodology) {
+				expect
+					.soft(collectToolCallNames(update.messages))
+					.toContain("confirm_changes");
+				expect.soft(update.document).toBe(rewrite);
+				expect(update.messages.at(-1)?.content).toContain(
+					legacySections
+						? '⚠️ This update removed or shortened these sections: "Document Control", "Revision History". Review them before accepting and restore anything you still need.'
+						: '⚠️ This update removed or shortened this section: "Acceptance Criteria". Review it before accepting and restore anything you still need.',
+				);
+			} else if (hasCustomPrompt) {
+				expect(collectToolCallNames(update.messages)).toContain(
+					"confirm_changes",
+				);
+				expect(text).not.toContain("This update removed or shortened");
+			}
+		},
+	);
 
 	it("retries with a corrective ToolMessage when a rewrite guts a section", async () => {
 		mockInvoke.mockResolvedValueOnce(

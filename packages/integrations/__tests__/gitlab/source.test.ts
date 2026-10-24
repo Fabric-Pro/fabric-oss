@@ -360,7 +360,7 @@ describe("callMcpWithRestFallback", () => {
 
 		const result = await callMcpWithRestFallback({
 			source: officialMcpSource(callTool),
-			method: "list_issues",
+			method: "get_issue",
 			args: {},
 			restFallback,
 		});
@@ -404,7 +404,7 @@ describe("callMcpWithRestFallback", () => {
 		expect(restFallback).toHaveBeenCalledOnce();
 	});
 
-	it("GitLabMcpError always rethrows and never falls back", async () => {
+	it("GitLabMcpError on a served tool rethrows and never falls back", async () => {
 		const mcpErr = new GitLabMcpError("boom", 500);
 		const callTool = vi.fn().mockRejectedValue(mcpErr);
 		const restFallback = vi.fn().mockResolvedValue("rest-value");
@@ -412,11 +412,66 @@ describe("callMcpWithRestFallback", () => {
 		await expect(
 			callMcpWithRestFallback({
 				source: officialMcpSource(callTool),
-				method: "list_issues",
+				method: "get_issue",
 				args: {},
 				restFallback,
 			}),
 		).rejects.toBe(mcpErr);
+		expect(restFallback).not.toHaveBeenCalled();
+	});
+
+	// GitLab's official MCP server has no tool by these names; it answers
+	// HTTP 400 / -32602, which used to fail the call with no REST fallback.
+	it.each([
+		["list_issues", true],
+		["list_issue_notes", true],
+		["update_issue", false],
+		["get_file_contents", true],
+	])(
+		"sends %s straight to REST without calling MCP",
+		async (method, idempotent) => {
+			const callTool = vi
+				.fn()
+				.mockRejectedValue(
+					new GitLabMcpError(
+						"GitLab MCP HTTP 400: Invalid params",
+						undefined,
+						400,
+						true,
+					),
+				);
+			const restFallback = vi.fn().mockResolvedValue("rest-value");
+
+			const result = await callMcpWithRestFallback({
+				source: officialMcpSource(callTool),
+				method,
+				args: {},
+				restFallback,
+				idempotent,
+			});
+
+			expect(result).toBe("rest-value");
+			expect(callTool).not.toHaveBeenCalled();
+			expect(restFallback).toHaveBeenCalledOnce();
+		},
+	);
+
+	it("still sends a tool the official server serves through MCP", async () => {
+		const callTool = vi.fn().mockResolvedValue({ iid: 7 });
+		const restFallback = vi.fn();
+
+		const result = await callMcpWithRestFallback({
+			source: officialMcpSource(callTool),
+			method: "get_issue",
+			args: { project_id: "1", issue_iid: 7 },
+			restFallback,
+		});
+
+		expect(result).toEqual({ iid: 7 });
+		expect(callTool).toHaveBeenCalledWith("get_issue", {
+			project_id: "1",
+			issue_iid: 7,
+		});
 		expect(restFallback).not.toHaveBeenCalled();
 	});
 });
@@ -501,7 +556,7 @@ describe("official MCP capability loss", () => {
 
 		const result = await callMcpWithRestFallback({
 			source,
-			method: "list_issues",
+			method: "get_issue",
 			args: {},
 			restFallback: async () => "rest-result",
 		});

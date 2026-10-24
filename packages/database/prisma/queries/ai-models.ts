@@ -1770,3 +1770,15 @@ export function getDefaultFallbackChains(): Array<{
 		},
 	];
 }
+
+/** The organization's explicit decision provider; absence keeps gateway routing. */
+export async function getOrgDecisionProvider(
+	organizationId: string,
+): Promise<AIProvider | null> {
+	const preference = await db.organizationModelPreference.findFirst({
+		where: { organizationId, taskType: "DECISION" },
+		orderBy: { updatedAt: "desc" },
+		select: { provider: true },
+	});
+	return preference?.provider ?? null;
+}

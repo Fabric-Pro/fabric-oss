@@ -64,8 +64,9 @@ export async function assertProposalArtifactEnabled(
  * The recipient brand gate: passes when GLOSSY_EDITION OR PROPOSAL_ARTIFACT is
  * on for the project's owning organization. The recipient brand serves both
  * the Glossy edition and the Proposal artifact's Style tab, so either rollout
- * makes it reachable. Only the recipient brand procedures use this; every
- * other Glossy and Brand kit procedure stays on GLOSSY_EDITION alone.
+ * makes it reachable. The recipient brand procedures use this; the Brand kit
+ * has its organization-level twin below, and every other Glossy procedure
+ * stays on GLOSSY_EDITION alone.
  *
  * Returns the owning organization, like {@link assertProposalArtifactEnabled}.
  */
@@ -87,6 +88,35 @@ export async function assertGlossyOrProposalArtifactEnabled(
 	if (!glossyEnabled && !proposalArtifactEnabled) {
 		throw new ORPCError("NOT_FOUND", {
 			message: "The recipient brand is not enabled",
+		});
+	}
+	return organizationId;
+}
+
+/**
+ * The Brand kit gate for an organization the caller has already resolved and
+ * verified membership of: passes when GLOSSY_EDITION OR PROPOSAL_ARTIFACT is
+ * on for it, since the Brand kit styles both Glossy editions and
+ * client-document Proposals (Fizzy #2946). NOT_FOUND when both are off, so
+ * the kit's routes behave as though they do not exist. Call it after the
+ * membership check, so its answer tells an outsider nothing about which
+ * organizations have either rollout on.
+ */
+export async function assertGlossyOrProposalArtifactEnabledForOrganization(
+	organizationId: string | null | undefined,
+): Promise<string> {
+	if (!organizationId) {
+		throw new ORPCError("NOT_FOUND", {
+			message: "The Brand kit is not enabled",
+		});
+	}
+	const [glossyEnabled, proposalArtifactEnabled] = await Promise.all([
+		isFeatureEnabled("GLOSSY_EDITION", organizationId),
+		isFeatureEnabled("PROPOSAL_ARTIFACT", organizationId),
+	]);
+	if (!glossyEnabled && !proposalArtifactEnabled) {
+		throw new ORPCError("NOT_FOUND", {
+			message: "The Brand kit is not enabled",
 		});
 	}
 	return organizationId;

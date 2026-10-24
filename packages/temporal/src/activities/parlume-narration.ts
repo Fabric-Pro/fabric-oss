@@ -31,16 +31,21 @@ export function narrationFor(
  * agent has said nothing yet this turn does it speak a short line of its own,
  * so the agent's preamble is never doubled and the line is spoken once per
  * turn. Speech plays from the queue on its own, so nothing here waits for it.
+ * Once someone has spoken over the reply, nothing more is narrated.
  */
 export function createToolNarrator(
-	queue: Pick<ParlumeSentenceQueue, "received" | "push" | "flush">,
+	queue: Pick<ParlumeSentenceQueue, "received" | "narrate" | "flush">,
+	isMuted: () => boolean = () => false,
 ) {
 	return async (invocation: Pick<AgentToolInvocation, "source">) => {
 		// Lets the agent's last streamed words reach the queue first.
 		await new Promise<void>((resolve) => setImmediate(resolve));
+		if (isMuted()) {
+			return;
+		}
 		const line = narrationFor(invocation);
 		if (line && !queue.received) {
-			queue.push(line);
+			queue.narrate(line);
 		}
 		queue.flush();
 	};

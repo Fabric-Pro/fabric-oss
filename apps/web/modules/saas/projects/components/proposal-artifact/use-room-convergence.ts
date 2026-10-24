@@ -522,11 +522,10 @@ export function useRoomConvergence(options: RoomConvergenceOptions): {
 				stamp.version < saved.version &&
 				o.canEdit === true
 			) {
-				// The same body at a later version — a run's version step,
-				// which no one announces: the room holds the saved body
-				// already, so its stamp moves at once, with nothing to look
-				// at twice and nothing to claim. A claim for it not yet
-				// verified is.
+				// The same body at a later version — a run's version step:
+				// the room holds the saved body already, so its stamp moves
+				// at once, with nothing to look at twice and nothing to
+				// claim. A claim for it not yet verified is.
 				if (claimForSaved && claimForSaved.settled !== "verified") {
 					writeConvergenceClaim(room, {
 						...claimForSaved,

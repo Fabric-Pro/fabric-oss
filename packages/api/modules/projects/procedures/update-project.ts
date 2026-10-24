@@ -14,6 +14,7 @@ import {
 	pmSelectionUnchangedWhere,
 	readPmServerIdKeySentinel,
 	seedTerminalStatusesIfEmpty,
+	setProjectLogSourceBinding,
 	syncLegacyProjectRepoOnDisconnect,
 	updateProject,
 } from "@repo/database";
@@ -58,6 +59,10 @@ import {
 	GOVERNANCE_FIELDS,
 	userHasProjectPermissionStrict,
 } from "../lib/governance";
+import {
+	projectLogSourceInputSchema,
+	toProjectLogSourceBinding,
+} from "../lib/log-source-input";
 import { cancelPausedSetupsOfProject } from "../lib/paused-setup";
 import { requireProjectOrganization } from "../lib/project-organization";
 
@@ -176,6 +181,34 @@ export const updateProjectProcedure = tenantProtectedProcedure
 			applyTddApproach: z.boolean().optional(),
 			// QA RCA→BUG opt-in: auto-open bugs for failing test cases
 			autoCreateBugsFromFailures: z.boolean().optional(),
+			// Recurring-error detection opt-in: a scheduled scan reads the
+			// project's logs and files BUG proposals. Admin/owner only (checked
+			// in the handler).
+			autoDetectRecurringErrors: z.boolean().optional(),
+			// Its tunables: how often an error must recur, within how many
+			// hours, and how confident the judge must be that two errors are
+			// the same problem. Admin/owner only (checked in the handler).
+			recurringErrorThreshold: z
+				.number()
+				.int()
+				.min(2)
+				.max(1000)
+				.optional(),
+			recurringErrorWindowHours: z
+				.number()
+				.int()
+				.min(1)
+				.max(168)
+				.optional(),
+			recurringErrorSimilarityThreshold: z
+				.number()
+				.min(0.5)
+				.max(1)
+				.optional(),
+			// Which application-log source the scan and bug analysis read.
+			// `null` clears it, returning the project to the deployment
+			// default. Admin/owner only (checked in the handler).
+			logSource: projectLogSourceInputSchema.optional(),
 			// PM terminal-status auto-close (card #1360 Phase A)
 			pmAutoCloseEnabled: z.boolean().optional(),
 			// PM custom field read-mapping feature flag
@@ -383,6 +416,21 @@ export const updateProjectProcedure = tenantProtectedProcedure
 			// its PM ticket's mapped status (Fizzy #2304).
 			pmStatusSyncEnabled:
 				"Only project admins or owners can change status sync with the PM tool.",
+			// Turning this on lets a scheduled scan read the project's
+			// application logs — the same project-settings permission reading
+			// logs for a bug analysis requires.
+			autoDetectRecurringErrors:
+				"Only project admins or owners can change recurring-error detection.",
+			recurringErrorThreshold:
+				"Only project admins or owners can change recurring-error detection.",
+			recurringErrorWindowHours:
+				"Only project admins or owners can change recurring-error detection.",
+			recurringErrorSimilarityThreshold:
+				"Only project admins or owners can change recurring-error detection.",
+			// Names the log workspace the worker's identity reads for this
+			// project, so it carries the same permission as reading the logs.
+			logSource:
+				"Only project admins or owners can change the project's log source.",
 		};
 		const presentAdminOnlyFields = (
 			Object.keys(ADMIN_ONLY_FIELD_MESSAGE) as Array<keyof typeof input>
@@ -777,6 +825,21 @@ export const updateProjectProcedure = tenantProtectedProcedure
 							input.autoCreateBugsFromFailures,
 					}
 				: {}),
+			...(input.autoDetectRecurringErrors !== undefined
+				? { autoDetectRecurringErrors: input.autoDetectRecurringErrors }
+				: {}),
+			...(input.recurringErrorThreshold !== undefined
+				? { recurringErrorThreshold: input.recurringErrorThreshold }
+				: {}),
+			...(input.recurringErrorWindowHours !== undefined
+				? { recurringErrorWindowHours: input.recurringErrorWindowHours }
+				: {}),
+			...(input.recurringErrorSimilarityThreshold !== undefined
+				? {
+						recurringErrorSimilarityThreshold:
+							input.recurringErrorSimilarityThreshold,
+					}
+				: {}),
 			// Auto-close toggle (pass through when provided)
 			...(input.pmAutoCloseEnabled !== undefined
 				? { pmAutoCloseEnabled: input.pmAutoCloseEnabled }
@@ -946,6 +1009,15 @@ export const updateProjectProcedure = tenantProtectedProcedure
 					expected ?? undefined,
 				),
 		});
+
+		// After the tenant-filtered write above, so a project outside the
+		// caller's organization has already failed before its binding changes.
+		if (input.logSource !== undefined) {
+			await setProjectLogSourceBinding(
+				input.id,
+				toProjectLogSourceBinding(input.logSource),
+			);
+		}
 
 		// Seed terminal statuses on first PM connect (best-effort, non-blocking).
 		// A PM connection is identified by EITHER the pinned config id OR the
@@ -1253,6 +1325,10 @@ export const updateProjectProcedure = tenantProtectedProcedure
 							hiddenMaturationStatuses:
 								input.hiddenMaturationStatuses,
 						}
+					: {}),
+				// The binding names a workspace, never a credential.
+				...(input.logSource !== undefined
+					? { logSource: input.logSource }
 					: {}),
 			},
 		});

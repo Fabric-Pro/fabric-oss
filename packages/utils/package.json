@@ -175,6 +175,11 @@
 			"import": "./lib/direct-chat-memory-prompt.ts",
 			"default": "./lib/direct-chat-memory-prompt.ts"
 		},
+		"./recurring-error-bug-prompt": {
+			"types": "./lib/recurring-error-bug-prompt.ts",
+			"import": "./lib/recurring-error-bug-prompt.ts",
+			"default": "./lib/recurring-error-bug-prompt.ts"
+		},
 		"./untrusted-fence": {
 			"types": "./lib/untrusted-fence.ts",
 			"import": "./lib/untrusted-fence.ts",
@@ -194,6 +199,16 @@
 			"types": "./lib/page-ask-prompt.ts",
 			"import": "./lib/page-ask-prompt.ts",
 			"default": "./lib/page-ask-prompt.ts"
+		},
+		"./parlume-realtime-voice-prompt": {
+			"types": "./lib/parlume-realtime-voice-prompt.ts",
+			"import": "./lib/parlume-realtime-voice-prompt.ts",
+			"default": "./lib/parlume-realtime-voice-prompt.ts"
+		},
+		"./parlume-suggestion-prompt": {
+			"types": "./lib/parlume-suggestion-prompt.ts",
+			"import": "./lib/parlume-suggestion-prompt.ts",
+			"default": "./lib/parlume-suggestion-prompt.ts"
 		},
 		"./publishing-refine-prompt": {
 			"types": "./lib/publishing-refine-prompt.ts",
@@ -445,6 +460,11 @@
 			"import": "./lib/quote-artifacts.ts",
 			"default": "./lib/quote-artifacts.ts"
 		},
+		"./introduced-quotes": {
+			"types": "./lib/introduced-quotes.ts",
+			"import": "./lib/introduced-quotes.ts",
+			"default": "./lib/introduced-quotes.ts"
+		},
 		"./agent-endpoint": {
 			"types": "./lib/agent-endpoint.ts",
 			"import": "./lib/agent-endpoint.ts",
@@ -515,6 +535,16 @@
 			"import": "./lib/proposal-artifact/visual-insert.ts",
 			"default": "./lib/proposal-artifact/visual-insert.ts"
 		},
+		"./proposal-artifact/visual-identity": {
+			"types": "./lib/proposal-artifact/visual-identity.ts",
+			"import": "./lib/proposal-artifact/visual-identity.ts",
+			"default": "./lib/proposal-artifact/visual-identity.ts"
+		},
+		"./proposal-artifact/visual-id-server": {
+			"types": "./lib/proposal-artifact/visual-id-server.ts",
+			"import": "./lib/proposal-artifact/visual-id-server.ts",
+			"default": "./lib/proposal-artifact/visual-id-server.ts"
+		},
 		"./proposal-artifact/markdown-ast": {
 			"types": "./lib/proposal-artifact/markdown-ast.ts",
 			"import": "./lib/proposal-artifact/markdown-ast.ts",
@@ -550,6 +580,11 @@
 			"import": "./lib/proposal-artifact/theme-tokens.ts",
 			"default": "./lib/proposal-artifact/theme-tokens.ts"
 		},
+		"./proposal-artifact/brand-sources": {
+			"types": "./lib/proposal-artifact/brand-sources.ts",
+			"import": "./lib/proposal-artifact/brand-sources.ts",
+			"default": "./lib/proposal-artifact/brand-sources.ts"
+		},
 		"./proposal-artifact/proposal-theme": {
 			"types": "./lib/proposal-artifact/proposal-theme.ts",
 			"import": "./lib/proposal-artifact/proposal-theme.ts",
@@ -570,6 +605,11 @@
 			"import": "./lib/brand-colors.ts",
 			"default": "./lib/brand-colors.ts"
 		},
+		"./brand-assets": {
+			"types": "./lib/brand-assets.ts",
+			"import": "./lib/brand-assets.ts",
+			"default": "./lib/brand-assets.ts"
+		},
 		"./pm-target": {
 			"types": "./lib/pm-target.ts",
 			"import": "./lib/pm-target.ts",
@@ -589,6 +629,7 @@
 	"dependencies": {
 		"@upstash/realtime": "^1.0.0",
 		"@upstash/redis": "^1.34.3",
+		"diff": "^8.0.3",
 		"handlebars": "^4.7.10",
 		"liquidjs": "^10.27.1",
 		"mustache": "^4.2.0",
@@ -598,6 +639,6 @@
 		"undici": "^8.5.0",
 		"unified": "^11.0.5",
 		"yaml": "^2.7.1",
-		"zod": "^4.2.1"
+		"zod": "^4.6.7"
 	}
 }

@@ -431,7 +431,156 @@ describe("decisions without Vercel", () => {
 		expect(
 			within(card).getByText(/Decision models require Vercel AI Gateway/),
 		).toHaveTextContent(
-			"Decision models require Vercel AI Gateway. Work items use your regular AI model when no decision model is available.",
+			"Decision models require Vercel AI Gateway or Databricks. Work items use your regular AI model when no decision model is available.",
+		);
+	});
+});
+
+const openjev = {
+	id: "example-openjev",
+	canonicalName: "openjev-qwen35-4b",
+	displayName: "OpenJev (Qwen3.5 4B)",
+	family: "openjev",
+	vendor: "Databricks",
+	contextWindow: 0,
+	speedTier: "BALANCED",
+	qualityTier: "STANDARD",
+	capabilities: ["EVALUATION"],
+	suitableForTasks: ["DECISION"],
+	providerModelId: "system.ai.openjev-qwen35-4b",
+	providerMappings: [
+		{
+			provider: "DATABRICKS",
+			providerModelId: "system.ai.openjev-qwen35-4b",
+			isAvailable: true,
+		},
+	],
+};
+describe("Databricks decision choices", () => {
+	function configure(databricksOnly: boolean) {
+		const configuredProviders = [
+			...(databricksOnly
+				? []
+				: generalModelsResponse.configuredProviders),
+			{
+				id: "example-databricks",
+				provider: "DATABRICKS",
+				displayName: "Databricks",
+				isDefault: databricksOnly,
+				priority: 1,
+				enabledProviders: [],
+				source: "org_config",
+			},
+		];
+		mockListAvailable.mockImplementation(
+			({ taskType }: { taskType?: string }) =>
+				Promise.resolve(
+					taskType === "DECISION"
+						? {
+								...decisionModelsResponse,
+								configuredProviders,
+								models: [
+									...(databricksOnly
+										? []
+										: decisionModelsResponse.models),
+									openjev,
+								],
+								modelsByGatewayAndProvider: {
+									...(databricksOnly
+										? {}
+										: decisionModelsResponse.modelsByGatewayAndProvider),
+									DATABRICKS: {
+										gatewayDisplayName: "Databricks",
+										isDefault: databricksOnly,
+										providers: {
+											DATABRICKS: {
+												providerDisplayName:
+													"Databricks",
+												models: [openjev],
+											},
+										},
+									},
+								},
+							}
+						: {
+								...generalModelsResponse,
+								configuredProviders,
+								organizationDefaultProvider: databricksOnly
+									? "DATABRICKS"
+									: "OPENAI_DIRECT",
+							},
+				),
+		);
+		mockGetTaskDefaults.mockResolvedValue([]);
+		mockGetOrg.mockResolvedValue([]);
+		mockSetOrg.mockClear();
+		mockSetOrg.mockResolvedValue({
+			id: "example-pref",
+			taskType: "DECISION",
+			provider: "DATABRICKS",
+			model: openjev,
+		});
+	}
+	it("lists OpenJev beside gateway models and saves its Databricks provider", async () => {
+		configure(false);
+		renderForm();
+		const row = (await screen.findByText("Decisions")).closest("tr");
+		if (!row) {
+			throw new Error("Decisions row missing");
+		}
+		fireEvent.click(within(row).getByRole("button"));
+		expect(
+			await screen.findByText("OpenJev (Qwen3.5 4B)"),
+		).toBeInTheDocument();
+		expect(screen.getByText("TypeSafe AI Jev")).toBeInTheDocument();
+		fireEvent.click(screen.getByText("OpenJev (Qwen3.5 4B)"));
+		fireEvent.click(await screen.findByText("Save Changes"));
+		await waitFor(() =>
+			expect(mockSetOrg).toHaveBeenCalledWith({
+				organizationId: "org-1",
+				taskType: "DECISION",
+				modelCanonicalName: "openjev-qwen35-4b",
+				overrideProvider: "DATABRICKS",
+			}),
+		);
+	});
+	it("displays the saved Databricks preference", async () => {
+		configure(true);
+		mockGetOrg.mockResolvedValue([
+			{
+				id: "example-pref",
+				taskType: "DECISION",
+				provider: "DATABRICKS",
+				model: openjev,
+			},
+		]);
+		renderForm();
+		const row = (await screen.findByText("Decisions")).closest("tr");
+		if (!row) {
+			throw new Error("Decisions row missing");
+		}
+		expect(
+			await within(row).findByText("OpenJev (Qwen3.5 4B)"),
+		).toBeInTheDocument();
+		expect(within(row).getByText("Reset")).toBeInTheDocument();
+	});
+	it("offers and saves Disabled for a Databricks-only organization", async () => {
+		configure(true);
+		renderForm();
+		const row = (await screen.findByText("Decisions")).closest("tr");
+		if (!row) {
+			throw new Error("Decisions row missing");
+		}
+		fireEvent.click(within(row).getByRole("button"));
+		fireEvent.click(await screen.findByText("Disabled"));
+		fireEvent.click(await screen.findByText("Save Changes"));
+		await waitFor(() =>
+			expect(mockSetOrg).toHaveBeenCalledWith({
+				organizationId: "org-1",
+				taskType: "DECISION",
+				modelCanonicalName: null,
+				overrideProvider: "VERCEL_GATEWAY",
+			}),
 		);
 	});
 });

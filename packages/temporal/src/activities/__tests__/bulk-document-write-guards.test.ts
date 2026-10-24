@@ -14,6 +14,10 @@
  *   `generationStartedAt` save and version only while the row is still that
  *   attempt's: a refused save throws the stale failure the child already
  *   handles and leaves no snapshot, and a refused version is skipped.
+ * - A save or version that wrote tells the project's open pages once its
+ *   write has committed, with an id no member has; one that wrote nothing
+ *   (refused, skipped, or a retry that finds its own commit) tells nobody,
+ *   and a nudge that fails or never answers fails neither step.
  *
  * The rows live in a small in-memory table the activities read and write by
  * the conditions they send; a transaction that throws is rolled back, as
@@ -22,11 +26,13 @@
 
 import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
 import { ApplicationFailure } from "@temporalio/common";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DOCUMENT_GENERATION_STALE } from "../../lib/proposal-artifact/types";
 
 type Row = {
 	id: string;
+	projectId: string;
+	type: string;
 	status: string;
 	workflowId: string | null;
 	generationStartedAt: Date | null;
@@ -54,6 +60,20 @@ const store = vi.hoisted(() => ({
 	 */
 	afterRead: undefined as (() => void) | undefined,
 	racesInTransaction: [] as Array<() => void>,
+	/** Whether a transaction is still open, so not yet committed. */
+	inTransaction: false,
+}));
+
+/**
+ * The `document_change` nudges sent, each with what it could see when it was
+ * sent: whether a transaction was still open, and the row as it stood.
+ */
+const nudges = vi.hoisted(() => ({
+	emitDocumentChange: vi.fn(),
+	seen: [] as Array<{
+		duringTransaction: boolean;
+		row: Record<string, unknown> | undefined;
+	}>,
 }));
 
 const sameValue = (value: unknown, expected: unknown): boolean =>
@@ -186,6 +206,7 @@ vi.mock("@repo/database", () => {
 				);
 				const versions = store.versions.map((row) => ({ ...row }));
 				store.racesInTransaction = [];
+				store.inTransaction = true;
 				try {
 					return await fn(client);
 				} catch (error) {
@@ -195,6 +216,8 @@ vi.mock("@repo/database", () => {
 						race();
 					}
 					throw error;
+				} finally {
+					store.inTransaction = false;
 				}
 			}),
 		},
@@ -207,6 +230,11 @@ vi.mock("@repo/database", () => {
 		listEmbeddedDocumentsForSweep: vi.fn().mockResolvedValue([]),
 	};
 });
+
+vi.mock("@repo/utils/realtime-emit", () => ({
+	emitDocumentChange: (...args: unknown[]) =>
+		nudges.emitDocumentChange(...args),
+}));
 
 vi.mock("@langchain/langgraph-sdk", () => ({
 	Client: class {},
@@ -271,6 +299,8 @@ vi.mock("../lib/activity-logger", () => ({
 	},
 }));
 
+import { db } from "@repo/database";
+import { activityLogger } from "../lib/activity-logger";
 import {
 	createDocumentVersion,
 	saveProjectDocument,
@@ -286,6 +316,8 @@ const NEWER_RUN = "project-document-generation-doc-1-0123abcd";
 
 const seed = (row: Partial<Row> & { id: string }): void => {
 	store.rows.set(row.id, {
+		projectId: "project-1",
+		type: "PRD",
 		status: "DRAFT",
 		workflowId: null,
 		generationStartedAt: null,
@@ -1152,4 +1184,319 @@ describe("createDocumentVersion — a legacy attempt's version", () => {
 		expect(row().version).toBe(4);
 		expect(store.versions).toHaveLength(3);
 	});
+});
+
+// -----------------------------------------------------------------------------
+// The nudge that tells the project's open pages about the run's end
+// -----------------------------------------------------------------------------
+
+/** A newer attempt's identity, stamped over this one's. */
+const NEWER_ATTEMPT = new Date("2026-10-21T11:55:00.000Z");
+
+const resetNudges = () => {
+	nudges.seen = [];
+	nudges.emitDocumentChange.mockReset();
+	nudges.emitDocumentChange.mockImplementation(
+		async (payload: { documentId: string }) => {
+			const current = store.rows.get(payload.documentId);
+			nudges.seen.push({
+				duringTransaction: store.inTransaction,
+				row: current ? { ...current } : undefined,
+			});
+		},
+	);
+	vi.mocked(activityLogger.warn).mockClear();
+	vi.mocked(db.projectDocument.findUnique).mockClear();
+};
+
+/** The one nudge sent: ids only, and an id no member has. */
+const expectOneNudge = () => {
+	expect(nudges.emitDocumentChange).toHaveBeenCalledTimes(1);
+	const [payload] = nudges.emitDocumentChange.mock.calls[0] ?? [];
+	expect(payload).toEqual({
+		projectId: "project-1",
+		documentId: "doc-1",
+		action: "updated",
+		userId: expect.stringMatching(/\S/),
+		userName: expect.stringMatching(/\S/),
+		documentType: "PRD",
+	});
+	// The page skips a nudge carrying a member's own id as the echo of that
+	// member's save, so the requester's id would hide the end from their tab.
+	expect(payload.userId).not.toBe("user-1");
+};
+
+/** The documents the nudges sent so far were about, in order. */
+const nudgedDocuments = () =>
+	nudges.emitDocumentChange.mock.calls.map(
+		([payload]) => (payload as { documentId: string }).documentId,
+	);
+
+describe("saveProjectDocument — the page is told the run ended", () => {
+	beforeEach(resetNudges);
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	const save = (id = "doc-1") =>
+		saveProjectDocument(id, "# Regenerated", "user-1", {
+			generationStartedAt: ATTEMPT,
+		});
+
+	/** A running document that every guard below still holds. */
+	const seedRunning = (id = "doc-1") =>
+		seed({
+			id,
+			status: "GENERATING",
+			generationStartedAt: new Date(ATTEMPT),
+			liveRunId: "run-1",
+			liveContent: "# Preview",
+			content: "# Before",
+			version: 3,
+		});
+
+	it.each([
+		["the attempt", { generationStartedAt: ATTEMPT }],
+		["the live run", { liveRunId: "run-1" }],
+		["the baseline", { baselineVersion: 3 }],
+		["no guard", undefined],
+	])(
+		"nudges the page once, after a save under %s has committed, from the row it already read",
+		async (_label, options) => {
+			seedRunning();
+
+			await expect(
+				saveProjectDocument(
+					"doc-1",
+					"# Regenerated",
+					"user-1",
+					options,
+				),
+			).resolves.toBeUndefined();
+
+			expectOneNudge();
+			expect(nudges.seen).toEqual([
+				{
+					duringTransaction: false,
+					row: expect.objectContaining({
+						status: "COMPLETE",
+						content: "# Regenerated",
+					}),
+				},
+			]);
+			expect(db.projectDocument.findUnique).toHaveBeenCalledTimes(1);
+		},
+	);
+
+	it.each([
+		[
+			"a newer attempt owns",
+			{ status: "GENERATING", generationStartedAt: NEWER_ATTEMPT },
+		],
+		[
+			"a person's save completed",
+			{ status: "COMPLETE", generationStartedAt: new Date(ATTEMPT) },
+		],
+		[
+			"the stale-generation sweep failed",
+			{ status: "FAILED", generationStartedAt: new Date(ATTEMPT) },
+		],
+	])(
+		"tells nobody of a refused save on a document %s, only of the one it still held",
+		async (_label, state) => {
+			seed({
+				id: "doc-1",
+				content: "# Their edit",
+				version: 4,
+				...state,
+			});
+			seedRunning("doc-2");
+
+			expectStale(await save("doc-1").catch((caught: unknown) => caught));
+			await save("doc-2");
+
+			expect(nudgedDocuments()).toEqual(["doc-2"]);
+		},
+	);
+
+	it("tells nobody when a newer attempt lands between the read and the write, only of the document it still held", async () => {
+		seedRunning("doc-1");
+		seedRunning("doc-2");
+		store.afterRead = () => {
+			Object.assign(row("doc-1"), { generationStartedAt: NEWER_ATTEMPT });
+		};
+
+		expectStale(await save("doc-1").catch((caught: unknown) => caught));
+		await save("doc-2");
+
+		expect(nudgedDocuments()).toEqual(["doc-2"]);
+	});
+
+	it("tells nobody again when a retry finds its own earlier attempt's save", async () => {
+		seedRunning();
+		await save();
+		expect(nudges.emitDocumentChange).toHaveBeenCalledTimes(1);
+
+		// The save committed, its result was lost, and the activity retries.
+		await expect(save()).resolves.toBeUndefined();
+
+		expect(nudges.emitDocumentChange).toHaveBeenCalledTimes(1);
+	});
+
+	it("still saves when the nudge fails, and logs it without the message", async () => {
+		seedRunning();
+		nudges.emitDocumentChange.mockRejectedValue(
+			new Error("realtime unreachable: internal-host"),
+		);
+
+		await expect(save()).resolves.toBeUndefined();
+
+		expect(row()).toMatchObject({
+			status: "COMPLETE",
+			content: "# Regenerated",
+		});
+		expect(activityLogger.warn).toHaveBeenCalledTimes(1);
+		expect(activityLogger.warn).toHaveBeenCalledWith(
+			expect.stringMatching(/save/),
+			{ documentId: "doc-1", error: "Error" },
+		);
+	});
+
+	it("stops waiting for a nudge that never answers, well inside the activity's timeout", async () => {
+		vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+		vi.setSystemTime(NOW);
+		seedRunning();
+		nudges.emitDocumentChange.mockReturnValue(new Promise(() => {}));
+
+		const pending = save();
+		await vi.advanceTimersByTimeAsync(10_000);
+
+		await expect(pending).resolves.toBeUndefined();
+		expect(row()).toMatchObject({
+			status: "COMPLETE",
+			content: "# Regenerated",
+		});
+		expect(activityLogger.warn).toHaveBeenCalledWith(
+			expect.stringMatching(/save/),
+			{ documentId: "doc-1", error: "TIMEOUT" },
+		);
+	});
+});
+
+describe("createDocumentVersion — the page is told of the run's version", () => {
+	beforeEach(resetNudges);
+
+	const versionUnder = {
+		attempt: (id = "doc-1") =>
+			createDocumentVersion(id, "# Regenerated", "user-1", "prompt-v1", {
+				generationStartedAt: ATTEMPT,
+			}),
+		liveRun: (id = "doc-1") =>
+			createDocumentVersion(id, "# Regenerated", "user-1", "prompt-v1", {
+				liveRunId: "run-1",
+			}),
+		baseline: (id = "doc-1") =>
+			createDocumentVersion(id, "# Regenerated", "user-1", "prompt-v1", {
+				baselineVersion: 3,
+			}),
+		none: (id = "doc-1") =>
+			createDocumentVersion(id, "# Regenerated", "user-1", "prompt-v1"),
+	};
+
+	/** Right after the run's save: its body is live, still at version 3. */
+	const seedSaved = (id = "doc-1") => {
+		seed({
+			id,
+			status: "COMPLETE",
+			generationStartedAt: new Date(ATTEMPT),
+			liveRunId: "run-1",
+			content: "# Regenerated",
+			version: 3,
+		});
+		store.versions.push({
+			id: `${id}-version-old`,
+			documentId: id,
+			version: 3,
+			content: "# Before",
+			changeDescription: "Pre-regeneration snapshot (auto)",
+			changedBy: "user-1",
+			promptVersionId: null,
+			createdAt: new Date("2026-10-20T09:00:00.000Z"),
+		});
+	};
+
+	it.each([
+		["the attempt", versionUnder.attempt],
+		["the live run", versionUnder.liveRun],
+		["the baseline", versionUnder.baseline],
+		["no guard", versionUnder.none],
+	])(
+		"nudges the page once, after a version under %s has committed",
+		async (_label, version) => {
+			seedSaved();
+
+			await version();
+
+			expectOneNudge();
+			expect(nudges.seen).toEqual([
+				{
+					duringTransaction: false,
+					row: expect.objectContaining({ version: 4 }),
+				},
+			]);
+		},
+	);
+
+	it.each([
+		["its body changed after the save", { content: "# Their edit" }],
+		["a newer attempt owns it", { generationStartedAt: NEWER_ATTEMPT }],
+	])(
+		"tells nobody of a version it skips because %s, only of the one it wrote",
+		async (_label, state) => {
+			seedSaved("doc-1");
+			seedSaved("doc-2");
+			Object.assign(row("doc-1"), state);
+
+			await expect(
+				versionUnder.attempt("doc-1"),
+			).resolves.toBeUndefined();
+			await versionUnder.attempt("doc-2");
+
+			expect(row("doc-1").version).toBe(3);
+			expect(nudgedDocuments()).toEqual(["doc-2"]);
+		},
+	);
+
+	it("tells nobody of a version a moved baseline refuses as stale, only of the one it wrote", async () => {
+		seedSaved("doc-1");
+		seedSaved("doc-2");
+		Object.assign(row("doc-1"), { content: "# Their edit", version: 4 });
+
+		expectStale(
+			await versionUnder
+				.baseline("doc-1")
+				.catch((caught: unknown) => caught),
+		);
+		await versionUnder.baseline("doc-2");
+
+		expect(nudgedDocuments()).toEqual(["doc-2"]);
+	});
+
+	it.each([
+		["the attempt", versionUnder.attempt],
+		["the live run", versionUnder.liveRun],
+	])(
+		"tells nobody again when a retry under %s finds its own earlier attempt's row",
+		async (_label, version) => {
+			seedSaved();
+			const first = await version();
+			expect(nudges.emitDocumentChange).toHaveBeenCalledTimes(1);
+
+			// The bump committed, its result was lost, and the activity retries.
+			await expect(version()).resolves.toEqual(first);
+
+			expect(row().version).toBe(4);
+			expect(nudges.emitDocumentChange).toHaveBeenCalledTimes(1);
+		},
+	);
 });

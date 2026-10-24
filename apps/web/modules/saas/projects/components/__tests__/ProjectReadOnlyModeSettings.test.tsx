@@ -121,6 +121,25 @@ describe("ProjectReadOnlyModeSettings", () => {
 		expect(updateMock).not.toHaveBeenCalled();
 	});
 
+	it("shows a non-admin why, as a visible note the switch is described by", () => {
+		renderCard({ canEdit: false });
+		const toggle = screen.getByRole("switch", { name: /read-only mode/i });
+		expect(toggle).toHaveAccessibleDescription(
+			/only project admins or owners can change read-only mode/i,
+		);
+	});
+
+	it("names the state and where writes are blocked", () => {
+		renderCard({ canEdit: true, project: { readOnlyMode: true } });
+		expect(screen.getByText("On")).toBeInTheDocument();
+		expect(screen.getByText("Blocks writes to")).toBeInTheDocument();
+		expect(screen.getByText("Azure DevOps")).toBeInTheDocument();
+		// Admins are not shown the lock note.
+		expect(
+			screen.queryByText(/only project admins or owners/i),
+		).not.toBeInTheDocument();
+	});
+
 	it("shows the active banner only when read-only is on", () => {
 		const { rerender, client } = (() => {
 			const c = new QueryClient({

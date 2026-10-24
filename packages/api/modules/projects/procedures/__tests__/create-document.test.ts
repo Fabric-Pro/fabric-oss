@@ -144,6 +144,7 @@ import {
 	DEFAULT_AI_CHAT_EXTRACTED_TEXT_BUDGET_CHARS,
 	neutralizeAiChatAttachmentBody,
 } from "@repo/utils/ai-chat-attachment";
+import { contentIdentity } from "@repo/utils/content-identity";
 import { MAX_RUN_INSTRUCTIONS_CHARS } from "../../lib/dispatch-document-generation";
 import { MAX_SUPPLIED_SOURCE_TEXT_CHARS } from "../../lib/supplied-context";
 import { createDocumentProcedure } from "../create-document";
@@ -206,6 +207,7 @@ beforeEach(() => {
 		async (args: {
 			title: string;
 			type: string;
+			content: string;
 			sourceContext?: unknown;
 			takesOverActive?: boolean;
 		}) => ({
@@ -213,6 +215,7 @@ beforeEach(() => {
 				id: DOCUMENT_ID,
 				type: args.type,
 				title: args.title,
+				content: args.content,
 			},
 			context: args.sourceContext ? { id: CONTEXT_ID } : null,
 			displacedCount: args.takesOverActive ? displaced.count : 0,
@@ -234,11 +237,14 @@ beforeEach(() => {
 		workflow: { start: mocks.workflowStart },
 	});
 	mocks.hasProjectAccess.mockResolvedValue(true);
-	mocks.createDocument.mockResolvedValue({
-		id: DOCUMENT_ID,
-		type: "PRD",
-		title: "Product Requirements Document",
-	});
+	mocks.createDocument.mockImplementation(
+		async (args: { content: string }) => ({
+			id: DOCUMENT_ID,
+			type: "PRD",
+			title: "Product Requirements Document",
+			content: args.content,
+		}),
+	);
 	mocks.resolveOrganizationId.mockReturnValue(ORG_ID);
 });
 
@@ -362,6 +368,7 @@ describe("createDocumentProcedure — awaiting a source file", () => {
 			type: "PRD",
 			title: "Product Requirements Document",
 			status: "GENERATING",
+			content: "",
 		});
 	});
 
@@ -1055,6 +1062,110 @@ describe("createDocumentProcedure — the plain route is unchanged", () => {
 		await expect(
 			handler({ input: input(), context: ctx }),
 		).rejects.toMatchObject({ code: "FORBIDDEN" });
+	});
+});
+
+/**
+ * Every route returns the created body's identity as `contentHash`, as
+ * `projects.documents.get` does (Fizzy #2946): a client may save straight
+ * after creating and name it as the base. The column of that name belongs to
+ * the embedding pipeline and is null on a row nothing has embedded yet.
+ */
+describe("createDocumentProcedure — the body's identity", () => {
+	it.each([
+		["an empty body", ""],
+		["a body", "## Scope\n\nThe first draft."],
+	])(
+		"returns the identity of %s on the plain route",
+		async (_label, body) => {
+			mocks.createDocument.mockResolvedValueOnce({
+				id: DOCUMENT_ID,
+				type: "PRD",
+				title: "Product Requirements Document",
+				content: body,
+				contentHash: null,
+			});
+
+			const result = await handler({
+				input: input({ content: body }),
+				context: ctx,
+			});
+
+			expect(result.document).toMatchObject({
+				contentHash: contentIdentity(body),
+			});
+		},
+	);
+
+	it("hashes the body as the row stores it, not as the request sent it", async () => {
+		// The as-is route stores the neutralized copy of a paste.
+		mocks.createDocumentWithContent.mockResolvedValueOnce({
+			document: {
+				id: DOCUMENT_ID,
+				type: "PRD",
+				title: "Discovery notes",
+				content: "The body as stored.",
+				contentHash: null,
+			},
+			context: { id: CONTEXT_ID },
+			displacedCount: 0,
+		});
+
+		const result = await handler({
+			input: input({
+				sourceText: "The body as sent.",
+				sourceUsage: "AS_IS",
+			}),
+			context: ctx,
+		});
+
+		expect(result.document).toMatchObject({
+			contentHash: contentIdentity("The body as stored."),
+		});
+	});
+
+	it("returns the empty body's identity for a row awaiting its source file", async () => {
+		mocks.documentCreate.mockResolvedValueOnce({
+			id: DOCUMENT_ID,
+			type: "PRD",
+			title: "Product Requirements Document",
+			status: "GENERATING",
+			content: "",
+			contentHash: null,
+		});
+
+		const result = await handler({
+			input: {
+				projectId: PROJECT_ID,
+				type: "PRD",
+				title: "Product Requirements Document",
+				awaitingSourceFile: true,
+			},
+			context: { user: { id: USER_ID }, session: {} },
+		});
+
+		expect(result.document).toMatchObject({
+			contentHash: contentIdentity(""),
+		});
+	});
+
+	it("keeps the identity on a document it reports queued", async () => {
+		mocks.dispatchDocumentGeneration.mockResolvedValueOnce({
+			outcome: "started",
+			workflowId: "wf-1",
+			runId: "run-1",
+			message: "Document generation started",
+		});
+
+		const result = await handler({
+			input: input({ generateWithAi: true }),
+			context: ctx,
+		});
+
+		expect(result.document).toMatchObject({
+			status: "QUEUED",
+			contentHash: contentIdentity(""),
+		});
 	});
 });
 

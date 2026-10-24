@@ -4,17 +4,22 @@ import type { FrameDocumentView } from "@saas/frames/components/FrameRenderer";
 import { Button } from "@ui/components/button";
 import { cn } from "@ui/lib";
 import { ChevronLeft, ChevronRight, Loader2, X } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Response } from "../../../../components/ai-elements/response";
 import { useFrameContentFingerprint } from "../hooks/use-frame-content-fingerprint";
 import { useFrameEmbedRpc } from "../hooks/use-frame-embed-rpc";
 import { useFrameExport } from "../hooks/use-frame-export";
 import { useFrameRuntimeBridge } from "../hooks/use-frame-runtime-bridge";
-import type { FrameSurfaceName } from "../lib/frame-tool-types";
+import type {
+	FrameEmbedToHostMessage,
+	FrameHostToEmbedMessage,
+} from "../lib/frame-embed-protocol";
 import { frameShellLabels } from "../lib/frame-shell-labels";
+import type { FrameSurfaceName } from "../lib/frame-tool-types";
 import { FrameRuntimeConfirmDialog } from "./FrameRuntimeConfirmDialog";
-import { FrameShellHeader, type FrameShareControl } from "./FrameShellHeader";
+import { type FrameShareControl, FrameShellHeader } from "./FrameShellHeader";
 import { ShareFrameSheet } from "./ShareFrameSheet";
 
 interface FrameVizShellProps {
@@ -72,6 +77,20 @@ interface FrameVizShellProps {
 
 const NO_TOOLS: readonly string[] = [];
 
+const InlineFrameRenderer = dynamic(
+	() => import("./FrameRenderer").then((module) => module.FrameRenderer),
+	{ ssr: false, loading: () => <FrameLoadingState label="Loading…" /> },
+);
+
+function FrameLoadingState({ label }: { label: string }) {
+	return (
+		<output className="absolute inset-0 z-10 flex flex-col items-center gap-3 bg-card pt-24 text-sm text-muted-foreground">
+			<Loader2 className="h-6 w-6 motion-safe:animate-spin" aria-hidden />
+			{label}
+		</output>
+	);
+}
+
 export function FrameVizShell({
 	frameId,
 	title,
@@ -102,6 +121,7 @@ export function FrameVizShell({
 }: FrameVizShellProps) {
 	const iframeRef = useRef<HTMLIFrameElement>(null);
 	const fullscreenIframeRef = useRef<HTMLIFrameElement>(null);
+	const inlineRootRef = useRef<HTMLDivElement>(null);
 	const [showCode, setShowCode] = useState(false);
 	const [isFullscreen, setIsFullscreen] = useState(false);
 	const [currentSlide, setCurrentSlide] = useState(0);
@@ -117,6 +137,10 @@ export function FrameVizShell({
 		? `${embedUrl}${embedUrl.includes("?") ? "&" : "?"}slide=${effectiveSlide}`
 		: embedUrl;
 	const labels = frameShellLabels({ surface, headerMode });
+	// A page drawn without its scripts needs nothing the embed route provides,
+	// so it is drawn here from the document already loaded instead of from a
+	// second full page load.
+	const inlineDocument = interactive ? undefined : frameDocument;
 
 	const codeView = useMemo(
 		() => (frameDocument ? JSON.stringify(frameDocument, null, 2) : null),
@@ -156,12 +180,40 @@ export function FrameVizShell({
 		enabled: headerMode !== "public" && interactive,
 	});
 
+	const captureInline = useCallback(
+		async (
+			message: FrameHostToEmbedMessage,
+		): Promise<FrameEmbedToHostMessage> => {
+			if (message.type !== "fabric-frame:request-export-png") {
+				return {
+					type: "fabric-frame:display-code",
+					requestId: message.requestId,
+				};
+			}
+			if (!inlineRootRef.current) {
+				throw new Error("Frame content is not ready yet.");
+			}
+			const { default: html2canvas } = await import("html2canvas");
+			const canvas = await html2canvas(inlineRootRef.current, {
+				backgroundColor: "#ffffff",
+				useCORS: true,
+				scale: window.devicePixelRatio > 1 ? 2 : 1,
+			});
+			return {
+				type: "fabric-frame:export-png-result",
+				requestId: message.requestId,
+				dataUrl: canvas.toDataURL("image/png"),
+			};
+		},
+		[],
+	);
+
 	const exporter = useFrameExport({
 		title,
 		kind,
 		codeView,
 		iframeRef,
-		requestFromEmbed,
+		requestFromEmbed: inlineDocument ? captureInline : requestFromEmbed,
 		resetKey: effectiveEmbedUrl,
 	});
 
@@ -345,13 +397,24 @@ export function FrameVizShell({
 								</div>
 							)}
 						</div>
+					) : inlineDocument ? (
+						<div
+							ref={inlineRootRef}
+							className="relative min-h-[480px] bg-card"
+						>
+							<InlineFrameRenderer
+								frame={inlineDocument}
+								slideIndex={
+									isSlideshow ? effectiveSlide : undefined
+								}
+								allowScripts={false}
+								embedded
+							/>
+						</div>
 					) : (
 						<div className="relative bg-muted/20">
 							{iframeLoading && !isPanelPresentation ? (
-								<div className="absolute inset-x-0 top-0 z-10 flex items-center gap-2 border-b bg-background/90 px-4 py-2 text-sm text-muted-foreground backdrop-blur">
-									<Loader2 className="h-4 w-4 animate-spin" />{" "}
-									{labels.loading}
-								</div>
+								<FrameLoadingState label={labels.loading} />
 							) : null}
 							{embedError ? (
 								<div className="border-b bg-destructive/5 px-4 py-3 text-sm text-destructive">
@@ -405,19 +468,34 @@ export function FrameVizShell({
 								overflow: "hidden",
 							}}
 						>
-							<iframe
-								ref={fullscreenIframeRef}
-								title={title}
-								src={effectiveEmbedUrl}
-								className="border-0"
-								scrolling="auto"
-								style={{
-									position: "absolute",
-									inset: 0,
-									width: "100%",
-									height: "100%",
-								}}
-							/>
+							{inlineDocument ? (
+								<div className="absolute inset-0 overflow-auto bg-card">
+									<InlineFrameRenderer
+										frame={inlineDocument}
+										slideIndex={
+											isSlideshow
+												? effectiveSlide
+												: undefined
+										}
+										allowScripts={false}
+										embedded
+									/>
+								</div>
+							) : (
+								<iframe
+									ref={fullscreenIframeRef}
+									title={title}
+									src={effectiveEmbedUrl}
+									className="border-0"
+									scrolling="auto"
+									style={{
+										position: "absolute",
+										inset: 0,
+										width: "100%",
+										height: "100%",
+									}}
+								/>
+							)}
 						</div>
 					</div>,
 					document.body,

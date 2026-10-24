@@ -8,7 +8,8 @@
 				"scripts/*.{js,mjs,ts}",
 				"tooling/docs-screenshots/render.mjs",
 				"tooling/identifier-guard/__tests__/*.test.mjs",
-				"tooling/pr-review-checks/__tests__/*.test.mjs"
+				"tooling/pr-review-checks/__tests__/*.test.mjs",
+				"tooling/jev-pr-review/__tests__/*.test.mjs"
 			]
 		},
 		"agents/langchain/api-agent": {

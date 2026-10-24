@@ -112,6 +112,7 @@ export interface CustomAgentModelExecutor {
 		model?: string;
 		temperature?: number;
 		maxTokens?: number;
+		abortSignal?: AbortSignal;
 	}): Promise<{
 		text: string;
 		toolCalls?: Array<{
@@ -131,6 +132,7 @@ export interface CustomAgentModelExecutor {
 		model?: string;
 		temperature?: number;
 		maxTokens?: number;
+		abortSignal?: AbortSignal;
 	}): AsyncGenerator<{
 		text?: string;
 		toolCall?: {
@@ -174,7 +176,9 @@ export function createCustomAgentA2AExecutor(
 			message: A2AMessage,
 			contextId?: string,
 			metadata?: Record<string, unknown>,
+			signal?: AbortSignal,
 		): Promise<A2AExecutionResult> {
+			signal?.throwIfAborted();
 			// Extract text from message
 			const textPart = message.parts.find((p) => p.type === "text");
 			const userMessage =
@@ -221,6 +225,7 @@ export function createCustomAgentA2AExecutor(
 			const systemPrompt = buildSystemPrompt(config, contextId, metadata);
 
 			try {
+				signal?.throwIfAborted();
 				// Execute with model
 				const result = await modelExecutor.generateText({
 					system: systemPrompt,
@@ -229,6 +234,7 @@ export function createCustomAgentA2AExecutor(
 					model: config.model,
 					temperature: config.temperature,
 					maxTokens: config.maxTokens,
+					abortSignal: signal,
 				});
 
 				// Close MCP connections
@@ -291,10 +297,16 @@ export function createCustomAgentA2AExecutor(
 			message: A2AMessage,
 			contextId?: string,
 			metadata?: Record<string, unknown>,
+			signal?: AbortSignal,
 		): AsyncGenerator<A2AStreamEvent> {
 			// If streaming is not supported by the model executor, fall back to non-streaming
 			if (!modelExecutor.generateTextStream) {
-				const result = await this.execute(message, contextId, metadata);
+				const result = await this.execute(
+					message,
+					contextId,
+					metadata,
+					signal,
+				);
 				yield { type: "text", text: result.response };
 				if (result.artifacts) {
 					for (const artifact of result.artifacts) {
@@ -304,6 +316,7 @@ export function createCustomAgentA2AExecutor(
 				return;
 			}
 
+			signal?.throwIfAborted();
 			// Extract text from message
 			const textPart = message.parts.find((p) => p.type === "text");
 			const userMessage =
@@ -350,6 +363,7 @@ export function createCustomAgentA2AExecutor(
 			const systemPrompt = buildSystemPrompt(config, contextId, metadata);
 
 			try {
+				signal?.throwIfAborted();
 				// Stream from model
 				const stream = modelExecutor.generateTextStream({
 					system: systemPrompt,
@@ -358,6 +372,7 @@ export function createCustomAgentA2AExecutor(
 					model: config.model,
 					temperature: config.temperature,
 					maxTokens: config.maxTokens,
+					abortSignal: signal,
 				});
 
 				const toolResults: Array<{
@@ -367,6 +382,7 @@ export function createCustomAgentA2AExecutor(
 				}> = [];
 
 				for await (const chunk of stream) {
+					signal?.throwIfAborted();
 					if (chunk.text) {
 						yield { type: "text", text: chunk.text };
 					}

@@ -19,7 +19,10 @@ import {
 	hasProviderCredentials,
 	resolveModelWithProvider,
 } from "@repo/ai";
-import { getEmbeddingDimensions } from "../embedding/generator";
+import {
+	embeddingModelFitsVectorStore,
+	getKnownEmbeddingDimensions,
+} from "../embedding/dimensions";
 import { VECTOR_SIZE } from "../vector-store/client";
 import {
 	COMPANY_EMBEDDING_RESOLUTION,
@@ -34,9 +37,9 @@ export {
 export interface CompanyEmbeddingModel {
 	/** `${provider}:${modelString}` of the organization's resolved EMBEDDING model. */
 	identity: string;
-	/** What the model produces, from the embedding generator's model table. */
-	dimensions: number;
-	/** Whether `dimensions` matches the collections' fixed `VECTOR_SIZE`. */
+	/** Recorded canonical model width, or null when unknown. */
+	dimensions: number | null;
+	/** Whether the canonical model has a known width matching `VECTOR_SIZE`. */
 	supported: boolean;
 }
 
@@ -88,11 +91,11 @@ export async function resolveCompanyEmbeddingModel(params: {
 		);
 	}
 
-	const dimensions = getEmbeddingDimensions(config.modelString);
+	const dimensions = getKnownEmbeddingDimensions(config.canonicalName);
 	return {
 		identity: companyEmbeddingIdentity(config),
 		dimensions,
-		supported: dimensions === VECTOR_SIZE,
+		supported: embeddingModelFitsVectorStore(config.canonicalName),
 	};
 }
 
@@ -100,5 +103,5 @@ export async function resolveCompanyEmbeddingModel(params: {
 export function unsupportedEmbeddingModelMessage(
 	model: CompanyEmbeddingModel,
 ): string {
-	return `${UNSUPPORTED_EMBEDDING_MODEL_REASON}: ${model.identity} produces ${model.dimensions}-dimension vectors, and company context stores ${VECTOR_SIZE}-dimension vectors. Choose a ${VECTOR_SIZE}-dimension embedding model in Settings → AI Models.`;
+	return `${UNSUPPORTED_EMBEDDING_MODEL_REASON}: ${model.identity} produces ${model.dimensions === null ? "vectors of unknown width" : `${model.dimensions}-dimension vectors`}, and company context stores ${VECTOR_SIZE}-dimension vectors. Choose a ${VECTOR_SIZE}-dimension embedding model in Settings → AI Models.`;
 }

@@ -245,3 +245,27 @@ describe("organization default provider identity", () => {
 		},
 	);
 });
+
+it("excludes a disabled organization Databricks config from provider-specific resolution", async () => {
+	const disabled = { ...servicePrincipalRow, enabled: false };
+	orgFindFirst.mockImplementation(async ({ where }) =>
+		disabled.enabled === where.enabled ? disabled : null,
+	);
+	const result = await getAiProviderApiKeyByProvider({
+		userId: "example-user",
+		organizationId: "example-org",
+		provider: "DATABRICKS",
+	});
+	expect(orgFindFirst).toHaveBeenCalledWith(
+		expect.objectContaining({
+			where: expect.objectContaining({
+				organizationId: "example-org",
+				provider: "DATABRICKS",
+				enabled: true,
+			}),
+		}),
+	);
+	expect(result.provider).toBeNull();
+	expect(result.source).toBeNull();
+	expect(disabled.enabled).toBe(false);
+});

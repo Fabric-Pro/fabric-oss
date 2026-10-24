@@ -62,6 +62,8 @@ const {
 	capturedEditor,
 	respondSpy,
 	mockUseHistoryEnabled,
+	recordOutcome,
+	stageEnhance,
 } = vi.hoisted(() => ({
 	/**
 	 * Stands in for the CopilotKit agent run. The mocked `useCopilotChat` /
@@ -95,13 +97,29 @@ const {
 		fetchCount: 0,
 	},
 	/**
-	 * Every `mutate()` the workspace fires, with the variables it sent. The
-	 * accept path's whole job is choosing WHAT to persist, and this is the only
-	 * place that choice is observable — the editor is reset to the same content
-	 * either way.
+	 * Every `mutate()` / `mutateAsync()` the workspace fires, with the
+	 * variables it sent. The accept path's whole job is choosing WHAT to
+	 * persist, and this is the only place that choice is observable — the
+	 * editor is reset to the same content either way.
 	 */
 	mutationStore: {
-		calls: [] as Array<{ key: string | null; variables: unknown }>,
+		calls: [] as Array<{
+			key: string | null;
+			variables: unknown;
+			/** The per-call callbacks `mutate` / `mutateAsync` was handed. */
+			options?: {
+				onSuccess?: (data: unknown) => void;
+				onError?: (error: unknown) => void;
+			};
+			/**
+			 * Settles a `mutateAsync` call's promise. Absent for `mutate`.
+			 * Nothing settles it unless a test does (see `answerSave`).
+			 */
+			answer?: {
+				resolve: (data: unknown) => void;
+				reject: (error: unknown) => void;
+			};
+		}>,
 		optionsByKey: {} as Record<
 			string,
 			{ onError?: (error: unknown) => void }
@@ -135,6 +153,20 @@ const {
 	/** CopilotKit's HITL callback — how the agent learns the decision. */
 	respondSpy: vi.fn(),
 	mockUseHistoryEnabled: vi.fn(),
+	/**
+	 * What the chat records of each accept or reject (Fizzy #2946). An accept
+	 * is recorded once its save has answered, so a test answers that save.
+	 */
+	recordOutcome: vi.fn(() => Promise.resolve()),
+	/**
+	 * The stage Enhance flow, the only way to an accept that also moves the
+	 * stage: the prompt the server resolves for it, and the message that
+	 * starts its run.
+	 */
+	stageEnhance: {
+		resolvePrompt: vi.fn(),
+		appendMessage: vi.fn(),
+	},
 }));
 
 // ---------------------------------------------------------------------------
@@ -169,6 +201,7 @@ vi.mock("@copilotkit/react-core", () => ({
 		messages: [],
 		isLoading: copilotStore.isLoading,
 		setMessages: vi.fn(),
+		appendMessage: stageEnhance.appendMessage,
 	}),
 	useCopilotReadable: vi.fn(),
 }));
@@ -252,6 +285,34 @@ vi.mock(
 vi.mock("@saas/projects/hooks/useDocumentAssistantHistoryEnabled", () => ({
 	useDocumentAssistantHistoryEnabled: () => mockUseHistoryEnabled(),
 }));
+
+// The chat's record of a resolution (Fizzy #2946). With no conversation in
+// this harness the real hook writes nothing, so the spy hides nothing.
+vi.mock("@saas/agents/copilot/useConfirmChangesOperationResult", () => ({
+	useConfirmChangesOperationResult: () => recordOutcome,
+}));
+
+// The real oRPC client, but for the one procedure the stage Enhance flow
+// awaits before it sets the stage an accept then writes.
+vi.mock("@shared/lib/orpc-client", async () => {
+	const actual = await vi.importActual<
+		typeof import("@shared/lib/orpc-client")
+	>("@shared/lib/orpc-client");
+	const served = ["projects", "stories", "resolvePrompt"];
+	const serve = (target: object, depth: number): unknown =>
+		new Proxy(target, {
+			get: (t, prop, receiver) => {
+				const value = Reflect.get(t, prop, receiver);
+				if (prop !== served[depth]) {
+					return value;
+				}
+				return depth === served.length - 1
+					? stageEnhance.resolvePrompt
+					: serve(value as object, depth + 1);
+			},
+		});
+	return { ...actual, orpcClient: serve(actual.orpcClient, 0) };
+});
 
 vi.mock("@saas/projects/components/copilot/CopilotSidebarHeader", () => ({
 	createCopilotSidebarHeader: () => () => null,
@@ -369,11 +430,21 @@ vi.mock("@tanstack/react-query", async () => {
 					onError?: (error: unknown) => void;
 				};
 			}
+			type CallOptions = (typeof mutationStore.calls)[number]["options"];
 			return {
-				mutate: (variables: unknown) => {
-					mutationStore.calls.push({ key, variables });
+				mutate: (variables: unknown, options?: CallOptions) => {
+					mutationStore.calls.push({ key, variables, options });
 				},
-				mutateAsync: vi.fn(),
+				// Held until a test answers it, like a write still in flight.
+				mutateAsync: (variables: unknown, options?: CallOptions) =>
+					new Promise((resolve, reject) => {
+						mutationStore.calls.push({
+							key,
+							variables,
+							options,
+							answer: { resolve, reject },
+						});
+					}),
 				isPending: false,
 			};
 		},
@@ -447,9 +518,27 @@ vi.mock(
 	() => ({ ConvertKindConfirmDialog: () => null }),
 );
 
+// Stubbed at its `onEnhance` seam: the dialog's own prompt picker is not the
+// subject, the stage it hands back is.
 vi.mock(
 	"../../modules/saas/projects/components/stories/FeatureTransitionDialog",
-	() => ({ FeatureTransitionDialog: () => null }),
+	() => ({
+		FeatureTransitionDialog: ({
+			targetStage,
+			onEnhance,
+		}: {
+			targetStage: string;
+			onEnhance: (stage: string) => void;
+		}) => (
+			<button
+				type="button"
+				data-testid="transition-enhance"
+				onClick={() => onEnhance(targetStage)}
+			>
+				enhance
+			</button>
+		),
+	}),
 );
 
 vi.mock(
@@ -562,17 +651,23 @@ function workspace({
 	// The story prop is React Query CACHE data. Tests that want the cache to
 	// lag the server (the window #1929 lives in) simply leave it alone.
 	description = ORIGINAL_SPEC,
+	// Off only for the stage bar and its Enhance flow, which Maturation V2
+	// replaces; that bar needs a stage it knows.
+	maturationV2 = true,
+	draftingStage = baseStory.draftingStage,
 }: {
 	canEdit?: boolean;
 	description?: string;
+	maturationV2?: boolean;
+	draftingStage?: string;
 } = {}) {
 	return (
 		<StoryWorkspace
-			story={{ ...baseStory, description } as StoryProp}
+			story={{ ...baseStory, description, draftingStage } as StoryProp}
 			canEdit={canEdit}
 			projectId="proj-1"
 			projectName="Test Project"
-			maturationV2
+			maturationV2={maturationV2}
 			onClose={vi.fn()}
 		/>
 	);
@@ -626,7 +721,7 @@ function bannerButton(name: string): HTMLElement {
 
 /**
  * Every spec body the workspace asked to persist, in order. Both writers of the
- * description column (the accept path's own `updateMutation.mutate`, and
+ * description column (the accept path's own `updateMutation.mutateAsync`, and
  * `handleSave`'s) send a `description` string; nothing else the workspace
  * mutates does.
  */
@@ -757,6 +852,59 @@ async function pendingReviewOnQuestionsTab(
 	);
 	expect(hasDiffMarks()).toBe(true);
 	return { rerender, unmount };
+}
+
+/**
+ * Mount on the stage bar, move the feature to Draft through the transition
+ * dialog's Enhance — which sets the stage the accept then writes — and walk
+ * that run's draft to a decision.
+ */
+async function pendingStageReview(): Promise<void> {
+	const current = () =>
+		workspace({ maturationV2: false, draftingStage: "PLACEHOLDER" });
+	const { rerender } = render(current());
+	await waitFor(() => expect(capturedEditor.current).not.toBeNull());
+
+	await act(async () => {
+		fireEvent.keyDown(
+			screen.getByRole("button", { name: "Change drafting stage" }),
+			{ key: "Enter" },
+		);
+	});
+	await click(await screen.findByRole("menuitem", { name: "Draft" }));
+	await click(screen.getByRole("button", { name: /^enhance$/i }));
+	await click(await screen.findByTestId("transition-enhance"));
+	await waitFor(() => expect(stageEnhance.appendMessage).toHaveBeenCalled());
+
+	await runAgent(rerender, current);
+	await arriveAtConfirmation();
+	expect(hasDiffMarks()).toBe(true);
+}
+
+/** The one write the accept sent and is waiting on, still unanswered. */
+function heldAcceptSave(): (typeof mutationStore.calls)[number] {
+	const held = mutationStore.calls.filter((call) => call.answer);
+	expect(held).toHaveLength(1);
+	return held[0] as (typeof mutationStore.calls)[number];
+}
+
+/**
+ * Answer a held write the way TanStack Query does: the call's own callback
+ * first, then the promise `mutateAsync` returned.
+ */
+async function answerSave(
+	save: (typeof mutationStore.calls)[number],
+	answer: { data: unknown } | { error: Error },
+): Promise<void> {
+	await act(async () => {
+		if ("error" in answer) {
+			save.options?.onError?.(answer.error);
+			save.answer?.reject(answer.error);
+		} else {
+			save.options?.onSuccess?.(answer.data);
+			save.answer?.resolve(answer.data);
+		}
+	});
 }
 
 // ---------------------------------------------------------------------------
@@ -1369,6 +1517,169 @@ describe("StoryWorkspace — reaching a pending review from any maturation tab",
 		});
 		expect(vi.mocked(toast.error)).toHaveBeenCalledWith("answerError");
 		expect(vi.mocked(toast.warning)).not.toHaveBeenCalled();
+	});
+
+	/**
+	 * Fizzy #2946. Accepting recorded "Changes applied." in the chat the moment
+	 * the save was sent, and the record stood when the save was then refused.
+	 * It now waits for the save's answer and says what that answer was. The
+	 * agent is still answered at once — only the record waits.
+	 */
+	describe("the chat's record of an accepted draft", () => {
+		// Each record carries the one key its accept made (the helper
+		// dedupes per operation).
+		const SAVED = {
+			accepted: true,
+			summary: "Changes applied.",
+			operationKey: expect.any(String),
+		};
+		const FAILED = {
+			accepted: true,
+			outcome: "failure",
+			summary:
+				"The accepted changes could not be saved; they are still in the editor.",
+			operationKey: expect.any(String),
+		};
+
+		beforeEach(() => {
+			recordOutcome.mockClear();
+			stageEnhance.resolvePrompt.mockReset();
+			stageEnhance.resolvePrompt.mockResolvedValue({
+				resolved: true,
+				content: "Enhance the feature to the next stage.",
+				kind: "FEATURE",
+			});
+			stageEnhance.appendMessage.mockReset();
+			stageEnhance.appendMessage.mockResolvedValue(undefined);
+		});
+
+		it("records nothing while the save is in flight, then that it was saved", async () => {
+			await pendingReviewOnQuestionsTab();
+			await click(bannerButton("pendingReview.approveAria"));
+
+			expect(respondSpy).toHaveBeenCalledWith({ accepted: true });
+			expect(recordOutcome).not.toHaveBeenCalled();
+			const save = heldAcceptSave();
+			expect(save.variables).toMatchObject({ description: AI_SPEC });
+
+			await answerSave(save, { data: {} });
+
+			expect(recordOutcome).toHaveBeenCalledTimes(1);
+			expect(recordOutcome).toHaveBeenCalledWith(SAVED);
+		});
+
+		it("records one failure when the save is refused", async () => {
+			await pendingReviewOnQuestionsTab();
+			await click(bannerButton("pendingReview.approveAria"));
+
+			expect(respondSpy).toHaveBeenCalledWith({ accepted: true });
+			expect(recordOutcome).not.toHaveBeenCalled();
+			const save = heldAcceptSave();
+
+			await answerSave(save, { error: new Error("network down") });
+
+			expect(recordOutcome).toHaveBeenCalledTimes(1);
+			expect(recordOutcome).toHaveBeenCalledWith(FAILED);
+		});
+
+		it("records a failure that names no editor when the workspace closed before the save was refused", async () => {
+			const { unmount } = await pendingReviewOnQuestionsTab();
+			await click(bannerButton("pendingReview.approveAria"));
+			const save = heldAcceptSave();
+
+			unmount();
+			await answerSave(save, { error: new Error("network down") });
+
+			expect(recordOutcome).toHaveBeenCalledTimes(1);
+			expect(recordOutcome).toHaveBeenCalledWith({
+				...FAILED,
+				summary: "The accepted changes could not be saved.",
+			});
+		});
+
+		it("names the stage it advanced to once the stage write lands", async () => {
+			await pendingStageReview();
+			const card = await renderChatConfirmCard();
+			await click(within(card).getByTestId("confirm-button"));
+
+			expect(respondSpy).toHaveBeenCalledWith({ accepted: true });
+			expect(recordOutcome).not.toHaveBeenCalled();
+			const save = heldAcceptSave();
+			expect(save.variables).toMatchObject({ targetStage: "DRAFT" });
+
+			await answerSave(save, { data: { pendingStageRequest: null } });
+
+			expect(recordOutcome).toHaveBeenCalledTimes(1);
+			expect(recordOutcome).toHaveBeenCalledWith({
+				accepted: true,
+				summary: "Changes applied — advanced to stage DRAFT.",
+				operationKey: expect.any(String),
+			});
+		});
+
+		it("says the move went for approval when a reviewer holds the stage", async () => {
+			await pendingStageReview();
+			const card = await renderChatConfirmCard();
+			await click(within(card).getByTestId("confirm-button"));
+
+			expect(recordOutcome).not.toHaveBeenCalled();
+			const save = heldAcceptSave();
+
+			await answerSave(save, {
+				data: { pendingStageRequest: { id: "stage-request-1" } },
+			});
+
+			expect(recordOutcome).toHaveBeenCalledTimes(1);
+			expect(recordOutcome).toHaveBeenCalledWith({
+				accepted: true,
+				summary:
+					"Changes applied — the move to stage DRAFT was sent for approval.",
+				operationKey: expect.any(String),
+			});
+		});
+
+		it("records one failure when the stage write is refused", async () => {
+			await pendingStageReview();
+			const card = await renderChatConfirmCard();
+			await click(within(card).getByTestId("confirm-button"));
+
+			expect(recordOutcome).not.toHaveBeenCalled();
+			const save = heldAcceptSave();
+
+			await answerSave(save, {
+				error: Object.assign(new Error("story version conflict"), {
+					code: "CONFLICT",
+				}),
+			});
+
+			expect(recordOutcome).toHaveBeenCalledTimes(1);
+			expect(recordOutcome).toHaveBeenCalledWith(FAILED);
+		});
+
+		it("says the accepted text is not saved yet when it waits behind a save in flight", async () => {
+			await pendingReviewOnQuestionsTab();
+			// A save of the editor goes out and stays unanswered, so the accept
+			// steps aside for it and leaves its text to the next autosave.
+			await act(async () => {
+				fireEvent.keyDown(window, { key: "s", ctrlKey: true });
+			});
+			expect(savedDescriptions()).toHaveLength(1);
+
+			await click(bannerButton("pendingReview.approveAria"));
+
+			expect(respondSpy).toHaveBeenCalledWith({ accepted: true });
+			expect(mutationStore.calls.filter((call) => call.answer)).toEqual(
+				[],
+			);
+			expect(recordOutcome).toHaveBeenCalledTimes(1);
+			expect(recordOutcome).toHaveBeenCalledWith({
+				accepted: true,
+				outcome: "partial",
+				summary:
+					"The accepted changes are in the editor, not saved yet.",
+				operationKey: expect.any(String),
+			});
+		});
 	});
 });
 

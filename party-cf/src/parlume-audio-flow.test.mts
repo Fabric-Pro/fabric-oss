@@ -245,6 +245,83 @@ test("the bot's audio is verified on its first chunk, transcribed, attributed, a
 	assert.equal(turn?.botId, "bot_abc123");
 });
 
+test("Flux word bounds attribute speech to the caller after another participant's long turn", async (t) => {
+	t.mock.timers.enable({ apis: ["Date", "setTimeout"] });
+	const { bridge, bot, flux, requests } = meeting();
+	await bridge.onStart();
+	await bridge.onConnect(bot, { request: { url: STREAM_URL } });
+	t.after(() => bridge.onClose(bot));
+	for (let end = 1_000_010; end <= 1_000_080; end += 10) {
+		await bridge.onMessage(bot, audio(end));
+	}
+	await flush();
+	await bridge.onRequest(
+		control("speakers", {
+			updates: [
+				{
+					name: "Previous speaker",
+					id: "participant-1",
+					timestamp: 1_000_000,
+					isSpeaking: true,
+				},
+				{
+					name: "Previous speaker",
+					id: "participant-1",
+					timestamp: 1_020_000,
+					isSpeaking: false,
+				},
+				{
+					name: "Caller",
+					id: "participant-2",
+					timestamp: 1_020_000,
+					isSpeaking: true,
+				},
+				{
+					name: "Caller",
+					id: "participant-2",
+					timestamp: 1_023_500,
+					isSpeaking: false,
+				},
+			],
+		}),
+	);
+	flux.turn({
+		event: "Update",
+		turn_index: 0,
+		transcript: "",
+		audio_window_start: 0,
+		audio_window_end: 0.25,
+	});
+	flux.turn({
+		event: "EndOfTurn",
+		turn_index: 0,
+		transcript: "Hey Fabric, hello",
+		audio_window_start: 20,
+		audio_window_end: 23.5,
+		words: [
+			{ word: "Hey", start: 20.1, end: 20.4 },
+			{ word: "Fabric", start: 20.5, end: 21 },
+			{ word: "hello", start: 22, end: 23.2 },
+		],
+	});
+	await flush();
+	assert.deepEqual(requests.find((r) => r.path.endsWith("/segments"))?.body, {
+		sessionId: "session-1",
+		botId: "bot_abc123",
+		text: "Hey Fabric, hello",
+		speakerName: "Caller",
+		speakerId: "participant-2",
+		utteranceStartMs: 20_100,
+		utteranceEndMs: 23_200,
+	});
+	assert.equal(requests.filter((r) => r.path.endsWith("/turns")).length, 0);
+	t.mock.timers.tick(1);
+	await flush();
+	const turn = requests.find((r) => r.path.endsWith("/turns"))?.body;
+	assert.equal(turn?.speakerId, "participant-2");
+	assert.equal(turn?.text, "hello");
+});
+
 test("a request that carries its own question is handed to Fabric at Flux's end of turn, with no extra wait", async () => {
 	const { bridge, bot, flux, requests } = meeting();
 	await bridge.onStart();
@@ -686,6 +763,8 @@ test("say is refused without the service secret, the right content type or a cur
 	assert.deepEqual(plain(await stale.json()), {
 		played: false,
 		interrupted: true,
+		muted: false,
+		heard: 0,
 	});
 	await bridge.onClose(bot, 1000, "done");
 });
@@ -805,5 +884,195 @@ test("speech from another participant mid-sentence silences a say reply and ends
 	assert.equal(result.failedAt, undefined);
 	assert.ok(framesBefore > 0, "it was speaking when interrupted");
 	assert.ok(sent.length < framesBefore + 6, "playback stopped");
+	await bridge.onClose(bot, 1000, "done");
+});
+
+test("a chat post the bridge reads aloud itself is reported to Fabric as Aura usage", async () => {
+	const { bridge, bot, requests, auraCalls } = await connectedMeeting();
+	const keepAlive = setInterval(() => {}, 1_000);
+	await bridge.onRequest(control("chat", { message: "Here is F-12." }));
+
+	await bridge.onRequest(
+		control("chat-message", {
+			id: "msg_1",
+			text: "say P1",
+			senderName: "Dev One",
+			senderId: "participant-1",
+			toBot: false,
+			timestampMs: null,
+		}),
+	);
+	for (
+		let waited = 0;
+		waited < 2_000 &&
+		!requests.some((r) => r.path.endsWith("/speech-usage"));
+		waited += 20
+	) {
+		await sleep(20);
+	}
+	clearInterval(keepAlive);
+
+	assert.equal(auraCalls.length, 1);
+	const usage = requests.find((r) => r.path.endsWith("/speech-usage"));
+	assert.equal(usage?.body.sessionId, "session-1");
+	assert.equal(usage?.body.botId, "bot_abc123");
+	assert.deepEqual(
+		usage?.body.sentences.map((s: { chars: number }) => s.chars),
+		[13],
+	);
+	await bridge.onClose(bot, 1000, "done");
+});
+
+// Aura that takes about 800 ms to stream one sentence, so speech can land on it.
+const slowAura = () =>
+	new Response(
+		new ReadableStream<Uint8Array>({
+			async start(controller) {
+				for (let part = 0; part < 20; part++) {
+					controller.enqueue(new Uint8Array(4_800));
+					await sleep(40);
+				}
+				controller.close();
+			},
+		}),
+	);
+
+async function answeringMeeting() {
+	const harness = await connectedMeeting({ aura: slowAura });
+	harness.flux.turn({
+		event: "EndOfTurn",
+		turn_index: 0,
+		audio_window_start: 0.01,
+		audio_window_end: 0.05,
+		transcript: "Hey Fabric, what is the plan?",
+	});
+	for (
+		let waited = 0;
+		waited < 2_000 &&
+		!harness.requests.some((r) => r.path.endsWith("/turns"));
+		waited += 20
+	) {
+		await sleep(20);
+	}
+	return harness;
+}
+
+const generationState = async (bridge: Bridge, voiceGeneration: number) =>
+	plain(
+		await (
+			await bridge.onRequest(
+				control("verify-generation", { voiceGeneration }),
+			)
+		).json(),
+	);
+
+test("an acknowledgement over Parlume does not interrupt it", async () => {
+	const { bridge, bot, flux, requests } = await answeringMeeting();
+	const keepAlive = setInterval(() => {}, 1_000);
+
+	const playing = bridge.onRequest(say(["The plan is ready."], {}, "1"));
+	await sleep(250);
+	for (const transcript of ["yeah", "mm-hmm", "got it"]) {
+		flux.turn({
+			event: "Update",
+			turn_index: 1,
+			audio_window_start: 0.06,
+			audio_window_end: 0.08,
+			transcript,
+		});
+		await flush();
+	}
+	const result = plain(await (await playing).json());
+	clearInterval(keepAlive);
+
+	assert.equal(result.played, true);
+	assert.equal(result.muted, false);
+	assert.equal(
+		requests.filter((r) => r.path.endsWith("/interrupt")).length,
+		0,
+	);
+	await bridge.onClose(bot, 1000, "done");
+});
+
+test("speech over Parlume mutes the reply but keeps its turn running and answering in the chat", async () => {
+	const { bridge, bot, flux, requests } = await answeringMeeting();
+	const keepAlive = setInterval(() => {}, 1_000);
+
+	const playing = bridge.onRequest(
+		say(["The plan is ready.", "Two items remain."], {}, "1"),
+	);
+	await sleep(250);
+	flux.turn({
+		event: "Update",
+		turn_index: 1,
+		audio_window_start: 0.06,
+		audio_window_end: 0.08,
+		transcript: "I think we should",
+	});
+	await flush();
+	const result = plain(await (await playing).json());
+	const late = plain(
+		await (await bridge.onRequest(say(["More."], {}, "1"))).json(),
+	);
+	clearInterval(keepAlive);
+
+	assert.equal(result.played, false);
+	assert.equal(result.interrupted, true);
+	assert.equal(result.muted, true);
+	assert.equal(result.heard, 0);
+	assert.deepEqual(late, {
+		played: false,
+		interrupted: true,
+		muted: true,
+		heard: 0,
+	});
+	assert.deepEqual(
+		requests
+			.filter((r) => r.path.endsWith("/interrupt"))
+			.map((r) => r.body),
+		[
+			{
+				sessionId: "session-1",
+				botId: "bot_abc123",
+				voiceGeneration: 1,
+				kind: "mute",
+			},
+		],
+	);
+	assert.deepEqual(await generationState(bridge, 1), {
+		current: true,
+		muted: true,
+		chatAvailable: true,
+	});
+	await bridge.onClose(bot, 1000, "done");
+});
+
+test("a cancel phrase abandons the answer, and is never a request of its own", async () => {
+	const { bridge, bot, flux, requests } = await answeringMeeting();
+
+	flux.turn({
+		event: "EndOfTurn",
+		turn_index: 1,
+		audio_window_start: 0.06,
+		audio_window_end: 0.08,
+		transcript: "Parlume, never mind.",
+	});
+	for (
+		let waited = 0;
+		waited < 2_000 && !requests.some((r) => r.path.endsWith("/interrupt"));
+		waited += 20
+	) {
+		await sleep(20);
+	}
+	await sleep(400);
+
+	assert.deepEqual(
+		requests
+			.filter((r) => r.path.endsWith("/interrupt"))
+			.map((r) => r.body),
+		[{ sessionId: "session-1", botId: "bot_abc123", voiceGeneration: 2 }],
+	);
+	assert.equal(requests.filter((r) => r.path.endsWith("/turns")).length, 1);
+	assert.equal((await generationState(bridge, 1)).current, false);
 	await bridge.onClose(bot, 1000, "done");
 });

@@ -24,8 +24,8 @@ import {
 	type RecipientLogoErrorCode,
 	recipientBrandDraftFrom,
 } from "../RecipientBrandFields";
-import { glossyKindKey } from "./glossy-copy";
 import type { GlossyLengthMode } from "./GlossyToolbar";
+import { glossyKindKey } from "./glossy-copy";
 
 /** The server's bound on style direction (`GLOSSY_STYLE_DIRECTION_MAX_CHARS`). */
 const STYLE_DIRECTION_MAX_CHARS = 500;
@@ -44,7 +44,7 @@ export type GlossyDetectionState =
 	| { status: "failed" }
 	| { status: "detected"; result: GlossyDetection };
 
-/** What Align first sends to `projects.glossy.build` (R24). */
+/** What Align first sends to `projects.glossy.build`. */
 export type GlossyAlignFirstOptions = {
 	mode: "align_first";
 	lengthMode: GlossyLengthMode;
@@ -89,21 +89,20 @@ function sameColors(a: readonly string[], b: readonly string[]): boolean {
 }
 
 /**
- * Align first (Fizzy #2589, R24, R25, R33, R34; F2; AE9): one form, prefilled
- * by AI detection and the saved brands, that the editor confirms before
- * anything is generated.
+ * Align first (Fizzy #2589): one form, prefilled by AI detection and the
+ * saved brands, that the editor confirms before anything is generated.
  *
  * - The detected opportunities, each with its one-line reason, all selected;
- *   the reason is model output and renders as plain text (KTD13).
+ *   the reason is model output and renders as plain text.
  * - Style direction, prefilled from the Brand kit guidance.
  * - The length, Brief by default.
  * - This edition's preparer colors, prefilled from the Brand kit; left as
  *   they are, nothing is recorded, so a later Brand kit change still applies.
  * - The recipient brand through `RecipientBrandFields`, remounted per saved
  *   version. A website fetch that fails leaves manual entry in place and
- *   never blocks the build (R34, AE9). A changed recipient brand is saved to
- *   the project before the build starts (F2), against the version it was
- *   read at.
+ *   never blocks the build. A changed recipient brand is saved to the
+ *   project before the build starts, against the version it was read at. Someone the server does not let change it (a project guest,
+ *   Fizzy #2946) reads it with the reason, and the build saves nothing.
  */
 export function GlossyAlignFirstPanel({
 	projectId,
@@ -180,9 +179,12 @@ export function GlossyAlignFirstPanel({
 		setLogoError(null);
 	}, [recipientVersion]);
 
+	// The recipient brand's own write gate, from the server: a project guest
+	// with an editor role builds the edition but only reads the recipient.
+	const recipientEditable = brand.recipientCanEdit;
 	const result = detection.status === "detected" ? detection.result : null;
 	const suggestions =
-		brand.recipient === null
+		brand.recipient === null && recipientEditable
 			? (result?.recipientWebsiteSuggestions ?? [])
 			: [];
 
@@ -208,8 +210,9 @@ export function GlossyAlignFirstPanel({
 		setSubmitting(true);
 		try {
 			const recipientChanged =
+				recipientEditable &&
 				JSON.stringify(recipientDraft) !==
-				JSON.stringify(recipientInitial);
+					JSON.stringify(recipientInitial);
 			if (recipientChanged) {
 				setLogoError(null);
 				let saved: Awaited<
@@ -433,7 +436,7 @@ export function GlossyAlignFirstPanel({
 																},
 															)}
 														</Label>
-														{/* Model output: plain text, never markup (KTD13). */}
+														{/* Model output: plain text, never markup. */}
 														<p
 															id={`${checkboxId}-reason`}
 															className="text-muted-foreground text-sm"
@@ -610,6 +613,10 @@ export function GlossyAlignFirstPanel({
 							value={recipientDraft}
 							onChange={setRecipientDraft}
 							currentLogoUrl={brand.recipient?.logoUrl ?? null}
+							disabled={!recipientEditable}
+							readOnlyReason={
+								recipientEditable ? null : "membersOnly"
+							}
 							busy={busy}
 							logoError={logoError}
 							idPrefix={`${idPrefix}-recipient`}

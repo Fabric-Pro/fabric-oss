@@ -34,6 +34,10 @@ import {
 } from "@repo/utils/proposal-artifact/export-scrub";
 import { parseMarkdownAst } from "@repo/utils/proposal-artifact/markdown-ast";
 import { isDiagramFence } from "@repo/utils/proposal-artifact/section-hash";
+import {
+	readDiagramCaption,
+	withDiagramCaption,
+} from "@repo/utils/proposal-artifact/visual-identity";
 import type { Code, Html, Nodes, Root, RootContent } from "mdast";
 import {
 	STORAGE_REFERENCE,
@@ -44,7 +48,10 @@ import { PROPOSAL_EXPORT_LIMITS } from "./types";
 
 export interface PreparedExportMarkdown {
 	root: Root;
-	/** Each diagram fence's source, in document order. */
+	/**
+	 * Each diagram fence's source, in document order, without its caption
+	 * line: the caption prints under the figure, from the fence itself.
+	 */
 	diagramSources: string[];
 	/** A diagram fence's position in `diagramSources`. */
 	diagramIndex: ReadonlyMap<Code, number>;
@@ -79,7 +86,7 @@ export function prepareExportMarkdown(content: string): PreparedExportMarkdown {
 	eachNode(root, (node) => {
 		if (node.type === "code" && isDiagramFence(node.lang, node.value)) {
 			diagramIndex.set(node, diagramSources.length);
-			diagramSources.push(node.value);
+			diagramSources.push(withDiagramCaption(node.value, null));
 		}
 	});
 	return { root, diagramSources, diagramIndex };
@@ -257,4 +264,18 @@ export function eachNode(root: Nodes, visit: (node: Nodes) => void): void {
 			}
 		}
 	}
+}
+
+/**
+ * A diagram's caption as an export prints it: without citation markers, by
+ * the rule prose follows, so no `[S#]` reaches a client document. Null when
+ * the fence has no caption or nothing is left of it.
+ */
+export function exportDiagramCaption(source: string): string | null {
+	const caption = readDiagramCaption(source);
+	if (caption === null) {
+		return null;
+	}
+	const scrubbed = scrubCitationText(caption).text.trim();
+	return scrubbed === "" ? null : scrubbed;
 }

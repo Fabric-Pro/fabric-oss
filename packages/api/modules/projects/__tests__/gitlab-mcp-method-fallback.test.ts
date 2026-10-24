@@ -22,13 +22,13 @@ describe("callMcpWithRestFallback", () => {
 	it("falls back to REST on JSON-RPC -32601", async () => {
 		const callTool = vi.fn(async () => {
 			throw new GitLabMcpMethodNotFoundError(
-				"Method not found: get_file_contents",
+				"Method not found: get_project",
 			);
 		});
 		const restFallback = vi.fn(async () => ({ from: "rest" }));
 		const result = await callMcpWithRestFallback({
 			source: { kind: "official-mcp", callTool },
-			method: "get_file_contents",
+			method: "get_project",
 			args: {},
 			restFallback,
 		});

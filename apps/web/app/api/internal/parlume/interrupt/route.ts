@@ -8,7 +8,39 @@ const bodySchema = z.object({
 	sessionId: z.string().min(1).max(128),
 	botId: z.string().min(1).max(256),
 	voiceGeneration: z.number().int().min(1),
+	// `mute`: someone spoke over Parlume. The reply went quiet but its turn
+	// runs on and finishes in the meeting chat. `cancel`: the turn is over.
+	kind: z.enum(["cancel", "mute"]).default("cancel"),
 });
+
+/** Notes that the active turn on this generation was spoken over; nothing stops. */
+async function recordMute(input: {
+	sessionId: string;
+	botId: string;
+	voiceGeneration: number;
+}): Promise<boolean> {
+	const session = await db.parlumeMeetingSession.findFirst({
+		where: {
+			id: input.sessionId,
+			providerBotId: input.botId,
+			status: "ACTIVE",
+			voiceGeneration: input.voiceGeneration,
+		},
+		select: { activeTurnId: true },
+	});
+	if (!session?.activeTurnId) {
+		return false;
+	}
+	const noted = await db.parlumeMeetingTurn.updateMany({
+		where: {
+			id: session.activeTurnId,
+			status: { in: ["PENDING", "RUNNING"] },
+			interruptedAt: null,
+		},
+		data: { interruptedAt: new Date() },
+	});
+	return noted.count > 0;
+}
 
 export async function POST(request: NextRequest) {
 	if (
@@ -24,6 +56,17 @@ export async function POST(request: NextRequest) {
 			{ error: "Invalid interruption" },
 			{ status: 400 },
 		);
+	}
+	const { kind, ...target } = parsed.data;
+	switch (kind) {
+		case "mute":
+			return NextResponse.json({ accepted: await recordMute(target) });
+		case "cancel":
+			break;
+		default: {
+			const unreachable: never = kind;
+			return unreachable;
+		}
 	}
 	const session = await db.parlumeMeetingSession.findFirst({
 		where: {

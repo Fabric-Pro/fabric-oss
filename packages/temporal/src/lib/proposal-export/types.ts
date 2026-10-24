@@ -61,6 +61,8 @@ export const PROPOSAL_EXPORT_WARNING_CODES = [
 	"DIAGRAM_PLACEHOLDER",
 	/** More diagrams than one export renders; the rest are placeholders. */
 	"DIAGRAM_LIMIT",
+	/** A diagram whose labels print below the legible size, even top-down. */
+	"DIAGRAM_BELOW_PRINT_FLOOR",
 	/** An uploaded image was missing, unreadable, too large or not allowed. */
 	"IMAGE_DROPPED",
 	/** More uploaded images than one export carries; the rest were left out. */

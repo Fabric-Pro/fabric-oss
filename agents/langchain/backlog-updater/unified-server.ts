@@ -168,6 +168,7 @@ const { app, start } = createUnifiedServer(
 				tools: copilotKitTools,
 			},
 			{
+				signal: config?.signal,
 				streamMode: ["updates", "messages"] as const,
 				configurable: config?.configurable,
 				recursionLimit: DEFAULT_RECURSION_LIMIT,

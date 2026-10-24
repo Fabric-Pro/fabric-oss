@@ -987,3 +987,62 @@ describe("with the real experimental_decide", () => {
 		expect(points[0].value).toBe(4);
 	});
 });
+
+describe("Databricks answering-model identity", () => {
+	const metadata = {
+		provider: "DATABRICKS",
+		modelString: "system.ai.openjev-qwen35-4b",
+		canonicalName: "openjev-qwen35-4b",
+	};
+	it.each([
+		["databricks-openjev-qwen35-4b", "openjev-qwen35-4b"],
+		["system.ai.openjev-qwen35-4b", "openjev-qwen35-4b"],
+		["databricks-unrelated", "unknown"],
+		["typesafe-ai/jev", "unknown"],
+		[SENTINEL, "unknown"],
+	])("bounds the answering model %s to %s", (modelId, label) => {
+		expect(
+			decisionModelLabel({ metadata }, { response: { modelId } }),
+		).toBe(label);
+	});
+	it("does not accept the Databricks endpoint alias for a gateway request", () => {
+		expect(
+			decisionModelLabel(
+				{ metadata: { ...metadata, provider: "VERCEL_GATEWAY" } },
+				{ response: { modelId: "databricks-openjev-qwen35-4b" } },
+			),
+		).toBe("unknown");
+	});
+	it("attributes the span and capture to the requested Databricks model", async () => {
+		const capture = createDecisionCapture();
+		const model = wrapDecisionModelWithTelemetry(
+			{
+				specificationVersion: "v4",
+				provider: "typesafe-ai",
+				modelId: metadata.modelString,
+				supportedQuestionTypes: ["boolean"],
+				doDecide: vi.fn(async () => ({
+					answers: {},
+					warnings: [],
+					usage: { inputTokens: 173, outputTokens: 0 },
+					response: { modelId: "databricks-openjev-qwen35-4b" },
+				})),
+			},
+			{
+				provider: metadata.provider,
+				requestModelId: metadata.modelString,
+				requestModelLabel: metadata.canonicalName,
+			},
+		);
+		await capture.run(() => model.doDecide({ state: [], questions: {} }));
+		expect(capture.answeringModelLabel).toBe("openjev-qwen35-4b");
+		expect(
+			spanExporter.getFinishedSpans()[0].attributes[
+				"gen_ai.response.model"
+			],
+		).toBe("databricks-openjev-qwen35-4b");
+		expect(
+			JSON.stringify(spanExporter.getFinishedSpans()[0].attributes),
+		).not.toContain(SENTINEL);
+	});
+});

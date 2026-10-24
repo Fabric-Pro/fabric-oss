@@ -64,3 +64,8 @@ export const BACKLOG_ANALYSIS_CANCELLED_TYPE =
  * `BACKLOG_ANALYSIS_CANCELLED_TYPE`.
  */
 export const BACKLOG_APPLY_CANCELLED_TYPE = "BACKLOG_APPLY_CANCELLED" as const;
+
+/** Termination reasons shared by apply stoppers and progress reporting. */
+export const BACKLOG_APPLY_USER_CANCEL_REASON = "cancelled_by_user" as const;
+export const BACKLOG_APPLY_WATCHDOG_STOP_REASON =
+	"backlog_apply_watchdog_stale" as const;

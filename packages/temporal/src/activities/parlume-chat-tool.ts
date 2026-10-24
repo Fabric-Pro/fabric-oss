@@ -10,12 +10,13 @@ import {
 import { tool } from "ai";
 import { z } from "zod";
 import type { ParlumeActionContext } from "./parlume-actions";
+import { PARLUME_CHAT_POST_CHARS } from "./parlume-chat-reply";
 import { parlumeActivityLog } from "./parlume-log";
 import { postParlumeMeetingChat } from "./parlume-voice";
 import { resolveProjectFeatureRef } from "./shared/project-feature-reads";
 
-/** The meeting chat holds 4,000 characters of the bridge's message. */
-const MAX_CHAT_MESSAGE_CHARS = 4_000;
+const CHAT_UNAVAILABLE_ERROR =
+	"This meeting's chat is not available to Parlume. Say the content aloud instead.";
 const MAX_POSTS_PER_TURN = 3;
 const MAX_LINKS_PER_POST = 10;
 
@@ -204,11 +205,11 @@ function composeMessage(
 	const dropped: ResolvedLink[] = [];
 	const block = () =>
 		kept.map((link) => `${link.title} — ${link.url}`).join("\n");
-	while (kept.length > 0 && block().length > MAX_CHAT_MESSAGE_CHARS) {
+	while (kept.length > 0 && block().length > PARLUME_CHAT_POST_CHARS) {
 		dropped.unshift(kept.pop() as ResolvedLink);
 	}
 	const lines = block();
-	const room = MAX_CHAT_MESSAGE_CHARS - lines.length - (lines ? 2 : 0);
+	const room = PARLUME_CHAT_POST_CHARS - lines.length - (lines ? 2 : 0);
 	const body = text?.trim() ?? "";
 	const shown =
 		body.length > room ? `${body.slice(0, Math.max(0, room - 1))}…` : body;
@@ -219,25 +220,26 @@ function composeMessage(
 }
 
 /**
- * Posts one message to the meeting's chat for the current turn: resolves the
- * links, composes the message, sends it, and reports what was posted. At most
- * three posts per turn; the count lives in this closure, so each turn starts
- * from zero.
+ * Sends one message to the meeting's chat for the current turn: resolves the
+ * links, composes the message, sends it, and reports what was sent. `sent`
+ * means the meeting provider queued it (`delivery: "queued"`); the bridge
+ * confirms separately whether it appeared. At most three posts per turn; the
+ * count lives in this closure, so each turn starts from zero.
  */
 export function createParlumeMeetingChatPoster(context: ParlumeActionContext) {
 	let posts = 0;
 	return async (input: z.infer<typeof inputSchema>) => {
 		if (posts >= MAX_POSTS_PER_TURN) {
 			return {
-				posted: false,
+				sent: false,
 				error: `At most ${MAX_POSTS_PER_TURN} chat posts per answer.`,
 			};
 		}
 		const text = input.text?.trim();
 		if (!text && !input.links?.length) {
 			return {
-				posted: false,
-				error: "Give some text or at least one link to post.",
+				sent: false,
+				error: "Give some text or at least one link to send.",
 			};
 		}
 		const access = await getProjectAccessContext(
@@ -246,7 +248,7 @@ export function createParlumeMeetingChatPoster(context: ParlumeActionContext) {
 		);
 		if (!access) {
 			return {
-				posted: false,
+				sent: false,
 				error: "Project not found or access denied.",
 			};
 		}
@@ -280,7 +282,7 @@ export function createParlumeMeetingChatPoster(context: ParlumeActionContext) {
 			}
 		}
 		if (!text && resolved.length === 0) {
-			return { posted: false, links: [], unresolved };
+			return { sent: false, links: [], unresolved };
 		}
 		const { message, dropped } = composeMessage(text, resolved);
 		for (const link of dropped) {
@@ -290,28 +292,41 @@ export function createParlumeMeetingChatPoster(context: ParlumeActionContext) {
 			});
 		}
 		posts++;
-		const posted = await postParlumeMeetingChat({
-			sessionId: context.sessionId,
-			message,
-		});
-		parlumeActivityLog(posted ? "info" : "warn", "chat.posted", {
+		const result = await postParlumeMeetingChat({
 			sessionId: context.sessionId,
 			turnId: context.turnId,
-			posted,
+			message,
+		});
+		parlumeActivityLog(result.sent ? "info" : "warn", "chat.posted", {
+			sessionId: context.sessionId,
+			turnId: context.turnId,
+			sent: result.sent,
+			delivery: result.sent ? "queued" : null,
+			reason: result.sent ? null : result.reason,
+			tag: result.sent ? result.tag : null,
 			post: posts,
 			chars: message.length,
 			links: resolved.length - dropped.length,
 			unresolved: unresolved.length,
 		});
-		if (!posted) {
-			return {
-				posted: false,
-				error: "The chat message could not be sent.",
-				unresolved,
-			};
+		if (!result.sent) {
+			return result.reason === "chat_unavailable"
+				? {
+						sent: false,
+						delivered: false,
+						reason: "chat_unavailable",
+						error: CHAT_UNAVAILABLE_ERROR,
+					}
+				: {
+						sent: false,
+						error: "The chat message could not be sent.",
+						unresolved,
+					};
 		}
 		return {
-			posted: true,
+			sent: true,
+			delivery: "queued",
+			tag: result.tag,
 			links: resolved
 				.filter((link) => !dropped.includes(link))
 				.map(({ ref, title, url }) => ({ ref, title, url })),
