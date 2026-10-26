@@ -189,11 +189,32 @@ describe("completeLanguageUsage", () => {
 	it("reads the provider totals: input with cache counted once, output with reasoning", () => {
 		expect(completeLanguageUsage(USAGE)).toEqual({
 			inputTokens: 120,
+			cacheReadTokens: 20,
 			outputTokens: 30,
 		});
 		expect(
 			completeLanguageUsage({ inputTokens: 7, outputTokens: 3 }),
 		).toEqual({ inputTokens: 7, outputTokens: 3 });
+	});
+
+	it("keeps cache writes fully charged by exposing only reported cache reads", () => {
+		expect(
+			completeLanguageUsage({
+				inputTokens: {
+					total: 120,
+					noCache: 20,
+					cacheWrite: 80,
+					cacheRead: 20,
+				},
+				outputTokens: 3,
+			}),
+		).toEqual({ inputTokens: 120, cacheReadTokens: 20, outputTokens: 3 });
+		expect(
+			completeLanguageUsage({
+				inputTokens: { total: 120 },
+				outputTokens: 3,
+			}),
+		).toEqual({ inputTokens: 120, outputTokens: 3 });
 	});
 
 	it("rejects partial or missing usage instead of reading it as zero", () => {
@@ -211,6 +232,44 @@ describe("completeLanguageUsage", () => {
 });
 
 describe("language models under a ledger", () => {
+	it.each(["generate", "stream"])(
+		"passes raw input and the read bucket through %s settlement",
+		async (mode) => {
+			const provider = new MockLanguageModelV4({
+				doGenerate: async () => GENERATE_RESULT,
+				doStream: async () =>
+					streamOf([...textChunks(), finishChunk()]),
+			});
+			const { budget } = makeBudget();
+			await runWithDispatchGuard(guardWith(budget), async () => {
+				const model = wrapModelWithTurnBudget(provider, {
+					enforcesOutputCap: true,
+				});
+				if (mode === "generate") {
+					const result = await generateText({
+						model,
+						prompt: "Example",
+						maxRetries: 0,
+					});
+					expect(result.usage.inputTokens).toBe(120);
+				} else {
+					const result = streamText({
+						model,
+						prompt: "Example",
+						maxRetries: 0,
+					});
+					await result.consumeStream();
+					expect((await result.usage).inputTokens).toBe(120);
+				}
+			});
+			expect(budget.settle).toHaveBeenCalledWith("attempt-1", {
+				inputTokens: 120,
+				cacheReadTokens: 20,
+				outputTokens: 30,
+			});
+		},
+	);
+
 	it("reserves a fresh attempt for every SDK retry, and settles each one", async () => {
 		let calls = 0;
 		const provider = new MockLanguageModelV4({
@@ -945,3 +1004,109 @@ describe("embeddings under a ledger", () => {
 		expect(events).toEqual(["reserve:attempt-1", "unknown:attempt-1"]);
 	});
 });
+
+describe("catalog cap on ledger reservations", () => {
+	describe.each(["generate", "stream"] as const)("%s", (mode) => {
+		it.each([8192, 32768, undefined])(
+			"caps an omitted budget reservation for model limit %s",
+			async (cap) => {
+				const provider = new MockLanguageModelV4({
+					doGenerate: async () => GENERATE_RESULT,
+					doStream: async () =>
+						streamOf([...textChunks(), finishChunk()]),
+				});
+				const { budget, reserved } = makeBudget();
+				const model = wrapModelWithTurnBudget(provider, {
+					enforcesOutputCap: true,
+					maxOutputTokens: cap,
+				});
+				await runWithDispatchGuard(guardWith(budget), async () => {
+					if (mode === "generate") {
+						await generateText({
+							model,
+							prompt: "Example",
+							maxRetries: 0,
+						});
+					} else {
+						await streamText({
+							model,
+							prompt: "Example",
+							maxRetries: 0,
+						}).consumeStream();
+					}
+				});
+				expect(reserved[0]?.request.requestedOutputTokens).toBe(
+					cap === 8192 ? 8192 : 16384,
+				);
+			},
+		);
+	});
+});
+
+describe.each(["generate", "stream"] as const)(
+	"catalog cap without reservation: %s",
+	(mode) => {
+		describe.each(["no guard", "no budget", "null reservation"] as const)(
+			"%s",
+			(path) => {
+				it.each([
+					{ requested: 16384, cap: 8192, expected: 8192 },
+					{ requested: 16384, cap: 32768, expected: 16384 },
+					{ requested: 16384, cap: undefined, expected: 16384 },
+					{ requested: 1000, cap: 8192, expected: 1000 },
+					{ requested: undefined, cap: 8192, expected: undefined },
+				])(
+					"sends $expected for requested $requested and catalog $cap",
+					async ({ requested, cap, expected }) => {
+						const provider = new MockLanguageModelV4({
+							doGenerate: async () => GENERATE_RESULT,
+							doStream: async () =>
+								streamOf([...textChunks(), finishChunk()]),
+						});
+						const model = wrapModelWithTurnBudget(provider, {
+							enforcesOutputCap: true,
+							maxOutputTokens: cap,
+						});
+						const { budget } = makeBudget({
+							outputCap: "unledgered",
+						});
+						const send = async () => {
+							if (mode === "generate") {
+								await generateText({
+									model,
+									prompt: "Example",
+									maxOutputTokens: requested,
+									maxRetries: 0,
+								});
+							} else {
+								await streamText({
+									model,
+									prompt: "Example",
+									maxOutputTokens: requested,
+									maxRetries: 0,
+								}).consumeStream();
+							}
+						};
+						if (path === "no guard") {
+							await send();
+						} else {
+							await runWithDispatchGuard(
+								guardWith(
+									path === "null reservation"
+										? budget
+										: undefined,
+								),
+								send,
+							);
+						}
+						const calls =
+							mode === "generate"
+								? provider.doGenerateCalls
+								: provider.doStreamCalls;
+						expect(calls[0]?.maxOutputTokens).toBe(expected);
+					},
+				);
+			},
+		);
+	},
+);

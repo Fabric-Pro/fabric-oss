@@ -6,6 +6,7 @@
  */
 
 import type { AiJobKey } from "@repo/ai";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { logger } from "@repo/logs";
 import { generateEmbedding } from "@repo/rag";
 import { heartbeat } from "@temporalio/activity";
@@ -465,7 +466,13 @@ export async function executeAiAnalysis(
 					complexity: "medium",
 					requiresToolCalling: false,
 				},
-				{ userId, organizationId, jobType },
+				{
+					userId,
+					organizationId,
+					jobType,
+					featureKey: "report-generation",
+					callPurpose: AI_CALL_PURPOSES.dataAnalysis,
+				},
 			);
 			console.log(
 				`[Orchestrator] Dynamic model selected: ${modelMetadata.modelString} (source: ${modelMetadata.selectionSource}, provider: ${modelMetadata.provider})`,
@@ -584,7 +591,7 @@ async function buildRagEnhancedPrompt(
 			{
 				userId,
 				organizationId,
-				featureKey: "knowledge-search",
+				featureKey: "report-generation",
 				tags: ["report-analysis"],
 			},
 			embeddingConfig,

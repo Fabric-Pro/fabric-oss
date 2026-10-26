@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
 	updateMany: vi.fn(),
 	finalize: vi.fn(),
 	leave: vi.fn(),
+	attendee: vi.fn(),
 }));
 vi.mock("@repo/database", () => ({
 	db: {
@@ -21,8 +22,10 @@ vi.mock("@repo/api/modules/projects/lib/parlume-finalization", () => ({
 	finalizeParlumeSession: mocks.finalize,
 }));
 vi.mock("@repo/api/modules/projects/lib/parlume-attendee", () => ({
-	getParlumeBridgeSettings: () => ({}),
 	leaveParlumeMeetingBot: mocks.leave,
+}));
+vi.mock("@repo/api/modules/projects/lib/parlume-provider-settings", () => ({
+	resolveParlumeAttendeeSettings: mocks.attendee,
 }));
 
 function request() {
@@ -39,6 +42,7 @@ beforeEach(() => {
 	vi.resetAllMocks();
 	mocks.findFirst.mockResolvedValue({
 		id: "example-session",
+		organizationId: "example-org",
 		providerBotId: "example-bot",
 		status: "ACTIVE",
 		terminalCallbackAt: null,
@@ -46,6 +50,12 @@ beforeEach(() => {
 		streamGeneration: 2,
 	});
 	mocks.updateMany.mockResolvedValue({ count: 1 });
+	mocks.attendee.mockResolvedValue({
+		apiKey: "org-key",
+		baseUrl: "https://attendee.example.com",
+		teamsLoginMode: null,
+		source: "organization",
+	});
 });
 describe("Parlume watchdog terminal recovery", () => {
 	it.each(["completed", "failed"])(
@@ -54,6 +64,13 @@ describe("Parlume watchdog terminal recovery", () => {
 			mocks.leave.mockResolvedValue({ kind: "TERMINAL", status });
 			const response = await POST(request());
 			expect(response.status).toBe(200);
+			expect(mocks.attendee).toHaveBeenCalledWith("example-org");
+			expect(mocks.leave).toHaveBeenCalledWith(
+				expect.objectContaining({
+					attendee: expect.objectContaining({ apiKey: "org-key" }),
+					providerBotId: "example-bot",
+				}),
+			);
 			expect(mocks.finalize).toHaveBeenCalledWith("example-session", {
 				expectedStreamGeneration: 2,
 				...(status === "failed" ? { preserveFailure: true } : {}),

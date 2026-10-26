@@ -103,7 +103,6 @@
 		"@opentelemetry/sdk-node": "^0.217.0",
 		"@opentelemetry/sdk-trace-base": "^2.7.1",
 		"@opentelemetry/semantic-conventions": "^1.40.0",
-		"@prisma/client": "6.19.3",
 		"@qdrant/js-client-rest": "^1.16.2",
 		"@repo/agent-core": "workspace:*",
 		"@repo/agent-prompts": "workspace:*",
@@ -156,7 +155,7 @@
 		"zod": "4.6.7"
 	},
 	"devDependencies": {
-		"@prisma/adapter-pg": "^6.19.3",
+		"@prisma/adapter-pg": "^7.10.1",
 		"@repo/tsconfig": "workspace:*",
 		"@temporalio/testing": "~1.23.0",
 		"@types/mdast": "^4.0.4",

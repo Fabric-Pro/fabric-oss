@@ -30,6 +30,14 @@ import {
 import type * as allActivities from "../../activities";
 import type * as orchestratorActivities from "../../activities/orchestrator";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "../ai-non-retryable-errors";
+import { advisorDeadline } from "./advisor-deadline";
+import {
+	BOUNDED_HISTORY_PATCH,
+	BOUNDED_HISTORY_V2_PATCH,
+	WEIGHTED_ALLOWANCE_PATCH,
+	boundedHistoryEnabled,
+} from "./advisor-history-retention";
+import { recordAdvisorTurnSummary } from "./advisor-request-log";
 import { buildConversationSummary } from "./conversation-summary";
 import {
 	buildWorkflowOutput,
@@ -45,7 +53,10 @@ import {
 	approvalSignalAnswersPending,
 	resolveApprovalWait,
 } from "./phases/approval-signal";
-import { summarizeAccomplishments } from "./phases/iterative-execution";
+import {
+	executeTimeLimitExit,
+	summarizeAccomplishments,
+} from "./phases/iterative-execution";
 import {
 	LEDGER_SIGNAL_MESSAGE,
 	ledgerSnapshotFromRefusal,
@@ -70,7 +81,6 @@ import {
 	type ClarificationDecision,
 	createInitialState,
 	DEFAULT_ALTK_CONFIG,
-	EXECUTION_MODE_CONFIGS,
 	ORCHESTRATOR_TURN_BUDGET_CONTRACT_VERSION,
 	type OrchestratorWorkflowInput,
 	type OrchestratorWorkflowOutput,
@@ -81,6 +91,10 @@ import {
 	usesIterativeExecution,
 	type WorkflowState,
 } from "./types";
+import {
+	executionModeConfig,
+	MAIN_ROUND_BUDGET_PATCH,
+} from "./types/execution-mode.types";
 import { orchestratorErrorMessage } from "./usage-limit";
 import { usageOriginFields } from "./workflow-usage-attribution";
 
@@ -396,6 +410,9 @@ function withPersistedBudgetStop(
 		const { budgetStop: _local, ...withoutStop } = output;
 		return withoutStop;
 	}
+	if (budgetStop.kind !== "token_allowance") {
+		return { ...output, budgetStop };
+	}
 	const budget = {
 		used: budgetStop.measured,
 		total: budgetStop.allowance,
@@ -423,8 +440,9 @@ function withPersistedBudgetStop(
 
 /**
  * Align the domain result with the terminal status the turn record holds.
- * Keeps the response as the turn's partial text; a cancelled or failed turn
- * offers no "continue in new chat".
+ * Keeps the response as the turn's partial text and clears the legacy handoff
+ * on cancelled or failed outcomes. A structured budget stop remains available
+ * for the latest terminal turn's continuation card.
  *
  * The token-allowance stop is the row's own stored value by now
  * (`withPersistedBudgetStop`), and it is kept whatever the status, so the
@@ -501,7 +519,13 @@ async function writeTurnTerminalState(
 					"failed")
 				: outcome === "LIMITED"
 					? output?.budgetStop
-						? "token allowance used"
+						? output.budgetStop.kind === "token_allowance"
+							? "token allowance used"
+							: output.budgetStop.kind === "time_limit"
+								? "time limit reached"
+								: output.budgetStop.kind === "round_limit"
+									? "round limit reached"
+									: "token budget reached"
 						: (output?.handoffRecommended?.reason ??
 							"limit reached")
 					: "completed";
@@ -574,10 +598,40 @@ async function runOrchestratorExecution(
 	const { executionId } = state;
 
 	// Get execution mode config
-	const modeConfig =
-		EXECUTION_MODE_CONFIGS[input.executionMode] ||
-		EXECUTION_MODE_CONFIGS.balanced;
+	// Only the chat starters set turnId. Decide once before initialization;
+	// helpers consume the stored decision instead of recording a later marker.
+	const mainRoundBudget =
+		patched(MAIN_ROUND_BUDGET_PATCH) &&
+		Boolean(input.turnId) &&
+		usesIterativeExecution(input.executionMode);
+	state.advisorBudgetEnabled = mainRoundBudget;
+	const boundedHistoryMarker = patched(BOUNDED_HISTORY_PATCH);
+	state.advisorBoundedHistoryEnabled =
+		usesIterativeExecution(input.executionMode) &&
+		boundedHistoryEnabled(input, boundedHistoryMarker);
+	const boundedHistoryV2Marker = patched(BOUNDED_HISTORY_V2_PATCH);
+	state.advisorBoundedHistoryV2Enabled =
+		state.advisorBoundedHistoryEnabled && boundedHistoryV2Marker;
+	const weightedAllowanceMarker = patched(WEIGHTED_ALLOWANCE_PATCH);
+	state.advisorWeightedAllowanceEnabled =
+		mainRoundBudget && weightedAllowanceMarker;
+	const modeConfig = executionModeConfig(
+		input.executionMode,
+		mainRoundBudget,
+		input.turnTokenAllowance,
+	);
 	const altkConfig = input.altkConfig || DEFAULT_ALTK_CONFIG;
+	const deadline =
+		mainRoundBudget && usesIterativeExecution(input.executionMode)
+			? advisorDeadline()
+			: undefined;
+	const waitTimeoutMs = () =>
+		deadline
+			? Math.min(
+					modeConfig.workflowTimeoutMs,
+					Math.max(0, deadline.stopAt - Date.now()),
+				)
+			: modeConfig.workflowTimeoutMs;
 
 	// ==========================================================================
 	// Signal Handlers
@@ -785,7 +839,7 @@ async function runOrchestratorExecution(
 		if (settled() === null) {
 			await condition(
 				() => settled() !== null || state.cancelled,
-				modeConfig.workflowTimeoutMs,
+				waitTimeoutMs(),
 			);
 		}
 		if (state.cancelled) {
@@ -809,7 +863,7 @@ async function runOrchestratorExecution(
 	async function waitForClarification(): Promise<ClarificationDecision | null> {
 		await condition(
 			() => state.clarificationDecision !== null || state.cancelled,
-			modeConfig.workflowTimeoutMs,
+			waitTimeoutMs(),
 		);
 
 		if (state.cancelled) {
@@ -888,165 +942,179 @@ async function runOrchestratorExecution(
 			}
 		}
 
-		// Check for cancellation
-		if (isCancelled()) {
-			state.status = "cancelled";
-			exitReason = "cancelled";
-			return buildWorkflowOutput(
-				state,
-				"cancelled",
-				"Execution cancelled by user",
-			);
-		}
-
-		// The attached project, as the clarity gates see it. Set only by
-		// initialization, so it stays unset on a continueAsNew resume — where
-		// both gates are skipped anyway.
+		// Initialization sets this for both clarity gates; a continueAsNew
+		// resume skips those gates and leaves it unset.
 		let attachedProjectContext: string | undefined;
-
-		// ======================================================================
-		// Phase 1: Initialization (skipped on continueAsNew resume — Issue #6)
-		// ======================================================================
-		if (!isResuming) {
-			const initResult = await executeInitializationPhase(
-				state,
-				input,
-				updateProgress,
-				turnOptions,
-			);
-
-			// A Stop during initialization is a cancelled turn, not a failed
-			// one: checked before the phase's failure is reported.
-			if (turnOptions && isCancelled()) {
+		async function prepareExecution(): Promise<
+			OrchestratorWorkflowOutput | undefined
+		> {
+			// Check for cancellation
+			if (isCancelled()) {
 				state.status = "cancelled";
 				exitReason = "cancelled";
 				return buildWorkflowOutput(
 					state,
 					"cancelled",
-					"Execution cancelled",
+					"Execution cancelled by user",
 				);
 			}
-			if (!initResult.success || !initResult.shouldContinue) {
-				state.status = "failed";
-				exitReason = "failure";
-				exitErrorMessage = initResult.error;
-				return buildWorkflowOutput(state, "failed", initResult.error);
+
+			// ======================================================================
+			// Phase 1: Initialization (skipped on continueAsNew resume — Issue #6)
+			// ======================================================================
+			if (!isResuming) {
+				const initResult = await executeInitializationPhase(
+					state,
+					input,
+					updateProgress,
+					turnOptions,
+				);
+
+				// A Stop during initialization is a cancelled turn, not a failed
+				// one: checked before the phase's failure is reported.
+				if (turnOptions && isCancelled()) {
+					state.status = "cancelled";
+					exitReason = "cancelled";
+					return buildWorkflowOutput(
+						state,
+						"cancelled",
+						"Execution cancelled",
+					);
+				}
+				if (!initResult.success || !initResult.shouldContinue) {
+					state.status = "failed";
+					exitReason = "failure";
+					exitErrorMessage = initResult.error;
+					return buildWorkflowOutput(
+						state,
+						"failed",
+						initResult.error,
+					);
+				}
+
+				// Update state with initialization results
+				// biome-ignore lint/style/noNonNullAssertion: initResult.success guarantees data is defined
+				state.workspaceContext = initResult.data!.workspaceContext;
+				// biome-ignore lint/style/noNonNullAssertion: initResult.success guarantees data is defined
+				state.lettaAgentId = initResult.data!.lettaAgentId;
+				// biome-ignore lint/style/noNonNullAssertion: initResult.success guarantees data is defined
+				state.enrichedMessage = initResult.data!.enrichedMessage;
+				state.enrichedSystemPrompt =
+					// biome-ignore lint/style/noNonNullAssertion: successful initialization returns data
+					initResult.data!.enrichedSystemPrompt;
+				attachedProjectContext = initResult.data?.clarityProjectContext;
 			}
 
-			// Update state with initialization results
-			// biome-ignore lint/style/noNonNullAssertion: initResult.success guarantees data is defined
-			state.workspaceContext = initResult.data!.workspaceContext;
-			// biome-ignore lint/style/noNonNullAssertion: initResult.success guarantees data is defined
-			state.lettaAgentId = initResult.data!.lettaAgentId;
-			// biome-ignore lint/style/noNonNullAssertion: initResult.success guarantees data is defined
-			state.enrichedMessage = initResult.data!.enrichedMessage;
-			// biome-ignore lint/style/noNonNullAssertion: initResult.success guarantees data is defined
-			state.enrichedSystemPrompt = initResult.data!.enrichedSystemPrompt;
-			attachedProjectContext = initResult.data?.clarityProjectContext;
-		}
-
-		// ======================================================================
-		// Up-front intent clarification (HITL). Before committing to an
-		// (expensive) multi-agent plan, ask ONE clarifying question when the
-		// request is materially ambiguous. Fail-safe (the activity never throws)
-		// and replay-safe (the pause mirrors waitForApproval; the synthetic id is
-		// derived from the stable executionId). The answer is folded into the
-		// enriched message so planning uses it. Skipped on continueAsNew resume.
-		//
-		// Scoped to the standalone Loom Orchestrator chat
-		// (`surface === "loom-orchestrator"`) — a SINGLE-execution surface that
-		// renders the clarifying card. It must NOT fire on Nexus, which runs one
-		// orchestrator execution PER selected agent (`useMultiAgentStream`):
-		// per-agent clarification would surface N competing cards and, without a
-		// card renderer there, would hang the run. `input.surface` is immutable
-		// per execution, so gating on it stays deterministic across replays.
-		//
-		// `patched()` is REQUIRED: this block adds a new activity call + a
-		// `condition()` pause to the workflow's command stream. In-flight
-		// executions started under the prior worker never recorded those
-		// commands, so replaying them on the new code without the gate throws a
-		// non-determinism error. The marker makes old histories skip the block
-		// (false) while new executions run it (true). Called FIRST (before the
-		// surface check) so the marker is recorded identically on every run
-		// regardless of surface (matches the `pm-flag-missing-producer-v1`
-		// convention).
-		// ======================================================================
-		const upfrontClarificationEnabled =
-			patched("orchestrator-upfront-clarification-v1") &&
-			input.surface === "loom-orchestrator";
-		if (upfrontClarificationEnabled && !isResuming && !state.cancelled) {
-			// The prior turns MUST travel with the message. Each completed turn
-			// ends its execution, so without them this gate re-evaluates from a
-			// blank slate every turn and re-asks what the user already answered
-			// (Fizzy #2406). `input.history` is the same history planning and
-			// iterative execution already consume — it was simply never handed
-			// to the clarity check.
-			// Without the attached project the gate read "this project" as
-			// unresolved and asked which one (Fizzy #2040, F41).
-			const clarityProjectContext = patched(
-				"orchestrator-clarity-project-context-v1",
-			)
-				? attachedProjectContext
-				: undefined;
-			// Without the organization the gate read "our company" as
-			// unresolved and asked which one, although the Advisor can search
-			// the organization's company context (Fizzy #2719). The preload
-			// built this line only for a member it offers company context to,
-			// and only a run through the loop can search, as initialization's
-			// hint requires too; the marker is asked only then, so other turns
-			// record none. The line goes as the Advisor gets it, header and all.
-			const companyContextHint =
-				state.preloadedResources?.companyContext?.hint;
-			const clarityOrganizationContext =
-				companyContextHint &&
-				usesIterativeExecution(input.executionMode) &&
-				patched("orchestrator-clarity-organization-context-v1")
-					? companyContextHint
-					: undefined;
-			const clarity = await analyzeIntentClarityActivity({
-				message: state.enrichedMessage || input.message,
-				conversationSummary: buildConversationSummary(input.history),
-				...(clarityOrganizationContext
-					? { organizationContext: clarityOrganizationContext }
-					: {}),
-				...(clarityProjectContext
-					? { projectContext: clarityProjectContext }
-					: {}),
-				userId: input.userId,
-				organizationId: input.organizationId,
-				...usageOriginFields(input),
-				...turnScopeField(turnOptions),
-			});
+			// ======================================================================
+			// Up-front intent clarification (HITL). Before committing to an
+			// (expensive) multi-agent plan, ask ONE clarifying question when the
+			// request is materially ambiguous. Ordinary clarity failures fall back
+			// to no clarification; stops propagate. The replay-safe pause mirrors
+			// waitForApproval; the synthetic id is
+			// derived from the stable executionId. The answer is folded into the
+			// enriched message so planning uses it. Skipped on continueAsNew resume.
+			//
+			// Scoped to the standalone Loom Orchestrator chat
+			// (`surface === "loom-orchestrator"`) — a SINGLE-execution surface that
+			// renders the clarifying card. It must NOT fire on Nexus, which runs one
+			// orchestrator execution PER selected agent (`useMultiAgentStream`):
+			// per-agent clarification would surface N competing cards and, without a
+			// card renderer there, would hang the run. `input.surface` is immutable
+			// per execution, so gating on it stays deterministic across replays.
+			//
+			// `patched()` is REQUIRED: this block adds a new activity call + a
+			// `condition()` pause to the workflow's command stream. In-flight
+			// executions started under the prior worker did not record those
+			// commands, so replaying them on the new code without the gate throws a
+			// non-determinism error. The marker makes old histories skip the block
+			// (false) while new executions run it (true). Called FIRST (before the
+			// surface check) so patched() records the marker regardless of surface
+			// (matches the `pm-flag-missing-producer-v1`
+			// convention).
+			// ======================================================================
+			const upfrontClarificationEnabled =
+				patched("orchestrator-upfront-clarification-v1") &&
+				input.surface === "loom-orchestrator";
 			if (
-				clarity.needsClarification &&
-				clarity.question &&
-				!isCancelled()
+				upfrontClarificationEnabled &&
+				!isResuming &&
+				!state.cancelled
 			) {
-				log.info("Up-front clarifying question raised", {
-					executionId,
-					optionCount: clarity.options?.length || 0,
+				// The prior turns MUST travel with the message. Each completed turn
+				// ends its execution, so without them this gate re-evaluates from a
+				// blank slate on later turns and re-asks what the user already answered
+				// (Fizzy #2406). `input.history` is the same history planning and
+				// iterative execution already consume — it was not handed
+				// to the clarity check.
+				// Without the attached project the gate read "this project" as
+				// unresolved and asked which one (Fizzy #2040, F41).
+				const clarityProjectContext = patched(
+					"orchestrator-clarity-project-context-v1",
+				)
+					? attachedProjectContext
+					: undefined;
+				// Without the organization the gate read "our company" as
+				// unresolved and asked which one, although the Advisor can search
+				// the organization's company context (Fizzy #2719). The preload
+				// built this line only for a member it offers company context to,
+				// and only a run through the loop can search, as initialization's
+				// hint requires too; the marker is asked only then, so other turns
+				// record none. The line goes as the Advisor gets it, header and all.
+				const companyContextHint =
+					state.preloadedResources?.companyContext?.hint;
+				const clarityOrganizationContext =
+					companyContextHint &&
+					usesIterativeExecution(input.executionMode) &&
+					patched("orchestrator-clarity-organization-context-v1")
+						? companyContextHint
+						: undefined;
+				const clarity = await analyzeIntentClarityActivity({
+					message: state.enrichedMessage || input.message,
+					conversationSummary: buildConversationSummary(
+						input.history,
+					),
+					...(clarityOrganizationContext
+						? { organizationContext: clarityOrganizationContext }
+						: {}),
+					...(clarityProjectContext
+						? { projectContext: clarityProjectContext }
+						: {}),
+					userId: input.userId,
+					organizationId: input.organizationId,
+					...usageOriginFields(input),
+					...turnScopeField(turnOptions),
 				});
-				state.pendingClarification = {
-					clarificationId: `clarify-upfront-${executionId}`,
-					question: clarity.question,
-					options: clarity.options,
-				};
-				updateProgress(
-					"planning",
-					"Waiting for your answer to a clarifying question…",
-				);
-				const decision = await waitForClarification();
-				state.pendingClarification = null;
-				if (decision && !decision.dismissed && decision.answer) {
-					const note = `\n\n[User clarification — ${clarity.question} → ${decision.answer}]`;
-					state.enrichedMessage =
-						(state.enrichedMessage || input.message) + note;
-					state.journeyState.conversationHistory.push({
-						role: "user",
-						content: `Clarification — ${clarity.question}: ${decision.answer}`,
-						timestamp: new Date().toISOString(),
+				if (
+					clarity.needsClarification &&
+					clarity.question &&
+					!isCancelled()
+				) {
+					log.info("Up-front clarifying question raised", {
+						executionId,
+						optionCount: clarity.options?.length || 0,
 					});
-					state.journeyState.turnCount++;
+					state.pendingClarification = {
+						clarificationId: `clarify-upfront-${executionId}`,
+						question: clarity.question,
+						options: clarity.options,
+					};
+					updateProgress(
+						"planning",
+						"Waiting for your answer to a clarifying question…",
+					);
+					const decision = await waitForClarification();
+					state.pendingClarification = null;
+					if (decision && !decision.dismissed && decision.answer) {
+						const note = `\n\n[User clarification — ${clarity.question} → ${decision.answer}]`;
+						state.enrichedMessage =
+							(state.enrichedMessage || input.message) + note;
+						state.journeyState.conversationHistory.push({
+							role: "user",
+							content: `Clarification — ${clarity.question}: ${decision.answer}`,
+							timestamp: new Date().toISOString(),
+						});
+						state.journeyState.turnCount++;
+					}
 				}
 			}
 		}
@@ -1069,16 +1137,63 @@ async function runOrchestratorExecution(
 				maxTotalTokens: modeConfig.maxTotalTokens || 100000,
 			});
 
-			const iterativeResult = await executeIterativePhase(
-				state,
-				input,
-				modeConfig,
-				altkConfig,
-				updateProgress,
-				waitForApproval,
-				isCancelled,
-				turnOptions,
-			);
+			const work = async () => {
+				const early = await prepareExecution();
+				if (early) {
+					return { early };
+				}
+				const iterativeResult = await executeIterativePhase(
+					state,
+					input,
+					modeConfig,
+					altkConfig,
+					updateProgress,
+					waitForApproval,
+					isCancelled,
+					turnOptions,
+				);
+				return { iterativeResult };
+			};
+			const deadlineScope = deadline
+				? new CancellationScope({
+						cancellable: true,
+						timeout: Math.max(1, deadline.stopAt - Date.now()),
+					})
+				: undefined;
+			let result: Awaited<ReturnType<typeof work>>;
+			try {
+				result = await (deadlineScope
+					? deadlineScope.run(work)
+					: work());
+			} catch (error) {
+				// The root scope remains authoritative for Stop, including a Stop
+				// received while deadline cancellation is being acknowledged.
+				if (
+					!deadlineScope?.consideredCancelled ||
+					!deadline ||
+					Date.now() < deadline.stopAt ||
+					isCancelled() ||
+					!isCancellationFailure(error)
+				) {
+					throw error;
+				}
+				result = {
+					iterativeResult: await executeTimeLimitExit(
+						state,
+						input,
+						updateProgress,
+						isCancelled,
+						turnOptions,
+					),
+				};
+			}
+			if (result.early) {
+				return result.early;
+			}
+			const iterativeResult = result.iterativeResult;
+			if (!iterativeResult) {
+				throw new Error("Missing iterative result");
+			}
 
 			if (!iterativeResult.success) {
 				if (isCancelled()) {
@@ -1155,6 +1270,11 @@ async function runOrchestratorExecution(
 				undefined,
 				finalResponse,
 			);
+		}
+
+		const early = await prepareExecution();
+		if (early) {
+			return early;
 		}
 
 		// ======================================================================
@@ -1542,6 +1662,9 @@ async function runOrchestratorExecution(
 		log.error("Orchestrator workflow failed", { error: errorMessage });
 		return buildWorkflowOutput(state, "failed", errorMessage);
 	} finally {
+		if (input.turnId && usesIterativeExecution(input.executionMode)) {
+			recordAdvisorTurnSummary(state);
+		}
 		// Only Weave-mode runs create a Background Agent sandbox — every
 		// other executionMode (direct-chat, code-gen, retrieval, etc.)
 		// would just emit an empty `terminated_on_exit` audit row, which

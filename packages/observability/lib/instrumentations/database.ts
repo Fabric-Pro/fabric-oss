@@ -9,10 +9,13 @@
  *
  * @example
  * ```typescript
- * import { PrismaClient } from '@prisma/client';
- * import { createInstrumentedPrisma } from '@repo/observability';
+ * import { db } from '@repo/database';
+ * import { databaseInstrumentation } from '@repo/observability';
  *
- * const prisma = createInstrumentedPrisma(new PrismaClient());
+ * const users = await databaseInstrumentation.trace(
+ *   { operation: 'findMany', model: 'User' },
+ *   () => db.user.findMany(),
+ * );
  * ```
  */
 
@@ -174,13 +177,9 @@ export const databaseInstrumentation = {
 	},
 
 	/**
-	 * Create Prisma middleware for automatic instrumentation
-	 *
-	 * @example
-	 * ```typescript
-	 * const prisma = new PrismaClient();
-	 * prisma.$use(createPrismaMiddleware());
-	 * ```
+	 * Legacy middleware adapter for clients exposing `$use`.
+	 * Current Fabric clients install query hooks with `$extends` in
+	 * `@repo/database`; manual instrumentation uses `trace` above.
 	 */
 	createPrismaMiddleware() {
 		return async (

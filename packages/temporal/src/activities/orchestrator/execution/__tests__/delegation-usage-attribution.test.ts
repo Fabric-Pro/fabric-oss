@@ -74,3 +74,20 @@ it("forwards the explicit accounting origin independently of retrieval project a
 		}),
 	);
 });
+
+it.each(["completed", "failed", "input-required"])(
+	"preserves A2A status %s for the workflow",
+	async (status) => {
+		h.delegate.mockResolvedValueOnce({
+			response: "Delegation response",
+			durationMs: 1,
+			status,
+		} as never);
+		const result = await executeAgentAsTool({
+			agentId: "example-agent",
+			userId: "example-user",
+			input: { message: "Summarize commits" },
+		});
+		expect(result).toMatchObject({ output: "Delegation response", status });
+	},
+);

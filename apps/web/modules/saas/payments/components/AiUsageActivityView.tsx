@@ -96,6 +96,12 @@ import {
 	YAxis,
 } from "recharts";
 import {
+	CHATGPT_PLAN_PROVIDER,
+	formatModel,
+	formatUsageModel,
+	formatUsageProvider,
+} from "../lib/ai-usage-labels";
+import {
 	AI_USAGE_ORIGIN_CSV_HEADERS,
 	type AiUsageOrigin,
 	aiUsageOriginCsvFields,
@@ -296,20 +302,6 @@ function formatLatency(ms: number): string {
 	}
 	const m = Math.floor(s / 60);
 	return `${m}m ${Math.round(s - m * 60)}s`;
-}
-
-const CHATGPT_PLAN_PROVIDER = "OPENAI_CHATGPT_PLAN";
-
-function formatProvider(provider: string): string {
-	return provider === CHATGPT_PLAN_PROVIDER ? "ChatGPT plan" : provider;
-}
-
-function formatModel(raw: string | null | undefined): string {
-	if (!raw) {
-		return "—";
-	}
-	const slash = raw.lastIndexOf("/");
-	return slash >= 0 ? raw.slice(slash + 1) : raw;
 }
 
 function formatTaskType(value: string | null): string {
@@ -1581,9 +1573,8 @@ export function AiUsageActivityView({
 													) : null}
 													<TableCell className="text-sm">
 														<div className="font-medium">
-															{formatModel(
-																row.modelCanonicalName ??
-																	row.providerModelId,
+															{formatUsageModel(
+																row,
 															)}
 															<UsageModelFit
 																row={row}
@@ -1591,8 +1582,8 @@ export function AiUsageActivityView({
 															/>
 														</div>
 														<div className="text-xs text-muted-foreground">
-															{formatProvider(
-																row.provider,
+															{formatUsageProvider(
+																row,
 															)}
 														</div>
 													</TableCell>
@@ -1834,16 +1825,11 @@ export function AiUsageActivityView({
 									/>
 									<DetailRow
 										label="Provider"
-										value={formatProvider(
-											selectedRow.provider,
-										)}
+										value={formatUsageProvider(selectedRow)}
 									/>
 									<DetailRow
 										label="Model"
-										value={formatModel(
-											selectedRow.modelCanonicalName ??
-												selectedRow.providerModelId,
-										)}
+										value={formatUsageModel(selectedRow)}
 									/>
 									{selectedRow.modelFit &&
 									selectedRow.taskType &&
@@ -2968,10 +2954,7 @@ function ModelFilter({
 	const labelByValue = useMemo(() => {
 		const map = new Map<string, string>();
 		for (const m of facetsModels) {
-			map.set(
-				m.providerModelId,
-				formatModel(m.modelCanonicalName ?? m.providerModelId),
-			);
+			map.set(m.providerModelId, formatUsageModel(m));
 		}
 		return map;
 	}, [facetsModels]);
@@ -2979,7 +2962,9 @@ function ModelFilter({
 	const triggerLabel = multiSelectLabel(
 		value,
 		"All models",
-		(v) => labelByValue.get(v) ?? formatModel(v),
+		(v) =>
+			labelByValue.get(v) ??
+			formatUsageModel({ modelCanonicalName: null, providerModelId: v }),
 	);
 
 	return (
@@ -3008,9 +2993,7 @@ function ModelFilter({
 								const selected = value.includes(
 									m.providerModelId,
 								);
-								const label = formatModel(
-									m.modelCanonicalName ?? m.providerModelId,
-								);
+								const label = formatUsageModel(m);
 								return (
 									<CommandItem
 										key={m.providerModelId}

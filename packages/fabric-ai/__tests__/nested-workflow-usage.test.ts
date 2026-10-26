@@ -5,13 +5,14 @@ const mocks = vi.hoisted(() => ({
 	generate: vi.fn(),
 	stream: vi.fn(),
 	send: vi.fn(),
+	providerConfig: vi.fn(),
 }));
-vi.mock("@repo/ai", () => ({
+vi.mock("@repo/ai", async () => ({
+	...(await vi.importActual<typeof import("@repo/ai/lib/databricks-url")>(
+		"@repo/ai/lib/databricks-url",
+	)),
 	getAIModelWithMetadata: mocks.resolve,
-	getSystemRAGProviderConfig: async () => ({
-		apiKey: "key-example",
-		provider: "OPENAI_DIRECT",
-	}),
+	getSystemRAGProviderConfig: mocks.providerConfig,
 	logModelUsageAsync: () => undefined,
 }));
 vi.mock("ai", () => ({
@@ -73,6 +74,10 @@ async function run(mode: (typeof modes)[number], userContext: UserContext) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.providerConfig.mockResolvedValue({
+		apiKey: "key-example",
+		provider: "OPENAI_DIRECT",
+	});
 	mocks.resolve.mockResolvedValue({
 		model: {},
 		metadata: { provider: "OPENAI_DIRECT", modelString: "example-model" },
@@ -154,5 +159,38 @@ describe("nested workflow analysis usage", () => {
 		for (const field of ["frameId", "workflowExecutionId", "projectId"]) {
 			expect(resolver).not.toHaveProperty(field);
 		}
+	});
+});
+
+describe("delegated Databricks URL routing", () => {
+	it.each([
+		["delegated", "system.ai.claude-sonnet-5", "ai-gateway/mlflow/v1"],
+		["delegated", "custom-chat", "serving-endpoints"],
+		[
+			"delegated-stream",
+			"system.ai.claude-sonnet-5",
+			"ai-gateway/mlflow/v1",
+		],
+		["delegated-stream", "custom-chat", "serving-endpoints"],
+	] as const)("%s routes %s to %s", async (mode, modelId, path) => {
+		mocks.providerConfig.mockResolvedValue({
+			apiKey: "key-example",
+			provider: "DATABRICKS",
+			baseUrl: "https://example.cloud.databricks.com",
+		});
+		mocks.resolve.mockResolvedValue({
+			model: {},
+			metadata: { provider: "DATABRICKS", modelString: modelId },
+			trackUsage: vi.fn(),
+		});
+		await run(mode, {
+			userId: "user-example",
+			organizationId: "org-example",
+		});
+		const request = JSON.parse(mocks.send.mock.calls[0][1].body);
+		expect(request.credentials).toMatchObject({
+			model: modelId,
+			baseUrl: `https://example.cloud.databricks.com/${path}`,
+		});
 	});
 });

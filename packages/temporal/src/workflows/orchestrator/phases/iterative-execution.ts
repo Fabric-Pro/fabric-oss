@@ -24,6 +24,7 @@
 // agent-core` entry (which would transitively load HTTP clients, langchain
 // SDKs, etc.).
 import { sanitizeMcpErrorMessage } from "@repo/agent-core/utils/sanitize-error";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import type {
 	BudgetLimit,
 	LimitSignal,
@@ -44,6 +45,23 @@ import type { ToolCategory } from "../../../activities/orchestrator";
 import { DEFAULT_MCP_TOOL_TIMEOUT_MS } from "../../../activities/orchestrator/execution/mcp-call-timeout";
 import type { DirectChatUsageLimitRefusal } from "../../../types";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "../../ai-non-retryable-errors";
+import { advisorDeadline } from "../advisor-deadline";
+import {
+	boundedHistoryDecision,
+	boundedHistoryV2Decision,
+	measureBoundedHistoryV2Request,
+} from "../advisor-history-retention";
+import {
+	beginAdvisorToolSearch,
+	finishAdvisorToolSearch,
+	recordAdvisorFailureRequests,
+	recordAdvisorHistoryChange,
+	recordAdvisorMainRound,
+	recordAdvisorRequests,
+	recordAdvisorToolCatalog,
+	recordAdvisorToolExecution,
+	recordAdvisorToolSet,
+} from "../advisor-request-log";
 import {
 	COMPANY_CONTEXT_SEARCH_DESCRIPTION,
 	COMPANY_CONTEXT_SEARCH_INPUT_SCHEMA,
@@ -84,7 +102,10 @@ import {
 	PROJECT_FEATURE_LIST_INPUT_SCHEMA,
 } from "../project-feature-tool-schemas";
 import { PROJECT_REPOSITORY_TOOLS } from "../project-repository-tool-schemas";
-import { assessToolCallRisk } from "../risk-assessment";
+import {
+	assessToolCallRisk,
+	type RiskAssessmentOptions,
+} from "../risk-assessment";
 import {
 	formatToolFailureAbort,
 	formatToolFailureNote,
@@ -100,8 +121,10 @@ import {
 	truncateWithinLimit,
 } from "../tool-result-progression";
 import {
+	advisorChargedUsage,
 	ledgerSnapshotFromRefusal,
 	recordTurnBudgetStop,
+	recordTurnLedgerReading,
 	refreshTurnBudgetStop,
 	refusedFinalization,
 } from "../turn-budget";
@@ -203,12 +226,15 @@ function buildBudgetStatus(
 	iterationCosts: IterationCost[],
 	modeConfig: ExecutionModeConfig,
 	warning?: string,
+	chargedUsed?: number,
 ): TokenBudgetStatus {
 	const maxTokens = modeConfig.maxTotalTokens || BUDGET.defaultMaxTotalTokens;
-	const used = iterationCosts.reduce(
-		(sum, ic) => sum + ic.inputTokens + ic.outputTokens,
-		0,
-	);
+	const used =
+		chargedUsed ??
+		iterationCosts.reduce(
+			(sum, ic) => sum + ic.inputTokens + ic.outputTokens,
+			0,
+		);
 	// usagePercentage is a decimal in [0, 1] to match the existing
 	// TokenBudgetCard convention (which multiplies by 100 for display).
 	const usagePercentage = maxTokens > 0 ? Math.min(used / maxTokens, 1) : 0;
@@ -237,6 +263,7 @@ const {
 	denyAuthoritySessionActivity,
 	summarizeLargeToolResult,
 	preloadMcpToolsForConfigsActivity,
+	preloadFrameToolsActivity,
 	compactConversationHistoryActivity,
 	checkCompletionClaimActivity,
 	// Default-MCP surface routing — see `applyDefaultMcpEagerRouting`.
@@ -260,6 +287,18 @@ const {
 		backoffCoefficient: 2,
 		maximumInterval: "30s",
 		maximumAttempts: 3,
+	},
+});
+
+const { judgeDelegationRiskActivity } = proxyActivities<
+	typeof orchestratorActivities
+>({
+	startToCloseTimeout: "30 seconds",
+	heartbeatTimeout: "15 seconds",
+	cancellationType: ActivityCancellationType.WAIT_CANCELLATION_COMPLETED,
+	retry: {
+		nonRetryableErrorTypes: [...AI_NON_RETRYABLE_ERROR_TYPES],
+		maximumAttempts: 1,
 	},
 });
 
@@ -599,6 +638,9 @@ Hard rules:
 - Use the headers above verbatim. Markdown formatting is required.
 - If you genuinely have nothing concrete to report, say so explicitly: state that no actionable information was gathered and what the user should try instead.`;
 
+const TIME_LIMIT_INTERRUPTED_OUTCOME =
+	"interrupted at the time limit — outcome unknown";
+
 // Minimum useful synthesis length. The exhaustion synthesis used to
 // occasionally return "Task completed." (15 chars) on long Sonnet
 // runs — well below anything actionable. Anything under this
@@ -683,11 +725,12 @@ function toolFailureSynthesisRetryPrompt(systemPrompt: string): string {
 function pruneConversationHistory(
 	conversationHistory: IterativeMessage[],
 	currentIteration: number,
-): void {
+	targetReached?: () => boolean,
+): number {
 	const pruneBeforeIteration =
 		currentIteration - TOOL_RESULTS.recentIterationsToKeep;
 	if (pruneBeforeIteration <= 0) {
-		return;
+		return 0;
 	}
 
 	// Build a map of toolCallId -> toolName from assistant messages
@@ -748,6 +791,9 @@ function pruneConversationHistory(
 
 		totalPruned++;
 		totalSaved += originalLength - msg.content.length;
+		if (targetReached?.()) {
+			break;
+		}
 	}
 
 	if (totalPruned > 0) {
@@ -758,6 +804,7 @@ function pruneConversationHistory(
 			pruneBeforeIteration,
 		});
 	}
+	return totalPruned;
 }
 
 /**
@@ -772,6 +819,47 @@ function recordTruncation(
 ): void {
 	if (truncated && patched("orch-truncation-signal-v1")) {
 		state.truncated = truncated;
+	}
+}
+
+/**
+ * Records that a round of the turn ran on the organization's API billing
+ * because every ChatGPT plan ran out mid-turn (Fizzy #3048), for the workflow
+ * output. Taken only when there is something to record, like
+ * `recordTruncation`, so histories without it replay unchanged.
+ */
+function recordApiBilling(
+	state: WorkflowState,
+	apiBilling: { resetAt: string | null } | undefined,
+): void {
+	if (apiBilling && patched("orch-api-billing-signal-v1")) {
+		state.apiBilling = apiBilling;
+	}
+}
+
+function applyImageAttachmentUpdates(
+	history: IterativeMessage[],
+	result: Awaited<ReturnType<typeof runAgentIteration>>,
+): void {
+	for (let index = 0; index < history.length; index++) {
+		const message = history[index];
+		const update = result.imageAttachmentUpdates?.find(
+			(item) => item.messageIndex === index,
+		);
+		if (update) {
+			message.imageAttachments = update.attachments;
+			if (update.note) {
+				message.imageAttachmentNote = update.note;
+			}
+		}
+		// Without byte identities from an older activity, later rounds omit the
+		// attachment rather than capturing a potentially different document.
+		if (update?.pendingDocumentIds?.length) {
+			message.imageAttachmentDocumentIds = update.pendingDocumentIds;
+		} else if (message.imageAttachmentDocumentIds) {
+			message.imageAttachments ??= [];
+			delete message.imageAttachmentDocumentIds;
+		}
 	}
 }
 
@@ -828,10 +916,38 @@ async function synthesizeFinalAnswer(params: {
 	// the synthesis activity is sent and what the turn answers, so a
 	// history recorded before this replays with the full history and
 	// the old fallback text.
+	const keepSynthesisTurnMessages = patched("orch-keep-turn-synthesis-v1");
+	if (keepSynthesisTurnMessages) {
+		answerUnpairedToolCalls(
+			conversationHistory,
+			"not completed; outcome unknown",
+		);
+	}
 	const compactSynthesis = patched("orch-synthesis-compacted-v1");
+
 	const synthesisHistory = compactSynthesis
-		? buildSynthesisHistory(conversationHistory)
+		? keepSynthesisTurnMessages
+			? buildSynthesisHistory(conversationHistory, true)
+			: buildSynthesisHistory(conversationHistory)
 		: conversationHistory;
+	// This opt-in also lets the activity omit pixels when a FINALIZATION
+	// scope resolves to a token ledger, keeping its request eligible for sizing.
+	const synthesisImageFields =
+		keepSynthesisTurnMessages &&
+		synthesisHistory.some(
+			(message) =>
+				message.imageAttachments !== undefined ||
+				message.imageAttachmentDocumentIds !== undefined,
+		)
+			? { preserveTurnImages: true as const }
+			: {};
+	const synthesisWrites =
+		patched("orch-synthesis-write-outcomes-v1") &&
+		systemPrompt === SYNTHESIS_SYSTEM_PROMPT;
+	const synthesisPrompt = (prompt: string) =>
+		synthesisWrites
+			? `${prompt}\n\nIn "What I did", list each write you performed with its outcome (succeeded, failed, or unknown). Name any write whose outcome is unknown, and tell the continuation to verify its outcome before retrying it.`
+			: prompt;
 
 	let synthesisContent = "";
 	// Set when the synthesis itself hit the output ceiling.
@@ -845,9 +961,12 @@ async function synthesizeFinalAnswer(params: {
 		// pruning again strips them and synthesis sees only
 		// `[Previous tool result pruned]` placeholders.
 		const synthesisResult = await runAgentIteration({
+			callPurpose: AI_CALL_PURPOSES.synthesis,
+			...synthesisImageFields,
 			conversationHistory: synthesisHistory,
 			availableTools: {}, // No tools → forces text response
-			systemPrompt,
+			systemPrompt: synthesisPrompt(systemPrompt),
+			...(synthesisWrites ? { synthesisOutput: true } : {}),
 			userId: input.userId,
 			organizationId: input.organizationId,
 			executionId: state.executionId,
@@ -864,10 +983,15 @@ async function synthesizeFinalAnswer(params: {
 			// and is sized to the room left (the activity's finalization-fit).
 			...budgetAttemptKindField(params.turn, "FINALIZATION"),
 			...finalizationQuestionField(params.turn, state.enrichedMessage),
+		}).catch((error: unknown) => {
+			recordAdvisorFailureRequests(state, error);
+			throw error;
 		});
-		if (synthesisResult.ledger) {
-			state.turnLedger = synthesisResult.ledger;
+		if (keepSynthesisTurnMessages) {
+			applyImageAttachmentUpdates(synthesisHistory, synthesisResult);
 		}
+		recordAdvisorRequests(state, synthesisResult);
+		recordApiBilling(state, synthesisResult.apiBilling);
 
 		// Track synthesis cost
 		state.iterationCosts.push({
@@ -876,6 +1000,9 @@ async function synthesizeFinalAnswer(params: {
 			outputTokens: synthesisResult.usage.outputTokens,
 			timestamp: new Date().toISOString(),
 		});
+		if (synthesisResult.ledger) {
+			recordTurnLedgerReading(state, synthesisResult.ledger);
+		}
 
 		if (synthesisResult.type === "response") {
 			synthesisContent = synthesisResult.content;
@@ -919,9 +1046,12 @@ async function synthesizeFinalAnswer(params: {
 				},
 			);
 			const retryResult = await runAgentIteration({
+				callPurpose: AI_CALL_PURPOSES.synthesisRetry,
+				...synthesisImageFields,
 				conversationHistory: synthesisHistory,
 				availableTools: {},
-				systemPrompt: params.retrySystemPrompt,
+				systemPrompt: synthesisPrompt(params.retrySystemPrompt),
+				...(synthesisWrites ? { synthesisOutput: true } : {}),
 				userId: input.userId,
 				organizationId: input.organizationId,
 				executionId: state.executionId,
@@ -936,9 +1066,23 @@ async function synthesizeFinalAnswer(params: {
 					params.turn,
 					state.enrichedMessage,
 				),
+			}).catch((error: unknown) => {
+				recordAdvisorFailureRequests(state, error);
+				throw error;
 			});
-			if (retryResult.ledger) {
-				state.turnLedger = retryResult.ledger;
+			if (keepSynthesisTurnMessages) {
+				applyImageAttachmentUpdates(synthesisHistory, retryResult);
+			}
+			recordAdvisorRequests(state, retryResult);
+			recordApiBilling(state, retryResult.apiBilling);
+			// This retry path changes only for the entry point's new chat
+			// budget decision; pre-marker histories retain their fallback.
+			if (
+				state.advisorBudgetEnabled &&
+				retryResult.type === "stream_error" &&
+				retryResult.usageLimit
+			) {
+				usageLimit = retryResult.usageLimit;
 			}
 			state.iterationCosts.push({
 				iteration: state.currentIteration + 2,
@@ -946,6 +1090,9 @@ async function synthesizeFinalAnswer(params: {
 				outputTokens: retryResult.usage.outputTokens,
 				timestamp: new Date().toISOString(),
 			});
+			if (retryResult.ledger) {
+				recordTurnLedgerReading(state, retryResult.ledger);
+			}
 			if (
 				retryResult.type === "response" &&
 				retryResult.content.trim().length >
@@ -973,7 +1120,7 @@ async function synthesizeFinalAnswer(params: {
 			finalizationDenied = true;
 			const refused = ledgerSnapshotFromRefusal(synthesisError);
 			if (refused) {
-				state.turnLedger = refused;
+				recordTurnLedgerReading(state, refused);
 			}
 		} else {
 			// A stopped turn is not a failed synthesis: the fallback would
@@ -1023,19 +1170,25 @@ async function synthesizeFinalAnswer(params: {
 function getBudgetUsage(
 	iterationCosts: IterationCost[],
 	modeConfig: ExecutionModeConfig,
+	mainRounds?: number,
+	chargedUsed?: number,
 ) {
 	const maxTokens = modeConfig.maxTotalTokens || BUDGET.defaultMaxTotalTokens;
 	const maxIterations =
 		modeConfig.maxIterations || BUDGET.defaultMaxIterations;
 	const effectiveBudget = maxTokens - BUDGET.synthesisReserveTokens;
 	const effectiveMaxIterations =
-		maxIterations - BUDGET.synthesisIterationReserve;
+		mainRounds === undefined
+			? maxIterations - BUDGET.synthesisIterationReserve
+			: maxIterations;
 
-	const totalTokens = iterationCosts.reduce(
-		(sum, ic) => sum + ic.inputTokens + ic.outputTokens,
-		0,
-	);
-	const iterations = iterationCosts.length;
+	const totalTokens =
+		chargedUsed ??
+		iterationCosts.reduce(
+			(sum, ic) => sum + ic.inputTokens + ic.outputTokens,
+			0,
+		);
+	const iterations = mainRounds ?? iterationCosts.length;
 
 	const tokenRatio = effectiveBudget > 0 ? totalTokens / effectiveBudget : 0;
 	const iterationRatio =
@@ -1073,12 +1226,19 @@ function checkIterationBudget(
 	 * the run answers that with its budget exit. The iteration limit stays.
 	 */
 	ledgerAdmitsTokens = false,
+	mainRounds?: number,
+	chargedUsed?: number,
 ): {
 	withinBudget: boolean;
 	limit?: BudgetLimit;
 	reason?: string;
 } {
-	const usage = getBudgetUsage(iterationCosts, modeConfig);
+	const usage = getBudgetUsage(
+		iterationCosts,
+		modeConfig,
+		mainRounds,
+		chargedUsed,
+	);
 
 	if (!ledgerAdmitsTokens && usage.totalTokens > usage.effectiveBudget) {
 		return {
@@ -1106,8 +1266,15 @@ function checkIterationBudget(
 function getBudgetWarning(
 	iterationCosts: IterationCost[],
 	modeConfig: ExecutionModeConfig,
+	mainRounds?: number,
+	chargedUsed?: number,
 ): string | null {
-	const { usageRatio } = getBudgetUsage(iterationCosts, modeConfig);
+	const { usageRatio } = getBudgetUsage(
+		iterationCosts,
+		modeConfig,
+		mainRounds,
+		chargedUsed,
+	);
 
 	if (usageRatio < BUDGET.warningThreshold) {
 		return null;
@@ -1145,6 +1312,66 @@ function formatTurnNotice(parts: string[]): string | undefined {
 	return `[Host note: this note is from the host for this step of the turn only; it is not part of the user's message.]\n\n${notes.join("\n\n")}`;
 }
 
+/** Patch gate keeps the activity and initial tool set out of older histories. */
+export async function preloadFrameToolsForTurn(
+	input: Pick<
+		OrchestratorWorkflowInput,
+		| "userId"
+		| "organizationId"
+		| "actingGrant"
+		| "projectId"
+		| "enabledFabricToolIds"
+		| "launchWorkspaceId"
+		| "launchSurface"
+		| "conversationId"
+		| "executionId"
+	>,
+	tools: Record<string, unknown>,
+	configIds: Record<string, string>,
+	turn?: IterativeTurnOptions,
+): Promise<string[]> {
+	if (
+		!patched("orch-frame-block-edit-preload-v1") ||
+		!input.organizationId ||
+		!input.actingGrant
+	) {
+		return [];
+	}
+	const registered: string[] = [];
+	try {
+		const offered = await preloadFrameToolsActivity({
+			userId: input.userId,
+			organizationId: input.organizationId,
+			actingGrant: input.actingGrant,
+			projectId: input.projectId,
+			workspaceId: input.launchWorkspaceId,
+			surface: input.launchSurface,
+			conversationId: input.conversationId,
+			sourceRunType: "orchestrator",
+			sourceRunId: input.executionId,
+		});
+		for (const entry of offered) {
+			if (
+				Array.isArray(input.enabledFabricToolIds) &&
+				!input.enabledFabricToolIds.includes(entry.name)
+			) {
+				continue;
+			}
+			tools[entry.name] = {
+				description: entry.description,
+				inputSchema: entry.inputSchema,
+			};
+			configIds[entry.name] = FABRIC_AI_SERVER_CONFIG_ID;
+			registered.push(entry.name);
+		}
+	} catch (error) {
+		// A stopped turn must not fall back to discovery.
+		rethrowTurnStop(error, turn);
+		log.warn("Frame tool preload unavailable", { error: String(error) });
+	}
+	return registered;
+}
+
 const ARGS_BLOCKS_TOOLS = new Set([
 	"fabric_create_frame",
 	"fabric_create_slideshow",
@@ -1159,10 +1386,28 @@ const ARGS_BLOCKS_TOOLS = new Set([
  * archive and the LLM's view on subsequent iterations from re-carrying
  * 7KB+ of HTML per block.
  */
-function scrubArgsForRetention(
+export function scrubArgsForRetention(
 	name: string,
 	args: Record<string, unknown>,
 ): Record<string, unknown> {
+	if (name === "fabric_edit_frame_block" && Array.isArray(args.edits)) {
+		return {
+			...args,
+			edits: args.edits.map((entry) => {
+				if (!entry || typeof entry !== "object") {
+					return entry;
+				}
+				const edit = entry as Record<string, unknown>;
+				return typeof edit.newText === "string" &&
+					edit.newText.length > 2_000
+					? {
+							...edit,
+							newText: `[content omitted: ${edit.newText.length} chars - rendered to frame]`,
+						}
+					: entry;
+			}),
+		};
+	}
 	if (!ARGS_BLOCKS_TOOLS.has(name)) {
 		return args;
 	}
@@ -1705,6 +1950,12 @@ export async function executeIterativePhase(
 		) {
 			throw error;
 		}
+		if (loop.keepTurnMessages) {
+			answerUnpairedToolCalls(
+				loop.conversationHistory,
+				"not completed; outcome unknown",
+			);
+		}
 		return turnBudgetExit({
 			state,
 			input,
@@ -1714,11 +1965,19 @@ export async function executeIterativePhase(
 			isCancelled,
 			turn,
 		});
+	} finally {
+		if (loop.keepTurnMessages && loop.conversationHistory) {
+			answerUnpairedToolCalls(
+				loop.conversationHistory,
+				"not completed; outcome unknown",
+			);
+		}
 	}
 }
 
 /** What the budget exit needs from the loop it replaces. */
 interface IterativeLoopContext {
+	keepTurnMessages?: boolean;
 	/** Set as soon as the loop builds the turn's conversation. */
 	conversationHistory?: IterativeMessage[];
 }
@@ -1790,7 +2049,7 @@ async function turnBudgetExit(params: {
 		synthesis.usageLimit &&
 		patched("orch-synthesis-usage-limit-notice-v1")
 	) {
-		refreshTurnBudgetStop(state);
+		state.budgetStop = undefined;
 		return streamFailureResult({
 			message: synthesis.usageLimit.message,
 			usageLimit: synthesis.usageLimit,
@@ -1819,6 +2078,103 @@ async function turnBudgetExit(params: {
 	};
 }
 
+/** Called by the entry point after the deadline scope has unwound. */
+export async function executeTimeLimitExit(
+	state: WorkflowState,
+	input: OrchestratorWorkflowInput,
+	updateProgress: (phase: string, message: string) => void,
+	isCancelled: () => boolean,
+	turn: IterativeTurnOptions | undefined,
+): Promise<IterativePhaseResult> {
+	const deadline = advisorDeadline();
+	state.budgetStop = {
+		version: 1,
+		kind: "time_limit",
+		used: Math.floor((Date.now() - deadline.startedAt) / 1000),
+		limit: BUDGET.maxIterativeExecutionSeconds,
+	};
+	state.limitSignals.push({
+		kind: "internal_budget",
+		message: "This answer reached its time limit",
+		budgetLimit: "time",
+	});
+	state.pendingApproval = null;
+	state.pendingToolApproval = null;
+	state.pendingClarification = null;
+	const history = state.iterativeConversationHistory.length
+		? state.iterativeConversationHistory
+		: [
+				{
+					role: "user" as const,
+					content: state.enrichedMessage || input.message,
+					timestamp: new Date().toISOString(),
+				},
+			];
+	answerUnpairedToolCalls(history, TIME_LIMIT_INTERRUPTED_OUTCOME);
+	const interrupted = state.inFlightToolCall;
+	if (interrupted) {
+		const outcome = TIME_LIMIT_INTERRUPTED_OUTCOME;
+		state.toolCalls.push({
+			id: interrupted.id,
+			name: interrupted.name,
+			args: interrupted.args,
+			result: outcome,
+			status: "error",
+			durationMs: Date.now() - interrupted.startedAt,
+		});
+		history.push({
+			role: "user",
+			content: `Host observation: ${interrupted.name} (${JSON.stringify(interrupted.args)}) was ${outcome}. Verify its outcome before retrying it.`,
+			timestamp: new Date().toISOString(),
+		});
+		state.inFlightToolCall = undefined;
+	}
+	updateProgress("synthesizing", "Summarizing findings...");
+	const synthesis = await synthesizeFinalAnswer({
+		state,
+		input,
+		conversationHistory: history,
+		systemPrompt: SYNTHESIS_SYSTEM_PROMPT,
+		retrySystemPrompt: SYNTHESIS_RETRY_SYSTEM_PROMPT,
+		fallback: () =>
+			summarizeAccomplishments(state, {
+				includeFindings: true,
+				stoppedBecause: "this answer reached its time limit",
+			}),
+		turn,
+		handleBudgetRefusal: true,
+	});
+	if (
+		synthesis.usageLimit &&
+		patched("orch-synthesis-usage-limit-notice-v1")
+	) {
+		state.budgetStop = undefined;
+		return streamFailureResult({
+			message: synthesis.usageLimit.message,
+			usageLimit: synthesis.usageLimit,
+		});
+	}
+	// Host-owned text preserves the uncertain operation even if synthesis
+	// omits it or the static rollup has already filled its per-tool cap.
+	const finalResponse = interrupted
+		? `${synthesis.content}\n\n## Work to verify\n\n- ${interrupted.name} (${renderToolCallArgs(interrupted.args)}): interrupted at the time limit — outcome unknown. Verify its outcome before retrying it.`
+		: synthesis.content;
+	if (isCancelled()) {
+		return {
+			success: false,
+			shouldContinue: false,
+			error: "Execution cancelled",
+			data: { finalResponse },
+		};
+	}
+	state.pendingHandoff = {
+		reason: "This answer reached its time limit",
+		summary: finalResponse,
+	};
+	recordTruncation(state, synthesis.truncated);
+	return { success: true, shouldContinue: true, data: { finalResponse } };
+}
+
 async function runIterativeLoop(
 	state: WorkflowState,
 	input: OrchestratorWorkflowInput,
@@ -1838,6 +2194,11 @@ async function runIterativeLoop(
 	});
 
 	updateProgress("iterating", "Starting iterative execution...");
+
+	// Recorded once at turn start so a deploy during the loop keeps one history contract.
+	const keepTurnMessages = patched("orch-keep-turn-messages-v1");
+	loop.keepTurnMessages = keepTurnMessages;
+	const keepTurnImages = patched("orch-keep-turn-images-v1");
 
 	// Initialize conversation history with any prior conversation context
 	// This allows follow-up questions to reference previous responses
@@ -1868,6 +2229,9 @@ async function runIterativeLoop(
 		{
 			role: "user",
 			content: userContent,
+			...(keepTurnImages && input.attachedDocumentIds?.length
+				? { imageAttachmentDocumentIds: [...input.attachedDocumentIds] }
+				: {}),
 			timestamp: new Date().toISOString(),
 		},
 	];
@@ -1880,13 +2244,19 @@ async function runIterativeLoop(
 	});
 
 	// Sync to state
-	state.iterativeConversationHistory = [...conversationHistory];
+	state.iterativeConversationHistory =
+		state.advisorBudgetEnabled || keepTurnMessages
+			? conversationHistory
+			: [...conversationHistory];
 	state.currentIteration = 0;
 
 	// Initialize with meta-tools only (Tool Search pattern - 85% token reduction)
 	// OAuth tools from preloadedResources are still included if available
 	const metaTools = getMetaTools();
 	const discoveredTools: Record<string, unknown> = {}; // Tools found via search_tools
+	// Rebuilt from recorded calls during replay. Inherited results without captured
+	// approval options remain unclassified and are retained by the v2 reset.
+	const retentionRiskOptions = new Map<string, RiskAssessmentOptions>();
 	const discoveredToolConfigIds: Record<string, string> = {}; // configId per discovered tool for direct execution
 	// Server names from pre-loaded MCP configs — used in system prompt for focused agents
 	let preloadedServerNames: string[] = [];
@@ -1924,6 +2294,10 @@ async function runIterativeLoop(
 					{ servers: preloadedServerNames },
 				);
 			} else {
+				recordAdvisorToolCatalog(
+					state,
+					preloadedMcpTools.map((t) => t.toolName),
+				);
 				preloadedToolCatalog =
 					buildPreloadedToolCatalog(preloadedMcpTools);
 				log.warn(
@@ -1943,6 +2317,13 @@ async function runIterativeLoop(
 			);
 		}
 	}
+
+	const frameToolsRegistered = await preloadFrameToolsForTurn(
+		input,
+		discoveredTools,
+		discoveredToolConfigIds,
+		turn,
+	);
 
 	// Set when the attached project's live roadmap reads are pre-registered
 	// below, so the focused-agent prompt lists them only on histories that
@@ -2433,14 +2814,19 @@ async function runIterativeLoop(
 			const schemaLifetime = patched(STUB_CATALOG_TURN_SCOPE_PATCH)
 				? "the loaded schema stays loaded for the rest of this turn only — after the user's next message, load it again with search_tools before calling the tool"
 				: "the loaded schema persists for the rest of this conversation";
-			systemPrompt += `\n\nFOCUSED AGENT — The catalog below lists the MCP tools exposed by ${preloadedServerNames.join(", ")}. Their schemas are NOT pre-attached. Before invoking a tool from the catalog, call search_tools with the exact tool name (e.g., search_tools({ query: "<tool_name>" })) to load its inputSchema; ${schemaLifetime}. Tools NOT in the catalog (search_tools, ${projectToolsListed ? "project_rag_query, fabric_list_meeting_transcripts, " : ""}${projectFeatureToolsRegistered ? "fabric_list_project_features, fabric_get_project_feature, " : ""}${projectDocumentToolsRegistered ? "fabric_list_project_documents, fabric_get_project_document, fabric_list_project_sources, fabric_get_project_source, " : ""}${projectRepositoryToolsRegistered.map((name) => `${name}, `).join("")}${projectToolsListed ? "search_slack_messages, search_teams_messages, " : ""}${companyContextToolRegistered ? "search_company_context, " : ""}OAuth integrations such as Microsoft Teams or GitHub) are already attached and can be called directly without a search_tools roundtrip.\n\n${preloadedToolCatalog}`;
+			systemPrompt += `\n\nFOCUSED AGENT — The catalog below lists the MCP tools exposed by ${preloadedServerNames.join(", ")}. Their schemas are NOT pre-attached. Before invoking a tool from the catalog, call search_tools with the exact tool name (e.g., search_tools({ query: "<tool_name>" })) to load its inputSchema; ${schemaLifetime}. Tools NOT in the catalog (search_tools, ${projectToolsListed ? "project_rag_query, fabric_list_meeting_transcripts, " : ""}${projectFeatureToolsRegistered ? "fabric_list_project_features, fabric_get_project_feature, " : ""}${projectDocumentToolsRegistered ? "fabric_list_project_documents, fabric_get_project_document, fabric_list_project_sources, fabric_get_project_source, " : ""}${projectRepositoryToolsRegistered.map((name) => `${name}, `).join("")}${frameToolsRegistered.map((name) => `${name}, `).join("")}${projectToolsListed ? "search_slack_messages, search_teams_messages, " : ""}${companyContextToolRegistered ? "search_company_context, " : ""}OAuth integrations such as Microsoft Teams or GitHub) are already attached and can be called directly without a search_tools roundtrip.\n\n${preloadedToolCatalog}`;
 		} else if (
 			options.firstCall &&
 			preloadedServerNames.length > 0 &&
 			Object.keys(discoveredTools).length > 0
 		) {
-			const preloadedToolList = Object.keys(discoveredTools).join(", ");
+			const preloadedToolList = Object.keys(discoveredTools)
+				.filter((name) => !frameToolsRegistered.includes(name))
+				.join(", ");
 			systemPrompt += `\n\nFOCUSED AGENT — Pre-loaded tools from ${preloadedServerNames.join(", ")}: ${preloadedToolList}. These tools are ALREADY available — call them directly. Do NOT call search_tools first; that wastes a round-trip and may return incorrect tools.`;
+			if (frameToolsRegistered.length > 0) {
+				systemPrompt += `\n\nAlready-attached Fabric tools: ${frameToolsRegistered.join(", ")}. Call these directly using their attached schemas.`;
+			}
 		} else if (
 			// Fallback: for general agents, hint which servers are available so search_tools
 			// can formulate targeted queries.
@@ -2475,6 +2861,11 @@ Never guess or use example values — always use real data from API responses.`;
 		return systemPrompt;
 	};
 
+	const mainRoundBudget = state.advisorBudgetEnabled === true;
+	const deadline = mainRoundBudget ? advisorDeadline() : undefined;
+	const roundsUsed = () => (mainRoundBudget ? state.mainRounds : undefined);
+	const chargedUsed = () => advisorChargedUsage(state);
+
 	// Main iteration loop
 	while (!isCancelled()) {
 		state.currentIteration++;
@@ -2483,41 +2874,94 @@ Never guess or use example values — always use real data from API responses.`;
 		updateProgress("iterating", `Iteration ${iteration}...`);
 
 		// Prune old tool results to prevent context bloat
-		if (state.currentIteration > TOOL_RESULTS.recentIterationsToKeep) {
-			pruneConversationHistory(
+		if (
+			!state.advisorBoundedHistoryEnabled &&
+			state.currentIteration > TOOL_RESULTS.recentIterationsToKeep
+		) {
+			const pruned = pruneConversationHistory(
 				conversationHistory,
 				state.currentIteration,
 			);
+			if (pruned) {
+				recordAdvisorHistoryChange(state, "pruned");
+			}
 		}
 
 		// Check budget before each iteration
-		const budgetCheck = checkIterationBudget(
-			state.iterationCosts,
-			modeConfig,
-			state.turnLedger !== undefined,
-		);
+		const elapsedSeconds = deadline
+			? Math.floor((Date.now() - deadline.startedAt) / 1000)
+			: 0;
+		const timeLimitReached =
+			deadline !== undefined && Date.now() >= deadline.stopAt;
+		const budgetCheck: ReturnType<typeof checkIterationBudget> =
+			timeLimitReached
+				? {
+						withinBudget: false,
+						reason: `Time limit reached: ${elapsedSeconds}/${BUDGET.maxIterativeExecutionSeconds} seconds`,
+					}
+				: checkIterationBudget(
+						state.iterationCosts,
+						modeConfig,
+						state.turnLedger !== undefined,
+						roundsUsed(),
+						chargedUsed(),
+					);
 		if (!budgetCheck.withinBudget) {
 			// Surface the exhaustion to the UI. Keep the soft-degrade
 			// behavior (run synthesis), but emit a LimitSignal so the frontend can
 			// render a banner + TokenBudgetCard in red. Logged at error level so
 			// it shows up in Sentry with the execution identifiers attached.
-			const budgetStatus = buildBudgetStatus(
-				state.iterationCosts,
-				modeConfig,
-				budgetCheck.reason,
-			);
+			const budgetStatus = timeLimitReached
+				? undefined
+				: buildBudgetStatus(
+						state.iterationCosts,
+						modeConfig,
+						budgetCheck.reason,
+						chargedUsed(),
+					);
 			const internalLimitSignal: LimitSignal = {
 				kind: "internal_budget",
 				message: budgetCheck.reason ?? "Internal token budget exceeded",
 				budget: budgetStatus,
-				budgetLimit: budgetCheck.limit,
+				budgetLimit: timeLimitReached ? "time" : budgetCheck.limit,
 			};
 			state.limitSignals.push(internalLimitSignal);
-			const stopUsage = getBudgetUsage(state.iterationCosts, modeConfig);
+			const stopUsage = getBudgetUsage(
+				state.iterationCosts,
+				modeConfig,
+				roundsUsed(),
+				chargedUsed(),
+			);
+			if (mainRoundBudget) {
+				state.budgetStop = timeLimitReached
+					? {
+							version: 1,
+							kind: "time_limit",
+							used: elapsedSeconds,
+							limit: BUDGET.maxIterativeExecutionSeconds,
+						}
+					: budgetCheck.limit === "iterations"
+						? {
+								version: 1,
+								kind: "round_limit",
+								used: stopUsage.iterations,
+								limit: stopUsage.effectiveMaxIterations,
+							}
+						: {
+								version: 1,
+								kind: "token_budget",
+								used: stopUsage.totalTokens,
+								limit: stopUsage.effectiveBudget,
+								maxTokens: stopUsage.maxTokens,
+								reservedTokens: BUDGET.synthesisReserveTokens,
+							};
+			}
 			log.error(
-				budgetCheck.limit === "iterations"
-					? "Orchestrator iteration limit reached"
-					: "Orchestrator token budget exhausted",
+				timeLimitReached
+					? "Orchestrator time limit reached"
+					: budgetCheck.limit === "iterations"
+						? "Orchestrator iteration limit reached"
+						: "Orchestrator token budget exhausted",
 				{
 					reason: budgetCheck.reason,
 					limit: budgetCheck.limit,
@@ -2545,6 +2989,7 @@ Never guess or use example values — always use real data from API responses.`;
 				synthesis.usageLimit &&
 				patched("orch-synthesis-usage-limit-notice-v1")
 			) {
+				state.budgetStop = undefined;
 				return streamFailureResult({
 					message: synthesis.usageLimit.message,
 					usageLimit: synthesis.usageLimit,
@@ -2564,11 +3009,10 @@ Never guess or use example values — always use real data from API responses.`;
 				};
 			}
 
-			// Stash the summary on state so buildWorkflowOutput can surface
-			// it as `handoffRecommended` for the frontend's "Continue in new
-			// chat" CTA. Independent of finalResponse — the workflow itself
-			// completes successfully with the synthesis as its response, but
-			// the handoff signal tells the UI this thread is done.
+			// Keep the summary on state so buildWorkflowOutput can surface
+			// `handoffRecommended` for clients using the legacy card signal.
+			// The workflow completes with the synthesis as its response;
+			// continuation starts a new turn in this conversation.
 			state.pendingHandoff = {
 				reason:
 					budgetCheck.reason ?? "Conversation context limit reached",
@@ -2589,6 +3033,8 @@ Never guess or use example values — always use real data from API responses.`;
 		const budgetWarning = getBudgetWarning(
 			state.iterationCosts,
 			modeConfig,
+			roundsUsed(),
+			chargedUsed(),
 		);
 
 		const imageToolResults = state.toolCalls.filter(
@@ -2653,7 +3099,14 @@ Never guess or use example values — always use real data from API responses.`;
 			? BUDGET.budgetWarningStepsPerIteration
 			: BUDGET.defaultMaxStepsPerIteration;
 
-		const iterationResult = await runAgentIteration({
+		if (mainRoundBudget) {
+			state.mainRounds++;
+		}
+		const iterationInput: Parameters<typeof runAgentIteration>[0] = {
+			...(keepTurnMessages
+				? { preserveTurnMessages: true as const }
+				: {}),
+			...(keepTurnImages ? { preserveTurnImages: true as const } : {}),
 			conversationHistory,
 			availableTools,
 			systemPrompt: iterationSystemPrompt,
@@ -2667,11 +3120,7 @@ Never guess or use example values — always use real data from API responses.`;
 			iteration,
 			maxStepsPerIteration: stepsPerIteration,
 			modelOverride: input.modelOverride,
-			// Pass paperclip image attachments to the model as real pixels on
-			// the first iteration only — vision-capable models then SEE the
-			// image instead of relying solely on its RAG-extracted description.
-			// Gated to iteration 1 so images aren't re-sent (and re-billed) on
-			// every follow-up step.
+			// Retained on round 1 for older activities, which ignore message-bound references.
 			...(iteration === 1 && input.attachedDocumentIds?.length
 				? { attachedDocumentIds: input.attachedDocumentIds }
 				: {}),
@@ -2686,13 +3135,183 @@ Never guess or use example values — always use real data from API responses.`;
 			...turnScopeField(turn),
 			// A main round, for the turn's token ledger.
 			...budgetAttemptKindField(turn, "EXPLORATION"),
-		});
-		// The ledger's reading after this round (a ledgered turn only): from
-		// here on the ledger, not `iterationCosts`, admits the turn's tokens.
-		if (iterationResult.ledger) {
-			state.turnLedger = iterationResult.ledger;
+		};
+		if (state.advisorBoundedHistoryV2Enabled) {
+			const retentionInput = {
+				request: iterationInput,
+				...state.advisorRequestSizing,
+				calibrationFactor: state.advisorCalibrationFactor ?? 1,
+				allowance:
+					state.turnLedger?.allowance ??
+					input.turnTokenAllowance ??
+					modeConfig.maxTotalTokens ??
+					BUDGET.defaultMaxTotalTokens,
+				hasTurnLedger: state.turnLedger !== undefined,
+				spent: state.turnLedger
+					? (advisorChargedUsage(state) ??
+						state.turnLedger.measured +
+							state.turnLedger.outstanding)
+					: state.iterationCosts.reduce(
+							(sum, cost) =>
+								sum + cost.inputTokens + cost.outputTokens,
+							0,
+						),
+				finalizationReserve:
+					state.turnLedger?.finalizationReserve ??
+					BUDGET.synthesisReserveTokens,
+				iteration,
+				lastRewrite: state.advisorLastHistoryRewriteIteration,
+				riskOptionsByToolCallId: retentionRiskOptions,
+				autonomyLevel: input.autonomyLevel,
+			};
+			const decision = boundedHistoryV2Decision(retentionInput);
+			let compacted = false;
+			// Apply the reset before the fallback so cooldown, short history, and
+			// failed summaries retain the space already freed by read placeholders.
+			if (decision.pruned > 0) {
+				conversationHistory.splice(
+					0,
+					conversationHistory.length,
+					...decision.history,
+				);
+				state.advisorLastHistoryRewriteIteration = iteration;
+				recordAdvisorHistoryChange(state, "pruned");
+			}
+			// Only an unresolved technical hard limit selects the compactor.
+			switch (decision.action) {
+				case "compact": {
+					const beforeCompaction = [...conversationHistory];
+					await maybeCompactConversationHistory(
+						state,
+						conversationHistory,
+						iteration,
+						modeConfig.maxTotalTokens ??
+							BUDGET.defaultMaxTotalTokens,
+						modeConfig.maxTotalTokens ??
+							BUDGET.defaultMaxTotalTokens,
+						input.userId,
+						input.organizationId,
+						turn,
+						input.conversationId,
+						input.usageFrameId,
+						input.projectId,
+					);
+					compacted =
+						beforeCompaction.length !==
+							conversationHistory.length ||
+						beforeCompaction.some(
+							(message, index) =>
+								message !== conversationHistory[index],
+						);
+					if (compacted) {
+						state.advisorLastHistoryRewriteIteration = iteration;
+						recordAdvisorHistoryChange(state, "compacted");
+					}
+					break;
+				}
+				case "reset":
+				case "append":
+					break;
+			}
+			const after = measureBoundedHistoryV2Request({
+				...retentionInput,
+				spent: advisorChargedUsage(state) ?? retentionInput.spent,
+			});
+			const retention = {
+				iteration,
+				historyRetention: "bounded-v2",
+				action: decision.action,
+				reason: decision.reason,
+				hasTurnLedger: retentionInput.hasTurnLedger,
+				hardTrigger: decision.before.hardLimit,
+				softTrigger: decision.before.softLimit,
+				hardLimits: decision.before.hardLimits,
+				softLimits: decision.before.softLimits,
+				calibrationFactor: state.advisorCalibrationFactor ?? 1,
+				pruned: decision.pruned,
+				keptNonReadOnlyResults: decision.keptNonReadOnlyResults,
+				fellBackToCompaction: decision.action === "compact",
+				compacted,
+				beforeTokens: decision.before.tokens,
+				afterTokens: after.tokens,
+				reservation: decision.before.reservation,
+				afterReservation: after.reservation,
+				room: decision.before.room,
+				afterRoom: after.room,
+				beforeBytes: decision.before.bytes,
+				afterBytes: after.bytes,
+				tokensFreed: decision.before.tokens - after.tokens,
+				bytesFreed: decision.before.bytes - after.bytes,
+				softCap: decision.before.softCap,
+			};
+			state.advisorHistoryDecision = retention;
+			log.info("advisor.history_retention", retention);
+		} else if (state.advisorBoundedHistoryEnabled) {
+			const size = () =>
+				boundedHistoryDecision({
+					request: iterationInput,
+					...state.advisorRequestSizing,
+					allowance:
+						state.turnLedger?.allowance ??
+						input.turnTokenAllowance ??
+						modeConfig.maxTotalTokens ??
+						BUDGET.defaultMaxTotalTokens,
+					spent: state.turnLedger
+						? state.turnLedger.measured +
+							state.turnLedger.outstanding
+						: state.iterationCosts.reduce(
+								(sum, cost) =>
+									sum + cost.inputTokens + cost.outputTokens,
+								0,
+							),
+					finalizationReserve:
+						state.turnLedger?.finalizationReserve ??
+						BUDGET.synthesisReserveTokens,
+				});
+			const before = size();
+			if (before.prune) {
+				const pruned = pruneConversationHistory(
+					conversationHistory,
+					iteration,
+					() => {
+						const after = size();
+						return (
+							after.tokens <= before.targetTokens &&
+							after.bytes <= before.targetBytes
+						);
+					},
+				);
+				if (pruned) {
+					recordAdvisorHistoryChange(state, "pruned");
+				}
+				log.info("advisor.history_retention", {
+					iteration,
+					reason: before.reason,
+					pruned,
+					beforeTokens: before.tokens,
+					afterTokens: size().tokens,
+					softCap: before.softCap,
+					targetTokens: before.targetTokens,
+					beforeBytes: before.bytes,
+					afterBytes: size().bytes,
+				});
+			}
 		}
-
+		if (iteration === 1) {
+			recordAdvisorToolSet(state, availableTools, 1);
+		}
+		recordAdvisorMainRound(state);
+		const iterationResult = await runAgentIteration(iterationInput).catch(
+			(error: unknown) => {
+				recordAdvisorFailureRequests(state, error);
+				throw error;
+			},
+		);
+		if (keepTurnImages) {
+			applyImageAttachmentUpdates(conversationHistory, iterationResult);
+		}
+		recordAdvisorRequests(state, iterationResult);
+		recordApiBilling(state, iterationResult.apiBilling);
 		// If the iteration classifier tagged a provider limit/quota
 		// error, bubble it into state so it reaches the workflow output + SSE.
 		// The iteration itself has already soft-degraded to a text response, so
@@ -2721,11 +3340,20 @@ Never guess or use example values — always use real data from API responses.`;
 			outputTokens: iterOutputTokens,
 			timestamp: new Date().toISOString(),
 		});
+		// The reading includes this main request and preceding auxiliary calls.
+		if (iterationResult.ledger) {
+			recordTurnLedgerReading(state, iterationResult.ledger);
+		}
 
 		// budgetUsedPct is the ratio the wrap-up warning and the stop act on:
 		// the larger of the token and iteration ratios. Both are logged so a
 		// stop can be read as the limit that actually tripped.
-		const usage = getBudgetUsage(state.iterationCosts, modeConfig);
+		const usage = getBudgetUsage(
+			state.iterationCosts,
+			modeConfig,
+			roundsUsed(),
+			chargedUsed(),
+		);
 
 		log.info("[IterativeExecution] Iteration token usage", {
 			iteration,
@@ -2887,6 +3515,26 @@ Never guess or use example values — always use real data from API responses.`;
 		// Process tool calls
 		toolRoundSeen = true;
 		const toolCalls = iterationResult.toolCalls;
+		if (keepTurnMessages) {
+			conversationHistory.push({
+				role: "assistant",
+				content:
+					iterationResult.assistantParts
+						?.flatMap((part) =>
+							part.type === "text" ? [part.text] : [],
+						)
+						.join("") ?? "",
+				...(iterationResult.assistantParts
+					? { assistantParts: iterationResult.assistantParts }
+					: {}),
+				toolCalls: toolCalls.map((call) => ({
+					...call,
+					args: scrubArgsForRetention(call.name, call.args),
+				})),
+				timestamp: new Date().toISOString(),
+				iteration,
+			});
+		}
 		log.info("Agent requested tool calls", {
 			iteration,
 			toolCount: toolCalls.length,
@@ -2934,21 +3582,73 @@ Never guess or use example values — always use real data from API responses.`;
 			// catalog is not scanned either, from its own marker: the activity
 			// asks the person before it writes, so the scan could only add a
 			// second prompt.
-			const riskAssessment = assessToolCallRisk(
+			const riskOptions: RiskAssessmentOptions = patched(
+				"orch-risk-read-only-exempt-v1",
+			)
+				? {
+						rules: patched("orch-risk-fabric-gated-v1")
+							? "fabric-gated-v2"
+							: "read-only-exempt-v1",
+						fabricRouted:
+							isLoopBuiltInReadTool(toolCall.name) ||
+							discoveredToolConfigIds[toolCall.name] ===
+								FABRIC_AI_SERVER_CONFIG_ID,
+					}
+				: { rules: "legacy" };
+			let riskAssessment = assessToolCallRisk(
 				toolCall,
 				autonomyLevel,
-				patched("orch-risk-read-only-exempt-v1")
-					? {
-							rules: patched("orch-risk-fabric-gated-v1")
-								? "fabric-gated-v2"
-								: "read-only-exempt-v1",
-							fabricRouted:
-								isLoopBuiltInReadTool(toolCall.name) ||
-								discoveredToolConfigIds[toolCall.name] ===
-									FABRIC_AI_SERVER_CONFIG_ID,
-						}
-					: { rules: "legacy" },
+				riskOptions,
 			);
+			if (state.advisorBoundedHistoryV2Enabled) {
+				retentionRiskOptions.set(toolCall.id, riskOptions);
+			}
+
+			// Only message-derived keywords may be cleared. Tool-name hits and
+			// unexpected arguments retain the scan's approval decision.
+			if (
+				patched("orch-risk-delegation-judge-v1") &&
+				riskAssessment.requiresApproval &&
+				toolCall.name.startsWith("delegate_to_") &&
+				riskAssessment.keywordHits?.name.length === 0 &&
+				riskAssessment.keywordHits.args.length > 0 &&
+				typeof toolCall.args.message === "string" &&
+				Object.keys(toolCall.args).every((key) => key === "message")
+			) {
+				try {
+					const judgment = await judgeDelegationRiskActivity({
+						userId: input.userId,
+						organizationId: input.organizationId,
+						projectId: input.projectId,
+						...usageOriginFields(input),
+						agentId: toolCall.name.slice("delegate_to_".length),
+						message: toolCall.args.message,
+						...turnScopeField(turn),
+					});
+					if (
+						judgment.usage &&
+						(judgment.usage.inputTokens > 0 ||
+							judgment.usage.outputTokens > 0)
+					) {
+						state.iterationCosts.push({
+							iteration,
+							...judgment.usage,
+							timestamp: new Date().toISOString(),
+						});
+					}
+					if (judgment.clear === true) {
+						riskAssessment = {
+							riskLevel: "low",
+							requiresApproval: false,
+						};
+					}
+				} catch (error) {
+					rethrowTurnStop(error, turn);
+					log.warn("Delegation risk judge failed; keeping approval", {
+						toolName: toolCall.name,
+					});
+				}
+			}
 
 			if (riskAssessment.requiresApproval) {
 				log.info("Tool call requires approval", {
@@ -3019,23 +3719,26 @@ Never guess or use example values — always use real data from API responses.`;
 						feedback: decision?.feedback,
 					});
 
-					// Add rejection to conversation
-					conversationHistory.push({
-						role: "assistant",
-						content: "",
-						toolCalls: [
-							{
-								id: toolCall.id,
-								name: toolCall.name,
-								args: toolCall.args,
-								...(toolCall.providerMetadata && {
-									providerMetadata: toolCall.providerMetadata,
-								}),
-							},
-						],
-						timestamp: new Date().toISOString(),
-						iteration,
-					});
+					// Legacy histories recorded an assistant message for each rejection.
+					if (!keepTurnMessages) {
+						conversationHistory.push({
+							role: "assistant",
+							content: "",
+							toolCalls: [
+								{
+									id: toolCall.id,
+									name: toolCall.name,
+									args: toolCall.args,
+									...(toolCall.providerMetadata && {
+										providerMetadata:
+											toolCall.providerMetadata,
+									}),
+								},
+							],
+							timestamp: new Date().toISOString(),
+							iteration,
+						});
+					}
 					conversationHistory.push({
 						role: "tool",
 						content: `Tool call rejected by user: ${decision?.feedback || "No reason provided"}`,
@@ -3062,8 +3765,17 @@ Never guess or use example values — always use real data from API responses.`;
 				args: Object.keys(toolCall.args),
 			});
 
+			recordAdvisorToolExecution(state, toolCall.name);
 			const startTime = Date.now();
+			if (mainRoundBudget) {
+				state.inFlightToolCall = {
+					...toolCall,
+					args: scrubArgsForRetention(toolCall.name, toolCall.args),
+					startedAt: startTime,
+				};
+			}
 			let toolResult: unknown;
+			let toolResultReadOnly: true | undefined;
 			let toolError: string | undefined;
 			let mcpAppResourceUri: string | undefined;
 			let mcpAppConfigId: string | undefined;
@@ -3076,6 +3788,8 @@ Never guess or use example values — always use real data from API responses.`;
 				// Discovers capabilities on-demand via semantic search
 				// ================================================================
 				if (toolCall.name === "search_tools") {
+					const toolSearch = beginAdvisorToolSearch(state, iteration);
+					const toolSetBeforeSearch = availableTools;
 					updateProgress("executing_tool", "Searching for tools...");
 					log.info("Executing search_tools meta-tool", {
 						args: toolCall.args,
@@ -3128,6 +3842,7 @@ Never guess or use example values — always use real data from API responses.`;
 						type: string;
 					}> = [];
 					try {
+						toolSearch.agentSearch.ran = true;
 						const agentSearchResult = await searchAvailableAgents({
 							...secondaryUsageOriginFields(input),
 							...(input.conversationId
@@ -3211,6 +3926,7 @@ Never guess or use example values — always use real data from API responses.`;
 						"loom-chat-integration-executor-registry-v1",
 					);
 					try {
+						toolSearch.integrationSearch.ran = true;
 						const integrationSearchResult =
 							await searchAvailableIntegrations({
 								...secondaryUsageOriginFields(input),
@@ -3365,6 +4081,8 @@ Never guess or use example values — always use real data from API responses.`;
 									: "No tools found matching your query. Try rephrasing your search or check if the required MCP server is connected.",
 					};
 
+					const toolsBeforeDiscovery = JSON.stringify(availableTools);
+
 					// Add discovered tools to available tools for subsequent iterations
 					for (const result of searchResult.results) {
 						discoveredTools[result.toolName] = {
@@ -3386,6 +4104,22 @@ Never guess or use example values — always use real data from API responses.`;
 							discoveredTools,
 						),
 					};
+
+					finishAdvisorToolSearch(
+						state,
+						toolSearch,
+						toolSetBeforeSearch,
+						availableTools,
+						agentToolsFound.map((t) => t.name),
+						integrationToolsFound.map((t) => t.name),
+						suppressedFrameTools,
+					);
+
+					if (
+						JSON.stringify(availableTools) !== toolsBeforeDiscovery
+					) {
+						recordAdvisorHistoryChange(state, "tools_discovered");
+					}
 
 					// Issue #11: Track search quality metrics
 					state.toolSearchMetrics.totalSearches++;
@@ -3463,6 +4197,22 @@ Never guess or use example values — always use real data from API responses.`;
 					});
 
 					toolResult = agentResult.output;
+					// A new activity worker can return status to an older workflow
+					// task during rollout; the marker preserves that task's success path.
+					if (
+						patched("orch-delegation-status-v1") &&
+						agentResult.status !== undefined &&
+						agentResult.status !== "completed"
+					) {
+						toolError =
+							agentResult.status === "input-required"
+								? "The delegated agent cancelled the task before finishing."
+								: "Delegation failed to complete.";
+						toolResult = {
+							error: toolError,
+							output: agentResult.output,
+						};
+					}
 
 					log.info("Agent delegation completed", {
 						agentId,
@@ -3839,6 +4589,12 @@ Never guess or use example values — always use real data from API responses.`;
 					}
 
 					toolResult = result.output;
+					if (
+						state.advisorBoundedHistoryV2Enabled &&
+						result.readOnly === true
+					) {
+						toolResultReadOnly = true;
+					}
 					// Capture MCP App resource URI for iframe rendering
 					if (result.mcpAppResourceUri) {
 						mcpAppResourceUri = result.mcpAppResourceUri;
@@ -3993,8 +4749,9 @@ Never guess or use example values — always use real data from API responses.`;
 			// iteration phase) to the SSE pipeline. The flusher is a
 			// no-op when the cursor is already at the end, so calling it
 			// after every tool call is safe and cheap.
-			await flushMcpDefaultToolSignals(state);
-
+			if (!mainRoundBudget) {
+				await flushMcpDefaultToolSignals(state);
+			}
 			const durationMs = Date.now() - startTime;
 
 			// `conversationHistory` is the input to `runAgentIteration`. Shrinking
@@ -4017,6 +4774,10 @@ Never guess or use example values — always use real data from API responses.`;
 				mcpAppResourceUri,
 				mcpAppConfigId,
 			});
+			if (mainRoundBudget) {
+				state.inFlightToolCall = undefined;
+				await flushMcpDefaultToolSignals(state);
+			}
 
 			// Per-tool failure breaker. OAuth-required failures return early
 			// above and don't reach it. Under the per-round marker this only
@@ -4068,22 +4829,24 @@ Never guess or use example values — always use real data from API responses.`;
 			// Add to conversation history (tag with iteration for pruning).
 			// Use the scrubbed args so the LLM doesn't keep re-receiving the
 			// full rendered HTML on every subsequent iteration.
-			conversationHistory.push({
-				role: "assistant",
-				content: "",
-				toolCalls: [
-					{
-						id: toolCall.id,
-						name: toolCall.name,
-						args: retainedArgs,
-						...(toolCall.providerMetadata && {
-							providerMetadata: toolCall.providerMetadata,
-						}),
-					},
-				],
-				timestamp: new Date().toISOString(),
-				iteration,
-			});
+			if (!keepTurnMessages) {
+				conversationHistory.push({
+					role: "assistant",
+					content: "",
+					toolCalls: [
+						{
+							id: toolCall.id,
+							name: toolCall.name,
+							args: retainedArgs,
+							...(toolCall.providerMetadata && {
+								providerMetadata: toolCall.providerMetadata,
+							}),
+						},
+					],
+					timestamp: new Date().toISOString(),
+					iteration,
+				});
+			}
 
 			// Summarize large tool results to avoid bloating context.
 			// Skill tools return structured reference material (SKILL.md bodies
@@ -4187,6 +4950,7 @@ Never guess or use example values — always use real data from API responses.`;
 					});
 					try {
 						resultContent = await summarizeLargeToolResult({
+							featureKey: "chat-agent",
 							toolName: toolCall.name,
 							toolResult: resultContent,
 							userQuery: state.enrichedMessage,
@@ -4246,6 +5010,7 @@ Never guess or use example values — always use real data from API responses.`;
 				role: "tool",
 				content: resultContent,
 				toolCallId: toolCall.id,
+				...(toolResultReadOnly === true ? { toolResultReadOnly } : {}),
 				timestamp: new Date().toISOString(),
 				iteration,
 			});
@@ -4258,7 +5023,10 @@ Never guess or use example values — always use real data from API responses.`;
 		}
 
 		// Sync conversation history to state
-		state.iterativeConversationHistory = [...conversationHistory];
+		state.iterativeConversationHistory =
+			state.advisorBudgetEnabled || keepTurnMessages
+				? conversationHistory
+				: [...conversationHistory];
 
 		// Per-round breaker verdict, once every call in the round has its
 		// result in the history (so nothing is left without its answer): a
@@ -4345,19 +5113,31 @@ Never guess or use example values — always use real data from API responses.`;
 		// into a single "PROGRESS SO FAR" summary block so subsequent
 		// iterations have less context to process. Buys ~7–15 more iterations
 		// on long sessions at the cost of one ~5K-token summarization call.
-		await maybeCompactConversationHistory(
-			state,
-			conversationHistory,
-			iteration,
-			usage.totalTokens,
-			usage.maxTokens,
-			input.userId,
-			input.organizationId,
-			turn,
-			input.conversationId,
-			input.usageFrameId,
-			input.projectId,
-		);
+		const historyBeforeCompaction = [...conversationHistory];
+		if (!state.advisorBoundedHistoryV2Enabled) {
+			await maybeCompactConversationHistory(
+				state,
+				conversationHistory,
+				iteration,
+				usage.totalTokens,
+				usage.maxTokens,
+				input.userId,
+				input.organizationId,
+				turn,
+				input.conversationId,
+				input.usageFrameId,
+				input.projectId,
+			);
+		}
+
+		if (
+			historyBeforeCompaction.length !== conversationHistory.length ||
+			historyBeforeCompaction.some(
+				(message, index) => message !== conversationHistory[index],
+			)
+		) {
+			recordAdvisorHistoryChange(state, "compacted");
+		}
 
 		// Update progress for next iteration
 		updateProgress(
@@ -4392,6 +5172,48 @@ export function trimLeadingOrphans(
 		i++;
 	}
 	return i === 0 ? slice : slice.slice(i);
+}
+
+/**
+ * Give every tool call in the last assistant turn a result. A deadline can
+ * cancel the loop after the assistant's tool calls were recorded but before
+ * all of their results were, and a model request with an unanswered tool
+ * call is rejected. Each missing result is added as `outcome`, right after
+ * the results already recorded. Mutates `history`.
+ */
+export function answerUnpairedToolCalls(
+	history: IterativeMessage[],
+	outcome: string,
+): void {
+	let assistantIndex = history.length - 1;
+	while (assistantIndex >= 0 && history[assistantIndex].role === "tool") {
+		assistantIndex--;
+	}
+	const assistant = history[assistantIndex];
+	if (
+		!assistant ||
+		assistant.role !== "assistant" ||
+		!assistant.toolCalls?.length
+	) {
+		return;
+	}
+	const answered = new Set(
+		history
+			.slice(assistantIndex + 1)
+			.map((message) => message.toolCallId)
+			.filter((id): id is string => typeof id === "string"),
+	);
+	for (const call of assistant.toolCalls) {
+		if (!answered.has(call.id)) {
+			history.push({
+				role: "tool",
+				content: `${call.name} was ${outcome}.`,
+				toolCallId: call.id,
+				timestamp: new Date().toISOString(),
+				iteration: assistant.iteration,
+			});
+		}
+	}
 }
 
 /**
@@ -4461,16 +5283,38 @@ export async function maybeCompactConversationHistory(
 		return;
 	}
 
-	const originalUserMessage = conversationHistory[0];
-	const middleSlice = conversationHistory.slice(
-		1,
-		-COMPACTION.keepRecentTurns,
-	);
-	const recentSlice = conversationHistory.slice(-COMPACTION.keepRecentTurns);
+	const keepResponseGroups = patched("orch-keep-turn-compaction-v1");
+	let prefixEnd = 1;
+	let cut = conversationHistory.length - COMPACTION.keepRecentTurns;
+	if (keepResponseGroups) {
+		for (let index = conversationHistory.length - 1; index >= 0; index--) {
+			const message = conversationHistory[index];
+			if (
+				message.role === "user" &&
+				(message.imageAttachments !== undefined ||
+					message.imageAttachmentDocumentIds !== undefined)
+			) {
+				prefixEnd = index + 1;
+				break;
+			}
+		}
 
-	// Don't cut mid-pair on either side of the compaction boundary.
-	const safeMiddle = trimTrailingOrphans(middleSlice);
-	const safeRecent = trimLeadingOrphans(recentSlice);
+		// The cut moves before the assistant that owns the results at the boundary.
+		while (cut > prefixEnd && conversationHistory[cut]?.role === "tool") {
+			cut--;
+		}
+		cut = Math.max(prefixEnd, cut);
+	}
+	const preservedPrefix = conversationHistory.slice(0, prefixEnd);
+	const originalUserMessage = preservedPrefix[preservedPrefix.length - 1];
+	const middleSlice = conversationHistory.slice(prefixEnd, cut);
+	const recentSlice = conversationHistory.slice(cut);
+	const safeMiddle = keepResponseGroups
+		? middleSlice
+		: trimTrailingOrphans(middleSlice);
+	const safeRecent = keepResponseGroups
+		? recentSlice
+		: trimLeadingOrphans(recentSlice);
 
 	if (safeMiddle.length < COMPACTION.minTurnsToCompact) {
 		return;
@@ -4517,6 +5361,19 @@ export async function maybeCompactConversationHistory(
 		return;
 	}
 
+	if (
+		state.advisorWeightedAllowanceEnabled ||
+		compactionResult.summaryText.trim()
+	) {
+		// Track the compaction's own LLM cost in the budget accounting.
+		state.iterationCosts.push({
+			iteration,
+			inputTokens: compactionResult.usage.inputTokens,
+			outputTokens: compactionResult.usage.outputTokens,
+			timestamp: new Date().toISOString(),
+		});
+	}
+
 	if (!compactionResult.summaryText.trim()) {
 		log.warn("Compaction returned empty summary — skipping replacement", {
 			iteration,
@@ -4524,14 +5381,6 @@ export async function maybeCompactConversationHistory(
 		state.lastCompactionIteration = iteration;
 		return;
 	}
-
-	// Track the compaction's own LLM cost in the budget accounting.
-	state.iterationCosts.push({
-		iteration,
-		inputTokens: compactionResult.usage.inputTokens,
-		outputTokens: compactionResult.usage.outputTokens,
-		timestamp: new Date().toISOString(),
-	});
 
 	// Replace history in place with [original user msg, summary, ...recent].
 	const summaryMessage: IterativeMessage = {
@@ -4544,11 +5393,13 @@ export async function maybeCompactConversationHistory(
 	conversationHistory.splice(
 		0,
 		conversationHistory.length,
-		originalUserMessage,
+		...preservedPrefix,
 		summaryMessage,
 		...safeRecent,
 	);
-	state.iterativeConversationHistory = [...conversationHistory];
+	state.iterativeConversationHistory = state.advisorBudgetEnabled
+		? conversationHistory
+		: [...conversationHistory];
 	state.lastCompactionIteration = iteration;
 
 	log.info("Conversation history compacted", {
@@ -4681,7 +5532,12 @@ export function summarizeAccomplishments(
 	}
 
 	const successful = state.toolCalls.filter((tc) => tc.status === "success");
-	const failed = state.toolCalls.filter((tc) => tc.status === "error");
+	const isUnknown = (call: WorkflowState["toolCalls"][number]) =>
+		call.result === TIME_LIMIT_INTERRUPTED_OUTCOME;
+	const unknown = state.toolCalls.filter(isUnknown);
+	const failed = state.toolCalls.filter(
+		(tc) => tc.status === "error" && !isUnknown(tc),
+	);
 	const iterations = state.currentIteration ?? 0;
 	// The patched wording matches the handoff card: it is this answer's step
 	// budget that ran out, not the conversation.
@@ -4708,7 +5564,7 @@ export function summarizeAccomplishments(
 		return sections.join("\n\n");
 	}
 
-	const headline = `${stopped}. Made ${state.toolCalls.length} tool call(s) — ${successful.length} successful${failed.length ? `, ${failed.length} failed` : ""}.`;
+	const headline = `${stopped}. Made ${state.toolCalls.length} tool call(s) — ${successful.length} successful${failed.length ? `, ${failed.length} failed` : ""}${unknown.length ? `, ${unknown.length} outcome unknown` : ""}.`;
 
 	// Group by tool name preserving first-seen order so the output is
 	// deterministic and reads chronologically.
@@ -4735,21 +5591,34 @@ export function summarizeAccomplishments(
 			continue;
 		}
 		const total = group.successful.length + group.failed.length;
-		const failedSuffix = group.failed.length
-			? `, ${group.failed.length} failed`
+		const uncertain = group.failed.filter(isUnknown);
+		const knownFailures = group.failed.filter((call) => !isUnknown(call));
+		const failedSuffix = knownFailures.length
+			? `, ${knownFailures.length} failed`
 			: "";
-		toolLines.push(`**${toolName}** (×${total}${failedSuffix})`);
-
-		// Successful calls preferred so the user has actionable data; pad
-		// with failed calls if there's room.
-		const callsToShow = [...group.successful, ...group.failed].slice(
-			0,
-			MAX_CALLS_PER_TOOL_SHOWN,
+		const unknownSuffix = uncertain.length
+			? `, ${uncertain.length} outcome unknown`
+			: "";
+		toolLines.push(
+			`**${toolName}** (×${total}${failedSuffix}${unknownSuffix})`,
 		);
+
+		// Uncertain calls need verification; show them before successful
+		// calls, then use remaining space for known failures.
+		const callsToShow = [
+			...uncertain,
+			...group.successful,
+			...knownFailures,
+		].slice(0, MAX_CALLS_PER_TOOL_SHOWN);
 
 		for (const call of callsToShow) {
 			const argLine = renderToolCallArgs(call.args);
-			const status = call.status === "error" ? " — failed" : "";
+			const status =
+				call.result === TIME_LIMIT_INTERRUPTED_OUTCOME
+					? " — interrupted at the time limit — outcome unknown; verify before retrying"
+					: call.status === "error"
+						? " — failed"
+						: "";
 			toolLines.push(`- ${argLine || "(no identifying args)"}${status}`);
 		}
 		if (total > callsToShow.length) {

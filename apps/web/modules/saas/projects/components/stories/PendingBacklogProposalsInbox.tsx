@@ -1,5 +1,7 @@
 "use client";
 
+import { PROPOSAL_SOURCE_LABELS } from "../../lib/stories/proposal-source-labels";
+
 /**
  * PendingBacklogProposalsInbox
  *
@@ -170,13 +172,6 @@ type ProposalStatus =
 	| "FAILED"
 	| "SUPERSEDED"
 	| "BACKLOG";
-
-const SOURCE_BADGE_LABELS: Record<string, string> = {
-	TEAMS_CHANNEL: "Teams channel",
-	TEAMS_CHAT: "Teams chat",
-	SCOPE_DOCUMENT: "Scope document",
-	ROADMAP_RECOMMENDATION: "Recommended from project context",
-};
 
 function filenameFromMetadata(
 	metadata: Record<string, unknown> | null,
@@ -535,7 +530,7 @@ function ProposalSourceBadge({
 		return (
 			<span className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 text-xs text-muted-foreground">
 				<SparklesIcon className="size-3 text-muted-foreground" />
-				AI Update
+				{PROPOSAL_SOURCE_LABELS.AI_UPDATE_SIDEBAR}
 			</span>
 		);
 	}
@@ -547,7 +542,7 @@ function ProposalSourceBadge({
 					className="size-3 text-muted-foreground"
 					aria-hidden="true"
 				/>
-				Recommended from project context
+				{PROPOSAL_SOURCE_LABELS.ROADMAP_RECOMMENDATION}
 			</span>
 		);
 	}
@@ -834,16 +829,9 @@ export function PendingBacklogProposalsInbox({
 				organizationId,
 			],
 		});
-		// Keep the Rejected list and Roadmap archive-button count fresh so moving a
-		// proposal into or out of Rejected reflects immediately.
+		// Keep the Rejected list fresh so moving a proposal into or out of
+		// Rejected reflects immediately.
 		queryClient.invalidateQueries({ queryKey: backlogQueryKey });
-		queryClient.invalidateQueries({
-			queryKey: [
-				"projects.backlog.proposals.backlogCount",
-				projectId,
-				organizationId,
-			],
-		});
 		// Approving a proposal can create or update UserStory rows that the
 		// Roadmap reads from `projects.stories.list`. Invalidate it so the
 		// new/updated features appear without a manual page refresh.
@@ -905,6 +893,11 @@ export function PendingBacklogProposalsInbox({
 			proposalId: string;
 			source: string;
 			approvedChanges: unknown[];
+			approvedChangeIndexes?: number[];
+			pmSyncOverrides?: Record<
+				number,
+				{ pushAnyway?: boolean; skip?: boolean }
+			>;
 			syncToPM: boolean;
 			/** Items the proposal had already created (a returned batch). */
 			createdBefore?: number;
@@ -928,6 +921,8 @@ export function PendingBacklogProposalsInbox({
 						organizationId,
 						proposalId: payload.proposalId,
 						approvedChanges: payload.approvedChanges as never,
+						approvedChangeIndexes: payload.approvedChangeIndexes,
+						pmSyncOverrides: payload.pmSyncOverrides,
 						...(isRecommendation
 							? {
 									syncToPM: payload.syncToPM,
@@ -952,6 +947,7 @@ export function PendingBacklogProposalsInbox({
 				// on the change shape; we pass whatever BacklogChangeProposal
 				// produced after normalization.
 				approvedChanges: payload.approvedChanges as never,
+				approvedChangeIndexes: payload.approvedChangeIndexes,
 				// Explicit user choice from the proposal-review checkbox. Pass
 				// the boolean verbatim (never undefined): the approve procedure
 				// treats `undefined` as "sync if a PM tool is configured", so an
@@ -1832,11 +1828,18 @@ export function PendingBacklogProposalsInbox({
 							? "Submitting proposal..."
 							: undefined
 					}
-					onApprove={(approvedChanges, syncToPM) => {
+					onApprove={(
+						approvedChanges,
+						syncToPM,
+						pmSyncOverrides,
+						approvedChangeIndexes,
+					) => {
 						approveMutation.mutate({
 							proposalId: detail.id,
 							source: detail.source,
 							approvedChanges,
+							approvedChangeIndexes,
+							pmSyncOverrides,
 							syncToPM,
 							createdBefore: createdIndexes?.size ?? 0,
 						});

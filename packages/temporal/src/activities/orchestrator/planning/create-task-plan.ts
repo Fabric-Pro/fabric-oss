@@ -12,6 +12,7 @@
  */
 
 import { generateText } from "@repo/ai";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { db } from "@repo/database";
 import { isInlineDiagramRequest } from "../../../workflows/orchestrator/diagram-rendering";
 import { usageOriginFields } from "../../../workflows/orchestrator/usage-attribution";
@@ -236,9 +237,10 @@ async function planTask(input: CreateTaskPlanInput): Promise<TaskPlan> {
 		false,
 		undefined,
 		undefined,
-		input.conversationId || input.frameId || input.projectId
-			? usageOriginFields(input)
-			: undefined,
+		{
+			...usageOriginFields(input),
+			callPurpose: AI_CALL_PURPOSES.planning,
+		},
 	);
 
 	// ==========================================================================

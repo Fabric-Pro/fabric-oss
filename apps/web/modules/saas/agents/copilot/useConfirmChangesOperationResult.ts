@@ -1,84 +1,15 @@
 "use client";
 
 /**
- * `useConfirmChangesOperationResult` — Fizzy #1412 PR3 §7.4 follow-up.
+ * Best-effort chat-history messages for confirm_changes in StoryWorkspace and
+ * DocumentEditor. Verdict capture lives in useConfirmChangesVerdict so it does
+ * not depend on conversation creation or the eventual save result.
  *
- * # What this hook does
- *
- * When a user clicks Accept or Reject inside a `<ConfirmChangesDialog>`
- * (the `renderAndWaitForResponse` UI of a `useCopilotAction({ name:
- * "confirm_changes", ... })` registration), this hook fires a persistent
- * `role: "system"` operation-result message into the underlying
- * `AgentConversation` via `agents.conversations.recordOperationResult`.
- *
- * # Why a hook, not inline code in each site
- *
- * `confirm_changes` is registered in 5 different CopilotKit consumer
- * surfaces:
- *
- *   - `apps/web/modules/saas/projects/components/stories/StoryWorkspace.tsx`
- *   - `apps/web/modules/saas/projects/components/DocumentEditor.tsx`
- *   - `apps/web/modules/saas/agents/components/AgentDocumentViewer.tsx`
- *   - `apps/web/modules/saas/agents/components/DocumentGeneratorEditor.tsx`
- *   - `apps/web/modules/saas/prompts/components/PromptContentEnhancer.tsx`
- *
- * Each site owns its own `conversationId` state (the parent of
- * `<CopilotPersistenceHook>` in that surface) and its own `projectId`
- * context. Inlining the `recordOperationResult` call into the
- * `handleAccept`/`handleReject` of each site would duplicate the
- * (a) operation-key generation, (b) error-swallow policy, (c) defensive
- * null-conversationId check, and (d) operation-label boilerplate. This
- * hook centralises all four so a future change to any of them (e.g.
- * switching from random UUID to a content-hash key, or wanting to surface
- * persistence failures as a toast) lands in one place.
- *
- * # How it integrates with the existing flow
- *
- * The hook does NOT replace the `respond?.({ accepted })` call that
- * resolves the CopilotKit tool — that resolution is still the
- * source of truth for the agent's downstream behaviour. The hook is
- * an additive sibling: it persists a record of the outcome to the
- * chat history while the agent flow continues unchanged.
- *
- * Call order in the consumer site:
- *
- *   const recordOperationResult = useConfirmChangesOperationResult({
- *     conversationId: activeAssistantConversationId,
- *     projectId,
- *     organizationId: organizationId ?? null,
- *   });
- *
- *   const handleAccept = async () => {
- *     // ... existing accept work (commit document, save state, etc.) ...
- *     await recordOperationResult({ accepted: true, summary, artifact });
- *     respond?.({ accepted: true });
- *   };
- *
- * # Defensive design
- *
- *   - **`conversationId` may be `null`**: when the feature-assistant
- *     history flag is off, or `<CopilotPersistenceHook>` hasn't lazy-
- *     created the conversation yet, no row exists to append to. The hook
- *     no-ops in that case — the UI flow proceeds normally; the operation
- *     just isn't persisted. This mirrors the same defensive guard
- *     `BacklogChat.tsx` uses in `ensureBacklogConversationId`.
- *
- *   - **API errors are swallowed**: persistence is best-effort. A
- *     network failure or server 500 during `recordOperationResult` MUST
- *     NOT block the user's accept/reject action — they've already done
- *     the cognitive work of deciding. Errors are logged via
- *     `console.warn` for observability but never propagated.
- *
- *   - **`operationKey` is fresh per click**: this prevents one click's
- *     persisted message from being deduplicated against an earlier
- *     click's. The frontend already prevents double-clicks via the
- *     `setIsAwaitingConfirmation(false)` guard in each consumer site,
- *     so duplicate-click protection doesn't need to also live in the
- *     operation key. If the network retries the SAME call internally
- *     (e.g. browser-level retry), the server's `appendConversationMessage`
- *     SELECT FOR UPDATE + operationKey dedup catches it. A caller that
- *     records one operation later than the click — an accept, once its
- *     save answers (Fizzy #2946) — passes its own key, made at the click.
+ * Other registrations are DocumentGeneratorEditor, PromptContentEnhancer, and
+ * TopicAssistant. The first two record verdicts without chat messages.
+ * TopicAssistant records rejections separately; accepted rewrites are measured
+ * when analysis-revision.ts saves the resulting revision.
+ * StoryWorkspace intentionally posts an accept message after its save answers.
  */
 
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -98,8 +29,7 @@ export interface UseConfirmChangesOperationResultArgs {
 	 * The `AgentConversation.id` to append the operation-result message
 	 * to. Sourced from the consumer site's local state — typically the
 	 * same value passed to `<CopilotPersistenceHook conversationId={...}>`.
-	 * `null` is allowed and triggers the no-op defensive path (see hook
-	 * doc-comment).
+	 * `null` skips this chat message; the separate verdict recorder still runs.
 	 */
 	conversationId: string | null;
 	/**

@@ -1,3 +1,4 @@
+import { detailOf } from "../../../../../../../../../packages/api/modules/agents/procedures/conversations/conversation-view";
 /**
  * A conversation someone else shared: read-only, with one way on, a chat of the
  * reader's own.
@@ -263,4 +264,40 @@ describe("continuing in a chat of the reader's own", () => {
 			screen.getByRole("button", { name: "Continue in my own chat" }),
 		).toBeEnabled();
 	});
+});
+
+it("shows a projected clarification exchange with owner attribution", () => {
+	const messages: ConversationDetail["messages"] = [
+		{
+			id: "clarification-1",
+			role: "user",
+			timestamp: new Date().toISOString(),
+			content: "Clarification — Which branch?: staging",
+			metadata: {
+				clarification: { question: "Which branch?", answer: "staging" },
+			},
+		},
+	];
+	const projected = detailOf({
+		...conversation,
+		messages,
+		userId: "example-owner",
+		organizationId: "example-org",
+		createdAt: new Date(conversation.createdAt),
+		updatedAt: new Date(conversation.updatedAt),
+		carriedOverAt: null,
+		isOwn: false,
+	});
+	renderView(projected);
+	const exchange = screen.getByRole("group", { name: "Clarifying question" });
+	expect(exchange).toHaveTextContent("Advisor asked:");
+	expect(exchange).toHaveTextContent("↳ Sam Example:");
+	expect(screen.getByText("staging").closest(".is-user")).toBeNull();
+	expect(screen.getByText("Which branch?")).toBeInTheDocument();
+	expect(screen.getByText("staging")).toBeInTheDocument();
+	expect(screen.getByText("Sam Example answered:")).toBeInTheDocument();
+	expect(screen.queryByText("Your answer")).not.toBeInTheDocument();
+	expect(
+		screen.queryByText("Clarification — Which branch?: staging"),
+	).not.toBeInTheDocument();
 });

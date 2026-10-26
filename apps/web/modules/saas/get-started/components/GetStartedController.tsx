@@ -181,18 +181,22 @@ export function GetStartedController() {
 	// changes what the Glossy component and step say, since a Proposal under
 	// it needs no Glossy edition.
 	const proposalArtifactEnabled = useFeatureFlag("PROPOSAL_ARTIFACT");
+	// Parlume gates one settings entry, the meeting assistant page.
+	const parlumeMeetingsEnabled = useFeatureFlag("PARLUME_MEETINGS");
 	const gsGates: GsRuntimeGates = useMemo(
 		() => ({
 			publishingSuite: tabGates.publishingSuiteEnabled,
 			todoList: todoListEnabled,
 			glossyEdition: glossyEditionEnabled,
 			proposalArtifact: proposalArtifactEnabled,
+			parlumeMeetings: parlumeMeetingsEnabled,
 		}),
 		[
 			tabGates,
 			todoListEnabled,
 			glossyEditionEnabled,
 			proposalArtifactEnabled,
+			parlumeMeetingsEnabled,
 		],
 	);
 	// A tour step / drawer entry pointing at a project tab this viewer can't

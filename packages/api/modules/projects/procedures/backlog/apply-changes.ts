@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { ORPCError } from "@orpc/client";
 import type { DecisionPrecheckResult } from "@repo/agent-types";
 import {
-	claimPendingProposalForApply,
+	claimPendingProposalWithReview,
 	createBacklogUpdateSession,
 	createPendingBacklogProposal,
 	db,
@@ -35,6 +35,12 @@ import {
 	recordDecisionOverridesAccepted,
 	snapshotBacklogChange,
 } from "../../lib/decision-override-audit";
+import {
+	buildProposalReviewEntries,
+	buildSidebarReviewEntries,
+	PROPOSAL_REVIEW_MAX_CHANGES,
+	resolveApprovedChangeIndexes,
+} from "./proposal-review";
 import { backlogApplyWorkflowId } from "./workflow-id";
 
 /**
@@ -127,7 +133,6 @@ import {
 	changeItemSchema,
 	readProposalChanges,
 	remapPmSyncOverrides,
-	resolveProposalChangeIndex,
 } from "./change-item-schema";
 
 /**
@@ -155,6 +160,20 @@ export const applyChangesProcedure = tenantProtectedProcedure
 			operationKey: z.string().min(1).max(200).optional(),
 			organizationId: z.string().nullable().optional(),
 			approvedChanges: z.array(changeItemSchema),
+			approvedChangeIndexes: z
+				.array(z.number().int().min(0).max(PROPOSAL_REVIEW_MAX_CHANGES))
+				.max(PROPOSAL_REVIEW_MAX_CHANGES)
+				.optional(),
+			offeredChanges: z
+				.array(
+					z.object({
+						action: z.enum(["create", "update"]),
+						type: z.enum(["epic", "feature", "story", "bug"]),
+						title: z.string(),
+					}),
+				)
+				.max(PROPOSAL_REVIEW_MAX_CHANGES)
+				.optional(),
 			/**
 			 * Optional PendingBacklogProposal being applied. When set, the
 			 * handler claims the row (plan §F3) before starting the workflow
@@ -278,7 +297,13 @@ export const applyChangesProcedure = tenantProtectedProcedure
 		// gets a clear nudge instead of a 500. (The server-computed pre-check is
 		// bounded by the judge's own `MAX_DECISION_FINDINGS`, so it can't blow the
 		// ceiling on its own.)
-		const payloadBytes = JSON.stringify(input.approvedChanges).length;
+		const payloadBytes = Buffer.byteLength(
+			JSON.stringify({
+				approvedChanges: input.approvedChanges,
+				offeredChanges: input.offeredChanges,
+			}),
+			"utf8",
+		);
 		if (payloadBytes > APPLY_PAYLOAD_MAX_BYTES) {
 			throw new ORPCError("RESOURCE_EXHAUSTED", {
 				message: "Batch too large; approve in smaller chunks",
@@ -344,6 +369,9 @@ export const applyChangesProcedure = tenantProtectedProcedure
 								userId: user.id,
 								organizationId: project.organizationId,
 								approvedChanges: input.approvedChanges,
+								approvedChangeIndexes:
+									input.approvedChangeIndexes,
+								offeredChanges: input.offeredChanges,
 								syncToPM: input.syncToPM,
 								pmConfig: input.pmConfig,
 								pmSyncOverrides: input.pmSyncOverrides,
@@ -456,6 +484,14 @@ export const applyChangesProcedure = tenantProtectedProcedure
 				proposalId: null,
 			};
 		}
+		const sidebarEntries = !input.proposalId
+			? buildSidebarReviewEntries(
+					input.approvedChanges,
+					input.approvedChangeIndexes,
+					input.offeredChanges,
+					input.pmSyncOverrides,
+				)
+			: undefined;
 		// Server-AUTHORITATIVE decision pre-check. The override ledger must not be
 		// suppressible by client input (a forged `ok`, an omitted finding, or the
 		// chat "skip analysis" / fast-apply paths that relay nothing), so we
@@ -513,21 +549,21 @@ export const applyChangesProcedure = tenantProtectedProcedure
 				});
 			}
 			const proposalChanges = readProposalChanges(existing.proposal);
+			const indexes = resolveApprovedChangeIndexes(
+				proposalChanges,
+				input.approvedChanges,
+				input.approvedChangeIndexes,
+			);
 			const indexed = input.approvedChanges.map((change, position) => ({
 				change,
-				index: resolveProposalChangeIndex(proposalChanges, change),
+				index: indexes[position]!,
 				position,
 			}));
-			for (const entry of indexed) {
-				if (entry.index < 0) {
-					throw new ORPCError("BAD_REQUEST", {
-						message: `Approved change "${entry.change.title.to}" not found in proposal — it may be stale. Re-open the proposal.`,
-					});
-				}
-			}
 			const alreadyApplied = await getAppliedChangeIndexes(
 				input.proposalId,
 			);
+			for (const index of existing.appliedChangeIndexes ?? [])
+				alreadyApplied.add(index);
 			const remaining = indexed.filter(
 				({ index }) => !alreadyApplied.has(index),
 			);
@@ -552,10 +588,19 @@ export const applyChangesProcedure = tenantProtectedProcedure
 					});
 				}
 			}
-			const claimed = await claimPendingProposalForApply({
+			const claimed = await claimPendingProposalWithReview({
 				proposalId: input.proposalId,
 				reviewedBy: user.id,
 				applyWorkflowId: workflowId,
+				syncToPM: input.syncToPM,
+				offeredListComplete: true,
+				pmConfig: input.pmConfig,
+				entries: buildProposalReviewEntries(
+					proposalChanges,
+					input.approvedChanges,
+					indexes,
+					input.pmSyncOverrides,
+				),
 				...(isRecommendation ? { admitBacklog: true } : {}),
 			});
 			if (!claimed) {
@@ -746,6 +791,7 @@ export const applyChangesProcedure = tenantProtectedProcedure
 			// Non-fatal: a missing session row only affects the history tab.
 		}
 
+		let sidebarClaimed = false;
 		try {
 			const client = await getTemporalClient();
 
@@ -761,9 +807,12 @@ export const applyChangesProcedure = tenantProtectedProcedure
 				// but cannot resurrect a terminal row or take another workflow's row.
 				// Reusing APPLYING requires a null stamp so a concurrent confirmation
 				// after reconciliation is preserved rather than cleared.
-				const claimed = await db.pendingBacklogProposal.updateMany({
-					where: {
-						id: proposalId,
+				const claimed = await claimPendingProposalWithReview({
+					proposalId,
+					reviewedBy: user.id,
+					applyWorkflowId: workflowId,
+					reuseReviewForAttempt: true,
+					claimWhere: {
 						OR: [
 							{ status: "PENDING", applyWorkflowId: null },
 							{
@@ -773,15 +822,12 @@ export const applyChangesProcedure = tenantProtectedProcedure
 							},
 						],
 					},
-					data: {
-						status: "APPLYING",
-						applyWorkflowId: workflowId,
-						applyStartedAt: null,
-						reviewedAt: new Date(),
-						reviewedBy: user.id,
-					},
+					syncToPM: input.syncToPM,
+					pmConfig: input.pmConfig,
+					entries: sidebarEntries!,
+					offeredListComplete: input.offeredChanges !== undefined,
 				});
-				if (claimed.count !== 1) {
+				if (!claimed) {
 					// A keyed delivery may have dispatched between reconciliation
 					// and the claim. Recheck through the shared evidence gate.
 					if (operationRowId) {
@@ -813,6 +859,7 @@ export const applyChangesProcedure = tenantProtectedProcedure
 							"This proposal is no longer available to apply.",
 					});
 				}
+				sidebarClaimed = true;
 			}
 			const handle = await client.workflow.start(
 				"backlogApplyChangesWorkflow",
@@ -946,20 +993,21 @@ export const applyChangesProcedure = tenantProtectedProcedure
 							: "Failed to start apply changes workflow",
 				});
 			}
-			// Workflow start failed AFTER we persisted the proposal row. Mark
-			// the row as FAILED so it surfaces in the inbox / banner — without
-			// this, recovery would wait for the watchdog. The row
-			// update is best-effort; the rethrown error is what the client sees.
+			// Preparation or workflow start failed after this request persisted the row.
+			// Fail only its unclaimed PENDING row or its current APPLYING attempt.
+			// The update is best-effort; the rethrown error is what the client sees.
 			await db.pendingBacklogProposal
 				.updateMany({
 					where: {
 						id: proposalId,
-						status: "APPLYING",
-						applyWorkflowId: workflowId,
+						status: sidebarClaimed ? "APPLYING" : "PENDING",
+						applyWorkflowId: sidebarClaimed ? workflowId : null,
 					},
 					data: {
 						status: "FAILED",
-						errorClass: "TemporalScheduleFailed",
+						errorClass: sidebarClaimed
+							? "TemporalScheduleFailed"
+							: "ProposalReviewFailed",
 						errorMessage: "Background job couldn't start.",
 						applyError: (error instanceof Error
 							? describeSyncErrorForUser(error)

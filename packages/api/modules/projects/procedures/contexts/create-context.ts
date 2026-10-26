@@ -12,6 +12,10 @@ import {
 import { ProjectContextTypeSchema } from "@repo/database/prisma/zod";
 import { logger } from "@repo/logs";
 import { getTemporalClient } from "@repo/temporal";
+import {
+	isDeprecatedDocumentType,
+	RETIRED_TYPE_MESSAGE,
+} from "@repo/utils/document-type-catalog";
 import { countDocumentWords } from "@repo/utils/document-word-count";
 import { z } from "zod";
 import { emitActivity, emitContextChange } from "../../../../lib/realtime";
@@ -96,6 +100,17 @@ export const createContextProcedure = tenantProtectedProcedure
 		}
 
 		assertKnowledgeBaseCategoryIsDescribed(input);
+
+		// A tagged context becomes a document below; a retired type cannot be one.
+		const requestedTag = input.metadata?.documentTag;
+		if (
+			typeof requestedTag === "string" &&
+			isDeprecatedDocumentType(requestedTag)
+		) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: RETIRED_TYPE_MESSAGE,
+			});
+		}
 
 		// Create context (without qdrantId initially)
 		// TENANT ISOLATION: Pass userId and organizationId for proper tenant filtering

@@ -1,6 +1,22 @@
+import { createUsageLoggingMiddleware } from "@repo/ai/lib/usage-logging-middleware";
+import { wrapLanguageModel } from "ai";
+import { MockLanguageModelV4 } from "ai/test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+let meterScriptedTurns = false;
 const streamTextMock = vi.fn();
+const usageRows = vi.hoisted(() => vi.fn());
+const summaryMock = vi.hoisted(() =>
+	vi.fn(
+		async (
+			_input: import("../src/activities/orchestrator/execution/summarize-tool-result").SummarizeToolResultInput,
+		) => "summary",
+	),
+);
+vi.mock(
+	"../src/activities/orchestrator/execution/summarize-tool-result",
+	() => ({ summarizeLargeToolResult: summaryMock }),
+);
 // Fake model handle returned to the loop. streamText is mocked, so the model
 // object is never actually exercised — it only has to be a value.
 const fakeAiModel = {
@@ -29,6 +45,7 @@ vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));
 // @repo/ai / template-instance/index.ts, mirroring the established mock shape
 // in update-instance-execution-status.test.ts.
 vi.mock("@repo/database", () => ({
+	logAiUsageAsync: usageRows,
 	db: {},
 	resolveReportMcpConfig: vi.fn(async (id: string) => ({ id, name: id })),
 	// Registry hook called by @repo/payments at module init.
@@ -47,6 +64,7 @@ vi.mock("@repo/database", () => ({
 	getProviderMetadata: () => undefined,
 }));
 
+import { getAIModelWithMetadata } from "@repo/ai";
 import { getCachedMcpClientForConfig } from "@repo/mcp";
 import { executeAgentDataGatheringLoop } from "../src/activities/template-instance/report-agent-loop";
 
@@ -159,7 +177,17 @@ function fakeStream(turn: Turn) {
 function scriptTurns(turns: Turn[]) {
 	streamTextMock.mockReset();
 	for (const t of turns) {
-		streamTextMock.mockImplementationOnce(() => fakeStream(t));
+		streamTextMock.mockImplementationOnce((options) => {
+			const scripted = fakeStream(t);
+			if (meterScriptedTurns) {
+				const original = scripted.stream;
+				scripted.stream = (async function* () {
+					await options.model.doGenerate({ prompt: [] });
+					yield* original;
+				})();
+			}
+			return scripted;
+		});
 	}
 	streamTextMock.mockImplementation(() =>
 		fakeStream({ text: "", toolCalls: [] }),
@@ -390,4 +418,115 @@ describe("executeAgentDataGatheringLoop — streamDiagnostics on AgentLoopResult
 			"anthropic:claude-test",
 		);
 	});
+});
+
+it("writes report gathering and summary rows with report attribution", async () => {
+	const { summarizeLargeToolResult } = await vi.importActual<
+		typeof import("../src/activities/orchestrator/execution/summarize-tool-result")
+	>("../src/activities/orchestrator/execution/summarize-tool-result");
+	usageRows.mockClear();
+	summaryMock.mockImplementationOnce(summarizeLargeToolResult);
+	vi.mocked(getAIModelWithMetadata).mockImplementation(
+		async (_request, context) =>
+			({
+				...fakeAiModel,
+				model: wrapLanguageModel({
+					model: new MockLanguageModelV4({
+						doGenerate: async () => ({
+							content: [{ type: "text", text: "Report summary" }],
+							finishReason: { unified: "stop", raw: "stop" },
+							usage: {
+								inputTokens: {
+									total: 10,
+									noCache: 10,
+									cacheRead: 0,
+									cacheWrite: 0,
+								},
+								outputTokens: {
+									total: 4,
+									text: 4,
+									reasoning: 0,
+								},
+							},
+							warnings: [],
+						}),
+					}),
+					middleware: createUsageLoggingMiddleware({
+						...context,
+						provider: "VERCEL_GATEWAY",
+						providerModelId: "example-model",
+					}),
+				}),
+			}) as any,
+	);
+
+	summaryMock.mockClear();
+	mockGetClient.mockResolvedValue(
+		fakeClient({
+			fizzy_get_report: () => [
+				{ id: "card-example", description: "x".repeat(120_000) },
+			],
+		}) as any,
+	);
+	scriptTurns([
+		{
+			toolCalls: [
+				{
+					toolCallId: "call-example",
+					toolName: "fizzy_get_report",
+					input: {},
+				},
+			],
+		},
+		{ text: "Report complete" },
+	]);
+	meterScriptedTurns = true;
+	try {
+		await executeAgentDataGatheringLoop({
+			...input,
+			jobType: "scheduled-report",
+		});
+	} finally {
+		meterScriptedTurns = false;
+	}
+	expect(vi.mocked(getAIModelWithMetadata).mock.calls[0][1]).toMatchObject({
+		featureKey: "report-generation",
+	});
+	expect(usageRows).toHaveBeenCalledWith(
+		expect.objectContaining({
+			featureKey: "report-generation",
+			jobType: "scheduled-report",
+			callPurpose: "result-summary-chunk",
+			inputTokens: 10,
+			outputTokens: 4,
+		}),
+	);
+	expect(
+		usageRows.mock.calls.map(([row]) => [row.featureKey, row.callPurpose]),
+	).toEqual([
+		["report-generation", "data-gathering"],
+		["report-generation", "result-summary-chunk"],
+		["report-generation", "result-summary-chunk"],
+		["report-generation", "data-gathering"],
+	]);
+	expect(summaryMock).toHaveBeenCalledWith(
+		expect.objectContaining({
+			featureKey: "report-generation",
+		}),
+	);
+	await summarizeLargeToolResult({
+		featureKey: "chat-agent",
+		toolName: "example-tool",
+		toolResult: "Example result",
+		userQuery: "Summarize",
+		maxOutputLength: 100,
+		userId: "example-user",
+		organizationId: "example-org",
+	});
+	expect(usageRows).toHaveBeenLastCalledWith(
+		expect.objectContaining({
+			featureKey: "chat-agent",
+			callPurpose: "result-summary-single",
+		}),
+	);
 });

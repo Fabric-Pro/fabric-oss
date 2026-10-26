@@ -58,7 +58,10 @@ export type ConversationTurnReservationPlan =
 	  };
 
 /**
- * Whether one request fits the room left, and with what output cap. The
+ * Whether one request fits the room left, and with what output cap.
+ * Reservations use the full input estimate: cache hits are known only after
+ * the response. Deliberately, room smaller than a full minimum reservation
+ * cannot be used even if a later cache discount would make the request fit. The
  * counts must already be non-negative integers.
  *
  * An enforced model's output cap is `min(requested, room − inputEstimate)`;

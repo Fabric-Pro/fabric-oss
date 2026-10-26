@@ -28,6 +28,7 @@ import {
 	getAIModelWithMetadata,
 	recordDecisionOutcome,
 } from "@repo/ai";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { logger } from "@repo/logs";
 import {
 	COMPLETION_CLAIM_CORRECTION_AGENT_KEY,
@@ -171,6 +172,7 @@ async function decideWithDecisionModel(
 			userId: input.userId,
 			organizationId: input.organizationId,
 			projectId: input.projectId,
+			callPurpose: AI_CALL_PURPOSES.completionJudge,
 			featureKey: "chat-agent",
 			...usageOriginFields(input),
 		});
@@ -271,6 +273,7 @@ async function decideWithLanguageModel(
 				userId: input.userId,
 				organizationId: input.organizationId,
 				projectId: input.projectId,
+				callPurpose: AI_CALL_PURPOSES.completionJudge,
 				featureKey: "chat-agent",
 				...usageOriginFields(input),
 			},

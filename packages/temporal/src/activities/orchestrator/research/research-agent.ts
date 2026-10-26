@@ -7,6 +7,7 @@
 
 import { guardToolsAgainstRepeatedCalls } from "@repo/agent-types/repeated-tool-call-guard";
 import { generateText, isStepCount } from "@repo/ai";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { makeStepCacheBreakpoint } from "@repo/ai/prompt-cache";
 import type {
 	ExecuteResearchAgentInput,
@@ -56,7 +57,14 @@ export async function executeResearchAgent(
 		model,
 		provider: modelProvider,
 		modelString,
-	} = await getAiModelWithSelection(input.userId, input.organizationId, true);
+	} = await getAiModelWithSelection(
+		input.userId,
+		input.organizationId,
+		true,
+		undefined,
+		undefined,
+		{ callPurpose: AI_CALL_PURPOSES.research },
+	);
 	const maxSteps = input.maxSteps || 10;
 
 	const results: ResearchResult[] = [];

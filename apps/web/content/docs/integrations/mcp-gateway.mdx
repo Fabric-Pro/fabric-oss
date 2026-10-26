@@ -901,10 +901,11 @@ These give the AI direct access to your Fabric data — no extra setup needed:
 | `fabric_get_workspace` | Get a document library's details and document list |
 | `fabric_query_workspace` | Semantic search (RAG) across a document library's documents |
 | `fabric_list_frames` | List your frames; with `surface: "workspace"` the organization's Workspaces you can open, with `surface: "artifact"` and a `projectId` a project's Artifacts |
-| `fabric_get_frame` | Read a frame's blocks, surface and the Fabric tools its page script may call |
+| `fabric_get_frame` | Read a frame's blocks, surface and runtime tools; outline:true returns block sizes without content for partial editing |
 | `fabric_create_frame` | Create a page. Pass the whole page in `blocks`, a `surface` (`artifact` or `workspace`), and the tools its script calls in `runtimeTools`. A Workspace is shared with the organization unless `sharedWithOrganization` is `false`; any other page is private to its creator. `shareOnCreate: true` also makes a public link, where the organization allows public links. Asks the person in chat first when `runtimeTools` is set |
 | `fabric_share_frame` | Change who can open a page you own. `scope` is required: `PUBLIC` (a link anyone can open, only where the organization allows public links), `WORKSPACE_AND_EMAILS`, `EMAILS_ONLY` or `PRIVATE`. Asks the person in chat first (`frames:write`) |
-| `fabric_update_frame` | Change a page you created; with no `frameId` it changes the Workspace the user has open. Asks the person in chat first when it sets `runtimeTools` |
+| `fabric_edit_frame_block` | Edit part of a page block: read an outline, read the needed source window, then submit literal replacements with expectedUpdatedAt |
+| `fabric_update_frame` | Add, remove or reorder blocks, or rewrite a page you created; with no `frameId` it changes the Workspace the user has open. Asks the person in chat first when it sets `runtimeTools` |
 | `fabric_list_workflows` | List your automation workflows, optionally only the scheduled ones |
 | `fabric_get_workflow` | Get workflow details: schedule, project, nodes, edges and the latest run |
 | `fabric_list_workflow_runs` | List a workflow's recent runs, with the page each one published |

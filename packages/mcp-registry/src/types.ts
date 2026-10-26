@@ -31,6 +31,8 @@ export interface MCPToolSchema {
 	description?: string;
 	/** JSON Schema for input parameters */
 	inputSchema: Record<string, unknown>;
+	/** Positive read declaration for the named operation; omission leaves it unclassified. */
+	readOnly?: true;
 	/** Fields requiring user approval before execution */
 	approvalRequiredFields?: string[];
 }

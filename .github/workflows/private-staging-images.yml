@@ -367,13 +367,30 @@ jobs:
             docker buildx prune --all --force
           fi
 
+      # A failed layer pull from GHCR (`unexpected EOF`) fails Syft, and the
+      # image would then stay unattested, blocking staging until a manual
+      # re-run. One retry absorbs that; a second failure fails the job.
       - name: Generate SPDX SBOM from pushed digest
+        id: sbom
+        continue-on-error: true
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           # Supplying registry credentials makes this pinned action invoke
           # Syft's registry provider directly. Without them, its automatic
           # Docker-first selection can duplicate a large image in the daemon
           # and exhaust a standard runner before registry fallback.
+          image: ${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: ${{ matrix.component }}.spdx.json
+          upload-release-assets: false
+          upload-artifact: false
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Retry SPDX SBOM from pushed digest
+        if: steps.sbom.outcome == 'failure'
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
           image: ${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
           format: spdx-json
           output-file: ${{ matrix.component }}.spdx.json

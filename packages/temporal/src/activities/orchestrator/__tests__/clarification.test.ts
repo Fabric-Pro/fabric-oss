@@ -65,7 +65,10 @@ describe("analyzeIntentClarityActivity", () => {
 
 		expect(getAIModel).toHaveBeenCalledWith(
 			{ taskType: "SIMPLE" },
-			expect.objectContaining({ featureKey: "chat-agent" }),
+			expect.objectContaining({
+				featureKey: "chat-agent",
+				callPurpose: "intent-clarity",
+			}),
 		);
 	});
 

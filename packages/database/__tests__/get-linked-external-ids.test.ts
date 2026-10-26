@@ -23,6 +23,7 @@ describe("getLinkedExternalIds", () => {
 				externalMcpServerId: "srv-gl",
 				externalPmTarget: 'pmt1:["srv-gl","https://gitlab.com","42"]',
 				externalUrl: "https://gitlab.com/acme/portal/-/issues/123",
+				pmTicketStatusExternalId: "123",
 			},
 		]);
 		const rows = await getLinkedExternalIds("proj_1");
@@ -38,6 +39,7 @@ describe("getLinkedExternalIds", () => {
 				externalMcpServerId: true,
 				externalPmTarget: true,
 				externalUrl: true,
+				pmTicketStatusExternalId: true,
 			},
 		});
 		expect(rows[0]).toEqual({
@@ -51,6 +53,7 @@ describe("getLinkedExternalIds", () => {
 			externalMcpServerId: "srv-gl",
 			externalPmTarget: 'pmt1:["srv-gl","https://gitlab.com","42"]',
 			externalUrl: "https://gitlab.com/acme/portal/-/issues/123",
+			pmTicketStatusExternalId: "123",
 		});
 	});
 });

@@ -16,7 +16,12 @@
  * would count every step twice.
  */
 
-import { isDispatchGuardedModel } from "@repo/utils/dispatch-guard";
+import { runWithAiInteractiveContext } from "@repo/agent-types/ai-interactive-context";
+import {
+	type DispatchBudget,
+	isDispatchGuardedModel,
+	runWithDispatchGuard,
+} from "@repo/utils/dispatch-guard";
 import { embed, generateText, streamText } from "ai";
 import {
 	MockEmbeddingModelV4,
@@ -26,17 +31,24 @@ import {
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
+	fetchMock,
 	getAiProviderApiKeyMock,
 	getModelForTaskMock,
 	getModelMock,
 	getEmbeddingModelMock,
 	logAiUsageAsyncMock,
 } = vi.hoisted(() => ({
+	fetchMock: vi.fn(),
 	getAiProviderApiKeyMock: vi.fn(),
 	getModelForTaskMock: vi.fn(),
 	getModelMock: vi.fn(),
 	getEmbeddingModelMock: vi.fn(),
 	logAiUsageAsyncMock: vi.fn(),
+}));
+
+vi.mock("undici", async () => ({
+	...(await vi.importActual<typeof import("undici")>("undici")),
+	fetch: fetchMock,
 }));
 
 vi.mock("@repo/database", () => ({
@@ -84,6 +96,7 @@ import {
 	getAIEmbeddingModelWithMetadata,
 	getAIModelWithMetadata,
 } from "../lib/dynamic-model-selector";
+import { runWithAiJobType } from "../lib/job-context";
 
 const CONTEXT = {
 	userId: "user-1",
@@ -259,7 +272,11 @@ describe("getAIModelWithMetadata — per-call usage logging (default)", () => {
 	it("records one row with the resolved tenant and billing fields for a generateText call", async () => {
 		const resolved = await getAIModelWithMetadata(
 			{ taskType: "CHAT" },
-			CONTEXT,
+			{
+				...CONTEXT,
+				featureKey: "chat-agent",
+				callPurpose: "main-round",
+			},
 		);
 
 		await generateText({ model: resolved.model, prompt: "Hi" });
@@ -272,6 +289,8 @@ describe("getAIModelWithMetadata — per-call usage logging (default)", () => {
 		expect(logAiUsageAsyncMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				...RESOLVED_ROW_FIELDS,
+				featureKey: "chat-agent",
+				callPurpose: "main-round",
 				inputTokens: 10,
 				outputTokens: 4,
 				totalTokens: 14,
@@ -405,11 +424,276 @@ describe("embedding conversation sink", () => {
 			const { model } = await getAIEmbeddingModelWithMetadata({
 				...CONTEXT,
 				conversationId,
+				callPurpose: "memory-search-embedding",
 			});
 			await embed({ model, value: "query" });
+			expect(logAiUsageAsyncMock.mock.calls[0][0].callPurpose).toBe(
+				"memory-search-embedding",
+			);
 			expect(logAiUsageAsyncMock.mock.calls[0][0].conversationId).toBe(
 				conversationId,
 			);
 		},
 	);
+});
+
+describe("gateway flex resolution", () => {
+	it.each([
+		["publishing-suggestion", undefined, false, undefined, "flex"],
+		["living-document-refresh", undefined, false, undefined, "flex"],
+		["newsletter-curation", undefined, false, undefined, "flex"],
+		// "Trigger now" starts this job without an interactive marker, so it stays off.
+		["teams-channel-monitor", undefined, false, undefined, undefined],
+		["recurring-error-scan", undefined, false, undefined, "flex"],
+		["publishing-suggestion", true, false, undefined, undefined],
+		["publishing-suggestion", false, true, undefined, undefined],
+		["other-job", undefined, false, undefined, undefined],
+		["publishing-suggestion", undefined, false, "1", undefined],
+		["publishing-suggestion", undefined, false, "true", undefined],
+	])(
+		"job=%s planEligible=%s interactive=%s disabled=%s => %s",
+		async (jobType, planEligible, interactive, disabled, expected) => {
+			vi.stubEnv("AI_GATEWAY_FLEX_DISABLED", disabled);
+			try {
+				const resolve = () =>
+					getAIModelWithMetadata(
+						{ taskType: "CHAT" },
+						{
+							...CONTEXT,
+							jobType,
+							planEligible,
+							excludeChatGptPlan: true,
+						},
+					);
+				await (interactive
+					? runWithAiInteractiveContext(
+							{ userId: CONTEXT.userId },
+							resolve,
+						)
+					: resolve());
+				expect(getModelMock.mock.calls.at(-1)?.[1].serviceTier).toBe(
+					expected,
+				);
+			} finally {
+				vi.unstubAllEnvs();
+			}
+		},
+	);
+});
+
+describe("resolved gateway flex request bodies", () => {
+	it.each([
+		[
+			"publishing-suggestion",
+			undefined,
+			false,
+			undefined,
+			"VERCEL_GATEWAY",
+			"flex",
+		],
+		[
+			"publishing-suggestion",
+			true,
+			false,
+			undefined,
+			"VERCEL_GATEWAY",
+			undefined,
+		],
+		[
+			"publishing-suggestion",
+			false,
+			true,
+			undefined,
+			"VERCEL_GATEWAY",
+			undefined,
+		],
+		["other-job", undefined, false, undefined, "VERCEL_GATEWAY", undefined],
+		[
+			"publishing-suggestion",
+			undefined,
+			false,
+			undefined,
+			"OPENROUTER",
+			undefined,
+		],
+		[
+			"publishing-suggestion",
+			undefined,
+			false,
+			"1",
+			"VERCEL_GATEWAY",
+			undefined,
+		],
+	])(
+		"body job=%s eligible=%s interactive=%s disabled=%s provider=%s => %s",
+		async (
+			jobType,
+			planEligible,
+			interactive,
+			disabled,
+			provider,
+			tier,
+		) => {
+			vi.stubEnv("AI_GATEWAY_FLEX_DISABLED", disabled);
+			const bodies: {
+				providerOptions: { gateway: Record<string, unknown> };
+			}[] = [];
+			fetchMock.mockImplementation(
+				async (_url: unknown, init?: RequestInit) => {
+					bodies.push(JSON.parse(String(init?.body)));
+					return new Response(
+						JSON.stringify(
+							provider === "OPENROUTER"
+								? {
+										id: "example-completion",
+										model: "openai/gpt-4o-mini",
+										created: 1,
+										choices: [
+											{
+												index: 0,
+												message: {
+													role: "assistant",
+													content: "Hello",
+												},
+												finish_reason: "stop",
+											},
+										],
+										usage: {
+											prompt_tokens: 1,
+											completion_tokens: 1,
+											total_tokens: 2,
+										},
+									}
+								: {
+										content: [
+											{ type: "text", text: "Hello" },
+										],
+										finishReason: {
+											unified: "stop",
+											raw: "stop",
+										},
+										usage: USAGE,
+										warnings: [],
+									},
+						),
+						{ headers: { "content-type": "application/json" } },
+					);
+				},
+			);
+			const { getModel } =
+				await vi.importActual<typeof import("../model-factory")>(
+					"../model-factory",
+				);
+			getModelMock.mockImplementation(getModel);
+			getAiProviderApiKeyMock.mockResolvedValue({
+				...ORGANIZATION_GATEWAY,
+				provider,
+			});
+			try {
+				const call = async () => {
+					const resolved = await getAIModelWithMetadata(
+						{ taskType: "CHAT" },
+						{
+							...CONTEXT,
+							jobType,
+							planEligible,
+							excludeChatGptPlan: true,
+						},
+					);
+					await generateText({
+						model: resolved.model,
+						prompt: "hello",
+						maxRetries: 0,
+					});
+				};
+				await (interactive
+					? runWithAiInteractiveContext(
+							{ userId: CONTEXT.userId },
+							call,
+						)
+					: call());
+				expect(bodies).toHaveLength(1);
+				expect(bodies[0].providerOptions?.gateway?.serviceTier).toBe(
+					tier,
+				);
+			} finally {
+				vi.unstubAllEnvs();
+			}
+		},
+	);
+});
+
+it("settles one reservation and logs one result after an ambient flex job retries", async () => {
+	const { getModel } =
+		await vi.importActual<typeof import("../model-factory")>(
+			"../model-factory",
+		);
+	getModelMock.mockImplementation(getModel);
+	const bodies: { providerOptions: { gateway: Record<string, unknown> } }[] =
+		[];
+	fetchMock.mockImplementation(async (_url: unknown, init?: RequestInit) => {
+		bodies.push(JSON.parse(String(init?.body)));
+		return new Response(
+			JSON.stringify(
+				bodies.length === 1
+					? {
+							error: {
+								message: "Resource Unavailable",
+								type: "api_error",
+							},
+						}
+					: {
+							content: [{ type: "text", text: "Hello" }],
+							finishReason: { unified: "stop", raw: "stop" },
+							usage: USAGE,
+							warnings: [],
+						},
+			),
+			{
+				status: bodies.length === 1 ? 429 : 200,
+				headers: { "content-type": "application/json" },
+			},
+		);
+	});
+	const budget: DispatchBudget = {
+		reserve: vi.fn(async () => ({
+			attemptId: "attempt-example",
+			outputCap: 100,
+		})),
+		settle: vi.fn(async () => undefined),
+		markUnknown: vi.fn(async () => undefined),
+		release: vi.fn(async () => undefined),
+	};
+	const guard = {
+		key: "turn-example",
+		assertDispatchable: vi.fn(async () => undefined),
+		abortSignal: () => undefined,
+		rethrowIfStopped: () => undefined,
+		budget,
+	};
+	await runWithAiJobType("recurring-error-scan", () =>
+		runWithDispatchGuard(guard, async () => {
+			const resolved = await getAIModelWithMetadata(
+				{ taskType: "CHAT" },
+				{ ...CONTEXT, excludeChatGptPlan: true },
+			);
+			expect(
+				(
+					await generateText({
+						model: resolved.model,
+						prompt: "hello",
+						maxRetries: 0,
+					})
+				).text,
+			).toBe("Hello");
+		}),
+	);
+	expect(bodies).toHaveLength(2);
+	expect(bodies[0].providerOptions.gateway.serviceTier).toBe("flex");
+	expect(bodies[1].providerOptions.gateway).not.toHaveProperty("serviceTier");
+	expect(logAiUsageAsyncMock).toHaveBeenCalledTimes(1);
+	expect(budget.reserve).toHaveBeenCalledTimes(1);
+	expect(budget.settle).toHaveBeenCalledTimes(1);
+	expect(budget.markUnknown).not.toHaveBeenCalled();
+	expect(guard.assertDispatchable).toHaveBeenCalledTimes(1);
 });

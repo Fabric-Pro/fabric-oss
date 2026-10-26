@@ -1,5 +1,6 @@
 "use client";
 
+import { ORPCError } from "@orpc/client";
 import { PageTourButton } from "@saas/get-started/components/PageTourButton";
 import { LinkedMeetingSelector } from "@saas/meetings/components";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
@@ -15,7 +16,10 @@ import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { useLinkedMeetingJoinUrls } from "../hooks/use-linked-meeting-join-urls";
-import { useMeetingDigest } from "../hooks/use-meeting-digest";
+import {
+	type ParlumeAutoJoinSettings,
+	useMeetingDigest,
+} from "../hooks/use-meeting-digest";
 import { usePersonalMeetings } from "../hooks/use-personal-meetings";
 import type { UpcomingMeeting } from "../hooks/use-upcoming-meetings";
 import { parseDigestDeepLink } from "../lib/digest-deep-link";
@@ -107,6 +111,7 @@ export function MeetingDigestTab({
 		isLoading,
 		isError,
 		setIncluded,
+		setParlumeAutoJoin,
 		onActionItemToggled,
 		generateSummary,
 		generatingRefs,
@@ -173,6 +178,35 @@ export function MeetingDigestTab({
 			}
 		},
 		[setIncluded],
+	);
+
+	// Same in-flight guard as Exclude: a second flip before the first lands
+	// would send the opposite value. The server's refusal (no Microsoft
+	// connection, Parlume not ready) names what to fix, so it is shown as is.
+	const [pendingAutoJoinIds, setPendingAutoJoinIds] = useState<Set<string>>(
+		new Set(),
+	);
+	const handleSetParlumeAutoJoin = useCallback(
+		async (linkedMeetingId: string, settings: ParlumeAutoJoinSettings) => {
+			setPendingAutoJoinIds((prev) => new Set(prev).add(linkedMeetingId));
+			try {
+				await setParlumeAutoJoin(linkedMeetingId, settings);
+			} catch (error) {
+				toast.error("Parlume auto-join was not changed", {
+					description:
+						error instanceof ORPCError && error.message
+							? error.message
+							: "Please try again.",
+				});
+			} finally {
+				setPendingAutoJoinIds((prev) => {
+					const next = new Set(prev);
+					next.delete(linkedMeetingId);
+					return next;
+				});
+			}
+		},
+		[setParlumeAutoJoin],
 	);
 
 	// FIX 4 (#1898 final review): the confirmation dialog stays open and
@@ -620,6 +654,15 @@ export function MeetingDigestTab({
 					pendingIncludeIds={pendingIncludeIds}
 					onAddMeeting={() => setShowPicker(true)}
 					onUnlink={handleUnlink}
+					autoJoin={
+						parlumeEnabled && meetingAgendaEnabled && organizationId
+							? {
+									settingsBasePath: `${basePath}/settings`,
+									pendingIds: pendingAutoJoinIds,
+									onChange: handleSetParlumeAutoJoin,
+								}
+							: undefined
+					}
 				/>
 			)}
 

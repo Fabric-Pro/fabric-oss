@@ -4,6 +4,12 @@
  * @see https://a2a-protocol.org/latest/specification/
  */
 
+import {
+	dispatchBudgetSend,
+	getDispatchGuard,
+	rethrowIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
+
 import type {
 	A2AError,
 	A2AMessage,
@@ -334,29 +340,96 @@ export class A2AClient {
 			// never wrapped or retried as a network failure.
 			control?.throwIfStopped?.();
 			const controller = new AbortController();
-			const timeoutId = setTimeout(
-				() => controller.abort(),
-				this.options.timeout,
-			);
+			let timeoutId: ReturnType<typeof setTimeout> | undefined;
+			let bodyParseError: unknown;
 
+			let transportStarted = false;
+			const submissionAllowance =
+				init.method === "POST" && url.endsWith("/a2a/send")
+					? control?.submissionTokenAllowance
+					: undefined;
 			try {
-				const response = await (this.options.fetch ?? fetch)(url, {
-					...init,
-					signal: external
-						? AbortSignal.any([controller.signal, external])
-						: controller.signal,
-					headers: {
-						...this.options.headers,
-						...init.headers,
-					},
-				});
+				const signal = external
+					? AbortSignal.any([controller.signal, external])
+					: controller.signal;
+				const send = async (sendSignal: AbortSignal | undefined) => {
+					// Start the per-attempt clock only after admission/reservation,
+					// and stop it once the response headers arrive, as before the
+					// ledger: the body read is bounded by the stop signal, not the
+					// timeout.
+					// Entering a custom fetch is not proof that bytes were sent or
+					// that an error is positively unsent. Endpoint guard errors here
+					// have no proof-bearing type; their charges remain UNKNOWN.
+					transportStarted = true;
+					timeoutId = setTimeout(
+						() => controller.abort(),
+						this.options.timeout,
+					);
+					try {
+						const response = await (this.options.fetch ?? fetch)(
+							url,
+							{
+								...init,
+								signal: sendSignal,
+								headers: {
+									...this.options.headers,
+									...init.headers,
+								},
+							},
+						);
+						clearTimeout(timeoutId);
+						if (
+							getDispatchGuard()?.budget &&
+							submissionAllowance !== undefined
+						) {
+							// Consume/parse within this physical attempt. Keep the original
+							// Response for the client's existing protocol/error handling.
+							const body = await response.clone().text();
+							if (response.ok) {
+								try {
+									JSON.parse(body);
+								} catch (error) {
+									bodyParseError = error;
+									throw error;
+								}
+							}
+						}
+						return { result: response };
+					} finally {
+						clearTimeout(timeoutId);
+					}
+				};
+				const response =
+					submissionAllowance === undefined
+						? (await send(signal)).result
+						: await dispatchBudgetSend({
+								request: {
+									modality: "external",
+									inputEstimate: 0,
+									requestedOutputTokens: submissionAllowance,
+									minOutputTokens: submissionAllowance,
+									enforcesOutputCap: false,
+								},
+								signal,
+								send,
+							});
 				clearTimeout(timeoutId);
 				// Return on successful fetch (even if HTTP error status)
 				return response;
 			} catch (error) {
 				clearTimeout(timeoutId);
+				// Admission failures are not network failures and must leave as-is.
+				if (!transportStarted) {
+					throw error;
+				}
+				rethrowIfDispatchStopped(error);
 				if (external?.aborted) {
 					throw external.reason;
+				}
+				// A malformed success body used to fail in sendMessage's parser,
+				// outside the network retry/error wrapper. Preserve that identity.
+				if (bodyParseError !== undefined && bodyParseError === error) {
+					throw error;
 				}
 				lastError =
 					error instanceof Error ? error : new Error(String(error));
@@ -525,6 +598,8 @@ export class A2AClient {
  * that hook, in the same synchronous run as each attempt's `fetch`.
  */
 export interface A2ARequestControl {
+	/** Fixed surrogate token block for each /a2a/send submission, including retries. */
+	submissionTokenAllowance?: number;
 	signal?: AbortSignal;
 	beforeAttempt?: () => Promise<void>;
 	/**

@@ -12,7 +12,15 @@ type Engine = {
 		endOfTurn: boolean;
 	}): void;
 	noteLine(speaker: string | null, text: string): void;
+	restore(context: unknown): void;
 	say(text: string): Promise<boolean>;
+	respondToChat(speaker: string | null, text: string): Promise<boolean>;
+	respondToRequest(
+		speaker: string | null,
+		speakerKey: string,
+		text: string,
+	): Promise<boolean>;
+	requesterKey(): string | null;
 	deliverResult(input: {
 		job: string;
 		status: "completed" | "failed";
@@ -83,6 +91,7 @@ function harness(
 	const jobs: Array<Record<string, unknown>> = [];
 	const usage: unknown[] = [];
 	const fallbacks: string[] = [];
+	const contexts: unknown[] = [];
 	const logs: Array<{ event: string; meta: Record<string, unknown> }> = [];
 	const outlet = {
 		droppedBytes: 0,
@@ -119,6 +128,7 @@ function harness(
 		postChat: async () => ({ posted: true, tag: "P3" }),
 		readChat: () => [{ from: "Sam", text: "Link?" }],
 		reportUsage: (entry: unknown) => usage.push(entry),
+		saveContext: (context: unknown) => contexts.push(plain(context)),
 		fallBack: (reason: string) => fallbacks.push(reason),
 		log: (_level: string, event: string, meta: Record<string, unknown>) =>
 			logs.push({ event, meta: plain(meta) }),
@@ -132,6 +142,7 @@ function harness(
 		jobs,
 		usage,
 		fallbacks,
+		contexts,
 		logs,
 		outlet,
 		advance(ms: number) {
@@ -239,6 +250,18 @@ test("a wake phrase mid-utterance is answered when the speaker stops, once", asy
 	);
 });
 
+test("a wake phrase not refreshed for five seconds is not answered when someone else stops talking", async () => {
+	const { engine, socket, advance, logs } = harness();
+	await engine.start();
+	socket().clear();
+	engine.arm({ requester: "Dev One", speakerKey: "p1", endOfTurn: false });
+	advance(5_001);
+	socket().server({ type: "input_audio_buffer.speech_started" });
+	socket().server({ type: "input_audio_buffer.speech_stopped" });
+	assert.equal(socket().types().includes("response.create"), false);
+	assert.ok(logs.some((entry) => entry.event === "realtime.arm_expired"));
+});
+
 test("Flux's end of turn answers at once, ending the turn the session is still hearing", async () => {
 	const { engine, socket } = harness();
 	await engine.start();
@@ -250,6 +273,10 @@ test("Flux's end of turn answers at once, ending the turn the session is still h
 		"conversation.item.create",
 		"response.create",
 	]);
+	// Only the requester's words, or words addressed to Parlume, stop it.
+	assert.equal(engine.requesterKey(), "p1");
+	void engine.respondToChat("Dev Two", "What is next?");
+	assert.equal(engine.requesterKey(), null);
 });
 
 test("Parlume's voice plays through the outlet, and a barge-in cancels and truncates to what was heard", async () => {
@@ -349,6 +376,84 @@ test("ask_fabric starts a Fabric job and answers at once; its result waits for t
 		}),
 		false,
 		"a result is spoken once",
+	);
+});
+
+test("Parlume says it is on a Fabric job at most once every ten seconds", async () => {
+	const h = harness();
+	await h.engine.start();
+	const askFabric = (callId: string) => ({
+		type: "function_call",
+		call_id: callId,
+		name: "ask_fabric",
+		arguments: JSON.stringify({ request: "More on P1" }),
+	});
+	const responses = () =>
+		h
+			.socket()
+			.types()
+			.filter((type) => type === "response.create").length;
+
+	// The answer to the request spoke ("Sure, one moment") and started a job.
+	h.engine.arm({ requester: "Dev One", speakerKey: "p1", endOfTurn: true });
+	h.socket().server({ type: "response.created", response: { id: "resp_1" } });
+	h.socket().server(audioDelta("resp_1", 4_800));
+	h.socket().server(done("resp_1", [askFabric("call_1")]));
+	await flush();
+	assert.equal(h.jobs.length, 1);
+	assert.equal(responses(), 1, "the job's start is not announced again");
+	assert.ok(h.socket().types().includes("conversation.item.create"));
+
+	// Asked again a few seconds later, the job is busy: nothing more is said.
+	h.advance(4_000);
+	h.socket().server({ type: "input_audio_buffer.speech_started" });
+	h.engine.arm({ requester: "Dev One", speakerKey: "p1", endOfTurn: true });
+	h.socket().server({ type: "response.created", response: { id: "resp_2" } });
+	h.socket().server(done("resp_2", [askFabric("call_2")]));
+	await flush();
+	assert.equal(responses(), 2);
+
+	// Ten seconds after the last holding line, it may say so once more.
+	h.advance(10_000);
+	h.socket().server({ type: "input_audio_buffer.speech_started" });
+	h.engine.arm({ requester: "Dev One", speakerKey: "p1", endOfTurn: true });
+	h.socket().server({ type: "response.created", response: { id: "resp_3" } });
+	h.socket().server(done("resp_3", [askFabric("call_3")]));
+	h.socket().server({ type: "input_audio_buffer.speech_stopped" });
+	await flush();
+	assert.equal(responses(), 4);
+});
+
+test("a request the bridge resolved is not answered again when its wake phrase already was", async () => {
+	const h = harness();
+	await h.engine.start();
+	h.socket().server({ type: "input_audio_buffer.speech_started" });
+	h.engine.arm({ requester: "Dev One", speakerKey: "p1", endOfTurn: false });
+	h.socket().server({ type: "input_audio_buffer.speech_stopped" });
+	assert.equal(
+		await h.engine.respondToRequest("Dev One", "p1", "More on P1"),
+		false,
+	);
+	assert.equal(
+		h
+			.socket()
+			.types()
+			.filter((type) => type === "response.create").length,
+		1,
+	);
+
+	// A new utterance resolved by the bridge is answered.
+	h.socket().server({ type: "input_audio_buffer.speech_started" });
+	void h.engine.respondToRequest("Dev One", "p1", "Say P2");
+	h.socket().server({ type: "input_audio_buffer.speech_stopped" });
+	h.socket().server({ type: "response.created", response: { id: "resp_1" } });
+	h.socket().server(done("resp_1"));
+	assert.equal(
+		h
+			.socket()
+			.types()
+			.filter((type) => type === "response.create").length,
+		2,
 	);
 });
 
@@ -475,6 +580,54 @@ test("a dropped session reconnects with what the meeting said so far", async (t)
 	assert.ok(h.logs.some((entry) => entry.event === "realtime.reconnect"));
 });
 
+test("after the bridge restarts, the voice resumes the meeting and still speaks a running job's result", async () => {
+	const before = harness();
+	await before.engine.start();
+	before.engine.noteLine("Dev One", "We ship on Friday.");
+	before.engine.arm({ requester: null, speakerKey: "p1", endOfTurn: true });
+	before
+		.socket()
+		.server({ type: "response.created", response: { id: "resp_1" } });
+	before.socket().server(
+		done("resp_1", [
+			{
+				type: "function_call",
+				call_id: "call_1",
+				name: "ask_fabric",
+				arguments: JSON.stringify({ request: "Status?" }),
+			},
+		]),
+	);
+	await flush();
+	const saved = before.contexts.at(-1);
+	assert.deepEqual(saved, {
+		lines: ["Dev One: We ship on Friday."],
+		jobs: [{ job: "J1", generation: 7 }],
+		jobCounter: 1,
+	});
+
+	const after = harness();
+	after.engine.restore(saved);
+	await after.engine.start();
+	const seed = systemTexts(after.socket())[0];
+	assert.match(seed, /Dev One: We ship on Friday\./);
+	assert.match(seed, /still working on J1/);
+	assert.equal(
+		after.engine.deliverResult({
+			job: "J1",
+			status: "completed",
+			text: "All green.",
+			chatTags: [],
+		}),
+		true,
+	);
+	assert.deepEqual(after.contexts.at(-1), {
+		lines: ["Dev One: We ship on Friday."],
+		jobs: [],
+		jobCounter: 1,
+	});
+});
+
 test("after repeated failures to reconnect the meeting falls back to classic", async (t) => {
 	t.mock.timers.enable({ apis: ["setTimeout"] });
 	let opens = 0;
@@ -497,6 +650,38 @@ test("after repeated failures to reconnect the meeting falls back to classic", a
 	}
 	assert.deepEqual(h.fallbacks, ["reconnect_failed"]);
 	assert.equal(h.engine.active, false);
+});
+
+test("sessions that close as soon as they open fall back to classic", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const h = harness();
+	await h.engine.start();
+	h.socket().drop();
+	for (const delay of [1_000, 3_000, 10_000]) {
+		t.mock.timers.tick(delay);
+		await flush();
+		await flush();
+		h.socket().drop();
+	}
+	assert.equal(h.sockets.length, 4);
+	assert.deepEqual(h.fallbacks, ["reconnect_failed"]);
+	assert.equal(h.engine.active, false);
+});
+
+test("a session that held for a while starts its reconnects afresh", async (t) => {
+	t.mock.timers.enable({ apis: ["setTimeout"] });
+	const h = harness();
+	await h.engine.start();
+	for (let drop = 0; drop < 5; drop++) {
+		h.advance(60_000);
+		h.socket().drop();
+		t.mock.timers.tick(1_000);
+		await flush();
+		await flush();
+	}
+	assert.equal(h.sockets.length, 6);
+	assert.deepEqual(h.fallbacks, []);
+	assert.equal(h.engine.active, true);
 });
 
 test("a fresh session takes over before the 60-minute limit", async (t) => {

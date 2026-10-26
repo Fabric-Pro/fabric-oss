@@ -154,8 +154,8 @@ describe("the tenant extension routes reads and writes differently", () => {
 	function extensionFor() {
 		const executeRaw = vi.fn(async () => 1);
 		const base = {
-			$transaction: async (fn: (tx: unknown) => Promise<unknown>) =>
-				fn({ $executeRawUnsafe: executeRaw }),
+			$executeRaw: executeRaw,
+			$transaction: (queries: Promise<unknown>[]) => Promise.all(queries),
 			$extends: (config: {
 				query: {
 					$allModels: {
@@ -203,18 +203,22 @@ describe("the tenant extension routes reads and writes differently", () => {
 	it.each(["findMany", "findFirst", "findUnique", "count"])(
 		"%s sees shared rows",
 		async (operation) => {
-			expect(await whereSentFor(operation)).toEqual({
-				AND: [{ id: "c_1" }, { OR: [OWNER, SHARED] }],
-			});
+			expect(await whereSentFor(operation)).toEqual(
+				operation === "findUnique"
+					? { id: "c_1", AND: [{ OR: [OWNER, SHARED] }] }
+					: { AND: [{ id: "c_1" }, { OR: [OWNER, SHARED] }] },
+			);
 		},
 	);
 
 	it.each(["update", "updateMany", "delete", "deleteMany"])(
 		"%s stays with the owner",
 		async (operation) => {
-			expect(await whereSentFor(operation)).toEqual({
-				AND: [{ id: "c_1" }, OWNER],
-			});
+			expect(await whereSentFor(operation)).toEqual(
+				operation === "update" || operation === "delete"
+					? { id: "c_1", AND: [OWNER] }
+					: { AND: [{ id: "c_1" }, OWNER] },
+			);
 		},
 	);
 });

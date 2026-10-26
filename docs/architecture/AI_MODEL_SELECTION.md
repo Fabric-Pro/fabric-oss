@@ -267,6 +267,17 @@ AI Gateways act as intermediaries that route requests to multiple AI providers t
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+OpenRouter and Cloudflare AI Gateway connections use `createOpenAI(...).chat(modelId)`
+at their configured base URL, rather than the Vercel SDK transport shown above.
+Their full model IDs are preserved. OpenRouter defaults to
+`https://openrouter.ai/api/v1`; Cloudflare requires a gateway base URL. Embeddings
+use the same connection client and preserve the supplied model ID. Vercel flex
+options and gateway generation metadata belong to the Vercel route. Adaptive
+Claude sampling restrictions also apply to OpenRouter and Cloudflare. A `vck_`
+Vercel gateway key takes precedence over the configured provider endpoint. The
+Vercel image activities accept a Vercel connection or a Vercel gateway key stored
+under another provider.
+
 **Other Supported Gateways**:
 - OpenRouter (`OPENROUTER`)
 - Cloudflare AI (`CLOUDFLARE_AI`)

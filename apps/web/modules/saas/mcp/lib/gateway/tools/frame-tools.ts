@@ -183,6 +183,21 @@ function handleUpdateFrame(
 	};
 }
 
+async function handleEditFrameBlock(
+	args: Record<string, unknown>,
+	session: GatewaySession,
+): Promise<ToolCallResult> {
+	const { editFirstClassFrameBlock } = await frameService();
+	const result = await editFirstClassFrameBlock({
+		args: withDefaultFrameId(args, session),
+		userId: session.userId,
+		organizationId: session.organizationId || undefined,
+	});
+	return "error" in result
+		? errorResult(String(result.error || "Unknown frame error"))
+		: jsonResult(result);
+}
+
 async function handleGetFrame(
 	args: Record<string, unknown>,
 	session: GatewaySession,
@@ -266,6 +281,7 @@ export function createFrameTools(
 		new Map<string, PlatformToolHandler>([
 			["fabric_create_frame", handleCreateFrame(pageMayDeclare)],
 			["fabric_update_frame", handleUpdateFrame(pageMayDeclare)],
+			["fabric_edit_frame_block", handleEditFrameBlock],
 			["fabric_get_frame", handleGetFrame],
 			["fabric_list_frames", handleListFrames],
 			["fabric_share_frame", handleShareFrame],

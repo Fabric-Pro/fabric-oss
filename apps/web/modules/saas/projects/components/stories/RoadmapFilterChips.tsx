@@ -273,7 +273,7 @@ export function RoadmapFilterChips({
 				<Badge
 					key={chip.key}
 					variant="outline"
-					className="gap-1.5 py-1 pr-1 pl-2 font-normal"
+					className="gap-1.5 py-1 pr-1 pl-2 font-sans text-xs font-normal"
 				>
 					{chip.label && (
 						<span className="text-muted-foreground">

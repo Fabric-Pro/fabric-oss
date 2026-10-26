@@ -47,7 +47,7 @@ vi.mock("@temporalio/workflow", () => ({
 	},
 }));
 
-import { log } from "@temporalio/workflow";
+import { log, patched } from "@temporalio/workflow";
 
 import { orchestratorCompletionWorkflow } from "../src/workflows/orchestrator/phases/completion";
 import { executeInitializationPhase } from "../src/workflows/orchestrator/phases/initialization";
@@ -57,6 +57,7 @@ import { createInitialState } from "../src/workflows/orchestrator/types";
 describe("orchestrator memory regression", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		vi.mocked(patched).mockReturnValue(true);
 
 		activityStubs.preloadResourcesActivity.mockResolvedValue({
 			mcpTools: [],
@@ -158,8 +159,12 @@ describe("orchestrator memory regression", () => {
 	});
 
 	it.each(["letta", "qdrant"])(
-		"logs suggestion metadata without pattern text for %s",
+		"logs legacy suggestion metadata without pattern text for %s",
 		async (source) => {
+			// Exercise the retained lookup for histories without the new marker.
+			vi.mocked(patched).mockImplementation(
+				(id) => id !== "orch-skip-unused-routing-v1",
+			);
 			const suggestion = {
 				source,
 				confidence: 80,

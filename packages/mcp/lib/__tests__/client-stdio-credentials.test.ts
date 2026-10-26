@@ -1063,3 +1063,87 @@ describe("API key STDIO credentials", () => {
 		},
 	);
 });
+
+describe("STDIO wrapper JSON-RPC failure responses", () => {
+	it.each(["tools/call", "tools/list"])(
+		"maps a 200 failure envelope for %s to MCP_CALL_FAILED",
+		async (method) => {
+			mockGetMcpConfigById.mockResolvedValue(gdriveConfig());
+			const { client } = await createMcpClientForConfig({
+				configId: "config_gd",
+				userId: "example-user",
+				organizationId: "example-org",
+			});
+			vi.mocked(global.fetch).mockResolvedValueOnce(
+				new Response(
+					JSON.stringify({
+						success: false,
+						error: "MCP error -32602: Invalid example query",
+					}),
+					{ status: 200 },
+				),
+			);
+			const call =
+				method === "tools/list"
+					? client.listTools()
+					: client.callTool({ name: "query", arguments: {} });
+			await expect(call).rejects.toMatchObject({
+				code: "MCP_CALL_FAILED",
+				message:
+					"MCP call failed: MCP error -32602: Invalid example query",
+			});
+			const body = JSON.parse(
+				String(vi.mocked(global.fetch).mock.calls.at(-1)?.[1]?.body),
+			);
+			expect(body.method).toBe(method);
+			if (method === "tools/call") {
+				expect(body.params).toEqual({ name: "query", arguments: {} });
+			}
+		},
+	);
+});
+
+it("lists raw STDIO definitions with the SDK cursor shape for the internal proxy", async () => {
+	mockGetMcpConfigById.mockResolvedValue(gdriveConfig());
+	const { client } = await createMcpClientForConfig({
+		configId: "config_gd",
+		userId: "example-user",
+		organizationId: "example-org",
+	});
+	const page = {
+		tools: [
+			{
+				name: "query",
+				inputSchema: { type: "object" },
+				annotations: { readOnlyHint: true },
+			},
+		],
+		nextCursor: "example-next",
+	};
+	vi.mocked(global.fetch).mockResolvedValueOnce(
+		new Response(JSON.stringify({ success: true, result: page })),
+	);
+	await expect(
+		client.listTools({ params: { cursor: "example-cursor" } }),
+	).resolves.toEqual(page);
+	expect(
+		JSON.parse(String(vi.mocked(global.fetch).mock.calls.at(-1)?.[1]?.body))
+			.params,
+	).toEqual({ cursor: "example-cursor" });
+});
+
+it("does not send a STDIO listing whose abort signal already fired", async () => {
+	mockGetMcpConfigById.mockResolvedValue(gdriveConfig());
+	const { client } = await createMcpClientForConfig({
+		configId: "config_gd",
+		userId: "example-user",
+		organizationId: "example-org",
+	});
+	const callsBefore = vi.mocked(global.fetch).mock.calls.length;
+	const controller = new AbortController();
+	controller.abort();
+	await expect(
+		client.listTools({ options: { signal: controller.signal } }),
+	).rejects.toThrow();
+	expect(vi.mocked(global.fetch).mock.calls.length).toBe(callsBefore);
+});

@@ -27,7 +27,6 @@ import {
 	verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { pmDetectedTypeDisplayName } from "@repo/utils";
-import { PageTourButton } from "@saas/get-started/components/PageTourButton";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { PromptSelector } from "@saas/prompts/components/PromptSelector";
 import {
@@ -86,15 +85,12 @@ import {
 	ChevronDownIcon,
 	CloudDownloadIcon,
 	CloudUploadIcon,
-	CopyIcon,
 	EyeIcon,
 	EyeOffIcon,
 	FlagIcon,
 	GitBranchIcon,
-	HistoryIcon,
 	Loader2Icon,
 	PlusIcon,
-	RefreshCwIcon,
 	SettingsIcon,
 	SparklesIcon,
 	Trash2Icon,
@@ -191,25 +187,22 @@ import { AttachmentsField } from "./AttachmentsField";
 import { BacklogAuditDialog, type HistoryView } from "./BacklogAuditDialog";
 import { BacklogSessionHistoryDialog } from "./BacklogSessionHistoryDialog";
 import { BulkUndoToast } from "./BulkUndoToast";
-import { ClassifyTracksButton } from "./ClassifyTracksButton";
 import { CreateStoryDocAttachmentsField } from "./CreateStoryDocAttachmentsField";
 import {
 	CreateStoryDuplicateWarning,
 	checkBeforeCreate,
 	type DuplicateWarningResult,
 } from "./CreateStoryDuplicateWarning";
-import { ExportEstimateButton } from "./ExportEstimateButton";
 import { pullLifecycleSuffix } from "./lib/pull-lifecycle-suffix";
 import { PendingBacklogProposalsInbox } from "./PendingBacklogProposalsInbox";
-import { PendingProposalsBanner } from "./PendingProposalsBanner";
 import { PullFromPMDialog } from "./PullFromPMDialog";
 import { ReviewCenterPanel } from "./pm-sync/review-center/ReviewCenterPanel";
 import { PriorityRankedList } from "./priority/PriorityRankedList";
 import { RoadmapActionsMenu } from "./RoadmapActionsMenu";
-import { RoadmapContextStrip, type RoadmapStats } from "./RoadmapContextStrip";
+import type { RoadmapStats } from "./RoadmapContextStrip";
 import { RoadmapEmptyState } from "./RoadmapEmptyState";
 import { RoadmapFilterToolbar } from "./RoadmapFilterToolbar";
-import { RoadmapSectionSwitcher } from "./RoadmapSectionSwitcher";
+import { RoadmapHeader } from "./RoadmapHeader";
 import { RoadmapSettingsMenu } from "./RoadmapSettingsMenu";
 import { RoadmapSortControl } from "./RoadmapSortControl";
 import { RoadmapStartBuilding } from "./RoadmapStartBuilding";
@@ -223,14 +216,16 @@ import {
 	type PmSyncTerminal,
 	usePmSyncProgressPoll,
 } from "./roadmap-entry/usePmSyncProgressPoll";
-import { StageRequestsButton } from "./StageRequestsButton";
 import { StageRequestsInbox } from "./StageRequestsInbox";
 import { StoryCard } from "./StoryCard";
 import { StoryKindIcon } from "./StoryKindIcon";
+import { StoryList } from "./StoryList";
 import { StoryTile } from "./StoryTile";
 import { useSyncLogDeepLink } from "./sync-log-deep-link";
 import { useConsumeSearchParam } from "./use-consume-search-param";
+import { useClassifyTracks } from "./useClassifyTracks";
 import { useDuplicateCheckPrefetch } from "./useDuplicateCheckPrefetch";
+import { useExportEstimate } from "./useExportEstimate";
 
 // The AI Backlog chat pulls in the full CopilotKit runtime (react-core +
 // react-ui). Load it lazily on first open so it stays out of the roadmap's
@@ -276,14 +271,6 @@ const PRIORITY_SECTION_DOT: Record<string, string> = {
 	P1_HIGH: "bg-orange-500",
 	P2_MEDIUM: "bg-yellow-500",
 	P3_LOW: "bg-success",
-};
-
-// Left accent rail per priority lane (the section's "side line").
-const PRIORITY_SECTION_RAIL: Record<string, string> = {
-	P0_CRITICAL: "border-destructive/40",
-	P1_HIGH: "border-orange-500/40",
-	P2_MEDIUM: "border-yellow-500/40",
-	P3_LOW: "border-success/40",
 };
 
 // Coding-run statuses that count as "active work" (drive the roadmap's
@@ -453,10 +440,20 @@ export function StoriesRoadmap({ projectId }: Props) {
 	// stories query has rendered.
 	const focusStoryId = searchParams.get("storyId");
 	const { organizationId, basePath } = useOrganizationContext();
+	const tUi = useTranslations("projects.stories.roadmapUi");
+	const tDelivery = useTranslations("projects.stories.deliveryTrack");
+	const classificationQueryKey = useMemo(
+		() => getStoriesQueryKey(projectId, organizationId),
+		[projectId, organizationId],
+	);
+	const classification = useClassifyTracks({
+		projectId,
+		storiesQueryKey: classificationQueryKey,
+	});
+	const estimateExport = useExportEstimate({ projectId });
 	const tStories = useTranslations("tooltips.stories");
 	const tRecommendations = useTranslations("projects.recommendations");
 	const tCreateRoadmap = useTranslations("projects.stories.create");
-	const tDuplicates = useTranslations("projects.stories.duplicates");
 	const {
 		filters: roadmapFilters,
 		setFilters: setRoadmapFilters,
@@ -485,6 +482,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 		setSort,
 		showClosed,
 		setShowClosed,
+		setShowClosedDraft,
 		toggleShowClosed,
 		commitView,
 		revertView,
@@ -1523,15 +1521,18 @@ export function StoriesRoadmap({ projectId }: Props) {
 				map[s.key] = [];
 			}
 			if (showClosed || roadmapFilters.hiddenOnly) {
-				map["CLOSED"] = [];
+				map.CLOSED = [];
 			}
 			for (const story of sortedStories) {
 				if (story.draftingStage === "CLOSED") {
 					if (showClosed || roadmapFilters.hiddenOnly) {
-						(map["CLOSED"] ??= []).push(story);
+						map.CLOSED ??= [];
+						map.CLOSED.push(story);
 					}
 				} else {
-					(map[getMaturationStatus(story)] ??= []).push(story);
+					const status = getMaturationStatus(story);
+					map[status] ??= [];
+					map[status].push(story);
 				}
 			}
 		} else if (groupBy === "track") {
@@ -1549,7 +1550,8 @@ export function StoriesRoadmap({ projectId }: Props) {
 				map[s.priority] = [];
 			}
 			for (const story of sortedStories) {
-				(map[story.priority] ??= []).push(story);
+				map[story.priority] ??= [];
+				map[story.priority].push(story);
 			}
 		}
 		return map;
@@ -1749,8 +1751,9 @@ export function StoriesRoadmap({ projectId }: Props) {
 						roadmapOrder: map.get(s.id) ?? s.roadmapOrder,
 					};
 				}
-				if (map.has(s.id)) {
-					return { ...s, roadmapOrder: map.get(s.id)! };
+				const roadmapOrder = map.get(s.id);
+				if (roadmapOrder !== undefined) {
+					return { ...s, roadmapOrder };
 				}
 				return s;
 			});
@@ -1824,7 +1827,9 @@ export function StoriesRoadmap({ projectId }: Props) {
 			}
 			const prev = previous as unknown as { stories: UserStory[] };
 			const updated = prev.stories.map((s) => {
-				if (s.id !== vars.storyId) return s;
+				if (s.id !== vars.storyId) {
+					return s;
+				}
 				if (vars.targetStage === "CLOSED") {
 					return { ...s, draftingStage: "CLOSED" };
 				}
@@ -2907,227 +2912,197 @@ export function StoriesRoadmap({ projectId }: Props) {
 	return (
 		<div className="space-y-4">
 			<div className="space-y-4">
-				<PendingProposalsBanner
+				<RoadmapHeader
 					projectId={projectId}
 					organizationId={organizationId}
-					onOpenInbox={() => {
+					userRole={projectData?.project?.userRole}
+					synced={roadmapStats.synced}
+					unsynced={roadmapStats.unsynced}
+					priorityEnabled={PRIORITY_VIEW_ENABLED}
+					section={showingPriority ? "priority" : "items"}
+					onSectionChange={handleSectionChange}
+					onOpenProposalsInbox={() => {
 						setInboxDefaultFilter("all");
 						setInboxOpen(true);
 					}}
-				/>
-				<RoadmapContextStrip stats={roadmapStats} groupBy={groupBy} />
-
-				{/* Toolbar */}
-				<div className="flex items-center justify-end gap-4">
-					<div className="flex items-center gap-2">
-						{/* Get started with this page */}
-						<PageTourButton pageId="stories" />
-						{/* Export estimate (inverted-loop Slice 7) */}
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<span className="inline-flex">
-									<ExportEstimateButton
-										projectId={projectId}
-									/>
-								</span>
-							</TooltipTrigger>
-							<TooltipContent className="max-w-xs">
-								{tStories("estimateExport")}
-							</TooltipContent>
-						</Tooltip>
-						{/* Governed stage approvals awaiting review (plan Slice 5) */}
-						<StageRequestsButton
-							projectId={projectId}
-							organizationId={organizationId ?? null}
-							userRole={projectData?.project?.userRole}
-							onOpenInbox={() => setStageRequestsOpen(true)}
-						/>
-						{/* Classify into delivery tracks (inverted-loop Slice 2) */}
-						<ClassifyTracksButton
-							projectId={projectId}
-							storiesQueryKey={getStoriesQueryKey(
-								projectId,
-								organizationId,
-							)}
-						/>
-						{/* AI Update */}
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<Button
-									variant="outline"
-									size="sm"
-									onClick={() => setChatOpen((prev) => !prev)}
-									className="gap-2"
-									data-onboarding-target="roadmap-ai-update"
-								>
-									<SparklesIcon className="size-4" />
-									AI Update
-								</Button>
-							</TooltipTrigger>
-							<TooltipContent>
-								{tStories("aiUpdateRoadmap")}
-							</TooltipContent>
-						</Tooltip>
-
-						{/* Scan for duplicates */}
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<Button
-									variant="outline"
-									size="sm"
-									className="gap-2"
-									disabled={isScanningDuplicates}
-									onClick={() => runDuplicateScan()}
-								>
-									{isScanningDuplicates ? (
-										<Loader2Icon className="size-4 motion-safe:animate-spin" />
-									) : (
-										<CopyIcon className="size-4" />
-									)}
-									{tDuplicates("scanButton")}
-								</Button>
-							</TooltipTrigger>
-							<TooltipContent>
-								{tDuplicates("scanTooltip")}
-							</TooltipContent>
-						</Tooltip>
-
-						{/* Pull from PM tool */}
-						{hasPMIntegration && canPull && !pmSync.workflowId && (
-							<EntryPointReasonGuard
-								reason={entryPoints.pull.reason}
-								hint={tStories("pullFromPmTool")}
-							>
-								{(guard) => (
-									<Button
-										{...guard}
-										variant="outline"
-										size="sm"
-										onClick={
-											entryPoints.pull.disabled
-												? undefined
-												: handleBulkPull
-										}
-										disabled={bulkSyncMutation.isPending}
-										aria-label={`Pull items from ${pmToolName}`}
-										className="gap-2 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+					onOpenStageRequests={() => setStageRequestsOpen(true)}
+				>
+					{((hasPMIntegration &&
+						((canPull && !pmSync.workflowId) ||
+							selectedStoryIds.size > 0)) ||
+						pmSync.progress) && (
+						<div className="flex flex-wrap items-center justify-end gap-2">
+							{/* Pull from PM tool */}
+							{hasPMIntegration &&
+								canPull &&
+								!pmSync.workflowId && (
+									<EntryPointReasonGuard
+										reason={entryPoints.pull.reason}
+										hint={tStories("pullFromPmTool")}
 									>
-										<CloudDownloadIcon className="size-4" />
-										Pull from {pmToolName}
-									</Button>
-								)}
-							</EntryPointReasonGuard>
-						)}
-
-						{/* F-171: single +Add button — classifier decides BUG vs FEATURE */}
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<Button
-									variant="outline"
-									size="sm"
-									className="gap-2"
-									disabled={
-										statusesLoading || statuses.length === 0
-									}
-									onClick={handleAddStory}
-									data-onboarding-target="roadmap-add"
-								>
-									<PlusIcon className="size-4" />
-									Add
-								</Button>
-							</TooltipTrigger>
-							<TooltipContent>
-								{tStories("addFeature")}
-							</TooltipContent>
-						</Tooltip>
-
-						{/* Refresh */}
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<Button
-									variant="outline"
-									size="sm"
-									onClick={handleRefresh}
-									className="gap-2"
-								>
-									<RefreshCwIcon className="size-4" />
-									Refresh
-								</Button>
-							</TooltipTrigger>
-							<TooltipContent>
-								{tStories("refreshRoadmap")}
-							</TooltipContent>
-						</Tooltip>
-						<RoadmapActionsMenu items={roadmapActions.items} />
-
-						{/* Bulk sync */}
-						{hasPMIntegration && selectedStoryIds.size > 0 && (
-							<EntryPointReasonGuard
-								reason={entryPoints.sync.reason}
-								hint={tStories("syncSelectedToPm")}
-							>
-								{(guard) => (
-									<Button
-										{...guard}
-										variant="outline"
-										size="sm"
-										onClick={
-											entryPoints.sync.disabled
-												? undefined
-												: () =>
-														setSyncSelectedDialogOpen(
-															true,
-														)
-										}
-										className="gap-2 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
-									>
-										{entryPoints.sync.reason?.kind ===
-											"running" ||
-										(entryPoints.sync.reason?.kind ===
-											"gate" &&
-											entryPoints.sync.reason.view
-												.state === "PROCESSING") ? (
-											<Loader2Icon
-												aria-hidden
-												className="size-4 motion-safe:animate-spin"
-											/>
-										) : (
-											<CloudUploadIcon className="size-4" />
+										{(guard) => (
+											<Button
+												{...guard}
+												variant="outline"
+												size="sm"
+												onClick={
+													entryPoints.pull.disabled
+														? undefined
+														: handleBulkPull
+												}
+												disabled={
+													bulkSyncMutation.isPending
+												}
+												className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+											>
+												<CloudDownloadIcon className="size-4" />
+												Pull from {pmToolName}
+											</Button>
 										)}
-										Sync selected ({selectedStoryIds.size})
-									</Button>
+									</EntryPointReasonGuard>
 								)}
-							</EntryPointReasonGuard>
-						)}
+							{/* Bulk sync */}
+							{hasPMIntegration && selectedStoryIds.size > 0 && (
+								<EntryPointReasonGuard
+									reason={entryPoints.sync.reason}
+									hint={tStories("syncSelectedToPm")}
+								>
+									{(guard) => (
+										<Button
+											{...guard}
+											variant="outline"
+											size="sm"
+											onClick={
+												entryPoints.sync.disabled
+													? undefined
+													: () =>
+															setSyncSelectedDialogOpen(
+																true,
+															)
+											}
+											className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+										>
+											{entryPoints.sync.reason?.kind ===
+												"running" ||
+											(entryPoints.sync.reason?.kind ===
+												"gate" &&
+												entryPoints.sync.reason.view
+													.state === "PROCESSING") ? (
+												<Loader2Icon
+													aria-hidden
+													className="size-4 motion-safe:animate-spin"
+												/>
+											) : (
+												<CloudUploadIcon className="size-4" />
+											)}
+											Sync selected (
+											{selectedStoryIds.size})
+										</Button>
+									)}
+								</EntryPointReasonGuard>
+							)}
+							{/* Sync progress indicator */}
+							{pmSync.progress && (
+								<div className="flex min-h-8 flex-wrap items-center justify-end gap-1.5 text-sm text-muted-foreground">
+									<Loader2Icon className="size-4 animate-spin" />
+									<span>{pmSync.progress.message}</span>
+									{pmSync.progress.totalStories > 0 && (
+										<span>
+											({pmSync.progress.syncedCount}/
+											{pmSync.progress.totalStories})
+										</span>
+									)}
+								</div>
+							)}
+						</div>
+					)}
+					{/* AI Update */}
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<Button
+								variant="outline"
+								size="sm"
+								onClick={() => setChatOpen((prev) => !prev)}
+								data-onboarding-target="roadmap-ai-update"
+							>
+								<SparklesIcon className="size-4" />
+								{tUi("aiUpdate")}
+							</Button>
+						</TooltipTrigger>
+						<TooltipContent>
+							{tStories("aiUpdateRoadmap")}
+						</TooltipContent>
+					</Tooltip>
 
-						{/* Sync progress indicator */}
-						{pmSync.progress && (
-							<div className="flex items-center gap-2 text-sm text-muted-foreground">
-								<Loader2Icon className="size-4 animate-spin" />
-								<span>{pmSync.progress.message}</span>
-								{pmSync.progress.totalStories > 0 && (
-									<span>
-										({pmSync.progress.syncedCount}/
-										{pmSync.progress.totalStories})
-									</span>
-								)}
-							</div>
-						)}
-					</div>
-				</div>
+					{/* F-171: single +Add button — classifier decides BUG vs FEATURE */}
+					<Tooltip>
+						<TooltipTrigger asChild>
+							<Button
+								variant="primary"
+								size="sm"
+								disabled={
+									statusesLoading || statuses.length === 0
+								}
+								onClick={handleAddStory}
+								data-onboarding-target="roadmap-add"
+							>
+								<PlusIcon className="size-4" />
+								{tUi("add")}
+							</Button>
+						</TooltipTrigger>
+						<TooltipContent>
+							{tStories("addFeature")}
+						</TooltipContent>
+					</Tooltip>
+
+					<RoadmapActionsMenu
+						items={roadmapActions.items}
+						actions={{
+							onClassify: classification.start,
+							classifyDisabledReason:
+								classification.disabledReason,
+							onScan: () => runDuplicateScan(),
+							scanning: isScanningDuplicates,
+							onExport: estimateExport.exportEstimate,
+							exporting: estimateExport.exporting,
+							onRefresh: handleRefresh,
+							onHistory: () => {
+								setHistoryView("changes");
+								setHistoryOpen(true);
+							},
+							onRejected: () => {
+								setInboxDefaultFilter("backlog");
+								setInboxOpen(true);
+							},
+						}}
+					/>
+				</RoadmapHeader>
+				<output
+					aria-live="polite"
+					className={cn(
+						"flex flex-wrap items-center gap-3 text-sm text-muted-foreground",
+						!(
+							classification.isRunning ||
+							isScanningDuplicates ||
+							estimateExport.exporting
+						) && "sr-only",
+					)}
+				>
+					{classification.isRunning && (
+						<span>{tDelivery("classifying")}</span>
+					)}
+					{isScanningDuplicates && <span>{tUi("scanning")}</span>}
+					{estimateExport.exporting && (
+						<span>{tUi("exporting")}</span>
+					)}
+				</output>
 
 				{/* Filters */}
 				<RoadmapFilterToolbar
-					// Work items | Priority shares the result-count lane: the
-					// switcher chooses which view of the counted set you get, so
-					// the two belong on one line.
-					viewSwitcher={
-						PRIORITY_VIEW_ENABLED ? (
-							<RoadmapSectionSwitcher
-								value={showingPriority ? "priority" : "items"}
-								onChange={handleSectionChange}
-							/>
-						) : undefined
+					lanesCount={
+						!showingPriority && mode !== "plain"
+							? roadmapStats.lanes
+							: undefined
 					}
 					filters={roadmapFilters}
 					onFiltersChange={setRoadmapFilters}
@@ -3161,14 +3136,6 @@ export function StoriesRoadmap({ projectId }: Props) {
 					hasActiveFilters={hasActiveRoadmapFilters}
 					projectId={projectId}
 					organizationId={organizationId}
-					onOpenProposalsInbox={() => {
-						setInboxDefaultFilter("all");
-						setInboxOpen(true);
-					}}
-					onOpenBacklog={() => {
-						setInboxDefaultFilter("backlog");
-						setInboxOpen(true);
-					}}
 					trailing={
 						<>
 							{/* Sort has no effect on the Priority section's ranked
@@ -3182,63 +3149,9 @@ export function StoriesRoadmap({ projectId }: Props) {
 									groupBy={groupBy}
 								/>
 							)}
-							<Tooltip>
-								<TooltipTrigger asChild>
-									<Button
-										variant="ghost"
-										size="icon"
-										onClick={() => {
-											setHistoryView("changes");
-											setHistoryOpen(true);
-										}}
-										className="size-8"
-										aria-label="View roadmap history"
-									>
-										<HistoryIcon className="size-4" />
-									</Button>
-								</TooltipTrigger>
-								<TooltipContent>
-									History — every change to these tickets, and
-									the PM sync log
-								</TooltipContent>
-							</Tooltip>
-							{/* Eye: show/hide hidden tickets — between history and settings. */}
-							<Tooltip>
-								<TooltipTrigger asChild>
-									<Button
-										variant="ghost"
-										size="icon"
-										aria-pressed={showClosed}
-										aria-label={
-											showClosed
-												? tStories("hideClosedFeatures")
-												: tStories("showClosedFeatures")
-										}
-										onClick={() =>
-											setShowClosed(!showClosed)
-										}
-										className={cn(
-											"size-8",
-											// Active state uses the project's
-											// primary token, not a fixed green.
-											showClosed &&
-												"border border-primary/40 bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary",
-										)}
-									>
-										{showClosed ? (
-											<EyeIcon className="size-4" />
-										) : (
-											<EyeOffIcon className="size-4" />
-										)}
-									</Button>
-								</TooltipTrigger>
-								<TooltipContent>
-									{showClosed
-										? tStories("hideClosedFeatures")
-										: tStories("showClosedFeatures")}
-								</TooltipContent>
-							</Tooltip>
 							<RoadmapSettingsMenu
+								showHidden={showClosed}
+								onShowHiddenChange={setShowClosedDraft}
 								mode={mode}
 								onModeChange={setMode}
 								groupBy={groupBy}
@@ -3553,7 +3466,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 									</div>
 								)}
 								{useFlatList ? (
-									<div>
+									<StoryList columns={columns}>
 										<SortableContext
 											items={sortedStories.map(
 												(s) => s.id,
@@ -3564,7 +3477,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 										>
 											{sortedStories.map(renderStoryRow)}
 										</SortableContext>
-									</div>
+									</StoryList>
 								) : mode === "board" ? (
 									<div className="flex gap-3 overflow-x-auto p-3">
 										{sections.map((section) => {
@@ -3812,7 +3725,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 										}
 									/>
 								) : (
-									<div>
+									<StoryList columns={columns}>
 										{sections.map((section) => {
 											const items =
 												groupedDisplay[section.key] ??
@@ -3849,12 +3762,6 @@ export function StoriesRoadmap({ projectId }: Props) {
 													: collapsedSections.has(
 															section.key,
 														));
-											const railClass =
-												groupBy === "stage"
-													? "border-border/50"
-													: PRIORITY_SECTION_RAIL[
-															section.key
-														];
 											const dotColor =
 												groupBy === "stage"
 													? MATURATION_STATUS_META[
@@ -3943,12 +3850,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 														</button>
 													</div>
 													{!isCollapsed && (
-														<div
-															className={cn(
-																"border-l-2 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-200",
-																railClass,
-															)}
-														>
+														<div className="motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-200">
 															{items.length >
 															0 ? (
 																<SortableContext
@@ -3974,7 +3876,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 												</DroppableLane>
 											);
 										})}
-									</div>
+									</StoryList>
 								)}
 							</>
 						)}
@@ -4427,9 +4329,7 @@ function CreateStoryDialog({
 	const [selectedPromptId, setSelectedPromptId] = useState<
 		string | undefined
 	>();
-	const [selectedPromptVersionId, setSelectedPromptVersionId] = useState<
-		string | undefined
-	>();
+	const [, setSelectedPromptVersionId] = useState<string | undefined>();
 	// Tracks the entire async onSubmit chain (create + uploads + updateStory
 	// + router.push). `isSubmitting` only mirrors the create mutation's
 	// isPending, so it would re-enable the button as soon as create resolved

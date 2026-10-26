@@ -10,6 +10,16 @@
 	"main": "./index.ts",
 	"type": "module",
 	"exports": {
+		"./conversation-turn-charge": {
+			"types": "./lib/conversation-turn-charge.ts",
+			"import": "./lib/conversation-turn-charge.ts",
+			"default": "./lib/conversation-turn-charge.ts"
+		},
+		"./clarification-turns": {
+			"types": "./lib/clarification-turns.ts",
+			"import": "./lib/clarification-turns.ts",
+			"default": "./lib/clarification-turns.ts"
+		},
 		"./ai-model-fit": {
 			"types": "./lib/ai-model-fit.ts",
 			"import": "./lib/ai-model-fit.ts",

@@ -12,8 +12,7 @@ import {
 	databricksModelNeedsPromptSteeredStructuredOutput,
 } from "../lib/prompt-steered-structured-output-middleware";
 
-// The Databricks fetch captures the global fetch when model-factory loads, so
-// the stub has to be in place before any import runs.
+// Stub the transport before constructing Databricks providers.
 const { fetchMock } = vi.hoisted(() => {
 	const fetchMock = vi.fn();
 	globalThis.fetch = fetchMock as unknown as typeof fetch;
@@ -77,7 +76,15 @@ async function generateViaDatabricks(
 function systemText(body: Record<string, unknown>): string {
 	const messages = body.messages as Array<{ role: string; content: unknown }>;
 	const system = messages.find((m) => m.role === "system");
-	return JSON.stringify(system?.content ?? "");
+	const content = system?.content;
+	return JSON.stringify(
+		Array.isArray(content)
+			? content
+					.filter((block) => block.type === "text")
+					.map((block) => block.text)
+					.join("")
+			: (content ?? ""),
+	);
 }
 
 afterEach(() => {
@@ -228,4 +235,64 @@ describe("databricksModelNeedsPromptSteeredStructuredOutput", () => {
 			),
 		).toBe(expected);
 	});
+});
+
+describe("Databricks model-factory URL wiring", () => {
+	it.each([
+		["system.ai.claude-sonnet-5", "ai-gateway/mlflow/v1"],
+		["custom-chat", "serving-endpoints"],
+	])(
+		"chat routes %s to %s with the same credential",
+		async (modelId, path) => {
+			fetchMock.mockImplementation(async () => chatCompletion("Hello"));
+			const { getModel } = await import("../model-factory");
+			await generateText({
+				model: getModel(modelId, {
+					provider: "DATABRICKS",
+					apiKey: "routing-key",
+					baseUrl: "https://example.cloud.databricks.com",
+				}),
+				prompt: "Hello",
+				maxRetries: 0,
+			});
+			expect(fetchMock).toHaveBeenCalledWith(
+				`https://example.cloud.databricks.com/${path}/chat/completions`,
+				expect.objectContaining({ body: expect.any(String) }),
+			);
+			expect(
+				JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).model,
+			).toBe(modelId);
+		},
+	);
+	it.each([
+		["system.ai.gte-large-en", "ai-gateway/mlflow/v1"],
+		["custom-embedding", "serving-endpoints"],
+	])(
+		"embeddings route %s to %s with the same credential",
+		async (modelId, path) => {
+			fetchMock.mockImplementation(
+				async () =>
+					new Response(
+						JSON.stringify({
+							data: [{ index: 0, embedding: [0.1, 0.2] }],
+							usage: { prompt_tokens: 1, total_tokens: 1 },
+						}),
+						{ headers: { "content-type": "application/json" } },
+					),
+			);
+			const { getEmbeddingModel } = await import("../model-factory");
+			await getEmbeddingModel(modelId, {
+				provider: "DATABRICKS",
+				apiKey: "routing-key",
+				baseUrl: "https://example.cloud.databricks.com",
+			}).doEmbed({ values: ["Hello"] });
+			expect(fetchMock).toHaveBeenCalledWith(
+				`https://example.cloud.databricks.com/${path}/embeddings`,
+				expect.objectContaining({ body: expect.any(String) }),
+			);
+			expect(
+				JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)).model,
+			).toBe(modelId);
+		},
+	);
 });

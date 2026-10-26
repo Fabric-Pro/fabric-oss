@@ -1,6 +1,6 @@
 # Prisma client and Zod generation
 
-Generate the database client and schemas with the repository's pinned tools and patches.
+Generate the database client and schemas with the repository's pinned tools and dependency patch.
 
 - **Audience**: engineers changing the Prisma schema, generators or database builds
 - **Owner**: Engineering team
@@ -24,17 +24,41 @@ compilation receives the same ceiling explicitly. The ceiling limits heap use
 and does not reserve that memory. Generation writes build artifacts and does not
 apply database migrations.
 
-## Dependency patches
+## CLI configuration and module format
 
-[`pnpm-workspace.yaml`](../pnpm-workspace.yaml) and the lockfile bind these
-patches to their installed dependency versions:
+Prisma ORM 7.10.1 reads [`prisma.config.ts`](../packages/database/prisma.config.ts)
+from `packages/database`, including when `--schema=./prisma/schema.prisma` is
+passed. Database commands require `DIRECT_URL`; the config rejects a missing
+value instead of using the application's pooled `DATABASE_URL`. Generation can
+run without either URL because it does not connect. Environment loading belongs
+to the existing dotenv-wrapped scripts, not the Prisma config.
+
+The `prisma-client` generator explicitly emits CommonJS-compatible source with
+`moduleFormat = "cjs"`. The generation pipeline compiles it with
+`module = "CommonJS"` so Node require, tsx, Next.js and worker consumers can
+load the resulting JavaScript. The runtime uses the PostgreSQL driver adapter
+and a WASM query compiler; it does not ship a native query-engine binary.
+
+Prisma 7 migration commands do not generate the client automatically; run the
+package generation command after changing the schema. `pnpm migrate` chains
+these steps.
+
+## Dependency patch
+
+[`pnpm-workspace.yaml`](../pnpm-workspace.yaml) and the lockfile bind
+the patch to its installed dependency version:
 
 | Dependency | Patch behavior |
 |---|---|
-| `prisma@6.19.3` | Advances an array index through the input-type graph queue in both bundled client generators, preserving traversal order without repeatedly shifting the queue. |
-| `prisma-zod-generator@1.31.2` | Reuses `options.dmmf` supplied by Prisma and retains `getDMMF` as a fallback when it is absent. |
+| `prisma@7.10.1` | Advances an array index through the input-type graph queue in both bundled client generators, preserving traversal order without repeatedly shifting the queue. |
 
-Install dependencies with pnpm so the patches apply. Direct generation with an
+`prisma-zod-generator@3.3.1` includes supplied-DMMF reuse and its fallback
+upstream, so it needs no repository patch. Its JSON configuration retains the
+custom, single-file pure-model output. The post-generation repair preserves
+scalar decimal validation and the existing JSON-string defaults for omitted
+empty JSON fields; the dependency upgrade does not change those API results.
+
+Install dependencies with pnpm so the patch applies. Direct generation with an
 unpatched dependency does not exercise the repository's generation contract.
 
 ## Verify a generator dependency change
@@ -42,7 +66,7 @@ unpatched dependency does not exercise the repository's generation contract.
 Run the installed-dependency regression tests from the repository root:
 
 ```bash
-pnpm --filter @repo/database exec node --test scripts/__tests__/prisma-generation-queue.test.mjs scripts/__tests__/prisma-zod-dmmf.test.mjs
+pnpm --filter @repo/database exec node --test scripts/__tests__/prisma-generation-queue.test.mjs scripts/__tests__/prisma-zod-dmmf.test.mjs scripts/__tests__/prisma-config.test.mjs
 ```
 
 The Prisma tests exercise both bundled graph walkers with cycles, field

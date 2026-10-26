@@ -711,7 +711,7 @@ export async function getProjectForDownload(
  * Escape SQL `LIKE` metacharacters so a string matches only itself.
  *
  * Prisma passes a `startsWith` value into `LIKE $n` verbatim — checked
- * against this repo's Prisma 6.18 query compiler, where
+ * with Prisma 6.18's query compiler, where
  * `startsWith: "a_b%/"` becomes `"sourcePath"::text LIKE $2` with
  * `$2 = 'a_b%/%'` — so an unescaped `_` or `%` in a folder name would act
  * as a wildcard. Backslash is Postgres's default `LIKE` escape character,

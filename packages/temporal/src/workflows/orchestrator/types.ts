@@ -1,3 +1,4 @@
+import type { RequestFingerprint } from "@repo/ai/lib/request-shape";
 /**
  * Orchestrator Workflow Types
  *
@@ -260,9 +261,29 @@ export interface IterationCost {
 /**
  * Message in the iterative conversation history
  */
+export type AssistantResponsePart =
+	| { type: "text"; text: string }
+	| { type: "tool-call"; toolCallId: string };
+
+export interface ImageAttachmentReference {
+	documentId: string;
+	/** SHA-256 of the downloaded, untransformed image bytes. */
+	contentHash: string;
+	mimeType: string;
+	transformationVersion: "original-v1";
+}
+
 export interface IterativeMessage {
 	role: "user" | "assistant" | "tool";
 	content: string;
+	/** Ordered response parts; tool IDs refer to this message's toolCalls. */
+	assistantParts?: AssistantResponsePart[];
+	/** Pending capture on this turn's source user message, consumed after its first round. */
+	imageAttachmentDocumentIds?: string[];
+	/** Ordered byte identities scoped to this answer; no image bytes enter workflow history. */
+	imageAttachments?: ImageAttachmentReference[];
+	/** Stable budget note recorded alongside the initial image selection. */
+	imageAttachmentNote?: string;
 	toolCalls?: Array<{
 		id: string;
 		name: string;
@@ -271,6 +292,8 @@ export interface IterativeMessage {
 		providerMetadata?: Record<string, unknown>;
 	}>;
 	toolCallId?: string;
+	/** Positive declaration returned by the executor for this result; absent means unknown. */
+	toolResultReadOnly?: true;
 	timestamp: string;
 	/** Which workflow iteration produced this message (for pruning) */
 	iteration?: number;
@@ -383,6 +406,73 @@ export interface WorkflowState {
 	// Iterative mode tracking
 	/** Current iteration number (iterative mode only) */
 	currentIteration: number;
+	/** Main activity schedules; helper calls and activity retries do not increment it. */
+	mainRounds: number;
+	/** The chat-only marker decision, set once by the workflow entry point. */
+	advisorBudgetEnabled?: boolean;
+	/** Entry-point marker plus recorded chat input; no environment reads in workflows. */
+	advisorBoundedHistoryEnabled?: boolean;
+	/** Recorded entry-point decisions; pre-marker histories keep the original arithmetic. */
+	advisorBoundedHistoryV2Enabled?: boolean;
+	advisorWeightedAllowanceEnabled?: boolean;
+	/** Calibrated only from recorded physical-request observations. */
+	advisorCalibrationFactor?: number;
+	advisorPreviousInputTokens?: number;
+	advisorPreviousCacheReadTokens?: number;
+	advisorLastHistoryRewriteIteration?: number;
+	/** Latest v2 action, attached to request and turn summary diagnostics. */
+	advisorHistoryDecision?: {
+		iteration: number;
+		action: "append" | "reset" | "compact";
+		reason: string;
+		beforeTokens: number;
+		afterTokens: number;
+		reservation: number;
+		afterReservation: number;
+		room: number;
+		afterRoom?: number;
+		tokensFreed: number;
+		bytesFreed: number;
+	};
+	advisorRequestSizing?: { extraInputTokens: number; contextWindow?: number };
+	advisorPreviousRequest?: RequestFingerprint;
+	advisorToolLoading?: import("./advisor-request-log").AdvisorToolLoadingMetrics;
+	advisorCacheMetrics?: {
+		mainRounds: number;
+		physicalRequests: number;
+		chargedInputTokens?: number;
+		chargedTokens?: number;
+		compactions: number;
+		prunes: number;
+		activitiesWithoutRequestObservations: number;
+		tokens: Partial<
+			Record<
+				| "cacheReadTokens"
+				| "cacheWriteTokens"
+				| "uncachedInputTokens"
+				| "outputTokens",
+				number
+			>
+		>;
+		reportedRequests: Partial<
+			Record<
+				| "cacheReadTokens"
+				| "cacheWriteTokens"
+				| "uncachedInputTokens"
+				| "outputTokens",
+				number
+			>
+		>;
+	};
+	advisorCacheSummaryLogged?: boolean;
+	advisorHistoryChanges?: Array<"pruned" | "compacted" | "tools_discovered">;
+	/** Set immediately before dispatch; cleared when the outcome is recorded. */
+	inFlightToolCall?: {
+		id: string;
+		name: string;
+		args: Record<string, unknown>;
+		startedAt: number;
+	};
 	/** Cost tracking per iteration (iterative mode only) */
 	iterationCosts: IterationCost[];
 	/** Conversation history for iterative mode */
@@ -399,11 +489,11 @@ export interface WorkflowState {
 	/**
 	 * Set when the budget-exhaustion synthesis fires. Carries the structured
 	 * "Progress so far" summary so the workflow output can include it in
-	 * `handoffRecommended` for the frontend's "Continue in new chat" CTA.
+	 * `handoffRecommended` for browsers running an older bundle.
 	 */
 	pendingHandoff: { reason: string; summary: string } | null;
 	/**
-	 * Set when a ledgered turn stopped on its token allowance; carried to the
+	 * Set when a turn stopped on its allowance, round limit or local token budget; carried to the
 	 * workflow output, the turn row and the stream (see `TurnBudgetStop`).
 	 */
 	budgetStop?: TurnBudgetStopType;
@@ -416,11 +506,19 @@ export interface WorkflowState {
 	 * at its reservation, in `outstanding`, until the settlement lands).
 	 */
 	turnLedger?: TurnLedgerSnapshotType;
+	/** Recorded costs already included in the latest ledger reading; refreshed with that reading. */
+	turnLedgerCostIndex?: number;
 	/**
 	 * Set when the final answer stopped at the output-token ceiling rather
 	 * than finishing (review F25). Surfaced as `truncated` on the output.
 	 */
 	truncated?: "output_limit";
+	/**
+	 * Set when a round of the turn ran on the organization's API billing
+	 * because every ChatGPT plan ran out mid-turn (Fizzy #3048). Surfaced as
+	 * `apiBilling` on the output.
+	 */
+	apiBilling?: { resetAt: string | null };
 
 	// Circuit breaker: per-agent failure tracking within this workflow execution
 	agentCircuitBreakers: Record<string, CircuitBreakerState>;
@@ -731,6 +829,7 @@ export function createInitialState(
 
 		// Iterative mode fields
 		currentIteration: 0,
+		mainRounds: 0,
 		iterationCosts: [],
 		iterativeConversationHistory: [],
 		pendingToolApproval: null,

@@ -37,7 +37,11 @@ import { PLATFORM_TOOL_DEFINITIONS } from "../platform-tools";
 // unchanged diagram body, and an agent must not invent or copy one.
 // A diagram's `%% caption:` line (Fizzy #2946) adds 52 to the read and 63 to
 // the write: an agent rewriting a body must know the line is the caption.
-const TOTAL_BUDGET = 53_244 + 2_118 + 31 + 163 + 188 + 115;
+// fabric_edit_frame_block (Fizzy #3344) adds a required pre-call schema and
+// contract: an agent must know before the call that oldText matches once and
+// which updatedAt to send. With fabric_get_frame's outline flag that is 894 net,
+// after shortening the frame read and update descriptions to make room.
+const TOTAL_BUDGET = 53_244 + 2_118 + 31 + 163 + 188 + 115 + 894;
 // The complete bounded sprint config makes configure-story-review the largest
 // pre-call schema at 2,334 characters. Other tools retain the original cap below.
 const PER_TOOL_BUDGET = 2_190;

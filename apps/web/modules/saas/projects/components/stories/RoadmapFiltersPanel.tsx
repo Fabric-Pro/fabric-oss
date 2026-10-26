@@ -1,22 +1,21 @@
 "use client";
 
 /**
- * RoadmapFiltersPanel
+ * The roadmap filters have two tiers: primary Type / Priority / Stage controls
+ * share the wrapping search toolbar; secondary facets occupy the More filters
+ * row, with compact date ranges and recency windows in the same wrapping row.
  *
- * The grouped body of the roadmap filters. Pure + prop-driven. Two tiers:
- *  - "primary": Type / Priority / Stage — always inline on the canvas.
- *  - "more":    Sync / Source / Dates / Flags — under the "More filters"
- *               disclosure.
+ * FacetMultiSelect uses a fixed-width trigger and truncates its summary so a
+ * selection does not shift neighbouring controls. Its cmdk checkbox list keeps
+ * multi-selection inside the popover instead of growing the toolbar. Longer
+ * option lists get search; shorter lists remain directly scannable.
  *
- * Layout is a TIGHT horizontal flow: each facet group is a small editorial
- * label sitting directly beside its control, and the groups wrap as a unit — so
- * there is no wide-column blank space. Every facet (Type / Priority / Stage /
- * Sync / Source) is the same compact `FacetMultiSelect` dropdown with a
- * FIXED-WIDTH trigger, so selecting a value tints it rose (`--primary`) without
- * ever changing its width — neighbouring facets never reflow. Tokens only —
- * correct in light + dark.
+ * Active styling uses the primary theme token rather than a fixed colour.
+ * Filter values remain controlled by the caller; More filters owns visibility
+ * of the entire secondary tier, including date controls.
  */
 
+import { Button } from "@ui/components/button";
 import {
 	Command,
 	CommandEmpty,
@@ -26,14 +25,15 @@ import {
 	CommandList,
 	CommandSeparator,
 } from "@ui/components/command";
-import { DatePicker } from "@ui/components/date-picker";
-import { Label } from "@ui/components/label";
+import {
+	DateRangePicker,
+	type DateRangePickerLabels,
+} from "@ui/components/date-range-picker";
 import {
 	Popover,
 	PopoverContent,
 	PopoverTrigger,
 } from "@ui/components/popover";
-import { RadioGroup, RadioGroupItem } from "@ui/components/radio-group";
 import {
 	Tooltip,
 	TooltipContent,
@@ -52,7 +52,9 @@ import {
 	OctagonXIcon,
 	PuzzleIcon,
 } from "lucide-react";
-import type { ReactNode } from "react";
+import { useTranslations } from "next-intl";
+import type { ComponentProps, ReactNode } from "react";
+import { useState } from "react";
 import {
 	FILTERABLE_KINDS,
 	FILTERABLE_PRIORITIES,
@@ -94,14 +96,6 @@ function dateToIso(d: Date | undefined): string | null {
 	return `${y}-${m}-${day}`;
 }
 
-function isoToDate(value: string | null): Date | undefined {
-	if (!value) {
-		return undefined;
-	}
-	const d = new Date(`${value}T00:00:00`);
-	return Number.isNaN(d.getTime()) ? undefined : d;
-}
-
 type ToggleOption<T extends string> = {
 	value: T;
 	label: string;
@@ -109,14 +103,50 @@ type ToggleOption<T extends string> = {
 	leading?: ReactNode;
 };
 
-// The single facet control for the whole roadmap toolbar (Type / Priority /
-// Stage / Sync / Source). An editorial label sits left of a FIXED-WIDTH trigger
-// that tints rose when active and summarises the selection ("Any" / the single
-// value / "N selected"). Because the trigger never changes width, toggling a
-// value can't reflow its neighbours — that sibling reflow was the old filter
-// "flicker". The popover is a cmdk checkbox list so several values toggle on
-// without the row growing; the in-popover search box only appears for the
-// longer option lists (Stage, Source) where scanning warrants it.
+// Facets and recency controls share their complete button presentation.
+function FacetTrigger({
+	label,
+	summary,
+	active = false,
+	className,
+	...props
+}: Omit<ComponentProps<typeof Button>, "children"> & {
+	label: string;
+	summary: string;
+	active?: boolean;
+}) {
+	const t = useTranslations("projects.stories.roadmapUi");
+	const text = t("facetLabel", { label, value: summary });
+	const valueOffset = text.lastIndexOf(summary);
+	return (
+		<Button
+			{...props}
+			variant="outline"
+			type="button"
+			className={cn(
+				"inline-flex h-9 w-40 shrink-0 items-center justify-between gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
+				active
+					? "border-primary/50 bg-primary/10 text-primary"
+					: "border-border bg-transparent text-muted-foreground hover:border-foreground/40 hover:text-foreground",
+				className,
+			)}
+		>
+			<span className="flex min-w-0 flex-1 items-center">
+				<span className="truncate whitespace-pre">
+					{text.slice(0, valueOffset)}
+				</span>
+				<span className="max-w-full shrink-0 truncate">{summary}</span>
+				{text.slice(valueOffset + summary.length)}
+			</span>
+			<ChevronDownIcon
+				aria-hidden
+				className="size-3.5 shrink-0 opacity-70"
+			/>
+		</Button>
+	);
+}
+
+// Fixed-width triggers keep selected values from shifting neighbouring controls.
 function FacetMultiSelect<T extends string>({
 	label,
 	options,
@@ -138,6 +168,8 @@ function FacetMultiSelect<T extends string>({
 		onToggle: () => void;
 	};
 }) {
+	const t = useTranslations("projects.stories.roadmapUi");
+	const [open, setOpen] = useState(false);
 	const set = new Set(selected);
 	const toggle = (value: T) =>
 		onChange(
@@ -152,52 +184,36 @@ function FacetMultiSelect<T extends string>({
 	const activeCount = count + (extraActive ? 1 : 0);
 	const summary =
 		activeCount === 0
-			? "Any"
+			? t("any")
 			: activeCount === 1
 				? count === 1
 					? (options.find((o) => o.value === selected[0])?.label ??
 						"1")
 					: (extraOption?.label ?? "1")
-				: `${activeCount} selected`;
+				: t("selected", { count: activeCount });
 	// A search box only earns its place on longer lists (Stage = 5, Source = 11);
 	// on the short facets (Type / Priority / Sync) it's clutter, and dropping it
 	// also keeps cmdk from filtering.
 	const searchable = options.length > 4;
 	const trigger = (
 		<PopoverTrigger asChild>
-			<button
-				type="button"
-				aria-label={`${label} filter`}
-				className={cn(
-					// Fixed width → the trigger never grows/shrinks with the
-					// summary, so toggling a value can't reflow the row.
-					"inline-flex w-36 items-center justify-between gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
-					activeCount > 0
-						? "border-primary/50 bg-primary/10 text-primary"
-						: "border-border bg-transparent text-muted-foreground hover:border-foreground/40 hover:text-foreground",
-				)}
-			>
-				<span className="truncate">{summary}</span>
-				<ChevronDownIcon
-					aria-hidden
-					className="size-3.5 shrink-0 opacity-70"
-				/>
-			</button>
+			<FacetTrigger
+				label={label}
+				summary={summary}
+				active={activeCount > 0}
+			/>
 		</PopoverTrigger>
 	);
 	return (
 		<div className="flex items-baseline gap-2.5">
-			<span className="app-editorial-label shrink-0 translate-y-0.5">
-				{label}
-			</span>
-			<Popover>
+			<Popover open={open} onOpenChange={setOpen}>
 				{/* Long single-value summaries truncate; surface the full text on
-					hover/focus. Multi/none summaries are always short, so the tooltip
-					is force-closed for them via `open={false}` rather than by swapping
-					the element out — keeping the tooltip mounted keeps the tree shape
+					hover/focus. Multi/none summaries are always short, and the open
+					popover already shows the value, so the tooltip is `disabled` in
+					those cases rather than swapped out — keeping the tooltip mounted keeps the tree shape
 					stable, so toggling the first/last facet while the popover is open
 					can't remount (and re-focus) the trigger button. */}
-				<Tooltip disabled={activeCount === 0}>
+				<Tooltip disabled={open || activeCount !== 1}>
 					<TooltipTrigger asChild>{trigger}</TooltipTrigger>
 					<TooltipContent>{summary}</TooltipContent>
 				</Tooltip>
@@ -312,41 +328,7 @@ function FacetMultiSelect<T extends string>({
 	);
 }
 
-function DateRangeRow({
-	label,
-	from,
-	to,
-	onFromChange,
-	onToChange,
-}: {
-	label: string;
-	from: string | null;
-	to: string | null;
-	onFromChange: (value: string | null) => void;
-	onToChange: (value: string | null) => void;
-}) {
-	return (
-		<div className="flex items-center gap-2">
-			<span className="w-24 shrink-0 text-muted-foreground text-xs">
-				{label}
-			</span>
-			<DatePicker
-				value={isoToDate(from)}
-				onChange={(d) => onFromChange(dateToIso(d))}
-				placeholder="From"
-				className="h-8 flex-1"
-			/>
-			<DatePicker
-				value={isoToDate(to)}
-				onChange={(d) => onToChange(dateToIso(d))}
-				placeholder="To"
-				className="h-8 flex-1"
-			/>
-		</div>
-	);
-}
-
-function RecencyRadio({
+function RecencySelect({
 	label,
 	value,
 	onChange,
@@ -355,34 +337,66 @@ function RecencyRadio({
 	value: RecencyWindowDays | null;
 	onChange: (next: RecencyWindowDays | null) => void;
 }) {
+	const t = useTranslations("projects.stories.roadmapUi");
+	const [open, setOpen] = useState(false);
+	const selected = value === null ? "none" : String(value);
+	const options = [
+		{ value: "none", label: t("anyTime") },
+		...RECENCY_WINDOW_OPTIONS.map((days) => ({
+			value: String(days),
+			label: t("lastDays", { days }),
+		})),
+	];
+	const summary =
+		options.find((option) => option.value === selected)?.label ??
+		t("anyTime");
 	return (
-		<div className="flex items-center gap-3">
-			<span className="w-40 shrink-0 whitespace-nowrap text-muted-foreground text-xs">
-				{label}
-			</span>
-			<RadioGroup
-				value={value === null ? "none" : String(value)}
-				onValueChange={(v) =>
-					onChange(
-						v === "none" ? null : (Number(v) as RecencyWindowDays),
-					)
-				}
-				className="flex flex-1 flex-wrap items-center gap-x-8 gap-y-1"
-				aria-label={label}
-			>
-				<Label className="flex items-center gap-1 text-xs text-muted-foreground">
-					<RadioGroupItem value="none" /> Any
-				</Label>
-				{RECENCY_WINDOW_OPTIONS.map((days) => (
-					<Label
-						key={`${label}-${days}`}
-						className="flex items-center gap-1 text-xs"
-					>
-						<RadioGroupItem value={String(days)} /> {days}d
-					</Label>
-				))}
-			</RadioGroup>
-		</div>
+		<Popover open={open} onOpenChange={setOpen}>
+			<PopoverTrigger asChild>
+				<FacetTrigger
+					label={label}
+					summary={summary}
+					active={value !== null}
+				/>
+			</PopoverTrigger>
+			<PopoverContent align="start" className="w-56 p-0">
+				<Command
+					shouldFilter={false}
+					defaultValue={selected}
+					tabIndex={0}
+				>
+					<CommandList>
+						<CommandGroup>
+							{options.map((option) => (
+								<CommandItem
+									key={option.value}
+									value={option.value}
+									className="justify-between"
+									onSelect={() => {
+										onChange(
+											option.value === "none"
+												? null
+												: (Number(
+														option.value,
+													) as RecencyWindowDays),
+										);
+										setOpen(false);
+									}}
+								>
+									{option.label}
+									{option.value === selected && (
+										<CheckIcon
+											aria-hidden
+											className="size-3.5"
+										/>
+									)}
+								</CommandItem>
+							))}
+						</CommandGroup>
+					</CommandList>
+				</Command>
+			</PopoverContent>
+		</Popover>
 	);
 }
 
@@ -519,6 +533,17 @@ export function RoadmapFiltersPanel({
 	tier,
 	tagOptions = [],
 }: RoadmapFiltersPanelProps) {
+	const tRange = useTranslations("common.dateRangePicker");
+	const rangeLabels: DateRangePickerLabels = {
+		any: tRange("any"),
+		clear: tRange("clear"),
+		from: (date) => tRange("from", { date }),
+		until: (date) => tRange("until", { date }),
+		lastDays: (days) => tRange("lastDays", { days }),
+		thisMonth: tRange("thisMonth"),
+	};
+
+	const t = useTranslations("projects.stories.roadmapUi");
 	const selectedFlags = FLAG_OPTIONS.filter((o) => filters[o.value]).map(
 		(o) => o.value,
 	);
@@ -535,21 +560,21 @@ export function RoadmapFiltersPanel({
 
 	if (tier === "primary") {
 		return (
-			<div className="flex flex-wrap items-baseline gap-x-7 gap-y-3">
+			<div className="flex flex-wrap items-center gap-2">
 				<FacetMultiSelect
-					label="Type"
+					label={t("type")}
 					options={KIND_OPTIONS}
 					selected={filters.kind}
 					onChange={(kind) => onChange({ kind })}
 				/>
 				<FacetMultiSelect
-					label="Priority"
+					label={t("priority")}
 					options={PRIORITY_OPTIONS}
 					selected={filters.priority}
 					onChange={(priority) => onChange({ priority })}
 				/>
 				<FacetMultiSelect
-					label="Stage"
+					label={t("stage")}
 					options={STAGE_OPTIONS}
 					selected={filters.stage}
 					onChange={(stage) =>
@@ -587,127 +612,122 @@ export function RoadmapFiltersPanel({
 	}
 
 	return (
-		<div className="space-y-5">
+		<div className="flex flex-wrap items-center gap-2">
 			{/* Uniform facet dropdowns: Sync / Source / Flags on one row,
 			    consistent with the Type / Priority / Stage primary row. */}
-			<div className="flex flex-wrap items-baseline gap-x-7 gap-y-3">
+			<FacetMultiSelect
+				label={t("sync")}
+				options={SYNC_OPTIONS}
+				selected={filters.sync}
+				onChange={(sync) => onChange({ sync })}
+			/>
+			<FacetMultiSelect
+				label={t("source")}
+				options={SOURCE_OPTIONS}
+				selected={filters.source}
+				onChange={(source) => onChange({ source })}
+			/>
+			<FacetMultiSelect
+				label={t("size")}
+				options={SIZE_OPTIONS}
+				selected={filters.size}
+				onChange={(size) => onChange({ size })}
+			/>
+			<FacetMultiSelect
+				label={t("flags")}
+				options={FLAG_OPTIONS}
+				selected={selectedFlags}
+				onChange={handleFlagsChange}
+			/>
+			{(tagOptions.length > 0 || filters.tags.length > 0) && (
 				<FacetMultiSelect
-					label="Sync"
-					options={SYNC_OPTIONS}
-					selected={filters.sync}
-					onChange={(sync) => onChange({ sync })}
+					label={t("tags")}
+					options={[
+						// union(options, currently-selected) so a URL-supplied
+						// value not in tagOptions still appears as checked.
+						...new Set([...tagOptions, ...filters.tags]),
+					].map((value) => ({ value, label: value }))}
+					selected={filters.tags}
+					onChange={(tags) =>
+						onChange({
+							tags,
+							...(tags.length < 2 ? { tagsLogic: "OR" } : {}),
+						})
+					}
+					extraOption={
+						filters.tags.length >= 2
+							? {
+									label: t("matchAll"),
+									checked: filters.tagsLogic === "AND",
+									onToggle: () =>
+										onChange({
+											tagsLogic:
+												filters.tagsLogic === "AND"
+													? "OR"
+													: "AND",
+										}),
+								}
+							: undefined
+					}
 				/>
-				<FacetMultiSelect
-					label="Source"
-					options={SOURCE_OPTIONS}
-					selected={filters.source}
-					onChange={(source) => onChange({ source })}
-				/>
-				<FacetMultiSelect
-					label="Size"
-					options={SIZE_OPTIONS}
-					selected={filters.size}
-					onChange={(size) => onChange({ size })}
-				/>
-				<FacetMultiSelect
-					label="Flags"
-					options={FLAG_OPTIONS}
-					selected={selectedFlags}
-					onChange={handleFlagsChange}
-				/>
-				{(tagOptions.length > 0 || filters.tags.length > 0) && (
-					<FacetMultiSelect
-						label="Tags"
-						options={[
-							// union(options, currently-selected) so a URL-supplied
-							// value not in tagOptions still appears as checked.
-							...new Set([...tagOptions, ...filters.tags]),
-						].map((value) => ({ value, label: value }))}
-						selected={filters.tags}
-						onChange={(tags) =>
-							onChange({
-								tags,
-								...(tags.length < 2 ? { tagsLogic: "OR" } : {}),
-							})
-						}
-						extraOption={
-							filters.tags.length >= 2
-								? {
-										label: "Match all (AND)",
-										checked: filters.tagsLogic === "AND",
-										onToggle: () =>
-											onChange({
-												tagsLogic:
-													filters.tagsLogic === "AND"
-														? "OR"
-														: "AND",
-											}),
-									}
-								: undefined
-						}
-					/>
-				)}
-			</div>
-
-			{/* Dates: From/To ranges on the left, recency windows
-			    (Any / 7d / 30d / 90d) on the right. Stacks on small screens. */}
-			<div className="space-y-2.5">
-				<span className="app-editorial-label">Dates</span>
-				<div className="grid grid-cols-1 gap-x-10 gap-y-2 lg:grid-cols-2">
-					<div className="space-y-2">
-						<DateRangeRow
-							label="Created"
-							from={filters.createdFrom}
-							to={filters.createdTo}
-							onFromChange={(createdFrom) =>
-								onChange({ createdFrom })
-							}
-							onToChange={(createdTo) => onChange({ createdTo })}
-						/>
-						<DateRangeRow
-							label="Last updated"
-							from={filters.updatedFrom}
-							to={filters.updatedTo}
-							onFromChange={(updatedFrom) =>
-								onChange({ updatedFrom })
-							}
-							onToChange={(updatedTo) => onChange({ updatedTo })}
-						/>
-						<DateRangeRow
-							label="Last synced"
-							from={filters.syncedFrom}
-							to={filters.syncedTo}
-							onFromChange={(syncedFrom) =>
-								onChange({ syncedFrom })
-							}
-							onToChange={(syncedTo) => onChange({ syncedTo })}
-						/>
-					</div>
-					<div className="space-y-2">
-						<RecencyRadio
-							label="Recently approved"
-							value={filters.recentlyApproved}
-							onChange={(recentlyApproved) =>
-								onChange({ recentlyApproved })
-							}
-						/>
-						<RecencyRadio
-							label="Recently added"
-							value={filters.recentlyAdded}
-							onChange={(recentlyAdded) =>
-								onChange({ recentlyAdded })
-							}
-						/>
-						<RecencyRadio
-							label="Date Modified"
-							value={filters.recentlyChanged}
-							onChange={(recentlyChanged) =>
-								onChange({ recentlyChanged })
-							}
-						/>
-					</div>
-				</div>
-			</div>
+			)}
+			<RecencySelect
+				label={t("recentlyApproved")}
+				value={filters.recentlyApproved}
+				onChange={(recentlyApproved) => onChange({ recentlyApproved })}
+			/>
+			<RecencySelect
+				label={t("recentlyAdded")}
+				value={filters.recentlyAdded}
+				onChange={(recentlyAdded) => onChange({ recentlyAdded })}
+			/>
+			<RecencySelect
+				label={t("recentlyEdited")}
+				value={filters.recentlyChanged}
+				onChange={(recentlyChanged) => onChange({ recentlyChanged })}
+			/>
+			<DateRangePicker
+				label={t("created")}
+				labels={rangeLabels}
+				value={{
+					from: filters.createdFrom ?? undefined,
+					to: filters.createdTo ?? undefined,
+				}}
+				onChange={(next) =>
+					onChange({
+						createdFrom: dateToIso(next.from),
+						createdTo: dateToIso(next.to),
+					})
+				}
+			/>
+			<DateRangePicker
+				label={t("lastActivity")}
+				labels={rangeLabels}
+				value={{
+					from: filters.updatedFrom ?? undefined,
+					to: filters.updatedTo ?? undefined,
+				}}
+				onChange={(next) =>
+					onChange({
+						updatedFrom: dateToIso(next.from),
+						updatedTo: dateToIso(next.to),
+					})
+				}
+			/>
+			<DateRangePicker
+				label={t("lastSynced")}
+				labels={rangeLabels}
+				value={{
+					from: filters.syncedFrom ?? undefined,
+					to: filters.syncedTo ?? undefined,
+				}}
+				onChange={(next) =>
+					onChange({
+						syncedFrom: dateToIso(next.from),
+						syncedTo: dateToIso(next.to),
+					})
+				}
+			/>
 		</div>
 	);
 }

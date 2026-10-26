@@ -18,6 +18,11 @@
  * - error: An error occurred
  */
 
+import {
+	budgetContinuationSeed,
+	InvalidBudgetContinuationError,
+} from "../budget-continuation";
+
 import { getDefaultEnabledMcpConfigIds } from "@repo/agent-core/backend";
 import { getAIModelWithMetadata } from "@repo/ai";
 import {
@@ -194,6 +199,7 @@ export async function POST(request: NextRequest) {
 			executionId: requestedExecutionId,
 			organizationId: requestedOrganizationId,
 			clientRequestKey: rawClientRequestKey,
+			continueFromTurnId: rawContinueFromTurnId,
 			executionMode: requestedExecutionMode = "balanced", // All modes now use iterative execution with mode-specific limits
 			enabledMcpConfigIds = null,
 			enabledAgentIds = null,
@@ -370,6 +376,40 @@ export async function POST(request: NextRequest) {
 		const clientRequestKey = resolveClientRequestKey(rawClientRequestKey);
 		if (!clientRequestKey.ok) {
 			return clientRequestKey.response;
+		}
+
+		const continueFromTurnId =
+			rawContinueFromTurnId === undefined
+				? undefined
+				: typeof rawContinueFromTurnId === "string" &&
+						rawContinueFromTurnId.length > 0 &&
+						rawContinueFromTurnId.length <= 200
+					? rawContinueFromTurnId
+					: null;
+		if (
+			continueFromTurnId === null ||
+			(continueFromTurnId &&
+				(!conversationId ||
+					requestedExecutionId ||
+					!executionModeUsesTurns(executionMode)))
+		) {
+			return new InvalidBudgetContinuationError().response();
+		}
+		if (continueFromTurnId && conversationId) {
+			try {
+				await budgetContinuationSeed({
+					turnId: continueFromTurnId,
+					conversationId,
+					userId,
+					organizationId,
+					clientRequestKey: clientRequestKey.key,
+				});
+			} catch (error) {
+				if (error instanceof InvalidBudgetContinuationError) {
+					return error.response();
+				}
+				throw error;
+			}
 		}
 
 		// Debug: Log workspace IDs received
@@ -730,12 +770,18 @@ export async function POST(request: NextRequest) {
 		// (or organization's) turn is refused.
 		// =====================================================================
 		let storedTerminalTurn: ConversationTurn | null = null;
+		let activeTurnId = turnToStart?.id;
+		let activeTurnGeneration = turnToStart?.generation;
 		if (resumeExecutionId) {
 			const ownTurn = await getConversationTurnForExecution({
 				executionId: resumeExecutionId,
 				userId,
 				organizationId,
 			});
+			if (ownTurn) {
+				activeTurnId = ownTurn.id;
+				activeTurnGeneration = ownTurn.generation;
+			}
 			if (!ownTurn) {
 				const owner =
 					await getConversationTurnOwnerForExecution(
@@ -1073,9 +1119,26 @@ export async function POST(request: NextRequest) {
 		if (storedTerminalTurn) {
 			const turn = storedTerminalTurn;
 			const status = resultStatusForTurn(turn.status);
+			const storedBudgetStop = turnBudgetStopForStream(turn.budgetStop);
+			const storedHandoff =
+				status === "completed" &&
+				(storedBudgetStop?.kind === "time_limit" ||
+					storedBudgetStop?.kind === "round_limit" ||
+					storedBudgetStop?.kind === "token_budget")
+					? {
+							reason:
+								storedBudgetStop.kind === "time_limit"
+									? `Time limit reached: ${storedBudgetStop.used}/${storedBudgetStop.limit} seconds`
+									: storedBudgetStop.kind === "round_limit"
+										? `Iteration limit reached: ${storedBudgetStop.used}/${storedBudgetStop.limit}`
+										: `Token budget exceeded: ${storedBudgetStop.used}/${storedBudgetStop.maxTokens}`,
+							summary: turn.responseText ?? "",
+						}
+					: undefined;
 			const events: StreamEvent[] = [
 				{
 					type: "started",
+					turnId: turn.id,
 					executionId,
 					workflowId: executionId,
 					resumed: true,
@@ -1088,9 +1151,7 @@ export async function POST(request: NextRequest) {
 							),
 							// The row's stored stop, whatever the status,
 							// exactly as the live event carried it.
-							budgetStop: turnBudgetStopForStream(
-								turn.budgetStop,
-							),
+							budgetStop: storedBudgetStop,
 						}
 					: {
 							type: "completed",
@@ -1099,21 +1160,19 @@ export async function POST(request: NextRequest) {
 							toolCalls: [],
 							stepResults: [],
 							limitSignals: turn.limitSignalSummary ?? undefined,
-							// The same structured token-allowance stop the
-							// live event carried, from the row, whatever the
-							// status: a cancelled turn keeps the stop it
-							// stored, and the chat shows no budget card for
-							// it because of its status.
-							budgetStop: turnBudgetStopForStream(
-								turn.budgetStop,
-							),
+							// Structured stop plus the older bundle's handoff signal.
+							budgetStop: storedBudgetStop,
+							handoffRecommended: storedHandoff,
 							fromTurnRecord: true,
 						},
 			];
 			return new Response(
 				encoder.encode(
 					events
-						.map((event) => `data: ${JSON.stringify(event)}\n\n`)
+						.map(
+							(event) =>
+								`data: ${JSON.stringify({ ...event, ...(event.type === "started" || event.type === "completed" ? { turnId: activeTurnId, turnGeneration: activeTurnGeneration } : {}) })}\n\n`,
+						)
 						.join(""),
 				),
 				{
@@ -1146,6 +1205,14 @@ export async function POST(request: NextRequest) {
 			}
 		};
 
+		// Delay the continuation's HTTP response until startup is checked. Redis
+		// subscribes first, so the continuation keeps its initial streamed text.
+		let startupFailureResponse: Response | undefined;
+		let resolveStartup: () => void = () => {};
+		const startupReady = new Promise<void>((resolve) => {
+			resolveStartup = resolve;
+		});
+
 		const stream = new ReadableStream({
 			async start(controller) {
 				const sendEvent = (event: StreamEvent) => {
@@ -1155,7 +1222,7 @@ export async function POST(request: NextRequest) {
 					try {
 						controller.enqueue(
 							encoder.encode(
-								`data: ${JSON.stringify(event)}\n\n`,
+								`data: ${JSON.stringify({ ...event, ...(event.type === "started" || event.type === "completed" ? { turnId: activeTurnId, turnGeneration: activeTurnGeneration } : {}) })}\n\n`,
 							),
 						);
 					} catch {
@@ -1256,6 +1323,7 @@ export async function POST(request: NextRequest) {
 				};
 
 				const closeController = () => {
+					resolveStartup();
 					clearInterval(heartbeat);
 					if (!controllerClosed) {
 						controllerClosed = true;
@@ -1549,6 +1617,9 @@ export async function POST(request: NextRequest) {
 								temporalClient,
 								turn: turnToStart,
 								workflowInput,
+								...(continueFromTurnId
+									? { continueFromTurnId }
+									: {}),
 								memo: { userId, organizationId },
 							});
 						} catch (startError) {
@@ -1598,6 +1669,7 @@ export async function POST(request: NextRequest) {
 					}
 
 					// Send started event
+					resolveStartup();
 					sendEvent({
 						type: "started",
 						executionId,
@@ -1794,6 +1866,10 @@ export async function POST(request: NextRequest) {
 										// The answer stopped at the output
 										// ceiling (review F25).
 										truncated: result.truncated,
+										// Every ChatGPT plan ran out mid-turn
+										// and API billing finished it (Fizzy
+										// #3048).
+										apiBilling: result.apiBilling,
 									});
 								}
 
@@ -2177,6 +2253,9 @@ export async function POST(request: NextRequest) {
 					cleanupRedis();
 					closeController();
 				} catch (error) {
+					if (error instanceof InvalidBudgetContinuationError) {
+						startupFailureResponse = error.response();
+					}
 					console.error("[Orchestrator Stream] Error:", error);
 					sendEvent({
 						type: "error",
@@ -2199,6 +2278,13 @@ export async function POST(request: NextRequest) {
 				);
 			},
 		});
+
+		if (continueFromTurnId && turnToStart) {
+			await startupReady;
+			if (startupFailureResponse) {
+				return startupFailureResponse;
+			}
+		}
 
 		// The stream owns the turn from here: it starts the workflow (or
 		// marks the turn failed if the start definitely fails).

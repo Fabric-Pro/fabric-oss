@@ -35,9 +35,8 @@ const OPTIONS = [
  * three ways to draw the same list; Priority is a different list with different
  * verbs, so it belongs one level up, in the page.
  *
- * Deliberately compact: it shares a lane with the result count, so it carries no
- * card, no border of its own and no explanatory paragraph — the explanation
- * lives in the per-option tooltip and in "How priority works".
+ * The compact switcher sits beside the Roadmap title. Explanations live in
+ * the per-option tooltip and in "How priority works".
  */
 export function RoadmapSectionSwitcher({
 	value,
@@ -48,8 +47,7 @@ export function RoadmapSectionSwitcher({
 }) {
 	const t = useTranslations("projects.stories.roadmapSections");
 	return (
-		<div
-			role="group"
+		<fieldset
 			aria-label={t("groupAriaLabel")}
 			data-onboarding-target="roadmap-priority"
 			className="flex shrink-0 rounded-md border border-border/60 bg-card p-0.5"
@@ -78,7 +76,7 @@ export function RoadmapSectionSwitcher({
 								<Icon aria-hidden className="size-3.5" />
 								{/* The label collapses below `sm`; the icon plus
 								    the tooltip still identify the option, and the
-								    control stops competing with the count for
+								    control stops competing with the title for
 								    room on a phone. */}
 								<span className="hidden sm:inline">
 									{label}
@@ -91,6 +89,6 @@ export function RoadmapSectionSwitcher({
 					</Tooltip>
 				);
 			})}
-		</div>
+		</fieldset>
 	);
 }

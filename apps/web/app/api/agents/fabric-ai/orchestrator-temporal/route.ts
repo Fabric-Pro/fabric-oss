@@ -123,6 +123,15 @@ export async function POST(request: NextRequest) {
 		}
 
 		const body = await request.json();
+		if (body.continueFromTurnId !== undefined) {
+			return Response.json(
+				{
+					code: "INVALID_BUDGET_CONTINUATION",
+					error: "Use the streaming chat endpoint to continue a stopped answer.",
+				},
+				{ status: 400 },
+			);
+		}
 
 		const {
 			message,

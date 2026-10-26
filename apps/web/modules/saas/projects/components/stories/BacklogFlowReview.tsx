@@ -2,7 +2,10 @@
 import { useQueryClient } from "@tanstack/react-query";
 import type { MutableRefObject } from "react";
 import { orpcClient } from "../../../../shared/lib/orpc-client";
-import { BacklogChangeProposal } from "./BacklogChangeProposal";
+import {
+	BacklogChangeProposal,
+	type ChangeItem,
+} from "./BacklogChangeProposal";
 import {
 	type BacklogFlow,
 	type BacklogFlowController,
@@ -212,6 +215,7 @@ export function BacklogFlowReview({
 					approvedChanges,
 					syncToPM,
 					pmSyncOverrides,
+					approvedChangeIndexes,
 				) => {
 					const current = settingsRef?.current;
 					const selectedPmConfig = structuredClone(
@@ -222,6 +226,16 @@ export function BacklogFlowReview({
 						(current?.hasPMTool ?? hasPMTool) &&
 						!!selectedPmConfig;
 					const approvedSnapshot = structuredClone(approvedChanges);
+					const indexesSnapshot = structuredClone(
+						approvedChangeIndexes,
+					);
+					const offeredSnapshot = changes.map(
+						(change: ChangeItem) => ({
+							action: change.action,
+							type: change.type,
+							title: change.title.to,
+						}),
+					);
 					const overridesSnapshot = structuredClone(pmSyncOverrides);
 					const messagesSnapshot = snapshotBacklogMessages(
 						liveMessagesRef.current,
@@ -268,6 +282,8 @@ export function BacklogFlowReview({
 									projectId,
 									organizationId: organizationId ?? null,
 									approvedChanges: approvedSnapshot,
+									approvedChangeIndexes: indexesSnapshot,
+									offeredChanges: offeredSnapshot,
 									operationKey,
 									syncToPM: shouldSync,
 									pmConfig: shouldSync

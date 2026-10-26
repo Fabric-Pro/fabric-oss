@@ -2,6 +2,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { getDatabricksTokenProvider } from "@repo/databricks";
 import { buildPgPoolConfig } from "./adapter-config";
 import { Prisma, PrismaClient } from "./generated/client";
+import { withTransactionLifetime } from "./transaction-lifetime";
 
 /**
  * Lazy-init the real PrismaClient. Importing `db` from this module
@@ -66,7 +67,9 @@ const createRealPrismaClient = (): PrismaClient => {
 		connectionTimeoutMillis: 20_000,
 	});
 
-	return withQueryObserver(new PrismaClient({ adapter }));
+	return withQueryObserver(
+		new PrismaClient({ adapter: withTransactionLifetime(adapter) }),
+	);
 };
 
 /**

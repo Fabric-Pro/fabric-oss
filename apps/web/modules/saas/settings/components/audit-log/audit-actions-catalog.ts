@@ -1776,6 +1776,13 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"A project administrator requested that Parlume leave a meeting and finalize its session.",
 	},
 	{
+		key: "project.parlume.auto_join_changed",
+		categoryId: "project",
+		labelKey: "settings.auditLog.actions.project.parlume.auto_join_changed",
+		description:
+			"A project administrator turned Parlume's automatic joining of a linked meeting series on or off, with the mode and chat suggestions its joins use.",
+	},
+	{
 		key: "project.parlume.action_confirmed",
 		categoryId: "project",
 		labelKey: "settings.auditLog.actions.project.parlume.action_confirmed",

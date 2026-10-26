@@ -171,13 +171,19 @@ const DISCOVERY: Record<FabricChatToolName, Discovery> = {
 			"create a page, build a dashboard, make a chart, interactive visualization, workspace page, project artifact, a page with a button, status dashboard, frame",
 	},
 	fabric_update_frame: {
-		when: "To change a page that exists: its title, content or the tools its buttons call.",
+		when: "To add, remove or reorder page blocks, rewrite a page, or change metadata and runtime tools. Use fabric_edit_frame_block for partial content edits.",
 		keywords:
 			"update the page, change the dashboard, edit the workspace, add a button, redesign the page, fix the page",
 	},
+	fabric_edit_frame_block: {
+		when: "To edit part of a page block, including large HTML pages, without rewriting the block.",
+		how: "Read an outline, read the source window you need, then apply literal replacements with expectedUpdatedAt.",
+		keywords:
+			"edit page block, partial page edit, replace text, add links, change HTML",
+	},
 	fabric_get_frame: {
 		when: "To read a page's content, surface and tools before changing it.",
-		how: "For source edits use offset:0, limit:6000; follow nextOffset until complete and keep updatedAt unchanged across chunks.",
+		how: "For partial edits read outline:true, then the needed blockId/offset/limit source window, then fabric_edit_frame_block with expectedUpdatedAt. For full rewrites follow nextOffset until complete and keep updatedAt unchanged across chunks.",
 		keywords:
 			"show the page, read the page, open the workspace, page content",
 	},

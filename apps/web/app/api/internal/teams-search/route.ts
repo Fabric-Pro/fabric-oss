@@ -4,10 +4,10 @@
  * Called by the LangGraph agent's tool_node to search Microsoft Teams messages
  * for a project. Reuses the existing searchProjectTeamsMessages function.
  *
- * Auth: Uses X-AI-Token JWT (same as /api/mcp/configs). Body-based userId is not
+ * Auth: Uses X-AI-Token JWT (same as /api/internal/mcp-tools). Body-based userId is not
  * accepted to prevent impersonation.
  *
- * Pattern: Same as data-analyst's fetchMcpConfigs → /api/mcp/configs
+ * Pattern: Same as data-analyst's tool proxy → /api/internal/mcp-tools
  */
 
 import { AI_TOKEN_HEADER, verifyAIToken } from "@repo/ai-token";

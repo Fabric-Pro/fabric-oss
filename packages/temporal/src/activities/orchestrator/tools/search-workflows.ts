@@ -4,6 +4,8 @@
  * Search for available workflows that can be triggered by the orchestrator.
  */
 
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { db } from "@repo/database";
 import {
 	generateEmbedding,
@@ -125,10 +127,14 @@ export async function searchAvailableWorkflows(
 			organizationId: input.organizationId,
 		};
 		// Credentials are fetched internally by generateEmbedding()
-		const result = await generateEmbedding(
-			input.query,
-			toolSearchUsage(tenantContext),
-			undefined,
+		const result = await runWithAiCallPurpose(
+			AI_CALL_PURPOSES.capabilitySearchEmbedding,
+			() =>
+				generateEmbedding(
+					input.query,
+					toolSearchUsage(tenantContext),
+					undefined,
+				),
 		);
 		queryEmbedding = result.embedding;
 	} catch (error) {
@@ -156,10 +162,14 @@ export async function searchAvailableWorkflows(
 				organizationId: input.organizationId,
 			};
 			// Credentials are fetched internally by generateEmbeddings()
-			const results = await generateEmbeddings(
-				workflowTexts,
-				toolSearchUsage(tenantContext),
-				undefined,
+			const results = await runWithAiCallPurpose(
+				AI_CALL_PURPOSES.capabilityIndexEmbedding,
+				() =>
+					generateEmbeddings(
+						workflowTexts,
+						toolSearchUsage(tenantContext),
+						undefined,
+					),
 			);
 			workflowEmbeddings = results.embeddings;
 		} catch (error) {

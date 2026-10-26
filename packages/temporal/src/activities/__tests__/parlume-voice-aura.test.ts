@@ -25,24 +25,21 @@ const speaker = {
 };
 const spoken = (text: string) => ParlumeSentenceQueue.fromText(text, 800);
 
-async function readLines(body: unknown): Promise<string[]> {
-	if (!(body instanceof ReadableStream)) {
-		throw new Error("Expected a streaming body");
+function readLines(body: unknown): string[] {
+	if (typeof body !== "string") {
+		throw new Error("Expected a whole reply part as text");
 	}
-	const decoder = new TextDecoder();
-	let text = "";
-	const reader = body.getReader();
-	for (
-		let chunk = await reader.read();
-		!chunk.done;
-		chunk = await reader.read()
-	) {
-		text += decoder.decode(chunk.value, { stream: true });
-	}
-	return text
+	return body
 		.split("\n")
 		.filter(Boolean)
 		.map((line) => (JSON.parse(line) as { text: string }).text);
+}
+
+function header(call: Call, name: string): string | undefined {
+	const headers = call.init?.headers;
+	return headers && !Array.isArray(headers) && !(headers instanceof Headers)
+		? headers[name]
+		: undefined;
 }
 
 async function drain(body: unknown): Promise<void> {
@@ -75,18 +72,35 @@ function auraResult(overrides: Record<string, unknown> = {}) {
 
 type Call = { url: string; init?: RequestInit };
 
+// Later parts of a reply sent in parts, apart from the calls that start it.
+let parts: Call[] = [];
+
 function stubBridge(handlers: {
+	/** The first part of a reply: answered with its whole playback. */
 	say: (call: Call) => Promise<Response> | Response;
+	part?: (call: Call) => Promise<Response> | Response;
 	speak?: (call: Call) => Promise<Response> | Response;
 	openai?: () => Response;
 }) {
 	const calls: Call[] = [];
+	parts = [];
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (url: string, init?: RequestInit) => {
-			calls.push({ url: String(url), init });
+			const call = { url: String(url), init };
+			if (
+				String(url).includes("action=say") &&
+				header(call, "x-parlume-reply-part") !== "0"
+			) {
+				parts.push(call);
+				return (
+					(await handlers.part?.(call)) ??
+					Response.json({ accepted: true })
+				);
+			}
+			calls.push(call);
 			if (String(url).includes("action=say")) {
-				return handlers.say({ url: String(url), init });
+				return handlers.say(call);
 			}
 			if (new URL(String(url)).origin === "https://api.openai.com") {
 				return (
@@ -115,9 +129,7 @@ describe("Parlume speech through Deepgram Aura in the bridge", () => {
 	it("sends the sentences as text to the bridge and plays nothing through the worker", async () => {
 		const calls = stubBridge({
 			say: async ({ init }) => {
-				expect(await readLines(init?.body)).toEqual([
-					"The plan is ready.",
-				]);
+				expect(readLines(init?.body)).toEqual(["The plan is ready."]);
 				return Response.json(auraResult());
 			},
 		});
@@ -137,7 +149,12 @@ describe("Parlume speech through Deepgram Aura in the bridge", () => {
 			Authorization: "Bearer service-secret",
 			"content-type": "application/x-ndjson",
 			"x-parlume-voice-generation": "4",
+			"x-parlume-reply": expect.any(String),
+			"x-parlume-reply-part": "0",
+			// A reply that already exists whole is one request.
+			"x-parlume-reply-last": "1",
 		});
+		expect(parts).toEqual([]);
 		expect(calls[0]?.init?.headers).not.toHaveProperty(
 			"x-parlume-confirmation-speaker",
 		);
@@ -145,39 +162,104 @@ describe("Parlume speech through Deepgram Aura in the bridge", () => {
 		expect(resolveOpenAiApiKey).not.toHaveBeenCalled();
 	});
 
-	it("starts sending the first sentence before the rest of the answer is written", async () => {
+	it("sends the first sentence before the rest of the answer is written, and the rest as a later part", async () => {
 		const sentences = new ParlumeSentenceQueue(800);
-		let firstReceived = "";
-		const sent: string[] = [];
-		stubBridge({
+		let lastPart: () => void = () => {};
+		const lastPartSent = new Promise<void>((resolve) => {
+			lastPart = resolve;
+		});
+		let first: string[] = [];
+		const calls = stubBridge({
 			say: async ({ init }) => {
-				const reader = (
-					init?.body as ReadableStream<Uint8Array>
-				).getReader();
-				const decoder = new TextDecoder();
-				const first = await reader.read();
-				firstReceived = decoder.decode(first.value);
+				first = readLines(init?.body);
 				// Only now does the rest of the answer exist.
 				sentences.push(" of them are done.");
 				sentences.end();
-				for (
-					let chunk = await reader.read();
-					!chunk.done;
-					chunk = await reader.read()
-				) {
-					sent.push(decoder.decode(chunk.value));
-				}
+				await lastPartSent;
 				return Response.json(auraResult());
+			},
+			part: (call) => {
+				if (header(call, "x-parlume-reply-last") === "1") {
+					lastPart();
+				}
+				return Response.json({ accepted: true });
 			},
 		});
 
 		sentences.push("The roadmap has two hundred items. Forty");
 		await speakParlumeResponse({ ...speaker, sentences });
 
-		expect(firstReceived).toBe(
-			'{"text":"The roadmap has two hundred items."}\n',
-		);
-		expect(sent.join("")).toBe('{"text":"Forty of them are done."}\n');
+		expect(first).toEqual(["The roadmap has two hundred items."]);
+		expect(
+			header(calls[0] as Call, "x-parlume-reply-last"),
+		).toBeUndefined();
+		expect(
+			parts.map((part) => ({
+				reply: header(part, "x-parlume-reply"),
+				part: header(part, "x-parlume-reply-part"),
+				last: header(part, "x-parlume-reply-last"),
+				sentences: readLines(part.init?.body),
+			})),
+		).toEqual([
+			{
+				reply: header(calls[0] as Call, "x-parlume-reply"),
+				part: "1",
+				last: "1",
+				sentences: ["Forty of them are done."],
+			},
+		]);
+	});
+
+	it("speaks the sentences the bridge stopped waiting for through another route", async () => {
+		const sentences = new ParlumeSentenceQueue(800);
+		stubBridge({
+			// The bridge gave up waiting after the first part and played it.
+			say: () => {
+				sentences.push("Forty of them are done.");
+				sentences.end();
+				return Response.json(auraResult());
+			},
+			part: () => Response.json({ accepted: false }),
+		});
+		const openaiFetch = vi.mocked(fetch);
+
+		sentences.push("The roadmap has two hundred items. ");
+		const result = await speakParlumeResponse({ ...speaker, sentences });
+
+		expect(
+			openaiFetch.mock.calls
+				.filter(
+					([url]) =>
+						new URL(String(url)).origin ===
+						"https://api.openai.com",
+				)
+				.map(([, init]) => JSON.parse(String(init?.body)).input),
+		).toEqual(["Forty of them are done."]);
+		expect(result.played).toBe(true);
+	});
+
+	it("withdraws a reply the turn gave up on, so the bridge drops what it queued", async () => {
+		const abort = new AbortController();
+		const sentences = new ParlumeSentenceQueue(800);
+		stubBridge({
+			say: async () => {
+				abort.abort();
+				throw new Error("aborted");
+			},
+		});
+
+		sentences.push("The roadmap has two hundred items. ");
+		await expect(
+			speakParlumeResponse({
+				...speaker,
+				sentences,
+				signal: abort.signal,
+			}),
+		).rejects.toThrow("aborted");
+
+		expect(
+			parts.map((part) => header(part, "x-parlume-reply-cancel")),
+		).toEqual(["1"]);
 	});
 
 	it("records each synthesized sentence as Workers AI usage, priced per character", async () => {

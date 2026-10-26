@@ -18,7 +18,7 @@ import {
 export const GITHUB_ACCOUNT: AccountDefinition = {
 	id: "github",
 	name: "GitHub",
-	version: "1.1.0", // Added search_commits, get_commit, get_authenticated_user
+	version: "1.1.1", // Refresh indexed PR and issue detail descriptions.
 	credentialType: "github_oauth",
 	authType: "oauth",
 	icon: "github",
@@ -36,6 +36,7 @@ export const GITHUB_ACCOUNT: AccountDefinition = {
 			tools: [
 				{
 					name: "list_repositories",
+					readOnly: true,
 					description: "List repositories for the authenticated user",
 					inputSchema: {
 						type: "object",
@@ -65,6 +66,7 @@ export const GITHUB_ACCOUNT: AccountDefinition = {
 				},
 				{
 					name: "get_repository",
+					readOnly: true,
 					description: "Get repository details",
 					inputSchema: {
 						type: "object",
@@ -83,6 +85,7 @@ export const GITHUB_ACCOUNT: AccountDefinition = {
 				},
 				{
 					name: "list_issues",
+					readOnly: true,
 					description: "List issues for a repository",
 					inputSchema: {
 						type: "object",
@@ -111,7 +114,9 @@ export const GITHUB_ACCOUNT: AccountDefinition = {
 				},
 				{
 					name: "get_issue",
-					description: "Get a specific issue by number",
+					readOnly: true,
+					description:
+						"Get issue details: number, title, state/reason, author login, dates, html_url, body (6000 characters with a truncation note), label names, assignee logins, milestone title, comment count and an is_pull_request boolean.",
 					inputSchema: {
 						type: "object",
 						properties: {
@@ -133,7 +138,9 @@ export const GITHUB_ACCOUNT: AccountDefinition = {
 				},
 				{
 					name: "get_pull_request",
-					description: "Get a specific pull request by number",
+					readOnly: true,
+					description:
+						"Get pull request details: number, title, state, draft/merge status, author login, head ref/SHA/label, head/base repository full names, base ref, merger login, merge commit SHA, auto-merge status/method, dates, html_url, body (up to 6000 characters with a truncation note), label names, pending reviewer requests (user logins and team slugs/names), assignee logins, milestone title, commit/change counts and comment counts.",
 					inputSchema: {
 						type: "object",
 						properties: {
@@ -155,6 +162,7 @@ export const GITHUB_ACCOUNT: AccountDefinition = {
 				},
 				{
 					name: "list_pull_requests",
+					readOnly: true,
 					description: "List pull requests for a repository",
 					inputSchema: {
 						type: "object",
@@ -266,6 +274,7 @@ export const GITHUB_ACCOUNT: AccountDefinition = {
 				},
 				{
 					name: "get_file_contents",
+					readOnly: true,
 					description: "Get contents of a file from a repository",
 					inputSchema: {
 						type: "object",
@@ -290,6 +299,7 @@ export const GITHUB_ACCOUNT: AccountDefinition = {
 				},
 				{
 					name: "list_branches",
+					readOnly: true,
 					description: "List branches for a repository",
 					inputSchema: {
 						type: "object",
@@ -313,6 +323,7 @@ export const GITHUB_ACCOUNT: AccountDefinition = {
 				},
 				{
 					name: "get_authenticated_user",
+					readOnly: true,
 					description:
 						"Get the authenticated GitHub user's profile. Use this first to discover the current user's login name (used as 'owner' for their personal repositories).",
 					inputSchema: {
@@ -322,6 +333,7 @@ export const GITHUB_ACCOUNT: AccountDefinition = {
 				},
 				{
 					name: "search_commits",
+					readOnly: true,
 					description:
 						"Search GitHub commits by SHA or keyword. Use this when you have a commit hash but don't know which repository it belongs to — the result includes 'owner' and 'repo' fields you can use in other tools.",
 					inputSchema: {
@@ -342,6 +354,7 @@ export const GITHUB_ACCOUNT: AccountDefinition = {
 				},
 				{
 					name: "get_commit",
+					readOnly: true,
 					description:
 						"Get details of a specific commit including the top 10 most-changed files with short diff excerpts. Returns filename, status, additions/deletions, and a patch snippet for each file.",
 					inputSchema: {

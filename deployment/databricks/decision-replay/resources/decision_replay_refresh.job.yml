@@ -1,0 +1,47 @@
+resources:
+  jobs:
+    decision_replay_refresh:
+      name: decision-replay-refresh-${bundle.target}
+      performance_target: STANDARD
+      max_concurrent_runs: 1
+      tags:
+        project: fabric
+        feature: decision-replay
+      # Prod: every 6 hours from midnight Arizona time (00:00, 06:00, 12:00,
+      # 18:00). Staging: once a day at midnight. America/Phoenix has no
+      # daylight saving, so the run times do not shift during the year.
+      schedule:
+        quartz_cron_expression: ${var.refresh_schedule}
+        timezone_id: America/Phoenix
+        pause_status: UNPAUSED
+      parameters:
+        - name: catalog
+          default: ${var.catalog}
+        - name: schema
+          default: ${var.schema}
+        - name: fabric_base_url
+          default: ${var.fabric_base_url}
+        - name: embed_principal
+          default: ${var.embed_principal}
+      environments:
+        - environment_key: sql_refresh
+          spec:
+            client: "5"
+      # No cluster declaration: SQL source notebooks use serverless jobs compute.
+      tasks:
+        - task_key: current_state
+          environment_key: sql_refresh
+          notebook_task:
+            notebook_path: ../src/01_current.sql
+        - task_key: gold
+          environment_key: sql_refresh
+          depends_on:
+            - task_key: current_state
+          notebook_task:
+            notebook_path: ../src/02_gold.sql
+        - task_key: grants
+          environment_key: sql_refresh
+          depends_on:
+            - task_key: gold
+          notebook_task:
+            notebook_path: ../src/03_grants.sql

@@ -1728,7 +1728,11 @@ export function getMcpClientCacheStats(): {
  */
 interface StdioWrapperClient {
 	tools(): Promise<unknown>;
-	callTool(name: string, args: Record<string, unknown>): Promise<unknown>;
+	listTools: McpClientType["listTools"];
+	callTool(
+		name: string | { name: string; arguments?: Record<string, unknown> },
+		args?: Record<string, unknown>,
+	): Promise<unknown>;
 	readResource(uri: string): Promise<unknown>;
 	listResources(cursor?: string): Promise<unknown>;
 	close(): Promise<void>;
@@ -2581,11 +2585,25 @@ function createStdioWrapperClient(options: {
 			return toolsMap;
 		},
 
+		async listTools(options) {
+			return (await callWrapper(
+				"tools/list",
+				options?.params ?? {},
+				options?.options?.signal,
+			)) as Awaited<ReturnType<McpClientType["listTools"]>>;
+		},
+
 		async callTool(
-			name: string,
-			toolArgs: Record<string, unknown>,
+			name:
+				| string
+				| { name: string; arguments?: Record<string, unknown> },
+			toolArgs?: Record<string, unknown>,
 		): Promise<unknown> {
-			return callWrapper("tools/call", { name, arguments: toolArgs });
+			const params =
+				typeof name === "string"
+					? { name, arguments: toolArgs ?? {} }
+					: { name: name.name, arguments: name.arguments ?? {} };
+			return callWrapper("tools/call", params);
 		},
 
 		async readResource(uri: string): Promise<unknown> {

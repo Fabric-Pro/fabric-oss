@@ -91,6 +91,7 @@ vi.mock("../../utils", () => ({
 		provider: "ANTHROPIC_DIRECT",
 		modelString: "claude-sonnet-5",
 		canonicalName: "claude-sonnet-5",
+		planSpentApiBilling: () => undefined,
 	})),
 }));
 
@@ -585,5 +586,73 @@ describe("runAgentIteration — output-ceiling truncation (review F25)", () => {
 
 		expect(result.type).toBe("response");
 		expect(result).not.toHaveProperty("truncated");
+	});
+});
+
+describe("runAgentIteration — API billing after every ChatGPT plan ran out (Fizzy #3048)", () => {
+	const handedOff = async () => {
+		const { getAiModelWithSelection } = await import("../../utils");
+		vi.mocked(getAiModelWithSelection).mockResolvedValueOnce({
+			model: { __mockModel: true },
+			provider: "OPENAI_CHATGPT_PLAN",
+			modelString: "example-plan-model",
+			canonicalName: "example-plan-model",
+			planSpentApiBilling: () => ({ resetAt: null }),
+		} as unknown as Awaited<ReturnType<typeof getAiModelWithSelection>>);
+	};
+
+	it("says so on a final answer", async () => {
+		await handedOff();
+		aiStubs.streamTextMock.mockImplementationOnce(() =>
+			makeStreamResult({
+				parts: [{ type: "text-delta", text: "pong" }],
+				finishReason: "stop",
+			}),
+		);
+
+		const result = await runAgentIteration(buildInput());
+
+		expect(result).toMatchObject({
+			type: "response",
+			content: "pong",
+			apiBilling: { resetAt: null },
+		});
+	});
+
+	it("says so on a round that only calls tools", async () => {
+		await handedOff();
+		aiStubs.streamTextMock.mockImplementationOnce(() =>
+			makeStreamResult({
+				parts: [
+					{
+						type: "tool-call",
+						toolCallId: "tc-1",
+						toolName: "create_view",
+						input: { a: 1 },
+					},
+				],
+				finishReason: "tool-calls",
+			}),
+		);
+
+		const result = await runAgentIteration(buildInput());
+
+		expect(result).toMatchObject({
+			type: "tool_calls",
+			apiBilling: { resetAt: null },
+		});
+	});
+
+	it("says nothing when the round stayed on its plan or provider", async () => {
+		aiStubs.streamTextMock.mockImplementationOnce(() =>
+			makeStreamResult({
+				parts: [{ type: "text-delta", text: "Done." }],
+				finishReason: "stop",
+			}),
+		);
+
+		const result = await runAgentIteration(buildInput());
+
+		expect(result).not.toHaveProperty("apiBilling");
 	});
 });

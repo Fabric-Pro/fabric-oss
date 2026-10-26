@@ -16,6 +16,7 @@ import {
 	fabricCatalogAuthority,
 	resolveFabricCatalogRoute,
 } from "../../../../activities/orchestrator/execution/fabric-catalog-adapter";
+import { jsonSchemaToZod } from "../../../../activities/orchestrator/utils/schema-utils";
 import { getFabricAiTools } from "../../../../activities/orchestrator/tools/fabric-ai-tools";
 import {
 	PROJECT_FEATURE_GET_INPUT_SCHEMA,
@@ -70,6 +71,19 @@ describe("iterative loop pre-registration", () => {
 });
 
 describe("catalog routing", () => {
+	it("advertises updated sorting in the shared Advisor catalog schema", () => {
+		const schema = getFabricAiTools().find(
+			(t) => t.name === "fabric_list_project_features",
+		)?.inputSchema as { properties: Record<string, unknown> };
+		expect(jsonSchemaToZod(schema).parse({ sort: "updated" })).toEqual({
+			sort: "updated",
+		});
+		expect(schema.properties.sort).toMatchObject({
+			enum: ["identifier", "updated"],
+			default: "identifier",
+		});
+	});
+
 	it.each(NAMES)(
 		"%s runs in-process as a READ with no integration authority",
 		(name) => {

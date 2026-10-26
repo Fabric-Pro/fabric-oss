@@ -6,6 +6,7 @@ const fakeMetadata = {
 	modelString: "anthropic:claude-3-5-sonnet",
 	provider: "anthropic",
 	selectionSource: "user-preference",
+	maxOutputTokens: 8192,
 };
 const fakeTrackUsage = vi.fn();
 
@@ -46,6 +47,7 @@ describe("getAiModelWithSelection", () => {
 	it("returns model, provider, and modelString from metadata", async () => {
 		const result = await getAiModelWithSelection("user-1", "org-1", true);
 		expect(result.model).toBe(fakeModel);
+		expect(result.maxOutputTokens).toBe(8192);
 		expect(result.provider).toBe("anthropic");
 		expect(result.modelString).toBe("anthropic:claude-3-5-sonnet");
 	});

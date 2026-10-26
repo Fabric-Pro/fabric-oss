@@ -4,10 +4,13 @@ import { ORPCError } from "@orpc/client";
 import {
 	buildBacklogDedupGuard,
 	db,
+	getAppliedChangeIndexes,
 	getPendingBacklogProposal,
+	getPendingProposalReview,
 	inferDedupFamily,
 	markProposalApplyDispatched,
-	returnFailedRecommendationToReview,
+	recordProposalDuplicateResolution,
+	returnFailedProposalToReview,
 } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
 import { describeSyncErrorForUser } from "@repo/temporal/pm-sync-user-error";
@@ -20,6 +23,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { isChannelMonitorSource } from "../../lib/channel-monitor-source";
+import type { PmSyncOverride } from "./change-item-schema";
 
 /**
  * Minimal shape of a stored proposal change. The stored JSON came from the
@@ -45,29 +49,8 @@ interface StoredSourceMetadata {
 	[key: string]: unknown;
 }
 
-/**
- * Retry a FAILED `PendingBacklogProposal` row.
- *
- * Behavior:
- *   1. Load proposal, verify project + tenancy, verify status === FAILED.
- *   2. Build a `BacklogDedupGuard` for the project (PR #1238 helper).
- *   3. For every change not already in `appliedChangeIndexes`, call
- *      `guard.findCollision(family, title)`:
- *        - collision → soft dedup-success: dedupCollisionCount++ and the
- *          original index is folded into the new `appliedChangeIndexes`.
- *          The existing target UserStory keeps its `pmAutoSyncEnabled` —
- *          retry MUST NOT mutate the gate on a pre-existing row.
- *        - miss → include in the workflow payload.
- *   4. If every remaining change resolved via dedup → mark APPLIED
- *      directly, no workflow.
- *   5. Otherwise: compare-and-set FAILED → APPLYING (a double-click's second
- *      call matches no row and CONFLICTs), start
- *      `backlogApplyChangesWorkflow` with the filtered payload and
- *      `pendingProposalId` so the workflow's terminal transition lands on
- *      the same row.
- *
- * AUTHORIZATION: `tenantProtectedProcedure` + `PROJECT_UPDATE` —
- * mirrors the channel-monitor approve/retry pattern.
+/** Replay a bound review, or the approved-only payload of a legacy sidebar row.
+ * Other legacy sources return to review. Claims are fenced to the attempt read.
  */
 export const retryFailedProposalProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.PROJECT_UPDATE))
@@ -129,12 +112,32 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 			});
 		}
 
-		// A recommendation batch goes back to review instead of replaying:
-		// its stored changes don't record which candidates were selected.
-		if (proposal.source === "ROADMAP_RECOMMENDATION") {
-			const returned = await returnFailedRecommendationToReview(
-				proposal.id,
-			);
+		const boundReview =
+			!!proposal.applyReviewId &&
+			proposal.applyReviewWorkflowId === proposal.applyWorkflowId;
+		const review =
+			proposal.source !== "ROADMAP_RECOMMENDATION" && boundReview
+				? await getPendingProposalReview(
+						proposal.id,
+						proposal.applyReviewId!,
+					)
+				: null;
+		const retryWhere = {
+			id: proposal.id,
+			status: "FAILED" as const,
+			applyWorkflowId: proposal.applyWorkflowId ?? null,
+			applyReviewId: proposal.applyReviewId ?? null,
+		};
+		if (
+			proposal.source === "ROADMAP_RECOMMENDATION" ||
+			(!review &&
+				(!!proposal.applyReviewId ||
+					proposal.source !== "AI_UPDATE_SIDEBAR"))
+		) {
+			const returned = await returnFailedProposalToReview(proposal.id, {
+				applyWorkflowId: proposal.applyWorkflowId ?? null,
+				applyReviewId: proposal.applyReviewId ?? null,
+			});
 			if (!returned) {
 				throw new ORPCError("CONFLICT", {
 					message: "Proposal is no longer FAILED",
@@ -144,7 +147,9 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 				workflowId: null,
 				dedupCollisionCount: 0,
 				message:
-					"Returned to review — select the features to accept again.",
+					proposal.source === "ROADMAP_RECOMMENDATION"
+						? "Returned to review — select the features to accept again."
+						: "Returned to review — select the changes to apply again.",
 			};
 		}
 
@@ -157,28 +162,74 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 		)
 			? (proposalPayload?.changes as StoredChange[])
 			: [];
-		if (storedChanges.length === 0) {
+		if (!review && storedChanges.length === 0) {
 			throw new ORPCError("BAD_REQUEST", {
 				message: "Stored proposal has no changes to retry",
 			});
 		}
 		const sourceMetadata = (proposal.sourceMetadata ??
 			{}) as StoredSourceMetadata;
-		const alreadyApplied = new Set(proposal.appliedChangeIndexes ?? []);
+		const alreadyApplied = await getAppliedChangeIndexes(proposal.id);
+		for (const index of proposal.appliedChangeIndexes ?? []) {
+			alreadyApplied.add(index);
+		}
+		const replayEntries = review
+			? review.entries
+					.filter((entry) => entry.selected)
+					.map((entry) => ({
+						change: entry.change as unknown as StoredChange,
+						index: entry.changeIndex,
+						override: entry.pmSyncOverride as PmSyncOverride | null,
+					}))
+			: storedChanges.map((change, index) => ({
+					change,
+					index,
+					override: null,
+				}));
+		const syncSettings = review
+			? {
+					syncToPM: review.syncToPM,
+					pmConfig:
+						review.pmConfig as StoredSourceMetadata["pmConfig"],
+				}
+			: sourceMetadata;
+		const workflowOverrides: Record<number, PmSyncOverride> = {};
 
 		// 3. Dedup guard pass on every remaining CREATE.
 		const dedupGuard = await buildBacklogDedupGuard(input.projectId);
+		const duplicateResolutions: Parameters<
+			typeof recordProposalDuplicateResolution
+		>[0][] = [];
+		const recordDuplicates = async () => {
+			for (const resolution of duplicateResolutions) {
+				try {
+					await recordProposalDuplicateResolution(resolution);
+				} catch {
+					console.warn(
+						"Failed to record proposal duplicate resolution",
+						{
+							proposalId: resolution.proposalId,
+							changeIndex: resolution.changeIndex,
+						},
+					);
+				}
+			}
+		};
 		const newlyApplied: number[] = [];
 		const workflowChanges: StoredChange[] = [];
 		const workflowIndexes: number[] = [];
 		let dedupCollisionCount = 0;
 
-		for (let i = 0; i < storedChanges.length; i++) {
-			if (alreadyApplied.has(i)) {
-				continue;
+		for (const entry of replayEntries) {
+			const i = entry.index;
+			const change = entry.change;
+			if (i === null || !change) {
+				throw new ORPCError("BAD_REQUEST", {
+					message:
+						"Selected review entry has no stored change or index",
+				});
 			}
-			const change = storedChanges[i];
-			if (!change) {
+			if (alreadyApplied.has(i)) {
 				continue;
 			}
 
@@ -192,6 +243,12 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 					change.title.to,
 				);
 				if (collision) {
+					duplicateResolutions.push({
+						proposalId: input.proposalId,
+						changeIndex: i,
+						existingEntityId: collision.existingId,
+						existingEntityType: family === "BUG" ? "bug" : "story",
+					});
 					// Dedup-collision: the change resolves to a pre-existing
 					// UserStory. Treat as soft-success. We deliberately do NOT
 					// mutate `pmAutoSyncEnabled` on the existing target row —
@@ -204,6 +261,9 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 			}
 
 			// Miss or non-create — include in the workflow payload.
+			if (entry.override) {
+				workflowOverrides[workflowChanges.length] = entry.override;
+			}
 			workflowChanges.push(change);
 			workflowIndexes.push(i);
 		}
@@ -212,14 +272,11 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 		//    title → mark APPLIED directly; skip the workflow start.
 		if (workflowChanges.length === 0) {
 			const mergedApplied = Array.from(
-				new Set([
-					...(proposal.appliedChangeIndexes ?? []),
-					...newlyApplied,
-				]),
+				new Set([...alreadyApplied, ...newlyApplied]),
 			);
 			// Close only a still-FAILED row; a concurrent dispatch owns its claim.
 			const finalized = await db.pendingBacklogProposal.updateMany({
-				where: { id: input.proposalId, status: "FAILED" },
+				where: retryWhere,
 				data: {
 					status: "APPLIED",
 					appliedAt: new Date(),
@@ -232,6 +289,7 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 					message: "This proposal is no longer failed.",
 				});
 			}
+			await recordDuplicates();
 			return {
 				workflowId: null,
 				dedupCollisionCount,
@@ -264,18 +322,16 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 		// retry that already loaded FAILED must still win this write to start.
 		const newWorkflowId = `backlog-apply-retry-${input.projectId}-${Date.now()}`;
 		const mergedApplied = Array.from(
-			new Set([
-				...(proposal.appliedChangeIndexes ?? []),
-				...newlyApplied,
-			]),
+			new Set([...alreadyApplied, ...newlyApplied]),
 		);
 		const claimed = await db.pendingBacklogProposal.updateMany({
-			where: { id: input.proposalId, status: "FAILED" },
+			where: retryWhere,
 			data: {
 				status: "APPLYING",
 				reviewedAt: new Date(),
 				reviewedBy: user.id,
 				applyWorkflowId: newWorkflowId,
+				...(review ? { applyReviewWorkflowId: newWorkflowId } : {}),
 				// This claim is unconfirmed until workflow.start returns. The
 				// watchdog uses the fresh reviewedAt while the start is in flight.
 				applyStartedAt: null,
@@ -292,6 +348,8 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 				message: "This proposal is no longer failed.",
 			});
 		}
+
+		await recordDuplicates();
 
 		try {
 			const client = await getTemporalClient();
@@ -313,10 +371,11 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 								undefined,
 							approvedChanges: workflowChanges,
 							approvedChangeIndexes: workflowIndexes,
-							syncToPM: Boolean(sourceMetadata.syncToPM),
-							pmConfig: sourceMetadata.pmConfig
+							syncToPM: Boolean(syncSettings.syncToPM),
+							pmSyncOverrides: workflowOverrides,
+							pmConfig: syncSettings.pmConfig
 								? {
-										...sourceMetadata.pmConfig,
+										...syncSettings.pmConfig,
 										containerName:
 											project.projectManagementContainerName ??
 											undefined,

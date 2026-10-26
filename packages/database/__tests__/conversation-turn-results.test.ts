@@ -579,6 +579,15 @@ describe("conversation load after a detached Advisor turn", () => {
 			expect(result?.messages).toEqual(conversation.messages);
 			expect(result?.metadata).toEqual({
 				mode: "orchestrator",
+				latestTurn: {
+					id: turn.id,
+					executionId: turn.executionId,
+					generation: 1,
+					status,
+					budgetStop: null,
+					questionText: turn.questionText,
+					responseText: turn.responseText,
+				},
 				executions: [
 					{
 						id: turn.executionId,
@@ -1238,4 +1247,76 @@ describe("conversation load after a detached Advisor turn", () => {
 		});
 		expect(JSON.stringify(result)).not.toContain("private");
 	});
+});
+
+describe("budget-stop hydration", () => {
+	it.each([
+		{ version: 1, kind: "time_limit", used: 2700, limit: 2700 },
+		{ version: 1, kind: "round_limit", used: 30, limit: 30 },
+		{
+			version: 1,
+			kind: "token_budget",
+			used: 492001,
+			limit: 492000,
+			maxTokens: 500000,
+			reservedTokens: 8000,
+		},
+		{
+			version: 1,
+			kind: "token_allowance",
+			allowance: 500000,
+			measured: 490000,
+			outstanding: 0,
+			enforcement: "ENFORCED",
+			stopReason: "allowance_exhausted",
+		},
+	])("selects and projects %j from the server turn", async (budgetStop) => {
+		mocks.turns.mockResolvedValue([
+			{ ...turn, status: "LIMITED", budgetStop },
+		]);
+		const result = await read();
+		expect(mocks.turns.mock.calls[0][0].select.budgetStop).toBe(true);
+		expect(result?.metadata).toMatchObject({
+			latestTurn: {
+				id: turn.id,
+				executionId: turn.executionId,
+				status: "LIMITED",
+				budgetStop,
+				responseText: turn.responseText,
+			},
+		});
+	});
+	it("projects a newer running turn over an older stopped turn", async () => {
+		mocks.turns.mockResolvedValue([
+			{
+				...turn,
+				budgetStop: {
+					version: 1,
+					kind: "round_limit",
+					used: 30,
+					limit: 30,
+				},
+			},
+			{
+				...turn,
+				id: "turn-2",
+				executionId: "exec-2",
+				generation: 2,
+				status: "ACTIVE",
+				terminalAt: null,
+				budgetStop: null,
+			},
+		]);
+		expect((await read())?.metadata).toMatchObject({
+			latestTurn: { id: "turn-2", status: "ACTIVE", budgetStop: null },
+		});
+	});
+});
+
+it("does not project a null-generation row as the latest generated turn", () => {
+	const hydrated = hydrateConversationTurnResults(
+		{ messages: [], metadata: { mode: "orchestrator" } },
+		[{ ...turn, generation: null }],
+	);
+	expect(hydrated.metadata).not.toHaveProperty("latestTurn");
 });

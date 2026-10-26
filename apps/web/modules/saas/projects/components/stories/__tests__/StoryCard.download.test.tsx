@@ -146,6 +146,7 @@ vi.mock("@saas/shared/components/FabricLogo", () => ({
 // next-intl translations — return the key itself so the menu items are
 // queryable by `format.markdown`, `format.pdf`, `format.docx`, `action`.
 vi.mock("next-intl", () => ({
+	useLocale: () => "en",
 	useTranslations: () => {
 		const t = (k: string) => k;
 		// PmSyncCloudToggle (mounted via Task 4.3) calls `t.rich(...)` for the

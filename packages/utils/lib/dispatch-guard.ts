@@ -50,6 +50,8 @@ export interface DispatchGuard {
 	 * The guarded work's token ledger, when it has one: every factory model
 	 * reserves each physical request against it before sending and settles
 	 * the request's usage after (`@repo/ai`'s turn-budget middleware).
+	 * Raw token-billed callers opt in with {@link dispatchBudgetSend};
+	 * {@link guardDispatch} alone checks stops without reserving tokens.
 	 * Absent for guarded work with no ledger.
 	 */
 	readonly budget?: DispatchBudget;
@@ -59,11 +61,11 @@ export interface DispatchGuard {
 export interface DispatchBudgetRequest {
 	/**
 	 * What kind of model request it is. An embedding reserves its input only.
-	 * An embedding and a decision (a typed `doDecide`) always count as
-	 * auxiliary work for the ledger; a language request counts as whatever
+	 * Embeddings, decisions (a typed `doDecide`) and external remote work
+	 * count as auxiliary work for the ledger; a language request counts as whatever
 	 * its activity's work is.
 	 */
-	modality: "language" | "embedding" | "decision";
+	modality: "language" | "embedding" | "decision" | "external";
 	/** Estimated input tokens (an estimate, never a measured value). */
 	inputEstimate: number;
 	/** Output tokens the request asks for; 0 for an embedding. */
@@ -99,7 +101,7 @@ export interface DispatchBudgetReservation {
 export interface DispatchBudget {
 	/**
 	 * What the ledger counts this guard's language requests as (an
-	 * embedding or a decision is always auxiliary, whatever this says).
+	 * embedding, decision or external request is auxiliary, whatever this says).
 	 * Read only to decide whether a request sizer applies: a sizer is
 	 * honoured for `"FINALIZATION"` and for nothing else, and a ledger that
 	 * leaves this out is never sized.
@@ -110,7 +112,11 @@ export interface DispatchBudget {
 	): Promise<DispatchBudgetReservation | null>;
 	settle(
 		attemptId: string,
-		usage: { inputTokens: number; outputTokens: number },
+		usage: {
+			inputTokens: number;
+			outputTokens: number;
+			cacheReadTokens?: number;
+		},
 	): Promise<void>;
 	markUnknown(attemptId: string): Promise<void>;
 	release(attemptId: string): Promise<void>;
@@ -264,6 +270,9 @@ export function throwIfDispatchStopped(): void {
 }
 
 /**
+ * Checks stops and merges signals only; this does not reserve tokens.
+ * Raw token-billed callers use {@link dispatchBudgetSend} for accounting.
+ *
  * For code that sends a provider request itself (a raw `fetch`, a provider
  * SDK model built outside the `@repo/ai` factory): call it immediately before
  * EVERY physical request, each retry or poll attempt included, and send the
@@ -346,4 +355,113 @@ export function isDispatchGuardedModel(model: unknown): boolean {
 	return (
 		typeof model === "object" && model !== null && guardedModels.has(model)
 	);
+}
+
+/** Maximum wait for a raw send's ledger transition; late writes stay in flight. */
+const RAW_SEND_SETTLEMENT_TIMEOUT_MS = 10_000;
+
+/**
+ * One physical raw request, including consumption/parsing of its response body.
+ * This helper rechecks the latched stop, takes the merged signal and invokes
+ * `send` in the same synchronous run. Direct transports should start before
+ * the callback's first await. SDK header preparation (Gemini) or a safe-fetch
+ * DNS check (external A2A) can await internally before opening a connection:
+ * those callers still pass the merged signal, so a stop in that window aborts
+ * the request. Once the callback has started, such failures end UNKNOWN and
+ * keep the charge rather than risk undercharging. Retry loops call this helper
+ * inside the loop.
+ *
+ * A refused reservation never reaches `send`. Once `send` starts, only complete
+ * provider usage can replace the charge; failures and incomplete usage mark it
+ * UNKNOWN. A stop (or an already aborted signal) before `send` releases it.
+ * Each reservation takes one terminal transition. Transition failures/timeouts
+ * leave it charged and cannot turn a successful provider call into a retry.
+ * No ledger means the ordinary guard check/signal and an otherwise untouched send.
+ */
+export async function dispatchBudgetSend<T>(options: {
+	request: DispatchBudgetRequest;
+	signal?: AbortSignal;
+	send: (
+		signal: AbortSignal | undefined,
+		outputCap: number | null,
+	) => Promise<{
+		result: T;
+		usage?: { inputTokens?: number; outputTokens?: number } | null;
+	}>;
+}): Promise<T> {
+	const guard = getDispatchGuard();
+	if (guard) {
+		await guard.assertDispatchable();
+	}
+	const budget = guard?.budget;
+	const reservation = budget ? await budget.reserve(options.request) : null;
+	const finish = async (write: () => Promise<void>) => {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			// Promise.resolve also catches a synchronous callback failure. The losing
+			// write keeps its rejection handler and is not raced by another transition.
+			const writing = Promise.resolve()
+				.then(write)
+				.catch(() => {
+					console.warn(
+						"[DispatchBudget] Ledger write failed; the attempt stays charged",
+					);
+				});
+			await Promise.race([
+				writing,
+				new Promise<void>((resolve) => {
+					timer = setTimeout(() => {
+						console.warn(
+							"[DispatchBudget] Ledger write still in flight; the attempt stays charged",
+						);
+						resolve();
+					}, RAW_SEND_SETTLEMENT_TIMEOUT_MS);
+				}),
+			]);
+		} finally {
+			clearTimeout(timer);
+		}
+	};
+	let signal: AbortSignal | undefined;
+	try {
+		signal = dispatchSendSignal(options.signal);
+		if (reservation && signal?.aborted) {
+			throw signal.reason ?? new DOMException("Aborted", "AbortError");
+		}
+	} catch (error) {
+		if (budget && reservation) {
+			await finish(() => budget.release(reservation.attemptId));
+		}
+		throw error;
+	}
+	// No await between dispatchSendSignal above and invocation of the send callback.
+	let sent: Awaited<ReturnType<typeof options.send>>;
+	try {
+		sent = await options.send(signal, reservation?.outputCap ?? null);
+	} catch (error) {
+		if (budget && reservation) {
+			await finish(() => budget.markUnknown(reservation.attemptId));
+		}
+		throw error;
+	}
+	if (budget && reservation) {
+		const input = sent.usage?.inputTokens;
+		const output = sent.usage?.outputTokens;
+		const complete =
+			typeof input === "number" &&
+			Number.isFinite(input) &&
+			input >= 0 &&
+			typeof output === "number" &&
+			Number.isFinite(output) &&
+			output >= 0;
+		await finish(() =>
+			complete
+				? budget.settle(reservation.attemptId, {
+						inputTokens: input,
+						outputTokens: output,
+					})
+				: budget.markUnknown(reservation.attemptId),
+		);
+	}
+	return sent.result;
 }

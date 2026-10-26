@@ -1,11 +1,13 @@
 import { type Connection, type ConnectionContext, Server } from "partyserver";
 import type { Env } from "./env";
 import type { ParlumeAuraBinding } from "./parlume-aura";
+import { classifyParlumeBargeIn } from "./parlume-barge-in";
 import type { ParlumeChatMessage } from "./parlume-chat";
 import {
 	type ParlumeChatBot,
 	ParlumeChatChannel,
 	type ParlumeChatTurn,
+	type ParlumePostAction,
 } from "./parlume-chat-channel";
 import type { ParlumeReplyChannel } from "./parlume-chat-commands";
 import {
@@ -15,6 +17,7 @@ import {
 } from "./parlume-pcm";
 import { createParlumeRealtimeEngine } from "./parlume-realtime-bridge";
 import {
+	type ParlumeRealtimeContext,
 	type ParlumeRealtimeEngine,
 	parseParlumeFabricResult,
 } from "./parlume-realtime-engine";
@@ -35,8 +38,13 @@ import {
 	PARLUME_COMPLETE_REQUEST_QUIET_MS,
 	ParlumeTurnEndpoint,
 } from "./parlume-turn-endpoint";
-import { ParlumeVoiceFloor } from "./parlume-voice-floor";
-import { parseParlumeWake } from "./parlume-wake";
+import { ParlumeVoiceFloor, UNKNOWN_SPEAKER } from "./parlume-voice-floor";
+import {
+	isSameParlumeRequest,
+	mayNameParlumePost,
+	parseParlumeSpokenReference,
+	parseParlumeWake,
+} from "./parlume-wake";
 
 const WATCHDOG_RETRY_MS = 5 * 60 * 1000;
 const ACCESS_CHECK_MS = 60 * 1000;
@@ -47,6 +55,9 @@ const STREAM_CLOSED_KEY = "streamClosed";
 const STREAM_ERROR_KEY = "streamError";
 const WAKE_ARM_KEY = "wakeArm";
 const PENDING_TURNS_KEY = "pendingTurns";
+// The Durable Object is restarted now and then by Cloudflare (a runtime
+// update, a host move) even mid-meeting; the realtime voice resumes from this.
+const REALTIME_CONTEXT_KEY = "realtimeContext";
 const MAX_PENDING_SEGMENTS = 1_000;
 const MAX_SEGMENTS_PER_FLUSH = 25;
 // Nobody has spoken for this long and Parlume is silent: treat the meeting
@@ -54,6 +65,8 @@ const MAX_SEGMENTS_PER_FLUSH = 25;
 const IDLE_LEAVE_MS = 3 * 60 * 1000;
 const LAST_ACTIVITY_KEY = "lastActivityAt";
 const IDLE_REPORTED_KEY = "idleReported";
+// Flux's end-of-turn confidence for its early guess; its final needs 0.7.
+const PARLUME_EAGER_EOT_THRESHOLD = "0.5";
 
 interface BridgeState {
 	sessionId: string;
@@ -109,7 +122,7 @@ function parlumeSpeakerKey(
 	speakerId: string | null,
 	speakerName: string | null,
 ): string {
-	return speakerId ?? speakerName?.toLowerCase() ?? "unknown";
+	return speakerId ?? speakerName?.toLowerCase() ?? UNKNOWN_SPEAKER;
 }
 
 // Workers Logs keep these as structured fields. Ids only: never the meeting
@@ -174,6 +187,9 @@ export class Parlume extends Server<Env> {
 	private connectionGeneration = 0;
 	// When the latest wake phrase was heard, for the dispatch timing log.
 	private wokeAt = 0;
+	// A request started on Flux's early end-of-turn, kept while its final
+	// transcript is awaited.
+	private eagerTurn: { request: string; generation: number } | null = null;
 	private turnEndpoint = new ParlumeTurnEndpoint<PendingTurn>((turn) => {
 		void this.dispatchTurn(turn);
 	});
@@ -229,6 +245,8 @@ export class Parlume extends Server<Env> {
 	// Set while the realtime engine is starting or speaking; null when the
 	// meeting runs on the classic engine.
 	private realtime: ParlumeRealtimeEngine | null = null;
+	/** Where on the audio clock the latest final transcript ended. */
+	private finalHeardUntil = 0;
 	// Realtime could not be started or kept up: classic for the rest of the
 	// meeting, stream reconnects included.
 	private realtimeGaveUp = false;
@@ -237,9 +255,22 @@ export class Parlume extends Server<Env> {
 		await this.floor.load();
 		// A restart loses the in-memory clock; the stored value is refreshed on
 		// every final segment, so the idle window resumes rather than restarts.
-		this.lastActivityAt =
-			(await this.ctx.storage.get<number>(LAST_ACTIVITY_KEY)) ??
-			Date.now();
+		const storedActivityAt =
+			await this.ctx.storage.get<number>(LAST_ACTIVITY_KEY);
+		this.lastActivityAt = storedActivityAt ?? Date.now();
+		// Cloudflare resets the object now and then mid-meeting ("Durable Object
+		// connection closed because the object was reset"), with no deploy and
+		// no memory, CPU or exception error of ours. This counts them. The bridge
+		// is stored at invite, so only a meeting that has already heard someone
+		// counts as restarted.
+		const bridge = await this.ctx.storage.get<BridgeState>("bridge");
+		if (bridge && storedActivityAt !== undefined) {
+			log("info", "bridge.restarted", {
+				sessionId: bridge.sessionId,
+				botId: bridge.botId,
+				sinceActivityMs: Date.now() - this.lastActivityAt,
+			});
+		}
 	}
 
 	/**
@@ -442,6 +473,9 @@ export class Parlume extends Server<Env> {
 				encoding: "linear16",
 				sample_rate: String(sampleRate),
 				keyterm: "Parlume",
+				// Flux's early end-of-turn lets a request start before Flux is
+				// sure the speaker has finished (see `startEagerTurn`).
+				eager_eot_threshold: PARLUME_EAGER_EOT_THRESHOLD,
 			},
 			{ websocket: true },
 		);
@@ -462,6 +496,12 @@ export class Parlume extends Server<Env> {
 		if (!state.botId || !audio) {
 			return;
 		}
+		if (transcript.isFinal) {
+			this.finalHeardUntil = Math.max(
+				this.finalHeardUntil,
+				transcript.endMs,
+			);
+		}
 		const speaker = this.speakers.attribute(
 			transcript.startMs,
 			transcript.endMs,
@@ -472,31 +512,11 @@ export class Parlume extends Server<Env> {
 		const speakerKey = parlumeSpeakerKey(speakerId, speakerName);
 		if (!fromBot) {
 			await this.noteActivity({ persist: transcript.isFinal });
-			if (transcript.isFinal) {
-				this.chat.noteSpeechSegment();
+			if (transcript.isFinal && this.chat.noteSpeechSegment()) {
+				await this.wakeForSuggestionPass();
 			}
 		}
 		const realtime = this.realtimeVoice();
-		if (!transcript.isFinal) {
-			await this.floor.onPartial(state, {
-				fromBot,
-				text: transcript.text,
-				held: () => this.turnEndpoint.hold(speakerKey),
-			});
-			if (
-				realtime &&
-				!fromBot &&
-				transcript.text &&
-				parseParlumeWake(transcript.text) !== null
-			) {
-				realtime.arm({
-					requester: speakerName,
-					speakerKey,
-					endOfTurn: false,
-				});
-			}
-			return;
-		}
 		const segment: PendingSegment = {
 			sessionId: state.sessionId,
 			botId: state.botId,
@@ -513,19 +533,91 @@ export class Parlume extends Server<Env> {
 				Math.round(transcript.endMs - audio.startTime),
 			),
 		};
-		const bargeIn = await this.floor.onFinal(state, {
-			fromBot,
-			text: segment.text,
-			speakerId,
-		});
-		// A cancel phrase is never a request of its own.
-		if (bargeIn !== "cancel" && !fromBot) {
+		if (transcript.tentative) {
+			if (!realtime && !fromBot) {
+				await this.onTentativeEnd(
+					state,
+					segment,
+					transcript.tentative,
+					speakerKey,
+				);
+			}
+			return;
+		}
+		if (!transcript.isFinal) {
+			await this.floor.onPartial(state, {
+				fromBot,
+				text: transcript.text,
+				held: () => this.turnEndpoint.hold(speakerKey),
+			});
+			const partialWake =
+				realtime && !fromBot ? parseParlumeWake(transcript.text) : null;
+			if (
+				realtime &&
+				!fromBot &&
+				classifyParlumeBargeIn(transcript.text) === "cancel"
+			) {
+				realtime.disarm();
+			} else if (
+				realtime &&
+				partialWake !== null &&
+				!mayNameParlumePost(partialWake) &&
+				// Transcripts are handled concurrently: a partial of an
+				// utterance whose final was already answered must not arm
+				// Parlume again.
+				transcript.endMs > this.finalHeardUntil
+			) {
+				realtime.arm({
+					requester: speakerName,
+					speakerKey,
+					endOfTurn: false,
+				});
+			}
+			return;
+		}
+		// The request already started on Flux's early end-of-turn: it is not
+		// started again, and does not barge in on its own answer.
+		const eagerKept =
+			!fromBot &&
+			!realtime &&
+			(await this.settleEagerTurn(state, segment));
+		const bargeIn = eagerKept
+			? "ignore"
+			: await this.floor.onFinal(state, {
+					fromBot,
+					text: segment.text,
+					speakerId,
+					speakerKey,
+				});
+		if (eagerKept) {
+			log("info", "turn.eager_kept", {
+				sessionId: state.sessionId,
+				botId: state.botId,
+				speakerId,
+			});
+		} else if (bargeIn === "cancel") {
+			// A cancel phrase is never a request of its own, even one that
+			// opened with Parlume's name and armed the realtime voice.
+			realtime?.disarm();
+		} else if (!fromBot) {
 			if (realtime) {
 				// The realtime voice heard the request itself; Flux only says
 				// that it was addressed to Parlume, and that it has ended.
 				realtime.noteLine(speakerName, segment.text);
-				if (
-					(await this.resolveWakeTurn(segment)) !== null ||
+				const wake = await this.resolveWakeTurn(segment);
+				const action = wake
+					? await this.postReferenceAction(segment, wake.text)
+					: null;
+				if (action?.kind === "speak") {
+					void realtime.say(action.text);
+				} else if (action?.kind === "ask") {
+					void realtime.respondToRequest(
+						speakerName,
+						speakerKey,
+						action.text,
+					);
+				} else if (
+					wake !== null ||
 					parseParlumeWake(segment.text) !== null
 				) {
 					realtime.arm({
@@ -699,7 +791,9 @@ export class Parlume extends Server<Env> {
 				);
 			}
 			return Response.json({
-				accepted: this.realtimeVoice()?.deliverResult(result) === true,
+				// A result survives a reconnect: the engine speaks it once the
+				// new session is up.
+				accepted: this.realtime?.deliverResult(result) === true,
 			});
 		}
 		if (action === "verify-generation") {
@@ -813,9 +907,13 @@ export class Parlume extends Server<Env> {
 		return this.realtimeVoice()?.say(text) ?? this.floor.speakLocally(text);
 	}
 
-	/** The realtime engine, once it is the one speaking. */
+	/**
+	 * The realtime engine while a session is open. Until it first connects, and
+	 * while it reconnects, it cannot hear the meeting, so the classic voice
+	 * answers instead of a request going unheard.
+	 */
 	private realtimeVoice(): ParlumeRealtimeEngine | null {
-		return this.realtime?.active ? this.realtime : null;
+		return this.realtime?.connected ? this.realtime : null;
 	}
 
 	/**
@@ -839,6 +937,8 @@ export class Parlume extends Server<Env> {
 			},
 			generation: () => this.floor.generation,
 			chat: this.chat,
+			saveContext: (context) =>
+				void this.ctx.storage.put(REALTIME_CONTEXT_KEY, context),
 			fallBack: (stopped, reason) => {
 				if (this.realtime === stopped) {
 					this.realtime = null;
@@ -854,6 +954,13 @@ export class Parlume extends Server<Env> {
 			log,
 		});
 		this.realtime = engine;
+		const saved =
+			await this.ctx.storage.get<ParlumeRealtimeContext>(
+				REALTIME_CONTEXT_KEY,
+			);
+		if (saved) {
+			engine.restore(saved);
+		}
 		const started = await engine.start();
 		if (this.realtime !== engine) {
 			engine.stop("superseded");
@@ -990,11 +1097,8 @@ export class Parlume extends Server<Env> {
 		}
 		await this.reportIdleMeeting(bridge);
 		await this.chat.checkDeliveries();
-		await this.chat.runSuggestionPass({
-			enabled:
-				bridge.suggestionsEnabled === true &&
-				this.liveStream() !== null,
-		});
+		const suggestions = this.suggestionsEnabled(bridge);
+		await this.chat.runSuggestionPass({ enabled: suggestions });
 		const [flushed, turnsFlushed] = await Promise.all([
 			this.flushPendingSegments(),
 			this.flushPendingTurns(),
@@ -1009,7 +1113,7 @@ export class Parlume extends Server<Env> {
 				: !turnsFlushed
 					? TURN_RETRY_MS
 					: ACCESS_CHECK_MS;
-			const chatWakeAt = await this.chat.nextWakeAt();
+			const chatWakeAt = await this.chat.nextWakeAt({ suggestions });
 			await this.ctx.storage.setAlarm(
 				Math.min(
 					hardStopAt,
@@ -1030,6 +1134,28 @@ export class Parlume extends Server<Env> {
 			return;
 		}
 		await this.ctx.storage.delete("bridge");
+	}
+
+	private suggestionsEnabled(bridge: BridgeState): boolean {
+		return bridge.suggestionsEnabled === true && this.liveStream() !== null;
+	}
+
+	// The alarm otherwise runs on the access-check cadence, which would leave a
+	// due suggestion pass waiting up to a minute after the remark it answers.
+	// Only an alarm already set is brought forward: none means the bridge is
+	// shutting down.
+	private async wakeForSuggestionPass(): Promise<void> {
+		const bridge = await this.ctx.storage.get<BridgeState>("bridge");
+		if (!bridge || !this.suggestionsEnabled(bridge)) {
+			return;
+		}
+		const [wakeAt, alarm] = await Promise.all([
+			this.chat.nextWakeAt({ suggestions: true }),
+			this.ctx.storage.getAlarm(),
+		]);
+		if (wakeAt !== null && alarm !== null && wakeAt < alarm) {
+			await this.ctx.storage.setAlarm(wakeAt);
+		}
 	}
 
 	// Runs on the access-check cadence, so a silent meeting is reported within
@@ -1272,11 +1398,16 @@ export class Parlume extends Server<Env> {
 		if (!wake) {
 			return;
 		}
-		const turnText = wake.text;
+		const action = await this.postReferenceAction(segment, wake.text);
 		if (this.floor.isAnswering()) {
 			await this.floor.interrupt(state);
 		}
-		const generation = await this.floor.beginReply(true);
+		if (action?.kind === "speak") {
+			void this.speakLocally(action.text);
+			return;
+		}
+		const turnText = action?.kind === "ask" ? action.text : wake.text;
+		const generation = await this.floor.beginReply(true, speakerKey);
 		this.wokeAt = Date.now();
 		log("info", "wake.detected", {
 			sessionId: segment.sessionId,
@@ -1307,6 +1438,103 @@ export class Parlume extends Server<Env> {
 			// endpoint's default window.
 			wake.armed ? undefined : PARLUME_COMPLETE_REQUEST_QUIET_MS,
 		);
+	}
+
+	/**
+	 * Flux guesses early that a turn has ended, and takes the guess back if the
+	 * speaker goes on. A complete request to the classic voice starts on the
+	 * guess, which saves the rest of Flux's end-of-turn wait; a guess taken
+	 * back stops it. Chat post commands and dictation wait for the final
+	 * transcript, and so does any request while Parlume is already answering.
+	 */
+	private async onTentativeEnd(
+		state: StreamConnection,
+		segment: PendingSegment,
+		tentative: "eager" | "resumed",
+		speakerKey: string,
+	): Promise<void> {
+		if (tentative === "resumed") {
+			const eager = this.eagerTurn;
+			this.eagerTurn = null;
+			if (eager && eager.generation === this.floor.generation) {
+				log("info", "turn.eager_resumed", {
+					sessionId: segment.sessionId,
+					botId: segment.botId,
+					voiceGeneration: eager.generation,
+				});
+				await this.floor.interrupt(state);
+			}
+			return;
+		}
+		const request = parseParlumeWake(segment.text);
+		if (
+			!request ||
+			classifyParlumeBargeIn(segment.text) === "cancel" ||
+			segment.speakerName?.toLowerCase().includes("parlume") ||
+			this.floor.isAnswering() ||
+			parseParlumeSpokenReference(request) ||
+			isIncompleteParlumeDictation(request)
+		) {
+			return;
+		}
+		await this.beginWakeTurn(state, segment, speakerKey);
+		this.eagerTurn = { request, generation: this.floor.generation };
+		log("info", "turn.eager_started", {
+			sessionId: segment.sessionId,
+			botId: segment.botId,
+			voiceGeneration: this.floor.generation,
+		});
+	}
+
+	/**
+	 * Whether the final transcript asks what the early start already asked.
+	 * One that asks anything else stops the early answer and goes on as a
+	 * transcript of its own.
+	 */
+	private async settleEagerTurn(
+		state: StreamConnection,
+		segment: PendingSegment,
+	): Promise<boolean> {
+		const eager = this.eagerTurn;
+		this.eagerTurn = null;
+		if (!eager || eager.generation !== this.floor.generation) {
+			return false;
+		}
+		const request = parseParlumeWake(segment.text);
+		if (request !== null && isSameParlumeRequest(request, eager.request)) {
+			return true;
+		}
+		log("info", "turn.eager_discarded", {
+			sessionId: segment.sessionId,
+			botId: segment.botId,
+			voiceGeneration: eager.generation,
+		});
+		await this.floor.interrupt(state);
+		return false;
+	}
+
+	/**
+	 * "Parlume, go P3" acts on a chat post the way the typed command does, and
+	 * is answered aloud, in either voice.
+	 */
+	private async postReferenceAction(
+		segment: PendingSegment,
+		request: string,
+	): Promise<ParlumePostAction | null> {
+		const reference = parseParlumeSpokenReference(request);
+		const action = reference
+			? await this.chat.spokenReference(reference)
+			: null;
+		if (reference && action) {
+			log("info", "wake.post_reference", {
+				sessionId: segment.sessionId,
+				botId: segment.botId,
+				command: reference.kind,
+				tag: reference.tag,
+				action: action.kind,
+			});
+		}
+		return action;
 	}
 
 	private async resolveWakeTurn(input: {
@@ -1349,9 +1577,9 @@ export class Parlume extends Server<Env> {
 
 	private async dispatchTurn(turn: PendingTurn): Promise<void> {
 		const endpointedAt = Date.now();
-		// The request's segments reach Fabric first, so the turn sees them as
-		// meeting context.
-		await this.finalSegmentChain;
+		// Not held for the transcript segments still being posted: the turn
+		// carries its own request, and the worker reads the meeting's segments
+		// only after its workflow has started, by when they have usually landed.
 		if (turn.voiceGeneration !== this.floor.generation) {
 			log("info", "turn.superseded", {
 				sessionId: turn.sessionId,
@@ -1360,11 +1588,14 @@ export class Parlume extends Server<Env> {
 			});
 			return;
 		}
-		if (
+		const accepted =
 			(await this.floor.flushPendingInterrupt()) &&
-			turn.voiceGeneration === this.floor.generation &&
-			(await this.postToFabric("/api/internal/parlume/turns", turn))
-		) {
+			turn.voiceGeneration === this.floor.generation
+				? await this.postToFabric("/api/internal/parlume/turns", turn)
+				: null;
+		if (accepted) {
+			const handoffMs = Date.now() - endpointedAt;
+			const body: unknown = await accepted.json().catch(() => null);
 			log("info", "turn.dispatched", {
 				sessionId: turn.sessionId,
 				botId: turn.botId,
@@ -1372,7 +1603,12 @@ export class Parlume extends Server<Env> {
 				requestChars: turn.text.length,
 				// Wake phrase to the end of the request, then to Fabric's accept.
 				endpointMs: endpointedAt - this.wokeAt,
-				handoffMs: Date.now() - endpointedAt,
+				handoffMs,
+				// Fabric's own steps, from when its handler started.
+				fabricTiming:
+					isRecord(body) && isRecord(body.timing)
+						? body.timing
+						: null,
 			});
 			return;
 		}

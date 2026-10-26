@@ -21,7 +21,8 @@ This directory contains the .NET Aspire 13.6 orchestration layer for the Fabric 
 2. **Aspire CLI 13.6+** (required for MCP tool discovery; the CLI ships as a NativeAOT global tool with instant startup)
    ```bash
    aspire --version
-   # Install/update: dotnet tool install -g Aspire.Cli
+   # Install: dotnet tool install -g Aspire.Cli
+   # Update a global-tool install: dotnet tool update -g Aspire.Cli
    # Or update an existing install: aspire update --self
    ```
 
@@ -30,12 +31,12 @@ This directory contains the .NET Aspire 13.6 orchestration layer for the Fabric 
    dotnet new install Aspire.ProjectTemplates --force
    ```
 
-3. **Docker Desktop** (for containers)
+4. **Docker Desktop** (for containers)
    ```bash
    docker --version
    ```
 
-4. **Node.js 22+** with pnpm
+5. **Node.js 22+** with pnpm
    ```bash
    node --version
    pnpm --version
@@ -260,6 +261,41 @@ All services support hot reload:
 - **Terminal**: View logs in the Aspire terminal output
 
 ## Troubleshooting
+
+### Run One Fabric Stack at a Time
+
+The infrastructure containers use `ContainerLifetime.Persistent`, so they keep
+running after the AppHost stops. Their data volumes have fixed names (for
+example `fabric-postgres-data`, `fabric-redis-data`, `fabric-qdrant-data` and
+`fabric-minio-data`), so every checkout of this repository uses the same
+volumes, while container names get a per-checkout suffix such as
+`postgres-1a2b3c4d`.
+
+Starting the AppHost from a second checkout while the first checkout's
+containers are still up mounts the same volumes into a second set of
+containers. Two Postgres servers on one data directory can leave the database
+unable to start (`PANIC: could not locate a valid checkpoint record`). Before
+switching checkouts, stop the other stack's containers:
+
+```bash
+# Infrastructure containers from any checkout
+docker ps --format '{{.Names}}' | grep -E '^(postgres|cache|qdrant|minio|temporal)-'
+
+# Stop every container with the other checkout's suffix
+docker stop $(docker ps -q --filter name=-<suffix>)
+```
+
+### Resource Shows FailedToStart on a Slow Machine
+
+Aspire 13.6.4 retries a timed-out create request and checks whether the
+resource was created before marking it `FailedToStart`. If startup still times
+out, raise the orchestrator's limits (time-span values, at most ten minutes)
+through configuration or environment variables:
+
+```bash
+export DcpPublisher__KubernetesApiTimeout=00:01:30           # default 00:00:40
+export DcpPublisher__KubernetesCreateRecoveryTimeout=00:04:00 # default 00:02:00
+```
 
 ### Port Already in Use
 ```bash

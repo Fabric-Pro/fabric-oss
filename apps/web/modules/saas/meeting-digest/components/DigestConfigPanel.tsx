@@ -9,6 +9,11 @@ import {
 } from "@ui/components/dropdown-menu";
 import { format } from "date-fns";
 import { MoreVerticalIcon, PlusIcon } from "lucide-react";
+import type {
+	ParlumeAutoJoinSettings,
+	ParlumeAutoJoinState,
+} from "../hooks/use-meeting-digest";
+import { ParlumeAutoJoinControl } from "./ParlumeAutoJoinControl";
 
 export interface ConfigMeeting {
 	linkedMeetingId: string;
@@ -16,6 +21,17 @@ export interface ConfigMeeting {
 	includedInDigest: boolean;
 	// Date over the wire may arrive serialized — parse defensively when rendering.
 	lastMeetingDate: Date | string | null;
+	parlumeAutoJoin?: ParlumeAutoJoinState | null;
+}
+
+/** Present only while both the Parlume and meeting agenda flags are on. */
+export interface ConfigPanelAutoJoin {
+	settingsBasePath: string;
+	pendingIds: Set<string>;
+	onChange: (
+		linkedMeetingId: string,
+		settings: ParlumeAutoJoinSettings,
+	) => void;
 }
 
 export function DigestConfigPanel({
@@ -24,6 +40,7 @@ export function DigestConfigPanel({
 	pendingIncludeIds,
 	onAddMeeting,
 	onUnlink,
+	autoJoin,
 }: {
 	meetings: ConfigMeeting[];
 	onSetIncluded: (linkedMeetingId: string, included: boolean) => void;
@@ -35,6 +52,7 @@ export function DigestConfigPanel({
 	pendingIncludeIds?: Set<string>;
 	onAddMeeting: () => void;
 	onUnlink: (meeting: ConfigMeeting) => void;
+	autoJoin?: ConfigPanelAutoJoin;
 }) {
 	return (
 		<div className="space-y-2">
@@ -60,61 +78,79 @@ export function DigestConfigPanel({
 			) : (
 				<ul className="divide-y rounded border">
 					{meetings.map((m) => (
-						<li
-							key={m.linkedMeetingId}
-							className="flex items-center justify-between p-2"
-						>
-							<div className="min-w-0">
-								<p className="truncate text-sm">
-									{m.subject ?? "Meeting"}
-								</p>
-								<p className="text-xs text-muted-foreground">
-									{m.lastMeetingDate
-										? `Last meeting ${format(new Date(m.lastMeetingDate), "MMM d, yyyy")}`
-										: "No meetings synced yet"}
-								</p>
+						<li key={m.linkedMeetingId} className="space-y-2 p-2">
+							<div className="flex items-center justify-between">
+								<div className="min-w-0">
+									<p className="truncate text-sm">
+										{m.subject ?? "Meeting"}
+									</p>
+									<p className="text-xs text-muted-foreground">
+										{m.lastMeetingDate
+											? `Last meeting ${format(new Date(m.lastMeetingDate), "MMM d, yyyy")}`
+											: "No meetings synced yet"}
+									</p>
+								</div>
+								<div className="flex shrink-0 items-center gap-1">
+									<Button
+										type="button"
+										variant="outline"
+										size="sm"
+										disabled={pendingIncludeIds?.has(
+											m.linkedMeetingId,
+										)}
+										onClick={() =>
+											onSetIncluded(
+												m.linkedMeetingId,
+												!m.includedInDigest,
+											)
+										}
+									>
+										{m.includedInDigest
+											? "Exclude"
+											: "Include"}
+									</Button>
+									{/* Unlink lives behind a menu, never adjacent to
+									    Exclude: Exclude is reversible, unlink deletes
+									    the link and purges transcript context. */}
+									<DropdownMenu>
+										<DropdownMenuTrigger asChild>
+											<Button
+												type="button"
+												variant="ghost"
+												size="icon"
+												aria-label={`Meeting options for ${m.subject ?? "Meeting"}`}
+											>
+												<MoreVerticalIcon className="size-4" />
+											</Button>
+										</DropdownMenuTrigger>
+										<DropdownMenuContent align="end">
+											<DropdownMenuItem
+												className="text-destructive"
+												onSelect={() => onUnlink(m)}
+											>
+												Unlink meeting…
+											</DropdownMenuItem>
+										</DropdownMenuContent>
+									</DropdownMenu>
+								</div>
 							</div>
-							<div className="flex shrink-0 items-center gap-1">
-								<Button
-									type="button"
-									variant="outline"
-									size="sm"
-									disabled={pendingIncludeIds?.has(
+							{autoJoin && (
+								<ParlumeAutoJoinControl
+									linkedMeetingId={m.linkedMeetingId}
+									subject={m.subject}
+									state={m.parlumeAutoJoin}
+									settingsBasePath={autoJoin.settingsBasePath}
+									pending={autoJoin.pendingIds.has(
 										m.linkedMeetingId,
 									)}
-									onClick={() =>
-										onSetIncluded(
+									onChange={(settings) =>
+										autoJoin.onChange(
 											m.linkedMeetingId,
-											!m.includedInDigest,
+											settings,
 										)
 									}
-								>
-									{m.includedInDigest ? "Exclude" : "Include"}
-								</Button>
-								{/* Unlink lives behind a menu, never adjacent to
-								    Exclude: Exclude is reversible, unlink deletes
-								    the link and purges transcript context. */}
-								<DropdownMenu>
-									<DropdownMenuTrigger asChild>
-										<Button
-											type="button"
-											variant="ghost"
-											size="icon"
-											aria-label={`Meeting options for ${m.subject ?? "Meeting"}`}
-										>
-											<MoreVerticalIcon className="size-4" />
-										</Button>
-									</DropdownMenuTrigger>
-									<DropdownMenuContent align="end">
-										<DropdownMenuItem
-											className="text-destructive"
-											onSelect={() => onUnlink(m)}
-										>
-											Unlink meeting…
-										</DropdownMenuItem>
-									</DropdownMenuContent>
-								</DropdownMenu>
-							</div>
+								/>
+							)}
 						</li>
 					))}
 				</ul>

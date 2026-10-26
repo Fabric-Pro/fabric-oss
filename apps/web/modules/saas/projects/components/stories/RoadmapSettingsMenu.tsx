@@ -44,7 +44,6 @@ import {
 	DEFAULT_ROADMAP_COLUMN_ORDER,
 	DEFAULT_ROADMAP_COLUMNS,
 	DEFAULT_ROADMAP_MODE,
-	ROADMAP_COLUMN_LABELS,
 	type RoadmapColumnKey,
 	type RoadmapColumns,
 	type RoadmapFieldKey,
@@ -68,6 +67,8 @@ export type RoadmapSettingsMenuProps = {
 	onSave: () => void;
 	/** Discard unsaved edits, snapping the roadmap back to the last-saved view. */
 	onCancel: () => void;
+	showHidden?: boolean;
+	onShowHiddenChange?: (show: boolean) => void;
 };
 
 /** One draggable, toggle-able card-field row in the Card fields list. */
@@ -85,6 +86,8 @@ function SortableFieldRow({
 	locked?: boolean;
 	onCheckedChange: (checked: boolean) => void;
 }) {
+	const t = useTranslations("projects.stories.roadmapUi");
+	const checkboxId = useId();
 	const {
 		attributes,
 		listeners,
@@ -107,7 +110,7 @@ function SortableFieldRow({
 		>
 			<button
 				type="button"
-				aria-label={`Reorder ${label}`}
+				aria-label={t("reorderField", { label })}
 				className="cursor-grab touch-none text-muted-foreground/50 transition-colors hover:text-foreground active:cursor-grabbing"
 				{...attributes}
 				{...listeners}
@@ -115,6 +118,7 @@ function SortableFieldRow({
 				<GripVerticalIcon className="size-3.5" />
 			</button>
 			<label
+				htmlFor={checkboxId}
 				className={cn(
 					"flex flex-1 items-center gap-2 text-sm",
 					locked
@@ -123,9 +127,12 @@ function SortableFieldRow({
 				)}
 			>
 				<Checkbox
+					id={checkboxId}
 					checked={checked}
 					disabled={locked}
-					aria-label={locked ? `${label} (always shown)` : undefined}
+					aria-label={
+						locked ? t("alwaysShown", { label }) : undefined
+					}
 					onCheckedChange={
 						locked ? undefined : (c) => onCheckedChange(c === true)
 					}
@@ -148,7 +155,13 @@ export function RoadmapSettingsMenu({
 	isDirty,
 	onSave,
 	onCancel,
+	showHidden,
+	onShowHiddenChange,
 }: RoadmapSettingsMenuProps) {
+	const t = useTranslations("projects.stories.roadmapUi");
+	const viewLabel = t(isDirty ? "viewUnsaved" : "view", {
+		layout: t(`layouts.${mode}`),
+	});
 	const tTips = useTranslations("tooltips.stories");
 	const [open, setOpen] = useState(false);
 	// Two-step Reset: the first click reveals an inline confirm (it wipes every
@@ -172,6 +185,8 @@ export function RoadmapSettingsMenu({
 	// roadmap as you edit; the hook holds it as an unsaved draft. Save persists it
 	// (survives refresh); Cancel discards it back to the last-saved view.
 	const headingId = useId();
+	const hiddenId = useId();
+	const hiddenHelpId = useId();
 
 	const sensors = useSensors(
 		useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -215,20 +230,17 @@ export function RoadmapSettingsMenu({
 				setOpen(o);
 			}}
 		>
-			<Tooltip>
+			<Tooltip disabled={open}>
 				<TooltipTrigger asChild>
 					<PopoverTrigger asChild>
 						<Button
 							variant="ghost"
-							size="icon"
-							className="relative size-8"
-							aria-label={
-								isDirty
-									? "Roadmap view settings (unsaved changes)"
-									: "Roadmap view settings"
-							}
+							size="sm"
+							className="relative gap-2"
+							aria-label={viewLabel}
 						>
-							<SettingsIcon className="size-4" />
+							<SettingsIcon aria-hidden className="size-4" />
+							{t("view", { layout: t(`layouts.${mode}`) })}
 							{/* Unsaved-draft cue: the live view differs from the
 							    saved one, which a refresh would revert. */}
 							{isDirty && (
@@ -241,9 +253,7 @@ export function RoadmapSettingsMenu({
 					</PopoverTrigger>
 				</TooltipTrigger>
 				<TooltipContent>
-					{isDirty
-						? "Settings — unsaved changes (Save to keep)"
-						: "Settings — layout, grouping, fields"}
+					{isDirty ? t("settingsUnsavedHelp") : t("settingsHelp")}
 				</TooltipContent>
 			</Tooltip>
 			<PopoverContent
@@ -256,32 +266,59 @@ export function RoadmapSettingsMenu({
 						id={headingId}
 						className="text-xs font-semibold uppercase tracking-[0.16em] text-muted-foreground"
 					>
-						Settings
+						{t("settings")}
 					</p>
 					<p className="mt-1 text-[11px] leading-snug text-muted-foreground">
-						Personal to you — changing these doesn't affect the
-						roadmap for your teammates.
+						{t("personalViewHelp")}
 					</p>
 				</div>
+				{onShowHiddenChange && (
+					<div className="space-y-2">
+						<label
+							htmlFor={hiddenId}
+							className="flex items-center gap-2 text-sm"
+						>
+							<Checkbox
+								id={hiddenId}
+								aria-describedby={hiddenHelpId}
+								checked={showHidden}
+								onCheckedChange={(checked) =>
+									onShowHiddenChange(checked === true)
+								}
+							/>
+							{t("showHidden")}
+						</label>
+						<p
+							id={hiddenHelpId}
+							className="text-sm text-muted-foreground"
+						>
+							{tTips(
+								showHidden
+									? "hideClosedFeatures"
+									: "showClosedFeatures",
+							)}
+						</p>
+					</div>
+				)}
 				<div>
 					<Segmented<RoadmapViewMode>
-						label="Layout"
+						label={t("layout")}
 						value={mode}
 						onChange={onModeChange}
 						options={[
 							{
 								value: "table",
-								label: "Table",
+								label: t("layouts.table"),
 								icon: <ListIcon className="size-3.5" />,
 							},
 							{
 								value: "board",
-								label: "Board",
+								label: t("layouts.board"),
 								icon: <LayoutGridIcon className="size-3.5" />,
 							},
 							{
 								value: "plain",
-								label: "Plain",
+								label: t("layouts.plain"),
 								icon: <Rows3Icon className="size-3.5" />,
 							},
 							// Priority is deliberately absent: it is a peer SECTION
@@ -295,8 +332,7 @@ export function RoadmapSettingsMenu({
 					    of silently navigating. */}
 					{mode === "priority" && (
 						<p className="mt-1 text-[11px] leading-snug text-muted-foreground">
-							You're viewing the Priority section — picking a
-							layout returns you to Work items.
+							{t("priorityLayoutHelp")}
 						</p>
 					)}
 				</div>
@@ -305,24 +341,24 @@ export function RoadmapSettingsMenu({
 				    two grouped layouts. */}
 				{mode !== "plain" && mode !== "priority" && (
 					<Segmented<RoadmapGroupBy>
-						label="Group by"
+						label={t("groupBy")}
 						value={groupBy}
 						onChange={onGroupByChange}
 						options={[
 							{
 								value: "priority",
-								label: "Priority",
+								label: t("priority"),
 								tooltip: tTips("groupByPriority"),
 							},
-							{ value: "stage", label: "Stage" },
+							{ value: "stage", label: t("groupStage") },
 							{
 								value: "track",
-								label: "Delivery track",
+								label: t("groupTrack"),
 								tooltip: tTips("groupByTrack"),
 							},
 							{
 								value: "phase",
-								label: "Phase",
+								label: t("groupPhase"),
 								tooltip: tTips("groupByPhase"),
 							},
 						]}
@@ -337,10 +373,10 @@ export function RoadmapSettingsMenu({
 						<div className="space-y-2">
 							<div className="flex items-center justify-between">
 								<p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-									Card fields
+									{t("cardFields")}
 								</p>
 								<span className="text-[10px] text-muted-foreground/50">
-									drag to reorder
+									{t("reorderHint")}
 								</span>
 							</div>
 							<div className="space-y-1">
@@ -359,13 +395,9 @@ export function RoadmapSettingsMenu({
 												<SortableFieldRow
 													key={key}
 													id={key}
-													label={
-														isTitle
-															? "Title"
-															: ROADMAP_COLUMN_LABELS[
-																	key
-																]
-													}
+													label={t(
+														`fieldLabels.${key}`,
+													)}
 													checked={
 														isTitle
 															? true
@@ -394,8 +426,7 @@ export function RoadmapSettingsMenu({
 					{resetConfirm && (
 						<div className="rounded-md border border-border bg-muted/40 p-2">
 							<p className="mb-2 text-[11px] text-muted-foreground">
-								Reset layout, grouping and fields to their
-								defaults?
+								{t("resetConfirm")}
 							</p>
 							<div className="flex justify-end gap-2">
 								<Button
@@ -409,7 +440,7 @@ export function RoadmapSettingsMenu({
 									size="sm"
 									onClick={() => setResetConfirm(false)}
 								>
-									Cancel
+									{t("cancel")}
 								</Button>
 								<Button
 									variant="destructive"
@@ -419,14 +450,14 @@ export function RoadmapSettingsMenu({
 										setResetConfirm(false);
 									}}
 								>
-									Reset to defaults
+									{t("resetDefaults")}
 								</Button>
 							</div>
 						</div>
 					)}
 					{isDirty && (
 						<p className="text-center text-[11px] text-primary/80">
-							Unsaved changes — Save to keep them after a refresh.
+							{t("unsavedChanges")}
 						</p>
 					)}
 					<div className="flex items-center justify-between">
@@ -439,7 +470,7 @@ export function RoadmapSettingsMenu({
 							className="px-2 text-muted-foreground hover:text-foreground"
 						>
 							<RotateCcwIcon className="mr-1.5 size-3.5" />
-							Reset
+							{t("reset")}
 						</Button>
 						<div className="flex gap-2">
 							<Button
@@ -452,7 +483,7 @@ export function RoadmapSettingsMenu({
 									setOpen(false);
 								}}
 							>
-								Cancel
+								{t("cancel")}
 							</Button>
 							<Button
 								size="sm"
@@ -463,7 +494,7 @@ export function RoadmapSettingsMenu({
 									setOpen(false);
 								}}
 							>
-								Save
+								{t("save")}
 							</Button>
 						</div>
 					</div>

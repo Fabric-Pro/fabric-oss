@@ -4,13 +4,8 @@
 # SECURITY.md § Documented dismissals, which stays the authority for the
 # reasoning behind each entry. Add a row there when you add an entry here.
 
-# OSV sees the registry version, not pnpm's installed patch. This exception is
-# backed by the mandatory installed-package and patch-integrity check in the
-# code-quality workflow; removal or modification of the patch fails that check.
-[[IgnoredVulns]]
-id = "GHSA-vfj7-8cjw-p6xm"
-ignoreUntil = 2026-12-31
-reason = "braces@3.0.3 is patched locally with bounded parse/compile/expand/stringify depth. CI verifies reviewed patch bytes, lockfile consumer hashes, effective installed behavior and Docker patch propagation. OSV cannot recognize pnpm patches. Retire when a fixed upstream release exists. See SECURITY.md § Documented dismissals."
+# OSV sees the registry version, not pnpm's installed patch, so an exception for
+# a locally patched package must be backed by a CI check of the installed patch.
 #
 # `ignoreUntil` is enforced by osv-scanner: once the date passes the advisory
 # fails CI again, so a dismissal cannot outlive its quarterly re-evaluation.
@@ -20,6 +15,10 @@ reason = "braces@3.0.3 is patched locally with bounded parse/compile/expand/stri
 # The former undici@5.x entries (GHSA-v9p9-hfj2-hcw8, GHSA-vrm6-8vpv-qv8q,
 # GHSA-vxpw-j846-p89q) were removed once undici@5 left the lockfile and
 # osv-scanner started flagging them as unused ignores.
+#
+# The former braces entry (GHSA-vfj7-8cjw-p6xm) was removed 2026-10-23: GitHub
+# withdrew the advisory as not practically exploitable and osv-scanner flagged
+# the ignore as unused. The local braces patch it covered was retired with it.
 
 # The supported GraphQL consumers require utils 10.x. Version 12.0.1 fixes
 # mergeDeep but changes the field-collection variable API used by executor 1.x.
@@ -68,15 +67,17 @@ reason = "extract-zip@2.0.1 via @langchain/langgraph-cli; same unfixable package
 
 # This ID-level ignore would also hide a vulnerable zod 4 copy. The required
 # dependency-security lockfile check limits it to reviewed zod 3 versions and
-# zod >= 4.6.6; bundled zod/v4 inside zod 3 remains part of the accepted risk.
+# zod >= 4.6.6, and requires first-party importers to resolve >= 4.6.6.
+# First-party importers now resolve zod 4.6.7; third-party bundled v4 remains accepted.
 [[IgnoredVulns]]
 id = "GHSA-mrhx-c7xc-m3w5"
 ignoreUntil = 2026-12-31
-reason = "Temporary risk acceptance for zod 3.25.75 via @microsoft/agents-hosting and @microsoft/agents-activity, and 3.25.76 via CopilotKit runtime/shared/a2ui-renderer/Slack/Teams channels, @ag-ui/core/client, @a2ui/web_core, exa-js, miniflare, zod-from-json-schema and first-party data-analyst/project-document-generator/weave-planners/weave-readers/mcp-server. Oversized capped collections still parse elements; no fixed 3.x release exists. Mounted CopilotKit HTTP parsing is session/organization checked and rate limited to 500/min/user; reviewed RunAgentInput schemas have uncapped collections, and no explicit route byte limit was found. CopilotKit Slack/Teams listeners and Microsoft activity parsing have no first-party mount; reviewed activity schemas have no capped collections. First-party code imports bundled zod/v4 from 3.25.76: the data-analyst Next.js chat route has messages.max(100), reachable with a session and an in-process 10/min/user limit, with no explicit route byte limit; the agent Docker image instead starts unified-server. Other reviewed first-party schemas have no capped collections. This accepts remaining risk, including bundled v4; it is not an unreachability claim. The zod/v3 compatibility subpath inside zod 4.6.7 also retains the behavior and is not separately visible to OSV; imports by openai, @modelcontextprotocol/sdk, @ai-sdk/provider-utils, zod-to-json-schema and zod-validation-error are included in this risk acceptance; no direct first-party zod/v3 import was found. Standalone zod 4 copies moved to 4.6.7 through the override; the required dependency-security lockfile check rejects versions below 4.6.6 except the two reviewed zod 3 versions. Retire per Fizzy #3277. See SECURITY.md § Documented dismissals."
+reason = "Temporary risk acceptance for zod 3.25.75 via @microsoft/agents-hosting and @microsoft/agents-activity, and 3.25.76 via CopilotKit runtime/shared/a2ui-renderer/Slack/Teams channels, @ag-ui/core/client, @a2ui/web_core, exa-js, miniflare, zod-from-json-schema. Oversized capped collections still parse elements; no fixed 3.x release exists. Mounted CopilotKit HTTP parsing is session/organization checked and rate limited to 500/min/user; reviewed RunAgentInput schemas have uncapped collections, and no explicit route byte limit was found. CopilotKit Slack/Teams listeners and Microsoft activity parsing have no first-party mount; reviewed activity schemas have no capped collections. This accepts remaining risk, including bundled v4; it is not an unreachability claim. The zod/v3 compatibility subpath inside zod 4.6.7 also retains the behavior and is not separately visible to OSV; imports by openai, @modelcontextprotocol/sdk, @ai-sdk/provider-utils, zod-to-json-schema and zod-validation-error are included in this risk acceptance; no direct first-party zod/v3 import was found. Standalone zod 4 copies moved to 4.6.7 through the override; first-party importers resolve zod 4.6.7, and the required dependency-security lockfile check enforces >=4.6.6 for first-party zod dependencies while permitting only the two reviewed zod 3 versions for third-party dependencies. Retire per Fizzy #3277. See SECURITY.md § Documented dismissals."
 
 # The former deepmerge-ts entry (GHSA-ggr8-5vv4-36mx) was removed 2026-09-02:
-# the `deepmerge-ts` -> `^8.0.2` override in the root package.json moves
-# @prisma/config's exact 7.1.5 pin past the first fixed release (8.0.0).
+# the override moved it past the first fixed release (8.0.0). The override
+# is now removed because @prisma/config@7.10.1 pins deepmerge-ts 8.0.2 itself;
+# the lockfile contains only deepmerge-ts 8.0.2, with no lower version.
 
 # The former @opentelemetry/core entry (GHSA-8988-4f7v-96qf) was removed
 # 2026-09-04: `@temporalio/interceptors-opentelemetry` was the only

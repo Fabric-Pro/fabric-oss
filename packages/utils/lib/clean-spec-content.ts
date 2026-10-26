@@ -4,16 +4,14 @@
  * The Clean Spec IS `UserStory.description` + `UserStory.acceptanceCriteria`.
  * The TipTap editor
  * round-trips the two columns through a single markdown document, splitting on
- * the `## Acceptance Criteria` heading. The Decision→Spec patch is produced
- * against — and applied to — that SAME combined document, so the block a patch's
- * `from` references is exactly what the PO sees in the Clean Spec tab.
+ * the `## Acceptance Criteria` heading. Backend drafting paths use the same
+ * representation when normalizing a combined model response.
  *
  * These helpers MUST stay byte-compatible with the editor's
  * `formatStoryContent` / `parseStoryContent`
  * (`apps/web/modules/saas/projects/lib/story-content.ts`). Deliberately NOT the
  * `## Description`-prefixed shape in `update-with-context.ts` — that surface
- * injects a heading the editor never stores, which would shift every patch
- * offset. Pure, no I/O.
+ * injects a heading the editor never stores. Pure, no I/O.
  *
  * The byte-compatibility half that concerns inline decoration is no longer a
  * hand-synced copy: both sides call the shared `stripInlineDecoration` from
@@ -38,14 +36,9 @@ import { stripInlineDecoration } from "./markdown-heading";
 // Match an `Acceptance Criteria` heading at ANY level (`#`–`######`), exactly
 // like the editor's `parseStoryContent`. This file's contract is to stay
 // byte-compatible with that parser, and it had drifted: the editor was
-// broadened to tolerate a demoted `### Acceptance Criteria` (a common AI edit)
-// while this stayed at `#{1,2}`. The consequence was silent data loss on the
-// patch path — `combineCleanSpec` always emits `##`, so a patch that DEMOTES
-// the heading made this split miss the section, fold every criterion back into
-// `description`, and persist an empty `acceptanceCriteria`. That empties the QA
-// tab's traceability matrix and makes drafting refuse ("no acceptance
-// criteria"). Broadening is a strict superset of `#{1,2}`, so every document
-// that split correctly before still splits identically.
+// broadened to tolerate a demoted `### Acceptance Criteria` (a common AI edit).
+// Backend normalization must preserve the same boundary or it can fold every
+// criterion into `description` and persist empty `acceptanceCriteria`.
 //
 // The pattern is unchanged by the decoration fix — it is tested against
 // `stripInlineDecoration(line)` rather than the raw line, which makes the
@@ -62,7 +55,7 @@ export const ACCEPTANCE_HEADING_RE = /^#{1,6}\s+acceptance/i;
 
 /**
  * Combine description + acceptance criteria into the single markdown document
- * the Clean Spec is patched in. Description is emitted as-is (it may carry its
+ * used by the Clean Spec editor. Description is emitted as-is (it may carry its
  * own heading structure from a stage-enhance prompt); acceptance criteria, when
  * present, is placed under a `## Acceptance Criteria` heading so `splitCleanSpec`
  * recovers the boundary.
@@ -82,8 +75,8 @@ export function combineCleanSpec(
 }
 
 /**
- * Split a patched Clean Spec document back into the two stored columns. Only
- * `## Acceptance Criteria` (or a single `#`) is treated as the section boundary;
+ * Split a combined Clean Spec document back into the two stored columns. An
+ * Acceptance Criteria heading at any level is treated as the section boundary;
  * everything before it — including any `## Description` heading the content may
  * carry — stays in `description` (mirrors the editor's parse, which fixed #737).
  */

@@ -25,6 +25,7 @@
 		"BETTER_AUTH_SECRET",
 		"ENCRYPTION_KEY",
 		"AI_GATEWAY_API_KEY",
+		"AI_GATEWAY_FLEX_DISABLED",
 		"OPENAI_API_KEY",
 		"ANTHROPIC_API_KEY",
 		"GOOGLE_AI_STUDIO_API_KEY",
@@ -49,6 +50,7 @@
 		"TURBO_REMOTE_CACHE_SIGNATURE_KEY"
 	],
 	"globalPassThroughEnv": [
+		"ADVISOR_HISTORY_RETENTION",
 		"VERCEL_*",
 		"CI",
 		"NODE_ENV",
@@ -306,6 +308,7 @@
 			],
 			"inputs": [
 				"prisma/schema.prisma",
+				"prisma.config.ts",
 				"src/**/*.graphql",
 				"package.json",
 				"scripts/generate-client.mts",

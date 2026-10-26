@@ -1,5 +1,7 @@
 "use client";
 
+import { AnsweredClarification } from "../../FabricChat/shared/AnsweredClarification";
+import { clarificationOf } from "../../../lib/clarification-turns";
 import type { ConversationDetail } from "@saas/agents/lib/conversation-list";
 import type { ChatEngine } from "@saas/agents/lib/interface-mode-engine";
 import { userMessageOf } from "@saas/shared/lib/user-message-of";
@@ -129,24 +131,34 @@ export function SharedSessionView({
 					</p>
 				) : (
 					<ol className="mx-auto max-w-3xl space-y-5">
-						{messages.map((message) => (
-							<li key={message.id} className="space-y-1">
-								<p className="text-xs font-medium text-muted-foreground">
-									{message.role === "user"
-										? ownerName
-										: "Fabric Agent"}
-								</p>
-								{message.role === "assistant" ? (
-									<Response components={SHARED_MARKDOWN}>
-										{message.content}
-									</Response>
-								) : (
-									<p className="whitespace-pre-wrap break-words text-sm text-foreground">
-										{message.content}
+						{messages.map((message) => {
+							const clarification = clarificationOf(message);
+							return clarification ? (
+								<li key={message.id}>
+									<AnsweredClarification
+										turn={clarification}
+										answerer={ownerName}
+									/>
+								</li>
+							) : (
+								<li key={message.id} className="space-y-1">
+									<p className="text-xs font-medium text-muted-foreground">
+										{message.role === "user"
+											? ownerName
+											: "Fabric Agent"}
 									</p>
-								)}
-							</li>
-						))}
+									{message.role === "assistant" ? (
+										<Response components={SHARED_MARKDOWN}>
+											{message.content}
+										</Response>
+									) : (
+										<p className="whitespace-pre-wrap break-words text-sm text-foreground">
+											{message.content}
+										</p>
+									)}
+								</li>
+							);
+						})}
 					</ol>
 				)}
 			</section>

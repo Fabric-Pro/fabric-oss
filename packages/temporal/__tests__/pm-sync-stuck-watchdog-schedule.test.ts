@@ -4,16 +4,16 @@
  * The watchdog used to be a Vercel cron route, so it ran only where Vercel
  * Cron triggered it (`apps/web/vercel.json`); the Docker/Azure build had no
  * trigger at all. It is now a Temporal schedule registered at worker startup.
- * Every failure this file covers is silent in production: a registration
+ * These registration failures can be silent in production: a registration
  * function nobody calls, a `workflowType` no worker resolves, an activity the
- * worker never registers, an `already exists` rejection that fails the second
+ * worker does not register, an `already exists` rejection that fails the second
  * boot.
  *
  * Mocks mirror `project-instruction-reaper-schedule.test.ts`.
  */
 
 import type { ScheduleClient } from "@temporalio/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 const { scheduleCreate, FakeScheduleAlreadyRunning, FakeScheduleClient } =
 	vi.hoisted(() => {
@@ -50,6 +50,13 @@ import {
 	registerSystemSchedules,
 } from "../src/schedules";
 
+// The worker barrel loads the provider/database dependency graph. Give that
+// setup its own budget under parallel transforms; assertions keep the test timeout.
+let activities: typeof import("../src/activities");
+beforeAll(async () => {
+	activities = await import("../src/activities");
+}, 120_000);
+
 function fakeClient(create = scheduleCreate): ScheduleClient {
 	return { create } as unknown as ScheduleClient;
 }
@@ -60,7 +67,7 @@ afterEach(() => {
 });
 
 describe("the stuck PM-sync watchdog schedule", () => {
-	it("creates the schedule with exactly this payload", async () => {
+	it("creates the expected schedule payload", async () => {
 		await registerPmSyncStuckWatchdogSchedule(fakeClient());
 
 		expect(scheduleCreate).toHaveBeenCalledTimes(1);
@@ -81,7 +88,7 @@ describe("the stuck PM-sync watchdog schedule", () => {
 		});
 	});
 
-	it("runs every 5 minutes, the cadence of the cron it replaces", () => {
+	it("runs on the five-minute cadence of the cron it replaces", () => {
 		expect(PM_SYNC_STUCK_WATCHDOG_CRON_SCHEDULE).toBe("*/5 * * * *");
 	});
 
@@ -93,7 +100,6 @@ describe("the stuck PM-sync watchdog schedule", () => {
 	});
 
 	it("uses activities the top-level activities barrel registers, and nothing else from their module", async () => {
-		const activities = await import("../src/activities");
 		const names = [
 			"findStuckPmSyncRowsActivity",
 			"probeStuckPmSyncActivity",

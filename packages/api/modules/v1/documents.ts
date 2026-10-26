@@ -41,6 +41,10 @@ import {
 	isRunGuardedDocumentType,
 } from "@repo/utils/generation-run-guard";
 import {
+	isCreatableDocumentType,
+	RETIRED_TYPE_MESSAGE,
+} from "@repo/utils/document-type-catalog";
+import {
 	hasVisualSlots,
 	preserveVisualSlots,
 } from "@repo/utils/glossy/visual-slots";
@@ -313,6 +317,11 @@ export function registerDocumentRoutes(
 					),
 					400,
 				);
+			}
+			// Still a valid type for list filters and reads; only new ones are
+			// refused (Fizzy #2776).
+			if (!isCreatableDocumentType(body.type)) {
+				return c.json(badRequest(RETIRED_TYPE_MESSAGE), 400);
 			}
 			const title = body.title?.trim();
 			if (!title) {

@@ -6,12 +6,11 @@ import type { LanguageModelMiddleware } from "ai";
  * Claude model (Opus 4.7/4.8 and the 5.x generation), which return HTTP 400
  * for any non-default sampling value.
  *
- * Only the gateway routes need it. `@ai-sdk/anthropic` already drops these
- * client-side (its `rejectsSamplingParameters` capability) and the Databricks
- * fetch deletes `temperature` for every model, but `@ai-sdk/gateway` forwards
- * call options unchanged, so on VERCEL_GATEWAY / OPENROUTER / CLOUDFLARE_AI a
- * caller's fixed temperature (planner, journey, security scan, Fabric
- * patterns) reaches the gateway server as-is.
+ * Applied to Vercel, OpenRouter and Cloudflare gateway routes. The Vercel
+ * SDK forwards sampling options unchanged; prefixed Claude IDs on the
+ * OpenAI-compatible routes also need this transform, matching LangChain.
+ * The native Anthropic client handles its own sampling restrictions, while
+ * the Databricks fetch applies its separate compatibility transform.
  */
 export function createAdaptiveClaudeSamplingMiddleware(): LanguageModelMiddleware {
 	return {

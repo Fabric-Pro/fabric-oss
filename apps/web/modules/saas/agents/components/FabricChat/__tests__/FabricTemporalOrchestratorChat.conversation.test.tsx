@@ -1940,6 +1940,46 @@ describe("FabricTemporalOrchestratorChat — a conversation another surface is w
 		]);
 	});
 
+	it("renders a reloaded clarification and sends its formatted history", async () => {
+		render(
+			<FabricTemporalOrchestratorChat
+				reasoningMode="balanced"
+				activeConversationId="conv_drawer"
+				activeConversation={conversation([
+					{
+						id: "exec_example",
+						userMessage: "Check the branch",
+						finalResponse: "Done",
+						stepResults: [],
+						clarifications: [
+							{ question: "Which branch?", answer: "staging" },
+						],
+					},
+				])}
+			/>,
+		);
+		expect(await screen.findByText("Which branch?")).toBeInTheDocument();
+		expect(
+			screen.getByRole("group", { name: "Clarifying question" }),
+		).toHaveTextContent("↳ You:");
+		expect(
+			screen.getByRole("group", { name: "Clarifying question" }),
+		).toHaveTextContent("Which branch?");
+		expect(
+			screen.getByRole("group", { name: "Clarifying question" }),
+		).toHaveTextContent("staging");
+		expect(screen.getByText("staging").closest(".is-user")).toBeNull();
+		await send("Continue");
+		expect(
+			(streamState.current.sendMessage as ReturnType<typeof vi.fn>).mock
+				.calls[0][1],
+		).toEqual([
+			{ role: "user", content: "Check the branch" },
+			{ role: "user", content: "Clarification — Which branch?: staging" },
+			{ role: "assistant", content: "Done" },
+		]);
+	});
+
 	it("shows an updated durable answer alongside retained partial steps and uses it in followup history", async () => {
 		const recovered = {
 			id: "exec_drawer",
@@ -2237,4 +2277,189 @@ describe("FabricTemporalOrchestratorChat — landing", () => {
 		).toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: /Resume/ })).toBeNull();
 	});
+});
+
+describe("answered clarification display", () => {
+	const turn = { question: "Which branch?", answer: "staging" };
+	const content = "Clarification — Which branch?: staging";
+	it.each([true, false])(
+		"renders live structured=%s and keeps model history",
+		async (structured) => {
+			streamState.current = idleStream({
+				messages: [
+					{
+						id: "clarification-1",
+						role: "user",
+						content,
+						timestamp: new Date(),
+						...(structured
+							? { metadata: { clarification: turn } }
+							: {}),
+					},
+				],
+			});
+			const { container } = render(
+				<FabricTemporalOrchestratorChat
+					reasoningMode="balanced"
+					activeConversationId="conv_example"
+				/>,
+			);
+			if (structured) {
+				expect(screen.getByText(turn.question)).toBeInTheDocument();
+				const exchange = screen.getByRole("group", {
+					name: "Clarifying question",
+				});
+				expect(exchange).toHaveTextContent(turn.question);
+				expect(exchange).toHaveTextContent(turn.answer);
+				expect(exchange).toHaveTextContent("↳ You:");
+				expect(exchange).toHaveTextContent("You answered:");
+				expect(exchange.closest(".is-assistant")).not.toBeNull();
+				expect(
+					screen.getByText(turn.answer).closest(".is-user"),
+				).toBeNull();
+				expect(
+					exchange.querySelector('svg[aria-hidden="true"]'),
+				).not.toBeNull();
+				expect(
+					exchange
+						.closest(".is-assistant")
+						?.querySelector('img[alt="Fabric AI"]'),
+				).not.toBeNull();
+				expect(screen.queryByText(content)).not.toBeInTheDocument();
+				expect(
+					(
+						await axe(container, {
+							rules: { "color-contrast": { enabled: false } },
+						})
+					).violations,
+				).toEqual([]);
+			} else {
+				expect(
+					screen.getByText("Clarification - Which branch?: staging"),
+				).toBeInTheDocument();
+			}
+			await send("Continue");
+			expect(
+				(streamState.current.sendMessage as ReturnType<typeof vi.fn>)
+					.mock.calls[0][1],
+			).toEqual([{ role: "user", content }]);
+		},
+	);
+});
+
+describe("saved clarification messages", () => {
+	it.each([
+		[false, false],
+		[true, false],
+		[true, true],
+	])(
+		"keeps saved structured=%s projected=%s display",
+		async (structured, projected) => {
+			const content = "Clarification — Which branch?: staging";
+			render(
+				<FabricTemporalOrchestratorChat
+					reasoningMode="balanced"
+					activeConversationId="conv_saved"
+					activeConversation={{
+						id: "conv_saved",
+						metadata: {
+							mode: "orchestrator",
+							executions: projected
+								? [
+										{
+											id: "message-result-clarification-1",
+											userMessage: content,
+											finalResponse: "Done",
+										},
+									]
+								: [],
+						},
+						messages: [
+							{
+								id: "clarification-1",
+								role: "user",
+								content,
+								timestamp: new Date().toISOString(),
+								...(structured
+									? {
+											metadata: {
+												clarification: {
+													question: "Which branch?",
+													answer: "staging",
+												},
+											},
+										}
+									: {}),
+							},
+						],
+					}}
+				/>,
+			);
+			if (structured) {
+				expect(
+					await screen.findByText("Which branch?"),
+				).toBeInTheDocument();
+				expect(
+					screen.getByRole("group", { name: "Clarifying question" }),
+				).toHaveTextContent("Which branch?");
+				expect(
+					screen.getByRole("group", { name: "Clarifying question" }),
+				).toHaveTextContent("staging");
+				expect(
+					screen.getByText("staging").closest(".is-user"),
+				).toBeNull();
+			} else {
+				expect(
+					await screen.findByText(
+						"Clarification - Which branch?: staging",
+					),
+				).toBeInTheDocument();
+			}
+		},
+	);
+});
+
+it("ignores a malformed saved clarification and retains the valid exchange in history", async () => {
+	render(
+		<FabricTemporalOrchestratorChat
+			reasoningMode="balanced"
+			activeConversationId="conv_malformed"
+			activeConversation={{
+				id: "conv_malformed",
+				messages: [],
+				metadata: {
+					mode: "orchestrator",
+					executions: [
+						{
+							id: "exec_malformed",
+							userMessage: "Check the branch",
+							finalResponse: "Done",
+							stepResults: [],
+							clarifications: [
+								{
+									question: { invalid: true },
+									answer: "broken",
+								},
+								{
+									question: "Which branch?",
+									answer: "staging",
+								},
+							],
+						},
+					],
+				},
+			}}
+		/>,
+	);
+	expect(await screen.findByText("Which branch?")).toBeInTheDocument();
+	expect(screen.queryByText("broken")).not.toBeInTheDocument();
+	await send("Continue");
+	expect(
+		(streamState.current.sendMessage as ReturnType<typeof vi.fn>).mock
+			.calls[0][1],
+	).toEqual([
+		{ role: "user", content: "Check the branch" },
+		{ role: "user", content: "Clarification — Which branch?: staging" },
+		{ role: "assistant", content: "Done" },
+	]);
 });

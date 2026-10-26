@@ -9,10 +9,8 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
  *
  * Hard requirements asserted here:
  *  - ownership/tenant enforcement (FORBIDDEN) + NOT_FOUND, via ORPCError codes;
- *  - effective approval-mode fall-through matrix (feature → user → hard default,
- *    plus the "Auto-accept all" preset);
- *  - PM-sync isolation (§7.7): appendDecisionEntry / answerQuestion /
- *    setApprovalMode never call `enqueuePmSync`;
+ *  - PM-sync isolation (§7.7): appendDecisionEntry and answerQuestion
+ *    never call `enqueuePmSync`;
  *  - question dedupe (AC-2.4): the same question does not mint a 2nd decision.
  */
 
@@ -33,21 +31,14 @@ const { handlers, mocks, resolveOrganizationIdMock } = vi.hoisted(() => {
 		getFeatureMaturationState: vi.fn(),
 		listDecisionLogThreads: vi.fn(),
 		getLatestRunChangeSummary: vi.fn(),
-		getApprovalPreference: vi.fn(),
-		upsertApprovalPreference: vi.fn(),
-		setFeatureApprovalOverride: vi.fn(),
 		createDecisionLogEntry: vi.fn(),
 		findDecisionByQuestionId: vi.fn(),
 		resolveQuestionThread: vi.fn(),
 		setDecisionMetadata: vi.fn(),
 		optInFeatureToMaturationV2: vi.fn(),
 		enqueuePmSync: vi.fn(),
-		propagateDecisionToCleanSpec: vi.fn(),
 		recordAnswerInSpec: vi.fn(),
 		extractMaturationQuestions: vi.fn(),
-		getDecisionLogEntryById: vi.fn(),
-		recordAiOutcome: vi.fn(),
-		acceptPendingPatches: vi.fn(),
 		isAiAnswerRecommendationsEnabledForProject: vi.fn(),
 		// QA tab
 		projectFindUnique: vi.fn(),
@@ -71,59 +62,18 @@ const { handlers, mocks, resolveOrganizationIdMock } = vi.hoisted(() => {
 	return { handlers, mocks, resolveOrganizationIdMock };
 });
 
-// Real `effectiveApprovalMode` + HARD_DEFAULT_APPROVAL_MODE are exercised so the
-// fall-through matrix tests run against production logic, not a re-stub.
-const HARD_DEFAULT_APPROVAL_MODE = {
-	cleanSpec: "AUTO_ACCEPT",
-	decisionLog: "AUTO_ACCEPT",
-	summaryQuestions: "MANUAL",
-} as const;
-
-type Tab = "cleanSpec" | "decisionLog" | "summaryQuestions";
-const FEATURE_FIELD: Record<Tab, string> = {
-	cleanSpec: "cleanSpecApprovalMode",
-	decisionLog: "decisionLogApprovalMode",
-	summaryQuestions: "summaryQuestionsApprovalMode",
-};
-const USER_FIELD: Record<Tab, string> = {
-	cleanSpec: "cleanSpecMode",
-	decisionLog: "decisionLogMode",
-	summaryQuestions: "summaryQuestionsMode",
-};
-
-function effectiveApprovalMode(
-	feature: Record<string, unknown> | null,
-	userPref: Record<string, unknown> | null,
-	tab: Tab,
-) {
-	const featureMode = feature ? feature[FEATURE_FIELD[tab]] : null;
-	if (featureMode != null) {
-		return featureMode;
-	}
-	const userMode = userPref ? userPref[USER_FIELD[tab]] : null;
-	if (userMode != null) {
-		return userMode;
-	}
-	return HARD_DEFAULT_APPROVAL_MODE[tab];
-}
-
 vi.mock("@repo/database", () => ({
 	hasProjectAccess: mocks.hasProjectAccess,
 	getFeatureMaturationState: mocks.getFeatureMaturationState,
 	listDecisionLogThreads: mocks.listDecisionLogThreads,
 	getLatestRunChangeSummary: mocks.getLatestRunChangeSummary,
-	getApprovalPreference: mocks.getApprovalPreference,
 	isAiAnswerRecommendationsEnabledForProject:
 		mocks.isAiAnswerRecommendationsEnabledForProject,
-	upsertApprovalPreference: mocks.upsertApprovalPreference,
-	setFeatureApprovalOverride: mocks.setFeatureApprovalOverride,
 	createDecisionLogEntry: mocks.createDecisionLogEntry,
 	findDecisionByQuestionId: mocks.findDecisionByQuestionId,
 	resolveQuestionThread: mocks.resolveQuestionThread,
 	setDecisionMetadata: mocks.setDecisionMetadata,
 	optInFeatureToMaturationV2: mocks.optInFeatureToMaturationV2,
-	getDecisionLogEntryById: mocks.getDecisionLogEntryById,
-	recordAiOutcome: mocks.recordAiOutcome,
 	// Faithful mini-implementation (same shape as the one in
 	// `stories/__tests__/update-drafting-stage-with-version-attachment-guard.test.ts`):
 	// `answerQuestion` narrows on TYPE to tell a lost concurrency race (a hard
@@ -139,8 +89,6 @@ vi.mock("@repo/database", () => ({
 			this.storyId = storyId;
 		}
 	},
-	effectiveApprovalMode,
-	HARD_DEFAULT_APPROVAL_MODE,
 	// QA tab: editor-state depth read + analysis parse/persist +
 	// sibling-feature titles for the cross-feature analysis context (AC-3).
 	// Question assignment (#1751). Editor state loads assignees for the open
@@ -206,13 +154,6 @@ vi.mock("../../../../lib/start-test-case-draft", () => ({
 	startTestCaseDraft: mocks.startTestCaseDraft,
 }));
 
-// TG4 propagation is exercised in its own suite (propagate-decision-to-spec
-// + answer-question-propagation tests). Here it is stubbed so the TG3 answer/
-// dedupe/isolation assertions don't make a real model call.
-vi.mock("../../../../lib/propagate-decision-to-spec", () => ({
-	propagateDecisionToCleanSpec: mocks.propagateDecisionToCleanSpec,
-}));
-
 // Notebook model: answering records the Q+A into the spec deterministically.
 vi.mock("../../../../lib/record-answer-in-spec", async (importOriginal) => ({
 	// Keep the real (pure) `countPendingDecisions` — get-editor-state uses it to
@@ -225,10 +166,6 @@ vi.mock("../../../../lib/record-answer-in-spec", async (importOriginal) => ({
 
 vi.mock("../../../../lib/extract-maturation-questions", () => ({
 	extractMaturationQuestions: mocks.extractMaturationQuestions,
-}));
-
-vi.mock("../../../../lib/accept-pending-patches", () => ({
-	acceptPendingPatches: mocks.acceptPendingPatches,
 }));
 
 // PM-sync isolation backstop: if any procedure imported `enqueuePmSync`, this
@@ -265,22 +202,16 @@ const { StoryVersionConflictError } = await import("@repo/database");
 // Import each module in a fixed order; handlers[] fills in that order.
 await import("../get-editor-state");
 const getEditorState = handlers[0];
-await import("../get-approval-mode");
-const getApprovalMode = handlers[1];
-await import("../set-approval-mode");
-const setApprovalMode = handlers[2];
 await import("../list-decision-log");
-const listDecisionLog = handlers[3];
+const listDecisionLog = handlers[1];
 await import("../append-decision-entry");
-const appendDecisionEntry = handlers[4];
+const appendDecisionEntry = handlers[2];
 await import("../answer-question");
-const answerQuestion = handlers[5];
-await import("../accept-clean-spec-patch");
-const acceptCleanSpecPatch = handlers[6];
+const answerQuestion = handlers[3];
 await import("../record-change-note");
-const recordChangeNote = handlers[7];
+const recordChangeNote = handlers[4];
 await import("../generate-qa-analysis");
-const generateQaAnalysis = handlers[8];
+const generateQaAnalysis = handlers[5];
 
 const ctx = { user: { id: "user-1", name: "Alice Test" }, session: {} };
 const base = {
@@ -300,9 +231,6 @@ const feature = {
 	workingNotesContent: null,
 	maturationV2OptedIn: true,
 	qaAnalysis: null,
-	cleanSpecApprovalMode: null,
-	decisionLogApprovalMode: null,
-	summaryQuestionsApprovalMode: null,
 };
 
 beforeEach(() => {
@@ -322,9 +250,7 @@ beforeEach(() => {
 	);
 	mocks.userFindMany.mockResolvedValue([]);
 	mocks.isFeatureEnabled.mockResolvedValue(true);
-	mocks.getApprovalPreference.mockResolvedValue(null);
 	mocks.isAiAnswerRecommendationsEnabledForProject.mockResolvedValue(true);
-	mocks.setFeatureApprovalOverride.mockResolvedValue(1);
 	mocks.setDecisionMetadata.mockResolvedValue(1);
 	mocks.optInFeatureToMaturationV2.mockResolvedValue(1);
 	mocks.extractMaturationQuestions.mockResolvedValue({
@@ -332,25 +258,6 @@ beforeEach(() => {
 		minted: 0,
 		skipped: 0,
 		questions: [],
-	});
-	mocks.getDecisionLogEntryById.mockResolvedValue({
-		id: "dec-1",
-		metadata: null,
-	});
-	mocks.acceptPendingPatches.mockResolvedValue({
-		status: "applied",
-		applied: [{ from: "x", to: "y", summary: "s" }],
-		failed: [],
-		pmSyncEnqueued: false,
-	});
-	// Default: propagation no-ops (skipped) so TG3 answer tests don't model-call.
-	mocks.propagateDecisionToCleanSpec.mockResolvedValue({
-		status: "skipped",
-		mode: null,
-		applied: [],
-		pending: [],
-		failed: [],
-		pmSyncEnqueued: false,
 	});
 	// Default: the deterministic spec write succeeds.
 	mocks.recordAnswerInSpec.mockResolvedValue(undefined);
@@ -411,17 +318,6 @@ describe("ownership / tenant enforcement", () => {
 			}),
 		).rejects.toMatchObject({ code: "FORBIDDEN" });
 		expect(mocks.createDecisionLogEntry).not.toHaveBeenCalled();
-	});
-
-	it("setApprovalMode rejects with FORBIDDEN when project access is denied", async () => {
-		mocks.hasProjectAccess.mockResolvedValue(false);
-		await expect(
-			setApprovalMode({
-				input: { ...base, userDefault: { cleanSpec: "MANUAL" } },
-				context: ctx,
-			}),
-		).rejects.toMatchObject({ code: "FORBIDDEN" });
-		expect(mocks.upsertApprovalPreference).not.toHaveBeenCalled();
 	});
 });
 
@@ -603,124 +499,6 @@ describe("getEditorState", () => {
 		expect(
 			mocks.isAiAnswerRecommendationsEnabledForProject,
 		).toHaveBeenCalledTimes(2);
-	});
-});
-
-describe("effective approval-mode fall-through matrix (§5.3)", () => {
-	it("falls through to the hard default when no override and no user preference", async () => {
-		const result = (await getApprovalMode({
-			input: base,
-			context: ctx,
-		})) as { effective: Record<Tab, string> };
-		expect(result.effective).toEqual({
-			cleanSpec: "AUTO_ACCEPT",
-			decisionLog: "AUTO_ACCEPT",
-			summaryQuestions: "MANUAL",
-		});
-	});
-
-	it("uses the per-user default over the hard default", async () => {
-		mocks.getApprovalPreference.mockResolvedValue({
-			cleanSpecMode: "MANUAL",
-			decisionLogMode: "MANUAL",
-			summaryQuestionsMode: "AUTO_ACCEPT",
-			autoAcceptAll: false,
-		});
-		const result = (await getApprovalMode({
-			input: base,
-			context: ctx,
-		})) as { effective: Record<Tab, string> };
-		expect(result.effective).toEqual({
-			cleanSpec: "MANUAL",
-			decisionLog: "MANUAL",
-			summaryQuestions: "AUTO_ACCEPT",
-		});
-	});
-
-	it("uses the per-feature override over the per-user default", async () => {
-		mocks.getFeatureMaturationState.mockResolvedValue({
-			...feature,
-			cleanSpecApprovalMode: "MANUAL",
-		});
-		mocks.getApprovalPreference.mockResolvedValue({
-			cleanSpecMode: "AUTO_ACCEPT",
-			decisionLogMode: "AUTO_ACCEPT",
-			summaryQuestionsMode: "AUTO_ACCEPT",
-			autoAcceptAll: true,
-		});
-		const result = (await getApprovalMode({
-			input: base,
-			context: ctx,
-		})) as { effective: Record<Tab, string> };
-		expect(result.effective.cleanSpec).toBe("MANUAL");
-		// other tabs still resolve from the user default
-		expect(result.effective.decisionLog).toBe("AUTO_ACCEPT");
-	});
-});
-
-describe("setApprovalMode", () => {
-	it("Auto-accept all preset flips all three user defaults to AUTO_ACCEPT", async () => {
-		mocks.upsertApprovalPreference.mockResolvedValue({
-			cleanSpecMode: "AUTO_ACCEPT",
-			decisionLogMode: "AUTO_ACCEPT",
-			summaryQuestionsMode: "AUTO_ACCEPT",
-			autoAcceptAll: true,
-		});
-
-		const result = (await setApprovalMode({
-			input: { ...base, autoAcceptAll: true },
-			context: ctx,
-		})) as { effective: Record<Tab, string> };
-
-		expect(mocks.upsertApprovalPreference).toHaveBeenCalledWith(
-			expect.objectContaining({
-				cleanSpecMode: "AUTO_ACCEPT",
-				decisionLogMode: "AUTO_ACCEPT",
-				summaryQuestionsMode: "AUTO_ACCEPT",
-				autoAcceptAll: true,
-			}),
-		);
-		expect(result.effective).toEqual({
-			cleanSpec: "AUTO_ACCEPT",
-			decisionLog: "AUTO_ACCEPT",
-			summaryQuestions: "AUTO_ACCEPT",
-		});
-	});
-
-	it("writes a per-feature override and re-resolves effective modes", async () => {
-		// The procedure reads the feature back AFTER the write so a freshly
-		// written override is reflected in the re-resolved effective modes.
-		mocks.getFeatureMaturationState.mockResolvedValue({
-			...feature,
-			decisionLogApprovalMode: "MANUAL",
-		});
-
-		const result = (await setApprovalMode({
-			input: {
-				...base,
-				featureOverride: { decisionLog: "MANUAL" },
-			},
-			context: ctx,
-		})) as { effective: Record<Tab, string> };
-
-		expect(mocks.setFeatureApprovalOverride).toHaveBeenCalledWith(
-			expect.objectContaining({
-				userStoryId: "story-1",
-				projectId: "project-1",
-				decisionLogApprovalMode: "MANUAL",
-			}),
-		);
-		expect(result.effective.decisionLog).toBe("MANUAL");
-	});
-
-	it("rejects with NOT_FOUND when the per-feature override targets a missing feature", async () => {
-		mocks.setFeatureApprovalOverride.mockResolvedValue(0);
-		await expect(
-			setApprovalMode({
-				input: { ...base, featureOverride: { cleanSpec: "MANUAL" } },
-				context: ctx,
-			}),
-		).rejects.toMatchObject({ code: "NOT_FOUND" });
 	});
 });
 
@@ -990,8 +768,6 @@ describe("answerQuestion → Clean Spec write (notebook model)", () => {
 		};
 
 		expect(mocks.recordAnswerInSpec).toHaveBeenCalledTimes(1);
-		// No per-answer LLM scoped-patch in the notebook model.
-		expect(mocks.propagateDecisionToCleanSpec).not.toHaveBeenCalled();
 		expect(result.propagation).toEqual({
 			status: "applied",
 			appliedCount: 1,
@@ -1112,109 +888,6 @@ describe("answerQuestion → Clean Spec write (notebook model)", () => {
 		expect(result.deduped).toBe(true);
 		expect(result.propagation).toBeNull();
 		expect(mocks.recordAnswerInSpec).not.toHaveBeenCalled();
-	});
-});
-
-describe("acceptCleanSpecPatch (§7.5 MANUAL accept)", () => {
-	const acceptInput = { ...base, decisionId: "dec-1" };
-
-	it("rejects with FORBIDDEN when project access is denied", async () => {
-		mocks.hasProjectAccess.mockResolvedValue(false);
-		await expect(
-			acceptCleanSpecPatch({ input: acceptInput, context: ctx }),
-		).rejects.toMatchObject({ code: "FORBIDDEN" });
-		expect(mocks.acceptPendingPatches).not.toHaveBeenCalled();
-	});
-
-	it("rejects with NOT_FOUND when the decision is missing", async () => {
-		mocks.getDecisionLogEntryById.mockResolvedValue(null);
-		await expect(
-			acceptCleanSpecPatch({ input: acceptInput, context: ctx }),
-		).rejects.toMatchObject({ code: "NOT_FOUND" });
-	});
-
-	it("delegates to the accept lib and returns its summary", async () => {
-		const result = (await acceptCleanSpecPatch({
-			input: acceptInput,
-			context: ctx,
-		})) as { status: string; appliedCount: number };
-
-		expect(mocks.acceptPendingPatches).toHaveBeenCalledWith(
-			expect.objectContaining({
-				feature,
-				decision: expect.objectContaining({ id: "dec-1" }),
-				tenantFilter: { organizationId: null, userId: "user-1" },
-				projectId: "project-1",
-			}),
-		);
-		expect(result.status).toBe("applied");
-		expect(result.appliedCount).toBe(1);
-	});
-
-	/**
-	 * Behavioural acceptance signal (Fizzy #2230): applying a patch is the PO
-	 * saying the AI got it right, so it is the measurement we trust — unlike a
-	 * rating, it is recorded for every accept without anyone volunteering.
-	 */
-	it("records an acceptance verdict when the patch applies", async () => {
-		await acceptCleanSpecPatch({ input: acceptInput, context: ctx });
-
-		expect(mocks.recordAiOutcome).toHaveBeenCalledWith(
-			expect.objectContaining({
-				featureKey: "maturation",
-				outcome: "ACCEPTED_AS_IS",
-				subjectType: "spec-patch",
-				subjectId: "dec-1",
-				userId: "user-1",
-			}),
-		);
-	});
-
-	it("records a rejection when the stashed patch no longer applies", async () => {
-		mocks.acceptPendingPatches.mockResolvedValueOnce({
-			status: "refused",
-			applied: [],
-			failed: [{ id: "p-1" }],
-			pmSyncEnqueued: false,
-		});
-
-		await acceptCleanSpecPatch({ input: acceptInput, context: ctx });
-
-		expect(mocks.recordAiOutcome).toHaveBeenCalledWith(
-			expect.objectContaining({ outcome: "REJECTED" }),
-		);
-	});
-
-	/** A no-op had nothing to decide; a verdict nobody rendered would drag the rate down. */
-	it("records nothing for a no-op", async () => {
-		mocks.acceptPendingPatches.mockResolvedValueOnce({
-			status: "noop",
-			applied: [],
-			failed: [],
-			pmSyncEnqueued: false,
-		});
-
-		await acceptCleanSpecPatch({ input: acceptInput, context: ctx });
-
-		expect(mocks.recordAiOutcome).not.toHaveBeenCalled();
-	});
-
-	/**
-	 * Measurement must never break the write it measures — and a SYNCHRONOUS
-	 * throw is the case a `.catch()` would miss, turning a successful apply
-	 * into a 500.
-	 */
-	it("still succeeds when outcome capture throws synchronously", async () => {
-		mocks.recordAiOutcome.mockImplementationOnce(() => {
-			throw new Error("db down");
-		});
-
-		const result = (await acceptCleanSpecPatch({
-			input: acceptInput,
-			context: ctx,
-		})) as { status: string };
-
-		expect(result.status).toBe("applied");
 	});
 });
 
@@ -1567,21 +1240,6 @@ describe("PM-sync isolation (§7.7)", () => {
 
 		await answerQuestion({
 			input: { ...base, questionId: "q3", answer: "ans" },
-			context: ctx,
-		});
-		expect(mocks.enqueuePmSync).not.toHaveBeenCalled();
-	});
-
-	it("setApprovalMode does not call enqueuePmSync", async () => {
-		mocks.upsertApprovalPreference.mockResolvedValue({
-			cleanSpecMode: "MANUAL",
-			decisionLogMode: "AUTO_ACCEPT",
-			summaryQuestionsMode: "MANUAL",
-			autoAcceptAll: false,
-		});
-
-		await setApprovalMode({
-			input: { ...base, userDefault: { cleanSpec: "MANUAL" } },
 			context: ctx,
 		});
 		expect(mocks.enqueuePmSync).not.toHaveBeenCalled();

@@ -18,7 +18,13 @@ import {
 } from "vitest";
 import { formatClock } from "../../lib/parlume-format";
 import { ParlumePage } from "../ParlumePage";
-import { action, PROJECT_BASE_PATH, request, session } from "./fixtures";
+import {
+	action,
+	PROJECT_BASE_PATH,
+	request,
+	SETTINGS_BASE_PATH,
+	session,
+} from "./fixtures";
 
 const mocks = vi.hoisted(() => ({
 	listAgents: vi.fn(),
@@ -75,6 +81,7 @@ function showPage() {
 			<ParlumePage
 				projectId="example-project"
 				projectBasePath={PROJECT_BASE_PATH}
+				settingsBasePath={SETTINGS_BASE_PATH}
 				canEdit
 			/>
 		</QueryClientProvider>,

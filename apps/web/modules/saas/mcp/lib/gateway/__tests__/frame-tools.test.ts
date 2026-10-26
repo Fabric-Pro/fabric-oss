@@ -24,6 +24,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	createFirstClassFrame: vi.fn(),
 	updateFirstClassFrame: vi.fn(),
+	editFirstClassFrameBlock: vi.fn(),
 	getFirstClassFrame: vi.fn(),
 	listFirstClassFrames: vi.fn(),
 	shareFirstClassFrame: vi.fn(),
@@ -39,6 +40,7 @@ vi.mock("@repo/api/modules/v1/instruction-direct-repository", () => ({
 vi.mock("@repo/temporal/frame-service", () => ({
 	createFirstClassFrame: mocks.createFirstClassFrame,
 	updateFirstClassFrame: mocks.updateFirstClassFrame,
+	editFirstClassFrameBlock: mocks.editFirstClassFrameBlock,
 	getFirstClassFrame: mocks.getFirstClassFrame,
 	listFirstClassFrames: mocks.listFirstClassFrames,
 	shareFirstClassFrame: mocks.shareFirstClassFrame,
@@ -888,5 +890,46 @@ describe("fabric_list_frames", () => {
 			},
 			{ frameId: "loose-1" },
 		]);
+	});
+});
+
+describe("fabric_edit_frame_block gateway registration", () => {
+	it("requires frames:write before the handler runs", async () => {
+		const result = await executePlatformTool(
+			"fabric_edit_frame_block",
+			{
+				frameId: "example-frame",
+				blockId: "example-block",
+				edits: [{ oldText: "old", newText: "new" }],
+			},
+			{ ...session, credential: "personal-key", scopes: ["frames:read"] },
+		);
+		expect(result.isError).toBe(true);
+		expect(payload(result).error).toContain("frames:write");
+		expect(mocks.editFirstClassFrameBlock).not.toHaveBeenCalled();
+	});
+	it("routes the acting user and organization to the edit service", async () => {
+		mocks.editFirstClassFrameBlock.mockResolvedValue({
+			frameId: "example-frame",
+			blockId: "example-block",
+			chars: 3,
+			replacements: [1],
+		});
+		const args = {
+			frameId: "example-frame",
+			blockId: "example-block",
+			edits: [{ oldText: "old", newText: "new" }],
+		};
+		const result = await executePlatformTool(
+			"fabric_edit_frame_block",
+			args,
+			session,
+		);
+		expect(result.isError).toBeUndefined();
+		expect(mocks.editFirstClassFrameBlock).toHaveBeenCalledWith({
+			args,
+			userId: session.userId,
+			organizationId: session.organizationId,
+		});
 	});
 });

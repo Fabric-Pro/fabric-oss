@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
 	execute: vi.fn(async () => ({ ok: true })),
+	readOnlyHint: undefined as boolean | undefined,
 	ensureSensitiveOperationAuthority: vi.fn(),
 	checkAuthority: vi.fn(),
 	findConfig: vi.fn(),
@@ -24,7 +25,10 @@ vi.mock("@repo/mcp", () => ({
 		client: {
 			tools: async () => ({
 				"notion-create-pages": { execute: h.execute },
-				"notion-search": { execute: h.execute },
+				"notion-search": {
+					execute: h.execute,
+					metadata: { annotations: { readOnlyHint: h.readOnlyHint } },
+				},
 			}),
 		},
 		serverName: "Notion",
@@ -82,6 +86,7 @@ const base = {
 };
 
 beforeEach(() => {
+	h.readOnlyHint = undefined;
 	h.execute.mockClear();
 	h.executeGitHubTool.mockClear();
 	h.ensureSensitiveOperationAuthority.mockReset();
@@ -255,3 +260,35 @@ describe("executeMcpTool without requestRuntimeAuthority (pre-patch path)", () =
 		expect(h.ensureSensitiveOperationAuthority).not.toHaveBeenCalled();
 	});
 });
+
+it.each([true, undefined, false])(
+	"returns a positive MCP read declaration only for hint %s",
+	async (hint) => {
+		h.readOnlyHint = hint;
+		const result = await executeMcpTool({
+			...base,
+			toolName: "notion-search",
+		});
+		expect(result.success).toBe(true);
+		expect(result.readOnly).toBe(hint === true ? true : undefined);
+	},
+);
+
+it.each([
+	["get_pull_request", true],
+	["list_pull_requests", true],
+	["create_issue", undefined],
+	["create_pull_request", undefined],
+])(
+	"returns GitHub registry read declaration for %s",
+	async (method, readOnly) => {
+		const result = await executeMcpTool({
+			...base,
+			toolName: `GitHub__${method}`,
+			mcpConfigId: "github-connected:github:github-repos",
+			args: { owner: "example-org", repo: "example", pull_number: 1 },
+		});
+		expect(result.success).toBe(true);
+		expect(result.readOnly).toBe(readOnly);
+	},
+);

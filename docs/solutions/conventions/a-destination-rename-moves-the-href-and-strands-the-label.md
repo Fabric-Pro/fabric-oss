@@ -58,8 +58,8 @@ This is the part a blind find-and-replace gets wrong, and it cuts both ways.
 - **Container** — it names the destination. Rename it.
 - **Sub-kind** — it names one of the things inside the destination. Leave it. Here,
   Connections contains *Integrations* and *MCP servers*, so the segmented control's
-  "Integrations" tab, the "Action integrations" group and the "Browse integrations" item
-  are all correct as they stand. Renaming them would collapse the very distinction the
+  "Integrations" tab and the "Browse integrations" item
+  are both correct as they stand. Renaming them would collapse the very distinction the
   page exists to draw.
 - **Structure** — it names a URL slug or a tree the move did not actually change. Leave
   it. The settings breadcrumb map still reads "Integrations" because provider and action

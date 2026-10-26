@@ -9,6 +9,7 @@ import {
 } from "@ui/components/tooltip";
 import { InboxIcon } from "lucide-react";
 import { useParams } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { ReviewCenterPanel } from "./ReviewCenterPanel";
 import { useReviewCenterCount } from "./use-review-center";
@@ -16,13 +17,14 @@ import { useReviewCenterCount } from "./use-review-center";
 /**
  * Review Center entry point for the roadmap toolbar.
  *
- * A dedicated inbox icon + count badge that opens the unified slide-over. The
- * badge count is ACTIONABLE items only (conflicts + FAILED/CONFLICT items + ADO
- * pull-drift) and renders nothing when 0. Self-contained: derives `projectId`
+ * A labelled Sync issues button opens the unified slide-over. Its
+ * count includes actionable items only (conflicts + FAILED/CONFLICT items + ADO
+ * pull-drift). It hides at 0 only after its open panel closes. Self-contained: derives `projectId`
  * from the route and tenant/`basePath` from `useOrganizationContext`, so the
  * toolbar only has to render it (no extra prop threading).
  */
 export function ReviewCenterInbox() {
+	const t = useTranslations("projects.stories.roadmapUi");
 	const params = useParams<{ id: string }>();
 	const projectId = params?.id;
 	const { organizationId } = useOrganizationContext();
@@ -33,31 +35,23 @@ export function ReviewCenterInbox() {
 	// drift), preserving the badge's pre-tabs semantics after the count endpoint
 	// split into per-category fields.
 	const count = data?.total ?? 0;
-
-	if (!projectId || count === 0) {
+	if (!projectId || (count === 0 && !open)) {
 		return null;
 	}
 
-	const label = `${count} ${count === 1 ? "item" : "items"} to review`;
+	const label = t("syncIssues", { count });
 
 	return (
 		<>
 			<Tooltip>
 				<TooltipTrigger asChild>
 					<Button
-						variant="ghost"
+						variant="outline"
 						size="sm"
-						className="relative h-8 gap-1.5 text-highlight"
 						onClick={() => setOpen(true)}
-						aria-label={`Review Center: ${label}`}
+						aria-label={label}
 					>
-						<span className="relative flex size-2">
-							<span className="absolute inline-flex size-full rounded-full bg-highlight opacity-75 motion-safe:animate-ping" />
-							<span className="relative inline-flex size-2 rounded-full bg-highlight" />
-						</span>
-						<span className="text-xs font-medium tabular-nums">
-							{count}
-						</span>
+						<span className="tabular-nums">{label}</span>
 						<InboxIcon className="size-3.5" aria-hidden />
 					</Button>
 				</TooltipTrigger>

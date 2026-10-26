@@ -41,6 +41,7 @@ export async function getAiModel(
 		AIOperationContext,
 		| "projectId"
 		| "featureKey"
+		| "callPurpose"
 		| "conversationId"
 		| "frameId"
 		| "workflowExecutionId"
@@ -102,6 +103,7 @@ export async function getAiModelWithSelection(
 		AIOperationContext,
 		| "projectId"
 		| "featureKey"
+		| "callPurpose"
 		| "conversationId"
 		| "frameId"
 		| "workflowExecutionId"
@@ -140,6 +142,11 @@ export async function getAiModelWithSelection(
 		// model string is an org-defined alias (e.g. a Databricks serving
 		// endpoint name).
 		canonicalName: metadata.canonicalName,
+		contextWindow: metadata.contextWindow,
+		maxOutputTokens: metadata.maxOutputTokens,
+		// Read after the calls: set only once every ChatGPT plan ran out
+		// mid-turn and the model moved to API billing (Fizzy #3048).
+		planSpentApiBilling: () => metadata.planSpentApiBilling,
 	};
 }
 

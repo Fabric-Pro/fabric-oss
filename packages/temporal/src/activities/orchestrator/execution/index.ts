@@ -54,6 +54,11 @@ export {
 	WebHandler,
 	WorkflowHandler,
 } from "./handlers";
+export {
+	type JudgeDelegationRiskInput,
+	type JudgeDelegationRiskResult,
+	judgeDelegationRiskActivity,
+} from "./judge-delegation-risk";
 // Phase 2: Recovery Management
 export {
 	type AttemptRecord,

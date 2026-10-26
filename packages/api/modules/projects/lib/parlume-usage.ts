@@ -4,9 +4,10 @@ export const PARLUME_FEATURE_KEY = "parlume";
 
 /**
  * Hosted Attendee bills one credit per bot-hour, at $0.50 for purchases up to
- * $200 and less at volume; the bridge transcribes, so no provider
- * transcription is added. Priced at the entry rate so spend is never
- * understated. Update it when the plan changes.
+ * $200 and less at volume, from the bot's creation, so the time it waits in a
+ * lobby counts; the bridge transcribes, so no provider transcription is added.
+ * Priced at the entry rate so spend is never understated. Update it when the
+ * plan changes.
  */
 export const PARLUME_ATTENDEE_USD_PER_HOUR = 0.5;
 
@@ -38,24 +39,32 @@ export function resolveParlumeMeetingEnd(
 	);
 }
 
+function elapsedMs(from: Date | null, to: Date): number {
+	return from ? Math.max(0, to.getTime() - from.getTime()) : 0;
+}
+
 /**
- * Records the meeting provider's bot time, and the live transcription of that
- * time, as invocation-marker rows: the same shape image generation and
- * transcription use for spend that has no token count. Never throws: usage
- * accounting must not block finalization.
+ * Records the meeting provider's bot time, and the live transcription of the
+ * streamed audio, as invocation-marker rows: the same shape image generation
+ * and transcription use for spend that has no token count. The provider bills
+ * a bot from its creation, so bot time runs from the invite (`requestedAt`,
+ * just before the bot is created), lobby wait and a bot that never streamed
+ * included; transcription runs only from the verified stream (`joinedAt`).
+ * Neither row has a request latency. Never throws: usage accounting must not
+ * block finalization.
  */
 export function recordParlumeMeetingProviderUsage(input: {
 	sessionId: string;
 	userId: string;
 	organizationId: string;
 	projectId: string;
+	requestedAt: Date;
 	joinedAt: Date | null;
 	endedAt: Date;
 	success: boolean;
 }): void {
-	const durationMs = input.joinedAt
-		? Math.max(0, input.endedAt.getTime() - input.joinedAt.getTime())
-		: 0;
+	const botMs = elapsedMs(input.requestedAt, input.endedAt);
+	const streamedMs = elapsedMs(input.joinedAt, input.endedAt);
 	const row = {
 		userId: input.userId,
 		organizationId: input.organizationId,
@@ -66,22 +75,22 @@ export function recordParlumeMeetingProviderUsage(input: {
 		inputTokens: 0,
 		outputTokens: 0,
 		totalTokens: 0,
-		latencyMs: durationMs,
+		latencyMs: 0,
 		success: input.success,
 	} as const;
 	logAiUsageAsync({
 		...row,
 		provider: "CUSTOM",
 		providerModelId: "attendee/teams-bot",
-		costUsd: (durationMs / 3_600_000) * PARLUME_ATTENDEE_USD_PER_HOUR,
+		costUsd: (botMs / 3_600_000) * PARLUME_ATTENDEE_USD_PER_HOUR,
 	});
-	if (durationMs > 0) {
+	if (streamedMs > 0) {
 		logAiUsageAsync({
 			...row,
 			provider: "CLOUDFLARE_AI",
 			providerModelId: "@cf/deepgram/flux",
 			costUsd:
-				(durationMs / 60_000) * PARLUME_TRANSCRIPTION_USD_PER_MINUTE,
+				(streamedMs / 60_000) * PARLUME_TRANSCRIPTION_USD_PER_MINUTE,
 		});
 	}
 }

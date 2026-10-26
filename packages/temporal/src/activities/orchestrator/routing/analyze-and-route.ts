@@ -17,6 +17,7 @@
  */
 
 import { generateText } from "@repo/ai";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { db } from "@repo/database";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import type { RoutingDecision } from "../../../workflows/orchestrator/types";
@@ -128,9 +129,10 @@ async function routeTask(
 		false,
 		undefined,
 		undefined,
-		input.conversationId || input.frameId || input.projectId
-			? usageOriginFields(input)
-			: undefined,
+		{
+			...usageOriginFields(input),
+			callPurpose: AI_CALL_PURPOSES.routing,
+		},
 	);
 
 	// ==========================================================================
@@ -238,6 +240,7 @@ async function routeTask(
 						"fabric_create_frame",
 						"fabric_create_slideshow",
 						"fabric_update_frame",
+						"fabric_edit_frame_block",
 						"fabric_get_frame",
 						"fabric_list_frames",
 						"fabric_share_frame",

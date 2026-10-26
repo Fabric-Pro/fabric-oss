@@ -15,6 +15,40 @@ export interface ConfigRow {
 	lastMeetingDate: Date | null;
 }
 
+/** A series' Parlume auto-join switch, as the config panel shows it. */
+export interface ParlumeAutoJoinState {
+	enabled: boolean;
+	toolsReadOnly: boolean;
+	suggestionsEnabled: boolean;
+	/** Who turned it on; null when off, or when their account is gone. */
+	enabledBy: { id: string; name: string } | null;
+	error: string | null;
+	errorAt: Date | null;
+	/** Syncing is stopped for the series, so the scheduler skips it. */
+	syncStopped: boolean;
+}
+
+/** Pure mapper — unit-tested in isolation, no DB. */
+export function toParlumeAutoJoinState(row: {
+	deactivatedAt: Date | null;
+	parlumeAutoJoin: boolean;
+	parlumeAutoJoinToolsReadOnly: boolean;
+	parlumeAutoJoinSuggestions: boolean;
+	parlumeAutoJoinError: string | null;
+	parlumeAutoJoinErrorAt: Date | null;
+	parlumeAutoJoinUser: { id: string; name: string } | null;
+}): ParlumeAutoJoinState {
+	return {
+		enabled: row.parlumeAutoJoin,
+		toolsReadOnly: row.parlumeAutoJoinToolsReadOnly,
+		suggestionsEnabled: row.parlumeAutoJoinSuggestions,
+		enabledBy: row.parlumeAutoJoin ? row.parlumeAutoJoinUser : null,
+		error: row.parlumeAutoJoinError,
+		errorAt: row.parlumeAutoJoinErrorAt,
+		syncStopped: row.deactivatedAt !== null,
+	};
+}
+
 /** Pure mapper — unit-tested in isolation, no DB. */
 export function toConfigRows(
 	linked: Array<{
@@ -66,7 +100,18 @@ export const listConfigurableMeetingsProcedure = tenantProtectedProcedure
 
 		const rows = await db.projectLinkedMeeting.findMany({
 			where: { projectId: input.projectId },
-			select: { id: true, subject: true, includedInDigest: true },
+			select: {
+				id: true,
+				subject: true,
+				includedInDigest: true,
+				deactivatedAt: true,
+				parlumeAutoJoin: true,
+				parlumeAutoJoinToolsReadOnly: true,
+				parlumeAutoJoinSuggestions: true,
+				parlumeAutoJoinError: true,
+				parlumeAutoJoinErrorAt: true,
+				parlumeAutoJoinUser: { select: { id: true, name: true } },
+			},
 			orderBy: { subject: "asc" },
 		});
 
@@ -89,5 +134,13 @@ export const listConfigurableMeetingsProcedure = tenantProtectedProcedure
 			}
 		}
 
-		return { meetings: toConfigRows(rows, lastMeetingByLinkedId) };
+		const autoJoinById = new Map(
+			rows.map((row) => [row.id, toParlumeAutoJoinState(row)]),
+		);
+		return {
+			meetings: toConfigRows(rows, lastMeetingByLinkedId).map((row) => ({
+				...row,
+				parlumeAutoJoin: autoJoinById.get(row.linkedMeetingId) ?? null,
+			})),
+		};
 	});

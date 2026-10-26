@@ -1,6 +1,7 @@
 import { ORPCError } from "@orpc/server";
 import { updateWizardTempContextTag } from "@repo/database";
 import { ProjectDocumentTypeSchema } from "@repo/database/prisma/zod";
+import { isCreatableDocumentType } from "@repo/utils/document-type-catalog";
 import { z } from "zod";
 import {
 	Permissions,
@@ -9,7 +10,10 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 
-const VALID_DOCUMENT_TAGS = ProjectDocumentTypeSchema.options;
+// A tag turns the upload into a document, so a retired type is no tag (Fizzy #2776).
+const VALID_DOCUMENT_TAGS = ProjectDocumentTypeSchema.options.filter(
+	isCreatableDocumentType,
+);
 
 export const updateTempContextTagProcedure = tenantProtectedProcedure
 	// Evaluated against the organization named in the input, not the

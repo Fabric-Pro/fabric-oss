@@ -14,6 +14,7 @@ import {
 	DOCUMENT_TYPE_CATALOG,
 	DOCUMENT_TYPE_OPTIONS,
 	documentTypeLabel,
+	isCreatableDocumentType,
 	isDeprecatedDocumentType,
 } from "@repo/utils/document-type-catalog";
 import { describe, expect, it } from "vitest";
@@ -56,9 +57,11 @@ describe("document type catalog", () => {
 		);
 	});
 
-	it("exposes the catalog as an ordered option list", () => {
+	it("exposes the creatable types as an ordered option list", () => {
 		expect(DOCUMENT_TYPE_OPTIONS.map((o) => o.value)).toEqual(
-			Object.keys(DOCUMENT_TYPE_CATALOG),
+			Object.keys(DOCUMENT_TYPE_CATALOG).filter(
+				(type) => !isDeprecatedDocumentType(type),
+			),
 		);
 		expect(DOCUMENT_TYPE_OPTIONS[0]?.value).toBe("GENERAL");
 	});
@@ -75,19 +78,28 @@ describe("document type catalog", () => {
 			expect(documentTypeLabel("USER_STORY")).toBe("Features");
 		});
 
-		it("lists deprecated types after every current one", () => {
-			const values = DOCUMENT_TYPE_OPTIONS.map((o) => o.value);
-			const firstDeprecated = values.findIndex((type) =>
-				isDeprecatedDocumentType(type),
+		it("leaves Features out of the create flow's options", () => {
+			expect(DOCUMENT_TYPE_OPTIONS.map((o) => o.value)).not.toContain(
+				"USER_STORY",
 			);
-			expect(firstDeprecated).toBeGreaterThan(-1);
-			expect(
-				values.slice(firstDeprecated).every(isDeprecatedDocumentType),
-			).toBe(true);
 		});
 
 		it("does not treat an unknown type as deprecated", () => {
 			expect(isDeprecatedDocumentType("SOME_RETIRED_TYPE")).toBe(false);
+		});
+	});
+
+	describe("isCreatableDocumentType", () => {
+		it("refuses Features and allows every other schema type", () => {
+			const notCreatable = ProjectDocumentTypeSchema.options.filter(
+				(type) => !isCreatableDocumentType(type),
+			);
+			expect(notCreatable).toEqual(["USER_STORY"]);
+		});
+
+		it("refuses a type the catalog does not know", () => {
+			expect(isCreatableDocumentType("SOME_RETIRED_TYPE")).toBe(false);
+			expect(isCreatableDocumentType("constructor")).toBe(false);
 		});
 	});
 });

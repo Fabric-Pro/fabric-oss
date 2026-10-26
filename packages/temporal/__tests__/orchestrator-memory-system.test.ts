@@ -27,7 +27,10 @@ const mockUpdateEpisodeQdrantReference = vi.fn();
 const mockUpdateRecentActivity = vi.fn();
 const mockLearnPattern = vi.fn();
 
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	renderOrchestratorMemoryContext: (
+		await vi.importActual<typeof import("@repo/database")>("@repo/database")
+	).renderOrchestratorMemoryContext,
 	setAiUsageRecorder: vi.fn(),
 	getOrchestratorMemoryPreferences: (...args: unknown[]) =>
 		mockGetOrchestratorMemoryPreferences(...args),
@@ -111,7 +114,13 @@ describe("Orchestrator Memory System", () => {
 		mockGetRecentEpisodes.mockResolvedValue([]);
 		mockSearchSimilarEpisodes.mockResolvedValue([]);
 		mockBuildOrchestratorMemoryContext.mockResolvedValue({
-			preferences: {},
+			preferences: {
+				preferences: {},
+				recentProjectIds: [],
+				recentWorkspaceIds: [],
+			},
+			projectEpisodes: [],
+			workspaceEpisodes: [],
 			recentEpisodes: [],
 			relevantEpisodes: [],
 		});
@@ -689,7 +698,13 @@ describe("Memory Evaluation", () => {
 		});
 		mockGetRecentEpisodes.mockResolvedValue([]);
 		mockBuildOrchestratorMemoryContext.mockResolvedValue({
-			preferences: {},
+			preferences: {
+				preferences: {},
+				recentProjectIds: [],
+				recentWorkspaceIds: [],
+			},
+			projectEpisodes: [],
+			workspaceEpisodes: [],
 			recentEpisodes: [],
 			relevantEpisodes: [],
 		});

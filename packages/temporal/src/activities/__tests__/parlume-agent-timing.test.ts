@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { executeParlumeAgent } from "../parlume-agent";
+import {
+	executeParlumeAgent,
+	gatherParlumeAgentContext,
+} from "../parlume-agent";
 import { TurnTimings, withTurnTimings } from "../shared/turn-timing";
 
 const mocks = vi.hoisted(() => ({
@@ -113,6 +116,18 @@ describe("Parlume agent timing", () => {
 				values["agent.memoryMs"] +
 				values["agent.workspaceMs"],
 		);
+	});
+
+	it("uses lookups the turn started earlier instead of repeating them", async () => {
+		const gathered = gatherParlumeAgentContext(
+			builtIn,
+			session,
+			"Question",
+		);
+		await executeParlumeAgent({ ...input, agent: builtIn, gathered });
+		expect(mocks.memory).toHaveBeenCalledTimes(1);
+		expect(mocks.mcp).toHaveBeenCalledTimes(1);
+		expect(mocks.builtin).toHaveBeenCalledTimes(1);
 	});
 
 	it("times a custom agent's context and knowledge lookups", async () => {

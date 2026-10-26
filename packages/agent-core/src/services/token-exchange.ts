@@ -20,6 +20,8 @@ import { rememberChatGptPlanExchange } from "./chatgpt-plan-reexchange";
 export interface AICredentials {
 	/** Catalog metadata for the pinned model; null caps mean unknown. */
 	isReasoningModel?: boolean;
+	/** Resolved catalog identity for model-family capabilities. */
+	canonicalModelName?: string;
 	maxOutputTokens?: number | null;
 	contextWindow?: number | null;
 	/** Set by the exchange when it applied the signed model selection. */
@@ -158,6 +160,7 @@ async function exchangeTokenForCredentials(
 	return {
 		modelPinned: result.modelPinned === true,
 		isReasoningModel: result.isReasoningModel,
+		canonicalModelName: result.canonicalModelName,
 		maxOutputTokens: result.maxOutputTokens,
 		contextWindow: result.contextWindow,
 		apiKey: result.apiKey,

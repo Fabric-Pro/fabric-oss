@@ -33,7 +33,10 @@ import type {
 } from "@repo/temporal";
 import { classifyTemporalClientError } from "@repo/temporal/temporal-client-errors";
 import { turnBudgetForExecutionMode } from "@repo/temporal/turn-budget-policy";
+import { parseTurnBudgetStop } from "@saas/agents/lib/turn-budget-stop";
 import { v4 as uuidv4 } from "uuid";
+import { assertChatWorkflowPayload } from "../chat-workflow-payload";
+import { budgetContinuationSeed } from "./budget-continuation";
 import { isOrchestratorOrganizationMember } from "./run-access";
 
 /** The turn contract this starter speaks (see the workflow's turn input). */
@@ -567,6 +570,7 @@ export async function startTurnWorkflow(args: {
 	temporalClient: TemporalClientLike;
 	turn: ConversationTurn;
 	workflowInput: OrchestratorWorkflowInput;
+	continueFromTurnId?: string;
 	/** Correlation memo; `userId`/`organizationId` are what owner checks read. */
 	memo: Record<string, unknown>;
 }): Promise<{ handle: unknown; attached: boolean }> {
@@ -604,8 +608,15 @@ export async function startTurnWorkflow(args: {
 	const workflowInput: OrchestratorWorkflowInput = {
 		...args.workflowInput,
 		executionId,
+		historyRetention:
+			process.env.ADVISOR_HISTORY_RETENTION === "bounded"
+				? "bounded"
+				: undefined,
 		turnId: turn.id,
 		turnContractVersion: TURN_CONTRACT_VERSION,
+		...(turn.tokenAllowance != null
+			? { turnTokenAllowance: turn.tokenAllowance }
+			: {}),
 		// The ledger fences reservations on it (under the workflow's
 		// `orch-turn-budget-v1` marker); null for a turn with no conversation.
 		turnGeneration: turn.generation,
@@ -613,6 +624,23 @@ export async function startTurnWorkflow(args: {
 	let handle: unknown;
 	let attached = false;
 	try {
+		if (args.continueFromTurnId) {
+			if (!turn.conversationId) {
+				throw new Error("Continuation requires a conversation");
+			}
+			const seed = await budgetContinuationSeed({
+				turnId: args.continueFromTurnId,
+				conversationId: turn.conversationId,
+				userId: turn.userId,
+				organizationId: turn.organizationId,
+				successorTurnId: turn.id,
+			});
+			workflowInput.history = [...(workflowInput.history ?? []), seed];
+			assertChatWorkflowPayload(
+				workflowInput,
+				"orchestrator budget continuation",
+			);
+		}
 		handle = await args.temporalClient.workflow.start(
 			"orchestratorExecutionWorkflow",
 			{
@@ -622,17 +650,17 @@ export async function startTurnWorkflow(args: {
 				taskQueue: "fabric-orchestrator",
 				workflowId: executionId,
 				args: [workflowInput],
-				// Absolute wall-clock ceiling. Every activity in this workflow
-				// already bounds itself (`startToCloseTimeout` +
-				// `heartbeatTimeout`) and every human-in-the-loop `condition()`
-				// wait is bounded too, so no single step can hang — but without
-				// this the RUN as a whole had no ceiling, and a wedged one
-				// stayed RUNNING with nothing to reclaim it. An hour is far
-				// above a normal run (the stream itself caps at 11 minutes and
-				// reattaches on resume) and far below "forever". A run that
-				// exceeds it surfaces as TIMED_OUT, which the stream's poll loop
-				// renders as an error.
-				workflowExecutionTimeout: "1 hour",
+				// Under orch-main-round-budget-v1, a cancellation scope bounds
+				// Advisor chat work to 45 minutes from the start event. After
+				// cancellation settles (at most the current activity's remaining
+				// start-to-close, up to 5 minutes in the loop), synthesis runs
+				// outside that scope: two calls × 5 minutes × 3 attempts = 30
+				// minutes, plus 6 seconds of retry delays. Finalization is
+				// 1 minute × 5 attempts + 15 seconds of retry delays. About 40
+				// minutes total leaves ~35 of the remaining 75 for queueing and
+				// completion. Service outages can still prevent a durable write.
+
+				workflowExecutionTimeout: "2 hours",
 				// One turn, one execution: a delayed second start (a retry
 				// racing the first) must find the first execution — even one
 				// that already closed — rather than start another.
@@ -698,7 +726,7 @@ export async function startLegacyChatWorkflow(args: {
 		workflowId: args.executionId,
 		args: [{ ...args.workflowInput, executionId: args.executionId }],
 		// Same ceiling as a turn's run (see startTurnWorkflow).
-		workflowExecutionTimeout: "1 hour",
+		workflowExecutionTimeout: "2 hours",
 		memo: args.memo,
 	});
 }
@@ -712,47 +740,7 @@ export async function startLegacyChatWorkflow(args: {
 export function turnBudgetStopForStream(
 	value: unknown,
 ): OrchestratorWorkflowOutput["budgetStop"] {
-	if (!value || typeof value !== "object" || Array.isArray(value)) {
-		return undefined;
-	}
-	const record = value as Record<string, unknown>;
-	const count = (key: string): number | null => {
-		const raw = record[key];
-		const parsed =
-			typeof raw === "bigint"
-				? Number(raw)
-				: typeof raw === "number"
-					? raw
-					: Number.NaN;
-		return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
-	};
-	const allowance = count("allowance");
-	const measured = count("measured");
-	const outstanding = count("outstanding");
-	if (
-		record.kind !== "token_allowance" ||
-		allowance === null ||
-		measured === null ||
-		outstanding === null
-	) {
-		return undefined;
-	}
-	const enforcement =
-		record.enforcement === "ENFORCED" ||
-		record.enforcement === "MEASURED_ONLY"
-			? record.enforcement
-			: null;
-	return {
-		kind: "token_allowance",
-		allowance,
-		measured,
-		outstanding,
-		enforcement,
-		stopReason:
-			record.stopReason === "finalization_unavailable"
-				? "finalization_unavailable"
-				: "allowance_exhausted",
-	};
+	return parseTurnBudgetStop(value);
 }
 
 export function resultStatusForTurn(

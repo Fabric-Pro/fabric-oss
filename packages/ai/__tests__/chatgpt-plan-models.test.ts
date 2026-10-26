@@ -61,6 +61,8 @@ import {
 } from "../lib/chatgpt-plan/models";
 import { createChatGptPlanModel } from "../lib/chatgpt-plan/provider";
 import { __resetChatGptPlanServedModelProbes } from "../lib/chatgpt-plan/served-models";
+import * as requestObservation from "../lib/request-observation";
+import { observeModelRequests } from "../lib/request-observation";
 
 const NON_TEXT = new Set(["EMBEDDING", "IMAGE", "AUDIO", "DECISION"]);
 
@@ -579,4 +581,83 @@ describe("unsupported-model fallback (F10)", () => {
 			),
 		).toBe(await chatGptPlanSessionId("thread-123"));
 	});
+});
+
+it("observes transformed plan sends on an unsupported-model fallback", async () => {
+	const baseFetch = vi
+		.fn<typeof fetch>()
+		.mockResolvedValueOnce(unsupported())
+		.mockResolvedValueOnce(sseText("ok", "gpt-5.6-terra"));
+	const observed = await observeModelRequests(
+		{ iteration: 1, activityAttempt: 1 },
+		() =>
+			generateText({
+				model: createChatGptPlanModel({
+					userId: "user-1",
+					sessionKey: "PRIVATE_SESSION_SENTINEL",
+					modelId: "gpt-5.6-luna",
+					fallbackModelId: "gpt-5.6-terra",
+					fetchImpl: baseFetch,
+				}),
+				prompt: "PRIVATE_PROMPT_SENTINEL",
+				maxRetries: 0,
+			}),
+	);
+	expect(observed.result.text).toBe("ok");
+	expect(observed.requests).toHaveLength(2);
+	expect(
+		observed.requests.map((request) => request.fingerprint.boundary),
+	).toEqual(["wire", "wire"]);
+	expect(observed.requests[0].fingerprint.modelHash).not.toBe(
+		observed.requests[1].fingerprint.modelHash,
+	);
+	expect(observed.requests[0].fingerprint.sessionKeyHash).toBe(
+		observed.requests[1].fingerprint.sessionKeyHash,
+	);
+	expect(observed.requests[1]).toMatchObject({
+		inputTokens: 3,
+		outputTokens: 2,
+		cacheReadTokens: 0,
+	});
+	expect(observed.requests[0].inputTokens).toBeUndefined();
+	expect(observed.requests[1].fingerprint.bytes).toBe(
+		Buffer.byteLength(String(baseFetch.mock.calls[1]?.[1]?.body), "utf8"),
+	);
+	expect(JSON.stringify(observed.requests)).not.toContain("PRIVATE_");
+});
+
+it("passes plan request bytes through with no observer and with a throwing observer", async () => {
+	const baseFetch = vi
+		.fn<typeof fetch>()
+		.mockImplementation(async () => sseText("ok", "gpt-6.1-sol"));
+	const wire = vi.spyOn(requestObservation, "observeRequestWire");
+	const model = createChatGptPlanModel({
+		userId: "user-1",
+		sessionKey: "example-session",
+		modelId: "gpt-6.1-sol",
+		fetchImpl: baseFetch,
+	});
+	try {
+		await generateText({ model, prompt: "Example", maxRetries: 0 });
+		expect(wire).not.toHaveBeenCalled();
+		wire.mockImplementation(() => {
+			throw new Error("observer failure");
+		});
+		const observed = await observeModelRequests(
+			{ iteration: 1, activityAttempt: 1 },
+			() => generateText({ model, prompt: "Example", maxRetries: 0 }),
+		);
+		expect(observed.result.text).toBe("ok");
+		expect(baseFetch).toHaveBeenCalledTimes(2);
+		expect(wire).toHaveBeenCalled();
+		expect(baseFetch.mock.calls[0][0]).toEqual(baseFetch.mock.calls[1][0]);
+		expect(baseFetch.mock.calls[0][1]?.body).toBe(
+			baseFetch.mock.calls[1][1]?.body,
+		);
+		expect([...new Headers(baseFetch.mock.calls[0][1]?.headers)]).toEqual([
+			...new Headers(baseFetch.mock.calls[1][1]?.headers),
+		]);
+	} finally {
+		wire.mockRestore();
+	}
 });

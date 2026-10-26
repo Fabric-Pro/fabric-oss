@@ -212,3 +212,85 @@ describe("normalizePolledState — itemUrl (Fizzy #2304 D2.3)", () => {
 		).toBeNull();
 	});
 });
+
+describe("normalizePolledState — displayStatus (Fizzy #3088)", () => {
+	const display = (
+		raw: Record<string, unknown>,
+		ctx: { kind: "mcp" | "rest-gitlab"; pmTool?: string },
+	) => normalizePolledState(item(raw), ctx).displayStatus;
+
+	it("ADO / Jira: the tool's own status string", () => {
+		expect(
+			display({ fields: { "System.State": "Active" } }, { kind: "mcp" }),
+		).toBe("Active");
+		expect(
+			display(
+				{ fields: { status: { name: "In Review" } } },
+				{ kind: "mcp", pmTool: "jira" },
+			),
+		).toBe("In Review");
+	});
+
+	it("Fizzy: Done when closed, even though the card keeps its column", () => {
+		const n = normalizePolledState(
+			item({
+				closed: true,
+				status: "published",
+				column: { name: "QA/ Review" },
+			}),
+			{ kind: "mcp", pmTool: "fizzy" },
+		);
+		expect(n.displayStatus).toBe("Done");
+		// The terminal classifier still reads the column (unchanged).
+		expect(n.statusString).toBe("QA/ Review");
+	});
+
+	it("Fizzy: Not Now when postponed, the column when open, Maybe? in triage", () => {
+		const fizzy = { kind: "mcp" as const, pmTool: "fizzy" };
+		expect(
+			display(
+				{ closed: false, postponed: true, status: "published" },
+				fizzy,
+			),
+		).toBe("Not Now");
+		expect(
+			display({ closed: false, column: { name: "In Progress" } }, fizzy),
+		).toBe("In Progress");
+		expect(display({ closed: false, status: "published" }, fizzy)).toBe(
+			"Maybe?",
+		);
+	});
+
+	it("GitLab REST: Closed, else the workflow:: label, else Open", () => {
+		const rest = { kind: "rest-gitlab" as const };
+		expect(
+			display({ state: "closed", labels: ["workflow::in-review"] }, rest),
+		).toBe("Closed");
+		expect(
+			display(
+				{
+					state: "opened",
+					labels: ["type::feature", "workflow::in-review"],
+				},
+				rest,
+			),
+		).toBe("workflow::in-review");
+		expect(display({ state: "opened", labels: ["backend"] }, rest)).toBe(
+			"Open",
+		);
+	});
+
+	it("GitLab MCP: same rule over the raw opened/closed state", () => {
+		const mcp = { kind: "mcp" as const, pmTool: "gitlab-official" };
+		expect(display({ state: "opened" }, mcp)).toBe("Open");
+		expect(display({ state: "closed" }, mcp)).toBe("Closed");
+		// The terminal classifier input is unchanged for GitLab MCP.
+		expect(
+			normalizePolledState(item({ state: "opened" }), mcp).statusString,
+		).toBe("opened");
+	});
+
+	it("no status at all → null", () => {
+		expect(display({}, { kind: "mcp" })).toBeNull();
+	});
+});

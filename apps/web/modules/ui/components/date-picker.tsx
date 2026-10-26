@@ -19,6 +19,7 @@ interface DatePickerProps {
 	placeholder?: string;
 	className?: string;
 	disabled?: boolean;
+	"aria-label"?: string;
 }
 
 export function DatePicker({
@@ -27,6 +28,7 @@ export function DatePicker({
 	placeholder = "Pick a date",
 	className,
 	disabled,
+	"aria-label": ariaLabel,
 }: DatePickerProps) {
 	// Convert string value to Date if needed
 	const dateValue = React.useMemo(() => {
@@ -41,12 +43,16 @@ export function DatePicker({
 		return Number.isNaN(parsed.getTime()) ? undefined : parsed;
 	}, [value]);
 
+	const visibleLabel = dateValue ? format(dateValue, "PPP") : placeholder;
 	return (
 		<Popover>
 			<PopoverTrigger asChild>
 				<Button
 					variant="outline"
 					disabled={disabled}
+					aria-label={
+						ariaLabel ? `${ariaLabel}: ${visibleLabel}` : undefined
+					}
 					className={cn(
 						"w-[240px] justify-start text-left font-normal",
 						!dateValue && "text-muted-foreground",
@@ -54,14 +60,14 @@ export function DatePicker({
 					)}
 				>
 					<CalendarIcon className="mr-2 h-4 w-4" />
-					{dateValue ? (
-						format(dateValue, "PPP")
-					) : (
-						<span>{placeholder}</span>
-					)}
+					{visibleLabel}
 				</Button>
 			</PopoverTrigger>
-			<PopoverContent className="w-auto p-0" align="start">
+			<PopoverContent
+				collisionPadding={16}
+				className="w-auto p-0"
+				align="start"
+			>
 				<Calendar
 					mode="single"
 					selected={dateValue}

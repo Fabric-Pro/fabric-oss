@@ -21,11 +21,9 @@
  * Identical to `rls-isolation.test.ts`:
  *   1. Insert a row via the direct connection (Prisma client connects as
  *      the table owner / superuser and bypasses FORCE RLS).
- *   2. Set `app.tenant_type` / `app.tenant_id` on the same connection to
- *      simulate a tenant-scoped query. The `USING (false)` policy is now
- *      enforced because the tenant context is set, so reads from the
- *      tenant-scoped session return zero rows.
- *   3. Reset the session to no-tenant; reads succeed.
+ *   2. Use the shared restricted-role harness, which verifies NOSUPERUSER
+ *      and NOBYPASSRLS and sets transaction-local tenant context.
+ *   3. Read as the administrator again as a positive control.
  *
  * Excluded from the default `pnpm --filter @repo/database test` run via
  * the package's vitest config (`INTEGRATION_TESTS`). Run locally with
@@ -39,33 +37,13 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { db } from "../../prisma/client";
 import { hasReachableDatabaseUrl } from "../_helpers/db-availability";
+import { asRlsRole, ensureRlsTestRole } from "../_helpers/rls-role";
 
 // Reachable-DB gate: rejects the CI/local placeholder DATABASE_URL, not
 // just an unset one (see _helpers/db-availability.ts).
 const HAS_DB = hasReachableDatabaseUrl();
 
 const TEST_USER_ID = "test-user-rls-incidents";
-
-/**
- * Helper: enter tenant-scoped session. With `app.tenant_type` set the
- * `admin_only` policy USING (false) takes effect.
- */
-async function setTenantContext(userId: string) {
-	await db.$executeRaw`SELECT set_config('app.tenant_type', 'personal', true)`;
-	await db.$executeRaw`SELECT set_config('app.tenant_id', ${userId}, true)`;
-	await db.$executeRaw`SELECT set_config('app.user_id', ${userId}, true)`;
-}
-
-/**
- * Helper: reset session back to no-tenant. With `app.tenant_type=none`
- * the policy still evaluates to false (`USING (false)` is unconditional),
- * but the table owner / superuser bypasses FORCE RLS so reads succeed.
- */
-async function resetTenantContext() {
-	await db.$executeRaw`SELECT set_config('app.tenant_type', 'none', true)`;
-	await db.$executeRaw`SELECT set_config('app.tenant_id', '', true)`;
-	await db.$executeRaw`SELECT set_config('app.user_id', '', true)`;
-}
 
 describe.skipIf(!HAS_DB)(
 	"RLS policies — monitoring/incident tables (admin_only)",
@@ -77,8 +55,8 @@ describe.skipIf(!HAS_DB)(
 
 		beforeAll(async () => {
 			// Inserts as the table owner / superuser bypass FORCE RLS.
-			// Reset context defensively in case a sibling suite left it set.
-			await resetTenantContext();
+			// The harness verifies that tenant reads cannot bypass RLS.
+			await ensureRlsTestRole();
 
 			// `createdAt`/`updatedAt` carry no default on User, so they are
 			// required here. The cast this call used to carry hid that: the
@@ -143,7 +121,6 @@ describe.skipIf(!HAS_DB)(
 		});
 
 		afterAll(async () => {
-			await resetTenantContext();
 			// Cascade clean up — IncidentEvent has FK ON DELETE CASCADE.
 			await db.incidentEvent
 				.delete({ where: { id: incidentEventId } })
@@ -164,69 +141,108 @@ describe.skipIf(!HAS_DB)(
 
 		describe("per-tenant reads are denied (admin_only policy)", () => {
 			it("denies SELECT on error_rate_incident from a personal tenant context", async () => {
-				await setTenantContext(TEST_USER_ID);
-				const row = await db.errorRateIncident.findUnique({
-					where: { id: errorRateIncidentId },
-				});
+				const row = await asRlsRole(
+					{
+						type: "personal",
+						tenantId: TEST_USER_ID,
+						userId: TEST_USER_ID,
+					},
+					(tx) =>
+						tx.errorRateIncident.findUnique({
+							where: { id: errorRateIncidentId },
+						}),
+				);
 				expect(row).toBeNull();
 			});
 
 			it("denies SELECT on integration_incident from a personal tenant context", async () => {
-				await setTenantContext(TEST_USER_ID);
-				const row = await db.integrationIncident.findUnique({
-					where: { id: integrationIncidentId },
-				});
+				const row = await asRlsRole(
+					{
+						type: "personal",
+						tenantId: TEST_USER_ID,
+						userId: TEST_USER_ID,
+					},
+					(tx) =>
+						tx.integrationIncident.findUnique({
+							where: { id: integrationIncidentId },
+						}),
+				);
 				expect(row).toBeNull();
 			});
 
 			it("denies SELECT on incident_event from a personal tenant context", async () => {
-				await setTenantContext(TEST_USER_ID);
-				const row = await db.incidentEvent.findUnique({
-					where: { id: incidentEventId },
-				});
+				const row = await asRlsRole(
+					{
+						type: "personal",
+						tenantId: TEST_USER_ID,
+						userId: TEST_USER_ID,
+					},
+					(tx) =>
+						tx.incidentEvent.findUnique({
+							where: { id: incidentEventId },
+						}),
+				);
 				expect(row).toBeNull();
 			});
 
 			it("denies SELECT on integration_provider_registry from a personal tenant context", async () => {
-				await setTenantContext(TEST_USER_ID);
-				const row = await db.integrationProviderRegistry.findUnique({
-					where: { providerKey: providerRegistryKey },
-				});
+				const row = await asRlsRole(
+					{
+						type: "personal",
+						tenantId: TEST_USER_ID,
+						userId: TEST_USER_ID,
+					},
+					(tx) =>
+						tx.integrationProviderRegistry.findUnique({
+							where: { providerKey: providerRegistryKey },
+						}),
+				);
 				expect(row).toBeNull();
 			});
 
 			it("denies findMany across error_rate_incident from a personal tenant context", async () => {
-				await setTenantContext(TEST_USER_ID);
-				const rows = await db.errorRateIncident.findMany({
-					where: { id: errorRateIncidentId },
-				});
+				const rows = await asRlsRole(
+					{
+						type: "personal",
+						tenantId: TEST_USER_ID,
+						userId: TEST_USER_ID,
+					},
+					(tx) =>
+						tx.errorRateIncident.findMany({
+							where: { id: errorRateIncidentId },
+						}),
+				);
 				expect(rows).toEqual([]);
 			});
 
 			it("denies findMany across integration_incident from a personal tenant context", async () => {
-				await setTenantContext(TEST_USER_ID);
-				const rows = await db.integrationIncident.findMany({
-					where: { id: integrationIncidentId },
-				});
+				const rows = await asRlsRole(
+					{
+						type: "personal",
+						tenantId: TEST_USER_ID,
+						userId: TEST_USER_ID,
+					},
+					(tx) =>
+						tx.integrationIncident.findMany({
+							where: { id: integrationIncidentId },
+						}),
+				);
 				expect(rows).toEqual([]);
 			});
 		});
 
 		describe("admin / superuser reads succeed", () => {
-			it("reads error_rate_incident when tenant context is reset (admin bypass)", async () => {
-				await resetTenantContext();
+			it("reads error_rate_incident as the administrator (admin bypass)", async () => {
 				const row = await db.errorRateIncident.findUnique({
 					where: { id: errorRateIncidentId },
 				});
-				// FORCE RLS is bypassed by the table owner / superuser
-				// connection that Prisma uses. The row IS visible when no
-				// tenant context is set.
+				// This administrator connection bypasses RLS, providing a
+				// positive control for the restricted-role reads above.
 				expect(row).not.toBeNull();
 				expect(row?.id).toBe(errorRateIncidentId);
 			});
 
-			it("reads integration_incident when tenant context is reset", async () => {
-				await resetTenantContext();
+			it("reads integration_incident as the administrator", async () => {
 				const row = await db.integrationIncident.findUnique({
 					where: { id: integrationIncidentId },
 				});
@@ -234,8 +250,7 @@ describe.skipIf(!HAS_DB)(
 				expect(row?.id).toBe(integrationIncidentId);
 			});
 
-			it("reads incident_event when tenant context is reset", async () => {
-				await resetTenantContext();
+			it("reads incident_event as the administrator", async () => {
 				const row = await db.incidentEvent.findUnique({
 					where: { id: incidentEventId },
 				});
@@ -243,8 +258,7 @@ describe.skipIf(!HAS_DB)(
 				expect(row?.id).toBe(incidentEventId);
 			});
 
-			it("reads integration_provider_registry when tenant context is reset", async () => {
-				await resetTenantContext();
+			it("reads integration_provider_registry as the administrator", async () => {
 				const row = await db.integrationProviderRegistry.findUnique({
 					where: { providerKey: providerRegistryKey },
 				});
@@ -255,24 +269,32 @@ describe.skipIf(!HAS_DB)(
 
 		describe("organization tenant context is also denied", () => {
 			it("denies SELECT on integration_incident from an organization tenant context", async () => {
-				await db.$executeRaw`SELECT set_config('app.tenant_type', 'organization', true)`;
-				await db.$executeRaw`SELECT set_config('app.tenant_id', ${"some-org-id"}, true)`;
-				await db.$executeRaw`SELECT set_config('app.user_id', ${TEST_USER_ID}, true)`;
-
-				const row = await db.integrationIncident.findUnique({
-					where: { id: integrationIncidentId },
-				});
+				const row = await asRlsRole(
+					{
+						type: "organization",
+						tenantId: "example-org",
+						userId: TEST_USER_ID,
+					},
+					(tx) =>
+						tx.integrationIncident.findUnique({
+							where: { id: integrationIncidentId },
+						}),
+				);
 				expect(row).toBeNull();
 			});
 
 			it("denies SELECT on error_rate_incident from an organization tenant context", async () => {
-				await db.$executeRaw`SELECT set_config('app.tenant_type', 'organization', true)`;
-				await db.$executeRaw`SELECT set_config('app.tenant_id', ${"some-org-id"}, true)`;
-				await db.$executeRaw`SELECT set_config('app.user_id', ${TEST_USER_ID}, true)`;
-
-				const row = await db.errorRateIncident.findUnique({
-					where: { id: errorRateIncidentId },
-				});
+				const row = await asRlsRole(
+					{
+						type: "organization",
+						tenantId: "example-org",
+						userId: TEST_USER_ID,
+					},
+					(tx) =>
+						tx.errorRateIncident.findUnique({
+							where: { id: errorRateIncidentId },
+						}),
+				);
 				expect(row).toBeNull();
 			});
 		});

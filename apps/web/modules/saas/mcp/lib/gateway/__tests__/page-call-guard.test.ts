@@ -512,6 +512,7 @@ describe("a call a page may not make", () => {
 		"fabric_share_frame",
 		"fabric_create_frame",
 		"fabric_update_frame",
+		"fabric_edit_frame_block",
 		"fabric_create_workflow",
 		"fabric_publish_workflow",
 		"fabric_switch_organization",

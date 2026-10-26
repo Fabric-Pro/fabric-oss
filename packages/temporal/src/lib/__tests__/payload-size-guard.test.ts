@@ -5,7 +5,7 @@
  *   pnpm --filter @repo/temporal test src/lib/__tests__/payload-size-guard.test.ts
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	assertPayloadWithinLimit,
 	classifyPayloadSize,
@@ -109,4 +109,36 @@ describe("assertPayloadWithinLimit", () => {
 			assertPayloadWithinLimit(value, "under budget"),
 		).not.toThrow();
 	});
+});
+
+it("measures serialized UTF-8 in a workflow sandbox without Node Buffer", () => {
+	const values = [
+		{ text: "Example" },
+		{ text: "界é🙂" },
+		{ text: "\ud800" },
+		{ text: "\udfff" },
+		undefined,
+	];
+	const expected = values.map((value) =>
+		JSON.stringify(value) === undefined
+			? 0
+			: Buffer.byteLength(JSON.stringify(value), "utf8"),
+	);
+	vi.stubGlobal("Buffer", undefined);
+	try {
+		expect(values.map(measureSerializedBytes)).toEqual(expected);
+	} finally {
+		vi.unstubAllGlobals();
+	}
+});
+
+it("uses Buffer byteLength when Node provides it", () => {
+	const byteLength = vi.spyOn(Buffer, "byteLength");
+	try {
+		const value = { text: "界🙂" };
+		expect(measureSerializedBytes(value)).toBe(18);
+		expect(byteLength).toHaveBeenCalledWith(JSON.stringify(value), "utf8");
+	} finally {
+		byteLength.mockRestore();
+	}
 });

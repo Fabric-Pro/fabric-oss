@@ -42,6 +42,7 @@ vi.mock("@repo/ai", () => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	recordProposalDuplicateResolution: vi.fn(),
 	db: {
 		project: { findFirst: mocks.dbProjectFindFirst },
 		userStory: {

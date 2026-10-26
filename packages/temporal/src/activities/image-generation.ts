@@ -12,9 +12,21 @@
  * 3. Adding a case in generateImageActivity()
  */
 
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import {
+	currentAiCallPurpose,
+	runWithAiCallPurpose,
+} from "@repo/ai/lib/call-purpose-context";
+import { wrapModelWithDispatchGuard } from "@repo/ai/lib/dispatch-guard-middleware";
+import {
+	estimateLanguageRequestInputTokens,
+	TURN_BUDGET_ESTIMATE,
+} from "@repo/ai/lib/turn-budget-estimate";
+import { wrapModelWithTurnBudget } from "@repo/ai/lib/turn-budget-middleware";
 import { fetchCredentialsByProvider, logAiUsageAsync } from "@repo/database";
 import { downloadFile, getSignedUrl, uploadFile } from "@repo/storage";
 import {
+	dispatchBudgetSend,
 	dispatchSendSignal,
 	getDispatchGuard,
 	rethrowIfDispatchStopped,
@@ -113,7 +125,15 @@ function parseAspectRatio(
 	return trimmed as `${number}:${number}`;
 }
 
-export async function generateImageActivity(
+export function generateImageActivity(
+	...args: Parameters<typeof generateImageActivityInternal>
+): ReturnType<typeof generateImageActivityInternal> {
+	return runWithAiCallPurpose(AI_CALL_PURPOSES.imageGeneration, () =>
+		generateImageActivityInternal(...args),
+	);
+}
+
+async function generateImageActivityInternal(
 	params: ImageGenerationParams,
 ): Promise<ImageGenerationResult> {
 	const startTime = Date.now();
@@ -228,9 +248,9 @@ function getDefaultModel(provider: string, gatewayModel?: string): string {
 /**
  * Best-effort usage row for one image-generation call (Fizzy #1894).
  *
- * Image APIs are billed per image, not per token, and neither the gateway
- * multimodal path nor the dedicated image/FAL APIs expose token counts — so
- * this is an invocation marker (zero tokens, zero cost), not a spend figure.
+ * This is an invocation marker (zero tokens, zero cost), not a spend figure.
+ * Token-billed IMAGE+TEXT requests account separately against the turn ledger
+ * from their provider usage; the marker also covers the dedicated image APIs.
  * It exists so image generation shows up in the AI usage ledger at all.
  * Fire-and-forget: a logging failure must never break the generation itself.
  */
@@ -243,6 +263,7 @@ function logImageGenerationUsage(
 ): void {
 	try {
 		logAiUsageAsync({
+			callPurpose: currentAiCallPurpose(),
 			userId,
 			organizationId,
 			conversationId,
@@ -319,7 +340,9 @@ async function generateWithGateway(params: {
 	// ingestion). Image generation is also the most expensive call the product
 	// makes, so serving it on the deployment's key is the single largest hole
 	// a "runs on the tenant's own provider" claim could carry.
-	const { getRAGProviderConfig } = await import("@repo/ai");
+	const { getRAGProviderConfig, isVercelGatewayKey } = await import(
+		"@repo/ai"
+	);
 	const providerConfig = await getRAGProviderConfig({
 		userId,
 		organizationId,
@@ -333,6 +356,15 @@ async function generateWithGateway(params: {
 			error: "AI Gateway API key not configured. Please configure it in Settings > AI Providers.",
 			durationMs: Date.now() - startTime,
 		};
+	}
+
+	if (
+		providerConfig.provider !== "VERCEL_GATEWAY" &&
+		!isVercelGatewayKey(providerConfig.apiKey)
+	) {
+		throw new Error(
+			"This image generation path requires a VERCEL_GATEWAY connection or a Vercel gateway key. Configure one in Settings → AI Providers.",
+		);
 	}
 
 	const { createGateway, generateImage, generateText } = await import(
@@ -406,10 +438,17 @@ async function generateWithGateway(params: {
 		// Every physical request — the SDK's retries included — is checked
 		// against the turn record (guardTurnModel), after the credential
 		// lookup and the input download above.
+		// IMAGE+TEXT shares an output budget; lowering maxOutputTokens could
+		// truncate the image. Reserve the allowance without imposing a cap.
+		const budgetedModel = wrapModelWithDispatchGuard(
+			wrapModelWithTurnBudget(gateway(model), {
+				enforcesOutputCap: false,
+			}),
+		);
 		const result = await generateText({
 			model: turnScope
-				? guardTurnModel(gateway(model), turnScope).model
-				: gateway(model),
+				? guardTurnModel(budgetedModel, turnScope).model
+				: budgetedModel,
 			...(abortSignal ? { abortSignal } : {}),
 			messages: [{ role: "user", content: contentParts }],
 			providerOptions: {
@@ -705,20 +744,56 @@ async function generateWithGemini(params: {
 		: "";
 	const fullPrompt = `${prompt}${aspectPrompt}`;
 
-	// As for FAL above.
 	if (turnScope) {
 		await assertTurnDispatchable(turnScope);
-		throwIfTurnStopped();
 	}
-	const geminiSignal = turnScope
-		? activityAbortSignal(getDispatchGuard()?.abortSignal())
-		: dispatchSendSignal();
-	const response = await ai.models.generateContent({
-		model: geminiModel,
-		contents: fullPrompt,
-		config: {
-			responseModalities: ["IMAGE", "TEXT"],
-			...(geminiSignal ? { abortSignal: geminiSignal } : {}),
+	const response = await dispatchBudgetSend({
+		request: {
+			modality: "language",
+			// This route accepts text only. The shared estimator includes framing
+			// and a 3,000-token allowance per image if image parts are added.
+			inputEstimate: estimateLanguageRequestInputTokens({
+				prompt: [{ content: fullPrompt }],
+			}),
+			requestedOutputTokens:
+				TURN_BUDGET_ESTIMATE.defaultRequestedOutputTokens,
+			minOutputTokens: TURN_BUDGET_ESTIMATE.defaultRequestedOutputTokens,
+			// As on the gateway IMAGE+TEXT path, a reduced cap may truncate images.
+			enforcesOutputCap: false,
+			modelId: geminiModel,
+		},
+		signal: turnScope
+			? activityAbortSignal(getDispatchGuard()?.abortSignal())
+			: undefined,
+		send: async (signal) => {
+			const result = await ai.models.generateContent({
+				model: geminiModel,
+				contents: fullPrompt,
+				config: {
+					responseModalities: ["IMAGE", "TEXT"],
+					...(signal ? { abortSignal: signal } : {}),
+				},
+			});
+			const candidateTokens = result.usageMetadata?.candidatesTokenCount;
+			const thoughtsTokens =
+				result.usageMetadata?.thoughtsTokenCount ?? 0;
+
+			return {
+				result,
+				usage: {
+					// Match @ai-sdk/google's convertGoogleGenerativeAIUsage: the
+					// input total is promptTokenCount (cache is already included),
+					// and output includes reasoning. It does not add tool-use input.
+					inputTokens: result.usageMetadata?.promptTokenCount,
+					outputTokens:
+						typeof candidateTokens === "number" &&
+						candidateTokens >= 0 &&
+						typeof thoughtsTokens === "number" &&
+						thoughtsTokens >= 0
+							? candidateTokens + thoughtsTokens
+							: undefined,
+				},
+			};
 		},
 	});
 

@@ -175,6 +175,67 @@ describe("useOrchestratorStream.stop()", () => {
 		vi.restoreAllMocks();
 	});
 
+	it("sends Continue as a new message with a fresh key and its source turn id", async () => {
+		const { windows, streamBodies } = mockStreamWindows(2);
+		const { result } = renderHook(() =>
+			useOrchestratorStream({ conversationId: "example-conversation" }),
+		);
+		let first: Promise<string | null> | undefined;
+		act(() => {
+			first = result.current.sendMessage("Initial request");
+		});
+		await act(async () => {
+			windows[0].enqueueLine(
+				'data: {"type":"started","executionId":"example-execution-1","turnId":"example-turn-1","turnGeneration":1}',
+			);
+			windows[0].enqueueLine(
+				'data: {"type":"completed","status":"completed","response":"Progress","budgetStop":{"version":1,"kind":"round_limit","used":30,"limit":30}}',
+			);
+			windows[0].enqueueDone();
+			await first;
+		});
+		expect(result.current.state.turnId).toBe("example-turn-1");
+		let second: Promise<string | null> | undefined;
+		act(() => {
+			second = result.current.sendMessage(
+				"Continue",
+				[],
+				false,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				{
+					conversationId: "example-conversation",
+					continueFromTurnId: "example-turn-1",
+				},
+			);
+		});
+		await act(async () => {
+			windows[1].enqueueLine(
+				'data: {"type":"started","executionId":"example-execution-2","turnId":"example-turn-2","turnGeneration":2}',
+			);
+			windows[1].enqueueLine(
+				'data: {"type":"completed","status":"completed","response":"Finished"}',
+			);
+			windows[1].enqueueDone();
+			await second;
+		});
+		const [initial, continued] = streamBodies.map((b) => JSON.parse(b));
+		expect(continued).toMatchObject({
+			message: "Continue",
+			conversationId: "example-conversation",
+			continueFromTurnId: "example-turn-1",
+		});
+		expect(continued.clientRequestKey).not.toBe(initial.clientRequestKey);
+		expect(continued.clientRequestKey).toBeTruthy();
+		expect(result.current.state.budgetStop).toBeUndefined();
+	});
+
 	it("posts to the orchestrator-temporal cancel route on stop", async () => {
 		const { response, enqueueLine, enqueueDone } = makeSseResponse();
 		const fetchSpy = vi
@@ -897,9 +958,9 @@ describe("useOrchestratorStream — resumable streaming windows (#2269)", () => 
 	});
 
 	it("fails the turn after the timeout-resume cap without overwriting streamed content", async () => {
-		// Initial window + MAX_TIMEOUT_RESUMES (5) reconnects = 6 windows,
-		// each ending in stream_timeout. The 6th exhausts the budget.
-		const { windows, streamBodies } = mockStreamWindows(6);
+		// Initial window + MAX_TIMEOUT_RESUMES (15) reconnects = 16 windows,
+		// each ending in stream_timeout. The 16th exhausts the budget.
+		const { windows, streamBodies } = mockStreamWindows(16);
 		const { result } = renderHook(() => useOrchestratorStream());
 
 		let sendPromise: Promise<string | null | undefined> | undefined;
@@ -918,7 +979,7 @@ describe("useOrchestratorStream — resumable streaming windows (#2269)", () => 
 			);
 		});
 
-		for (let i = 0; i < 6; i++) {
+		for (let i = 0; i < 16; i++) {
 			if (i > 0) {
 				// Every reconnect replays the run so far.
 				await act(async () => {
@@ -945,8 +1006,8 @@ describe("useOrchestratorStream — resumable streaming windows (#2269)", () => 
 			});
 		}
 
-		// Six POSTs total — the 6th stream_timeout found the budget spent.
-		expect(streamBodies).toHaveLength(6);
+		// Sixteen windows cover 160 minutes before the timeout budget stops resuming.
+		expect(streamBodies).toHaveLength(16);
 		expect(result.current.state.status).toBe("failed");
 		expect(result.current.state.result?.error).toMatch(
 			/could not be resumed/i,
@@ -1292,8 +1353,8 @@ describe("useOrchestratorStream — resumable streaming windows (#2269)", () => 
 		// Post-merge review P1, layer 2: a replayed `step_complete` IS real
 		// progress by the consecutive counter's rule, so a window that replays
 		// the same step every cycle resets that counter forever. Only the total
-		// cap bounds this: initial window + MAX_TOTAL_RESUMES (12) = 13 POSTs.
-		const TOTAL_POSTS = 13;
+		// cap bounds this: initial window + MAX_TOTAL_RESUMES (24) = 25 POSTs.
+		const TOTAL_POSTS = 25;
 		const { windows, streamBodies } = mockStreamWindows(TOTAL_POSTS);
 		const { result } = renderHook(() => useOrchestratorStream());
 
@@ -1906,6 +1967,19 @@ describe("useOrchestratorStream clarifying questions", () => {
 		});
 	});
 
+	it("carries structured display data alongside the live history content", async () => {
+		const question = "Which branch?";
+		const result = await raiseClarification(question);
+		await act(async () => {
+			await result.current.sendClarification("  staging  ");
+		});
+		expect(result.current.messages.at(-1)).toMatchObject({
+			role: "user",
+			content: "Clarification — Which branch?: staging",
+			metadata: { clarification: { question, answer: "staging" } },
+		});
+	});
+
 	it("also records the answer on the execution, for rebuilding history after a reload", async () => {
 		const question = "Which project?";
 		const result = await raiseClarification(question);
@@ -1932,6 +2006,11 @@ describe("useOrchestratorStream clarifying questions", () => {
 			expect(result.current.state.pendingClarification).toBeNull();
 		});
 		expect(result.current.state.answeredClarifications).toEqual([]);
+		expect(
+			result.current.messages.some(
+				(message) => message.metadata?.clarification,
+			),
+		).toBe(false);
 		expect(
 			result.current.messages.some((m) =>
 				m.content.startsWith("Clarification —"),
@@ -2231,5 +2310,58 @@ describe("a terminal usage refusal after tool output only", () => {
 			},
 		]);
 		expect(result.current.isLoading).toBe(false);
+	});
+});
+
+// Fizzy #3048: every ChatGPT plan ran out mid-turn and the turn finished on
+// the organization's API billing. The turn's first response could not say
+// so, so the completed event does, and the chat shows the note.
+describe("useOrchestratorStream — API billing after the plans ran out mid-turn", () => {
+	const originalFetch = global.fetch;
+
+	afterEach(() => {
+		global.fetch = originalFetch;
+	});
+
+	it("takes it from the completed event", async () => {
+		const { windows } = mockStreamWindows(1);
+		const { result } = renderHook(() => useOrchestratorStream());
+		let sent: Promise<string | null> | undefined;
+		act(() => {
+			sent = result.current.sendMessage("plan this");
+		});
+		await act(async () => {
+			windows[0].enqueueLine(
+				'data: {"type":"started","executionId":"example-execution","turnId":"example-turn","turnGeneration":1}',
+			);
+			windows[0].enqueueLine(
+				'data: {"type":"completed","status":"completed","response":"pong","apiBilling":{"resetAt":null}}',
+			);
+			windows[0].enqueueDone();
+			await sent;
+		});
+
+		expect(result.current.state.apiBilling).toEqual({ resetAt: null });
+	});
+
+	it("leaves a turn that stayed on its plan without the note", async () => {
+		const { windows } = mockStreamWindows(1);
+		const { result } = renderHook(() => useOrchestratorStream());
+		let sent: Promise<string | null> | undefined;
+		act(() => {
+			sent = result.current.sendMessage("plan this");
+		});
+		await act(async () => {
+			windows[0].enqueueLine(
+				'data: {"type":"started","executionId":"example-execution","turnId":"example-turn","turnGeneration":1}',
+			);
+			windows[0].enqueueLine(
+				'data: {"type":"completed","status":"completed","response":"pong"}',
+			);
+			windows[0].enqueueDone();
+			await sent;
+		});
+
+		expect(result.current.state.apiBilling).toBeUndefined();
 	});
 });

@@ -144,7 +144,9 @@ describe("ParlumeLiveCard details", () => {
 			screen.getByText("Spend so far").nextElementSibling,
 		).toHaveTextContent("$0.09");
 		expect(
-			screen.getByText("Bot time is added after the meeting."),
+			screen.getByText(
+				"Bot and transcription time are added when the meeting ends.",
+			),
 		).toBeInTheDocument();
 	});
 

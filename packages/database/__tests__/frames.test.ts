@@ -1,4 +1,13 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+	afterAll,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	vi,
+} from "vitest";
+import { editFirstClassFrameBlock } from "../../temporal/src/activities/shared/frame-service";
 import { db, Prisma } from "../prisma/client";
 import {
 	createFrame,
@@ -26,6 +35,18 @@ beforeAll(async () => {
 		VALUES (${ORG_ID}, ${"Test Frames Org"}, ${ORG_ID}, ${now})
 		ON CONFLICT (id) DO NOTHING
 	`);
+	await db.member.upsert({
+		where: { id: "example-frame-editor" },
+		create: {
+			id: "example-frame-editor",
+			userId: USER_ID,
+			organizationId: ORG_ID,
+			role: "admin",
+			createdAt: now,
+		},
+		update: { role: "admin" },
+	});
+
 	await db.project.upsert({
 		where: { id: PROJECT_ID },
 		create: {
@@ -55,6 +76,13 @@ afterAll(async () => {
 		where: {
 			userId: USER_ID,
 			fileType: { in: ["FRAME", "SLIDESHOW"] },
+		},
+	});
+	await db.member.deleteMany({
+		where: {
+			id: "example-frame-editor",
+			userId: USER_ID,
+			organizationId: ORG_ID,
 		},
 	});
 	await db.project.deleteMany({ where: { id: PROJECT_ID, userId: USER_ID } });
@@ -199,5 +227,251 @@ describe("first-class frames queries", () => {
 		// No alphanumeric chars survive within the bounded prefix, so the
 		// slug falls back to the frame kind.
 		expect(frame.path).toMatch(/^\/frames\/frame-\d+\.frame\.json$/);
+	});
+});
+
+describe("conditional frame updates", () => {
+	it("refuses a stale expected timestamp without saving history", async () => {
+		const frame = await createFrame({
+			userId: USER_ID,
+			organizationId: ORG_ID,
+			title: "Example",
+			blocks: [{ id: "example-block", type: "html", content: "hello" }],
+		});
+		const before = await db.frameEditHistory.count({
+			where: { frameId: frame.id },
+		});
+		await expect(
+			updateFrame({
+				id: frame.id,
+				userId: USER_ID,
+				organizationId: ORG_ID,
+				expectedUpdatedAt: frame.updatedAt,
+				requestedUpdatedAt: new Date(frame.updatedAt.getTime() - 1000),
+				blocks: [
+					{ id: "example-block", type: "html", content: "changed" },
+				],
+			}),
+		).rejects.toThrow("Re-read");
+		expect(
+			await db.frameEditHistory.count({ where: { frameId: frame.id } }),
+		).toBe(before);
+	});
+	it("preserves a concurrent writer between the read and save and rolls back history", async () => {
+		const frame = await createFrame({
+			userId: USER_ID,
+			organizationId: ORG_ID,
+			title: "Example",
+			blocks: [{ id: "example-block", type: "html", content: "hello" }],
+		});
+		const original = db.agentWorkspaceFile.findFirst.bind(
+			db.agentWorkspaceFile,
+		);
+		const concurrentContent = JSON.stringify({
+			...frame.document,
+			blocks: [
+				{ id: "example-block", type: "html", content: "concurrent" },
+			],
+		});
+		const before = await db.frameEditHistory.count({
+			where: { frameId: frame.id },
+		});
+		const read = vi
+			.spyOn(db.agentWorkspaceFile, "findFirst")
+			.mockImplementationOnce(
+				(...args) =>
+					(async () => {
+						const snapshot = await original(...args);
+						await db.agentWorkspaceFile.update({
+							where: { id: frame.id },
+							data: {
+								content: concurrentContent,
+								updatedAt: new Date(
+									frame.updatedAt.getTime() + 1000,
+								),
+							},
+						});
+						return snapshot;
+					})() as ReturnType<typeof db.agentWorkspaceFile.findFirst>,
+			);
+		try {
+			await expect(
+				updateFrame({
+					id: frame.id,
+					userId: USER_ID,
+					organizationId: ORG_ID,
+					expectedUpdatedAt: frame.updatedAt,
+					blocks: [
+						{
+							id: "example-block",
+							type: "html",
+							content: "lost update",
+						},
+					],
+				}),
+			).rejects.toThrow("Re-read");
+		} finally {
+			read.mockRestore();
+		}
+		expect(
+			(
+				await getFrameById({
+					id: frame.id,
+					userId: USER_ID,
+					organizationId: ORG_ID,
+				})
+			)?.document.blocks[0].content,
+		).toBe("concurrent");
+		expect(
+			await db.frameEditHistory.count({ where: { frameId: frame.id } }),
+		).toBe(before);
+	});
+	it("saves edit history without returning its unusable identifier", async () => {
+		const frame = await createFrame({
+			userId: USER_ID,
+			organizationId: ORG_ID,
+			title: "Example",
+			blocks: [{ id: "example-block", type: "html", content: "hello" }],
+		});
+		const before = await db.frameEditHistory.count({
+			where: { frameId: frame.id },
+		});
+		const updated = await updateFrame({
+			id: frame.id,
+			userId: USER_ID,
+			organizationId: ORG_ID,
+			expectedUpdatedAt: frame.updatedAt,
+			blocks: [{ id: "example-block", type: "html", content: "changed" }],
+		});
+		expect(updated).not.toHaveProperty("editVersionId");
+		expect(
+			await db.frameEditHistory.count({ where: { frameId: frame.id } }),
+		).toBe(before + 1);
+		expect(
+			await db.frameEditHistory.findFirst({
+				where: { frameId: frame.id },
+			}),
+		).toMatchObject({ contentSnapshot: expect.stringContaining("hello") });
+	});
+	it("forwards a stale caller timestamp through editFirstClassFrameBlock without saving", async () => {
+		const frame = await createFrame({
+			userId: USER_ID,
+			organizationId: ORG_ID,
+			title: "Example",
+			blocks: [{ id: "example-block", type: "html", content: "hello" }],
+		});
+		const before = await db.frameEditHistory.count({
+			where: { frameId: frame.id },
+		});
+		const result = await editFirstClassFrameBlock({
+			userId: USER_ID,
+			organizationId: ORG_ID,
+			args: {
+				frameId: frame.id,
+				blockId: "example-block",
+				expectedUpdatedAt: new Date(
+					frame.updatedAt.getTime() - 1000,
+				).toISOString(),
+				edits: [{ oldText: "hello", newText: "changed" }],
+			},
+		});
+		expect(result).toEqual({
+			error: "Frame conflict: the page changed. Re-read the frame before editing again.",
+		});
+		expect(
+			await db.frameEditHistory.count({ where: { frameId: frame.id } }),
+		).toBe(before);
+		const stored = await getFrameById({
+			id: frame.id,
+			userId: USER_ID,
+			organizationId: ORG_ID,
+		});
+		expect(stored?.updatedAt).toEqual(frame.updatedAt);
+		expect(stored?.document.blocks[0].content).toBe("hello");
+	});
+	it.each([false, true])(
+		"a no-op edit preserves version count and updatedAt (caller timestamp: %s)",
+		async (withTimestamp) => {
+			const frame = await createFrame({
+				userId: USER_ID,
+				organizationId: ORG_ID,
+				title: "Example",
+				blocks: [
+					{ id: "example-block", type: "html", content: "hello" },
+				],
+			});
+			const before = await db.frameEditHistory.count({
+				where: { frameId: frame.id },
+			});
+			const result = await editFirstClassFrameBlock({
+				userId: USER_ID,
+				organizationId: ORG_ID,
+				args: {
+					frameId: frame.id,
+					blockId: "example-block",
+					...(withTimestamp
+						? { expectedUpdatedAt: frame.updatedAt.toISOString() }
+						: {}),
+					edits: [{ oldText: "hello", newText: "hello" }],
+				},
+			});
+			expect(result).toMatchObject({
+				unchanged: true,
+				updatedAt: frame.updatedAt.toISOString(),
+			});
+			expect(result).not.toHaveProperty("versionId");
+			expect(
+				await db.frameEditHistory.count({
+					where: { frameId: frame.id },
+				}),
+			).toBe(before);
+			expect(
+				(
+					await getFrameById({
+						id: frame.id,
+						userId: USER_ID,
+						organizationId: ORG_ID,
+					})
+				)?.updatedAt,
+			).toEqual(frame.updatedAt);
+		},
+	);
+	it("a stale no-op edit returns a conflict without changing the frame", async () => {
+		const frame = await createFrame({
+			userId: USER_ID,
+			organizationId: ORG_ID,
+			title: "Example",
+			blocks: [{ id: "example-block", type: "html", content: "hello" }],
+		});
+		const before = await db.frameEditHistory.count({
+			where: { frameId: frame.id },
+		});
+		const result = await editFirstClassFrameBlock({
+			userId: USER_ID,
+			organizationId: ORG_ID,
+			args: {
+				frameId: frame.id,
+				blockId: "example-block",
+				expectedUpdatedAt: new Date(
+					frame.updatedAt.getTime() - 1000,
+				).toISOString(),
+				edits: [{ oldText: "hello", newText: "hello" }],
+			},
+		});
+		expect(result).toMatchObject({
+			error: expect.stringContaining("Re-read"),
+		});
+		expect(
+			await db.frameEditHistory.count({ where: { frameId: frame.id } }),
+		).toBe(before);
+		expect(
+			(
+				await getFrameById({
+					id: frame.id,
+					userId: USER_ID,
+					organizationId: ORG_ID,
+				})
+			)?.updatedAt,
+		).toEqual(frame.updatedAt);
 	});
 });

@@ -363,13 +363,26 @@ describe("CopilotAssistantMessage — footer (timestamp + controls)", () => {
 		});
 		(useCoAgent as any).mockReturnValue({ state: {} });
 		return render(
-			<CopilotAssistantMessage
-				{...baseProps}
-				{...extraProps}
-				message={
-					{ id: "a1", content: "Done.", ...messageOverride } as any
-				}
-			/>,
+			<CopilotReplyRatingContext.Provider
+				value={{
+					getVote: () => undefined,
+					canRate: () => true,
+					isPending: () => false,
+					setMessageIds: () => {},
+				}}
+			>
+				<CopilotAssistantMessage
+					{...baseProps}
+					{...extraProps}
+					message={
+						{
+							id: "a1",
+							content: "Done.",
+							...messageOverride,
+						} as any
+					}
+				/>
+			</CopilotReplyRatingContext.Provider>,
 		);
 	}
 
@@ -451,5 +464,110 @@ describe("CopilotAssistantMessage — footer (timestamp + controls)", () => {
 		);
 		// Touch devices (no hover) still get always-on controls.
 		expect(wrapper?.className).toContain("max-md:opacity-100");
+	});
+});
+
+import userEvent from "@testing-library/user-event";
+import { CopilotReplyRatingContext } from "../CopilotReplyRatingContext";
+
+describe("reply rating controls", () => {
+	function setupRating(
+		vote: "RATED_UP" | "RATED_DOWN" | undefined,
+		props: Partial<typeof baseProps> = {},
+	) {
+		vi.mocked(useCoAgent).mockReturnValue({ state: {} } as never);
+		vi.mocked(useCopilotChatInternal).mockReturnValue({
+			visibleMessages: [],
+		} as never);
+		const up = vi.fn();
+		const down = vi.fn();
+		render(
+			<CopilotReplyRatingContext.Provider
+				value={{
+					getVote: () => vote,
+					canRate: () => true,
+					isPending: () => false,
+					setMessageIds: () => {},
+				}}
+			>
+				<CopilotAssistantMessage
+					{...baseProps}
+					onThumbsUp={up}
+					onThumbsDown={down}
+					{...props}
+				/>
+			</CopilotReplyRatingContext.Provider>,
+		);
+		return { up, down };
+	}
+	it.each(["RATED_UP", "RATED_DOWN", undefined] as const)(
+		"exposes the pressed state for %s",
+		async (vote) => {
+			const user = userEvent.setup();
+			const { up } = setupRating(vote);
+			const upButton = screen.getByRole("button", { name: "Like" });
+			const downButton = screen.getByRole("button", { name: "Dislike" });
+			expect(upButton).toHaveAttribute(
+				"aria-pressed",
+				String(vote === "RATED_UP"),
+			);
+			expect(downButton).toHaveAttribute(
+				"aria-pressed",
+				String(vote === "RATED_DOWN"),
+			);
+			if (vote) {
+				expect(vote === "RATED_UP" ? upButton : downButton).toHaveClass(
+					"active",
+					"bg-primary",
+					"text-primary-foreground",
+				);
+			}
+			upButton.focus();
+			expect(upButton).toHaveFocus();
+			await user.keyboard("{Enter}");
+			expect(up).toHaveBeenCalledWith(baseProps.message);
+		},
+	);
+	it("hides ratings while generating", () => {
+		setupRating(undefined, { isGenerating: true });
+		expect(
+			screen.queryByRole("button", { name: "Like" }),
+		).not.toBeInTheDocument();
+	});
+	it("hides ratings for tool-only messages with blank text", () => {
+		setupRating(undefined, {
+			message: {
+				id: "example-tool-sibling",
+				content: "  ",
+				toolCalls: [
+					{ id: "example-tool", function: { name: "example_tool" } },
+				],
+			},
+		});
+		expect(
+			screen.queryByRole("button", { name: "Like" }),
+		).not.toBeInTheDocument();
+	});
+	it("leaves surfaces without rating callbacks unchanged", () => {
+		setupRating(undefined, {
+			onThumbsUp: undefined,
+			onThumbsDown: undefined,
+		});
+		expect(
+			screen.queryByRole("button", { name: "Like" }),
+		).not.toBeInTheDocument();
+	});
+	it("hides CopilotKit's synthetic callbacks outside a rating-enabled sidebar", () => {
+		vi.mocked(useCoAgent).mockReturnValue({ state: {} } as never);
+		vi.mocked(useCopilotChatInternal).mockReturnValue({
+			visibleMessages: [],
+		} as never);
+		render(<CopilotAssistantMessage {...baseProps} />);
+		expect(
+			screen.queryByRole("button", { name: "Like" }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Copy" }),
+		).toBeInTheDocument();
 	});
 });

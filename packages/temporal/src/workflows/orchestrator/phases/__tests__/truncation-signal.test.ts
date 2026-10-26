@@ -33,12 +33,12 @@ describe("orchestrator truncation signal", () => {
 		expect(finalBranch).toMatch(
 			/recordTruncation\(state, iterationResult\.truncated\);[\s\S]*data: \{ finalResponse \}/,
 		);
-		// Every synthesis caller — budget exhaustion, the per-round tool
-		// failure breaker and the token ledger's budget exit — records what
+		// The four synthesis paths (round/token budget, deadline, tool failure,
+		// and token allowance) each call recordTruncation with what
 		// `synthesizeFinalAnswer` returned.
 		expect(
 			loop.split("recordTruncation(state, synthesis.truncated);"),
-		).toHaveLength(4);
+		).toHaveLength(5);
 		const synthesis = loop.slice(
 			loop.indexOf("async function synthesizeFinalAnswer("),
 			loop.indexOf("function getBudgetUsage("),

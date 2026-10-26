@@ -62,6 +62,7 @@ export function isFrameToolName(toolName: string): boolean {
 	return [
 		"fabric_create_frame",
 		"fabric_update_frame",
+		"fabric_edit_frame_block",
 		"fabric_get_frame",
 		"fabric_list_frames",
 		"fabric_share_frame",

@@ -6,6 +6,7 @@
 		".": {
 			"entry": [
 				"scripts/*.{js,mjs,ts}",
+				"scripts/__tests__/*.test.mjs",
 				"tooling/docs-screenshots/render.mjs",
 				"tooling/identifier-guard/__tests__/*.test.mjs",
 				"tooling/pr-review-checks/__tests__/*.test.mjs",

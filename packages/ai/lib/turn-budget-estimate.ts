@@ -42,8 +42,10 @@ export const TURN_BUDGET_ESTIMATE = {
 	/** Tokens counted per embedded value on top of its text. */
 	perEmbeddingValueTokens: 4,
 	/**
-	 * Output tokens assumed when a request names no `maxOutputTokens` (the
-	 * value the Advisor's rounds send).
+	 * Fallback output reservation when a request names no `maxOutputTokens`.
+	 * The middleware clamps this when supplied a catalog cap, as
+	 * `getAIModelWithMetadata` does for API-provider models. Other production
+	 * turn-budget wrappers currently omit the limit.
 	 */
 	defaultRequestedOutputTokens: 16_384,
 	/** The smallest output cap worth sending; less room refuses the request. */
@@ -162,7 +164,7 @@ export function estimateLanguageRequestInputTokens(params: {
  * URL is not downloaded here (it counts at its fixed estimate either way).
  */
 export async function estimateModelRequestInputTokens(request: {
-	instructions?: string;
+	instructions?: string | Extract<ModelMessage, { role: "system" }>;
 	messages: ModelMessage[];
 }): Promise<number> {
 	return estimateLanguageRequestInputTokens({
@@ -177,7 +179,7 @@ export async function estimateModelRequestInputTokens(request: {
  * turn-budget middleware as the prompt to send.
  */
 export async function toLanguageModelPrompt(request: {
-	instructions?: string;
+	instructions?: string | Extract<ModelMessage, { role: "system" }>;
 	messages: ModelMessage[];
 }): Promise<Awaited<ReturnType<typeof convertToLanguageModelPrompt>>> {
 	const standardized = await standardizePrompt({

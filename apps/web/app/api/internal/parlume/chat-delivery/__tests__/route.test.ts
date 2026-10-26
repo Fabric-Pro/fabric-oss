@@ -40,7 +40,7 @@ function report(overrides: Record<string, unknown> = {}, token = "secret") {
 				tag: "P3",
 				kind: "reply",
 				outcome: "unconfirmed",
-				latencyMs: 8_200,
+				latencyMs: 15_200,
 				...overrides,
 			}),
 		},
@@ -74,7 +74,7 @@ describe("Parlume chat delivery reports", () => {
 		expect(mocks.turnUpdate).toHaveBeenCalledWith({
 			where: { id: "turn-1" },
 			data: {
-				error: "Chat message P3 was sent but did not appear in the meeting chat within 8 seconds.",
+				error: "Chat message P3 was sent but did not appear in the meeting chat within 15 seconds.",
 			},
 		});
 		expect(mocks.log).toHaveBeenCalledWith(
@@ -113,12 +113,28 @@ describe("Parlume chat delivery reports", () => {
 	});
 
 	it("notes a confirmation that came after the post was reported missing", async () => {
-		await POST(report({ outcome: "confirmed", latencyMs: 12_400 }));
+		await POST(report({ outcome: "confirmed", latencyMs: 18_400 }));
 
 		expect(mocks.turnUpdate).toHaveBeenCalledWith({
 			where: { id: "turn-1" },
 			data: {
-				error: "Chat message P3 appeared in the meeting chat after 12 s.",
+				error: "Chat message P3 appeared in the meeting chat after 18 s.",
+			},
+		});
+	});
+
+	it("replaces the missing-post note when the post appears after all", async () => {
+		mocks.turnFindFirst.mockResolvedValue({
+			id: "turn-1",
+			error: "Spoken reply unavailable. Chat message P3 was sent but did not appear in the meeting chat within 15 seconds.",
+		});
+
+		await POST(report({ outcome: "confirmed", latencyMs: 16_300 }));
+
+		expect(mocks.turnUpdate).toHaveBeenCalledWith({
+			where: { id: "turn-1" },
+			data: {
+				error: "Spoken reply unavailable. Chat message P3 appeared in the meeting chat after 16 s.",
 			},
 		});
 	});

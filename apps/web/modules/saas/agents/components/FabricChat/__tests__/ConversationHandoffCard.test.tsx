@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@shared/lib/orpc-client", () => ({
@@ -52,7 +52,7 @@ describe("<ConversationHandoffCard>", () => {
 	});
 
 	it.each(["allowance_exhausted", "finalization_unavailable"] as const)(
-		"offers no new chat for a token-allowance stop and says the user can continue here (%s)",
+		"offers the secondary summary fork for a token-allowance stop (%s)",
 		(stopReason) => {
 			const { container } = render(
 				<ConversationHandoffCard
@@ -79,8 +79,14 @@ describe("<ConversationHandoffCard>", () => {
 			expect(
 				screen.getByText(/ask it to continue in this chat/),
 			).toBeInTheDocument();
-			expect(screen.queryByRole("button")).toBeNull();
-			expect(container.textContent).not.toMatch(/new chat|fresh chat/i);
+			expect(
+				screen.getByRole("button", {
+					name: "Start a new chat with this summary",
+				}),
+			).toBeInTheDocument();
+			expect(container.textContent).toContain(
+				"Start a new chat with this summary",
+			);
 			// No token counts: the copy says what happened, not the numbers.
 			expect(container.textContent).not.toMatch(/\d{3},?\d{3}/);
 		},
@@ -119,4 +125,62 @@ describe("<ConversationHandoffCard>", () => {
 			}
 		},
 	);
+});
+
+describe("budget continuation actions", () => {
+	it.each([
+		[
+			{ version: 1, kind: "time_limit", used: 2700, limit: 2700 },
+			"This answer reached its time limit",
+		],
+		[
+			{ version: 1, kind: "round_limit", used: 30, limit: 30 },
+			"This answer reached its step limit",
+		],
+		[
+			{
+				version: 1,
+				kind: "token_budget",
+				used: 992001,
+				limit: 992000,
+				maxTokens: 1000000,
+				reservedTokens: 8000,
+			},
+			"This answer reached its token budget",
+		],
+		[
+			{
+				version: 1,
+				kind: "token_allowance",
+				allowance: 1000000,
+				measured: 990000,
+				outstanding: 0,
+				enforcement: "ENFORCED",
+				stopReason: "allowance_exhausted",
+			},
+			"This answer used its token allowance",
+		],
+	] as const)("offers Continue for %j", (budgetStop, title) => {
+		const onContinueInChat = vi.fn();
+		render(
+			<ConversationHandoffCard
+				parentConversationId="example-conversation"
+				reason=""
+				summary="Server progress"
+				budgetStop={budgetStop}
+				onContinue={vi.fn()}
+				onContinueInChat={onContinueInChat}
+			/>,
+		);
+		expect(screen.getByText(title)).toBeInTheDocument();
+		fireEvent.click(
+			screen.getByRole("button", { name: "Continue", exact: true }),
+		);
+		expect(onContinueInChat).toHaveBeenCalledOnce();
+		expect(
+			screen.getByRole("button", {
+				name: "Start a new chat with this summary",
+			}),
+		).toBeInTheDocument();
+	});
 });

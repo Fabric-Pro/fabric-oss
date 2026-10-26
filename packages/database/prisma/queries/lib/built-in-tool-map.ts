@@ -14,6 +14,7 @@ export const BUILT_IN_TO_FABRIC_TOOLS: Record<string, string[]> = {
 	"create-frames": [
 		"fabric_create_frame",
 		"fabric_update_frame",
+		"fabric_edit_frame_block",
 		"fabric_get_frame",
 		"fabric_list_frames",
 		"fabric_share_frame",

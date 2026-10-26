@@ -1,6 +1,11 @@
 import { type AiModelFit, getAiModelFit } from "@repo/utils/ai-model-fit";
 import { db, type Prisma } from "../client";
 import type { AIProvider, AiTaskType } from "../generated/client";
+import {
+	buildLatencyClause,
+	hasRequestLatency,
+	requestLatencyRows,
+} from "./ai-usage-latency";
 
 const MAX_LIMIT = 100;
 const DEFAULT_LIMIT = 50;
@@ -218,14 +223,6 @@ export async function listAiUsageActivity(
 		costFilter.lte = params.maxCostMicroUsd;
 	}
 
-	const latencyFilter: { gte?: number; lte?: number } = {};
-	if (typeof params.minLatencyMs === "number") {
-		latencyFilter.gte = params.minLatencyMs;
-	}
-	if (typeof params.maxLatencyMs === "number") {
-		latencyFilter.lte = params.maxLatencyMs;
-	}
-
 	const projectIdClause = buildProjectIdClause(params.projectIds);
 
 	const where: Prisma.AiUsageLogWhereInput = {
@@ -249,9 +246,7 @@ export async function listAiUsageActivity(
 		...(Object.keys(costFilter).length > 0
 			? { costMicroUsd: costFilter }
 			: {}),
-		...(Object.keys(latencyFilter).length > 0
-			? { latencyMs: latencyFilter }
-			: {}),
+		...buildLatencyClause(params.minLatencyMs, params.maxLatencyMs),
 	};
 
 	const sortBy = params.sortBy ?? "createdAt";
@@ -279,6 +274,7 @@ export async function listAiUsageActivity(
 		rowCount,
 		failedAttempts,
 		costGroups,
+		latencyAggregate,
 	] = await Promise.all([
 		db.aiUsageLog.findMany({
 			where,
@@ -325,7 +321,6 @@ export async function listAiUsageActivity(
 				costMicroUsd: true,
 			},
 			_count: { id: true },
-			_avg: { latencyMs: true },
 		}),
 		db.aiUsageLog.groupBy({
 			by: ["provider"],
@@ -361,6 +356,10 @@ export async function listAiUsageActivity(
 			by: ["provider"],
 			where,
 			_sum: { costMicroUsd: true },
+		}),
+		db.aiUsageLog.aggregate({
+			where: { AND: [succeeded, requestLatencyRows] },
+			_avg: { latencyMs: true },
 		}),
 	]);
 
@@ -489,7 +488,9 @@ export async function listAiUsageActivity(
 			outputTokens: row.outputTokens,
 			totalTokens: row.totalTokens,
 			costMicroUsd: row.costMicroUsd,
-			latencyMs: row.latencyMs,
+			latencyMs: hasRequestLatency(row.providerModelId)
+				? row.latencyMs
+				: 0,
 			success: row.success,
 			errorMessage: row.errorMessage,
 		};
@@ -507,7 +508,7 @@ export async function listAiUsageActivity(
 			outputTokens: totalsAggregate._sum.outputTokens ?? 0,
 			totalTokens: totalsAggregate._sum.totalTokens ?? 0,
 			costMicroUsd,
-			avgLatencyMs: Math.round(totalsAggregate._avg.latencyMs ?? 0),
+			avgLatencyMs: Math.round(latencyAggregate._avg.latencyMs ?? 0),
 			bySource,
 		},
 		planUsageByModel: planModelGroups.map((group) => ({
@@ -688,8 +689,8 @@ export interface AiUsageActivityTimeSeriesPoint {
 	requests: number;
 	totalTokens: number;
 	costMicroUsd: number;
-	// Mean latency (ms) over rows in this bucket. Zero when the bucket
-	// is empty so charts can render a continuous line.
+	// Mean latency (ms) over the bucket's rows that have a request latency.
+	// Zero when there are none so charts can render a continuous line.
 	avgLatencyMs: number;
 }
 
@@ -752,14 +753,6 @@ export async function getAiUsageActivityTimeSeries(
 		costFilter.lte = params.maxCostMicroUsd;
 	}
 
-	const latencyFilter: { gte?: number; lte?: number } = {};
-	if (typeof params.minLatencyMs === "number") {
-		latencyFilter.gte = params.minLatencyMs;
-	}
-	if (typeof params.maxLatencyMs === "number") {
-		latencyFilter.lte = params.maxLatencyMs;
-	}
-
 	const projectIdClause = buildProjectIdClause(params.projectIds);
 
 	const where: Prisma.AiUsageLogWhereInput = {
@@ -783,9 +776,7 @@ export async function getAiUsageActivityTimeSeries(
 		...(Object.keys(costFilter).length > 0
 			? { costMicroUsd: costFilter }
 			: {}),
-		...(Object.keys(latencyFilter).length > 0
-			? { latencyMs: latencyFilter }
-			: {}),
+		...buildLatencyClause(params.minLatencyMs, params.maxLatencyMs),
 	};
 
 	const granularity = params.granularity ?? "day";
@@ -800,6 +791,7 @@ export async function getAiUsageActivityTimeSeries(
 			totalTokens: true,
 			costMicroUsd: true,
 			latencyMs: true,
+			providerModelId: true,
 			success: true,
 		},
 		orderBy: { createdAt: "asc" },
@@ -849,6 +841,7 @@ export async function getAiUsageActivityTimeSeries(
 			totalTokens: number;
 			costMicroUsd: number;
 			latencySum: number;
+			latencyCount: number;
 		}
 	>();
 
@@ -865,6 +858,7 @@ export async function getAiUsageActivityTimeSeries(
 			totalTokens: 0,
 			costMicroUsd: 0,
 			latencySum: 0,
+			latencyCount: 0,
 		});
 	}
 
@@ -882,17 +876,21 @@ export async function getAiUsageActivityTimeSeries(
 		if (row.success || params.status === "error") {
 			bucket.requests += 1;
 			bucket.totalTokens += row.totalTokens;
-			bucket.latencySum += row.latencyMs;
+			if (hasRequestLatency(row.providerModelId)) {
+				bucket.latencySum += row.latencyMs;
+				bucket.latencyCount += 1;
+			}
 		}
 	}
 
 	return Array.from(buckets.values())
 		.sort((a, b) => a.date.getTime() - b.date.getTime())
-		.map(({ date, latencySum, requests, ...vals }) => ({
+		.map(({ date, latencySum, latencyCount, requests, ...vals }) => ({
 			date: date.toISOString(),
 			requests,
 			...vals,
-			avgLatencyMs: requests > 0 ? Math.round(latencySum / requests) : 0,
+			avgLatencyMs:
+				latencyCount > 0 ? Math.round(latencySum / latencyCount) : 0,
 		}));
 }
 

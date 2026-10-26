@@ -780,21 +780,133 @@ export async function claimPendingProposalForApply(params: {
 	return result.count === 1;
 }
 
-/**
- * Retry-door branch for a FAILED ROADMAP_RECOMMENDATION batch (Fizzy #2208):
- * FAILED → PENDING with the claim and failure fields cleared, so the reviewer
- * re-selects what to accept. The stored changes do not record which
- * candidates were selected, so replaying them would create features nobody
- * accepted. Returns false when the row is no longer FAILED.
- */
-export async function returnFailedRecommendationToReview(
+/** Snapshot input shared by the apply entry points. JSON is serialized at the query boundary. */
+export interface ProposalReviewEntryInput {
+	offeredIndex: number;
+	changeIndex: number | null;
+	selected: boolean;
+	change?: unknown;
+	pmSyncOverride?: unknown;
+}
+
+/** Claim, insert the submission, and bind it to this attempt in one transaction. */
+export async function claimPendingProposalWithReview(params: {
+	proposalId: string;
+	reviewedBy: string;
+	applyWorkflowId: string;
+	admitBacklog?: boolean;
+	claimWhere?: Prisma.PendingBacklogProposalWhereInput;
+	claimStatus?: "APPLYING" | "APPROVED";
+	reuseReviewForAttempt?: boolean;
+	offeredListComplete: boolean;
+	syncToPM: boolean;
+	pmConfig?: unknown;
+	entries: ProposalReviewEntryInput[];
+}): Promise<boolean> {
+	return db.$transaction(async (tx) => {
+		const result = await tx.pendingBacklogProposal.updateMany({
+			where: {
+				id: params.proposalId,
+				...(params.claimWhere ?? {
+					status: {
+						in: params.admitBacklog
+							? ["PENDING", "FAILED", "BACKLOG"]
+							: ["PENDING", "FAILED"],
+					},
+				}),
+			},
+			data: {
+				status: params.claimStatus ?? "APPLYING",
+				reviewedAt: new Date(),
+				reviewedBy: params.reviewedBy,
+				applyWorkflowId: params.applyWorkflowId,
+				applyStartedAt: null,
+				applyError: null,
+			},
+		});
+		if (result.count !== 1) {
+			return false;
+		}
+		// Keyed sidebar redelivery can reacquire its unconfirmed attempt. Keep its original submission.
+		const current = params.reuseReviewForAttempt
+			? await tx.pendingBacklogProposal.findUnique({
+					where: { id: params.proposalId },
+					select: {
+						applyReviewId: true,
+						applyReviewWorkflowId: true,
+					},
+				})
+			: null;
+		if (
+			current?.applyReviewId &&
+			current.applyReviewWorkflowId === params.applyWorkflowId
+		) {
+			return true;
+		}
+		const json = (value: unknown): Prisma.InputJsonValue =>
+			JSON.parse(JSON.stringify(value));
+		const review = await tx.pendingBacklogProposalReview.create({
+			data: {
+				proposalId: params.proposalId,
+				reviewedBy: params.reviewedBy,
+				offeredCount: params.entries.length,
+				offeredListComplete: params.offeredListComplete,
+				selectedCount: params.entries.filter((e) => e.selected).length,
+				syncToPM: params.syncToPM,
+				...(params.pmConfig != null
+					? { pmConfig: json(params.pmConfig) }
+					: {}),
+			},
+		});
+		await tx.pendingBacklogProposalReviewEntry.createMany({
+			data: params.entries.map((entry) => ({
+				reviewId: review.id,
+				proposalId: params.proposalId,
+				offeredIndex: entry.offeredIndex,
+				changeIndex: entry.changeIndex,
+				selected: entry.selected,
+				...(entry.change !== undefined
+					? { change: json(entry.change) }
+					: {}),
+				...(entry.pmSyncOverride !== undefined
+					? { pmSyncOverride: json(entry.pmSyncOverride) }
+					: {}),
+			})),
+		});
+
+		await tx.pendingBacklogProposal.update({
+			where: { id: params.proposalId },
+			data: {
+				applyReviewId: review.id,
+				applyReviewWorkflowId: params.applyWorkflowId,
+			},
+		});
+		return true;
+	});
+}
+
+export async function getPendingProposalReview(
 	proposalId: string,
+	reviewId: string,
+) {
+	return db.pendingBacklogProposalReview.findFirst({
+		where: { id: reviewId, proposalId },
+		include: { entries: { orderBy: { offeredIndex: "asc" } } },
+	});
+}
+
+/** Return a failed proposal without a replayable selection to review. */
+export async function returnFailedProposalToReview(
+	proposalId: string,
+	expected?: { applyWorkflowId: string | null; applyReviewId: string | null },
 ): Promise<boolean> {
 	const result = await db.pendingBacklogProposal.updateMany({
-		where: { id: proposalId, status: "FAILED" },
+		where: { id: proposalId, status: "FAILED", ...expected },
 		data: {
 			status: "PENDING",
 			applyWorkflowId: null,
+			applyReviewId: null,
+			applyReviewWorkflowId: null,
 			applyStartedAt: null,
 			applyError: null,
 			errorClass: null,
@@ -821,11 +933,10 @@ export async function getAppliedChangeIndexes(
 }
 
 /**
- * Record that `changeIndex` of `proposalId` was applied, in the SAME
- * transaction as the mutation it records. Idempotent on the unique
- * (proposalId, changeIndex): a retry that re-applies is rejected by the
- * unique index before it can create a second entity. Also mirrors into the
- * legacy `appliedChangeIndexes` array.
+ * Record an applied change and mirror its index. A transaction client lets a
+ * caller fence its mutation with the unique (proposalId, changeIndex) index.
+ * Inline creates use skipDuplicates immediately after the helper returns;
+ * the default mode rejects conflicts so transactional callers can roll back.
  */
 export async function recordProposalApplication(
 	tx: Prisma.TransactionClient,
@@ -836,16 +947,24 @@ export async function recordProposalApplication(
 		createdEntityType?: "epic" | "feature" | "story" | "bug";
 		createdEntityId?: string;
 	},
+	options: { skipDuplicates?: boolean } = {},
 ): Promise<void> {
-	await tx.pendingBacklogProposalApplication.create({
-		data: {
-			proposalId: params.proposalId,
-			changeIndex: params.changeIndex,
-			action: params.action,
-			createdEntityType: params.createdEntityType,
-			createdEntityId: params.createdEntityId,
-		},
-	});
+	const data = {
+		proposalId: params.proposalId,
+		changeIndex: params.changeIndex,
+		action: params.action,
+		createdEntityType: params.createdEntityType,
+		createdEntityId: params.createdEntityId,
+	};
+	if (options.skipDuplicates) {
+		await tx.pendingBacklogProposalApplication.createMany({
+			data: [data],
+			skipDuplicates: true,
+		});
+	} else {
+		await tx.pendingBacklogProposalApplication.create({ data });
+	}
+
 	const existing = await tx.pendingBacklogProposal.findUnique({
 		where: { id: params.proposalId },
 		select: { appliedChangeIndexes: true },
@@ -955,4 +1074,18 @@ export async function finalizeClaimedProposal(params: {
 					},
 	});
 	return result.count === 1;
+}
+
+/** Duplicate resolutions are separate from applications: existing items must not
+ * enter the application-driven PM sync maps. The unique index makes retries safe. */
+export async function recordProposalDuplicateResolution(params: {
+	proposalId: string;
+	changeIndex: number;
+	existingEntityType?: "epic" | "feature" | "story" | "bug";
+	existingEntityId?: string;
+}): Promise<void> {
+	await db.pendingBacklogProposalDuplicateResolution.createMany({
+		data: [params],
+		skipDuplicates: true,
+	});
 }

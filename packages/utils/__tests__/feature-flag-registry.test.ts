@@ -1218,3 +1218,30 @@ describe("DOCUMENT_ROOM_CONVERGENCE (#2946)", () => {
 		]);
 	});
 });
+
+describe("Decision Replay override-only resolution", () => {
+	it("registers an organization-scopable flag without an environment fallback", () => {
+		expect(FEATURE_FLAG_REGISTRY.DECISION_REPLAY).toMatchObject({
+			envVar: null,
+			default: false,
+			orgScopable: true,
+		});
+		expect(ORG_SCOPABLE_FLAG_KEYS).toContain("DECISION_REPLAY");
+	});
+	it.each(
+		[true, false, undefined].flatMap((org) =>
+			[true, false, undefined].map((global) => ({ org, global })),
+		),
+	)(
+		"resolves org=$org global=$global using only overrides",
+		({ org, global }) => {
+			expect(
+				resolveFlag(
+					"DECISION_REPLAY",
+					{ org, global },
+					{ FABRIC_FEATURE_DECISION_REPLAY: "true", null: "true" },
+				).enabled,
+			).toBe(org ?? global ?? false);
+		},
+	);
+});

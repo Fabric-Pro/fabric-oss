@@ -229,6 +229,10 @@ export interface UserStory {
 	// checkmark. Set by the ADO poll; false/null when not terminal.
 	pmTicketTerminal?: boolean;
 	pmTicketTerminalStatus?: string | null;
+	// Linked ticket's native PM status, read-only (Fizzy #3088). Null when
+	// unlinked, not yet read, or read for a ticket the story is no longer
+	// linked to.
+	pmTicketStatus?: string | null;
 	// F-171 bug triage: AI-determined; set at bug creation, cleared only by
 	// the "Re-evaluate Bug" action. Always false for features.
 	needsMoreInfo?: boolean;
@@ -868,6 +872,11 @@ export function transformStory(
 		mergedIntoStoryId: story.mergedIntoStoryId ?? null,
 		pmTicketTerminal: story.pmTicketTerminal ?? false,
 		pmTicketTerminalStatus: story.pmTicketTerminalStatus ?? null,
+		pmTicketStatus:
+			story.externalId &&
+			story.pmTicketStatusExternalId === story.externalId
+				? (story.pmTicketStatus ?? null)
+				: null,
 		// F-171 bug triage + reporter tracking. The DB columns may be null
 		// for stories created before F-171 — coerce to safe defaults so the
 		// UI's `story.kind === "BUG" && story.needsMoreInfo` guards work.

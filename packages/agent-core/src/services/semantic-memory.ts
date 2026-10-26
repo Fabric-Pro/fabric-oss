@@ -13,6 +13,8 @@
  * @see @repo/rag for embedding generation and Qdrant operations
  */
 
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import {
 	type ExecutionSummary,
 	generateEmbedding,
@@ -77,12 +79,16 @@ export async function searchSemanticMemory(
 
 	try {
 		// Generate embedding for query
-		const embeddingResult = await generateEmbedding(query, {
-			userId,
-			organizationId,
-			featureKey: "chat-agent",
-			tags: ["semantic-search"],
-		});
+		const embeddingResult = await runWithAiCallPurpose(
+			AI_CALL_PURPOSES.executionSearchEmbedding,
+			() =>
+				generateEmbedding(query, {
+					userId,
+					organizationId,
+					featureKey: "chat-agent",
+					tags: ["semantic-search"],
+				}),
+		);
 
 		// Search Qdrant
 		const results = await searchSimilarExecutions({

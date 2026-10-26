@@ -23,6 +23,7 @@ import {
 	McpClientError,
 	type McpClientType,
 	type McpConfigAccess,
+	OAuthAuthorizationRequiredError,
 } from "@repo/mcp";
 
 // ============================================================================
@@ -67,7 +68,10 @@ export interface McpClientResult {
  */
 export type McpClientResultOrError =
 	| { ok: true; client: McpClientType; serverName: string }
-	| { ok: false; error: { code: string; message: string } };
+	| {
+			ok: false;
+			error: { code: string; message: string; serverName?: string };
+	  };
 
 export interface GetMcpToolsOptions {
 	userId: string;
@@ -144,10 +148,26 @@ export async function getMcpClientResult(
 			serverName: result.serverName,
 		};
 	} catch (error) {
+		if (error instanceof OAuthAuthorizationRequiredError) {
+			return {
+				ok: false,
+				error: {
+					code: "OAUTH_AUTH_REQUIRED",
+					message: error.message,
+					serverName: error.serverName,
+				},
+			};
+		}
 		if (error instanceof McpClientError) {
 			return {
 				ok: false,
-				error: { code: error.code, message: error.message },
+				error: {
+					code: error.code,
+					message: error.message,
+					...(error.serverName
+						? { serverName: error.serverName }
+						: {}),
+				},
 			};
 		}
 		return {
@@ -206,49 +226,48 @@ export async function getTenantMcpConfigs(
 // Tool Discovery
 // ============================================================================
 
-/**
- * Fetches detailed MCP tool information including descriptions.
- * This allows the AI to understand what each tool can do.
- *
- * @param options.skipConnection - If true, only returns config metadata without connecting to servers.
- *                                 Use this for lazy loading - tools will be fetched on-demand later.
- */
-export async function getDetailedMcpToolInfo(
-	options: GetMcpToolsOptions & { skipConnection?: boolean },
-): Promise<DetailedMcpToolInfo[]> {
-	const {
+function mcpConfigTenantFilter({ userId, organizationId }: GetMcpToolsOptions) {
+	return {
 		userId,
-		organizationId,
-		enabledMcpConfigIds,
-		skipConnection = false,
-	} = options;
+		...(organizationId ? { organizationId } : { organizationId: null }),
+	};
+}
 
-	// Handle filtering:
-	// - null/undefined = no filter, return all enabled configs
-	// - [] (empty array) = explicitly disabled all, return none
-	// - ["id1", "id2"] = filter to specific IDs
-	const hasExplicitFilter =
-		enabledMcpConfigIds !== null && enabledMcpConfigIds !== undefined;
-	const isExplicitlyEmpty =
-		hasExplicitFilter && enabledMcpConfigIds.length === 0;
-
-	// If user explicitly disabled all MCP servers, return empty array early
-	if (isExplicitlyEmpty) {
-		console.log(
-			"[MCP Tools] All MCP servers explicitly disabled, returning empty",
-		);
+/** Load enabled OAuth configs excluded from discovery because they need reauthentication. */
+export async function getMcpConfigsNeedingReauth(options: GetMcpToolsOptions) {
+	const { enabledMcpConfigIds } = options;
+	if (enabledMcpConfigIds != null && enabledMcpConfigIds.length === 0) {
 		return [];
 	}
+	return db.mCPConfig.findMany({
+		where: {
+			...mcpConfigTenantFilter(options),
+			enabled: true,
+			authType: "OAUTH2",
+			needsReauth: true,
+			mcpServer: { key: { notIn: [...GITLAB_PERSONAL_MCP_SERVER_KEYS] } },
+			...(enabledMcpConfigIds != null
+				? { id: { in: enabledMcpConfigIds } }
+				: {}),
+		},
+		include: { mcpServer: true },
+		orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+	});
+}
 
+/** Load enabled configs in stable order, using the discovery reauthentication rule. */
+export async function getEnabledMcpConfigs(options: GetMcpToolsOptions) {
+	const { enabledMcpConfigIds } = options;
+	const hasExplicitFilter = enabledMcpConfigIds != null;
+	if (hasExplicitFilter && enabledMcpConfigIds.length === 0) {
+		return [];
+	}
 	// SECURITY: Strict tenant isolation - use same pattern as getTenantMcpConfigs
 	// Per-user-within-org pattern: configs have both userId AND organizationId set
-	// Always filter by userId to prevent credential leakage between org members
-	const mcpConfigs = await db.mCPConfig.findMany({
+	// The query filters by userId because credentials are per-user.
+	return db.mCPConfig.findMany({
 		where: {
-			userId, // Always filter by current user (credentials are per-user)
-			...(organizationId
-				? { organizationId } // Org context: current user's configs within this org
-				: { organizationId: null }), // Personal context: only user configs
+			...mcpConfigTenantFilter(options),
 			enabled: true,
 			// Configs tripped by the refresh circuit breaker can't produce tools
 			// until the user re-authenticates, so skip them at discovery instead
@@ -283,6 +302,43 @@ export async function getDetailedMcpToolInfo(
 		// is arbitrary but stable.
 		orderBy: [{ createdAt: "asc" }, { id: "asc" }],
 	});
+}
+
+/**
+ * Fetches detailed MCP tool information including descriptions.
+ * This allows the AI to understand what each tool can do.
+ *
+ * @param options.skipConnection - If true, only returns config metadata without connecting to servers.
+ *                                 Use this for lazy loading - tools will be fetched on-demand later.
+ */
+export async function getDetailedMcpToolInfo(
+	options: GetMcpToolsOptions & { skipConnection?: boolean },
+): Promise<DetailedMcpToolInfo[]> {
+	const {
+		userId,
+		organizationId,
+		enabledMcpConfigIds,
+		skipConnection = false,
+	} = options;
+
+	// Handle filtering:
+	// - null/undefined = no filter, return all enabled configs
+	// - [] (empty array) = explicitly disabled all, return none
+	// - ["id1", "id2"] = filter to specific IDs
+	const hasExplicitFilter =
+		enabledMcpConfigIds !== null && enabledMcpConfigIds !== undefined;
+	const isExplicitlyEmpty =
+		hasExplicitFilter && enabledMcpConfigIds.length === 0;
+
+	// If user explicitly disabled all MCP servers, return empty array early
+	if (isExplicitlyEmpty) {
+		console.log(
+			"[MCP Tools] All MCP servers explicitly disabled, returning empty",
+		);
+		return [];
+	}
+
+	const mcpConfigs = await getEnabledMcpConfigs(options);
 
 	console.log("[MCP Tools] Loaded configs:", {
 		count: mcpConfigs.length,

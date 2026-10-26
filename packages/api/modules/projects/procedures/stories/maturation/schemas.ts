@@ -11,8 +11,6 @@ import { z } from "zod";
  * validates output without a deep-import into the generated client.
  */
 
-export const MaturationApprovalModeSchema = z.enum(["AUTO_ACCEPT", "MANUAL"]);
-
 export const DecisionStatusSchema = z.enum([
 	"OPEN",
 	"RESOLVED",
@@ -32,14 +30,6 @@ export const AnswerSourceSchema = z.enum([
 	"MANUAL",
 ]);
 
-/** Effective approval mode per tab (the resolved §5.3 fall-through result). */
-export const EffectiveApprovalModesSchema = z.object({
-	cleanSpec: MaturationApprovalModeSchema,
-	decisionLog: MaturationApprovalModeSchema,
-	summaryQuestions: MaturationApprovalModeSchema,
-});
-export type ApprovalModeMap = z.infer<typeof EffectiveApprovalModesSchema>;
-
 const DecisionLogReplySchema = z.object({
 	id: z.string(),
 	status: DecisionStatusSchema,
@@ -56,39 +46,11 @@ const DecisionLogReplySchema = z.object({
 	supersedesId: z.string().nullable(),
 });
 
-const CleanSpecPropagationStatusSchema = z.enum([
-	"applied",
-	"pending",
-	"refused",
-	"noop",
-	"skipped",
-	"error",
-]);
-
-/**
- * The Clean-Spec propagation outcome a decision produced (§7.5), summarized for
- * the editor: the status, the one-line applied summaries (for the Decision Log
- * "what changed"), and how many patches are still PENDING (drives the Clean Spec
- * MANUAL review banner + an accept affordance). `null` when a decision never ran
- * propagation (e.g. an OPEN question).
- */
-const CleanSpecPropagationSummarySchema = z
-	.object({
-		status: CleanSpecPropagationStatusSchema,
-		appliedSummaries: z.array(z.string()),
-		pendingPatchCount: z.number().int(),
-	})
-	.nullable();
-export type CleanSpecPropagationSummary = z.infer<
-	typeof CleanSpecPropagationSummarySchema
->;
-
 const DecisionLogRootSchema = DecisionLogReplySchema.extend({
 	impactedSection: z.string().nullable(),
 	topic: z.string().nullable(),
 	questionId: z.string().nullable(),
 	decidedBy: z.string().nullable(),
-	cleanSpecPropagation: CleanSpecPropagationSummarySchema,
 	// AI answer recommendations for an OPEN question (#7), derived from
 	// `metadata.answerRecommendation`. 0–4 candidate answers, each with a required
 	// justification (FR-2); empty array = no recommendation (renders as a plain

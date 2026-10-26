@@ -38,10 +38,13 @@ import {
 	checkConversationTurnDispatchable,
 	finalizeConversationTurn,
 	finalizeOrphanedConversationTurn,
+	getConversationTurnContinuationSnapshot,
 	markConversationTurnActive,
 	markConversationTurnStartFailed,
 	requestConversationTurnCancel,
 } from "../prisma/queries/conversation-turns";
+
+import { hydrateConversationTurnResults } from "../prisma/queries/conversation-turn-results";
 
 const IDS = {
 	owner: "cturn-owner",
@@ -195,6 +198,68 @@ describe.skipIf(!process.env.DATABASE_URL)(
 			const { db } = await import("../prisma/client");
 			await db.$disconnect();
 		});
+
+		it.each([
+			{ version: 1, kind: "round_limit", used: 30, limit: 30 },
+			{ version: 1, kind: "time_limit", used: 2700, limit: 2700 },
+		] as const)(
+			"selects the same generated turn for Continue and hydration with a tombstone: %j",
+			async (stop) => {
+				const admitted = await admit();
+				if (admitted.outcome !== "created") {
+					throw new Error("expected created turn");
+				}
+				await finalizeConversationTurn({
+					turnId: admitted.turn.id,
+					executionId: admitted.turn.executionId as string,
+					userId: IDS.owner,
+					organizationId: IDS.org,
+					outcome: "LIMITED",
+					responseText: "Saved example progress",
+					budgetStop: stop,
+				});
+				const cancelled = await requestConversationTurnCancel({
+					userId: IDS.owner,
+					organizationId: IDS.org,
+					conversationId: IDS.conversation,
+					clientRequestKey: "example-cancel-before-start",
+					source: "USER_STOP",
+				});
+				expect(cancelled).toMatchObject({
+					outcome: "tombstoned",
+					turn: { generation: null, executionId: null },
+				});
+				const snapshot = await getConversationTurnContinuationSnapshot({
+					turnId: admitted.turn.id,
+					conversationId: IDS.conversation,
+					userId: IDS.owner,
+					organizationId: IDS.org,
+				});
+				const turns = await fixtures.conversationTurn.findMany({
+					where: {
+						conversationId: IDS.conversation,
+						userId: IDS.owner,
+						organizationId: IDS.org,
+					},
+				});
+				const hydrated = hydrateConversationTurnResults(
+					{ messages: [], metadata: { mode: "orchestrator" } },
+					turns,
+				);
+				expect(snapshot.latest).toMatchObject({
+					id: admitted.turn.id,
+					generation: 1,
+					budgetStop: stop,
+				});
+				expect(hydrated.metadata).toMatchObject({
+					latestTurn: {
+						id: admitted.turn.id,
+						generation: 1,
+						budgetStop: stop,
+					},
+				});
+			},
+		);
 
 		// ------------------------------------------------------------------
 		// 1. Idempotent creation

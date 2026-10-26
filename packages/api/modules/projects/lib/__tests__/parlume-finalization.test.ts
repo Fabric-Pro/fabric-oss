@@ -49,7 +49,10 @@ vi.mock("@repo/temporal", () => ({
 
 vi.mock("../parlume-attendee", () => ({
 	deleteParlumeMeetingBotData: mocks.deleteProviderData,
-	getParlumeBridgeSettings: mocks.getSettings,
+}));
+
+vi.mock("../parlume-provider-settings", () => ({
+	resolveParlumeAttendeeSettings: mocks.getSettings,
 }));
 
 vi.mock("../parlume-log", () => ({ parlumeLog: () => undefined }));
@@ -77,9 +80,17 @@ function storedSession(overrides: Record<string, unknown> = {}) {
 		finalizedAt: null,
 		transcriptContextId: null,
 		providerDataDeletedAt: null,
+		createdAt: new Date("2026-10-01T17:00:00Z"),
 		...overrides,
 	};
 }
+
+const attendee = {
+	apiKey: "test-key",
+	baseUrl: "https://attendee.example.com",
+	teamsLoginMode: null,
+	source: "organization",
+};
 
 beforeEach(() => {
 	vi.resetAllMocks();
@@ -90,7 +101,7 @@ beforeEach(() => {
 	mocks.turnFindMany.mockResolvedValue([]);
 	mocks.actionFindMany.mockResolvedValue([]);
 	mocks.contextCreate.mockResolvedValue({ id: "context-1" });
-	mocks.getSettings.mockReturnValue({ apiKey: "test-key" });
+	mocks.getSettings.mockResolvedValue(attendee);
 	mocks.deleteProviderData.mockResolvedValue(undefined);
 });
 
@@ -369,11 +380,14 @@ describe("finalizeParlumeSession conversation records", () => {
 		expect(mocks.deleteProviderData).toHaveBeenCalledOnce();
 	});
 
-	it("preserves the empty-session path", async () => {
+	it("says a session that left the lobby heard nothing", async () => {
+		mocks.sessionFindUnique.mockResolvedValue(
+			storedSession({ joinedAt: new Date("2026-10-01T17:06:00Z") }),
+		);
 		await finalizeParlumeSession("session-1");
 		expect(mocks.contextCreate).not.toHaveBeenCalled();
 		expect(mocks.workflowStart).not.toHaveBeenCalled();
-		expect(mocks.sessionUpdate).toHaveBeenCalledWith(
+		expect(mocks.sessionUpdateMany).toHaveBeenCalledWith(
 			expect.objectContaining({
 				data: expect.objectContaining({
 					lastError: "No final speech segments were received.",
@@ -382,6 +396,17 @@ describe("finalizeParlumeSession conversation records", () => {
 		);
 		expect(mocks.recordUsage).toHaveBeenCalledOnce();
 		expect(mocks.deleteProviderData).toHaveBeenCalledOnce();
+	});
+
+	it("records no speech error for a session that never got past the lobby", async () => {
+		await finalizeParlumeSession("session-1");
+
+		const ended = mocks.sessionUpdateMany.mock.calls
+			.map(([args]) => args.data)
+			.find((data) => data.status === "ENDED");
+		expect(ended).toBeDefined();
+		expect(ended).not.toHaveProperty("lastError");
+		expect(mocks.recordUsage).toHaveBeenCalledOnce();
 	});
 
 	it("applies the Context size limit to incoming speech and appended records together", async () => {
@@ -429,7 +454,8 @@ describe("finalizeParlumeSession provider usage", () => {
 		expect(mocks.recordUsage).toHaveBeenCalledWith(
 			expect.objectContaining({ sessionId: "session-1", success: false }),
 		);
-		expect(mocks.sessionUpdateMany).toHaveBeenCalledTimes(1);
+		// The claim, then the finish that still holds it.
+		expect(mocks.sessionUpdateMany).toHaveBeenCalledTimes(2);
 
 		// The watchdog reads the session after the first finalization finished.
 		mocks.sessionFindUnique.mockResolvedValue(
@@ -444,7 +470,7 @@ describe("finalizeParlumeSession provider usage", () => {
 		).resolves.toBeUndefined();
 
 		expect(mocks.recordUsage).toHaveBeenCalledTimes(1);
-		expect(mocks.sessionUpdateMany).toHaveBeenCalledTimes(1);
+		expect(mocks.sessionUpdateMany).toHaveBeenCalledTimes(2);
 		expect(mocks.deleteProviderData).toHaveBeenCalledTimes(1);
 	});
 
@@ -460,10 +486,70 @@ describe("finalizeParlumeSession provider usage", () => {
 
 		expect(mocks.recordUsage).not.toHaveBeenCalled();
 		expect(mocks.sessionUpdateMany).not.toHaveBeenCalled();
+		expect(mocks.getSettings).toHaveBeenCalledWith("org-1");
 		expect(mocks.deleteProviderData).toHaveBeenCalledWith({
-			settings: { apiKey: "test-key" },
+			attendee,
 			providerBotId: "bot-1",
 		});
+	});
+
+	it("refuses to delete provider data when no Attendee settings resolve", async () => {
+		mocks.sessionFindUnique.mockResolvedValue(
+			storedSession({
+				status: "FAILED",
+				finalizedAt: new Date("2026-10-01T18:00:05Z"),
+			}),
+		);
+		mocks.getSettings.mockResolvedValue(null);
+
+		await expect(
+			finalizeParlumeSession("session-1", { preserveFailure: true }),
+		).rejects.toThrow("provider configuration is unavailable");
+		expect(mocks.deleteProviderData).not.toHaveBeenCalled();
+	});
+
+	it("ends a bot stopped in the lobby with its stop reason and bills it from the invite", async () => {
+		// Stopped while waiting to be admitted: no stream ever opened, so no
+		// segments, no turns, no join time and stream generation 0.
+		const createdAt = new Date("2026-10-26T17:50:00Z");
+		const leaveRequestedAt = new Date("2026-10-26T17:54:05Z");
+		const terminalCallbackAt = new Date("2026-10-26T17:54:40Z");
+		mocks.sessionFindUnique.mockResolvedValue(
+			storedSession({
+				status: "LEAVING",
+				endReason: "STOPPED",
+				createdAt,
+				leaveRequestedAt,
+				terminalCallbackAt,
+			}),
+		);
+
+		await finalizeParlumeSession("session-1", {
+			expectedStreamGeneration: 0,
+		});
+
+		const [claim, finish] = mocks.sessionUpdateMany.mock.calls;
+		expect(claim[0].where).toEqual(
+			expect.objectContaining({ id: "session-1", streamGeneration: 0 }),
+		);
+		expect(finish[0].data).toEqual(
+			expect.objectContaining({
+				status: "ENDED",
+				finalizedAt: expect.any(Date),
+				endedAt: expect.any(Date),
+			}),
+		);
+		expect(finish[0].data).not.toHaveProperty("endReason");
+		expect(mocks.contextCreate).not.toHaveBeenCalled();
+		expect(mocks.recordUsage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				requestedAt: createdAt,
+				joinedAt: null,
+				endedAt: terminalCallbackAt,
+				success: true,
+			}),
+		);
+		expect(mocks.deleteProviderData).toHaveBeenCalledOnce();
 	});
 
 	it("records nothing for a session that already ended", async () => {
@@ -510,4 +596,56 @@ describe("finalizeParlumeSession provider usage", () => {
 		const [{ where }] = mocks.sessionUpdateMany.mock.calls[0];
 		expect(JSON.stringify(where.OR)).not.toContain('"FAILED"');
 	});
+
+	it("bills the bot from the invite and transcription from the verified stream", async () => {
+		const createdAt = new Date("2026-10-01T17:00:00Z");
+		const joinedAt = new Date("2026-10-01T17:06:00Z");
+		const terminalCallbackAt = new Date("2026-10-01T17:36:00Z");
+		mocks.sessionFindUnique.mockResolvedValue(
+			storedSession({ createdAt, joinedAt, terminalCallbackAt }),
+		);
+
+		await finalizeParlumeSession("session-1");
+
+		expect(mocks.recordUsage).toHaveBeenCalledWith(
+			expect.objectContaining({
+				requestedAt: createdAt,
+				joinedAt,
+				endedAt: terminalCallbackAt,
+			}),
+		);
+	});
+
+	it.each([
+		["an empty session", false],
+		["a session with a transcript", true],
+	])(
+		"records nothing when %s was claimed again while it stalled",
+		async (_label, withTranscript) => {
+			if (withTranscript) {
+				mocks.turnFindMany.mockResolvedValue([storedTurn()]);
+			}
+			// The claim succeeds; by the finish, a later attempt holds it.
+			mocks.sessionUpdateMany
+				.mockResolvedValueOnce({ count: 1 })
+				.mockResolvedValueOnce({ count: 0 });
+
+			await expect(finalizeParlumeSession("session-1")).rejects.toThrow(
+				"taken over by a later attempt",
+			);
+
+			const [, finish] = mocks.sessionUpdateMany.mock.calls;
+			const claimedAt =
+				mocks.sessionUpdateMany.mock.calls[0][0].data
+					.finalizationStartedAt;
+			expect(finish[0].where).toEqual({
+				id: "session-1",
+				status: "FINALIZING",
+				finalizationStartedAt: claimedAt,
+			});
+			expect(mocks.recordUsage).not.toHaveBeenCalled();
+			expect(mocks.workflowStart).not.toHaveBeenCalled();
+			expect(mocks.deleteProviderData).not.toHaveBeenCalled();
+		},
+	);
 });

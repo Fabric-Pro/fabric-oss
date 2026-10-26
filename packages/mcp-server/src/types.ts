@@ -95,7 +95,7 @@ const ApiStepSchema = z.object({
 	name: z.string().optional(),
 	url: z.string().url(),
 	method: z.enum(["GET", "POST", "PUT", "DELETE", "PATCH"]).optional(),
-	headers: z.record(z.string()).optional(),
+	headers: z.record(z.string(), z.string()).optional(),
 	body: z.unknown().optional(),
 	timeout: z.number().optional(),
 });
@@ -122,7 +122,7 @@ export const RunHybridTaskInputSchema = z.object({
 		.optional()
 		.describe("Whether to fallback to alternative method on error"),
 	variables: z
-		.record(z.unknown())
+		.record(z.string(), z.unknown())
 		.optional()
 		.describe("Variables for template substitution in URLs/values"),
 });
@@ -130,7 +130,7 @@ export const RunHybridTaskInputSchema = z.object({
 export const ExecuteTemplateInputSchema = z.object({
 	templateId: z.string().describe("ID of the saved automation template"),
 	parameters: z
-		.record(z.unknown())
+		.record(z.string(), z.unknown())
 		.describe("Parameter values to substitute in the template"),
 	takeScreenshots: z
 		.boolean()

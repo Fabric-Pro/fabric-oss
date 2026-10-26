@@ -30,6 +30,7 @@
  *    exactly as before.
  */
 
+import { createHash } from "node:crypto";
 import { estimateLanguageRequestInputTokens } from "@repo/ai/lib/turn-budget-estimate";
 import { ApplicationFailure } from "@temporalio/common";
 import { wrapLanguageModel } from "ai";
@@ -64,6 +65,56 @@ vi.mock("../../../../lib/redis-publisher", () => ({
 	publishExecutionEvent: vi.fn(),
 }));
 
+vi.mock("@repo/ai/capabilities", () => ({
+	getModelCapabilities: () => ({ vision: true }),
+}));
+vi.mock("@repo/storage", () => ({
+	downloadFile: async () => ({ data: Buffer.from([1, 2, 3]) }),
+}));
+vi.mock("@repo/config", () => ({
+	config: {
+		storage: { bucketNames: { chatDocuments: "example-documents" } },
+	},
+}));
+const workflowMocks = vi.hoisted(() => {
+	const activities = new Map<string, ReturnType<typeof vi.fn>>();
+	return {
+		stub: (name: string) => {
+			const existing = activities.get(name);
+			if (existing) {
+				return existing;
+			}
+			const fn = vi.fn();
+			activities.set(name, fn);
+			return fn;
+		},
+		resetAll: () => {
+			for (const fn of activities.values()) {
+				fn.mockReset();
+			}
+		},
+		off: new Set<string>(),
+	};
+});
+vi.mock("@temporalio/workflow", () => ({
+	log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+	patched: vi.fn((id: string) => !workflowMocks.off.has(id)),
+	proxyActivities: vi.fn(
+		() =>
+			new Proxy(
+				{},
+				{ get: (_, name) => workflowMocks.stub(String(name)) },
+			),
+	),
+	workflowInfo: vi.fn(() => ({
+		startTime: new Date(),
+		runId: "example-run",
+		unsafe: { isReplaying: false },
+	})),
+	startChild: vi.fn(),
+	ParentClosePolicy: { ABANDON: "ABANDON" },
+}));
+
 interface Attempt {
 	id: string;
 	kind: string;
@@ -86,6 +137,8 @@ const store = vi.hoisted(() => ({
 	attempts: [] as Attempt[],
 	refusals: [] as Array<{ kind: string; room: number; needed: number }>,
 	snapshotReads: 0,
+	hasLedger: true,
+	snapshotReadFailure: undefined as "throw" | "undefined" | undefined,
 }));
 
 vi.mock("@repo/database", async () => {
@@ -98,11 +151,29 @@ vi.mock("@repo/database", async () => {
 		enforcement: "ENFORCED" as const,
 	});
 	return {
+		db: {
+			chatDocument: {
+				findMany: vi.fn(async () => [
+					{
+						id: "example-image",
+						filename: "example.png",
+						mimeType: "image/png",
+						s3Path: "example.png",
+					},
+				]),
+			},
+		},
 		conversationTurnRoom: room.conversationTurnRoom,
 		checkConversationTurnDispatchable: vi.fn(async () => ({ ok: true })),
 		getConversationTurnLedgerSnapshot: vi.fn(async () => {
 			store.snapshotReads += 1;
-			return snapshot();
+			if (store.snapshotReadFailure === "throw") {
+				throw new Error("Example ledger read failure");
+			}
+			if (store.snapshotReadFailure === "undefined") {
+				return undefined;
+			}
+			return store.hasLedger ? snapshot() : undefined;
 		}),
 		reserveConversationTurnAttempt: vi.fn(
 			async (input: {
@@ -112,6 +183,9 @@ vi.mock("@repo/database", async () => {
 				minOutputTokens: number;
 				enforced: boolean;
 			}) => {
+				if (!store.hasLedger) {
+					return { outcome: "unledgered" };
+				}
 				const plan = room.planConversationTurnReservation({
 					totals: store.ledger,
 					kind: input.kind as "FINALIZATION",
@@ -188,17 +262,25 @@ vi.mock("@repo/database", async () => {
 	};
 });
 
-const provider = vi.hoisted(() => ({ current: undefined as unknown }));
+const provider = vi.hoisted(() => ({
+	current: undefined as unknown,
+	maxOutputTokens: undefined as number | undefined,
+}));
 vi.mock("../../utils", () => ({
 	getAiModelWithSelection: vi.fn(async () => ({
 		model: provider.current,
 		canonicalName: "example-model",
+		maxOutputTokens: provider.maxOutputTokens,
+		planSpentApiBilling: () => undefined,
 	})),
 }));
 
 import { wrapModelWithDispatchGuard } from "@repo/ai/lib/dispatch-guard-middleware";
 import { wrapModelWithTurnBudget } from "@repo/ai/lib/turn-budget-middleware";
+import { installDefaultStubs } from "../../../../workflows/orchestrator/phases/__tests__/advisor-scenario-harness";
+import { executeIterativePhase } from "../../../../workflows/orchestrator/phases/iterative-execution";
 import type { IterativeMessage } from "../../../../workflows/orchestrator/types";
+import { createInitialState } from "../../../../workflows/orchestrator/types";
 import {
 	runWithTurnDispatch,
 	TURN_BUDGET_EXHAUSTED,
@@ -411,9 +493,13 @@ function userText(request: SentRequest): string {
 }
 
 beforeEach(() => {
+	vi.restoreAllMocks();
+	provider.maxOutputTokens = undefined;
 	store.attempts = [];
 	store.refusals = [];
 	store.snapshotReads = 0;
+	store.hasLedger = true;
+	store.snapshotReadFailure = undefined;
 	ledgerWithFinalizationRoom(8_500);
 });
 
@@ -585,6 +671,7 @@ describe("the finalization synthesis of a ledgered turn", () => {
 		expect(need).toBeLessThanOrEqual(9_000);
 
 		for (const room of [need, need - 1]) {
+			provider.maxOutputTokens = undefined;
 			store.attempts = [];
 			store.refusals = [];
 			ledgerWithFinalizationRoom(room);
@@ -753,6 +840,7 @@ describe("the finalization synthesis of a ledgered turn", () => {
 		expect(store.attempts[0]?.reservedTokens).toBeLessThanOrEqual(8_000);
 
 		// A room that cannot hold even the shortest head and tail.
+		provider.maxOutputTokens = undefined;
 		store.attempts = [];
 		ledgerWithFinalizationRoom(1_400);
 		const error = await run(
@@ -764,3 +852,220 @@ describe("the finalization synthesis of a ledgered turn", () => {
 		expect(store.attempts).toEqual([]);
 	});
 });
+
+it("keeps cache markers when finalization sizing replaces the request prompt", async () => {
+	const sent = answeringProvider();
+	const { getAiModelWithSelection } = await import("../../utils");
+	vi.mocked(getAiModelWithSelection).mockResolvedValueOnce({
+		model: provider.current,
+		provider: "ANTHROPIC_DIRECT",
+		modelString: "claude-sonnet-4-5",
+		canonicalName: "example-model",
+		maxOutputTokens: provider.maxOutputTokens,
+		planSpentApiBilling: () => undefined,
+	} as never);
+	ledgerWithFinalizationRoom(8_000);
+	await run(finalizationInput(largeHistory()));
+	const { createRequestFingerprint } = await import(
+		"@repo/ai/lib/request-observation"
+	);
+	expect(sent).toHaveLength(1);
+	expect(
+		createRequestFingerprint({
+			modelId: "example",
+			route: "example",
+			prompt: sent[0].prompt,
+		}).cacheMarkers,
+	).toEqual([
+		[1, 0],
+		[1, 1],
+	]);
+});
+
+describe("resolved catalog output cap", () => {
+	it.each([8192, 32768, undefined])(
+		"aligns request, finalization sizing and ledger for cap %s",
+		async (cap) => {
+			for (const kind of ["EXPLORATION", "FINALIZATION"] as const) {
+				store.attempts = [];
+				ledgerWithFinalizationRoom(100_000);
+				provider.maxOutputTokens = cap;
+				const sent = answeringProvider();
+				const result = await run(
+					finalizationInput(largeHistory(1, 100), {
+						budgetAttemptKind: kind,
+					}),
+				);
+				expect(result).toMatchObject({ type: "response" });
+				const expected = cap === 8192 ? 8192 : 16384;
+				expect(sent[0]?.maxOutputTokens).toBe(expected);
+				expect(store.attempts[0]?.requestedOutputTokens).toBe(expected);
+				expect(store.attempts[0]?.outputCap).toBe(expected);
+			}
+		},
+	);
+	it("caps a synthesis retry after a failed send", async () => {
+		provider.maxOutputTokens = 8192;
+		ledgerWithFinalizationRoom(100_000);
+		const sent = answeringProvider({ failFirst: true });
+		await run(finalizationInput(largeHistory(1, 100)));
+		expect(sent).toHaveLength(2);
+		expect(sent.map((request) => request.maxOutputTokens)).toEqual([
+			8192, 8192,
+		]);
+		expect(
+			store.attempts.map((attempt) => attempt.requestedOutputTokens),
+		).toEqual([8192, 8192]);
+	});
+});
+
+const IMAGE_REFERENCE = {
+	documentId: "example-image",
+	contentHash: createHash("sha256")
+		.update(Buffer.from([1, 2, 3]))
+		.digest("hex"),
+	mimeType: "image/png",
+	transformationVersion: "original-v1" as const,
+};
+
+it("sizes a budget-contract image finalization within its reserve and keeps images without the contract", async () => {
+	const history = largeHistory();
+	history[0].imageAttachments = [IMAGE_REFERENCE];
+	history[1].content = "The diagram shows the launch flag reader.";
+	const original = structuredClone(history);
+	ledgerWithFinalizationRoom(8_000);
+	const sent = answeringProvider();
+	const logs = vi.spyOn(console, "log");
+	const result = await run(
+		finalizationInput(history, { preserveTurnImages: true }),
+	);
+	expect(logs).toHaveBeenCalledWith(
+		"[AgentIteration] Image attachments omitted for ledgered finalization",
+		{ reason: "ledger_finalization" },
+	);
+	logs.mockRestore();
+	expect(result).toMatchObject({ type: "response", content: ANSWER });
+	expect(store.refusals).toEqual([]);
+	expect(store.attempts[0]).toMatchObject({
+		kind: "FINALIZATION",
+		status: "SETTLED",
+	});
+	expect(store.attempts[0].reservedTokens).toBeLessThanOrEqual(8_000);
+	expect(sent[0].maxOutputTokens).toBe(FINALIZATION_FIT.outputTokens);
+	expect(JSON.stringify(sent[0].prompt)).not.toContain('"type":"file"');
+	expect(history).toEqual(original);
+	store.hasLedger = false;
+	const { budgetContractVersion: _contract, ...unledgeredScope } = SCOPE;
+	const unledgered = answeringProvider();
+	const second = await run(
+		finalizationInput(history, {
+			preserveTurnImages: true,
+			turnScope: unledgeredScope,
+		}),
+	);
+	expect(second).toMatchObject({ type: "response", content: ANSWER });
+	expect(JSON.stringify(unledgered[0].prompt)).toContain('"type":"file"');
+	expect(store.attempts).toHaveLength(1);
+});
+
+it("writes a model answer after a ledgered image turn exhausts exploration allowance", async () => {
+	installDefaultStubs(workflowMocks);
+	workflowMocks
+		.stub("runAgentIteration")
+		.mockImplementation((input: RunAgentIterationInput) => run(input));
+	const input = {
+		executionId: SCOPE.executionId,
+		userId: SCOPE.userId,
+		organizationId: SCOPE.organizationId,
+		message: QUESTION,
+		history: [
+			{ role: "user" as const, content: "Earlier image analysis." },
+			...Array.from({ length: 8 }, () => ({
+				role: "assistant" as const,
+				content: "The diagram shows two services. ".repeat(150),
+			})),
+		],
+		executionMode: "iterative" as const,
+		attachedDocumentIds: ["example-image"],
+	};
+	const state = createInitialState(input);
+	state.enrichedMessage = input.message;
+	state.enrichedSystemPrompt = "You are an Advisor.";
+	ledgerWithFinalizationRoom(8_000);
+	const sent = answeringProvider();
+	const result = await executeIterativePhase(
+		state,
+		input,
+		{ maxIterations: 8, maxTotalTokens: 100_000 } as never,
+		{} as never,
+		vi.fn(),
+		vi.fn(async () => null),
+		() => false,
+		{ cancellationAware: true, turnScope: SCOPE },
+	);
+	expect(result).toMatchObject({
+		success: true,
+		data: { finalResponse: ANSWER },
+	});
+	expect(state.budgetStop).toMatchObject({
+		kind: "token_allowance",
+		stopReason: "allowance_exhausted",
+	});
+	expect(store.refusals.map((r) => r.kind)).toEqual(["EXPLORATION"]);
+	expect(store.attempts).toHaveLength(1);
+	expect(store.attempts[0]).toMatchObject({
+		kind: "FINALIZATION",
+		status: "SETTLED",
+	});
+	expect(
+		store.attempts[0].inputEstimate + (sent[0].maxOutputTokens ?? 0),
+	).toBeLessThanOrEqual(8_000);
+	expect(sent[0].maxOutputTokens).toBe(FINALIZATION_FIT.outputTokens);
+	expect(JSON.stringify(sent[0].prompt)).not.toContain('"type":"file"');
+	expect(userText(sent[0])).toContain("The diagram shows two services.");
+});
+
+it.each(["throw", "undefined"] as const)(
+	"prepares text-only finalization sizing when ledger reads %s",
+	async (failure) => {
+		const module = await import("../finalization-fit");
+		const originalFactory = module.createFinalizationSizing;
+		const instances: ReturnType<typeof module.createFinalizationSizing>[] =
+			[];
+		vi.spyOn(module, "createFinalizationSizing").mockImplementation(
+			(...args) => {
+				const sizing = originalFactory(...args);
+				vi.spyOn(sizing, "prepare");
+				vi.spyOn(sizing, "sizer");
+				instances.push(sizing);
+				return sizing;
+			},
+		);
+		store.snapshotReadFailure = failure;
+		ledgerWithFinalizationRoom(8_000);
+		const history = largeHistory(1, 100);
+		history[0].imageAttachments = [IMAGE_REFERENCE];
+		const sent = answeringProvider();
+		const logs = vi.spyOn(console, "log");
+		const result = await run(
+			finalizationInput(history, { preserveTurnImages: true }),
+		);
+		expect(result).toMatchObject({ type: "response", content: ANSWER });
+		expect(instances).toHaveLength(1);
+		expect(instances[0].prepare).toHaveBeenCalledTimes(1);
+		expect(instances[0].sizer).toHaveBeenCalled();
+		expect(store.snapshotReads).toBeGreaterThan(0);
+		expect(sent).toHaveLength(1);
+		expect(JSON.stringify(sent[0].prompt)).not.toContain('"type":"file"');
+		expect(store.refusals).toEqual([]);
+		expect(store.attempts[0]).toMatchObject({
+			kind: "FINALIZATION",
+			status: "SETTLED",
+		});
+		expect(store.attempts[0].reservedTokens).toBeLessThanOrEqual(8_000);
+		expect(logs).toHaveBeenCalledWith(
+			"[AgentIteration] Image attachments omitted for ledgered finalization",
+			{ reason: "ledger_finalization" },
+		);
+	},
+);

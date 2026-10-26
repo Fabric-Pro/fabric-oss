@@ -450,6 +450,7 @@ export * from "./publishing-newsletter-blurb";
 export * from "./publishing-planning";
 export * from "./publishing-refine";
 export * from "./parlume";
+export * from "./parlume-auto-join";
 export * from "./parlume-notes";
 export * from "./parlume-warmup";
 export * from "./publishing-short-post";
@@ -859,6 +860,7 @@ export {
 	// Recovery Management (Phase 2.3)
 	classifyFailureActivity,
 	checkCompletionClaimActivity,
+	judgeDelegationRiskActivity,
 	compactConversationHistoryActivity,
 	createOrchestratorApprovalRequest,
 	createTaskPlan,
@@ -1594,3 +1596,5 @@ export {
 	updateWorkspaceDocumentStatus,
 } from "./workspace-document-activities";
 export { purgeExpiredMeetingArchivesActivity } from "./meeting-archive-retention";
+
+export { preloadFrameToolsActivity } from "./orchestrator/tools/preload-frame-tools";

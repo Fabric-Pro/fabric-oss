@@ -29,6 +29,11 @@ class FakeSocket {
 	types() {
 		return this.sent.map((event) => event.type);
 	}
+	drop() {
+		for (const listener of this.listeners.get("close") ?? []) {
+			listener({ code: 1006, reason: "gone" });
+		}
+	}
 }
 
 type Bridge = {
@@ -39,7 +44,7 @@ type Bridge = {
 	onClose(conn: unknown): Promise<void>;
 };
 
-function meeting(options: { realtime: boolean }) {
+function meeting(options: { realtime: boolean; realtimeUrl?: string }) {
 	const requests: Array<{
 		url: string;
 		headers: Record<string, string>;
@@ -71,10 +76,13 @@ function meeting(options: { realtime: boolean }) {
 						clientSecret: "ek_meeting",
 						expiresAt: 1_900_000_000,
 						model: "gpt-realtime-2.1",
+						...(options.realtimeUrl
+							? { realtimeUrl: options.realtimeUrl }
+							: {}),
 					})
 				: Response.json({ engine: "classic" }, { status: 404 });
 		}
-		if (path === "/v1/realtime") {
+		if (path.endsWith("/v1/realtime")) {
 			return { status: 101, webSocket: openai };
 		}
 		return Response.json({ accepted: true });
@@ -147,7 +155,7 @@ function control(action: string, body: unknown) {
 	);
 }
 
-async function joined(options: { realtime: boolean }) {
+async function joined(options: { realtime: boolean; realtimeUrl?: string }) {
 	const live = meeting(options);
 	await live.bridge.onStart();
 	await live.bridge.onConnect(live.bot, { request: { url: STREAM_URL } });
@@ -183,6 +191,37 @@ test("an organization with an OpenAI key gets the realtime voice, fed the meetin
 		true,
 		"Flux still transcribes",
 	);
+});
+
+test("a session minted on the organization's Azure resource opens that resource and bills it", async (t) => {
+	const azure =
+		"https://example-resource.openai.azure.com/openai/v1/realtime";
+	const live = await joined({ realtime: true, realtimeUrl: azure });
+	t.after(() => live.bridge.onClose(live.bot));
+	const upgrade = live.requests.find((request) =>
+		request.url.startsWith(azure),
+	);
+	assert.equal(upgrade?.url, `${azure}?model=gpt-realtime-2.1`);
+	assert.equal(upgrade?.headers.Authorization, "Bearer ek_meeting");
+	assert.equal(live.openai.accepted, true);
+
+	live.openai.emit({
+		type: "response.done",
+		response: {
+			id: "resp_1",
+			status: "completed",
+			output: [],
+			usage: {
+				input_token_details: { audio_tokens: 500, text_tokens: 100 },
+				output_token_details: { audio_tokens: 60, text_tokens: 5 },
+			},
+		},
+	});
+	await flush();
+	const usage = live.requests.find((request) =>
+		request.url.endsWith("/realtime-usage"),
+	);
+	assert.equal(usage?.body?.provider, "AZURE_AI_FOUNDRY");
 });
 
 test("a wake phrase is answered by the realtime voice, not dispatched as a classic turn", async (t) => {
@@ -239,6 +278,174 @@ test("a wake phrase is answered by the realtime voice, not dispatched as a class
 	await flush();
 	const tail = live.openai.types().slice(-2);
 	assert.deepEqual(tail, ["response.cancel", "conversation.item.truncate"]);
+});
+
+test("a partial handled after its own final does not make the realtime voice answer again", async (t) => {
+	const live = await joined({ realtime: true });
+	t.after(() => live.bridge.onClose(live.bot));
+	const responses = () =>
+		live.openai.types().filter((type) => type === "response.create").length;
+	live.flux.emit({
+		event: "EndOfTurn",
+		turn_index: 0,
+		audio_window_start: 0.1,
+		audio_window_end: 1.5,
+		transcript: "Hey Fabric, what is the status?",
+	});
+	await flush();
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(responses(), 1);
+	live.openai.emit({ type: "response.created", response: { id: "resp_1" } });
+	live.openai.emit({
+		type: "response.done",
+		response: { id: "resp_1", status: "completed", output: [] },
+	});
+	await flush();
+
+	// A partial of the same utterance, handled late.
+	live.flux.emit({
+		event: "Update",
+		turn_index: 0,
+		audio_window_start: 0.1,
+		audio_window_end: 1.2,
+		transcript: "Hey Fabric, what is",
+	});
+	await flush();
+	// Someone else talks, and stops.
+	live.openai.emit({ type: "input_audio_buffer.speech_started" });
+	live.openai.emit({ type: "input_audio_buffer.speech_stopped" });
+	assert.equal(responses(), 1);
+});
+
+test("'Parlume, stop' is never answered by the realtime voice", async (t) => {
+	const live = await joined({ realtime: true });
+	t.after(() => live.bridge.onClose(live.bot));
+	const answered = () => live.openai.types().includes("response.create");
+
+	// The cancel is still being spoken when the voice hears the speech end.
+	live.flux.emit({
+		event: "Update",
+		turn_index: 0,
+		audio_window_start: 0.1,
+		audio_window_end: 0.6,
+		transcript: "Parlume,",
+	});
+	await flush();
+	live.flux.emit({
+		event: "Update",
+		turn_index: 0,
+		audio_window_start: 0.1,
+		audio_window_end: 1,
+		transcript: "Parlume, stop.",
+	});
+	await flush();
+	live.openai.emit({ type: "input_audio_buffer.speech_stopped" });
+	assert.equal(answered(), false);
+
+	// Flux's final words arrive before the voice hears the speech end.
+	live.flux.emit({
+		event: "Update",
+		turn_index: 1,
+		audio_window_start: 2,
+		audio_window_end: 2.5,
+		transcript: "Parlume,",
+	});
+	await flush();
+	live.flux.emit({
+		event: "EndOfTurn",
+		turn_index: 1,
+		audio_window_start: 2,
+		audio_window_end: 3,
+		transcript: "Parlume, never mind.",
+	});
+	await flush();
+	live.openai.emit({ type: "input_audio_buffer.speech_stopped" });
+	assert.equal(answered(), false);
+});
+
+test("a request heard while the realtime voice reconnects is answered by the classic voice", async (t) => {
+	const live = await joined({ realtime: true });
+	t.after(() => live.bridge.onClose(live.bot));
+	live.openai.drop();
+	live.flux.emit({
+		event: "EndOfTurn",
+		turn_index: 0,
+		audio_window_start: 0.1,
+		audio_window_end: 1.5,
+		transcript: "Hey Fabric, what is the status?",
+	});
+	for (
+		let waited = 0;
+		waited < 2_000 && !live.paths().includes("/api/internal/parlume/turns");
+		waited += 20
+	) {
+		await new Promise((resolve) => setTimeout(resolve, 20));
+	}
+	const turn = live.requests.find((request) =>
+		request.url.endsWith("/api/internal/parlume/turns"),
+	);
+	assert.equal(turn?.body?.text, "what is the status?");
+	assert.equal(turn?.body?.delivery, undefined, "a classic turn");
+});
+
+test("a spoken chat post reference is acted on by the bridge, not left to the realtime model", async (t) => {
+	const live = await joined({ realtime: true });
+	t.after(() => live.bridge.onClose(live.bot));
+	await live.bridge.onRequest(control("chat", { message: "Here is F-12." }));
+	const texts = () =>
+		live.openai.sent
+			.filter((event) => event.type === "conversation.item.create")
+			.map((event) => JSON.stringify(event));
+
+	live.flux.emit({
+		event: "Update",
+		turn_index: 0,
+		audio_window_start: 0.1,
+		audio_window_end: 0.9,
+		transcript: "Parlume read",
+	});
+	await flush();
+	live.openai.emit({ type: "input_audio_buffer.speech_stopped" });
+	assert.equal(
+		live.openai.types().includes("response.create"),
+		false,
+		"a request that may name a post waits for its end",
+	);
+	live.flux.emit({
+		event: "EndOfTurn",
+		turn_index: 0,
+		audio_window_start: 0.1,
+		audio_window_end: 1.5,
+		transcript: "Parlume read p one",
+	});
+	await flush();
+	assert.equal(texts().length, 1);
+	assert.match(texts()[0], /chat_post/);
+	assert.match(texts()[0], /Here is F-12\./);
+	assert.equal(
+		live.openai.types().filter((type) => type === "response.create").length,
+		1,
+	);
+	live.openai.emit({ type: "response.created", response: { id: "resp_1" } });
+	live.openai.emit({
+		type: "response.done",
+		response: { id: "resp_1", status: "completed", output: [] },
+	});
+
+	live.flux.emit({
+		event: "EndOfTurn",
+		turn_index: 1,
+		audio_window_start: 2,
+		audio_window_end: 3.5,
+		transcript: "Hey Parlume, tell me more about P1.",
+	});
+	await flush();
+	assert.equal(texts().length, 2);
+	assert.match(
+		texts()[1],
+		/meeting chat as P1 \(the label of that chat message, not a work item ID\): Here is F-12\./,
+	);
+	assert.equal(live.paths().includes("/api/internal/parlume/turns"), false);
 });
 
 test("ask_fabric runs as a Fabric turn and its result is spoken through the bridge", async (t) => {

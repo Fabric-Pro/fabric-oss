@@ -93,6 +93,18 @@ describe("Parlume realtime usage", () => {
 		expect(row.costUsd).toBeCloseTo(expected, 10);
 	});
 
+	it("records a session on the organization's Azure AI Foundry resource against Azure", async () => {
+		const response = await POST(usage({ provider: "AZURE_AI_FOUNDRY" }));
+
+		expect(response.status).toBe(200);
+		expect(mocks.logUsage.mock.calls[0]?.[0]).toEqual(
+			expect.objectContaining({
+				provider: "AZURE_AI_FOUNDRY",
+				providerModelId: "gpt-realtime-2.1",
+			}),
+		);
+	});
+
 	it("rejects a caller without the service token", async () => {
 		const response = await POST(usage({}, "wrong"));
 		expect(response.status).toBe(401);

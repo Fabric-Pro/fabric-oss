@@ -13,6 +13,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		sessionCreate: vi.fn(),
 		sessionUpdate: vi.fn(),
 		sessionUpdateMany: vi.fn(),
+		linkedFindFirst: vi.fn(),
 		isFeatureEnabled: vi.fn(),
 		resolveVoiceKey: vi.fn(),
 		speechModel: vi.fn(),
@@ -24,6 +25,9 @@ const { handlers, mocks } = vi.hoisted(() => {
 		finalize: vi.fn(),
 		recordAudit: vi.fn(),
 		contextFindMany: vi.fn(),
+		azure: vi.fn(),
+		attendee: vi.fn(),
+		membership: vi.fn(),
 	};
 	return { handlers, mocks };
 });
@@ -51,15 +55,20 @@ vi.mock("@repo/database", () => ({
 		projectContext: {
 			findMany: (...args: unknown[]) => mocks.contextFindMany(...args),
 		},
+		projectLinkedMeeting: {
+			findFirst: (...args: unknown[]) => mocks.linkedFindFirst(...args),
+		},
 	},
 	isFeatureEnabled: (...args: unknown[]) => mocks.isFeatureEnabled(...args),
+	getOrganizationMembership: (...args: unknown[]) =>
+		mocks.membership(...args),
 	getBuiltInToolConfig: (connections: Record<string, unknown>, key: string) =>
 		connections[key] ?? null,
 }));
 
 vi.mock("@repo/ai", () => ({
-	AUDIO_PROVIDER_REQUIRED: { parlumeVoice: "parlume voice refused" },
 	getAISpeechModel: (...args: unknown[]) => mocks.speechModel(...args),
+	resolveAzureOpenAiResource: (...args: unknown[]) => mocks.azure(...args),
 	resolveOpenAiApiKey: (...args: unknown[]) => mocks.resolveVoiceKey(...args),
 }));
 
@@ -67,12 +76,18 @@ vi.mock("../../../../../lib/audit", () => ({
 	recordAuditFromRequest: (...args: unknown[]) => mocks.recordAudit(...args),
 }));
 
-vi.mock("../../../lib/parlume-attendee", () => ({
+vi.mock("../../../lib/parlume-attendee", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../../../lib/parlume-attendee")>()),
 	armParlumeMeetingBridge: (...args: unknown[]) => mocks.armBridge(...args),
 	getParlumeBridgeSettings: () => mocks.getSettings(),
 	isTeamsMeetingUrl: (...args: unknown[]) => mocks.isTeamsMeetingUrl(...args),
 	startParlumeMeetingBot: (...args: unknown[]) => mocks.startBot(...args),
 	leaveParlumeMeetingBot: (...args: unknown[]) => mocks.leaveBot(...args),
+}));
+
+vi.mock("../../../lib/parlume-provider-settings", () => ({
+	resolveParlumeAttendeeSettings: (...args: unknown[]) =>
+		mocks.attendee(...args),
 }));
 
 vi.mock("../../../lib/parlume-finalization", () => ({
@@ -103,6 +118,10 @@ vi.mock("../../../../../orpc/procedures", () => {
 });
 
 await import("../sessions");
+const { PARLUME_VOICE_REQUIRED } = await import(
+	"../../../lib/parlume-readiness"
+);
+const { ParlumeProviderError } = await import("../../../lib/parlume-attendee");
 
 const context = {
 	user: { id: "user-1", email: "dev@example.com", name: "Dev" },
@@ -132,16 +151,26 @@ const session = {
 	updatedAt: new Date(),
 };
 
+const attendee = {
+	apiKey: "org-key",
+	baseUrl: "https://attendee.example.com",
+	teamsLoginMode: null,
+	source: "organization",
+};
+
 beforeEach(() => {
 	vi.resetAllMocks();
 	mocks.contextFindMany.mockResolvedValue([]);
+	mocks.linkedFindFirst.mockResolvedValue(null);
 	mocks.sessionCount.mockResolvedValue(0);
 	mocks.projectFindFirst.mockResolvedValue(project);
 	mocks.isFeatureEnabled.mockResolvedValue(true);
 	mocks.resolveVoiceKey.mockResolvedValue("test-voice-key");
 	mocks.speechModel.mockResolvedValue(null);
+	mocks.azure.mockResolvedValue(null);
+	mocks.attendee.mockResolvedValue(attendee);
+	mocks.membership.mockResolvedValue({ role: "owner" });
 	mocks.getSettings.mockReturnValue({
-		apiKey: "test-key",
 		bridgeUrl: "wss://bridge.example.com/live",
 		callbackUrl: "https://fabric.example.com/api/internal/parlume/callback",
 		serviceSecret: "service-secret",
@@ -184,6 +213,67 @@ describe("Parlume session procedures", () => {
 		})) as { operatorReady: boolean };
 
 		expect(result.operatorReady).toBe(false);
+	});
+
+	it("names each missing setup item and whether the viewer can fix it", async () => {
+		mocks.resolveVoiceKey.mockResolvedValue(null);
+		mocks.attendee.mockResolvedValue(null);
+		mocks.getSettings.mockReturnValue(null);
+		mocks.membership.mockResolvedValue({ role: "member" });
+
+		const result = (await handlers.listAgents({
+			input: { projectId: "project-1" },
+			context,
+		})) as { operatorReady: boolean; readiness: unknown };
+
+		expect(result.operatorReady).toBe(false);
+		expect(result.readiness).toEqual({
+			meetingBot: { ready: false, source: null },
+			voice: { ready: false, engine: null },
+			platform: { ready: false },
+			canConfigure: false,
+		});
+		expect(JSON.stringify(result)).not.toContain("org-key");
+	});
+
+	it("reads an unreadable meeting bot setting as missing instead of failing the page", async () => {
+		mocks.attendee.mockRejectedValue(
+			new Error(
+				"PARLUME_ATTENDEE_TEAMS_LOGIN must be always or only_if_required.",
+			),
+		);
+
+		const result = (await handlers.listAgents({
+			input: { projectId: "project-1" },
+			context,
+		})) as { readiness: { meetingBot: unknown } };
+
+		expect(result.readiness.meetingBot).toEqual({
+			ready: false,
+			source: null,
+		});
+	});
+
+	it("is ready with an Azure AI Foundry resource as the only voice provider", async () => {
+		mocks.resolveVoiceKey.mockResolvedValue(null);
+		mocks.azure.mockResolvedValue({
+			origin: "https://example-resource.openai.azure.com",
+			apiKey: "azure-key",
+		});
+
+		const result = (await handlers.listAgents({
+			input: { projectId: "project-1" },
+			context,
+		})) as { operatorReady: boolean; readiness: unknown };
+
+		expect(result.operatorReady).toBe(true);
+		expect(result.readiness).toEqual({
+			meetingBot: { ready: true, source: "organization" },
+			voice: { ready: true, engine: "realtime" },
+			platform: { ready: true },
+			canConfigure: true,
+		});
+		expect(mocks.speechModel).not.toHaveBeenCalled();
 	});
 
 	it("is ready with gateway speech even without a direct OpenAI key", async () => {
@@ -618,10 +708,160 @@ describe("Parlume session procedures", () => {
 			}),
 		).rejects.toMatchObject({
 			code: "CONFLICT",
-			message: "parlume voice refused",
+			message: PARLUME_VOICE_REQUIRED,
 		});
 		expect(mocks.sessionCreate).not.toHaveBeenCalled();
 		expect(mocks.startBot).not.toHaveBeenCalled();
+	});
+
+	it("invites with only an Azure AI Foundry resource for voice", async () => {
+		mocks.resolveVoiceKey.mockResolvedValue("");
+		mocks.azure.mockResolvedValue({
+			origin: "https://example-resource.openai.azure.com",
+			apiKey: "azure-key",
+		});
+
+		await handlers.start({
+			input: {
+				projectId: "project-1",
+				agentKind: "FABRIC_AGENT",
+				meetingUrl: "https://teams.microsoft.com/l/meetup-join/example",
+			},
+			context,
+		});
+
+		expect(mocks.startBot).toHaveBeenCalled();
+	});
+
+	it("refuses an invitation when the organization has no meeting bot", async () => {
+		mocks.attendee.mockResolvedValue(null);
+
+		await expect(
+			handlers.start({
+				input: {
+					projectId: "project-1",
+					agentKind: "FABRIC_AGENT",
+					meetingUrl:
+						"https://teams.microsoft.com/l/meetup-join/example",
+				},
+				context,
+			}),
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			message: expect.stringContaining("Settings → Meeting assistant"),
+		});
+		expect(mocks.attendee).toHaveBeenCalledWith("org-1");
+		expect(mocks.sessionCreate).not.toHaveBeenCalled();
+	});
+
+	it("refuses an invitation without leaking settings it could not read", async () => {
+		mocks.attendee.mockRejectedValue(new Error("secret-bearing detail"));
+
+		const failure = handlers.start({
+			input: {
+				projectId: "project-1",
+				agentKind: "FABRIC_AGENT",
+				meetingUrl: "https://teams.microsoft.com/l/meetup-join/example",
+			},
+			context,
+		});
+
+		await expect(failure).rejects.toMatchObject({ code: "CONFLICT" });
+		await expect(failure).rejects.not.toMatchObject({
+			message: expect.stringContaining("secret-bearing"),
+		});
+		expect(mocks.sessionCreate).not.toHaveBeenCalled();
+	});
+
+	it("starts the bot with the organization's resolved Attendee settings", async () => {
+		await handlers.start({
+			input: {
+				projectId: "project-1",
+				agentKind: "FABRIC_AGENT",
+				meetingUrl: "https://teams.microsoft.com/l/meetup-join/example",
+			},
+			context,
+		});
+
+		expect(mocks.startBot).toHaveBeenCalledWith(
+			expect.objectContaining({
+				attendee,
+				settings: expect.objectContaining({
+					bridgeUrl: "wss://bridge.example.com/live",
+				}),
+			}),
+		);
+	});
+
+	it("tells the inviter Attendee's own reason for refusing the bot", async () => {
+		mocks.startBot.mockRejectedValue(
+			new ParlumeProviderError(400, "meeting_url is not a valid URL"),
+		);
+
+		await expect(
+			handlers.start({
+				input: {
+					projectId: "project-1",
+					agentKind: "FABRIC_AGENT",
+					meetingUrl:
+						"https://teams.microsoft.com/l/meetup-join/example",
+				},
+				context,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_GATEWAY",
+			message:
+				"Attendee refused the invitation (HTTP 400): meeting_url is not a valid URL",
+		});
+		expect(mocks.sessionUpdateMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					status: "FAILED",
+					endReason: "START_FAILED",
+					lastError:
+						"Attendee refused the invitation (HTTP 400): meeting_url is not a valid URL",
+				}),
+			}),
+		);
+	});
+
+	it("points to the settings page when Attendee rejects the key", async () => {
+		mocks.startBot.mockRejectedValue(new ParlumeProviderError(401, null));
+
+		await expect(
+			handlers.start({
+				input: {
+					projectId: "project-1",
+					agentKind: "FABRIC_AGENT",
+					meetingUrl:
+						"https://teams.microsoft.com/l/meetup-join/example",
+				},
+				context,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_GATEWAY",
+			message:
+				"Attendee rejected the meeting bot's API key. Check it in Settings → Meeting assistant.",
+		});
+	});
+
+	it("keeps an unexpected start failure generic", async () => {
+		mocks.startBot.mockRejectedValue(new Error("internal host detail"));
+
+		await expect(
+			handlers.start({
+				input: {
+					projectId: "project-1",
+					agentKind: "FABRIC_AGENT",
+					meetingUrl:
+						"https://teams.microsoft.com/l/meetup-join/example",
+				},
+				context,
+			}),
+		).rejects.toMatchObject({
+			code: "INTERNAL_SERVER_ERROR",
+			message: "Parlume could not join the meeting.",
+		});
 	});
 
 	it("lists the built-in project Fabric Agent before custom agents", async () => {
@@ -670,6 +910,92 @@ describe("Parlume session procedures", () => {
 					agentInstanceVersionId: null,
 					agentInstanceVersion: null,
 				}),
+			}),
+		);
+	});
+
+	it("records the linked series a manual invitation's meeting belongs to", async () => {
+		mocks.linkedFindFirst.mockResolvedValue({ id: "lm-1" });
+		mocks.sessionFindFirst.mockResolvedValue(null);
+
+		await handlers.start({
+			input: {
+				projectId: "project-1",
+				agentKind: "FABRIC_AGENT",
+				meetingUrl:
+					" https://teams.microsoft.com/l/meetup-join/example ",
+			},
+			context,
+		});
+
+		expect(mocks.linkedFindFirst).toHaveBeenCalledWith({
+			where: {
+				projectId: "project-1",
+				deactivatedAt: null,
+				joinUrl: {
+					equals: "https://teams.microsoft.com/l/meetup-join/example",
+					mode: "insensitive",
+				},
+			},
+			select: { id: true },
+		});
+		expect(mocks.sessionFindFirst).toHaveBeenCalledWith({
+			where: {
+				linkedMeetingId: "lm-1",
+				status: { in: ["PENDING", "JOINING", "ACTIVE", "LEAVING"] },
+			},
+			select: { id: true, status: true },
+		});
+		expect(mocks.sessionCreate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					trigger: "MANUAL",
+					linkedMeetingId: "lm-1",
+					occurrenceStart: null,
+				}),
+			}),
+		);
+	});
+
+	it("refuses a second bot while one is in the linked series' meeting", async () => {
+		mocks.linkedFindFirst.mockResolvedValue({ id: "lm-1" });
+		mocks.sessionFindFirst.mockResolvedValue({
+			id: "session-0",
+			status: "JOINING",
+		});
+
+		await expect(
+			handlers.start({
+				input: {
+					projectId: "project-1",
+					agentKind: "FABRIC_AGENT",
+					meetingUrl:
+						"https://teams.microsoft.com/l/meetup-join/example",
+				},
+				context,
+			}),
+		).rejects.toMatchObject({
+			code: "CONFLICT",
+			message: "Parlume is already in this meeting.",
+		});
+		expect(mocks.sessionCreate).not.toHaveBeenCalled();
+		expect(mocks.startBot).not.toHaveBeenCalled();
+	});
+
+	it("invites to a meeting that is no linked series without a series check", async () => {
+		await handlers.start({
+			input: {
+				projectId: "project-1",
+				agentKind: "FABRIC_AGENT",
+				meetingUrl: "https://teams.microsoft.com/l/meetup-join/example",
+			},
+			context,
+		});
+
+		expect(mocks.sessionFindFirst).not.toHaveBeenCalled();
+		expect(mocks.sessionCreate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({ linkedMeetingId: null }),
 			}),
 		);
 	});

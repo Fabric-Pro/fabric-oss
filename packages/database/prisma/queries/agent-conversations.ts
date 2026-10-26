@@ -169,6 +169,7 @@ export async function withConversationTurnResults<
 			terminalReason: true,
 			createdAt: true,
 			limitSignalSummary: true,
+			budgetStop: true,
 		},
 	});
 	return {

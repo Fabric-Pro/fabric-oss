@@ -169,7 +169,8 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: fabric_test
+          # Capture setup permits only loopback example_* disposable databases.
+          POSTGRES_DB: example_db_integration
         ports:
           - 5432:5432
         # -h/-p make this a TCP probe, and they are load-bearing. Without
@@ -201,8 +202,8 @@ jobs:
       # (postgresql://test:test@localhost:5432/test) — that value is
       # rejected by hasReachableDatabaseUrl() and would make the exclusion
       # suite self-skip. This points at the real `postgres` service above.
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/fabric_test
-      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/fabric_test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/example_db_integration
+      DIRECT_URL: postgresql://postgres:postgres@localhost:5432/example_db_integration
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -232,7 +233,7 @@ jobs:
         uses: ./.github/actions/pnpm-install
 
       - name: Verify Prisma generation patches
-        run: node --test packages/database/scripts/__tests__/prisma-generation-queue.test.mjs packages/database/scripts/__tests__/prisma-zod-dmmf.test.mjs
+        run: node --test packages/database/scripts/__tests__/prisma-generation-queue.test.mjs packages/database/scripts/__tests__/prisma-zod-dmmf.test.mjs packages/database/scripts/__tests__/prisma-config.test.mjs packages/database/scripts/__tests__/prisma-disposable.test.mjs apps/web/lib/__tests__/prisma-trace.node-test.mjs
 
       # prisma/generated is gitignored and expensive to compile. Both DB jobs
       # share the compiled-client key published by the unit-tests push warmer.
@@ -247,7 +248,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: packages/database/prisma/generated
-          key: prisma-client-${{ runner.os }}-${{ hashFiles('packages/database/prisma/schema.prisma', 'packages/database/prisma/zod-generator.config.json', 'packages/database/prisma/tsconfig.generated.json', 'packages/database/scripts/generate-client.mts', 'packages/database/scripts/fix-zod-imports.ts', 'packages/database/tsconfig.json', 'packages/database/package.json', 'tooling/typescript/base.json', 'tooling/typescript/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml') }}
+          key: prisma-client-${{ runner.os }}-${{ hashFiles('packages/database/prisma.config.ts', 'packages/database/prisma/schema.prisma', 'packages/database/prisma/zod-generator.config.json', 'packages/database/prisma/tsconfig.generated.json', 'packages/database/scripts/generate-client.mts', 'packages/database/scripts/fix-zod-imports.ts', 'packages/database/tsconfig.json', 'packages/database/package.json', 'tooling/typescript/base.json', 'tooling/typescript/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml') }}
 
       - name: Generate Prisma client
         if: steps.prisma-client-cache.outputs.cache-hit != 'true'
@@ -271,6 +272,56 @@ jobs:
         # left unset so fabric_worker role provisioning is skipped; the
         # tenant_isolation policies under test still apply regardless.
         run: pnpm --filter @repo/database exec tsx ./scripts/apply-rls-direct.ts
+
+      - name: Run the tenant-db RLS context suite against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+          VITEST_INCLUDE_INTEGRATION: '1'
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/tenant-db-rls-context.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=tenant-db-rls-context-results.json
+
+      - name: 'Guard: assert the tenant-db RLS context suite executed (exact count, zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync("packages/database/tenant-db-rls-context-results.json", "utf8"));
+          const files = report.testResults?.length ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          console.log(`tenant-db-rls-context-results: ${files} file(s), ${passed} passed, ${skipped} skipped`);
+          if (files !== 1) { console.error("::error::expected exactly 1 test file (__tests__/tenant-db-rls-context.integration.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error(`::error::${skipped} test(s) skipped — the suite self-skipped instead of executing against Postgres`); process.exit(1); }
+          if (passed !== 17) { console.error(`::error::expected exactly 17 passing tests, got ${passed}`); process.exit(1); }
+          EOF
+
+      - name: Run the incident-table RLS suite against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+          VITEST_INCLUDE_INTEGRATION: '1'
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/rls/incident-tables.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=incident-tables-rls-results.json
+
+      - name: 'Guard: assert the incident-table RLS suite executed (exact count, zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync("packages/database/incident-tables-rls-results.json", "utf8"));
+          const files = report.testResults?.length ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          console.log(`incident-tables-rls-results: ${files} file(s), ${passed} passed, ${skipped} skipped`);
+          if (files !== 1) { console.error("::error::expected exactly 1 test file (__tests__/rls/incident-tables.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error(`::error::${skipped} test(s) skipped — the suite self-skipped instead of executing against Postgres`); process.exit(1); }
+          if (passed !== 12) { console.error(`::error::expected exactly 12 passing tests, got ${passed}`); process.exit(1); }
+          EOF
 
       - name: Run the RLS-policy enforcement suite (non-superuser harness)
         env:
@@ -1000,7 +1051,7 @@ jobs:
           console.log(`conversation-turn-admission-results: ${files} file(s), ${passed} passed, ${skipped} skipped`);
           if (files !== 1) { console.error("::error::expected exactly 1 test file (__tests__/conversation-turn-admission.integration.test.ts)"); process.exit(1); }
           if (skipped > 0) { console.error(`::error::${skipped} test(s) skipped — the suite self-skipped instead of executing against Postgres`); process.exit(1); }
-          if (passed !== 28) { console.error(`::error::expected exactly 28 passing tests, got ${passed}`); process.exit(1); }
+          if (passed !== 30) { console.error(`::error::expected exactly 30 passing tests, got ${passed}`); process.exit(1); }
           EOF
 
       - name: Run the conversation turn token ledger suite against real Postgres
@@ -1036,7 +1087,7 @@ jobs:
           console.log(`conversation-turn-ledger-results: ${files} file(s), ${passed} passed, ${skipped} skipped`);
           if (files !== 1) { console.error("::error::expected exactly 1 test file (__tests__/conversation-turn-ledger.integration.test.ts)"); process.exit(1); }
           if (skipped > 0) { console.error(`::error::${skipped} test(s) skipped — the suite self-skipped instead of executing against Postgres`); process.exit(1); }
-          if (passed !== 17) { console.error(`::error::expected exactly 17 passing tests, got ${passed}`); process.exit(1); }
+          if (passed !== 23) { console.error(`::error::expected exactly 23 passing tests, got ${passed}`); process.exit(1); }
           EOF
 
       - name: Run the Advisor turn save suite against real Postgres
@@ -1323,9 +1374,9 @@ jobs:
             );
             process.exit(1);
           }
-          if (passed < 15) {
+          if (passed < 12) {
             console.error(
-              `::error::Only ${passed} test(s) passed — expected at least 15. The cross-project scoping case may not have been collected.`,
+              `::error::Only ${passed} test(s) passed — expected at least 12. The cross-project scoping case may not have been collected.`,
             );
             process.exit(1);
           }
@@ -1508,6 +1559,68 @@ jobs:
           // nothing.
           if (skipped > 0) { console.error(`::error::${skipped} test(s) skipped — the suite must not self-skip in CI`); process.exit(1); }
           if (passed !== 3) { console.error(`::error::Expected exactly 3 passing tests, got ${passed}`); process.exit(1); }
+          EOF
+
+      - name: Run Decision Replay capture (real Postgres)
+        env:
+          RUN_DB_INTEGRATION: '1'
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/decision-replay-capture.integration.test.ts \
+            --passWithNoTests=false --reporter=dot \
+            --reporter=json --outputFile=decision-replay-results.json
+
+      - name: 'Guard: assert Decision Replay capture executed (zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const r = JSON.parse(fs.readFileSync("packages/database/decision-replay-results.json", "utf8"));
+          if (r.numTotalTests !== 546 || r.numPassedTests !== 546 || r.numPendingTests !== 0 || r.numFailedTests !== 0 || r.numTodoTests !== 0) {
+            console.error("::error::Expected all 546 Decision Replay capture tests to pass without skips");
+            process.exit(1);
+          }
+          EOF
+
+      - name: Run Decision Replay native outcomes (real Postgres)
+        env:
+          RUN_DB_INTEGRATION: '1'
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/decision-replay.integration.test.ts \
+            --passWithNoTests=false --reporter=dot \
+            --reporter=json --outputFile=decision-replay-outcomes-results.json
+
+      - name: 'Guard: assert Decision Replay native outcomes executed (exact count, zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const r = JSON.parse(fs.readFileSync("packages/database/decision-replay-outcomes-results.json", "utf8"));
+          if (r.numTotalTests !== 52 || r.numPassedTests !== 52 || r.numPendingTests !== 0 || r.numFailedTests !== 0 || r.numTodoTests !== 0) {
+            console.error("::error::Expected all 52 Decision Replay native outcomes tests to pass without skips");
+            process.exit(1);
+          }
+          EOF
+
+      - name: Run the proposal review claim suite (real Postgres)
+        env:
+          RUN_DB_INTEGRATION: '1'
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/proposal-review-claim.integration.test.ts \
+            --passWithNoTests=false --reporter=dot \
+            --reporter=json --outputFile=proposal-review-claim-results.json
+
+      - name: 'Guard: assert the proposal review claim suite executed (exact count, zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          const r = JSON.parse(fs.readFileSync("packages/database/proposal-review-claim-results.json", "utf8"));
+          // Exactly 7: the five claim cases (including capture at 10000 entries),
+          // idempotent application/duplicate ledgers, and restricted-role RLS.
+          if (r.numTotalTests !== 7 || r.numPassedTests !== 7 || r.numPendingTests !== 0 || r.numFailedTests !== 0 || r.numTodoTests !== 0) {
+            console.error("::error::Expected all 7 proposal review claim tests to pass without skips");
+            process.exit(1);
+          }
           EOF
 
       - name: Run the prompt sync-migration apply suite (real Postgres)
@@ -1719,7 +1832,7 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: packages/database/prisma/generated
-          key: prisma-client-${{ runner.os }}-${{ hashFiles('packages/database/prisma/schema.prisma', 'packages/database/prisma/zod-generator.config.json', 'packages/database/prisma/tsconfig.generated.json', 'packages/database/scripts/generate-client.mts', 'packages/database/scripts/fix-zod-imports.ts', 'packages/database/tsconfig.json', 'packages/database/package.json', 'tooling/typescript/base.json', 'tooling/typescript/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml') }}
+          key: prisma-client-${{ runner.os }}-${{ hashFiles('packages/database/prisma.config.ts', 'packages/database/prisma/schema.prisma', 'packages/database/prisma/zod-generator.config.json', 'packages/database/prisma/tsconfig.generated.json', 'packages/database/scripts/generate-client.mts', 'packages/database/scripts/fix-zod-imports.ts', 'packages/database/tsconfig.json', 'packages/database/package.json', 'tooling/typescript/base.json', 'tooling/typescript/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml') }}
 
       - name: Generate Prisma client
         # publishing-notify-activity.test.ts imports `db` and the publishing

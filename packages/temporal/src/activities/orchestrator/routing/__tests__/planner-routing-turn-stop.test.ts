@@ -210,10 +210,11 @@ describe("analyzeAndRoute in a Planner turn", () => {
 		const calls = vi.mocked(getAiModel).mock.calls;
 		expect(calls).toHaveLength(2);
 		expect(calls[0][5]).toEqual({
+			callPurpose: "routing",
 			conversationId: "conv-1",
 			frameId: "frame-1",
 		});
-		expect(calls[1][5]).toBeUndefined();
+		expect(calls[1][5]).toEqual({ callPurpose: "routing" });
 	});
 
 	it("rethrows a stop from the agent-capability lookup instead of routing around it", async () => {
@@ -328,10 +329,11 @@ describe("createTaskPlan in a Planner turn", () => {
 		const calls = vi.mocked(getAiModel).mock.calls;
 		expect(calls).toHaveLength(2);
 		expect(calls[0][5]).toEqual({
+			callPurpose: "planning",
 			conversationId: "conv-1",
 			frameId: "frame-1",
 		});
-		expect(calls[1][5]).toBeUndefined();
+		expect(calls[1][5]).toEqual({ callPurpose: "planning" });
 	});
 
 	it("leaves on a refused planning request rather than planning a fallback step", async () => {

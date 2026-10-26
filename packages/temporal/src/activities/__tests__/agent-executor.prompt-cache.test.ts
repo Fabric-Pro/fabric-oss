@@ -278,6 +278,7 @@ describe("executeAgentTurn without tools", () => {
 			const context = model
 				? mocks.getAIModelWithMetadata.mock.calls[0][1]
 				: mocks.getAiModelWithSelection.mock.calls[0][5];
+			expect(context.callPurpose).toBeUndefined();
 			expect(context).toMatchObject({
 				workflowExecutionId: "execution-1",
 				promptVersionId: "prompt-1",

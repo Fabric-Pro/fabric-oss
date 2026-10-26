@@ -12,7 +12,6 @@ type ProjectDocumentType =
 	| "PROPOSAL"
 	| "ARCHITECTURE"
 	| "TECHNICAL_SPEC"
-	| "USER_STORY"
 	| "API_SPEC";
 
 export interface DocumentRecommendation {
@@ -162,39 +161,6 @@ DO NOT include: Executive Summary, Product Vision, Timeline & Milestones, Append
 		reason: "Detailed technical implementation guide for development teams",
 		promptTemplate: (project) =>
 			`Create a technical specification for ${project.name} covering implementation details, algorithms, data structures, and technical decisions.`,
-	},
-	USER_STORY: {
-		title: "Features",
-		description:
-			"Actionable features with acceptance criteria (Given/When/Then)",
-		icon: "👤",
-		triggers: [
-			"frontend",
-			"mobile",
-			"web",
-			"ui",
-			"ux",
-			"user",
-			"interface",
-		],
-		priority: 5,
-		reason: "Generates actionable features with clear acceptance criteria for development",
-		// NOTE: Do NOT include project.features here - when RAG contexts exist, they define the scope
-		// The actual generation activity handles feature injection conditionally
-		promptTemplate: (project) =>
-			`Generate 15-25 features for ${project.name} based on the project context and any uploaded reference documents.
-
-Use Epic → Feature → Feature Item hierarchy:
-- Start with: # EPIC-001: [Epic Title]
-- Then: ## FEAT-001: [Feature Title]
-- Then: ### F-001: [Feature Item Title]
-
-Each feature item must have:
-- Description (As a/I want/So that)
-- Acceptance Criteria (Given/When/Then + AND)
-- Notes/Links and Release Notes sections
-
-Focus on ACTUAL APP FEATURES only. No meta-documentation.`,
 	},
 	PROPOSAL: {
 		title: "Project Proposal",

@@ -6,6 +6,7 @@
  */
 
 import { generateText } from "@repo/ai";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import type {
 	ResearchResult,
 	SynthesizeContextInput,
@@ -32,7 +33,14 @@ export async function synthesizeContext(
 		previousStepCount: input.previousStepResults.length,
 	});
 
-	const model = await getAiModel(input.userId, input.organizationId);
+	const model = await getAiModel(
+		input.userId,
+		input.organizationId,
+		false,
+		undefined,
+		undefined,
+		{ callPurpose: AI_CALL_PURPOSES.contextSynthesis },
+	);
 
 	// Format research for synthesis
 	const researchSummary = formatResearchForSynthesis(input.researchResults);

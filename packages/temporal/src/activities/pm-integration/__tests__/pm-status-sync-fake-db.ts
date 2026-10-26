@@ -515,6 +515,8 @@ export function fakeDatabaseModule(): Record<string, unknown> {
 						pmAutoHidden: r.pmAutoHidden,
 						pmTicketTerminal: r.pmTicketTerminal,
 						pmTicketTerminalStatus: r.pmTicketTerminalStatus,
+						pmTicketStatus: r.pmTicketStatus,
+						pmTicketStatusExternalId: r.pmTicketStatusExternalId,
 					}
 				: null;
 		},

@@ -12,12 +12,14 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { PROPOSAL_REVIEW_MAX_CHANGES } from "../../backlog/proposal-review";
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks
 // ---------------------------------------------------------------------------
 
-const { handlers, mocks } = vi.hoisted(() => {
+const { handlers, mocks, schemas } = vi.hoisted(() => {
+	const schemas: Record<string, import("zod").ZodType> = {};
 	const handlers: Record<string, (...args: unknown[]) => unknown> = {};
 	const mocks = {
 		// DB queries
@@ -28,6 +30,8 @@ const { handlers, mocks } = vi.hoisted(() => {
 		markPendingProposalApplied: vi.fn(),
 		markPendingProposalFailed: vi.fn(),
 		appendAppliedChangeIndexes: vi.fn(),
+		recordProposalApplication: vi.fn(),
+		recordProposalDuplicateResolution: vi.fn(),
 		markProposalApplyDispatched: vi.fn(),
 		setPendingProposalAttachmentResult: vi.fn(),
 		markPendingProposalRejected: vi.fn(),
@@ -47,18 +51,20 @@ const { handlers, mocks } = vi.hoisted(() => {
 		loggerError: vi.fn(),
 		loggerDebug: vi.fn(),
 	};
-	return { handlers, mocks };
+	return { handlers, mocks, schemas };
 });
 
 vi.mock("@repo/database", () => ({
 	getAppliedChangeIndexes: vi.fn(async () => new Set<number>()),
-	claimPendingProposalForApply: mocks.claim,
+	claimPendingProposalWithReview: mocks.claim,
 
 	getPendingBacklogProposal: mocks.getPendingBacklogProposal,
 	markPendingProposalApproved: mocks.markPendingProposalApproved,
 	markPendingProposalApplied: mocks.markPendingProposalApplied,
 	markPendingProposalFailed: mocks.markPendingProposalFailed,
 	appendAppliedChangeIndexes: mocks.appendAppliedChangeIndexes,
+	recordProposalApplication: mocks.recordProposalApplication,
+	recordProposalDuplicateResolution: mocks.recordProposalDuplicateResolution,
 	markProposalApplyDispatched: mocks.markProposalApplyDispatched,
 	setPendingProposalAttachmentResult:
 		mocks.setPendingProposalAttachmentResult,
@@ -144,7 +150,10 @@ vi.mock("../../../../../orpc/procedures", () => {
 		Object.assign(chainable, {
 			use: () => chainable,
 			route: () => chainable,
-			input: () => chainable,
+			input: (schema: import("zod").ZodType) => {
+				schemas[handlerSlot] = schema;
+				return chainable;
+			},
 			output: () => chainable,
 			handler: (fn: (...args: unknown[]) => unknown) => {
 				handlers[handlerSlot] = fn;
@@ -296,6 +305,22 @@ describe("approvePendingProposal (Teams) — PM sync auto-enqueue on CREATE", ()
 
 		expect(result.status).toBe("applied");
 		expect(result.createdStoryIds).toHaveLength(1);
+		expect(mocks.createStoryFromProposal).toHaveBeenCalledWith(
+			expect.objectContaining({
+				proposalApplicationKey: `proposal:${PROPOSAL_ID}:0`,
+			}),
+		);
+
+		expect(mocks.recordProposalApplication).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({
+				proposalId: PROPOSAL_ID,
+				changeIndex: 0,
+				action: "create",
+				createdEntityId: result.createdStoryIds[0],
+			}),
+			{ skipDuplicates: true },
+		);
 
 		// `createStoryFromProposal` got the per-row gate so future edits sync.
 		expect(mocks.createStoryFromProposal).toHaveBeenCalledTimes(1);
@@ -874,3 +899,215 @@ describe("approve dispatch clock", () => {
 		);
 	});
 });
+
+describe("stable review identity", () => {
+	it("uses the supplied index for an edited create to update override", async () => {
+		mocks.getPendingBacklogProposal.mockResolvedValue(
+			makeProposalRow({ changes: [CHANGE_BUG, CHANGE_BUG] }),
+		);
+		const edited = {
+			...CHANGE_BUG,
+			action: "update",
+			existingId: "example-story",
+			title: { to: "Edited title" },
+		};
+		await handlers.approve?.({
+			input: {
+				projectId: PROJECT_ID,
+				proposalId: PROPOSAL_ID,
+				organizationId: ORG_ID,
+				approvedChanges: [edited],
+				approvedChangeIndexes: [1],
+				syncToPM: false,
+			},
+			context: APPROVAL_CTX,
+		});
+		expect(mocks.workflowStart.mock.calls[0]?.[1].args[0]).toMatchObject({
+			approvedChanges: [edited],
+			approvedChangeIndexes: [1],
+		});
+		expect(mocks.claim.mock.calls[0]?.[0].entries).toMatchObject([
+			{ selected: false },
+			{ selected: true, change: edited },
+		]);
+	});
+	it.each([[2], [0, 0], []].map((indexes) => ({ indexes })))(
+		"rejects invalid indexes %j before effects",
+		async ({ indexes }) => {
+			mocks.getPendingBacklogProposal.mockResolvedValue(
+				makeProposalRow({ changes: [CHANGE_BUG, CHANGE_BUG] }),
+			);
+			await expect(
+				handlers.approve?.({
+					input: {
+						projectId: PROJECT_ID,
+						proposalId: PROPOSAL_ID,
+						organizationId: ORG_ID,
+						approvedChanges:
+							indexes.length === 2
+								? [CHANGE_BUG, CHANGE_BUG]
+								: [CHANGE_BUG],
+						approvedChangeIndexes: indexes,
+					},
+					context: APPROVAL_CTX,
+				}),
+			).rejects.toMatchObject({ code: "BAD_REQUEST" });
+			expect(mocks.claim).not.toHaveBeenCalled();
+			expect(mocks.createStoryFromProposal).not.toHaveBeenCalled();
+			expect(mocks.workflowStart).not.toHaveBeenCalled();
+		},
+	);
+});
+
+it("rejects an approved index above int32 as BAD_REQUEST at the input boundary", async () => {
+	const schema = schemas.approve;
+	const parsed = schema.safeParse({
+		projectId: PROJECT_ID,
+		proposalId: PROPOSAL_ID,
+		approvedChanges: [CHANGE_BUG],
+		approvedChangeIndexes: [2 ** 31 + 1],
+	});
+	expect(parsed.success).toBe(false);
+	const { call, os } = await import("@orpc/server");
+	const effect = vi.fn();
+	await expect(
+		call(os.input(schema).handler(effect), {
+			projectId: PROJECT_ID,
+			proposalId: PROPOSAL_ID,
+			approvedChanges: [CHANGE_BUG],
+			approvedChangeIndexes: [2 ** 31 + 1],
+		}),
+	).rejects.toMatchObject({ code: "BAD_REQUEST", status: 400 });
+	expect(effect).not.toHaveBeenCalled();
+	expect(mocks.createStoryFromProposal).not.toHaveBeenCalled();
+});
+
+it("approves a BACKLOG row through the Teams claim", async () => {
+	mocks.getPendingBacklogProposal.mockResolvedValue({
+		...makeProposalRow({ changes: [CHANGE_BUG] }),
+		status: "BACKLOG",
+	});
+	const result = (await handlers.approve?.({
+		input: {
+			projectId: PROJECT_ID,
+			proposalId: PROPOSAL_ID,
+			organizationId: ORG_ID,
+			approvedChanges: [CHANGE_BUG],
+			syncToPM: false,
+		},
+		context: APPROVAL_CTX,
+	})) as { status: string };
+	expect(result.status).toBe("applied");
+	expect(mocks.claim).toHaveBeenCalledWith(
+		expect.objectContaining({ admitBacklog: true }),
+	);
+});
+
+it("returns BAD_REQUEST 400 for more than the review cap of approved indexes", async () => {
+	const { call, os } = await import("@orpc/server");
+	const effect = vi.fn();
+	await expect(
+		call(os.input(schemas.approve).handler(effect), {
+			projectId: PROJECT_ID,
+			proposalId: PROPOSAL_ID,
+			approvedChanges: [CHANGE_BUG],
+			approvedChangeIndexes: Array.from(
+				{ length: PROPOSAL_REVIEW_MAX_CHANGES + 1 },
+				() => 0,
+			),
+		}),
+	).rejects.toMatchObject({ code: "BAD_REQUEST", status: 400 });
+	expect(effect).not.toHaveBeenCalled();
+});
+
+it("records a duplicate resolution without an application or PM sync", async () => {
+	const { buildBacklogDedupGuard } = await import("@repo/database");
+	vi.mocked(buildBacklogDedupGuard).mockResolvedValueOnce({
+		findCollision: () => ({
+			existingId: "example-existing",
+			existingIdentifier: "EX-1",
+		}),
+		recordCreated: () => {},
+	});
+	mocks.getPendingBacklogProposal.mockResolvedValueOnce(
+		makeProposalRow({ changes: [CHANGE_BUG] }),
+	);
+	await handlers.approve?.({
+		input: {
+			projectId: PROJECT_ID,
+			organizationId: ORG_ID,
+			proposalId: PROPOSAL_ID,
+			approvedChanges: [CHANGE_BUG],
+			syncToPM: true,
+		},
+		context: APPROVAL_CTX,
+	});
+	expect(mocks.recordProposalDuplicateResolution).toHaveBeenCalledWith(
+		expect.objectContaining({
+			proposalId: PROPOSAL_ID,
+			changeIndex: 0,
+			existingEntityId: "example-existing",
+		}),
+	);
+	expect(mocks.recordProposalApplication).not.toHaveBeenCalled();
+	expect(mocks.createStoryFromProposal).not.toHaveBeenCalled();
+	expect(mocks.enqueuePmSync).not.toHaveBeenCalled();
+	expect(mocks.appendAppliedChangeIndexes).toHaveBeenCalledWith(
+		PROPOSAL_ID,
+		[0],
+	);
+});
+
+it.each(["application", "duplicate"])(
+	"keeps the approval outcome when %s bookkeeping fails",
+	async (kind) => {
+		const failure = new Error("Example private change content");
+		mocks.getPendingBacklogProposal.mockResolvedValueOnce(
+			makeProposalRow({ changes: [CHANGE_BUG] }),
+		);
+		if (kind === "duplicate") {
+			const { buildBacklogDedupGuard } = await import("@repo/database");
+			vi.mocked(buildBacklogDedupGuard).mockResolvedValueOnce({
+				findCollision: () => ({
+					existingId: "example-existing",
+					existingIdentifier: "EX-1",
+				}),
+				recordCreated: () => {},
+			});
+			mocks.recordProposalDuplicateResolution.mockRejectedValueOnce(
+				failure,
+			);
+		} else {
+			mocks.recordProposalApplication.mockRejectedValueOnce(failure);
+		}
+		const result = (await handlers.approve?.({
+			input: {
+				projectId: PROJECT_ID,
+				organizationId: ORG_ID,
+				proposalId: PROPOSAL_ID,
+				approvedChanges: [CHANGE_BUG],
+				syncToPM: true,
+			},
+			context: APPROVAL_CTX,
+		})) as { status: string; createdStoryIds: string[] };
+		expect(result.status).toBe("applied");
+		expect(result.createdStoryIds).toHaveLength(
+			kind === "application" ? 1 : 0,
+		);
+		expect(mocks.markPendingProposalFailed).not.toHaveBeenCalled();
+		expect(mocks.appendAppliedChangeIndexes).toHaveBeenCalledWith(
+			PROPOSAL_ID,
+			[0],
+		);
+		expect(mocks.enqueuePmSync).toHaveBeenCalledTimes(
+			kind === "application" ? 1 : 0,
+		);
+		expect(mocks.loggerWarn).toHaveBeenCalledWith(
+			expect.stringContaining("record"),
+			{ proposalId: PROPOSAL_ID, changeIndex: 0 },
+		);
+		expect(JSON.stringify(mocks.loggerWarn.mock.calls)).not.toContain(
+			failure.message,
+		);
+	},
+);

@@ -3,8 +3,6 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { withContentCollections } from "@content-collections/next";
-// @ts-expect-error - PrismaPlugin is not typed
-import { PrismaPlugin } from "@prisma/nextjs-monorepo-workaround-plugin";
 import type { NextConfig } from "next";
 import nextIntlPlugin from "next-intl/plugin";
 import { cliManifestEnv } from "./lib/cli-manifest-env";
@@ -64,18 +62,18 @@ function assertSharpLibvipsTraceable(): void {
 assertSharpLibvipsTraceable();
 
 /**
- * Database providers this app cannot connect to. Prisma ships a WASM query
- * engine AND a WASM query compiler for every database it supports, and the file
- * tracer copies the whole `@prisma/client/runtime` directory into EVERY
- * serverless function. Measured on a real build of `/api/[[...rest]]`: 42.6 MB
+ * Database providers this app cannot connect to. Prisma ships fast and small
+ * WASM query compilers for its database providers.
+ * The file tracer can copy the whole `@prisma/client/runtime` directory into
+ * serverless functions. Measured on a real build of `/api/[[...rest]]`: 42.6 MB
  * of a 157 MB traced bundle was engines for databases this app has no
  * datasource for — more than a quarter of the function, repeated per function.
  *
  * Nothing can reach them at runtime. The datasource is `provider =
  * "postgresql"` and the generated client imports one compiler by literal name
- * (`@prisma/client/runtime/query_compiler_bg.postgresql.mjs`) — there is no
- * dynamic provider interpolation for the tracer to resolve conservatively, and
- * `query_engine_bg.*` is not referenced by the generated client at all.
+ * (`@prisma/client/runtime/query_compiler_fast_bg.postgresql.js`) — there is no
+ * dynamic provider interpolation for the tracer to resolve conservatively. The
+ * exclusions cover both fast and small compiler families for unused providers.
  */
 const PRISMA_UNUSED_DB_PROVIDERS = [
 	"cockroachdb",
@@ -104,7 +102,7 @@ const PNPM_STORE_DIR = path.resolve(__dirname, "../../node_modules/.pnpm");
  * artifacts rather than assumed.
  *
  * Prefers the generated client because that is what ships: its `activeProvider`
- * and its literal `query_*_bg.<provider>` imports are the real answer. Falls
+ * and its literal `query_*_bg.<provider>` imports identify the provider. Falls
  * back to the committed schema's `datasource` block when the client has not been
  * generated yet. Returns an empty set only when NEITHER source yields anything,
  * which the caller treats as a failure rather than a pass.
@@ -114,7 +112,7 @@ function resolvePrismaProviders(): Set<string> {
 	if (fs.existsSync(PRISMA_GENERATED_CLIENT)) {
 		const source = fs.readFileSync(PRISMA_GENERATED_CLIENT, "utf8");
 		for (const match of source.matchAll(
-			/query_(?:engine|compiler)_bg\.([a-z]+)\./g,
+			/query_(?:engine|compiler(?:_fast|_small)?)_bg\.([a-z]+)\./g,
 		)) {
 			providers.add(match[1]);
 		}
@@ -271,7 +269,7 @@ function assertPrismaExcludeGlobsMatchLayout(): void {
 			.some((file) =>
 				PRISMA_UNUSED_DB_PROVIDERS.some((provider) =>
 					new RegExp(
-						`^query_(engine|compiler)_bg\\.${provider}\\.`,
+						`^query_(engine|compiler(?:_fast|_small)?)_bg\\.${provider}\\.`,
 					).test(file),
 				),
 			),
@@ -279,7 +277,9 @@ function assertPrismaExcludeGlobsMatchLayout(): void {
 	const anyProviderEngines = runtimeDirs.some((dir) =>
 		fs
 			.readdirSync(dir)
-			.some((file) => /^query_(engine|compiler)_bg\./.test(file)),
+			.some((file) =>
+				/^query_(engine|compiler(?:_fast|_small)?)_bg\./.test(file),
+			),
 	);
 	if (!targeted && anyProviderEngines) {
 		throw new Error(
@@ -535,7 +535,7 @@ const nextConfig: NextConfig = {
 			"../../node_modules/.pnpm/@shikijs+engine-oniguruma@*/node_modules/@shikijs/engine-oniguruma/dist/wasm-inlined.mjs",
 		],
 		"/*": PRISMA_UNUSED_DB_PROVIDERS.flatMap((provider) =>
-			["query_engine_bg", "query_compiler_bg"].map(
+			["query_compiler_fast_bg", "query_compiler_small_bg"].map(
 				(family) =>
 					"../../node_modules/.pnpm/@prisma+client@*/node_modules/@prisma/client/runtime/" +
 					`${family}.${provider}.*`,
@@ -861,16 +861,12 @@ const nextConfig: NextConfig = {
 			},
 		];
 	},
-	webpack: (config, { webpack, isServer }) => {
+	webpack: (config, { webpack }) => {
 		config.plugins.push(
 			new webpack.IgnorePlugin({
 				resourceRegExp: /^pg-native$/,
 			}),
 		);
-
-		if (isServer) {
-			config.plugins.push(new PrismaPlugin());
-		}
 
 		return config;
 	},

@@ -165,8 +165,14 @@ describe("budget-exhausted synthesis wiring", () => {
 	);
 
 	it("compacts only behind its own patch marker, keeping the full history otherwise", () => {
+		expect(source).toContain(
+			'const compactSynthesis = patched("orch-synthesis-compacted-v1");',
+		);
+		expect(source).toContain(
+			'const keepSynthesisTurnMessages = patched("orch-keep-turn-synthesis-v1");',
+		);
 		expect(source).toMatch(
-			/const compactSynthesis = patched\("orch-synthesis-compacted-v1"\);\s*const synthesisHistory = compactSynthesis\s*\?\s*buildSynthesisHistory\(conversationHistory\)\s*:\s*conversationHistory;/,
+			/const synthesisHistory = compactSynthesis\s*\?\s*\(?keepSynthesisTurnMessages\s*\?\s*buildSynthesisHistory\(conversationHistory, true\)\s*:\s*buildSynthesisHistory\(conversationHistory\)\)?\s*:\s*conversationHistory;/,
 		);
 	});
 

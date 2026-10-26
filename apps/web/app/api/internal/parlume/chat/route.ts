@@ -1,8 +1,6 @@
-import {
-	getParlumeBridgeSettings,
-	sendParlumeMeetingChat,
-} from "@repo/api/modules/projects/lib/parlume-attendee";
+import { sendParlumeMeetingChat } from "@repo/api/modules/projects/lib/parlume-attendee";
 import { parlumeLog } from "@repo/api/modules/projects/lib/parlume-log";
+import { resolveParlumeAttendeeSettings } from "@repo/api/modules/projects/lib/parlume-provider-settings";
 import { db } from "@repo/database";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
@@ -38,7 +36,7 @@ export async function POST(request: NextRequest) {
 			providerBotId: parsed.data.botId,
 			status: "ACTIVE",
 		},
-		select: { id: true, providerBotId: true },
+		select: { id: true, providerBotId: true, organizationId: true },
 	});
 	if (!session?.providerBotId) {
 		return NextResponse.json(
@@ -46,13 +44,15 @@ export async function POST(request: NextRequest) {
 			{ status: 409 },
 		);
 	}
-	const settings = getParlumeBridgeSettings();
-	if (!settings) {
+	const attendee = await resolveParlumeAttendeeSettings(
+		session.organizationId,
+	);
+	if (!attendee) {
 		return NextResponse.json({ error: "Unavailable" }, { status: 503 });
 	}
 	try {
 		await sendParlumeMeetingChat({
-			settings,
+			attendee,
 			providerBotId: session.providerBotId,
 			message: parsed.data.message,
 		});

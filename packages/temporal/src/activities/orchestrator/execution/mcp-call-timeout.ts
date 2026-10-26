@@ -43,6 +43,10 @@ export function effectiveMcpToolTimeoutMs(
  * The loser of the race keeps running (an AI-SDK tool call has no cancellation
  * plumbed through here); the defensive `.catch` prevents a late rejection of
  * `work` from surfacing as an unhandled rejection after the timeout has won.
+ *
+ * An `onTimeout` that throws rejects the returned promise. Thrown from the
+ * timer callback itself, the error would be an uncaught exception, which the
+ * worker answers by exiting (`worker.ts`), and the race would never settle.
  */
 export async function runWithTimeout<T>(
 	work: Promise<T>,
@@ -54,8 +58,14 @@ export async function runWithTimeout<T>(
 	try {
 		return await Promise.race<T>([
 			work,
-			new Promise<T>((resolve) => {
-				timer = setTimeout(() => resolve(onTimeout()), timeoutMs);
+			new Promise<T>((resolve, reject) => {
+				timer = setTimeout(() => {
+					try {
+						resolve(onTimeout());
+					} catch (error) {
+						reject(error);
+					}
+				}, timeoutMs);
 			}),
 		]);
 	} finally {

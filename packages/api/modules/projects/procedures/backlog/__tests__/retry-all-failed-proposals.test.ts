@@ -19,6 +19,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		projectFindFirst: vi.fn(),
 		listFailedProposals: vi.fn(),
 		getPendingBacklogProposal: vi.fn(),
+		recordProposalDuplicateResolution: vi.fn(),
 		buildBacklogDedupGuard: vi.fn(),
 		inferDedupFamily: vi.fn(),
 		markPendingProposalApplied: vi.fn(),
@@ -26,12 +27,17 @@ const { handlers, mocks } = vi.hoisted(() => {
 		proposalUpdate: vi.fn(),
 		getTemporalClient: vi.fn(),
 		workflowStart: vi.fn(),
-		returnFailedRecommendationToReview: vi.fn(),
+		returnFailedProposalToReview: vi.fn(),
+		getPendingProposalReview: vi.fn(),
+		getAppliedChangeIndexes: vi.fn(),
 	};
 	return { handlers, mocks };
 });
 
 vi.mock("@repo/database", () => ({
+	getPendingProposalReview: mocks.getPendingProposalReview,
+	recordProposalDuplicateResolution: mocks.recordProposalDuplicateResolution,
+	getAppliedChangeIndexes: mocks.getAppliedChangeIndexes,
 	db: {
 		project: { findFirst: mocks.projectFindFirst },
 		pendingBacklogProposal: {
@@ -45,8 +51,7 @@ vi.mock("@repo/database", () => ({
 	inferDedupFamily: mocks.inferDedupFamily,
 	markPendingProposalApplied: mocks.markPendingProposalApplied,
 	markProposalApplyDispatched: mocks.markProposalApplyDispatched,
-	returnFailedRecommendationToReview:
-		mocks.returnFailedRecommendationToReview,
+	returnFailedProposalToReview: mocks.returnFailedProposalToReview,
 }));
 
 vi.mock("@repo/temporal", () => ({
@@ -139,6 +144,8 @@ beforeEach(() => {
 		projectManagementContainerName: null,
 	});
 	mocks.proposalUpdate.mockResolvedValue({ count: 1 });
+	mocks.getAppliedChangeIndexes.mockResolvedValue(new Set());
+	mocks.returnFailedProposalToReview.mockResolvedValue(true);
 	mocks.markProposalApplyDispatched.mockResolvedValue(1);
 	mocks.markPendingProposalApplied.mockResolvedValue(undefined);
 	mocks.inferDedupFamily.mockReturnValue("FEATURE");
@@ -272,6 +279,9 @@ describe("retryAllFailedProposalsProcedure — mixed-result aggregation", () => 
 		).toBe("error");
 		// retriedCount excludes the error row.
 		expect(result.retriedCount).toBe(2);
+		expect(mocks.recordProposalDuplicateResolution).toHaveBeenCalledWith(
+			expect.objectContaining({ existingEntityId: "story-existing" }),
+		);
 	});
 });
 
@@ -300,7 +310,22 @@ describe("retryAllFailedProposalsProcedure — forbidEpics per-source gating (Co
 	it("a mixed batch gates forbidEpics PER proposal source (channel-monitor → true, AI_UPDATE_SIDEBAR → false)", async () => {
 		// Row 1 is a channel-monitor source; row 2 is the general AI Update
 		// sidebar. Each workflow start must carry the flag for ITS source.
-		const channelRow = rowFor("channel-row", { source: "TEAMS_CHANNEL" });
+		const baseChannelRow = rowFor("channel-row", {
+			source: "TEAMS_CHANNEL",
+		});
+		const channelRow = {
+			...baseChannelRow,
+			applyReviewId: "example-review",
+			applyReviewWorkflowId: baseChannelRow.applyWorkflowId,
+		};
+		mocks.getPendingProposalReview.mockResolvedValue({
+			syncToPM: false,
+			entries: channelRow.proposal.changes.map((change, changeIndex) => ({
+				change,
+				changeIndex,
+				selected: true,
+			})),
+		});
 		const sidebarRow = rowFor("sidebar-row", {
 			source: "AI_UPDATE_SIDEBAR",
 		});
@@ -338,7 +363,7 @@ describe("retryAllFailedProposalsProcedure — ROADMAP_RECOMMENDATION batch", ()
 		mocks.getPendingBacklogProposal.mockImplementation((id: string) =>
 			rows.find((r) => r.id === id),
 		);
-		mocks.returnFailedRecommendationToReview.mockResolvedValue(true);
+		mocks.returnFailedProposalToReview.mockResolvedValue(true);
 
 		const result = (await handlers.retryAll({
 			input: { projectId: "project-1", organizationId: "org-1" },
@@ -358,9 +383,10 @@ describe("retryAllFailedProposalsProcedure — ROADMAP_RECOMMENDATION batch", ()
 			workflowId: null,
 		});
 		expect(result.results[1]?.status).toBe("queued");
-		expect(mocks.returnFailedRecommendationToReview).toHaveBeenCalledWith(
-			"p1",
-		);
+		expect(mocks.returnFailedProposalToReview).toHaveBeenCalledWith("p1", {
+			applyWorkflowId: "wf-prev-p1",
+			applyReviewId: null,
+		});
 		expect(mocks.workflowStart).toHaveBeenCalledTimes(1);
 	});
 });
@@ -400,3 +426,392 @@ describe("workflow start failure messages", () => {
 		},
 	);
 });
+
+describe("bound review replay", () => {
+	it("replays only two selected entries with edits and review PM choices", async () => {
+		const row = { ...rowFor("proposal-1") };
+		mocks.listFailedProposals.mockResolvedValue([row]);
+		const changes = [0, 1, 2].map((i) => ({
+			type: "feature",
+			action: "create",
+			title: { to: `Original ${i}` },
+		}));
+		const bound = {
+			...row,
+			proposal: { changes },
+			applyReviewId: "example-review",
+			applyReviewWorkflowId: row.applyWorkflowId,
+			sourceMetadata: { syncToPM: true },
+		};
+		mocks.getPendingBacklogProposal.mockResolvedValue(bound);
+		const edited = { ...changes[0], title: { to: "Edited by reviewer" } };
+		mocks.projectFindFirst.mockResolvedValue({
+			id: "project-1",
+			organizationId: "org-1",
+			projectManagementContainerName: "Current container",
+		});
+		mocks.getPendingProposalReview.mockResolvedValue({
+			syncToPM: false,
+			pmConfig: {
+				mcpConfigId: "example-config",
+				containerId: "example-container",
+			},
+			entries: [
+				{
+					selected: true,
+					changeIndex: 0,
+					change: edited,
+					pmSyncOverride: null,
+				},
+				{ selected: false, changeIndex: 1, change: null },
+				{
+					selected: true,
+					changeIndex: 2,
+					change: changes[2],
+					pmSyncOverride: { skip: true },
+				},
+			],
+		});
+		await handlers.retryAll({
+			input: { projectId: "project-1", organizationId: "org-1" },
+			context: ctx,
+		});
+		const args = mocks.workflowStart.mock.calls[0]?.[1].args[0];
+		expect(args).toMatchObject({
+			approvedChanges: [edited, changes[2]],
+			approvedChangeIndexes: [0, 2],
+			syncToPM: false,
+			pmSyncOverrides: { 1: { skip: true } },
+			pmConfig: {
+				mcpConfigId: "example-config",
+				containerId: "example-container",
+				containerName: "Current container",
+			},
+		});
+		expect(mocks.proposalUpdate.mock.calls[0]?.[0]).toMatchObject({
+			where: {
+				applyWorkflowId: row.applyWorkflowId,
+				applyReviewId: "example-review",
+			},
+			data: { applyReviewWorkflowId: expect.any(String) },
+		});
+	});
+	it("does not start when the attempt changes before the CAS", async () => {
+		const row = { ...rowFor("proposal-1") };
+		mocks.listFailedProposals.mockResolvedValue([row]);
+		mocks.getPendingBacklogProposal.mockResolvedValue({
+			...row,
+			applyReviewId: "example-review",
+			applyReviewWorkflowId: row.applyWorkflowId,
+		});
+		mocks.getPendingProposalReview.mockResolvedValue({
+			syncToPM: false,
+			entries: [
+				{
+					selected: true,
+					changeIndex: 0,
+					change: row.proposal.changes[0],
+				},
+			],
+		});
+		mocks.proposalUpdate.mockImplementation(
+			async ({ where }: { where: { applyWorkflowId?: string } }) => ({
+				count: where.applyWorkflowId === row.applyWorkflowId ? 0 : 1,
+			}),
+		);
+		const result = (await handlers.retryAll({
+			input: { projectId: "project-1", organizationId: "org-1" },
+			context: ctx,
+		})) as { results: Array<{ status: string }> };
+		expect(result.results[0]?.status).toBe("error");
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
+	});
+	it.each([
+		"TEAMS_CHANNEL",
+		"SLACK_CHANNEL",
+		"MONITORED_MEETING",
+		"SCOPE_DOCUMENT",
+	])("returns legacy %s rows to review", async (source) => {
+		const row = { ...rowFor("proposal-1") };
+		mocks.listFailedProposals.mockResolvedValue([row]);
+		mocks.getPendingBacklogProposal.mockResolvedValue({ ...row, source });
+		await handlers.retryAll({
+			input: { projectId: "project-1", organizationId: "org-1" },
+			context: ctx,
+		});
+		expect(mocks.returnFailedProposalToReview).toHaveBeenCalledWith(
+			row.id,
+			{ applyWorkflowId: row.applyWorkflowId, applyReviewId: null },
+		);
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
+	});
+	it("returns a stale review binding to review", async () => {
+		const row = { ...rowFor("proposal-1") };
+		mocks.listFailedProposals.mockResolvedValue([row]);
+		mocks.getPendingBacklogProposal.mockResolvedValue({
+			...row,
+			source: "TEAMS_CHANNEL",
+			applyReviewId: "example-review",
+			applyReviewWorkflowId: "old-code-attempt",
+		});
+		await handlers.retryAll({
+			input: { projectId: "project-1", organizationId: "org-1" },
+			context: ctx,
+		});
+		expect(mocks.returnFailedProposalToReview).toHaveBeenCalledWith(
+			row.id,
+			{
+				applyWorkflowId: row.applyWorkflowId,
+				applyReviewId: "example-review",
+			},
+		);
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
+	});
+});
+
+it("filters the application table union mirror and rekeys the surviving review override", async () => {
+	const row = rowFor("proposal-1");
+	mocks.listFailedProposals.mockResolvedValue([row]);
+	const changes = [0, 1, 2, 3].map((i) => ({
+		type: "feature",
+		action: "create",
+		title: { to: `Selected ${i}` },
+	}));
+	mocks.getPendingBacklogProposal.mockResolvedValue({
+		...row,
+		applyReviewId: "example-review",
+		applyReviewWorkflowId: row.applyWorkflowId,
+		appliedChangeIndexes: [1],
+	});
+	mocks.getAppliedChangeIndexes.mockResolvedValue(new Set([0]));
+	mocks.getPendingProposalReview.mockResolvedValue({
+		syncToPM: false,
+		entries: changes.map((change, changeIndex) => ({
+			change,
+			changeIndex,
+			selected: true,
+			pmSyncOverride: { skip: true },
+		})),
+	});
+	mocks.buildBacklogDedupGuard.mockResolvedValue({
+		findCollision: (_family: string, title: string) =>
+			title === "Selected 2" ? { id: "example-existing" } : null,
+	});
+	await handlers.retryAll({
+		input: { projectId: "project-1", organizationId: "org-1" },
+		context: ctx,
+	});
+	expect(mocks.workflowStart.mock.calls[0]?.[1].args[0]).toMatchObject({
+		approvedChanges: [changes[3]],
+		approvedChangeIndexes: [3],
+		pmSyncOverrides: { 0: { skip: true } },
+	});
+});
+it("full dedup considers only selected review entries and fences its terminal write", async () => {
+	const row = rowFor("proposal-1");
+	mocks.listFailedProposals.mockResolvedValue([row]);
+	mocks.getPendingBacklogProposal.mockResolvedValue({
+		...row,
+		applyReviewId: "example-review",
+		applyReviewWorkflowId: row.applyWorkflowId,
+	});
+	mocks.getPendingProposalReview.mockResolvedValue({
+		syncToPM: false,
+		entries: [
+			{ change: row.proposal.changes[0], changeIndex: 0, selected: true },
+		],
+	});
+	mocks.buildBacklogDedupGuard.mockResolvedValue({
+		findCollision: () => ({ id: "example-existing" }),
+	});
+	await handlers.retryAll({
+		input: { projectId: "project-1", organizationId: "org-1" },
+		context: ctx,
+	});
+	expect(mocks.workflowStart).not.toHaveBeenCalled();
+	expect(mocks.proposalUpdate.mock.calls[0]?.[0]).toMatchObject({
+		where: {
+			applyWorkflowId: row.applyWorkflowId,
+			applyReviewId: "example-review",
+		},
+		data: { status: "APPLIED" },
+	});
+});
+
+it("refuses a selected review entry without an index", async () => {
+	const row = rowFor("proposal-1");
+	mocks.listFailedProposals.mockResolvedValue([row]);
+	mocks.getPendingBacklogProposal.mockResolvedValue({
+		...row,
+		applyReviewId: "example-review",
+		applyReviewWorkflowId: row.applyWorkflowId,
+	});
+	mocks.getPendingProposalReview.mockResolvedValue({
+		syncToPM: false,
+		entries: [
+			{
+				selected: true,
+				changeIndex: null,
+				change: row.proposal.changes[0],
+			},
+		],
+	});
+	const result = (await handlers.retryAll({
+		input: { projectId: "project-1", organizationId: "org-1" },
+		context: ctx,
+	})) as { results: Array<{ status: string }> };
+	expect(result.results[0]?.status).toBe("error");
+	expect(mocks.workflowStart).not.toHaveBeenCalled();
+	expect(mocks.proposalUpdate).not.toHaveBeenCalled();
+});
+
+describe("binding states across source groups", () => {
+	it.each(
+		[
+			"AI_UPDATE_SIDEBAR",
+			"TEAMS_CHANNEL",
+			"ROADMAP_RECOMMENDATION",
+		].flatMap((source) =>
+			["unset", "valid", "stale"].map((binding) => ({ source, binding })),
+		),
+	)("$source with $binding binding", async ({ source, binding }) => {
+		const row = rowFor("proposal-1");
+		mocks.listFailedProposals.mockResolvedValue([row]);
+		const reviewId = binding === "unset" ? null : "example-review";
+		mocks.getPendingBacklogProposal.mockResolvedValue({
+			...row,
+			source,
+			applyReviewId: reviewId,
+			applyReviewWorkflowId:
+				binding === "valid"
+					? row.applyWorkflowId
+					: binding === "stale"
+						? "example-other-attempt"
+						: null,
+		});
+		mocks.getPendingProposalReview.mockResolvedValue({
+			syncToPM: false,
+			entries: [
+				{
+					selected: true,
+					changeIndex: 0,
+					change: row.proposal.changes[0],
+				},
+			],
+		});
+		await handlers.retryAll({
+			input: { projectId: "project-1", organizationId: "org-1" },
+			context: ctx,
+		});
+		const replay =
+			source !== "ROADMAP_RECOMMENDATION" &&
+			(binding === "valid" ||
+				(binding === "unset" && source === "AI_UPDATE_SIDEBAR"));
+		if (replay) {
+			expect(mocks.workflowStart).toHaveBeenCalledTimes(1);
+			expect(mocks.returnFailedProposalToReview).not.toHaveBeenCalled();
+		} else {
+			expect(mocks.workflowStart).not.toHaveBeenCalled();
+			expect(mocks.returnFailedProposalToReview).toHaveBeenCalledWith(
+				row.id,
+				{
+					applyWorkflowId: row.applyWorkflowId,
+					applyReviewId: reviewId,
+				},
+			);
+		}
+	});
+});
+
+function prepareRoundOneRetry(mode: "full" | "partial" | "invalid") {
+	const row = rowFor("proposal-1");
+	const changes = [0, 1].map((i) => ({
+		action: "create",
+		type: "feature",
+		title: { to: `Example retry ${i}` },
+	}));
+	const bound = {
+		...row,
+		applyReviewId: "example-review",
+		applyReviewWorkflowId: row.applyWorkflowId,
+	};
+	mocks.listFailedProposals.mockResolvedValue([bound]);
+	mocks.getPendingBacklogProposal.mockResolvedValue(bound);
+	mocks.getPendingProposalReview.mockResolvedValue({
+		syncToPM: false,
+		entries: changes.map((change, i) => ({
+			selected: true,
+			changeIndex: mode === "invalid" && i === 1 ? null : i,
+			change,
+		})),
+	});
+	mocks.buildBacklogDedupGuard.mockResolvedValue({
+		findCollision: (_family: string, title: string) =>
+			mode === "full" || title.endsWith("0")
+				? { existingId: "example-existing", existingIdentifier: "EX-1" }
+				: null,
+		recordCreated: () => {},
+	});
+}
+const runRoundOneRetry = () =>
+	handlers.retryAll({
+		input: { projectId: "project-1", organizationId: "org-1" },
+		context: ctx,
+	});
+it.each(["full", "partial"] as const)(
+	"a losing %s dedup claim writes no duplicate outcome",
+	async (mode) => {
+		prepareRoundOneRetry(mode);
+		mocks.proposalUpdate.mockResolvedValue({ count: 0 });
+		expect(
+			(
+				(await runRoundOneRetry()) as {
+					results: Array<{ status: string }>;
+				}
+			).results[0]?.status,
+		).toBe("error");
+		expect(mocks.recordProposalDuplicateResolution).not.toHaveBeenCalled();
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
+	},
+);
+it("a late invalid review entry writes no duplicate outcome", async () => {
+	prepareRoundOneRetry("invalid");
+	expect(
+		((await runRoundOneRetry()) as { results: Array<{ status: string }> })
+			.results[0]?.status,
+	).toBe("error");
+	expect(mocks.recordProposalDuplicateResolution).not.toHaveBeenCalled();
+	expect(mocks.proposalUpdate).not.toHaveBeenCalled();
+});
+it.each(["full", "partial"] as const)(
+	"a failed ledger write preserves the winning %s retry",
+	async (mode) => {
+		prepareRoundOneRetry(mode);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const failure = new Error("Example private retry content");
+		mocks.recordProposalDuplicateResolution.mockRejectedValue(failure);
+		try {
+			const result = (await runRoundOneRetry()) as {
+				results: Array<{ status: string }>;
+			};
+			expect(result.results[0]?.status).toBe(
+				mode === "full" ? "dedup_only_applied" : "queued",
+			);
+			expect(mocks.proposalUpdate.mock.calls[0]?.[0].data.status).toBe(
+				mode === "full" ? "APPLIED" : "APPLYING",
+			);
+			expect(mocks.workflowStart).toHaveBeenCalledTimes(
+				mode === "full" ? 0 : 1,
+			);
+			expect(warn).toHaveBeenCalledWith(
+				expect.stringContaining("record"),
+				{ proposalId: "proposal-1", changeIndex: 0 },
+			);
+			expect(JSON.stringify(warn.mock.calls)).not.toContain(
+				failure.message,
+			);
+		} finally {
+			warn.mockRestore();
+		}
+	},
+);

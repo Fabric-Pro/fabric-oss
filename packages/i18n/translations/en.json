@@ -633,6 +633,14 @@
 		"actions": {
 			"continue": "Continue",
 			"verify": "Verify"
+		},
+		"dateRangePicker": {
+			"any": "Any",
+			"clear": "Clear",
+			"from": "from {date}",
+			"until": "until {date}",
+			"lastDays": "Last {days} days",
+			"thisMonth": "This month"
 		}
 	},
 	"documentation": {
@@ -994,12 +1002,12 @@
 					"title": "Projects hold your work"
 				},
 				"proposals": {
-					"body": "Fabric surfaces AI-generated proposals in your Proposal Inbox on the Roadmap. Review, refine, and approve them to keep your backlog moving.",
-					"title": "Review AI proposals"
+					"title": "Review AI proposals",
+					"body": "Use Review proposals in the status row above the Roadmap filters to review, refine and approve proposals. Sync issues opens the separate PM review queue. Find rejected proposals in Actions, including when no proposals are pending."
 				},
 				"roadmap": {
-					"body": "The Roadmap turns your work into features and tasks you can prioritise, track, and sync to your PM tool — a live picture of what's shipping.",
-					"title": "Plan on the Roadmap"
+					"title": "Plan on the Roadmap",
+					"body": "The Roadmap work area shows your work items in the selected layout. Browse, prioritize and track the work here, then sync it to your PM tool. Use the controls above it to filter, sort or change the view."
 				},
 				"todos": {
 					"body": "To Do gathers what you owe across this workspace — action items your meetings produced and to-dos you wrote yourself — into one list you can snooze, reassign, and tick off.",
@@ -1726,6 +1734,7 @@
 					},
 					"parlume": {
 						"action_confirmed": "Parlume action executed",
+						"auto_join_changed": "Parlume auto-join changed",
 						"session_started": "Parlume meeting session started",
 						"session_stopped": "Parlume meeting session stop requested"
 					},
@@ -2490,7 +2499,8 @@
 				"members": "Members",
 				"title": "Org",
 				"dangerZone": "Danger zone",
-				"companyContext": "Company context"
+				"companyContext": "Company context",
+				"meetingAssistant": "Meeting assistant"
 			}
 		},
 		"save": "Save",
@@ -2771,6 +2781,7 @@
 				"workflow-builder": "Workflow builder",
 				"meeting-transcript-sync": "Meeting transcript sync",
 				"chat-agent": "Chat",
+				"report-generation": "Report generation",
 				"maturation": "Feature maturation",
 				"answer-recommendation": "Answer recommendations",
 				"clean-spec": "Clean spec",
@@ -3947,6 +3958,40 @@
 			}
 		},
 		"stories": {
+			"listRow": {
+				"hiddenMetadata": "Hidden: {items}",
+				"tagCount": "{count, plural, one {# tag} other {# tags}}",
+				"syncFailed": "Failed",
+				"syncConflict": "Conflict",
+
+				"syncing": "Sync…",
+				"pmTicketStatus": "Status in {tool}: {status}",
+				"tasks": "tasks",
+				"items": "Work items",
+				"selection": "Select or reorder",
+				"item": "Item",
+				"title": "Title",
+				"priority": "Priority",
+				"stage": "Stage",
+				"pm": "PM sync",
+				"actions": "Actions",
+				"bug": "Bug",
+				"feature": "Feature",
+				"track": "Track",
+				"estimate": "Estimate",
+				"size": "Size",
+				"points": "{count, plural, one {#pt} other {#pt}}",
+				"moreTags": "{count, plural, one {+# more} other {+# more}}",
+				"edited": "edited {age}",
+				"created": "created {age}",
+				"SPIKE": "Spike",
+				"DISCOVERY": "Discovery",
+				"SPECIFY": "Specify",
+				"DEFER": "Defer",
+				"LOW": "Low confidence",
+				"MEDIUM": "Medium confidence",
+				"HIGH": "High confidence"
+			},
 			"duplicates": {
 				"scanButton": "Scan for duplicates",
 				"scanTooltip": "Find potential duplicate features and bugs with AI.",
@@ -4127,7 +4172,6 @@
 				},
 				"saved": "Delivery track set to {track}",
 				"saveFailed": "Could not save the delivery track",
-				"classify": "Classify",
 				"classifying": "Classifying…",
 				"classifyTooltip": "Assign delivery tracks (Spike, Discovery, Specify, Defer) to unclassified features. Tracks set by a person are left alone.",
 				"classifyStarted": "Classification started",
@@ -4851,7 +4895,6 @@
 					"filterAll": "All",
 					"filterOpen": "Open",
 					"filterResolved": "Resolved",
-					"changed": "Changed",
 					"agent": "AI",
 					"you": "You",
 					"needsReview": "Needs review",
@@ -4873,7 +4916,6 @@
 				},
 				"toasts": {
 					"specUpdated": "Full Spec updated.",
-					"savedForReview": "Saved — review it on the Full Specification tab.",
 					"couldntApply": "Couldn’t auto-apply — review on the Full Specification tab.",
 					"answerError": "Couldn’t save your answer. Please try again.",
 					"amendError": "Couldn’t save your amendment. Please try again.",
@@ -4882,10 +4924,6 @@
 					"answerConflictTitle": "Answer recorded — the Full Specification wasn’t updated",
 					"answerConflictBody": "Your decision is saved in the Decision Log. The specification changed at the same moment, so the answer wasn’t written into it — open the Full Specification and add it there.",
 					"notesError": "Couldn’t save your notes. Please try again.",
-					"patchApplied": "Full Spec updated.",
-					"patchRefused": "Those changes no longer fit the current spec.",
-					"acceptError": "Couldn’t apply the changes. Please try again.",
-					"modeUpdated": "Approval mode updated.",
 					"runReverted": "Reverted — restored to the version before this run.",
 					"runRevertError": "Couldn’t revert this run. Please try again.",
 					"cleanSpecRefreshed": "Full Spec refreshed from the latest context and decisions.",
@@ -5066,7 +5104,14 @@
 				"showHidden": "{count, plural, one {Show # hidden work item} other {Show # hidden work items}}"
 			},
 			"actionsMenu": {
-				"trigger": "More Roadmap actions"
+				"trigger": "Actions",
+				"classify": "Classify delivery tracks",
+				"refresh": "Refresh",
+				"history": "History",
+				"rejected": "Rejected proposals",
+				"exportInProgress": "Export in progress",
+				"historyDescription": "Every change to these tickets, and the PM sync log.",
+				"rejectedDescription": "Recover or permanently delete dismissed proposals."
 			},
 			"pullNothingNew": {
 				"title": "No new work items",
@@ -5126,6 +5171,109 @@
 				"acceptedNotice": {
 					"title": "{count, plural, one {# recommended feature added to the Roadmap} other {# recommended features added to the Roadmap}}",
 					"body": "These items are labeled AI Recommended. To remove the whole batch later, use Remove AI Recommended Items in the Roadmap's ⋯ menu. This only changes Fabric; items already synced to your PM tool stay there."
+				}
+			},
+			"roadmapUi": {
+				"title": "Roadmap",
+				"aboutLabel": "About this roadmap",
+				"aboutTitle": "Work item flow, delivery stages, and execution pressure",
+				"aboutBody": "Track planned work, priorities, and connections to your delivery system.",
+				"quickFocus": "Quick focus",
+				"quickFocusBody": "Shape the work item list, then sync it to your PM system when the priority order looks right.",
+				"add": "Add work item",
+				"aiUpdate": "AI Update",
+				"syncIssues": "Sync issues {count}",
+				"linked": "{count} linked to PM",
+				"unlinked": "{count} unlinked",
+				"lanes": "{count, plural, one {# lane} other {# lanes}}",
+				"moreFilters": "More filters",
+				"fewerFilters": "Fewer filters",
+				"type": "Type",
+				"priority": "Priority",
+				"stage": "Stage",
+				"any": "Any",
+				"selected": "{count} selected",
+				"facetLabel": "{label}: {value}",
+				"created": "Created",
+				"lastActivity": "Last activity",
+				"lastSynced": "Last synced",
+				"recentlyApproved": "Approved",
+				"recentlyAdded": "Added",
+				"recentlyEdited": "Edited",
+				"anyTime": "Any time",
+				"lastDays": "Last {days} days",
+				"view": "View: {layout}",
+				"viewUnsaved": "View: {layout} (unsaved changes)",
+				"showHidden": "Show hidden",
+				"layouts": {
+					"plain": "Plain",
+					"table": "Table",
+					"board": "Board",
+					"priority": "Priority"
+				},
+				"sortLabel": "{field}: {direction}",
+				"newestFirst": "newest first",
+				"oldestFirst": "oldest first",
+				"ascending": "ascending",
+				"descending": "descending",
+				"exporting": "Exporting estimate…",
+				"scanning": "Scanning for duplicates…",
+				"loadingAi": "Checking AI configuration…",
+				"unavailable": "Unavailable",
+				"sortFields": {
+					"roadmapOrder": "Roadmap order",
+					"priority": "Priority",
+					"stage": "Maturity stage",
+					"updated": "Last updated",
+					"created": "Created",
+					"sync": "Sync status",
+					"source": "Source",
+					"recentlyApproved": "Recently approved"
+				},
+				"sortAccessibleLabel": "Sort work items: {sort}",
+				"sortAll": "Sort (all items)",
+				"sortLanes": "Sort (within lanes)",
+				"roadmapOrderHelp": "Roadmap order — the project's saved order (priority first, then each item's saved position).",
+				"groupSortHelp": "Orders the {group} lanes themselves — ascending keeps the default order, descending reverses it.",
+				"sync": "Sync",
+				"source": "Source",
+				"size": "Size",
+				"flags": "Flags",
+				"tags": "Tags",
+				"matchAll": "Match all (AND)",
+				"showHiddenCount": "Show {count} hidden",
+				"showHiddenHelp": "{count, plural, one {Show the # hidden item that also matches your filters} other {Show the # hidden items that also match your filters}}",
+				"settings": "Settings",
+				"settingsHelp": "Settings — layout, grouping, fields",
+				"settingsUnsavedHelp": "Settings — unsaved changes (Save to keep)",
+				"hiddenCount": "{count} hidden",
+				"searchLabel": "Search work items",
+				"searchPlaceholder": "Search by title, ID, or keyword…",
+				"personalViewHelp": "Personal to you — changing these doesn't affect the roadmap for your teammates.",
+				"resetConfirm": "Reset layout, grouping and fields to their defaults?",
+				"resetDefaults": "Reset to defaults",
+				"reset": "Reset",
+				"cancel": "Cancel",
+				"save": "Save",
+				"unsavedChanges": "Unsaved changes — Save to keep them after a refresh.",
+				"layout": "Layout",
+				"groupBy": "Group by",
+				"cardFields": "Card fields",
+				"reorderHint": "drag to reorder",
+				"priorityLayoutHelp": "You're viewing the Priority section — picking a layout returns you to Work items.",
+				"groupStage": "Stage",
+				"groupTrack": "Delivery track",
+				"groupPhase": "Phase",
+				"reorderField": "Reorder {label}",
+				"alwaysShown": "{label} (always shown)",
+				"fieldLabels": {
+					"title": "Title",
+					"stage": "Drafting stage",
+					"sync": "PM sync state",
+					"size": "Size",
+					"source": "Source",
+					"flags": "Status flags",
+					"tags": "Tags"
 				}
 			}
 		},
@@ -9483,7 +9631,6 @@
 			"resetColumnTitles": "Revert renamed columns back to their default status names.",
 			"swimlaneGroup": "Group kanban cards into swimlanes by priority.",
 			"reviewProposals": "Review backlog proposals queued by the Teams channel monitor. Each proposal can be accepted as a new work item or rejected.",
-			"pendingProposalsBanner": "Review backlog proposals Fabric suggested from monitored channels and your project context.",
 			"storyDownload": "Download this work item as Markdown, PDF, or Word.",
 			"storyOpenDetails": "Open the full story editor for this work item.",
 			"storyCopyLink": "Copy",
@@ -9643,9 +9790,9 @@
 			"discoveryPanel": "Discovery runs for this feature. The latest contract waits for your sign-off; open questions are posted on the feature as comments.",
 			"discoveryMarkComplete": "Marks the integration contract Complete and closes the run in one step, which satisfies the discovery gate. The document's status cannot be changed from the documents list for that reason.",
 			"estimateExport": "Downloads the scope estimate grouped by phase and by track, as markdown or CSV. Phases that hold Low-confidence items show a point range instead of one number.",
-			"classifyConcept": "A delivery track says what a feature must show before Published: Spike (accepted spike run), Discovery (completed integration contract), Specify (description and acceptance criteria) or Defer (parked).",
 			"stageRequestsConcept": "Under a governed profile a drafting-stage change is recorded as a request instead of applied; a configured approver reviews it here.",
-			"kanbanColumnPreset": "Renames the board's columns to a preset that matches how this engagement runs, and creates any columns the preset needs. Titles can be edited afterwards; cards keep their state."
+			"kanbanColumnPreset": "Renames the board's columns to a preset that matches how this engagement runs, and creates any columns the preset needs. Titles can be edited afterwards; cards keep their state.",
+			"classifyConcept": "A delivery track says what a feature must show before Published: Spike (accepted spike run), Discovery (completed integration contract), Specify (description and acceptance criteria) or Defer (parked)."
 		},
 		"testCases": {
 			"new": "Create a new test case with ordered steps.",
@@ -9690,8 +9837,9 @@
 				"failed": "Upload failed."
 			},
 			"regenerateResponse": "Send the same prompt again and draft a fresh reply. The current reply is replaced.",
-			"thumbsUp": "Record this reply as helpful. The rating is stored with the conversation and is not sent back to the model.",
-			"thumbsDown": "Record this reply as unhelpful. The rating is stored with the conversation and is not sent back to the model.",
+			"thumbsUp": "Record this reply as helpful. Your rating is saved for AI quality tracking and is not sent back to the model.",
+			"thumbsDown": "Record this reply as unhelpful. Your rating is saved for AI quality tracking and is not sent back to the model.",
+			"replyRatingError": "Couldn't save your reply rating. Please try again.",
 			"forkFromHere": "Start a new active conversation that carries every message up to this point. The current thread is kept as history.",
 			"sessionStartedBy": "Conversation started by {name} on {date}.",
 			"sessionStartedByAuthorOnly": "Conversation started by {name}.",

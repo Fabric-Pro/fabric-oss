@@ -27,8 +27,8 @@
  * The Planner (`save_reuse`) scenarios run the up-front path — routing,
  * planning, per-step clarification, step execution — with its activities
  * mocked: a Stop in any of them ends the turn "cancelled" (not "failed"),
- * with no recovery or later step scheduled after it. A Weave run never
- * writes turn state, even when handed a turnId.
+ * with no recovery or later step scheduled after it. The Weave scenario skips
+ * turn-state writes when handed a turnId.
  *
  * Offline note: `TestWorkflowEnvironment.createTimeSkipping()` downloads a
  * Temporal test-server binary on first use.
@@ -108,12 +108,27 @@ const WORKFLOW_NAME = "orchestratorExecutionWorkflow";
 
 let env: TestWorkflowEnvironment;
 let workflowBundle: WorkflowBundleWithSourceMap;
+let legacyRoutingBundle: WorkflowBundleWithSourceMap;
 
 beforeAll(async () => {
 	env = await TestWorkflowEnvironment.createTimeSkipping();
 	workflowBundle = await bundleWorkflowCode({
 		workflowsPath: WORKFLOWS_PATH,
 	});
+	// Replace only the new decision in the test bundle to record the old path.
+	// The production bundle is used unchanged for new runs and replay.
+	const decision =
+		/\(0,\s*[\w.$]+\.patched\)\("orch-skip-unused-routing-v1"\)/g;
+	const matches = workflowBundle.code.match(decision) ?? [];
+	if (matches.length !== 1) {
+		throw new Error(
+			"Expected one routing patch call in the workflow bundle",
+		);
+	}
+	legacyRoutingBundle = {
+		...workflowBundle,
+		code: workflowBundle.code.replace(decision, "false"),
+	};
 }, 240_000);
 
 afterAll(async () => {
@@ -171,12 +186,22 @@ interface Recorder {
 	hangingStarted: boolean;
 	/** Set once the finalization synthesis has started. */
 	finalizationStarted: boolean;
+	toolInvocations: number;
+	deadlineInterrupted?: boolean;
 }
 
 /** How a planner-path activity behaves in a scenario. */
 type PlannerBehaviour = "hang_until_cancelled" | "refuse_dispatch";
 
+type DeadlineSite = "round" | "tool" | "compaction" | "approval";
+
 interface ScenarioOptions {
+	legacyRouting?: boolean;
+	routingEmpty?: boolean;
+	memoryPrompt?: string;
+	historyRetention?: "bounded";
+	deadlineSite?: DeadlineSite;
+	deadlineStop?: "before" | "after" | "summary";
 	behaviour: RoundBehaviour;
 	withTurn: boolean;
 	cancelDuringRound?: boolean;
@@ -192,7 +217,7 @@ interface ScenarioOptions {
 	plannerStepClarity?: PlannerBehaviour;
 	/** Cancel the run once a `hang_until_cancelled` activity has started. */
 	cancelWhenHanging?: boolean;
-	/** The plan needs approval; the run waits for it (and marks hanging). */
+	/** The plan needs approval; cancel after its pendingApproval query is set. */
 	planNeedsApproval?: boolean;
 	/** The step fails (not a stop), recovery classifies it retryable and
 	 * waits out a back-off (marks hanging) before retrying. */
@@ -360,7 +385,7 @@ function plannerActivities(opts: ScenarioOptions, rec: Recorder) {
 			keyFacts: [],
 		})),
 		// Recovery runs only after a step fails for a reason that is not a
-		// stop; a stopped step must never reach it.
+		// stop; the Stop scenarios assert that recovery is not called.
 		classifyFailureActivity: opts.stepFailsRetryably
 			? vi.fn(async () => {
 					const calls = rec.planner.classifyFailureActivity ?? [];
@@ -380,7 +405,47 @@ function plannerActivities(opts: ScenarioOptions, rec: Recorder) {
 	};
 }
 
-function buildActivities(opts: ScenarioOptions, rec: Recorder) {
+function buildActivities(opts: ScenarioOptions, rec: Recorder, testEnv = env) {
+	const advance = async (seconds: number) => {
+		const ctx = Context.current();
+		for (let elapsed = 0; elapsed < seconds; elapsed += 15) {
+			ctx.heartbeat();
+			// Context.heartbeat queues delivery through the worker. Wait for a
+			// server acknowledgement before skipping towards the 30-second
+			// heartbeat timeout; a short wall-clock sleep cannot ensure delivery
+			// under load. Keep the worker heartbeat so cancellation reaches ctx.
+			await testEnv.connection.workflowService.recordActivityTaskHeartbeat(
+				{
+					taskToken: ctx.info.taskToken,
+				},
+			);
+			await testEnv.sleep("15 seconds");
+		}
+	};
+	const hang = async () => {
+		rec.hangingStarted = true;
+		const ctx = Context.current();
+		ctx.heartbeat();
+		for (
+			let elapsed = 0;
+			elapsed < 120 && !ctx.cancellationSignal.aborted;
+			elapsed += 15
+		) {
+			await advance(15);
+			ctx.heartbeat();
+			await new Promise((resolveTick) => setTimeout(resolveTick, 5));
+		}
+		// A removed deadline guard lets the activity return after two minutes;
+		// the assertions then fail on the missing cancellation command.
+		if (!ctx.cancellationSignal.aborted) {
+			return;
+		}
+		if (opts.deadlineStop === "after") {
+			rec.deadlineInterrupted = true;
+			await new Promise((resolveTick) => setTimeout(resolveTick, 100));
+		}
+		throw new CancelledFailure("deadline activity interrupted");
+	};
 	const behaviour = opts.behaviour;
 	const modelCall = (name: string) =>
 		vi.fn(async () => {
@@ -388,6 +453,18 @@ function buildActivities(opts: ScenarioOptions, rec: Recorder) {
 			throw new Error(`${name} should not run in this scenario`);
 		});
 	return {
+		// These scenarios answer factual questions without claiming a write.
+		checkCompletionClaimActivity: vi.fn(async () => ({
+			unbackedClaim: false,
+			judgedBy: "decision",
+			usage: { inputTokens: 0, outputTokens: 0 },
+		})),
+		// Finish the abandoned completion child before its test worker exits.
+		embedAndStoreTrajectory: vi.fn(async () => undefined),
+		recordExecution: vi.fn(async () => undefined),
+		createEpisodeFromExecutionActivity: vi.fn(async () => undefined),
+		extractAndLearnPatternsActivity: vi.fn(async () => ({ count: 0 })),
+		preloadMcpToolsForConfigsActivity: vi.fn(async () => []),
 		// Initialization — an empty, healthy environment.
 		preloadResourcesActivity: vi.fn(async () => {
 			rec.preloadStarted = true;
@@ -405,14 +482,24 @@ function buildActivities(opts: ScenarioOptions, rec: Recorder) {
 			}
 			return {
 				toolMap: {},
-				mcpTools: [],
+				mcpTools: opts.deadlineSite
+					? [
+							{
+								toolName: "example_read",
+								description: "Read example data",
+								inputSchema: { type: "object", properties: {} },
+								serverName: "Example",
+								configId: "example-config",
+							},
+						]
+					: [],
 				agents: [],
 				integrations: [],
 				loadDurationMs: 1,
 			};
 		}),
 		loadOrchestratorMemoryActivity: vi.fn(async () => ({
-			memoryContextPrompt: "",
+			memoryContextPrompt: opts.memoryPrompt ?? "",
 			preferences: {},
 			recentEpisodes: [],
 			relevantEpisodes: [],
@@ -420,7 +507,31 @@ function buildActivities(opts: ScenarioOptions, rec: Recorder) {
 		updateRecentActivityActivity: vi.fn(async () => undefined),
 		initializeLettaMemory: vi.fn(async () => null),
 		getHybridRoutingSuggestions: vi.fn(async () => ({
-			suggestions: [],
+			suggestions: opts.routingEmpty
+				? []
+				: [
+						{
+							source: "qdrant",
+							confidence: 0.9,
+							agents: [],
+							tools: [],
+						},
+						{
+							source: "letta",
+							confidence: 0.8,
+							agents: [],
+							tools: [],
+						},
+					],
+			warnings: opts.routingEmpty
+				? []
+				: [
+						{
+							failedTask: "Example task",
+							similarity: 0.8,
+							errorSummary: "Example error",
+						},
+					],
 			fromCache: false,
 		})),
 		applyPolicyEnrichment: vi.fn(async () => ({ blocked: false })),
@@ -430,7 +541,7 @@ function buildActivities(opts: ScenarioOptions, rec: Recorder) {
 		listDefaultEnabledMcpServersActivity: vi.fn(async () => []),
 		findDefaultMcpConfigActivity: vi.fn(async () => null),
 		publishMcpDefaultToolSignalActivity: vi.fn(async () => undefined),
-		// The up-front check (the request itself) never asks; a per-step
+		// The up-front check (the request itself) returns no question; a per-step
 		// check (a plan step's description) behaves as the scenario says.
 		analyzeIntentClarityActivity: vi.fn(
 			async (req: Record<string, unknown>) => {
@@ -452,6 +563,9 @@ function buildActivities(opts: ScenarioOptions, rec: Recorder) {
 			rec.rounds.push(req);
 			if (req.budgetAttemptKind === "FINALIZATION") {
 				rec.finalizationStarted = true;
+				if (opts.deadlineStop === "summary") {
+					await hang();
+				}
 				if (opts.finalization === "denied") {
 					throw budgetRefusal();
 				}
@@ -469,7 +583,10 @@ function buildActivities(opts: ScenarioOptions, rec: Recorder) {
 				}
 				return {
 					type: "response",
-					content: FINAL_ANSWER,
+					content:
+						opts.deadlineSite === "tool"
+							? `${FINAL_ANSWER}\nexample_read: interrupted at the time limit — outcome unknown; verify before retrying.`
+							: FINAL_ANSWER,
 					usage: USAGE,
 					ledger: {
 						...REFUSAL_SNAPSHOT,
@@ -477,6 +594,46 @@ function buildActivities(opts: ScenarioOptions, rec: Recorder) {
 						outstanding: 0,
 						...opts.finalizationLedger,
 					},
+				};
+			}
+			if (opts.deadlineSite && rec.rounds.length <= 11) {
+				return {
+					type: "tool_calls",
+					toolCalls: [
+						{
+							id: `example-progress-${rec.rounds.length}`,
+							name: "example_read",
+							args: {},
+						},
+					],
+					usage: USAGE,
+				};
+			}
+			if (opts.deadlineSite === "round") {
+				await hang();
+			}
+			if (
+				opts.deadlineSite === "approval" ||
+				opts.deadlineSite === "tool" ||
+				opts.deadlineSite === "compaction"
+			) {
+				return {
+					type: "tool_calls",
+					toolCalls: Array.from(
+						{ length: opts.deadlineSite === "tool" ? 4 : 1 },
+						(_, i) => ({
+							id: `example-call-${rec.rounds.length}-${i}`,
+							name:
+								opts.deadlineSite === "approval"
+									? "delete_records"
+									: "example_read",
+							args: {},
+						}),
+					),
+					usage:
+						opts.deadlineSite === "compaction"
+							? { inputTokens: 800000, outputTokens: 5 }
+							: USAGE,
 				};
 			}
 			if (behaviour === "budget_exhausted") {
@@ -500,9 +657,30 @@ function buildActivities(opts: ScenarioOptions, rec: Recorder) {
 			);
 		}),
 		summarizeLargeToolResult: modelCall("summarizeLargeToolResult"),
-		compactConversationHistoryActivity: modelCall(
-			"compactConversationHistoryActivity",
-		),
+		compactConversationHistoryActivity:
+			opts.deadlineSite === "compaction"
+				? vi.fn(async () => {
+						await hang();
+						return {
+							summaryText: "Earlier example findings",
+							usage: USAGE,
+						};
+					})
+				: modelCall("compactConversationHistoryActivity"),
+		executeMcpTool: vi.fn(async () => {
+			rec.toolInvocations++;
+			if (rec.rounds.length <= 11) {
+				await advance(240);
+			} else if (opts.deadlineSite === "tool") {
+				await hang();
+			}
+			return { success: true, output: "Example data", durationMs: 1 };
+		}),
+		createOrchestratorApprovalRequest: vi.fn(async () => {
+			rec.hangingStarted = true;
+			return { approvalId: "example-approval" };
+		}),
+		updateApprovalTaskStatus: vi.fn(async () => undefined),
 		executeAgentAsTool: modelCall("executeAgentAsTool"),
 
 		finalizeConversationTurnActivity: vi.fn(
@@ -569,6 +747,9 @@ function recordedPatchIds(history: {
 let taskQueueSeq = 0;
 
 async function runScenario(opts: ScenarioOptions) {
+	const testEnv = opts.deadlineSite
+		? await TestWorkflowEnvironment.createTimeSkipping()
+		: env;
 	const rec: Recorder = {
 		rounds: [],
 		finalized: [],
@@ -577,6 +758,7 @@ async function runScenario(opts: ScenarioOptions) {
 		planner: {},
 		hangingStarted: false,
 		finalizationStarted: false,
+		toolInvocations: 0,
 	};
 	if (opts.behaviour === "real_round_hanging_provider") {
 		installHangingProvider();
@@ -586,10 +768,23 @@ async function runScenario(opts: ScenarioOptions) {
 	const input: OrchestratorWorkflowInput = {
 		executionId: workflowId,
 		message: "What is the launch date?",
-		history: [],
+		history:
+			opts.deadlineSite === "compaction"
+				? Array.from({ length: 30 }, (_, i) => ({
+						role:
+							i % 2 === 0
+								? ("user" as const)
+								: ("assistant" as const),
+						content: "Earlier example finding",
+					}))
+				: [],
+		enabledMcpConfigIds: opts.deadlineSite ? ["example-config"] : undefined,
 		userId: "user-example-1",
 		organizationId: "org-example-1",
 		executionMode: opts.executionMode ?? "balanced",
+		...(opts.historyRetention
+			? { historyRetention: opts.historyRetention }
+			: {}),
 		...(opts.surface ? { surface: opts.surface } : {}),
 		...(opts.withTurn
 			? { turnId: "turn-example-1", turnContractVersion: 1 }
@@ -598,21 +793,67 @@ async function runScenario(opts: ScenarioOptions) {
 			? { turnGeneration: opts.turnGeneration }
 			: {}),
 	};
+	const cacheLogs: Array<{
+		event: string;
+		details: Record<string, unknown>;
+	}> = [];
 	const worker = await Worker.create({
-		connection: env.nativeConnection,
+		connection: testEnv.nativeConnection,
 		taskQueue,
-		workflowBundle,
-		activities: buildActivities(opts, rec),
+		workflowBundle: opts.legacyRouting
+			? legacyRoutingBundle
+			: workflowBundle,
+		activities: buildActivities(opts, rec, testEnv),
+		sinks: {
+			defaultWorkerLogger: {
+				info: {
+					fn: (
+						_info: unknown,
+						event: string,
+						details: Record<string, unknown>,
+					) => {
+						if (event.startsWith("advisor.")) {
+							cacheLogs.push({ event, details });
+						}
+					},
+				},
+				trace: { fn: () => {} },
+				debug: { fn: () => {} },
+				warn: { fn: () => {} },
+				error: { fn: () => {} },
+			},
+		},
 		// As the production orchestrator queue (worker.ts).
-		maxHeartbeatThrottleInterval: "1s",
+		maxHeartbeatThrottleInterval: opts.deadlineSite ? "1ms" : "1s",
 	});
 	let cancelRequestedAt: number | undefined;
 	const result = await worker.runUntil(async () => {
-		const handle = await env.client.workflow.start(WORKFLOW_NAME, {
+		const handle = await testEnv.client.workflow.start(WORKFLOW_NAME, {
 			args: [input],
 			taskQueue,
 			workflowId,
+			workflowExecutionTimeout: "2 hours",
 		});
+		const deadlineResult = opts.deadlineSite ? handle.result() : undefined;
+		if (opts.deadlineSite && opts.deadlineStop) {
+			await vi.waitFor(() => expect(rec.hangingStarted).toBe(true), {
+				timeout: 60000,
+				interval: 5,
+			});
+			if (opts.deadlineStop === "after") {
+				await vi.waitFor(
+					() => expect(rec.deadlineInterrupted).toBe(true),
+					{ timeout: 30000, interval: 5 },
+				);
+			}
+			if (opts.deadlineStop === "summary") {
+				await vi.waitFor(
+					() => expect(rec.finalizationStarted).toBe(true),
+					{ timeout: 30000, interval: 5 },
+				);
+			}
+			await handle.cancel();
+		}
 		if (opts.cancelDuringRound) {
 			await vi.waitFor(
 				() => {
@@ -625,8 +866,21 @@ async function runScenario(opts: ScenarioOptions) {
 		}
 		if (opts.cancelWhenHanging) {
 			await vi.waitFor(
-				() => {
-					expect(rec.hangingStarted).toBe(true);
+				async () => {
+					if (opts.planNeedsApproval) {
+						// The activity-side flag precedes completion delivery. This
+						// query observes the workflow after it consumes that result
+						// and enters waitForApproval. Time skipping stays locked until
+						// handle.result() below, keeping the approval timer pending.
+						expect(
+							await handle.query("pendingApproval"),
+						).toMatchObject({
+							approvalId: "example-approval",
+							stepId: "plan-approval",
+						});
+					} else {
+						expect(rec.hangingStarted).toBe(true);
+					}
 				},
 				{ timeout: 30_000, interval: 25 },
 			);
@@ -650,10 +904,18 @@ async function runScenario(opts: ScenarioOptions) {
 			);
 			await handle.cancel();
 		}
-		const output = await handle
-			.result()
+		const output = await (deadlineResult ?? handle.result())
 			.then((value) => ({ ok: true as const, value }))
 			.catch((error: unknown) => ({ ok: false as const, error }));
+		if (
+			opts.deadlineSite &&
+			output.ok &&
+			output.value.status === "completed"
+		) {
+			await testEnv.client.workflow
+				.getHandle(`${workflowId}-completion`)
+				.result();
+		}
 		const description = await handle.describe();
 		// The recorded history must replay against the same code: the new
 		// cancellation path is deterministic.
@@ -670,7 +932,10 @@ async function runScenario(opts: ScenarioOptions) {
 		cancelRequestedAt !== undefined && provider.abortedAt !== undefined
 			? provider.abortedAt - cancelRequestedAt
 			: undefined;
-	return { ...result, rec, workflowId, cancelLatencyMs };
+	if (opts.deadlineSite) {
+		await testEnv.teardown();
+	}
+	return { ...result, rec, workflowId, cancelLatencyMs, cacheLogs };
 }
 
 describe("orchestratorExecutionWorkflow — Stop on a chat turn", () => {
@@ -717,7 +982,7 @@ describe("orchestratorExecutionWorkflow — Stop on a chat turn", () => {
 		});
 	}, 120_000);
 
-	it("a refused dispatch (cancel recorded, Temporal never told) ends the turn 'cancelled', not failed", async () => {
+	it("a refused dispatch (cancel recorded without a Temporal cancel) ends the turn 'cancelled', not failed", async () => {
 		const { output, temporalStatus, rec } = await runScenario({
 			behaviour: "refuse_dispatch",
 			withTurn: true,
@@ -830,7 +1095,7 @@ describe("orchestratorExecutionWorkflow — Stop on a chat turn", () => {
 			"orch-turn-cancellation-v1",
 			"orch-planner-turn-v1",
 		]);
-		// Recorded on every new run, whatever its mode.
+		// Both tested modes record these markers on a new run.
 		const iterative = await runScenario({
 			behaviour: "answer",
 			withTurn: false,
@@ -931,7 +1196,7 @@ describe("orchestratorExecutionWorkflow — Stop on a chat turn", () => {
 	}, 120_000);
 
 	it("Planner: a native cancel while the plan waits for approval ends 'cancelled', not 'Plan not approved'", async () => {
-		const { output, temporalStatus, rec } = await runScenario({
+		const { output, temporalStatus, rec, history } = await runScenario({
 			behaviour: "answer",
 			withTurn: true,
 			executionMode: "save_reuse",
@@ -942,6 +1207,23 @@ describe("orchestratorExecutionWorkflow — Stop on a chat turn", () => {
 		const value = (output as { value: OrchestratorWorkflowOutput }).value;
 		expect(value.status).toBe("cancelled");
 		expect(temporalStatus).toBe("COMPLETED");
+		// History enforces cancellation at the approval wait, after the
+		// request activity completed, rather than during its setup.
+		const events = history.events ?? [];
+		const requested = events.find(
+			(event) => event.workflowExecutionCancelRequestedEventAttributes,
+		);
+		const approvalTimer = events.find(
+			(event) => event.timerStartedEventAttributes,
+		);
+		expect(approvalTimer).toBeDefined();
+		expect(requested).toBeDefined();
+		expect(Number(approvalTimer?.eventId)).toBeLessThan(
+			Number(requested?.eventId),
+		);
+		expect(events.some((event) => event.timerFiredEventAttributes)).toBe(
+			false,
+		);
 		// No decision was recorded and no step ran.
 		expect(rec.planner.recordApprovalOutcomeActivity).toBeUndefined();
 		expect(rec.planner.executeStep).toBeUndefined();
@@ -1023,6 +1305,7 @@ describe("orchestratorExecutionWorkflow — Stop on a chat turn", () => {
 			planner: {},
 			hangingStarted: false,
 			finalizationStarted: false,
+			toolInvocations: 0,
 		};
 		const worker = await Worker.create({
 			connection: env.nativeConnection,
@@ -1124,7 +1407,10 @@ function withResultWithoutBudgetStop<T>(history: T): T {
  * token ledger would. (Deleting the event instead would renumber the
  * history.)
  */
-function withoutBudgetMarker<T>(history: T): T {
+function withoutBudgetMarker<T>(
+	history: T,
+	markerId = "orch-turn-budget-v1",
+): T {
 	const copy = structuredClone(history) as {
 		events?: Array<{
 			markerRecordedEventAttributes?: {
@@ -1155,7 +1441,7 @@ function withoutBudgetMarker<T>(history: T): T {
 			id?: string;
 			deprecated?: boolean;
 		};
-		if (parsed.id !== "orch-turn-budget-v1") {
+		if (parsed.id !== markerId) {
 			continue;
 		}
 		parsed.id = "orch-unrelated-example-v1";
@@ -1205,7 +1491,7 @@ describe("orchestratorExecutionWorkflow — token allowance on a chat turn", () 
 		const value = (output as { value: OrchestratorWorkflowOutput }).value;
 		expect(value.status).toBe("completed");
 		expect(value.response).toBe(FINAL_ANSWER);
-		// Exactly the refused round and one finalization, with no tools.
+		// toHaveLength(2) enforces a refused round and one finalization, with no tools.
 		expect(rec.rounds).toHaveLength(2);
 		expect(rec.rounds[1]).toMatchObject({
 			budgetAttemptKind: "FINALIZATION",
@@ -1215,6 +1501,7 @@ describe("orchestratorExecutionWorkflow — token allowance on a chat turn", () 
 		// The ledger as it stands after the finalization (476,000 measured,
 		// nothing outstanding), not the reading taken at the refusal.
 		expect(value.budgetStop).toEqual({
+			version: 1,
 			kind: "token_allowance",
 			allowance: 500_000,
 			measured: 476_000,
@@ -1224,7 +1511,7 @@ describe("orchestratorExecutionWorkflow — token allowance on a chat turn", () 
 		});
 		// No new-chat handoff for a token-allowance stop.
 		expect(value.handoffRecommended).toBeUndefined();
-		// The limit signal reports measured usage, never the reservations.
+		// The limit signal reports measured usage, excluding reservations.
 		expect(value.limitSignals).toEqual([
 			expect.objectContaining({
 				kind: "internal_budget",
@@ -1265,7 +1552,7 @@ describe("orchestratorExecutionWorkflow — token allowance on a chat turn", () 
 		});
 	}, 120_000);
 
-	it("returns the stop exactly as the terminal write persisted it (totals refreshed from the ledger)", async () => {
+	it("returns the stop persisted by the terminal write (totals refreshed from the ledger)", async () => {
 		const persisted = {
 			kind: "token_allowance",
 			allowance: 500_000,
@@ -1294,7 +1581,7 @@ describe("orchestratorExecutionWorkflow — token allowance on a chat turn", () 
 		]);
 	}, 120_000);
 
-	it("drops the run's own stop when the turn row stores none, so live output never shows a payload the row lacks", async () => {
+	it("drops the run's own stop when the turn row stores none, so live output omits the payload the row lacks", async () => {
 		const { output, rec } = await runScenario({
 			behaviour: "budget_exhausted",
 			withTurn: true,
@@ -1404,7 +1691,7 @@ describe("orchestratorExecutionWorkflow — token allowance on a chat turn", () 
 		// …while a budget stop recorded under the marker does not: without
 		// it the scope has no contract, so the refusal is not routed to the
 		// budget exit and the finalization activity the history holds is
-		// never scheduled. The marker alone gates the ledger behaviour.
+		// not scheduled. The marker gates the ledger behaviour.
 		const stopped = await runScenario({
 			behaviour: "budget_exhausted",
 			withTurn: true,
@@ -1419,4 +1706,272 @@ describe("orchestratorExecutionWorkflow — token allowance on a chat turn", () 
 			),
 		).rejects.toThrow(/[Nn]ondetermin/);
 	}, 180_000);
+});
+
+describe("Advisor deadline cancellation boundary", () => {
+	it.each(["round", "tool", "compaction", "approval"] as const)(
+		"saves a time stop when interrupted during %s",
+		async (deadlineSite) => {
+			const { output, temporalStatus, rec, history } = await runScenario({
+				behaviour: "answer",
+				withTurn: true,
+				deadlineSite,
+			});
+			const events = history.events ?? [];
+			const target =
+				deadlineSite === "round"
+					? "runAgentIteration"
+					: deadlineSite === "tool"
+						? "executeMcpTool"
+						: "compactConversationHistoryActivity";
+			if (deadlineSite !== "approval") {
+				const cancelledIds = new Set(
+					events.flatMap((event) =>
+						event.activityTaskCancelRequestedEventAttributes
+							? [
+									Number(
+										event
+											.activityTaskCancelRequestedEventAttributes
+											.scheduledEventId,
+									),
+								]
+							: [],
+					),
+				);
+				expect(
+					events.some(
+						(event) =>
+							event.activityTaskScheduledEventAttributes
+								?.activityType?.name === target &&
+							cancelledIds.has(Number(event.eventId)),
+					),
+					`deadline requests cancellation of ${target}`,
+				).toBe(true);
+			} else {
+				// The capped approval timer and scope timer can expire in the
+				// same task. Check the outer deadline timer as well as the saved
+				// stop; a removed scope leaves only the approval's one-minute cap.
+				expect(
+					events.some((event) => {
+						const seconds = Number(
+							event.timerStartedEventAttributes
+								?.startToFireTimeout?.seconds,
+						);
+						return seconds >= 2698 && seconds <= 2700;
+					}),
+					"deadline scope schedules its 45-minute timer",
+				).toBe(true);
+			}
+			expect(output).toMatchObject({
+				ok: true,
+				value: {
+					status: "completed",
+					budgetStop: { version: 1, kind: "time_limit" },
+				},
+			});
+			expect(temporalStatus).toBe("COMPLETED");
+			expect(rec.finalized.at(-1)).toMatchObject({
+				outcome: "LIMITED",
+				responseText: expect.stringContaining("## Summary"),
+				budgetStop: { kind: "time_limit" },
+			});
+			const started = events[0].eventTime;
+			const ended = events.at(-1)?.eventTime;
+			expect(
+				Number(ended?.seconds) - Number(started?.seconds),
+			).toBeLessThan(7200);
+			if (deadlineSite === "tool") {
+				expect(rec.toolInvocations).toBe(12);
+				expect(
+					JSON.stringify(
+						rec.rounds.find(
+							(r) => r.budgetAttemptKind === "FINALIZATION",
+						)?.conversationHistory,
+					),
+				).toContain("interrupted at the time limit — outcome unknown");
+				expect(output).toMatchObject({
+					ok: true,
+					value: {
+						response: expect.stringContaining("example_read"),
+					},
+				});
+			}
+		},
+		120_000,
+	);
+	it.each(["before", "after", "summary"] as const)(
+		"lets Stop win %s the deadline summary",
+		async (deadlineStop) => {
+			const { output, rec } = await runScenario({
+				behaviour: "answer",
+				withTurn: true,
+				deadlineSite: "round",
+				deadlineStop,
+			});
+			expect(output).toMatchObject({
+				ok: true,
+				value: { status: "cancelled" },
+			});
+			expect(rec.finalized.at(-1)).toMatchObject({
+				outcome: "CANCELLED",
+			});
+		},
+		120_000,
+	);
+});
+
+it.each(["bounded", undefined] as const)(
+	"records the production history-retention arm %s from the workflow input",
+	async (historyRetention) => {
+		const { output, rec, patchIds, cacheLogs } = await runScenario({
+			behaviour: "answer",
+			withTurn: true,
+			historyRetention,
+		});
+		expect(output.ok).toBe(true);
+		expect(
+			(output as { value: OrchestratorWorkflowOutput }).value.status,
+		).toBe("completed");
+		expect(rec.rounds).toHaveLength(1);
+		const summaries = cacheLogs.filter(
+			(line) => line.event === "advisor.turn_cache_summary",
+		);
+		expect(summaries).toHaveLength(1);
+		expect(summaries[0].details).toMatchObject({
+			historyRetention: historyRetention ? "bounded-v2" : "age",
+			mainRounds: 1,
+			answerFinished: true,
+		});
+		expect(
+			patchIds.filter((id) => id === "orch-bounded-history-v1"),
+		).toHaveLength(1);
+		expect(
+			patchIds.filter((id) => id === "orch-bounded-history-v2"),
+		).toHaveLength(1);
+		expect(
+			patchIds.filter((id) => id === "orch-cache-weighted-allowance-v1"),
+		).toHaveLength(1);
+	},
+);
+
+it("replays without the weighted and v2 markers using the retained v1 path", async () => {
+	const run = await runScenario({
+		behaviour: "answer",
+		withTurn: true,
+		historyRetention: "bounded",
+	});
+	await Worker.runReplayHistory(
+		{ workflowBundle },
+		withoutBudgetMarker(
+			withoutBudgetMarker(run.history, "orch-bounded-history-v2"),
+			"orch-cache-weighted-allowance-v1",
+		),
+		run.workflowId,
+	);
+}, 180_000);
+
+describe("Advisor routing lookup patch", () => {
+	const routingLabels = [
+		"Past Executions",
+		"Keyword Memory",
+		"Failure Avoidance",
+	];
+	const activityNames = (history: {
+		events?: Array<{
+			activityTaskScheduledEventAttributes?: {
+				activityType?: { name?: string | null } | null;
+			} | null;
+		}> | null;
+	}) =>
+		(history.events ?? []).flatMap(
+			(event) =>
+				event.activityTaskScheduledEventAttributes?.activityType
+					?.name ?? [],
+		);
+
+	it("skips routing lookup through the recorded marker on a new turn", async () => {
+		const { output, history, patchIds } = await runScenario({
+			behaviour: "answer",
+			withTurn: true,
+		});
+		expect(output.ok && output.value.status).toBe("completed");
+		expect(activityNames(history)).not.toContain(
+			"getHybridRoutingSuggestions",
+		);
+		expect(
+			patchIds.filter((id) => id === "orch-skip-unused-routing-v1"),
+		).toHaveLength(1);
+		expect(
+			(output.ok ? output.value.planningAudit : undefined)?.sourcesUsed,
+		).toEqual([]);
+		expect(
+			output.ok ? output.value.planningAudit : undefined,
+		).toMatchObject({
+			usedMemory: false,
+			totalSourcesConsulted: 1,
+			headline: "Created from analysis",
+		});
+	});
+
+	it("keeps the prompt memory block in the summary without routing sources", async () => {
+		const { output, rec } = await runScenario({
+			behaviour: "answer",
+			withTurn: true,
+			memoryPrompt: "Example preference: concise answers.",
+		});
+		expect(JSON.stringify(rec.rounds[0])).toContain(
+			"Example preference: concise answers.",
+		);
+		expect(
+			output.ok ? output.value.planningAudit : undefined,
+		).toMatchObject({
+			usedMemory: true,
+			sourcesUsed: ["Orchestrator Memory"],
+			headline: "Created with memory context",
+			totalSourcesConsulted: 1,
+		});
+	});
+
+	it.each([false, true])(
+		"schedules the legacy lookup and replays its pre-marker history (empty=%s)",
+		async (routingEmpty) => {
+			const { output, history, patchIds } = await runScenario({
+				behaviour: "answer",
+				withTurn: true,
+				legacyRouting: true,
+				routingEmpty,
+			});
+			expect(output.ok && output.value.status).toBe("completed");
+			expect(patchIds).not.toContain("orch-skip-unused-routing-v1");
+			expect(
+				activityNames(history).filter(
+					(name) => name === "getHybridRoutingSuggestions",
+				),
+			).toHaveLength(1);
+			expect(
+				output.ok ? output.value.planningAudit : undefined,
+			).toMatchObject({
+				sourcesUsed: routingEmpty ? [] : routingLabels,
+				usedMemory: !routingEmpty,
+				totalSourcesConsulted: routingEmpty ? 2 : 4,
+				headline: routingEmpty
+					? "Created from analysis"
+					: "Created using past experience with avoiding past failures",
+			});
+			await Worker.runReplayHistory({ workflowBundle }, history);
+			const corrupt = structuredClone(history);
+			const command = corrupt.events?.find(
+				(event) =>
+					event.activityTaskScheduledEventAttributes?.activityType
+						?.name === "getHybridRoutingSuggestions",
+			)?.activityTaskScheduledEventAttributes?.activityType;
+			expect(command).toBeDefined();
+			if (command) {
+				command.name = "exampleWrongRoutingActivity";
+			}
+			await expect(
+				Worker.runReplayHistory({ workflowBundle }, corrupt),
+			).rejects.toThrow(/nondeterminism|TMPRL1100/i);
+		},
+	);
 });

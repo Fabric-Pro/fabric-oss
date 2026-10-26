@@ -169,6 +169,7 @@ jobs:
             # Everything the migration-drift job's verdict depends on. A
             # migration is .sql, which no `code` glob above covers.
             migrations:
+              - 'packages/database/prisma.config.ts'
               - 'packages/database/prisma/schema.prisma'
               - 'packages/database/prisma/migrations/**'
               - 'packages/database/scripts/assert-handwritten-constraints.sql'
@@ -534,10 +535,9 @@ jobs:
       # packages/database/prisma/zod/index.ts is tracked source that must be
       # committed exactly as the patching pipeline (`pnpm --filter
       # @repo/database generate`) writes it. Raw `prisma generate` output,
-      # which `prisma migrate dev` also writes, keeps `z.instanceof(
-      # Prisma.Decimal, ...)` sites that throw "Prisma is not defined"
-      # wherever the committed file is loaded without regenerating first.
-      # That form has reached master three times, and the `test` run below
+      # produced before the repository's post-processing, keeps Prisma.Decimal
+      # validators and different JSON defaults. Earlier raw output also failed
+      # at import time because it lacked the Prisma import. The `test` run below
       # cannot catch it: its `generate` dependency repairs the file on disk,
       # or restores the repaired barrel from the turbo cache, before any
       # suite, including the barrel's own integrity test, reads it. So run
@@ -769,8 +769,8 @@ jobs:
         run: |
           set +e
           pnpm exec prisma migrate diff \
-            --from-url "$DATABASE_URL" \
-            --to-schema-datamodel ./prisma/schema.prisma \
+            --from-config-datasource \
+            --to-schema ./prisma/schema.prisma \
             --script --exit-code
           status=$?
           set -e
@@ -783,7 +783,7 @@ jobs:
       # script's header for why these constraints need their own assertion.
       - name: Hand-written constraints keep the shape Prisma cannot express
         working-directory: packages/database
-        run: pnpm exec prisma db execute --file ./scripts/assert-handwritten-constraints.sql --schema=./prisma/schema.prisma
+        run: pnpm exec prisma db execute --file ./scripts/assert-handwritten-constraints.sql
 
   # Seeds the caches a relay PR's one and only run restores (see header).
   # Installs and generates; runs no tests, so it takes minutes rather than
@@ -852,7 +852,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: packages/database/prisma/generated
-          key: prisma-client-${{ runner.os }}-${{ hashFiles('packages/database/prisma/schema.prisma', 'packages/database/prisma/zod-generator.config.json', 'packages/database/prisma/tsconfig.generated.json', 'packages/database/scripts/generate-client.mts', 'packages/database/scripts/fix-zod-imports.ts', 'packages/database/tsconfig.json', 'packages/database/package.json', 'tooling/typescript/base.json', 'tooling/typescript/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml') }}
+          key: prisma-client-${{ runner.os }}-${{ hashFiles('packages/database/prisma.config.ts', 'packages/database/prisma/schema.prisma', 'packages/database/prisma/zod-generator.config.json', 'packages/database/prisma/tsconfig.generated.json', 'packages/database/scripts/generate-client.mts', 'packages/database/scripts/fix-zod-imports.ts', 'packages/database/tsconfig.json', 'packages/database/package.json', 'tooling/typescript/base.json', 'tooling/typescript/package.json', 'package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml') }}
 
       # Publishes the apt archives browser-security restores (see there), once
       # per Playwright version and runner image. Same runner label as that

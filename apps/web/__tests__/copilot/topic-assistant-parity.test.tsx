@@ -31,7 +31,13 @@
  *     rather than as the failure it is.
  */
 
-import { act, fireEvent, render as rtlRender } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+	act,
+	fireEvent,
+	render as rtlRender,
+	screen,
+} from "@testing-library/react";
 import type { ComponentType, ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -40,6 +46,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // ---------------------------------------------------------------------------
 
 const {
+	renderRatings,
+	listRatings,
+	ratingMessages,
+	confirmDraft,
 	sidebarProps,
 	registeredActions,
 	clarifyingCalls,
@@ -60,10 +70,29 @@ const {
 	AssistantSentinel,
 	MessagesSentinel,
 } = vi.hoisted(() => ({
+	renderRatings: { current: false },
+	listRatings: vi.fn(),
+	ratingMessages: [
+		{
+			id: "example-topic-reply",
+			role: "assistant",
+			content: "Example topic reply",
+		},
+	],
+	confirmDraft: vi.fn(),
 	/** Props `<CopilotSidebar>` received, one entry per render. */
 	sidebarProps: [] as Array<Record<string, unknown>>,
 	/** Action configs the surface registered directly via `useCopilotAction`. */
-	registeredActions: [] as Array<{ name?: string }>,
+	registeredActions: [] as Array<{
+		name?: string;
+		renderAndWaitForResponse?: (props: {
+			status: string;
+			respond: (value: unknown) => void;
+		}) => React.ReactElement<{
+			onAccept: () => boolean;
+			onReject: () => boolean;
+		}>;
+	}>,
 	/** Arguments `useClarifyingQuestions` was mounted with. */
 	clarifyingCalls: [] as Array<Record<string, unknown> | undefined>,
 	/** Props `<CopilotPersistenceHook>` received. */
@@ -107,7 +136,10 @@ const {
 
 vi.mock("@copilotkit/react-core", () => ({
 	CopilotKit: ({ children }: { children?: ReactNode }) => <>{children}</>,
-	useCoAgent: () => ({ state: { document: "" }, setState: vi.fn() }),
+	useCoAgent: () => ({
+		state: { document: "Example proposed analysis." },
+		setState: vi.fn(),
+	}),
 	useCopilotAction: (config: { name?: string }) => {
 		registeredActions.push(config);
 	},
@@ -116,8 +148,8 @@ vi.mock("@copilotkit/react-core", () => ({
 	// `isLoading` is the run signal the editor lock is derived from, so it is
 	// mutable here and a re-render publishes the change.
 	useCopilotChatInternal: () => ({
-		messages: [],
-		visibleMessages: [],
+		messages: renderRatings.current ? ratingMessages : [],
+		visibleMessages: renderRatings.current ? ratingMessages : [],
 		isLoading: chatIsLoading.current,
 		// The live-transcript setter both conversation switches call. Absent
 		// from this mock, the destructure hands back `undefined` and the first
@@ -127,12 +159,33 @@ vi.mock("@copilotkit/react-core", () => ({
 }));
 
 vi.mock("@copilotkit/react-ui", () => ({
-	useChatContext: () => ({ setOpen: vi.fn() }),
+	useChatContext: () => ({
+		setOpen: vi.fn(),
+		labels: { thumbsUp: "Helpful", thumbsDown: "Unhelpful" },
+		icons: {},
+	}),
+	Markdown: ({ content }: { content: string }) => <div>{content}</div>,
 	CopilotSidebar: (props: Record<string, unknown>) => {
 		sidebarProps.push(props);
 		return (
 			<div data-testid="copilot-sidebar">
 				{props.children as ReactNode}
+				{renderRatings.current ? (
+					<ActualMessages
+						inProgress={false}
+						AssistantMessage={ActualAssistant}
+						RenderMessage={(messageProps) => (
+							<ActualAssistant
+								{...messageProps}
+								message={messageProps.message as never}
+								isLoading={false}
+								isGenerating={false}
+								onThumbsUp={props.onThumbsUp as never}
+								onThumbsDown={props.onThumbsDown as never}
+							/>
+						)}
+					/>
+				) : null}
 			</div>
 		);
 	},
@@ -203,6 +256,7 @@ vi.mock(
 vi.mock(
 	"../../modules/saas/projects/components/copilot/DocumentAssistantOutcomesProvider",
 	() => ({
+		useDocumentAssistantOutcomes: () => null,
 		DocumentAssistantOutcomesProvider: (props: Record<string, unknown>) => {
 			outcomesProps.push(props);
 			return <>{props.children as ReactNode}</>;
@@ -213,6 +267,7 @@ vi.mock(
 vi.mock(
 	"../../modules/saas/projects/components/copilot/HydratedMessagesContext",
 	() => ({
+		useHydratedMessages: () => null,
 		HydratedMessagesProvider: (props: Record<string, unknown>) => {
 			hydratedProps.push(props);
 			return <>{props.children as ReactNode}</>;
@@ -230,6 +285,7 @@ vi.mock("@saas/auth/hooks/use-session", () => ({
 
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
+		ai: { feedback: { confirmDraft } },
 		agents: { conversations: { archiveForDocument: archiveForDocument } },
 	},
 }));
@@ -245,6 +301,33 @@ vi.mock("@saas/shared/components/copilot/use-copilot-error-handler", () => ({
 vi.mock("next/navigation", () => ({
 	useParams: () => routeParams.current,
 }));
+
+vi.mock("@shared/lib/orpc-query-utils", () => ({
+	orpc: {
+		ai: {
+			feedback: {
+				list: {
+					queryOptions: ({ input }: { input: unknown }) => ({
+						queryKey: ["example-topic-ratings", input],
+						queryFn: () => listRatings(input),
+					}),
+				},
+			},
+		},
+	},
+}));
+vi.mock("../../modules/components/ai-elements/McpAppFrame", () => ({
+	McpAppFrame: () => null,
+}));
+vi.mock("@saas/shared/components/copilot/ReasoningCollapsible", () => ({
+	ReasoningCollapsible: () => null,
+}));
+const { CopilotAssistantMessage: ActualAssistant } = await vi.importActual<
+	typeof import("@saas/shared/components/copilot/CopilotAssistantMessage")
+>("@saas/shared/components/copilot/CopilotAssistantMessage");
+const { CustomMessages: ActualMessages } = await vi.importActual<
+	typeof import("../../modules/saas/projects/components/copilot/CustomMessages")
+>("../../modules/saas/projects/components/copilot/CustomMessages");
 
 // ---------------------------------------------------------------------------
 // Import AFTER the mocks are registered.
@@ -288,7 +371,16 @@ function assistant(
  * assertion that reads as though the prop were merely wrong.
  */
 function render(ui: Parameters<typeof rtlRender>[0]) {
-	const result = rtlRender(ui);
+	const client = new QueryClient({
+		defaultOptions: { queries: { retry: false } },
+	});
+	const result = rtlRender(ui, {
+		wrapper: ({ children }) => (
+			<QueryClientProvider client={client}>
+				{children}
+			</QueryClientProvider>
+		),
+	});
 	expect(sidebarProps.length).toBeGreaterThan(0);
 	return result;
 }
@@ -313,6 +405,8 @@ function renderHeader() {
 
 describe("TopicAssistant — Feature Maturation parity", () => {
 	beforeEach(() => {
+		renderRatings.current = false;
+		listRatings.mockReset().mockResolvedValue({ outcomes: {} });
 		sidebarProps.length = 0;
 		registeredActions.length = 0;
 		clarifyingCalls.length = 0;
@@ -332,10 +426,74 @@ describe("TopicAssistant — Feature Maturation parity", () => {
 		toastError.mockReset();
 	});
 
+	it.each([false, true])(
+		"renders rating controls only when the topic history flag is enabled (%s)",
+		async (enabled) => {
+			historyFlag.current = enabled;
+			renderRatings.current = true;
+			render(assistant());
+			if (enabled) {
+				expect(
+					await screen.findByRole("button", { name: "Helpful" }),
+				).toBeInTheDocument();
+				expect(listRatings).toHaveBeenCalled();
+			} else {
+				expect(
+					screen.getByText("Example topic reply"),
+				).toBeInTheDocument();
+				expect(
+					screen.queryByRole("button", { name: "Helpful" }),
+				).not.toBeInTheDocument();
+				expect(
+					screen.queryByRole("button", { name: "Unhelpful" }),
+				).not.toBeInTheDocument();
+				expect(listRatings).not.toHaveBeenCalled();
+			}
+		},
+	);
+
 	// -----------------------------------------------------------------------
 	// Reasoning trace
 	// -----------------------------------------------------------------------
 
+	it.each([true, false])(
+		"topic rewrite %s records only an explicit rejection",
+		async (accept) => {
+			confirmDraft.mockClear();
+			const applied = vi.fn();
+			render(assistant({ onApplyRewrite: applied }));
+			const action = registeredActions.findLast(
+				(entry) => entry.name === "confirm_changes",
+			);
+			const card = action?.renderAndWaitForResponse?.({
+				status: "executing",
+				respond: vi.fn(),
+			});
+			expect(card).toBeDefined();
+			// Exercise the surface handlers; mounted card identity is tested by the verdict suite.
+			if (accept) {
+				card?.props.onAccept();
+			} else {
+				card?.props.onReject();
+			}
+			await Promise.resolve();
+			if (accept) {
+				expect(confirmDraft).not.toHaveBeenCalled();
+				expect(applied).toHaveBeenCalledWith(
+					"Example proposed analysis.",
+				);
+			} else {
+				expect(confirmDraft).toHaveBeenCalledOnce();
+				expect(confirmDraft).toHaveBeenCalledWith(
+					expect.objectContaining({
+						surface: "topic-analysis",
+						verdict: "rejected",
+						projectId: "proj-1",
+					}),
+				);
+			}
+		},
+	);
 	it("renders the agent's reasoning and tool calls through the shared assistant bubble", () => {
 		render(assistant());
 

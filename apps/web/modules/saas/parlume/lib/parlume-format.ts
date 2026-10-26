@@ -18,6 +18,10 @@ export type ParlumeAgent = Awaited<
 	ReturnType<typeof orpcClient.projects.parlume.listAgents>
 >["agents"][number];
 
+export type ParlumeReadiness = Awaited<
+	ReturnType<typeof orpcClient.projects.parlume.listAgents>
+>["readiness"];
+
 const LIVE_STATUSES: ReadonlySet<string> = new Set([
 	"PENDING",
 	"JOINING",
@@ -59,6 +63,8 @@ export function endReasonLabel(endReason: string | null): string | null {
 			return "Provider failed";
 		case "START_FAILED":
 			return "Never joined";
+		case "NOT_ADMITTED":
+			return "Not admitted from the lobby";
 		default:
 			return statusLabel(endReason);
 	}

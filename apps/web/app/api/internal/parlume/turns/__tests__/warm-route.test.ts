@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@repo/database", () => ({
 	db: { parlumeMeetingSession: { findFirst: mocks.sessionFindFirst } },
 }));
-vi.mock("@repo/temporal", () => ({
+vi.mock("@repo/temporal/client", () => ({
 	getTemporalClient: mocks.getTemporalClient,
 }));
 vi.mock("@repo/api/modules/projects/lib/parlume-attendee", () => ({

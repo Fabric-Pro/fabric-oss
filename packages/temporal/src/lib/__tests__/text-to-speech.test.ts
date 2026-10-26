@@ -1,3 +1,4 @@
+import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
@@ -82,10 +83,13 @@ describe("synthesizeToolSpeech", () => {
 				frameId: "frame-example",
 				workflowExecutionId: "execution-example",
 			};
-			await synthesizeToolSpeech({ ...REQUEST, usageOrigin });
+			await runWithAiCallPurpose("compaction", () =>
+				synthesizeToolSpeech({ ...REQUEST, usageOrigin }),
+			);
 			expect(h.logAiUsageAsync).toHaveBeenCalledOnce();
 			expect(h.logAiUsageAsync.mock.calls[0][0]).toMatchObject({
 				...usageOrigin,
+				callPurpose: "speech-generation",
 				featureKey: "text-to-speech",
 				taskType: "AUDIO",
 				success: status === 200,

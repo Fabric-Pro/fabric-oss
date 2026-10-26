@@ -126,7 +126,18 @@ export interface CreateFrameInput {
 	sourceNodeId?: string;
 }
 
+export class FrameUpdateConflictError extends Error {
+	constructor() {
+		super(
+			"Frame conflict: the page changed. Re-read the frame before editing again.",
+		);
+		this.name = "FrameUpdateConflictError";
+	}
+}
+
 export interface UpdateFrameInput {
+	expectedUpdatedAt?: Date;
+	requestedUpdatedAt?: Date;
 	id: string;
 	userId: string;
 	organizationId?: string;
@@ -392,10 +403,12 @@ export async function getFrameById(input: {
 	id: string;
 	userId: string;
 	organizationId?: string;
+	projectId?: string;
 }) {
 	const file = await db.agentWorkspaceFile.findFirst({
 		where: {
 			id: input.id,
+			projectId: input.projectId,
 			userId: input.userId,
 			organizationId: input.organizationId ?? null,
 			fileType: { in: ["FRAME", "SLIDESHOW"] },
@@ -735,62 +748,88 @@ export async function updateFrame(input: UpdateFrameInput) {
 	// The history row and the update stand or fall together: a row for an edit
 	// that never landed would be a version of the page nobody ever saw, and it
 	// would shift the number of every version after it.
-	const updated = await db.$transaction(async (tx) => {
-		let surfaceMetadata: Prisma.InputJsonObject | undefined;
-		if (input.surface) {
-			await tx.$queryRaw`SELECT id FROM agent_workspace_file WHERE id = ${existing.id} FOR UPDATE`;
-			const latest = await tx.agentWorkspaceFile.findFirst({
+	const updated = await db
+		.$transaction(async (tx) => {
+			let surfaceMetadata: Prisma.InputJsonObject | undefined;
+			if (input.surface) {
+				await tx.$queryRaw`SELECT id FROM agent_workspace_file WHERE id = ${existing.id} FOR UPDATE`;
+				const latest = await tx.agentWorkspaceFile.findFirst({
+					where: {
+						id: existing.id,
+						userId: input.userId,
+						organizationId: input.organizationId ?? null,
+						projectId: input.projectId,
+					},
+					select: { metadata: true },
+				});
+				if (!latest) {
+					return null;
+				}
+				const metadata = latest.metadata;
+				const currentMetadata =
+					metadata &&
+					typeof metadata === "object" &&
+					!Array.isArray(metadata)
+						? metadata
+						: {};
+				const { workflowBindings, ...rest } = currentMetadata;
+				surfaceMetadata = {
+					...rest,
+					...(input.surface === "workspace" &&
+					workflowBindings !== undefined
+						? { workflowBindings }
+						: {}),
+					surface: input.surface,
+				};
+			}
+			if (
+				input.requestedUpdatedAt &&
+				input.requestedUpdatedAt.getTime() !==
+					existing.updatedAt.getTime()
+			) {
+				throw new FrameUpdateConflictError();
+			}
+			if (content !== existing.content) {
+				await saveFrameEdit(
+					{
+						frameId: existing.id,
+						editType: "full_update",
+						contentSnapshot: existing.content,
+						editedBy: input.userId,
+					},
+					tx,
+				);
+			}
+			return tx.agentWorkspaceFile.update({
 				where: {
 					id: existing.id,
-					userId: input.userId,
-					organizationId: input.organizationId ?? null,
 					projectId: input.projectId,
+					...(input.expectedUpdatedAt
+						? { updatedAt: input.expectedUpdatedAt }
+						: {}),
 				},
-				select: { metadata: true },
+				data: {
+					name: `${nextDocument.title}.frame.json`,
+					content,
+					size: Buffer.byteLength(content, "utf8"),
+					description: nextDocument.description,
+					isPublic: input.isPublic ?? existing.isPublic,
+					...(surfaceMetadata ? { metadata: surfaceMetadata } : {}),
+				},
 			});
-			if (!latest) {
-				return null;
+		})
+		.catch((error: unknown) => {
+			if (
+				input.expectedUpdatedAt &&
+				error &&
+				typeof error === "object" &&
+				"code" in error &&
+				error.code === "P2025"
+			) {
+				throw new FrameUpdateConflictError();
 			}
-			const metadata = latest.metadata;
-			const currentMetadata =
-				metadata &&
-				typeof metadata === "object" &&
-				!Array.isArray(metadata)
-					? metadata
-					: {};
-			const { workflowBindings, ...rest } = currentMetadata;
-			surfaceMetadata = {
-				...rest,
-				...(input.surface === "workspace" &&
-				workflowBindings !== undefined
-					? { workflowBindings }
-					: {}),
-				surface: input.surface,
-			};
-		}
-		if (content !== existing.content) {
-			await saveFrameEdit(
-				{
-					frameId: existing.id,
-					editType: "full_update",
-					contentSnapshot: existing.content,
-					editedBy: input.userId,
-				},
-				tx,
-			);
-		}
-		return tx.agentWorkspaceFile.update({
-			where: { id: existing.id, projectId: input.projectId },
-			data: {
-				name: `${nextDocument.title}.frame.json`,
-				content,
-				size: Buffer.byteLength(content, "utf8"),
-				description: nextDocument.description,
-				isPublic: input.isPublic ?? existing.isPublic,
-				...(surfaceMetadata ? { metadata: surfaceMetadata } : {}),
-			},
+			throw error;
 		});
-	});
 
 	return updated ? mapFrameRecord(updated) : null;
 }

@@ -1952,6 +1952,7 @@ export async function syncGitLabStoryViaRest(
 							: null,
 						isClosed: n.isClosed,
 						labels: n.labels,
+						displayStatus: n.displayStatus,
 					},
 					fabricItem: {
 						entityType: "STORY",

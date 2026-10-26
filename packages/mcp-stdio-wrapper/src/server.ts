@@ -42,7 +42,7 @@ import {
 	type ProcessPoolConfig,
 	shutdownProcessPool,
 } from "./process-pool";
-import { createStdioTransport } from "./stdio-transport";
+import { createStdioTransport, StdioRpcError } from "./stdio-transport";
 
 const TWILIO_PACKAGE = "@twilio-alpha/mcp";
 const TWILIO_LAUNCHER = fileURLToPath(
@@ -404,6 +404,9 @@ export function createServer(config: ServerConfig = {}): Hono {
 			});
 		} catch (error) {
 			console.error("[MCP Call] Error:", error);
+			if (error instanceof StdioRpcError) {
+				return c.json({ success: false, error: error.message });
+			}
 
 			// If the transport failed, remove it from pool so next request
 			// creates a fresh one. A failed creation pooled nothing: the factory

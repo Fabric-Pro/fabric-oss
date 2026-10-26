@@ -9,6 +9,7 @@ type Props = {
 	className?: string;
 	pmToolName?: string;
 	loading?: boolean;
+	compactLabel?: string;
 	/**
 	 * Overrides the default "PM sync conflict" text/aria — used to surface a
 	 * distinct "PM unavailable" state when the user's connection couldn't load
@@ -19,7 +20,7 @@ type Props = {
 
 export const PmSyncConflictBadge = forwardRef<HTMLButtonElement, Props>(
 	function PmSyncConflictBadge(
-		{ onClick, className, pmToolName, loading, label },
+		{ onClick, className, pmToolName, loading, label, compactLabel },
 		ref,
 	) {
 		const resolvedLabel = label ?? "PM sync conflict";
@@ -42,6 +43,7 @@ export const PmSyncConflictBadge = forwardRef<HTMLButtonElement, Props>(
 					onClick?.();
 				}}
 				aria-label={ariaLabel}
+				title={compactLabel ? ariaLabel : undefined}
 				className={cn(
 					"inline-flex items-center gap-1.5 rounded-md border border-highlight/30 bg-muted px-2 py-0.5",
 					"text-[10px] font-medium uppercase tracking-[0.18em] text-highlight",
@@ -58,7 +60,11 @@ export const PmSyncConflictBadge = forwardRef<HTMLButtonElement, Props>(
 				) : (
 					<AlertTriangleIcon className="size-3" aria-hidden="true" />
 				)}
-				{loading ? "Loading…" : resolvedLabel}
+				{loading
+					? compactLabel
+						? "…"
+						: "Loading…"
+					: (compactLabel ?? resolvedLabel)}
 			</button>
 		);
 	},

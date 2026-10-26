@@ -66,6 +66,7 @@ import {
 import { getFabricToolDefinitionMap } from "../shared/fabric-content-tools";
 import {
 	createFirstClassFrame,
+	editFirstClassFrameBlock,
 	getFirstClassFrame,
 	listFirstClassFrames,
 	shareFirstClassFrame,
@@ -1082,6 +1083,16 @@ async function loadBuiltInToolsForAgent(
 				inputSchema: jsonSchemaToZod(toolDefinition.inputSchema),
 				execute: async (args: Record<string, unknown>) =>
 					updateFirstClassFrame({ args, userId, organizationId }),
+			} as unknown as Parameters<typeof tool>[0]);
+			continue;
+		}
+
+		if (toolId === "fabric_edit_frame_block") {
+			tools.fabric_edit_frame_block = tool({
+				description: toolDefinition.description || toolId,
+				inputSchema: jsonSchemaToZod(toolDefinition.inputSchema),
+				execute: async (args: Record<string, unknown>) =>
+					editFirstClassFrameBlock({ args, userId, organizationId }),
 			} as unknown as Parameters<typeof tool>[0]);
 			continue;
 		}

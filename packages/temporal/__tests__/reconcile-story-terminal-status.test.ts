@@ -40,6 +40,7 @@ vi.mock("@repo/database", () => ({
 
 import {
 	classifyPmItem,
+	pmTicketDisplayStatus,
 	reconcileStoryTerminalStatus,
 } from "../src/activities/pm-integration/reconcile-story-terminal-status";
 
@@ -67,6 +68,8 @@ function fabric(
 		 *  two — the reconcile then always writes (fail-safe). */
 		pmTicketTerminal: boolean;
 		pmTicketTerminalStatus: string | null;
+		pmTicketStatus: string | null;
+		pmTicketStatusExternalId: string | null;
 	}>,
 ) {
 	return {
@@ -115,7 +118,12 @@ describe("reconcileStoryTerminalStatus", () => {
 		// Checkmark snapshot was written with the terminal flag.
 		expect(mockUserStoryUpdate).toHaveBeenCalledWith({
 			where: { id: "story-1", projectId: "proj-1" },
-			data: { pmTicketTerminal: true, pmTicketTerminalStatus: "Closed" },
+			data: {
+				pmTicketTerminal: true,
+				pmTicketTerminalStatus: "Closed",
+				pmTicketStatus: "Closed",
+				pmTicketStatusExternalId: "123",
+			},
 		});
 	});
 
@@ -238,7 +246,12 @@ describe("reconcileStoryTerminalStatus", () => {
 		// Snapshot cleared the terminal flag.
 		expect(mockUserStoryUpdate).toHaveBeenCalledWith({
 			where: { id: "story-1", projectId: "proj-1" },
-			data: { pmTicketTerminal: false, pmTicketTerminalStatus: null },
+			data: {
+				pmTicketTerminal: false,
+				pmTicketTerminalStatus: null,
+				pmTicketStatus: "Active",
+				pmTicketStatusExternalId: "123",
+			},
 		});
 	});
 
@@ -298,6 +311,8 @@ describe("reconcileStoryTerminalStatus", () => {
 				fabricItem: fabric({
 					pmTicketTerminal: true,
 					pmTicketTerminalStatus: "Closed",
+					pmTicketStatus: "Closed",
+					pmTicketStatusExternalId: "123",
 				}),
 				terminalLc,
 				autoCloseEnabled: true,
@@ -326,6 +341,8 @@ describe("reconcileStoryTerminalStatus", () => {
 					pmAutoHidden: false,
 					pmTicketTerminal: false,
 					pmTicketTerminalStatus: null,
+					pmTicketStatus: "Active",
+					pmTicketStatusExternalId: "123",
 				}),
 				terminalLc,
 				autoCloseEnabled: true,
@@ -352,6 +369,8 @@ describe("reconcileStoryTerminalStatus", () => {
 				data: {
 					pmTicketTerminal: true,
 					pmTicketTerminalStatus: "Closed",
+					pmTicketStatus: "Closed",
+					pmTicketStatusExternalId: "123",
 				},
 			});
 			expect(r.action).toBe("checkmark-only");
@@ -376,6 +395,8 @@ describe("reconcileStoryTerminalStatus", () => {
 				data: {
 					pmTicketTerminal: true,
 					pmTicketTerminalStatus: "Closed",
+					pmTicketStatus: "Closed",
+					pmTicketStatusExternalId: "123",
 				},
 			});
 			expect(r.action).toBe("checkmark-only");
@@ -398,6 +419,8 @@ describe("reconcileStoryTerminalStatus", () => {
 				data: {
 					pmTicketTerminal: true,
 					pmTicketTerminalStatus: "Closed",
+					pmTicketStatus: "Closed",
+					pmTicketStatusExternalId: "123",
 				},
 			});
 		});
@@ -419,9 +442,85 @@ describe("reconcileStoryTerminalStatus", () => {
 				data: {
 					pmTicketTerminal: false,
 					pmTicketTerminalStatus: null,
+					pmTicketStatus: "Active",
+					pmTicketStatusExternalId: "123",
 				},
 			});
 		});
+
+		it("non-terminal status moved (To Do → QA) → userStory.update IS called with the native status (Fizzy #3088)", async () => {
+			const r = await reconcileStoryTerminalStatus({
+				projectId: "proj-1",
+				item: storyItem({ state: "QA" }),
+				fabricItem: fabric({
+					pmTicketTerminal: false,
+					pmTicketTerminalStatus: null,
+					pmTicketStatus: "To Do",
+					pmTicketStatusExternalId: "123",
+				}),
+				terminalLc,
+				autoCloseEnabled: true,
+				tenant: baseTenant,
+			});
+			expect(mockUserStoryUpdate).toHaveBeenCalledWith({
+				where: { id: "story-1", projectId: "proj-1" },
+				data: {
+					pmTicketTerminal: false,
+					pmTicketTerminalStatus: null,
+					pmTicketStatus: "QA",
+					pmTicketStatusExternalId: "123",
+				},
+			});
+			expect(r.action).toBe("non-terminal-passthrough");
+		});
+
+		it("same status read through a different link → userStory.update IS called with the new link (Fizzy #3088)", async () => {
+			await reconcileStoryTerminalStatus({
+				projectId: "proj-1",
+				item: storyItem({ state: "QA" }),
+				fabricItem: fabric({
+					pmTicketTerminal: false,
+					pmTicketTerminalStatus: null,
+					pmTicketStatus: "QA",
+					pmTicketStatusExternalId: "999",
+				}),
+				terminalLc,
+				autoCloseEnabled: true,
+				tenant: baseTenant,
+			});
+			expect(mockUserStoryUpdate).toHaveBeenCalledWith(
+				expect.objectContaining({
+					data: expect.objectContaining({
+						pmTicketStatus: "QA",
+						pmTicketStatusExternalId: "123",
+					}),
+				}),
+			);
+		});
+	});
+});
+
+describe("pmTicketDisplayStatus (Fizzy #3088)", () => {
+	it("prefers the per-tool displayStatus over the classifier's state", () => {
+		expect(
+			pmTicketDisplayStatus({
+				state: "QA/ Review",
+				displayStatus: "Done",
+			}),
+		).toBe("Done");
+	});
+
+	it("a verdict without displayStatus (older fetch) falls back to state", () => {
+		expect(pmTicketDisplayStatus({ state: "In Progress" })).toBe(
+			"In Progress",
+		);
+	});
+
+	it("no status at all → null", () => {
+		expect(pmTicketDisplayStatus({ state: "  " })).toBeNull();
+		expect(
+			pmTicketDisplayStatus({ state: "Active", displayStatus: null }),
+		).toBeNull();
 	});
 });
 

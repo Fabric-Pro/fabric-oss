@@ -346,11 +346,18 @@ export async function getDirectPrismaClient(): Promise<{
 	// re-exports `db` (a proxy bound to DATABASE_URL) but not the bare
 	// PrismaClient constructor — we need a fresh client bound to
 	// TEST_DATABASE_URL so cascade specs can target a dedicated test DB.
-	const mod = (await import("@repo/database/prisma/generated/client")) as {
-		PrismaClient: new (opts: { datasourceUrl?: string }) => any;
-	};
+	// Prisma 7 connects only through a driver adapter, so bind TEST_DATABASE_URL
+	// through @prisma/adapter-pg the way packages/database/prisma/client.ts does.
+	const [mod, { PrismaPg }] = await Promise.all([
+		import("@repo/database/prisma/generated/client") as Promise<{
+			PrismaClient: new (opts: { adapter: unknown }) => any;
+		}>,
+		import("@prisma/adapter-pg"),
+	]);
 	_directClient = new mod.PrismaClient({
-		datasourceUrl: process.env.TEST_DATABASE_URL,
+		adapter: new PrismaPg({
+			connectionString: process.env.TEST_DATABASE_URL,
+		}),
 	});
 	return _directClient as any;
 }

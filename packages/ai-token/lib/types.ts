@@ -107,6 +107,8 @@ export interface VerifyTokenError {
 export interface ExchangeResult {
 	/** Catalog metadata for the pinned model; null caps mean unknown. */
 	isReasoningModel?: boolean;
+	/** Resolved catalog identity for model-family capabilities. */
+	canonicalModelName?: string;
 	maxOutputTokens?: number | null;
 	contextWindow?: number | null;
 	/** The exchange applied the signed model selection. */

@@ -7,6 +7,7 @@ import {
 	UPLOAD_SIZE_LIMITS,
 } from "@repo/utils";
 import { isValidExcalidrawContent } from "@repo/utils/attachment";
+import { documentTypeLabel } from "@repo/utils/document-type-catalog";
 import {
 	LiveAnnouncerRegion,
 	useLiveAnnouncer,
@@ -785,7 +786,10 @@ export function WizardFileUploader({
 													(o) =>
 														o.value ===
 														file.documentTag,
-												)?.label || file.documentTag}
+												)?.label ||
+													documentTypeLabel(
+														file.documentTag,
+													)}
 											</span>
 										)}
 

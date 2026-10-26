@@ -11,6 +11,7 @@
  * Modeled on the lightweight LLM-call pattern in activities/weave/loom-routing.ts.
  */
 
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { logger } from "@repo/logs";
 import { usageOriginFields } from "../../workflows/orchestrator/usage-attribution";
 import {
@@ -125,6 +126,7 @@ export async function analyzeIntentClarityActivity(
 			{
 				userId: input.userId,
 				organizationId: input.organizationId,
+				callPurpose: AI_CALL_PURPOSES.intentClarity,
 				featureKey: "chat-agent",
 				...usageOriginFields(input),
 			},

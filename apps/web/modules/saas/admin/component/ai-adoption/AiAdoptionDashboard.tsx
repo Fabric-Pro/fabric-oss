@@ -500,11 +500,14 @@ function UsageSection({ usage }: { usage: AiAdoptionMetrics["usage"] }) {
 }
 
 const FEATURE_LABELS: Record<string, string> = {
+	"report-generation": "Report generation",
 	maturation: "Feature maturation",
 	"answer-recommendation": "Answer recommendations",
 	"clean-spec": "Clean Spec",
 	"backlog-update": "AI Backlog Update",
 	"document-generation": "Document generation",
+	"agent-document-generation": "Agent document generation",
+	"prompt-enhancement": "Prompt enhancement",
 	"generate-tasks": "Generate tasks",
 	"enhance-feature": "Enhance feature",
 	"regenerate-title": "Regenerate title",

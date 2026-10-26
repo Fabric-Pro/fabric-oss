@@ -235,49 +235,68 @@ export async function loadParlumeAgent(session: ParlumeAgentSession) {
 	};
 }
 
+type ParlumeAgent = Awaited<ReturnType<typeof loadParlumeAgent>>;
+
+/**
+ * What the Fabric Agent looks up for a request before it runs: its MCP tools,
+ * the user's memory and the agent's workspace documents. None of it depends on
+ * the meeting context, so a turn starts it alongside that context's lookups.
+ */
+export function gatherParlumeAgentContext(
+	agent: Extract<ParlumeAgent, { kind: "FABRIC_AGENT" }>,
+	session: ParlumeAgentSession,
+	message: string,
+) {
+	const gathered = timeTurnStep("agent.gatherMs", () =>
+		Promise.all([
+			timeTurnStep("agent.mcpCollectMs", () =>
+				collectMcpToolsActivity(
+					session.userId,
+					session.organizationId,
+					agent.enabledMcpConfigIds,
+				),
+			),
+			timeTurnStep("agent.memoryMs", () =>
+				generateMemoryContextActivity(
+					message,
+					session.userId,
+					session.organizationId,
+				),
+			),
+			timeTurnStep("agent.workspaceMs", () =>
+				retrieveWorkspaceDocumentsActivity(
+					message,
+					session.userId,
+					session.organizationId,
+					agent.workspaceIds,
+					undefined,
+					PARLUME_WORKSPACE_RAG_CHUNKS,
+				),
+			),
+		]),
+	);
+	// Awaited by the agent run; a turn that fails before then still settles it.
+	gathered.catch(() => {});
+	return gathered;
+}
+
 export async function executeParlumeAgent(input: {
-	agent: Awaited<ReturnType<typeof loadParlumeAgent>>;
+	agent: ParlumeAgent;
 	session: ParlumeAgentSession;
 	turnId: string;
 	message: string;
 	voiceInstructions: string;
 	knowledgeContext: string;
 	history: Array<{ role: "user" | "assistant"; content: string }>;
+	/** From `gatherParlumeAgentContext`, started with the turn's other lookups. */
+	gathered?: ReturnType<typeof gatherParlumeAgentContext>;
 	/** Minted for this turn by the web route; the worker only carries it. */
 	actingGrant?: string;
 }): Promise<{ success: boolean; response: string; error?: string }> {
 	const { agent, session } = input;
 	if (agent.kind === "FABRIC_AGENT") {
-		const [{ mcpToolInfo }, memory, workspace] = await timeTurnStep(
-			"agent.gatherMs",
-			() =>
-				Promise.all([
-					timeTurnStep("agent.mcpCollectMs", () =>
-						collectMcpToolsActivity(
-							session.userId,
-							session.organizationId,
-							agent.enabledMcpConfigIds,
-						),
-					),
-					timeTurnStep("agent.memoryMs", () =>
-						generateMemoryContextActivity(
-							input.message,
-							session.userId,
-							session.organizationId,
-						),
-					),
-					timeTurnStep("agent.workspaceMs", () =>
-						retrieveWorkspaceDocumentsActivity(
-							input.message,
-							session.userId,
-							session.organizationId,
-							agent.workspaceIds,
-							undefined,
-							PARLUME_WORKSPACE_RAG_CHUNKS,
-						),
-					),
-				]),
-		);
+		const [{ mcpToolInfo }, memory, workspace] = await (input.gathered ??
+			gatherParlumeAgentContext(agent, session, input.message));
 		const result = await executeDirectChatActivity(
 			{
 				executionId: `parlume-${input.turnId}`,

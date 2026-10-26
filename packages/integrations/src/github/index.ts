@@ -1265,6 +1265,58 @@ async function listIssues(
 		}));
 }
 
+// 6,000 body characters leave room for metadata under the chat's 12,000-character
+// summarization threshold for typical detail responses.
+const DETAIL_BODY_CHARS = 6_000;
+
+function detailBody(body: string | null): string | null {
+	if (!body || body.length <= DETAIL_BODY_CHARS) {
+		return body;
+	}
+	let end = DETAIL_BODY_CHARS;
+	const lastUnit = body.charCodeAt(end - 1);
+	if (lastUnit >= 0xd800 && lastUnit <= 0xdbff) {
+		end -= 1;
+	}
+	return `${body.slice(0, end)}\n\n[Body truncated: showing ${end} of ${body.length} characters.]`;
+}
+
+type GitHubIssueDetails = {
+	number: number;
+	title: string;
+	state: string;
+	state_reason?: string | null;
+	pull_request?: { url: string };
+	user: { login: string } | null;
+	body: string | null;
+	html_url: string;
+	created_at: string;
+	updated_at: string;
+	closed_at: string | null;
+	labels: Array<{ name: string }>;
+	assignees: Array<{ login: string }> | null;
+	milestone: { title: string } | null;
+	comments: number;
+};
+
+function issueDetails(issue: GitHubIssueDetails) {
+	return {
+		number: issue.number,
+		title: issue.title,
+		state: issue.state,
+		author: issue.user?.login ?? null,
+		body: detailBody(issue.body),
+		html_url: issue.html_url,
+		created_at: issue.created_at,
+		updated_at: issue.updated_at,
+		closed_at: issue.closed_at,
+		labels: issue.labels?.map((label) => label.name) ?? [],
+		assignees: issue.assignees?.map((assignee) => assignee.login) ?? [],
+		milestone: issue.milestone?.title ?? null,
+		comments: issue.comments,
+	};
+}
+
 async function getIssue(
 	token: string,
 	args: Record<string, unknown>,
@@ -1277,7 +1329,15 @@ async function getIssue(
 	if (!owner || !repo || !issue_number) {
 		throw new Error("owner, repo, and issue_number are required");
 	}
-	return githubFetch(token, `/repos/${owner}/${repo}/issues/${issue_number}`);
+	const issue = (await githubFetch(
+		token,
+		`/repos/${owner}/${repo}/issues/${issue_number}`,
+	)) as GitHubIssueDetails;
+	return {
+		...issueDetails(issue),
+		state_reason: issue.state_reason ?? null,
+		is_pull_request: Boolean(issue.pull_request),
+	};
 }
 
 async function getPullRequest(
@@ -1292,7 +1352,66 @@ async function getPullRequest(
 	if (!owner || !repo || !pull_number) {
 		throw new Error("owner, repo, and pull_number are required");
 	}
-	return githubFetch(token, `/repos/${owner}/${repo}/pulls/${pull_number}`);
+	const pr = (await githubFetch(
+		token,
+		`/repos/${owner}/${repo}/pulls/${pull_number}`,
+	)) as GitHubIssueDetails & {
+		draft: boolean;
+		merged: boolean;
+		merged_at: string | null;
+		mergeable: boolean | null;
+		mergeable_state: string;
+		head: {
+			ref: string;
+			sha: string;
+			label: string;
+			repo: { full_name: string } | null;
+		};
+		base: { ref: string; repo: { full_name: string } | null };
+		requested_reviewers: Array<{ login: string }> | null;
+		requested_teams: Array<{ slug?: string; name: string }> | null;
+		merged_by: { login: string } | null;
+		merge_commit_sha: string | null;
+		auto_merge: { merge_method: string } | null;
+		commits: number;
+		additions: number;
+		deletions: number;
+		changed_files: number;
+		review_comments: number;
+	};
+	return {
+		...issueDetails(pr),
+		draft: pr.draft,
+		merged: pr.merged,
+		merged_at: pr.merged_at,
+		mergeable: pr.mergeable,
+		mergeable_state: pr.mergeable_state,
+		head: {
+			ref: pr.head.ref,
+			sha: pr.head.sha,
+			label: pr.head.label,
+			repo: pr.head.repo?.full_name ?? null,
+		},
+		base: { ref: pr.base.ref, repo: pr.base.repo?.full_name ?? null },
+		merged_by: pr.merged_by?.login ?? null,
+		merge_commit_sha: pr.merge_commit_sha ?? null,
+		auto_merge: {
+			enabled: Boolean(pr.auto_merge),
+			merge_method: pr.auto_merge?.merge_method ?? null,
+		},
+		requested_reviewers:
+			pr.requested_reviewers?.map((reviewer) => reviewer.login) ?? [],
+		requested_teams:
+			pr.requested_teams?.map((team) => ({
+				slug: team.slug ?? null,
+				name: team.name,
+			})) ?? [],
+		commits: pr.commits,
+		additions: pr.additions,
+		deletions: pr.deletions,
+		changed_files: pr.changed_files,
+		review_comments: pr.review_comments,
+	};
 }
 
 async function listPullRequests(

@@ -353,6 +353,13 @@ function rollingBreakpointCanPayOff(
 	);
 }
 
+/** Claude-family decision; absent identity preserves the endpoint-name fallback. */
+export function databricksPromptCacheForModel(
+	canonicalModelName: string | null | undefined,
+): boolean | undefined {
+	return canonicalModelName ? /claude/i.test(canonicalModelName) : undefined;
+}
+
 /**
  * Inject Anthropic prompt-cache breakpoints into a Databricks chat-completions
  * body, in place. Returns true if `body` changed.
@@ -383,16 +390,9 @@ function rollingBreakpointCanPayOff(
  * text or image alike — so a `[text, image_url]` turn is cached in full rather
  * than up to its text.
  *
- * GATING: only bodies whose `model` mentions "claude". Databricks validates
- * request bodies strictly (`parallel_tool_calls` → "Extra inputs are not
- * permitted"), so an unrecognized field on a non-Claude endpoint would 400. The
- * `model` field is the serving-ENDPOINT name, which for custom endpoints is a
- * user-defined alias that need not name the backing family — the same limitation
- * documented on {@link isReasoningModelName}. A Claude endpoint aliased without
- * "claude" in its name therefore just doesn't get caching; that is the safe
- * failure direction (a missed saving, never a rejected request), and the
- * pre-provisioned `databricks-claude-*` endpoints this repo actually targets do
- * match.
+ * GATING: prefer the caller's canonical-derived `promptCache` decision. When
+ * absent, retain the serving-endpoint name check for compatibility. An explicit
+ * false prevents injection even when the endpoint alias mentions "claude".
  *
  * KILL-SWITCH: set {@link PROMPT_CACHE_DISABLED_ENV}
  * (`DATABRICKS_PROMPT_CACHE_DISABLED`) to any truthy value to stop injecting —
@@ -401,13 +401,17 @@ function rollingBreakpointCanPayOff(
  */
 export function applyDatabricksPromptCacheMarkers(
 	body: Record<string, unknown>,
+	promptCache?: boolean,
 ): boolean {
 	try {
 		if (isPromptCacheDisabled()) {
 			return false;
 		}
 		const model = body.model;
-		if (typeof model !== "string" || !/claude/i.test(model)) {
+		if (
+			typeof model !== "string" ||
+			!(promptCache ?? databricksPromptCacheForModel(model))
+		) {
 			return false;
 		}
 		const messages = body.messages;
@@ -496,11 +500,12 @@ export function applyDatabricksPromptCacheMarkers(
 export function stripUnsupportedRequestFields(
 	bodyText: string,
 	applyBodyCompat: DatabricksRequestBodyCompat = stripDatabricksUnsupportedFields,
+	promptCache?: boolean,
 ): string {
 	try {
 		const body = JSON.parse(bodyText) as Record<string, unknown>;
 		let mutated = applyBodyCompat(body);
-		if (applyDatabricksPromptCacheMarkers(body)) {
+		if (applyDatabricksPromptCacheMarkers(body, promptCache)) {
 			mutated = true;
 		}
 		return mutated ? JSON.stringify(body) : bodyText;
@@ -1399,6 +1404,8 @@ async function normalizeDatabricksErrorResponse(
 
 /** Options for {@link createDatabricksFetch}. */
 export interface DatabricksFetchOptions {
+	/** Canonical Claude family decision; undefined retains endpoint-name detection. */
+	promptCache?: boolean;
 	/** Remove DeepSeek-R1 `<think>…</think>` spans from response content. */
 	stripReasoning?: boolean;
 	/**
@@ -1427,6 +1434,7 @@ export function createDatabricksFetch(
 			const newBody = stripUnsupportedRequestFields(
 				init.body,
 				applyBodyCompat,
+				options.promptCache,
 			);
 			if (newBody !== init.body) {
 				patchedInit = { ...init, body: newBody };

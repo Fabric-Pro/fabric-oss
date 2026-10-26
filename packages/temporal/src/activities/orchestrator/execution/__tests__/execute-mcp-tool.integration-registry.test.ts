@@ -574,6 +574,7 @@ describe("read-only mode gating order", () => {
 		});
 
 		expect(result.success).toBe(true);
+		expect(result.readOnly).toBe(true);
 		// A declared READ short-circuits the gate — no project lookup at all,
 		// and there is no second gate anywhere on this path.
 		expect(h.isProjectReadOnly).not.toHaveBeenCalled();

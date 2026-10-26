@@ -5,7 +5,11 @@ import {
 	createParlumeToolRuntime,
 	type ParlumeActionContext,
 } from "./parlume-actions";
-import { executeParlumeAgent, loadParlumeAgent } from "./parlume-agent";
+import {
+	executeParlumeAgent,
+	gatherParlumeAgentContext,
+	loadParlumeAgent,
+} from "./parlume-agent";
 import { sendParlumeChatReply } from "./parlume-chat-reply";
 import { parlumeActivityLog } from "./parlume-log";
 import { createToolNarrator } from "./parlume-narration";
@@ -33,6 +37,7 @@ import {
 	MAX_LIVE_TRANSCRIPT_SEGMENTS,
 	MAX_PARLUME_CHAT_MESSAGES,
 	MAX_PARLUME_HISTORY_TURNS,
+	PARLUME_PROJECT_PASSAGE_CHARS,
 	PARLUME_PROJECT_RAG_CHUNKS,
 } from "./parlume-voice-context";
 import { retrieveProjectContextsActivity } from "./project-metadata";
@@ -192,6 +197,17 @@ export async function executeParlumeMeetingTurn(params: {
 		const agent = await timings.time("agentLoadMs", () =>
 			loadParlumeAgent(session),
 		);
+		// Runs alongside the meeting context gathered below.
+		const gathered =
+			agent.kind === "FABRIC_AGENT"
+				? withTurnTimings(timings, () =>
+						gatherParlumeAgentContext(
+							agent,
+							session,
+							turn.requestText,
+						),
+					)
+				: undefined;
 		const actionContext: ParlumeActionContext = {
 			turnId: turn.id,
 			sessionId: session.id,
@@ -276,6 +292,7 @@ export async function executeParlumeMeetingTurn(params: {
 							session.userId,
 							session.organizationId,
 							PARLUME_PROJECT_RAG_CHUNKS,
+							{ maxPassageChars: PARLUME_PROJECT_PASSAGE_CHARS },
 						),
 					),
 					timings.time("segmentsQueryMs", () =>
@@ -356,6 +373,7 @@ export async function executeParlumeMeetingTurn(params: {
 								.filter(Boolean)
 								.join("\n\n"),
 							history,
+							gathered,
 							actingGrant: params.actingGrant,
 						}),
 				),

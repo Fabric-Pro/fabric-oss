@@ -25,7 +25,7 @@ vi.mock("@repo/database", () => {
 		},
 	};
 });
-vi.mock("@repo/temporal", () => ({
+vi.mock("@repo/temporal/client", () => ({
 	getTemporalClient: async () => ({
 		workflow: { getHandle: () => ({ cancel: mocks.cancel }) },
 	}),

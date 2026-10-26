@@ -19,6 +19,7 @@
  */
 
 import { ORPCError } from "@orpc/client";
+import { RETIRED_TYPE_MESSAGE } from "@repo/utils/document-type-catalog";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { mocks, usedMiddleware, captured, displaced } = vi.hoisted(() => ({
@@ -523,6 +524,30 @@ describe("createDocumentProcedure — input validation (R19)", () => {
 		).rejects.toMatchObject({ code: "BAD_REQUEST" });
 
 		expect(mocks.createDocumentWithContent).not.toHaveBeenCalled();
+	});
+
+	it("refuses the retired Features type on every route before any write (Fizzy #2776)", async () => {
+		for (const overrides of [
+			{},
+			{ generateWithAi: true },
+			{ sourceText: "Notes.", sourceUsage: "AS_IS" as const },
+			{ awaitingSourceFile: true },
+		]) {
+			await expect(
+				handler({
+					input: input({ type: "USER_STORY", ...overrides }),
+					context: ctx,
+				}),
+			).rejects.toMatchObject({
+				code: "BAD_REQUEST",
+				message: RETIRED_TYPE_MESSAGE,
+			});
+		}
+
+		expect(mocks.createDocument).not.toHaveBeenCalled();
+		expect(mocks.createDocumentWithContent).not.toHaveBeenCalled();
+		expect(mocks.projectFindUnique).not.toHaveBeenCalled();
+		expect(mocks.dispatchDocumentGeneration).not.toHaveBeenCalled();
 	});
 
 	// QUEUED and GENERATING are set by generation dispatch with the run's

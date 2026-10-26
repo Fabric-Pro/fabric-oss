@@ -60,6 +60,10 @@ import { FABRIC_WORKFLOW_TOOL_DEFINITIONS } from "@repo/temporal/fabric-workflow
 // of its base, the same value `projects.documents.get` returns.
 import { contentIdentity } from "@repo/utils/content-identity";
 import {
+	isCreatableDocumentType,
+	RETIRED_TYPE_MESSAGE,
+} from "@repo/utils/document-type-catalog";
+import {
 	DOCUMENT_STATUS_GENERATION_OWNED,
 	generationOwnedStatusMessage,
 	isGenerationOwnedStatus,
@@ -736,7 +740,6 @@ export const PLATFORM_TOOL_DEFINITIONS: GatewayToolDefinition[] = [
 						"DESIGN_SYSTEM",
 						"ARCHITECTURE",
 						"TECHNICAL_SPEC",
-						"USER_STORY",
 						"API_SPEC",
 						"QA_STRATEGY",
 					],
@@ -4003,6 +4006,10 @@ async function handleCreateDocument(
 	if (access === "forbidden") {
 		return errorResult("No edit permission for this project");
 	}
+	// Features is read-only now; the Roadmap owns it (Fizzy #2776).
+	if (!isCreatableDocumentType(type)) {
+		return errorResult(RETIRED_TYPE_MESSAGE);
+	}
 
 	const doc = await createDocument({
 		projectId,
@@ -4013,7 +4020,6 @@ async function handleCreateDocument(
 			| "DESIGN_SYSTEM"
 			| "ARCHITECTURE"
 			| "TECHNICAL_SPEC"
-			| "USER_STORY"
 			| "API_SPEC",
 		title,
 		content,
@@ -7107,8 +7113,9 @@ async function handleQueryWorkspace(
 		// resolver the workspace chunks were embedded with at ingest. This is the
 		// one source of truth for the embedding provider+model, so the query and
 		// the stored vectors always come from the same provider/model — and, for
-		// Databricks/Azure BYOK, the correct serving URL (workspace host →
-		// /serving-endpoints, Azure → /openai/deployments/.../embeddings +
+		// Databricks/Azure BYOK, the correct inference URL (Databricks catalog
+		// models → Unity Gateway, custom names → classic serving; Azure →
+		// /openai/deployments/.../embeddings +
 		// api-version). The old hand-rolled createOpenAI bound its baseURL/key to
 		// the tenant's DEFAULT provider (getRAGProviderConfig, no task type) while
 		// ingest uses the dedicated embedding provider, so for a BYOK Databricks/

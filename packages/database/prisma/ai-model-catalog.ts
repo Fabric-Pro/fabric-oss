@@ -1282,7 +1282,7 @@ export const MODELS: ModelSeedData[] = [
 		canonicalName: "gemini-3-1-pro",
 		displayName: "Gemini 3.1 Pro (Preview)",
 		description:
-			"Google's latest and most capable model with advanced reasoning, agentic coding, and complex problem-solving",
+			"Google's Gemini 3 Pro-class model with advanced reasoning, agentic coding, and complex problem-solving",
 		family: "gemini",
 		vendor: "Google",
 		capabilities: ["TEXT", "VISION", "TOOL_CALLING", "CODE", "REASONING"],
@@ -1311,6 +1311,47 @@ export const MODELS: ModelSeedData[] = [
 			{
 				provider: "VERCEL_GATEWAY",
 				providerModelId: "google/gemini-3.1-pro-preview",
+			},
+		],
+	},
+	{
+		canonicalName: "gemini-4-argon",
+		displayName: "Gemini 4 Argon",
+		description:
+			"Google's flagship reasoning model for complex problem-solving, agentic coding, and long-context work",
+		family: "gemini",
+		vendor: "Google",
+		capabilities: ["TEXT", "VISION", "TOOL_CALLING", "CODE", "REASONING"],
+		// Input and output share this one limit.
+		contextWindow: 1048576,
+		// Per-request ceiling. Google lists 1,048,576 maximum output tokens, but
+		// one synchronous request generates at most 65,536.
+		maxOutputTokens: 65536,
+		speedTier: "BALANCED",
+		qualityTier: "PREMIUM",
+		// Google's standard rate from 2026-12-01; the lower introductory rate
+		// ($2 / $10) runs through 2026-11-30.
+		inputCostPer1M: 4,
+		outputCostPer1M: 20,
+		suitableForTasks: [
+			"COMPLEX",
+			"REASONING",
+			"CHAT",
+			"TOOL_CALLING",
+			"EVAL",
+		],
+		providerMappings: [
+			{
+				provider: "GOOGLE_VERTEX_AI",
+				providerModelId: "gemini-4-argon",
+			},
+			{
+				provider: "OPENROUTER",
+				providerModelId: "google/gemini-4-argon",
+			},
+			{
+				provider: "VERCEL_GATEWAY",
+				providerModelId: "google/gemini-4-argon",
 			},
 		],
 	},
@@ -3006,6 +3047,7 @@ export const MODEL_ALIASES: Record<string, string> = {
 	"gemini-flash": "gemini-2-5-flash",
 	"gemini-3": "gemini-3-flash",
 	"gemini-3-pro": "gemini-3-1-pro",
+	"gemini-4": "gemini-4-argon",
 
 	// DeepSeek shortcuts
 	deepseek: "deepseek-chat",

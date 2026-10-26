@@ -5,7 +5,7 @@
  * Replaces Composio with dynamic MCP tool discovery from user's configured servers.
  * Includes built-in chart generation tool for creating visualizations.
  *
- * MCP configs are fetched via API to keep the agent stateless (no direct database access).
+ * Fabric proxies MCP discovery and read-only execution; credentials stay in Fabric.
  */
 
 import { StateGraph, START, END, Annotation } from "@langchain/langgraph";
@@ -16,7 +16,7 @@ import {
 } from "@langchain/core/messages";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { DynamicStructuredTool } from "@langchain/core/tools";
-import { z } from "zod/v4";
+import { z } from "zod";
 import {
 	getAgentModelAsync,
 	logAgentUsageFromRunnableConfig,
@@ -31,93 +31,20 @@ import {
 	countToolRoundsSinceLastHuman,
 	deriveRecursionLimit,
 } from "@repo/agent-core/recursion";
-import { createMCPClient } from "@ai-sdk/mcp";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { decryptApiKey } from "@repo/utils";
-
-type McpClientType = Awaited<ReturnType<typeof createMCPClient>>;
+import type { createMCPClient } from "@ai-sdk/mcp";
 
 export const MAX_TOOL_ITERATIONS = 20;
 
 /**
  * The agent-tool loop needs 2*N + 1 supersteps to reach its finalize call;
- * discover_tools and cleanup add two fixed graph nodes outside that loop.
+ * discover_tools adds one fixed graph node outside that loop.
  * The shared derivation adds a five-step safety buffer above this invariant.
  */
 export const DEFAULT_RECURSION_LIMIT = deriveRecursionLimit({
 	maxToolIterations: MAX_TOOL_ITERATIONS,
-	graphOverhead: 2,
+	graphOverhead: 1,
 });
 
-/**
- * Build authentication headers for MCP servers
- * (Copied from @repo/mcp to avoid database dependency)
- */
-function buildAuthHeaders(
-	authType: string,
-	token?: string | null,
-	apiKeyMethod: "BEARER" | "HEADER" | "PLAIN" = "BEARER",
-	apiKeyHeaderName?: string | null,
-): Record<string, string> {
-	if (!token) return {};
-
-	if (authType === "API_KEY") {
-		if (apiKeyMethod === "BEARER") {
-			return { Authorization: `Bearer ${token}` };
-		}
-		if (apiKeyMethod === "PLAIN") {
-			return { Authorization: token };
-		}
-		// HEADER method - use custom header name or default to X-API-Key
-		const headerName = apiKeyHeaderName || "X-API-Key";
-		return { [headerName]: token };
-	}
-
-	if (authType === "OAUTH2") {
-		return { Authorization: `Bearer ${token}` };
-	}
-
-	return {};
-}
-
-/**
- * Create an MCP client from options (no database dependency)
- */
-async function createMcpClient(options: {
-	serverUrl: string;
-	transport: "HTTP" | "SSE" | string;
-	headers?: Record<string, string>;
-}): Promise<McpClientType> {
-	const { serverUrl, transport, headers = {} } = options;
-
-	// Create transport based on type
-	const transportInstance =
-		transport === "SSE"
-			? new SSEClientTransport(new URL(serverUrl), {
-					requestInit: { headers },
-				})
-			: new StreamableHTTPClientTransport(new URL(serverUrl), {
-					requestInit: { headers },
-				});
-
-	// Create and return the MCP client
-	return await createMCPClient({ transport: transportInstance });
-}
-
-/**
- * Close an MCP client connection
- */
-async function closeMcpClient(client: McpClientType): Promise<void> {
-	try {
-		await client.close();
-	} catch (error) {
-		console.warn("[MCP] Error closing client:", error);
-	}
-}
-
-// Use 'any' for MCP client type to avoid type instantiation depth issues with experimental @ai-sdk/mcp API
-type McpClientAny = any;
 import {
 	createChartArtifact,
 	type ChartArtifact,
@@ -135,7 +62,10 @@ import {
 	clearConnectionSuggestions,
 	detectMentionedButNotConnected,
 	type ConnectionSuggestionArtifact,
+	type UnavailableMcpServer,
 } from "./analytics-tools";
+
+type McpClientType = Awaited<ReturnType<typeof createMCPClient>>;
 
 // State annotation for the agent
 const DataAnalystAnnotation = Annotation.Root({
@@ -158,10 +88,6 @@ const DataAnalystAnnotation = Annotation.Root({
 	// MCP tool state
 	// Use 'any[]' to avoid TypeScript type instantiation depth issues with DynamicStructuredTool and Zod
 	mcpTools: Annotation<any[]>({
-		reducer: (_, update) => update,
-		default: () => [],
-	}),
-	mcpClients: Annotation<McpClientAny[]>({
 		reducer: (_, update) => update,
 		default: () => [],
 	}),
@@ -192,7 +118,7 @@ type DataAnalystState = typeof DataAnalystAnnotation.State;
 
 /**
  * Create the built-in chart tool
- * This tool is always available and creates structured chart artifacts
+ * Creates structured chart artifacts
  */
 function createChartTool(
 	addArtifact: (artifact: ChartArtifact) => void,
@@ -294,72 +220,64 @@ function addArtifact(artifact: ChartArtifact): void {
 	currentArtifacts.push(artifact);
 }
 
-/**
- * MCP config response from the API
- */
-interface McpConfigResponse {
-	id: string;
+interface McpProxyServer {
+	configId: string;
 	name: string;
-	transportType: string;
-	baseUrl?: string;
-	command?: string;
-	args?: string[];
-	headers?: Record<string, string>;
-	env?: Record<string, string>;
-	authType: string;
-	encryptedApiKey?: string;
-	apiKeyHeaderName?: string;
-	apiKeyMethod?: string;
-	accessToken?: string;
-	serverName?: string;
-	serverDefaultUrl?: string;
-	mcpServer?: { key?: string | null } | null;
+	serverName: string;
+	tools: Awaited<ReturnType<McpClientType["listTools"]>>["tools"];
 }
 
-/**
- * MCP server keys whose credential is the person's GitLab connection, held by
- * Fabric's GitLab connection service (the list in `@repo/database`'s
- * `gitlab-personal-keys`, which this agent cannot import). Their config rows
- * carry no credential this agent could use, so it skips them.
- */
-const GITLAB_PERSONAL_MCP_SERVER_KEYS = new Set(["gitlab", "gitlab-official"]);
-
-/**
- * Fetch MCP configs from Fabric API (stateless - no database access)
- */
-async function fetchMcpConfigs(aiToken: string): Promise<McpConfigResponse[]> {
+/** List or call MCP tools through Fabric without receiving server credentials. */
+async function requestMcpTools(
+	aiToken: string,
+	body:
+		| { operation: "list" }
+		| {
+				operation: "call";
+				configId: string;
+				toolName: string;
+				arguments: Record<string, unknown>;
+		  },
+) {
 	const fabricApiUrl =
 		process.env.RUNTIME_API_URL ||
 		process.env.FABRIC_API_URL ||
 		"http://localhost:3001";
-	const url = `${fabricApiUrl}/api/mcp/configs`;
-
-	console.log("[DataAnalyst] Fetching MCP configs from:", url);
-
-	const response = await fetch(url, {
-		method: "GET",
-		headers: {
-			"X-AI-Token": aiToken,
-			"Content-Type": "application/json",
-		},
+	const response = await fetch(`${fabricApiUrl}/api/internal/mcp-tools`, {
+		method: "POST",
+		headers: { "X-AI-Token": aiToken, "Content-Type": "application/json" },
+		body: JSON.stringify(body),
 	});
-
 	if (!response.ok) {
-		const error = await response.text();
+		const operation =
+			body.operation === "call"
+				? `call MCP tool ${body.toolName}`
+				: "list MCP tools";
+		let detail = "";
+		if ([409, 422, 429].includes(response.status)) {
+			const body: unknown = await response.json().catch(() => null);
+			if (body && typeof body === "object") {
+				const { message, error } = body as {
+					message?: unknown;
+					error?: unknown;
+				};
+				const text = typeof message === "string" ? message : error;
+				if (typeof text === "string")
+					detail = `: ${text.slice(0, 500)}`;
+			}
+		}
 		throw new Error(
-			`Failed to fetch MCP configs: ${response.status} ${error}`,
+			`Failed to ${operation}: HTTP ${response.status}${detail}`,
 		);
 	}
-
-	const data = await response.json();
-	return data.configs || [];
+	return response.json();
 }
 
 /**
  * Node: Discover and load MCP tools from user's configured servers
  * Also includes the built-in chart tool
  *
- * Uses the Fabric API to fetch MCP configs (stateless pattern - no direct database access)
+ * Uses Fabric to list and execute read-only tools (no direct server connections).
  */
 async function discoverMcpTools(
 	state: DataAnalystState,
@@ -367,174 +285,40 @@ async function discoverMcpTools(
 ): Promise<Partial<DataAnalystState>> {
 	const aiToken = config?.configurable?.ai_token as string | undefined;
 
-	// Always include the built-in chart tool
+	// Include the built-in chart tool before discovering MCP tools.
 	const chartTool = createChartTool(addArtifact);
 	// Use 'any' array type to avoid TypeScript type instantiation depth issues with Zod schemas
 	const tools: any[] = [chartTool];
-	const clients: McpClientAny[] = [];
+	const usedNames = new Set([chartTool.name]);
 
 	console.log("[DataAnalyst] Added built-in chart tool");
 
 	if (!aiToken) {
 		console.log("[DataAnalyst] No AI token, skipping MCP tool discovery");
-		return { mcpTools: tools, mcpClients: [] };
+		return { mcpTools: tools };
 	}
 
 	console.log("[DataAnalyst] Discovering MCP tools via API");
 
 	try {
-		// Fetch MCP configs from Fabric API
-		const configs = await fetchMcpConfigs(aiToken);
+		// Fetch read-only tool definitions from Fabric.
+		const { servers: configs, unavailable: unavailableValue }: {
+			servers: McpProxyServer[];
+			unavailable?: unknown;
+		} =
+			await requestMcpTools(aiToken, { operation: "list" });
+		const unavailable: UnavailableMcpServer[] = Array.isArray(unavailableValue)
+			? unavailableValue.filter(
+					(entry): entry is UnavailableMcpServer =>
+						entry !== null &&
+						typeof entry === "object" &&
+						typeof entry.name === "string" &&
+						typeof entry.code === "string",
+				)
+			: [];
+
 		console.log(`[DataAnalyst] Found ${configs.length} MCP configs`);
 
-		// Create MCP clients and extract tools
-		for (const mcpConfig of configs) {
-			try {
-				if (
-					GITLAB_PERSONAL_MCP_SERVER_KEYS.has(
-						mcpConfig.mcpServer?.key ?? "",
-					)
-				) {
-					console.log(
-						`[DataAnalyst] Skipping GitLab MCP config ${mcpConfig.name}: its credential is the person's GitLab connection`,
-					);
-					continue;
-				}
-				const serverUrl =
-					mcpConfig.baseUrl || mcpConfig.serverDefaultUrl;
-				if (!serverUrl) {
-					console.warn(
-						`[DataAnalyst] No URL for MCP config ${mcpConfig.name}, skipping`,
-					);
-					continue;
-				}
-
-				// Build auth headers
-				let authHeaders: Record<string, string> = {};
-				if (
-					mcpConfig.authType === "API_KEY" &&
-					mcpConfig.encryptedApiKey
-				) {
-					const apiKey = decryptApiKey(mcpConfig.encryptedApiKey);
-					authHeaders = buildAuthHeaders(
-						mcpConfig.authType,
-						apiKey,
-						(mcpConfig.apiKeyMethod as
-							| "BEARER"
-							| "HEADER"
-							| "PLAIN") || "BEARER",
-						mcpConfig.apiKeyHeaderName,
-					);
-				} else if (
-					mcpConfig.authType === "OAUTH2" &&
-					mcpConfig.accessToken
-				) {
-					authHeaders = {
-						Authorization: `Bearer ${mcpConfig.accessToken}`,
-					};
-				}
-
-				// Merge with config headers
-				const headers = { ...mcpConfig.headers, ...authHeaders };
-
-				// Create MCP client
-				const client = await createMcpClient({
-					serverUrl,
-					transport:
-						mcpConfig.transportType === "SSE" ? "SSE" : "HTTP",
-					headers,
-				});
-
-				clients.push(client);
-				const serverName = mcpConfig.serverName || mcpConfig.name;
-
-				// Get tools from this MCP server
-				const mcpTools = await client.tools();
-
-				for (const [toolName, toolDef] of Object.entries(mcpTools)) {
-					const def = toolDef as {
-						description?: string;
-						inputSchema?: Record<string, unknown>;
-					};
-					// The AI SDK MCPClient interface intentionally doesn't
-					// expose a generic callTool() method; each tool from
-					// client.tools() carries its own execute() that funnels
-					// into the underlying tools/call request.
-					const mcpTool = toolDef as unknown as {
-						execute: (
-							args: Record<string, unknown>,
-							context: {
-								toolCallId: string;
-								messages: unknown[];
-							},
-						) => Promise<unknown>;
-					};
-
-					// Convert MCP tool to LangChain DynamicStructuredTool
-					const lcTool = new DynamicStructuredTool({
-						name: `${serverName.toLowerCase().replace(/\s+/g, "_")}_${toolName}`,
-						description:
-							def.description ||
-							`Tool from ${serverName}: ${toolName}`,
-						schema: convertJsonSchemaToZod(def.inputSchema),
-						func: async (input: Record<string, unknown>) => {
-							try {
-								// Execute the MCP tool
-								const result = await mcpTool.execute(input, {
-									toolCallId: `${toolName}-${Date.now()}`,
-									messages: [],
-								});
-
-								// Extract text content from result
-								if (
-									result &&
-									typeof result === "object" &&
-									"content" in result
-								) {
-									const content = result.content;
-									if (Array.isArray(content)) {
-										return content
-											.map((c: any) => {
-												if (c.type === "text")
-													return c.text;
-												if (c.type === "image")
-													return `![Image](${c.data})`;
-												return JSON.stringify(c);
-											})
-											.join("\n");
-									}
-									return JSON.stringify(content);
-								}
-								return JSON.stringify(result);
-							} catch (error) {
-								const msg =
-									error instanceof Error
-										? error.message
-										: String(error);
-								console.error(
-									`[DataAnalyst] Tool ${toolName} failed:`,
-									msg,
-								);
-								return `Error executing ${toolName}: ${msg}`;
-							}
-						},
-					});
-
-					tools.push(lcTool);
-				}
-
-				console.log(
-					`[DataAnalyst] Loaded ${Object.keys(mcpTools).length} tools from ${serverName}`,
-				);
-			} catch (error) {
-				console.warn(
-					`[DataAnalyst] Failed to load MCP config ${mcpConfig.name}:`,
-					error,
-				);
-			}
-		}
-
-		// Add analytics tools
 		const fabricApiUrl =
 			process.env.RUNTIME_API_URL ||
 			process.env.FABRIC_API_URL ||
@@ -543,13 +327,42 @@ async function discoverMcpTools(
 			name: c.name,
 			serverName: c.serverName,
 		}));
+		const analyticsTools = [
+			createListDataSourcesTool(connectedConfigs, unavailable),
+			createSuggestConnectionTool(connectedConfigs, fabricApiUrl, unavailable),
+			createCalculateStatisticsTool(),
+			createAggregateDataTool(),
+			createDetectTrendsTool(),
+			createJoinDatasetsTool(),
+		];
+		// Reserve built-in names before allocating names for connected servers.
+		for (const tool of analyticsTools) usedNames.add(tool.name);
 
-		tools.push(createListDataSourcesTool(connectedConfigs));
-		tools.push(createSuggestConnectionTool(connectedConfigs, fabricApiUrl));
-		tools.push(createCalculateStatisticsTool());
-		tools.push(createAggregateDataTool());
-		tools.push(createDetectTrendsTool());
-		tools.push(createJoinDatasetsTool());
+		for (const server of configs) {
+			const client: Pick<McpClientType, "listTools" | "callTool"> = {
+				listTools: async () => ({ tools: server.tools }),
+				callTool: async ({ name, arguments: args }) => {
+					const { result } = await requestMcpTools(aiToken, {
+						operation: "call",
+						configId: server.configId,
+						toolName: name,
+						arguments: args ?? {},
+					});
+					return result;
+				},
+			};
+			const mcpTools = await loadMcpTools(
+				client,
+				server.serverName,
+				usedNames,
+			);
+			tools.push(...mcpTools);
+			console.log(
+				`[DataAnalyst] Loaded ${mcpTools.length} tools from ${server.serverName}`,
+			);
+		}
+
+		tools.push(...analyticsTools);
 
 		console.log(
 			`[DataAnalyst] Total tools loaded: ${tools.length} (including built-in analytics tools)`,
@@ -558,7 +371,6 @@ async function discoverMcpTools(
 		const availableSources = configs.map((c) => c.serverName || c.name);
 		return {
 			mcpTools: tools,
-			mcpClients: clients,
 			availableDataSources: availableSources,
 		};
 	} catch (error) {
@@ -576,66 +388,359 @@ async function discoverMcpTools(
 		tools.push(createDetectTrendsTool());
 		tools.push(createJoinDatasetsTool());
 
-		return { mcpTools: tools, mcpClients: [], availableDataSources: [] };
+		return { mcpTools: tools, availableDataSources: [] };
 	}
 }
 
-/**
- * Convert JSON Schema to Zod schema (simplified)
- */
-function convertJsonSchemaToZod(
-	schema?: Record<string, unknown>,
-): z.ZodObject<any> {
-	if (!schema || !schema.properties) {
-		return z.object({}).loose();
+type McpToolDefinition = Pick<
+	Awaited<ReturnType<McpClientType["listTools"]>>["tools"][number],
+	"name" | "description"
+> & { inputSchema?: unknown };
+
+function isPlainSchemaObject(value: unknown): value is Record<string, unknown> {
+	return (
+		value !== null &&
+		typeof value === "object" &&
+		(Object.getPrototypeOf(value) === Object.prototype ||
+			Object.getPrototypeOf(value) === null)
+	);
+}
+
+// Construct the allowlisted grammar exercised by mcp-tool-schema.test.ts.
+// Dropped constraints are left to the MCP server's input validation.
+function projectMcpInputSchema(
+	schema: unknown,
+	onFallback?: (reason: string) => void,
+): Record<string, unknown> {
+	const maxDepth = 8;
+	const maxNodes = 2000;
+	const maxSchemaChars = 65_536;
+	let visitedNodes = 0;
+	let estimatedChars = 0;
+	let budgetReason = `schema was too large (projection exceeds ${maxNodes} nodes)`;
+	const budgetExceeded = new Error("schema was too large");
+	const validTypes = new Set([
+		"string",
+		"number",
+		"integer",
+		"boolean",
+		"object",
+		"array",
+		"null",
+	]);
+	const fallback = (reason: string) => {
+		onFallback?.(reason);
+		return { type: "object", properties: {} };
+	};
+	if (!isPlainSchemaObject(schema)) {
+		return fallback("inputSchema must be a plain object");
+	}
+	const definitionsRoot = schema;
+	const resolveRef = (ref: unknown) => {
+		const match =
+			typeof ref === "string"
+				? /^#\/(\$defs|definitions)\/([^/]+)$/.exec(ref)
+				: null;
+		if (!match) return undefined;
+		const definitions = definitionsRoot[match[1]];
+		const name = match[2].replace(/~1/g, "/").replace(/~0/g, "~");
+		if (
+			!isPlainSchemaObject(definitions) ||
+			!Object.hasOwn(definitions, name)
+		) {
+			return undefined;
+		}
+		const definition = definitions[name];
+		return isPlainSchemaObject(definition) ? definition : undefined;
+	};
+
+	// Resolve the root separately so its object-only contract also applies to refs.
+	let root = schema;
+	let rootDescription: string | undefined;
+	for (let depth = 0; ; depth++) {
+		if ("type" in root && root.type !== "object") {
+			return fallback('root type must be the string "object"');
+		}
+		const unsupported = ["anyOf", "oneOf", "allOf", "not", "enum"].find(
+			(keyword) => keyword in root,
+		);
+		if (unsupported)
+			return fallback(`root ${unsupported} is not supported`);
+		if (
+			rootDescription === undefined &&
+			typeof root.description === "string"
+		) {
+			rootDescription = root.description;
+		}
+		if (!("$ref" in root)) break;
+		const definition = resolveRef(root.$ref);
+		if (!definition || depth >= maxDepth) {
+			return fallback(
+				"root $ref could not be resolved within the depth limit",
+			);
+		}
+		root = definition;
 	}
 
-	const properties = schema.properties as Record<
-		string,
-		Record<string, unknown>
-	>;
-	const required = (schema.required as string[]) || [];
-	const shape: Record<string, z.ZodTypeAny> = {};
+	function addSize(chars: number) {
+		estimatedChars += chars;
+		if (estimatedChars > maxSchemaChars) {
+			budgetReason = `schema was too large (estimated ${estimatedChars} characters; limit ${maxSchemaChars})`;
+			throw budgetExceeded;
+		}
+	}
 
-	for (const [key, prop] of Object.entries(properties)) {
-		let zodType: z.ZodTypeAny;
+	function project(value: unknown, depth: number): Record<string, unknown> {
+		// Bound traversal, including ref/allOf expansion and empty schema nodes.
+		if (++visitedNodes > maxNodes) throw budgetExceeded;
+		if (!isPlainSchemaObject(value)) return {};
+		const text = value.description;
+		if (typeof text === "string") addSize(text.length);
+		const description =
+			typeof text === "string" ? { description: text } : {};
+		if (depth > maxDepth) return description;
+		if ("$ref" in value) {
+			const definition = resolveRef(value.$ref);
+			return definition
+				? { ...project(definition, depth + 1), ...description }
+				: description;
+		}
+		if (
+			depth > 0 &&
+			Array.isArray(value.allOf) &&
+			value.allOf.length === 1 &&
+			isPlainSchemaObject(value.allOf[0])
+		) {
+			return { ...project(value.allOf[0], depth + 1), ...description };
+		}
 
-		switch (prop.type) {
-			case "string":
-				zodType = z.string();
-				if (prop.enum) {
-					zodType = z.enum(prop.enum as [string, ...string[]]);
+		const projected: Record<string, unknown> = { ...description };
+		const types = Array.isArray(value.type)
+			? [...value.type]
+			: [value.type];
+		if (
+			types.length > 0 &&
+			types.every(
+				(type) => typeof type === "string" && validTypes.has(type),
+			)
+		) {
+			projected.type = Array.isArray(value.type)
+				? [...new Set(types)]
+				: value.type;
+		}
+		if (
+			Array.isArray(value.enum) &&
+			value.enum.length > 0 &&
+			[...value.enum].every(
+				(item) =>
+					item === null ||
+					["string", "number", "boolean"].includes(typeof item),
+			)
+		) {
+			addSize(JSON.stringify(value.enum).length);
+			projected.enum = [...value.enum];
+		} else if (
+			depth > 0 &&
+			!("enum" in value) &&
+			(value.const === null ||
+				["string", "number", "boolean"].includes(typeof value.const))
+		) {
+			addSize(JSON.stringify([value.const]).length);
+			projected.enum = [value.const];
+		}
+		for (const keyword of ["anyOf", "oneOf"]) {
+			const branches = value[keyword];
+			if (
+				Array.isArray(branches) &&
+				branches.length > 0 &&
+				[...branches].every(isPlainSchemaObject)
+			) {
+				projected.anyOf = branches.map((branch) =>
+					project(branch, depth + 1),
+				);
+				break;
+			}
+		}
+		const keptTypes = Array.isArray(projected.type)
+			? projected.type
+			: [projected.type];
+		if (keptTypes.includes("array")) {
+			projected.items = project(value.items, depth + 1);
+		}
+		if (
+			depth === 0 ||
+			keptTypes.includes("object") ||
+			isPlainSchemaObject(value.properties)
+		) {
+			const properties = Object.fromEntries(
+				Object.entries(
+					isPlainSchemaObject(value.properties)
+						? value.properties
+						: {},
+				).map(([key, property]) => {
+					addSize(JSON.stringify(key).length);
+					return [key, project(property, depth + 1)];
+				}),
+			);
+			projected.properties = properties;
+			if (Array.isArray(value.required)) {
+				const required = value.required.filter(
+					(key) =>
+						typeof key === "string" &&
+						Object.hasOwn(properties, key),
+				);
+				if (required.length > 0) {
+					addSize(JSON.stringify(required).length);
+					projected.required = required;
 				}
-				break;
-			case "number":
-			case "integer":
-				zodType = z.number();
-				break;
-			case "boolean":
-				zodType = z.boolean();
-				break;
-			case "array":
-				zodType = z.array(z.unknown());
-				break;
-			case "object":
-				zodType = z.record(z.string(), z.unknown());
-				break;
-			default:
-				zodType = z.unknown();
+			}
+			if (typeof value.additionalProperties === "boolean") {
+				projected.additionalProperties = value.additionalProperties;
+			} else if (isPlainSchemaObject(value.additionalProperties)) {
+				projected.additionalProperties = project(
+					value.additionalProperties,
+					depth + 1,
+				);
+			}
 		}
-
-		if (prop.description) {
-			zodType = zodType.describe(prop.description as string);
-		}
-
-		if (!required.includes(key)) {
-			zodType = zodType.optional();
-		}
-
-		shape[key] = zodType;
+		return projected;
 	}
 
-	return z.object(shape);
+	try {
+		const projected = project(root, 0);
+		projected.type = "object";
+		if (rootDescription !== undefined) {
+			if (rootDescription !== projected.description)
+				addSize(rootDescription.length);
+			projected.description = rootDescription;
+		}
+		// Account for escaping and schema structure in the final serialized bound.
+		const serializedChars = JSON.stringify(projected).length;
+		if (serializedChars > maxSchemaChars) {
+			return fallback(
+				`schema was too large (${serializedChars} characters; limit ${maxSchemaChars})`,
+			);
+		}
+		return projected;
+	} catch (error) {
+		if (error === budgetExceeded) {
+			return fallback(budgetReason);
+		}
+		throw error;
+	}
+}
+
+function createMcpTool(
+	definition: McpToolDefinition,
+	callTool: McpClientType["callTool"],
+	serverName: string,
+	usedNames = new Set<string>(),
+) {
+	const { name: toolName, description, inputSchema } = definition;
+	const schema = projectMcpInputSchema(inputSchema, (reason) => {
+		console.warn(
+			`[DataAnalyst] Tool ${serverName}/${toolName} is using an empty object schema: ${reason}`,
+		);
+	});
+
+	const sanitizedName =
+		`${serverName.toLowerCase().replace(/\s+/g, "_")}_${toolName}`.replace(
+			/[^a-zA-Z0-9_-]/g,
+			"_",
+		);
+	const baseName = (
+		/^[a-zA-Z_]/.test(sanitizedName) ? sanitizedName : `_${sanitizedName}`
+	).slice(0, 64);
+	let name = baseName;
+	for (let index = 1; usedNames.has(name); index++) {
+		const suffix = `_${index.toString(36)}`;
+		name = `${baseName.slice(0, 64 - suffix.length)}${suffix}`;
+	}
+	usedNames.add(name);
+
+	return new DynamicStructuredTool({
+		name,
+		description: (
+			description || `Tool from ${serverName}: ${toolName}`
+		).slice(0, 4096),
+		schema,
+		verboseParsingErrors: true,
+		func: async (input: Record<string, unknown>) => {
+			try {
+				const result = await callTool({
+					name: toolName,
+					arguments: input,
+				});
+
+				// Extract text content from result, including isError results.
+				if (
+					result &&
+					typeof result === "object" &&
+					"content" in result
+				) {
+					const content = result.content;
+					if (Array.isArray(content)) {
+						return content
+							.map((c) => {
+								if (c.type === "text") return c.text;
+								if (c.type === "image")
+									return `![Image](${c.data})`;
+								return JSON.stringify(c);
+							})
+							.join("\n");
+					}
+					return JSON.stringify(content);
+				}
+				return JSON.stringify(result);
+			} catch (error) {
+				const msg =
+					error instanceof Error ? error.message : String(error);
+				console.error(`[DataAnalyst] Tool ${toolName} failed:`, msg);
+				return `Error executing ${toolName}: ${msg}`;
+			}
+		},
+	});
+}
+
+async function loadMcpTools(
+	client: Pick<McpClientType, "listTools" | "callTool">,
+	serverName: string,
+	usedNames = new Set<string>(),
+) {
+	const maxPages = 100;
+	let definitions = await client.listTools();
+	let pages = 1;
+	const tools = [...definitions.tools];
+	const seenCursors = new Set<string>();
+	while (definitions.nextCursor != null) {
+		if (pages >= maxPages) {
+			console.warn(
+				`[DataAnalyst] Stopped listing tools from ${serverName}: reached the ${maxPages}-page limit`,
+			);
+			break;
+		}
+		const cursor = definitions.nextCursor;
+		if (seenCursors.has(cursor)) {
+			console.warn(
+				`[DataAnalyst] Stopped listing tools from ${serverName}: repeated pagination cursor`,
+			);
+			break;
+		}
+		seenCursors.add(cursor);
+		definitions = await client.listTools({
+			params: { cursor },
+		});
+		pages++;
+		tools.push(...definitions.tools);
+	}
+	return tools.map((definition) =>
+		createMcpTool(
+			definition,
+			(args) => client.callTool(args),
+			serverName,
+			usedNames,
+		),
+	);
 }
 
 /**
@@ -855,27 +960,9 @@ async function toolNode(
 }
 
 /**
- * Node: Cleanup MCP clients
- */
-async function cleanupNode(
-	state: DataAnalystState,
-): Promise<Partial<DataAnalystState>> {
-	// Close all MCP clients
-	for (const client of state.mcpClients) {
-		try {
-			await closeMcpClient(client);
-		} catch {
-			// Ignore cleanup errors
-		}
-	}
-
-	return { mcpClients: [] };
-}
-
-/**
  * Routing function: Should we continue to tools or end?
  */
-function shouldContinue(state: DataAnalystState): "tools" | "cleanup" {
+function shouldContinue(state: DataAnalystState): "tools" | typeof END {
 	const lastMessage = state.messages[state.messages.length - 1];
 
 	if (
@@ -890,19 +977,23 @@ function shouldContinue(state: DataAnalystState): "tools" | "cleanup" {
 		const toolRounds = countToolRoundsSinceLastHuman(state.messages);
 		if (toolRounds > MAX_TOOL_ITERATIONS) {
 			console.warn(
-				"[DataAnalyst] Tool iteration limit exceeded; routing to cleanup",
+				"[DataAnalyst] Tool iteration limit exceeded; ending graph",
 				{ toolRounds, maxToolIterations: MAX_TOOL_ITERATIONS },
 			);
-			return "cleanup";
+			return END;
 		}
 		return "tools";
 	}
 
-	return "cleanup";
+	return END;
 }
 
 // Exported for unit tests only — not part of the public surface.
 export const __testing = {
+	discoverMcpTools,
+	projectMcpInputSchema,
+	createMcpTool,
+	loadMcpTools,
 	sanitizeToolCallArgs,
 	toFriendlyAgentError,
 	agentNode,
@@ -918,16 +1009,14 @@ export function createDataAnalystGraph() {
 		.addNode("discover_tools", discoverMcpTools)
 		.addNode("agent", agentNode)
 		.addNode("tools", toolNode)
-		.addNode("cleanup", cleanupNode)
 		// Edges
 		.addEdge(START, "discover_tools")
 		.addEdge("discover_tools", "agent")
 		.addConditionalEdges("agent", shouldContinue, {
 			tools: "tools",
-			cleanup: "cleanup",
+			[END]: END,
 		})
-		.addEdge("tools", "agent")
-		.addEdge("cleanup", END);
+		.addEdge("tools", "agent");
 
 	return graph.compile();
 }

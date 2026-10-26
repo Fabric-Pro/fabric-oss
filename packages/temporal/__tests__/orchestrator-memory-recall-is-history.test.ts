@@ -11,7 +11,7 @@
  * Library resolution with nothing bound, so the seeded default body) into the
  * real initialization phase, and pin that the system prompt the model receives
  * frames that summary as history to check with a tool before reporting it —
- * and never as done in this turn.
+ * rather than as done in this turn.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -29,6 +29,7 @@ vi.mock("@repo/database", async () => {
 			"@repo/database",
 		);
 	return {
+		renderOrchestratorMemoryContext: actual.renderOrchestratorMemoryContext,
 		buildMemoryContextPromptVariables:
 			actual.buildMemoryContextPromptVariables,
 		...db,
@@ -143,13 +144,76 @@ describe("loadOrchestratorMemoryActivity", () => {
 		expect(memoryContextPrompt).toContain(
 			"- [2026-10-16] Weekly project status page: Created a scheduled workflow",
 		);
-		// The rule precedes every summary it governs.
+		// Compare the rule and summary positions in the resolved text.
 		expect(memoryContextPrompt.indexOf(RULE_HEADING)).toBeLessThan(
 			memoryContextPrompt.indexOf("Created a scheduled workflow"),
 		);
 	});
 
+	it("returns rendered episode counts after overlapping sections are omitted", async () => {
+		const result = await loadOrchestratorMemoryActivity(MEMORY_INPUT);
+		expect(result.relevantEpisodes.map((row) => row.id)).toEqual([
+			DELETED_WORKFLOW_EPISODE.id,
+		]);
+		expect(result.recentEpisodes).toEqual([]);
+		expect(
+			result.memoryContextPrompt.match(/Weekly project status page:/g),
+		).toHaveLength(1);
+	});
+
+	it("trims a large recent episode and counts retained scoped episodes using one binding lookup", async () => {
+		const row = DELETED_WORKFLOW_EPISODE;
+		db.buildOrchestratorMemoryContext.mockResolvedValue({
+			preferences: EMPTY_PREFERENCES,
+			relevantEpisodes: [row],
+			projectEpisodes: [
+				{
+					...row,
+					id: "project-only",
+					title: "Project fact",
+					summary: "Project decision",
+				},
+			],
+			workspaceEpisodes: [
+				{
+					...row,
+					id: "workspace-only",
+					title: "Workspace fact",
+					summary: "Workspace decision",
+				},
+			],
+			recentEpisodes: [
+				{
+					...row,
+					id: "large-recent",
+					title: "Large recent fact",
+					summary: "x".repeat(9000),
+				},
+			],
+		});
+		const result = await loadOrchestratorMemoryActivity(MEMORY_INPUT);
+		expect(result.relevantEpisodes.map((row) => row.id)).toEqual([
+			row.id,
+			"project-only",
+			"workspace-only",
+		]);
+		expect(result.recentEpisodes).toEqual([]);
+		expect(
+			Buffer.byteLength(result.memoryContextPrompt),
+		).toBeLessThanOrEqual(8192);
+		expect(result.memoryContextPrompt).not.toContain("Large recent fact");
+		expect(db.getBoundPromptForAgent).toHaveBeenCalledTimes(1);
+	});
+
 	it("resolves the wording from the Prompt Library for the run's scope", async () => {
+		// This binding test recalls the episode only through its project section.
+		db.buildOrchestratorMemoryContext.mockResolvedValue({
+			preferences: EMPTY_PREFERENCES,
+			projectEpisodes: [DELETED_WORKFLOW_EPISODE],
+			relevantEpisodes: [],
+			recentEpisodes: [],
+			workspaceEpisodes: [],
+		});
 		db.getBoundPromptForAgent.mockResolvedValue({
 			format: "HANDLEBARS",
 			version: {

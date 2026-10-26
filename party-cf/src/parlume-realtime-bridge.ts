@@ -2,9 +2,13 @@ import type { ParlumeAuraOutlet } from "./parlume-aura";
 import type { ParlumeChatChannel } from "./parlume-chat-channel";
 import {
 	openParlumeRealtimeSocket,
+	type ParlumeRealtimeCredentials,
 	parseParlumeRealtimeCredentials,
 } from "./parlume-realtime";
-import { ParlumeRealtimeEngine } from "./parlume-realtime-engine";
+import {
+	type ParlumeRealtimeContext,
+	ParlumeRealtimeEngine,
+} from "./parlume-realtime-engine";
 import { isRecord } from "./parlume-stream-auth";
 
 /** What the realtime engine needs from the meeting's bridge. */
@@ -17,6 +21,7 @@ export interface ParlumeRealtimeBridge {
 	outlet(): ParlumeAuraOutlet | null;
 	generation(): number;
 	chat: Pick<ParlumeChatChannel, "postFromVoice" | "recentMessages">;
+	saveContext(context: ParlumeRealtimeContext): void;
 	/** The engine gave up; the meeting carries on with the classic engine. */
 	fallBack(engine: ParlumeRealtimeEngine, reason: string): void;
 	log(
@@ -36,15 +41,19 @@ export function createParlumeRealtimeEngine(
 	bridge: ParlumeRealtimeBridge,
 ): ParlumeRealtimeEngine {
 	const { sessionId, botId } = bridge;
+	// Usage is recorded against whichever host the latest secret was minted on.
+	let provider: ParlumeRealtimeCredentials["provider"] = "OPENAI_DIRECT";
 	const engine: ParlumeRealtimeEngine = new ParlumeRealtimeEngine({
 		credentials: async () => {
 			const response = await bridge.postToFabric(
 				"/api/internal/parlume/realtime-session",
 				{ sessionId, botId },
 			);
-			return parseParlumeRealtimeCredentials(
+			const credentials = parseParlumeRealtimeCredentials(
 				await response?.json().catch(() => null),
 			);
+			provider = credentials?.provider ?? provider;
+			return credentials;
 		},
 		connect: openParlumeRealtimeSocket,
 		outlet: () => bridge.outlet(),
@@ -82,8 +91,10 @@ export function createParlumeRealtimeEngine(
 			void bridge.postToFabric("/api/internal/parlume/realtime-usage", {
 				sessionId,
 				botId,
+				provider,
 				...usage,
 			}),
+		saveContext: (context) => bridge.saveContext(context),
 		fallBack: (reason) => bridge.fallBack(engine, reason),
 		log: (level, event, meta) =>
 			bridge.log(level, event, { sessionId, botId, ...meta }),

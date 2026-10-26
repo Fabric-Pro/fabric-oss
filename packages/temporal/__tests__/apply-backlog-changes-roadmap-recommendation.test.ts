@@ -31,6 +31,7 @@ const { mockDb, mocks } = vi.hoisted(() => {
 		updateStory: vi.fn(),
 		recordAudit: vi.fn(),
 		recordProposalApplication: vi.fn(),
+		recordProposalDuplicateResolution: vi.fn(),
 		appendAppliedChangeIndexes: vi.fn(),
 		createStoryFromProposal: vi.fn(),
 	};
@@ -44,6 +45,8 @@ vi.mock("@repo/database", async () => {
 		createStory: mocks.createStory,
 		updateStory: mocks.updateStory,
 		recordAudit: mocks.recordAudit,
+		recordProposalDuplicateResolution:
+			mocks.recordProposalDuplicateResolution,
 		recordProposalApplication: mocks.recordProposalApplication,
 		appendAppliedChangeIndexes: mocks.appendAppliedChangeIndexes,
 		getBoundPromptForAgent: vi.fn(),
@@ -243,6 +246,15 @@ describe("applyBacklogChanges — ROADMAP_RECOMMENDATION source", () => {
 			},
 		);
 		expect(result.skippedDuplicates).toHaveLength(1);
+		expect(mocks.recordProposalDuplicateResolution).toHaveBeenCalledWith(
+			expect.objectContaining({
+				proposalId: "batch-1",
+				changeIndex: 9,
+				existingEntityId: "s-old",
+			}),
+		);
+		expect(Object.values(result.createdItemMap)).not.toContain("s-old");
+
 		expect(mocks.appendAppliedChangeIndexes).toHaveBeenCalledWith(
 			"batch-1",
 			[9],
@@ -275,6 +287,14 @@ describe("applyBacklogChanges — ROADMAP_RECOMMENDATION source", () => {
 		expect(params).not.toHaveProperty("requireCleanSpec");
 		expect(result.skippedDuplicates).toHaveLength(1);
 		expect(mocks.appendAppliedChangeIndexes).not.toHaveBeenCalled();
+		expect(mocks.recordProposalDuplicateResolution).toHaveBeenCalledWith(
+			expect.objectContaining({
+				proposalId: "batch-1",
+				changeIndex: 1,
+				existingEntityId: "s-old",
+			}),
+		);
+		expect(Object.values(result.createdItemMap)).not.toContain("s-old");
 	});
 });
 
@@ -303,3 +323,86 @@ it("records a duplicate recommendation as resolved after an earlier refusal", as
 	);
 	expect(mocks.createStoryFromProposal).toHaveBeenCalledTimes(1);
 });
+
+it("prior applications populate the PM map while a separate duplicate does not", async () => {
+	mockDb.pendingBacklogProposalApplication.findMany.mockResolvedValue([
+		{
+			changeIndex: 4,
+			createdEntityType: "story",
+			createdEntityId: "example-created",
+		},
+	]);
+	const result = await apply(
+		[
+			createChange("Previously created"),
+			createChange("Existing roadmap item"),
+		],
+		{
+			approvedChangeIndexes: [4, 9],
+			existingBacklog: {
+				stories: [
+					{
+						id: "example-existing",
+						identifier: "EX-1",
+						title: "Existing roadmap item",
+					},
+				],
+			},
+		},
+	);
+	expect(result.createdItemMap).toEqual({ 0: "example-created" });
+	expect(result.updatedItemMap).toEqual({});
+	expect(mocks.recordProposalApplication).not.toHaveBeenCalled();
+	expect(mocks.recordProposalDuplicateResolution).toHaveBeenCalledWith(
+		expect.objectContaining({
+			changeIndex: 9,
+			existingEntityId: "example-existing",
+		}),
+	);
+});
+
+it.each(["TEAMS_CHANNEL", "ROADMAP_RECOMMENDATION"])(
+	"keeps %s apply results when duplicate bookkeeping fails",
+	async (source) => {
+		mockDb.pendingBacklogProposal.findUnique.mockResolvedValue({ source });
+		const failure = new Error("Example private activity content");
+		mocks.recordProposalDuplicateResolution.mockRejectedValueOnce(failure);
+		const result = await apply(
+			[createChange("Existing roadmap item"), createChange("New item")],
+			{
+				approvedChangeIndexes: [4, 9],
+				existingBacklog: {
+					stories: [
+						{
+							id: "example-existing",
+							identifier: "EX-1",
+							title: "Existing roadmap item",
+						},
+					],
+				},
+			},
+		);
+		expect(result.errors).toEqual([]);
+		expect(result.skippedDuplicates).toHaveLength(1);
+		expect(result.createdItems).toHaveLength(1);
+		expect(result.createdItemMap).toEqual({ 1: "story-1" });
+		expect(result.updatedItemMap).toEqual({});
+		expect(mocks.recordProposalApplication).toHaveBeenCalledTimes(1);
+		if (source === "ROADMAP_RECOMMENDATION") {
+			expect(mocks.appendAppliedChangeIndexes).toHaveBeenCalledWith(
+				"batch-1",
+				[4],
+			);
+		} else {
+			expect(mocks.appendAppliedChangeIndexes).not.toHaveBeenCalled();
+		}
+		const { logger } = await import("@repo/logs");
+		expect(logger.warn).toHaveBeenCalledWith(
+			expect.stringContaining("record"),
+			{ proposalId: "batch-1", changeIndex: 4 },
+		);
+		expect(JSON.stringify(vi.mocked(logger.warn).mock.calls)).not.toContain(
+			failure.message,
+		);
+	},
+);

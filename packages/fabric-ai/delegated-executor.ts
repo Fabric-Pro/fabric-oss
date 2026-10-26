@@ -24,14 +24,17 @@ import {
 	getAIModelWithMetadata,
 	getSystemRAGProviderConfig,
 	logModelUsageAsync,
+	toDatabricksInferenceBaseUrl,
 } from "@repo/ai";
 import { logger } from "@repo/logs";
 import {
+	dispatchBudgetSend,
 	guardDispatch,
 	rethrowIfDispatchStopped,
 	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
 import { createFabricClient } from "./client";
+import { patternBudgetRequest } from "./pattern-budget";
 import type {
 	ChatPrompt,
 	ChatStreamEvent,
@@ -289,7 +292,15 @@ export async function executePatternDelegated(
 			// send their base URL; otherwise the server falls back to the vendor's
 			// default host and the request fails with the wrong credentials.
 			...(providerConfig.baseUrl
-				? { baseUrl: providerConfig.baseUrl }
+				? {
+						baseUrl:
+							provider === "DATABRICKS"
+								? toDatabricksInferenceBaseUrl(
+										providerConfig.baseUrl,
+										modelName || modelString,
+									)
+								: providerConfig.baseUrl,
+					}
 				: {}),
 		};
 
@@ -311,102 +322,112 @@ export async function executePatternDelegated(
 
 		// 8. Call Fabric AI's delegated endpoint
 		const delegatedStart = Date.now();
-		const signal = await guardDispatch();
-		// Awaiting the record check is itself an await: the guard's
-		// latched stops are checked again in the same run as the send.
-		throwIfDispatchStopped();
-		const response = await fetch(`${baseUrl}/chat/delegated`, {
-			method: "POST",
-			signal,
-			headers: {
-				"Content-Type": "application/json",
-				...(fabricApiKey ? { "X-API-Key": fabricApiKey } : {}),
-			},
-			body: JSON.stringify(request),
-		});
-
-		if (!response.ok) {
-			const errorBody = await response.text();
-
-			// Check if delegated mode is not supported
-			if (response.status === 404) {
-				return {
-					output: "",
-					success: false,
-					error: "Delegated mode not supported by Fabric AI server. Please update Fabric AI or use hybrid mode.",
-					metadata: {
-						pattern,
-						model: modelString,
-						vendor,
-						taskType,
-						executionMode: "delegated",
+		return await dispatchBudgetSend<DelegatedExecutionResult>({
+			request: patternBudgetRequest(input),
+			send: async (signal) => {
+				const response = await fetch(`${baseUrl}/chat/delegated`, {
+					method: "POST",
+					signal,
+					headers: {
+						"Content-Type": "application/json",
+						...(fabricApiKey ? { "X-API-Key": fabricApiKey } : {}),
 					},
-				};
-			}
+					body: JSON.stringify(request),
+				});
 
-			throw new Error(
-				`Fabric delegated API error (${response.status}): ${errorBody}`,
-			);
-		}
+				if (!response.ok) {
+					const errorBody = await response.text();
 
-		// 9. Parse SSE stream response
-		const text = await response.text();
-		const lines = text.split("\n").filter((line) => line.trim());
-		let result = "";
+					// Check if delegated mode is not supported
+					if (response.status === 404) {
+						return {
+							result: {
+								output: "",
+								success: false,
+								error: "Delegated mode not supported by Fabric AI server. Please update Fabric AI or use hybrid mode.",
+								metadata: {
+									pattern,
+									model: modelString,
+									vendor,
+									taskType,
+									executionMode: "delegated",
+								},
+							},
+						};
+					}
 
-		for (const line of lines) {
-			try {
-				const event = JSON.parse(line) as ChatStreamEvent;
-				if (event.type === "content") {
-					result += event.content;
-				} else if (event.type === "error") {
-					throw new Error(`Fabric pattern error: ${event.content}`);
+					throw new Error(
+						`Fabric delegated API error (${response.status}): ${errorBody}`,
+					);
 				}
-			} catch {
-				if (line.startsWith("data:")) {
+
+				// 9. Parse SSE stream response
+				const text = await response.text();
+				const lines = text.split("\n").filter((line) => line.trim());
+				let result = "";
+
+				for (const line of lines) {
 					try {
-						const data = line.slice(5).trim();
-						if (data) {
-							const event = JSON.parse(data) as ChatStreamEvent;
-							if (event.type === "content") {
-								result += event.content;
-							}
+						const event = JSON.parse(line) as ChatStreamEvent;
+						if (event.type === "content") {
+							result += event.content;
+						} else if (event.type === "error") {
+							throw new Error(
+								`Fabric pattern error: ${event.content}`,
+							);
 						}
 					} catch {
-						// Ignore parse errors
+						if (line.startsWith("data:")) {
+							try {
+								const data = line.slice(5).trim();
+								if (data) {
+									const event = JSON.parse(
+										data,
+									) as ChatStreamEvent;
+									if (event.type === "content") {
+										result += event.content;
+									}
+								}
+							} catch {
+								// Ignore parse errors
+							}
+						}
 					}
 				}
-			}
-		}
-		const estimatedInputTokens = Math.ceil(input.length / 4);
-		const estimatedOutputTokens = Math.ceil(result.length / 4);
-		logModelUsageAsync({
-			context: {
-				userId: userContext.userId,
-				organizationId: userContext.organizationId,
-			},
-			metadata,
-			taskType: taskType as any,
-			usage: {
-				inputTokens: estimatedInputTokens,
-				outputTokens: estimatedOutputTokens,
-				totalTokens: estimatedInputTokens + estimatedOutputTokens,
-			},
-			latencyMs: Date.now() - delegatedStart,
-			projectId: userContext.projectId,
-		});
+				const estimatedInputTokens = Math.ceil(input.length / 4);
+				const estimatedOutputTokens = Math.ceil(result.length / 4);
+				logModelUsageAsync({
+					context: {
+						userId: userContext.userId,
+						organizationId: userContext.organizationId,
+					},
+					metadata,
+					taskType: taskType as any,
+					usage: {
+						inputTokens: estimatedInputTokens,
+						outputTokens: estimatedOutputTokens,
+						totalTokens:
+							estimatedInputTokens + estimatedOutputTokens,
+					},
+					latencyMs: Date.now() - delegatedStart,
+					projectId: userContext.projectId,
+				});
 
-		return {
-			output: result,
-			success: true,
-			metadata: {
-				pattern,
-				model: modelString,
-				vendor,
-				taskType,
-				executionMode: "delegated",
+				return {
+					result: {
+						output: result,
+						success: true,
+						metadata: {
+							pattern,
+							model: modelString,
+							vendor,
+							taskType,
+							executionMode: "delegated",
+						},
+					},
+				};
 			},
-		};
+		});
 	} catch (err) {
 		// A stop leaves as an error, never as a { success: false } result.
 		rethrowIfDispatchStopped(err);
@@ -537,7 +558,15 @@ export async function* executePatternDelegatedStream(
 			// send their base URL; otherwise the server falls back to the vendor's
 			// default host and the request fails with the wrong credentials.
 			...(providerConfig.baseUrl
-				? { baseUrl: providerConfig.baseUrl }
+				? {
+						baseUrl:
+							provider === "DATABRICKS"
+								? toDatabricksInferenceBaseUrl(
+										providerConfig.baseUrl,
+										modelName || modelString,
+									)
+								: providerConfig.baseUrl,
+					}
 				: {}),
 		};
 

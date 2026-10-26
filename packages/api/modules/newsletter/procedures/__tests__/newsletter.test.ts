@@ -41,6 +41,7 @@ const {
 	mockCountNewsletterSends,
 	mockListNewsletterSendsForMembers,
 	mockCountNewsletterSendsForMembers,
+	mockGetNewsletterSendForMembers,
 	mockTransaction,
 	mockSetPublicWidgetState,
 	mockRecordAuditTx,
@@ -64,6 +65,7 @@ const {
 	mockCountNewsletterSends: vi.fn(),
 	mockListNewsletterSendsForMembers: vi.fn(),
 	mockCountNewsletterSendsForMembers: vi.fn(),
+	mockGetNewsletterSendForMembers: vi.fn(),
 	// settings.update now composes the upsert + widget toggle + audit in one
 	// db.$transaction. The mock runs the callback with a sentinel tx client.
 	mockTransaction: vi.fn(async (cb: (tx: unknown) => unknown) => cb("TX")),
@@ -100,6 +102,7 @@ vi.mock("@repo/database", () => ({
 	countNewsletterSends: mockCountNewsletterSends,
 	listNewsletterSendsForMembers: mockListNewsletterSendsForMembers,
 	countNewsletterSendsForMembers: mockCountNewsletterSendsForMembers,
+	getNewsletterSendForMembers: mockGetNewsletterSendForMembers,
 	// settings-update / sends-send-now build their zod input schemas with these
 	// at module load (`z.enum(NEWSLETTER_DETAIL_LEVELS)`), and sends-send-now
 	// calls `coerceDetailLevel` in the handler — real values/logic (not vi.fn())
@@ -148,6 +151,7 @@ vi.mock("../../../../orpc/procedures", () => {
 });
 
 import { listSendsProcedure } from "../sends-list";
+import { memberGetSendProcedure } from "../sends-member-get";
 import { memberListSendsProcedure } from "../sends-member-list";
 import { sendNowProcedure } from "../sends-send-now";
 import { getSettingsProcedure } from "../settings-get";
@@ -1004,5 +1008,55 @@ describe("sends.memberList", () => {
 				context: ctx,
 			}),
 		).rejects.toMatchObject({ code: "NOT_FOUND" });
+	});
+});
+
+describe("sends.memberGet", () => {
+	const ctx = { user: { id: "u1" }, session: {} } as any;
+	const get = (input: Record<string, unknown>) =>
+		(memberGetSendProcedure as any)._handler({ input, context: ctx });
+
+	beforeEach(() => {
+		mockProjectFindUnique.mockReset().mockResolvedValue({
+			id: "p1",
+			organizationId: "org-9",
+		});
+		mockGetNewsletterSendForMembers.mockReset().mockResolvedValue({
+			id: "s1",
+			status: "SENT",
+			createdAt: new Date(),
+			content: { headline: "h" },
+		});
+	});
+
+	it("returns the send, scoped to the authorized project", async () => {
+		const r = await get({
+			projectId: "p1",
+			organizationId: "org-9",
+			sendId: "s1",
+		});
+		expect(r.id).toBe("s1");
+		expect(mockGetNewsletterSendForMembers).toHaveBeenCalledWith(
+			"p1",
+			"s1",
+		);
+	});
+
+	it("NOT_FOUND for a send outside the project (query returns null)", async () => {
+		mockGetNewsletterSendForMembers.mockResolvedValue(null);
+		await expect(
+			get({
+				projectId: "p1",
+				organizationId: "org-9",
+				sendId: "foreign",
+			}),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+	});
+
+	it("rejects an organizationId that does not match the project", async () => {
+		await expect(
+			get({ projectId: "p1", organizationId: "org-other", sendId: "s1" }),
+		).rejects.toMatchObject({ code: "BAD_REQUEST" });
+		expect(mockGetNewsletterSendForMembers).not.toHaveBeenCalled();
 	});
 });

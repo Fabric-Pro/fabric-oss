@@ -85,3 +85,24 @@ describe("LimitBanner subscription_exhausted copy", () => {
 		expect(banner).not.toHaveTextContent(/your own ChatGPT plan reached/i);
 	});
 });
+
+it.each([true, false])(
+	"renders a time stop without billing copy or a link (admin=%s)",
+	(canManageBilling) => {
+		render(
+			<LimitBanner
+				signal={{
+					kind: "internal_budget",
+					message: "Time limit reached",
+					budgetLimit: "time",
+				}}
+				canManageBilling={canManageBilling}
+			/>,
+		);
+		expect(
+			screen.getByText("This answer reached its time limit"),
+		).toBeTruthy();
+		expect(screen.queryByText(/token|credits|billing|admin/i)).toBeNull();
+		expect(screen.queryByRole("link")).toBeNull();
+	},
+);

@@ -8,6 +8,7 @@ import {
 	cleanupParlumeProviderData,
 	finalizeParlumeSession,
 } from "@repo/api/modules/projects/lib/parlume-finalization";
+import { describeParlumeProviderFailure } from "@repo/api/modules/projects/lib/parlume-join-failure";
 import { parlumeLog } from "@repo/api/modules/projects/lib/parlume-log";
 import { db } from "@repo/database";
 import { type NextRequest, NextResponse } from "next/server";
@@ -234,13 +235,25 @@ async function handleTerminalState(input: {
 	// the bot as failed.
 	const requestedLeave =
 		session.leaveRequestedAt !== null && session.endReason !== null;
+	// Only an authenticated media stream can still be draining segments: the
+	// bridge bumps `streamGeneration` when it verifies one. A bot stopped or
+	// refused in the lobby never opened one, so no stream close will ever
+	// arrive, and the bridge alarm that drives the watchdog may not exist for
+	// it either. Waiting would leave the session LEAVING for good, so such a
+	// session finalizes on its terminal callback.
+	const streamMayDrain =
+		session.streamGeneration > 0 && session.streamClosedAt === null;
 	if (outcome === "failed" && !requestedLeave) {
+		// A bot nobody admitted, or one the meeting refused, gets its own
+		// reason and words; anything Attendee does not explain stays generic
+		// and names its sub type.
+		const failure = describeParlumeProviderFailure(input.state);
 		await db.parlumeMeetingSession.updateMany({
 			where: { id: session.id, status: { not: "ENDED" } },
 			data: {
 				status: "FAILED",
-				endReason: session.endReason ?? "PROVIDER_FAILED",
-				lastError: "Parlume meeting bot failed.",
+				endReason: session.endReason ?? failure.endReason,
+				lastError: failure.message,
 				endedAt: new Date(),
 			},
 		});
@@ -259,8 +272,9 @@ async function handleTerminalState(input: {
 		}
 		// The bridge can still be draining final segments that were buffered during
 		// an outage. Keep the failure visible, then let stream close or the hard
-		// stop claim finalization after those segments have reached Fabric.
-		if (!session.streamClosedAt) {
+		// stop claim finalization after those segments have reached Fabric. A
+		// stream that never opened has nothing to drain (see below).
+		if (streamMayDrain) {
 			await closeBridge(session.id);
 			return NextResponse.json({ accepted: true });
 		}
@@ -313,7 +327,7 @@ async function handleTerminalState(input: {
 	if (callbackRecorded.count === 0) {
 		return NextResponse.json({ accepted: true, stale: true });
 	}
-	if (!session.streamClosedAt) {
+	if (streamMayDrain) {
 		await closeBridge(session.id);
 		return NextResponse.json({ accepted: true });
 	}

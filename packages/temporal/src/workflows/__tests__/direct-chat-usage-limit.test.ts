@@ -29,6 +29,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
+
 import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
 import { defaultPayloadConverter } from "@temporalio/common";
 import { TestWorkflowEnvironment } from "@temporalio/testing";
@@ -103,6 +104,8 @@ afterAll(async () => {
 });
 
 const INPUT = {
+	executionId: "example-execution",
+	history: [],
 	message: "What is on the roadmap?",
 	userId: "user-1",
 	organizationId: "org-1",
@@ -147,6 +150,12 @@ async function runTurn(options: {
 		(_input: DirectChatWorkflowInput, ..._rest: unknown[]) =>
 			options.execute(),
 	);
+	const generateMemoryContextActivity = vi.fn(
+		async (..._args: unknown[]) => ({ context: "", memoryCount: 0 }),
+	);
+	const retrieveWorkspaceDocumentsActivity = vi.fn(
+		async (..._args: unknown[]) => ({ context: "", chunkCount: 0 }),
+	);
 	const taskQueue = `direct-usage-limit-${taskQueueSeq++}`;
 	const workflowId = `${taskQueue}-wf`;
 	const worker = await Worker.create({
@@ -167,10 +176,8 @@ async function runTurn(options: {
 					},
 				],
 			}),
-			generateMemoryContextActivity: async () => ({
-				context: "",
-				memoryCount: 0,
-			}),
+			generateMemoryContextActivity,
+			retrieveWorkspaceDocumentsActivity,
 			generateToolSuggestionsActivity: async () => "",
 			executeDirectChatActivity,
 		},
@@ -207,7 +214,11 @@ async function runTurn(options: {
 				}),
 				(error: unknown) => ({ error }),
 			);
-	return { ...outcome, executeDirectChatActivity, workflowId };
+	return {
+		...outcome,
+		executeDirectChatActivity,
+		workflowId,
+	};
 }
 
 describe("directChatWorkflow — a usage limit reached during the turn", () => {

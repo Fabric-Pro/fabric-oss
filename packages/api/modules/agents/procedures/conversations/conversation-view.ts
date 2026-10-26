@@ -9,6 +9,10 @@
  */
 
 import type { AgentConversationForViewer } from "@repo/database";
+import {
+	clarificationOf,
+	formatClarificationTurn,
+} from "@repo/utils/clarification-turns";
 import { z } from "zod";
 
 const ToolStatusSchema = z.enum(["pending", "running", "success", "error"]);
@@ -193,7 +197,8 @@ export function listItemOf(
 /**
  * A conversation opened. Its owner gets everything that parses of its messages
  * and trajectory. Anyone else, who can read it because the owner shared it, gets
- * the transcript and nothing behind it: each message's role, text and time, with
+ * the transcript and nothing behind it: each message's role, text and time, plus
+ * validated clarification display data matching that text, with
  * no tool calls or what they returned, no reasoning, no attachments (whose
  * storage paths are the owner's), no trajectory, no execution record, and none
  * of what the owner carried over from an earlier chat of theirs.
@@ -204,14 +209,20 @@ export function detailOf(
 	if (!conversation.isOwn) {
 		return {
 			...fieldsOf(conversation),
-			messages: messagesOf(conversation.messages).map(
-				({ id, role, content, timestamp }) => ({
+			messages: messagesOf(conversation.messages).map((message) => {
+				const { id, role, content, timestamp } = message;
+				const clarification = clarificationOf(message);
+				return {
 					id,
 					role,
 					content,
 					timestamp,
-				}),
-			),
+					...(clarification &&
+					content === formatClarificationTurn(clarification)
+						? { metadata: { clarification } }
+						: {}),
+				};
+			}),
 			trajectory: null,
 			parentConversationId: null,
 			carriedOverSummary: null,

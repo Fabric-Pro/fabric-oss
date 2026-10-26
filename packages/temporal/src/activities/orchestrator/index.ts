@@ -120,6 +120,7 @@ export {
 	// Activity wrappers for Temporal workflow compatibility
 	classifyFailureActivity,
 	checkCompletionClaimActivity,
+	judgeDelegationRiskActivity,
 	compactConversationHistoryActivity,
 	createCheckpoint,
 	createRetryStep,
@@ -476,3 +477,5 @@ export {
 	type SemanticIntentResult,
 	type UserPreference,
 } from "./routing/semantic-intent-matcher";
+
+export { preloadFrameToolsActivity } from "./tools/preload-frame-tools";

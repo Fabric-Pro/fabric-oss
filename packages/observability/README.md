@@ -142,6 +142,7 @@ checks this with a planted sentinel.
 Track Prisma database operations:
 
 ```typescript
+import { db } from '@repo/database';
 import { databaseInstrumentation } from '@repo/observability';
 
 // Manual tracing
@@ -149,15 +150,13 @@ const users = await databaseInstrumentation.trace({
   operation: 'findMany',
   model: 'User',
 }, async (span) => {
-  return await prisma.user.findMany({ where: { active: true } });
+  return await db.user.findMany({ where: { emailVerified: true } });
 });
 
-// Prisma middleware (add to client setup)
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
-prisma.$use(databaseInstrumentation.createPrismaMiddleware());
 ```
+
+Prisma query hooks are installed through `$extends` in `@repo/database`;
+manual spans use the shared client rather than a second client instance.
 
 **Metrics recorded:**
 - `db.queries` - Counter of queries by operation/model/status

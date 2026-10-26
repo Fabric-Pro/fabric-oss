@@ -67,6 +67,7 @@ export default async function OrganizationParlumePage({ params }: Props) {
 			<ParlumePage
 				projectId={id}
 				projectBasePath={`${basePath}/projects/${id}`}
+				settingsBasePath={`${basePath}/settings`}
 				canEdit={projectResult.project.canManageMembers === true}
 			/>
 		</div>

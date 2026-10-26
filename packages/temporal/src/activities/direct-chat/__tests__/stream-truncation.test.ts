@@ -82,14 +82,48 @@ describe("resolveStreamOutcome truncation", () => {
 		expect(outcome.truncated).toBe("step_limit");
 	});
 
-	it("reports a provider error, not truncation, when both happen", () => {
-		const outcome = resolveStreamOutcome({
-			responseText: "Partial",
+	/**
+	 * A tool's usage-limit refusal becomes the partial error while the model
+	 * stream itself finishes normally (Fizzy #3031), so that stream can still
+	 * have stopped on a limit. Reporting only the error hid that the answer
+	 * was cut short and the offer to continue (Fizzy #3273).
+	 */
+	it("reports both a partial error and the output limit when both happen", () => {
+		expect(
+			resolveStreamOutcome({
+				responseText: "Partial",
+				toolCalls: [],
+				streamErrorMessage: "AI usage limit reached",
+				finishReason: "length",
+			}),
+		).toEqual({
 			toolCalls: [],
-			streamErrorMessage: "overloaded",
-			finishReason: "length",
+			partialError: "AI usage limit reached",
+			truncated: "output_limit",
 		});
-		expect(outcome.partialError).toBe("overloaded");
+	});
+
+	it("reports both a partial error and the step limit when both happen", () => {
+		const outcome = resolveStreamOutcome({
+			responseText: "I checked three projects so far.",
+			toolCalls: [],
+			streamErrorMessage: "AI usage limit reached",
+			finishReason: "tool-calls",
+			stepCount: 5,
+			maxSteps: 5,
+		});
+		expect(outcome.partialError).toBe("AI usage limit reached");
+		expect(outcome.truncated).toBe("step_limit");
+	});
+
+	it("reports no truncation when the stream ended on the error", () => {
+		const outcome = resolveStreamOutcome({
+			responseText: "I'll search the project first.",
+			toolCalls: [],
+			streamErrorMessage: "429 Too Many Requests",
+			finishReason: "error",
+		});
+		expect(outcome.partialError).toBe("429 Too Many Requests");
 		expect(outcome.truncated).toBeUndefined();
 	});
 });

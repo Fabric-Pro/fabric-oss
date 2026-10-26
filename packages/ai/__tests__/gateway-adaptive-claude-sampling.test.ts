@@ -20,7 +20,7 @@ const SAMPLING = { temperature: 0.2, topP: 0.5, topK: 7 } as const;
 
 async function sentBody(
 	modelName: string,
-	context: { apiKey: string; provider: string },
+	context: { apiKey: string; provider: string; baseUrl?: string },
 ): Promise<Record<string, unknown>> {
 	let body: Record<string, unknown> | undefined;
 	fetchMock.mockImplementation(async (_url: unknown, init?: RequestInit) => {
@@ -49,8 +49,6 @@ describe("gateway routes drop sampling params for adaptive-only Claude", () => {
 		["VERCEL_GATEWAY", "anthropic/claude-sonnet-5"],
 		["VERCEL_GATEWAY", "anthropic/claude-sonnet-5.5"],
 		["VERCEL_GATEWAY", "anthropic/claude-opus-4.8"],
-		["OPENROUTER", "anthropic/claude-opus-5.5"],
-		["CLOUDFLARE_AI", "anthropic/claude-sonnet-5"],
 	])("%s %s", async (provider, modelName) => {
 		const body = await sentBody(modelName, {
 			apiKey: "example-gateway-key",
@@ -60,6 +58,20 @@ describe("gateway routes drop sampling params for adaptive-only Claude", () => {
 		expect(body).not.toHaveProperty("topP");
 		expect(body).not.toHaveProperty("topK");
 	});
+
+	it.each(["OPENROUTER", "CLOUDFLARE_AI"])(
+		"%s strips adaptive Claude sampling parameters",
+		async (provider) => {
+			const body = await sentBody("anthropic/claude-sonnet-5", {
+				provider,
+				apiKey: "example-key",
+				baseUrl: "https://example.com/v1",
+			});
+			expect(body).not.toHaveProperty("temperature");
+			expect(body).not.toHaveProperty("top_p");
+			expect(body).not.toHaveProperty("top_k");
+		},
+	);
 
 	it("covers a Vercel gateway key configured under a direct provider", async () => {
 		const body = await sentBody("claude-sonnet-5", {

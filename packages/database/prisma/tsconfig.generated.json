@@ -14,8 +14,8 @@
 	// generated tree is self-contained (imports only the Prisma runtime + itself —
 	// zero @repo/* imports), so it needs none of the base's module wiring.
 	"compilerOptions": {
-		"module": "ESNext",
-		"moduleResolution": "Bundler",
+		"module": "CommonJS",
+		"moduleResolution": "Node",
 		"target": "ES2022",
 		"lib": ["ES2022", "DOM"],
 		"declaration": true,

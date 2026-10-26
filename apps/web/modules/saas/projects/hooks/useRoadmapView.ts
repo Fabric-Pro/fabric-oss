@@ -82,15 +82,6 @@ export type RoadmapColumnKey = keyof RoadmapColumns;
 /** A reorderable card field: the always-on Title plus every optional column. */
 export type RoadmapFieldKey = "title" | RoadmapColumnKey;
 
-export const ROADMAP_COLUMN_LABELS: Record<RoadmapColumnKey, string> = {
-	stage: "Drafting stage",
-	sync: "PM sync state",
-	size: "Size",
-	source: "Source",
-	flags: "Status flags",
-	tags: "Tags",
-};
-
 /** Canonical left-to-right order of the card fields — Title first, then the
  * optional fields. Title is always shown but may be dragged to reorder. The
  * status-flag badges sit right after the title by default. */
@@ -169,9 +160,7 @@ type View = {
 	columns: RoadmapColumns;
 	columnOrder: RoadmapFieldKey[];
 	sort: RoadmapSort;
-	// "Show hidden items" toggle. Persisted per user+project (like the rest of the
-	// view) but applied + saved IMMEDIATELY on toggle — it's a toolbar control,
-	// not a draft setting — so it never participates in the Save/Cancel draft.
+	// View settings preview this as a draft; the results-row reveal saves immediately.
 	showClosed: boolean;
 };
 
@@ -249,7 +238,8 @@ function viewsEqual(a: View, b: View): boolean {
 	return (
 		a.mode === b.mode &&
 		a.groupBy === b.groupBy &&
-		// sort is intentionally excluded — like showClosed it persists immediately
+		a.showClosed === b.showClosed &&
+		// sort is intentionally excluded — it persists immediately
 		// (not via the Save/Cancel draft), so changing it must never mark the
 		// saved view as dirty.
 		a.columns.stage === b.columns.stage &&
@@ -374,7 +364,11 @@ export function useRoadmapView(
 		[projectId, organizationId, updateMutation],
 	);
 
-	// Show-hidden persists IMMEDIATELY on toggle (not draft-gated): update the
+	const setShowClosedDraft = useCallback((showClosed: boolean) => {
+		setDraft((prev) => ({ ...prev, showClosed }));
+	}, []);
+
+	// Results-row reveal persists IMMEDIATELY: update the
 	// live draft AND the saved baseline, then write to the DB + localStorage cache.
 	const setShowClosed = useCallback(
 		(value: boolean) => {
@@ -433,6 +427,7 @@ export function useRoadmapView(
 		setSort,
 		showClosed: draft.showClosed,
 		setShowClosed,
+		setShowClosedDraft,
 		toggleShowClosed,
 		commitView,
 		revertView,

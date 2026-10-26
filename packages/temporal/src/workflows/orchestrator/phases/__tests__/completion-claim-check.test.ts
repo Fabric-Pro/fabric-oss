@@ -1,3 +1,5 @@
+import { recordTurnBudgetStop } from "../../turn-budget";
+import { buildWorkflowOutput } from "../completion";
 /**
  * A reply that claims an action in a turn that called no tool.
  *
@@ -46,6 +48,7 @@ vi.mock("@temporalio/workflow", () => ({
 			new Proxy({}, { get: (_target, name) => mocks.stub(String(name)) }),
 	),
 	workflowInfo: vi.fn(() => ({
+		startTime: new Date(Date.now()),
 		runId: "test-run-id",
 		unsafe: { isReplaying: false },
 	})),
@@ -320,4 +323,107 @@ describe("shouldCheckCompletionClaim", () => {
 			shouldCheckCompletionClaim({ ...eligible, enabled: false }),
 		).toBe(false);
 	});
+});
+
+it("includes a passing final claim check after the last ledger reading in the weighted card", async () => {
+	mocks.stub("checkCompletionClaimActivity").mockResolvedValue({
+		unbackedClaim: false,
+		judgedBy: "decision",
+		usage: { inputTokens: 120, outputTokens: 1 },
+	});
+	const { state } = await runTurn(mocks, {
+		advisorBudgetEnabled: true,
+		input: { turnId: "turn-example" },
+		message: REQUEST,
+		preload: preloaded([TOOL], "cfg-workflows", "Workflows"),
+		steps: [
+			{
+				answer: HONEST_ANSWER,
+				ledger: {
+					allowance: 300_000,
+					measured: 1_000,
+					outstanding: 200,
+					finalizationReserve: 30_000,
+					enforcement: "ENFORCED",
+				},
+			},
+		],
+	});
+	expect(state.iterationCosts.at(-1)).toMatchObject({
+		inputTokens: 120,
+		outputTokens: 1,
+	});
+	expect(buildWorkflowOutput(state, "completed").tokenBudget).toMatchObject({
+		used: 1_321,
+		total: 300_000,
+	});
+});
+
+it("absorbs the claim check into a later main-round reading without adding it twice", async () => {
+	claimFound();
+	const reading = (measured: number) => ({
+		allowance: 300_000,
+		measured,
+		outstanding: 0,
+		finalizationReserve: 30_000,
+		enforcement: "ENFORCED",
+	});
+	const { state } = await runTurn(mocks, {
+		advisorBudgetEnabled: true,
+		input: { turnId: "turn-example" },
+		message: REQUEST,
+		preload: preloaded([TOOL], "cfg-workflows", "Workflows"),
+		steps: [
+			{ answer: FALSE_CLAIM, ledger: reading(1_000) },
+			{ answer: HONEST_ANSWER, ledger: reading(1_300) },
+		],
+	});
+	expect(
+		state.iterationCosts.some(
+			(cost) => cost.inputTokens === 120 && cost.outputTokens === 1,
+		),
+	).toBe(true);
+	expect(buildWorkflowOutput(state, "completed").tokenBudget?.used).toBe(
+		1_300,
+	);
+});
+
+it("absorbs previously unreported costs into a refusal reading", async () => {
+	mocks.stub("checkCompletionClaimActivity").mockResolvedValue({
+		unbackedClaim: false,
+		judgedBy: "decision",
+		usage: { inputTokens: 120, outputTokens: 1 },
+	});
+	const { state } = await runTurn(mocks, {
+		advisorBudgetEnabled: true,
+		input: { turnId: "turn-example" },
+		message: REQUEST,
+		preload: preloaded([TOOL], "cfg-workflows", "Workflows"),
+		steps: [
+			{
+				answer: HONEST_ANSWER,
+				ledger: {
+					allowance: 300_000,
+					measured: 1_000,
+					outstanding: 0,
+					finalizationReserve: 30_000,
+					enforcement: "ENFORCED",
+				},
+			},
+		],
+	});
+	recordTurnBudgetStop(
+		state,
+		{
+			allowance: 300_000,
+			measured: 1_400,
+			outstanding: 0,
+			finalizationReserve: 30_000,
+			enforcement: "ENFORCED",
+		},
+		"allowance_exhausted",
+	);
+	expect(buildWorkflowOutput(state, "completed").tokenBudget?.used).toBe(
+		1_400,
+	);
 });

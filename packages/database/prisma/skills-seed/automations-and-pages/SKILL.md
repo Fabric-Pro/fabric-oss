@@ -3,7 +3,7 @@ name: Automations & pages
 description: Set up something that runs on a schedule (a weekly report, a daily digest) as a scheduled workflow, change, pause or debug one, and build interactive pages (project artifacts and workspaces) that read live Fabric data. Use when the user asks for a recurring job, a status page, a dashboard or a page with buttons, or asks why one did not run.
 category: automation
 tags: [automation, workflows, schedule, pages, frames, workspace]
-version: 14
+version: 15
 ---
 
 # Automations & pages
@@ -12,8 +12,8 @@ version: 14
 Two things people ask for in the same breath: "do this every Monday" and "show me the result on a page". A scheduled workflow runs an agent on a cron, unattended, and publishes what it wrote as a page. A page is interactive HTML you write once; it can read live Fabric data when it is viewed. You build both with Fabric's own tools and explain what you built.
 
 ## Load the tools by name
-If your tools come through `search_tools`, load the ones this skill names by their exact names, all in one search. A descriptive search can rank them out.
-- A page: `search_tools({ query: "fabric_create_frame fabric_update_frame fabric_get_frame fabric_list_frames" })`
+Use attached tool schemas directly. The Advisor preloads `fabric_get_frame` and `fabric_edit_frame_block` when its Fabric gateway is available. If a tool is missing and your tools come through `search_tools`, load the missing names together by their exact names. A descriptive search can rank them out.
+- A page: `search_tools({ query: "fabric_create_frame fabric_update_frame fabric_get_frame fabric_edit_frame_block fabric_list_frames" })`
 - Live data for a page: `search_tools({ query: "fabric_list_page_tools fabric_list_projects fabric_get_project fabric_list_project_instructions fabric_get_project_instruction fabric_get_project_instruction_bundle fabric_list_connected_servers" })`. These project and Coding Instructions reads use the actual attached source; project artifacts are not a substitute for configuration files.
 - A page's data, comments and versions: `search_tools({ query: "fabric_page_data_list fabric_page_data_get fabric_page_data_set fabric_page_comment_list fabric_list_frame_versions fabric_restore_frame_version fabric_duplicate_frame fabric_share_frame" })`
 - A scheduled workflow: `search_tools({ query: "fabric_create_workflow fabric_update_workflow fabric_publish_workflow fabric_execute_workflow fabric_get_workflow_execution fabric_get_workflow fabric_list_workflows" })`, adding the pause, resume, unpublish or runs tool when you need it.
@@ -139,9 +139,11 @@ The write node requires `value` as JSON text and `expectedVersion` as a number o
 
 The workflow and Workspace must belong to the same owner and organization and share a non-null project. Publish the complete graph, then bind its exact version with current workflow and Workspace timestamps. Each data step rechecks the current permissions and server-owned binding. HTML, graph inputs and saved records cannot grant access. Revocation or a workflow edit requires authorization again. Writes do not retry automatically: a lost response leaves the result unknown, so read the current record before reconciling; never report that write as successful from the attempted call alone.
 
-A page is a frame: one self-contained HTML document with its CSS and JavaScript inline. Create one with `fabric_create_frame`, change it with `fabric_update_frame` (every change is a new version the user can go back to), find one with `fabric_list_frames` and `fabric_get_frame`.
+A page is a frame: one self-contained HTML document with its CSS and JavaScript inline. Create one with `fabric_create_frame`, edit parts with `fabric_edit_frame_block` (saved changes have version history), find one with `fabric_list_frames` and `fabric_get_frame`.
 
-Before editing saved code, call `fabric_get_frame` with `offset: 0, limit: 6000` and optional `blockId` (the first block is the default). Follow `nextOffset` until `complete`, concatenate exact source, and restart if `updatedAt` changes between chunks. A summary or an internal history placeholder is never replacement page content.
+For a partial edit, call `fabric_get_frame` with `outline: true` to see block ids and sizes, read the source window containing the text you need, then call `fabric_edit_frame_block` with literal `oldText`/`newText` edits and the `updatedAt` from the most recent read or edit as `expectedUpdatedAt`. Edits apply in order; use `replaceAll` for repeated text. On a conflict, re-read. Use `fabric_update_frame` for adding, removing or reordering blocks, or full rewrites.
+
+For a full rewrite of saved code, call `fabric_get_frame` with `offset: 0, limit: 6000` and optional `blockId` (the first block is the default). Follow `nextOffset` until `complete`, concatenate exact source, and restart if `updatedAt` changes between chunks. Use saved source rather than a summary or an internal history placeholder as replacement page content.
 
 ### Where a page lives
 `surface` says where a page appears:

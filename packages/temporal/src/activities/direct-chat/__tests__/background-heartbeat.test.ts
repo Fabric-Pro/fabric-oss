@@ -113,7 +113,7 @@ describe("Direct chat activity wiring", () => {
 		"utf-8",
 	);
 
-	it("wraps the whole turn in the background heartbeat and always stops it", () => {
+	it("wraps the turn in the background heartbeat and stops it in finally", () => {
 		const entry = source.slice(
 			source.indexOf("export async function executeDirectChatActivity("),
 			source.indexOf("interface DirectChatTurnParams"),
@@ -122,7 +122,7 @@ describe("Direct chat activity wiring", () => {
 			/const backgroundHeartbeat = startBackgroundHeartbeat\(/,
 		);
 		expect(entry).toMatch(
-			/try \{\s*const run = \(\) =>\s*runDirectChatTurn\([\s\S]*return await \([\s\S]*\} finally \{\s*backgroundHeartbeat\.stop\(\);/,
+			/try \{\s*const run = \(\) =>\s*runWithAiCallPurpose\(undefined, \(\) =>\s*runDirectChatTurn\([\s\S]*return await \([\s\S]*\} finally \{\s*backgroundHeartbeat\.stop\(\);/,
 		);
 	});
 

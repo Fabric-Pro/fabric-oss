@@ -242,6 +242,16 @@ describe("createContextUploadUrl — document usage and target", () => {
 	 * forever with nothing to explain it, so it is refused at the door rather
 	 * than left to a client to get right.
 	 */
+	it("refuses the retired Features tag before anything is written (Fizzy #2776)", async () => {
+		await expect(
+			handler({
+				input: { ...baseInput, documentTag: "USER_STORY" },
+				context: ctx,
+			}),
+		).rejects.toThrow(/Invalid document tag: USER_STORY/);
+		expect(mockCreateFileContext).not.toHaveBeenCalled();
+	});
+
 	it("refuses a file offered as generation input", async () => {
 		await expect(
 			handler({

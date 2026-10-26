@@ -27,7 +27,7 @@ import {
 	type DatabricksTokenProvider,
 } from "@repo/databricks";
 import { logger } from "@repo/logs";
-import { decryptApiKey, decryptApiKeyMaybe } from "@repo/utils";
+import { decryptApiKey } from "@repo/utils";
 
 /**
  * The credential-bearing subset of a stored AI provider config. Mirrors the
@@ -300,6 +300,20 @@ function extractOAuthStatus(error: unknown): number | undefined {
 }
 
 /**
+ * Decrypts a stored key in every format `decryptApiKey` reads, including the
+ * oldest `iv:authTag:data` one, and returns a legacy plaintext key unchanged.
+ * `decryptApiKeyMaybe` recognises only the newer formats, so it passed an old
+ * ciphertext through and the provider was sent the encrypted value.
+ */
+function decryptStoredKeyLeniently(storedKey: string): string {
+	try {
+		return decryptApiKey(storedKey);
+	} catch {
+		return storedKey;
+	}
+}
+
+/**
  * Resolve a stored provider config to the PLAINTEXT bearer token to send
  * upstream.
  *
@@ -329,7 +343,7 @@ export async function resolveProviderApiKey(
 ): Promise<string> {
 	if (config.apiKey) {
 		return options?.lenientDecrypt
-			? decryptApiKeyMaybe(config.apiKey)
+			? decryptStoredKeyLeniently(config.apiKey)
 			: decryptApiKey(config.apiKey);
 	}
 

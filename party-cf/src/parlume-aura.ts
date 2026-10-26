@@ -11,6 +11,9 @@ const MAX_CLIP_BYTES = 6 * 1024 * 1024;
 const MAX_SENTENCES = 40;
 const MAX_SENTENCE_CHARS = 2_000;
 const MAX_TOTAL_CHARS = 8_000;
+// How long a reply sent in parts waits for its next one before it ends with
+// what it has; the worker gives up on the whole reply after 90 seconds.
+const PART_IDLE_MS = 60_000;
 
 export interface ParlumeAuraBinding {
 	run(
@@ -136,6 +139,124 @@ export async function* readParlumeSentenceLines(
 	}
 }
 
+/**
+ * A reply's sentences sent as numbered parts, one request each, released in
+ * part order however the requests arrive. The edge holds a request body until
+ * it ends, so a reply spoken while the agent is still writing it cannot be one
+ * streamed body: each sentence comes as a part as soon as it exists. Ends
+ * after the part marked last, on `close`, or when no part arrives for
+ * `idleMs`; `fail` ends it with an error.
+ */
+export class ParlumeSentenceFeed implements AsyncIterable<string> {
+	private readonly parts = new Map<
+		number,
+		{ sentences: string[]; last: boolean }
+	>();
+	private nextPart = 0;
+	private readonly ready: string[] = [];
+	private count = 0;
+	private chars = 0;
+	private ended = false;
+	private failure: Error | null = null;
+	private waiter: (() => void) | null = null;
+	private readonly idleMs: number;
+
+	constructor(idleMs = PART_IDLE_MS) {
+		this.idleMs = idleMs;
+	}
+
+	/** The reply takes no more parts. */
+	get closed(): boolean {
+		return this.ended || this.failure !== null;
+	}
+
+	/** False when the reply takes no more parts or already has this one. */
+	add(part: number, sentences: string[], last: boolean): boolean {
+		if (this.closed || part < this.nextPart || this.parts.has(part)) {
+			return false;
+		}
+		this.parts.set(part, { sentences, last });
+		for (
+			let next = this.parts.get(this.nextPart);
+			next && !this.closed;
+			next = this.parts.get(this.nextPart)
+		) {
+			this.parts.delete(this.nextPart);
+			this.nextPart++;
+			for (const sentence of next.sentences) {
+				this.count++;
+				this.chars += sentence.length;
+				if (
+					this.count > MAX_SENTENCES ||
+					this.chars > MAX_TOTAL_CHARS
+				) {
+					this.fail(new Error("Too much text"));
+					return true;
+				}
+				this.ready.push(sentence);
+			}
+			this.ended = next.last;
+		}
+		this.wake();
+		return true;
+	}
+
+	close(): void {
+		this.ended = true;
+		this.wake();
+	}
+
+	fail(error: Error): void {
+		this.failure ??= error;
+		this.wake();
+	}
+
+	async *[Symbol.asyncIterator](): AsyncIterator<string> {
+		for (;;) {
+			if (this.failure) {
+				throw this.failure;
+			}
+			const sentence = this.ready.shift();
+			if (sentence !== undefined) {
+				yield sentence;
+				continue;
+			}
+			if (this.ended) {
+				return;
+			}
+			const arrived = await new Promise<boolean>((resolve) => {
+				const timer = setTimeout(() => resolve(false), this.idleMs);
+				this.waiter = () => {
+					clearTimeout(timer);
+					resolve(true);
+				};
+			});
+			if (!arrived) {
+				this.close();
+			}
+		}
+	}
+
+	private wake(): void {
+		const waiter = this.waiter;
+		this.waiter = null;
+		waiter?.();
+	}
+}
+
+/** The sentences of one reply part, whose request body holds all of them. */
+export async function readParlumeSentencePart(
+	body: ReadableStream<Uint8Array> | null,
+): Promise<string[]> {
+	const sentences: string[] = [];
+	if (body) {
+		for await (const sentence of readParlumeSentenceLines(body)) {
+			sentences.push(sentence);
+		}
+	}
+	return sentences;
+}
+
 async function requestClip(
 	ai: ParlumeAuraBinding,
 	text: string,
@@ -172,7 +293,8 @@ function errorText(error: unknown): string {
 /**
  * Synthesizes `sentences` in order and plays them as one reply. Synthesis of a
  * sentence starts as soon as it arrives, so the next one is ready while the
- * current one plays. Stops quietly when the reply stops being current.
+ * current one plays. Stops quietly when the reply stops being current. When
+ * `sentences` fails, what it queued is dropped and the failure is thrown.
  */
 export async function playParlumeAuraSentences(input: {
 	ai: ParlumeAuraBinding;
@@ -181,7 +303,9 @@ export async function playParlumeAuraSentences(input: {
 	isCurrent: () => boolean;
 	now?: () => number;
 }): Promise<ParlumeAuraPlayback> {
-	const { ai, outlet, isCurrent } = input;
+	const { ai, outlet } = input;
+	let withdrawn: { cause: unknown } | null = null;
+	const isCurrent = () => withdrawn === null && input.isCurrent();
 	const now = input.now ?? Date.now;
 	const origin = now();
 	const timings: ParlumeAuraSentence[] = [];
@@ -259,23 +383,28 @@ export async function playParlumeAuraSentences(input: {
 		}
 	};
 
-	for await (const text of input.sentences) {
-		if (!isCurrent() || failedAt !== undefined) {
-			break;
+	try {
+		for await (const text of input.sentences) {
+			if (!isCurrent() || failedAt !== undefined) {
+				break;
+			}
+			const index = timings.length;
+			timings.push({
+				chars: text.length,
+				startedAtMs: now() - origin,
+				firstByteMs: null,
+				totalMs: null,
+				ok: false,
+			});
+			const clip = requestClip(ai, text);
+			// Awaited in turn by `play`; until then a failure must not go unhandled.
+			clip.catch(() => {});
+			clips.push(clip);
+			chain = chain.then((ok) => (ok ? play(index) : false));
 		}
-		const index = timings.length;
-		timings.push({
-			chars: text.length,
-			startedAtMs: now() - origin,
-			firstByteMs: null,
-			totalMs: null,
-			ok: false,
-		});
-		const clip = requestClip(ai, text);
-		// Awaited in turn by `play`; until then a failure must not go unhandled.
-		clip.catch(() => {});
-		clips.push(clip);
-		chain = chain.then((ok) => (ok ? play(index) : false));
+	} catch (cause) {
+		// The sentence playing stops at its next chunk.
+		withdrawn = { cause };
 	}
 	const complete = await chain;
 	if (timings.length === 0 && failedAt === undefined && isCurrent()) {
@@ -290,6 +419,10 @@ export async function playParlumeAuraSentences(input: {
 				() => {},
 			);
 		}
+	}
+	if (withdrawn) {
+		outlet.clear();
+		throw withdrawn.cause;
 	}
 	if (complete && isCurrent()) {
 		outlet.end();

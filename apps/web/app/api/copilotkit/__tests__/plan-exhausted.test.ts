@@ -17,29 +17,42 @@ const mocks = vi.hoisted(() => ({
 	resolvePlanModel: vi.fn(),
 	resolveCopilotOrgModel: vi.fn(),
 	handleRequest: vi.fn(),
+	openai: vi.fn(),
+	providerConfig: vi.fn(),
+	databricksFetch: vi.fn(),
+	endpoint: vi.fn(),
+	agent: vi.fn(),
 	session: { user: { id: "user-1" }, session: {} as Record<string, unknown> },
 }));
 
 vi.mock("next/headers", () => ({ headers: async () => new Headers() }));
 
 vi.mock("@ag-ui/langgraph", () => ({
-	LangGraphHttpAgent: class {},
+	LangGraphHttpAgent: class {
+		constructor(options: unknown) {
+			mocks.agent(options);
+		}
+	},
 }));
 
 vi.mock("@copilotkit/runtime", () => ({
 	CopilotRuntime: class {},
 	ExperimentalEmptyAdapter: class {},
 	OpenAIAdapter: class {},
-	copilotRuntimeNextJSAppRouterEndpoint: () => ({
-		handleRequest: mocks.handleRequest,
-	}),
+	copilotRuntimeNextJSAppRouterEndpoint: mocks.endpoint,
 }));
 
 vi.mock("@repo/agent-core", () => ({
 	AgentRegistry: class {
 		register() {}
 		getAll() {
-			return [];
+			return [
+				{
+					id: "task_planner",
+					getDeploymentUrl: () => "http://localhost:8126",
+					name: "task_planner",
+				},
+			];
 		}
 	},
 	LangGraphAgentAdapter: class {},
@@ -52,17 +65,17 @@ vi.mock("@repo/agent-tools", () => ({
 	WRITE_TASK_PLAN_TOOL: {},
 }));
 
-vi.mock("@repo/ai", () => ({
-	buildEffectiveBaseUrl: () => "https://gateway.example.com/v1",
-	createDatabricksFetch: () => undefined,
+vi.mock("@repo/ai", async () => ({
+	...(await vi.importActual<typeof import("@repo/ai/lib/databricks-url")>(
+		"@repo/ai/lib/databricks-url",
+	)),
+	buildEffectiveBaseUrl: (_provider: string, baseUrl: string) => baseUrl,
+	createDatabricksFetch: mocks.databricksFetch,
 	getCurrentDateContext: () => "",
-	getRAGProviderConfig: async () => ({
-		apiKey: "sk-test",
-		baseUrl: "https://gateway.example.com/v1",
-	}),
-	isReasoningModelName: () => false,
+	getRAGProviderConfig: mocks.providerConfig,
+	isReasoningModelName: (name: string) =>
+		name.toLowerCase().includes("deepseek-r1"),
 	resolveModelWithProvider: mocks.resolveModelWithProvider,
-	toDatabricksServingBaseUrl: (url: string) => url,
 }));
 
 vi.mock("@repo/ai/lib/chatgpt-plan/agent-config", () => ({
@@ -129,7 +142,13 @@ vi.mock("@repo/payments", () => ({
 	AiUsageLimitExceededError: class extends Error {},
 }));
 
-vi.mock("openai", () => ({ default: class {} }));
+vi.mock("openai", () => ({
+	default: class {
+		constructor(options: unknown) {
+			mocks.openai(options);
+		}
+	},
+}));
 
 vi.mock("../org-model", () => ({
 	resolveCopilotOrgModel: mocks.resolveCopilotOrgModel,
@@ -170,6 +189,11 @@ function call(method: string): Promise<Response> {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.endpoint.mockReturnValue({ handleRequest: mocks.handleRequest });
+	mocks.providerConfig.mockResolvedValue({
+		apiKey: "sk-test",
+		baseUrl: "https://gateway.example.com/v1",
+	});
 	mocks.resolveCopilotOrgModel.mockResolvedValue(PROVIDER_MODEL);
 	mocks.resolvePlanModel.mockResolvedValue({ model: "gpt-5" });
 	mocks.interactiveApiFallback.mockResolvedValue(false);
@@ -404,3 +428,119 @@ describe("/api/copilotkit — the plan model hint", () => {
 		expect(mocks.handleRequest).not.toHaveBeenCalled();
 	});
 });
+
+describe("CopilotKit Databricks URL routing", () => {
+	it.each([
+		["system.ai.claude-sonnet-5", "ai-gateway/mlflow/v1"],
+		["custom-chat", "serving-endpoints"],
+	])("routes %s to %s", async (modelId, path) => {
+		mocks.pickChatGptPlanSource.mockResolvedValue(null);
+		mocks.providerConfig.mockResolvedValue({
+			apiKey: "example-key",
+			baseUrl: "https://example.cloud.databricks.com",
+		});
+		mocks.resolveCopilotOrgModel.mockResolvedValue({
+			metadata: {
+				provider: "DATABRICKS",
+				modelString: modelId,
+				canonicalName: "claude-sonnet-5",
+			},
+			trackUsage: () => {},
+		});
+		expect((await call("agent/run")).status).toBe(200);
+		expect(mocks.openai).toHaveBeenCalledWith(
+			expect.objectContaining({
+				baseURL: `https://example.cloud.databricks.com/${path}`,
+			}),
+		);
+	});
+});
+
+describe("CopilotKit canonical prompt-cache decision", () => {
+	it.each([
+		["custom-chat", "claude-sonnet-5", true],
+		["claude-alias", "llama-3-3-70b", false],
+	])(
+		"%s backed by %s enables caching: %s",
+		async (modelString, canonicalName, promptCache) => {
+			mocks.pickChatGptPlanSource.mockResolvedValue(null);
+			mocks.resolveCopilotOrgModel.mockResolvedValue({
+				metadata: {
+					provider: "DATABRICKS",
+					modelString,
+					canonicalName,
+				},
+				trackUsage: () => {},
+			});
+			expect((await call("agent/run")).status).toBe(200);
+			expect(mocks.databricksFetch).toHaveBeenCalledWith(
+				undefined,
+				expect.objectContaining({ promptCache }),
+			);
+		},
+	);
+});
+
+it.each(["org", "plan", "personal", "org-nonreasoning"])(
+	"forwards model hints for %s credentials",
+	async (source) => {
+		mocks.pickChatGptPlanSource.mockResolvedValue(null);
+		mocks.resolveCopilotOrgModel.mockResolvedValue({
+			metadata: {
+				provider: "DATABRICKS",
+				modelString: "prod-chat",
+				canonicalName:
+					source === "org-nonreasoning"
+						? "llama-3-3-70b"
+						: "deepseek-r1",
+			},
+			trackUsage: () => {},
+		});
+		if (source === "plan") {
+			mocks.pickChatGptPlanSource.mockResolvedValue({
+				config: { accessToken: "example-token" },
+				source: "own",
+				audience: "interactive",
+			});
+		} else if (source === "personal") {
+			mocks.pickChatGptPlanSource.mockResolvedValue({
+				exhausted: true,
+				audience: "interactive",
+				policy: { apiFallbackInteractive: "ASK" },
+				resetAt: RESET,
+				ownPlanSpent,
+			});
+			mocks.personalKeyFallback.mockResolvedValue({
+				config: {
+					apiKey: "example-key",
+					provider: "ANTHROPIC_DIRECT",
+					source: "user",
+				},
+			});
+			mocks.resolveModelWithProvider.mockResolvedValue({
+				modelString: "personal-model",
+			});
+		}
+		expect((await call("agent/run")).status).toBe(200);
+		const properties = mocks.endpoint.mock.calls.at(-1)?.[0].properties;
+		const headers = mocks.agent.mock.calls.at(-1)?.[0].headers;
+		expect(headers).toBeDefined();
+		if (source.startsWith("org")) {
+			expect(properties.ai_model).toBe("prod-chat");
+			expect(properties.ai_canonical_model_name).toBe(
+				source === "org" ? "deepseek-r1" : "llama-3-3-70b",
+			);
+			expect(properties.ai_is_reasoning).toBe(source === "org");
+			expect(headers["X-AI-Is-Reasoning"]).toBe(
+				source === "org" ? "true" : "false",
+			);
+		} else {
+			expect(properties.ai_model).toBe(
+				source === "plan" ? "gpt-5" : "personal-model",
+			);
+			expect(properties).not.toHaveProperty("ai_canonical_model_name");
+			expect(properties).not.toHaveProperty("ai_is_reasoning");
+			expect(headers).not.toHaveProperty("X-AI-Is-Reasoning");
+		}
+	},
+);
