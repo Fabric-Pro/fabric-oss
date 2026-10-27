@@ -30,6 +30,10 @@ import {
 	PARLUME_REALTIME_VOICE_PROMPT_AGENT_KEY,
 } from "@repo/utils/parlume-realtime-voice-prompt";
 import {
+	PARLUME_RECAP_FALLBACK_BODY,
+	PARLUME_RECAP_PROMPT_AGENT_KEY,
+} from "@repo/utils/parlume-recap-prompt";
+import {
 	PARLUME_SUGGESTION_FALLBACK_BODY,
 	PARLUME_SUGGESTION_PROMPT_AGENT_KEY,
 } from "@repo/utils/parlume-suggestion-prompt";
@@ -441,6 +445,15 @@ const PROMPT_DOCUMENT_TYPE_BINDINGS: Record<string, SeedBindingSpec> = {
 		documentTypes: ["GENERAL"],
 		storyKind: null as null,
 		targetKey: PARLUME_REALTIME_VOICE_PROMPT_AGENT_KEY,
+	},
+	// parlume_series_recap: the "Since last time" chat post Parlume makes once
+	// when it joins a meeting of a linked series. Dedicated agent key,
+	// GENERAL + null: one prompt per tenant covers every series. The previous
+	// meeting and the work items are fenced as untrusted data code-side.
+	[PARLUME_RECAP_PROMPT_AGENT_KEY]: {
+		documentTypes: ["GENERAL"],
+		storyKind: null as null,
+		targetKey: PARLUME_RECAP_PROMPT_AGENT_KEY,
 	},
 	// recurring_error_bug_reporter: the bug report the recurring-error scan
 	// files for a recurring error group or a cluster of open bug reports.
@@ -6591,6 +6604,30 @@ Rules:
 		format: "HANDLEBARS" as const,
 		isPublic: true,
 		content: PARLUME_REALTIME_VOICE_FALLBACK_BODY,
+	},
+	{
+		// parlume_series_recap: the "Since last time" post. Once per session,
+		// when the bot is admitted to a meeting of a linked series, a fast
+		// model reads the previous meeting and the work items changed since
+		// and writes one short chat post.
+		//
+		// The body lives in @repo/utils (PARLUME_RECAP_FALLBACK_BODY) so this
+		// seed and the activity that resolves the binding share ONE
+		// definition. No variables and no promptType/structuredFormat: plain
+		// text output, and the material is fenced as untrusted data code-side.
+		//
+		// INSERT-ONLY: once this seeds, changing the text does nothing on an
+		// environment that already ran the seed. Ship wording changes as an
+		// explicit UPDATE migration.
+		key: PARLUME_RECAP_PROMPT_AGENT_KEY,
+		name: "Parlume Series Recap",
+		description:
+			'The short "Since last time" post Parlume makes in the chat when it joins a meeting of a linked series: what the previous meeting decided and left open, and what changed in the project since.',
+		category: "meetings",
+		tags: ["meetings", "parlume", "ai-generation"],
+		format: "HANDLEBARS" as const,
+		isPublic: true,
+		content: PARLUME_RECAP_FALLBACK_BODY,
 	},
 	{
 		// recurring_error_bug_reporter: the bug report the recurring-error scan

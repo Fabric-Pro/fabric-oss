@@ -82,7 +82,6 @@
 	"packages/api/modules/notifications/procedures/restore.ts",
 	"packages/api/modules/notifications/procedures/unread-count.ts",
 	"packages/api/modules/orchestrator/procedures/approval-templates.ts",
-	"packages/api/modules/orchestrator/procedures/memory-preferences.ts",
 	"packages/api/modules/projects/procedures/acknowledge-decision-precheck.ts",
 	"packages/api/modules/projects/procedures/architecture-decisions/comments.ts",
 	"packages/api/modules/projects/procedures/architecture-decisions/crud.ts",

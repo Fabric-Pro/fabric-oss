@@ -231,6 +231,8 @@ vi.mock("@saas/projects/hooks/useDocumentAssistantHistoryEnabled", () => ({
 }));
 vi.mock("@saas/projects/hooks/useDocumentAssistantHistory", () => ({
 	useDocumentAssistantHistoryRealtimeSync: vi.fn(),
+	// The editor stamps a proposal it answers itself (the idle limit).
+	useRecordDocumentAssistantDiffOutcome: () => ({ mutateAsync: vi.fn() }),
 }));
 vi.mock(
 	"@saas/projects/components/excalidraw-auto-insert/TiptapEditorRegistry",

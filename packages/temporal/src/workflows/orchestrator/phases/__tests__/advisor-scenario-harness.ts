@@ -4,6 +4,8 @@ import {
 	boundedHistoryEnabled,
 	WEIGHTED_ALLOWANCE_PATCH,
 } from "../../advisor-history-retention";
+import type { WorkflowState } from "../../types";
+
 /**
  * Shared harness for the Advisor scenario tests: synthetic fixtures, a fake
  * activity layer, and a scripted model turn run through the real
@@ -16,6 +18,7 @@ import type { ModelRequestObservation } from "@repo/ai/lib/request-shape";
 import { ApplicationFailure } from "@temporalio/common";
 import { vi } from "vitest";
 import { getFabricAiTools } from "../../../../activities/orchestrator/tools/fabric-ai-tools";
+import { normalizeAdvisorToolDefinition } from "../../advisor-tool-definition";
 import type { IterativeTurnOptions } from "../../turn-contract";
 import { createInitialState, type IterativeMessage } from "../../types";
 import { executeIterativePhase } from "../iterative-execution";
@@ -236,6 +239,17 @@ export interface Seen {
 }
 
 export interface TurnOptions {
+	state?: Partial<WorkflowState>;
+	/** Report the scripted provider set separately from the workflow's proposed set; null models an older worker. */
+	offeredToolNames?: string[] | null;
+	onIterationInput?: (
+		input: import("../../../../activities/orchestrator/execution/run-agent-iteration").RunAgentIterationInput,
+	) => void;
+	runIteration?: (
+		input: import("../../../../activities/orchestrator/execution/run-agent-iteration").RunAgentIterationInput,
+	) => Promise<
+		import("../../../../activities/orchestrator/execution/run-agent-iteration").AgentIterationResult
+	>;
 	/** Capture the scripted activity boundary without calling a provider. */
 	observeRequests?: boolean;
 	message: string;
@@ -260,6 +274,7 @@ export interface TurnOptions {
 	/** Extra workflow input fields, such as the Advisor's opt-in. */
 	input?: Record<string, unknown>;
 	/** Autonomy level for the risk gate; defaults to the loop's own. */
+	approval?: { approved: boolean };
 	autonomyLevel?: "CONSERVATIVE" | "BALANCED" | "AUTONOMOUS";
 	/** The turn contract options the workflow passes (absent = legacy run). */
 	turn?: IterativeTurnOptions;
@@ -269,6 +284,10 @@ export async function runTurn(mocks: ScenarioMocks, options: TurnOptions) {
 	const seen: Seen[] = [];
 	const queue = [...options.steps];
 	mocks.stub("runAgentIteration").mockImplementation(async (req) => {
+		options.onIterationInput?.(req);
+		if (options.runIteration) {
+			return options.runIteration(req);
+		}
 		// Snapshot: the loop keeps mutating the array it passed.
 		const history = structuredClone(
 			req.conversationHistory,
@@ -364,6 +383,28 @@ export async function runTurn(mocks: ScenarioMocks, options: TurnOptions) {
 				: requests
 					? { requests }
 					: {}),
+			...(req.callToolMode && options.offeredToolNames !== null
+				? {
+						offeredToolDefinitions: Object.fromEntries(
+							sentTools
+								.filter(
+									([name]) =>
+										options.offeredToolNames ===
+											undefined ||
+										options.offeredToolNames?.includes(
+											name,
+										),
+								)
+								.map(([name, definition]) => [
+									name,
+									normalizeAdvisorToolDefinition(
+										name,
+										definition as never,
+									),
+								]),
+						),
+					}
+				: {}),
 			type: "tool_calls",
 			toolCalls: step.calls.map((c, i) => ({
 				id: `call-${seen.length}-${i}`,
@@ -399,6 +440,12 @@ export async function runTurn(mocks: ScenarioMocks, options: TurnOptions) {
 		...options.input,
 	};
 	const state = createInitialState(input as never);
+	if (
+		options.input?.toolLoadingMode === "call_tool" &&
+		!mocks.off.has("orch-call-tool-v1")
+	) {
+		state.advisorCallToolMode = true;
+	}
 	state.advisorBudgetEnabled = options.advisorBudgetEnabled ?? false;
 	state.advisorBoundedHistoryEnabled = boundedHistoryEnabled(
 		input as never,
@@ -415,13 +462,14 @@ export async function runTurn(mocks: ScenarioMocks, options: TurnOptions) {
 		state.preloadedResources = options.preloadedResources as never;
 	}
 
+	Object.assign(state, options.state);
 	const result = await executeIterativePhase(
 		state,
 		input as never,
 		(options.modeConfig ?? { maxIterations: 20 }) as never,
 		{} as never,
 		vi.fn(),
-		vi.fn(),
+		vi.fn().mockResolvedValue(options.approval),
 		options.isCancelled ?? (() => false),
 		options.turn,
 	);

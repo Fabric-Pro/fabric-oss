@@ -21,7 +21,10 @@ import {
 	type ParlumeRealtimeEngine,
 	parseParlumeFabricResult,
 } from "./parlume-realtime-engine";
-import { ParlumeSpeakerTimeline } from "./parlume-speakers";
+import {
+	type ParlumeSpeaker,
+	ParlumeSpeakerTimeline,
+} from "./parlume-speakers";
 import {
 	authenticateParlumeStreamMessage,
 	isRecord,
@@ -32,6 +35,7 @@ import {
 import {
 	ParlumeTranscriber,
 	type ParlumeTranscript,
+	parlumeTranscriptTimeAt,
 } from "./parlume-transcriber";
 import {
 	isIncompleteParlumeDictation,
@@ -40,6 +44,7 @@ import {
 } from "./parlume-turn-endpoint";
 import { ParlumeVoiceFloor, UNKNOWN_SPEAKER } from "./parlume-voice-floor";
 import {
+	findParlumeWake,
 	isSameParlumeRequest,
 	mayNameParlumePost,
 	parseParlumeSpokenReference,
@@ -510,6 +515,10 @@ export class Parlume extends Server<Env> {
 		const speakerId = speaker?.id ?? null;
 		const fromBot = this.isBotSpeaker(speakerName ?? undefined);
 		const speakerKey = parlumeSpeakerKey(speakerId, speakerName);
+		const asker = this.requestSpeaker(transcript, speaker);
+		const askerName = asker?.name ?? null;
+		const askerKey = parlumeSpeakerKey(asker?.id ?? null, askerName);
+		const askedByBot = fromBot || this.isBotSpeaker(askerName ?? undefined);
 		if (!fromBot) {
 			await this.noteActivity({ persist: transcript.isFinal });
 			if (transcript.isFinal && this.chat.noteSpeechSegment()) {
@@ -533,13 +542,19 @@ export class Parlume extends Server<Env> {
 				Math.round(transcript.endMs - audio.startTime),
 			),
 		};
+		// The transcript keeps the turn's speaker; a request is the asker's.
+		const request: PendingSegment = {
+			...segment,
+			speakerName: askerName,
+			speakerId: asker?.id ?? null,
+		};
 		if (transcript.tentative) {
-			if (!realtime && !fromBot) {
+			if (!realtime && !askedByBot) {
 				await this.onTentativeEnd(
 					state,
-					segment,
+					request,
 					transcript.tentative,
-					speakerKey,
+					askerKey,
 				);
 			}
 			return;
@@ -548,10 +563,12 @@ export class Parlume extends Server<Env> {
 			await this.floor.onPartial(state, {
 				fromBot,
 				text: transcript.text,
-				held: () => this.turnEndpoint.hold(speakerKey),
+				held: () => this.turnEndpoint.hold(askerKey),
 			});
 			const partialWake =
-				realtime && !fromBot ? parseParlumeWake(transcript.text) : null;
+				realtime && !askedByBot
+					? parseParlumeWake(transcript.text)
+					: null;
 			if (
 				realtime &&
 				!fromBot &&
@@ -568,8 +585,8 @@ export class Parlume extends Server<Env> {
 				transcript.endMs > this.finalHeardUntil
 			) {
 				realtime.arm({
-					requester: speakerName,
-					speakerKey,
+					requester: askerName,
+					speakerKey: askerKey,
 					endOfTurn: false,
 				});
 			}
@@ -604,36 +621,36 @@ export class Parlume extends Server<Env> {
 				// The realtime voice heard the request itself; Flux only says
 				// that it was addressed to Parlume, and that it has ended.
 				realtime.noteLine(speakerName, segment.text);
-				const wake = await this.resolveWakeTurn(segment);
+				const wake = await this.resolveWakeTurn(request);
 				const action = wake
-					? await this.postReferenceAction(segment, wake.text)
+					? await this.postReferenceAction(request, wake.text)
 					: null;
 				if (action?.kind === "speak") {
 					void realtime.say(action.text);
 				} else if (action?.kind === "ask") {
 					void realtime.respondToRequest(
-						speakerName,
-						speakerKey,
+						askerName,
+						askerKey,
 						action.text,
 					);
 				} else if (
 					wake !== null ||
-					parseParlumeWake(segment.text) !== null
+					(!askedByBot && parseParlumeWake(segment.text) !== null)
 				) {
 					realtime.arm({
-						requester: speakerName,
-						speakerKey,
+						requester: askerName,
+						speakerKey: askerKey,
 						endOfTurn: true,
 					});
 				}
 			} else if (
 				!this.turnEndpoint.append(
-					speakerKey,
+					askerKey,
 					segment.text,
 					segment.utteranceEndMs,
 				)
 			) {
-				await this.beginWakeTurn(state, segment, speakerKey);
+				await this.beginWakeTurn(state, request, askerKey);
 			} else {
 				log("info", "turn.extended", {
 					sessionId: state.sessionId,
@@ -854,6 +871,26 @@ export class Parlume extends Server<Env> {
 
 	private isBotSpeaker(name: string | undefined): boolean {
 		return Boolean(name && /^Fabric Parlume\b/i.test(name));
+	}
+
+	/**
+	 * Who addressed Parlume: whoever spoke from the wake phrase on. Flux runs
+	 * two speakers into one turn when the second starts before the first has
+	 * finished, so the name can come partway through a turn the first began.
+	 * Without word times that match the text, the turn's speaker asked.
+	 */
+	private requestSpeaker(
+		transcript: ParlumeTranscript,
+		turnSpeaker: ParlumeSpeaker | null,
+	): ParlumeSpeaker | null {
+		const wake = findParlumeWake(transcript.text);
+		const wakeMs = wake?.offset
+			? parlumeTranscriptTimeAt(transcript, wake.offset)
+			: null;
+		return wakeMs === null
+			? turnSpeaker
+			: (this.speakers.attribute(wakeMs, transcript.endMs) ??
+					turnSpeaker);
 	}
 
 	// The bridge knows the session's provider bot; Fabric holds the provider key.

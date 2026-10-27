@@ -85,6 +85,16 @@ interface UseUpdateDocumentWithContextOptions {
 	 * refused when the document changed since the preview was drafted.
 	 */
 	resolveBase?: () => DocumentSaveBase | null | undefined | "unavailable";
+	/**
+	 * Whether another editor in a collaborative room reviews an assistant
+	 * proposal right now (Fizzy #2946). The room holds that proposal, so
+	 * nothing of this update goes into the editor meanwhile: a preview that
+	 * answers then is dropped, a confirm or reject waits, and the editor is
+	 * not unlocked — its own rule unlocks it once that review is answered.
+	 */
+	heldElsewhere?: () => boolean;
+	/** Called right before the preview's diff goes into the editor. */
+	beforePreview?: () => void;
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -99,6 +109,8 @@ export function useUpdateDocumentWithContext({
 	diffPartialText,
 	onSaved,
 	resolveBase,
+	heldElsewhere,
+	beforePreview,
 }: UseUpdateDocumentWithContextOptions) {
 	// Everything this hook says is in the reader's locale, a refused confirm
 	// included: never the server's English (Fizzy #2946).
@@ -112,9 +124,36 @@ export function useUpdateDocumentWithContext({
 	// The base of the body the preview is drafted from, captured with it.
 	const previewBaseRef = useRef<DocumentSaveBase | null>(null);
 	const elapsedSeconds = useElapsedTimer(phase === "loading");
+	// Read when they are needed, not when the callbacks were made.
+	const heldElsewhereRef = useRef(heldElsewhere);
+	heldElsewhereRef.current = heldElsewhere;
+	const beforePreviewRef = useRef(beforePreview);
+	beforePreviewRef.current = beforePreview;
+	const isHeldElsewhere = useCallback(
+		() => heldElsewhereRef.current?.() === true,
+		[],
+	);
+	// Counts preview requests (Fizzy #2946). A request withdrawn, or one a
+	// later request replaced, is stale: its answer touches neither the
+	// hook's state nor the editor.
+	const requestRef = useRef(0);
+	// Whether a confirm is being saved right now, read when it is asked —
+	// not from a render that may predate it (Fizzy #2946).
+	const applyingRef = useRef(false);
+	const isApplyingNow = useCallback(() => applyingRef.current, []);
 
 	const start = useCallback(async () => {
 		if (!editor) {
+			return;
+		}
+		// Unlocked again unless another editor's review holds it now.
+		const unlock = () => {
+			if (!isHeldElsewhere()) {
+				editor.setEditable(true);
+			}
+		};
+		if (isHeldElsewhere()) {
+			toast.info(t("heldElsewhere"));
 			return;
 		}
 
@@ -134,6 +173,8 @@ export function useUpdateDocumentWithContext({
 			toast.info(t("syncing"));
 			return;
 		}
+		const request = ++requestRef.current;
+		const stale = () => request !== requestRef.current;
 		previewBaseRef.current = base ?? null;
 		baselineRef.current = baseline;
 		// Lock the editor while the preview RPC is in flight so mid-review
@@ -153,6 +194,9 @@ export function useUpdateDocumentWithContext({
 					preview: true,
 					currentContent: baseline,
 				});
+			if (stale()) {
+				return;
+			}
 
 			const previewData: DocumentContextUpdatePreview = {
 				hasRelevantContext: result.hasRelevantContext,
@@ -175,24 +219,52 @@ export function useUpdateDocumentWithContext({
 				!proposedContent ||
 				isNoOpProposedContent(proposedContent, baseline)
 			) {
-				editor.setEditable(true);
+				unlock();
 				setPhase("idle");
 				toast.info(result.summary || t("noUpdates"));
+				return;
+			}
+
+			// Another editor's review began while this preview was drafted
+			// (Fizzy #2946): the room holds that proposal now, and this one
+			// was drafted from the body before it. It is dropped, not kept
+			// for later, and said so; the update can be asked for again once
+			// that review is answered.
+			if (isHeldElsewhere()) {
+				setPhase("idle");
+				setPreview(null);
+				toast.info(t("heldElsewhere"));
+				return;
+			}
+			// The body changed while the preview was drafted — in a room, a
+			// colleague's edit reached this editor meanwhile (Fizzy #2946).
+			// The preview, drafted from the body before, would replace that
+			// edit, and a confirm would save without it: it is dropped the
+			// same way, and the update can be asked for again.
+			if (getEditorMarkdownForSave(editor) !== baseline) {
+				unlock();
+				setPhase("idle");
+				setPreview(null);
+				toast.info(t("changedMeanwhile"));
 				return;
 			}
 
 			// Show diff in the editor. Diff markers can break ProseMirror tables,
 			// so fall back to plain proposed content if fromMarkdown throws.
 			const diff = diffPartialText(baseline, proposedContent, true);
+			beforePreviewRef.current?.();
 			try {
 				editor.commands.setContent(fromMarkdown(diff));
 			} catch {
 				editor.commands.setContent(fromMarkdown(proposedContent));
 			}
-			editor.setEditable(true);
+			unlock();
 			setPhase("diff");
 		} catch (err) {
-			editor.setEditable(true);
+			if (stale()) {
+				return;
+			}
+			unlock();
 			setPhase("idle");
 			// No AI provider, a document too large for the model's output, or
 			// a model call that failed is said with what resolves it. A
@@ -217,12 +289,18 @@ export function useUpdateDocumentWithContext({
 		fromMarkdown,
 		diffPartialText,
 		resolveBase,
+		isHeldElsewhere,
 		t,
 		tRefusal,
 	]);
 
 	const confirm = useCallback(async () => {
 		if (!editor || !preview) {
+			return;
+		}
+		// Not while another editor reviews a proposal: the review stays open.
+		if (isHeldElsewhere()) {
+			toast.info(t("heldElsewhere"));
 			return;
 		}
 
@@ -249,6 +327,7 @@ export function useUpdateDocumentWithContext({
 		}
 
 		setPhase("applying");
+		applyingRef.current = true;
 		const base = previewBaseRef.current;
 		try {
 			const response =
@@ -293,6 +372,8 @@ export function useUpdateDocumentWithContext({
 			// and the review stays open.
 			setPhase("diff");
 			toast.error(describeDocumentWriteRefusal(err, tRefusal).message);
+		} finally {
+			applyingRef.current = false;
 		}
 	}, [
 		editor,
@@ -303,12 +384,19 @@ export function useUpdateDocumentWithContext({
 		getEditorMarkdownForSave,
 		fromMarkdown,
 		onSaved,
+		isHeldElsewhere,
 		t,
 		tRefusal,
 	]);
 
 	const reject = useCallback(() => {
 		if (!editor) {
+			return;
+		}
+		// Nor a reject, which puts the body from before it back over the
+		// room — and the proposal under review there.
+		if (isHeldElsewhere()) {
+			toast.info(t("heldElsewhere"));
 			return;
 		}
 
@@ -321,7 +409,45 @@ export function useUpdateDocumentWithContext({
 			// Table structure error — phase is already idle so the user can
 			// continue manually.
 		}
-	}, [editor, fromMarkdown]);
+	}, [editor, fromMarkdown, isHeldElsewhere, t]);
+
+	// Another editor's review, begun at the same moment as this one, holds
+	// over it (Fizzy #2946): this one withdraws without writing the editor —
+	// the room holds that review's proposal, which putting this one's
+	// baseline back would replace. A confirm already being saved goes on.
+	const withdraw = useCallback(() => {
+		if (phase === "applying") {
+			return;
+		}
+		// A preview still being drafted is withdrawn with it.
+		requestRef.current += 1;
+		setPhase("idle");
+		setPreview(null);
+	}, [phase]);
+
+	// This review holds over another begun at the same moment, whose editor
+	// wrote into the room before it withdrew (Fizzy #2946): the room gets
+	// this one's again — its diff while it shows one, the body it is drafted
+	// from while it drafts.
+	const reassert = useCallback(() => {
+		if (!editor) {
+			return;
+		}
+		const proposed = preview?.proposedContent;
+		try {
+			if (phase === "diff" && proposed) {
+				editor.commands.setContent(
+					fromMarkdown(
+						diffPartialText(baselineRef.current, proposed, true),
+					),
+				);
+			} else if (phase === "loading") {
+				editor.commands.setContent(fromMarkdown(baselineRef.current));
+			}
+		} catch {
+			// Table structure error — as for the preview itself.
+		}
+	}, [editor, phase, preview, fromMarkdown, diffPartialText]);
 
 	// Time-based stage heuristic — the server doesn't emit progress, so we
 	// approximate from elapsed time. RAG fetch + live-integration fetch
@@ -337,6 +463,9 @@ export function useUpdateDocumentWithContext({
 		start,
 		confirm,
 		reject,
+		withdraw,
+		reassert,
+		isApplyingNow,
 		preview,
 		isActive: phase !== "idle",
 		isLoading: phase === "loading",

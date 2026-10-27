@@ -593,6 +593,9 @@ export async function executeExecutionPhase(
 						preloadedResources: state.preloadedResources,
 						enrichedMessage: state.enrichedMessage,
 						enrichedSystemPrompt: state.enrichedSystemPrompt,
+						...(state.systemPromptParts
+							? { systemPromptParts: state.systemPromptParts }
+							: {}),
 						lettaAgentId: state.lettaAgentId,
 						workspaceContext: state.workspaceContext,
 						journeyState: state.journeyState,

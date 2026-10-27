@@ -1,3 +1,4 @@
+import type { AnswerModelSnapshot } from "@repo/ai/lib/answer-model-snapshot";
 /**
  * Model Selector Utility
  *
@@ -109,15 +110,17 @@ export async function getAiModelWithSelection(
 		| "workflowExecutionId"
 		| "promptVersionId"
 	>,
+	answerSnapshot?: AnswerModelSnapshot,
 ) {
 	const taskType = hasTools ? "TOOL_CALLING" : "COMPLEX";
 
-	const { model, metadata, trackUsage } = await getAIModelWithMetadata(
+	const resolved = await getAIModelWithMetadata(
 		{
 			taskType,
 			complexity: "medium",
 			requiresToolCalling: hasTools,
 			modelOverride,
+			answerSnapshot,
 		},
 		{
 			userId,
@@ -128,6 +131,7 @@ export async function getAiModelWithSelection(
 		},
 	);
 
+	const { model, metadata, trackUsage } = resolved;
 	console.log(
 		`[Orchestrator] Dynamic model selected: ${metadata.modelString} (source: ${metadata.selectionSource}, provider: ${metadata.provider})`,
 	);
@@ -136,6 +140,8 @@ export async function getAiModelWithSelection(
 
 	return {
 		model,
+		answerSnapshot: () => resolved.metadata.answerSnapshot,
+		answerRouteChanges: () => resolved.metadata.answerRouteChanges,
 		provider: metadata.provider,
 		modelString: metadata.modelString,
 		// Catalog name — the only reliable model identity when the provider
@@ -146,7 +152,7 @@ export async function getAiModelWithSelection(
 		maxOutputTokens: metadata.maxOutputTokens,
 		// Read after the calls: set only once every ChatGPT plan ran out
 		// mid-turn and the model moved to API billing (Fizzy #3048).
-		planSpentApiBilling: () => metadata.planSpentApiBilling,
+		planSpentApiBilling: () => resolved.metadata.planSpentApiBilling,
 	};
 }
 

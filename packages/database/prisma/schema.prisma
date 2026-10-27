@@ -18160,8 +18160,11 @@ model EpisodicMemory {
   agentId        String? // "fabric-ai" for orchestrator, or agent template ID
 
   // Summary content (stored in PostgreSQL for fast access)
-  title   String
-  summary String @db.Text
+  /// Structured section state, first request, stable title and lifetime recorded
+  /// count. The episode query renders summary and evicts sections over its cap.
+  turnSections Json   @default("{}")
+  title        String
+  summary      String @db.Text
 
   // Extracted metadata for filtering
   keyTopics   String[] // ["project-planning", "debugging", "requirements"]
@@ -18169,10 +18172,13 @@ model EpisodicMemory {
   outcome     String // "completed" | "abandoned" | "ongoing" | "delegated"
 
   // Interaction metrics
-  messageCount Int
-  turnCount    Int
-  toolsUsed    String[]
-  agentsUsed   String[] // For delegated tasks
+  /// Execution IDs whose turns are in this entry, retained for retry-safe updates;
+  /// the episode query caps this list to the most recent 50 recorded executions.
+  recordedExecutionIds String[] @default([])
+  messageCount         Int
+  turnCount            Int
+  toolsUsed            String[]
+  agentsUsed           String[] // For delegated tasks
 
   // Timestamps
   conversationStartedAt DateTime

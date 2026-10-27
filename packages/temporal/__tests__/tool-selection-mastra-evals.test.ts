@@ -209,6 +209,7 @@ describe("Mastra tool selection evals", () => {
 						confidence: 0.91,
 					},
 				],
+				telemetry: { strategy: "semantic" },
 				userIntent: {},
 			},
 			{
@@ -221,6 +222,7 @@ describe("Mastra tool selection evals", () => {
 						confidence: 0.91,
 					},
 				],
+				telemetry: { strategy: "semantic" },
 				userIntent: {},
 			},
 			{
@@ -233,6 +235,7 @@ describe("Mastra tool selection evals", () => {
 						confidence: 0.9,
 					},
 				],
+				telemetry: { strategy: "semantic" },
 				userIntent: {},
 			},
 		];

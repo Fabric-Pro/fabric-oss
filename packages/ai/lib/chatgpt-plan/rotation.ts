@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
 	PlanSourceRotatedError,
 	SubscriptionPlanExhaustedError,
@@ -130,8 +131,14 @@ export function createChatGptPlanRotationMiddleware(
 		}
 		await rotation.beforeRotate?.(source);
 		logger.info("[chatgpt-plan] Plan spent; moving the call to another", {
-			from: planSourceKey(call.current),
-			to: planSourceKey(source),
+			from: createHash("sha256")
+				.update(planSourceKey(call.current))
+				.digest("hex")
+				.slice(0, 12),
+			to: createHash("sha256")
+				.update(planSourceKey(source))
+				.digest("hex")
+				.slice(0, 12),
 		});
 		call.current = source;
 		rotation.onRotated?.(source);

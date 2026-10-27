@@ -210,6 +210,11 @@
 			"import": "./lib/page-ask-prompt.ts",
 			"default": "./lib/page-ask-prompt.ts"
 		},
+		"./parlume-recap-prompt": {
+			"types": "./lib/parlume-recap-prompt.ts",
+			"import": "./lib/parlume-recap-prompt.ts",
+			"default": "./lib/parlume-recap-prompt.ts"
+		},
 		"./parlume-realtime-voice-prompt": {
 			"types": "./lib/parlume-realtime-voice-prompt.ts",
 			"import": "./lib/parlume-realtime-voice-prompt.ts",

@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { mergeOrphanBulletContinuations } from "../diff-utils";
+import { fromMarkdown, mergeOrphanBulletContinuations } from "../diff-utils";
 
 describe("mergeOrphanBulletContinuations", () => {
 	describe("basic continuation", () => {
@@ -62,6 +62,101 @@ describe("mergeOrphanBulletContinuations", () => {
 			const fence = ["- Bullet without a period", "```code"].join("\n");
 			expect(mergeOrphanBulletContinuations(fence)).toBe(fence);
 		});
+	});
+
+	describe("user-authored enumerated lists (Fizzy #3397)", () => {
+		const productionItems = [
+			"contribution margin retained per incremental win,",
+			"qualified-inquiry-to-win rate,",
+			"the number of incremental qualified inquiries attributable to the improved digital journey,",
+			"the assessment period and relevant recurring costs.",
+		];
+
+		it.each([
+			["tight", " ", "\n"],
+			["loose", "  ", "\n    \n"],
+		])(
+			"preserves the production ordered list in %s form",
+			(_, space, separator) => {
+				const input = productionItems
+					.map((body, index) => `${index + 1}.${space}${body}`)
+					.join(separator);
+				expect(mergeOrphanBulletContinuations(input)).toBe(input);
+			},
+		);
+
+		it.each(["\n", "\n    \n"])(
+			"renders four production list items with separator %j",
+			(separator) => {
+				const input = productionItems
+					.map((body, index) => `${index + 1}.  ${body}`)
+					.join(separator);
+				expect((fromMarkdown(input).match(/<li>/g) || []).length).toBe(
+					4,
+				);
+			},
+		);
+
+		it("preserves comma-ended unordered items", () => {
+			const input = [
+				"- revenue by product line,",
+				"- the cost of goods sold,",
+				"- the margin after fulfilment costs.",
+			].join("\n");
+			expect(mergeOrphanBulletContinuations(input)).toBe(input);
+		});
+
+		it.each([
+			["1.", "2."],
+			["1.", "-"],
+			["-", "2."],
+		])(
+			"preserves explicit numbered structure (%s then %s)",
+			(parent, candidate) => {
+				const input = [
+					`${parent} this sentence starts here`,
+					`${candidate} and finishes on the second line`,
+				].join("\n");
+				expect(mergeOrphanBulletContinuations(input)).toBe(input);
+			},
+		);
+
+		it.each([",", ";", ',"', ";'", ",)", ";]"])(
+			"preserves unordered items after enumerating punctuation %s",
+			(ending) => {
+				const input = [
+					`- revenue by product line${ending}`,
+					"- the cost of goods sold.",
+				].join("\n");
+				expect(mergeOrphanBulletContinuations(input)).toBe(input);
+			},
+		);
+
+		it.each([
+			[
+				"1. This is **important,",
+				"2. and urgent**",
+				"1. This is **important, and urgent**",
+			],
+			["1. Use `getUser", "2. ById` here", "1. Use `getUserById` here"],
+			[
+				"- This is **important,",
+				"- and urgent**",
+				"- This is **important, and urgent**",
+			],
+			[
+				"- This is **important;",
+				"- and urgent**",
+				"- This is **important; and urgent**",
+			],
+		])(
+			"still repairs split markup in %s",
+			(parent, candidate, expected) => {
+				expect(
+					mergeOrphanBulletContinuations(`${parent}\n${candidate}`),
+				).toBe(expected);
+			},
+		);
 	});
 
 	describe("diff-marker bail", () => {

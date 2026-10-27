@@ -6277,6 +6277,7 @@
 				"regenerating": "Speichern ist pausiert, während dieses Dokument neu generiert wird.",
 				"review": "Übernehmen oder verwerfen Sie die neu generierte Version, bevor Sie speichern.",
 				"proposal": "Übernehmen oder verwerfen Sie die vom Assistenten vorgeschlagenen Änderungen, bevor Sie speichern.",
+				"proposalElsewhere": "In einem anderen Tab wird ein Vorschlag des Assistenten für dieses Dokument geprüft. Speichern ist wieder möglich, sobald er beantwortet ist.",
 				"runLive": "Speichern ist pausiert, während ein Generierungslauf dieses Dokument schreibt. Es ist wieder möglich, sobald der Lauf abgeschlossen ist.",
 				"reconnecting": "Speichern ist pausiert, bis der Editor wieder mit dem Kollaborationsserver verbunden ist.",
 				"updatingToLatest": "Speichern ist pausiert, während der Editor auf die zuletzt gespeicherte Version aktualisiert wird.",
@@ -6292,6 +6293,14 @@
 			},
 			"staleRunSave": "Die Generierung dieses Dokuments hat sich seit zehn Minuten nicht gemeldet. Wenn Sie jetzt speichern, wird dieser Lauf beendet.",
 			"assistantFinishing": "Der Assistent schließt ab …",
+			"proposalElsewhereHeld": "In einem anderen Tab wird ein Vorschlag des Assistenten für dieses Dokument geprüft. Versuchen Sie es erneut, sobald er beantwortet ist.",
+			"proposalReviewTimedOut": "Die vom Assistenten vorgeschlagenen Änderungen wurden nicht übernommen, da sie 10 Minuten lang unbeantwortet blieben, während andere Tabs darauf warteten.",
+			"assistantRunTakenBack": "Der Assistent hat aufgehört, bevor er seine Änderungen angeboten hat. Was er bis dahin geschrieben hatte, wurde wieder aus dem Dokument entfernt.",
+			"regenerationCall": {
+				"completed": "Die Neugenerierung des Dokuments ist abgeschlossen.",
+				"notApplied": "Die Neugenerierung des Dokuments wurde nicht übernommen.",
+				"heldElsewhere": "Nicht gestartet: In einem anderen Tab wurde ein Vorschlag des Assistenten geprüft."
+			},
 			"rejectEmptyBody": "Es gibt keine frühere Version, zu der zurückgekehrt werden kann. Die neu generierte Version wurde beibehalten, und nichts wurde geändert.",
 			"rejectRunLive": "Eine neue Generierung dieses Dokuments hat begonnen. Die neu generierte Version wurde beibehalten, und nichts wurde geändert.",
 			"rejectReviewStale": "Dieses Dokument wurde geändert, nachdem diese Überprüfung geöffnet wurde. Es wurde nichts zurückgesetzt, die neueste Version bleibt erhalten.",
@@ -6302,6 +6311,8 @@
 		},
 		"documentEditorRoom": {
 			"updating": "Wird auf die neueste Version aktualisiert …",
+			"proposalElsewhere": "In einem anderen Tab wird ein Vorschlag des Assistenten geprüft. Sie können weiter bearbeiten, sobald er beantwortet ist.",
+			"proposalElsewhereBy": "{name} prüft in einem anderen Tab einen Vorschlag des Assistenten für dieses Dokument. Sie können weiter bearbeiten, sobald er beantwortet ist.",
 			"updateFailed": "Der Editor konnte nicht auf die neueste Version aktualisiert werden.",
 			"reloadLatest": "Neueste Version laden",
 			"reload": "Neu laden",
@@ -6309,6 +6320,7 @@
 			"saveConflictRoom": "Ihre Änderungen wurden nicht gespeichert: Das Dokument wurde zwischenzeitlich geändert. Der Editor wird auf die neueste Version aktualisiert.",
 			"saveConflictSolo": "Ihre Änderungen wurden nicht gespeichert: Das Dokument wurde zwischenzeitlich geändert. Kopieren Sie Ihren Text und laden Sie die Seite neu, um die neueste Version zu sehen.",
 			"leaveSaveFailed": "Ihre letzten Änderungen an diesem Dokument wurden nach dem Verlassen nicht gespeichert. Kopieren Sie sie, um sie zu behalten.",
+			"leaveWhileProposalElsewhere": "Ihre letzten Änderungen an diesem Dokument wurden nicht gespeichert: Sie haben es verlassen, während in einem anderen Tab ein Vorschlag des Assistenten geprüft wurde. Kopieren Sie sie, um sie zu behalten; die Kopie enthält auch diesen Vorschlag.",
 			"rawEditsStale": {
 				"message": "Das Dokument wurde geändert, während Sie sein Markdown bearbeitet haben. Ihre Änderungen hier sind nicht gespeichert und werden nicht von selbst gespeichert: Kopieren Sie sie, um sie zu behalten."
 			},
@@ -6329,11 +6341,14 @@
 		"versionHistory": {
 			"restoreBlocked": {
 				"runLive": "Die Wiederherstellung ist nicht verfügbar, solange ein Generierungslauf für dieses Dokument wartet oder es schreibt. Sie ist wieder verfügbar, sobald der Lauf abgeschlossen ist.",
-				"regenerating": "Die Wiederherstellung ist nicht verfügbar, solange eine hier gestartete Regenerierung läuft oder auf Ihre Prüfung wartet. Danach ist sie wieder verfügbar."
+				"regenerating": "Die Wiederherstellung ist nicht verfügbar, solange eine hier gestartete Regenerierung läuft oder auf Ihre Prüfung wartet. Danach ist sie wieder verfügbar.",
+				"proposalElsewhere": "Die Wiederherstellung ist nicht verfügbar, solange in einem anderen Tab ein Vorschlag des Assistenten für dieses Dokument geprüft wird. Sie ist wieder verfügbar, sobald er beantwortet ist."
 			}
 		},
 		"updateWithContext": {
 			"readFailed": "Der Dokumentinhalt konnte nicht gelesen werden. Versuchen Sie es erneut oder laden Sie die Seite neu.",
+			"heldElsewhere": "In einem anderen Tab wird ein Vorschlag des Assistenten für dieses Dokument geprüft. Versuchen Sie es erneut, sobald er beantwortet ist.",
+			"changedMeanwhile": "Das Dokument wurde geändert, während diese Aktualisierung erstellt wurde, deshalb wurde sie nicht angezeigt. Versuchen Sie es erneut.",
 			"syncing": "Das Dokument wird noch mit der zuletzt gespeicherten Version abgeglichen. Versuchen Sie es gleich noch einmal.",
 			"noUpdates": "Keine Aktualisierungen gefunden — das Dokument spiegelt bereits den neuesten Kontext wider.",
 			"previewFailed": "Der neueste Kontext konnte nicht abgerufen werden. Versuchen Sie es erneut.",

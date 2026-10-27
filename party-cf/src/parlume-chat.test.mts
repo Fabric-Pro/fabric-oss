@@ -325,6 +325,8 @@ test("chat commands: tags are handles, anything else must be addressed", () => {
 	assert.equal(parse("Hey Fabric"), null);
 	assert.equal(parse("say P7 please"), null);
 	assert.equal(parse("let's stop here"), null);
+	// Said aloud this wakes Parlume; typed, the address must come first.
+	assert.equal(parse("Thanks all. Parlume, what changed?"), null);
 });
 
 test("a suggestion pass is due on two new segments, 45 seconds after the last pass; one is posted every two minutes, ten an hour at most", () => {

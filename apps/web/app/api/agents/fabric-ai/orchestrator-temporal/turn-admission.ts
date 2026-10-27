@@ -608,6 +608,10 @@ export async function startTurnWorkflow(args: {
 	const workflowInput: OrchestratorWorkflowInput = {
 		...args.workflowInput,
 		executionId,
+		toolLoadingMode:
+			process.env.ADVISOR_TOOL_LOADING === "call_tool"
+				? "call_tool"
+				: undefined,
 		historyRetention:
 			process.env.ADVISOR_HISTORY_RETENTION === "bounded"
 				? "bounded"

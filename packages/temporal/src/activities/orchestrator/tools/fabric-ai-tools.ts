@@ -26,6 +26,7 @@ import {
 	PROJECT_SOURCE_LIST_INPUT_SCHEMA,
 } from "../../../workflows/orchestrator/project-document-tool-schemas";
 import {
+	PROJECT_FEATURE_GET_DESCRIPTION,
 	PROJECT_FEATURE_GET_INPUT_SCHEMA,
 	PROJECT_FEATURE_LIST_INPUT_SCHEMA,
 } from "../../../workflows/orchestrator/project-feature-tool-schemas";
@@ -329,7 +330,7 @@ function getFabricAiToolsInternal(): FabricAiTool[] {
 				"Filter with status (the project's status column name, e.g. 'In Review'), priority, kind or search text; page with offset when hasMore is true. " +
 				"Lists the same set as the roadmap page: features and bugs, excluding declined items, closed items only with includeHidden=true; ordered by identifier number by default (F-094 before F-100); sort=updated returns most recently updated first. Keep sort unchanged while paging. total counts that set and hiddenCount the closed items left out, so '199 items, 8 hidden' matches the page: total ALREADY excludes hidden items — report total as is and do not subtract hiddenCount from it; summary states the counts in words. " +
 				"An item missing from this list may still exist (declined, or closed without includeHidden) — read it with fabric_get_project_feature before saying it does not exist. " +
-				"Call fabric_get_project_feature for one feature's full description, acceptance criteria and tasks. " +
+				"Call fabric_get_project_feature for a feature overview and follow truncations[].next for long text or task pages. " +
 				"KEYWORDS: roadmap, features, backlog, stories, work items, feature status, in progress, in review, what's next.",
 			inputSchema: PROJECT_FEATURE_LIST_INPUT_SCHEMA,
 			outputSchema: {
@@ -364,15 +365,26 @@ function getFabricAiToolsInternal(): FabricAiTool[] {
 		},
 		{
 			name: "fabric_get_project_feature",
-			description:
-				"Read one feature (or bug) of the attached project LIVE from Fabric: full description, acceptance criteria, status, priority, drafting stage and every task with its completion. " +
-				"Pass the identifier the user mentions (e.g. 'F-040', 'F40', '40') or an id from fabric_list_project_features. " +
-				"A prefix is exact: 'F-001' matches F-001 or a feature numbered 1, never bug B-001; with no prefix a plain number is tried first, then F-, US-, B-. When nothing matches the tool returns an error — say the item does not exist rather than substituting another. " +
-				"It also returns items the roadmap hides — declined ones (never listed) and closed ones (listed only with includeHidden). Those items exist: onRoadmap=false and hiddenReason say why the roadmap does not show them.",
+			description: PROJECT_FEATURE_GET_DESCRIPTION,
 			inputSchema: PROJECT_FEATURE_GET_INPUT_SCHEMA,
 			outputSchema: {
 				type: "object",
 				properties: {
+					section: {
+						type: "string",
+						enum: ["description", "acceptanceCriteria", "tasks"],
+					},
+					offset: { type: "integer" },
+					nextOffset: { type: "integer" },
+					hasMore: { type: "boolean" },
+					content: { type: "string" },
+					contentLength: { type: "integer" },
+					returnedLength: { type: "integer" },
+					returnedCount: { type: "integer" },
+					total: { type: "integer" },
+					truncations: { type: "array", items: { type: "object" } },
+					next: { type: "object" },
+
 					identifier: { type: "string" },
 					title: { type: "string" },
 					onRoadmap: {

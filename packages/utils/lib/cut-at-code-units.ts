@@ -11,3 +11,11 @@ export function cutAtCodeUnits(text: string, max: number): string {
 	const end = code >= 0xd800 && code <= 0xdbff ? max - 1 : max;
 	return text.slice(0, end);
 }
+
+/** Cut at a code-point boundary and replace pre-existing lone surrogates. */
+export function truncateWellFormed(text: string, max = text.length): string {
+	// Node 22 supplies the method; the package type library predates ES2024.
+	return (
+		cutAtCodeUnits(text, max) as string & { toWellFormed(): string }
+	).toWellFormed();
+}

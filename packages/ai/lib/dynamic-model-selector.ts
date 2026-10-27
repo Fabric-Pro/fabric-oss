@@ -12,6 +12,15 @@
  * 7. Hardcoded fallback (if database is empty)
  */
 
+import { logger } from "@repo/logs";
+import {
+	type AnswerModelSnapshot,
+	AnswerModelUnavailableError,
+	type AnswerRouteChange,
+	answerRouteFingerprint,
+	answerRouteHash,
+	isUnusableAnswerModel,
+} from "./answer-model-snapshot";
 import {
 	embeddingModelFitsVectorStore,
 	UnsupportedEmbeddingModelError,
@@ -581,6 +590,8 @@ function mapProviderToPrefix(provider: DbAIProvider): string {
  * Result from resolveModelWithProvider - contains everything needed for AI calls
  */
 export interface ResolvedModelConfig {
+	/** Identity of the selected provider config, before legacy request options are combined. */
+	routeHash?: string;
 	/** The model string to pass to getModel - already includes provider prefix if needed */
 	modelString: string;
 	/** The provider type (e.g., "VERCEL_GATEWAY", "OPENAI_DIRECT") */
@@ -731,8 +742,9 @@ export async function resolveModelWithProvider(
 		};
 	}
 
-	// Capture deployment name early (for Azure AI Foundry)
-	const finalDeploymentName = providerConfig.deploymentName ?? null;
+	// Track the deployment alongside the credentials and endpoint.
+	let finalDeploymentName = providerConfig.deploymentName ?? null;
+	let routeHash = answerRouteHash(providerConfig);
 
 	const preferredProvider = providerConfig.provider as DbAIProvider;
 
@@ -835,6 +847,7 @@ export async function resolveModelWithProvider(
 		finalConfigId = null;
 		finalConfigSource = null;
 		finalBaseUrl = null;
+		finalDeploymentName = null;
 	} else if (needsFallbackKey) {
 		// Model selection requires a different provider than user's default
 		// Try to get the API key for the actual provider needed
@@ -876,6 +889,7 @@ export async function resolveModelWithProvider(
 				hasProviderCredentials(fallbackProviderConfig) &&
 				!fallbackIsPlatformServed
 			) {
+				routeHash = answerRouteHash(fallbackProviderConfig);
 				finalApiKey = fallbackProviderConfig.apiKey;
 				finalClientId = fallbackProviderConfig.clientId ?? null;
 				finalEncryptedClientSecret =
@@ -883,6 +897,8 @@ export async function resolveModelWithProvider(
 				finalConfigId = fallbackProviderConfig.configId ?? null;
 				finalConfigSource = fallbackProviderConfig.source ?? null;
 				finalBaseUrl = fallbackProviderConfig.baseUrl ?? null;
+				finalDeploymentName =
+					fallbackProviderConfig.deploymentName ?? null;
 				console.log(
 					`[ModelSelector] Found ${result.provider} credentials for ${dbTaskType} task`,
 				);
@@ -899,6 +915,7 @@ export async function resolveModelWithProvider(
 				finalConfigId = null;
 				finalConfigSource = null;
 				finalBaseUrl = null;
+				finalDeploymentName = null;
 			}
 		} catch (error) {
 			console.warn(
@@ -908,7 +925,10 @@ export async function resolveModelWithProvider(
 			finalApiKey = null;
 			finalClientId = null;
 			finalEncryptedClientSecret = null;
+			finalConfigId = null;
+			finalConfigSource = null;
 			finalBaseUrl = null;
+			finalDeploymentName = null;
 		}
 	}
 
@@ -924,6 +944,7 @@ export async function resolveModelWithProvider(
 		selectionSource: result.selectionSource,
 		canonicalName: result.canonicalName,
 		deploymentName: finalDeploymentName,
+		routeHash,
 		maxOutputTokens: result.maxOutputTokens,
 		// `DynamicModelSelectionResult.maxTokens` carries the catalog model's
 		// contextWindow (see selectModelDynamic); surface it under the
@@ -1060,7 +1081,7 @@ import {
 	CHATGPT_PLAN_API_BILLING,
 	createChatGptPlanRotationMiddleware,
 } from "./chatgpt-plan/rotation";
-import type { PlanSourceRef } from "./chatgpt-plan/sources";
+import { type PlanSourceRef, planSourceKey } from "./chatgpt-plan/sources";
 import { isReasoningModelName } from "./databricks-compat";
 import {
 	hasProviderCredentials,
@@ -1186,6 +1207,8 @@ export interface AIOperationContext {
  * Options for getting an AI model
  */
 export interface GetAIModelOptions {
+	/** Server-owned answer route; credential lookup and eligibility remain live. */
+	answerSnapshot?: AnswerModelSnapshot;
 	/** Task type determines which model to use (SIMPLE, COMPLEX, CHAT, TOOL_CALLING, REASONING) */
 	taskType: DbAiTaskType | string;
 	/** Task complexity (optional, defaults to "medium") */
@@ -1217,6 +1240,8 @@ type GetAIModelWithMetadataOptions =
  * Useful for logging, tracking usage, and debugging.
  */
 export interface AIModelMetadata {
+	answerSnapshot?: AnswerModelSnapshot;
+	answerRouteChanges?: AnswerRouteChange[];
 	/** The model string used (e.g., "llama-3.3-70b", "openai/gpt-4o") */
 	modelString: string;
 	/** The provider type (e.g., "GROQ", "VERCEL_GATEWAY", "AZURE_AI_FOUNDRY") */
@@ -1721,6 +1746,177 @@ export async function getAIModelWithMetadata(
 	options: GetAIModelWithMetadataOptions,
 	callerContext: AIOperationContext,
 ): Promise<AIModelResult | AggregateAIModelResult> {
+	const changes: AnswerRouteChange[] = [];
+	const pinned = options.answerSnapshot;
+	let resolved: AIModelResult | AggregateAIModelResult;
+	try {
+		resolved = await resolveAIModelWithMetadata(options, callerContext);
+	} catch (error) {
+		if (!pinned || pinned.reResolved || !isUnusableAnswerModel(error)) {
+			throw error;
+		}
+		resolved = await resolveFreshAnswerModel(options, callerContext);
+		if (resolved.metadata.answerSnapshot) {
+			resolved.metadata.answerSnapshot.reResolved = true;
+		}
+		recordAnswerChange(
+			resolved.metadata,
+			pinned,
+			"model_unavailable",
+			"configuration_unavailable",
+		);
+	}
+	changes.push(...(resolved.metadata.answerRouteChanges ?? []));
+	resolved.metadata.answerRouteChanges = changes;
+	// Request recovery is scoped to this answer route, including across activities.
+	// Only refusals of the selected route trigger resolution; quota/fallback policy
+	// remains in the existing provider and ChatGPT-plan middleware.
+	if (
+		options.answerSnapshot &&
+		!resolved.metadata.answerSnapshot?.reResolved
+	) {
+		const metadata = resolved.metadata;
+		const originalResult = resolved;
+		let replacement:
+			| Promise<AIModelResult | AggregateAIModelResult>
+			| undefined;
+		const recover = async (error: unknown) => {
+			if (!isUnusableAnswerModel(error)) {
+				throw error;
+			}
+			if (replacement) {
+				return (await replacement).model;
+			}
+			const previous = metadata.answerSnapshot;
+			replacement ??= resolveFreshAnswerModel(options, callerContext);
+			const next = await replacement;
+			if (
+				"recordAggregateUsage" in originalResult &&
+				"recordAggregateUsage" in next
+			) {
+				originalResult.recordAggregateUsage = next.recordAggregateUsage;
+			}
+			if (next.metadata.answerSnapshot) {
+				next.metadata.answerSnapshot.reResolved = true;
+			}
+			if (previous && metadata.answerSnapshot === previous) {
+				originalResult.metadata = next.metadata;
+				next.metadata.answerRouteChanges = changes;
+				recordAnswerChange(
+					next.metadata,
+					previous,
+					"model_unavailable",
+					"provider_refused",
+				);
+			}
+			return next.model;
+		};
+		const recovery: LanguageModelMiddleware = {
+			specificationVersion: "v4",
+			wrapGenerate: async ({ doGenerate, params }) => {
+				if (replacement) {
+					return (
+						(await replacement).model as ReturnType<
+							typeof wrapLanguageModel
+						>
+					).doGenerate(params);
+				}
+				try {
+					return await doGenerate();
+				} catch (error) {
+					return (
+						(await recover(error)) as ReturnType<
+							typeof wrapLanguageModel
+						>
+					).doGenerate(params);
+				}
+			},
+			wrapStream: async ({ doStream, params }) => {
+				if (replacement) {
+					return (
+						(await replacement).model as ReturnType<
+							typeof wrapLanguageModel
+						>
+					).doStream(params);
+				}
+				try {
+					const result = await doStream();
+					return {
+						...result,
+						stream: result.stream.pipeThrough(
+							new TransformStream({
+								async transform(part, controller) {
+									if (
+										part.type === "error" &&
+										isUnusableAnswerModel(part.error)
+									) {
+										await recover(part.error);
+									}
+									controller.enqueue(part);
+								},
+							}),
+						),
+					};
+				} catch (error) {
+					return (
+						(await recover(error)) as ReturnType<
+							typeof wrapLanguageModel
+						>
+					).doStream(params);
+				}
+			},
+		};
+		resolved.model = wrapLanguageModel({
+			model: resolved.model as Parameters<
+				typeof wrapLanguageModel
+			>[0]["model"],
+			middleware: recovery,
+		});
+	}
+	return resolved;
+}
+
+async function resolveFreshAnswerModel(
+	options: GetAIModelWithMetadataOptions,
+	context: AIOperationContext,
+) {
+	const freshOptions: GetAIModelWithMetadataOptions = {
+		...options,
+		answerSnapshot: undefined,
+	};
+	const result = await resolveAIModelWithMetadata(freshOptions, context);
+	// Plan request closures share this private options object. Pin the fresh
+	// selection before it sends anything, so its later fallback/rotation is
+	// retained within the replacement model as well as in workflow state.
+	freshOptions.answerSnapshot = result.metadata.answerSnapshot;
+	return result;
+}
+
+function recordAnswerChange(
+	metadata: AIModelMetadata,
+	previous: AnswerModelSnapshot,
+	cause: AnswerRouteChange["cause"],
+	reason: AnswerRouteChange["reason"],
+) {
+	const next = metadata.answerSnapshot;
+	if (!next) {
+		return;
+	}
+	const change = {
+		cause,
+		reason,
+		from: answerRouteFingerprint(previous),
+		to: answerRouteFingerprint(next),
+	};
+	metadata.answerRouteChanges ??= [];
+	metadata.answerRouteChanges.push(change);
+	logger.info("advisor.answer_route_change", change);
+}
+
+async function resolveAIModelWithMetadata(
+	options: GetAIModelWithMetadataOptions,
+	callerContext: AIOperationContext,
+): Promise<AIModelResult | AggregateAIModelResult> {
 	const context = withAmbientJobType(callerContext);
 	const {
 		taskType,
@@ -1739,23 +1935,34 @@ export async function getAIModelWithMetadata(
 	// Only text work can run on a plan — the member's own or one the
 	// organization shares. Embeddings also stay on the organization's provider
 	// because vectors from different models would not be comparable.
+	const pinned = options.answerSnapshot;
+	if (
+		pinned &&
+		(await getModelByCanonicalName(pinned.canonicalName))?.isActive ===
+			false
+	) {
+		throw new AnswerModelUnavailableError();
+	}
 	const routingContext = planRoutingContext(context);
-	const serviceTier =
-		context.jobType !== undefined &&
-		GATEWAY_FLEX_JOB_TYPES.has(context.jobType) &&
-		routingContext.planEligible !== true &&
-		!isAiInteractiveRequestFor(context.userId) &&
-		!gatewayFlexDisabled()
+	const serviceTier = pinned
+		? pinned.serviceTier
+		: context.jobType !== undefined &&
+				GATEWAY_FLEX_JOB_TYPES.has(context.jobType) &&
+				routingContext.planEligible !== true &&
+				!isAiInteractiveRequestFor(context.userId) &&
+				!gatewayFlexDisabled()
 			? "flex"
 			: undefined;
 	// Every plan is spent and the member's own key stands in (Fizzy #3085).
 	let personalKey: ChatGptPlanPersonalKeyPick | null = null;
 	if (
 		!NON_TEXT_TASK_TYPES.has(String(taskType).toUpperCase()) &&
-		context.excludeChatGptPlan !== true
+		context.excludeChatGptPlan !== true &&
+		(!pinned || pinned.provider === "OPENAI_CHATGPT_PLAN")
 	) {
 		const plan = await chatGptPlanSourceForCall(routingContext, {
 			exclude: context.excludePlanSources,
+			preferredSource: pinned?.planSource,
 		});
 		if (plan && "source" in plan) {
 			return getChatGptPlanModelWithMetadata(
@@ -1773,15 +1980,61 @@ export async function getAIModelWithMetadata(
 	// `AIProviderNotConfiguredError` in step 2 (Fizzy #1875).
 
 	// Step 1: Resolve model configuration (model string, API key, provider, baseUrl)
-	const config = await resolveModelWithProvider(
-		taskType,
-		{ userId: context.userId, organizationId: context.organizationId },
-		{
-			complexity,
-			requiresToolCalling,
-			...(personalKey && { providerConfig: personalKey.personalKey }),
-		},
-	);
+	const livePinnedConfig =
+		pinned && pinned.provider !== "OPENAI_CHATGPT_PLAN"
+			? pinned.personalKeyFallback
+				? await getPlanSpentPersonalProviderConfig({
+						userId: context.userId,
+						configId: pinned.configId ?? undefined,
+					})
+				: await getAiProviderApiKeyByProvider({
+						userId: context.userId,
+						organizationId:
+							pinned.configSource === "organization"
+								? context.organizationId
+								: undefined,
+						provider: pinned.provider,
+					})
+			: undefined;
+	if (
+		pinned &&
+		pinned.provider !== "OPENAI_CHATGPT_PLAN" &&
+		(!livePinnedConfig ||
+			!hasProviderCredentials(livePinnedConfig) ||
+			livePinnedConfig.configId !== pinned.configId ||
+			livePinnedConfig.source !== pinned.configSource ||
+			answerRouteHash(livePinnedConfig) !== pinned.routeHash)
+	) {
+		throw new AnswerModelUnavailableError();
+	}
+	const config: ResolvedModelConfig =
+		livePinnedConfig && pinned
+			? {
+					...livePinnedConfig,
+					provider: pinned.provider,
+					configSource: pinned.configSource,
+					modelString: pinned.modelString,
+					canonicalName: pinned.canonicalName,
+					selectionSource: "answer_snapshot",
+					routeHash: answerRouteHash(livePinnedConfig),
+					deploymentName: livePinnedConfig.deploymentName,
+					maxOutputTokens: pinned.maxOutputTokens,
+					contextWindow: pinned.contextWindow,
+				}
+			: await resolveModelWithProvider(
+					taskType,
+					{
+						userId: context.userId,
+						organizationId: context.organizationId,
+					},
+					{
+						complexity,
+						requiresToolCalling,
+						...(personalKey && {
+							providerConfig: personalKey.personalKey,
+						}),
+					},
+				);
 
 	// Step 2: Validate configuration. A Databricks service-principal config has
 	// no apiKey — check for either credential shape.
@@ -1821,7 +2074,7 @@ export async function getAIModelWithMetadata(
 	// canonical and rejects it. Falls back to the override as-is when it isn't a
 	// catalog canonical for this provider (e.g. an already provider-specific id).
 	let finalModelString = config.modelString;
-	let apiModelOverride = modelOverride;
+	let apiModelOverride = pinned ? undefined : modelOverride;
 	let overrideExistsInCatalog = false;
 	if (apiModelOverride) {
 		const overrideMapping = config.provider
@@ -1921,7 +2174,9 @@ export async function getAIModelWithMetadata(
 		selectionSource,
 		canonicalName,
 		maxOutputTokens: resolvedMaxOutputTokens,
-		contextWindow: apiModelOverride ? undefined : config.contextWindow,
+		contextWindow:
+			pinned?.contextWindow ??
+			(apiModelOverride ? undefined : config.contextWindow),
 		billingMode: billingState.mode,
 		// Always null: the Stripe-metered mode is unreachable now that the
 		// allowance and the saved-card path are gone.
@@ -1933,6 +2188,31 @@ export async function getAIModelWithMetadata(
 			},
 		}),
 	};
+
+	metadata.answerSnapshot = {
+		provider: config.provider,
+		modelString: finalModelString,
+		canonicalName,
+		configId: config.configId,
+		configSource: config.configSource,
+		routeHash: config.routeHash ?? answerRouteHash(config),
+		deploymentName: config.deploymentName,
+		maxOutputTokens: metadata.maxOutputTokens,
+		contextWindow: metadata.contextWindow,
+		...(serviceTier ? { serviceTier } : {}),
+		...(personalKey || pinned?.personalKeyFallback
+			? { personalKeyFallback: true }
+			: {}),
+		...(pinned?.reResolved ? { reResolved: true } : {}),
+	};
+	if (pinned?.provider === "OPENAI_CHATGPT_PLAN") {
+		recordAnswerChange(
+			metadata,
+			pinned,
+			"api_billing_handoff",
+			"account_ineligible",
+		);
+	}
 
 	// Step 7: Create trackUsage helper
 	const trackUsage = () => {
@@ -2042,14 +2322,23 @@ async function getChatGptPlanModelWithMetadata(
 		reasoningEffort,
 		fallbackModel,
 		pick,
-	} = await resolveChatGptPlanModel({
-		userId: context.userId,
-		organizationId: context.organizationId,
-		taskType,
-		source,
-		// Only a chat's plan pick; a saved provider model is not the plan's.
-		override: chatGptPlanModelOverride(options.modelOverride) ?? undefined,
-	});
+	} = options.answerSnapshot?.provider === "OPENAI_CHATGPT_PLAN"
+		? {
+				model: options.answerSnapshot.modelString,
+				reasoningEffort: options.answerSnapshot.reasoningEffort,
+				fallbackModel: options.answerSnapshot.fallbackModel ?? null,
+				pick: undefined,
+			}
+		: await resolveChatGptPlanModel({
+				userId: context.userId,
+				organizationId: context.organizationId,
+				taskType,
+				source,
+				// Only a chat's plan pick; a saved provider model is not the plan's.
+				override:
+					chatGptPlanModelOverride(options.modelOverride) ??
+					undefined,
+			});
 	const limitScope = {
 		userId: context.userId,
 		organizationId: context.organizationId ?? null,
@@ -2072,6 +2361,31 @@ async function getChatGptPlanModelWithMetadata(
 		planSource: source,
 		...(pick && { planPick: pick }),
 	};
+	metadata.answerSnapshot = {
+		provider: "OPENAI_CHATGPT_PLAN",
+		modelString: modelId,
+		canonicalName: modelId,
+		configId: null,
+		configSource: null,
+		routeHash: "chatgpt-plan",
+		planSource: source,
+		reasoningEffort,
+		fallbackModel,
+		...(options.answerSnapshot?.reResolved ? { reResolved: true } : {}),
+	};
+	if (
+		options.answerSnapshot?.planSource &&
+		planSourceKey(options.answerSnapshot.planSource) !==
+			planSourceKey(source)
+	) {
+		recordAnswerChange(
+			metadata,
+			options.answerSnapshot,
+			"plan_account_rotation",
+			"account_ineligible",
+		);
+	}
+
 	const trackUsage = () => {
 		const touched =
 			source.kind === "org"
@@ -2133,11 +2447,28 @@ async function getChatGptPlanModelWithMetadata(
 	};
 	const handOff = async (served: PlanUsageContext) => {
 		apiBilling ??= getAIModelWithMetadata(
-			{ ...options, usageLogging: "aggregate" },
+			{
+				...options,
+				answerSnapshot: undefined,
+				usageLogging: "aggregate",
+			},
 			{ ...context, excludeChatGptPlan: true },
 		);
 		apiBillingModel = await apiBilling;
 		metadata.planSpentApiBilling = { resetAt: null };
+		const previous = metadata.answerSnapshot;
+		metadata.answerSnapshot = apiBillingModel.metadata.answerSnapshot;
+		if (previous?.reResolved && metadata.answerSnapshot) {
+			metadata.answerSnapshot.reResolved = true;
+		}
+		if (options.answerSnapshot && previous) {
+			recordAnswerChange(
+				metadata,
+				previous,
+				"api_billing_handoff",
+				"plan_exhausted",
+			);
+		}
 		servedOnApiBilling(served);
 		return apiBillingModel.model;
 	};
@@ -2151,7 +2482,9 @@ async function getChatGptPlanModelWithMetadata(
 				context.conversationId?.trim() || context.workflowExecutionId,
 			userId: context.userId,
 			source: current,
-			modelId,
+			modelId: options.answerSnapshot
+				? (metadata.answerSnapshot?.modelString ?? modelId)
+				: modelId,
 			fallbackModelId: fallbackModel,
 			reasoningEffort,
 			// The turn token ledger, on every model a request is physically
@@ -2183,26 +2516,93 @@ async function getChatGptPlanModelWithMetadata(
 			onModelFallback: (servedBy) => {
 				served.providerModelId = servedBy;
 				served.modelCanonicalName = servedBy;
+				if (metadata.answerSnapshot) {
+					const previous = metadata.answerSnapshot;
+					metadata.answerSnapshot = {
+						...previous,
+						modelString: servedBy,
+						canonicalName: servedBy,
+					};
+					if (options.answerSnapshot) {
+						recordAnswerChange(
+							metadata,
+							previous,
+							"plan_model_fallback",
+							"model_not_served",
+						);
+					}
+				}
 			},
 		});
-	// A spent plan hands the call to the next one, silently; the usage row
-	// names the account that answered. Built per request, with its own usage
-	// context, so neither the rotation nor the account and model a request
-	// was served by carry over to the next request, or to one running
-	// alongside it (Fizzy #3025).
-	const forRequest = (requestedOutputTokens: number | undefined) => {
-		const served: PlanUsageContext = { ...usageLoggingContext };
+	// Usage contexts stay per request. Legacy calls start rotation afresh;
+	// options.answerSnapshot carries successful account/model changes to later
+	// requests of this answer, including its SDK retry and the next activity.
+	const forRequest = async (requestedOutputTokens: number | undefined) => {
+		if (
+			options.answerSnapshot &&
+			!apiBillingModel &&
+			metadata.answerSnapshot?.planSource
+		) {
+			const previous = metadata.answerSnapshot;
+			const previousSource = previous.planSource;
+			const eligible = await chatGptPlanSourceForCall(context, {
+				preferredSource: previous.planSource,
+				exclude: context.excludePlanSources,
+			});
+			if (eligible === null) {
+				await handOff({ ...usageLoggingContext });
+			} else if ("source" in eligible) {
+				if (
+					planSourceKey(eligible.source) !==
+					planSourceKey(previousSource as PlanSourceRef)
+				) {
+					metadata.answerSnapshot = {
+						...previous,
+						planSource: eligible.source,
+					};
+					recordAnswerChange(
+						metadata,
+						previous,
+						"plan_account_rotation",
+						"account_ineligible",
+					);
+				}
+			} else {
+				throw new AnswerModelUnavailableError();
+			}
+		}
+		const requestSource = options.answerSnapshot
+			? (metadata.answerSnapshot?.planSource ?? source)
+			: source;
+		if (options.answerSnapshot && !apiBillingModel) {
+			await assertWithinAiUsageLimits({
+				...limitScope,
+				providerConfigId:
+					requestSource.kind === "org"
+						? requestSource.accountId
+						: null,
+				modelCanonicalName:
+					metadata.answerSnapshot?.canonicalName ?? modelId,
+			});
+		}
+		const served: PlanUsageContext = {
+			...usageLoggingContext,
+			providerConfigId:
+				requestSource.kind === "org"
+					? requestSource.accountId
+					: undefined,
+		};
 		servedOnApiBilling(served);
 		const rotating = apiBillingModel
 			? (apiBillingModel.model as ReturnType<typeof wrapLanguageModel>)
 			: wrapLanguageModel({
 					model: build(
-						source,
+						requestSource,
 						served,
 						requestedOutputTokens,
 					) as Parameters<typeof wrapLanguageModel>[0]["model"],
 					middleware: createChatGptPlanRotationMiddleware({
-						source,
+						source: requestSource,
 						build: (next) =>
 							build(next, served, requestedOutputTokens),
 						repick: async (exclude) => {
@@ -2231,6 +2631,21 @@ async function getChatGptPlanModelWithMetadata(
 									next.kind === "org" ? next.accountId : null,
 							}),
 						onRotated: (next) => {
+							if (metadata.answerSnapshot) {
+								const previous = metadata.answerSnapshot;
+								metadata.answerSnapshot = {
+									...previous,
+									planSource: next,
+								};
+								if (options.answerSnapshot) {
+									recordAnswerChange(
+										metadata,
+										previous,
+										"plan_account_rotation",
+										"plan_exhausted",
+									);
+								}
+							}
 							served.providerConfigId =
 								next.kind === "org"
 									? next.accountId
@@ -2259,7 +2674,7 @@ async function getChatGptPlanModelWithMetadata(
 	const perRequest: LanguageModelMiddleware = {
 		specificationVersion: "v4",
 		wrapGenerate: async ({ params }) => {
-			const request = forRequest(params.maxOutputTokens);
+			const request = await forRequest(params.maxOutputTokens);
 			try {
 				return await request.model.doGenerate(params);
 			} finally {
@@ -2267,7 +2682,7 @@ async function getChatGptPlanModelWithMetadata(
 			}
 		},
 		wrapStream: async ({ params }) => {
-			const request = forRequest(params.maxOutputTokens);
+			const request = await forRequest(params.maxOutputTokens);
 			try {
 				return await request.model.doStream(params);
 			} finally {
@@ -2283,20 +2698,22 @@ async function getChatGptPlanModelWithMetadata(
 		// Outside perRequest to cover plan rotation and the plan model, which bypasses getModel.
 		middleware: [createTextToolCallRecoveryMiddleware(), perRequest],
 	});
-	// Per-request limit check, placed as in `getAIModelWithMetadata`. It uses
-	// the account resolved here because every request this model makes starts
-	// on `source`: the rotation middleware sends each request first to the
-	// model built for `source`, and moves it to another account only after
-	// `beforeRotate` has checked that account.
+	// Legacy requests check the initial source here. With an answer snapshot,
+	// forRequest checks the current eligible account too; beforeRotate checks
+	// a replacement account before dispatch.
 	//
 	// The turn token ledger is not here, around the request as a whole: it
 	// is on each physical model inside (see `build`), so the first send, a
 	// rotated one and a fallback one are each reserved and settled on their
 	// own, and nothing is reserved twice.
 	const trackedModel = wrapModelWithDispatchGuard(
-		wrapModelWithUsageLimits(model, () =>
-			assertWithinAiUsageLimits(limitScope),
-		),
+		wrapModelWithUsageLimits(model, async () => {
+			// Snapshot requests check the serving account in forRequest, after its
+			// live eligibility lookup; a retired account's limit cannot gate its successor.
+			if (!options.answerSnapshot) {
+				await assertWithinAiUsageLimits(limitScope);
+			}
+		}),
 	);
 	if (options.usageLogging === "aggregate") {
 		return {

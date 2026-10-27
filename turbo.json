@@ -51,6 +51,7 @@
 	],
 	"globalPassThroughEnv": [
 		"ADVISOR_HISTORY_RETENTION",
+		"ADVISOR_TOOL_LOADING",
 		"VERCEL_*",
 		"CI",
 		"NODE_ENV",

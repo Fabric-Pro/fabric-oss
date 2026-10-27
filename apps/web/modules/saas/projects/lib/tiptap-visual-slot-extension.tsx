@@ -490,7 +490,15 @@ export function VisualSlotToolbarButton({ editor }: { editor: Editor }) {
 				<VisualSlotForm
 					submitLabel={t("visualSlot.insertAction")}
 					onSubmit={(value) => {
-						editor.chain().focus().insertVisualSlot(value).run();
+						// Opened before the editor stopped taking input (Fizzy
+						// #2946): nothing goes in while it takes none.
+						if (editor.isEditable) {
+							editor
+								.chain()
+								.focus()
+								.insertVisualSlot(value)
+								.run();
+						}
 						setOpen(false);
 					}}
 				/>

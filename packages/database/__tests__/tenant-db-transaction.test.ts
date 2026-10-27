@@ -5,7 +5,7 @@ import {
 	createOrganizationContext,
 	runWithTenantContext,
 } from "../src/tenant-context";
-import { createTenantDbClient } from "../src/tenant-db";
+import { createTenantDbClient, withRLSContext } from "../src/tenant-db";
 
 // The real extension runs, but the database boundary is intercepted so this
 // regression is covered by the default unit run without a Postgres service.
@@ -31,6 +31,26 @@ async function readInTenant(tenant: ReturnType<typeof createTenantDbClient>) {
 }
 
 describe("tenant-db transaction boundary", () => {
+	it("passes transaction options through before the RLS context statements run", async () => {
+		const executeRawUnsafe = vi.fn().mockResolvedValue(0);
+		const callback = vi.fn().mockResolvedValue("example-result");
+		const tx = { $executeRawUnsafe: executeRawUnsafe };
+		const transaction = vi.fn(
+			async (fn: (transactionClient: typeof tx) => Promise<unknown>) =>
+				fn(tx),
+		);
+		const options = { isolationLevel: "RepeatableRead" as const };
+		const client = { $transaction: transaction } as unknown as PrismaClient;
+		const result = await withRLSContext(client, callback, options);
+		expect(result).toBe("example-result");
+		expect(transaction).toHaveBeenCalledExactlyOnceWith(
+			expect.any(Function),
+			options,
+		);
+		expect(callback.mock.invocationCallOrder[0]).toBeGreaterThan(
+			executeRawUnsafe.mock.invocationCallOrder[2],
+		);
+	});
 	it("submits context and query as a two-operation batch", async () => {
 		const { tenant, transaction } = setup();
 		await readInTenant(tenant);

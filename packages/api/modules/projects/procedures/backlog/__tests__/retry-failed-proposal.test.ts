@@ -320,10 +320,15 @@ describe("retryFailedProposalProcedure — dedup-guard", () => {
 			}),
 		);
 		expect(mocks.workflowStart).not.toHaveBeenCalled();
-		// Atomic APPLIED flip — single update with APPLIED.
+		// Atomic APPLIED flip — single update with APPLIED, stamped with the
+		// reviewer so decision capture records a human approval.
 		expect(mocks.proposalUpdate).toHaveBeenCalledWith(
 			expect.objectContaining({
-				data: expect.objectContaining({ status: "APPLIED" }),
+				data: expect.objectContaining({
+					status: "APPLIED",
+					reviewedBy: "user-1",
+					reviewedAt: expect.any(Date),
+				}),
 			}),
 		);
 	});

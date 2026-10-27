@@ -32,7 +32,7 @@ async function applyRLS() {
 		// Step 0: Provision the worker role (cloud deploys only).
 		// The Temporal worker uses raw `db` with no per-request tenant context, so
 		// under FORCE ROW LEVEL SECURITY it must connect as a role that BYPASSES RLS
-		// — mirroring how a superuser/owner connection bypasses locally and on Neon.
+		// — mirroring a superuser/BYPASSRLS connection locally or on Neon.
 		// When WORKER_DB_PASSWORD is set (AWS deploy injects it from the
 		// fabric/<env>/database-worker secret), ensure a dedicated `fabric_worker`
 		// LOGIN role and grant it DML on the public schema. Skipped when unset
@@ -230,6 +230,12 @@ async function applyRLS() {
 			// One Advisor chat turn of a member's conversation — the same
 			// per-member scope as the conversation it belongs to.
 			{ name: "conversation_turn", policy: "per_user_within_org" },
+			// Advisor summaries and preferences belong to a user within a tenant.
+			{ name: "episodic_memory", policy: "per_user_within_org" },
+			{
+				name: "orchestrator_memory_preferences",
+				policy: "per_user_within_org",
+			},
 			// One model request a turn reserved against its token allowance —
 			// bound on insert to the turn's member and organization.
 			{

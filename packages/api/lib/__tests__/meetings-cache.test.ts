@@ -111,6 +111,7 @@ describe("meetings-cache — Redis configured", () => {
 		expect(await getCachedMeetings("user-1", "org-2", 30)).toBeNull(); // other org
 		expect(await getCachedMeetings("user-1", null, 30)).toBeNull(); // personal vs org
 		expect(await getCachedMeetings("user-1", "org-1", 7)).toBeNull(); // other range
+		expect(await getCachedMeetings("user-1", "org-1", 30, 14)).toBeNull(); // upcoming included
 		expect(await getCachedMeetings("user-1", "org-1", 30)).toEqual(SAMPLE); // exact
 	});
 

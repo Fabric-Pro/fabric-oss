@@ -57,14 +57,17 @@ function key(
 	userId: string,
 	organizationId: string | null,
 	daysBack: number,
+	daysAhead: number,
 ): string {
-	return `backlog:meetings:${userId}:${organizationId ?? "_"}:${daysBack}`;
+	const window = daysAhead > 0 ? `${daysBack}+${daysAhead}` : `${daysBack}`;
+	return `backlog:meetings:${userId}:${organizationId ?? "_"}:${window}`;
 }
 
 export async function getCachedMeetings(
 	userId: string,
 	organizationId: string | null,
 	daysBack: number,
+	daysAhead = 0,
 ): Promise<CachedMeeting[] | null> {
 	const redis = getRedis();
 	if (!redis) {
@@ -72,7 +75,7 @@ export async function getCachedMeetings(
 	}
 	try {
 		const value = await redis.get<CachedMeeting[]>(
-			key(userId, organizationId, daysBack),
+			key(userId, organizationId, daysBack, daysAhead),
 		);
 		return Array.isArray(value) ? value : null;
 	} catch (error) {
@@ -89,15 +92,18 @@ export async function setCachedMeetings(
 	organizationId: string | null,
 	daysBack: number,
 	meetings: CachedMeeting[],
+	daysAhead = 0,
 ): Promise<void> {
 	const redis = getRedis();
 	if (!redis) {
 		return;
 	}
 	try {
-		await redis.set(key(userId, organizationId, daysBack), meetings, {
-			ex: TTL_SECONDS,
-		});
+		await redis.set(
+			key(userId, organizationId, daysBack, daysAhead),
+			meetings,
+			{ ex: TTL_SECONDS },
+		);
 	} catch (error) {
 		logger.warn({ err: error }, "[meetings-cache] Redis SET failed");
 	}

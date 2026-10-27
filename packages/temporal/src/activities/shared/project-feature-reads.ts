@@ -26,6 +26,15 @@
  * by another, and the app lets them read it.
  */
 
+import { sliceUnicodeCharacters } from "@repo/database/src/project-context-presentation";
+
+import {
+	FEATURE_DETAIL_SECTIONS,
+	FEATURE_RESULT_CHARS,
+	type FeatureDetailSection,
+	readFeatureSection,
+} from "./project-feature-detail-pages";
+
 export const PROJECT_FEATURE_TOOL_IDS = [
 	"fabric_list_project_features",
 	"fabric_get_project_feature",
@@ -34,6 +43,7 @@ export const PROJECT_FEATURE_TOOL_IDS = [
 const LIST_DEFAULT_LIMIT = 25;
 const LIST_MAX_LIMIT = 100;
 const LIST_DESCRIPTION_CHARS = 200;
+const RESULT_CHARS = FEATURE_RESULT_CHARS;
 const DETAIL_TEXT_CHARS = 12_000;
 const TASK_DESCRIPTION_CHARS = 300;
 
@@ -65,7 +75,11 @@ function clamp(value: string | null | undefined, max: number): string | null {
 	if (!trimmed) {
 		return null;
 	}
-	return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed;
+	if (Array.from(trimmed).length <= max) {
+		return trimmed;
+	}
+	const head = sliceUnicodeCharacters(trimmed, 0, max - 1).content;
+	return `${head}…`;
 }
 
 function readString(value: unknown): string | undefined {
@@ -337,35 +351,67 @@ export async function listProjectFeatures(
 		descriptions.map((row) => [row.id, row.description]),
 	);
 
-	const hasMore = offset + stories.length < total;
-	return {
-		summary: describeListTotals({
+	const rows = stories.map((story) => ({
+		updatedAt: story.updatedAt.toISOString(),
+		id: story.id,
+		identifier: story.identifier,
+		title: story.title,
+		kind: story.kind,
+		status: story.status.name,
+		priority: story.priority,
+		draftingStage: story.draftingStage,
+		tasks: `${story.completedTaskCount}/${story.taskCount} done`,
+		description: clamp(
+			descriptionById.get(story.id),
+			LIST_DESCRIPTION_CHARS,
+		),
+	}));
+	const features: typeof rows = [];
+	const result = () => {
+		const hasMore = offset + features.length < total;
+		const nextOffset = offset + features.length;
+		return {
+			summary:
+				describeListTotals({
+					total,
+					hiddenCount: hidden?.total,
+					filtered: Boolean(
+						statusId ||
+							filters.priority ||
+							filters.kind ||
+							filters.search,
+					),
+					hasMore,
+				}) +
+				` Returned ${features.length} of ${total} items.` +
+				(hasMore
+					? ` Continue with offset=${nextOffset} and the same filters and sort.`
+					: ""),
+			features,
 			total,
-			hiddenCount: hidden?.total,
-			filtered: Boolean(
-				statusId || filters.priority || filters.kind || filters.search,
-			),
+			...(hidden ? { hiddenCount: hidden.total } : {}),
 			hasMore,
-		}),
-		features: stories.map((story) => ({
-			updatedAt: story.updatedAt.toISOString(),
-			id: story.id,
-			identifier: story.identifier,
-			title: story.title,
-			kind: story.kind,
-			status: story.status.name,
-			priority: story.priority,
-			draftingStage: story.draftingStage,
-			tasks: `${story.completedTaskCount}/${story.taskCount} done`,
-			description: clamp(
-				descriptionById.get(story.id),
-				LIST_DESCRIPTION_CHARS,
-			),
-		})),
-		total,
-		...(hidden ? { hiddenCount: hidden.total } : {}),
-		hasMore,
+			...(hasMore ? { nextOffset } : {}),
+		};
 	};
+	for (const row of rows) {
+		features.push(row);
+		if (JSON.stringify(result()).length > RESULT_CHARS) {
+			features.pop();
+			break;
+		}
+	}
+	if (rows.length && !features.length) {
+		return {
+			error: `The first feature row exceeds the result budget. Read its text with fabric_get_project_feature(${JSON.stringify({ feature: rows[0].id, section: "description", offset: 0 })}), or continue fabric_list_project_features at offset=${offset + 1} with the same filters and sort.`,
+			feature: rows[0].id,
+			identifier: rows[0].identifier.slice(0, 200),
+			next: { section: "description", offset: 0 },
+			nextOffset: offset + 1,
+			hasMore: offset + 1 < total,
+		};
+	}
+	return result();
 }
 
 /**
@@ -419,6 +465,28 @@ export async function getProjectFeature(
 		};
 	}
 
+	const section = args.section;
+	if (
+		section !== undefined &&
+		!FEATURE_DETAIL_SECTIONS.includes(section as FeatureDetailSection)
+	) {
+		return {
+			error: "section must be description, acceptanceCriteria or tasks.",
+		};
+	}
+	if (
+		args.offset !== undefined &&
+		(typeof args.offset !== "number" ||
+			!Number.isSafeInteger(args.offset) ||
+			args.offset < 0)
+	) {
+		return { error: "offset must be a non-negative safe integer." };
+	}
+	if (section === undefined && args.offset !== undefined) {
+		return { error: "Choose a section when supplying offset." };
+	}
+	const offset = typeof args.offset === "number" ? args.offset : 0;
+
 	const { getStoryById } = await import("@repo/database");
 	let story = await getStoryById(ref, projectId);
 	if (!story) {
@@ -431,8 +499,34 @@ export async function getProjectFeature(
 		};
 	}
 
+	if (section !== undefined) {
+		return readFeatureSection(
+			{
+				id: story.id,
+				identifier: story.identifier,
+				description: clamp(story.description, Number.MAX_SAFE_INTEGER),
+				acceptanceCriteria: clamp(
+					story.acceptanceCriteria,
+					Number.MAX_SAFE_INTEGER,
+				),
+				tasks: story.tasks.map((task) => ({
+					identifier: task.identifier,
+					title: task.title,
+					isCompleted: task.isCompleted,
+					description: clamp(
+						task.description,
+						Number.MAX_SAFE_INTEGER,
+					),
+					subtasks: `${task.subtasks.filter((s) => s.isCompleted).length}/${task.subtasks.length} done`,
+				})),
+			},
+			section as FeatureDetailSection,
+			offset,
+		);
+	}
+
 	const completed = story.tasks.filter((task) => task.isCompleted).length;
-	return {
+	const result = {
 		id: story.id,
 		identifier: story.identifier,
 		title: story.title,
@@ -457,4 +551,132 @@ export async function getProjectFeature(
 		})),
 		updatedAt: story.updatedAt,
 	};
+	// Preserve the small-result shape. Cuts include field paths and exact text
+	// counts. Each cut points to a section read that can continue from it.
+	const original = new Map<string, string>();
+	const track = (field: string, value: string | null) => {
+		if (value) {
+			original.set(field, value);
+		}
+	};
+	track("description", clamp(story.description, Number.MAX_SAFE_INTEGER));
+	track(
+		"acceptanceCriteria",
+		clamp(story.acceptanceCriteria, Number.MAX_SAFE_INTEGER),
+	);
+	story.tasks.forEach((task, i) => {
+		track(
+			`tasks[${i}].description`,
+			clamp(task.description, Number.MAX_SAFE_INTEGER),
+		);
+	});
+
+	let tasksCut = false;
+	const response = () => {
+		const truncations: Array<{
+			field: string;
+			shown?: number;
+			total?: number;
+			count?: number;
+			next: { section: FeatureDetailSection; offset: number };
+		}> = [];
+		const record = (field: string, value: string | null) => {
+			const originalText = original.get(field) ?? "";
+			const total = Array.from(originalText).length;
+			const prefix =
+				value?.endsWith("…") && value.length < originalText.length
+					? value.slice(0, -1)
+					: (value ?? "");
+			const shown = Array.from(prefix).length;
+			if (shown < total) {
+				truncations.push({
+					field,
+					shown,
+					total,
+					next: {
+						section: field as FeatureDetailSection,
+						offset: shown,
+					},
+				});
+			}
+		};
+		record("description", result.description);
+		record("acceptanceCriteria", result.acceptanceCriteria);
+		const affected = result.tasks.flatMap((task, i) => {
+			const text = original.get(`tasks[${i}].description`) ?? "";
+			return task.description !== (text || null) ? [i] : [];
+		});
+		if (affected.length) {
+			truncations.push({
+				field: "tasks[].description",
+				count: affected.length,
+				next: { section: "tasks", offset: affected[0] },
+			});
+		}
+		if (tasksCut) {
+			truncations.push({
+				field: "tasks",
+				shown: result.tasks.length,
+				total: story.tasks.length,
+				next: { section: "tasks", offset: result.tasks.length },
+			});
+		}
+		return { ...result, ...(truncations.length ? { truncations } : {}) };
+	};
+	const size = () => JSON.stringify(response()).length;
+	// Task descriptions are lower priority than the feature's main text.
+	for (const task of result.tasks) {
+		if (size() <= RESULT_CHARS) {
+			break;
+		}
+		task.description = null;
+	}
+	if (size() <= RESULT_CHARS) {
+		return response();
+	}
+	// Reserve the main-text cut markers while checking task metadata, since
+	// they also consume space when both main fields are reduced to zero.
+	const description = result.description;
+	const acceptanceCriteria = result.acceptanceCriteria;
+	result.description = null;
+	result.acceptanceCriteria = null;
+	while (result.tasks.length && size() > RESULT_CHARS) {
+		result.tasks.pop();
+		tasksCut = true;
+	}
+	result.description = description;
+	result.acceptanceCriteria = acceptanceCriteria;
+	if (size() > RESULT_CHARS) {
+		let low = 0;
+		let high = Math.max(
+			Array.from(description ?? "").length,
+			Array.from(acceptanceCriteria ?? "").length,
+		);
+		const setText = (cap: number) => {
+			result.description = cap
+				? clamp(original.get("description"), cap)
+				: null;
+			result.acceptanceCriteria = cap
+				? clamp(original.get("acceptanceCriteria"), cap)
+				: null;
+		};
+		while (low < high) {
+			const mid = Math.ceil((low + high) / 2);
+			setText(mid);
+			if (size() <= RESULT_CHARS) {
+				low = mid;
+			} else {
+				high = mid - 1;
+			}
+		}
+		setText(low);
+	}
+	if (size() > RESULT_CHARS) {
+		return {
+			error: `Feature overview metadata exceeds the result budget. Read its description with fabric_get_project_feature(${JSON.stringify({ feature: story.id, section: "description", offset: 0 })}), then use section=acceptanceCriteria or section=tasks at offset=0 with the same feature. Open it on the project's roadmap for full metadata.`,
+			feature: story.id,
+			next: { section: "description", offset: 0 },
+		};
+	}
+	return response();
 }

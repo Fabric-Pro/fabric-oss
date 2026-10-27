@@ -170,6 +170,7 @@ describe("a stop inside the iterative phase is never converted into an answer", 
 			agents: [],
 			toolMap: {
 				search_databricks_indexes: {
+					configId: "databricks-vector-search:integration-1",
 					serverName: "databricks-vector-search",
 					definition: {
 						description: "Search the Databricks knowledge base.",
@@ -185,7 +186,12 @@ describe("a stop inside the iterative phase is never converted into an answer", 
 		const steps = (): Step[] => [
 			{
 				calls: [
-					{ name: "search_tools", args: { query: "launch plan" } },
+					{
+						name: "search_tools",
+						args: {
+							query: "Find agents and integrations for the launch plan",
+						},
+					},
 					{ name: "workspace_rag_query", args: { query: "launch" } },
 					{ name: "project_rag_query", args: { query: "launch" } },
 					{

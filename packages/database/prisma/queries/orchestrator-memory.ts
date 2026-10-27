@@ -12,8 +12,11 @@
  * - Workspace scope: workspaceId for workspace-specific episodes
  */
 
+import { createId } from "@paralleldrive/cuid2";
+import { truncateWellFormed } from "@repo/utils/cut-at-code-units";
 import { ORCHESTRATOR_MEMORY_FALLBACK_BODY } from "@repo/utils/orchestrator-memory-prompt";
 import { renderTemplate } from "@repo/utils/template-renderer";
+import { getTenantDb, withRLSContext } from "../../src/tenant-db";
 import { db } from "../client";
 import type { Prisma } from "../generated/client";
 import { hasProjectAccess } from "./projects/projects";
@@ -56,6 +59,7 @@ export interface EpisodeSummary {
 }
 
 export interface CreateEpisodeInput {
+	executionId: string;
 	userId: string;
 	organizationId?: string | null;
 	projectId?: string | null;
@@ -90,12 +94,13 @@ export async function getOrchestratorMemoryPreferences(
 	organizationId?: string | null,
 ): Promise<OrchestratorMemoryPreferencesData> {
 	// Use findFirst instead of findUnique because compound unique doesn't handle null well
-	const existing = await db.orchestratorMemoryPreferences.findFirst({
-		where: {
-			userId,
-			organizationId: organizationId ?? null,
-		},
-	});
+	const existing =
+		await getTenantDb().orchestratorMemoryPreferences.findFirst({
+			where: {
+				userId,
+				organizationId: organizationId ?? null,
+			},
+		});
 
 	if (existing) {
 		return {
@@ -129,12 +134,13 @@ export async function updateOrchestratorMemoryPreferences(
 	const normalizedOrgId = organizationId ?? null;
 
 	// Check if record exists (compound unique doesn't handle null well in Prisma)
-	const existing = await db.orchestratorMemoryPreferences.findFirst({
-		where: {
-			userId,
-			organizationId: normalizedOrgId,
-		},
-	});
+	const existing =
+		await getTenantDb().orchestratorMemoryPreferences.findFirst({
+			where: {
+				userId,
+				organizationId: normalizedOrgId,
+			},
+		});
 
 	let result: Awaited<
 		ReturnType<typeof db.orchestratorMemoryPreferences.create>
@@ -142,7 +148,7 @@ export async function updateOrchestratorMemoryPreferences(
 
 	if (existing) {
 		// Update existing record
-		result = await db.orchestratorMemoryPreferences.update({
+		result = await getTenantDb().orchestratorMemoryPreferences.update({
 			where: { id: existing.id },
 			data: {
 				...(updates.responseStyle !== undefined && {
@@ -174,7 +180,7 @@ export async function updateOrchestratorMemoryPreferences(
 		});
 	} else {
 		// Create new record
-		result = await db.orchestratorMemoryPreferences.create({
+		result = await getTenantDb().orchestratorMemoryPreferences.create({
 			data: {
 				userId,
 				organizationId: normalizedOrgId,
@@ -312,50 +318,294 @@ export async function removeLearnedPattern(
 // =============================================================================
 
 /**
- * Create a conversation episode or replace its latest turn for the same owner.
- * Preserve the original start/creation timestamps and existing vector reference.
- * Reject owner mismatches, including null versus non-null organizations.
+ * The row lock serializes section/ledger updates. Retained execution IDs are
+ * no-ops unless an old worker has overwritten the rendered projection.
  */
 export async function createEpisodicMemory(
 	input: CreateEpisodeInput,
 ): Promise<EpisodeSummary> {
+	if (!input.executionId) {
+		throw new Error("Episode executionId is required");
+	}
 	const where = {
 		conversationId: input.conversationId,
 		userId: input.userId,
 		organizationId: input.organizationId ?? null,
 	};
-	const update = {
-		projectId: input.projectId ?? null,
-		workspaceId: input.workspaceId ?? null,
-		agentId: input.agentId ?? null,
-		title: input.title,
-		summary: input.summary,
-		keyTopics: input.keyTopics,
-		userIntents: input.userIntents,
-		outcome: input.outcome,
-		messageCount: input.messageCount,
-		turnCount: input.turnCount,
-		toolsUsed: input.toolsUsed,
-		agentsUsed: input.agentsUsed,
-		conversationEndedAt: input.conversationEndedAt ?? null,
-	};
-	const episode = await db.episodicMemory.upsert({
-		where,
-		create: {
-			...where,
-			...update,
-			conversationStartedAt: input.conversationStartedAt,
-			qdrantPointId: input.qdrantPointId ?? null,
-			qdrantCollection: input.qdrantCollection ?? null,
-		},
-		update,
+	return withRLSContext(db, async (tx) => {
+		// Explicit conflict handling also covers two transactions creating this row.
+		// The losing insert waits for the winner before the scoped lock/read below.
+		await tx.$executeRaw`INSERT INTO "episodic_memory" (
+   "id", "userId", "organizationId", "projectId", "workspaceId", "conversationId", "agentId",
+   "title", "summary", "keyTopics", "userIntents", "outcome", "messageCount", "turnCount",
+   "toolsUsed", "agentsUsed", "conversationStartedAt", "qdrantPointId", "qdrantCollection"
+  ) VALUES (
+   ${createId()}, ${input.userId}, ${input.organizationId ?? null}, ${input.projectId ?? null},
+   ${input.workspaceId ?? null}, ${input.conversationId}, ${input.agentId ?? null},
+   ${truncateWellFormed(normalizedRequest(input.title), 200)}, '', ARRAY[]::TEXT[], ARRAY[]::TEXT[],
+   ${input.outcome}, 0, 0, ARRAY[]::TEXT[], ARRAY[]::TEXT[], ${new Date(input.conversationStartedAt)},
+   ${input.qdrantPointId ?? null}, ${input.qdrantCollection ?? null}
+  ) ON CONFLICT ("conversationId") DO NOTHING`;
+		const locked = await tx.$queryRaw<
+			Array<{ id: string }>
+		>`SELECT id FROM episodic_memory
+   WHERE "conversationId" = ${input.conversationId}
+   AND "userId" = ${input.userId}
+   AND "organizationId" IS NOT DISTINCT FROM ${input.organizationId ?? null}
+   FOR UPDATE`;
+		if (locked.length === 0) {
+			throw new Error("Episodic memory owner mismatch");
+		}
+		const stored = await tx.episodicMemory.findFirstOrThrow({ where });
+		const previous = readEpisodeTurnState(stored.turnSections);
+		const state: EpisodeTurnState = previous ?? {
+			version: 1,
+			firstRequest: stored.summary.startsWith("First request: ")
+				? truncateWellFormed(
+						stored.summary
+							.split("\n")[0]
+							.slice("First request: ".length),
+						200,
+					)
+				: truncateWellFormed(normalizedRequest(stored.title), 200),
+			firstStartedAt: stored.conversationStartedAt.toISOString(),
+			firstExecutionId: "",
+			title: truncateWellFormed(normalizedRequest(stored.title), 200),
+			// A pre-structured row has no trustworthy lifetime count. Its retained
+			// ledger is the available evidence; old step counts are deliberately unused.
+			turnCount: stored.recordedExecutionIds.length,
+			sections: [],
+		};
+		const overwritten = stored.summary !== renderEpisodeTurnState(state);
+		if (stored.summary && (!previous || overwritten)) {
+			// An old worker has no execution identity to add to the ledger. Retain its
+			// available text as uncounted context ahead of the structured turns.
+			const body = truncateWellFormed(
+				visibleLegacySummary(stored.summary),
+				2000,
+			);
+			if (
+				!state.sections.some(
+					(s) => s.executionId === null && s.body === body,
+				)
+			) {
+				state.sections.push({
+					executionId: null,
+					startedAt: state.firstStartedAt,
+					body,
+				});
+			}
+		}
+		const duplicate = stored.recordedExecutionIds.includes(
+			input.executionId,
+		);
+		if (!duplicate) {
+			const startedAt = new Date(
+				input.conversationStartedAt,
+			).toISOString();
+			const request = truncateWellFormed(
+				normalizedRequest(input.title),
+				200,
+			);
+			if (
+				startedAt < state.firstStartedAt ||
+				(startedAt === state.firstStartedAt &&
+					compareText(input.executionId, state.firstExecutionId) <
+						0) ||
+				(!previous && !stored.summary)
+			) {
+				state.firstRequest = request;
+				state.firstStartedAt = startedAt;
+				state.firstExecutionId = input.executionId;
+			}
+			if (
+				normalizedText(state.title).split(" ").length <
+					MIN_REPEAT_TITLE_WORDS &&
+				normalizedText(request).split(" ").length >=
+					MIN_REPEAT_TITLE_WORDS
+			) {
+				state.title = request;
+			}
+			state.turnCount += 1;
+			state.sections.push({
+				executionId: input.executionId,
+				startedAt,
+				body: truncateWellFormed(input.summary, 2000),
+				outcome: input.outcome,
+				endedAt: input.conversationEndedAt
+					? new Date(input.conversationEndedAt).toISOString()
+					: null,
+			});
+		}
+		if (
+			duplicate &&
+			previous &&
+			!overwritten &&
+			stored.title === state.title &&
+			stored.turnCount === state.turnCount &&
+			stored.messageCount === 2 * state.turnCount
+		) {
+			return episodeToSummary(stored);
+		}
+		const earliest = Math.min(
+			new Date(state.firstStartedAt).getTime(),
+			...state.sections
+				.filter((s) => s.executionId !== null)
+				.map((s) => new Date(s.startedAt).getTime()),
+		);
+		for (const section of state.sections) {
+			if (section.executionId === null) {
+				section.startedAt = new Date(earliest - 1).toISOString();
+			}
+		}
+		state.sections.sort(compareTurnSections);
+		trimEpisodeTurnState(state);
+		const latest = state.sections
+			.filter((s) => s.executionId !== null)
+			.at(-1);
+		const episode = await tx.episodicMemory.update({
+			where,
+			data: {
+				title: state.title,
+				summary: renderEpisodeTurnState(state),
+				turnSections: state,
+				turnCount: state.turnCount,
+				messageCount: 2 * state.turnCount,
+				recordedExecutionIds: duplicate
+					? stored.recordedExecutionIds
+					: [...stored.recordedExecutionIds, input.executionId].slice(
+							-50,
+						),
+				keyTopics: [
+					...new Set([...stored.keyTopics, ...input.keyTopics]),
+				].slice(0, 5),
+				userIntents: [
+					...new Set([...stored.userIntents, ...input.userIntents]),
+				].slice(0, 3),
+				toolsUsed: [
+					...new Set([...stored.toolsUsed, ...input.toolsUsed]),
+				],
+				agentsUsed: [
+					...new Set([...stored.agentsUsed, ...input.agentsUsed]),
+				],
+				...(latest && latest.executionId !== null
+					? {
+							outcome: latest.outcome,
+							conversationEndedAt: latest.endedAt
+								? new Date(latest.endedAt)
+								: null,
+						}
+					: {}),
+				...(!duplicate && latest?.executionId === input.executionId
+					? {
+							projectId: input.projectId ?? null,
+							workspaceId: input.workspaceId ?? null,
+							agentId: input.agentId ?? null,
+						}
+					: {}),
+				conversationStartedAt: new Date(state.firstStartedAt),
+			},
+		});
+		return episodeToSummary(episode);
 	});
-	// Prisma runs this as INSERT ... ON CONFLICT DO UPDATE WHERE <owner>; when the
-	// conversation belongs to another owner nothing is written and it returns null.
-	if (!episode) {
-		throw new Error("Episodic memory owner mismatch");
+}
+
+type EpisodeTurnSection = { startedAt: string; body: string } & (
+	| { executionId: null }
+	| {
+			executionId: string;
+			outcome: string;
+			endedAt: string | null;
+	  }
+);
+
+// The JSON envelope keeps lifetime counters and the first request outside the
+// evictable sections and outside fields written by older workers.
+type EpisodeTurnState = {
+	version: 1;
+	firstRequest: string;
+	firstStartedAt: string;
+	firstExecutionId: string;
+	title: string;
+	turnCount: number;
+	sections: EpisodeTurnSection[];
+};
+
+function readEpisodeTurnState(
+	value: Prisma.JsonValue,
+): EpisodeTurnState | null {
+	if (
+		!value ||
+		Array.isArray(value) ||
+		typeof value !== "object" ||
+		value.version !== 1
+	) {
+		return null;
 	}
-	return episodeToSummary(episode);
+	// This version is written by this query; defaults and pre-structured rows have
+	// no version. Validate the envelope before using it as the durable authority.
+	if (
+		typeof value.firstRequest !== "string" ||
+		typeof value.firstStartedAt !== "string" ||
+		typeof value.firstExecutionId !== "string" ||
+		typeof value.title !== "string" ||
+		typeof value.turnCount !== "number" ||
+		!Number.isSafeInteger(value.turnCount) ||
+		value.turnCount < 0 ||
+		!Array.isArray(value.sections)
+	) {
+		throw new Error("Invalid episodic memory turn state");
+	}
+	return structuredClone(value) as unknown as EpisodeTurnState;
+}
+
+function normalizedRequest(text: string): string {
+	return text.trim().replace(/\s+/g, " ");
+}
+
+function compareTurnSections(
+	a: EpisodeTurnSection,
+	b: EpisodeTurnSection,
+): number {
+	return (
+		compareText(a.startedAt, b.startedAt) ||
+		compareText(a.executionId ?? "", b.executionId ?? "")
+	);
+}
+
+function visibleLegacySummary(text: string): string {
+	// Strip the unshipped text-header format if encountered during local upgrades.
+	return text.replace(
+		/^((?:Turn \d+|Earlier summary)) \[[^;\]\n]+; \d+\]$/gm,
+		"$1",
+	);
+}
+
+function renderEpisodeTurnState(state: EpisodeTurnState): string {
+	let number = Math.max(
+		1,
+		state.turnCount -
+			state.sections.filter((s) => s.executionId !== null).length +
+			1,
+	);
+	return `First request: ${state.firstRequest}${state.sections.map((s) => `\n\n${s.executionId === null ? "Earlier summary" : `Turn ${number++}`}\n${s.body}`).join("")}`;
+}
+
+function trimEpisodeTurnState(state: EpisodeTurnState): void {
+	while (
+		renderEpisodeTurnState(state).length > 2000 &&
+		state.sections.length > 1
+	) {
+		state.sections.shift();
+	}
+	const overflow = renderEpisodeTurnState(state).length - 2000;
+	const section = state.sections[0];
+	if (overflow > 0 && section) {
+		section.body = truncateWellFormed(
+			section.body,
+			Math.max(0, section.body.length - overflow),
+		);
+	}
 }
 
 /**
@@ -370,7 +620,7 @@ export async function deleteEpisodicMemory(
 	const normalizedOrgId = organizationId ?? null;
 
 	// Verify ownership before deleting
-	const episode = await db.episodicMemory.findFirst({
+	const episode = await getTenantDb().episodicMemory.findFirst({
 		where: {
 			id: episodeId,
 			userId,
@@ -382,7 +632,7 @@ export async function deleteEpisodicMemory(
 		return false;
 	}
 
-	await db.episodicMemory.delete({
+	await getTenantDb().episodicMemory.delete({
 		where: { id: episodeId },
 	});
 
@@ -448,7 +698,7 @@ export async function searchEpisodicMemories(params: {
 		}
 	}
 
-	const episodes = await db.episodicMemory.findMany({
+	const episodes = await getTenantDb().episodicMemory.findMany({
 		where,
 		orderBy: { conversationEndedAt: "desc" },
 		take: limit,
@@ -471,7 +721,7 @@ export async function getRecentEpisodes(
 	organizationId: string | null | undefined,
 	limit = 5,
 ): Promise<EpisodeSummary[]> {
-	const episodes = await db.episodicMemory.findMany({
+	const episodes = await getTenantDb().episodicMemory.findMany({
 		where: {
 			userId,
 			organizationId: organizationId ?? null,
@@ -488,6 +738,95 @@ export async function getRecentEpisodes(
 }
 
 /**
+ * Page settings history after resolving current resource access.
+ * The page and count share an allowlist so inaccessible scopes do not consume slots.
+ */
+export async function getEpisodesPage(
+	userId: string,
+	organizationId: string | null | undefined,
+	limit = 10,
+	offset = 0,
+): Promise<{ episodes: EpisodeSummary[]; total: number }> {
+	const tenantWhere = { userId, organizationId: organizationId ?? null };
+	const scopes = await getTenantDb().episodicMemory.findMany({
+		where: tenantWhere,
+		select: { projectId: true, workspaceId: true },
+		distinct: ["projectId", "workspaceId"],
+	});
+	const projectIds = [
+		...new Set(
+			scopes.flatMap((scope) =>
+				scope.projectId ? [scope.projectId] : [],
+			),
+		),
+	];
+	const workspaceIds = [
+		...new Set(
+			scopes.flatMap((scope) =>
+				scope.workspaceId ? [scope.workspaceId] : [],
+			),
+		),
+	];
+	// Separate scopes let the shared helper check each id once, even when a row
+	// combines an accessible resource with an inaccessible one.
+	const accessible = await filterAccessibleMemoryScopes<{
+		projectId?: string;
+		workspaceId?: string;
+	}>(
+		[
+			...projectIds.map((projectId) => ({ projectId })),
+			...workspaceIds.map((workspaceId) => ({ workspaceId })),
+		],
+		userId,
+		organizationId,
+	);
+	const where: Prisma.EpisodicMemoryWhereInput = {
+		...tenantWhere,
+		AND: [
+			{
+				OR: [
+					{ projectId: null },
+					{
+						projectId: {
+							in: accessible.flatMap((scope) =>
+								scope.projectId ? [scope.projectId] : [],
+							),
+						},
+					},
+				],
+			},
+			{
+				OR: [
+					{ workspaceId: null },
+					{
+						workspaceId: {
+							in: accessible.flatMap((scope) =>
+								scope.workspaceId ? [scope.workspaceId] : [],
+							),
+						},
+					},
+				],
+			},
+		],
+	};
+	const [episodes, total] = await withRLSContext(
+		db,
+		async (tx) =>
+			[
+				await tx.episodicMemory.findMany({
+					where,
+					orderBy: [{ conversationEndedAt: "desc" }, { id: "desc" }],
+					take: limit,
+					skip: offset,
+				}),
+				await tx.episodicMemory.count({ where }),
+			] as const,
+		{ isolationLevel: "RepeatableRead" },
+	);
+	return { episodes: episodes.map(episodeToSummary), total };
+}
+
+/**
  * Get episodes related to a specific project
  * Used for project context loading
  *
@@ -501,7 +840,7 @@ export async function getProjectEpisodes(
 	organizationId?: string | null,
 	limit = 10,
 ): Promise<EpisodeSummary[]> {
-	const episodes = await db.episodicMemory.findMany({
+	const episodes = await getTenantDb().episodicMemory.findMany({
 		where: {
 			projectId,
 			userId,
@@ -532,7 +871,7 @@ export async function getWorkspaceEpisodes(
 	organizationId?: string | null,
 	limit = 10,
 ): Promise<EpisodeSummary[]> {
-	const episodes = await db.episodicMemory.findMany({
+	const episodes = await getTenantDb().episodicMemory.findMany({
 		where: {
 			workspaceId,
 			userId,
@@ -557,7 +896,7 @@ export async function updateEpisodeQdrantReference(
 	qdrantPointId: string,
 	qdrantCollection: string,
 ): Promise<void> {
-	await db.episodicMemory.update({
+	await getTenantDb().episodicMemory.update({
 		where: { id: episodeId },
 		data: {
 			qdrantPointId,
@@ -574,7 +913,7 @@ export async function getEpisodesByIds(
 	userId: string,
 	organizationId?: string | null,
 ): Promise<EpisodeSummary[]> {
-	const episodes = await db.episodicMemory.findMany({
+	const episodes = await getTenantDb().episodicMemory.findMany({
 		where: {
 			id: { in: episodeIds },
 			...(organizationId
@@ -603,7 +942,7 @@ export async function getEpisodesByIds(
  * Delete episode by ID
  */
 export async function deleteEpisode(episodeId: string): Promise<void> {
-	await db.episodicMemory.delete({
+	await getTenantDb().episodicMemory.delete({
 		where: { id: episodeId },
 	});
 }
@@ -614,7 +953,7 @@ export async function deleteEpisode(episodeId: string): Promise<void> {
 export async function deleteEpisodeByConversationId(
 	conversationId: string,
 ): Promise<void> {
-	await db.episodicMemory.deleteMany({
+	await getTenantDb().episodicMemory.deleteMany({
 		where: { conversationId },
 	});
 }
@@ -749,7 +1088,7 @@ export async function buildOrchestratorMemoryContext(params: {
 	// ConversationTurn has a required organization; absent tenant scope fails closed.
 	const counts =
 		organizationId && conversationIds.length > 0
-			? await db.conversationTurn.groupBy({
+			? await getTenantDb().conversationTurn.groupBy({
 					by: ["conversationId"],
 					where: {
 						conversationId: { in: conversationIds },
@@ -1045,7 +1384,10 @@ function memoryContextPromptVariables(
 /** "- [2026-10-16] title: summary", dated by when the conversation ended. */
 function episodeLine(episode: EpisodeSummary): string {
 	const date = episode.conversationEndedAt
-		? new Date(episode.conversationEndedAt).toISOString().slice(0, 10)
+		? truncateWellFormed(
+				new Date(episode.conversationEndedAt).toISOString(),
+				10,
+			)
 		: "ongoing";
 	return `- [${date}] ${episode.title}: ${episode.summary}`;
 }

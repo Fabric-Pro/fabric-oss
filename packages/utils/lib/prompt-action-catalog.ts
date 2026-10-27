@@ -37,6 +37,7 @@ import { documentTypeShortLabel } from "./document-type-catalog";
 import { ORCHESTRATOR_MEMORY_PROMPT_AGENT_KEY } from "./orchestrator-memory-prompt";
 import { PAGE_ASK_PROMPT_AGENT_KEY } from "./page-ask-prompt";
 import { PARLUME_REALTIME_VOICE_PROMPT_AGENT_KEY } from "./parlume-realtime-voice-prompt";
+import { PARLUME_RECAP_PROMPT_AGENT_KEY } from "./parlume-recap-prompt";
 import { PARLUME_SUGGESTION_PROMPT_AGENT_KEY } from "./parlume-suggestion-prompt";
 import { PUBLISHING_BLOG_POST_AGENT_KEY } from "./publishing-blog-post-prompt";
 import { PUBLISHING_CASE_STUDY_AGENT_KEY } from "./publishing-case-study-prompt";
@@ -530,6 +531,17 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 		// and participants are appended code-side as fenced meeting data.
 		key: PARLUME_REALTIME_VOICE_PROMPT_AGENT_KEY,
 		label: "Parlume Realtime Voice",
+		featureType: "MEETINGS",
+		actions: nonStage("GENERAL"),
+	},
+	{
+		// The "Since last time" post Parlume makes once when it joins a
+		// meeting of a linked series. Editing it changes what the recap
+		// covers and how it reads; the previous meeting and the work items are
+		// fenced as untrusted data code-side, and when it posts is decided by
+		// the worker.
+		key: PARLUME_RECAP_PROMPT_AGENT_KEY,
+		label: "Parlume Series Recap",
 		featureType: "MEETINGS",
 		actions: nonStage("GENERAL"),
 	},

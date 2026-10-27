@@ -225,7 +225,10 @@ describe("Orchestrator Memory System", () => {
 
 	describe("createEpisodicMemoryActivity", () => {
 		beforeEach(() => {
-			mockCreateEpisodicMemory.mockResolvedValue({ id: "ep-new-1" });
+			mockCreateEpisodicMemory.mockImplementation(async (data) => ({
+				...data,
+				id: "ep-new-1",
+			}));
 			mockStoreEpisodeEmbedding.mockResolvedValue({ pointId: "pt-1" });
 		});
 
@@ -238,6 +241,7 @@ describe("Orchestrator Memory System", () => {
 				userId: "user-1",
 				organizationId: "org-1",
 				conversationId: "conv-1",
+				executionId: "execution-example",
 				title: "Planning fitness app",
 				summary: "User asked about fitness app features",
 				keyTopics: ["fitness", "app", "wearables"],
@@ -273,9 +277,10 @@ describe("Orchestrator Memory System", () => {
 		])(
 			"persists the embedding reference only after a successful store (%s)",
 			async (scenario) => {
-				mockCreateEpisodicMemory.mockResolvedValue({
+				mockCreateEpisodicMemory.mockImplementation(async (data) => ({
+					...data,
 					id: "episode-example",
-				});
+				}));
 				mockUpdateEpisodeQdrantReference.mockResolvedValue(undefined);
 				mockDeleteEpisodeEmbedding.mockResolvedValue(true);
 				mockStoreEpisodeEmbedding.mockResolvedValue({
@@ -290,6 +295,7 @@ describe("Orchestrator Memory System", () => {
 					userId: "user-example-1",
 					organizationId: "example-org",
 					conversationId: "conversation-example",
+					executionId: "execution-example",
 					title: "Example turn",
 					summary: "Example summary",
 					keyTopics: [],
@@ -408,6 +414,7 @@ describe("Orchestrator Memory System", () => {
 				userId: "user-1",
 				organizationId: null,
 				conversationId: "conv-1",
+				executionId: "execution-example",
 				title: "Test",
 				summary: "Test summary",
 				keyTopics: [],
@@ -424,6 +431,102 @@ describe("Orchestrator Memory System", () => {
 			expect(result.episodeId).toBeNull();
 			expect(result.qdrantPointId).toBeNull();
 		});
+	});
+
+	describe("conversation episode persistence boundary", () => {
+		it.each(["execution", "embedding"])(
+			"persists the conversation at the %s boundary",
+			async (boundary) => {
+				const stored = {
+					id: "episode-example",
+					title: "Compare the five newest features and pick two",
+					summary:
+						"First request: Compare the five newest features and pick two\n\nTurn 1: Initial comparison\n\nTurn 2: Approved",
+					keyTopics: ["feature", "report"],
+					userIntents: ["compare", "approve"],
+					outcome: "success",
+					conversationEndedAt: new Date("2026-10-02"),
+				};
+				mockCreateEpisodicMemory.mockResolvedValue(stored);
+				const points = new Map<string, unknown>();
+				mockStoreEpisodeEmbedding.mockImplementation(
+					async ({ episode }) => {
+						points.set(episode.id, episode);
+						return {
+							success: true,
+							pointId: "point-example",
+							collectionName: "example-episodes",
+						};
+					},
+				);
+				const { createEpisodeFromExecutionActivity } = await import(
+					"../src/activities/orchestrator-memory/index"
+				);
+				const input = {
+					userId: "user-example",
+					organizationId: "example-org",
+					conversationId: "conversation-example",
+					executionId: "execution-example",
+					taskDescription: "yes",
+					steps: [
+						{
+							id: "step-example",
+							description: "Prepare report",
+							status: "complete",
+						},
+						{
+							id: "step-example-2",
+							description: "Publish report",
+							status: "complete",
+						},
+						{
+							id: "step-example-3",
+							description: "Check report",
+							status: "complete",
+						},
+					],
+					toolsUsed: [],
+					agentsUsed: [],
+					outcome: "success" as const,
+					conversationStartedAt: new Date("2026-10-01"),
+				};
+				await createEpisodeFromExecutionActivity(input);
+				await createEpisodeFromExecutionActivity(input);
+
+				if (boundary === "execution") {
+					expect(mockCreateEpisodicMemory).toHaveBeenCalledWith(
+						expect.objectContaining({
+							executionId: input.executionId,
+							messageCount: 2,
+							turnCount: 1,
+						}),
+					);
+				} else {
+					expect(mockEmbed).toHaveBeenCalledWith(
+						expect.objectContaining({
+							value: `${stored.title}\n\n${stored.summary}\n\nTopics: feature, report`,
+						}),
+					);
+				}
+				expect(points.size).toBe(1);
+				expect(points.get(stored.id)).toMatchObject({
+					title: stored.title,
+					summary: stored.summary,
+					keyTopics: stored.keyTopics,
+					userIntents: stored.userIntents,
+				});
+				expect(mockUpdateEpisodeQdrantReference).toHaveBeenCalledTimes(
+					2,
+				);
+				expect(
+					mockUpdateEpisodeQdrantReference,
+				).toHaveBeenLastCalledWith(
+					stored.id,
+					"point-example",
+					"example-episodes",
+				);
+			},
+		);
 	});
 
 	describe("searchEpisodicMemoryActivity", () => {
@@ -586,7 +689,10 @@ describe("Orchestrator Memory System", () => {
 
 	describe("createEpisodeFromExecutionActivity", () => {
 		beforeEach(() => {
-			mockCreateEpisodicMemory.mockResolvedValue({ id: "ep-exec-1" });
+			mockCreateEpisodicMemory.mockImplementation(async (data) => ({
+				...data,
+				id: "ep-exec-1",
+			}));
 			mockStoreEpisodeEmbedding.mockResolvedValue({
 				pointId: "pt-exec-1",
 			});

@@ -45,6 +45,20 @@ import type { ToolCategory } from "../../../activities/orchestrator";
 import { DEFAULT_MCP_TOOL_TIMEOUT_MS } from "../../../activities/orchestrator/execution/mcp-call-timeout";
 import type { DirectChatUsageLimitRefusal } from "../../../types";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "../../ai-non-retryable-errors";
+import { ADVISOR_ANSWER_SNAPSHOT_PATCH } from "../advisor-answer-snapshot";
+import {
+	admitCallable,
+	CALL_TOOL_DEFINITIONS,
+	type CallableRegistry,
+	type EffectiveToolCalls,
+	foundToolDefinitions,
+	historyCallIndex,
+	normalizedEntry,
+	objectArguments,
+	type RefusalReason,
+	toolBinding,
+	unwrapCall,
+} from "../advisor-call-tool";
 import { advisorDeadline } from "../advisor-deadline";
 import {
 	boundedHistoryDecision,
@@ -58,6 +72,7 @@ import {
 	recordAdvisorHistoryChange,
 	recordAdvisorMainRound,
 	recordAdvisorRequests,
+	recordAdvisorSnapshotFailure,
 	recordAdvisorToolCatalog,
 	recordAdvisorToolExecution,
 	recordAdvisorToolSet,
@@ -96,6 +111,8 @@ import {
 	PROJECT_SOURCE_LIST_INPUT_SCHEMA,
 } from "../project-document-tool-schemas";
 import {
+	LEGACY_PROJECT_FEATURE_GET_DESCRIPTION,
+	LEGACY_PROJECT_FEATURE_GET_INPUT_SCHEMA,
 	PROJECT_FEATURE_GET_DESCRIPTION,
 	PROJECT_FEATURE_GET_INPUT_SCHEMA,
 	PROJECT_FEATURE_LIST_DESCRIPTION,
@@ -120,6 +137,7 @@ import {
 	PAGED_BODY_READ_TOOLS,
 	truncateWithinLimit,
 } from "../tool-result-progression";
+import { relevantExtraToolSearches } from "../tool-search-relevance";
 import {
 	advisorChargedUsage,
 	ledgerSnapshotFromRefusal,
@@ -133,6 +151,7 @@ import {
 	finalizationQuestionField,
 	type IterativeTurnOptions,
 	isTurnBudgetExhausted,
+	isTurnStop,
 	rethrowTurnStop,
 	speaksBudgetContract,
 	turnScopeField,
@@ -254,6 +273,7 @@ function buildBudgetStatus(
 // heartbeatTimeout fails fast on a wedged worker without false positives.
 const {
 	runAgentIteration,
+	snapshotAdvisorAnswerActivity,
 	searchAvailableTools,
 	searchAvailableAgents,
 	searchAvailableIntegrations,
@@ -726,6 +746,7 @@ function pruneConversationHistory(
 	conversationHistory: IterativeMessage[],
 	currentIteration: number,
 	targetReached?: () => boolean,
+	effectiveCalls?: EffectiveToolCalls,
 ): number {
 	const pruneBeforeIteration =
 		currentIteration - TOOL_RESULTS.recentIterationsToKeep;
@@ -733,15 +754,19 @@ function pruneConversationHistory(
 		return 0;
 	}
 
-	// Build a map of toolCallId -> toolName from assistant messages
-	const toolCallNames = new Map<string, string>();
-	for (const msg of conversationHistory) {
-		if (msg.role === "assistant" && msg.toolCalls) {
-			for (const tc of msg.toolCalls) {
-				toolCallNames.set(tc.id, tc.name);
-			}
-		}
-	}
+	const toolCallNames = effectiveCalls
+		? new Map(
+				[...historyCallIndex(conversationHistory, effectiveCalls)].map(
+					([id, call]) => [id, call?.name],
+				),
+			)
+		: new Map(
+				conversationHistory.flatMap((msg) =>
+					(msg.toolCalls ?? []).map(
+						(tc) => [tc.id, tc.name] as const,
+					),
+				),
+			);
 
 	// Prune tool results from old iterations using the iteration tag on each message.
 	// A single workflow iteration can produce multiple tool calls (and therefore
@@ -770,6 +795,12 @@ function pruneConversationHistory(
 			continue;
 		}
 
+		if (
+			effectiveCalls &&
+			(!msg.toolCallId || !toolCallNames.get(msg.toolCallId))
+		) {
+			continue;
+		}
 		const toolName = msg.toolCallId
 			? toolCallNames.get(msg.toolCallId) || "unknown"
 			: "unknown";
@@ -921,14 +952,23 @@ async function synthesizeFinalAnswer(params: {
 		answerUnpairedToolCalls(
 			conversationHistory,
 			"not completed; outcome unknown",
+			state.advisorEffectiveCalls,
 		);
 	}
 	const compactSynthesis = patched("orch-synthesis-compacted-v1");
 
 	const synthesisHistory = compactSynthesis
 		? keepSynthesisTurnMessages
-			? buildSynthesisHistory(conversationHistory, true)
-			: buildSynthesisHistory(conversationHistory)
+			? buildSynthesisHistory(
+					conversationHistory,
+					true,
+					state.advisorEffectiveCalls,
+				)
+			: buildSynthesisHistory(
+					conversationHistory,
+					false,
+					state.advisorEffectiveCalls,
+				)
 		: conversationHistory;
 	// This opt-in also lets the activity omit pixels when a FINALIZATION
 	// scope resolves to a token ledger, keeping its request eligible for sizing.
@@ -961,6 +1001,12 @@ async function synthesizeFinalAnswer(params: {
 		// pruning again strips them and synthesis sees only
 		// `[Previous tool result pruned]` placeholders.
 		const synthesisResult = await runAgentIteration({
+			...(state.advisorCallToolMode
+				? { effectiveToolCalls: state.advisorEffectiveCalls }
+				: {}),
+			...(state.advisorAnswerSnapshot
+				? { answerSnapshot: state.advisorAnswerSnapshot }
+				: {}),
 			callPurpose: AI_CALL_PURPOSES.synthesis,
 			...synthesisImageFields,
 			conversationHistory: synthesisHistory,
@@ -1046,6 +1092,12 @@ async function synthesizeFinalAnswer(params: {
 				},
 			);
 			const retryResult = await runAgentIteration({
+				...(state.advisorCallToolMode
+					? { effectiveToolCalls: state.advisorEffectiveCalls }
+					: {}),
+				...(state.advisorAnswerSnapshot
+					? { answerSnapshot: state.advisorAnswerSnapshot }
+					: {}),
 				callPurpose: AI_CALL_PURPOSES.synthesisRetry,
 				...synthesisImageFields,
 				conversationHistory: synthesisHistory,
@@ -1954,6 +2006,7 @@ export async function executeIterativePhase(
 			answerUnpairedToolCalls(
 				loop.conversationHistory,
 				"not completed; outcome unknown",
+				state.advisorEffectiveCalls,
 			);
 		}
 		return turnBudgetExit({
@@ -1970,6 +2023,7 @@ export async function executeIterativePhase(
 			answerUnpairedToolCalls(
 				loop.conversationHistory,
 				"not completed; outcome unknown",
+				state.advisorEffectiveCalls,
 			);
 		}
 	}
@@ -2110,18 +2164,31 @@ export async function executeTimeLimitExit(
 					timestamp: new Date().toISOString(),
 				},
 			];
-	answerUnpairedToolCalls(history, TIME_LIMIT_INTERRUPTED_OUTCOME);
+	answerUnpairedToolCalls(
+		history,
+		TIME_LIMIT_INTERRUPTED_OUTCOME,
+		state.advisorEffectiveCalls,
+	);
 	const interrupted = state.inFlightToolCall;
 	if (interrupted) {
+		const effective = state.advisorEffectiveCalls?.[interrupted.id];
+		if (effective) {
+			effective.outcome = "interrupted";
+		}
 		const outcome = TIME_LIMIT_INTERRUPTED_OUTCOME;
-		state.toolCalls.push({
-			id: interrupted.id,
-			name: interrupted.name,
-			args: interrupted.args,
-			result: outcome,
-			status: "error",
-			durationMs: Date.now() - interrupted.startedAt,
-		});
+		if (
+			!state.advisorCallToolMode ||
+			!state.toolCalls.some((call) => call.id === interrupted.id)
+		) {
+			state.toolCalls.push({
+				id: interrupted.id,
+				name: interrupted.name,
+				args: interrupted.args,
+				result: outcome,
+				status: "error",
+				durationMs: Date.now() - interrupted.startedAt,
+			});
+		}
 		history.push({
 			role: "user",
 			content: `Host observation: ${interrupted.name} (${JSON.stringify(interrupted.args)}) was ${outcome}. Verify its outcome before retrying it.`,
@@ -2196,7 +2263,17 @@ async function runIterativeLoop(
 	updateProgress("iterating", "Starting iterative execution...");
 
 	// Recorded once at turn start so a deploy during the loop keeps one history contract.
-	const keepTurnMessages = patched("orch-keep-turn-messages-v1");
+	const callToolMode = state.advisorCallToolMode === true;
+	if (callToolMode) {
+		state.advisorCallToolMode = true;
+		state.advisorEffectiveCalls = Object.create(null);
+	}
+	const directMeetingListing = callToolMode
+		? patched("loom-meeting-transcript-listing-dispatch-v1")
+		: false;
+	const callableRegistry: CallableRegistry = new Map();
+	const keepTurnMessages =
+		callToolMode || patched("orch-keep-turn-messages-v1");
 	loop.keepTurnMessages = keepTurnMessages;
 	const keepTurnImages = patched("orch-keep-turn-images-v1");
 
@@ -2253,6 +2330,11 @@ async function runIterativeLoop(
 	// Initialize with meta-tools only (Tool Search pattern - 85% token reduction)
 	// OAuth tools from preloadedResources are still included if available
 	const metaTools = getMetaTools();
+	if (callToolMode) {
+		Object.assign(metaTools, CALL_TOOL_DEFINITIONS);
+		(metaTools.search_tools as { description: string }).description =
+			"Search for tools and agents enabled for this request. Found tools are callable with call_tool(name, arguments) from the next model request. Use get_tool_schema(name) to retrieve an admitted definition.";
+	}
 	const discoveredTools: Record<string, unknown> = {}; // Tools found via search_tools
 	// Rebuilt from recorded calls during replay. Inherited results without captured
 	// approval options remain unclassified and are retained by the v2 reset.
@@ -2263,6 +2345,11 @@ async function runIterativeLoop(
 	// Non-empty only when we took the stub-catalog path (preloaded count
 	// exceeded `TOOLS.eagerLoadThreshold`). See orchestrator-config TOOLS doc.
 	let preloadedToolCatalog = "";
+	let deferredCatalogTools: Array<{
+		toolName: string;
+		description: string;
+		serverName: string;
+	}> = [];
 
 	if (input.enabledMcpConfigIds && input.enabledMcpConfigIds.length > 0) {
 		log.info(
@@ -2294,12 +2381,17 @@ async function runIterativeLoop(
 					{ servers: preloadedServerNames },
 				);
 			} else {
-				recordAdvisorToolCatalog(
-					state,
-					preloadedMcpTools.map((t) => t.toolName),
-				);
-				preloadedToolCatalog =
-					buildPreloadedToolCatalog(preloadedMcpTools);
+				// Preserve the early catalog and prompt bytes on old histories.
+				if (patched("orch-final-initial-tool-catalog-v1")) {
+					deferredCatalogTools = preloadedMcpTools;
+				} else {
+					recordAdvisorToolCatalog(
+						state,
+						preloadedMcpTools.map((t) => t.toolName),
+					);
+					preloadedToolCatalog =
+						buildPreloadedToolCatalog(preloadedMcpTools);
+				}
 				log.warn(
 					`[IterativeExecution] Pre-loaded MCP tool count (${preloadedMcpTools.length}) exceeds eager threshold (${TOOLS.eagerLoadThreshold}); injecting stub catalog into system prompt — schemas load on demand via search_tools`,
 					{
@@ -2444,13 +2536,20 @@ async function runIterativeLoop(
 		// Patch-gated because it changes the tool set a recorded history saw;
 		// an older history replays without them.
 		if (patched("orch-project-feature-tools-v1")) {
+			const featureDetailPaging = patched(
+				"orch-project-feature-detail-paging-v1",
+			);
 			discoveredTools.fabric_list_project_features = {
 				description: PROJECT_FEATURE_LIST_DESCRIPTION,
 				inputSchema: PROJECT_FEATURE_LIST_INPUT_SCHEMA,
 			};
 			discoveredTools.fabric_get_project_feature = {
-				description: PROJECT_FEATURE_GET_DESCRIPTION,
-				inputSchema: PROJECT_FEATURE_GET_INPUT_SCHEMA,
+				description: featureDetailPaging
+					? PROJECT_FEATURE_GET_DESCRIPTION
+					: LEGACY_PROJECT_FEATURE_GET_DESCRIPTION,
+				inputSchema: featureDetailPaging
+					? PROJECT_FEATURE_GET_INPUT_SCHEMA
+					: LEGACY_PROJECT_FEATURE_GET_INPUT_SCHEMA,
 			};
 			discoveredToolConfigIds.fabric_list_project_features =
 				"fabric-ai-server";
@@ -2701,7 +2800,13 @@ async function runIterativeLoop(
 			// System-prompt addendum tells the model to acknowledge the
 			// CTA and NOT compensate by calling `fabric_create_frame`.
 			// Defense in depth on top of the suppression set.
-			state.enrichedSystemPrompt = `${state.enrichedSystemPrompt}\n\nDEFAULT MCP SERVICE DOWN — ${routingResult.serverName} is currently unavailable. A status card has been shown to the user. Do NOT attempt to compensate with fabric_create_frame or any other rendering tool. Acknowledge briefly that the service is unavailable and stop.`;
+			const serviceDownNote = `DEFAULT MCP SERVICE DOWN — ${routingResult.serverName} is currently unavailable. A status card has been shown to the user. Do NOT attempt to compensate with fabric_create_frame or any other rendering tool. Acknowledge briefly that the service is unavailable and stop.`;
+			state.enrichedSystemPrompt = `${state.enrichedSystemPrompt}\n\n${serviceDownNote}`;
+			// Availability is transient. This branch short-circuits before the model,
+			// but keep the optional parts aligned for state consumers.
+			if (state.systemPromptParts) {
+				state.systemPromptParts.variable += `\n\n${serviceDownNote}`;
+			}
 			suppressedFrameTools.add("fabric_create_frame");
 			suppressedFrameTools.add("fabric_create_slideshow");
 
@@ -2724,6 +2829,29 @@ async function runIterativeLoop(
 			);
 			break;
 		}
+	}
+
+	if (callToolMode) {
+		availableTools = {
+			...availableTools,
+			search_tools: metaTools.search_tools,
+			...CALL_TOOL_DEFINITIONS,
+		};
+	}
+
+	// Build once against the final initial native set after surface suppression.
+	// Discovery updates availableTools later but retains these catalog bytes.
+	if (deferredCatalogTools.length > 0) {
+		const catalog = deferredCatalogTools.filter(
+			(t) =>
+				!(t.toolName in availableTools) &&
+				!suppressedFrameTools.has(t.toolName),
+		);
+		recordAdvisorToolCatalog(
+			state,
+			catalog.map((t) => t.toolName),
+		);
+		preloadedToolCatalog = buildPreloadedToolCatalog(catalog);
 	}
 
 	// Drain the service-down analytics signal pushed above (if any).
@@ -2749,11 +2877,35 @@ async function runIterativeLoop(
 	// recorded activity results on replay, so it is deterministic.
 	const observationsByCall = new Map<string, Map<string, number>>();
 
+	const answerSnapshotEnabled = patched(ADVISOR_ANSWER_SNAPSHOT_PATCH);
+	if (answerSnapshotEnabled) {
+		try {
+			const result = await snapshotAdvisorAnswerActivity({
+				userId: input.userId,
+				organizationId: input.organizationId,
+				executionId: state.executionId,
+				...usageOriginFields(input),
+				modelOverride: input.modelOverride,
+				hasTools: Object.keys(availableTools).length > 0,
+				...turnScopeField(turn),
+			});
+			state.advisorAnswerSnapshot = result?.snapshot;
+		} catch (error) {
+			if (isTurnStop(error) || isTurnBudgetExhausted(error)) {
+				throw error;
+			}
+			state.advisorAnswerSnapshot = undefined;
+			const errorType = recordAdvisorSnapshotFailure(state, error);
+			log.warn("advisor.answer_snapshot_unavailable", { errorType });
+		}
+	}
 	// Read once for the whole turn, so a history that crosses the deploy
 	// mid-turn keeps one prompt shape until the turn ends.
-	const turnStableSystemPrompt = patched(TURN_STABLE_SYSTEM_PROMPT_PATCH);
+	const turnStableSystemPrompt =
+		callToolMode || patched(TURN_STABLE_SYSTEM_PROMPT_PATCH);
 	// The turn's system prompt under that marker, built on the first call.
 	let stableSystemPrompt: string | undefined;
+	let stableSystemPromptParts: WorkflowState["systemPromptParts"];
 	// Read once for the whole turn, for the same reason.
 	const completionClaimCheck = patched(COMPLETION_CLAIM_CHECK_PATCH);
 	let completionClaimChecked = false;
@@ -2762,11 +2914,13 @@ async function runIterativeLoop(
 	/**
 	 * Builds the system prompt for one call. Unpatched, the caller passes the
 	 * budget warning in `base`, `firstCall` only on iteration 1, and the image
-	 * rule, which reproduces the pre-marker bytes. Patched, it is called once
-	 * per turn with `firstCall: true`, no image rule, and `toolUsageAtTurnStart`.
+	 * rule, which reproduces the pre-marker bytes. Under the turn-stable marker,
+	 * each prompt is built once with `firstCall: true` and no image rule.
+	 * The reusable prompt uses the same tail with the attachment note excluded.
 	 */
 	const composeSystemPrompt = (options: {
 		base: string;
+		includeImageNote?: boolean;
 		firstCall: boolean;
 		imageDisplayRule: string | null;
 		toolUsageAtTurnStart: boolean;
@@ -2774,7 +2928,11 @@ async function runIterativeLoop(
 		let systemPrompt = options.base;
 
 		// When images are attached, tell the model how to treat them
-		if (input.attachedImageUrls?.length && options.firstCall) {
+		if (
+			input.attachedImageUrls?.length &&
+			options.firstCall &&
+			options.includeImageNote !== false
+		) {
 			systemPrompt += attachedImagesSystemNote(imageVisionPrompt);
 		}
 
@@ -2807,6 +2965,10 @@ async function runIterativeLoop(
 		const promptAuditApplied = patched(PROMPT_AUDIT_PATCH);
 		const projectToolsListed =
 			!promptAuditApplied || Boolean(input.projectId);
+		if (callToolMode) {
+			systemPrompt +=
+				"\n\nTool loading: The attached native tools remain fixed for this answer. Use search_tools to discover enabled capabilities, get_tool_schema(name) to retrieve a found definition, and call_tool(name, arguments) to run it. A search admits tools from the next model request. Meta-tools cannot be call_tool targets. Search definitions remain retrievable for this answer after history compaction.";
+		}
 		if (preloadedToolCatalog) {
 			// Discovered schemas live in this phase's `discoveredTools`, which
 			// is rebuilt for every turn, so a schema loaded now is gone on the
@@ -2814,7 +2976,10 @@ async function runIterativeLoop(
 			const schemaLifetime = patched(STUB_CATALOG_TURN_SCOPE_PATCH)
 				? "the loaded schema stays loaded for the rest of this turn only — after the user's next message, load it again with search_tools before calling the tool"
 				: "the loaded schema persists for the rest of this conversation";
-			systemPrompt += `\n\nFOCUSED AGENT — The catalog below lists the MCP tools exposed by ${preloadedServerNames.join(", ")}. Their schemas are NOT pre-attached. Before invoking a tool from the catalog, call search_tools with the exact tool name (e.g., search_tools({ query: "<tool_name>" })) to load its inputSchema; ${schemaLifetime}. Tools NOT in the catalog (search_tools, ${projectToolsListed ? "project_rag_query, fabric_list_meeting_transcripts, " : ""}${projectFeatureToolsRegistered ? "fabric_list_project_features, fabric_get_project_feature, " : ""}${projectDocumentToolsRegistered ? "fabric_list_project_documents, fabric_get_project_document, fabric_list_project_sources, fabric_get_project_source, " : ""}${projectRepositoryToolsRegistered.map((name) => `${name}, `).join("")}${frameToolsRegistered.map((name) => `${name}, `).join("")}${projectToolsListed ? "search_slack_messages, search_teams_messages, " : ""}${companyContextToolRegistered ? "search_company_context, " : ""}OAuth integrations such as Microsoft Teams or GitHub) are already attached and can be called directly without a search_tools roundtrip.\n\n${preloadedToolCatalog}`;
+			const catalogLoading = callToolMode
+				? "Before invoking a tool from the catalog, use search_tools to find its definition, get_tool_schema(name) if the definition was omitted, then call_tool(name, arguments) from the next model request. Definitions remain retrievable for this answer after history compaction. "
+				: `Before invoking a tool from the catalog, call search_tools with the exact tool name (e.g., search_tools({ query: "<tool_name>" })) to load its inputSchema; ${schemaLifetime}. `;
+			systemPrompt += `\n\nFOCUSED AGENT — The catalog below lists the MCP tools exposed by ${preloadedServerNames.join(", ")}. Their schemas are NOT pre-attached. ${catalogLoading}Tools NOT in the catalog (search_tools, ${projectToolsListed ? "project_rag_query, fabric_list_meeting_transcripts, " : ""}${projectFeatureToolsRegistered ? "fabric_list_project_features, fabric_get_project_feature, " : ""}${projectDocumentToolsRegistered ? "fabric_list_project_documents, fabric_get_project_document, fabric_list_project_sources, fabric_get_project_source, " : ""}${projectRepositoryToolsRegistered.map((name) => `${name}, `).join("")}${frameToolsRegistered.map((name) => `${name}, `).join("")}${projectToolsListed ? "search_slack_messages, search_teams_messages, " : ""}${companyContextToolRegistered ? "search_company_context, " : ""}OAuth integrations such as Microsoft Teams or GitHub) are already attached and can be called directly without a search_tools roundtrip.\n\n${preloadedToolCatalog}`;
 		} else if (
 			options.firstCall &&
 			preloadedServerNames.length > 0 &&
@@ -2881,6 +3046,8 @@ Never guess or use example values — always use real data from API responses.`;
 			const pruned = pruneConversationHistory(
 				conversationHistory,
 				state.currentIteration,
+				undefined,
+				state.advisorEffectiveCalls,
 			);
 			if (pruned) {
 				recordAdvisorHistoryChange(state, "pruned");
@@ -3062,6 +3229,22 @@ Never guess or use example values — always use real data from API responses.`;
 				imageDisplayRule: null,
 				toolUsageAtTurnStart: "search_tools" in availableTools,
 			});
+			if (state.systemPromptParts && !stableSystemPromptParts) {
+				stableSystemPromptParts = {
+					reusable: composeSystemPrompt({
+						base: state.systemPromptParts.reusable,
+						includeImageNote: false,
+						firstCall: true,
+						imageDisplayRule: null,
+						toolUsageAtTurnStart: "search_tools" in availableTools,
+					}),
+					variable:
+						state.systemPromptParts.variable +
+						(input.attachedImageUrls?.length
+							? attachedImagesSystemNote(imageVisionPrompt)
+							: ""),
+				};
+			}
 			iterationSystemPrompt = stableSystemPrompt;
 			turnNotice = formatTurnNotice(
 				[budgetWarning, imageDisplayRule].filter(
@@ -3102,7 +3285,25 @@ Never guess or use example values — always use real data from API responses.`;
 		if (mainRoundBudget) {
 			state.mainRounds++;
 		}
+		const requestTargets: CallableRegistry = new Map(
+			callToolMode
+				? [...callableRegistry].filter(
+						([, entry]) =>
+							entry.provenance === "search" &&
+							entry.admittedAtRequest < iteration,
+					)
+				: [],
+		);
 		const iterationInput: Parameters<typeof runAgentIteration>[0] = {
+			...(callToolMode
+				? {
+						callToolMode: true as const,
+						admittedWrapperTargets: [...requestTargets.keys()],
+					}
+				: {}),
+			...(state.advisorAnswerSnapshot
+				? { answerSnapshot: state.advisorAnswerSnapshot }
+				: {}),
 			...(keepTurnMessages
 				? { preserveTurnMessages: true as const }
 				: {}),
@@ -3110,6 +3311,9 @@ Never guess or use example values — always use real data from API responses.`;
 			conversationHistory,
 			availableTools,
 			systemPrompt: iterationSystemPrompt,
+			...(stableSystemPromptParts
+				? { systemPromptParts: stableSystemPromptParts }
+				: {}),
 			// Absent when there is no note (always, without the marker), so
 			// the unpatched path sends the input it sent before the marker.
 			...(turnNotice ? { turnNotice } : {}),
@@ -3162,6 +3366,9 @@ Never guess or use example values — always use real data from API responses.`;
 				iteration,
 				lastRewrite: state.advisorLastHistoryRewriteIteration,
 				riskOptionsByToolCallId: retentionRiskOptions,
+				...(callToolMode
+					? { effectiveToolCalls: state.advisorEffectiveCalls }
+					: {}),
 				autonomyLevel: input.autonomyLevel,
 			};
 			const decision = boundedHistoryV2Decision(retentionInput);
@@ -3280,6 +3487,7 @@ Never guess or use example values — always use real data from API responses.`;
 							after.bytes <= before.targetBytes
 						);
 					},
+					state.advisorEffectiveCalls,
 				);
 				if (pruned) {
 					recordAdvisorHistoryChange(state, "pruned");
@@ -3312,6 +3520,38 @@ Never guess or use example values — always use real data from API responses.`;
 		}
 		recordAdvisorRequests(state, iterationResult);
 		recordApiBilling(state, iterationResult.apiBilling);
+		if (callToolMode) {
+			// The activity reports the final provider set, including skills and suppression.
+			// Missing metadata from an older worker admits no initial wrapper targets.
+			for (const [name, definition] of Object.entries(
+				iterationResult.offeredToolDefinitions ?? {},
+			)) {
+				const entry = {
+					definition,
+					binding: toolBinding(
+						name,
+						discoveredToolConfigIds[name],
+						state.preloadedResources?.toolMap[name],
+						directMeetingListing,
+					),
+					provenance: "initial" as const,
+					admittedAtRequest: iteration,
+				};
+				const refusal = admitCallable(
+					callableRegistry,
+					name,
+					entry,
+					suppressedFrameTools,
+				);
+				if (!refusal) {
+					const admitted = callableRegistry.get(name);
+					if (admitted) {
+						requestTargets.set(name, admitted);
+					}
+				}
+			}
+		}
+
 		// If the iteration classifier tagged a provider limit/quota
 		// error, bubble it into state so it reaches the workflow output + SSE.
 		// The iteration itself has already soft-degraded to a text response, so
@@ -3514,7 +3754,55 @@ Never guess or use example values — always use real data from API responses.`;
 
 		// Process tool calls
 		toolRoundSeen = true;
-		const toolCalls = iterationResult.toolCalls;
+		const wrapperCalls = iterationResult.toolCalls;
+		const refusals = new Map<string, RefusalReason>();
+		const seenIds = new Set(
+			conversationHistory.flatMap((message) =>
+				(message.toolCalls ?? []).map((call) => call.id),
+			),
+		);
+		const duplicateIds = new Set<string>();
+		for (const call of wrapperCalls) {
+			if (seenIds.has(call.id)) {
+				duplicateIds.add(call.id);
+			}
+			seenIds.add(call.id);
+		}
+		const toolCalls = callToolMode
+			? wrapperCalls.map((call) => {
+					if (call.name !== "call_tool") {
+						return call;
+					}
+					const counts = state.advisorToolLoading;
+					if (counts) {
+						counts.callToolCalls = (counts.callToolCalls ?? 0) + 1;
+					}
+					const resolved = duplicateIds.has(call.id)
+						? { reason: "binding_conflict" as const }
+						: unwrapCall(
+								call,
+								requestTargets,
+								suppressedFrameTools,
+							);
+					if ("reason" in resolved) {
+						refusals.set(call.id, resolved.reason);
+						if (state.advisorEffectiveCalls) {
+							state.advisorEffectiveCalls[call.id] = null;
+						}
+						return call;
+					}
+					if (state.advisorEffectiveCalls) {
+						state.advisorEffectiveCalls[call.id] = {
+							...resolved.call,
+							args: scrubArgsForRetention(
+								resolved.call.name,
+								resolved.call.args,
+							),
+						};
+					}
+					return { ...call, ...resolved.call };
+				})
+			: wrapperCalls;
 		if (keepTurnMessages) {
 			conversationHistory.push({
 				role: "assistant",
@@ -3527,10 +3815,35 @@ Never guess or use example values — always use real data from API responses.`;
 				...(iterationResult.assistantParts
 					? { assistantParts: iterationResult.assistantParts }
 					: {}),
-				toolCalls: toolCalls.map((call) => ({
-					...call,
-					args: scrubArgsForRetention(call.name, call.args),
-				})),
+				toolCalls: wrapperCalls.map((call) => {
+					if (
+						callToolMode &&
+						call.name === "call_tool" &&
+						typeof call.args.name === "string"
+					) {
+						const inner = objectArguments(
+							call.args.arguments === undefined
+								? ""
+								: call.args.arguments,
+						);
+						if (inner) {
+							return {
+								...call,
+								args: {
+									name: call.args.name,
+									arguments: scrubArgsForRetention(
+										call.args.name,
+										inner,
+									),
+								},
+							};
+						}
+					}
+					return {
+						...call,
+						args: scrubArgsForRetention(call.name, call.args),
+					};
+				}),
 				timestamp: new Date().toISOString(),
 				iteration,
 			});
@@ -3566,6 +3879,33 @@ Never guess or use example values — always use real data from API responses.`;
 				};
 			}
 
+			const refusal = refusals.get(toolCall.id);
+			if (refusal) {
+				const counts = state.advisorToolLoading;
+				if (counts) {
+					counts.refusals ??= {};
+					counts.refusals[refusal] =
+						(counts.refusals[refusal] ?? 0) + 1;
+				}
+				conversationHistory.push({
+					role: "tool",
+					content: JSON.stringify({
+						error: refusal,
+						message:
+							"Tool call refused. Use search_tools to find an admitted tool.",
+					}),
+					toolCallId: toolCall.id,
+					timestamp: new Date().toISOString(),
+					iteration,
+				});
+				continue;
+			}
+			const effectiveCall = state.advisorEffectiveCalls?.[toolCall.id];
+			const binding = effectiveCall?.binding;
+			const effectiveConfigId =
+				binding?.kind === "config" || binding?.kind === "oauth"
+					? binding.configId
+					: discoveredToolConfigIds[toolCall.name];
 			// ================================================================
 			// SAFETY LAYER: Assess risk before execution
 			// Respect autonomy level from user preferences or agent config
@@ -3590,9 +3930,11 @@ Never guess or use example values — always use real data from API responses.`;
 							? "fabric-gated-v2"
 							: "read-only-exempt-v1",
 						fabricRouted:
-							isLoopBuiltInReadTool(toolCall.name) ||
-							discoveredToolConfigIds[toolCall.name] ===
-								FABRIC_AI_SERVER_CONFIG_ID,
+							isLoopBuiltInReadTool(
+								toolCall.name,
+								callToolMode,
+							) ||
+							effectiveConfigId === FABRIC_AI_SERVER_CONFIG_ID,
 					}
 				: { rules: "legacy" };
 			let riskAssessment = assessToolCallRisk(
@@ -3600,6 +3942,9 @@ Never guess or use example values — always use real data from API responses.`;
 				autonomyLevel,
 				riskOptions,
 			);
+			if (effectiveCall) {
+				effectiveCall.riskOptions = riskOptions;
+			}
 			if (state.advisorBoundedHistoryV2Enabled) {
 				retentionRiskOptions.set(toolCall.id, riskOptions);
 			}
@@ -3714,6 +4059,9 @@ Never guess or use example values — always use real data from API responses.`;
 				state.approvalDecision = null;
 
 				if (!decision?.approved) {
+					if (effectiveCall) {
+						effectiveCall.outcome = "refused";
+					}
 					log.info("Tool call rejected", {
 						toolName: toolCall.name,
 						feedback: decision?.feedback,
@@ -3765,7 +4113,17 @@ Never guess or use example values — always use real data from API responses.`;
 				args: Object.keys(toolCall.args),
 			});
 
-			recordAdvisorToolExecution(state, toolCall.name);
+			if (callToolMode) {
+				recordAdvisorToolExecution(
+					state,
+					toolCall.name,
+					callableRegistry.get(toolCall.name)?.provenance === "search"
+						? "discovery"
+						: "initial",
+				);
+			} else {
+				recordAdvisorToolExecution(state, toolCall.name);
+			}
 			const startTime = Date.now();
 			if (mainRoundBudget) {
 				state.inFlightToolCall = {
@@ -3780,7 +4138,12 @@ Never guess or use example values — always use real data from API responses.`;
 			let mcpAppResourceUri: string | undefined;
 			let mcpAppConfigId: string | undefined;
 			const preloadedTool =
-				state.preloadedResources?.toolMap[toolCall.name];
+				binding?.kind === "databricks"
+					? {
+							serverName: "databricks-vector-search",
+							dispatchMetadata: binding.metadata,
+						}
+					: state.preloadedResources?.toolMap[toolCall.name];
 
 			try {
 				// ================================================================
@@ -3788,6 +4151,11 @@ Never guess or use example values — always use real data from API responses.`;
 				// Discovers capabilities on-demand via semantic search
 				// ================================================================
 				if (toolCall.name === "search_tools") {
+					const searchDefinitions: Record<string, unknown> =
+						callToolMode ? {} : discoveredTools;
+					const searchConfigIds: Record<string, string> = callToolMode
+						? {}
+						: discoveredToolConfigIds;
 					const toolSearch = beginAdvisorToolSearch(state, iteration);
 					const toolSetBeforeSearch = availableTools;
 					updateProgress("executing_tool", "Searching for tools...");
@@ -3823,6 +4191,43 @@ Never guess or use example values — always use real data from API responses.`;
 						...turnScopeField(turn),
 					});
 
+					// Old histories scheduled both secondary searches. Evaluate the
+					// marker here, before either activity scheduling decision.
+					const relevantDiscovery = patched(
+						"orch-relevant-tool-search-v1",
+					);
+					const query = (toolCall.args.query as string) || "";
+					const extraSearches = relevantDiscovery
+						? relevantExtraToolSearches({
+								query,
+								category: toolCall.args.category,
+								searchResult,
+								knownToolNames: [
+									...Object.keys(availableTools),
+									...deferredCatalogTools.map(
+										(t) => t.toolName,
+									),
+								],
+							})
+						: undefined;
+					if (extraSearches) {
+						for (const kind of [
+							"agents",
+							"integrations",
+						] as const) {
+							const decision = extraSearches[kind];
+							const metric =
+								kind === "agents"
+									? toolSearch.agentSearch
+									: toolSearch.integrationSearch;
+							if (decision.run) {
+								metric.reason = decision.reason;
+							} else {
+								metric.skipped = decision.reason;
+							}
+						}
+					}
+
 					// Format result for agent
 					const toolsFound = searchResult.results.map((r) => ({
 						name: r.toolName,
@@ -3841,70 +4246,77 @@ Never guess or use example values — always use real data from API responses.`;
 						confidence: number;
 						type: string;
 					}> = [];
-					try {
-						toolSearch.agentSearch.ran = true;
-						const agentSearchResult = await searchAvailableAgents({
-							...secondaryUsageOriginFields(input),
-							...(input.conversationId
-								? { usageConversationId: input.conversationId }
-								: {}),
-							query: (toolCall.args.query as string) || "",
-							userId: input.userId,
-							organizationId: input.organizationId,
-							enabledAgentIds: input.enabledAgentIds ?? undefined,
-							...turnScopeField(turn),
-						});
+					if (!extraSearches || extraSearches.agents.run) {
+						try {
+							toolSearch.agentSearch.ran = true;
+							const agentSearchResult =
+								await searchAvailableAgents({
+									...secondaryUsageOriginFields(input),
+									...(input.conversationId
+										? {
+												usageConversationId:
+													input.conversationId,
+											}
+										: {}),
+									query:
+										(toolCall.args.query as string) || "",
+									userId: input.userId,
+									organizationId: input.organizationId,
+									enabledAgentIds:
+										input.enabledAgentIds ?? undefined,
+									...turnScopeField(turn),
+								});
 
-						// Create delegation tools for matched agents
-						for (const agent of agentSearchResult.results) {
-							const delegationToolName = `delegate_to_${agent.agentId}`;
-							const skillsSummary =
-								agent.skills.length > 0
-									? ` Skills: ${agent.skills.join(", ")}.`
-									: "";
-							const delegationDescription = `Delegate a task to the "${agent.displayName}" AI agent. ${agent.description}${skillsSummary} Use this when you need to hand off a complex sub-task to this specialized agent.`;
+							// Create delegation tools for matched agents
+							for (const agent of agentSearchResult.results) {
+								const delegationToolName = `delegate_to_${agent.agentId}`;
+								const skillsSummary =
+									agent.skills.length > 0
+										? ` Skills: ${agent.skills.join(", ")}.`
+										: "";
+								const delegationDescription = `Delegate a task to the "${agent.displayName}" AI agent. ${agent.description}${skillsSummary} Use this when you need to hand off a complex sub-task to this specialized agent.`;
 
-							discoveredTools[delegationToolName] = {
-								description: delegationDescription,
-								inputSchema: {
-									type: "object",
-									properties: {
-										message: {
-											type: "string",
-											description:
-												"Detailed task description to delegate to this agent. Be specific about what you need done.",
+								searchDefinitions[delegationToolName] = {
+									description: delegationDescription,
+									inputSchema: {
+										type: "object",
+										properties: {
+											message: {
+												type: "string",
+												description:
+													"Detailed task description to delegate to this agent. Be specific about what you need done.",
+											},
 										},
+										required: ["message"],
 									},
-									required: ["message"],
-								},
-							};
+								};
 
-							agentToolsFound.push({
-								name: delegationToolName,
-								description: delegationDescription,
-								confidence: agent.confidence,
-								type: "agent_delegation",
-							});
-						}
+								agentToolsFound.push({
+									name: delegationToolName,
+									description: delegationDescription,
+									confidence: agent.confidence,
+									type: "agent_delegation",
+								});
+							}
 
-						if (agentSearchResult.results.length > 0) {
-							log.info(
-								`[MetaTool] Discovered ${agentSearchResult.results.length} agents for delegation`,
-								{
-									agents: agentSearchResult.results.map(
-										(a) => a.agentId,
-									),
-								},
+							if (agentSearchResult.results.length > 0) {
+								log.info(
+									`[MetaTool] Discovered ${agentSearchResult.results.length} agents for delegation`,
+									{
+										agents: agentSearchResult.results.map(
+											(a) => a.agentId,
+										),
+									},
+								);
+							}
+						} catch (agentSearchError) {
+							rethrowTurnStop(agentSearchError, turn);
+							log.warn(
+								"[MetaTool] Agent search failed, continuing with tools only",
+								{ error: String(agentSearchError) },
 							);
 						}
-					} catch (agentSearchError) {
-						rethrowTurnStop(agentSearchError, turn);
-						log.warn(
-							"[MetaTool] Agent search failed, continuing with tools only",
-							{ error: String(agentSearchError) },
-						);
 					}
-
 					// Also search for enabled workflow integrations (NHTSA, etc.)
 					// These are discovered via DB query + semantic matching, not Qdrant
 					const integrationToolsFound: Array<{
@@ -3925,146 +4337,150 @@ Never guess or use example values — always use real data from API responses.`;
 					const chatIntegrationRegistryV1 = patched(
 						"loom-chat-integration-executor-registry-v1",
 					);
-					try {
-						toolSearch.integrationSearch.ran = true;
-						const integrationSearchResult =
-							await searchAvailableIntegrations({
-								...secondaryUsageOriginFields(input),
-								...(input.conversationId
-									? {
-											usageConversationId:
-												input.conversationId,
-										}
-									: {}),
-								query: (toolCall.args.query as string) || "",
-								limit: 5,
-								minConfidence: 0.3,
-								userId: input.userId,
-								organizationId: input.organizationId,
-								enabledIntegrationIds:
-									input.enabledIntegrationIds ?? undefined,
-								executionSurface: chatIntegrationRegistryV1
-									? "LOOM_CHAT"
-									: undefined,
-								...turnScopeField(turn),
-							});
-
-						// Pre-patch replay quarantine: the legacy hardcoded
-						// allowlist, kept ONLY so old histories replay exactly as
-						// they ran. Delete once in-flight chat workflows have
-						// drained and the patch is deprecated.
-						const executableResults = chatIntegrationRegistryV1
-							? integrationSearchResult.results
-							: integrationSearchResult.results.filter(
-									(i) => i.provider === "NHTSA_VPIC",
-								);
-						// Same patch marker as the discovery switch above. It has
-						// never shipped, so extending what it gates — first-wins
-						// provider binding and registry-derived argument schemas
-						// — is safe: no recorded history can contain it.
-						if (chatIntegrationRegistryV1) {
-							const projections =
-								projectIntegrationTools(executableResults);
-							// One integration now yields several tools (one per
-							// operation), so the count reported to the model
-							// stays a count of INTEGRATIONS, not of tools.
-							integrationsFound = new Set(
-								projections.map((p) => p.provider),
-							).size;
-							for (const projection of projections) {
-								discoveredTools[projection.toolName] = {
-									description: projection.description,
-									inputSchema: projection.inputSchema,
-								};
-								discoveredToolConfigIds[projection.toolName] =
-									projection.configId;
-
-								integrationToolsFound.push({
-									name: projection.toolName,
-									description: projection.description,
-									confidence: projection.confidence,
-									category: "integration",
-									inputSchema: projection.inputSchema,
+					if (!extraSearches || extraSearches.integrations.run) {
+						try {
+							toolSearch.integrationSearch.ran = true;
+							const integrationSearchResult =
+								await searchAvailableIntegrations({
+									...secondaryUsageOriginFields(input),
+									...(input.conversationId
+										? {
+												usageConversationId:
+													input.conversationId,
+											}
+										: {}),
+									query:
+										(toolCall.args.query as string) || "",
+									limit: 5,
+									minConfidence: 0.3,
+									userId: input.userId,
+									organizationId: input.organizationId,
+									enabledIntegrationIds:
+										input.enabledIntegrationIds ??
+										undefined,
+									executionSurface: chatIntegrationRegistryV1
+										? "LOOM_CHAT"
+										: undefined,
+									...turnScopeField(turn),
 								});
-							}
-						} else {
-							// Pre-patch replay quarantine — the original
-							// projection, including its last-wins overwrite of
-							// same-provider rows. Kept verbatim so old histories
-							// reconstruct exactly what they recorded. Delete with
-							// the rest of the legacy branch.
-							integrationsFound = executableResults.length;
-							for (const integration of executableResults) {
-								const opToolName = `integration__${integration.provider}`;
-								const opNames = integration.operations.map(
-									(op) => op.name,
-								);
-								const opList = integration.operations
-									.map(
-										(op) => `${op.name}: ${op.description}`,
-									)
-									.join("; ");
-								const opDescription = `${integration.description}. Available operations: ${opList}. Use the 'operation' parameter with one of: ${opNames.join(", ")}`;
-								const opInputSchema: Record<string, unknown> = {
-									type: "object",
-									properties: {
-										operation: {
-											type: "string",
-											description: `The operation to execute. Must be one of: ${opNames.join(", ")}`,
-											enum: opNames,
-										},
-										args: {
-											type: "object",
-											description:
-												"Arguments for the operation",
-										},
-									},
-									required: ["operation"],
-								};
 
-								discoveredTools[opToolName] = {
-									description: opDescription,
-									inputSchema: opInputSchema,
-								};
-								discoveredToolConfigIds[opToolName] =
-									encodeIntegrationToolRef(
-										integration.provider,
-										integration.integrationId,
+							// Legacy allowlist for histories without chatIntegrationRegistryV1.
+							// Retain until in-flight chat workflows drain and the
+							// patch is deprecated.
+							const executableResults = chatIntegrationRegistryV1
+								? integrationSearchResult.results
+								: integrationSearchResult.results.filter(
+										(i) => i.provider === "NHTSA_VPIC",
 									);
+							// chatIntegrationRegistryV1 also gates first-wins provider
+							// binding and registry-derived argument schemas.
+							if (chatIntegrationRegistryV1) {
+								const projections =
+									projectIntegrationTools(executableResults);
+								// One integration now yields several tools (one per
+								// operation), so the count reported to the model
+								// stays a count of INTEGRATIONS, not of tools.
+								integrationsFound = new Set(
+									projections.map((p) => p.provider),
+								).size;
+								for (const projection of projections) {
+									searchDefinitions[projection.toolName] = {
+										description: projection.description,
+										inputSchema: projection.inputSchema,
+									};
+									searchConfigIds[projection.toolName] =
+										projection.configId;
 
-								integrationToolsFound.push({
-									name: opToolName,
-									description: opDescription,
-									confidence: integration.confidence,
-									category: "integration",
-									inputSchema: opInputSchema,
-								});
+									integrationToolsFound.push({
+										name: projection.toolName,
+										description: projection.description,
+										confidence: projection.confidence,
+										category: "integration",
+										inputSchema: projection.inputSchema,
+									});
+								}
+							} else {
+								// Pre-patch replay quarantine — the original
+								// projection, including its last-wins overwrite of
+								// same-provider rows. Retained to reconstruct definitions
+								// recorded before chatIntegrationRegistryV1. Delete
+								// with the rest of the legacy branch.
+								integrationsFound = executableResults.length;
+								for (const integration of executableResults) {
+									const opToolName = `integration__${integration.provider}`;
+									const opNames = integration.operations.map(
+										(op) => op.name,
+									);
+									const opList = integration.operations
+										.map(
+											(op) =>
+												`${op.name}: ${op.description}`,
+										)
+										.join("; ");
+									const opDescription = `${integration.description}. Available operations: ${opList}. Use the 'operation' parameter with one of: ${opNames.join(", ")}`;
+									const opInputSchema: Record<
+										string,
+										unknown
+									> = {
+										type: "object",
+										properties: {
+											operation: {
+												type: "string",
+												description: `The operation to execute. Must be one of: ${opNames.join(", ")}`,
+												enum: opNames,
+											},
+											args: {
+												type: "object",
+												description:
+													"Arguments for the operation",
+											},
+										},
+										required: ["operation"],
+									};
+
+									searchDefinitions[opToolName] = {
+										description: opDescription,
+										inputSchema: opInputSchema,
+									};
+									searchConfigIds[opToolName] =
+										encodeIntegrationToolRef(
+											integration.provider,
+											integration.integrationId,
+										);
+
+									integrationToolsFound.push({
+										name: opToolName,
+										description: opDescription,
+										confidence: integration.confidence,
+										category: "integration",
+										inputSchema: opInputSchema,
+									});
+								}
 							}
-						}
 
-						if (executableResults.length > 0) {
-							log.info(
-								`[MetaTool] Discovered ${executableResults.length} integration(s)`,
-								{
-									integrations: executableResults.map(
-										(i) => i.provider,
-									),
-								},
-							);
-						}
-					} catch (integrationSearchError) {
-						rethrowTurnStop(integrationSearchError, turn);
-						log.warn("[MetaTool] Integration search failed", {
-							error: String(integrationSearchError),
-						});
-						// Fail loudly: swallowing this presents a broken
-						// discovery activity as "you have no integrations", which
-						// sends the model down a dead end it cannot diagnose.
-						if (chatIntegrationRegistryV1) {
-							throw integrationSearchError;
+							if (executableResults.length > 0) {
+								log.info(
+									`[MetaTool] Discovered ${executableResults.length} integration(s)`,
+									{
+										integrations: executableResults.map(
+											(i) => i.provider,
+										),
+									},
+								);
+							}
+						} catch (integrationSearchError) {
+							rethrowTurnStop(integrationSearchError, turn);
+							log.warn("[MetaTool] Integration search failed", {
+								error: String(integrationSearchError),
+							});
+							// Fail loudly: swallowing this presents a broken
+							// discovery activity as "you have no integrations", which
+							// sends the model down a dead end it cannot diagnose.
+							if (chatIntegrationRegistryV1) {
+								throw integrationSearchError;
+							}
 						}
 					}
-
 					const allFound = [
 						...toolsFound,
 						...agentToolsFound,
@@ -4085,25 +4501,101 @@ Never guess or use example values — always use real data from API responses.`;
 
 					// Add discovered tools to available tools for subsequent iterations
 					for (const result of searchResult.results) {
-						discoveredTools[result.toolName] = {
+						searchDefinitions[result.toolName] = {
 							description: result.description,
 							inputSchema: result.inputSchema,
 						};
 						// Store configId for direct MCP execution (avoids scanning all configs)
 						if (result.configId) {
-							discoveredToolConfigIds[result.toolName] =
-								result.configId;
+							searchConfigIds[result.toolName] = result.configId;
 						}
 					}
 
 					// Update available tools with newly discovered capabilities
-					availableTools = {
-						...metaTools,
-						...formatToolsForLLM(
-							state.preloadedResources,
-							discoveredTools,
-						),
-					};
+					if (!callToolMode) {
+						availableTools = {
+							...metaTools,
+							...formatToolsForLLM(
+								state.preloadedResources,
+								discoveredTools,
+							),
+						};
+					}
+
+					if (callToolMode) {
+						const conflicts: Array<{
+							name: string;
+							error: RefusalReason;
+						}> = [];
+						const admittedNames: string[] = [];
+						for (const found of allFound) {
+							const definition = searchDefinitions[
+								found.name
+							] as {
+								description?: string;
+								inputSchema?: Record<string, unknown>;
+							};
+							const reason: RefusalReason | undefined =
+								Object.hasOwn(searchDefinitions, found.name)
+									? admitCallable(
+											callableRegistry,
+											found.name,
+											normalizedEntry(
+												found.name,
+												definition,
+												toolBinding(
+													found.name,
+													searchConfigIds[found.name],
+													state.preloadedResources
+														?.toolMap[found.name],
+													directMeetingListing,
+												),
+												"search",
+												iteration,
+											),
+											suppressedFrameTools,
+										)
+									: "not_admitted";
+							if (reason) {
+								conflicts.push({
+									name: found.name,
+									error: reason,
+								});
+								if (state.advisorToolLoading) {
+									state.advisorToolLoading.refusals ??= {};
+									state.advisorToolLoading.refusals[reason] =
+										(state.advisorToolLoading.refusals[
+											reason
+										] ?? 0) + 1;
+								}
+								if (
+									reason === "binding_conflict" &&
+									state.advisorToolLoading
+								) {
+									state.advisorToolLoading.bindingConflicts =
+										(state.advisorToolLoading
+											.bindingConflicts ?? 0) + 1;
+								}
+							} else {
+								admittedNames.push(found.name);
+							}
+						}
+						toolResult = {
+							tools: foundToolDefinitions(
+								admittedNames,
+								callableRegistry,
+							),
+							totalFound: admittedNames.length,
+							refusals: conflicts,
+							message:
+								"Use call_tool(name, arguments) to call found tools from the next model request. Use get_tool_schema(name) for a complete definition if omitted.",
+						};
+						toolSearch.added = admittedNames.filter(
+							(name) =>
+								callableRegistry.get(name)
+									?.admittedAtRequest === iteration,
+						);
+					}
 
 					finishAdvisorToolSearch(
 						state,
@@ -4162,9 +4654,37 @@ Never guess or use example values — always use real data from API responses.`;
 							},
 						},
 					);
+				} else if (
+					callToolMode &&
+					toolCall.name === "get_tool_schema"
+				) {
+					if (state.advisorToolLoading) {
+						state.advisorToolLoading.getToolSchemaCalls =
+							(state.advisorToolLoading.getToolSchemaCalls ?? 0) +
+							1;
+					}
+					const name = toolCall.args.name;
+					const entry =
+						typeof name === "string" &&
+						!suppressedFrameTools.has(name)
+							? requestTargets.get(name)
+							: undefined;
+					toolResult = entry
+						? entry.definition
+						: {
+								error: "not_admitted",
+								message:
+									"Use search_tools to find this tool first.",
+							};
+					if (!entry) {
+						toolError = "not_admitted";
+					}
 				} else if (toolCall.name.startsWith("delegate_to_")) {
 					// Agent delegation tool execution
-					const agentId = toolCall.name.replace("delegate_to_", "");
+					const agentId =
+						binding?.kind === "agent"
+							? binding.agentId
+							: toolCall.name.replace("delegate_to_", "");
 					const delegationMessage =
 						typeof toolCall.args.message === "string"
 							? toolCall.args.message
@@ -4330,7 +4850,11 @@ Never guess or use example values — always use real data from API responses.`;
 					}
 				} else if (
 					toolCall.name === "fabric_list_meeting_transcripts" &&
-					patched("loom-meeting-transcript-listing-dispatch-v1")
+					(callToolMode
+						? directMeetingListing
+						: patched(
+								"loom-meeting-transcript-listing-dispatch-v1",
+							))
 				) {
 					// Date-filtered meeting lookup — execute directly without
 					// MCP. Without this branch the call falls through to MCP
@@ -4469,6 +4993,12 @@ Never guess or use example values — always use real data from API responses.`;
 					log.info("Executing skill tool", {
 						toolName: toolCall.name,
 					});
+					const skillReadKey = canonicalToolCallKey(toolCall.name, {
+						slug: toolCall.args.slug,
+						...(toolCall.name === "read_skill_file"
+							? { path: toolCall.args.path }
+							: {}),
+					});
 					const skillResult = await executeSkillToolActivity({
 						toolName: toolCall.name as
 							| "list_skills"
@@ -4477,7 +5007,21 @@ Never guess or use example values — always use real data from API responses.`;
 						args: toolCall.args,
 						userId: input.userId,
 						organizationId: input.organizationId,
+						...(state.advisorAnswerSnapshot
+							? {
+									answerSnapshotEnabled: true,
+									cachedResult:
+										state.advisorSkillReads?.[skillReadKey],
+								}
+							: {}),
 					});
+					if (
+						state.advisorAnswerSnapshot &&
+						skillResult.kind !== "list"
+					) {
+						state.advisorSkillReads ??= {};
+						state.advisorSkillReads[skillReadKey] ??= skillResult;
+					}
 					toolResult = skillResult;
 				} else {
 					// Regular MCP tool execution
@@ -4488,8 +5032,7 @@ Never guess or use example values — always use real data from API responses.`;
 					// a same-named tool on another server is not ours to resize.
 					const dispatchArgs =
 						PAGED_BODY_READ_TOOLS.has(toolCall.name) &&
-						discoveredToolConfigIds[toolCall.name] ===
-							FABRIC_AI_SERVER_CONFIG_ID &&
+						effectiveConfigId === FABRIC_AI_SERVER_CONFIG_ID &&
 						patched(PAGED_READ_FIT_PATCH)
 							? fitPagedBodyReadArgs(
 									toolCall.args,
@@ -4502,7 +5045,7 @@ Never guess or use example values — always use real data from API responses.`;
 						userId: input.userId,
 						organizationId: input.organizationId,
 						projectId: input.projectId,
-						mcpConfigId: discoveredToolConfigIds[toolCall.name],
+						mcpConfigId: effectiveConfigId,
 						attachedImageUrls: input.attachedImageUrls,
 						// The chat turn, so the image tool checks the turn
 						// record before each provider request and rethrows a
@@ -4626,11 +5169,19 @@ Never guess or use example values — always use real data from API responses.`;
 								serverName,
 							});
 
+							if (effectiveCall) {
+								effectiveCall.outcome = "error";
+							}
 							// Track the failed tool call
 							state.toolCalls.push({
 								id: toolCall.id,
 								name: toolCall.name,
-								args: toolCall.args,
+								args: callToolMode
+									? scrubArgsForRetention(
+											toolCall.name,
+											toolCall.args,
+										)
+									: toolCall.args,
 								result: {
 									error: `OAuth authorization required for ${serverName}`,
 								},
@@ -4759,10 +5310,15 @@ Never guess or use example values — always use real data from API responses.`;
 			// recorded for in-flight workflows, so gate the scrub behind a
 			// patched marker. New executions get the lean args; pre-patch
 			// histories replay with the full HTML they originally carried.
-			const retainedArgs = patched("orch-frame-args-scrub-2026-04")
-				? scrubArgsForRetention(toolCall.name, toolCall.args)
-				: toolCall.args;
+			const retainedArgs =
+				callToolMode || patched("orch-frame-args-scrub-2026-04")
+					? scrubArgsForRetention(toolCall.name, toolCall.args)
+					: toolCall.args;
 
+			if (effectiveCall) {
+				effectiveCall.outcome = toolError ? "error" : "success";
+				effectiveCall.args = retainedArgs;
+			}
 			// Track tool call
 			state.toolCalls.push({
 				id: toolCall.id,
@@ -4855,10 +5411,12 @@ Never guess or use example values — always use real data from API responses.`;
 			// structure. Give them a larger allowance; individual files are
 			// already capped at MAX_SKILL_FILE_READ_BYTES (256 KB) in the loader.
 			const MAX_TOOL_RESULT_LENGTH =
-				toolCall.name === "load_skill" ||
-				toolCall.name === "read_skill_file"
-					? 64_000
-					: TOOL_RESULTS.maxChars;
+				callToolMode && toolCall.name === "get_tool_schema"
+					? Number.MAX_SAFE_INTEGER
+					: toolCall.name === "load_skill" ||
+							toolCall.name === "read_skill_file"
+						? 64_000
+						: TOOL_RESULTS.maxChars;
 
 			// Extract plain text from MCP result format:
 			// { content: [{ type: "text", text: "..." }], isError: false }
@@ -4934,7 +5492,12 @@ Never guess or use example values — always use real data from API responses.`;
 						: "";
 				const reserved = continuationNote.length + repeatNote.length;
 				const contentLimit = MAX_TOOL_RESULT_LENGTH - reserved;
-				if (!overCapAlone) {
+				if (
+					!overCapAlone ||
+					(callToolMode &&
+						(toolCall.name === "search_tools" ||
+							toolCall.name === "get_tool_schema"))
+				) {
 					// Fits alone, not with its label. A plain, deterministic
 					// cut rather than a summarizer call: the label says the
 					// model already saw this exact result whole earlier.
@@ -5184,6 +5747,7 @@ export function trimLeadingOrphans(
 export function answerUnpairedToolCalls(
 	history: IterativeMessage[],
 	outcome: string,
+	effectiveCalls?: EffectiveToolCalls,
 ): void {
 	let assistantIndex = history.length - 1;
 	while (assistantIndex >= 0 && history[assistantIndex].role === "tool") {
@@ -5207,7 +5771,7 @@ export function answerUnpairedToolCalls(
 		if (!answered.has(call.id)) {
 			history.push({
 				role: "tool",
-				content: `${call.name} was ${outcome}.`,
+				content: `${call.name === "call_tool" && effectiveCalls ? (effectiveCalls[call.id]?.name ?? "Tool call") : call.name} was ${outcome}.`,
 				toolCallId: call.id,
 				timestamp: new Date().toISOString(),
 				iteration: assistant.iteration,
@@ -5340,6 +5904,28 @@ export async function maybeCompactConversationHistory(
 	try {
 		compactionResult = await compactConversationHistoryActivity({
 			oldTurns: safeMiddle,
+			...(state.advisorCallToolMode
+				? {
+						effectiveToolCallPreviews: Object.fromEntries(
+							[
+								...historyCallIndex(
+									safeMiddle,
+									state.advisorEffectiveCalls,
+								),
+							].map(([id, call]) => [
+								id,
+								call
+									? {
+											name: call.name,
+											argumentPreview: JSON.stringify(
+												call.args,
+											).slice(0, 500),
+										}
+									: null,
+							]),
+						),
+					}
+				: {}),
 			currentTask: taskText,
 			userId,
 			organizationId,

@@ -142,6 +142,7 @@ async function main() {
 					serverName: result.serverName,
 					confidence: result.confidence,
 				})),
+				telemetry: toolSearchResult.telemetry,
 				userIntent: detectedIntent,
 			});
 

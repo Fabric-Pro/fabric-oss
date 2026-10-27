@@ -158,6 +158,7 @@ export {
 	type RunAgentIterationInput,
 	restoreFromCheckpoint,
 	runAgentIteration,
+	snapshotAdvisorAnswerActivity,
 	selectRecoveryStrategy,
 	shouldRetry,
 	shouldRetryActivity,

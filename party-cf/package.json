@@ -8,6 +8,7 @@
 		"dev": "wrangler dev",
 		"type-check": "tsgo --noEmit",
 		"test": "node --test --experimental-strip-types \"src/*.test.mts\"",
+		"flux-replay": "node --experimental-strip-types scripts/parlume-flux-replay.mts",
 		"tail": "wrangler tail"
 	},
 	"dependencies": {

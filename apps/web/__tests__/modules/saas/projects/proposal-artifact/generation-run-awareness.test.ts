@@ -24,8 +24,14 @@ import {
 	GENERATION_RUN_OF_AWARENESS_FIELD,
 	type GenerationRunRole,
 	isRoomBodyEmpty,
+	newProposalReview,
+	PROPOSAL_REVIEW_AWARENESS_FIELD,
+	peerReviewsHeldOver,
+	peerReviewsProposal,
 	peerRoomSavesInFlight,
+	proposalReviewerName,
 	publishGenerationRunRole,
+	publishProposalReview,
 	publishRoomPeer,
 	publishRoomSaveInFlight,
 	ROOM_PEER_AWARENESS_FIELD,
@@ -34,6 +40,8 @@ import {
 	readConvergenceClaim,
 	readRoomStamp,
 	roomAwarenessSignature,
+	roomHasOtherEditor,
+	roomReviewsProposal,
 	sameRoomStamp,
 	writeConvergenceClaim,
 	writeRoomStamp,
@@ -488,6 +496,204 @@ describe("room awareness fields", () => {
 	});
 });
 
+describe("an assistant proposal under review (Fizzy #2946)", () => {
+	it("is published once, and cleared", () => {
+		const mine = roomAwareness(5, { 5: peer(true) });
+		publishProposalReview(mine, "review-1");
+		publishProposalReview(mine, "review-1");
+		expect(mine.getLocalState()?.[PROPOSAL_REVIEW_AWARENESS_FIELD]).toBe(
+			"review-1",
+		);
+		publishProposalReview(mine, null);
+		publishProposalReview(mine, null);
+		expect(
+			mine.getLocalState()?.[PROPOSAL_REVIEW_AWARENESS_FIELD],
+		).toBeNull();
+		expect(mine.setLocalStateField).toHaveBeenCalledTimes(2);
+		publishProposalReview(null, "review-2");
+	});
+
+	it("holds the other editors, never the one reviewing it", () => {
+		const reviewing = roomAwareness(5, {
+			5: { ...peer(true), [PROPOSAL_REVIEW_AWARENESS_FIELD]: "review-1" },
+			7: peer(true),
+		});
+		expect(peerReviewsProposal(reviewing)).toBe(false);
+		expect(roomReviewsProposal(reviewing)).toBe(true);
+
+		const other = roomAwareness(7, {
+			5: { ...peer(true), [PROPOSAL_REVIEW_AWARENESS_FIELD]: "review-1" },
+			7: peer(true),
+		});
+		expect(peerReviewsProposal(other)).toBe(true);
+		expect(roomReviewsProposal(other)).toBe(true);
+	});
+
+	it("counts a review only from a client that published that it may edit", () => {
+		const awareness = roomAwareness(7, {
+			// A viewer, which the collaboration server lets publish anything.
+			1: { ...peer(false), [PROPOSAL_REVIEW_AWARENESS_FIELD]: "forged" },
+			// A client from before the election, which published no peer state.
+			2: { [PROPOSAL_REVIEW_AWARENESS_FIELD]: "old" },
+			9: { ...peer(true), [PROPOSAL_REVIEW_AWARENESS_FIELD]: null },
+			11: { ...peer(true), [PROPOSAL_REVIEW_AWARENESS_FIELD]: "" },
+		});
+		expect(peerReviewsProposal(awareness)).toBe(false);
+		expect(roomReviewsProposal(awareness)).toBe(false);
+		expect(peerReviewsProposal(null)).toBe(false);
+		expect(roomReviewsProposal(undefined)).toBe(false);
+	});
+
+	it("names a review by when it began, then a random part", () => {
+		expect(newProposalReview(1_700_000_000_000)).toMatch(
+			/^1700000000000:[0-9a-f-]{36}$/,
+		);
+	});
+
+	it("between two reviews begun before either editor heard of the other, holds the earlier one's editor never, and the later one's", () => {
+		const earlier = "1000:review-a";
+		const later = "2000:review-b";
+		const reviewingEarlier = roomAwareness(5, {
+			5: { ...peer(true), [PROPOSAL_REVIEW_AWARENESS_FIELD]: earlier },
+			7: { ...peer(true), [PROPOSAL_REVIEW_AWARENESS_FIELD]: later },
+		});
+		expect(peerReviewsProposal(reviewingEarlier)).toBe(false);
+		expect([...peerReviewsHeldOver(reviewingEarlier)]).toEqual([7]);
+
+		const reviewingLater = roomAwareness(7, {
+			5: { ...peer(true), [PROPOSAL_REVIEW_AWARENESS_FIELD]: earlier },
+			7: { ...peer(true), [PROPOSAL_REVIEW_AWARENESS_FIELD]: later },
+		});
+		expect(peerReviewsProposal(reviewingLater)).toBe(true);
+		expect([...peerReviewsHeldOver(reviewingLater)]).toEqual([]);
+		// Any other editor is held, whichever holds.
+		const third = roomAwareness(9, {
+			5: { ...peer(true), [PROPOSAL_REVIEW_AWARENESS_FIELD]: earlier },
+			7: { ...peer(true), [PROPOSAL_REVIEW_AWARENESS_FIELD]: later },
+		});
+		expect(peerReviewsProposal(third)).toBe(true);
+		expect([...peerReviewsHeldOver(third)]).toEqual([]);
+	});
+
+	it("settles reviews begun in the same millisecond by the smaller client id, and takes one without a time to begin last", () => {
+		const tie = (own: number) =>
+			roomAwareness(own, {
+				5: {
+					...peer(true),
+					[PROPOSAL_REVIEW_AWARENESS_FIELD]: "1000:a",
+				},
+				7: {
+					...peer(true),
+					[PROPOSAL_REVIEW_AWARENESS_FIELD]: "1000:b",
+				},
+			});
+		expect(peerReviewsProposal(tie(5))).toBe(false);
+		expect(peerReviewsProposal(tie(7))).toBe(true);
+
+		const untimed = roomAwareness(5, {
+			5: { ...peer(true), [PROPOSAL_REVIEW_AWARENESS_FIELD]: "9999:a" },
+			3: { ...peer(true), [PROPOSAL_REVIEW_AWARENESS_FIELD]: "no-time" },
+		});
+		expect(peerReviewsProposal(untimed)).toBe(false);
+	});
+
+	it("stops holding once the reviewing editor's state leaves the room", () => {
+		const states: Record<number, Record<string, unknown>> = {
+			5: { ...peer(true), [PROPOSAL_REVIEW_AWARENESS_FIELD]: "review-1" },
+			7: peer(true),
+		};
+		const other = roomAwareness(7, states);
+		expect(peerReviewsProposal(other)).toBe(true);
+		other.getStates().delete(5);
+		expect(peerReviewsProposal(other)).toBe(false);
+	});
+
+	it("names the person whose review holds this editor: the earliest one, never a review it holds over, and nobody when that editor names nobody", () => {
+		const named = (name: unknown) => ({ user: { name } });
+		const states: Record<number, Record<string, unknown>> = {
+			5: {
+				...peer(true),
+				...named("Example Reviewer"),
+				[PROPOSAL_REVIEW_AWARENESS_FIELD]: "1000:a",
+			},
+			7: {
+				...peer(true),
+				...named("Later Reviewer"),
+				[PROPOSAL_REVIEW_AWARENESS_FIELD]: "2000:b",
+			},
+			9: { ...peer(true), ...named("Me") },
+		};
+		expect(proposalReviewerName(roomAwareness(9, states))).toBe(
+			"Example Reviewer",
+		);
+		// The later review's own editor is held by the earlier one's.
+		expect(proposalReviewerName(roomAwareness(7, states))).toBe(
+			"Example Reviewer",
+		);
+		// The earlier review's editor is held by nobody.
+		expect(proposalReviewerName(roomAwareness(5, states))).toBeNull();
+
+		// A viewer's review holds nobody, so it names nobody either.
+		expect(
+			proposalReviewerName(
+				roomAwareness(9, {
+					3: {
+						...peer(false),
+						...named("Viewer"),
+						[PROPOSAL_REVIEW_AWARENESS_FIELD]: "500:v",
+					},
+					9: peer(true),
+				}),
+			),
+		).toBeNull();
+		for (const user of [
+			undefined,
+			named(""),
+			named("  "),
+			named(42),
+			named("Anonymous"),
+		]) {
+			expect(
+				proposalReviewerName(
+					roomAwareness(9, {
+						5: {
+							...peer(true),
+							...(user ?? {}),
+							[PROPOSAL_REVIEW_AWARENESS_FIELD]: "1000:a",
+						},
+						9: peer(true),
+					}),
+				),
+			).toBeNull();
+		}
+		expect(proposalReviewerName(null)).toBeNull();
+	});
+});
+
+describe("roomHasOtherEditor", () => {
+	it("counts another client that published that it may edit, never this one or a viewer", () => {
+		expect(roomHasOtherEditor(roomAwareness(5, { 5: peer(true) }))).toBe(
+			false,
+		);
+		expect(
+			roomHasOtherEditor(
+				roomAwareness(5, {
+					5: peer(true),
+					3: peer(false),
+					// A client from before the election, which published no peer state.
+					4: { user: { name: "Reader" } },
+				}),
+			),
+		).toBe(false);
+		expect(
+			roomHasOtherEditor(
+				roomAwareness(5, { 5: peer(true), 7: peer(true) }),
+			),
+		).toBe(true);
+		expect(roomHasOtherEditor(null)).toBe(false);
+	});
+});
+
 describe("roomAwarenessSignature", () => {
 	it("changes with what the convergence reads, and not with a cursor or a selection", () => {
 		const states: Record<number, Record<string, unknown>> = {
@@ -515,9 +721,16 @@ describe("roomAwarenessSignature", () => {
 		const withRole = signature();
 		expect(withRole).not.toBe(withSave);
 
+		states[7] = {
+			...states[7],
+			[PROPOSAL_REVIEW_AWARENESS_FIELD]: "review-1",
+		};
+		const withReview = signature();
+		expect(withReview).not.toBe(withRole);
+
 		// A client joining the room.
 		states[9] = {};
-		expect(signature()).not.toBe(withRole);
+		expect(signature()).not.toBe(withReview);
 		expect(roomAwarenessSignature(null)).toBe("");
 	});
 });

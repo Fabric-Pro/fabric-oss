@@ -1,12 +1,13 @@
-import type { RequestFingerprint } from "@repo/ai/lib/request-shape";
 /**
  * Orchestrator Workflow Types
  *
  * Shared types for the modular orchestrator workflow phases.
  */
 
+import type { RequestFingerprint } from "@repo/ai/lib/request-shape";
 import type { LimitSignal } from "@repo/ai/limits";
 import type { DirectChatUsageLimitRefusal } from "../../types";
+import type { AdvisorAnswerSnapshot } from "./advisor-answer-snapshot";
 import type { CircuitBreakerState } from "./circuit-breaker";
 import type {
 	AgentVariable as AgentVariableType,
@@ -353,6 +354,14 @@ export interface ToolSearchMetrics {
  * Shared workflow state that is passed between phases
  */
 export interface WorkflowState {
+	advisorCallToolMode?: true;
+	advisorEffectiveCalls?: import("./advisor-call-tool").EffectiveToolCalls;
+
+	advisorAnswerSnapshot?: AdvisorAnswerSnapshot;
+	advisorSkillReads?: Record<
+		string,
+		import("../../activities/skill-tool-execution").ExecuteSkillToolOutput
+	>;
 	executionId: string;
 	startTime: number;
 	status: OrchestratorWorkflowStatus;
@@ -395,6 +404,10 @@ export interface WorkflowState {
 	workspaceContext: string;
 	enrichedMessage: string;
 	enrichedSystemPrompt: string;
+	/** Present only when initialization recorded the stable-prefix marker. */
+	systemPromptParts?: { reusable: string; variable: string };
+	/** Hash of the first main request's reusable text, including skills. */
+	advisorReusableSystemHash?: string;
 	lettaAgentId: string | null;
 
 	// Preloaded resources (loaded once, reused for all steps)

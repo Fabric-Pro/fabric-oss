@@ -48,11 +48,16 @@ export function meeting(
 	} = {},
 ) {
 	const auraCalls: Array<{ inputs: unknown; options: unknown }> = [];
-	const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
+	// `at` is when the request was sent, on `performance.now()`.
+	const requests: Array<{
+		path: string;
+		body: Record<string, unknown>;
+		at: number;
+	}> = [];
 	const fetch = async (url: unknown, init: unknown) => {
 		const path = new URL(String(url)).pathname;
 		const body = JSON.parse(String((init as RequestInit).body));
-		requests.push({ path, body });
+		requests.push({ path, body, at: performance.now() });
 		await options.fabricDelay?.(path);
 		if (path.endsWith("/verify-stream")) {
 			return (

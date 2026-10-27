@@ -25,6 +25,7 @@ import {
 
 const h = vi.hoisted(() => ({
 	searchAvailableTools: vi.fn(),
+	getFabricAiTools: vi.fn(),
 	searchAvailableAgents: vi.fn(),
 	searchAvailableIntegrations: vi.fn(),
 	searchAvailableWorkflows: vi.fn(),
@@ -88,7 +89,7 @@ vi.mock("../../tools", () => ({
 		hasRequiredConnections: false,
 	})),
 	fetchToolsFromServerIds: vi.fn(async () => []),
-	getFabricAiTools: vi.fn(() => []),
+	getFabricAiTools: h.getFabricAiTools,
 	searchAvailableAgents: h.searchAvailableAgents,
 	searchAvailableIntegrations: h.searchAvailableIntegrations,
 	searchAvailableTools: h.searchAvailableTools,
@@ -138,6 +139,7 @@ function routingInput(withTurn: boolean) {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	h.getFabricAiTools.mockReturnValue([]);
 	h.checkDispatchable.mockResolvedValue({ ok: true });
 	h.searchAvailableTools.mockResolvedValue({
 		results: [],
@@ -263,6 +265,538 @@ describe("analyzeAndRoute in a Planner turn", () => {
 		await noTurn.run(() => analyzeAndRoute(routingInput(false)));
 		expect(legacyBeats).toBe(0);
 	});
+});
+
+describe("analyzeAndRoute tool handling relevance", () => {
+	it.each([
+		{
+			name: "fallback write inventory",
+			strategy: "focused_server_fallback",
+			writeRisk: "medium",
+			modelRisk: "high",
+			expectedRisk: "high",
+		},
+		{
+			name: "fallback writes with a low model risk",
+			strategy: "focused_server_fallback",
+			writeRisk: "low",
+			modelRisk: "low",
+			expectedRisk: "medium",
+		},
+		{
+			name: "fallback ignores name-derived critical tool risk",
+			strategy: "focused_server_fallback",
+			writeRisk: "critical",
+			modelRisk: "low",
+			expectedRisk: "medium",
+		},
+		{
+			name: "relevant list_issues ignores low-ranked delete_issue",
+			strategy: "semantic",
+			writeRisk: "critical",
+			modelRisk: "low",
+			expectedRisk: "low",
+			expectedReadOnly: true,
+		},
+		{
+			name: "relevant write tool preserves low model risk",
+			strategy: "semantic",
+			writeRisk: "high",
+			writeConfidence: 0.7,
+			modelRisk: "low",
+			expectedRisk: "low",
+		},
+		{
+			name: "relevant write tool defaults missing model risk to medium",
+			strategy: "semantic",
+			writeRisk: "high",
+			writeConfidence: 0.7,
+			modelRisk: undefined,
+			expectedRisk: "medium",
+		},
+		{
+			name: "fallback preserves critical model risk",
+			strategy: "focused_server_fallback",
+			writeRisk: "low",
+			modelRisk: "critical",
+			expectedRisk: "critical",
+		},
+		{
+			name: "empty tool list",
+			strategy: "focused_server_fallback",
+			writeRisk: "medium",
+			modelRisk: "low",
+			expectedRisk: "medium",
+			empty: true,
+		},
+	])(
+		"uses expected tools for direct-route risk: $name",
+		async ({
+			strategy,
+			writeRisk,
+			writeConfidence,
+			modelRisk,
+			expectedRisk,
+			expectedReadOnly = false,
+			empty,
+		}) => {
+			const readTool = {
+				toolId: "example-read",
+				toolName: "list_issues",
+				configId: "example-server",
+				serverName: "Example server",
+				description: "Read example records",
+				confidence: 0.8,
+				matchReason: "Example retrieval",
+				isReadOnly: true,
+				riskLevel: "low",
+			};
+			h.searchAvailableTools.mockResolvedValue({
+				results: empty
+					? []
+					: [
+							readTool,
+							{
+								...readTool,
+								toolId: "example-write",
+								toolName: "delete_issue",
+								confidence: writeConfidence ?? 0.5,
+								isReadOnly: false,
+								riskLevel: writeRisk,
+							},
+						],
+				telemetry: { strategy },
+				totalToolsSearched: 2,
+				durationMs: 1,
+			});
+			h.generateText.mockResolvedValue({
+				text: JSON.stringify({
+					primaryAgent: "mcp_direct",
+					confidence: 73,
+					riskLevel: modelRisk,
+					riskFactors: ["Example write operation"],
+				}),
+			});
+			const decision = await analyzeAndRoute({
+				...routingInput(false),
+				message: "Process pending requests",
+			});
+			expect(decision.primaryAgent).toBe("mcp_direct");
+			expect(decision.riskLevel).toBe(expectedRisk);
+			expect(decision.isReadOnly).toBe(expectedReadOnly);
+			expect(decision.riskFactors).toEqual(
+				expectedReadOnly ? [] : ["Example write operation"],
+			);
+			if (strategy === "focused_server_fallback") {
+				// Fallback risk must reach both the plan and its execution step.
+				h.generateText.mockResolvedValue({ text: "[]" });
+				const plan = await createTaskPlan({
+					message: "Process pending requests",
+					routingDecision: decision,
+					userId: TURN_SCOPE.userId,
+					organizationId: TURN_SCOPE.organizationId,
+					executionMode: "save_reuse",
+				});
+				expect(plan.riskLevel).toBe(expectedRisk);
+				expect(plan.steps[0].riskLevel).toBe(expectedRisk);
+			}
+		},
+	);
+
+	it("uses the top planned tool confidence when a fallback has no relevant tools", async () => {
+		h.searchAvailableTools.mockResolvedValue({
+			results: [
+				{
+					toolId: "example-tool",
+					toolName: "example_tool",
+					configId: "example-server",
+					serverName: "Example server",
+					description: "Example tool",
+					confidence: 0.8,
+					matchReason: "Example fallback",
+					isReadOnly: true,
+					riskLevel: "low",
+				},
+			],
+			telemetry: { strategy: "focused_server_fallback" },
+			totalToolsSearched: 1,
+			durationMs: 1,
+		});
+		h.generateText.mockResolvedValue({
+			text: JSON.stringify({
+				primaryAgent: "mcp_direct",
+				confidence: 73,
+				riskLevel: "low",
+			}),
+		});
+		const decision = await analyzeAndRoute({
+			...routingInput(false),
+			message: "Retrieve pending requests",
+		});
+		expect(decision.confidence).toBe(80);
+		expect(decision.isReadOnly).toBe(true);
+		expect(decision.riskLevel).toBe("low");
+	});
+
+	it("keeps an all-read-only direct route low whatever risk the model reports", async () => {
+		h.searchAvailableTools.mockResolvedValue({
+			results: [
+				{
+					toolId: "example-tool",
+					toolName: "example_tool",
+					configId: "example-server",
+					serverName: "Example server",
+					description: "Example tool",
+					confidence: 0.8,
+					matchReason: "Example semantic match",
+					isReadOnly: true,
+					riskLevel: "low",
+				},
+			],
+			telemetry: { strategy: "semantic" },
+			totalToolsSearched: 1,
+			durationMs: 1,
+		});
+		h.generateText.mockResolvedValue({
+			text: JSON.stringify({
+				primaryAgent: "mcp_direct",
+				confidence: 80,
+				riskLevel: "high",
+			}),
+		});
+		const decision = await analyzeAndRoute({
+			...routingInput(false),
+			message: "Retrieve pending requests",
+		});
+		expect(decision.isReadOnly).toBe(true);
+		expect(decision.riskLevel).toBe("low");
+	});
+
+	it("retains model confidence when a direct route has no planned tools", async () => {
+		h.generateText.mockResolvedValue({
+			text: JSON.stringify({
+				primaryAgent: "mcp_direct",
+				confidence: 73,
+				riskLevel: "medium",
+			}),
+		});
+		const decision = await analyzeAndRoute({
+			...routingInput(false),
+			message: "Process pending requests",
+		});
+		expect(decision.confidence).toBe(73);
+	});
+
+	it.each(["tool", "server", "frame"] as const)(
+		"counts explicit %s relevance without counting the fallback inventory",
+		async (priority) => {
+			const inventoryTool = {
+				toolId: "example-inventory",
+				toolName:
+					priority === "frame"
+						? "fabric_list_frames"
+						: "example_inventory",
+				configId: "example-inventory-server",
+				serverName:
+					priority === "frame" ? "Fabric AI" : "Example inventory",
+				description: "Example inventory tool",
+				confidence: priority === "frame" ? 0.8 : 0.99,
+				matchReason: "Example fallback",
+				isReadOnly: true,
+				riskLevel: "low",
+			};
+			const selectedTool = {
+				...inventoryTool,
+				toolId: "example-selected",
+				toolName: "example_selected",
+				configId: "example-selected-server",
+				confidence: 0.4,
+				isReadOnly: false,
+			};
+			h.searchAvailableTools.mockResolvedValue({
+				results:
+					priority === "frame"
+						? [inventoryTool]
+						: [inventoryTool, selectedTool],
+				telemetry: { strategy: "focused_server_fallback" },
+				totalToolsSearched: 2,
+				durationMs: 1,
+			});
+			h.getFabricAiTools.mockReturnValue([
+				{
+					name: "fabric_create_frame",
+					description: "Create a frame",
+					inputSchema: { type: "object" },
+				},
+			]);
+			const decision = await analyzeAndRoute({
+				...routingInput(false),
+				message:
+					priority === "frame"
+						? "Create a frame about launch plans"
+						: "Retrieve pending requests",
+				...(priority === "tool"
+					? { prioritizedToolIds: [selectedTool.toolName] }
+					: priority === "server"
+						? { prioritizedMcpConfigIds: [selectedTool.configId] }
+						: {}),
+			});
+			expect(decision.primaryAgent).toBe("mcp_direct");
+			expect(
+				decision.selectorTelemetry?.finalSelection
+					.highConfidenceToolCount,
+			).toBe(1);
+			expect(decision.confidence).toBe(
+				priority === "frame" ? 98 : priority === "tool" ? 70 : 60,
+			);
+			expect(decision.isReadOnly).toBe(false);
+			const hint = h.generateText.mock.calls[0][0].instructions.split(
+				"RECOMMENDED ROUTING",
+			)[1];
+			expect(hint).toContain(
+				priority === "frame"
+					? "fabric_create_frame"
+					: selectedTool.toolName,
+			);
+			expect(hint).not.toContain(inventoryTool.toolName);
+			expect(decision.matchedMcpTools).toHaveLength(2);
+		},
+	);
+
+	it.each([
+		["focused_server_fallback", 0.8, false],
+		["mentioned_server_fallback", 0.85, false],
+		["semantic_fallback_keyword", 0.8, false],
+		["semantic_fallback_keyword", 0.4, false],
+		["semantic", 0.8, true],
+		["semantic", 0.6, true],
+		["semantic", 0.59, false],
+	] as const)(
+		"routes %s at %s by relevance",
+		async (strategy, confidence, direct) => {
+			const tool = {
+				toolId: "example-tool",
+				toolName: "example_list_issues",
+				configId: "example-server",
+				serverName: "Example Jira",
+				description: "List example Jira issues",
+				confidence,
+				matchReason: "Example retrieval",
+				isReadOnly: true,
+				riskLevel: "low",
+			};
+			h.searchAvailableTools.mockResolvedValue({
+				results: [tool],
+				telemetry: { strategy },
+				totalToolsSearched: 1,
+				durationMs: 1,
+			});
+			h.searchAvailableIntegrations.mockResolvedValue({
+				results: [
+					{
+						integrationId: "example-integration",
+						name: "GitHub: example-user",
+						provider: "github",
+						description: "Retrieve GitHub pull requests",
+						confidence: 0.9,
+						matchReason: "Example integration match",
+						capabilities: ["pull requests"],
+					},
+				],
+				totalIntegrationsSearched: 1,
+				durationMs: 1,
+			});
+			h.generateText.mockResolvedValue({
+				text: JSON.stringify({
+					primaryAgent: "mcp_direct",
+					confidence: 0.7,
+					riskLevel: "low",
+					suggestedStrategy: "api",
+				}),
+			});
+			const decision = await analyzeAndRoute({
+				...routingInput(true),
+				message: "Retrieve the pending pull requests",
+				enabledMcpConfigIds: ["example-server"],
+			});
+			expect(decision.primaryAgent).toBe(
+				direct ? "mcp_direct" : "mcp_tool_executor",
+			);
+			expect(decision.useMcpDirect).toBe(direct);
+			expect(
+				decision.selectorTelemetry?.finalSelection
+					.highConfidenceToolCount,
+			).toBe(direct ? 1 : 0);
+			expect(decision.matchedMcpTools).toEqual(
+				confidence >= 0.5
+					? [
+							expect.objectContaining({
+								toolName: tool.toolName,
+								confidence,
+							}),
+						]
+					: [],
+			);
+			const instructions = h.generateText.mock.calls[0][0].instructions;
+			expect(instructions.includes("RECOMMENDED ROUTING")).toBe(direct);
+			if (direct) {
+				expect(decision.confidence).toBe(Math.round(confidence * 100));
+			} else {
+				h.generateText.mockResolvedValue({
+					text: JSON.stringify([
+						{
+							id: "step-1",
+							description: "Retrieve GitHub pull requests",
+							capability: "integration",
+							app: "GitHub: example-user",
+						},
+					]),
+				});
+				const plan = await createTaskPlan({
+					message: "Retrieve the pending pull requests",
+					routingDecision: decision,
+					userId: TURN_SCOPE.userId,
+					organizationId: TURN_SCOPE.organizationId,
+					executionMode: "save_reuse",
+				});
+				expect(plan.steps[0]).toMatchObject({
+					capability: "integration",
+					executor: "GitHub: example-user",
+					app: "GitHub: example-user",
+				});
+			}
+		},
+	);
+});
+
+describe("analyzeAndRoute integration discovery relevance", () => {
+	it.each([
+		["focused_server_fallback", 0.8, true],
+		["mentioned_server_fallback", 0.85, true],
+		["semantic_fallback_keyword", 0.8, true],
+		["semantic", 0.8, false],
+	] as const)(
+		"uses the original %s result for integration discovery",
+		async (strategy, confidence, expected) => {
+			h.searchAvailableTools.mockResolvedValue({
+				results: [
+					{
+						toolId: "example-tool",
+						toolName: "example_list_issues",
+						configId: "example-server",
+						serverName: "Example Jira",
+						description: "List example issues",
+						confidence,
+						matchReason: "Example retrieval",
+						isReadOnly: true,
+						riskLevel: "low",
+					},
+				],
+				telemetry: { strategy },
+				totalToolsSearched: 1,
+				durationMs: 1,
+			});
+			await analyzeAndRoute({
+				...routingInput(false),
+				organizationId: "example-org",
+				message: "Retrieve pending requests",
+				enabledMcpConfigIds: ["example-server"],
+			});
+			expect(h.searchAvailableIntegrations).toHaveBeenCalledTimes(
+				expected ? 1 : 0,
+			);
+		},
+	);
+
+	it.each(
+		[
+			{
+				name: "prioritized tool",
+				message: "Retrieve pending requests",
+				prioritizedToolIds: ["example_tool"],
+				prioritizedMcpConfigIds: [],
+				toolName: "example_tool",
+				confidence: 0.5,
+				boosted: 0.8,
+			},
+			{
+				name: "prioritized server",
+				message: "Retrieve pending requests",
+				prioritizedToolIds: [],
+				prioritizedMcpConfigIds: ["example-server"],
+				toolName: "example_tool",
+				confidence: 0.6,
+				boosted: 0.8,
+			},
+			{
+				name: "first-class frame tool",
+				message: "Create a frame explaining VIN decoding",
+				prioritizedToolIds: [],
+				prioritizedMcpConfigIds: [],
+				toolName: "fabric_create_frame",
+				confidence: 0.5,
+				boosted: 0.98,
+			},
+		].flatMap((row) =>
+			// A semantic row's raw score is below the 0.75 cutoff and its boost lifts
+			// it above, so it fails if the decision reads boosted scores; a fallback
+			// row is weak whatever its score.
+			(["semantic", "focused_server_fallback"] as const).map(
+				(strategy) => ({
+					...row,
+					strategy,
+				}),
+			),
+		),
+	)(
+		"does not let a $name boost suppress integration search ($strategy)",
+		async ({
+			name: _name,
+			strategy,
+			message,
+			prioritizedToolIds,
+			prioritizedMcpConfigIds,
+			toolName,
+			confidence,
+			boosted,
+		}) => {
+			h.searchAvailableTools.mockResolvedValue({
+				results: [
+					{
+						toolId: toolName,
+						toolName,
+						configId: "example-server",
+						serverName: "Fabric AI",
+						description: "Example tool",
+						confidence,
+						matchReason: "Example semantic match",
+						isReadOnly: true,
+						riskLevel: "low",
+					},
+				],
+				telemetry: { strategy },
+				totalToolsSearched: 1,
+				durationMs: 1,
+			});
+			const decision = await analyzeAndRoute({
+				...routingInput(false),
+				organizationId: "example-org",
+				message,
+				prioritizedToolIds,
+				prioritizedMcpConfigIds,
+			});
+			expect(h.searchAvailableIntegrations).toHaveBeenCalledTimes(1);
+			expect(decision.primaryAgent).toBe("mcp_direct");
+			expect(h.generateText.mock.calls[0][0].instructions).toContain(
+				"RECOMMENDED ROUTING",
+			);
+			expect(decision.matchedMcpTools).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({ toolName, confidence: boosted }),
+				]),
+			);
+		},
+	);
 });
 
 describe("createTaskPlan in a Planner turn", () => {
@@ -928,5 +1462,60 @@ describe("explicit-agent database fallback precedence", () => {
 			own,
 		]);
 		expect(await route(null)).toHaveProperty("primaryAgent", own.agentId);
+	});
+});
+
+describe("browser/code routing word boundaries", () => {
+	it.each([
+		["Decode VIN 1HGCM82633A004352", false],
+		["scan this barcode", false],
+		["encode this value", false],
+		["summarize the transcript", false],
+		["update the description", false],
+		["what is the postcode", false],
+		["the code review", false],
+		["execute the plan", false],
+		["open the browser and click login", true],
+		["run python to parse this", true],
+		["run javascript to parse this", true],
+		["navigate to example.com", true],
+		["run this code", true],
+		["write code", true],
+		["execute code", true],
+		["execute a script", true],
+		["run the scripts in the deploy folder", true],
+		["run scripts nightly", true],
+		["clicking the submit button", true],
+		["open both browsers", true],
+		["run my code", true],
+		["execute my code", true],
+		["execute the following code", true],
+		["write some code", true],
+		["generate code for this", true],
+		["run python3 main.py", true],
+		["navigating to example.com", true],
+		["run pythonic checks", false],
+		["run scripture checks", false],
+	])("routes %s with browser/code=%s", async (message, requiresExecution) => {
+		h.searchAvailableTools.mockResolvedValue({
+			results: [
+				{
+					toolName: "example_lookup",
+					serverName: "Example",
+					configId: "example-config",
+					confidence: 0.99,
+					description: "Example lookup",
+				},
+			],
+			totalToolsSearched: 1,
+			durationMs: 1,
+		});
+		const decision = await analyzeAndRoute({
+			...routingInput(false),
+			message,
+		});
+		expect(decision.primaryAgent).toBe(
+			requiresExecution ? "researcher" : "mcp_direct",
+		);
 	});
 });

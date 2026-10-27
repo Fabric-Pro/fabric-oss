@@ -1,7 +1,7 @@
 ---
 title: "A write that splices from an earlier read is only right for the version it read"
 date: 2026-09-25
-last_updated: 2026-10-19
+last_updated: 2026-10-27
 category: architecture-patterns
 module: project-documents visual-slots
 problem_type: architecture_pattern
@@ -163,3 +163,4 @@ await updateDocument(documentId, {
 - `docs/solutions/architecture-patterns/scheduling-an-interactive-ai-engine-deletes-its-safety-model.md`, section 4: a read-then-write version check does nothing; the version belongs in the `WHERE` clause.
 - `docs/solutions/architecture-patterns/a-terminal-status-guard-blocks-the-retry-that-starts-from-it.md`: guarded writes that return an outcome, and retries that must recognize their own committed work.
 - `docs/features/glossy-editions.md`: the feature, its rollout flag and its deploy order.
+- `docs/solutions/architecture-patterns/identity-inside-text-that-writers-replace-wholesale.md`: the generated-diagram markers the same writers put back with `preserveVisualMarkers`.

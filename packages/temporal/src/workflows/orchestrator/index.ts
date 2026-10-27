@@ -1,3 +1,4 @@
+import { CALL_TOOL_PATCH } from "./advisor-call-tool";
 /**
  * Orchestrator Workflow - Modular Implementation
  *
@@ -34,8 +35,8 @@ import { advisorDeadline } from "./advisor-deadline";
 import {
 	BOUNDED_HISTORY_PATCH,
 	BOUNDED_HISTORY_V2_PATCH,
-	WEIGHTED_ALLOWANCE_PATCH,
 	boundedHistoryEnabled,
+	WEIGHTED_ALLOWANCE_PATCH,
 } from "./advisor-history-retention";
 import { recordAdvisorTurnSummary } from "./advisor-request-log";
 import { buildConversationSummary } from "./conversation-summary";
@@ -605,6 +606,9 @@ async function runOrchestratorExecution(
 		Boolean(input.turnId) &&
 		usesIterativeExecution(input.executionMode);
 	state.advisorBudgetEnabled = mainRoundBudget;
+	if (input.toolLoadingMode === "call_tool" && patched(CALL_TOOL_PATCH)) {
+		state.advisorCallToolMode = true;
+	}
 	const boundedHistoryMarker = patched(BOUNDED_HISTORY_PATCH);
 	state.advisorBoundedHistoryEnabled =
 		usesIterativeExecution(input.executionMode) &&
@@ -1002,6 +1006,7 @@ async function runOrchestratorExecution(
 				state.enrichedSystemPrompt =
 					// biome-ignore lint/style/noNonNullAssertion: successful initialization returns data
 					initResult.data!.enrichedSystemPrompt;
+				state.systemPromptParts = initResult.data?.systemPromptParts;
 				attachedProjectContext = initResult.data?.clarityProjectContext;
 			}
 

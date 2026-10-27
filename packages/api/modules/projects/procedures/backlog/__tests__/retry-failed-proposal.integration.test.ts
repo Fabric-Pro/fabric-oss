@@ -375,6 +375,10 @@ describe.skipIf(!hasReachableDb())(
 				where: { id: failed.id },
 			});
 			expect(reread.status).toBe("APPLIED");
+			// The reviewer stamp is what decision capture reads to record
+			// this retry as a human approval.
+			expect(reread.reviewedBy).toBe(USER_A);
+			expect(reread.reviewedAt).toBeInstanceOf(Date);
 
 			const afterCount = await db.userStory.count({
 				where: { projectId: project.id },

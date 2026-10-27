@@ -7,6 +7,7 @@
  * - Measure user engagement with memory features
  */
 
+import { getTenantDb } from "../../src/tenant-db";
 import { db } from "../client";
 
 // =============================================================================
@@ -143,12 +144,13 @@ export async function getUserMemoryEffectiveness(
 	const normalizedOrgId = organizationId ?? null;
 
 	// Get user preferences
-	const preferences = await db.orchestratorMemoryPreferences.findFirst({
-		where: { userId, organizationId: normalizedOrgId },
-	});
+	const preferences =
+		await getTenantDb().orchestratorMemoryPreferences.findFirst({
+			where: { userId, organizationId: normalizedOrgId },
+		});
 
 	// Get episode stats
-	const episodes = await db.episodicMemory.findMany({
+	const episodes = await getTenantDb().episodicMemory.findMany({
 		where: { userId, organizationId: normalizedOrgId },
 		select: {
 			id: true,
@@ -310,9 +312,10 @@ export async function consolidateLearnedPatterns(
 ): Promise<{ originalCount: number; consolidatedCount: number }> {
 	const normalizedOrgId = organizationId ?? null;
 
-	const preferences = await db.orchestratorMemoryPreferences.findFirst({
-		where: { userId, organizationId: normalizedOrgId },
-	});
+	const preferences =
+		await getTenantDb().orchestratorMemoryPreferences.findFirst({
+			where: { userId, organizationId: normalizedOrgId },
+		});
 
 	if (!preferences) {
 		return { originalCount: 0, consolidatedCount: 0 };
@@ -339,7 +342,7 @@ export async function consolidateLearnedPatterns(
 
 	// Update if changed
 	if (consolidatedPatterns.length !== originalCount) {
-		await db.orchestratorMemoryPreferences.update({
+		await getTenantDb().orchestratorMemoryPreferences.update({
 			where: { id: preferences.id },
 			data: {
 				preferences: {

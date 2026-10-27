@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+	findParlumeWake,
 	parseParlumeSpokenReference,
 	parseParlumeWake,
 } from "./parlume-wake.ts";
@@ -154,4 +155,55 @@ test("wakes when transcription fuses the greeting onto the name", () => {
 		"described this project in three sentences.",
 	);
 	assert.equal(parseParlumeWake("Heyfabric, summarize."), "summarize.");
+});
+
+// Flux ran two speakers into one turn when the second began before the first
+// had finished (recorded 2026-10-27, see fixtures/parlume-replay).
+const MERGED_TURN =
+	"and the fabric team is still reading through the logs before we call it done. Parlume, what is the status of f twelve?";
+
+test("Parlume opening a sentence partway through a turn wakes, from where that sentence starts", () => {
+	assert.equal(
+		parseParlumeWake(MERGED_TURN),
+		"what is the status of f twelve?",
+	);
+	assert.deepEqual(findParlumeWake(MERGED_TURN), {
+		request: "what is the status of f twelve?",
+		offset: MERGED_TURN.indexOf("Parlume"),
+	});
+	assert.equal(
+		parseParlumeWake("That is done? Parlume post the list."),
+		"post the list.",
+	);
+	assert.equal(parseParlumeWake("Thanks! Parlum: summarize."), "summarize.");
+	// A name opening the turn, or after "hey", still starts at its greeting.
+	assert.equal(findParlumeWake("Parlume, summarize.")?.offset, 0);
+	assert.equal(findParlumeWake("Okay, hey Fabric, summarize.")?.offset, 6);
+});
+
+test("Parlume partway through a turn does not wake when the sentence describes it, nor does Fabric", () => {
+	for (const text of [
+		"We call it done. Parlume is slow.",
+		"We call it done. Parlume said it twice.",
+		"We call it done. Parlume's answers are long.",
+		"We call it done. Fabric, what is the status of F-12?",
+		"We call it done. Fabric what is the status?",
+		"We call it done. Parlume",
+		"We asked Parlume, what is the status?",
+		"We call it done.Parlume, what is the status?",
+	]) {
+		assert.equal(parseParlumeWake(text), null, text);
+	}
+});
+
+test("a typed message wakes only on an address up front", () => {
+	assert.equal(parseParlumeWake(MERGED_TURN, { midTurn: false }), null);
+	assert.equal(
+		parseParlumeWake("Parlume, summarize.", { midTurn: false }),
+		"summarize.",
+	);
+	assert.equal(
+		parseParlumeWake("Okay. Hey Parlume, summarize.", { midTurn: false }),
+		"summarize.",
+	);
 });

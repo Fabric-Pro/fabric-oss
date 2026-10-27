@@ -99,6 +99,10 @@ function setup(
 		| null
 		| undefined
 		| "unavailable",
+	{
+		heldElsewhere,
+		beforePreview,
+	}: { heldElsewhere?: () => boolean; beforePreview?: () => void } = {},
 ) {
 	const setEditable = vi.fn();
 	const setContent = vi.fn();
@@ -124,6 +128,8 @@ function setup(
 			diffPartialText,
 			onSaved,
 			resolveBase,
+			heldElsewhere,
+			beforePreview,
 		}),
 	);
 
@@ -201,7 +207,10 @@ describe("useUpdateDocumentWithContext.confirm()", () => {
 		>["getEditorMarkdownForSave"],
 		baseline: string,
 	) {
-		getEditorMarkdownForSave.mockReturnValueOnce(baseline);
+		// Read before the preview is drafted, and again before it goes in.
+		getEditorMarkdownForSave
+			.mockReturnValueOnce(baseline)
+			.mockReturnValueOnce(baseline);
 		mockUpdateWithContext.mockResolvedValueOnce({
 			hasRelevantContext: true,
 			summary: "",
@@ -295,7 +304,9 @@ describe("useUpdateDocumentWithContext — the confirm names the preview's base 
 	it("sends the base read when the preview started, not one read at confirm", async () => {
 		let current = { version: 4, contentHash: "hash-at-preview" };
 		const { result, getEditorMarkdownForSave } = setup(() => current);
-		getEditorMarkdownForSave.mockReturnValueOnce("# Doc");
+		getEditorMarkdownForSave
+			.mockReturnValueOnce("# Doc")
+			.mockReturnValueOnce("# Doc");
 		mockUpdateWithContext.mockResolvedValueOnce(PREVIEW);
 		await act(async () => {
 			await result.current.start();
@@ -325,7 +336,9 @@ describe("useUpdateDocumentWithContext — the confirm names the preview's base 
 
 	it("sends no base when saves name none", async () => {
 		const { result, getEditorMarkdownForSave } = setup(() => undefined);
-		getEditorMarkdownForSave.mockReturnValueOnce("# Doc");
+		getEditorMarkdownForSave
+			.mockReturnValueOnce("# Doc")
+			.mockReturnValueOnce("# Doc");
 		mockUpdateWithContext.mockResolvedValueOnce(PREVIEW);
 		await act(async () => {
 			await result.current.start();
@@ -411,7 +424,9 @@ describe("useUpdateDocumentWithContext — refusals in the reader's words (Fizzy
 				version: 4,
 				contentHash: "hash-at-preview",
 			}));
-			getEditorMarkdownForSave.mockReturnValueOnce("# Doc");
+			getEditorMarkdownForSave
+				.mockReturnValueOnce("# Doc")
+				.mockReturnValueOnce("# Doc");
 			mockUpdateWithContext.mockResolvedValueOnce(PREVIEW);
 			await act(async () => {
 				await result.current.start();
@@ -523,5 +538,360 @@ describe("useUpdateDocumentWithContext — refusals in the reader's words (Fizzy
 
 		expect(result.current.isLoading).toBe(true);
 		expect(result.current.loadingStage).toBe(COPY.loadingStage.scanning);
+	});
+});
+
+describe("useUpdateDocumentWithContext while another tab reviews an assistant proposal (Fizzy #2946)", () => {
+	const PREVIEW_NONE = {
+		hasRelevantContext: false,
+		summary: "",
+		needsHumanResolution: false,
+		proposedContent: null,
+		documentVersion: 4,
+	};
+	const PREVIEW = {
+		hasRelevantContext: true,
+		summary: "",
+		needsHumanResolution: false,
+		proposedContent: "# Doc — with a real added sentence.",
+		documentVersion: 4,
+	};
+
+	it("drops a preview that answers once that review began: nothing goes into the editor, it stays locked, and it is said", async () => {
+		let held = false;
+		const beforePreview = vi.fn();
+		const { result, setEditable, setContent, getEditorMarkdownForSave } =
+			setup(undefined, { heldElsewhere: () => held, beforePreview });
+		getEditorMarkdownForSave.mockReturnValue("# Doc");
+		let answer: (value: typeof PREVIEW) => void = () => {};
+		mockUpdateWithContext.mockReturnValueOnce(
+			new Promise((resolve) => {
+				answer = resolve;
+			}),
+		);
+
+		let started: Promise<void> | undefined;
+		act(() => {
+			started = result.current.start();
+		});
+		expect(setEditable).toHaveBeenLastCalledWith(false);
+		held = true;
+		await act(async () => {
+			answer(PREVIEW);
+			await started;
+		});
+
+		expect(setContent).not.toHaveBeenCalled();
+		expect(beforePreview).not.toHaveBeenCalled();
+		expect(setEditable).not.toHaveBeenCalledWith(true);
+		expect(result.current.isActive).toBe(false);
+		expect(mockToast.info).toHaveBeenCalledWith(COPY.heldElsewhere);
+	});
+
+	it("leaves the editor locked when a preview with nothing to change answers once that review began", async () => {
+		let held = false;
+		const { result, setEditable, getEditorMarkdownForSave } = setup(
+			undefined,
+			{ heldElsewhere: () => held },
+		);
+		getEditorMarkdownForSave.mockReturnValue("# Doc");
+		let answer: (value: unknown) => void = () => {};
+		mockUpdateWithContext.mockReturnValueOnce(
+			new Promise((resolve) => {
+				answer = resolve;
+			}),
+		);
+		let started: Promise<void> | undefined;
+		act(() => {
+			started = result.current.start();
+		});
+		held = true;
+		await act(async () => {
+			answer({ ...PREVIEW_NONE });
+			await started;
+		});
+		expect(setEditable).not.toHaveBeenCalledWith(true);
+		expect(result.current.isActive).toBe(false);
+	});
+
+	it("does not start while that review holds the editor", async () => {
+		const { result, setEditable } = setup(undefined, {
+			heldElsewhere: () => true,
+		});
+		await act(async () => {
+			await result.current.start();
+		});
+		expect(mockUpdateWithContext).not.toHaveBeenCalled();
+		expect(setEditable).not.toHaveBeenCalled();
+		expect(mockToast.info).toHaveBeenCalledWith(COPY.heldElsewhere);
+	});
+
+	it("says it is under review before its diff goes in", async () => {
+		const beforePreview = vi.fn();
+		const { result, setContent, getEditorMarkdownForSave } = setup(
+			undefined,
+			{ heldElsewhere: () => false, beforePreview },
+		);
+		getEditorMarkdownForSave.mockReturnValue("# Doc");
+		mockUpdateWithContext.mockResolvedValueOnce(PREVIEW);
+		await act(async () => {
+			await result.current.start();
+		});
+		expect(beforePreview).toHaveBeenCalledTimes(1);
+		expect(setContent).toHaveBeenCalledTimes(1);
+		expect(beforePreview.mock.invocationCallOrder[0]).toBeLessThan(
+			setContent.mock.invocationCallOrder[0] ?? 0,
+		);
+	});
+
+	it("holds its confirm and its reject while that review holds the editor, and answers once it is over", async () => {
+		let held = false;
+		const { result, setContent, getEditorMarkdownForSave } = setup(
+			undefined,
+			{ heldElsewhere: () => held },
+		);
+		getEditorMarkdownForSave.mockReturnValue("# Doc");
+		mockUpdateWithContext.mockResolvedValueOnce(PREVIEW);
+		await act(async () => {
+			await result.current.start();
+		});
+		expect(result.current.showingDiff).toBe(true);
+		expect(setContent).toHaveBeenCalledTimes(1);
+
+		held = true;
+		getEditorMarkdownForSave.mockReturnValue(PREVIEW.proposedContent);
+		await act(async () => {
+			await result.current.confirm();
+		});
+		act(() => {
+			result.current.reject();
+		});
+		expect(mockUpdateWithContext).toHaveBeenCalledTimes(1);
+		expect(setContent).toHaveBeenCalledTimes(1);
+		expect(result.current.showingDiff).toBe(true);
+		expect(mockToast.info).toHaveBeenCalledWith(COPY.heldElsewhere);
+
+		held = false;
+		act(() => {
+			result.current.reject();
+		});
+		expect(setContent).toHaveBeenCalledTimes(2);
+		expect(result.current.isActive).toBe(false);
+	});
+});
+
+describe("useUpdateDocumentWithContext when the body changed while its preview was drafted (Fizzy #2946)", () => {
+	it("drops the preview, keeps what changed, unlocks the editor and says so", async () => {
+		const { result, setEditable, setContent, getEditorMarkdownForSave } =
+			setup();
+		// Read when the preview is asked for, then — a colleague's line has
+		// reached the editor meanwhile — before it would go in.
+		getEditorMarkdownForSave
+			.mockReturnValueOnce("# Doc")
+			.mockReturnValueOnce("# Doc\n\nA colleague's line.");
+		mockUpdateWithContext.mockResolvedValueOnce({
+			hasRelevantContext: true,
+			summary: "",
+			needsHumanResolution: false,
+			proposedContent: "# Doc — with a real added sentence.",
+			documentVersion: 4,
+		});
+
+		await act(async () => {
+			await result.current.start();
+		});
+
+		expect(setContent).not.toHaveBeenCalled();
+		expect(result.current.isActive).toBe(false);
+		expect(setEditable).toHaveBeenLastCalledWith(true);
+		expect(mockToast.info).toHaveBeenCalledWith(COPY.changedMeanwhile);
+	});
+});
+
+describe("useUpdateDocumentWithContext when a review begun at the same moment elsewhere settles it (Fizzy #2946)", () => {
+	const PREVIEW = {
+		hasRelevantContext: true,
+		summary: "",
+		needsHumanResolution: false,
+		proposedContent: "# Doc — with a real added sentence.",
+		documentVersion: 4,
+	};
+
+	it("withdraws without writing the editor, the review that holds being the other one's", async () => {
+		const { result, setContent, getEditorMarkdownForSave } = setup();
+		getEditorMarkdownForSave.mockReturnValue("# Doc");
+		mockUpdateWithContext.mockResolvedValueOnce(PREVIEW);
+		await act(async () => {
+			await result.current.start();
+		});
+		expect(setContent).toHaveBeenCalledTimes(1);
+
+		act(() => {
+			result.current.withdraw();
+		});
+		expect(result.current.isActive).toBe(false);
+		expect(setContent).toHaveBeenCalledTimes(1);
+	});
+
+	it("puts its diff in again while it shows one, and the body it drafts from while it drafts", async () => {
+		const {
+			result,
+			setContent,
+			diffPartialText,
+			getEditorMarkdownForSave,
+		} = setup();
+		getEditorMarkdownForSave.mockReturnValue("# Doc");
+		let answer: (value: typeof PREVIEW) => void = () => {};
+		mockUpdateWithContext.mockReturnValueOnce(
+			new Promise((resolve) => {
+				answer = resolve;
+			}),
+		);
+		let started: Promise<void> | undefined;
+		act(() => {
+			started = result.current.start();
+		});
+		act(() => {
+			result.current.reassert();
+		});
+		expect(setContent).toHaveBeenLastCalledWith("html:# Doc");
+
+		await act(async () => {
+			answer(PREVIEW);
+			await started;
+		});
+		setContent.mockClear();
+		act(() => {
+			result.current.reassert();
+		});
+		expect(diffPartialText).toHaveBeenLastCalledWith(
+			"# Doc",
+			PREVIEW.proposedContent,
+			true,
+		);
+		expect(setContent).toHaveBeenCalledWith(
+			`html:diff:# Doc=>${PREVIEW.proposedContent}`,
+		);
+	});
+});
+
+describe("useUpdateDocumentWithContext — a withdrawn preview's answer (Fizzy #2946)", () => {
+	const answerFor = (proposedContent: string) => ({
+		hasRelevantContext: true,
+		summary: "",
+		needsHumanResolution: false,
+		proposedContent,
+		documentVersion: 4,
+	});
+
+	function deferred() {
+		let resolve: (value: unknown) => void = () => {};
+		const promise = new Promise((done) => {
+			resolve = done;
+		});
+		return { promise, resolve };
+	}
+
+	it("goes nowhere when it answers after the review was withdrawn, the body unchanged", async () => {
+		const beforePreview = vi.fn();
+		const { result, setContent, getEditorMarkdownForSave } = setup(
+			undefined,
+			{ beforePreview },
+		);
+		getEditorMarkdownForSave.mockReturnValue("# Doc");
+		const first = deferred();
+		mockUpdateWithContext.mockReturnValueOnce(first.promise);
+		let started: Promise<void> | undefined;
+		act(() => {
+			started = result.current.start();
+		});
+		act(() => {
+			result.current.withdraw();
+		});
+		await act(async () => {
+			first.resolve(answerFor("# Doc — first."));
+			await started;
+		});
+
+		expect(setContent).not.toHaveBeenCalled();
+		expect(beforePreview).not.toHaveBeenCalled();
+		expect(result.current.isActive).toBe(false);
+		expect(mockToast.info).not.toHaveBeenCalled();
+	});
+
+	it("says nothing and leaves a later request alone when a withdrawn one fails", async () => {
+		const { result, setEditable, getEditorMarkdownForSave } = setup();
+		getEditorMarkdownForSave.mockReturnValue("# Doc");
+		const first = deferred();
+		mockUpdateWithContext
+			.mockReturnValueOnce(
+				first.promise.then(() => {
+					throw refusal("INTERNAL_SERVER_ERROR");
+				}),
+			)
+			.mockReturnValueOnce(new Promise(() => {}));
+		let firstStarted: Promise<void> | undefined;
+		act(() => {
+			firstStarted = result.current.start();
+		});
+		act(() => {
+			result.current.withdraw();
+		});
+		act(() => {
+			void result.current.start();
+		});
+		setEditable.mockClear();
+		await act(async () => {
+			first.resolve(undefined);
+			await firstStarted;
+		});
+		expect(mockToast.error).not.toHaveBeenCalled();
+		expect(setEditable).not.toHaveBeenCalled();
+		expect(result.current.isLoading).toBe(true);
+	});
+
+	it("leaves only a later request's preview, never the two mixed", async () => {
+		const {
+			result,
+			setContent,
+			diffPartialText,
+			getEditorMarkdownForSave,
+		} = setup();
+		getEditorMarkdownForSave.mockReturnValue("# Doc");
+		const first = deferred();
+		const second = deferred();
+		mockUpdateWithContext
+			.mockReturnValueOnce(first.promise)
+			.mockReturnValueOnce(second.promise);
+		let firstStarted: Promise<void> | undefined;
+		let secondStarted: Promise<void> | undefined;
+		act(() => {
+			firstStarted = result.current.start();
+		});
+		act(() => {
+			result.current.withdraw();
+		});
+		act(() => {
+			secondStarted = result.current.start();
+		});
+		await act(async () => {
+			first.resolve(answerFor("# Doc — first."));
+			await firstStarted;
+		});
+		expect(setContent).not.toHaveBeenCalled();
+		expect(result.current.isLoading).toBe(true);
+
+		await act(async () => {
+			second.resolve(answerFor("# Doc — second."));
+			await secondStarted;
+		});
+		expect(setContent).toHaveBeenCalledTimes(1);
+		expect(diffPartialText).toHaveBeenLastCalledWith(
+			"# Doc",
+			"# Doc — second.",
+			true,
+		);
+		expect(result.current.showingDiff).toBe(true);
+		expect(result.current.preview?.proposedContent).toBe("# Doc — second.");
 	});
 });

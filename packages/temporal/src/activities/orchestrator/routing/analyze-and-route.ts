@@ -20,6 +20,10 @@ import { generateText } from "@repo/ai";
 import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { db } from "@repo/database";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
+import {
+	isFallbackToolSearchStrategy,
+	isStrongToolMatch,
+} from "../../../lib/tool-search-confidence";
 import type { RoutingDecision } from "../../../workflows/orchestrator/types";
 import { usageOriginFields } from "../../../workflows/orchestrator/usage-attribution";
 import { getRoutingSystemPrompt } from "../../prompts";
@@ -45,6 +49,13 @@ import { safeParseJson } from "../utils/json-parser";
 import { getAiModel } from "../utils/model-selector";
 import { detectUserIntent } from "./intent";
 
+// Bare automate stays whole-word: inflected automation can describe ordinary workflows.
+// Code intent accepts up to two filler words, while bare code/execute can describe tool work.
+const BROWSER_CODE_INTENT =
+	/\b(?:browsers?|click(?:s|ed|ing)?|navigat(?:e|es|ed|ing)|automate|scripts?)\b/i;
+const CODE_EXECUTION_INTENT =
+	/\b(?:run|execute|write|generate)\s+(?:\w+\s+){0,2}?(?:code|scripts?|python\d?|javascript)\b/i;
+
 export function shouldSearchIntegrations(params: {
 	message: string;
 	toolResults: Array<{
@@ -52,17 +63,19 @@ export function shouldSearchIntegrations(params: {
 		serverName: string;
 		toolName: string;
 	}>;
+	// Required so every caller passes the search strategy: a fallback inventory
+	// is weak whatever its confidence (isStrongToolMatch).
+	telemetry: { strategy?: string } | undefined;
 	userIntent: ReturnType<typeof detectUserIntent>;
 }): boolean {
-	const { message, toolResults, userIntent } = params;
+	const { message, toolResults, telemetry, userIntent } = params;
 	const messageLower = message.toLowerCase();
-	const strongestToolConfidence = toolResults[0]?.confidence ?? 0;
 
 	if (userIntent.requestedWorkflow || userIntent.requestedMcpTools) {
 		return true;
 	}
 
-	if (strongestToolConfidence < 0.75) {
+	if (!isStrongToolMatch({ results: toolResults, telemetry })) {
 		return true;
 	}
 
@@ -169,12 +182,28 @@ async function routeTask(
 		...lookupTurnScope(input),
 	});
 
+	// Discovery uses retrieval relevance before frame and priority ranking boosts.
+	const integrationSearchTriggered = shouldSearchIntegrations({
+		message: input.message,
+		toolResults: toolSearchResult.results,
+		telemetry: toolSearchResult.telemetry,
+		userIntent,
+	});
+
 	// ==========================================================================
 	// APPLY EXPLICIT FRAME/SLIDESHOW INTENT BOOSTS
 	// When the user explicitly asks for a frame/deck/slideshow, ensure the
 	// first-class Fabric frame tools are present with strong confidence.
 	// ==========================================================================
 	let boostedToolResults = [...toolSearchResult.results];
+	// Track relevance before ranking boosts; fallback scores describe availability.
+	const relevantToolIds = new Set(
+		isFallbackToolSearchStrategy(toolSearchResult.telemetry?.strategy)
+			? []
+			: toolSearchResult.results
+					.filter((tool) => tool.confidence >= 0.6)
+					.map((tool) => tool.toolId),
+	);
 
 	if (userIntent.requestedFrameOutput) {
 		const requestedToolName =
@@ -213,6 +242,12 @@ async function routeTask(
 				isReadOnly: false,
 				inputSchema: requestedTool.inputSchema,
 			});
+		}
+
+		for (const tool of boostedToolResults) {
+			if (tool.toolName === requestedToolName) {
+				relevantToolIds.add(tool.toolId);
+			}
 		}
 
 		boostedToolResults = boostedToolResults
@@ -257,8 +292,8 @@ async function routeTask(
 	// ==========================================================================
 	// APPLY PRIORITIZATION BOOSTS
 	// User-selected tools/servers get boosted confidence
-	// Prioritized tools are GUARANTEED to appear in results with high confidence
-	// Prioritized MCP servers have ALL their tools included with elevated confidence
+	// Missing prioritized tools are added and their ranking scores are boosted.
+	// Missing prioritized servers are fetched directly for tool availability.
 	// ==========================================================================
 
 	if (
@@ -281,7 +316,7 @@ async function routeTask(
 				const toolDef = fabricAiToolMap.get(prioritizedToolId);
 
 				// Add the prioritized tool with a base confidence that will be boosted
-				// This ensures user-prioritized tools ALWAYS appear in results
+				// Add user-prioritized tools even when semantic search omitted them.
 				boostedToolResults.push({
 					toolId: prioritizedToolId,
 					toolName: prioritizedToolId,
@@ -304,7 +339,7 @@ async function routeTask(
 		}
 
 		// For prioritized MCP servers, fetch ALL their tools directly (bypass semantic search)
-		// This ensures that when user prioritizes an MCP server, its tools are always available
+		// Fetch inventory when search returned no tools from a prioritized server.
 		if (input.prioritizedMcpConfigIds?.length) {
 			const existingConfigIds = new Set(
 				boostedToolResults.map((t) => t.configId),
@@ -416,11 +451,6 @@ async function routeTask(
 		totalToolsSearched: toolSearchResult.totalToolsSearched,
 		durationMs: toolSearchResult.durationMs,
 	});
-	const integrationSearchTriggered = shouldSearchIntegrations({
-		message: input.message,
-		toolResults: boostedToolResults,
-		userIntent,
-	});
 	const integrationSearchReason = integrationSearchTriggered
 		? "query_or_confidence_requires_integration_search"
 		: "skipped_due_to_decisive_tool_result";
@@ -453,15 +483,17 @@ async function routeTask(
 		});
 	}
 
-	// Check if high-confidence tools can handle the task directly
+	// Count retrieval relevance and explicit user choices for direct routing.
 	const highConfidenceTools = boostedToolResults.filter(
-		(t) => t.confidence >= 0.6,
+		(t) =>
+			relevantToolIds.has(t.toolId) ||
+			input.prioritizedToolIds?.includes(t.toolName) ||
+			input.prioritizedMcpConfigIds?.includes(t.configId),
 	);
 	const mcpCanHandle = highConfidenceTools.length > 0;
 	const mcpConfidence = mcpCanHandle
 		? Math.round(highConfidenceTools[0].confidence * 100)
 		: 0;
-	const isReadOnly = highConfidenceTools.every((t) => t.isReadOnly);
 
 	// Build tool descriptions for routing prompt
 	let mcpToolDescriptions = "";
@@ -537,10 +569,10 @@ async function routeTask(
 	}
 
 	// ==========================================================================
-	// TOKEN-EFFICIENT INTEGRATION DISCOVERY (ALWAYS SEMANTIC)
+	// TOKEN-EFFICIENT INTEGRATION DISCOVERY
 	// Search for workflow integrations (Slack, GitHub, Linear, etc.)
 	// These are connected services that can be used as alternatives to MCP servers
-	// IMPORTANT: Always use semantic search - no keyword gates. Let Qdrant determine relevance.
+	// Search when retrieval is weak or an existing intent override applies.
 	// ==========================================================================
 	let integrationSearchResult: Awaited<
 		ReturnType<typeof searchAvailableIntegrations>
@@ -586,8 +618,9 @@ async function routeTask(
 		console.log(
 			"[Orchestrator] Skipping integration search - tool routing already decisive",
 			{
-				topTool: boostedToolResults[0]?.toolName,
-				topConfidence: boostedToolResults[0]?.confidence?.toFixed(2),
+				topTool: toolSearchResult.results[0]?.toolName,
+				topConfidence:
+					toolSearchResult.results[0]?.confidence?.toFixed(2),
 			},
 		);
 	}
@@ -1012,20 +1045,9 @@ Use primaryAgent: "mcp_direct" to execute MCP tools directly without agent deleg
 	// ==========================================================================
 	// MCP DIRECT ROUTING CHECK
 	// ==========================================================================
-	const browserCodeKeywords = [
-		"browser",
-		"click",
-		"navigate",
-		"automate",
-		"code",
-		"execute",
-		"script",
-		"run python",
-		"run javascript",
-	];
-	const requiresBrowserOrCode = browserCodeKeywords.some((kw) =>
-		input.message.toLowerCase().includes(kw),
-	);
+	const requiresBrowserOrCode =
+		BROWSER_CODE_INTENT.test(input.message) ||
+		CODE_EXECUTION_INTENT.test(input.message);
 
 	// Agents that should NOT be overridden to mcp_direct
 	// These agents have specialized capabilities beyond raw MCP tool execution
@@ -1039,7 +1061,7 @@ Use primaryAgent: "mcp_direct" to execute MCP tools directly without agent deleg
 	const llmSelectedSpecializedAgent =
 		parsed.primaryAgent && specializedAgents.includes(parsed.primaryAgent);
 
-	// Check if we have integrations but NO MCP tools - in this case, don't use mcp_direct
+	// Prefer integration routing when no tools establish handling relevance.
 	const hasIntegrationsOnly =
 		(integrationSearchResult?.results?.length ?? 0) > 0 &&
 		highConfidenceTools.length === 0;
@@ -1068,7 +1090,7 @@ Use primaryAgent: "mcp_direct" to execute MCP tools directly without agent deleg
 		primaryAgent = "mcp_direct";
 	} else if (hasIntegrationsOnly) {
 		console.log(
-			"[Orchestrator] Routing to integration handler - only integrations matched, no MCP tools",
+			"[Orchestrator] Routing to integration handler - only integrations matched, no relevant MCP tools",
 			{
 				integrationCount: integrationSearchResult?.results.length,
 				integrations: integrationSearchResult?.results.map(
@@ -1097,8 +1119,6 @@ Use primaryAgent: "mcp_direct" to execute MCP tools directly without agent deleg
 
 	// If mcp_direct selected, skip agent capability check
 	if (primaryAgent === "mcp_direct") {
-		const riskLevel = isReadOnly ? "low" : parsed.riskLevel || "medium";
-
 		// Use ALL matched tools, not just high-confidence ones
 		// This allows the LLM planner to decide which tools to use
 		// High confidence threshold is for auto-routing, not for tool availability
@@ -1107,10 +1127,27 @@ Use primaryAgent: "mcp_direct" to execute MCP tools directly without agent deleg
 				? boostedToolResults
 				: highConfidenceTools;
 
-		const effectiveConfidence =
-			toolsForPlan.length > 0
+		// Preserve relevant-tool risk; without relevance, use the inventory and
+		// floor non-read-only risk at medium, ignoring name-derived tool risk.
+		const isReadOnly =
+			highConfidenceTools.length > 0
+				? highConfidenceTools.every((t) => t.isReadOnly)
+				: toolsForPlan.length > 0 &&
+					toolsForPlan.every((t) => t.isReadOnly);
+		let riskLevel = isReadOnly ? "low" : parsed.riskLevel || "medium";
+		if (
+			highConfidenceTools.length === 0 &&
+			!isReadOnly &&
+			riskLevel === "low"
+		) {
+			riskLevel = "medium";
+		}
+
+		const effectiveConfidence = mcpCanHandle
+			? mcpConfidence
+			: toolsForPlan.length > 0
 				? Math.round(toolsForPlan[0].confidence * 100)
-				: mcpConfidence;
+				: (parsed.confidence ?? 70);
 
 		console.log("[Orchestrator] Using MCP direct execution", {
 			matchedTools: toolsForPlan.map((t) => t.toolName),

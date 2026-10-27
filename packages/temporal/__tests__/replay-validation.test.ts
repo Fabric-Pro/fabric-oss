@@ -11,11 +11,10 @@
  */
 
 import { existsSync, readdirSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { HistoryAndWorkflowId } from "@temporalio/client";
 import { Worker } from "@temporalio/worker";
 import { describe, expect, it } from "vitest";
+import { loadHistoriesForType } from "../scripts/replay-fixtures";
 import { buildWorkflowBundleOptions } from "../src/lib/workflow-bundle-options";
 import { OTEL_WORKFLOW_INTERCEPTOR_MODULE } from "../src/telemetry";
 
@@ -34,35 +33,6 @@ function listTypeDirs(): string[] {
 	return readdirSync(FIXTURES_DIR, { withFileTypes: true })
 		.filter((entry) => entry.isDirectory())
 		.map((entry) => entry.name);
-}
-
-type FixtureFile = {
-	workflowId: string;
-	runId?: string;
-	bucket?: "closed" | "running";
-	history: unknown;
-};
-
-async function loadHistoriesForType(
-	workflowType: string,
-): Promise<HistoryAndWorkflowId[]> {
-	const dir = join(FIXTURES_DIR, workflowType);
-	const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
-	return Promise.all(
-		files.map(async (file) => {
-			const raw = await readFile(join(dir, file), "utf8");
-			const parsed = JSON.parse(raw) as FixtureFile;
-			// Preserve the original workflowId — workflows that branch on
-			// workflowInfo().workflowId (e.g. project-document-generation,
-			// code-indexing) would either false-positive or mask real
-			// non-determinism if we fed them a synthetic ID derived from the
-			// sanitized filename.
-			return {
-				workflowId: parsed.workflowId,
-				history: parsed.history,
-			} as HistoryAndWorkflowId;
-		}),
-	);
 }
 
 // Workflow types undergoing an INTENTIONAL, backward-incompatible rewrite.
@@ -140,7 +110,11 @@ describe("Replay validation", () => {
 				// Intentional, backward-incompatible rewrite — see the note above.
 				return;
 			}
-			const histories = await loadHistoriesForType(workflowType);
+			const histories = await loadHistoriesForType(
+				FIXTURES_DIR,
+				workflowType,
+				REQUIRE_FIXTURES,
+			);
 			if (histories.length === 0) {
 				// A directory with no loadable history is not "nothing to do": the
 				// fetch created the directory, so it meant to put something there.

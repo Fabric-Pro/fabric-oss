@@ -23,6 +23,7 @@ const FUSED_GREETING = /^(?:h?e+y?|h?a+y?|hi)(?=[fp])/i;
 // open features…", and was not taken as a greeting. Before a name it counts as
 // one, under the same rules as a name opening the turn.
 const MISHEARD_GREETING = /^[\s"'“]*(?:a|ay|eh|ah|uh|he)\b[\s,]*/i;
+const SENTENCE_BOUNDARY = /[.?!]\s+/g;
 const FABRIC = new Set(["fbrk"]);
 const PARLUME = new Set(["prlm", "prlmn"]);
 const SPOKEN_REFERENCE =
@@ -119,15 +120,18 @@ export function isParlumeName(word: string): boolean {
 	return FABRIC.has(name) || PARLUME.has(name);
 }
 
-function parseOpeningAddress(text: string): string | null {
+/**
+ * `anyName` false takes only a plain "Parlume", for a sentence partway
+ * through a turn, where "Fabric" is an ordinary word.
+ */
+function parseOpeningAddress(text: string, anyName = true): string | null {
 	const opening = OPENING_WORD.exec(text);
 	if (!opening) {
 		return null;
 	}
-	const fused = FUSED_GREETING.exec(opening[1]);
-	if (
-		!isParlumeName(fused ? opening[1].slice(fused[0].length) : opening[1])
-	) {
+	const fused = anyName ? FUSED_GREETING.exec(opening[1]) : null;
+	const name = fused ? opening[1].slice(fused[0].length) : opening[1];
+	if (anyName ? !isParlumeName(name) : !PARLUME.has(skeleton(name))) {
 		return null;
 	}
 	let consumed = opening[0].length;
@@ -149,13 +153,29 @@ function parseOpeningAddress(text: string): string | null {
 	return rest.replace(TRAILING_PUNCTUATION, "").trim();
 }
 
-export function parseParlumeWake(text: string): string | null {
+interface ParlumeWake {
+	/** The words after the wake phrase. */
+	request: string;
+	/** Where the wake phrase starts in the text: 0 when it opens the turn. */
+	offset: number;
+}
+
+/**
+ * Wakes on a name opening the turn, on "hey <name>" anywhere, and, with
+ * `midTurn`, on "Parlume" opening a later sentence. Flux runs two speakers
+ * into one turn when the second starts before the first has finished, and
+ * heard "…before we call it done. Parlume, what is the status of f twelve?".
+ */
+export function findParlumeWake(
+	text: string,
+	{ midTurn = true }: { midTurn?: boolean } = {},
+): ParlumeWake | null {
 	const greeting = MISHEARD_GREETING.exec(text);
 	const addressed =
 		parseOpeningAddress(text) ??
 		(greeting ? parseOpeningAddress(text.slice(greeting[0].length)) : null);
 	if (addressed !== null) {
-		return addressed;
+		return { request: addressed, offset: 0 };
 	}
 	for (const greeting of text.matchAll(GREETING)) {
 		const rest = text.slice(greeting.index + greeting[0].length);
@@ -173,7 +193,30 @@ export function parseParlumeWake(text: string): string | null {
 		} else if (!PARLUME.has(name)) {
 			continue;
 		}
-		return rest.slice(consumed).replace(TRAILING_PUNCTUATION, "").trim();
+		return {
+			request: rest
+				.slice(consumed)
+				.replace(TRAILING_PUNCTUATION, "")
+				.trim(),
+			offset: greeting.index,
+		};
+	}
+	if (!midTurn) {
+		return null;
+	}
+	for (const boundary of text.matchAll(SENTENCE_BOUNDARY)) {
+		const offset = boundary.index + boundary[0].length;
+		const request = parseOpeningAddress(text.slice(offset), false);
+		if (request !== null) {
+			return { request, offset };
+		}
 	}
 	return null;
+}
+
+export function parseParlumeWake(
+	text: string,
+	options?: { midTurn?: boolean },
+): string | null {
+	return findParlumeWake(text, options)?.request ?? null;
 }

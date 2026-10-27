@@ -24,7 +24,10 @@ import { z } from "zod";
 const {
 	assertWithinAiUsageLimitsMock,
 	getAiProviderApiKeyMock,
+	getAiProviderByProviderMock,
+	getPlanSpentPersonalProviderConfigMock,
 	getModelForTaskMock,
+	getTaskDefaultModelMock,
 	getModelByCanonicalNameMock,
 	getProviderModelMappingForCanonicalMock,
 	getProviderModelIdForCanonicalMock,
@@ -34,7 +37,10 @@ const {
 } = vi.hoisted(() => ({
 	assertWithinAiUsageLimitsMock: vi.fn(),
 	getAiProviderApiKeyMock: vi.fn(),
+	getAiProviderByProviderMock: vi.fn(),
+	getPlanSpentPersonalProviderConfigMock: vi.fn(),
 	getModelForTaskMock: vi.fn(),
+	getTaskDefaultModelMock: vi.fn(),
 	getModelByCanonicalNameMock: vi.fn(),
 	getProviderModelMappingForCanonicalMock: vi.fn(async () => ({
 		exists: false,
@@ -50,7 +56,8 @@ vi.mock("@repo/database", () => ({
 	GATEWAY_PROVIDERS: ["VERCEL_GATEWAY", "OPENROUTER", "CLOUDFLARE_AI"],
 	getActiveModels: vi.fn(),
 	getAiProviderApiKey: getAiProviderApiKeyMock,
-	getAiProviderApiKeyByProvider: vi.fn(),
+	getAiProviderApiKeyByProvider: getAiProviderByProviderMock,
+	getPlanSpentPersonalProviderConfig: getPlanSpentPersonalProviderConfigMock,
 	getEmbeddingProviderConfig: vi.fn(),
 	getModelForTask: getModelForTaskMock,
 	getProviderModelIdForCanonical: getProviderModelIdForCanonicalMock,
@@ -59,7 +66,7 @@ vi.mock("@repo/database", () => ({
 		getProviderModelMappingForCanonicalMock,
 	getCanonicalNameForProviderModelId: getCanonicalNameForProviderModelIdMock,
 	getSystemAiProviderApiKey: vi.fn(),
-	getTaskDefaultModel: vi.fn(),
+	getTaskDefaultModel: getTaskDefaultModelMock,
 	updateProviderLastUsed: vi.fn(() => Promise.resolve()),
 	logAiUsageAsync: logAiUsageAsyncMock,
 }));
@@ -89,6 +96,7 @@ vi.mock("../model-factory", () => ({
 	getModel: getModelMock,
 }));
 
+import { answerRouteHash } from "../lib/answer-model-snapshot";
 import { getAIModelWithMetadata } from "../lib/dynamic-model-selector";
 
 const CONTEXT = {
@@ -230,7 +238,14 @@ beforeEach(() => {
 	});
 	getModelMock.mockImplementation(() => model);
 	getAiProviderApiKeyMock.mockResolvedValue(ORGANIZATION_GATEWAY);
-	getModelForTaskMock.mockResolvedValue(SELECTION);
+	getAiProviderByProviderMock
+		.mockReset()
+		.mockImplementation((...args: unknown[]) =>
+			getAiProviderApiKeyMock(...args),
+		);
+	getModelByCanonicalNameMock.mockReset();
+	getModelForTaskMock.mockReset().mockResolvedValue(SELECTION);
+	getTaskDefaultModelMock.mockReset();
 });
 
 describe("getAIModelWithMetadata — per-request usage-limit check", () => {
@@ -551,4 +566,275 @@ describe("model override catalog identity", () => {
 			}),
 		);
 	});
+});
+
+describe("answer model snapshot", () => {
+	it("keeps the resolved model when the task catalog changes", async () => {
+		const first = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			CONTEXT,
+		);
+		const snapshot = (
+			first.metadata as unknown as { answerSnapshot?: unknown }
+		).answerSnapshot;
+		getModelForTaskMock.mockResolvedValue({
+			...SELECTION,
+			model: { ...SELECTION.model, canonicalName: "example-other" },
+			providerModelId: "example-other",
+		});
+		const next = await getAIModelWithMetadata(
+			{ taskType: "CHAT", answerSnapshot: snapshot },
+			CONTEXT,
+		);
+		expect(next.metadata.modelString).toBe(PROVIDER_MODEL_ID);
+		expect(next.metadata.canonicalName).toBe("gpt-4o-mini");
+	});
+	it("records a credential-free route with the resolved output cap", async () => {
+		const resolved = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			CONTEXT,
+		);
+		expect(resolved.metadata.answerSnapshot).toMatchObject({
+			provider: "VERCEL_GATEWAY",
+			modelString: PROVIDER_MODEL_ID,
+			canonicalName: "gpt-4o-mini",
+			configId: "cfg-example-org",
+			maxOutputTokens: 16384,
+		});
+		expect(
+			JSON.stringify(
+				(resolved.metadata as unknown as { answerSnapshot?: unknown })
+					.answerSnapshot,
+			),
+		).not.toContain("example-org-gateway-key");
+	});
+});
+
+it("refreshes an unusable answer configuration once and records the reason", async () => {
+	const first = await getAIModelWithMetadata({ taskType: "CHAT" }, CONTEXT);
+	getAiProviderApiKeyMock.mockResolvedValue({
+		...ORGANIZATION_GATEWAY,
+		configId: "example-replacement",
+	});
+	const next = await getAIModelWithMetadata(
+		{ taskType: "CHAT", answerSnapshot: first.metadata.answerSnapshot },
+		CONTEXT,
+	);
+	expect(next.metadata.answerSnapshot).toMatchObject({
+		configId: "example-replacement",
+		reResolved: true,
+	});
+	expect(next.metadata.answerRouteChanges).toMatchObject([
+		{ cause: "model_unavailable", reason: "configuration_unavailable" },
+	]);
+	getAiProviderApiKeyMock.mockResolvedValue({
+		...ORGANIZATION_GATEWAY,
+		configId: "example-third",
+	});
+	await expect(
+		getAIModelWithMetadata(
+			{ taskType: "CHAT", answerSnapshot: next.metadata.answerSnapshot },
+			CONTEXT,
+		),
+	).rejects.toThrow("no longer available");
+});
+
+it.each(["generate", "stream"])(
+	"recovers a provider-refused answer model once during %s",
+	async (method) => {
+		const first = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			CONTEXT,
+		);
+		const failure = Object.assign(new Error("key revoked"), {
+			statusCode: 401,
+		});
+		const refused = new MockLanguageModelV4({
+			doGenerate: async () => {
+				throw failure;
+			},
+			doStream: async () => {
+				throw failure;
+			},
+		});
+		getModelMock.mockReturnValueOnce(refused).mockReturnValue(model);
+		const next = await getAIModelWithMetadata(
+			{ taskType: "CHAT", answerSnapshot: first.metadata.answerSnapshot },
+			CONTEXT,
+		);
+		if (method === "generate") {
+			await generateText({
+				model: next.model,
+				prompt: "Example",
+				maxRetries: 0,
+			});
+		} else {
+			await streamText({
+				model: next.model,
+				prompt: "Example",
+				maxRetries: 0,
+			}).consumeStream();
+		}
+		expect(next.metadata.answerSnapshot?.reResolved).toBe(true);
+		expect(next.metadata.answerRouteChanges).toMatchObject([
+			{ cause: "model_unavailable", reason: "provider_refused" },
+		]);
+	},
+);
+
+it("refreshes an answer route when its catalog model is disabled", async () => {
+	const first = await getAIModelWithMetadata({ taskType: "CHAT" }, CONTEXT);
+	getModelByCanonicalNameMock.mockResolvedValueOnce({ isActive: false });
+	getModelForTaskMock.mockResolvedValue({
+		...SELECTION,
+		model: { ...SELECTION.model, canonicalName: "example-active-model" },
+		providerModelId: "example-active-model",
+	});
+	const next = await getAIModelWithMetadata(
+		{ taskType: "CHAT", answerSnapshot: first.metadata.answerSnapshot },
+		CONTEXT,
+	);
+	expect(next.metadata.canonicalName).toBe("example-active-model");
+	expect(next.metadata.answerRouteChanges).toMatchObject([
+		{ cause: "model_unavailable", reason: "configuration_unavailable" },
+	]);
+});
+
+it("rechecks personal-key fallback consent before rebuilding a pinned answer route", async () => {
+	const { answerRouteHash } = await import("../lib/answer-model-snapshot");
+	const first = await getAIModelWithMetadata({ taskType: "CHAT" }, CONTEXT);
+	const personalConfig = {
+		...ORGANIZATION_GATEWAY,
+		configId: "example-personal-config",
+		source: "user" as const,
+	};
+	getAiProviderByProviderMock.mockResolvedValue(personalConfig);
+	getPlanSpentPersonalProviderConfigMock.mockResolvedValue(null);
+	const initialSnapshot = first.metadata.answerSnapshot;
+	if (!initialSnapshot) {
+		throw new Error("No initial route");
+	}
+	const snapshot = {
+		...initialSnapshot,
+		configId: personalConfig.configId,
+		configSource: "user" as const,
+		routeHash: answerRouteHash(personalConfig),
+		personalKeyFallback: true as const,
+	};
+	const next = await getAIModelWithMetadata(
+		{ taskType: "CHAT", answerSnapshot: snapshot },
+		CONTEXT,
+	);
+	expect(next.metadata.answerSnapshot).toMatchObject({
+		configId: ORGANIZATION_GATEWAY.configId,
+		configSource: "organization",
+		reResolved: true,
+	});
+});
+
+it.each([
+	{
+		provider: "OPENAI_DIRECT",
+		deploymentName: null,
+		defaultDeployment: "example-default-deployment",
+		defaultProvider: "AZURE_AI_FOUNDRY",
+	},
+	{
+		provider: "AZURE_AI_FOUNDRY",
+		deploymentName: "example-deployment",
+		defaultDeployment: null,
+		defaultProvider: "OPENAI_DIRECT",
+	},
+])(
+	"pins the $provider fallback using its own deployment name",
+	async ({
+		provider,
+		deploymentName,
+		defaultDeployment,
+		defaultProvider,
+	}) => {
+		const defaultConfig = {
+			...ORGANIZATION_GATEWAY,
+			provider: defaultProvider,
+			deploymentName: defaultDeployment,
+		};
+		const selectedConfig = {
+			...ORGANIZATION_GATEWAY,
+			provider,
+			baseUrl: "https://example.openai.azure.com",
+			configId: "example-selected-provider",
+			deploymentName,
+		};
+		getAiProviderApiKeyMock.mockResolvedValue(defaultConfig);
+		getAiProviderByProviderMock.mockResolvedValue(selectedConfig);
+		getModelForTaskMock.mockResolvedValue(null);
+		getTaskDefaultModelMock.mockResolvedValue({
+			...SELECTION.model,
+			providerMappings: [
+				{
+					provider,
+					providerModelId: "example-selected-model",
+					isAvailable: true,
+				},
+			],
+		});
+		const first = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			CONTEXT,
+		);
+		const snapshot = first.metadata.answerSnapshot;
+		if (!snapshot) {
+			throw new Error("Expected an answer snapshot");
+		}
+		const second = await getAIModelWithMetadata(
+			{
+				taskType: "CHAT",
+				answerSnapshot: {
+					...snapshot,
+					// Older snapshots may retain the default provider's deployment option.
+					deploymentName: "example-stale-deployment",
+				},
+			},
+			CONTEXT,
+		);
+		const third = await getAIModelWithMetadata(
+			{
+				taskType: "CHAT",
+				answerSnapshot: second.metadata.answerSnapshot,
+			},
+			CONTEXT,
+		);
+		expect(
+			[first, second, third].map((r) => r.metadata.modelString),
+		).toEqual([
+			"example-selected-model",
+			"example-selected-model",
+			"example-selected-model",
+		]);
+		expect(second.metadata.answerRouteChanges).toEqual([]);
+		expect(third.metadata.answerRouteChanges).toEqual([]);
+		expect(third.metadata.answerSnapshot?.reResolved).toBeUndefined();
+		expect(getModelForTaskMock).toHaveBeenCalledTimes(1);
+		// The selected provider supplies the deployment option across pinned calls.
+		expect(
+			getModelMock.mock.calls.map(
+				([, options]) => options.deploymentName,
+			),
+		).toEqual([deploymentName, deploymentName, deploymentName]);
+	},
+);
+
+it("distinguishes deployment-only route changes", () => {
+	const route = {
+		provider: "AZURE_AI_FOUNDRY",
+		configId: "example-config",
+		baseUrl: "https://example.openai.azure.com",
+		deploymentName: "example-deployment",
+	};
+	expect(answerRouteHash(route)).not.toBe(
+		answerRouteHash({
+			...route,
+			deploymentName: "example-other-deployment",
+		}),
+	);
 });

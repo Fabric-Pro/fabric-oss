@@ -12,6 +12,7 @@
  * hooks so the splice runs for real against a vision-capable model.
  */
 
+import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const stubs = vi.hoisted(() => ({
@@ -135,7 +136,10 @@ function buildInput(
 }
 
 interface StreamCall {
-	instructions: string | import("ai").ModelMessage;
+	instructions:
+		| string
+		| import("ai").ModelMessage
+		| import("ai").ModelMessage[];
 	messages: Array<{ role: string; content: unknown }>;
 	toolChoice?: unknown;
 }
@@ -496,4 +500,113 @@ it("keeps the preceding-request boundary before a correction round's assistant t
 	expect(breakpointIndexes(call)).toEqual([2, 4]);
 	expect(call.messages[3].content).toBe("Example claim");
 	expect(call.messages[4].content).toBe("Example correction");
+});
+
+describe("split system prompt", () => {
+	it.each([1, 2])(
+		"marks only reusable system text on round %i, outside history cleanup",
+		async (iteration) => {
+			const call = await streamCallFor(
+				buildInput({
+					iteration,
+					systemPrompt: "Full legacy prompt",
+					systemPromptParts: {
+						reusable: "Reusable instructions",
+						variable: "Variable memory",
+					},
+					conversationHistory:
+						iteration === 1
+							? [
+									{
+										role: "user",
+										content: "Example question",
+										timestamp: "2026-10-20T00:00:00Z",
+										providerOptions: CACHE_BREAKPOINT,
+									} as never,
+								]
+							: historyEndingInToolResult("Example question"),
+				}),
+			);
+			expect(call.instructions).toEqual([
+				{
+					role: "system",
+					content: "Reusable instructions",
+					providerOptions: CACHE_BREAKPOINT,
+				},
+				{ role: "system", content: "Variable memory" },
+			]);
+			const count = (JSON.stringify(call).match(/cacheControl/g) ?? [])
+				.length;
+			expect(count).toBeLessThanOrEqual(4);
+			expect(count).toBe(iteration === 1 ? 2 : 3);
+		},
+	);
+	it("appends skills before variable text and hashes the effective reusable bytes", async () => {
+		const { buildSkillsSystemBlock, listAvailableSkills } = await import(
+			"@repo/ai/skills"
+		);
+		vi.mocked(listAvailableSkills).mockResolvedValue([
+			{ name: "example-skill" },
+		] as never);
+		vi.mocked(buildSkillsSystemBlock).mockReturnValue("Example skills");
+		const input = buildInput({
+			systemPromptParts: {
+				reusable: "Reusable instructions",
+				variable: "Variable memory",
+			},
+		});
+		const result = await runAgentIteration(input);
+		expect(
+			stubs.streamTextMock.mock.calls[0][0].instructions[0].content,
+		).toBe("Reusable instructions\n\nExample skills");
+		expect(result.reusableSystemHash).toBe(
+			createHash("sha256")
+				.update("Reusable instructions\n\nExample skills")
+				.digest("hex")
+				.slice(0, 16),
+		);
+		vi.mocked(buildSkillsSystemBlock).mockReturnValue("");
+		vi.mocked(listAvailableSkills).mockResolvedValue([]);
+	});
+	it.each([
+		"OPENAI_DIRECT",
+		"CHATGPT_PLAN",
+		"DATABRICKS",
+		"AZURE_AI_FOUNDRY",
+	])("orders the split text for %s", async (provider) => {
+		vi.mocked(getAiModelWithSelection).mockResolvedValueOnce({
+			model: { __mockModel: true, modelId: "example-model" },
+			provider,
+			modelString: "example-model",
+		} as never);
+		const call = await streamCallFor(
+			buildInput({
+				systemPromptParts: {
+					reusable: "Reusable instructions",
+					variable: "Variable memory",
+				},
+			}),
+		);
+		expect(call.instructions).toEqual([
+			{ role: "system", content: "Reusable instructions" },
+			{ role: "system", content: "Variable memory" },
+		]);
+	});
+});
+
+it("keeps a full legacy request when an older activity ignores the new field", async () => {
+	const input = buildInput({
+		systemPrompt: "Example persona\n\nExample memory\n\nExample loop tail",
+		systemPromptParts: {
+			reusable: "Example persona\n\nExample loop tail",
+			variable: "Example memory",
+		},
+	});
+	const { systemPromptParts: _ignored, ...oldInput } = input;
+	const legacy = await streamCallFor(oldInput);
+	expect(legacy.instructions).toEqual({
+		role: "system",
+		content: input.systemPrompt,
+		providerOptions: CACHE_BREAKPOINT,
+	});
 });

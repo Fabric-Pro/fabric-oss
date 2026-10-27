@@ -281,8 +281,12 @@ describe("replay safety", () => {
 
 	it("takes the routing from the loop's dispatch, not from the name alone", () => {
 		expect(source).toMatch(
-			/fabricRouted:\s*isLoopBuiltInReadTool\(toolCall\.name\) \|\|\s*discoveredToolConfigIds\[toolCall\.name\] ===\s*FABRIC_AI_SERVER_CONFIG_ID,/,
+			/fabricRouted:\s*isLoopBuiltInReadTool\(\s*toolCall\.name,\s*callToolMode,?\s*\) \|\|\s*effectiveConfigId ===\s*FABRIC_AI_SERVER_CONFIG_ID,/,
 		);
+		expect(source).toMatch(
+			/const effectiveConfigId =\s*binding\?\.kind === "config" \|\| binding\?\.kind === "oauth"\s*\? binding.configId\s*:\s*discoveredToolConfigIds\[toolCall\.name\];/,
+		);
+		expect(source).toContain("mcpConfigId: effectiveConfigId,");
 	});
 
 	it("defaults to the legacy rules when none are named", () => {

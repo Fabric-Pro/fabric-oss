@@ -132,7 +132,7 @@ describe("listCalendarMeetings handler — server cache", () => {
 		getCachedMock.mockResolvedValue(MAPPED);
 		const result = await call();
 		expect(result).toEqual({ meetings: MAPPED });
-		expect(getCachedMock).toHaveBeenCalledWith("user-1", "org-1", 30);
+		expect(getCachedMock).toHaveBeenCalledWith("user-1", "org-1", 30, 0);
 		expect(executeTeamsToolMock).not.toHaveBeenCalled();
 		expect(setCachedMock).not.toHaveBeenCalled();
 	});
@@ -146,6 +146,7 @@ describe("listCalendarMeetings handler — server cache", () => {
 			"org-1",
 			30,
 			MAPPED,
+			0,
 		);
 	});
 
@@ -158,6 +159,7 @@ describe("listCalendarMeetings handler — server cache", () => {
 			"org-1",
 			30,
 			MAPPED,
+			0,
 		);
 		expect(result).toEqual({ meetings: MAPPED });
 	});
@@ -198,6 +200,7 @@ describe("listCalendarMeetings handler — server cache", () => {
 			"org-1",
 			30,
 			MAPPED,
+			0,
 		);
 	});
 
@@ -211,12 +214,13 @@ describe("listCalendarMeetings handler — server cache", () => {
 
 	it("threads daysBack into the cache key AND the Graph window (not hard-coded 30)", async () => {
 		await call({ daysBack: 7 });
-		expect(getCachedMock).toHaveBeenCalledWith("user-1", "org-1", 7);
+		expect(getCachedMock).toHaveBeenCalledWith("user-1", "org-1", 7, 0);
 		expect(setCachedMock).toHaveBeenCalledWith(
 			"user-1",
 			"org-1",
 			7,
 			MAPPED,
+			0,
 		);
 		const graphArgs = executeTeamsToolMock.mock.calls[0]?.[1] as {
 			startDate: string;
@@ -231,8 +235,33 @@ describe("listCalendarMeetings handler — server cache", () => {
 
 	it("resolves personal context (organizationId null) into the cache key", async () => {
 		await call({ organizationId: null });
-		expect(getCachedMock).toHaveBeenCalledWith("user-1", null, 30);
-		expect(setCachedMock).toHaveBeenCalledWith("user-1", null, 30, MAPPED);
+		expect(getCachedMock).toHaveBeenCalledWith("user-1", null, 30, 0);
+		expect(setCachedMock).toHaveBeenCalledWith(
+			"user-1",
+			null,
+			30,
+			MAPPED,
+			0,
+		);
+	});
+
+	it("reaches daysAhead into the future, so an upcoming series can be linked, under its own cache key", async () => {
+		const before = Date.now();
+		await call({ daysAhead: 14 });
+		expect(getCachedMock).toHaveBeenCalledWith("user-1", "org-1", 30, 14);
+		expect(setCachedMock).toHaveBeenCalledWith(
+			"user-1",
+			"org-1",
+			30,
+			MAPPED,
+			14,
+		);
+		const graphArgs = executeTeamsToolMock.mock.calls[0]?.[1] as {
+			endDate: string;
+		};
+		const aheadDays =
+			(new Date(graphArgs.endDate).getTime() - before) / 86_400_000;
+		expect(Math.round(aheadDays)).toBe(14);
 	});
 
 	it("does NOT cache a generic Graph failure (only successful results are cached)", async () => {

@@ -137,6 +137,7 @@ export interface OrchestratorWorkflowInput {
 	turnTokenAllowance?: number;
 	/** Server-recorded chat experiment, interpreted under orch-bounded-history-v1. */
 	historyRetention?: "bounded";
+	toolLoadingMode?: "call_tool";
 	/** `ORCHESTRATOR_TURN_CONTRACT_VERSION` of the starter that set `turnId`. */
 	turnContractVersion?: number;
 	/**
@@ -323,6 +324,7 @@ export interface OrchestratorWorkflowInput {
 		preloadedResources: import("../types").PreloadedResources | null;
 		enrichedMessage: string;
 		enrichedSystemPrompt: string;
+		systemPromptParts?: import("../types").WorkflowState["systemPromptParts"];
 		lettaAgentId: string | null;
 		workspaceContext: string;
 		journeyState: import("../types").JourneyState;

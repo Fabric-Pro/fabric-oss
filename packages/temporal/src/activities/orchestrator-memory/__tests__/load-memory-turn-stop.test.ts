@@ -30,7 +30,12 @@ vi.mock("@repo/database", () => ({
 	buildOrchestratorMemoryContext: vi
 		.fn()
 		.mockResolvedValue({ relevantEpisodes: [] }),
-	createEpisodicMemory: vi.fn().mockResolvedValue({ id: "episode-example" }),
+	createEpisodicMemory: vi
+		.fn()
+		.mockImplementation(async (data: Record<string, unknown>) => ({
+			...data,
+			id: "episode-example",
+		})),
 	buildMemoryContextPromptVariables: vi.fn(() => ({})),
 	getOrchestratorMemoryPreferences: vi.fn().mockResolvedValue({
 		preferences: {},
@@ -216,9 +221,13 @@ it.each(["conversation-example", undefined])(
 		const { createEpisodicMemoryActivity } = await import("../index");
 		vi.mocked(createEpisodicMemory).mockResolvedValue({
 			id: "episode-example",
+			title: "summary",
+			summary: "text",
+			keyTopics: [],
 		} as never);
 		mocks.embed.mockResolvedValue({ embedding: [0.1] });
 		await createEpisodicMemoryActivity({
+			executionId: "execution-example",
 			userId: "user-example",
 			conversationId: "execution-binding-example",
 			usageConversationId,

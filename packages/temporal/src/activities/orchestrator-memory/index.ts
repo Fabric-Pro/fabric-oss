@@ -29,6 +29,7 @@ import {
 	searchSimilarEpisodes,
 	storeEpisodeEmbedding,
 } from "@repo/rag/lib/vector-store";
+import { truncateWellFormed } from "@repo/utils/cut-at-code-units";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import {
 	type SecondaryUsageInput,
@@ -108,6 +109,7 @@ export interface SearchEpisodicMemoryInput extends SecondaryUsageInput {
 }
 
 export interface CreateEpisodeInput extends SecondaryUsageInput {
+	executionId: string;
 	userId: string;
 	organizationId?: string | null;
 	projectId?: string | null;
@@ -362,6 +364,7 @@ export async function createEpisodicMemoryActivity(
 	try {
 		// Step 1: Create PostgreSQL record
 		const episode = await createEpisodicMemory({
+			executionId: input.executionId,
 			userId: input.userId,
 			organizationId: input.organizationId,
 			projectId: input.projectId,
@@ -382,7 +385,7 @@ export async function createEpisodicMemoryActivity(
 		});
 
 		// Step 2: Generate embedding and store in Qdrant
-		const embeddingText = `${input.title}\n\n${input.summary}\n\nTopics: ${input.keyTopics.join(", ")}`;
+		const embeddingText = `${episode.title}\n\n${episode.summary}\n\nTopics: ${episode.keyTopics.join(", ")}`;
 		const embeddingModel = await getAIEmbeddingModel({
 			userId: input.userId,
 			callPurpose: AI_CALL_PURPOSES.memoryStorageEmbedding,
@@ -402,18 +405,20 @@ export async function createEpisodicMemoryActivity(
 			const storeResult = await storeEpisodeEmbedding({
 				episode: {
 					id: episode.id,
-					conversationId: input.conversationId,
-					title: input.title,
-					summary: input.summary,
-					keyTopics: input.keyTopics,
-					userIntents: input.userIntents,
-					outcome: input.outcome,
+					conversationId: episode.conversationId,
+					title: episode.title,
+					summary: episode.summary,
+					keyTopics: episode.keyTopics,
+					userIntents: episode.userIntents,
+					outcome: episode.outcome,
 					userId: input.userId,
 					organizationId: input.organizationId,
-					projectId: input.projectId,
-					workspaceId: input.workspaceId,
+					projectId: episode.projectId,
+					workspaceId: episode.workspaceId,
 					agentId: input.agentId,
-					conversationEndedAt: toISOString(input.conversationEndedAt),
+					conversationEndedAt: toISOString(
+						episode.conversationEndedAt,
+					),
 				},
 				embedding: episodeEmbedding,
 			});
@@ -619,11 +624,16 @@ export async function summarizeConversationActivity(
 	});
 
 	// Filter out system messages and format conversation
-	const conversationText = input.messages
-		.filter((m) => m.role !== "system")
-		.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
-		.join("\n\n")
-		.slice(0, 8000); // Limit to ~8k chars
+	const conversationText = truncateWellFormed(
+		input.messages
+			.filter((m) => m.role !== "system")
+			.map(
+				(m) =>
+					`${m.role === "user" ? "User" : "Assistant"}: ${m.content}`,
+			)
+			.join("\n\n"),
+		8000,
+	);
 
 	// Skip very short conversations
 	if (input.messages.filter((m) => m.role === "user").length < 2) {
@@ -772,16 +782,17 @@ export async function createEpisodeFromExecutionActivity(
 			projectId: input.projectId,
 			workspaceId: input.workspaceId,
 			conversationId: input.conversationId,
+			executionId: input.executionId,
 			agentId: null,
-			title: input.taskDescription.slice(0, 200),
-			summary: summary.slice(0, 2000),
+			title: truncateWellFormed(input.taskDescription, 200),
+			summary: truncateWellFormed(summary, 2000),
 			keyTopics,
 			userIntents: [
 				input.taskDescription.split(" ").slice(0, 5).join(" "),
 			],
 			outcome: input.outcome,
-			messageCount: input.steps.length + 1,
-			turnCount: input.steps.length,
+			messageCount: 2,
+			turnCount: 1,
 			toolsUsed: input.toolsUsed,
 			agentsUsed: input.agentsUsed,
 			conversationStartedAt: input.conversationStartedAt,
