@@ -118,12 +118,12 @@ describe("WeavePlanList", () => {
 		mocks.useKanbanRuntimeDetected.mockReturnValue("detected");
 	});
 
-	it("shows Background Agents and local development delegation for feature-linked approved plans", async () => {
+	it("shows Fabric Agents and local development delegation for feature-linked approved plans", async () => {
 		renderPlanList([approvedPlan()]);
 
 		expect(
 			await screen.findByRole("button", {
-				name: /Background Agents/i,
+				name: /Fabric Agents/i,
 			}),
 		).toBeEnabled();
 		expect(
@@ -134,7 +134,7 @@ describe("WeavePlanList", () => {
 		expect(screen.getByText(/through Fabric Kanban/i)).toBeInTheDocument();
 	});
 
-	it("disables Background Agents for standalone approved plans and explains why", async () => {
+	it("disables Fabric Agents for standalone approved plans and explains why", async () => {
 		renderPlanList([
 			approvedPlan({
 				id: "plan_2",
@@ -145,7 +145,7 @@ describe("WeavePlanList", () => {
 		]);
 
 		const backgroundButton = await screen.findByRole("button", {
-			name: /Background Agents/i,
+			name: /Fabric Agents/i,
 		});
 		expect(backgroundButton).toBeDisabled();
 		// The "why is this disabled" copy moved from a native `title` on the
@@ -219,7 +219,7 @@ describe("WeavePlanList", () => {
 			}),
 		]);
 
-		await screen.findByRole("button", { name: /Background Agents/i });
+		await screen.findByRole("button", { name: /Fabric Agents/i });
 		expect(
 			screen.queryByRole("button", { name: /Retry generation/i }),
 		).not.toBeInTheDocument();
@@ -276,17 +276,17 @@ describe("WeavePlanList", () => {
 		expect(onSelectExecution).toHaveBeenCalledWith("exec_1");
 	});
 
-	it("keeps the Background Agents delegation toast unchanged", async () => {
+	it("shows the Fabric Agents delegation toast", async () => {
 		mocks.startExecution.mockResolvedValue({ executionId: "exec_2" });
 		renderPlanList([approvedPlan()]);
 
 		fireEvent.click(
-			await screen.findByRole("button", { name: /Background Agents/i }),
+			await screen.findByRole("button", { name: /Fabric Agents/i }),
 		);
 
 		await waitFor(() =>
 			expect(mocks.toastSuccess).toHaveBeenCalledWith(
-				"Delegated to Background Agents!",
+				"Delegated to Fabric Agents!",
 			),
 		);
 	});
