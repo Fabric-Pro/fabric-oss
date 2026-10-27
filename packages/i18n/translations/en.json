@@ -1595,6 +1595,10 @@
 					"settings": {
 						"updated": "Organization settings updated"
 					},
+					"agent_definition": {
+						"imported": "Agent definition imported",
+						"exported": "Agent definition exported"
+					},
 					"member": {
 						"invited": "Member invited",
 						"role_changed": "Member role changed",

@@ -1286,6 +1286,10 @@
 					"settings": {
 						"updated": "Organisationseinstellungen aktualisiert"
 					},
+					"agent_definition": {
+						"imported": "Agent-Definition importiert",
+						"exported": "Agent-Definition exportiert"
+					},
 					"member": {
 						"invited": "Mitglied eingeladen",
 						"role_changed": "Rolle geändert",

@@ -69,8 +69,9 @@ export const AUDIT_ACTIONS = [
 	// back.
 	"org.purged",
 	"org.settings.updated",
-	"org.chat_approval.decided",
-	"org.chat_run.cancel_requested",
+	// Portable agent definitions (fabric.ai/v1): an agent instance's prompt,
+	// model, tool and skill bindings were imported into or exported from the
+	// organization. Format, mode and target instance id only; never prompt text.
 	"org.agent_definition.imported",
 	"org.agent_definition.exported",
 	"org.member.invited",

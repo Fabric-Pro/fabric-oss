@@ -188,6 +188,20 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 		"info",
 		"org",
 	),
+	"org.agent_definition.imported": D(
+		"org.agent_definition.imported",
+		"Agent definition imported",
+		Upload,
+		"info",
+		"org",
+	),
+	"org.agent_definition.exported": D(
+		"org.agent_definition.exported",
+		"Agent definition exported",
+		Download,
+		"info",
+		"org",
+	),
 	"org.member.invited": D(
 		"org.member.invited",
 		"Member invited",

@@ -252,6 +252,20 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"Org-level configuration changed (default model, integration credentials at the org level, etc.).",
 	},
 	{
+		key: "org.agent_definition.imported",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.agent_definition.imported",
+		description:
+			"A portable agent definition (`fabric.ai/v1`) was imported into the organization, creating a new agent instance or replacing an existing instance's prompt, model, tool and skill bindings. Format, mode and target instance id are recorded; prompt text is never stored in the audit row.",
+	},
+	{
+		key: "org.agent_definition.exported",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.agent_definition.exported",
+		description:
+			"An organization agent instance was exported as a portable `fabric.ai/v1` JSON or YAML definition. Format and instance id are recorded; prompt text is never stored in the audit row.",
+	},
+	{
 		key: "org.member.invited",
 		categoryId: "org",
 		labelKey: "settings.auditLog.actions.org.member.invited",
