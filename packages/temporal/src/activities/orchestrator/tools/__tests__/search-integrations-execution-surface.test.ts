@@ -206,6 +206,9 @@ describe("executionSurface: LOOM_CHAT", () => {
 				name,
 				description: op.description,
 				inputSchema: op.inputSchema,
+				outputSchema: op.outputSchema,
+				access: op.access,
+				retrySafety: op.retrySafety,
 			})),
 		);
 	});

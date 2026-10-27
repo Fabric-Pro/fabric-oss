@@ -8,10 +8,9 @@
  * resolve providers here, so each registered provider has exactly one
  * implementation and one operation list.
  *
- * Each operation declares ONE Zod schema. It is both the runtime validator and
- * the source of the JSON Schema advertised to the model — `inputSchema` is
- * derived from it via `z.toJSONSchema`, never hand-written alongside it, so the
- * two cannot drift.
+ * Each operation declares input and result Zod schemas. The runtime validators
+ * and JSON Schemas advertised to the model come from those same declarations,
+ * so discovery and execution cannot drift.
  *
  * Runtime policy is deliberately NOT here: credential fetching, project
  * Read-only mode, and runtime authority stay in the Temporal adapter that calls
@@ -28,6 +27,11 @@ import {
 	queryDatabricksVectorIndexes,
 } from "./databricks-vector-search";
 import { executeNhtsaTool } from "./nhtsa";
+import {
+	databricksIndexesResultSchema,
+	databricksQueryResultSchema,
+	nhtsaResultSchemas,
+} from "./operation-results";
 
 // ─── Contract ────────────────────────────────────────────────────────────────
 
@@ -76,6 +80,9 @@ export interface OperationDefinition {
 	inputSchema: Record<string, unknown>;
 	/** The Zod schema `inputSchema` and `parseArgs` both come from. */
 	schema: z.ZodType;
+	/** Validated structured results and the matching discovery contract. */
+	resultSchema: z.ZodType;
+	outputSchema: Record<string, unknown>;
 	/** Canonical effect. Authority and Read-only mode use this, not the name. */
 	access: "READ" | "WRITE";
 	/** Whether the LOOM chat surface may discover and execute this operation. */
@@ -121,34 +128,36 @@ export class IntegrationArgumentError extends Error {
 }
 
 /**
- * Render a schema as the JSON Schema advertised to the model.
+ * Render an input or result schema as the JSON Schema advertised to the model.
  *
  * `io: "input"` is required, not incidental: several operations transform their
  * input (VIN batches, index-name sanitization), and the default "output" mode
  * refuses to represent transforms at all. Input mode is also the semantically
- * correct choice — we are telling the model what to SEND.
+ * correct choice — we are telling the model what to SEND. Result contracts
+ * explicitly select "output" to describe what the dispatcher returns.
  *
  * `$schema` is stripped because the advertised schema is inlined into every
  * tool definition and the dialect declaration buys the model nothing.
  */
 export function toAdvertisedJsonSchema(
 	schema: z.ZodType,
+	io: "input" | "output" = "input",
 ): Record<string, unknown> {
 	const { $schema: _dialect, ...rest } = z.toJSONSchema(schema, {
-		io: "input",
+		io,
 	}) as Record<string, unknown>;
 	return rest;
 }
 
 /**
- * Bind one operation's schema, executor and derived JSON Schema together, so
- * `parseArgs`, `execute` and `inputSchema` cannot disagree about the argument
- * shape.
+ * Bind input and result schemas to the executor and discovery metadata.
+ * Argument parsing and result validation use the advertised contracts.
  */
 function defineOperation<TSchema extends z.ZodType>(spec: {
 	description: string;
 	keywords: readonly string[];
 	schema: TSchema;
+	resultSchema: z.ZodType;
 	access: "READ" | "WRITE";
 	chatEnabled: boolean;
 	retrySafety: OperationDefinition["retrySafety"];
@@ -161,6 +170,8 @@ function defineOperation<TSchema extends z.ZodType>(spec: {
 		description: spec.description,
 		keywords: spec.keywords,
 		schema: spec.schema,
+		resultSchema: spec.resultSchema,
+		outputSchema: toAdvertisedJsonSchema(spec.resultSchema, "output"),
 		inputSchema: toAdvertisedJsonSchema(spec.schema),
 		access: spec.access,
 		chatEnabled: spec.chatEnabled,
@@ -254,10 +265,17 @@ function buildNhtsaOperation<TSchema extends z.ZodType>(
 	keywords: readonly string[],
 	schema: TSchema,
 ): OperationDefinition {
+	const resultSchema = nhtsaResultSchemas[methodName];
+	if (!resultSchema) {
+		throw new Error(
+			`Missing result contract for NHTSA operation ${methodName}`,
+		);
+	}
 	return defineOperation({
 		description,
 		keywords,
 		schema,
+		resultSchema,
 		access: "READ",
 		chatEnabled: true,
 		retrySafety: "SAFE",
@@ -512,6 +530,7 @@ const DATABRICKS_OPERATIONS: Record<string, OperationDefinition> = {
 			"knowledge",
 		],
 		schema: queryIndexSchema,
+		resultSchema: databricksQueryResultSchema,
 		access: "READ",
 		chatEnabled: true,
 		retrySafety: "SAFE",
@@ -551,6 +570,7 @@ const DATABRICKS_OPERATIONS: Record<string, OperationDefinition> = {
 		},
 	}),
 	list_indexes: defineOperation({
+		resultSchema: databricksIndexesResultSchema,
 		description: "List available vector search indexes by schema",
 		keywords: ["list", "indexes", "catalog", "schema"],
 		schema: z.strictObject({
@@ -708,6 +728,9 @@ export function getIntegrationOperationKeywords(
 
 /** An operation as advertised to the LOOM chat surface. */
 export interface ChatEnabledOperation {
+	outputSchema: Record<string, unknown>;
+	access: OperationDefinition["access"];
+	retrySafety: OperationDefinition["retrySafety"];
 	name: string;
 	description: string;
 	/** Registry-derived JSON Schema for this operation's arguments. */
@@ -734,6 +757,9 @@ const CHAT_ENABLED_OPERATIONS: Record<
 				// Carried so chat discovery can advertise the real argument
 				// contract instead of an unconstrained object.
 				inputSchema: definition.inputSchema,
+				outputSchema: definition.outputSchema,
+				access: definition.access,
+				retrySafety: definition.retrySafety,
 			})),
 	]),
 );
@@ -771,6 +797,16 @@ export class UnknownIntegrationOperationError extends Error {
 				: `Unsupported integration provider: ${provider}`,
 		);
 		this.name = "UnknownIntegrationOperationError";
+	}
+}
+
+/** Result validation errors omit data because provider output may contain secrets. */
+export class IntegrationResultError extends Error {
+	constructor(provider: string, operation: string) {
+		super(
+			`Integration ${provider}.${operation} returned an invalid result.`,
+		);
+		this.name = "IntegrationResultError";
 	}
 }
 
@@ -905,9 +941,14 @@ export async function executeRegisteredIntegrationOperation(params: {
 		throw new MissingIntegrationCredentialsError(provider, missingKeys);
 	}
 
-	return definition.execute(parsedArgs, {
+	const result = await definition.execute(parsedArgs, {
 		credentials: params.credentials ?? undefined,
 		idempotencyKey: params.idempotencyKey,
 		signal: params.signal,
 	});
+	const parsedResult = definition.resultSchema.safeParse(result.data);
+	if (!parsedResult.success) {
+		throw new IntegrationResultError(provider, operation);
+	}
+	return { data: parsedResult.data, text: result.text };
 }
