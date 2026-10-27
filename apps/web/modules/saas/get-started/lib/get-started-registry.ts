@@ -1552,7 +1552,7 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				id: "agents-new",
 				anchor: "agents-new",
 				title: "An agent is what you attach to it",
-				body: "The power isn't the prompt — it's the Knowledge (libraries, integrations), Capabilities (Skills + built-in tools + MCP), and Triggers you compose in. It can loop autonomously toward a goal, or be exposed as a callable API.",
+				body: "Build an agent from instructions, knowledge, skills, tools, and triggers. In the builder, Import agent previews a Fabric JSON or YAML definition and creates a draft. Reconnect resources in this organization before publishing. Export agent on an agent's detail page saves a portable definition.",
 			},
 			{
 				id: "agents-featured",

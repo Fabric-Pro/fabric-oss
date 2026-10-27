@@ -190,6 +190,25 @@ export const updateInstanceProcedure = tenantProtectedProcedure
 			}
 		}
 
+		// Imported connection requirements describe resources still awaiting
+		// rebinding. Editing prose must not silently discard that declaration.
+		const previousInstructions = existing.customInstructions;
+		const portableRequirements =
+			previousInstructions &&
+			typeof previousInstructions === "object" &&
+			!Array.isArray(previousInstructions)
+				? previousInstructions.portableRequirements
+				: undefined;
+		const customInstructions =
+			input.customInstructions === undefined
+				? undefined
+				: {
+						...(portableRequirements !== undefined
+							? { portableRequirements }
+							: {}),
+						...input.customInstructions,
+					};
+
 		const instance = await updateAgentTemplateInstance({
 			id: input.id,
 			// Required for OAuth lookup when resolving knowledgeConnections
@@ -199,7 +218,7 @@ export const updateInstanceProcedure = tenantProtectedProcedure
 			description: input.description,
 			heroEmojis: input.heroEmojis,
 			heroImageUrl: input.heroImageUrl ?? undefined,
-			customInstructions: input.customInstructions as
+			customInstructions: customInstructions as
 				| Prisma.InputJsonValue
 				| undefined,
 			knowledgeConnections: input.knowledgeConnections as

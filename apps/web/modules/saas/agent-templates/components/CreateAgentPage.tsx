@@ -76,6 +76,7 @@ import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import { AgentDefinitionImportDialog } from "./AgentDefinitionDialog";
 import { DataSourcesSheet } from "./DataSourcesSheet";
 import { ToolsSheet } from "./ToolsSheet";
 import { type TriggerConfig, TriggersSheet } from "./TriggersSheet";
@@ -1201,6 +1202,17 @@ export function CreateAgentPage({
 									</div>
 								</div>
 								<div className="flex items-center gap-2">
+									{!isEditMode && organizationId && (
+										<AgentDefinitionImportDialog
+											key={organizationId}
+											organizationId={organizationId}
+											onImported={(id) =>
+												router.push(
+													`${basePath.replace(/\/agents$/, "")}/agents/${id}`,
+												)
+											}
+										/>
+									)}
 									<Button
 										variant="outline"
 										onClick={() => router.back()}

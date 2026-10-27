@@ -10,7 +10,7 @@
  *   fetch does this); `maxBytes` here is a second guard.
  */
 
-import { parse as parseYaml } from "yaml";
+import { parse as parseYaml, stringify } from "yaml";
 
 export interface SafeParseOptions {
 	/** Maximum nesting depth of the parsed document (default 50). */
@@ -19,6 +19,8 @@ export interface SafeParseOptions {
 	maxAliasCount?: number;
 	/** Maximum input size in bytes (default 5 MB). */
 	maxBytes?: number;
+	/** Reject duplicate mapping keys when interpreting a configuration file. */
+	uniqueKeys?: boolean;
 }
 
 export const SAFE_PARSE_DEFAULT_MAX_DEPTH = 50;
@@ -108,7 +110,7 @@ export function parseYamlSafe(
 		parsed = parseYaml(text, {
 			schema: "core",
 			maxAliasCount,
-			uniqueKeys: false,
+			uniqueKeys: options.uniqueKeys ?? false,
 			logLevel: "silent",
 		});
 	} catch (error) {
@@ -118,6 +120,11 @@ export function parseYamlSafe(
 	}
 	assertMaxDepth(parsed, maxDepth);
 	return parsed;
+}
+
+/** Serialize plain, validated configuration values without YAML aliases. */
+export function stringifyYaml(value: unknown): string {
+	return stringify(value, { aliasDuplicateObjects: false, lineWidth: 0 });
 }
 
 /**

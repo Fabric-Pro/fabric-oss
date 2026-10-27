@@ -461,6 +461,11 @@ describe("audit taxonomy — closed action set", () => {
 		expect(AUDIT_ACTIONS).toContain("project.ci_run.triggered");
 	});
 
+	it("includes portable agent import and export in the closed taxonomy", () => {
+		expect(AUDIT_ACTIONS).toContain("org.agent_definition.imported");
+		expect(AUDIT_ACTIONS).toContain("org.agent_definition.exported");
+	});
+
 	it("includes the project Databricks knowledge binding lifecycle in the closed taxonomy", () => {
 		// Connecting a binding points every agent/retrieval flow in the
 		// project at an external customer corpus via a stored org credential.

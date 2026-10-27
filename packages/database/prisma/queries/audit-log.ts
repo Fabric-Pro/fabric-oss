@@ -69,6 +69,10 @@ export const AUDIT_ACTIONS = [
 	// back.
 	"org.purged",
 	"org.settings.updated",
+	"org.chat_approval.decided",
+	"org.chat_run.cancel_requested",
+	"org.agent_definition.imported",
+	"org.agent_definition.exported",
 	"org.member.invited",
 	"org.member.role_changed",
 	"org.member.removed",
