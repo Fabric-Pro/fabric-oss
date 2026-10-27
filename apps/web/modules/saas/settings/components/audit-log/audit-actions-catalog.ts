@@ -252,6 +252,20 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"Org-level configuration changed (default model, integration credentials at the org level, etc.).",
 	},
 	{
+		key: "org.chat_approval.decided",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.chat_approval.decided",
+		description:
+			"A member approved or rejected a pending Orchestrator or Weave checkpoint. The row records the run id, checkpoint id and boolean decision, never the prompt or feedback text.",
+	},
+	{
+		key: "org.chat_run.cancel_requested",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.chat_run.cancel_requested",
+		description:
+			"A member requested cancellation of an in-flight Direct or Orchestrator chat run. The row records the execution and run ids, never conversation content.",
+	},
+	{
 		key: "org.agent_definition.imported",
 		categoryId: "org",
 		labelKey: "settings.auditLog.actions.org.agent_definition.imported",

@@ -301,7 +301,13 @@ describe("audit.taxonomy handler", () => {
 		// fabric.ai/v1 agent definition was imported into or exported from
 		// the organization; format, mode and instance id only, never prompt
 		// text) = 219.
-		expect(result.actions).toHaveLength(219);
+		// + 2 org.{chat_approval.decided, chat_run.cancel_requested} (a
+		// member approved or rejected a chat/Weave checkpoint, or requested
+		// cancellation of a chat run; run id and checkpoint id only, never
+		// prompt or feedback text) = 221.
+		expect(result.actions).toHaveLength(221);
+		expect(result.actions).toContain("org.chat_approval.decided");
+		expect(result.actions).toContain("org.chat_run.cancel_requested");
 		expect(result.actions).toContain("org.agent_definition.imported");
 		expect(result.actions).toContain("org.agent_definition.exported");
 		expect(result.actions).toContain(

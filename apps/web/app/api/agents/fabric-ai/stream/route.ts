@@ -19,12 +19,17 @@ import { AiUsageLimitExceededError } from "@repo/payments";
 import {
 	type ActivityHeartbeatDetails,
 	type DirectChatProgressUpdate,
+	type DirectChatToolCall,
 	type DirectChatWorkflowInput,
 	type DirectChatWorkflowOutput,
 	decodeHeartbeatDetails,
 	getTemporalClient,
 	isTemporalAvailable,
 } from "@repo/temporal";
+import {
+	type DirectStreamEvent,
+	encodeDirectStreamEvent,
+} from "@saas/agents/lib/direct-stream-protocol";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
 import { v4 as uuidv4 } from "uuid";
@@ -1105,13 +1110,13 @@ async function handleTemporalWorkflow(params: {
 					// Already closed or cancelled by the client.
 				}
 			};
-			const sendEvent = (data: unknown) => {
+			const sendEvent = (data: DirectStreamEvent) => {
 				if (isClosed) {
 					return; // Don't send if already closed
 				}
 				try {
 					controller.enqueue(
-						encoder.encode(`data: ${JSON.stringify(data)}\n\n`),
+						encoder.encode(encodeDirectStreamEvent(data)),
 					);
 				} catch {
 					// Controller already closed, mark as closed
@@ -1133,7 +1138,7 @@ async function handleTemporalWorkflow(params: {
 				serverName?: string;
 				args?: Record<string, unknown>;
 				result?: unknown;
-				status: string;
+				status: DirectChatToolCall["status"];
 				/**
 				 * Why this is carried separately from `result`: a tool that
 				 * never ran has no result to explain itself with. The activity
@@ -1193,7 +1198,7 @@ async function handleTemporalWorkflow(params: {
 				{
 					args: string;
 					result: string;
-					status: string;
+					status: DirectChatToolCall["status"];
 					started: boolean;
 				}
 			>();
@@ -1374,6 +1379,7 @@ async function handleTemporalWorkflow(params: {
 						memo: {
 							userId,
 							organizationId: organizationId ?? null,
+							projectId: projectId ?? null,
 						},
 						// Fizzy #1412 PR2 (Codex review round-3 fix #3):
 						// Make the "no-workflow-retry" contract EXPLICIT.
@@ -1576,7 +1582,7 @@ async function handleTemporalWorkflow(params: {
 											id: string;
 											name: string;
 											serverName?: string;
-											status: string;
+											status: DirectChatToolCall["status"];
 											args?: Record<string, unknown>;
 											result?: unknown;
 											mcpAppResourceUri?: string;

@@ -188,6 +188,20 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 		"info",
 		"org",
 	),
+	"org.chat_approval.decided": D(
+		"org.chat_approval.decided",
+		"Chat approval decided",
+		CheckCircle,
+		"info",
+		"org",
+	),
+	"org.chat_run.cancel_requested": D(
+		"org.chat_run.cancel_requested",
+		"Chat run cancellation requested",
+		AlertCircle,
+		"info",
+		"org",
+	),
 	"org.agent_definition.imported": D(
 		"org.agent_definition.imported",
 		"Agent definition imported",

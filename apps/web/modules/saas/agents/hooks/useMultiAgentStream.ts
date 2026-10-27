@@ -18,7 +18,10 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getSelectedAgentInstanceId } from "../components/FabricChat/shared/agent-selection";
 import { emitCancelEvent } from "../lib/cancel-telemetry";
+import { settleUnfinishedToolCalls } from "../lib/direct-chat-turns";
 import { loadInstanceAgentConfig } from "../lib/load-instance-agent-config";
+import { parseResearchStreamEvent } from "../lib/orchestrator-stream-protocol";
+import { readChatEventStream } from "../lib/read-chat-event-stream";
 
 function isMcpDebugEnabled(): boolean {
 	if (typeof window === "undefined") {
@@ -126,6 +129,7 @@ export interface AgentResponse {
 	toolCalls: MultiAgentToolCall[];
 	isLoading: boolean;
 	isError: boolean;
+	errorMessage?: string;
 	/**
 	 * Per-agent stream lifecycle status.
 	 * `"cancelled"` is set by `stopAll` only on agents that were
@@ -720,8 +724,8 @@ Respond for a chat interface:
 					return;
 				}
 
-				const reader = response.body?.getReader();
-				if (!reader) {
+				const body = response.body;
+				if (!body) {
 					updateResponse((prev) => ({
 						...prev,
 						isLoading: false,
@@ -731,442 +735,433 @@ Respond for a chat interface:
 					return;
 				}
 
-				const decoder = new TextDecoder();
-				let buffer = "";
-
-				while (true) {
-					const { done, value } = await reader.read();
-					if (done) {
-						break;
-					}
-
-					buffer += decoder.decode(value, { stream: true });
-					const lines = buffer.split("\n");
-					buffer = lines.pop() ?? "";
-
-					for (const line of lines) {
-						if (!line.startsWith("data: ")) {
-							continue;
-						}
-						// Freeze gate (decision 12 /): once the user
-						// has clicked Stop on the turn, every subsequent
-						// SSE event for this agent is dropped on the
-						// floor. The visible `Stopped` caption stays
-						// honest even if the server keeps streaming.
+				await readChatEventStream(body, {
+					parse: parseResearchStreamEvent,
+					isOutcome: (event) =>
+						[
+							"done",
+							"completed",
+							"error",
+							"stream_timeout",
+						].includes(event.type),
+					isTerminal: (event) =>
+						[
+							"done",
+							"completed",
+							"error",
+							"stream_timeout",
+						].includes(event.type),
+					onEvent: (data) => {
 						if (cancelledAgentIdsRef.current.has(agent.agentId)) {
-							continue;
+							return;
 						}
-						try {
-							const data = JSON.parse(line.slice(6));
-							switch (data.type) {
-								case "started":
-									updateResponse((prev) => ({
-										...prev,
-										executionId:
-											typeof data.executionId === "string"
-												? data.executionId
-												: prev.executionId,
-									}));
-									break;
-								case "text":
-								case "text_delta":
-									queueTextDelta(
-										responseKey,
-										typeof data.content === "string"
-											? data.content
-											: "",
-									);
-									break;
-								case "tool_start": {
-									const toolName = data.name ?? data.toolName;
-									if (!toolName) {
-										break;
-									}
-									debugLog("tool_start", {
-										toolCallId: data.toolCallId,
-										toolName,
-										status: data.status,
-										hasMcpApp:
-											Boolean(data.mcpAppResourceUri) &&
-											Boolean(data.mcpAppConfigId),
-									});
-									// Mark a text-segment boundary for this
-									// response so the next text delta arriving
-									// on the same key prepends a paragraph
-									// break (avoids "pattern.Onion" sentence
-									// merges across pre-tool / post-tool runs).
-									needsTextSeparatorRef.current.set(
-										responseKey,
-										true,
-									);
-									updateResponse((prev) => ({
-										...prev,
-										toolCalls: mergeToolCall(
-											prev.toolCalls,
-											{
-												id:
-													data.toolCallId ??
-													`tool-${Date.now()}`,
-												name: toolName,
-												args: data.args,
-												serverName: data.serverName,
-												status:
-													(data.status as
-														| "pending"
-														| "running"
-														| "complete"
-														| "error") ?? "running",
-												mcpAppResourceUri:
-													data.mcpAppResourceUri,
-												mcpAppConfigId:
-													data.mcpAppConfigId,
-											},
-										),
-									}));
+						switch (data.type) {
+							case "started":
+								updateResponse((prev) => ({
+									...prev,
+									executionId:
+										typeof data.executionId === "string"
+											? data.executionId
+											: prev.executionId,
+								}));
+								break;
+							case "text":
+							case "text_delta":
+								queueTextDelta(
+									responseKey,
+									typeof data.content === "string"
+										? data.content
+										: "",
+								);
+								break;
+							case "tool_start": {
+								const toolName = data.name ?? data.toolName;
+								if (!toolName) {
 									break;
 								}
-								case "tool_input": {
-									const toolName = data.name ?? data.toolName;
-									if (!toolName) {
-										break;
-									}
-									debugLog("tool_input", {
-										toolCallId: data.toolCallId,
-										toolName,
-										status: data.status,
-										argKeys:
-											data.args &&
-											typeof data.args === "object"
-												? Object.keys(
-														data.args as Record<
-															string,
-															unknown
-														>,
-													)
-												: [],
-										serializedLength: (() => {
-											try {
-												return JSON.stringify(data.args)
-													.length;
-											} catch {
-												return 0;
-											}
-										})(),
-									});
-									updateResponse((prev) => ({
-										...prev,
-										toolCalls: mergeToolCall(
-											prev.toolCalls,
-											{
-												id:
-													data.toolCallId ??
-													`tool-${Date.now()}`,
-												name: toolName,
-												args: data.args,
-												serverName: data.serverName,
-												status:
-													(data.status as
-														| "pending"
-														| "running"
-														| "complete"
-														| "error") ?? "pending",
-												mcpAppResourceUri:
-													data.mcpAppResourceUri,
-												mcpAppConfigId:
-													data.mcpAppConfigId,
-											},
-										),
-									}));
+								debugLog("tool_start", {
+									toolCallId: data.toolCallId,
+									toolName,
+									status: data.status,
+									hasMcpApp:
+										Boolean(data.mcpAppResourceUri) &&
+										Boolean(data.mcpAppConfigId),
+								});
+								// Mark a text-segment boundary for this
+								// response so the next text delta arriving
+								// on the same key prepends a paragraph
+								// break (avoids "pattern.Onion" sentence
+								// merges across pre-tool / post-tool runs).
+								needsTextSeparatorRef.current.set(
+									responseKey,
+									true,
+								);
+								updateResponse((prev) => ({
+									...prev,
+									toolCalls: mergeToolCall(prev.toolCalls, {
+										id:
+											data.toolCallId ??
+											`tool-${Date.now()}`,
+										name: toolName,
+										args: data.args,
+										serverName: data.serverName,
+										status:
+											(data.status as
+												| "pending"
+												| "running"
+												| "complete"
+												| "error") ?? "running",
+										mcpAppResourceUri:
+											data.mcpAppResourceUri,
+										mcpAppConfigId: data.mcpAppConfigId,
+									}),
+								}));
+								break;
+							}
+							case "tool_input": {
+								const toolName = data.name ?? data.toolName;
+								if (!toolName) {
 									break;
 								}
-								case "tool_result": {
-									const resultName =
-										data.name ?? data.toolName;
-									debugLog("tool_result", {
-										toolCallId: data.toolCallId,
-										toolName: resultName,
-										status: data.status,
-										hasMcpApp:
-											Boolean(data.mcpAppResourceUri) &&
-											Boolean(data.mcpAppConfigId),
-									});
-									updateResponse((prev) => ({
-										...prev,
-										toolCalls: resultName
-											? mergeToolCall(prev.toolCalls, {
-													id:
-														data.toolCallId ??
-														`tool-${Date.now()}`,
-													name: resultName,
-													args: data.args,
-													result: data.result,
-													serverName: data.serverName,
-													status:
-														data.status === "error"
-															? "error"
-															: "complete",
-													mcpAppResourceUri:
-														data.mcpAppResourceUri,
-													mcpAppConfigId:
-														data.mcpAppConfigId,
-												})
-											: prev.toolCalls,
-									}));
-									break;
-								}
-								case "step_complete": {
-									const toolCalls = Array.isArray(
-										data.toolCalls,
-									)
-										? data.toolCalls
-										: [];
-									if (toolCalls.length === 0) {
-										break;
-									}
-									updateResponse((prev) => {
-										const nextToolCalls = [
-											...prev.toolCalls,
-										];
-										for (const tc of toolCalls) {
-											const existingIndex =
-												nextToolCalls.findIndex(
-													(existing) =>
-														existing.id === tc.id ||
-														existing.name ===
-															tc.name,
-												);
-											const mapped = {
-												id:
-													tc.id ??
-													`tool-${Date.now()}-${tc.name ?? "step"}`,
-												name: tc.name,
-												args: tc.args,
-												result: tc.result,
-												status:
-													tc.status === "error"
-														? ("error" as const)
-														: ("complete" as const),
-												mcpAppResourceUri:
-													tc.mcpAppResourceUri,
-												mcpAppConfigId:
-													tc.mcpAppConfigId,
-											};
-											if (existingIndex >= 0) {
-												nextToolCalls[existingIndex] =
-													mergeToolCall(
-														[
-															nextToolCalls[
-																existingIndex
-															],
-														],
-														mapped,
-													)[0];
-											} else {
-												nextToolCalls.push(mapped);
-											}
+								debugLog("tool_input", {
+									toolCallId: data.toolCallId,
+									toolName,
+									status: data.status,
+									argKeys:
+										data.args &&
+										typeof data.args === "object"
+											? Object.keys(
+													data.args as Record<
+														string,
+														unknown
+													>,
+												)
+											: [],
+									serializedLength: (() => {
+										try {
+											return JSON.stringify(data.args)
+												.length;
+										} catch {
+											return 0;
 										}
-										return {
-											...prev,
-											toolCalls: nextToolCalls,
-										};
-									});
+									})(),
+								});
+								updateResponse((prev) => ({
+									...prev,
+									toolCalls: mergeToolCall(prev.toolCalls, {
+										id:
+											data.toolCallId ??
+											`tool-${Date.now()}`,
+										name: toolName,
+										args: data.args,
+										serverName: data.serverName,
+										status:
+											(data.status as
+												| "pending"
+												| "running"
+												| "complete"
+												| "error") ?? "pending",
+										mcpAppResourceUri:
+											data.mcpAppResourceUri,
+										mcpAppConfigId: data.mcpAppConfigId,
+									}),
+								}));
+								break;
+							}
+							case "tool_result": {
+								const resultName = data.name ?? data.toolName;
+								debugLog("tool_result", {
+									toolCallId: data.toolCallId,
+									toolName: resultName,
+									status: data.status,
+									hasMcpApp:
+										Boolean(data.mcpAppResourceUri) &&
+										Boolean(data.mcpAppConfigId),
+								});
+								updateResponse((prev) => ({
+									...prev,
+									toolCalls: resultName
+										? mergeToolCall(prev.toolCalls, {
+												id:
+													data.toolCallId ??
+													`tool-${Date.now()}`,
+												name: resultName,
+												args: data.args,
+												result: data.result,
+												serverName: data.serverName,
+												status:
+													data.status === "error"
+														? "error"
+														: "complete",
+												mcpAppResourceUri:
+													data.mcpAppResourceUri,
+												mcpAppConfigId:
+													data.mcpAppConfigId,
+											})
+										: prev.toolCalls,
+								}));
+								break;
+							}
+							case "step_complete": {
+								const toolCalls = Array.isArray(data.toolCalls)
+									? data.toolCalls
+									: [];
+								if (toolCalls.length === 0) {
 									break;
 								}
-								case "mcp_default_tool_invoked":
-								case "mcp_default_tool_failed": {
-									// Tracking-only event forwarded straight
-									// to the consumer's
-									// `useAnalytics.trackEvent`. No
-									// per-agent state mutation; the per-agent
-									// freeze gate above already covers
-									// cancellation. If the consumer didn't
-									// supply a handler we silently drop the
-									// event so the workflow can emit these
-									// without coordinating with every call
-									// site.
-									const handler = onAnalyticsEventRef.current;
-									if (
-										handler &&
-										data.payload &&
-										typeof data.payload === "object"
-									) {
-										handler(
-											data.type,
-											data.payload as Record<
-												string,
-												unknown
-											>,
+								updateResponse((prev) => {
+									const nextToolCalls = [...prev.toolCalls];
+									for (const tc of toolCalls) {
+										const existingIndex =
+											nextToolCalls.findIndex(
+												(existing) =>
+													existing.id === tc.id ||
+													existing.name === tc.name,
+											);
+										const mapped = {
+											id:
+												tc.id ??
+												`tool-${Date.now()}-${tc.name ?? "step"}`,
+											name: tc.name,
+											args: tc.args,
+											result: tc.result,
+											status:
+												tc.status === "error"
+													? ("error" as const)
+													: ("complete" as const),
+											mcpAppResourceUri:
+												tc.mcpAppResourceUri,
+											mcpAppConfigId: tc.mcpAppConfigId,
+										};
+										if (existingIndex >= 0) {
+											nextToolCalls[existingIndex] =
+												mergeToolCall(
+													[
+														nextToolCalls[
+															existingIndex
+														],
+													],
+													mapped,
+												)[0];
+										} else {
+											nextToolCalls.push(mapped);
+										}
+									}
+									return {
+										...prev,
+										toolCalls:
+											settleUnfinishedToolCalls(
+												nextToolCalls,
+											) ?? nextToolCalls,
+									};
+								});
+								break;
+							}
+							case "mcp_default_tool_invoked":
+							case "mcp_default_tool_failed": {
+								// Tracking-only event forwarded straight
+								// to the consumer's
+								// `useAnalytics.trackEvent`. No
+								// per-agent state mutation; the per-agent
+								// freeze gate above already covers
+								// cancellation. If the consumer didn't
+								// supply a handler we silently drop the
+								// event so the workflow can emit these
+								// without coordinating with every call
+								// site.
+								const handler = onAnalyticsEventRef.current;
+								if (
+									handler &&
+									data.payload &&
+									typeof data.payload === "object"
+								) {
+									handler(
+										data.type,
+										data.payload as Record<string, unknown>,
+									);
+								}
+								break;
+							}
+
+							case "approval_required":
+								updateResponse((prev) => ({
+									...prev,
+									pendingApproval: {
+										approvalId:
+											typeof data.approvalId === "string"
+												? data.approvalId
+												: "",
+										stepId:
+											typeof data.stepId === "string"
+												? data.stepId
+												: "",
+										reason:
+											typeof data.reason === "string"
+												? data.reason
+												: "Approval required",
+									},
+								}));
+								break;
+							case "approval_resolved":
+								updateResponse((prev) => ({
+									...prev,
+									pendingApproval: null,
+								}));
+								break;
+							case "stream_timeout":
+								// The orchestrator route now closes a
+								// long run's HTTP window with this instead
+								// of `error: "Execution timed out"`, and
+								// the workflow keeps running on Temporal
+								// (issue #2269). The Loom chat reconnects
+								// with the executionId; this surface has no
+								// resume loop, so end the agent's turn
+								// honestly rather than letting the close
+								// read as a clean finish.
+								flushBufferedText(responseKey);
+								updateResponse((prev) => ({
+									...prev,
+									isLoading: false,
+									status: "error",
+									isError: true,
+									content:
+										prev.content ||
+										"The streaming window closed before this agent finished. The workflow may still be running.",
+									errorMessage:
+										"The streaming window closed before this agent finished. The workflow may still be running.",
+									pendingApproval: null,
+									toolCalls:
+										settleUnfinishedToolCalls(
+											prev.toolCalls,
+										) ?? prev.toolCalls,
+								}));
+								clearBufferedText(responseKey);
+								break;
+							case "done":
+							case "completed":
+							case "error":
+								// AI usage-limit short-circuit. When
+								// the chokepoint blocks mid-stream
+								// the route emits a structured SSE
+								// error event with
+								// `code: "AI_USAGE_LIMIT_EXCEEDED"`.
+								// Render the shared destructive
+								// toast and reset to idle on this
+								// agent's response so the user is
+								// not left with a generic "Error:"
+								// stub.
+								if (
+									data.type === "error" &&
+									data.code === "AI_USAGE_LIMIT_EXCEEDED"
+								) {
+									const payload =
+										isAiUsageLimitExceededPayload(
+											data?.data,
+										)
+											? data.data
+											: isAiUsageLimitExceededPayload(
+														data,
+													)
+												? data
+												: null;
+									if (payload) {
+										showAiUsageLimitToastRef.current(
+											payload,
 										);
 									}
-									break;
-								}
-
-								case "approval_required":
-									updateResponse((prev) => ({
-										...prev,
-										pendingApproval: {
-											approvalId:
-												typeof data.approvalId ===
-												"string"
-													? data.approvalId
-													: "",
-											stepId:
-												typeof data.stepId === "string"
-													? data.stepId
-													: "",
-											reason:
-												typeof data.reason === "string"
-													? data.reason
-													: "Approval required",
-										},
-									}));
-									break;
-								case "approval_resolved":
-									updateResponse((prev) => ({
-										...prev,
-										pendingApproval: null,
-									}));
-									break;
-								case "stream_timeout":
-									// The orchestrator route now closes a
-									// long run's HTTP window with this instead
-									// of `error: "Execution timed out"`, and
-									// the workflow keeps running on Temporal
-									// (issue #2269). The Loom chat reconnects
-									// with the executionId; this surface has no
-									// resume loop, so end the agent's turn
-									// honestly rather than letting the close
-									// read as a clean finish.
 									flushBufferedText(responseKey);
 									updateResponse((prev) => ({
 										...prev,
 										isLoading: false,
-										status: "error",
-										isError: true,
-										content:
-											prev.content ||
-											"The streaming window closed before this agent finished. The workflow may still be running.",
+										isError: false,
+										status: "idle",
 									}));
 									clearBufferedText(responseKey);
 									break;
-								case "done":
-								case "completed":
-								case "error":
-									// AI usage-limit short-circuit. When
-									// the chokepoint blocks mid-stream
-									// the route emits a structured SSE
-									// error event with
-									// `code: "AI_USAGE_LIMIT_EXCEEDED"`.
-									// Render the shared destructive
-									// toast and reset to idle on this
-									// agent's response so the user is
-									// not left with a generic "Error:"
-									// stub.
-									if (
-										data.type === "error" &&
-										data.code === "AI_USAGE_LIMIT_EXCEEDED"
-									) {
-										const payload =
-											isAiUsageLimitExceededPayload(
-												data?.data,
-											)
-												? data.data
-												: isAiUsageLimitExceededPayload(
-															data,
-														)
-													? data
-													: null;
-										if (payload) {
-											showAiUsageLimitToastRef.current(
-												payload,
-											);
+								}
+								flushBufferedText(responseKey);
+								updateResponse((prev) => {
+									// Merge any tool-call results that
+									// only arrived in the final
+									// `completed` payload (e.g. the
+									// orchestrator's synthetic
+									// short-circuit branches like
+									// `fabric_connect_excalidraw_cta`,
+									// where no separate `tool_result`
+									// event fires before completion).
+									// Without this, `tc.result` stays
+									// undefined and downstream
+									// renderers (CTA cards, MCP App
+									// frames) never mount.
+									const completedToolCalls =
+										data.type === "completed" &&
+										Array.isArray(data.toolCalls)
+											? data.toolCalls
+											: [];
+									let nextToolCalls = prev.toolCalls;
+									for (const tc of completedToolCalls) {
+										if (!tc?.name) {
+											continue;
 										}
-										flushBufferedText(responseKey);
-										updateResponse((prev) => ({
-											...prev,
-											isLoading: false,
-											isError: false,
-											status: "idle",
-										}));
-										clearBufferedText(responseKey);
-										break;
+										nextToolCalls = mergeToolCall(
+											nextToolCalls,
+											{
+												id:
+													tc.id ??
+													`tool-${Date.now()}-${tc.name}`,
+												name: tc.name,
+												args: tc.args,
+												result: tc.result,
+												serverName: tc.serverName,
+												status:
+													tc.status === "error"
+														? "error"
+														: "complete",
+												mcpAppResourceUri:
+													tc.mcpAppResourceUri,
+												mcpAppConfigId:
+													tc.mcpAppConfigId,
+											},
+										);
 									}
-									flushBufferedText(responseKey);
-									updateResponse((prev) => {
-										// Merge any tool-call results that
-										// only arrived in the final
-										// `completed` payload (e.g. the
-										// orchestrator's synthetic
-										// short-circuit branches like
-										// `fabric_connect_excalidraw_cta`,
-										// where no separate `tool_result`
-										// event fires before completion).
-										// Without this, `tc.result` stays
-										// undefined and downstream
-										// renderers (CTA cards, MCP App
-										// frames) never mount.
-										const completedToolCalls =
-											data.type === "completed" &&
-											Array.isArray(data.toolCalls)
-												? data.toolCalls
-												: [];
-										let nextToolCalls = prev.toolCalls;
-										for (const tc of completedToolCalls) {
-											if (!tc?.name) {
-												continue;
-											}
-											nextToolCalls = mergeToolCall(
+									return {
+										...prev,
+										isLoading: false,
+										status:
+											data.type === "error"
+												? "error"
+												: "completed",
+										isError: data.type === "error",
+										errorMessage:
+											data.type === "error"
+												? (data.message ??
+													data.error ??
+													"Unknown error")
+												: undefined,
+										pendingApproval: null,
+										content:
+											data.type === "error" &&
+											!prev.content
+												? `Error: ${data.message ?? data.error ?? "Unknown error"}`
+												: data.type === "completed"
+													? mergeStreamedText(
+															prev.content,
+															data.response,
+														)
+													: prev.content,
+										toolCalls:
+											settleUnfinishedToolCalls(
 												nextToolCalls,
-												{
-													id:
-														tc.id ??
-														`tool-${Date.now()}-${tc.name}`,
-													name: tc.name,
-													args: tc.args,
-													result: tc.result,
-													serverName: tc.serverName,
-													status:
-														tc.status === "error"
-															? "error"
-															: "complete",
-													mcpAppResourceUri:
-														tc.mcpAppResourceUri,
-													mcpAppConfigId:
-														tc.mcpAppConfigId,
-												},
-											);
-										}
-										return {
-											...prev,
-											isLoading: false,
-											status:
-												data.type === "error"
-													? "error"
-													: "completed",
-											isError: data.type === "error",
-											content:
-												data.type === "error" &&
-												!prev.content
-													? `Error: ${data.message ?? data.error ?? "Unknown error"}`
-													: data.type === "completed"
-														? mergeStreamedText(
-																prev.content,
-																data.response,
-															)
-														: prev.content,
-											toolCalls: nextToolCalls,
-										};
-									});
-									clearBufferedText(responseKey);
-									break;
-								default:
-									break;
-							}
-						} catch {
-							// Skip malformed JSON lines
+											) ?? nextToolCalls,
+									};
+								});
+								clearBufferedText(responseKey);
+								break;
+							default:
+								break;
 						}
-					}
-				}
+					},
+				});
 
 				// Ensure loading is cleared after stream ends — but never
 				// overwrite an agent the user has already cancelled
@@ -1204,6 +1199,14 @@ Respond for a chat interface:
 						status: "error",
 						content:
 							prev.content || `Error: ${(err as Error).message}`,
+						errorMessage:
+							err instanceof Error
+								? err.message
+								: "The reply was interrupted.",
+						pendingApproval: null,
+						toolCalls:
+							settleUnfinishedToolCalls(prev.toolCalls) ??
+							prev.toolCalls,
 					}));
 				}
 			}

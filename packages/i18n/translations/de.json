@@ -1286,6 +1286,12 @@
 					"settings": {
 						"updated": "Organisationseinstellungen aktualisiert"
 					},
+					"chat_approval": {
+						"decided": "Chat-Freigabe entschieden"
+					},
+					"chat_run": {
+						"cancel_requested": "Abbruch eines Chat-Laufs angefordert"
+					},
 					"agent_definition": {
 						"imported": "Agent-Definition importiert",
 						"exported": "Agent-Definition exportiert"

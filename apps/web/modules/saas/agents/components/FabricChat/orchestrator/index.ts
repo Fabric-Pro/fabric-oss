@@ -6,8 +6,6 @@
 
 // Re-export shared components for backward compatibility
 export { ActiveContextIndicator } from "../shared/ActiveContextIndicator";
-// Components
-export { ApprovalDialog } from "./ApprovalDialog";
 export type {
 	DocumentArtifact,
 	SourceReference,

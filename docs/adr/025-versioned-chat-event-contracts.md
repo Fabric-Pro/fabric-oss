@@ -1,0 +1,54 @@
+# ADR-025: Versioned chat event contracts
+
+Proposed direction for typed chat transport and incremental engine convergence.
+
+- **Audience**: Engineering
+- **Owner**: Engineering team
+- **Status**: Proposed
+- **Date**: 2026-09-28
+- **Deciders**: Pending engineering review
+
+## Context
+
+Direct, Orchestrator and Research historically decoded SSE independently and
+consumed untyped values inside React hooks. Connection closure can be mistaken for successful completion,
+and producer events can lack corresponding consumer handling. Fabric also has
+Orchestrator and AG-UI interfaces whose event names and lifecycle contracts differ.
+
+## Decision
+
+Propose schema-derived discriminated event contracts shared by producers and
+consumers, transport decoding outside React, and explicit turn outcomes. Introduce
+an additive top-level `version: 1` on the existing Direct and Orchestrator SSE objects. Continue
+accepting legacy unversioned events during rolling deployment; reject unsupported
+versions and malformed known events while tolerating unknown event kinds for
+additive evolution. EOF alone cannot complete a reply.
+
+The implementation covers Direct and Orchestrator route producers and Direct,
+Orchestrator and Research consumers through one transport reader. Existing
+Orchestrator reconnects observe the same run; malformed contracts fail without
+reconnecting. Research retains legacy text/completion aliases. This does not
+create durable event storage, new workflow signals or tool-execution approval
+authority. Preserve AG-UI at existing agent interfaces. Keep the browser-safe
+schemas in the web application until other consumers justify a shared package.
+
+## Alternatives Considered
+
+- Continue using untyped JSON in each hook: permits producer/consumer drift and
+  duplicates transport behavior.
+- Replace all wire protocols immediately: couples every engine and deployment to
+  one migration, including AG-UI consumers.
+- Add event types without connecting producers and consumers: provides no runtime
+  validation or user-facing reliability improvement.
+
+## Consequences
+
+The Direct and Orchestrator routes declare the event shapes they emit. The browser
+validates received events and retains partial text when the transport is interrupted.
+Existing clients can still read the unchanged top-level event fields. Validation
+failures must avoid logging event bodies because tool results can contain sensitive
+content. Future resume support must observe an existing run without automatically
+replaying a request that could execute writes again.
+
+The [productization roadmap](../features/agent-productization.md) defines the later
+durability, governance and UI milestones and their acceptance gates.

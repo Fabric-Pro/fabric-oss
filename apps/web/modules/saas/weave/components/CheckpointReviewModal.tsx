@@ -67,7 +67,11 @@ export function CheckpointReviewModal({
 	// Signal approval mutation
 	const signalApprovalMutation = useMutation({
 		mutationFn: async (approved: boolean) => {
+			if (!checkpoint?.approvalId) {
+				throw new Error("No checkpoint to approve");
+			}
 			return await orpcClient.weave.executions.signalApproval({
+				approvalId: checkpoint.approvalId,
 				executionId,
 				organizationId: organizationId ?? null,
 				workflowId,

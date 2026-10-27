@@ -36,6 +36,7 @@ import {
 	type SelectedAgent,
 	selectionToPersist,
 } from "@saas/agents/components/FabricChat/shared/agent-selection";
+import { ChatFailureNotice } from "@saas/agents/components/FabricChat/shared/ChatFailureNotice";
 import { StoppedIndicator } from "@saas/agents/components/StoppedIndicator";
 import { useEscToStopOrClose } from "@saas/agents/hooks/useEscToStopOrClose";
 import {
@@ -3215,9 +3216,16 @@ function AgentResponseBlock({
 				!response.pendingApproval ? (
 					<ThinkingIndicator />
 				) : response.isError ? (
-					<p className="text-sm text-destructive">
-						{response.content || "An error occurred."}
-					</p>
+					<ChatFailureNotice
+						content={
+							response.errorMessage ? response.content : undefined
+						}
+						error={
+							response.errorMessage ||
+							response.content ||
+							"An error occurred."
+						}
+					/>
 				) : (
 					<div className="relative">
 						{/* HTML preview buttons */}
@@ -4422,6 +4430,7 @@ export function CopilotPage({
 							vendor: resp.vendor,
 							executionId: resp.executionId,
 							streamStatus: resp.status,
+							errorMessage: resp.errorMessage,
 							content:
 								selectedAgents.length > 1
 									? `[${resp.agentName}]: ${resp.content}`
@@ -4448,6 +4457,7 @@ export function CopilotPage({
 				vendor: m.vendor,
 				executionId: m.executionId,
 				streamStatus: m.streamStatus,
+				errorMessage: m.errorMessage,
 				toolCalls: m.toolCalls,
 			}));
 			return prior.length > 0 ? [...prior, ...allMessages] : allMessages;

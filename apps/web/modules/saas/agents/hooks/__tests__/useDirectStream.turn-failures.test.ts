@@ -59,7 +59,7 @@ function makeSseResponse() {
 		});
 
 	const enqueueLine = (line: string) => {
-		queue.push({ value: encoder.encode(`${line}\n`) });
+		queue.push({ value: encoder.encode(`${line}\n\n`) });
 		const r = resolveNext;
 		resolveNext = null;
 		r?.();
@@ -75,7 +75,11 @@ function makeSseResponse() {
 	const response = {
 		ok: true,
 		body: {
-			getReader: () => ({ read }),
+			getReader: () => ({
+				read,
+				releaseLock: vi.fn(),
+				cancel: vi.fn(async () => {}),
+			}),
 		},
 		json: async () => ({}),
 	};
@@ -296,7 +300,9 @@ describe("useDirectStream — a turn that fails", () => {
 		await finish();
 
 		expect(last().toolCalls?.[0].status).toBe("error");
-		expect(last().streamStatus).toBe("completed");
+		expect(last().streamStatus).toBe("error");
+		expect(last().content).toBe("Done.");
+		expect(last().errorMessage).toContain("connection ended");
 	});
 
 	it("shows the specific reason from an HTTP error body (F22)", async () => {
@@ -460,5 +466,52 @@ describe("useDirectStream — a reply on API billing", () => {
 		const turn = startTurn();
 		await turn.finish();
 		expect(turn.last().apiBilling).toBeUndefined();
+	});
+});
+
+describe("useDirectStream — versioned transport", () => {
+	it("handles explicit confirmation events from the workflow result", async () => {
+		const { send, finish, last } = startTurn();
+		await send({
+			type: "confirmation_required",
+			version: 1,
+			workflowId: "example-workflow",
+			workflowName: "Example workflow",
+			message: "Confirm this workflow run.",
+		});
+		await send({ type: "done", version: 1 });
+		await finish();
+		expect(last().pendingConfirmation).toEqual({
+			workflowId: "example-workflow",
+			workflowName: "Example workflow",
+			message: "Confirm this workflow run.",
+		});
+		expect(last().streamStatus).toBe("completed");
+	});
+
+	it("keeps partial text and reports incompatible protocol versions", async () => {
+		const { send, finish, last } = startTurn();
+		await send({ type: "text", version: 1, content: "Partial answer" });
+		await send({ type: "done", version: 2 });
+		await finish();
+		expect(last()).toMatchObject({
+			content: "Partial answer",
+			streamStatus: "error",
+			errorMessage: expect.stringContaining("unsupported version"),
+		});
+	});
+
+	it("does not overwrite the usage-limit idle state on EOF", async () => {
+		const { send, finish, hook } = startTurn();
+		await send({
+			type: "error",
+			message: "Usage limit reached",
+			code: "AI_USAGE_LIMIT_EXCEEDED",
+		});
+		await finish();
+		expect(hook.result.current.state.status).toBe("idle");
+		expect(
+			hook.result.current.messages.map((message) => message.role),
+		).toEqual(["user"]);
 	});
 });

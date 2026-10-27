@@ -12,13 +12,12 @@
  */
 
 import { checkRateLimit } from "@repo/api/lib/rate-limit";
-import { getTemporalClient } from "@repo/temporal";
+import {
+	ChatRunAccessError,
+	getAuthorizedChatRun,
+} from "@saas/agents/lib/server/chat-run-control";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
-import {
-	isOrchestratorOrganizationMember,
-	refuseUnlessRunOwner,
-} from "../run-access";
 
 // Rate limit: 20 follow-up signals per minute per user
 const FOLLOW_UP_RATE_LIMIT = { limit: 20, windowMs: 60_000 };
@@ -114,44 +113,12 @@ export async function POST(request: NextRequest) {
 		}
 
 		// Get Temporal client
-		const temporalClient = await getTemporalClient();
-
-		// Get workflow handle and send signal
-		const handle = temporalClient.workflow.getHandle(executionId);
-
-		// ✅ Security: Verify ownership and check workflow status
-		const description = await handle.describe();
-		const memo = description.memo as Record<string, unknown> | undefined;
-		const workflowOrgId = memo?.organizationId;
-		const refusal = await refuseUnlessRunOwner({
+		const { handle, description } = await getAuthorizedChatRun({
 			executionId,
 			userId,
-			memo,
-			notOwnerMessage: "You are not authorized to access this workflow",
+			engine: "orchestrator",
+			action: "approve",
 		});
-		if (refusal) {
-			return refusal;
-		}
-		if (workflowOrgId) {
-			// Membership: one helper for every paired route (../run-access.ts).
-			if (
-				!(await isOrchestratorOrganizationMember(
-					userId,
-					workflowOrgId as string,
-				))
-			) {
-				return new Response(
-					JSON.stringify({
-						error: "Forbidden",
-						message: "You are not a member of this organization",
-					}),
-					{
-						status: 403,
-						headers: { "Content-Type": "application/json" },
-					},
-				);
-			}
-		}
 		if (description.status.name !== "RUNNING") {
 			return new Response(
 				JSON.stringify({
@@ -189,18 +156,14 @@ export async function POST(request: NextRequest) {
 			},
 		);
 	} catch (error) {
-		console.error("[Orchestrator] Error sending follow-up signal:", error);
-		return new Response(
-			JSON.stringify({
-				error:
-					error instanceof Error
-						? error.message
-						: "Failed to send follow-up",
-			}),
+		return Response.json(
 			{
-				status: 500,
-				headers: { "Content-Type": "application/json" },
+				error:
+					error instanceof ChatRunAccessError
+						? "Forbidden"
+						: "The request could not be confirmed",
 			},
+			{ status: error instanceof ChatRunAccessError ? 403 : 503 },
 		);
 	}
 }

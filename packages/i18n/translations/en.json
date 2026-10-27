@@ -1595,6 +1595,12 @@
 					"settings": {
 						"updated": "Organization settings updated"
 					},
+					"chat_approval": {
+						"decided": "Chat approval decided"
+					},
+					"chat_run": {
+						"cancel_requested": "Chat run cancellation requested"
+					},
 					"agent_definition": {
 						"imported": "Agent definition imported",
 						"exported": "Agent definition exported"

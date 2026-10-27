@@ -48,6 +48,7 @@ export interface HistoryChatMessage {
 	agentName?: string;
 	vendor?: string;
 	executionId?: string;
+	errorMessage?: string;
 	streamStatus?: "idle" | "streaming" | "completed" | "error" | "cancelled";
 	toolCalls?: Array<{
 		id: string;
@@ -131,6 +132,7 @@ export function getHistoryAssistantIdentity(message: HistoryChatMessage): {
 	vendor?: string;
 	content: string;
 	executionId?: string;
+	errorMessage?: string;
 	streamStatus?: "idle" | "streaming" | "completed" | "error" | "cancelled";
 } {
 	const parsed = parseHistoryAssistantMessage(message.content);
@@ -144,6 +146,7 @@ export function getHistoryAssistantIdentity(message: HistoryChatMessage): {
 			content: parsed.content,
 			executionId: message.executionId,
 			streamStatus: message.streamStatus,
+			errorMessage: message.errorMessage,
 		};
 	}
 
@@ -151,6 +154,7 @@ export function getHistoryAssistantIdentity(message: HistoryChatMessage): {
 		...parsed,
 		executionId: message.executionId,
 		streamStatus: message.streamStatus,
+		errorMessage: message.errorMessage,
 	};
 }
 export function buildTurnsFromHistory(
@@ -222,6 +226,7 @@ export function buildTurnsFromHistory(
 			})),
 			isLoading: parsed.streamStatus === "streaming",
 			isError: parsed.streamStatus === "error",
+			errorMessage: parsed.errorMessage,
 			status: parsed.streamStatus ?? "completed",
 		});
 	}

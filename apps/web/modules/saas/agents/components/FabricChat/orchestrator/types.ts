@@ -258,6 +258,7 @@ export interface CompletedExecution {
 	inProgress?: boolean;
 	/** Of an `inProgress` turn: the stored message its question came from. */
 	questionMessageId?: string;
+	error?: string;
 	completedAt: Date;
 	/**
 	 * Clarifying questions answered during this execution, oldest first. Kept

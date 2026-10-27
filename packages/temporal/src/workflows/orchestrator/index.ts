@@ -20,7 +20,6 @@ import {
 	condition,
 	defineQuery,
 	defineSignal,
-	deprecatePatch,
 	log,
 	patched,
 	proxyActivities,
@@ -30,14 +29,16 @@ import {
 import type * as allActivities from "../../activities";
 import type * as orchestratorActivities from "../../activities/orchestrator";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "../ai-non-retryable-errors";
+import { installChatRunContext } from "../chat-run-context";
 import { advisorDeadline } from "./advisor-deadline";
 import {
 	BOUNDED_HISTORY_PATCH,
 	BOUNDED_HISTORY_V2_PATCH,
-	WEIGHTED_ALLOWANCE_PATCH,
 	boundedHistoryEnabled,
+	WEIGHTED_ALLOWANCE_PATCH,
 } from "./advisor-history-retention";
 import { recordAdvisorTurnSummary } from "./advisor-request-log";
+import { installApprovalController } from "./approval-controller";
 import { buildConversationSummary } from "./conversation-summary";
 import {
 	buildWorkflowOutput,
@@ -47,12 +48,6 @@ import {
 	executeIterativePhase,
 	executePlanningPhase,
 } from "./phases";
-import {
-	APPROVAL_SIGNAL_BOUND_PATCH,
-	AUTHORITY_EXPLICIT_APPROVAL_PATCH,
-	approvalSignalAnswersPending,
-	resolveApprovalWait,
-} from "./phases/approval-signal";
 import {
 	executeTimeLimitExit,
 	summarizeAccomplishments,
@@ -77,14 +72,12 @@ import {
 } from "./turn-contract";
 import {
 	type AgentVariable,
-	type ApprovalSignalData,
 	type ClarificationDecision,
 	createInitialState,
 	DEFAULT_ALTK_CONFIG,
 	ORCHESTRATOR_TURN_BUDGET_CONTRACT_VERSION,
 	type OrchestratorWorkflowInput,
 	type OrchestratorWorkflowOutput,
-	type PendingApprovalInfo,
 	type PendingClarificationInfo,
 	type PendingModification,
 	type TaskPlan,
@@ -102,9 +95,13 @@ import { usageOriginFields } from "./workflow-usage-attribution";
 // Signals
 // =============================================================================
 
-export const approvalSignal = defineSignal<[ApprovalSignalData]>("approval");
-export const autoApproveAllSignal = defineSignal("autoApproveAll");
-export const revokeAutoApproveSignal = defineSignal("revokeAutoApprove");
+export {
+	approvalSignal,
+	autoApproveAllSignal,
+	decideApprovalUpdate,
+	pendingApprovalQuery,
+	revokeAutoApproveSignal,
+} from "./approval-controller";
 export const retryFromStepSignal =
 	defineSignal<[{ stepId: string }]>("retryFromStep");
 export const cancelSignal = defineSignal("cancel");
@@ -133,9 +130,6 @@ export const planQuery = defineQuery<TaskPlan | null>("plan");
 export const variablesQuery =
 	defineQuery<Record<string, AgentVariable>>("variables");
 export const statusQuery = defineQuery<WorkflowState["status"]>("status");
-export const pendingApprovalQuery = defineQuery<PendingApprovalInfo | null>(
-	"pendingApproval",
-);
 export const pendingClarificationQuery =
 	defineQuery<PendingClarificationInfo | null>("pendingClarification");
 export const journeyStateQuery = defineQuery<{
@@ -581,6 +575,7 @@ async function runOrchestratorExecution(
 		? { cancellationAware: true, turnScope: turn.scope }
 		: undefined;
 
+	installChatRunContext(input);
 	// Initialize workflow state — restore from continueAsNew carry-forward if present
 	const state = createInitialState(input);
 	const isResuming = !!input.resumeState;
@@ -637,40 +632,11 @@ async function runOrchestratorExecution(
 	// Signal Handlers
 	// ==========================================================================
 
-	setHandler(approvalSignal, (data) => {
-		log.info("Received approval signal", {
-			approved: data.approved,
-			feedback: data.feedback,
-		});
-		deprecatePatch(APPROVAL_SIGNAL_BOUND_PATCH);
-		if (!approvalSignalAnswersPending(state.pendingApproval, data)) {
-			log.warn(
-				"Ignored an approval signal that answers no pending approval",
-				{
-					approvalId: data.approvalId,
-					pendingApprovalId: state.pendingApproval?.approvalId,
-				},
-			);
-			return;
-		}
-		state.approvalDecision = data;
-	});
-
-	// Only sets the flag: `waitForApproval` decides whether it settles the
-	// pending checkpoint, so it cannot answer one that needs an explicit click.
-	setHandler(autoApproveAllSignal, () => {
-		log.info(
-			"Received auto-approve-all signal — checkpoints will be auto-approved",
-		);
-		state.autoApproveAll = true;
-	});
-
-	setHandler(revokeAutoApproveSignal, () => {
-		log.info(
-			"Received revoke-auto-approve signal — future checkpoints will require human review again",
-		);
-		state.autoApproveAll = false;
-	});
+	const { waitForApproval } = installApprovalController(
+		state,
+		input,
+		waitTimeoutMs,
+	);
 
 	setHandler(retryFromStepSignal, (data) => {
 		log.info("Received retry-from-step signal", { stepId: data.stepId });
@@ -775,7 +741,6 @@ async function runOrchestratorExecution(
 	setHandler(planQuery, () => state.taskPlan);
 	setHandler(variablesQuery, () => state.variables);
 	setHandler(statusQuery, () => state.status);
-	setHandler(pendingApprovalQuery, () => state.pendingApproval);
 	setHandler(pendingClarificationQuery, () => state.pendingClarification);
 	setHandler(journeyStateQuery, () => ({
 		journeyId: state.journeyState.journeyId,
@@ -810,48 +775,6 @@ async function runOrchestratorExecution(
 			stepResults: [...state.stepResults],
 		};
 		state.journeyState.phase = phase;
-	}
-
-	async function waitForApproval(options?: {
-		requireExplicitDecision?: boolean;
-	}): Promise<ApprovalSignalData | null> {
-		// Runtime-authority checkpoints opt out of approve-all: granting a
-		// provider WRITE session is not a plan-step approval and must be an
-		// explicit click.
-		const requireExplicitDecision =
-			options?.requireExplicitDecision === true;
-		if (requireExplicitDecision) {
-			deprecatePatch(AUTHORITY_EXPLICIT_APPROVAL_PATCH);
-		}
-		const settled = () =>
-			resolveApprovalWait({
-				decision: state.approvalDecision,
-				autoApproveAll: state.autoApproveAll,
-				requireExplicitDecision,
-			});
-
-		if (state.autoApproveAll && requireExplicitDecision) {
-			log.info(
-				"Authority checkpoint requires an explicit decision; approve-all does not apply",
-			);
-		}
-
-		if (settled() === null) {
-			await condition(
-				() => settled() !== null || state.cancelled,
-				waitTimeoutMs(),
-			);
-		}
-		if (state.cancelled) {
-			return null;
-		}
-
-		const decision = settled();
-		if (decision !== null && state.approvalDecision === null) {
-			log.info("Auto-approving checkpoint (approve-all active)");
-		}
-		state.approvalDecision = null;
-		return decision;
 	}
 
 	/**

@@ -130,7 +130,6 @@ import {
 } from "../../hooks/useOrchestratorConversation";
 import { useOrchestratorStream } from "../../hooks/useOrchestratorStream";
 import { useRemoveConversationProject } from "../../hooks/useRemoveConversationProject";
-import { APPROVAL_STALE_MESSAGE } from "../../lib/approval-response";
 import {
 	describeImageUploadFailure,
 	ImageUploadError,
@@ -160,7 +159,6 @@ import { ChartCard, isChartArtifact } from "./cards/ChartCard";
 import {
 	ActiveContextIndicator,
 	AGENT_DISPLAY_INFO,
-	ApprovalDialog,
 	// Artifacts panel
 	ArtifactsPanel,
 	ArtifactsPanelTrigger,
@@ -180,6 +178,7 @@ import {
 	REASONING_TO_EXECUTION,
 	type TemporalOrchestratorActivityState,
 } from "./orchestrator";
+import { ApprovalPanel } from "./orchestrator/ApprovalPanel";
 import {
 	selectLiveStoppedAssistantMessages,
 	selectLiveUserMessages,
@@ -204,6 +203,7 @@ import {
 } from "./shared";
 import { AnsweredClarification } from "./shared/AnsweredClarification";
 import { ApiBillingNotice } from "./shared/ApiBillingNotice";
+import { ChatFailureNotice } from "./shared/ChatFailureNotice";
 import { TruncationNotice } from "./shared/TruncationNotice";
 import { toToolCallItems } from "./shared/tool-call-items";
 
@@ -1357,6 +1357,10 @@ export function FabricTemporalOrchestratorChat({
 										typeof signal.message === "string",
 								)
 							: [],
+						error:
+							typeof exec.error === "string"
+								? exec.error
+								: undefined,
 						// Rehydrate answered clarifications: after a reload the
 						// execution records — not the message array — are what
 						// rebuild `history`, so dropping these here would
@@ -1728,7 +1732,8 @@ export function FabricTemporalOrchestratorChat({
 							}
 						: undefined,
 					stepResults: convertStepResults(stepResults),
-					approvalHistory: approvalHistoryRef.current,
+					approvalHistory:
+						state.approvalHistory ?? approvalHistoryRef.current,
 					variables: {},
 					status: executionStatus,
 					startedAt:
@@ -1936,6 +1941,7 @@ export function FabricTemporalOrchestratorChat({
 			state.result,
 			state.plan,
 			state.answeredClarifications,
+			state.approvalHistory,
 			stepResults,
 			artifacts,
 			messages,
@@ -1991,7 +1997,11 @@ export function FabricTemporalOrchestratorChat({
 							: "Workflow stopped before any steps were completed.";
 				} else if (hasFailed) {
 					responseMessage =
-						state.result?.error || "Execution failed.";
+						messages.at(-1)?.role === "assistant"
+							? messages.at(-1)?.content ||
+								state.result?.error ||
+								"Execution failed."
+							: state.result?.error || "Execution failed.";
 				} else {
 					responseMessage = "Execution completed.";
 				}
@@ -2008,6 +2018,7 @@ export function FabricTemporalOrchestratorChat({
 				imageUrls: lastUserImageUrlsRef.current,
 				stepResults: [...stepResults],
 				response: responseMessage,
+				error: hasFailed ? state.result?.error : undefined,
 				completedAt: new Date(),
 				// The in-session path: the next message in this same tab builds
 				// its history from `completedExecutions`, which comes from here.
@@ -2977,109 +2988,6 @@ export function FabricTemporalOrchestratorChat({
 		}
 	};
 
-	// Approval state for ApprovalDialog component
-	const [isSubmittingApproval, setIsSubmittingApproval] = useState(false);
-
-	const handleApprove = async () => {
-		setIsSubmittingApproval(true);
-		try {
-			// Track approval in history
-			if (state.pendingApproval) {
-				approvalHistoryRef.current.push({
-					approvalId: `approval-${Date.now()}`,
-					stepId: currentStep?.id || "unknown",
-					stepDescription: state.pendingApproval.reason,
-					riskLevel: state.plan?.riskLevel || "medium",
-					requestedAt: new Date().toISOString(),
-					decidedAt: new Date().toISOString(),
-					approved: true,
-				});
-			}
-
-			const result = await sendApproval(true);
-			if (result === "sent") {
-				toast.success("Approved - execution continuing");
-			} else if (result === "stale") {
-				toast.info(APPROVAL_STALE_MESSAGE);
-			} else {
-				toast.error("Failed to send approval");
-			}
-		} finally {
-			setIsSubmittingApproval(false);
-		}
-	};
-
-	const handleReject = async () => {
-		setIsSubmittingApproval(true);
-		try {
-			// Track rejection in history
-			if (state.pendingApproval) {
-				approvalHistoryRef.current.push({
-					approvalId: `approval-${Date.now()}`,
-					stepId: currentStep?.id || "unknown",
-					stepDescription: state.pendingApproval.reason,
-					riskLevel: state.plan?.riskLevel || "medium",
-					requestedAt: new Date().toISOString(),
-					decidedAt: new Date().toISOString(),
-					approved: false,
-					feedback: "Rejected by user",
-				});
-			}
-
-			const result = await sendApproval(false, "Rejected by user");
-			if (result === "sent") {
-				toast.info("Rejected - execution stopped");
-			} else if (result === "stale") {
-				toast.info(APPROVAL_STALE_MESSAGE);
-			} else {
-				toast.error("Failed to send rejection");
-			}
-		} finally {
-			setIsSubmittingApproval(false);
-		}
-	};
-
-	// Parse risk level from approval reason
-	const parseApprovalReason = (reason: string) => {
-		const riskMatch = reason.match(/^(LOW|MEDIUM|HIGH|CRITICAL) RISK:/i);
-		const riskLevel = riskMatch ? riskMatch[1].toUpperCase() : "MEDIUM";
-		const description = riskMatch
-			? reason.replace(/^(LOW|MEDIUM|HIGH|CRITICAL) RISK:\s*/i, "")
-			: reason;
-		return { riskLevel, description };
-	};
-
-	const handleApprovalFeedback = async (feedback: string) => {
-		if (!feedback.trim()) {
-			return;
-		}
-		setIsSubmittingApproval(true);
-
-		// Track feedback rejection in history
-		if (state.pendingApproval) {
-			approvalHistoryRef.current.push({
-				approvalId: `approval-${Date.now()}`,
-				stepId: currentStep?.id || "unknown",
-				stepDescription: state.pendingApproval.reason || "Unknown",
-				riskLevel: state.plan?.riskLevel || "medium",
-				requestedAt: new Date().toISOString(),
-				decidedAt: new Date().toISOString(),
-				approved: false,
-				feedback: feedback.trim(),
-			});
-		}
-
-		const result = await sendApproval(false, feedback.trim());
-		setIsSubmittingApproval(false);
-		if (result === "sent") {
-			toast.info("Feedback sent - execution will adjust");
-		} else if (result === "stale") {
-			toast.info(APPROVAL_STALE_MESSAGE);
-		} else {
-			toast.error("Failed to send feedback");
-		}
-	};
-
 	// Quick suggestion chips for welcome screen
 	const quickSuggestions = [
 		{
@@ -3684,7 +3592,20 @@ export function FabricTemporalOrchestratorChat({
 
 												{/* A recovered final answer stays visible beside partial browser steps.
 												    A step already showing that exact answer is not repeated. */}
-												{execution.response &&
+												{execution.error &&
+													!execution.terminalStatus && (
+														<ChatFailureNotice
+															content={
+																execution.response
+															}
+															error={
+																execution.error
+															}
+														/>
+													)}
+												{(!execution.error ||
+													execution.terminalStatus) &&
+													execution.response &&
 													!execution.stepResults.some(
 														(step) =>
 															step.response ===
@@ -4754,13 +4675,16 @@ export function FabricTemporalOrchestratorChat({
 											className="flex-1 min-w-0"
 											role="alert"
 										>
-											<Response
-												className={
-													ASSISTANT_RESPONSE_SHELL_CLASSNAME
+											<ChatFailureNotice
+												content={
+													messages.at(-1)?.role ===
+													"assistant"
+														? messages.at(-1)
+																?.content
+														: undefined
 												}
-											>
-												{state.result.error}
-											</Response>
+												error={state.result.error}
+											/>
 										</div>
 									</div>
 								)}
@@ -4810,47 +4734,30 @@ export function FabricTemporalOrchestratorChat({
 									</div>
 								)}
 
-							{/* Approval request - using ApprovalDialog with full task plan */}
-							{isAwaitingApproval &&
-								state.pendingApproval &&
-								(() => {
-									const { riskLevel, description } =
-										parseApprovalReason(
-											state.pendingApproval.reason,
-										);
-									return (
-										<div className="flex gap-3">
-											<div className="shrink-0">
-												<FabricLogo
-													className="h-8 w-8"
-													size={32}
-												/>
-											</div>
-											<div className="flex-1">
-												<ApprovalDialog
-													stepId={
-														state.pendingApproval
-															.stepId
-													}
-													description={description}
-													riskLevel={riskLevel}
-													onApprove={handleApprove}
-													onReject={handleReject}
-													onFeedback={
-														handleApprovalFeedback
-													}
-													isSubmitting={
-														isSubmittingApproval
-													}
-													plan={state.plan}
-													currentStepId={
-														effectiveCurrentStep?.id
-													}
-												/>
-											</div>
-										</div>
-									);
-								})()}
+							{isAwaitingApproval && state.pendingApproval && (
+								<ApprovalPanel
+									key={state.pendingApproval.approvalId}
+									executionId={state.executionId}
+									pending={state.pendingApproval}
+									plan={state.plan}
+									currentStepId={effectiveCurrentStep?.id}
+									sendApproval={sendApproval}
+									onDecision={(decision) =>
+										approvalHistoryRef.current.push({
+											...decision,
+											stepDescription:
+												state.pendingApproval?.reason ??
+												"Approval",
+											riskLevel:
+												state.plan?.riskLevel ??
+												"medium",
+											requestedAt:
+												new Date().toISOString(),
+											decidedAt: new Date().toISOString(),
+										})
+									}
+								/>
+							)}
 
 							{/* Clarifying question (HITL) — sibling of the
 							 * approval request above. The orchestrator pauses

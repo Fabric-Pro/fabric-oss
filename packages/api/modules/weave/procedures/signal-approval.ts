@@ -7,14 +7,18 @@
 
 import { ORPCError } from "@orpc/server";
 import { db } from "@repo/database";
-import { getTemporalClient } from "@repo/temporal";
 import {
-	orchestratorApprovalSignal,
+	type ApprovalReceipt,
+	getTemporalClient,
+	type PendingApprovalInfo,
+} from "@repo/temporal";
+import {
 	orchestratorAutoApproveAllSignal,
 	orchestratorRetryFromStepSignal,
 	orchestratorRevokeAutoApproveSignal,
 } from "@repo/temporal/workflows";
 import { z } from "zod";
+import { recordAuditFromRequest } from "../../../lib/audit";
 import {
 	assertProjectPermission,
 	Permissions,
@@ -26,8 +30,9 @@ import { resolveWeaveHandle } from "../lib/temporal-handle";
 const SignalApprovalInputSchema = z.object({
 	executionId: z.string(),
 	organizationId: z.string().nullable().optional(),
+	approvalId: z.string().min(1).max(300),
 	approved: z.boolean(),
-	feedback: z.string().optional(),
+	feedback: z.string().max(10_000).optional(),
 	// Accepted for UI compatibility but looked up from DB for security
 	workflowId: z.string().optional(),
 	runId: z.string().optional(),
@@ -71,6 +76,7 @@ export const signalApprovalProcedure = protectedProcedure
 			execution,
 			authorized,
 		);
+		const organizationId = authorized.organizationId;
 
 		if (execution.status !== "CHECKPOINT") {
 			throw new ORPCError("BAD_REQUEST", {
@@ -82,19 +88,62 @@ export const signalApprovalProcedure = protectedProcedure
 			const temporal = await getTemporalClient();
 			const handle = resolveWeaveHandle(temporal, execution);
 
-			await handle.signal(orchestratorApprovalSignal, {
-				approved: input.approved,
-				feedback: input.feedback,
-			});
+			const pending = await handle.query<PendingApprovalInfo | null>(
+				"pendingApproval",
+			);
+			if (
+				!organizationId ||
+				!pending?.requestId ||
+				!pending.runId ||
+				pending.approvalId !== input.approvalId
+			) {
+				throw new ORPCError("CONFLICT", {
+					message:
+						"This checkpoint is no longer available. Refresh the execution.",
+				});
+			}
+			const receipt = await temporal.workflow
+				.getHandle(execution.workflowId, pending.runId)
+				.executeUpdate<ApprovalReceipt, [unknown]>("decideApproval", {
+					args: [
+						{
+							approvalId: input.approvalId,
+							requestId: pending.requestId,
+							runId: pending.runId,
+							organizationId,
+							decidedBy: userId,
+							approved: input.approved,
+							feedback: input.feedback,
+						},
+					],
+				});
+			if (!receipt.accepted) {
+				throw new ORPCError("CONFLICT", {
+					message: `Checkpoint ${receipt.reason}`,
+				});
+			}
 		} catch (error) {
+			if (error instanceof ORPCError) {
+				throw error;
+			}
 			throw new ORPCError("INTERNAL_SERVER_ERROR", {
-				message: `Failed to signal workflow: ${error instanceof Error ? error.message : "Workflow may have already completed"}`,
+				message:
+					"The checkpoint decision could not be confirmed. Refresh the execution before trying again.",
 			});
 		}
 
+		await recordAuditFromRequest(context, {
+			action: "org.chat_approval.decided",
+			organizationId,
+			resource: { type: "chat_run", id: execution.workflowId },
+			metadata: {
+				approvalId: input.approvalId,
+				approved: input.approved,
+			},
+		});
 		return {
 			success: true,
-			message: `Signal sent: ${input.approved ? "approved" : "rejected"}`,
+			message: `Decision accepted: ${input.approved ? "approved" : "rejected"}`,
 		};
 	});
 

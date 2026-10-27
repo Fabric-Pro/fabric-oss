@@ -18,11 +18,6 @@
  * - error: An error occurred
  */
 
-import {
-	budgetContinuationSeed,
-	InvalidBudgetContinuationError,
-} from "../budget-continuation";
-
 import { getDefaultEnabledMcpConfigIds } from "@repo/agent-core/backend";
 import { getAIModelWithMetadata } from "@repo/ai";
 import {
@@ -55,6 +50,12 @@ import type {
 import { getTemporalClient } from "@repo/temporal";
 import { PROJECT_REPOSITORY_TOOLS } from "@repo/temporal/project-repository-tool-schemas";
 import { REDIS_KEEPALIVE_MS } from "@repo/utils/redis-connection";
+import {
+	encodeOrchestratorStreamEvent,
+	type OrchestratorStreamEvent,
+	parseOrchestratorStreamEvent,
+} from "@saas/agents/lib/orchestrator-stream-protocol";
+import { getAuthorizedChatRun } from "@saas/agents/lib/server/chat-run-control";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
 import { v4 as uuidv4 } from "uuid";
@@ -68,6 +69,10 @@ import { resolveUsageFrame } from "../../resolve-usage-frame";
 import { windowUntypedHistory } from "../../stream/history-window";
 import { buildWorkflowErrorEvent } from "../../stream/turn-events";
 import { unionDefaultMcpConfigIds } from "../../union-default-mcp-config-ids";
+import {
+	budgetContinuationSeed,
+	InvalidBudgetContinuationError,
+} from "../budget-continuation";
 import {
 	isOrchestratorOrganizationMember,
 	refuseUnlessRunOwner,
@@ -157,11 +162,6 @@ function getRedisUrl(): string | null {
 // direct-chat stream (`../../stream/route.ts`).
 const MAX_WORKSPACE_IDS = 20;
 const MAX_WORKSPACE_ID_LENGTH = 200;
-
-interface StreamEvent {
-	type: string;
-	[key: string]: unknown;
-}
 
 export async function POST(request: NextRequest) {
 	// The turn this request admitted and must start. Until it is handed to
@@ -1135,7 +1135,7 @@ export async function POST(request: NextRequest) {
 							summary: turn.responseText ?? "",
 						}
 					: undefined;
-			const events: StreamEvent[] = [
+			const events: OrchestratorStreamEvent[] = [
 				{
 					type: "started",
 					turnId: turn.id,
@@ -1159,7 +1159,12 @@ export async function POST(request: NextRequest) {
 							response: turn.responseText ?? undefined,
 							toolCalls: [],
 							stepResults: [],
-							limitSignals: turn.limitSignalSummary ?? undefined,
+							limitSignals: Array.isArray(turn.limitSignalSummary)
+								? (turn.limitSignalSummary as unknown as Extract<
+										OrchestratorStreamEvent,
+										{ type: "completed" }
+									>["limitSignals"])
+								: undefined,
 							// Structured stop plus the older bundle's handoff signal.
 							budgetStop: storedBudgetStop,
 							handoffRecommended: storedHandoff,
@@ -1215,19 +1220,36 @@ export async function POST(request: NextRequest) {
 
 		const stream = new ReadableStream({
 			async start(controller) {
-				const sendEvent = (event: StreamEvent) => {
+				const sendEvent = (event: OrchestratorStreamEvent) => {
 					if (controllerClosed) {
 						return; // Don't send if controller is closed
 					}
 					try {
 						controller.enqueue(
 							encoder.encode(
-								`data: ${JSON.stringify({ ...event, ...(event.type === "started" || event.type === "completed" ? { turnId: activeTurnId, turnGeneration: activeTurnGeneration } : {}) })}\n\n`,
+								encodeOrchestratorStreamEvent({
+									...event,
+									...(event.type === "started" ||
+									event.type === "completed"
+										? {
+												turnId: activeTurnId,
+												turnGeneration:
+													activeTurnGeneration,
+											}
+										: {}),
+								}),
 							),
 						);
 					} catch {
 						// Controller might be closed, mark it
 						controllerClosed = true;
+					}
+				};
+
+				const forwardEvent = (value: unknown) => {
+					const event = parseOrchestratorStreamEvent(value);
+					if (event) {
+						sendEvent(event);
 					}
 				};
 
@@ -1445,7 +1467,7 @@ export async function POST(request: NextRequest) {
 											event.event ===
 											"execution.text_delta"
 										) {
-											sendEvent({
+											forwardEvent({
 												type: "text_delta",
 												content: event.data?.text || "",
 											});
@@ -1453,7 +1475,7 @@ export async function POST(request: NextRequest) {
 											event.event ===
 											"execution.iteration_start"
 										) {
-											sendEvent({
+											forwardEvent({
 												type: "text_start",
 												iteration:
 													event.data?.iteration,
@@ -1498,7 +1520,7 @@ export async function POST(request: NextRequest) {
 											// Forward token-budget /
 											// provider-limit signals so the UI can show
 											// a banner + toast while the run continues.
-											sendEvent({
+											forwardEvent({
 												type: "limit_signal",
 												signal: event.data,
 											});
@@ -1518,7 +1540,7 @@ export async function POST(request: NextRequest) {
 											event.event ===
 											"execution.context_compacted"
 										) {
-											sendEvent({
+											forwardEvent({
 												type: "context_compacted",
 												...(event.data as Record<
 													string,
@@ -1534,7 +1556,7 @@ export async function POST(request: NextRequest) {
 											// The consumer hook passes the
 											// payload as the second arg to
 											// `useAnalytics.trackEvent`.
-											sendEvent({
+											forwardEvent({
 												type: "mcp_default_tool_invoked",
 												payload: event.data,
 											});
@@ -1548,7 +1570,7 @@ export async function POST(request: NextRequest) {
 											// `sanitizeMcpErrorMessage` at
 											// the emission site, so no further
 											// redaction is needed.
-											sendEvent({
+											forwardEvent({
 												type: "mcp_default_tool_failed",
 												payload: event.data,
 											});
@@ -1719,7 +1741,22 @@ export async function POST(request: NextRequest) {
 						try {
 							const description = await handle.describe();
 
-							if (description.status.name === "COMPLETED") {
+							if (
+								description.status.name === "CONTINUED_AS_NEW"
+							) {
+								handle = (
+									await getAuthorizedChatRun({
+										executionId,
+										userId,
+										engine: "orchestrator",
+										action: "observe",
+										expectedOrganizationId:
+											organizationId ?? undefined,
+									})
+								).handle;
+							} else if (
+								description.status.name === "COMPLETED"
+							) {
 								// Get final result
 								const result = await handle.result();
 
@@ -1826,6 +1863,7 @@ export async function POST(request: NextRequest) {
 												"Workflow execution failed",
 											result.usageLimit,
 										),
+										approvalHistory: result.approvalHistory,
 										// The turn row's stored stop, as the
 										// workflow returned it.
 										budgetStop: result.budgetStop,
@@ -1841,6 +1879,7 @@ export async function POST(request: NextRequest) {
 										result.status === "cancelled";
 									sendEvent({
 										type: "completed",
+										approvalHistory: result.approvalHistory,
 										status: result.status,
 										response: result.response,
 										plan: result.taskPlan,
@@ -2121,7 +2160,7 @@ export async function POST(request: NextRequest) {
 														lastPendingApproval.approvalId,
 													stepId: lastPendingApproval.stepId,
 													message:
-														"Approval granted - proceeding to next step",
+														"Approval resolved",
 												});
 											}
 											// Now send the new approval requirement
@@ -2145,8 +2184,7 @@ export async function POST(request: NextRequest) {
 											approvalId:
 												resolvedApproval.approvalId,
 											stepId: resolvedApproval.stepId,
-											message:
-												"Approval granted - execution resuming",
+											message: "Approval resolved",
 										});
 									}
 

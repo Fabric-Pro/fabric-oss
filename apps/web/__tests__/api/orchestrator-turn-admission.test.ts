@@ -1306,6 +1306,7 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 		// useOrchestratorStream.turn.test.ts, "R2-F2").
 		expect(pending).toEqual({
 			type: "start_pending",
+			version: 1,
 			retryable: true,
 			executionId: expect.stringMatching(/^orch-/),
 		});

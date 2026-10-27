@@ -177,6 +177,10 @@ export interface ApprovalHistoryEntry {
  * Pending approval info
  */
 export interface PendingApprovalInfo {
+	/** Present on workflows supporting acknowledged, single-use decisions. */
+	requestId?: string;
+	runId?: string;
+	expiresAt?: number;
 	approvalId: string;
 	stepId: string;
 	reason: string;

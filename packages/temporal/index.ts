@@ -493,13 +493,16 @@ export type {
 } from "./src/workflows/member-cascade-delete";
 // Member Cascade Delete Workflow (cleanup when user removed from org)
 export { memberCascadeDeleteWorkflow } from "./src/workflows/member-cascade-delete";
+export type {
+	ApprovalCommand,
+	ApprovalReceipt,
+} from "./src/workflows/orchestrator/approval-gate";
 // Orchestrator exports (CUGA-inspired multi-agent orchestration)
 // Re-export OrchestratorStepResult as StepResult for backward compatibility
 export type {
 	AgentCapability,
 	AgentVariable,
 	ALTKConfig,
-	ApprovalHistoryEntry,
 	ApprovalSignalData,
 	ExecutionMemorySummary,
 	ExecutionMode,
@@ -512,6 +515,7 @@ export type {
 	OrchestratorStepResult as StepResult,
 	OrchestratorWorkflowInput,
 	OrchestratorWorkflowOutput,
+	PendingApprovalInfo,
 	PolicyContext,
 	PolicyRule,
 	RoutingDecision,
