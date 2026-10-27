@@ -21,8 +21,10 @@ import { cn } from "@ui/lib";
 import {
 	CheckCircleIcon,
 	CircleXIcon,
+	CpuIcon,
 	ExternalLinkIcon,
 	FlaskConicalIcon,
+	GitBranchIcon,
 	Loader2Icon,
 	PlayIcon,
 	Trash2Icon,
@@ -31,6 +33,7 @@ import dynamic from "next/dynamic";
 import { useTranslations } from "next-intl";
 import { useId, useState } from "react";
 import { toast } from "sonner";
+import { getFabricAgentConnectionLabel } from "../../lib/implementation-session-labels";
 import { discardSpikeRun, type SpikeRunView } from "../../lib/spike-runs";
 import { AcceptSpikeDialog } from "../stories/AcceptSpikeDialog";
 import { invalidateStoryReadiness } from "../stories/useStoryReadiness";
@@ -153,6 +156,26 @@ export function SpikeRunCard({
 							{t("kindBadge")}
 						</Badge>
 						<SpikeStatusBadge status={run.status} />
+						{run.llmConnection && (
+							<Badge
+								variant="outline"
+								className="rounded-full px-2.5 py-0.5 text-[11px]"
+							>
+								<CpuIcon className="mr-1 size-3" />
+								{getFabricAgentConnectionLabel(
+									run.llmConnection,
+								)}
+							</Badge>
+						)}
+						{run.spikeBranch && (
+							<Badge
+								variant="outline"
+								className="rounded-full px-2.5 py-0.5 font-mono text-[11px]"
+							>
+								<GitBranchIcon className="mr-1 size-3" />
+								{run.spikeBranch}
+							</Badge>
+						)}
 					</div>
 					<p
 						id={`${reasonId}-title`}
@@ -164,19 +187,33 @@ export function SpikeRunCard({
 						{run.spikeQuestion ?? t("untitledQuestion")}
 					</p>
 				</div>
-				{run.demoUrl && (isDemoReady || isCompleted) && (
-					<Button asChild size="sm" variant="outline">
-						<a
-							href={run.demoUrl}
-							target="_blank"
-							rel="noopener noreferrer"
-						>
-							<PlayIcon className="mr-2 size-3.5" />
-							{t("openDemo")}
-							<ExternalLinkIcon className="ml-2 size-3 text-muted-foreground" />
-						</a>
-					</Button>
-				)}
+				<div className="flex flex-wrap items-center gap-2">
+					{run.externalUrl && (
+						<Button asChild size="sm" variant="outline">
+							<a
+								href={run.externalUrl}
+								target="_blank"
+								rel="noopener noreferrer"
+							>
+								<span>Open in Fabric Agents</span>
+								<ExternalLinkIcon className="ml-2 size-3 text-muted-foreground" />
+							</a>
+						</Button>
+					)}
+					{run.demoUrl && (isDemoReady || isCompleted) && (
+						<Button asChild size="sm" variant="outline">
+							<a
+								href={run.demoUrl}
+								target="_blank"
+								rel="noopener noreferrer"
+							>
+								<PlayIcon className="mr-2 size-3.5" />
+								{t("openDemo")}
+								<ExternalLinkIcon className="ml-2 size-3 text-muted-foreground" />
+							</a>
+						</Button>
+					)}
+				</div>
 			</div>
 
 			{isDemoReady && (

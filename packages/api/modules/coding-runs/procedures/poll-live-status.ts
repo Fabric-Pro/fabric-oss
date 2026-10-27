@@ -8,7 +8,7 @@
  */
 
 import { ORPCError } from "@orpc/client";
-import { getCodingRun } from "@repo/database";
+import { getCodingRun, hasProjectAccess } from "@repo/database";
 import { z } from "zod";
 import {
 	Permissions,
@@ -48,14 +48,14 @@ export const pollLiveStatusProcedure = tenantProtectedProcedure
 			});
 		}
 
-		// Only local providers benefit from live polling
-		if (run.provider !== "KANBAN_LOCAL") {
-			return {
-				id: run.id,
-				provider: run.provider,
-				liveStatus: null,
-				message: "Live polling only available for local providers",
-			};
+		const canViewProject = await hasProjectAccess(
+			run.projectId,
+			context.user.id,
+		);
+		if (!canViewProject) {
+			throw new ORPCError("FORBIDDEN", {
+				message: "You don't have access to this project",
+			});
 		}
 
 		if (!run.providerSessionId) {
@@ -81,6 +81,9 @@ export const pollLiveStatusProcedure = tenantProtectedProcedure
 			const localRuntimeArtifact = status.artifacts.find(
 				(a) => a.type === "local_runtime",
 			);
+			const prArtifact = status.artifacts.find(
+				(a) => a.type === "pull_request" && a.url,
+			);
 
 			let sessionState: string | null = null;
 			if (
@@ -104,9 +107,9 @@ export const pollLiveStatusProcedure = tenantProtectedProcedure
 					providerStatus: status.status,
 					sessionState,
 					branchName: status.branchName,
-					hasPullRequest: status.artifacts.some(
-						(a) => a.type === "pull_request" && a.url,
-					),
+					error: status.error ?? null,
+					hasPullRequest: Boolean(prArtifact?.url),
+					pullRequestUrl: prArtifact?.url ?? null,
 				},
 			};
 		} catch (error) {

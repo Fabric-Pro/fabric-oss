@@ -262,32 +262,45 @@ describe("security utilities", () => {
 			process.env.NODE_ENV = originalEnv;
 		});
 
-		it("rejects localhost in production", () => {
+		it("allows local, Tailscale, and LAN fabric-agent-server URLs in production", () => {
 			const originalEnv = process.env.NODE_ENV;
 			process.env.NODE_ENV = "production";
 
-			expect(() =>
-				validateBackgroundAgentsUrl("http://localhost:3000"),
-			).toThrow(SessionValidationError);
-			expect(() =>
-				validateBackgroundAgentsUrl("http://127.0.0.1:3000"),
-			).toThrow(SessionValidationError);
+			const allowedFleetUrls = [
+				"http://localhost:9100",
+				"http://127.0.0.1:9100",
+				"http://[::1]:9100",
+				"https://agent-node:9100",
+				"http://agent-node:9100",
+				"http://agent-node.example.ts.net:9100",
+				"http://100.100.10.20:9100",
+				"https://10.0.0.1:9100",
+				"https://172.16.0.1:9100",
+				"https://192.168.1.1:9100",
+			];
+
+			for (const url of allowedFleetUrls) {
+				expect(() => validateBackgroundAgentsUrl(url)).not.toThrow();
+			}
 
 			process.env.NODE_ENV = originalEnv;
 		});
 
-		it("rejects private IPs in production", () => {
+		it("rejects cloud metadata link-local IPs (IPv4 and IPv6) in production", () => {
 			const originalEnv = process.env.NODE_ENV;
 			process.env.NODE_ENV = "production";
 
-			const privateUrls = [
-				"https://10.0.0.1",
-				"https://172.16.0.1",
-				"https://192.168.1.1",
+			const blockedMetadataUrls = [
 				"https://169.254.1.1",
+				"http://169.254.169.254",
+				"http://[::ffff:169.254.169.254]",
+				"http://[fd00:ec2::254]",
+				"http://[fe80::1]",
+				"http://metadata.google.internal",
+				"http://0.0.0.0:9100",
 			];
 
-			for (const url of privateUrls) {
+			for (const url of blockedMetadataUrls) {
 				expect(() => validateBackgroundAgentsUrl(url)).toThrow(
 					SessionValidationError,
 				);
@@ -296,13 +309,23 @@ describe("security utilities", () => {
 			process.env.NODE_ENV = originalEnv;
 		});
 
-		it("rejects HTTP in production", () => {
+		it("rejects HTTP for external public hosts (including public IPv6) in production", () => {
 			const originalEnv = process.env.NODE_ENV;
 			process.env.NODE_ENV = "production";
 
 			expect(() =>
 				validateBackgroundAgentsUrl("http://example.com"),
 			).toThrow(SessionValidationError);
+			expect(() =>
+				validateBackgroundAgentsUrl(
+					"http://[2001:4860:4860::8888]:9100",
+				),
+			).toThrow(SessionValidationError);
+			expect(() =>
+				validateBackgroundAgentsUrl(
+					"https://[2001:4860:4860::8888]:9100",
+				),
+			).not.toThrow();
 
 			process.env.NODE_ENV = originalEnv;
 		});

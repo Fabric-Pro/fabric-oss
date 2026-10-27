@@ -232,6 +232,26 @@ describe("codingRuns.start — kind: SPIKE", () => {
 		);
 	});
 
+	it("forwards llmConnection and model to codingRunWorkflow when provided", async () => {
+		await start({
+			...spikeInput,
+			llmConnection: "antigravity",
+			model: "gemini-2.5-pro",
+		});
+		expect(workflowStart).toHaveBeenCalledWith(
+			"codingRunWorkflow",
+			expect.objectContaining({
+				args: [
+					expect.objectContaining({
+						kind: "SPIKE",
+						llmConnection: "antigravity",
+						model: "gemini-2.5-pro",
+					}),
+				],
+			}),
+		);
+	});
+
 	it("defaults the question to the title and a text summary of the description", async () => {
 		await start({ ...spikeInput, spikeQuestion: undefined });
 		const created = mockDb.codingRun.create.mock.calls[0][0] as {

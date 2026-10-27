@@ -25,6 +25,18 @@ export const CodingExecutionEnvSchema = z.object({
 			return val;
 		}),
 	BACKGROUND_AGENTS_INTERNAL_SECRET: z.string().min(32).optional(),
+	FABRIC_AGENTS_DEFAULT_CONNECTION: z
+		.string()
+		.optional()
+		.transform((val) =>
+			val && val.trim().length > 0 ? val.trim() : undefined,
+		),
+	FABRIC_AGENTS_DEFAULT_MODEL: z
+		.string()
+		.optional()
+		.transform((val) =>
+			val && val.trim().length > 0 ? val.trim() : undefined,
+		),
 
 	// Port ranges for local providers
 	KANBAN_RUNTIME_PORT_RANGE: z
@@ -96,9 +108,7 @@ export const CodingExecutionEnvSchema = z.object({
 			return num;
 		}),
 
-	// fabric-bot settings (for routing BACKGROUND_AGENTS sessions through fabric-bot)
-	FABRIC_BOT_URL: z.string().url().optional(),
-	FABRIC_BOT_SECRET: z.string().min(16).optional(),
+	// Optional callback secret for external status callbacks
 	FABRIC_CALLBACK_SECRET: z.string().min(16).optional(),
 
 	// Debug mode
@@ -132,52 +142,52 @@ export const env = (() => {
  * Gets the background agents URL or throws if not configured
  */
 export function getBackgroundAgentsUrl(): string {
-	if (!env.BACKGROUND_AGENTS_URL) {
+	const rawUrl =
+		process.env.BACKGROUND_AGENTS_URL ?? env.BACKGROUND_AGENTS_URL;
+	if (!rawUrl) {
 		throw new RuntimeNotFoundError(
 			"BACKGROUND_AGENTS",
 			"BACKGROUND_AGENTS_URL environment variable",
 		);
 	}
-	return env.BACKGROUND_AGENTS_URL;
+	validateBackgroundAgentsUrl(rawUrl);
+	return rawUrl;
 }
 
 /**
  * Gets the background agents secret or throws if not configured
  */
 export function getBackgroundAgentsSecret(): string {
-	if (!env.BACKGROUND_AGENTS_INTERNAL_SECRET) {
+	const secret =
+		process.env.BACKGROUND_AGENTS_INTERNAL_SECRET ??
+		env.BACKGROUND_AGENTS_INTERNAL_SECRET;
+	if (!secret) {
 		throw new RuntimeNotFoundError(
 			"BACKGROUND_AGENTS",
 			"BACKGROUND_AGENTS_INTERNAL_SECRET environment variable",
 		);
 	}
-	return env.BACKGROUND_AGENTS_INTERNAL_SECRET;
+	return secret;
 }
 
 /**
- * Gets the fabric-bot URL or throws if not configured
+ * Gets the optional default Fabric Agents LLM connection slug (e.g. "claude-max", "codex", "cursor-cli", "antigravity", "droid")
  */
-export function getFabricBotUrl(): string {
-	if (!env.FABRIC_BOT_URL) {
-		throw new RuntimeNotFoundError(
-			"BACKGROUND_AGENTS",
-			"FABRIC_BOT_URL environment variable",
-		);
-	}
-	return env.FABRIC_BOT_URL;
+export function getFabricAgentsDefaultConnection(): string | undefined {
+	const raw =
+		process.env.FABRIC_AGENTS_DEFAULT_CONNECTION ??
+		env.FABRIC_AGENTS_DEFAULT_CONNECTION;
+	return raw && raw.trim().length > 0 ? raw.trim() : undefined;
 }
 
 /**
- * Gets the fabric-bot webhook secret or throws if not configured
+ * Gets the optional default Fabric Agents model identifier
  */
-export function getFabricBotSecret(): string {
-	if (!env.FABRIC_BOT_SECRET) {
-		throw new RuntimeNotFoundError(
-			"BACKGROUND_AGENTS",
-			"FABRIC_BOT_SECRET environment variable",
-		);
-	}
-	return env.FABRIC_BOT_SECRET;
+export function getFabricAgentsDefaultModel(): string | undefined {
+	const raw =
+		process.env.FABRIC_AGENTS_DEFAULT_MODEL ??
+		env.FABRIC_AGENTS_DEFAULT_MODEL;
+	return raw && raw.trim().length > 0 ? raw.trim() : undefined;
 }
 
 /**

@@ -131,7 +131,7 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 		z.object({
 			projectId: z.string(),
 			storyId: z.string(),
-			taskId: z.string().optional(),
+			taskId: z.string().nullable().optional(),
 			organizationId: z.string().nullable().optional(),
 			executionChannel: z.enum(["BACKGROUND_AGENTS"]).optional(),
 			provider: z.enum(["BACKGROUND_AGENTS"]).optional(),
@@ -144,6 +144,12 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 			kind: z.enum(["IMPLEMENT", "SPIKE"]).default("IMPLEMENT"),
 			/** SPIKE only. Defaults to the story title + description summary. */
 			spikeQuestion: z.string().min(10).max(2000).optional(),
+			/** Optional Fabric Agents backend connection slug (e.g. "claude-max", "codex", "cursor", "antigravity", "droid", "grok", "kimi"). */
+			llmConnection: z.string().min(1).max(120).optional(),
+			/** Optional model override for Fabric Agents session. */
+			model: z.string().min(1).max(200).optional(),
+			/** Optional target machine / host identifier. */
+			targetMachine: z.string().min(1).max(200).optional(),
 		}),
 	)
 	.output(
@@ -155,7 +161,8 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 	)
 	.handler(async ({ input, context }) => {
 		const { user } = context;
-		const { projectId, storyId, taskId } = input;
+		const { projectId, storyId } = input;
+		const taskId = input.taskId?.trim() || undefined;
 		const kind = input.kind ?? "IMPLEMENT";
 
 		// Fetch story with project context
@@ -286,6 +293,12 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 		const selectedTask = taskId
 			? (story.tasks.find((task) => task.id === taskId) ?? null)
 			: null;
+		if (taskId && !selectedTask) {
+			throw new ORPCError("BAD_REQUEST", {
+				message:
+					"Selected task was not found on this feature or is already completed.",
+			});
+		}
 
 		// Validate repository context exists
 		const repoUrl =
@@ -349,7 +362,7 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 				data: {
 					projectId,
 					storyId,
-					storyTaskId: taskId,
+					storyTaskId: selectedTask?.id,
 					userId: user.id,
 					organizationId: workflowOrgId,
 					executionChannel,
@@ -440,6 +453,13 @@ export const startCodingRunProcedure = tenantProtectedProcedure
 							storyTitle: `${story.identifier} - ${story.title}`,
 							kind,
 							spikeQuestion,
+							...(input.llmConnection
+								? { llmConnection: input.llmConnection }
+								: {}),
+							...(input.model ? { model: input.model } : {}),
+							...(input.targetMachine
+								? { targetMachine: input.targetMachine }
+								: {}),
 						},
 					],
 				}),

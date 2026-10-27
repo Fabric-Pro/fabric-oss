@@ -49,6 +49,8 @@ export {
 	env,
 	getBackgroundAgentsSecret,
 	getBackgroundAgentsUrl,
+	getFabricAgentsDefaultConnection,
+	getFabricAgentsDefaultModel,
 } from "./env";
 // Error types
 export {

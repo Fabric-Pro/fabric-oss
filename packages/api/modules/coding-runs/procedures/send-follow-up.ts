@@ -1,11 +1,9 @@
 /**
  * Send Follow-Up Prompt Procedure
  *
- * Sends a follow-up message to an in-progress agent session.
+ * Sends a follow-up message to an in-progress Fabric Agents session.
  * Used when the agent is in AWAITING_REVIEW state and the user
  * wants to continue or provide additional instructions.
- *
- * Calls fabric-bot's /webhook endpoint with action: "prompted".
  *
  * AUTHORIZATION: Org-level AGENT_EXECUTE via middleware, PLUS a project-level
  * STORY_UPDATE check inside the handler (the input has only the run id, so
@@ -13,12 +11,13 @@
  * after loading the run and check manually).
  */
 
-import { randomUUID } from "node:crypto";
 import { ORPCError } from "@orpc/client";
 import {
+	addCodingRunEvent,
 	getCodingRun,
 	getProjectMemberRole,
 	isProjectReadOnly,
+	updateCodingRunStatus,
 } from "@repo/database";
 import {
 	hasPermission,
@@ -77,7 +76,7 @@ export const sendFollowUpProcedure = tenantProtectedProcedure
 		}
 
 		const allowedStatuses = ["RUNNING", "AWAITING_REVIEW", "PR_OPENED"];
-		if (!allowedStatuses.includes(run.status)) {
+		if (!allowedStatuses.includes(run.status) || run.completedAt) {
 			throw new ORPCError("BAD_REQUEST", {
 				message: `Cannot send follow-up to a session with status: ${run.status}`,
 			});
@@ -93,37 +92,39 @@ export const sendFollowUpProcedure = tenantProtectedProcedure
 			});
 		}
 
-		const fabricBotUrl = process.env.FABRIC_BOT_URL;
-		const fabricBotSecret = process.env.FABRIC_BOT_SECRET;
-		if (!fabricBotUrl || !fabricBotSecret) {
-			throw new ORPCError("SERVICE_UNAVAILABLE", {
-				message: "Follow-up messaging is not configured",
-			});
+		if (
+			run.provider === "BACKGROUND_AGENTS" &&
+			run.providerSessionId &&
+			process.env.BACKGROUND_AGENTS_URL
+		) {
+			try {
+				const { getCodingExecutionProvider } = await import(
+					"@repo/temporal/coding-execution"
+				);
+				const provider = getCodingExecutionProvider(run.provider);
+				await provider.sendPrompt(
+					run.providerSessionId,
+					input.message,
+					user.id,
+				);
+				if (run.status === "AWAITING_REVIEW") {
+					await updateCodingRunStatus(run.id, "RUNNING");
+				}
+				await addCodingRunEvent(run.id, "follow_up_sent", {
+					authorId: user.id,
+					contentLength: input.message.length,
+				});
+				return { sent: true };
+			} catch (error) {
+				throw new ORPCError("INTERNAL_SERVER_ERROR", {
+					message: `Failed to send follow-up: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				});
+			}
 		}
-		const traceId = randomUUID();
 
-		const res = await fetch(`${fabricBotUrl}/webhook`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				"X-Fabric-Signature": fabricBotSecret,
-				"X-Trace-Id": traceId,
-			},
-			body: JSON.stringify({
-				action: "prompted",
-				codingRunId: run.id,
-				workflowId: run.workflowId ?? `coding-run-${run.id}`,
-				prompt: input.message,
-				organizationId: organizationId ?? null,
-			}),
+		throw new ORPCError("SERVICE_UNAVAILABLE", {
+			message: "Follow-up messaging is not configured",
 		});
-
-		if (!res.ok) {
-			const text = await res.text();
-			throw new ORPCError("INTERNAL_SERVER_ERROR", {
-				message: `Failed to send follow-up: ${text}`,
-			});
-		}
-
-		return { sent: true };
 	});

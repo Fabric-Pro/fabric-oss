@@ -1,9 +1,10 @@
 import { getAuthHeaders } from "./auth";
 import {
 	debugLog,
-	env,
 	getBackgroundAgentsSecret,
 	getBackgroundAgentsUrl,
+	getFabricAgentsDefaultConnection,
+	getFabricAgentsDefaultModel,
 } from "./env";
 import { AuthError, NetworkError, SessionValidationError } from "./errors";
 import type {
@@ -16,13 +17,13 @@ import type {
 import { validateCreateSessionParams } from "./schemas";
 
 /**
- * Plan §F4 decision for background agents: `pushBranchWithoutPr` is true.
+ * Plan §F4 decision for Fabric Agents (`BACKGROUND_AGENTS`): `pushBranchWithoutPr` is true.
  *
- * Session creation accepts a working `branch` (see `createSession` below and
- * the fabric-bot path), and the sandbox pushes through the same git path it
- * uses before opening a PR — whether a PR is opened is decided by the
- * prompt, not by the runtime. The spike prompt instructs the agent to push
- * `fabric-spike/<runId>` and not open a PR; `syncSpikeArtifacts` then
+ * Session creation prepares an isolated git worktree on `fabric-agent-server`
+ * for the execution branch (`feat/<slug>` or `fabric-spike/<runId>`), and the
+ * agent pushes through git in its worktree — whether a PR is opened is decided
+ * by the prompt, not by the runtime. The spike prompt instructs the agent to
+ * push `fabric-spike/<runId>` and not open a PR; `syncSpikeArtifacts` then
  * verifies the branch exists on GitHub by reading the deliverables from it
  * and fails the run closed when they are missing. Exported as a constant so
  * the API can read the flag without constructing the adapter (whose
@@ -42,7 +43,7 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 	private readonly controlPlaneSecret: string;
 
 	constructor() {
-		this.controlPlaneUrl = getBackgroundAgentsUrl();
+		this.controlPlaneUrl = getBackgroundAgentsUrl().replace(/\/+$/, "");
 		this.controlPlaneSecret = getBackgroundAgentsSecret();
 	}
 
@@ -55,25 +56,43 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 		// Validate inputs
 		const validated = validateCreateSessionParams(params);
 
-		// Use fabric-bot when configured (enables callback signals and follow-up
-		// prompts). Fall back to direct control-plane when fabric-bot is unavailable.
-		if (env.FABRIC_BOT_URL && env.FABRIC_BOT_SECRET) {
-			return this.createSessionViaFabricBot(params);
-		}
+		const llmConnection =
+			validated.llmConnection ??
+			params.llmConnection ??
+			getFabricAgentsDefaultConnection();
+		const model =
+			validated.model ?? params.model ?? getFabricAgentsDefaultModel();
+		const targetMachine = validated.targetMachine ?? params.targetMachine;
+		const headBranch = validated.headBranch ?? params.headBranch;
 
-		debugLog("Creating background agent session (direct)", {
+		debugLog("Creating Fabric Agents coding session", {
 			repoOwner: validated.repoOwner,
 			repoName: validated.repoName,
+			branch: validated.branch,
+			headBranch,
+			llmConnection,
+			model,
+			targetMachine,
 		});
 
 		const res = await fetch(`${this.controlPlaneUrl}/sessions`, {
 			method: "POST",
 			headers: getAuthHeaders(this.controlPlaneSecret),
+			signal: AbortSignal.timeout(240_000),
 			body: JSON.stringify({
 				repoOwner: validated.repoOwner,
 				repoName: validated.repoName,
 				title: validated.title,
 				branch: validated.branch,
+				...(headBranch ? { headBranch } : {}),
+				codingRunId: validated.codingRunId ?? params.codingRunId,
+				workflowId: validated.workflowId ?? params.workflowId,
+				organizationId:
+					validated.organizationId ?? params.organizationId,
+				workingDirectory: validated.workingDirectory,
+				llmConnection,
+				model,
+				targetMachine,
 			}),
 		});
 
@@ -85,6 +104,17 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 					`Authentication failed: ${text}`,
 				);
 			}
+			if (
+				res.status === 400 ||
+				res.status === 404 ||
+				res.status === 409 ||
+				res.status === 422
+			) {
+				throw new SessionValidationError(
+					"BACKGROUND_AGENTS",
+					`Session validation failed (${res.status}): ${text}`,
+				);
+			}
 			throw new NetworkError(
 				"BACKGROUND_AGENTS",
 				`${this.controlPlaneUrl}/sessions`,
@@ -93,70 +123,36 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 			);
 		}
 
-		const data = (await res.json()) as { sessionId: string };
-		debugLog("Background agent session created", {
-			sessionId: data.sessionId,
-		});
-
-		return { sessionId: data.sessionId };
-	}
-
-	private async createSessionViaFabricBot(
-		params: CreateSessionParams,
-	): Promise<{
-		sessionId: string;
-		externalUrl?: string;
-		externalStatus?: string;
-		providerMetadata?: Record<string, unknown>;
-	}> {
-		const botUrl = env.FABRIC_BOT_URL!;
-		const botSecret = env.FABRIC_BOT_SECRET!;
-
-		debugLog("Creating background agent session via fabric-bot", {
-			repoOwner: params.repoOwner,
-			repoName: params.repoName,
-		});
-
-		const res = await fetch(`${botUrl}/webhook`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				"X-Fabric-Signature": botSecret,
-			},
-			body: JSON.stringify({
-				action: "started",
-				codingRunId: params.codingRunId,
-				workflowId: params.workflowId,
-				organizationId: params.organizationId ?? null,
-			}),
-		});
-
-		if (!res.ok) {
-			const text = await res.text();
-			if (res.status === 401 || res.status === 403) {
-				throw new AuthError(
-					"BACKGROUND_AGENTS",
-					`fabric-bot authentication failed: ${text}`,
-				);
-			}
-			throw new NetworkError(
+		const data = (await res.json()) as {
+			sessionId: string;
+			externalUrl?: string;
+			externalStatus?: string;
+			providerMetadata?: Record<string, unknown>;
+		};
+		if (
+			typeof data.sessionId !== "string" ||
+			data.sessionId.trim().length === 0
+		) {
+			throw new SessionValidationError(
 				"BACKGROUND_AGENTS",
-				`${botUrl}/webhook`,
-				res.status,
-				new Error(text),
+				"Provider returned an empty sessionId",
 			);
 		}
-
-		const data = (await res.json()) as {
-			ok: boolean;
-			controlPlaneSessionId: string;
-		};
-
-		debugLog("fabric-bot created session", {
-			sessionId: data.controlPlaneSessionId,
+		debugLog("Fabric Agents coding session created", {
+			sessionId: data.sessionId,
+			externalUrl: data.externalUrl,
 		});
 
-		return { sessionId: data.controlPlaneSessionId };
+		return {
+			sessionId: data.sessionId,
+			...(data.externalUrl ? { externalUrl: data.externalUrl } : {}),
+			...(data.externalStatus
+				? { externalStatus: data.externalStatus }
+				: {}),
+			...(data.providerMetadata
+				? { providerMetadata: data.providerMetadata }
+				: {}),
+		};
 	}
 
 	async sendPrompt(
@@ -164,6 +160,7 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 		content: string,
 		authorId: string,
 	): Promise<void> {
+		const encodedSessionId = encodeURIComponent(sessionId);
 		debugLog("Sending prompt to background agent", {
 			sessionId,
 			contentLength: content.length,
@@ -171,7 +168,7 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 		});
 
 		const res = await fetch(
-			`${this.controlPlaneUrl}/sessions/${sessionId}/prompt`,
+			`${this.controlPlaneUrl}/sessions/${encodedSessionId}/prompt`,
 			{
 				method: "POST",
 				headers: getAuthHeaders(this.controlPlaneSecret),
@@ -195,7 +192,7 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 			}
 			throw new NetworkError(
 				"BACKGROUND_AGENTS",
-				`${this.controlPlaneUrl}/sessions/${sessionId}/prompt`,
+				`${this.controlPlaneUrl}/sessions/${encodedSessionId}/prompt`,
 				res.status,
 				new Error(text),
 			);
@@ -203,15 +200,19 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 	}
 
 	async getSessionStatus(sessionId: string): Promise<SessionStatus> {
+		const encodedSessionId = encodeURIComponent(sessionId);
 		debugLog("Getting background agent session status", { sessionId });
 
 		const [sessionRes, artifactsRes] = await Promise.all([
-			fetch(`${this.controlPlaneUrl}/sessions/${sessionId}`, {
+			fetch(`${this.controlPlaneUrl}/sessions/${encodedSessionId}`, {
 				headers: getAuthHeaders(this.controlPlaneSecret),
 			}),
-			fetch(`${this.controlPlaneUrl}/sessions/${sessionId}/artifacts`, {
-				headers: getAuthHeaders(this.controlPlaneSecret),
-			}),
+			fetch(
+				`${this.controlPlaneUrl}/sessions/${encodedSessionId}/artifacts`,
+				{
+					headers: getAuthHeaders(this.controlPlaneSecret),
+				},
+			),
 		]);
 
 		if (!sessionRes.ok) {
@@ -224,7 +225,7 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 			}
 			throw new NetworkError(
 				"BACKGROUND_AGENTS",
-				`${this.controlPlaneUrl}/sessions/${sessionId}`,
+				`${this.controlPlaneUrl}/sessions/${encodedSessionId}`,
 				sessionRes.status,
 				new Error(text),
 			);
@@ -234,6 +235,7 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 			id: string;
 			status: SessionStatus["status"];
 			branchName?: string | null;
+			error?: string | null;
 		};
 		type Artifact = {
 			id: string;
@@ -252,21 +254,28 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 			id: session.id,
 			status: session.status,
 			branchName: session.branchName ?? null,
+			...(session.error ? { error: session.error } : {}),
 			artifacts: artifacts.map((a) => ({
 				id: a.id,
 				type: a.type,
 				url: a.url ?? null,
 				metadata: a.metadata ?? null,
-				createdAt: a.createdAt,
+				createdAt:
+					typeof a.createdAt === "number"
+						? a.createdAt
+						: typeof a.createdAt === "string"
+							? Date.parse(a.createdAt) || Date.now()
+							: Date.now(),
 			})),
 		};
 	}
 
 	async cancelSession(sessionId: string): Promise<void> {
+		const encodedSessionId = encodeURIComponent(sessionId);
 		debugLog("Cancelling background agent session", { sessionId });
 
 		const res = await fetch(
-			`${this.controlPlaneUrl}/sessions/${sessionId}/stop`,
+			`${this.controlPlaneUrl}/sessions/${encodedSessionId}/stop`,
 			{
 				method: "POST",
 				headers: getAuthHeaders(this.controlPlaneSecret),
@@ -282,7 +291,7 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 			}
 			throw new NetworkError(
 				"BACKGROUND_AGENTS",
-				`${this.controlPlaneUrl}/sessions/${sessionId}/stop`,
+				`${this.controlPlaneUrl}/sessions/${encodedSessionId}/stop`,
 				res.status,
 				new Error(text),
 			);
@@ -308,11 +317,17 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 				};
 			}
 
-			const body = await res.json();
+			const body = (await res.json()) as Record<string, unknown> | null;
+			const statusField =
+				body && typeof body === "object" ? body.status : undefined;
+			const healthy =
+				statusField === undefined ||
+				statusField === "ok" ||
+				statusField === "healthy";
 			return {
-				healthy: true,
+				healthy,
 				latencyMs: Date.now() - startedAt,
-				details: body,
+				details: body ?? undefined,
 			};
 		} catch (error) {
 			return {

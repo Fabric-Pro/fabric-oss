@@ -4162,7 +4162,7 @@
 				},
 				"runSpike": {
 					"title": "Run a spike",
-					"description": "A Background Agent explores the question on a throwaway branch and comes back with a self-contained demo and a findings note. Nothing is merged.",
+					"description": "A Fabric Agent explores the question on a throwaway branch in an isolated worktree and comes back with a self-contained demo and a findings note. Nothing is merged.",
 					"questionLabel": "What should the spike answer?",
 					"questionPlaceholder": "Can we render the mortgage schedule client-side in under 200 ms?",
 					"questionHint": "One concrete question. The agent will answer it, show evidence and recommend the next track.",
@@ -4174,7 +4174,7 @@
 					"branchHint": "Work lands on a new fabric-spike/ branch for this run; product code paths are not modified.",
 					"repositoryRequiredTitle": "Repository required",
 					"repositoryRequired": "Spikes need a repository the agent can push a throwaway branch to. Connect one on the project first.",
-					"providerHintTitle": "Runs on Background Agents",
+					"providerHintTitle": "Runs on Fabric Agents",
 					"providerHint": "This project's default provider is {local}. Spikes always run on {background}; no local setup is used.",
 					"aiNotConfiguredTitle": "AI provider not configured",
 					"aiNotConfigured": "Configure an AI provider before running a spike.",
