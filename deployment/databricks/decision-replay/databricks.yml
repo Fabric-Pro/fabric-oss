@@ -1,0 +1,42 @@
+bundle:
+  name: decision-replay
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog catalog containing the feed and derived tables.
+    default: example_catalog
+  schema:
+    description: Schema containing lb_decision_event_history.
+    default: example_schema
+  warehouse_id:
+    description: Serverless SQL warehouse for the embedded dashboard.
+    default: example_warehouse
+  embed_principal:
+    description: Application id of Fabric's embedding service principal (not a secret).
+    default: example_embed_principal
+  fabric_base_url:
+    description: Fabric origin without a trailing slash.
+    default: https://example.com
+  refresh_schedule:
+    description: Quartz cron for the gold refresh, in America/Phoenix time.
+    default: "0 0 0/6 * * ?"
+
+# Host and authentication come exclusively from the operator's CLI profile.
+# No mode presets: trigger state and concurrency are explicit in the job.
+# This also permits profile-only hosting without production-mode identity rules.
+workspace:
+  root_path: /Workspace/${bundle.name}/${bundle.target}
+
+targets:
+  staging:
+    default: true
+    variables:
+      schema: example_staging_schema
+      # Once a day at midnight; prod keeps the 6-hour default.
+      refresh_schedule: "0 0 0 * * ?"
+  prod:
+    variables:
+      schema: example_prod_schema

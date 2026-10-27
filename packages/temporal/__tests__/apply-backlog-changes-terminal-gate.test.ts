@@ -15,6 +15,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { mocks } = vi.hoisted(() => ({
 	mocks: {
 		createStoryFromProposal: vi.fn(),
+		recordProposalDuplicateResolution: vi.fn(),
+		recordProposalApplication: vi.fn(),
 		updateStory: vi.fn(),
 		tenantWhere: vi.fn(() => ({
 			organizationId: "org-1",
@@ -35,7 +37,13 @@ vi.mock("@repo/ai", () => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	recordProposalDuplicateResolution: mocks.recordProposalDuplicateResolution,
+	recordProposalApplication: mocks.recordProposalApplication,
 	db: {
+		pendingBacklogProposal: {
+			findUnique: vi.fn(async () => ({ source: "TEAMS_CHANNEL" })),
+		},
+		pendingBacklogProposalApplication: { findMany: vi.fn(async () => []) },
 		project: { findFirst: mocks.dbProjectFindFirst },
 		userStory: {
 			findMany: mocks.dbUserStoryFindMany,
@@ -65,7 +73,10 @@ vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-vi.mock("@temporalio/activity", () => ({ heartbeat: mocks.heartbeat }));
+vi.mock("@temporalio/activity", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@temporalio/activity")>()),
+	heartbeat: mocks.heartbeat,
+}));
 
 vi.mock("../src/lib/create-story-from-proposal", () => ({
 	createStoryFromProposal: mocks.createStoryFromProposal,
@@ -421,34 +432,77 @@ describe("applyBacklogChanges → terminal-state gate", () => {
 		expect(result.skippedDuplicates).toHaveLength(0);
 	});
 
-	it("idempotency: redirect is skipped when the closed source is already superseded (retry-safe)", async () => {
-		mocks.dbUserStoryFindFirst.mockImplementation(
-			async ({ where }: { where: Record<string, unknown> }) => {
-				if (where && "labels" in where) {
-					return {
-						id: "existing-superseder",
-						identifier: "F-150",
-						title: "Existing superseder ticket",
-					};
-				}
-				return terminalRow("CLOSED", false, "F-042");
-			},
-		);
+	it.each([
+		{ proposalId: undefined, ledgerFailure: false },
+		{ proposalId: "example-proposal", ledgerFailure: false },
+		{ proposalId: "example-proposal", ledgerFailure: true },
+	])(
+		"idempotency: redirect is skipped when already superseded, proposal=$proposalId, ledger failure=$ledgerFailure",
+		async ({ proposalId, ledgerFailure }) => {
+			const failure = new Error("Example private terminal content");
+			if (ledgerFailure) {
+				mocks.recordProposalDuplicateResolution.mockRejectedValueOnce(
+					failure,
+				);
+			}
+			mocks.dbUserStoryFindFirst.mockImplementation(
+				async ({ where }: { where: Record<string, unknown> }) => {
+					if (where && "labels" in where) {
+						return {
+							id: "existing-superseder",
+							identifier: "F-150",
+							title: "Existing superseder ticket",
+						};
+					}
+					return terminalRow("CLOSED", false, "F-042");
+				},
+			);
 
-		const result = await applyBacklogChanges({
-			projectId: "project-1",
-			userId: "user-1",
-			organizationId: "org-1",
-			approvedChanges: [makeUpdate()],
-			existingBacklog: EMPTY_BACKLOG,
-		});
+			const result = await applyBacklogChanges({
+				...(proposalId
+					? { proposalId, approvedChangeIndexes: [7] }
+					: {}),
+				projectId: "project-1",
+				userId: "user-1",
+				organizationId: "org-1",
+				approvedChanges: [makeUpdate()],
+				existingBacklog: EMPTY_BACKLOG,
+			});
 
-		expect(mocks.createStoryFromProposal).not.toHaveBeenCalled();
-		expect(result.createdItems).toHaveLength(0);
-		expect(result.redirectedTerminalUpdates).toHaveLength(0);
-		expect(result.skippedDuplicates).toHaveLength(1);
-		expect(result.skippedDuplicates[0]?.existingId).toBe(
-			"existing-superseder",
-		);
-	});
+			if (proposalId) {
+				expect(
+					mocks.recordProposalDuplicateResolution,
+				).toHaveBeenCalledWith({
+					proposalId,
+					changeIndex: 7,
+					existingEntityId: "existing-superseder",
+				});
+			} else {
+				expect(
+					mocks.recordProposalDuplicateResolution,
+				).not.toHaveBeenCalled();
+			}
+			expect(result.errors).toEqual([]);
+			if (ledgerFailure) {
+				const { logger } = await import("@repo/logs");
+				expect(logger.warn).toHaveBeenCalledWith(
+					expect.stringContaining("record"),
+					{ proposalId: "example-proposal", changeIndex: 7 },
+				);
+				expect(
+					JSON.stringify(vi.mocked(logger.warn).mock.calls),
+				).not.toContain(failure.message);
+			}
+			expect(mocks.recordProposalApplication).not.toHaveBeenCalled();
+			expect(result.createdItemMap).toEqual({});
+			expect(result.updatedItemMap).toEqual({});
+			expect(mocks.createStoryFromProposal).not.toHaveBeenCalled();
+			expect(result.createdItems).toHaveLength(0);
+			expect(result.redirectedTerminalUpdates).toHaveLength(0);
+			expect(result.skippedDuplicates).toHaveLength(1);
+			expect(result.skippedDuplicates[0]?.existingId).toBe(
+				"existing-superseder",
+			);
+		},
+	);
 });

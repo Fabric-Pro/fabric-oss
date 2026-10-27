@@ -4,6 +4,7 @@
  * resolver. Without one the resolver gets no conversation.
  */
 
+import { currentAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { generateEmbedding } from "@repo/rag";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -11,6 +12,7 @@ const h = vi.hoisted(() => ({
 	getAIModelWithMetadata: vi.fn(),
 	generateText: vi.fn(),
 	getAiModel: vi.fn(),
+	embeddingPurposes: [] as (string | undefined)[],
 }));
 
 vi.mock("@repo/ai", () => ({
@@ -24,7 +26,10 @@ vi.mock("../../../lib/redis-publisher", () => ({
 }));
 vi.mock("../utils/model-selector", () => ({ getAiModel: h.getAiModel }));
 vi.mock("@repo/rag", () => ({
-	generateEmbedding: vi.fn(async () => ({ embedding: [0.1], tokens: 1 })),
+	generateEmbedding: vi.fn(async () => {
+		h.embeddingPurposes.push(currentAiCallPurpose());
+		return { embedding: [0.1], tokens: 1 };
+	}),
 	executionExists: vi.fn(async () => false),
 	storeExecutionSummary: vi.fn(async () => true),
 	searchSimilarExecutions: vi.fn(async () => []),
@@ -42,6 +47,7 @@ import { compactConversationHistoryActivity } from "../execution/compact-convers
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	h.embeddingPurposes.length = 0;
 	h.getAIModelWithMetadata.mockResolvedValue({ model: { id: "m" } });
 	h.getAiModel.mockResolvedValue({ id: "m" });
 	h.generateText.mockResolvedValue({
@@ -77,6 +83,7 @@ describe("compactConversationHistoryActivity — usage attribution", () => {
 
 		const contexts = h.getAIModelWithMetadata.mock.calls.map((c) => c[1]);
 		expect(contexts[0]).toMatchObject({
+			callPurpose: "compaction",
 			conversationId: "conv-1",
 			frameId: "frame-1",
 			projectId: "project-1",
@@ -106,11 +113,14 @@ describe("generateLLMSummary — usage attribution", () => {
 		await generateLLMSummary(input);
 
 		expect(h.getAiModel.mock.calls[0][5]).toEqual({
+			callPurpose: "trajectory-summary",
 			conversationId: "conv-1",
 			frameId: "frame-1",
 			projectId: "project-1",
 		});
-		expect(h.getAiModel.mock.calls[1][5]).toBeUndefined();
+		expect(h.getAiModel.mock.calls[1][5]).toEqual({
+			callPurpose: "trajectory-summary",
+		});
 	});
 
 	it("is reached with the conversation from embedAndStoreTrajectory", async () => {
@@ -128,10 +138,12 @@ describe("generateLLMSummary — usage attribution", () => {
 		});
 
 		expect(h.getAiModel.mock.calls[0][5]).toEqual({
+			callPurpose: "trajectory-summary",
 			conversationId: "conv-1",
 			frameId: "frame-1",
 			projectId: "project-1",
 		});
+		expect(h.embeddingPurposes).toEqual(["trajectory-embedding"]);
 		expect(vi.mocked(generateEmbedding).mock.calls[0][1]).toMatchObject({
 			conversationId: "conv-1",
 			frameId: "frame-1",
@@ -159,4 +171,18 @@ it("attributes success and failure memory-query embeddings to the same turn", as
 	for (const call of vi.mocked(generateEmbedding).mock.calls) {
 		expect(call[1]).toMatchObject(usageOrigin);
 	}
+});
+
+it("labels both hybrid-routing query embeddings without changing the lookup", async () => {
+	await getHybridRoutingSuggestions({
+		task: "Example task",
+		lettaAgentId: null,
+		userId: "example-user",
+		organizationId: "example-org",
+		includeFailureWarnings: true,
+	});
+	expect(h.embeddingPurposes).toEqual([
+		"execution-search-embedding",
+		"execution-search-embedding",
+	]);
 });

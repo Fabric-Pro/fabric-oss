@@ -17,9 +17,8 @@
  * is user-visible.
  *
  * STORAGE: each recommendation is stamped onto its question root's `metadata` JSONB
- * under `answerRecommendation` (no migration; mirrors the `cleanSpecPropagation`
- * convention). INVARIANT: only ever called on FRESHLY-MINTED roots, whose metadata is
- * still null — `setDecisionMetadata` replaces the whole JSONB, so extending this to
+ * under `answerRecommendation` (no migration). INVARIANT: only ever called on
+ * FRESHLY-MINTED roots, whose metadata is still null — `setDecisionMetadata` replaces the whole JSONB, so extending this to
  * pre-existing roots would require a read-merge to avoid clobbering other metadata.
  */
 

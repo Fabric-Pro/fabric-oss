@@ -10,6 +10,7 @@
  */
 
 import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
 	act,
 	fireEvent,
@@ -22,7 +23,21 @@ import {
 // see the provider's doc-comment and Fizzy #2389), so each render mounts the
 // real provider over this file's mocked `useCopilotChatInternal`.
 function render(ui: Parameters<typeof rtlRender>[0]) {
-	return rtlRender(ui, { wrapper: CopilotChatSessionProvider });
+	const queryClient = new QueryClient({
+		defaultOptions: {
+			queries: { retry: false },
+			mutations: { retry: false },
+		},
+	});
+	return rtlRender(ui, {
+		wrapper: ({ children }) => (
+			<QueryClientProvider client={queryClient}>
+				<CopilotChatSessionProvider>
+					{children}
+				</CopilotChatSessionProvider>
+			</QueryClientProvider>
+		),
+	});
 }
 
 import type { ReactNode } from "react";

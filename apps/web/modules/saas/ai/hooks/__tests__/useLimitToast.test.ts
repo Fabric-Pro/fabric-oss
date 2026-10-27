@@ -56,3 +56,14 @@ describe("useLimitToast internal_budget copy", () => {
 		expect(options.action?.label).toBe("Billing settings");
 	});
 });
+
+it("renders a time stop without billing copy or an action", () => {
+	const [title, options] = show({
+		kind: "internal_budget",
+		message: "Time limit reached",
+		budgetLimit: "time",
+	});
+	expect(title).toBe("This answer reached its time limit");
+	expect(options.description).not.toMatch(/token|credits|billing|admin/i);
+	expect(options.action).toBeUndefined();
+});

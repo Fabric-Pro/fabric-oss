@@ -345,7 +345,7 @@ function buildContextDetails(context: FabricAgentLaunchContext): string {
 			: null,
 		context.surface === "workspace"
 			? context.workspaceId
-				? `Page: the organization Workspace the user has open (workspace id: ${context.workspaceId}). Change it with fabric_update_frame.`
+				? `Page: the organization Workspace the user has open (workspace id: ${context.workspaceId}). For partial edits, use fabric_get_frame outline, read the needed source window, then fabric_edit_frame_block. Use fabric_update_frame for block structure or full rewrites.`
 				: "Page: the organization's Workspaces list. A new Workspace is a frame created with surface workspace."
 			: null,
 		context.codeContext?.filePath

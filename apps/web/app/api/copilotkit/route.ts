@@ -43,6 +43,7 @@ import {
 	CHATGPT_PLAN_EXHAUSTED_CODE,
 	SubscriptionPlanExhaustedError,
 } from "@repo/agent-types/chatgpt-plan-fetch";
+import { databricksPromptCacheForModel } from "@repo/agent-types/databricks-compat";
 import {
 	buildEffectiveBaseUrl,
 	createDatabricksFetch,
@@ -51,7 +52,7 @@ import {
 	getRAGProviderConfig,
 	isReasoningModelName,
 	resolveModelWithProvider,
-	toDatabricksServingBaseUrl,
+	toDatabricksInferenceBaseUrl,
 } from "@repo/ai";
 import { chatGptPlanReconnectRefusal } from "@repo/ai/lib/chatgpt-plan/agent-config";
 import {
@@ -626,23 +627,23 @@ async function getTenantConfig(
 		// Both client and adapter are stateless beyond construction args, so
 		// caching them shaves the per-request allocation on the AG-UI poll path.
 		//
-		// Databricks: `buildEffectiveBaseUrl` returns the raw workspace host, so a
-		// bare host needs `/serving-endpoints` appended (idempotent for a URL that
-		// already carries a path, e.g. the Unity AI Gateway). The compat fetch
-		// corrects the OpenAI-schema divergences the serving endpoints reject.
-		// Other providers are unaffected — same base URL, default fetch.
+		// Route Databricks using the actual model ID, including custom aliases.
+		// The compat fetch handles the provider's OpenAI-schema divergences.
 		const isDatabricks = metadata.provider === "DATABRICKS";
 		// Gate <think> stripping on the resolved CANONICAL identity (Bug #1942
 		// review) — the alias in `metadata.modelString` may be opaque (`prod-chat`).
 		const isReasoning = isReasoningModelName(metadata.canonicalName);
-		const databricksFetch =
-			isDatabricks && isReasoning
-				? createDatabricksFetch(undefined, { stripReasoning: true })
-				: createDatabricksFetch();
+		const databricksFetch = createDatabricksFetch(undefined, {
+			stripReasoning: isDatabricks && isReasoning,
+			promptCache: databricksPromptCacheForModel(metadata.canonicalName),
+		});
 		const openaiClient = new OpenAI({
 			apiKey: providerConfig.apiKey,
 			baseURL: isDatabricks
-				? toDatabricksServingBaseUrl(aiGatewayUrl)
+				? toDatabricksInferenceBaseUrl(
+						aiGatewayUrl,
+						metadata.modelString,
+					)
 				: aiGatewayUrl,
 			...(isDatabricks && { fetch: databricksFetch }),
 		});
@@ -1051,13 +1052,20 @@ export async function POST(req: NextRequest) {
 				"[CopilotKit] AGENT_API_KEY is not set — self-hosted agents will reject requests with 401",
 			);
 		}
-		// Canonical-derived "emits <think>" signal (Bug #1942 review). Passed to
-		// agents so a DeepSeek-R1 Databricks endpoint mapped to an opaque alias
-		// (e.g. `prod-chat`, which the agent otherwise can't recognize as R1) still
-		// gets its reasoning stripped, while a non-R1 model's literal `<think>` is
-		// preserved. Resolved from the CANONICAL name, not the serving alias.
-		const aiIsReasoning = isReasoningModelName(metadata.canonicalName);
+		// Org metadata describes agentModel only while the org resolution supplies it.
+		const agentModelHints =
+			!agentOffOrgProvider && agentModel === metadata.modelString
+				? {
+						ai_canonical_model_name: metadata.canonicalName,
+						ai_is_reasoning: isReasoningModelName(
+							metadata.canonicalName,
+						),
+					}
+				: undefined;
 		const agentHeaders = {
+			...(agentModelHints && {
+				"X-AI-Is-Reasoning": String(agentModelHints.ai_is_reasoning),
+			}),
 			// Service-to-service auth — verified by agent-core auth middleware
 			// against the AGENT_API_KEY secret each agent container has.
 			...(agentApiKey && {
@@ -1083,7 +1091,6 @@ export async function POST(req: NextRequest) {
 			...(agentDeploymentName && {
 				"X-AI-Deployment-Name": agentDeploymentName,
 			}),
-			"X-AI-Is-Reasoning": aiIsReasoning ? "true" : "false",
 		};
 
 		// Build LangGraphHttpAgent wrappers from the module-scope registry.
@@ -1137,6 +1144,7 @@ export async function POST(req: NextRequest) {
 			ai_provider: agentProvider,
 			ai_token: aiToken, // Token for secure API key exchange
 			ai_model: agentModel,
+			...agentModelHints,
 			ai_gateway_url: agentGatewayUrl,
 			...(!agentOffOrgProvider &&
 				providerConfig?.baseUrl && {
@@ -1146,8 +1154,6 @@ export async function POST(req: NextRequest) {
 			...(agentDeploymentName && {
 				ai_deployment_name: agentDeploymentName,
 			}),
-			// Canonical-derived reasoning signal (Bug #1942 review).
-			ai_is_reasoning: aiIsReasoning,
 		};
 
 		const systemPrompt = `You are Fabric AI, a helpful assistant for planning, coding, document generation, and more.\n\n${getCurrentDateContext()}`;

@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 
 const require = createRequire(import.meta.url);
-const source = readFileSync(require.resolve("prisma/build/index.js"), "utf8");
+const source = readFileSync(
+	join(dirname(require.resolve("prisma/package.json")), "build/cli.js"),
+	"utf8",
+);
 // Prisma bundles this private graph walker twice (JS and TS generators).
 // Exercise both installed copies so a missing dependency patch fails the test.
 const walkers = [

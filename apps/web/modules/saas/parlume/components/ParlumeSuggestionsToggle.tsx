@@ -9,31 +9,32 @@ export function ParlumeSuggestionsToggle({
 	checked,
 	onChange,
 	disabled,
+	idPrefix = "parlume",
 }: {
 	checked: boolean;
 	onChange: (checked: boolean) => void;
 	disabled: boolean;
+	/** Keeps element ids unique where several toggles share a page. */
+	idPrefix?: string;
 }) {
 	const t = useTranslations("parlume.invite.suggestions");
+	const id = `${idPrefix}-suggestions`;
 	return (
 		<div className="flex items-start gap-3">
 			<Switch
-				id="parlume-suggestions"
+				id={id}
 				checked={checked}
 				onCheckedChange={onChange}
 				disabled={disabled}
-				aria-describedby="parlume-suggestions-description"
+				aria-describedby={`${id}-description`}
 				className="mt-0.5"
 			/>
 			<div className="space-y-0.5">
-				<Label
-					htmlFor="parlume-suggestions"
-					className="text-sm font-medium"
-				>
+				<Label htmlFor={id} className="text-sm font-medium">
 					{t("label")}
 				</Label>
 				<p
-					id="parlume-suggestions-description"
+					id={`${id}-description`}
 					className="text-xs text-muted-foreground"
 				>
 					{t("description")}

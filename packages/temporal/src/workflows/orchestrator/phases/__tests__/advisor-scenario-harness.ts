@@ -1,3 +1,9 @@
+import {
+	BOUNDED_HISTORY_PATCH,
+	BOUNDED_HISTORY_V2_PATCH,
+	boundedHistoryEnabled,
+	WEIGHTED_ALLOWANCE_PATCH,
+} from "../../advisor-history-retention";
 /**
  * Shared harness for the Advisor scenario tests: synthetic fixtures, a fake
  * activity layer, and a scripted model turn run through the real
@@ -5,6 +11,8 @@
  * activity proxy itself (vi.mock is per file) and passes its mocks in.
  */
 
+import { createRequestFingerprint } from "@repo/ai/lib/request-observation";
+import type { ModelRequestObservation } from "@repo/ai/lib/request-shape";
 import { ApplicationFailure } from "@temporalio/common";
 import { vi } from "vitest";
 import { getFabricAiTools } from "../../../../activities/orchestrator/tools/fabric-ai-tools";
@@ -190,11 +198,18 @@ async function fakeMcp(req: {
 
 export type Call = { name: string; args: Record<string, unknown> };
 export type Step =
-	| { calls: Call[] }
+	| {
+			calls: Call[];
+			ledger?: Record<string, unknown>;
+			requests?: import("@repo/ai/lib/request-shape").ModelRequestObservation[];
+			usage?: { inputTokens: number; outputTokens: number };
+	  }
 	| {
 			answer: string;
 			/** The token-ledger reading the round returns (ledgered turns). */
 			ledger?: Record<string, unknown>;
+			requests?: import("@repo/ai/lib/request-shape").ModelRequestObservation[];
+			usage?: { inputTokens: number; outputTokens: number };
 	  }
 	/**
 	 * The turn's token ledger refuses this round's request: the activity
@@ -208,6 +223,7 @@ export type Step =
 	| ((history: IterativeMessage[]) => Step);
 
 export interface Seen {
+	fingerprint?: ModelRequestObservation["fingerprint"];
 	history: IterativeMessage[];
 	systemPrompt: string;
 	/** The per-call host note sent beside the system prompt, if any. */
@@ -220,6 +236,8 @@ export interface Seen {
 }
 
 export interface TurnOptions {
+	/** Capture the scripted activity boundary without calling a provider. */
+	observeRequests?: boolean;
 	message: string;
 	steps: Step[];
 	history?: Array<{ role: "user" | "assistant"; content: string }>;
@@ -228,6 +246,7 @@ export interface TurnOptions {
 	enabledFabricToolIds?: string[];
 	/** Execution-mode limits; defaults to `{ maxIterations: 20 }`. */
 	modeConfig?: Record<string, unknown>;
+	advisorBudgetEnabled?: boolean;
 	/** The loop's cancellation check; defaults to never cancelled. */
 	isCancelled?: () => boolean;
 	/** The attached project; defaults to "project-1", null for none. */
@@ -266,14 +285,50 @@ export async function runTurn(mocks: ScenarioMocks, options: TurnOptions) {
 				? { finalizationQuestion: req.finalizationQuestion }
 				: {}),
 		});
+		// Mirror the activity's suppression when observing the scripted model request.
+		const sentTools = Object.entries(req.availableTools).filter(
+			([name]) => !(req.suppressedToolNames ?? []).includes(name),
+		);
+		const requests: ModelRequestObservation[] | undefined =
+			options.observeRequests
+				? [
+						{
+							iteration: seen.length,
+							activityAttempt: 1,
+							request: 1,
+							estimatedInputTokens: 10,
+							toolNames: sentTools.map(([name]) => name),
+							fingerprint: createRequestFingerprint({
+								modelId: "example-model",
+								route: "scripted",
+								prompt: [
+									{
+										role: "system",
+										content: req.systemPrompt,
+									},
+									...history,
+								],
+								tools: sentTools.map(([name, definition]) => ({
+									name,
+									...(definition as object),
+								})),
+							}),
+						} satisfies ModelRequestObservation,
+					]
+				: undefined;
+		if (requests) {
+			seen[seen.length - 1].fingerprint = requests[0].fingerprint;
+		}
 		let step = queue.shift();
 		while (typeof step === "function") {
 			step = step(history);
 		}
-		const usage = { inputTokens: 10, outputTokens: 5 };
+		const defaultUsage = { inputTokens: 10, outputTokens: 5 };
 		if (!step) {
 			throw new Error("model script exhausted");
 		}
+		const usage =
+			("usage" in step ? step.usage : undefined) ?? defaultUsage;
 		if ("refuse" in step) {
 			throw ApplicationFailure.create({
 				type: "TurnBudgetExhausted",
@@ -295,9 +350,20 @@ export async function runTurn(mocks: ScenarioMocks, options: TurnOptions) {
 				content: step.answer,
 				usage,
 				...(step.ledger ? { ledger: step.ledger } : {}),
+				...("requests" in step
+					? { requests: step.requests }
+					: requests
+						? { requests }
+						: {}),
 			};
 		}
 		return {
+			...("ledger" in step ? { ledger: step.ledger } : {}),
+			...("requests" in step
+				? { requests: step.requests }
+				: requests
+					? { requests }
+					: {}),
 			type: "tool_calls",
 			toolCalls: step.calls.map((c, i) => ({
 				id: `call-${seen.length}-${i}`,
@@ -333,6 +399,16 @@ export async function runTurn(mocks: ScenarioMocks, options: TurnOptions) {
 		...options.input,
 	};
 	const state = createInitialState(input as never);
+	state.advisorBudgetEnabled = options.advisorBudgetEnabled ?? false;
+	state.advisorBoundedHistoryEnabled = boundedHistoryEnabled(
+		input as never,
+		!mocks.off.has(BOUNDED_HISTORY_PATCH),
+	);
+	state.advisorBoundedHistoryV2Enabled =
+		state.advisorBoundedHistoryEnabled &&
+		!mocks.off.has(BOUNDED_HISTORY_V2_PATCH);
+	state.advisorWeightedAllowanceEnabled =
+		state.advisorBudgetEnabled && !mocks.off.has(WEIGHTED_ALLOWANCE_PATCH);
 	state.enrichedMessage = options.message;
 	state.enrichedSystemPrompt = "You are the project Advisor.";
 	if (options.preloadedResources) {

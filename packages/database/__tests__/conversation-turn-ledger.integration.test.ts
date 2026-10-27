@@ -212,6 +212,48 @@ describe.skipIf(!process.env.DATABASE_URL)(
 		// 1. Concurrency
 		// ------------------------------------------------------------------
 
+		it.each([undefined, null, 90_001])(
+			"settles raw input with cache reads %s and charged measured totals",
+			async (cacheReadTokens) => {
+				const { scope } = await admitLedgeredTurn();
+				const attempt = await reserve(scope);
+				if (attempt.outcome !== "reserved") {
+					throw new Error("expected reservation");
+				}
+				expect(
+					(
+						await fixtures.conversationTurnAttempt.findUniqueOrThrow(
+							{ where: { id: attempt.attemptId } },
+						)
+					).cacheReadTokens,
+				).toBeNull();
+				await settleConversationTurnAttempt({
+					scope,
+					attemptId: attempt.attemptId,
+					settlement: {
+						status: "SETTLED",
+						inputTokens: 100_000,
+						outputTokens: 100,
+						...(cacheReadTokens === undefined
+							? {}
+							: { cacheReadTokens }),
+					},
+				});
+				const row =
+					await fixtures.conversationTurnAttempt.findUniqueOrThrow({
+						where: { id: attempt.attemptId },
+					});
+				expect(row.inputTokens).toBe(100_000);
+				expect(row.cacheReadTokens).toBe(cacheReadTokens ?? null);
+				expect((await turnRow(scope.turnId)).measuredTokens).toBe(
+					cacheReadTokens == null ? 100_100n : 19_100n,
+				);
+				expect((await turnRow(scope.turnId)).outstandingTokens).toBe(
+					0n,
+				);
+			},
+		);
+
 		it("never lets concurrent reservations exceed the allowance", async () => {
 			const { scope } = await admitLedgeredTurn();
 			const results = await Promise.all(
@@ -831,6 +873,56 @@ describe.skipIf(!process.env.DATABASE_URL)(
 				outcome: "denied",
 				reason: "cancelled",
 			});
+		});
+		it.each([
+			{ version: 1, kind: "round_limit", used: 30, limit: 30 },
+			{
+				version: 1,
+				kind: "token_budget",
+				used: 992001,
+				limit: 992000,
+				maxTokens: 1000000,
+				reservedTokens: 8000,
+			},
+		] as const)(
+			"stores the local budget envelope %j on the terminal turn",
+			async (budgetStop) => {
+				const { scope } = await admitLedgeredTurn({
+					budget: undefined,
+				});
+				const result = await finalizeConversationTurn({
+					...scope,
+					outcome: "LIMITED",
+					budgetStop,
+				});
+				expect(result).toMatchObject({ status: "LIMITED", budgetStop });
+				expect(
+					await fixtures.conversationTurn.findUniqueOrThrow({
+						where: { id: scope.turnId },
+						select: { budgetStop: true },
+					}),
+				).toEqual({ budgetStop });
+			},
+		);
+		it("preserves a pre-change balanced allowance of 500k across a 1M admission retry", async () => {
+			const { scope, clientRequestKey } = await admitLedgeredTurn({
+				executionMode: "balanced",
+				budget: { ...BUDGET, tokenAllowance: 500000 },
+			});
+			const again = await admitConversationTurn({
+				userId: IDS.owner,
+				organizationId: IDS.org,
+				conversationId: IDS.conversation,
+				clientRequestKey,
+				executionId: nextExecutionId(),
+				executionMode: "balanced",
+				budget: { ...BUDGET, tokenAllowance: 1000000 },
+			});
+			expect(again).toMatchObject({
+				outcome: "existing",
+				turn: { tokenAllowance: 500000 },
+			});
+			expect((await turnRow(scope.turnId)).tokenAllowance).toBe(500000);
 		});
 	},
 );

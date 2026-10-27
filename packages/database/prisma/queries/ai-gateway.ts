@@ -462,13 +462,16 @@ const PROVIDER_LAST_USED_DEBOUNCE_MS = 60_000;
 
 /**
  * Update last used timestamp for a provider config, debounced to at most once
- * per `PROVIDER_LAST_USED_DEBOUNCE_MS`. Uses a conditional `updateMany` (id +
- * "never touched or touched before the cutoff") instead of an unconditional
- * `update` so a call inside the debounce window takes no row lock at all.
+ * per `PROVIDER_LAST_USED_DEBOUNCE_MS`. The conditional predicate matches a
+ * config never touched or touched before the cutoff.
+ *
+ * Uses a single autocommit raw statement because ORM `updateMany` runs inside
+ * an implicit transaction. A caller frozen or stalled between UPDATE and
+ * COMMIT can strand an idle-in-transaction session whose lock blocks migrations;
+ * autocommit has no client-held transaction to strand.
  *
  * Returns the number of rows actually updated (0 or 1) rather than the row
- * itself — both call sites (`packages/ai/lib/dynamic-model-selector.ts`) are
- * fire-and-forget (`.catch(() => {})`) and never read the return value.
+ * itself. Callers track usage in the background and do not read the count.
  */
 export async function updateProviderLastUsed({
 	configId,
@@ -479,23 +482,21 @@ export async function updateProviderLastUsed({
 }): Promise<number> {
 	const now = new Date();
 	const cutoff = new Date(now.getTime() - PROVIDER_LAST_USED_DEBOUNCE_MS);
-	const where = {
-		id: configId,
-		OR: [{ lastUsedAt: null }, { lastUsedAt: { lt: cutoff } }],
-	};
 
 	if (source === "organization") {
-		const { count } = await db.cloudProviderConfig.updateMany({
-			where,
-			data: { lastUsedAt: now },
-		});
-		return count;
+		return db.$executeRaw`
+			UPDATE "cloud_provider_config"
+			SET "lastUsedAt" = ${now}
+			WHERE "id" = ${configId}
+				AND ("lastUsedAt" IS NULL OR "lastUsedAt" < ${cutoff})
+		`;
 	}
-	const { count } = await db.userCloudProviderConfig.updateMany({
-		where,
-		data: { lastUsedAt: now },
-	});
-	return count;
+	return db.$executeRaw`
+		UPDATE "user_cloud_provider_config"
+		SET "lastUsedAt" = ${now}
+		WHERE "id" = ${configId}
+			AND ("lastUsedAt" IS NULL OR "lastUsedAt" < ${cutoff})
+	`;
 }
 
 /**

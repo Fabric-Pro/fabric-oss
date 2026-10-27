@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PmSyncPendingIndicator } from "../PmSyncPendingIndicator";
 
@@ -20,6 +21,23 @@ describe("PmSyncPendingIndicator", () => {
 
 		expect(screen.getByRole("status")).toHaveTextContent(
 			"Syncing to Fizzy…",
+		);
+	});
+
+	it("keeps compact provider text accessible through one Radix tooltip", async () => {
+		render(
+			<PmSyncPendingIndicator
+				pmToolName="Example PM"
+				compactLabel="Sync…"
+			/>,
+		);
+		const status = screen.getByRole("status", {
+			name: "Syncing to Example PM…",
+		});
+		expect(status).not.toHaveAttribute("title");
+		await userEvent.hover(status);
+		expect(await screen.findByRole("tooltip")).toHaveTextContent(
+			"Syncing to Example PM…",
 		);
 	});
 

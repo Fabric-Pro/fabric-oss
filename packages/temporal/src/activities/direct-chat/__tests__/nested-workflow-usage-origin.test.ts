@@ -78,7 +78,7 @@ beforeEach(() => {
 
 describe("nested workflow tool usage", () => {
 	it.each(["workspace_rag_query", "workspace_rag_summarize"])(
-		"passes the origin through selected %s without changing retrieval scope",
+		"passes origin through %s without changing retrieval scope",
 		async (name) => {
 			const tools = await createBuiltInTools({
 				...context,

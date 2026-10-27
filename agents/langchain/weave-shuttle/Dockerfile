@@ -48,7 +48,7 @@ RUN pnpm install --frozen-lockfile --filter weave-shuttle...
 # it reran a five-minute generate on every change. tsconfig.json is one of
 # those inputs: the generator takes the client's import extensions from it.
 FROM base AS prisma
-COPY packages/database/tsconfig.json ./packages/database/
+COPY packages/database/tsconfig.json packages/database/prisma.config.ts ./packages/database/
 COPY packages/database/prisma/schema.prisma packages/database/prisma/zod-generator.config.json packages/database/prisma/tsconfig.generated.json ./packages/database/prisma/
 COPY packages/database/prisma/zod ./packages/database/prisma/zod
 COPY packages/database/scripts/generate-client.mts packages/database/scripts/fix-zod-imports.ts ./packages/database/scripts/

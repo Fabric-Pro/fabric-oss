@@ -30,6 +30,10 @@ export async function POST(request: NextRequest) {
 			status: true,
 			hardStopAt: true,
 			suggestionsEnabled: true,
+			userId: true,
+			organizationId: true,
+			projectId: true,
+			toolsReadOnly: true,
 		},
 	});
 	if (
@@ -76,11 +80,22 @@ export async function POST(request: NextRequest) {
 	// not repeat it.
 	if (session.status === "JOINING") {
 		const origin = request.nextUrl.origin;
+		const { id, userId, organizationId, projectId, toolsReadOnly } =
+			session;
 		// Loaded here so the Temporal client stays out of this route's
 		// start-up, which every reconnect pays.
 		after(async () => {
 			const { warmParlumeRuntime } = await import("../warm");
-			await warmParlumeRuntime({ origin, sessionId: session.id });
+			await warmParlumeRuntime({
+				origin,
+				session: {
+					id,
+					userId,
+					organizationId,
+					projectId,
+					toolsReadOnly,
+				},
+			});
 		});
 	}
 	return NextResponse.json({

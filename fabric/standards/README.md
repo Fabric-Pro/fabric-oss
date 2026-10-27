@@ -119,7 +119,7 @@ Use standards as a checklist:
 | **Framework** | Next.js 16, React 19, TypeScript 5.9 |
 | **Styling** | Tailwind CSS 4.1, Shadcn UI, Radix UI |
 | **API** | oRPC, Hono, Zod |
-| **Database** | PostgreSQL, Prisma 6.18, Qdrant |
+| **Database** | PostgreSQL, Prisma 7.10.1, Qdrant |
 | **Auth** | Better Auth 1.6 |
 | **AI** | Vercel AI SDK 7, OpenAI, Anthropic |
 | **Workflows** | Temporal |

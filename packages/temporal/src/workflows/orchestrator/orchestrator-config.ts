@@ -97,6 +97,8 @@ export const TOOLS = {
 // =============================================================================
 
 export const BUDGET = {
+	/** Iterative work stops early enough to leave time for final synthesis. */
+	maxIterativeExecutionSeconds: 45 * 60,
 	/** Fraction of effective budget at which the LLM gets a "wrap up" warning */
 	warningThreshold: 0.85,
 	/** Tokens reserved for the final synthesis call when budget is exceeded */

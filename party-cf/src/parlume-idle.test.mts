@@ -2,8 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loadParlumeModule } from "./parlume-test-runtime.mts";
 
+const logged: string[] = [];
+
 function load(path: string): Record<string, unknown> {
-	return loadParlumeModule(path, (...args) => calls.fetch(...args));
+	const record = (event: string) => {
+		logged.push(event);
+	};
+	return loadParlumeModule(path, (...args) => calls.fetch(...args), {
+		info: record,
+		warn: record,
+		error: record,
+		log: record,
+	});
 }
 
 const calls: { fetch: (...args: unknown[]) => Promise<Response> } = {
@@ -115,6 +125,21 @@ test("does not report an attended or speaking meeting", async () => {
 	instance.floor.playbackActive = true;
 	await instance.onAlarm();
 	assert.equal(requests.filter((r) => r.path.endsWith("/idle")).length, 0);
+});
+
+test("counts a restart only once the meeting has heard someone", async () => {
+	const now = Date.now();
+	logged.length = 0;
+	const restarts = () =>
+		logged.filter((event) => event === "[Parlume] bridge.restarted").length;
+
+	await harness(now).instance.onStart();
+	assert.equal(restarts(), 0);
+
+	const { instance, storage } = harness(now);
+	storage.data.set("lastActivityAt", now - 60_000);
+	await instance.onStart();
+	assert.equal(restarts(), 1);
 });
 
 test("resumes the idle window from storage after a restart", async () => {

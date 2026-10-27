@@ -80,6 +80,7 @@ vi.mock("../../../../../orpc/procedures", () => {
 });
 
 import { proposalPromptNotBoundMessage } from "@repo/temporal/proposal-artifact-prompts";
+import { RETIRED_TYPE_MESSAGE } from "@repo/utils/document-type-catalog";
 import { batchGenerateDocumentsProcedure } from "../batch-generate";
 
 type Handler = (args: {
@@ -199,6 +200,31 @@ describe("batchGenerate — an unbound Proposal with the gate on", () => {
 			projectId: "project_example",
 			action: PROPOSAL_CLIENT_MAIN_AGENT_KEY,
 		});
+	});
+});
+
+describe("batchGenerate — the retired Features type (Fizzy #2776)", () => {
+	it("skips and reports Features from a stale draft and still runs the rest", async () => {
+		const result = await batch(["PRD", "USER_STORY"]);
+
+		expect(result.skipped).toEqual([
+			{
+				type: "USER_STORY",
+				reasonKey: null,
+				message: RETIRED_TYPE_MESSAGE,
+			},
+		]);
+		expect(mocks.documentCreate).toHaveBeenCalledTimes(1);
+		expect(startedTypes()).toEqual(["PRD"]);
+	});
+
+	it("refuses a Features-only batch outright, writing nothing", async () => {
+		await expect(batch(["USER_STORY"])).rejects.toMatchObject({
+			code: "PRECONDITION_FAILED",
+			message: RETIRED_TYPE_MESSAGE,
+		});
+		expect(mocks.documentCreate).not.toHaveBeenCalled();
+		expect(mocks.workflowStart).not.toHaveBeenCalled();
 	});
 });
 

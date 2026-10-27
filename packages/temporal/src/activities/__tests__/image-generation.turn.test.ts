@@ -27,6 +27,10 @@ const h = vi.hoisted(() => ({
 	/** Runs once a physical request has answered. */
 	afterRequest: { current: undefined as (() => void) | undefined },
 	uploadFile: vi.fn(),
+	generateContent: vi.fn(),
+	beforePhysical: { current: undefined as (() => void) | undefined },
+	maxOutputTokens: { current: undefined as number | undefined },
+	cacheReadTokens: undefined as number | undefined,
 }));
 
 vi.mock("@repo/database", () => ({
@@ -43,6 +47,7 @@ vi.mock("@repo/storage", () => ({
 
 /** One physical provider request; hangs until aborted when asked to. */
 async function physicalRequest(signal: AbortSignal | undefined) {
+	h.beforePhysical.current?.();
 	h.physical.count++;
 	if (!h.hangUntilAborted.value) {
 		h.afterRequest.current?.();
@@ -71,11 +76,13 @@ vi.mock("@repo/ai", async () => {
 		generateText: ai.generateText,
 		generateImage: ai.generateImage,
 		getRAGProviderConfig: h.getRAGProviderConfig,
+		isVercelGatewayKey: (apiKey: string) => apiKey.startsWith("vck_"),
 		createGateway: () => {
 			const gateway = (modelId: string) =>
 				new MockLanguageModelV4({
 					modelId,
 					doGenerate: async (options) => {
+						h.maxOutputTokens.current = options.maxOutputTokens;
 						await physicalRequest(options.abortSignal);
 						return {
 							content: [
@@ -92,7 +99,14 @@ vi.mock("@repo/ai", async () => {
 								unified: "stop" as const,
 								raw: undefined,
 							},
-							usage: USAGE,
+							usage: {
+								...USAGE,
+								inputTokens: {
+									...USAGE.inputTokens,
+									noCache: 1 - (h.cacheReadTokens ?? 0),
+									cacheRead: h.cacheReadTokens,
+								},
+							},
 							warnings: [],
 						};
 					},
@@ -120,6 +134,13 @@ vi.mock("@repo/ai", async () => {
 	};
 });
 
+vi.mock("@google/genai", () => ({
+	GoogleGenAI: class {
+		models = { generateContent: h.generateContent };
+	},
+}));
+
+import { estimateLanguageRequestInputTokens } from "@repo/ai/lib/turn-budget-estimate";
 import { runWithDispatchGuard } from "@repo/utils/dispatch-guard";
 import { generateImageActivity } from "../image-generation";
 
@@ -139,6 +160,9 @@ const originalFetch = global.fetch;
 beforeEach(() => {
 	cancelled = false;
 	h.physical.count = 0;
+	h.beforePhysical.current = undefined;
+	h.maxOutputTokens.current = undefined;
+	h.cacheReadTokens = 0;
 	h.physical.aborted = false;
 	h.hangUntilAborted.value = false;
 	h.afterRequest.current = undefined;
@@ -149,7 +173,10 @@ beforeEach(() => {
 		cancelled ? { ok: false, reason: "cancelled" } : { ok: true },
 	);
 	h.getRAGProviderConfig.mockReset();
-	h.getRAGProviderConfig.mockResolvedValue({ apiKey: "gateway-key" });
+	h.getRAGProviderConfig.mockResolvedValue({
+		apiKey: "gateway-key",
+		provider: "VERCEL_GATEWAY",
+	});
 	h.downloadFile.mockReset();
 	h.downloadFile.mockResolvedValue({
 		data: Buffer.from([1, 2, 3]),
@@ -161,6 +188,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	global.fetch = originalFetch;
+	vi.unstubAllEnvs();
 });
 
 function expectRefused(outcome: unknown) {
@@ -181,7 +209,7 @@ describe("generateImageActivity — a recorded Stop refuses the provider request
 	it("Stop recorded during credential resolution (gateway multimodal): zero requests", async () => {
 		h.getRAGProviderConfig.mockImplementation(async () => {
 			cancelled = true;
-			return { apiKey: "gateway-key" };
+			return { apiKey: "gateway-key", provider: "VERCEL_GATEWAY" };
 		});
 		const outcome = await run({
 			prompt: "a paper boat",
@@ -216,7 +244,7 @@ describe("generateImageActivity — a recorded Stop refuses the provider request
 	it("Stop recorded during credential resolution (gateway image API): zero requests", async () => {
 		h.getRAGProviderConfig.mockImplementation(async () => {
 			cancelled = true;
-			return { apiKey: "gateway-key" };
+			return { apiKey: "gateway-key", provider: "VERCEL_GATEWAY" };
 		});
 		const outcome = await run({
 			prompt: "a paper boat",
@@ -251,7 +279,7 @@ describe("generateImageActivity — a recorded Stop refuses the provider request
 	it("a run without a turn generates as before", async () => {
 		h.getRAGProviderConfig.mockImplementation(async () => {
 			cancelled = true;
-			return { apiKey: "gateway-key" };
+			return { apiKey: "gateway-key", provider: "VERCEL_GATEWAY" };
 		});
 		const outcome = (await run({
 			prompt: "a paper boat",
@@ -410,4 +438,203 @@ describe("generateImageActivity — called without a turn scope inside a turn's 
 		expect(fetchSpy).not.toHaveBeenCalled();
 		expect(outcome).toBe(STOP);
 	});
+});
+
+describe("image token reservations", () => {
+	function ledger() {
+		const reserve = vi.fn(async () => ({
+			attemptId: "image-attempt",
+			outputCap: null,
+		}));
+		const budget = {
+			reserve,
+			settle: vi.fn(async () => {}),
+			markUnknown: vi.fn(async () => {}),
+			release: vi.fn(async () => {}),
+		};
+		const guard = {
+			key: "example-turn",
+			assertDispatchable: async () => {},
+			abortSignal: () => undefined,
+			rethrowIfStopped: () => {},
+			budget,
+		};
+		return { budget, guard };
+	}
+	it.each([undefined, 0, 1])(
+		"reserves the resolved gateway model before sending IMAGE+TEXT without a token cap, cacheReadTokens=%s",
+		async (cacheReadTokens) => {
+			h.cacheReadTokens = cacheReadTokens;
+			const { budget, guard } = ledger();
+			let reservationsAtSend = 0;
+			h.beforePhysical.current = () => {
+				reservationsAtSend = budget.reserve.mock.calls.length;
+			};
+			const outcome = await runWithDispatchGuard(guard, () =>
+				run({
+					prompt: "boat",
+					provider: "gateway",
+					gatewayModel: NANO_BANANA,
+					userId: TURN_SCOPE.userId,
+					organizationId: "example-org",
+					inputImagePath: "example-org/input.png",
+				}),
+			);
+			expect(outcome).toMatchObject({ resolvedWith: { success: true } });
+			expect(reservationsAtSend).toBe(1);
+			expect(budget.reserve).toHaveBeenCalledWith(
+				expect.objectContaining({
+					modality: "language",
+					inputEstimate: estimateLanguageRequestInputTokens({
+						prompt: [
+							{
+								content: [
+									{ type: "image" },
+									{ type: "text", text: "boat" },
+								],
+							},
+						],
+					}),
+					requestedOutputTokens: 16384,
+					enforcesOutputCap: false,
+				}),
+			);
+			expect(h.maxOutputTokens.current).toBeUndefined();
+			expect(budget.settle).toHaveBeenCalledTimes(1);
+			expect(budget.settle).toHaveBeenCalledWith("image-attempt", {
+				inputTokens: 1,
+				outputTokens: 1,
+				...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+			});
+		},
+	);
+	it("charges Gemini candidate and thinking output using the SDK usage totals", async () => {
+		vi.stubEnv("GOOGLE_AI_STUDIO_API_KEY", "example-key");
+		const { budget, guard } = ledger();
+		h.generateContent.mockResolvedValue({
+			candidates: [
+				{
+					content: {
+						parts: [
+							{
+								inlineData: {
+									mimeType: "image/png",
+									data: "AQ==",
+								},
+							},
+						],
+					},
+				},
+			],
+			usageMetadata: {
+				promptTokenCount: 12,
+				candidatesTokenCount: 30,
+				thoughtsTokenCount: 37,
+				toolUsePromptTokenCount: 5,
+				cachedContentTokenCount: 4,
+			},
+		});
+		const outcome = await runWithDispatchGuard(guard, () =>
+			run({
+				prompt: "boat",
+				provider: "gemini",
+				userId: TURN_SCOPE.userId,
+			}),
+		);
+		expect(outcome).toMatchObject({ resolvedWith: { success: true } });
+		expect(budget.settle).toHaveBeenCalledWith("image-attempt", {
+			inputTokens: 12,
+			outputTokens: 67,
+		});
+		expect(budget.markUnknown).not.toHaveBeenCalled();
+	});
+	it("reserves once per physical gateway call when the scoped turn guard wraps the model", async () => {
+		const { budget, guard } = ledger();
+		const reservationsAtSend: number[] = [];
+		h.beforePhysical.current = () => {
+			reservationsAtSend.push(budget.reserve.mock.calls.length);
+		};
+		await runWithDispatchGuard(guard, async () => {
+			for (let call = 0; call < 2; call++) {
+				const outcome = await run({
+					prompt: "boat",
+					provider: "gateway",
+					gatewayModel: NANO_BANANA,
+					userId: TURN_SCOPE.userId,
+					turnScope: TURN_SCOPE,
+				});
+				expect(outcome).toMatchObject({
+					resolvedWith: { success: true },
+				});
+			}
+		});
+		expect(reservationsAtSend).toEqual([1, 2]);
+		expect(budget.reserve).toHaveBeenCalledTimes(2);
+		expect(budget.settle).toHaveBeenCalledTimes(2);
+	});
+	it.each([true, false])(
+		"direct Gemini reserves before sending and handles complete usage=%s",
+		async (complete) => {
+			vi.stubEnv("GOOGLE_AI_STUDIO_API_KEY", "example-key");
+			const { budget, guard } = ledger();
+			let reservationsAtSend = 0;
+			h.generateContent.mockImplementation(async () => {
+				reservationsAtSend = budget.reserve.mock.calls.length;
+				return {
+					candidates: [
+						{
+							content: {
+								parts: [
+									{
+										inlineData: {
+											mimeType: "image/png",
+											data: "AQ==",
+										},
+									},
+								],
+							},
+						},
+					],
+					usageMetadata: {
+						promptTokenCount: 12,
+						...(complete ? { candidatesTokenCount: 30 } : {}),
+					},
+				};
+			});
+			const outcome = await runWithDispatchGuard(guard, () =>
+				run({
+					prompt: "boat",
+					provider: "gemini",
+					userId: TURN_SCOPE.userId,
+				}),
+			);
+			expect(outcome).toMatchObject({ resolvedWith: { success: true } });
+			expect(reservationsAtSend).toBe(1);
+			expect(budget.reserve).toHaveBeenCalledWith(
+				expect.objectContaining({
+					modality: "language",
+					inputEstimate: estimateLanguageRequestInputTokens({
+						prompt: [{ content: "boat" }],
+					}),
+					requestedOutputTokens: 16384,
+					minOutputTokens: 16384,
+					enforcesOutputCap: false,
+				}),
+			);
+			expect(
+				h.generateContent.mock.calls.at(-1)?.[0].config.maxOutputTokens,
+			).toBeUndefined();
+			if (complete) {
+				expect(budget.settle).toHaveBeenCalledWith("image-attempt", {
+					inputTokens: 12,
+					outputTokens: 30,
+				});
+			} else {
+				expect(budget.markUnknown).toHaveBeenCalledWith(
+					"image-attempt",
+				);
+				expect(budget.settle).not.toHaveBeenCalled();
+			}
+		},
+	);
 });

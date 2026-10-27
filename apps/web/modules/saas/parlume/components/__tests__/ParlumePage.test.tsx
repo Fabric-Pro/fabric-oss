@@ -1,3 +1,4 @@
+import { ORPCError } from "@orpc/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
 	cleanup,
@@ -18,7 +19,7 @@ import {
 	vi,
 } from "vitest";
 import { ParlumePage } from "../ParlumePage";
-import { PROJECT_BASE_PATH } from "./fixtures";
+import { PROJECT_BASE_PATH, SETTINGS_BASE_PATH } from "./fixtures";
 
 const mocks = vi.hoisted(() => ({
 	listAgents: vi.fn(),
@@ -86,6 +87,7 @@ function showPage(canEdit = true) {
 			<ParlumePage
 				projectId="example-project"
 				projectBasePath={PROJECT_BASE_PATH}
+				settingsBasePath={SETTINGS_BASE_PATH}
 				canEdit={canEdit}
 			/>
 		</QueryClientProvider>,
@@ -262,19 +264,91 @@ describe("ParlumePage invitation", () => {
 		);
 	});
 
-	it("shows an alert and disables invitations when the operator is not ready", async () => {
+	function notReady(
+		overrides: Partial<{
+			meetingBot: boolean;
+			voice: boolean;
+			platform: boolean;
+			canConfigure: boolean;
+		}> = {},
+	) {
+		const ready = {
+			meetingBot: true,
+			voice: true,
+			platform: true,
+			canConfigure: true,
+			...overrides,
+		};
 		mocks.listAgents.mockResolvedValue({
 			agents: [builtIn],
 			operatorReady: false,
+			readiness: {
+				meetingBot: {
+					ready: ready.meetingBot,
+					source: ready.meetingBot ? "organization" : null,
+				},
+				voice: {
+					ready: ready.voice,
+					engine: ready.voice ? "realtime" : null,
+				},
+				platform: { ready: ready.platform },
+				canConfigure: ready.canConfigure,
+			},
 		});
+	}
+
+	it("lists each missing setup item with a link to fix it and back, and disables invitations", async () => {
+		notReady({ meetingBot: false, voice: false, platform: false });
 		showPage();
-		expect(
+
+		const checklist = (
 			await screen.findByText(
-				/An operator must complete its media setup/,
-			),
-		).toHaveAttribute("role", "alert");
+				"Parlume is not ready to join meetings yet.",
+			)
+		).closest("[role='alert']") as HTMLElement;
+		expect(
+			within(checklist).getByRole("link", {
+				name: "Set up the meeting bot",
+			}),
+		).toHaveAttribute(
+			"href",
+			"/app/example-org/settings/meeting-assistant?returnTo=%2F",
+		);
+		expect(
+			within(checklist).getByRole("link", { name: "Add an AI provider" }),
+		).toHaveAttribute(
+			"href",
+			"/app/example-org/settings/ai-providers?returnTo=%2F",
+		);
+		expect(
+			within(checklist).getByTestId("parlume-missing-platform"),
+		).toHaveTextContent("Contact the Fabric operator");
 		fireEvent.change(linkField(), { target: { value: meetingUrl } });
 		expect(inviteButton()).toBeDisabled();
+	});
+
+	it("names only what is missing", async () => {
+		notReady({ voice: false });
+		showPage();
+
+		await screen.findByTestId("parlume-missing-voice");
+		expect(
+			screen.queryByTestId("parlume-missing-meeting-bot"),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByTestId("parlume-missing-platform"),
+		).not.toBeInTheDocument();
+	});
+
+	it("tells a member who cannot change settings who can, without a settings link", async () => {
+		notReady({ meetingBot: false, canConfigure: false });
+		showPage();
+
+		const item = await screen.findByTestId("parlume-missing-meeting-bot");
+		expect(item).toHaveTextContent(
+			"An organization owner or admin can set it up in Settings → Meeting assistant.",
+		);
+		expect(within(item).queryByRole("link")).not.toBeInTheDocument();
 	});
 
 	it("lets the reader retry when the project agents cannot be loaded", async () => {
@@ -310,6 +384,23 @@ describe("ParlumePage invitation", () => {
 		fireEvent.click(inviteButton());
 		expect(
 			await screen.findByText(/could not join this meeting/),
+		).toHaveAttribute("role", "alert");
+	});
+
+	it("shows the server's reason when it refuses the invitation", async () => {
+		mocks.start.mockRejectedValue(
+			new ORPCError("BAD_GATEWAY", {
+				message:
+					"Attendee refused the invitation (HTTP 400): meeting_url is invalid",
+			}),
+		);
+		showPage();
+		await readyToInvite();
+		fireEvent.click(inviteButton());
+		expect(
+			await screen.findByText(
+				"Attendee refused the invitation (HTTP 400): meeting_url is invalid",
+			),
 		).toHaveAttribute("role", "alert");
 	});
 

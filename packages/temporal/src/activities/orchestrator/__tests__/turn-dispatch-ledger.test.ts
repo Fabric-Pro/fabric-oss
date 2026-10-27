@@ -169,6 +169,7 @@ describe("the guard's ledger", () => {
 			settlement: {
 				status: "SETTLED",
 				inputTokens: 40,
+				cacheReadTokens: 0,
 				outputTokens: 10,
 			},
 		});
@@ -186,12 +187,16 @@ describe("the guard's ledger", () => {
 		});
 	});
 
-	it("reserves an embedding or a typed decision as AUXILIARY whatever the activity's kind", async () => {
+	it("reserves embedding, decision and external requests as AUXILIARY whatever the activity's kind", async () => {
 		await runWithTurnDispatch(
 			SCOPE,
 			async () => {
 				const budget = getDispatchGuard()?.budget;
-				for (const modality of ["embedding", "decision"] as const) {
+				for (const modality of [
+					"embedding",
+					"decision",
+					"external",
+				] as const) {
 					await budget?.reserve({
 						modality,
 						inputEstimate: 100,
@@ -205,6 +210,7 @@ describe("the guard's ledger", () => {
 			{ attemptKind: "EXPLORATION" },
 		);
 		expect(db.reserve.mock.calls.map((call) => call[0].kind)).toEqual([
+			"AUXILIARY",
 			"AUXILIARY",
 			"AUXILIARY",
 		]);

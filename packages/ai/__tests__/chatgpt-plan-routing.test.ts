@@ -12,13 +12,14 @@
  * database boundary are the seams.
  */
 
-import { generateText } from "ai";
-import { MockLanguageModelV4 } from "ai/test";
+import { generateText, jsonSchema, streamText, tool } from "ai";
+import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	getAiProviderApiKey: vi.fn(),
 	getModelForTask: vi.fn(),
+	getModelByCanonicalName: vi.fn(),
 	getModel: vi.fn(),
 	logAiUsageAsync: vi.fn(),
 	isFeatureEnabled: vi.fn(),
@@ -40,6 +41,7 @@ vi.mock("@repo/database", () => ({
 	getAiProviderApiKeyByProvider: vi.fn(),
 	getEmbeddingProviderConfig: mocks.embeddingProvider,
 	getModelForTask: mocks.getModelForTask,
+	getModelByCanonicalName: mocks.getModelByCanonicalName,
 	getProviderModelIdForCanonical: mocks.providerModelIdFor,
 	getProviderModelMappingForCanonical: async (
 		name: string,
@@ -163,6 +165,7 @@ beforeEach(() => {
 	mocks.createPlanModel.mockImplementation(() => mockModel());
 	mocks.getAiProviderApiKey.mockResolvedValue(ORG_GATEWAY);
 	mocks.getModelForTask.mockResolvedValue(SELECTION);
+	mocks.getModelByCanonicalName.mockResolvedValue(null);
 	mocks.providerModelIdFor.mockResolvedValue(null);
 	mocks.resolvePlanModel.mockImplementation(
 		async ({
@@ -623,6 +626,10 @@ describe("getAIModelWithMetadata — a plan pick on the API path", () => {
 	});
 
 	it("still honours a provider model the member picked", async () => {
+		mocks.getModelByCanonicalName.mockResolvedValue({
+			canonicalName: "claude-sonnet-5",
+			maxOutputTokens: 8192,
+		});
 		mocks.providerModelIdFor.mockImplementation(async (_name, provider) =>
 			provider === "VERCEL_GATEWAY" ? "anthropic/claude-sonnet-5" : null,
 		);
@@ -632,6 +639,7 @@ describe("getAIModelWithMetadata — a plan pick on the API path", () => {
 		);
 		expect(resolved.metadata.selectionSource).toBe("override");
 		expect(resolved.metadata.modelString).toContain("claude-sonnet-5");
+		expect(resolved.metadata.maxOutputTokens).toBe(8192);
 	});
 });
 
@@ -750,3 +758,79 @@ describe("getAIModelWithMetadata — bulk runs a person starts", () => {
 		).rejects.toThrow(/^No AI provider configured/);
 	});
 });
+
+it.each([false, true])(
+	"plan selector recovers text calls with streaming=%s",
+	async (streaming) => {
+		const text =
+			'Fetching. <function=example_lookup>{"feature":"F-019"}</function>';
+		mocks.createPlanModel.mockImplementation(
+			() =>
+				new MockLanguageModelV4({
+					doGenerate: async () => ({
+						content: [{ type: "text", text }],
+						finishReason: { unified: "stop", raw: "stop" },
+						usage: USAGE,
+						warnings: [],
+					}),
+					doStream: async () => ({
+						stream: simulateReadableStream({
+							chunks: [
+								{ type: "text-start" as const, id: "t" },
+								{
+									type: "text-delta" as const,
+									id: "t",
+									delta: text,
+								},
+								{ type: "text-end" as const, id: "t" },
+								{
+									type: "finish" as const,
+									finishReason: {
+										unified: "stop" as const,
+										raw: "stop",
+									},
+									usage: USAGE,
+								},
+							],
+						}),
+					}),
+				}),
+		);
+		const resolved = await getAIModelWithMetadata(
+			{ taskType: "TOOL_CALLING" },
+			ELIGIBLE,
+		);
+		const options = {
+			model: resolved.model,
+			prompt: "Fetch a feature",
+			tools: {
+				example_lookup: tool({
+					inputSchema: jsonSchema<{ feature: string }>({
+						type: "object",
+						properties: { feature: { type: "string" } },
+						required: ["feature"],
+					}),
+				}),
+			},
+		};
+		if (!streaming) {
+			const result = await generateText(options);
+			expect(result.text).toBe("Fetching. ");
+			expect(result.toolCalls).toMatchObject([
+				{ toolName: "example_lookup", input: { feature: "F-019" } },
+			]);
+		} else {
+			const result = streamText(options);
+			let shown = "";
+			for await (const part of result.stream) {
+				if (part.type === "text-delta") {
+					shown += part.text;
+				}
+			}
+			expect(shown).toBe("Fetching. ");
+			expect(await result.toolCalls).toMatchObject([
+				{ toolName: "example_lookup", input: { feature: "F-019" } },
+			]);
+		}
+	},
+);

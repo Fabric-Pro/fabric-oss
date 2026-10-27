@@ -6,6 +6,7 @@ import {
 	FramePlacementRefusedError,
 	type FrameRecord,
 	type FrameSurface,
+	FrameUpdateConflictError,
 	getAccessibleFrameById,
 	getFrameById,
 	listFrames,
@@ -25,10 +26,12 @@ import {
 } from "../../lib/fabric-frame-tool-definitions";
 import { agentToolProjectScope } from "./agent-tool-runtime";
 import {
+	applyFrameBlockEdits,
 	getNonEmptyString,
 	parseFrameSourceWindow,
 	parseRuntimeTools,
 	validateCreateFrameArgs,
+	validateEditFrameBlockArgs,
 	validateUpdateFrameArgs,
 	withTrustedRuntimeTools,
 } from "./frame-args";
@@ -289,8 +292,7 @@ export async function updateFirstClassFrame(input: {
 		}
 	}
 
-	throwIfDispatchStopped();
-	const frame = await updateFrame({
+	const persisted = await persistFrameUpdate({
 		id: validated.value.frameId,
 		userId: input.userId,
 		organizationId: input.organizationId,
@@ -301,9 +303,11 @@ export async function updateFirstClassFrame(input: {
 		surface: validated.value.surface,
 		runtimeTools: validated.value.runtimeTools,
 	});
-	if (!frame) {
-		return { error: "Frame not found." };
+	if ("error" in persisted) {
+		return persisted;
 	}
+	const frame = persisted.frame;
+
 	const shareToken = liveShareToken(frame);
 	return {
 		frameId: frame.id,
@@ -316,7 +320,130 @@ export async function updateFirstClassFrame(input: {
 		shareUrl: shareToken ? buildShareUrl(shareToken) : undefined,
 		shareEmbedUrl: shareToken ? buildShareEmbedUrl(shareToken) : undefined,
 		...describeFrameSurface(frame, input.userId),
+		updatedAt: frame.updatedAt.toISOString(),
 		response: `Frame "${frame.title}" updated successfully.`,
+	};
+}
+
+/** Shared persistence for full updates and partial edits, after frameWriteRefusal. */
+async function persistFrameUpdate(
+	input: Parameters<typeof updateFrame>[0],
+): Promise<
+	| { frame: NonNullable<Awaited<ReturnType<typeof updateFrame>>> }
+	| { error: string }
+> {
+	throwIfDispatchStopped();
+	try {
+		const frame = await updateFrame(input);
+		return frame ? { frame } : { error: "Frame not found." };
+	} catch (error) {
+		if (error instanceof FrameUpdateConflictError) {
+			return { error: error.message };
+		}
+		throw error;
+	}
+}
+
+export async function editFirstClassFrameBlock(input: {
+	args: Record<string, unknown> | undefined;
+	userId: string;
+	organizationId?: string;
+}) {
+	const validated = validateEditFrameBlockArgs(input.args);
+	if (!validated.ok) {
+		return { error: validated.error };
+	}
+	const refusal = await frameWriteRefusal(
+		input.userId,
+		input.organizationId,
+		"update",
+	);
+	if (refusal) {
+		return { error: refusal };
+	}
+	const { frameId, blockId, edits, expectedUpdatedAt } = validated.value;
+	const existing = await getFrameById({
+		id: frameId,
+		userId: input.userId,
+		organizationId: input.organizationId,
+		projectId: agentToolProjectScope()?.projectId,
+	});
+	if (!existing) {
+		return { error: "Frame not found." };
+	}
+	const block = existing.document.blocks.find(
+		(entry) => entry.id === blockId,
+	);
+	if (!block) {
+		return { error: "Block not found." };
+	}
+	let applied: ReturnType<typeof applyFrameBlockEdits>;
+	try {
+		applied = applyFrameBlockEdits(block.content, edits);
+	} catch (error) {
+		return { error: (error as Error).message };
+	}
+	if (applied.content === block.content) {
+		if (
+			expectedUpdatedAt &&
+			expectedUpdatedAt.getTime() !== existing.updatedAt.getTime()
+		) {
+			return { error: new FrameUpdateConflictError().message };
+		}
+		return {
+			frameId,
+			blockId,
+			unchanged: true,
+			updatedAt: existing.updatedAt.toISOString(),
+			replacements: applied.replacements,
+			chars: applied.content.length,
+		};
+	}
+	if (!applied.content.trim()) {
+		return {
+			error: `Edit would leave block ${blockId} empty; use fabric_update_frame to remove a block.`,
+		};
+	}
+
+	const blocks = existing.document.blocks.map((entry) =>
+		entry === block ? { ...entry, content: applied.content } : entry,
+	);
+	// Use the update argument validator, including its blank-content normalization.
+	const update = validateUpdateFrameArgs({
+		frameId,
+		blocks: [{ ...block, content: applied.content }],
+	});
+	if (!update.ok) {
+		return { error: update.error };
+	}
+	if (
+		update.value.blocks?.find((entry) => entry.id === blockId)?.content !==
+		applied.content
+	) {
+		return {
+			error: "Resulting block content was refused by frame update validation.",
+		};
+	}
+
+	const result = await persistFrameUpdate({
+		id: frameId,
+		userId: input.userId,
+		organizationId: input.organizationId,
+		projectId: agentToolProjectScope()?.projectId,
+		blocks,
+		expectedUpdatedAt: existing.updatedAt,
+		requestedUpdatedAt: expectedUpdatedAt,
+	});
+	if ("error" in result) {
+		return result;
+	}
+
+	return {
+		frameId,
+		blockId,
+		updatedAt: result.frame.updatedAt.toISOString(),
+		replacements: applied.replacements,
+		chars: applied.content.length,
 	};
 }
 
@@ -362,6 +489,22 @@ export async function getFirstClassFrame(input: {
 			frame.projectId !== input.projectRestrictionId)
 	) {
 		return { error: "Frame not found." };
+	}
+	if (input.args?.outline === true) {
+		return {
+			frameId: frame.id,
+			title: frame.title,
+			updatedAt: frame.updatedAt.toISOString(),
+			version: frame.version,
+			blocks: frame.document.blocks.map(
+				({ id, type, title, content }) => ({
+					id,
+					type,
+					title,
+					chars: content.length,
+				}),
+			),
+		};
 	}
 	if (sourceWindow.value) {
 		return readFrameSource(frame, sourceWindow.value);

@@ -324,10 +324,10 @@ function getFabricAiToolsInternal(): FabricAiTool[] {
 		{
 			name: "fabric_list_project_features",
 			description:
-				"List the attached project's roadmap items (features and bugs) LIVE from Fabric, with identifier (e.g. F-040), title, status, priority, drafting stage, task progress and a short description. " +
+				"List the attached project's roadmap items (features and bugs) LIVE from Fabric, with identifier (e.g. F-040), title, status, priority, drafting stage, task progress, updatedAt (ISO timestamp) and a short description. " +
 				"Use this — not project_rag_query — for any question about what is on the roadmap, a feature's current status, or which features are in a given status/priority. " +
 				"Filter with status (the project's status column name, e.g. 'In Review'), priority, kind or search text; page with offset when hasMore is true. " +
-				"Lists the same set as the roadmap page: features and bugs, never declined items, closed items only with includeHidden=true; ordered by identifier number (F-094 before F-100). total counts that set and hiddenCount the closed items left out, so '199 items, 8 hidden' matches the page: total ALREADY excludes hidden items — report total as is and never subtract hiddenCount from it; summary states the counts in words. " +
+				"Lists the same set as the roadmap page: features and bugs, excluding declined items, closed items only with includeHidden=true; ordered by identifier number by default (F-094 before F-100); sort=updated returns most recently updated first. Keep sort unchanged while paging. total counts that set and hiddenCount the closed items left out, so '199 items, 8 hidden' matches the page: total ALREADY excludes hidden items — report total as is and do not subtract hiddenCount from it; summary states the counts in words. " +
 				"An item missing from this list may still exist (declined, or closed without includeHidden) — read it with fabric_get_project_feature before saying it does not exist. " +
 				"Call fabric_get_project_feature for one feature's full description, acceptance criteria and tasks. " +
 				"KEYWORDS: roadmap, features, backlog, stories, work items, feature status, in progress, in review, what's next.",

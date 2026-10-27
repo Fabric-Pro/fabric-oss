@@ -93,6 +93,7 @@ import type {
 	LanguageModelMiddleware,
 } from "ai";
 import { wrapEmbeddingModel, wrapLanguageModel } from "ai";
+import { clampRequestedOutputTokens } from "./output-token-budget";
 import {
 	decisionOutputAllowance,
 	estimateDecisionRequestInputTokens,
@@ -103,6 +104,8 @@ import {
 import type { DecisionModelInstance } from "./usage-logging-middleware";
 
 export interface TurnBudgetModelOptions {
+	/** Catalog output limit of the resolved model, when known. */
+	maxOutputTokens?: number;
 	/**
 	 * Whether the model sends `maxOutputTokens` to the provider. An explicit
 	 * capability of the model the factory built, never inferred from a name.
@@ -137,15 +140,25 @@ function totalOf(value: unknown): number | null {
  * total (which includes reasoning). Partial usage never settles: a missing
  * count would read as zero and refund tokens that were spent.
  */
-export function completeLanguageUsage(
-	usage: unknown,
-): { inputTokens: number; outputTokens: number } | null {
+export function completeLanguageUsage(usage: unknown): {
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens?: number;
+} | null {
 	const record = (usage ?? {}) as Record<string, unknown>;
 	const inputTokens = totalOf(record.inputTokens);
 	const outputTokens = totalOf(record.outputTokens);
+	const cacheReadTokens =
+		typeof record.inputTokens === "object" && record.inputTokens !== null
+			? totalOf((record.inputTokens as { cacheRead?: unknown }).cacheRead)
+			: null;
 	return inputTokens === null || outputTokens === null
 		? null
-		: { inputTokens, outputTokens };
+		: {
+				inputTokens,
+				outputTokens,
+				...(cacheReadTokens === null ? {} : { cacheReadTokens }),
+			};
 }
 
 function logLedgerWriteFailure(
@@ -203,7 +216,11 @@ function settlementTimer(): {
 async function finishAttempt(
 	budget: DispatchBudget,
 	attemptId: string,
-	usage: { inputTokens: number; outputTokens: number } | null,
+	usage: {
+		inputTokens: number;
+		outputTokens: number;
+		cacheReadTokens?: number;
+	} | null,
 ): Promise<void> {
 	const name = usage ? "settle" : "unknown";
 	const writing = (
@@ -291,11 +308,13 @@ function createLanguageMiddleware(
 		budget.reserve({
 			modality: "language",
 			inputEstimate: estimateLanguageRequestInputTokens(params),
-			requestedOutputTokens:
+			requestedOutputTokens: clampRequestedOutputTokens(
 				sizedOutputTokens ??
-				options.requestedOutputTokens ??
-				params.maxOutputTokens ??
-				TURN_BUDGET_ESTIMATE.defaultRequestedOutputTokens,
+					options.requestedOutputTokens ??
+					params.maxOutputTokens ??
+					TURN_BUDGET_ESTIMATE.defaultRequestedOutputTokens,
+				options,
+			),
 			minOutputTokens: TURN_BUDGET_ESTIMATE.minOutputTokens,
 			enforcesOutputCap: options.enforcesOutputCap,
 			modelId: modelIdOf(model),
@@ -303,6 +322,20 @@ function createLanguageMiddleware(
 
 	return {
 		specificationVersion: "v4",
+		// SDK parameter transformation runs before the dispatch branches, including
+		// those without a ledger or whose ledger returns no reservation.
+		transformParams: async ({ params }) => {
+			if (params.maxOutputTokens === undefined) {
+				return params;
+			}
+			const maxOutputTokens = clampRequestedOutputTokens(
+				params.maxOutputTokens,
+				options,
+			);
+			return maxOutputTokens === params.maxOutputTokens
+				? params
+				: { ...params, maxOutputTokens };
+		},
 		wrapGenerate: async ({ doGenerate, params: requested, model }) => {
 			const budget = activeBudget();
 			if (!budget) {
@@ -387,7 +420,11 @@ function createLanguageMiddleware(
 			// One terminal transition per attempt, at the first terminal state.
 			let terminal = false;
 			const finishWith = async (
-				usage: { inputTokens: number; outputTokens: number } | null,
+				usage: {
+					inputTokens: number;
+					outputTokens: number;
+					cacheReadTokens?: number;
+				} | null,
 			) => {
 				if (terminal) {
 					return;

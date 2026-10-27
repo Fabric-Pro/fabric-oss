@@ -6,7 +6,13 @@ import {
 	useCopilotAction,
 	useCopilotReadable,
 } from "@copilotkit/react-core";
-import { CopilotSidebar, useChatContext } from "@copilotkit/react-ui";
+import { useChatContext } from "@copilotkit/react-ui";
+import {
+	type DraftVerdictRecorder,
+	useConfirmChangesVerdict,
+	useConfirmChangesVerdictCard,
+} from "@saas/agents/copilot/useConfirmChangesVerdict";
+import { CopilotReplyRatingSidebar } from "@saas/shared/components/copilot/CopilotReplyRatingSidebar";
 import "@copilotkit/react-ui/styles.css";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { useActiveDocumentAssistantConversation } from "@saas/projects/hooks/useDocumentAssistantHistory";
@@ -560,7 +566,10 @@ function TopicAssistantConversation({
 				projectId={projectId}
 				organizationId={organizationId}
 			>
-				<CopilotSidebar
+				<CopilotReplyRatingSidebar
+					enabled={topicId !== null && historyEnabled}
+					featureKey="publishing-suite"
+					projectId={projectId}
 					// The agent already streams `reasoningByTurn` and
 					// `toolCallsByTurn` into co-agent state; without this
 					// prop CopilotKit's default bubble renders and the
@@ -624,7 +633,7 @@ function TopicAssistantConversation({
 							initialPersistedMessageIds={persistedMessageIds}
 						/>
 					) : null}
-				</CopilotSidebar>
+				</CopilotReplyRatingSidebar>
 				{/* This topic's earlier conversations, and the way back into
 					    one. A SIBLING of the sidebar rather than a child: the
 					    drawer overlays the chat area while the live thread
@@ -865,21 +874,45 @@ function TopicAssistantAgent({
 		organizationId: organizationId ?? null,
 	});
 
+	const verdictFactory = useConfirmChangesVerdict({
+		surface: "topic-analysis",
+		projectId,
+	});
 	useCopilotAction(
 		{
 			name: "confirm_changes",
-			renderAndWaitForResponse: ({ respond, status }) => (
-				<ConfirmRewrite
-					status={status}
-					respond={respond}
-					canEdit={canEdit}
-					onOpen={() => setIsReviewOpen(true)}
-					onAccept={handleAccept}
-					onReject={handleReject}
-				/>
-			),
+			renderAndWaitForResponse: ({ respond, status }) => {
+				const recordVerdict = verdictFactory();
+				return (
+					<ConfirmRewrite
+						recordVerdict={recordVerdict}
+						status={status}
+						respond={respond}
+						canEdit={canEdit}
+						onOpen={() => setIsReviewOpen(true)}
+						onAccept={() => {
+							// analysis-revision.ts records acceptance once this rewrite saves.
+							const landed = handleAccept();
+							if (landed) {
+								void recordVerdict(true);
+							}
+							return landed;
+						}}
+						onReject={() => {
+							void recordVerdict(false);
+							return handleReject();
+						}}
+					/>
+				);
+			},
 		},
-		[agentState?.document, canEdit, handleAccept, handleReject],
+		[
+			agentState?.document,
+			canEdit,
+			handleAccept,
+			handleReject,
+			verdictFactory,
+		],
 	);
 
 	return null;
@@ -896,6 +929,7 @@ function TopicAssistantAgent({
  * promise something this suite deliberately does not do.
  */
 function ConfirmRewrite({
+	recordVerdict,
 	status,
 	respond,
 	canEdit,
@@ -903,6 +937,7 @@ function ConfirmRewrite({
 	onAccept,
 	onReject,
 }: {
+	recordVerdict: DraftVerdictRecorder;
 	status: string;
 	respond?: (payload: unknown) => void;
 	canEdit: boolean;
@@ -911,6 +946,7 @@ function ConfirmRewrite({
 	onAccept: () => boolean;
 	onReject: () => boolean;
 }) {
+	useConfirmChangesVerdictCard(recordVerdict);
 	const [resolved, setResolved] = useState<"accepted" | "rejected" | null>(
 		null,
 	);

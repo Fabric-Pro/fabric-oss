@@ -39,6 +39,8 @@
  * turn.
  */
 
+import { chargedConversationInputTokens } from "@repo/utils/conversation-turn-charge";
+
 import { db } from "../client";
 import type {
 	ConversationTurnAttemptKind,
@@ -325,7 +327,12 @@ export async function reserveConversationTurnAttempt(
 
 export type ConversationTurnAttemptSettlement =
 	/** Complete, authoritative usage: reconcile to it. */
-	| { status: "SETTLED"; inputTokens: number; outputTokens: number }
+	| {
+			status: "SETTLED";
+			inputTokens: number;
+			outputTokens: number;
+			cacheReadTokens?: number | null;
+	  }
 	/** Sent, or possibly sent, with no complete usage: keep the charge. */
 	| { status: "UNKNOWN" }
 	/** Positively never sent: refund the reservation. */
@@ -378,11 +385,16 @@ export async function settleConversationTurnAttempt(args: {
 			if (settlement.status === "SETTLED") {
 				const inputTokens = nonNegativeInt(settlement.inputTokens);
 				const outputTokens = nonNegativeInt(settlement.outputTokens);
+				const cacheReadTokens =
+					settlement.cacheReadTokens == null
+						? null
+						: nonNegativeInt(settlement.cacheReadTokens);
 				await tx.conversationTurnAttempt.update({
 					where: { id: attempt.id },
 					data: {
 						status: "SETTLED",
 						inputTokens,
+						cacheReadTokens,
 						outputTokens,
 						settledAt,
 					},
@@ -391,7 +403,12 @@ export async function settleConversationTurnAttempt(args: {
 					where: { id: row.id },
 					data: {
 						measuredTokens: {
-							increment: BigInt(inputTokens + outputTokens),
+							increment: BigInt(
+								chargedConversationInputTokens(
+									inputTokens,
+									cacheReadTokens,
+								) + outputTokens,
+							),
 						},
 						outstandingTokens: { decrement: reserved },
 					},

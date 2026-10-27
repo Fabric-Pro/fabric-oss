@@ -34,6 +34,7 @@ export function buildAgentConfigurable(
 	}
 	for (const key of [
 		"ai_deployment_name",
+		"ai_canonical_model_name",
 		"tenant_user_id",
 		"tenant_organization_id",
 	]) {

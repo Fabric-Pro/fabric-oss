@@ -209,7 +209,7 @@ type Props = {
  * Tab 1 — Summary & Questions. Three stacked
  * sections in a fixed order: Summary (AI-owned digest, read-only), Questions
  * (answered inline, expand-in-place — answering resolves the thread and the
- * server propagates a scoped patch to the spec deterministically), and Notes
+ * server records the Q+A in the spec for the next maturation run), and Notes
  * (the human's free-text notebook — the only place the PO writes prose; the AI
  * never touches it). Questions are no longer scanned from this tab — they arrive
  * from a maturation run (stage advance / Enhance).

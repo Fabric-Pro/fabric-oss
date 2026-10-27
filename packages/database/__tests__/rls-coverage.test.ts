@@ -1,23 +1,20 @@
 /**
  * RLS coverage guard (SOC 2 CC6.1 — M-A1 / M-A2).
  *
- * The RLS allowlist in `scripts/apply-rls-direct.ts` must (A) reference only
- * REAL physical tables, and (B) cover every organization-scoped tenant table
- * — otherwise a tenant table silently ships without a row-level-security
- * policy (defense-in-depth backstop for the RLS-enforcing DB role).
+ * Compare the RLS allowlist in scripts/apply-rls-direct.ts with Prisma models
+ * and recognized, explicitly schema-qualified CREATE TABLE declarations in
+ * migration SQL. Unknown targets and uncovered organization-scoped models or
+ * recognized non-public tables fail the checks below.
  *
- * This test enforces both, so a NEW org-scoped model can't land without either
- * an RLS policy or an explicit, justified exemption. It complements the
- * fail-loud behavior added to apply-rls-direct.ts (an allowlist entry that
- * targets a nonexistent relation now throws instead of silently skipping —
- * that was how `openapi_service`/`openapi_service_config` went unprotected).
+ * Migration discovery is lexical: it does not evaluate dynamic SQL or every
+ * PostgreSQL DDL form. The capture integration suite also checks the current
+ * decision_event table's tenant policy and owner exemption against restricted roles.
  *
- * NOTE: RLS is currently latent (the app connection bypasses RLS; `getTenantDb`
- * is not yet the app query path — tracked as the deeper H8 activation). This
- * guard ensures that WHEN that lands, coverage is already complete.
+ * This static guard checks registration, not whether a host has applied the
+ * policies or which roles its application uses.
  */
 
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -87,9 +84,48 @@ function parseModels(schema: string): Model[] {
 /** Physical table names in the RLS allowlist (`{ name: "x", policy: "y" }`). */
 function parseAllowlist(src: string): Set<string> {
 	return new Set(
-		[...src.matchAll(/name:\s*"([^"]+)",\s*policy:/g)].map((m) => m[1]),
+		[
+			...src.matchAll(
+				/name:\s*"([^"]+)",\s*policy:\s*"[^"]+"(?:,\s*schema:\s*"([^"]+)")?/g,
+			),
+		].map((m) => (m[2] ? `${m[2]}.${m[1]}` : m[1])),
 	);
 }
+
+// This lexical inventory recognizes explicitly schema-qualified CREATE TABLE
+// declarations in migration SQL; it is not a general SQL parser.
+function discoverMigrationTables(source: string): string[] {
+	const identifier = '(?:"((?:[^"]|"")*)"|([a-z_][a-z0-9_$]*))';
+	const declaration = new RegExp(
+		String.raw`\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?${identifier}\s*\.\s*${identifier}\s*\(`,
+		"gi",
+	);
+	return [...source.matchAll(declaration)]
+		.map((match) => ({
+			schema:
+				match[1] === undefined
+					? match[2].toLowerCase()
+					: match[1].replaceAll('""', '"'),
+			table:
+				match[3] === undefined
+					? match[4].toLowerCase()
+					: match[3].replaceAll('""', '"'),
+		}))
+		.filter(({ schema }) => schema !== "public")
+		.map(({ schema, table }) => `${schema}.${table}`);
+}
+
+const migrationsDir = resolve(__dirname, "../prisma/migrations");
+const exportTables = readdirSync(migrationsDir, { withFileTypes: true })
+	.filter((entry) => entry.isDirectory())
+	.flatMap((entry) =>
+		discoverMigrationTables(
+			readFileSync(
+				resolve(migrationsDir, entry.name, "migration.sql"),
+				"utf8",
+			),
+		),
+	);
 
 /**
  * Org-scoped tables intentionally NOT under an RLS policy (yet). Each MUST have
@@ -166,7 +202,7 @@ const EXEMPT: ReadonlyMap<string, string> = new Map([
 
 const models = parseModels(schemaSrc);
 const allowlist = parseAllowlist(applySrc);
-const physicals = new Set(models.map((m) => m.physical));
+const physicals = new Set([...models.map((m) => m.physical), ...exportTables]);
 
 describe("RLS coverage guard (SOC 2 CC6.1)", () => {
 	it("sanity: schema + allowlist parsed", () => {
@@ -687,5 +723,44 @@ describe("tenant-db allowlist parity with the RLS registration", () => {
 			.map((model) => `${model.name} (${model.physical})`);
 
 		expect(missing).toEqual([]);
+	});
+});
+
+describe("migration-only export RLS registration", () => {
+	it("enumerates the export table with an explicit schema and org policy", () => {
+		expect(exportTables).toContain("lakehouse_export.decision_event");
+		expect(allowlist.has("lakehouse_export.decision_event")).toBe(true);
+		for (const table of exportTables) {
+			expect(allowlist.has(table)).toBe(true);
+		}
+		expect(applySrc).toMatch(
+			/name:\s*"decision_event",\s*policy:\s*"export_org_only",\s*schema:\s*"lakehouse_export"/,
+		);
+		expect(applySrc).toContain(
+			'const ownerManagedExport = table.policy === "export_org_only"',
+		);
+		expect(applySrc).toMatch(
+			/ownerManagedExport\s*\?\s*"NO FORCE"\s*:\s*"FORCE"/,
+		);
+		expect(applySrc).toMatch(/!ownerManagedExport\s*&&\s*workerEnabled/);
+		expect(applySrc).toContain("!ownerManagedExport && appRlsBypass");
+		expect(applySrc).toContain("const tableSql =");
+		expect(applySrc).toContain('case "export_org_only":');
+		expect(applySrc).toContain("GRANT USAGE ON SCHEMA lakehouse_export");
+	});
+});
+
+describe("migration-only table discovery", () => {
+	it("recognizes any explicit non-public schema, including IF NOT EXISTS", () => {
+		expect(
+			discoverMigrationTables(
+				'CREATE TABLE IF NOT EXISTS "example_export"."example_missing" (organization_id text); CREATE TABLE public.example_public (id text); create table other_export.example_second (id text); CREATE TABLE "PUBLIC".example_quoted (id text); CREATE TABLE IF NOT EXISTS "example schema"."example-table" (id text);',
+			),
+		).toEqual([
+			"example_export.example_missing",
+			"other_export.example_second",
+			"PUBLIC.example_quoted",
+			"example schema.example-table",
+		]);
 	});
 });

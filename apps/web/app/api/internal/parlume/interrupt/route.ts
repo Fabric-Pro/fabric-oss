@@ -1,5 +1,5 @@
 import { db } from "@repo/database";
-import { getTemporalClient } from "@repo/temporal";
+import { getTemporalClient } from "@repo/temporal/client";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { isParlumeServiceRequestAuthorized } from "../lib";

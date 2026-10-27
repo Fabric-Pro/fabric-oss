@@ -9,6 +9,7 @@
  */
 
 import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
+import { estimateLanguageRequestInputTokens } from "@repo/ai/lib/turn-budget-estimate";
 import type { WorkflowIntegrationProvider } from "@repo/database";
 import {
 	fetchCredentialsByIdAndProviderInTenant,
@@ -28,7 +29,7 @@ import {
 	gitlabOutboundFetch,
 } from "@repo/integrations/gitlab";
 import {
-	guardDispatch,
+	dispatchBudgetSend,
 	rethrowIfDispatchStopped,
 	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
@@ -36,6 +37,9 @@ import { executeMicrosoftTeamsTool } from "../../../shared/oauth-tool-executors"
 import { guardToolWriteForReadOnly } from "../../../shared/read-only-gate";
 import type { ExecuteStepInput } from "../../types";
 import type { HandlerContext, HandlerResult, StepHandler } from "./types";
+
+const PERPLEXITY_OUTPUT_TOKENS = 2_048;
+const PERPLEXITY_MIN_OUTPUT_TOKENS = 256;
 
 /**
  * Integration operations still implemented by this handler's own switch.
@@ -1798,43 +1802,65 @@ export class IntegrationHandler implements StepHandler {
 			return { success: false, error: "query is required" };
 		}
 
-		// A model provider called outside the model factory: in a chat turn
-		// the request is checked against the turn record first and aborted
-		// (with the reading of its body) when the turn stops. Outside one
-		// `guardDispatch` returns no signal.
-		const signal = await guardDispatch();
-		// Awaiting the record check above is itself an await: the guard's
-		// latched stops are checked again in the same run as the send.
-		throwIfDispatchStopped();
-		const response = await fetch(
-			"https://api.perplexity.ai/chat/completions",
-			{
-				method: "POST",
-				signal,
-				headers: {
-					Authorization: `Bearer ${apiKey}`,
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify({
-					model: "llama-3.1-sonar-small-128k-online",
-					messages: [{ role: "user", content: query }],
+		return dispatchBudgetSend<{
+			success: boolean;
+			output?: string;
+			data?: unknown;
+			error?: string;
+		}>({
+			request: {
+				modality: "language",
+				inputEstimate: estimateLanguageRequestInputTokens({
+					prompt: [{ content: query }],
 				}),
+				requestedOutputTokens: PERPLEXITY_OUTPUT_TOKENS,
+				minOutputTokens: PERPLEXITY_MIN_OUTPUT_TOKENS,
+				enforcesOutputCap: true,
+				modelId: "llama-3.1-sonar-small-128k-online",
 			},
-		);
-
-		if (!response.ok) {
-			const error = await response.text();
-			return { success: false, error: `Perplexity API error: ${error}` };
-		}
-
-		const result = await response.json();
-		const content = result.choices?.[0]?.message?.content;
-
-		return {
-			success: true,
-			output: content,
-			data: result,
-		};
+			send: async (signal, outputCap) => {
+				const response = await fetch(
+					"https://api.perplexity.ai/chat/completions",
+					{
+						method: "POST",
+						signal,
+						headers: {
+							Authorization: `Bearer ${apiKey}`,
+							"Content-Type": "application/json",
+						},
+						body: JSON.stringify({
+							model: "llama-3.1-sonar-small-128k-online",
+							messages: [{ role: "user", content: query }],
+							// No ledger leaves the provider's prior default unchanged.
+							...(outputCap === null
+								? {}
+								: { max_tokens: outputCap }),
+						}),
+					},
+				);
+				if (!response.ok) {
+					const error = await response.text();
+					return {
+						result: {
+							success: false,
+							error: `Perplexity API error: ${error}`,
+						},
+					};
+				}
+				const result = await response.json();
+				return {
+					result: {
+						success: true,
+						output: result.choices?.[0]?.message?.content,
+						data: result,
+					},
+					usage: {
+						inputTokens: result.usage?.prompt_tokens,
+						outputTokens: result.usage?.completion_tokens,
+					},
+				};
+			},
+		});
 	}
 
 	/**

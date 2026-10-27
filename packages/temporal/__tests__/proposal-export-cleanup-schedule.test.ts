@@ -4,7 +4,7 @@
  * Exported PDF and Word files are kept for a day; this daily schedule is the
  * only thing that deletes them afterwards. Failures this file covers are
  * silent in production: a registration function nobody calls, a
- * `workflowType` no worker resolves, an activity the worker never registers,
+ * `workflowType` no worker resolves, an activity the worker does not register,
  * an `already exists` rejection that fails the second boot, and a payload
  * drifting from what the cleanup's comments promise (overlap skipped, one
  * hour of catchup).
@@ -13,7 +13,7 @@
  */
 
 import type { ScheduleClient } from "@temporalio/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 const { scheduleCreate, FakeScheduleAlreadyRunning, FakeScheduleClient } =
 	vi.hoisted(() => {
@@ -50,6 +50,13 @@ import {
 	registerSystemSchedules,
 } from "../src/schedules";
 
+// The worker barrel loads the provider/database dependency graph. Give that
+// setup its own budget under parallel transforms; assertions keep the test timeout.
+let activities: typeof import("../src/activities");
+beforeAll(async () => {
+	activities = await import("../src/activities");
+}, 120_000);
+
 function fakeClient(create = scheduleCreate): ScheduleClient {
 	return { create } as unknown as ScheduleClient;
 }
@@ -60,7 +67,7 @@ afterEach(() => {
 });
 
 describe("the Proposal export cleanup schedule", () => {
-	it("creates the schedule with exactly this payload", async () => {
+	it("creates the expected schedule payload", async () => {
 		await registerProposalExportCleanupSchedule(fakeClient());
 
 		expect(scheduleCreate).toHaveBeenCalledTimes(1);
@@ -97,7 +104,6 @@ describe("the Proposal export cleanup schedule", () => {
 	});
 
 	it("uses activities the top-level activities barrel registers, and its module exports nothing else", async () => {
-		const activities = await import("../src/activities");
 		expect(Object.keys(activities)).toContain(
 			"cleanupExpiredProposalExportsActivity",
 		);

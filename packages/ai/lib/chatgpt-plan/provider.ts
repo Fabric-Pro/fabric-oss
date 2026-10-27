@@ -17,6 +17,11 @@ import {
 	type LanguageModelMiddleware,
 	wrapLanguageModel,
 } from "ai";
+import {
+	createRequestObservationMiddleware,
+	hasActiveRequestObservation,
+	observeRequestWire,
+} from "../request-observation";
 import { createStrictJsonSchemaMiddleware } from "../strict-json-schema-middleware";
 import { structuredOutputCapabilityFor } from "../structured-output-capabilities";
 import {
@@ -356,6 +361,13 @@ export function createChatGptPlanModel({
 		waitUntil(write);
 		onUsageReport?.(write);
 	};
+	const physicalModel = (id: string) =>
+		wrapPhysicalModel(
+			wrapLanguageModel({
+				model: provider.responses(id),
+				middleware: createRequestObservationMiddleware(),
+			}) as unknown as PlanResponsesModel,
+		);
 	const provider = createOpenAI({
 		apiKey: "chatgpt-plan",
 		// Pinned: OPENAI_BASE_URL must never redirect a plan token.
@@ -380,11 +392,27 @@ export function createChatGptPlanModel({
 			beforeResend: async () => {
 				await getDispatchGuard()?.assertDispatchable();
 			},
-			...(fetchImpl && { baseFetch: fetchImpl }),
+			baseFetch: (request, init) => {
+				try {
+					if (
+						hasActiveRequestObservation() &&
+						typeof init?.body === "string"
+					) {
+						observeRequestWire(
+							JSON.parse(init.body),
+							"chatgpt-plan-responses",
+							new Headers(init.headers).get("session_id"),
+						);
+					}
+				} catch {
+					/* Observation does not change the transport request. */
+				}
+				return (fetchImpl ?? fetch)(request, init);
+			},
 		}),
 	});
 	return wrapLanguageModel({
-		model: wrapPhysicalModel(provider.responses(modelId)),
+		model: physicalModel(modelId),
 		middleware: [
 			createChatGptPlanExhaustionMiddleware(source),
 			createChatGptPlanRequestMiddleware(reasoningEffort),
@@ -393,7 +421,7 @@ export function createChatGptPlanModel({
 				source,
 				modelId,
 				fallbackModelId,
-				buildModel: (id) => wrapPhysicalModel(provider.responses(id)),
+				buildModel: (id) => physicalModel(id),
 				beforeModelFallback,
 				onModelFallback,
 			}),

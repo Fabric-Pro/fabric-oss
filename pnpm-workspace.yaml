@@ -91,6 +91,9 @@ trustPolicy: no-downgrade
 # why in the PR. Prune drops an entry once `pnpm add`, `update` or `remove`
 # leaves the lockfile without it.
 trustPolicyExclude:
+  # The 7.10.1 publish workflow uses a maintainer bot token for the CLI:
+  # https://github.com/prisma/orm/blob/7.10.1/.github/workflows/publish.yml#L119-L120
+  - "prisma@7.10.1"
   - "chokidar@4.0.3"
   - "eslint-import-resolver-typescript@3.10.1"
   - "exa-js@2.0.12"
@@ -171,7 +174,7 @@ overrides:
   "path-to-regexp@^8.0.0": "^8.4.0"
   "picomatch@^4.0.0": "^4.0.4"
   "serialize-javascript@^6.0.0": "^7.0.3"
-  "fast-uri@^3.0.0": "^3.1.8"
+  "fast-uri@^3.0.0": "^3.1.9"
   "fast-xml-builder@^1.0.0": "^1.1.7"
   "fastify@^5.0.0": "^5.8.5"
   "tar@^7.0.0": "^7.5.21"
@@ -197,7 +200,6 @@ overrides:
   "ws": "^8.21.0"
   "@grpc/grpc-js": "^1.14.5"
   "tmp": "^0.2.6"
-  "deepmerge-ts": "^8.0.2"
   "toml": "^5.0.1"
   "linkify-it": "^5.0.1"
   "vite@^7.0.0": "^7.3.7"
@@ -258,7 +260,7 @@ overrides:
   "body-parser@^1.0.0": "^1.20.9"
   "body-parser@^2.0.0": "^2.4.0"
   "joi@^18.0.0": "^18.2.1"
-  "ip-address@^10.0.0": "^10.7.2"
+  "ip-address@^10.0.0": "^10.7.4"
   "prismjs@^1.0.0": "^1.30.0"
   "mdast-util-to-hast@^13.0.0": "^13.2.1"
   "@babel/core@^7.0.0": "^7.29.6"
@@ -307,9 +309,4 @@ allowBuilds:
 patchedDependencies:
   '@better-auth/oauth-provider@1.7.7': patches/@better-auth__oauth-provider@1.7.7.patch
   '@graphql-tools/utils@10.10.1': patches/@graphql-tools__utils@10.10.1.patch
-  braces@3.0.3: patches/braces@3.0.3.patch
-  # Backport upstream f3558ed: reuse Prisma's DMMF instead of rebuilding it.
-  prisma-zod-generator@1.31.2: patches/prisma-zod-generator@1.31.2.patch
-  # Preserve Prisma's BFS order without quadratic Array.shift queue movement.
-  # Both bundled client generators are covered by prisma-generation-queue.test.mjs.
-  prisma@6.19.3: patches/prisma@6.19.3.patch
+  prisma@7.10.1: patches/prisma@7.10.1.patch

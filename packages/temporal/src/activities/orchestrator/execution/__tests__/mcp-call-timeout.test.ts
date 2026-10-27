@@ -35,6 +35,22 @@ describe("runWithTimeout", () => {
 		reject(new Error("late failure")); // must NOT surface as unhandled rejection
 		await Promise.resolve();
 	});
+
+	// The worker exits on an uncaught exception, so a throw from inside the
+	// timer callback took the whole Temporal worker down and left the race
+	// unsettled. The throw must reject the returned promise instead.
+	it("rejects with onTimeout()'s error when onTimeout throws", async () => {
+		const never = new Promise<string>(() => {});
+		const p = runWithTimeout(never, 1000, () => {
+			throw new Error("Timed out listing example tools");
+		});
+		const settled = expect(p).rejects.toThrow(
+			"Timed out listing example tools",
+		);
+		await vi.advanceTimersByTimeAsync(1000);
+		await settled;
+		expect(vi.getTimerCount()).toBe(0);
+	});
 });
 
 // Fizzy #2770 D8: Fabric's own tools may run a model step on a ChatGPT plan

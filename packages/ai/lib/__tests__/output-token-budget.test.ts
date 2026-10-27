@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	clampRequestedOutputTokens,
 	computeMaxOutputTokenBudget,
 	computeScaledOutputTokenBudget,
 	FALLBACK_OUTPUT_TOKEN_CAP,
@@ -197,5 +198,53 @@ describe("computeMaxOutputTokenBudget", () => {
 				{ promptChars: 3_000 },
 			),
 		).toBe(17_476);
+	});
+});
+
+describe("invalid catalog limits", () => {
+	it.each([
+		0,
+		-1,
+		null,
+		Number.NaN,
+		Number.POSITIVE_INFINITY,
+		Number.NEGATIVE_INFINITY,
+	])("treats %s as unknown for explicit budgets", (cap) => {
+		expect(
+			clampRequestedOutputTokens(16384, { maxOutputTokens: cap }),
+		).toBe(16384);
+	});
+	it.each([
+		0,
+		-1,
+		null,
+		Number.NaN,
+		Number.POSITIVE_INFINITY,
+		Number.NEGATIVE_INFINITY,
+	])("treats %s as unknown in provider budget helpers", (cap) => {
+		for (const compute of [
+			computeMaxOutputTokenBudget,
+			(
+				metadata: Parameters<typeof computeMaxOutputTokenBudget>[0],
+				opts: { promptChars: number },
+			) =>
+				computeScaledOutputTokenBudget(metadata, {
+					...opts,
+					inputChars: 0,
+				}),
+		]) {
+			expect(
+				compute(
+					{ provider: "OPENAI_DIRECT", maxOutputTokens: cap },
+					{ promptChars: 0 },
+				),
+			).toBeUndefined();
+			expect(
+				compute(
+					{ provider: "DATABRICKS", maxOutputTokens: cap },
+					{ promptChars: 0 },
+				),
+			).toBe(compute === computeMaxOutputTokenBudget ? 32768 : 16384);
+		}
 	});
 });

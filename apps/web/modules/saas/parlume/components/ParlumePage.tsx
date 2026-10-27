@@ -26,11 +26,14 @@ const POLL_MS = 10_000;
 export function ParlumePage({
 	projectId,
 	projectBasePath,
+	settingsBasePath,
 	canEdit,
 }: {
 	projectId: string;
 	/** `/app/{org}/projects/{id}`, where a session's transcript lives under `/contexts`. */
 	projectBasePath: string;
+	/** `/app/{org}/settings`, where a missing setup item is fixed. */
+	settingsBasePath: string;
 	canEdit: boolean;
 }) {
 	const queryClient = useQueryClient();
@@ -163,7 +166,10 @@ export function ParlumePage({
 							/>
 						)
 					) : canEdit ? (
-						<ParlumeInviteCard projectId={projectId} />
+						<ParlumeInviteCard
+							projectId={projectId}
+							settingsBasePath={settingsBasePath}
+						/>
 					) : (
 						<ParlumeLockedCard />
 					)}

@@ -1,7 +1,8 @@
 generator client {
-  provider   = "prisma-client"
-  output     = "./generated"
-  engineType = "client"
+  provider     = "prisma-client"
+  output       = "./generated"
+  engineType   = "client"
+  moduleFormat = "cjs"
 }
 
 generator zod {
@@ -11,9 +12,7 @@ generator zod {
 }
 
 datasource db {
-  provider  = "postgresql"
-  url       = env("DATABASE_URL")
-  directUrl = env("DIRECT_URL")
+  provider = "postgresql"
 }
 
 model User {
@@ -86,6 +85,7 @@ model User {
   agentTasks                 AgentTask[]
   aiChats                    AiChat[]
   aiOutcomeEvents            AiOutcomeEvent[]
+  aiOutputProvenances        AiOutputProvenance[]
   chatDocuments              ChatDocument[]
   invitations                Invitation[]
   members                    Member[]
@@ -343,6 +343,8 @@ model User {
   parlumeMeetingSessions ParlumeMeetingSession[]
   parlumeMeetingSegments ParlumeMeetingSegment[]
   parlumeMeetingTurns    ParlumeMeetingTurn[]
+  parlumeSettingsUpdates OrganizationParlumeSettings[] @relation("OrganizationParlumeSettingsUpdatedBy")
+  parlumeAutoJoinSeries  ProjectLinkedMeeting[]        @relation("ProjectLinkedMeetingParlumeAutoJoinUser")
 
   // Teams channel monitor relations
   linkedTeamsChannels       ProjectLinkedTeamsChannel[]
@@ -849,6 +851,7 @@ model Organization {
   agentTasks                       AgentTask[]
   aiChats                          AiChat[]
   aiOutcomeEvents                  AiOutcomeEvent[]
+  aiOutputProvenances              AiOutputProvenance[]
   azureAgentDeployments            AzureAgentDeployment[]
   azureAiModelDeployments          AzureAiModelDeployment[]
   chatDocuments                    ChatDocument[]
@@ -1055,6 +1058,7 @@ model Organization {
   parlumeMeetingSessions ParlumeMeetingSession[]
   parlumeMeetingSegments ParlumeMeetingSegment[]
   parlumeMeetingTurns    ParlumeMeetingTurn[]
+  parlumeSettings        OrganizationParlumeSettings?
 
   // Teams channel monitor relations
   linkedTeamsChannels     ProjectLinkedTeamsChannel[]
@@ -1246,6 +1250,31 @@ enum AiOutcomeKind {
   RATED_DOWN
 
   @@map("ai_outcome_kind")
+}
+
+/// Server-recorded identity of the model that produced a rateable reply.
+/// Ordinary Copilot chat uses code-built prompts, so promptVersionId stays null.
+model AiOutputProvenance {
+  id                 String   @id @default(cuid())
+  organizationId     String
+  userId             String
+  projectId          String?
+  subjectType        String
+  subjectId          String
+  agentId            String?
+  modelCanonicalName String?
+  promptVersionId    String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project      Project?     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId, subjectType, subjectId], map: "ai_output_provenance_subject_key")
+  @@index([userId])
+  @@index([projectId])
+  @@map("ai_output_provenance")
 }
 
 /// One human verdict on one piece of AI output. Written from the mutation that
@@ -2073,8 +2102,8 @@ model ConversationTurn {
   /// Part of `tokenAllowance` that exploration may not use: only the turn's
   /// finalization request may reserve into it.
   finalizationReserveTokens Int?
-  /// Sum of settled attempts' reported usage (input incl. cache + output incl.
-  /// reasoning).
+  /// Sum of settled allowance charges: input outside the read cache, a tenth
+  /// of reported cache reads (rounded up per request), and output including reasoning.
   measuredTokens            BigInt                             @default(0)
   /// Reservations not yet settled, plus the reservations of attempts whose
   /// usage is UNKNOWN (kept as a conservative charge, never refunded).
@@ -2136,6 +2165,8 @@ model ConversationTurnAttempt {
   /// Reported usage, normalized: total input including cache reads and
   /// writes, counted once; output including reasoning.
   inputTokens     Int?
+  /// Raw cache-read input; null for old workers or a missing provider breakdown.
+  cacheReadTokens Int?
   outputTokens    Int?
   /// Diagnostic attribution only; never used for authorization.
   workflowId      String?
@@ -2625,7 +2656,8 @@ model Project {
   aiUsageLimits AiUsageLimit[]
 
   // AI adoption: human verdicts on AI-generated output
-  aiOutcomeEvents AiOutcomeEvent[]
+  aiOutcomeEvents     AiOutcomeEvent[]
+  aiOutputProvenances AiOutputProvenance[]
 
   // Chat artifacts (durable outputs from agent conversations)
   chatArtifacts ChatArtifact[]
@@ -6003,16 +6035,29 @@ model ProjectLinkedMeeting {
   lastErrorAt         DateTime?
   userId              String?
   organizationId      String?
+  /// Parlume joins every occurrence of this series at its start time.
+  parlumeAutoJoin              Boolean   @default(false)
+  /// Who turned auto-join on: their calendar, Microsoft connection and project
+  /// permissions are what each join uses.
+  parlumeAutoJoinUserId        String?
+  parlumeAutoJoinToolsReadOnly Boolean   @default(true)
+  parlumeAutoJoinSuggestions   Boolean   @default(true)
+  /// Why the last automatic join could not happen, in words for the series' admins.
+  parlumeAutoJoinError         String?
+  parlumeAutoJoinErrorAt       DateTime?
 
-  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
-  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  project             Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user                User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization        Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  parlumeAutoJoinUser User?         @relation("ProjectLinkedMeetingParlumeAutoJoinUser", fields: [parlumeAutoJoinUserId], references: [id], onDelete: SetNull)
 
-  transcripts ProjectMeetingTranscript[]
-  agendas     ProjectMeetingAgenda[]
+  transcripts     ProjectMeetingTranscript[]
+  agendas         ProjectMeetingAgenda[]
+  parlumeSessions ParlumeMeetingSession[]
 
   @@unique([projectId, joinUrl])
   @@index([projectId])
+  @@index([parlumeAutoJoinUserId])
   @@map("project_linked_meeting")
 }
 
@@ -6049,8 +6094,45 @@ enum ParlumeMeetingEndReason {
   PROVIDER_FAILED
   /// The bot never joined: provider, bridge, or database failure at start.
   START_FAILED
+  /// Nobody admitted the bot from the meeting lobby, or the organizer
+  /// declined its request to join.
+  NOT_ADMITTED
 
   @@map("parlume_meeting_end_reason")
+}
+
+/// How the meeting bot signs in to Teams: with the Microsoft 365 account set
+/// up on the Attendee project, every time or only when the meeting requires
+/// it. No value means it joins as an anonymous guest.
+enum ParlumeTeamsLoginMode {
+  ALWAYS
+  ONLY_IF_REQUIRED
+
+  @@map("parlume_teams_login_mode")
+}
+
+/// An organization's own Parlume settings, one row per organization. The
+/// Attendee key, its base URL and the Teams sign-in mode describe one Attendee
+/// project, so they apply together and only while the organization has its own
+/// key; otherwise the operator's environment applies as a whole.
+model OrganizationParlumeSettings {
+  id                      String                 @id @default(cuid())
+  organizationId          String                 @unique
+  encryptedAttendeeApiKey String?                @db.Text
+  /// https origin of a self-hosted Attendee; null is app.attendee.dev.
+  attendeeBaseUrl         String?
+  teamsLoginMode          ParlumeTeamsLoginMode?
+  /// The Azure AI Foundry deployment that serves the realtime voice model.
+  realtimeDeployment      String?
+  updatedById             String?
+  createdAt               DateTime               @default(now())
+  updatedAt               DateTime               @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  updatedBy    User?        @relation("OrganizationParlumeSettingsUpdatedBy", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@index([updatedById])
+  @@map("organization_parlume_settings")
 }
 
 /// The source of configuration for a Parlume meeting agent.
@@ -6059,6 +6141,14 @@ enum ParlumeMeetingAgentKind {
   TEMPLATE_INSTANCE
 
   @@map("parlume_meeting_agent_kind")
+}
+
+/// Whether a person invited Parlume or a linked series' auto-join did.
+enum ParlumeSessionTrigger {
+  MANUAL
+  AUTO
+
+  @@map("parlume_session_trigger")
 }
 
 enum ParlumeMeetingTurnStatus {
@@ -6144,15 +6234,22 @@ model ParlumeMeetingSession {
   providerDataDeletedAt  DateTime?
   activeTurnId           String?
   endedAt                DateTime?
+  trigger                ParlumeSessionTrigger       @default(MANUAL)
+  /// The linked series an automatic join came from, and which occurrence.
+  linkedMeetingId        String?
+  occurrenceStart        DateTime?
   createdAt              DateTime                    @default(now())
   updatedAt              DateTime                    @updatedAt
 
-  project      Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  organization Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  user         User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  segments     ParlumeMeetingSegment[]
-  turns        ParlumeMeetingTurn[]
+  project       Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  organization  Organization            @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user          User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  linkedMeeting ProjectLinkedMeeting?   @relation(fields: [linkedMeetingId], references: [id], onDelete: SetNull)
+  segments      ParlumeMeetingSegment[]
+  turns         ParlumeMeetingTurn[]
 
+  /// One session per occurrence of a series, however often its join is requested.
+  @@unique([linkedMeetingId, occurrenceStart])
   @@index([projectId, createdAt])
   @@index([organizationId, status])
   @@index([agentInstanceSId])
@@ -7005,13 +7102,15 @@ model PendingBacklogProposal {
   // re-approved.
   appliedChangeIndexes Int[] @default([])
 
-  applyWorkflowId String?
+  applyWorkflowId       String?
+  applyReviewId         String?
+  applyReviewWorkflowId String?
   // Wall-clock when an apply workflow was dispatched for this proposal (AI
   // Update apply / retry). Null for awaiting-review proposals that were never
   // dispatched. The stuck-apply watchdog measures staleness from this, NOT
   // `createdAt` — a retry reuses the original row, so its `createdAt` is stale.
-  applyStartedAt  DateTime?
-  applyError      String?   @db.Text
+  applyStartedAt        DateTime?
+  applyError            String?   @db.Text
 
   // Failure metadata. `applyError` (above) keeps the raw multi-line error text
   // truncated to 4000 chars; the columns below surface a classified cause
@@ -7035,11 +7134,15 @@ model PendingBacklogProposal {
   organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   reviewer     User?         @relation("PendingBacklogProposalReviewer", fields: [reviewedBy], references: [id])
 
-  seenMessages      ProjectLinkedTeamsChannelSeenMessage[]
-  seenChatMessages  ProjectLinkedTeamsChatSeenMessage[]
-  seenSlackMessages ProjectLinkedSlackChannelSeenMessage[]
-  drafts            BacklogProposalDraft[]
-  applications      PendingBacklogProposalApplication[]
+  seenMessages         ProjectLinkedTeamsChannelSeenMessage[]
+  seenChatMessages     ProjectLinkedTeamsChatSeenMessage[]
+  seenSlackMessages    ProjectLinkedSlackChannelSeenMessage[]
+  drafts               BacklogProposalDraft[]
+  duplicateResolutions PendingBacklogProposalDuplicateResolution[]
+  applications         PendingBacklogProposalApplication[]
+  reviews              PendingBacklogProposalReview[]              @relation("ProposalReviews")
+  reviewEntries        PendingBacklogProposalReviewEntry[]
+  applyReview          PendingBacklogProposalReview?               @relation("ApplyReview", fields: [applyReviewId], references: [id], onDelete: SetNull)
 
   @@index([projectId, status])
   @@index([userId])
@@ -7051,8 +7154,8 @@ model PendingBacklogProposal {
   @@map("pending_backlog_proposal")
 }
 
-// One row per applied change of a proposal. Written in the same transaction as the
-// Fabric mutation it records, so a retry after a crash cannot re-apply a change.
+// One row per applied change. Transactional callers can fence the Fabric mutation;
+// inline story helpers record immediately after creation.
 model PendingBacklogProposalApplication {
   id                String   @id @default(cuid())
   proposalId        String
@@ -7067,6 +7170,59 @@ model PendingBacklogProposalApplication {
   @@unique([proposalId, changeIndex])
   @@index([proposalId])
   @@map("pending_backlog_proposal_application")
+}
+
+model PendingBacklogProposalDuplicateResolution {
+  id                 String   @id @default(cuid())
+  proposalId         String
+  changeIndex        Int
+  existingEntityType String?
+  existingEntityId   String?
+  createdAt          DateTime @default(now())
+
+  proposal PendingBacklogProposal @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+
+  @@unique([proposalId, changeIndex])
+  @@index([proposalId])
+  @@map("pending_backlog_proposal_duplicate_resolution")
+}
+
+model PendingBacklogProposalReview {
+  id                  String   @id @default(cuid())
+  proposalId          String
+  reviewedBy          String
+  createdAt           DateTime @default(now())
+  offeredCount        Int
+  offeredListComplete Boolean
+  selectedCount       Int
+  syncToPM            Boolean
+  pmConfig            Json?
+
+  proposal       PendingBacklogProposal              @relation("ProposalReviews", fields: [proposalId], references: [id], onDelete: Cascade)
+  entries        PendingBacklogProposalReviewEntry[]
+  applyProposals PendingBacklogProposal[]            @relation("ApplyReview")
+
+  @@index([proposalId, createdAt])
+  @@map("pending_backlog_proposal_review")
+}
+
+model PendingBacklogProposalReviewEntry {
+  id             String  @id @default(cuid())
+  reviewId       String
+  proposalId     String
+  // Sidebar: position in the client offered list; inbox and monitor reviews: index into proposal.changes.
+  offeredIndex   Int
+  changeIndex    Int?
+  selected       Boolean
+  change         Json?
+  pmSyncOverride Json?
+
+  review   PendingBacklogProposalReview @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  proposal PendingBacklogProposal       @relation(fields: [proposalId], references: [id], onDelete: Cascade)
+
+  @@unique([reviewId, offeredIndex])
+  @@index([proposalId])
+  @@map("pending_backlog_proposal_review_entry")
 }
 
 enum RecurringErrorSource {
@@ -8641,6 +8797,11 @@ model UserStory {
   // pmTicketTerminal drives the roadmap checkmark; status is the raw PM state.
   pmTicketTerminal             Boolean                 @default(false)
   pmTicketTerminalStatus       String?
+  // Linked ticket's native PM status, display-only (Fizzy #3088) — set by the
+  // poll and per-item Pull. Shown only while `pmTicketStatusExternalId` still
+  // equals `externalId`, so a relink never shows the old ticket's status.
+  pmTicketStatus               String?
+  pmTicketStatusExternalId     String?
   // UNHIDE provenance (#1360): true iff the story is currently CLOSED because
   // the terminal-status poll auto-hid it, with no other stage write since.
   // Set only by the auto-hide path; cleared by every other draftingStage writer.
@@ -16094,6 +16255,8 @@ model AiUsageLog {
   // is the job-type label ("scheduled-report", "meeting-transcript-sync", …).
   // Nullable by design — user-initiated rows stay null.
   jobType             String?
+  // Usage-only purpose: the operation that made the call; independent of routing and job attribution.
+  callPurpose         String?
 
   // Usage metrics
   inputTokens              Int

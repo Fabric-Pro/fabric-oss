@@ -5,6 +5,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 const stubs = vi.hoisted(() => ({
 	getAgentDeploymentById: vi.fn(),
 	generateText: vi.fn(),
+	modelContext: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -18,10 +19,13 @@ vi.mock("@repo/database", () => ({
 	mapBuiltInKeysToFabricToolIds: () => [],
 }));
 vi.mock("@repo/ai", () => ({
-	getAIModelWithMetadata: async () => ({
-		model: {},
-		metadata: { provider: "example", modelString: "example-model" },
-	}),
+	getAIModelWithMetadata: async (_options: unknown, context: unknown) => {
+		stubs.modelContext(context);
+		return {
+			model: {},
+			metadata: { provider: "example", modelString: "example-model" },
+		};
+	},
 	getCurrentDateContext: () => "Example date context",
 }));
 vi.mock("ai", async (importOriginal) => ({
@@ -106,6 +110,11 @@ it("does not classify a plain model error as a usage-limit refusal", async () =>
 		error: "Example provider failure",
 	});
 	expect(result).not.toHaveProperty("usageLimit");
+	expect(stubs.modelContext).toHaveBeenCalledWith({
+		userId: INPUT.userId,
+		organizationId: INPUT.organizationId,
+	});
+	expect(stubs.modelContext.mock.calls[0][0].callPurpose).toBeUndefined();
 });
 
 it("does not classify a missing deployment as a usage-limit refusal", async () => {

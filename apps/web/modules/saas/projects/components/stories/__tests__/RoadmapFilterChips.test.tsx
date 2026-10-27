@@ -37,6 +37,9 @@ describe("RoadmapFilterChips", () => {
 			/>,
 		);
 		expect(screen.getByText("Bug")).toBeInTheDocument();
+		expect(
+			screen.getByText("Bug").closest('[data-slot="badge"]'),
+		).toHaveClass("font-sans", "text-xs");
 		fireEvent.click(
 			screen.getByRole("button", { name: "Remove type Bug filter" }),
 		);

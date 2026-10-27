@@ -1,4 +1,6 @@
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { orchestratorPreferencesQueryKey } from "../interface-mode-preference";
 import {
 	enqueueOrchestratorPreferences as enqueue,
 	flushOrchestratorPreferences as flush,
@@ -21,9 +23,24 @@ vi.mock("sonner", () => ({
 
 const owner = { userId: "example-user", organizationId: "example-org" };
 const getUser = () => "example-user";
+let queryClient: QueryClient;
+const queryKey = orchestratorPreferencesQueryKey(owner.organizationId);
+const oldPreferences = {
+	exists: false,
+	enabledAgentIds: ["example-old-agent"],
+	enabledMcpConfigIds: ["example-mcp"],
+	enabledWorkspaceIds: ["example-workspace"],
+	uiMode: "advanced",
+	chatMode: "orchestrator",
+	reasoningMode: "enabled",
+	autonomyLevel: "full",
+};
 
 beforeEach(() => {
 	vi.useFakeTimers();
+	queryClient = new QueryClient({
+		defaultOptions: { queries: { retry: false } },
+	});
 	resetOrchestratorPreferenceSaveQueueForTests();
 	mocks.update.mockReset().mockResolvedValue({});
 	mocks.error.mockReset().mockReturnValue("example-sync-error");
@@ -31,11 +48,154 @@ beforeEach(() => {
 	vi.spyOn(console, "error").mockImplementation(() => {});
 });
 afterEach(() => {
+	queryClient.clear();
 	vi.restoreAllMocks();
 	vi.useRealTimers();
 });
 
 describe("orchestrator preference save queue", () => {
+	it("merges only sent lists and preserves cached modes", async () => {
+		queryClient.setQueryData(queryKey, oldPreferences);
+		enqueue(owner, { enabledAgentIds: [] }, getUser, queryClient);
+		await flush(owner);
+		expect(queryClient.getQueryData(queryKey)).toEqual({
+			...oldPreferences,
+			exists: true,
+			enabledAgentIds: [],
+		});
+	});
+
+	it("leaves the cache unchanged after all retries fail", async () => {
+		queryClient.setQueryData(queryKey, oldPreferences);
+		mocks.update.mockRejectedValue(new Error("Example failure"));
+		enqueue(owner, { enabledAgentIds: [] }, getUser, queryClient);
+		const running = flush(owner);
+		await vi.advanceTimersByTimeAsync(7000);
+		await running;
+		expect(mocks.update).toHaveBeenCalledTimes(4);
+		expect(queryClient.getQueryData(queryKey)).toEqual(oldPreferences);
+	});
+
+	it("leaves the cache unchanged when the batch is fully superseded", async () => {
+		queryClient.setQueryData(queryKey, oldPreferences);
+		mocks.update.mockRejectedValueOnce(new Error("Example failure"));
+		enqueue(owner, { enabledAgentIds: [] }, getUser, queryClient);
+		const running = flush(owner);
+		await vi.advanceTimersByTimeAsync(0);
+		enqueue(
+			owner,
+			{ enabledAgentIds: ["example-new-agent"] },
+			getUser,
+			queryClient,
+		);
+		await vi.advanceTimersByTimeAsync(1000);
+		await running;
+		expect(mocks.update).toHaveBeenCalledOnce();
+		expect(queryClient.getQueryData(queryKey)).toEqual(oldPreferences);
+	});
+
+	it("merges only the fields remaining after a partially superseded retry", async () => {
+		queryClient.setQueryData(queryKey, oldPreferences);
+		mocks.update.mockRejectedValueOnce(new Error("Example failure"));
+		enqueue(
+			owner,
+			{ enabledAgentIds: [], enabledWorkspaceIds: [] },
+			getUser,
+			queryClient,
+		);
+		const running = flush(owner);
+		await vi.advanceTimersByTimeAsync(0);
+		enqueue(
+			owner,
+			{ enabledAgentIds: ["example-new-agent"] },
+			getUser,
+			queryClient,
+		);
+		await vi.advanceTimersByTimeAsync(1000);
+		await running;
+		expect(queryClient.getQueryData(queryKey)).toEqual({
+			...oldPreferences,
+			exists: true,
+			enabledWorkspaceIds: [],
+		});
+	});
+
+	it("cancels an older GET before merging saved lists", async () => {
+		queryClient.setQueryData(queryKey, oldPreferences);
+		let finish!: (value: typeof oldPreferences) => void;
+		const loading = queryClient
+			.fetchQuery({
+				queryKey,
+				queryFn: () =>
+					new Promise<typeof oldPreferences>((resolve) => {
+						finish = resolve;
+					}),
+			})
+			.catch(() => {});
+		enqueue(owner, { enabledAgentIds: [] }, getUser, queryClient);
+		await flush(owner);
+		finish(oldPreferences);
+		await loading;
+		expect(queryClient.getQueryData(queryKey)).toEqual({
+			...oldPreferences,
+			exists: true,
+			enabledAgentIds: [],
+		});
+	});
+
+	it("refetches a cancelled first load without fabricating partial preferences", async () => {
+		let finishOld!: (value: typeof oldPreferences) => void;
+		let finishNew!: (value: typeof oldPreferences) => void;
+		const queryFn = vi
+			.fn()
+			.mockImplementationOnce(
+				() =>
+					new Promise<typeof oldPreferences>((resolve) => {
+						finishOld = resolve;
+					}),
+			)
+			.mockImplementationOnce(
+				() =>
+					new Promise<typeof oldPreferences>((resolve) => {
+						finishNew = resolve;
+					}),
+			);
+		const observer = new QueryObserver(queryClient, { queryKey, queryFn });
+		const unsubscribe = observer.subscribe(() => {});
+		try {
+			enqueue(owner, { enabledAgentIds: [] }, getUser, queryClient);
+			const running = flush(owner);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(queryFn).toHaveBeenCalledTimes(2);
+			expect(queryClient.getQueryData(queryKey)).toBeUndefined();
+			finishOld(oldPreferences);
+			// The save settles without waiting for the refetch.
+			await running;
+			expect(queryClient.getQueryData(queryKey)).toBeUndefined();
+			finishNew({ ...oldPreferences, enabledAgentIds: [] });
+			await vi.advanceTimersByTimeAsync(0);
+			expect(queryClient.getQueryData(queryKey)).toEqual({
+				...oldPreferences,
+				enabledAgentIds: [],
+			});
+		} finally {
+			unsubscribe();
+		}
+	});
+
+	it("reports success even when the cache write rejects", async () => {
+		vi.spyOn(queryClient, "cancelQueries").mockRejectedValueOnce(
+			new Error("Example cache failure"),
+		);
+		const listener = vi.fn();
+		subscribe(owner, getUser, listener, queryClient);
+		enqueue(owner, { enabledAgentIds: [] }, getUser, queryClient);
+		await flush(owner);
+		expect(listener).toHaveBeenLastCalledWith("success");
+		expect(readUnsent(owner)).toEqual({});
+		expect(mocks.error).not.toHaveBeenCalled();
+	});
+
 	it("reads in-flight fields overlaid by pending fields and clears settled fields", async () => {
 		let finish!: () => void;
 		mocks.update.mockImplementationOnce(
@@ -48,13 +208,14 @@ describe("orchestrator preference save queue", () => {
 			owner,
 			{ enabledAgentIds: ["example-old-agent"], enabledWorkspaceIds: [] },
 			getUser,
+			queryClient,
 		);
 		const running = flush(owner);
 		expect(readUnsent(owner)).toEqual({
 			enabledAgentIds: ["example-old-agent"],
 			enabledWorkspaceIds: [],
 		});
-		enqueue(owner, { enabledAgentIds: [] }, getUser);
+		enqueue(owner, { enabledAgentIds: [] }, getUser, queryClient);
 		expect(readUnsent(owner)).toEqual({
 			enabledAgentIds: [],
 			enabledWorkspaceIds: [],
@@ -76,6 +237,7 @@ describe("orchestrator preference save queue", () => {
 			owner,
 			{ enabledMcpConfigIds: ["oauth:integration:example-integration"] },
 			getUser,
+			queryClient,
 		);
 		const running = flush(owner);
 		await vi.advanceTimersByTimeAsync(1000);
@@ -94,9 +256,19 @@ describe("orchestrator preference save queue", () => {
 	it("isolates fields by both user and organization", async () => {
 		const otherOrg = { ...owner, organizationId: "example-org-b" };
 		const otherUser = { ...owner, userId: "example-user-b" };
-		enqueue(owner, { enabledAgentIds: ["example-agent"] }, getUser);
-		enqueue(otherOrg, { enabledWorkspaceIds: [] }, getUser);
-		enqueue(otherUser, { enabledMcpConfigIds: [] }, () => "example-user-b");
+		enqueue(
+			owner,
+			{ enabledAgentIds: ["example-agent"] },
+			getUser,
+			queryClient,
+		);
+		enqueue(otherOrg, { enabledWorkspaceIds: [] }, getUser, queryClient);
+		enqueue(
+			otherUser,
+			{ enabledMcpConfigIds: [] },
+			() => "example-user-b",
+			queryClient,
+		);
 		await flush(owner);
 		await flush(otherOrg);
 		await flush(otherUser);
@@ -119,10 +291,15 @@ describe("orchestrator preference save queue", () => {
 				}),
 		);
 		const listener = vi.fn();
-		const unsubscribe = subscribe(owner, getUser, listener);
-		enqueue(owner, { enabledAgentIds: [] }, getUser);
+		const unsubscribe = subscribe(owner, getUser, listener, queryClient);
+		enqueue(owner, { enabledAgentIds: [] }, getUser, queryClient);
 		const running = flush(owner);
-		enqueue(owner, { enabledAgentIds: ["example-new-agent"] }, getUser);
+		enqueue(
+			owner,
+			{ enabledAgentIds: ["example-new-agent"] },
+			getUser,
+			queryClient,
+		);
 		await flush(owner);
 		unsubscribe();
 		expect(mocks.update).toHaveBeenCalledTimes(1);
@@ -143,10 +320,16 @@ describe("orchestrator preference save queue", () => {
 			owner,
 			{ enabledAgentIds: [], enabledWorkspaceIds: [] },
 			getUser,
+			queryClient,
 		);
 		const running = flush(owner);
 		await vi.advanceTimersByTimeAsync(0);
-		enqueue(owner, { enabledAgentIds: ["example-new-agent"] }, getUser);
+		enqueue(
+			owner,
+			{ enabledAgentIds: ["example-new-agent"] },
+			getUser,
+			queryClient,
+		);
 		await flush(owner);
 		await vi.advanceTimersByTimeAsync(1000);
 		await running;
@@ -170,6 +353,7 @@ describe("orchestrator preference save queue", () => {
 			owner,
 			{ enabledAgentIds: [], enabledWorkspaceIds: [] },
 			getUser,
+			queryClient,
 		);
 		const running = flush(owner);
 		await vi.advanceTimersByTimeAsync(3000);
@@ -181,7 +365,12 @@ describe("orchestrator preference save queue", () => {
 				}),
 		);
 		await vi.advanceTimersByTimeAsync(4000);
-		enqueue(owner, { enabledAgentIds: ["example-new-agent"] }, getUser);
+		enqueue(
+			owner,
+			{ enabledAgentIds: ["example-new-agent"] },
+			getUser,
+			queryClient,
+		);
 		rejectLast(new Error("Example last failure"));
 		await running;
 		await vi.advanceTimersByTimeAsync(10000);
@@ -198,8 +387,8 @@ describe("orchestrator preference save queue", () => {
 	it("retains failed fields after the last subscriber unmounts", async () => {
 		mocks.update.mockRejectedValue(new Error("Example failure"));
 		const listener = vi.fn();
-		const unsubscribe = subscribe(owner, getUser, listener);
-		enqueue(owner, { enabledAgentIds: [] }, getUser);
+		const unsubscribe = subscribe(owner, getUser, listener, queryClient);
+		enqueue(owner, { enabledAgentIds: [] }, getUser, queryClient);
 		const running = flush(owner);
 		unsubscribe();
 		listener.mockClear();
@@ -218,9 +407,9 @@ describe("orchestrator preference save queue", () => {
 		let sessionUser = "example-user";
 		const getSessionUser = () => sessionUser;
 		const listener = vi.fn();
-		subscribe(owner, getSessionUser, listener);
+		subscribe(owner, getSessionUser, listener, queryClient);
 		mocks.update.mockRejectedValue(new Error("Example failure"));
-		enqueue(owner, { enabledAgentIds: [] }, getSessionUser);
+		enqueue(owner, { enabledAgentIds: [] }, getSessionUser, queryClient);
 		const running = flush(owner);
 		await vi.advanceTimersByTimeAsync(7000);
 		await running;
@@ -242,11 +431,11 @@ describe("orchestrator preference save queue", () => {
 			.mockReturnValueOnce("example-error-a")
 			.mockReturnValueOnce("example-error-b");
 		mocks.update.mockRejectedValue(new Error("Example failure"));
-		enqueue(owner, { enabledAgentIds: [] }, getUser);
+		enqueue(owner, { enabledAgentIds: [] }, getUser, queryClient);
 		const first = flush(owner);
 		await vi.advanceTimersByTimeAsync(7000);
 		await first;
-		enqueue(other, { enabledWorkspaceIds: [] }, getUser);
+		enqueue(other, { enabledWorkspaceIds: [] }, getUser, queryClient);
 		const second = flush(other);
 		await vi.advanceTimersByTimeAsync(7000);
 		await second;

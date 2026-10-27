@@ -276,7 +276,12 @@ describe("reconcileAdoStates", () => {
 
 		expect(mockUserStoryUpdate).toHaveBeenCalledWith({
 			where: { id: "story-1", projectId: "proj-1" },
-			data: { pmTicketTerminal: true, pmTicketTerminalStatus: "Closed" },
+			data: {
+				pmTicketTerminal: true,
+				pmTicketTerminalStatus: "Closed",
+				pmTicketStatus: "Closed",
+				pmTicketStatusExternalId: "123",
+			},
 		});
 		expect(mockUpsertPendingChange).not.toHaveBeenCalled();
 		expect(mockApplyTerminalClose).not.toHaveBeenCalled();
@@ -310,7 +315,12 @@ describe("reconcileAdoStates", () => {
 
 		expect(mockUserStoryUpdate).toHaveBeenCalledWith({
 			where: { id: "story-1", projectId: "proj-1" },
-			data: { pmTicketTerminal: true, pmTicketTerminalStatus: "Closed" },
+			data: {
+				pmTicketTerminal: true,
+				pmTicketTerminalStatus: "Closed",
+				pmTicketStatus: "Closed",
+				pmTicketStatusExternalId: "123",
+			},
 		});
 		expect(mockApplyTerminalClose).toHaveBeenCalledWith(
 			expect.objectContaining({
@@ -380,7 +390,12 @@ describe("reconcileAdoStates", () => {
 		});
 		expect(mockUserStoryUpdate).toHaveBeenCalledWith({
 			where: { id: "story-1", projectId: "proj-1" },
-			data: { pmTicketTerminal: false, pmTicketTerminalStatus: null },
+			data: {
+				pmTicketTerminal: false,
+				pmTicketTerminalStatus: null,
+				pmTicketStatus: "Active",
+				pmTicketStatusExternalId: "123",
+			},
 		});
 		expect(mockApplyTerminalClose).not.toHaveBeenCalled();
 	});
@@ -439,7 +454,12 @@ describe("reconcileAdoStates", () => {
 		// "Done" is in the built-in fallback set → snapshot true
 		expect(mockUserStoryUpdate).toHaveBeenCalledWith({
 			where: { id: "story-1", projectId: "proj-1" },
-			data: { pmTicketTerminal: true, pmTicketTerminalStatus: "Done" },
+			data: {
+				pmTicketTerminal: true,
+				pmTicketTerminalStatus: "Done",
+				pmTicketStatus: "Done",
+				pmTicketStatusExternalId: "123",
+			},
 		});
 	});
 
@@ -828,8 +848,18 @@ describe("fetchAdoWorkItemStates", () => {
 
 	it("filters items by date in non-backfill mode", async () => {
 		mockGetLinkedExternalIds.mockResolvedValue([
-			{ entityType: "STORY", entityId: "s1", externalId: "101" },
-			{ entityType: "STORY", entityId: "s2", externalId: "102" },
+			{
+				entityType: "STORY",
+				entityId: "s1",
+				externalId: "101",
+				pmTicketStatusExternalId: "101",
+			},
+			{
+				entityType: "STORY",
+				entityId: "s2",
+				externalId: "102",
+				pmTicketStatusExternalId: "102",
+			},
 		]);
 		mockFetchPMItemsByIds.mockResolvedValue({
 			items: [
@@ -854,6 +884,51 @@ describe("fetchAdoWorkItemStates", () => {
 
 		expect(result.items).toHaveLength(1);
 		expect(result.items[0].externalId).toBe("102");
+	});
+
+	it("reads an unchanged ticket until its native status is recorded for the current link (Fizzy #3088)", async () => {
+		mockGetLinkedExternalIds.mockResolvedValue([
+			// Never recorded (linked before #3088, or linked while unchanged).
+			{ entityType: "STORY", entityId: "s1", externalId: "101" },
+			// Recorded, but for a previous link.
+			{
+				entityType: "STORY",
+				entityId: "s2",
+				externalId: "102",
+				pmTicketStatusExternalId: "999",
+			},
+			// Recorded for this link: the watermark skip applies.
+			{
+				entityType: "STORY",
+				entityId: "s3",
+				externalId: "103",
+				pmTicketStatusExternalId: "103",
+			},
+		]);
+		mockFetchPMItemsByIds.mockResolvedValue({
+			items: [
+				buildItem("101", "Active", "2026-05-04T00:00:00Z"),
+				buildItem("102", "Active", "2026-05-04T00:00:00Z"),
+				buildItem("103", "Active", "2026-05-04T00:00:00Z"),
+			],
+			total: 3,
+			hasNextPage: false,
+			failedIds: [],
+		});
+
+		const result = await fetchAdoWorkItemStates({
+			projectId: "proj-1",
+			mcpConfigId: "mcp-1",
+			mcpServerId: "srv-1",
+			sourceKind: "mcp",
+			containerId: "container-1",
+			containerName: null,
+			lastAdoStatePollAt: new Date("2026-05-05T00:00:00Z"),
+			userId: "user-1",
+		});
+
+		expect(result.items.map((i) => i.externalId)).toEqual(["101", "102"]);
+		expect(result.items[0].displayStatus).toBe("Active");
 	});
 
 	it("returns empty array when no linked items exist", async () => {
@@ -964,8 +1039,8 @@ describe("fetchAdoWorkItemStates", () => {
 
 	it("applies the incremental changed-date filter for MCP items", async () => {
 		mockGetLinkedExternalIds.mockResolvedValue([
-			{ externalId: "1" },
-			{ externalId: "2" },
+			{ externalId: "1", pmTicketStatusExternalId: "1" },
+			{ externalId: "2", pmTicketStatusExternalId: "2" },
 		]);
 		mockFetchPMItemsByIds.mockResolvedValue({
 			items: [
@@ -1641,6 +1716,7 @@ describe("reconcileAdoStates — unified terminal predicate (Phase B)", () => {
 					stateChangedDate: null,
 					isClosed: true,
 					labels: [],
+					displayStatus: "Closed",
 				},
 			],
 			terminalStatusesHash: hashOf(["Closed", "Done"]),
@@ -1650,6 +1726,8 @@ describe("reconcileAdoStates — unified terminal predicate (Phase B)", () => {
 				data: {
 					pmTicketTerminal: true,
 					pmTicketTerminalStatus: "closed",
+					pmTicketStatus: "Closed",
+					pmTicketStatusExternalId: "7",
 				},
 			}),
 		);
@@ -1667,6 +1745,7 @@ describe("reconcileAdoStates — unified terminal predicate (Phase B)", () => {
 					stateChangedDate: null,
 					isClosed: false,
 					labels: ["Done"],
+					displayStatus: "Open",
 				},
 			],
 			terminalStatusesHash: hashOf(["Closed", "Done"]),
@@ -1676,6 +1755,8 @@ describe("reconcileAdoStates — unified terminal predicate (Phase B)", () => {
 				data: {
 					pmTicketTerminal: true,
 					pmTicketTerminalStatus: "Done",
+					pmTicketStatus: "Open",
+					pmTicketStatusExternalId: "7",
 				},
 			}),
 		);
@@ -1700,6 +1781,8 @@ describe("reconcileAdoStates — unified terminal predicate (Phase B)", () => {
 				data: {
 					pmTicketTerminal: true,
 					pmTicketTerminalStatus: "closed",
+					pmTicketStatus: "closed",
+					pmTicketStatusExternalId: "9",
 				},
 			}),
 		);
@@ -1719,13 +1802,19 @@ describe("reconcileAdoStates — unified terminal predicate (Phase B)", () => {
 					stateChangedDate: null,
 					isClosed: false,
 					labels: ["backend"],
+					displayStatus: "Open",
 				},
 			],
 			terminalStatusesHash: hashOf(["Closed", "Done"]),
 		});
 		expect(mockUserStoryUpdate).toHaveBeenCalledWith(
 			expect.objectContaining({
-				data: { pmTicketTerminal: false, pmTicketTerminalStatus: null },
+				data: {
+					pmTicketTerminal: false,
+					pmTicketTerminalStatus: null,
+					pmTicketStatus: "Open",
+					pmTicketStatusExternalId: "7",
+				},
 			}),
 		);
 	});
@@ -1750,7 +1839,12 @@ describe("reconcileAdoStates — unified terminal predicate (Phase B)", () => {
 		});
 		expect(mockUserStoryUpdate).toHaveBeenCalledWith({
 			where: { id: "story-1", projectId: "proj-1" },
-			data: { pmTicketTerminal: false, pmTicketTerminalStatus: null },
+			data: {
+				pmTicketTerminal: false,
+				pmTicketTerminalStatus: null,
+				pmTicketStatus: null,
+				pmTicketStatusExternalId: "7",
+			},
 		});
 	});
 });
@@ -2135,6 +2229,7 @@ describe("fetchAdoWorkItemStates — status sync (Fizzy #2304)", () => {
 		pmAutoHidden: false,
 		lastSyncedPmHash: null,
 		lastPmSyncStatus: null,
+		pmTicketStatusExternalId: externalId,
 	});
 	const mcpInput = {
 		projectId: "proj-1",
@@ -3011,6 +3106,7 @@ describe("reconcileAdoStates — mapped-status sync (Fizzy #2304)", () => {
 		stateChangedDate: D1,
 		isClosed: false,
 		labels: ["type::feature", "workflow::in-review"],
+		displayStatus: "workflow::in-review",
 		classification: "passthrough",
 		itemUrl: issueUrl(iid),
 		...over,
@@ -3185,6 +3281,8 @@ describe("reconcileAdoStates — mapped-status sync (Fizzy #2304)", () => {
 					data: {
 						pmTicketTerminal: false,
 						pmTicketTerminalStatus: null,
+						pmTicketStatus: "workflow::in-review",
+						pmTicketStatusExternalId: "42",
 					},
 				},
 			],
@@ -3194,6 +3292,8 @@ describe("reconcileAdoStates — mapped-status sync (Fizzy #2304)", () => {
 					data: {
 						pmTicketTerminal: false,
 						pmTicketTerminalStatus: null,
+						pmTicketStatus: "workflow::in-review",
+						pmTicketStatusExternalId: "43",
 					},
 				},
 			],

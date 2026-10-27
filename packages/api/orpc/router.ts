@@ -167,6 +167,10 @@ export const router = publicProcedure
 			"searchProvidersRouter",
 			() => import("../modules/search-providers/router"),
 		),
+		parlumeSettings: lazyRouter(
+			"parlumeSettingsRouter",
+			() => import("../modules/parlume-settings/router"),
+		),
 		users: lazyRouter(
 			"usersRouter",
 			() => import("../modules/users/router"),

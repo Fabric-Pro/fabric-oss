@@ -63,6 +63,13 @@ function getBannerCopy(
 
 	switch (signal.kind) {
 		case "internal_budget": {
+			if (signal.budgetLimit === "time") {
+				return {
+					title: "This answer reached its time limit",
+					description:
+						"We summarized the progress so far. You can continue in this chat, or try a narrower question.",
+				};
+			}
 			if (signal.budgetLimit === "iterations") {
 				return {
 					title: "Response was cut short — step limit reached",
@@ -152,7 +159,8 @@ export function LimitBanner({
 	const showBillingLink =
 		canManageBilling &&
 		((signal.kind === "internal_budget" &&
-			signal.budgetLimit !== "iterations") ||
+			signal.budgetLimit !== "iterations" &&
+			signal.budgetLimit !== "time") ||
 			signal.kind === "provider_quota");
 
 	return (

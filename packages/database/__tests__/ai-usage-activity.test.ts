@@ -546,7 +546,9 @@ describe("failed attempts", () => {
 
 	it("totals the failed attempts themselves when filtered to errors", async () => {
 		await listAiUsageActivity({ organizationId: "org-1", status: "error" });
-		const aggregateArgs = aggregateMock.mock.calls.at(-1)?.[0] as {
+		const aggregateArgs = aggregateMock.mock.calls.find(
+			(call) => "_count" in (call[0] as object),
+		)?.[0] as {
 			where: Record<string, unknown>;
 		};
 		expect(aggregateArgs.where).toMatchObject({ success: false });
@@ -607,6 +609,151 @@ describe("failed attempts", () => {
 				}
 			).where.success,
 		).toBe(false);
+	});
+});
+
+// Meeting-time and realtime-voice rows have no request latency: an hour-long
+// meeting bot row must not read as an hour-long request.
+describe("rows without a request latency", () => {
+	const notRequestLatency = {
+		NOT: {
+			providerModelId: {
+				in: [
+					"attendee/teams-bot",
+					"@cf/deepgram/flux",
+					"gpt-realtime-2.1",
+				],
+			},
+		},
+	};
+
+	beforeEach(() => {
+		findManyMock.mockReset();
+		aggregateMock.mockReset();
+		groupByMock.mockReset();
+		countMock.mockReset();
+		countMock.mockResolvedValue(0);
+		findManyMock.mockResolvedValue([]);
+		aggregateMock.mockResolvedValue(EMPTY_AGGREGATE);
+		groupByMock.mockResolvedValue([]);
+	});
+
+	it("averages latency only over rows that have one", async () => {
+		aggregateMock.mockImplementation(async (args: object) =>
+			"_avg" in args
+				? { _avg: { latencyMs: 812.4 } }
+				: { ...EMPTY_AGGREGATE, _count: { id: 3 } },
+		);
+
+		const result = await listAiUsageActivity({ organizationId: "org-1" });
+
+		expect(result.totals).toMatchObject({ requests: 3, avgLatencyMs: 812 });
+		const totalsArgs = aggregateMock.mock.calls.find(
+			(call) => "_count" in (call[0] as object),
+		)?.[0] as { where: unknown };
+		expect(totalsArgs).not.toHaveProperty("_avg");
+		const latencyArgs = aggregateMock.mock.calls.find(
+			(call) => "_avg" in (call[0] as object),
+		)?.[0] as { where: { AND: unknown[] } };
+		expect(latencyArgs.where.AND).toContainEqual(notRequestLatency);
+		expect(latencyArgs.where.AND[0]).toEqual(totalsArgs.where);
+	});
+
+	it("keeps those rows out of a latency filter, and leaves the filter off otherwise", async () => {
+		await listAiUsageActivity({
+			organizationId: "org-1",
+			minLatencyMs: 1_000,
+			providerModelIds: ["attendee/teams-bot"],
+		});
+		const filtered = (
+			findManyMock.mock.calls[0]?.[0] as {
+				where: Record<string, unknown>;
+			}
+		).where;
+		expect(filtered).toMatchObject({
+			latencyMs: { gte: 1_000 },
+			providerModelId: { in: ["attendee/teams-bot"] },
+			...notRequestLatency,
+		});
+
+		findManyMock.mockClear();
+		await listAiUsageActivity({ organizationId: "org-1" });
+		const unfiltered = (
+			findManyMock.mock.calls[0]?.[0] as {
+				where: Record<string, unknown>;
+			}
+		).where;
+		expect(unfiltered).not.toHaveProperty("latencyMs");
+		expect(unfiltered).not.toHaveProperty("NOT");
+	});
+
+	it("shows no latency on a meeting bot row that stored the meeting's length", async () => {
+		findManyMock.mockResolvedValue([
+			{
+				id: "bot",
+				provider: "CUSTOM",
+				providerModelId: "attendee/teams-bot",
+				modelCanonicalName: null,
+				latencyMs: 1_800_000,
+			},
+			{
+				id: "turn",
+				provider: "OPENAI_DIRECT",
+				providerModelId: "gpt-4.1",
+				modelCanonicalName: null,
+				latencyMs: 640,
+			},
+		]);
+
+		const result = await listAiUsageActivity({ organizationId: "org-1" });
+
+		expect(result.rows.map((row) => [row.id, row.latencyMs])).toEqual([
+			["bot", 0],
+			["turn", 640],
+		]);
+	});
+
+	it("charts latency only over rows that have one", async () => {
+		const at = new Date();
+		at.setHours(12, 0, 0, 0);
+		findManyMock.mockResolvedValue([
+			{
+				createdAt: at,
+				totalTokens: 0,
+				costMicroUsd: 250_000,
+				latencyMs: 1_800_000,
+				providerModelId: "attendee/teams-bot",
+				success: true,
+			},
+			{
+				createdAt: at,
+				totalTokens: 900,
+				costMicroUsd: 4_000,
+				latencyMs: 0,
+				providerModelId: "gpt-realtime-2.1",
+				success: true,
+			},
+			{
+				createdAt: at,
+				totalTokens: 100,
+				costMicroUsd: 50,
+				latencyMs: 600,
+				providerModelId: "gpt-4.1",
+				success: true,
+			},
+		]);
+
+		const series = await getAiUsageActivityTimeSeries({
+			organizationId: "org-1",
+			periodDays: 1,
+		});
+
+		const point = series.find((entry) => entry.requests > 0);
+		expect(point).toMatchObject({
+			requests: 3,
+			costMicroUsd: 254_050,
+			avgLatencyMs: 600,
+		});
 	});
 });
 

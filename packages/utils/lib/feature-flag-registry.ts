@@ -18,8 +18,8 @@ export interface FeatureFlagDefinition {
 	label: string;
 	/** One sentence on what turning this on does. */
 	description: string;
-	/** The env var that seeds this flag when no override row exists. */
-	envVar: string;
+	/** Environment fallback, or null for flags resolved only from DB overrides. */
+	envVar: string | null;
 	/** Value when neither an override nor the env var is set. */
 	default: boolean;
 	/** Optional risk note surfaced in the admin UI. */
@@ -313,6 +313,15 @@ export const FEATURE_FLAG_REGISTRY = {
 		orgScopable: true,
 		note: "Fizzy #2946. Default-ON rollback lever, read for the project's OWNING organization. Off, the editor behaves as before it: no room stamp, no convergence, saves send no base, and the server requires no base from a client-document Proposal; on, a Proposal save without a base (an editor bundle from before this change) is refused with a reload code, and other document types accept and log it. No data is migrated either way: the stamp lives in the room, so turning it back on resumes from the next save or server write.",
 	},
+	DECISION_REPLAY: {
+		label: "Decision Replay capture",
+		description:
+			"Records the history of AI suggestions and their outcomes.",
+		envVar: null,
+		default: false,
+		orgScopable: true,
+		note: "Override-only: database capture triggers cannot read application environment variables. Resolution uses the organization override, then the global override, then false, matching lakehouse_export.capture_enabled. Application readers may cache overrides for up to 10 seconds; triggers read them at write time.",
+	},
 } as const satisfies Record<string, FeatureFlagDefinition>;
 
 export type FeatureFlagKey = keyof typeof FEATURE_FLAG_REGISTRY;
@@ -408,7 +417,7 @@ export function resolveFlag(
 		return { enabled: overrides.global, source: "override" };
 	}
 
-	const raw = env[definition.envVar];
+	const raw = definition.envVar === null ? undefined : env[definition.envVar];
 	if (raw !== undefined) {
 		return { enabled: parseOptInFlag(raw), source: "env" };
 	}

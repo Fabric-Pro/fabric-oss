@@ -55,6 +55,7 @@
 
 import { type MessagesProps, useChatContext } from "@copilotkit/react-ui";
 import { useCopilotChatSession } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
+import { useCopilotReplyRatingState } from "@saas/shared/components/copilot/CopilotReplyRatingContext";
 import { useEffect, useMemo, useRef } from "react";
 import {
 	SystemMessage,
@@ -302,6 +303,24 @@ export const CustomMessages = ({
 		() => [...initialGreetings, ...historicalAgui, ...liveFiltered],
 		[initialGreetings, historicalAgui, liveFiltered],
 	) as Parameters<typeof useScrollToBottom>[0];
+
+	const rating = useCopilotReplyRatingState();
+	const setRatingMessageIds = rating?.setMessageIds;
+	const ratingMessageIds = useMemo(
+		() =>
+			[...historicalAgui, ...liveFiltered]
+				.filter(
+					(message) =>
+						message.role === "assistant" &&
+						typeof message.content === "string" &&
+						message.content.trim(),
+				)
+				.map((message) => message.id),
+		[historicalAgui, liveFiltered],
+	);
+	useEffect(() => {
+		setRatingMessageIds?.(ratingMessageIds);
+	}, [setRatingMessageIds, ratingMessageIds]);
 
 	const { messagesContainerRef, messagesEndRef } =
 		useScrollToBottom(messages);

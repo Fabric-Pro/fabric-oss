@@ -609,6 +609,10 @@ function readPersistedTurnOutcome(message: {
 		errorMessage,
 		...(limit ? { limit } : {}),
 		...(toolsFailed ? { toolsFailed } : {}),
+		// A partial error can share its turn with these; the live chat shows
+		// them beside the error, so a reload must too (Fizzy #3273).
+		...(truncated ? { truncated } : {}),
+		...(apiBilling ? { apiBilling } : {}),
 	};
 }
 

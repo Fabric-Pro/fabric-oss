@@ -606,6 +606,25 @@ interface PollClassifyContext {
 	statusSyncEnabled: boolean;
 }
 
+/**
+ * Incremental skip: only when we have BOTH a resolved anchor and a
+ * changed-date, and the story already holds this link's native status (Fizzy
+ * #3088). A ticket linked while unchanged — or every ticket on the first poll
+ * after #3088 shipped — is read once so its card status fills in.
+ */
+function isUnchangedSinceWatermark(
+	externalId: string,
+	n: NormalizedPmState,
+	watermark: Date | null,
+	ctx: PollClassifyContext,
+): boolean {
+	if (!watermark || !n.changedDate || n.changedDate > watermark) {
+		return false;
+	}
+	const linked = ctx.linkedByExternalId.get(externalId);
+	return !linked || linked.pmTicketStatusExternalId === linked.externalId;
+}
+
 /** One SLIM verdict plus whether this item raised/advanced a `CONTENT_DRIFT` row. */
 interface PollVerdictResult {
 	verdict: PmWorkItemState;
@@ -633,6 +652,7 @@ async function buildPollVerdict(
 		stateChangedDate: n.changedDate ? n.changedDate.toISOString() : null,
 		isClosed: n.isClosed,
 		labels: n.labels,
+		displayStatus: n.displayStatus,
 	};
 	// Fizzy #2304 D2.3 — the fetched issue's own URL, for the status-sync leaf's
 	// linked-issue check. Only while the switch is on, so a switch-off verdict
@@ -772,11 +792,12 @@ async function fetchViaAdoBatch(
 			safeHeartbeat();
 		}
 		const n = normalizePolledState(pmItem, { kind: "mcp" });
-		if (watermark && n.changedDate && n.changedDate <= watermark) {
+		const externalId = orig(Number(pmItem.id));
+		if (isUnchangedSinceWatermark(externalId, n, watermark, ctx)) {
 			continue;
 		}
 		const { verdict, driftCreated } = await buildPollVerdict(
-			orig(Number(pmItem.id)),
+			externalId,
 			n,
 			ctx,
 		);
@@ -1357,13 +1378,12 @@ async function fetchLinkedItemStates(
 		});
 
 		// Incremental skip: only when we have BOTH a resolved anchor and a
-		// changed-date. Tools without a changed-date (null) are always
-		// evaluated — idempotent, since reconcile dedups via upsertPendingChange.
-		// Status sync resolves the anchor to null (D2.1): nothing is skipped.
-		if (watermark && n.changedDate) {
-			if (n.changedDate <= watermark) {
-				continue;
-			}
+		// changed-date (and the card's native status is recorded, Fizzy #3088).
+		// Tools without a changed-date (null) are always evaluated — idempotent,
+		// since reconcile dedups via upsertPendingChange. Status sync resolves
+		// the anchor to null (D2.1): nothing is skipped.
+		if (isUnchangedSinceWatermark(pmItem.id, n, watermark, ctx)) {
+			continue;
 		}
 
 		const { verdict, driftCreated } = await buildPollVerdict(

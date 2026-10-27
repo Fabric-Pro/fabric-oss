@@ -50,10 +50,12 @@ export async function sendNewsletterChatMessagesActivity(
 
 	// Org projects live under /app/{slug}/projects/{id}; resolve the correct
 	// tenant-scoped URL (the personal route would 404 for org sends) via the
-	// canonical helper, which also uses the worker-safe base-URL chain.
+	// canonical helper, which also uses the worker-safe base-URL chain. The
+	// sendId opens this exact release note rather than the list.
 	const link = await buildReleaseNotesUrl({
 		projectId: input.projectId,
 		organizationId: input.organizationId,
+		sendId: input.sendId,
 	});
 
 	return deliverChatMessages({

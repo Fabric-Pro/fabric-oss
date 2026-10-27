@@ -40,6 +40,7 @@ vi.mock("@temporalio/workflow", () => ({
 			new Proxy({}, { get: (_target, name) => mocks.stub(String(name)) }),
 	),
 	workflowInfo: vi.fn(() => ({
+		startTime: new Date(Date.now()),
 		runId: "test-run-id",
 		unsafe: { isReplaying: false },
 	})),
@@ -168,6 +169,9 @@ describe("Advisor usage attribution", () => {
 
 		const rounds = requestsTo("runAgentIteration");
 		expect(rounds.length).toBeGreaterThan(0);
+		expect(rounds.some((round) => round.callPurpose === "synthesis")).toBe(
+			true,
+		);
 		// The synthesis round binds no tools.
 		expect(
 			rounds.some(
@@ -427,5 +431,36 @@ it.each(["claude-haiku-4-5", undefined])(
 		} else {
 			expect(request).not.toHaveProperty("modelOverride");
 		}
+	},
+);
+
+it.each([true, false])(
+	"leaves the iterative workspace purpose to its operation with usage-origin patch=%s",
+	async (enabled) => {
+		if (!enabled) {
+			mocks.off.add("orchestrator-complete-usage-origin-v1");
+		}
+		mocks
+			.stub("retrieveWorkspaceDocumentsActivity")
+			.mockResolvedValue({ context: "Example context", chunkCount: 1 });
+		await runTurn(mocks, {
+			message: "Search workspace",
+			workspaceIds: ["example-workspace"],
+			steps: [
+				{
+					calls: [
+						{
+							name: "workspace_rag_query",
+							args: { query: "example" },
+						},
+					],
+				},
+				{ answer: "Found it" },
+			],
+		});
+		expect(
+			mocks.stub("retrieveWorkspaceDocumentsActivity").mock.calls[0][7] ??
+				{},
+		).not.toHaveProperty("callPurpose");
 	},
 );

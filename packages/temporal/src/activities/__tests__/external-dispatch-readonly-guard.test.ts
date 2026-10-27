@@ -60,6 +60,10 @@ const ALLOWLIST: ReadonlyMap<string, string> = new Map([
 		"loads tool DEFINITIONS for the planner — dispatch happens in the gated executeMcpTool chokepoint",
 	],
 	[
+		"packages/temporal/src/activities/parlume-auto-join.ts",
+		"Teams calendar READ only (list_calendar_meetings: the planner's read per enabler and organization, and the re-read before each join); the join itself goes through the web app, which skips it while the project is in Read-only mode",
+	],
+	[
 		"packages/temporal/src/activities/search-project-teams-messages.ts",
 		"Teams message search — READ only",
 	],

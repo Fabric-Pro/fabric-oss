@@ -6,6 +6,7 @@
  */
 
 import { generateText } from "@repo/ai";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import { rethrowIfDispatchStopped } from "@repo/utils/dispatch-guard";
 import { usageOriginFields } from "../../../../workflows/orchestrator/usage-attribution";
@@ -110,9 +111,10 @@ Please present the results in a clear, well-formatted manner.`;
 			false,
 			undefined,
 			undefined,
-			input.conversationId || input.frameId || input.projectId
-				? usageOriginFields(input)
-				: undefined,
+			{
+				...usageOriginFields(input),
+				callPurpose: AI_CALL_PURPOSES.handlerGeneration,
+			},
 		);
 
 		const response = await generateText({

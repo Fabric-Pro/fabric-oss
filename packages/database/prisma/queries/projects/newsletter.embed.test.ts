@@ -77,6 +77,7 @@ describe("setPublicWidgetState", () => {
 		},
 	) {
 		return {
+			$transaction: vi.fn(),
 			$queryRaw: vi.fn().mockResolvedValue(locked ? [locked] : []),
 			newsletterSettings: { update: vi.fn().mockResolvedValue(updated) },
 			// biome-ignore lint/suspicious/noExplicitAny: mock tx client
@@ -193,11 +194,11 @@ describe("setPublicWidgetState", () => {
 	});
 
 	it("rejects a non-transaction client (base db)", async () => {
-		// The guard is `if ("$transaction" in client) throw …`: a base PrismaClient
-		// exposes `$transaction` (a TransactionClient does not), so handing the base
-		// db in must throw BEFORE any query runs — never silently lose the FOR UPDATE
-		// lock guarantee.
+		// Prisma 7 transaction clients expose nested `$transaction`, but the
+		// generated ITXClientDenyList still excludes `$connect`. A base client
+		// must be rejected before querying to preserve the FOR UPDATE lock.
 		const fakeBaseDb = {
+			$connect: vi.fn(),
 			$transaction: vi.fn(),
 			$queryRaw: vi.fn(),
 			newsletterSettings: { update: vi.fn() },

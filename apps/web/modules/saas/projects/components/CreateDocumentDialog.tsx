@@ -46,10 +46,6 @@ import { useTranslations } from "next-intl";
 import { useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import { CompanyContextNotice } from "./CompanyContextNotice";
-import {
-	DeprecatedDocumentTypeBadge,
-	FeaturesDeprecationNotice,
-} from "./FeaturesDeprecationNotice";
 import { describeGenerationRefusal } from "./proposal-artifact/generation-feedback";
 import { ProposalPromptField } from "./proposal-artifact/ProposalPromptField";
 
@@ -505,10 +501,6 @@ export function CreateDocumentDialog({ projectId, open, onOpenChange }: Props) {
 	const sourceErrorId = useId();
 	const usageModeLabelId = useId();
 	const asIsHintId = useId();
-	const deprecationNoticeId = useId();
-	// The notice's copy is about Features specifically; the badge in the list
-	// follows the catalog flag.
-	const showFeaturesDeprecation = type === "USER_STORY";
 
 	const createMutation = useMutation(
 		orpc.projects.documents.create.mutationOptions(),
@@ -888,14 +880,7 @@ export function CreateDocumentDialog({ projectId, open, onOpenChange }: Props) {
 								handleTypeChange(value as DocumentType)
 							}
 						>
-							<SelectTrigger
-								id="type"
-								aria-describedby={
-									showFeaturesDeprecation
-										? deprecationNoticeId
-										: undefined
-								}
-							>
+							<SelectTrigger id="type">
 								<SelectValue />
 							</SelectTrigger>
 							<SelectContent>
@@ -907,29 +892,11 @@ export function CreateDocumentDialog({ projectId, open, onOpenChange }: Props) {
 										<span className="flex items-center gap-2">
 											<span>{docType.icon}</span>
 											<span>{docType.label}</span>
-											{docType.deprecated && (
-												<DeprecatedDocumentTypeBadge />
-											)}
 										</span>
 									</SelectItem>
 								))}
 							</SelectContent>
 						</Select>
-						{showFeaturesDeprecation && (
-							<div className="mt-2">
-								<FeaturesDeprecationNotice
-									roadmapHref={`${basePath}/projects/${projectId}?tab=stories`}
-									messageId={deprecationNoticeId}
-									onNavigate={() => {
-										// Same rule as the dialog's own
-										// dismissal paths: never close mid-submit.
-										if (!isSubmitting) {
-											onOpenChange(false);
-										}
-									}}
-								/>
-							</div>
-						)}
 					</div>
 
 					<div>

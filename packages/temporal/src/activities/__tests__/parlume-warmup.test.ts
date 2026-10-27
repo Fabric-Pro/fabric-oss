@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
 	collect: vi.fn(),
 	model: vi.fn(),
 	speech: vi.fn(),
+	memory: vi.fn(),
+	fabricTools: vi.fn(),
 }));
 vi.mock("@repo/database", () => ({
 	db: { parlumeMeetingSession: { findUnique: mocks.session } },
@@ -23,7 +25,13 @@ vi.mock("../parlume-agent", () => ({ loadParlumeAgent: mocks.load }));
 vi.mock("../direct-chat/mcp-tools", () => ({
 	collectMcpToolsActivity: mocks.collect,
 }));
+vi.mock("../direct-chat/memory-context", () => ({
+	generateMemoryContextActivity: mocks.memory,
+}));
 vi.mock("../shared/project-context-block", () => ({}));
+vi.mock("../shared/fabric-platform-mcp", () => ({
+	loadFabricPlatformTools: mocks.fabricTools,
+}));
 
 const session = {
 	id: "session",
@@ -53,6 +61,7 @@ beforeEach(() => {
 	mocks.collect.mockResolvedValue({ mcpToolInfo: [] });
 	mocks.model.mockResolvedValue({});
 	mocks.speech.mockResolvedValue(null);
+	mocks.memory.mockResolvedValue({ context: "", memoryCount: 0 });
 });
 
 describe("Parlume session warm-up", () => {
@@ -74,6 +83,11 @@ describe("Parlume session warm-up", () => {
 			userId: "user",
 			organizationId: "org",
 		});
+		expect(mocks.memory).toHaveBeenCalledWith(
+			expect.any(String),
+			"user",
+			"org",
+		);
 		const log = warmLog();
 		expect(log).toMatchObject({
 			sessionId: "session",
@@ -83,12 +97,42 @@ describe("Parlume session warm-up", () => {
 		expect(Object.keys(log?.timings as object).sort()).toEqual(
 			[
 				"agentLoadMs",
+				"memoryMs",
 				"modelResolveMs",
 				"projectBlockImportMs",
 				"sessionLoadMs",
 				"speechRouteMs",
 			].sort(),
 		);
+	});
+
+	it("lists Fabric's tools as the inviter with the grant it was given, and closes the connection", async () => {
+		const close = vi.fn();
+		mocks.fabricTools.mockResolvedValue({ close });
+
+		await warmParlumeSession({
+			sessionId: "session",
+			actingGrant: "grant",
+		});
+
+		expect(mocks.fabricTools).toHaveBeenCalledWith(
+			{
+				userId: "user",
+				organizationId: "org",
+				actingGrant: "grant",
+				projectId: "project",
+				conversationId: "session",
+				sourceRunType: "direct-chat",
+			},
+			{ portal: { offer: false } },
+		);
+		expect(close).toHaveBeenCalledTimes(1);
+		expect(warmLog()?.timings).toHaveProperty("fabricToolsMs");
+	});
+
+	it("lists no Fabric tools without a grant", async () => {
+		await warmParlumeSession({ sessionId: "session" });
+		expect(mocks.fabricTools).not.toHaveBeenCalled();
 	});
 
 	it("loads a custom agent without collecting tools for it", async () => {
@@ -106,6 +150,7 @@ describe("Parlume session warm-up", () => {
 		await warmParlumeSession({ sessionId: "session" });
 		expect(mocks.load).not.toHaveBeenCalled();
 		expect(mocks.model).not.toHaveBeenCalled();
+		expect(mocks.memory).not.toHaveBeenCalled();
 		expect(warmLog()).toMatchObject({ live: false });
 	});
 

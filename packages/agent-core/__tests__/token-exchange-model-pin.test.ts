@@ -13,6 +13,7 @@ it.each([true, undefined])(
 						apiKey: "example-key",
 						provider: "GROQ",
 						model: "selected-model",
+						canonicalModelName: "claude-sonnet-5",
 						expiresIn: 300,
 						...(modelPinned && {
 							modelPinned,
@@ -34,6 +35,7 @@ it.each([true, undefined])(
 			});
 			expect(result?.modelPinned).toBe(modelPinned === true);
 			expect(result?.model).toBe("selected-model");
+			expect(result?.canonicalModelName).toBe("claude-sonnet-5");
 			if (modelPinned) {
 				expect(result).toMatchObject({
 					isReasoningModel: true,

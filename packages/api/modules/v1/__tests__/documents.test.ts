@@ -7,6 +7,7 @@
  */
 
 import { contentIdentity } from "@repo/utils/content-identity";
+import { RETIRED_TYPE_MESSAGE } from "@repo/utils/document-type-catalog";
 import { Hono } from "hono";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -244,6 +245,22 @@ describe("v1 documents — create", () => {
 				userId: "user-1",
 			}),
 		);
+	});
+
+	it("400 for the retired Features type (Fizzy #2776)", async () => {
+		const res = await makeApp().request("/projects/proj-1/documents", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				type: "USER_STORY",
+				title: "Features",
+				content: "x",
+			}),
+		});
+		expect(res.status).toBe(400);
+		const body = (await res.json()) as { error: { message: string } };
+		expect(body.error.message).toBe(RETIRED_TYPE_MESSAGE);
+		expect(mockCreateDocument).not.toHaveBeenCalled();
 	});
 
 	it("404 when caller has no project access", async () => {

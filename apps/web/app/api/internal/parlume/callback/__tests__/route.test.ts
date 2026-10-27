@@ -37,6 +37,7 @@ vi.mock("@repo/api/modules/projects/lib/parlume-finalization", () => ({
 }));
 
 vi.mock("@repo/api/modules/projects/lib/parlume-attendee", () => ({
+	PARLUME_LOBBY_WAIT_SECONDS: 600,
 	getParlumeBridgeSettings: () => mocks.settings(),
 	closeParlumeMeetingBridge: (...args: unknown[]) =>
 		mocks.closeBridge(...args),
@@ -317,8 +318,7 @@ describe("Parlume fatal_error callback", () => {
 					trigger: "bot.state_change",
 					data: {
 						event_type: "could_not_join_meeting",
-						event_sub_type:
-							"could_not_join_meeting_waiting_room_timed_out",
+						event_sub_type: "waiting_room_timeout_exceeded",
 						old_state: "waiting_room",
 						new_state: "fatal_error",
 					},
@@ -333,7 +333,7 @@ describe("Parlume fatal_error callback", () => {
 			expect.objectContaining({
 				outcome: "failed",
 				eventType: "could_not_join_meeting",
-				eventSubType: "could_not_join_meeting_waiting_room_timed_out",
+				eventSubType: "waiting_room_timeout_exceeded",
 			}),
 		);
 	});
@@ -352,6 +352,84 @@ describe("Parlume fatal_error callback", () => {
 			preserveFailure: true,
 		});
 		expect(mocks.closeBridge).not.toHaveBeenCalled();
+	});
+
+	function couldNotJoin(subType: string | null) {
+		return webhook(
+			{
+				trigger: "bot.state_change",
+				data: {
+					event_type: "could_not_join_meeting",
+					event_sub_type: subType,
+					old_state: "waiting_room",
+					new_state: "fatal_error",
+				},
+			},
+			"callback-secret",
+		);
+	}
+
+	it("ends a bot nobody admitted from the lobby as not admitted, in plain words", async () => {
+		mocks.findFirst.mockResolvedValue({
+			...active,
+			status: "JOINING",
+			streamGeneration: 0,
+		});
+
+		await POST(couldNotJoin("waiting_room_timeout_exceeded"));
+
+		expect(mocks.updateMany).toHaveBeenCalledWith({
+			where: { id: "session-1", status: { not: "ENDED" } },
+			data: expect.objectContaining({
+				status: "FAILED",
+				endReason: "NOT_ADMITTED",
+				lastError:
+					"Nobody admitted Parlume from the lobby within 10 minutes.",
+			}),
+		});
+		expect(mocks.finalize).toHaveBeenCalledWith("session-1", {
+			preserveFailure: true,
+		});
+	});
+
+	it("explains a join the organizer declined", async () => {
+		mocks.findFirst.mockResolvedValue({
+			...active,
+			status: "JOINING",
+			streamGeneration: 0,
+		});
+
+		await POST(couldNotJoin("request_to_join_denied"));
+
+		expect(mocks.updateMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					endReason: "NOT_ADMITTED",
+					lastError:
+						"The meeting organizer declined Parlume's request to join.",
+				}),
+			}),
+		);
+	});
+
+	it("names the sub type of a join failure it does not know", async () => {
+		mocks.findFirst.mockResolvedValue({
+			...active,
+			status: "JOINING",
+			streamGeneration: 0,
+		});
+
+		await POST(couldNotJoin("some_new_reason"));
+
+		expect(mocks.updateMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					endReason: "START_FAILED",
+					lastError:
+						"Parlume could not join the meeting (some_new_reason).",
+				}),
+			}),
+		);
 	});
 
 	it("keeps an earlier stop reason on a failure that follows it", async () => {
@@ -447,6 +525,100 @@ describe("Parlume ended callback", () => {
 			}),
 		);
 		expect(mocks.cleanup).toHaveBeenCalledWith("session-1");
+	});
+});
+
+describe("Parlume terminal callback for a bot that never opened a stream", () => {
+	// Staging: invited, left waiting in the lobby (JOINING), stopped there,
+	// which set LEAVING/STOPPED; Attendee then reported the bot completed. No
+	// media stream ever authenticated, so no stream close can follow and the
+	// session must finalize on this callback instead of waiting for one.
+	const stoppedInLobby = {
+		...active,
+		status: "LEAVING",
+		endReason: "STOPPED",
+		leaveRequestedAt: new Date("2026-10-26T17:54:05Z"),
+		streamClosedAt: null,
+		streamGeneration: 0,
+	};
+
+	it("finalizes a bot stopped in the lobby at once, keeping the stop reason", async () => {
+		mocks.findFirst.mockResolvedValue(stoppedInLobby);
+		mocks.finalize.mockResolvedValue(undefined);
+
+		const response = await POST(ended());
+
+		expect(await response.json()).toEqual({ accepted: true });
+		expect(mocks.updateMany).toHaveBeenCalledWith({
+			where: { id: "session-1", streamGeneration: 0 },
+			data: {
+				status: "LEAVING",
+				endReason: "STOPPED",
+				terminalCallbackAt: expect.any(Date),
+			},
+		});
+		expect(mocks.closeBridge).not.toHaveBeenCalled();
+		expect(mocks.finalize).toHaveBeenCalledWith("session-1", {
+			expectedStreamGeneration: 0,
+		});
+	});
+
+	it("finalizes the same way when Attendee reports the stopped bot as failed", async () => {
+		mocks.findFirst.mockResolvedValue(stoppedInLobby);
+		mocks.finalize.mockResolvedValue(undefined);
+
+		await POST(fatalError());
+
+		expect(mocks.updateMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: expect.objectContaining({
+					status: "LEAVING",
+					endReason: "STOPPED",
+				}),
+			}),
+		);
+		expect(mocks.closeBridge).not.toHaveBeenCalled();
+		expect(mocks.finalize).toHaveBeenCalledWith("session-1", {
+			expectedStreamGeneration: 0,
+		});
+	});
+
+	it("finalizes a failed bot that left the lobby on its own without waiting for a stream", async () => {
+		mocks.findFirst.mockResolvedValue({
+			...stoppedInLobby,
+			endReason: null,
+			leaveRequestedAt: null,
+		});
+		mocks.finalize.mockResolvedValue(undefined);
+
+		await POST(fatalError());
+
+		expect(mocks.closeBridge).not.toHaveBeenCalled();
+		expect(mocks.finalize).toHaveBeenCalledWith("session-1", {
+			preserveFailure: true,
+			expectedStreamGeneration: 0,
+		});
+	});
+
+	it("asks Attendee to redeliver when that finalization fails", async () => {
+		mocks.findFirst.mockResolvedValue(stoppedInLobby);
+		mocks.finalize.mockRejectedValue(new Error("database unavailable"));
+
+		const response = await POST(ended());
+
+		expect(response.status).toBe(503);
+	});
+
+	it("still waits for a stream that opened and has not closed", async () => {
+		mocks.findFirst.mockResolvedValue({
+			...stoppedInLobby,
+			streamGeneration: 1,
+		});
+
+		await POST(ended());
+
+		expect(mocks.closeBridge).toHaveBeenCalled();
+		expect(mocks.finalize).not.toHaveBeenCalled();
 	});
 });
 

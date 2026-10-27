@@ -1,11 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	armParlumeMeetingBridge,
+	checkAttendeeConnection,
 	closeParlumeMeetingBridge,
 	deleteParlumeMeetingBotData,
+	getAttendeeBaseUrlBlockReason,
+	getEnvironmentAttendeeSettings,
 	getParlumeBridgeSettings,
 	isTeamsMeetingUrl,
 	leaveParlumeMeetingBot,
+	normalizeAttendeeBaseUrl,
+	PARLUME_ATTENDEE_ALLOWED_HOSTS_ENV,
+	type ParlumeAttendeeSettings,
+	ParlumeProviderError,
 	sendParlumeChatMessage,
 	sendParlumeMeetingChat,
 	sendParlumeSpeakerUpdates,
@@ -13,10 +20,16 @@ import {
 } from "../parlume-attendee";
 
 const settings = {
-	apiKey: "operator-key",
 	bridgeUrl: "wss://bridge.fabric.example/live",
 	callbackUrl: "https://fabric.example/api/internal/parlume/callback",
 	serviceSecret: "service-secret",
+};
+
+const attendee: ParlumeAttendeeSettings = {
+	apiKey: "operator-key",
+	baseUrl: "https://app.attendee.dev",
+	teamsLoginMode: null,
+	source: "environment",
 };
 
 const fetchMock = vi.fn();
@@ -49,7 +62,6 @@ describe("getParlumeBridgeSettings", () => {
 		configure();
 
 		expect(getParlumeBridgeSettings()).toEqual({
-			apiKey: "operator-key",
 			bridgeUrl: "wss://bridge.fabric.example/parties/parlume",
 			callbackUrl:
 				"https://staging.fabric.example/api/internal/parlume/callback",
@@ -57,11 +69,11 @@ describe("getParlumeBridgeSettings", () => {
 		});
 	});
 
-	it("is not ready without the Attendee API key", () => {
+	it("needs no Attendee key: the bridge is the operator's alone", () => {
 		configure();
 		vi.stubEnv("PARLUME_ATTENDEE_API_KEY", "");
 
-		expect(getParlumeBridgeSettings()).toBeNull();
+		expect(getParlumeBridgeSettings()).not.toBeNull();
 	});
 
 	it("is not ready when the bridge or callback is not served over TLS", () => {
@@ -83,9 +95,10 @@ describe("getParlumeBridgeSettings", () => {
 describe("startParlumeMeetingBot", () => {
 	const hardStopAt = new Date("2030-01-01T04:00:00.000Z");
 
-	function start() {
+	function start(overrides: Partial<ParlumeAttendeeSettings> = {}) {
 		return startParlumeMeetingBot({
 			settings,
+			attendee: { ...attendee, ...overrides },
 			sessionId: "session-1",
 			meetingUrl: "https://teams.microsoft.com/meet/123456?p=abc",
 			streamToken: "stream-token",
@@ -139,7 +152,8 @@ describe("startParlumeMeetingBot", () => {
 				},
 			],
 			automatic_leave_settings: {
-				waiting_room_timeout_seconds: 180,
+				// Ten minutes in the lobby; three alone.
+				waiting_room_timeout_seconds: 600,
 				only_participant_in_meeting_timeout_seconds: 180,
 				// Four hours to the hard stop, plus the two-minute backstop.
 				max_uptime_seconds: 4 * 60 * 60 + 120,
@@ -148,16 +162,15 @@ describe("startParlumeMeetingBot", () => {
 	});
 
 	it.each(["always", "only_if_required"] as const)(
-		"signs the bot in to Teams when the operator sets %s",
+		"signs the bot in to Teams when the settings say %s",
 		async (mode) => {
-			vi.stubEnv("PARLUME_ATTENDEE_TEAMS_LOGIN", mode);
 			fetchMock.mockResolvedValue(
 				new Response(JSON.stringify({ id: "bot_abc123" }), {
 					status: 201,
 				}),
 			);
 
-			await start();
+			await start({ teamsLoginMode: mode });
 
 			expect(requestBody(0)).toMatchObject({
 				teams_settings: { use_login: true, login_mode: mode },
@@ -166,7 +179,6 @@ describe("startParlumeMeetingBot", () => {
 	);
 
 	it("joins as an anonymous guest when no Teams login is configured", async () => {
-		vi.stubEnv("PARLUME_ATTENDEE_TEAMS_LOGIN", "");
 		fetchMock.mockResolvedValue(
 			new Response(JSON.stringify({ id: "bot_abc123" }), { status: 201 }),
 		);
@@ -176,12 +188,33 @@ describe("startParlumeMeetingBot", () => {
 		expect(requestBody(0)).not.toHaveProperty("teams_settings");
 	});
 
-	it("refuses an unknown Teams login mode before creating a bot", async () => {
-		vi.stubEnv("PARLUME_ATTENDEE_TEAMS_LOGIN", "sometimes");
-
-		await expect(start()).rejects.toThrow(
-			"PARLUME_ATTENDEE_TEAMS_LOGIN must be always or only_if_required.",
+	it("creates the bot on a self-hosted Attendee with that instance's key", async () => {
+		fetchMock.mockResolvedValue(
+			new Response(JSON.stringify({ id: "bot_abc123" }), { status: 201 }),
 		);
+
+		await start({
+			apiKey: "organization-key",
+			baseUrl: "https://attendee.example.com/proxy",
+			source: "organization",
+		});
+
+		const [url, init] = fetchMock.mock.calls[0] ?? [];
+		expect(url).toBe("https://attendee.example.com/proxy/api/v1/bots");
+		expect(init).toMatchObject({
+			headers: { Authorization: "Token organization-key" },
+			// The key must not follow a redirect somewhere nobody declared.
+			redirect: "error",
+		});
+	});
+
+	it("refuses an internal Attendee address before the key leaves Fabric", async () => {
+		vi.stubEnv("NODE_ENV", "production");
+		vi.stubEnv(PARLUME_ATTENDEE_ALLOWED_HOSTS_ENV, "");
+
+		await expect(
+			start({ baseUrl: "https://169.254.169.254" }),
+		).rejects.toThrow();
 		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
@@ -192,6 +225,7 @@ describe("startParlumeMeetingBot", () => {
 
 		await startParlumeMeetingBot({
 			settings,
+			attendee,
 			sessionId: "session-1",
 			meetingUrl: "https://teams.microsoft.com/meet/123456?p=abc",
 			streamToken: "stream-token",
@@ -216,11 +250,27 @@ describe("startParlumeMeetingBot", () => {
 
 		const failure = await start().catch((error: Error) => error);
 
-		expect(failure).toBeInstanceOf(Error);
-		expect((failure as Error).message).toBe(
+		expect(failure).toBeInstanceOf(ParlumeProviderError);
+		expect((failure as ParlumeProviderError).message).toBe(
 			'Attendee request failed with HTTP 400. {"bot_name":["Bot name cannot contain emojis."]}',
 		);
+		expect((failure as ParlumeProviderError).status).toBe(400);
+		expect((failure as ParlumeProviderError).detail).toBe(
+			'{"bot_name":["Bot name cannot contain emojis."]}',
+		);
 		expect((failure as Error).message).not.toContain("meet/123456");
+	});
+
+	it("masks the key should Attendee ever quote it", async () => {
+		fetchMock.mockResolvedValue(
+			new Response(JSON.stringify({ error: "Bad token operator-key" }), {
+				status: 400,
+			}),
+		);
+
+		const failure = await start().catch((error: Error) => error);
+
+		expect((failure as Error).message).not.toContain("operator-key");
 	});
 
 	it("relays Attendee's error message when it sends one", async () => {
@@ -380,7 +430,7 @@ describe("deleteParlumeMeetingBotData", () => {
 		fetchMock.mockResolvedValue(new Response("{}", { status: 200 }));
 
 		await deleteParlumeMeetingBotData({
-			settings,
+			attendee,
 			providerBotId: "bot_abc123",
 		});
 
@@ -405,7 +455,7 @@ describe("deleteParlumeMeetingBotData", () => {
 
 		await expect(
 			deleteParlumeMeetingBotData({
-				settings,
+				attendee,
 				providerBotId: "bot_abc123",
 			}),
 		).rejects.toThrow("HTTP 400");
@@ -417,7 +467,7 @@ describe("sendParlumeMeetingChat", () => {
 		fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
 
 		await sendParlumeMeetingChat({
-			settings,
+			attendee,
 			providerBotId: "bot_abc123",
 			message: "The project is on track \u{1F680} for release.",
 		});
@@ -433,7 +483,7 @@ describe("sendParlumeMeetingChat", () => {
 		);
 		expect(requestBody(0)).toEqual({
 			to: "everyone",
-			message: "The project is on track  for release.",
+			message: "<p>The project is on track  for release.</p>",
 		});
 	});
 
@@ -441,13 +491,30 @@ describe("sendParlumeMeetingChat", () => {
 		fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
 
 		await sendParlumeMeetingChat({
-			settings,
+			attendee,
 			providerBotId: "bot_abc123",
 			message: `${"a".repeat(4_095)}\u{1F680}${"b".repeat(10)}`,
 		});
 
 		const body = requestBody(0) as { message: string };
-		expect(body.message).toBe(`${"a".repeat(4_095)}b`);
+		expect(body.message).toBe(`<p>${"a".repeat(4_095)}b</p>`);
+	});
+
+	// Attendee's Teams bot pastes a message with HTML tags at once; plain text it
+	// types a key at a time, with the meeting audio held up meanwhile.
+	it("sends the text as one escaped HTML paragraph", async () => {
+		fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+
+		await sendParlumeMeetingChat({
+			attendee,
+			providerBotId: "bot_abc123",
+			message: "[P3] Use <b> & keep a > b",
+		});
+
+		const body = requestBody(0) as { message: string };
+		expect(body.message).toBe(
+			"<p>[P3] Use &lt;b&gt; &amp; keep a &gt; b</p>",
+		);
 	});
 
 	it("reports a meeting that refuses chat", async () => {
@@ -462,7 +529,7 @@ describe("sendParlumeMeetingChat", () => {
 
 		await expect(
 			sendParlumeMeetingChat({
-				settings,
+				attendee,
 				providerBotId: "bot_abc123",
 				message: "Hello",
 			}),
@@ -479,7 +546,7 @@ describe("leaveParlumeMeetingBot", () => {
 		fetchMock.mockResolvedValueOnce(new Response("{}", { status: 200 }));
 
 		await expect(
-			leaveParlumeMeetingBot({ settings, providerBotId: "bot_abc123" }),
+			leaveParlumeMeetingBot({ attendee, providerBotId: "bot_abc123" }),
 		).resolves.toEqual({ kind: "LEAVE_REQUESTED" });
 
 		expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -507,7 +574,7 @@ describe("leaveParlumeMeetingBot", () => {
 
 			await expect(
 				leaveParlumeMeetingBot({
-					settings,
+					attendee,
 					providerBotId: "bot_abc123",
 				}),
 			).resolves.toEqual(expected);
@@ -532,7 +599,7 @@ describe("leaveParlumeMeetingBot", () => {
 			.mockResolvedValueOnce(stateResponse("ready"));
 
 		await expect(
-			leaveParlumeMeetingBot({ settings, providerBotId: "bot_abc123" }),
+			leaveParlumeMeetingBot({ attendee, providerBotId: "bot_abc123" }),
 		).rejects.toThrow("HTTP 400. Cannot leave");
 	});
 
@@ -542,7 +609,7 @@ describe("leaveParlumeMeetingBot", () => {
 			.mockResolvedValueOnce(stateResponse("ended", "bot_other"));
 
 		await expect(
-			leaveParlumeMeetingBot({ settings, providerBotId: "bot_abc123" }),
+			leaveParlumeMeetingBot({ attendee, providerBotId: "bot_abc123" }),
 		).rejects.toThrow("HTTP 400");
 	});
 
@@ -552,7 +619,7 @@ describe("leaveParlumeMeetingBot", () => {
 			.mockResolvedValueOnce(new Response("{}", { status: 500 }));
 
 		await expect(
-			leaveParlumeMeetingBot({ settings, providerBotId: "bot_abc123" }),
+			leaveParlumeMeetingBot({ attendee, providerBotId: "bot_abc123" }),
 		).rejects.toThrow("HTTP 400");
 	});
 
@@ -560,9 +627,157 @@ describe("leaveParlumeMeetingBot", () => {
 		fetchMock.mockResolvedValueOnce(new Response("{}", { status: 404 }));
 
 		await expect(
-			leaveParlumeMeetingBot({ settings, providerBotId: "bot_abc123" }),
+			leaveParlumeMeetingBot({ attendee, providerBotId: "bot_abc123" }),
 		).rejects.toThrow("HTTP 404");
 		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("getEnvironmentAttendeeSettings", () => {
+	it("is the operator's Attendee project, anonymous by default", () => {
+		vi.stubEnv("PARLUME_ATTENDEE_API_KEY", "operator-key");
+		vi.stubEnv("PARLUME_ATTENDEE_BASE_URL", "");
+		vi.stubEnv("PARLUME_ATTENDEE_TEAMS_LOGIN", "");
+
+		expect(getEnvironmentAttendeeSettings()).toEqual({
+			apiKey: "operator-key",
+			baseUrl: "https://app.attendee.dev",
+			teamsLoginMode: null,
+			source: "environment",
+		});
+	});
+
+	it("is absent without a key", () => {
+		vi.stubEnv("PARLUME_ATTENDEE_API_KEY", "");
+
+		expect(getEnvironmentAttendeeSettings()).toBeNull();
+	});
+
+	it.each(["always", "only_if_required"] as const)(
+		"reads the Teams sign-in mode %s",
+		(mode) => {
+			vi.stubEnv("PARLUME_ATTENDEE_API_KEY", "operator-key");
+			vi.stubEnv("PARLUME_ATTENDEE_TEAMS_LOGIN", mode);
+
+			expect(getEnvironmentAttendeeSettings()?.teamsLoginMode).toBe(mode);
+		},
+	);
+
+	it("refuses an unknown Teams sign-in mode rather than join in one nobody configured", () => {
+		vi.stubEnv("PARLUME_ATTENDEE_API_KEY", "operator-key");
+		vi.stubEnv("PARLUME_ATTENDEE_TEAMS_LOGIN", "sometimes");
+
+		expect(() => getEnvironmentAttendeeSettings()).toThrow(
+			"PARLUME_ATTENDEE_TEAMS_LOGIN must be always or only_if_required.",
+		);
+	});
+
+	it("points at a self-hosted Attendee", () => {
+		vi.stubEnv("PARLUME_ATTENDEE_API_KEY", "operator-key");
+		vi.stubEnv(
+			"PARLUME_ATTENDEE_BASE_URL",
+			"https://attendee.example.com/api/v1/",
+		);
+
+		expect(getEnvironmentAttendeeSettings()?.baseUrl).toBe(
+			"https://attendee.example.com",
+		);
+	});
+});
+
+describe("Attendee base URL", () => {
+	it.each([
+		["https://attendee.example.com/", "https://attendee.example.com"],
+		["https://attendee.example.com/api/v1", "https://attendee.example.com"],
+		[
+			"https://gateway.example.com/attendee/",
+			"https://gateway.example.com/attendee",
+		],
+	])("normalizes %s", (input, expected) => {
+		expect(normalizeAttendeeBaseUrl(input)).toBe(expected);
+	});
+
+	it.each([
+		"http://attendee.example.com",
+		"https://user:secret@attendee.example.com",
+		"https://attendee.example.com/?token=abc",
+		"not a url",
+	])("refuses %s", (input) => {
+		expect(normalizeAttendeeBaseUrl(input)).toBeNull();
+		expect(getAttendeeBaseUrlBlockReason(input)).not.toBeNull();
+	});
+
+	it("refuses internal destinations unless the operator lists the host", () => {
+		vi.stubEnv("NODE_ENV", "production");
+		vi.stubEnv(PARLUME_ATTENDEE_ALLOWED_HOSTS_ENV, "");
+		expect(
+			getAttendeeBaseUrlBlockReason("https://169.254.169.254"),
+		).not.toBeNull();
+		expect(
+			getAttendeeBaseUrlBlockReason("https://10.0.0.5"),
+		).not.toBeNull();
+
+		vi.stubEnv(PARLUME_ATTENDEE_ALLOWED_HOSTS_ENV, "10.0.0.5");
+		expect(getAttendeeBaseUrlBlockReason("https://10.0.0.5")).toBeNull();
+	});
+
+	it("accepts the hosted service", () => {
+		expect(
+			getAttendeeBaseUrlBlockReason("https://app.attendee.dev"),
+		).toBeNull();
+	});
+});
+
+describe("checkAttendeeConnection", () => {
+	const check = () =>
+		checkAttendeeConnection({
+			apiKey: "organization-key",
+			baseUrl: "https://attendee.example.com",
+		});
+
+	it("lists bots, read-only, with the key", async () => {
+		fetchMock.mockResolvedValue(new Response("[]", { status: 200 }));
+
+		await expect(check()).resolves.toEqual({ status: "ok" });
+		const [url, init] = fetchMock.mock.calls[0] ?? [];
+		expect(url).toBe("https://attendee.example.com/api/v1/bots");
+		expect(init.method).toBeUndefined();
+		expect(init.headers).toEqual({
+			Authorization: "Token organization-key",
+		});
+	});
+
+	it.each([401, 403])("reports HTTP %s as a rejected key", async (status) => {
+		fetchMock.mockResolvedValue(new Response("{}", { status }));
+
+		await expect(check()).resolves.toEqual({
+			status: "invalid_key",
+			httpStatus: status,
+		});
+	});
+
+	it("reports any other answer with its status and Attendee's reason", async () => {
+		fetchMock.mockResolvedValue(
+			new Response(JSON.stringify({ error: "Service unavailable" }), {
+				status: 503,
+			}),
+		);
+
+		await expect(check()).resolves.toEqual({
+			status: "error",
+			httpStatus: 503,
+			detail: "Service unavailable",
+		});
+	});
+
+	it("reports an unreachable instance without a status", async () => {
+		fetchMock.mockRejectedValue(new TypeError("fetch failed"));
+
+		await expect(check()).resolves.toEqual({
+			status: "error",
+			httpStatus: null,
+			detail: "Attendee could not be reached.",
+		});
 	});
 });
 

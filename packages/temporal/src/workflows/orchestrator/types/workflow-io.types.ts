@@ -67,7 +67,8 @@ export type OrchestratorBudgetAttemptKind = "EXPLORATION" | "FINALIZATION";
  * reservations not yet settled plus attempts whose usage is unknown, kept as
  * a conservative charge — never measured usage.
  */
-export interface TurnBudgetStop {
+export interface TokenAllowanceStop {
+	version?: 1;
 	kind: "token_allowance";
 	allowance: number;
 	measured: number;
@@ -81,6 +82,30 @@ export interface TurnBudgetStop {
 	 */
 	stopReason: "allowance_exhausted" | "finalization_unavailable";
 }
+
+/** Versioned local stops; used and limit are the numbers compared by the guard. */
+export type TurnBudgetStop =
+	| TokenAllowanceStop
+	| {
+			version: 1;
+			kind: "round_limit";
+			used: number;
+			limit: number;
+	  }
+	| {
+			version: 1;
+			kind: "time_limit";
+			used: number;
+			limit: number;
+	  }
+	| {
+			version: 1;
+			kind: "token_budget";
+			used: number;
+			limit: number;
+			maxTokens: number;
+			reservedTokens: number;
+	  };
 
 /** A ledger reading an activity returns after its requests settled. */
 export interface TurnLedgerSnapshot {
@@ -108,6 +133,10 @@ export interface OrchestratorWorkflowInput {
 	 * behaviour.
 	 */
 	turnId?: string;
+	/** Admission-frozen allowance; the workflow uses it for warnings under the main-round marker. */
+	turnTokenAllowance?: number;
+	/** Server-recorded chat experiment, interpreted under orch-bounded-history-v1. */
+	historyRetention?: "bounded";
 	/** `ORCHESTRATOR_TURN_CONTRACT_VERSION` of the starter that set `turnId`. */
 	turnContractVersion?: number;
 	/**
@@ -508,6 +537,11 @@ export interface OrchestratorWorkflowOutput {
 	 * mid-way. The chat says so and offers to continue (review F25).
 	 */
 	truncated?: "output_limit";
+	/**
+	 * Every ChatGPT plan ran out mid-turn and the turn finished on the
+	 * organization's API billing (Fizzy #3048). The chat says so.
+	 */
+	apiBilling?: { resetAt: string | null };
 }
 
 // =============================================================================

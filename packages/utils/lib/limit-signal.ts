@@ -24,7 +24,7 @@ export type LimitKind =
 	| "subscription_reconnect";
 
 /** Which per-run limit stopped an `internal_budget` run. */
-export type BudgetLimit = "tokens" | "iterations";
+export type BudgetLimit = "tokens" | "iterations" | "time";
 
 export interface TokenBudgetStatus {
 	used: number;

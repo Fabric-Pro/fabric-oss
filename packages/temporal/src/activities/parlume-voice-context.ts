@@ -1,3 +1,5 @@
+import { headAtLineBreak } from "./shared/text-head";
+
 /**
  * How much of the meeting a spoken reply is given to read. Every input token is
  * read before the first word, and an answer is one or two sentences, so each
@@ -13,6 +15,12 @@ export const LIVE_TRANSCRIPT_WINDOW_MS = 3 * 60 * 1000;
 export const MAX_LIVE_TRANSCRIPT_CHARS = 4_000;
 /** Three project passages ground a one-sentence answer; more only lengthen the prompt. */
 export const PARLUME_PROJECT_RAG_CHUNKS = 3;
+/**
+ * The opening of each passage. Whole passages ran to about 3,800 characters,
+ * 11,000 for three; the agent's project search tool reads the rest when the
+ * answer needs it.
+ */
+export const PARLUME_PROJECT_PASSAGE_CHARS = 1_500;
 /** Newest-first rows read for the window; far above what 4,000 characters can hold. */
 export const MAX_LIVE_TRANSCRIPT_SEGMENTS = 200;
 
@@ -88,14 +96,5 @@ export function formatParlumeHistory(
 
 /** Recalled memories within the voice budget, cut at the last line break that fits. */
 export function trimParlumeMemory(context: string): string {
-	if (context.length <= MAX_PARLUME_MEMORY_CHARS) {
-		return context;
-	}
-	const head = context.slice(0, MAX_PARLUME_MEMORY_CHARS);
-	const lineBreak = head.lastIndexOf("\n");
-	return (
-		lineBreak > MAX_PARLUME_MEMORY_CHARS / 2
-			? head.slice(0, lineBreak)
-			: head
-	).trimEnd();
+	return headAtLineBreak(context, MAX_PARLUME_MEMORY_CHARS);
 }

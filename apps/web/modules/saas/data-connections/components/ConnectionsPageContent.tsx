@@ -638,7 +638,10 @@ export function ConnectionsPageContent({
 						const providers = category.providers.filter(
 							(provider) => filteredProviders.includes(provider),
 						);
-						if (providers.length === 0) {
+						const actionOnly = filteredActionOnly.filter(
+							(entry) => entry.category === category.id,
+						);
+						if (providers.length + actionOnly.length === 0) {
 							return null;
 						}
 						return (
@@ -676,23 +679,19 @@ export function ConnectionsPageContent({
 										/>
 									);
 								})}
+								{actionOnly.map((entry) => (
+									<ActionOnlyProviderCard
+										key={entry.type}
+										type={entry.type}
+										href={`${settingsBasePath}/actions/${entry.type}`}
+										hasConnection={connectedActionOnlyTypes.has(
+											entry.type,
+										)}
+									/>
+								))}
 							</IntegrationGroup>
 						);
 					})}
-					{view !== "mcp" && filteredActionOnly.length > 0 ? (
-						<IntegrationGroup title="Action integrations">
-							{filteredActionOnly.map((entry) => (
-								<ActionOnlyProviderCard
-									key={entry.type}
-									type={entry.type}
-									href={`${settingsBasePath}/actions/${entry.type}`}
-									hasConnection={connectedActionOnlyTypes.has(
-										entry.type,
-									)}
-								/>
-							))}
-						</IntegrationGroup>
-					) : null}
 					{mcpGroups.map(([category, servers]) => (
 						<IntegrationGroup
 							key={`mcp-${category}`}

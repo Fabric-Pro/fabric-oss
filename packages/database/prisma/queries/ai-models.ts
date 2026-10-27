@@ -1088,6 +1088,8 @@ export interface AiUsageLogData {
 	 * "scheduled-report". Null = user-initiated.
 	 */
 	jobType?: string;
+	/** Usage-only purpose within the feature or job. */
+	callPurpose?: string;
 	inputTokens: number;
 	outputTokens: number;
 	totalTokens: number;
@@ -1272,6 +1274,7 @@ export async function logAiUsage(data: AiUsageLogData) {
 			featureKey: data.featureKey,
 			promptVersionId: data.promptVersionId,
 			jobType: data.jobType,
+			callPurpose: data.callPurpose,
 			inputTokens: data.inputTokens,
 			outputTokens: data.outputTokens,
 			totalTokens: data.totalTokens,

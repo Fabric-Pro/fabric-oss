@@ -16,7 +16,11 @@ import type { ExecuteAgentAsToolInput } from "../types";
  */
 export async function executeAgentAsTool(
 	input: ExecuteAgentAsToolInput,
-): Promise<{ output: unknown; durationMs: number }> {
+): Promise<{
+	output: unknown;
+	durationMs: number;
+	status?: Awaited<ReturnType<typeof delegateToAgent>>["status"];
+}> {
 	console.log(`[Orchestrator] Executing agent as tool: ${input.agentId}`);
 	const _startTime = Date.now();
 
@@ -61,6 +65,7 @@ export async function executeAgentAsTool(
 
 	return {
 		output: result.response,
+		status: result.status,
 		durationMs: result.durationMs,
 	};
 }

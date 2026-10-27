@@ -11,6 +11,8 @@
  * - For personal projects: only the owner can retrieve
  */
 
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import {
 	db,
 	getProjectRagSettings,
@@ -218,19 +220,23 @@ export async function retrieveProjectContexts(
 		);
 
 		// Generate embedding for the query
-		const embeddingResult = await generateEmbedding(
-			query,
-			withDefaultFeature(
-				{
-					conversationId: options.conversationId,
-					userId,
-					organizationId,
-					projectId,
-					tags: ["rag-query", "project-context"],
-					...options.usageOrigin,
-				},
-				"knowledge-search",
-			),
+		const embeddingResult = await runWithAiCallPurpose(
+			AI_CALL_PURPOSES.projectRetrievalEmbedding,
+			() =>
+				generateEmbedding(
+					query,
+					withDefaultFeature(
+						{
+							conversationId: options.conversationId,
+							userId,
+							organizationId,
+							projectId,
+							tags: ["rag-query", "project-context"],
+							...options.usageOrigin,
+						},
+						"knowledge-search",
+					),
+				),
 		);
 
 		if (

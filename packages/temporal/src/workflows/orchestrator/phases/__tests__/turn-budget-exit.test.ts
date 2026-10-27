@@ -48,6 +48,7 @@ vi.mock("@temporalio/workflow", () => ({
 			new Proxy({}, { get: (_target, name) => mocks.stub(String(name)) }),
 	),
 	workflowInfo: vi.fn(() => ({
+		startTime: new Date(Date.now()),
 		runId: "test-run-id",
 		unsafe: { isReplaying: false },
 	})),
@@ -93,6 +94,8 @@ const SYNTHESIZED = `## Summary\nThe launch flag is enabled. ${"The flag is expo
 
 beforeEach(() => {
 	installDefaultStubs(mocks);
+	// These scenarios pin the pre-main-round budget contract.
+	mocks.off.add("orch-main-round-budget-v1");
 	mocks
 		.stub("executeMcpTool")
 		.mockImplementation(async (req: { args: Record<string, unknown> }) =>

@@ -70,6 +70,7 @@ vi.mock("@repo/database", () => ({
 	createStory: mocks.createStory,
 	updateStory: mocks.updateStory,
 	recordAudit: mocks.recordAudit,
+	recordProposalDuplicateResolution: vi.fn(),
 	recordProposalApplication: mocks.recordProposalApplication,
 	normalizeBacklogTitle: (title: string) =>
 		title

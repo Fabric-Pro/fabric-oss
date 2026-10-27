@@ -115,6 +115,13 @@ function Outcome({ session }: { session: ParlumeSession }) {
 	);
 }
 
+/** A session the series' auto-join started rather than a person's invite. */
+function autoJoinedLabel(
+	session: Pick<ParlumeSession, "linkedMeeting">,
+): string {
+	return `Auto-joined · ${session.linkedMeeting?.subject ?? "linked meeting series"}`;
+}
+
 function lengthOf(session: ParlumeSession, now: number): string {
 	if (session.endedAt) {
 		return formatDuration(session.joinedAt, session.endedAt);
@@ -150,6 +157,11 @@ export function ParlumeSessionRow({
 			<span className="block break-words text-xs text-muted-foreground">
 				{session.agentLabel}
 			</span>
+			{session.trigger === "AUTO" && (
+				<span className="block break-words text-xs text-muted-foreground">
+					{autoJoinedLabel(session)}
+				</span>
+			)}
 		</>
 	);
 	return (
@@ -187,6 +199,11 @@ export function ParlumeSessionRow({
 				</TableCell>
 				<TableCell className="py-3.5 text-right tabular-nums">
 					{cost === undefined ? "—" : formatCost(cost)}
+					{cost !== undefined && isLiveSession(session) && (
+						<span className="block text-xs text-muted-foreground">
+							so far
+						</span>
+					)}
 				</TableCell>
 				<TableCell className="w-10 py-3.5 pr-6">
 					{expandable && (

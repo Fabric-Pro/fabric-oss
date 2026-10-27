@@ -286,3 +286,54 @@ describe("useRoadmapView — layout mode persistence", () => {
 		);
 	});
 });
+
+describe("show hidden view drafts", () => {
+	it("previews without persisting, cancels, and saves explicitly", async () => {
+		const { result } = renderRoadmapView();
+		act(() => result.current.setShowClosedDraft(true));
+		expect(result.current.showClosed).toBe(true);
+		expect(result.current.isViewDirty).toBe(true);
+		expect(mockUpdate).not.toHaveBeenCalled();
+		expect(
+			window.localStorage.getItem("fabric:roadmap-view:project-1"),
+		).toBeNull();
+		act(() => result.current.revertView());
+		expect(result.current.showClosed).toBe(false);
+		expect(result.current.isViewDirty).toBe(false);
+		act(() => result.current.setShowClosedDraft(true));
+		act(() => result.current.commitView());
+		await waitFor(() =>
+			expect(mockUpdate).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({
+					roadmapView: expect.objectContaining({ showClosed: true }),
+				}),
+			),
+		);
+		expect(
+			JSON.parse(
+				window.localStorage.getItem("fabric:roadmap-view:project-1") ??
+					"{}",
+			).showClosed,
+		).toBe(true);
+		expect(result.current.isViewDirty).toBe(false);
+	});
+	it("reveals results immediately without saving other draft settings", async () => {
+		const { result } = renderRoadmapView();
+		act(() => result.current.setGroupBy("stage"));
+		act(() => result.current.toggleShowClosed());
+		expect(result.current.showClosed).toBe(true);
+		await waitFor(() =>
+			expect(mockUpdate).toHaveBeenCalledExactlyOnceWith(
+				expect.objectContaining({
+					roadmapView: expect.objectContaining({
+						showClosed: true,
+						groupBy: "priority",
+					}),
+				}),
+			),
+		);
+		act(() => result.current.revertView());
+		expect(result.current.showClosed).toBe(true);
+		expect(result.current.groupBy).toBe("priority");
+	});
+});

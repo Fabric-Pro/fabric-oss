@@ -106,7 +106,7 @@ const CONTEXT_WINDOW_MARGIN_TOKENS = 1_024;
 export interface BudgetMetadata {
 	provider: string;
 	/** Catalog output-token cap of the resolved model, when known. */
-	maxOutputTokens?: number;
+	maxOutputTokens?: number | null;
 	/** Catalog context-window size (total tokens) of the resolved model, when known. */
 	contextWindow?: number;
 }
@@ -144,7 +144,7 @@ function clampToProviderAndContext(
 	promptChars: number,
 ): number | undefined {
 	const cap =
-		metadata.maxOutputTokens ??
+		catalogOutputTokenCap(metadata.maxOutputTokens) ??
 		(providerNeedsExplicitBudget(metadata.provider)
 			? FALLBACK_OUTPUT_TOKEN_CAP
 			: undefined);
@@ -227,5 +227,26 @@ export function computeMaxOutputTokenBudget(
 		metadata,
 		opts.ceilingTokens ?? MAXIMAL_OUTPUT_TOKEN_CEILING,
 		opts.promptChars,
+	);
+}
+
+/** Catalog rows with no positive finite output limit leave the cap unknown. */
+function catalogOutputTokenCap(
+	value: number | null | undefined,
+): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) && value > 0
+		? value
+		: undefined;
+}
+
+/** Cap an explicit request at the resolved catalog limit; an unknown limit preserves it. */
+export function clampRequestedOutputTokens(
+	requestedOutputTokens: number,
+	metadata: Pick<BudgetMetadata, "maxOutputTokens"> | undefined,
+): number {
+	return Math.min(
+		requestedOutputTokens,
+		catalogOutputTokenCap(metadata?.maxOutputTokens) ??
+			requestedOutputTokens,
 	);
 }

@@ -16,11 +16,16 @@ const bodySchema = z.object({
 	cachedAudioTokens: tokens,
 	outputTextTokens: tokens,
 	outputAudioTokens: tokens,
+	// A bridge deployed before Azure hosts reports no provider.
+	provider: z
+		.enum(["OPENAI_DIRECT", "AZURE_AI_FOUNDRY"])
+		.default("OPENAI_DIRECT"),
 });
 
 /**
  * One response of Parlume's realtime voice, as the bridge read its usage,
- * recorded against the meeting on the organization's OpenAI key.
+ * recorded against the meeting on the organization's OpenAI key or Azure AI
+ * Foundry resource, whichever served the session.
  */
 export async function POST(request: NextRequest) {
 	if (
@@ -34,7 +39,7 @@ export async function POST(request: NextRequest) {
 	if (!parsed.success) {
 		return NextResponse.json({ error: "Invalid usage" }, { status: 400 });
 	}
-	const { sessionId, botId, ...usage } = parsed.data;
+	const { sessionId, botId, provider, ...usage } = parsed.data;
 	const session = await db.parlumeMeetingSession.findFirst({
 		where: { id: sessionId, providerBotId: botId },
 		select: {
@@ -53,6 +58,7 @@ export async function POST(request: NextRequest) {
 			userId: session.userId,
 			organizationId: session.organizationId,
 			projectId: session.projectId,
+			provider,
 		},
 		usage,
 	);

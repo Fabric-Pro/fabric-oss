@@ -1,4 +1,4 @@
-import { z } from "zod/v4";
+import { z } from "zod";
 
 const envSchema = z.object({
 	// Fabric API (required for MCP tools via Fabric tool router)
@@ -16,7 +16,7 @@ const parsed = envSchema.safeParse(process.env);
 if (!parsed.success) {
 	console.error(
 		"Invalid environment variables:",
-		JSON.stringify(parsed.error.format(), null, 2),
+		JSON.stringify(z.treeifyError(parsed.error), null, 2),
 	);
 	throw new Error(
 		"Invalid environment variables. Check the console for details.",

@@ -61,6 +61,20 @@ describe("buildReleaseNotesUrl", () => {
 		expect(url).toBe("https://app.test/app/projects/p1?tab=release-notes");
 	});
 
+	it("with a sendId: links straight to that release note", async () => {
+		vi.mocked(db.organization.findUnique).mockResolvedValue({
+			slug: "acme",
+		} as never);
+		const url = await buildReleaseNotesUrl({
+			projectId: "p1",
+			organizationId: "o1",
+			sendId: "s1",
+		});
+		expect(url).toBe(
+			"https://app.test/app/acme/projects/p1?tab=release-notes&releaseNote=s1",
+		);
+	});
+
 	it("prefers NEXT_PUBLIC_APP_URL over getBaseUrl (worker-safe base)", async () => {
 		process.env.NEXT_PUBLIC_APP_URL = "https://fabric.pro";
 		const url = await buildReleaseNotesUrl({

@@ -312,6 +312,29 @@ describe("ConnectionsPageContent — Databricks Vector Search catalog card", () 
 			expect(screen.getByText("1 actions connected")).toBeInTheDocument();
 		});
 	});
+
+	it("lists the Databricks card under Knowledge & Docs", async () => {
+		renderPage();
+
+		const heading = await screen.findByRole("button", {
+			name: "Knowledge & Docs",
+		});
+		const group = heading.parentElement as HTMLElement;
+		expect(
+			within(group).getByRole("link", {
+				name: /Databricks Vector Search/i,
+			}),
+		).toBeInTheDocument();
+	});
+
+	it("no longer renders a separate Action integrations heading", async () => {
+		renderPage();
+
+		await screen.findByRole("link", { name: /Databricks Vector Search/i });
+		expect(
+			screen.queryByRole("button", { name: "Action integrations" }),
+		).not.toBeInTheDocument();
+	});
 });
 
 describe("ConnectionsPageContent — GitLab that needs a reconnect", () => {
@@ -804,7 +827,7 @@ describe("ConnectionsPageContent — Add connection menu", () => {
 });
 
 describe("ConnectionsPageContent — hidden integrations", () => {
-	it("does not render any of the eleven unconfigured providers by default", async () => {
+	it("does not render any unconfigured provider by default", async () => {
 		renderPage();
 		await screen.findByRole("link", { name: /GitHub/i });
 
@@ -861,6 +884,25 @@ describe("ConnectionsPageContent — hidden integrations", () => {
 			await screen.findByRole("link", { name: /Snowflake/i }),
 		).toBeInTheDocument();
 		expect(screen.getByText("Data Warehouses")).toBeInTheDocument();
+	});
+
+	it("still renders an existing Zendesk connection", async () => {
+		renderPage([], {
+			data: [
+				{
+					id: "zd-conn-1",
+					provider: "ZENDESK",
+					status: "CONNECTED",
+					name: "Zendesk Support",
+				},
+			],
+			isLoading: false,
+			error: null,
+		});
+
+		expect(
+			await screen.findByRole("link", { name: /Zendesk/i }),
+		).toBeInTheDocument();
 	});
 });
 

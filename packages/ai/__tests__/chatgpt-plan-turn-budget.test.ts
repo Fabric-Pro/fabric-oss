@@ -19,6 +19,7 @@
  * first send had no attempt of its own and the resend no admission check.
  */
 
+import { logAiUsageAsync } from "@repo/database";
 import {
 	type DispatchBudget,
 	type DispatchBudgetRequest,
@@ -30,6 +31,9 @@ import {
 } from "@repo/utils/dispatch-guard";
 import { generateText, streamText } from "ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AI_CALL_PURPOSES, type AiCallPurpose } from "../lib/call-purpose";
+import * as accountUsage from "../lib/chatgpt-plan/account-usage";
+import * as pool from "../lib/chatgpt-plan/pool";
 
 type Account = {
 	id: string;
@@ -37,6 +41,7 @@ type Account = {
 	status: "ACTIVE";
 	serveInteractive: boolean;
 	serveBackground: boolean;
+	maxMemberSharePct?: number;
 };
 
 const state = vi.hoisted(() => ({
@@ -107,6 +112,7 @@ vi.mock("@repo/database", () => ({
 						requests: 1,
 						inputTokens: state.usage.get(id),
 						weightedInputTokens: state.usage.get(id),
+						weightedInputTokensByUser: { user_1: 5 },
 						outputTokens: 0,
 						resetsAt: null,
 					},
@@ -377,6 +383,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	vi.unstubAllGlobals();
+	vi.restoreAllMocks();
 });
 
 async function planModel() {
@@ -384,6 +391,87 @@ async function planModel() {
 }
 
 describe("a plan account rotation inside a ledgered chat turn", () => {
+	it.each(
+		[undefined, "scheduled-report"].flatMap((jobType) =>
+			[
+				AI_CALL_PURPOSES.intentClarity,
+				AI_CALL_PURPOSES.directMain,
+				AI_CALL_PURPOSES.resultSummarySingle,
+			].map((callPurpose) => ({ jobType, callPurpose })),
+		),
+	)(
+		"$callPurpose preserves route, account, fair-share inputs and usage attribution for job $jobType",
+		async ({ jobType, callPurpose }) => {
+			state.accounts = state.accounts.map((account) => ({
+				...account,
+				maxMemberSharePct: 25,
+			}));
+			const pick = vi.spyOn(pool, "chatGptPlanSourceForCall");
+			const fairShareInput = vi.spyOn(
+				accountUsage,
+				"chatGptPlanAccountUsage",
+			);
+			vi.spyOn(Date, "now").mockReturnValue(Date.now());
+			const sends = openai({ "org:acc_A": () => answered("NO") });
+			const context = {
+				...ELIGIBLE,
+				planEligible: jobType === undefined,
+				featureKey: "chat-agent" as const,
+				...(jobType ? { jobType } : {}),
+			};
+			const resolveAndCall = async (callPurpose?: AiCallPurpose) => {
+				__resetChatGptPlanWindowCache();
+				const { model, metadata } = await getAIModelWithMetadata(
+					{ taskType: "SIMPLE" },
+					{ ...context, ...(callPurpose ? { callPurpose } : {}) },
+				);
+				await generateText({
+					model,
+					prompt: "Does this request need clarification?",
+					maxOutputTokens: 5,
+				});
+				return metadata;
+			};
+			const before = await resolveAndCall();
+			const inputsBefore = pick.mock.calls.map(([input]) => input);
+			const fairShareBefore = fairShareInput.mock.calls.map(
+				([input]) => input,
+			);
+			expect(inputsBefore.length).toBeGreaterThan(0);
+			expect(fairShareBefore.length).toBeGreaterThan(0);
+			expect(
+				fairShareBefore[0].window?.weightedInputTokensByUser,
+			).toEqual({
+				user_1: 5,
+			});
+			pick.mockClear();
+			fairShareInput.mockClear();
+			const after = await resolveAndCall(callPurpose);
+			expect(after).toEqual(before);
+			expect(pick.mock.calls.map(([input]) => input)).toEqual(
+				inputsBefore,
+			);
+			expect(fairShareInput.mock.calls.map(([input]) => input)).toEqual(
+				fairShareBefore,
+			);
+			expect(sends).toEqual([
+				"org:acc_A:gpt-6-luna",
+				"org:acc_A:gpt-6-luna",
+			]);
+			const rows = vi
+				.mocked(logAiUsageAsync)
+				.mock.calls.map(([row]) => row);
+			expect(rows).toHaveLength(2);
+			expect(rows[1]).toEqual({
+				...rows[0],
+				callPurpose,
+			});
+			expect(rows[1]).toMatchObject({
+				featureKey: "chat-agent",
+				jobType,
+			});
+		},
+	);
 	it("gives the refused first send and the rotated resend an attempt each: the first stays charged, the second settles", async () => {
 		const sends = openai({
 			"org:acc_A": refusedSpent,

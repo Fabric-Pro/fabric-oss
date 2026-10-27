@@ -21,7 +21,11 @@ describe("Parlume failed bot finalization", () => {
 			),
 		]);
 
-		expect(callback).toContain("if (!session.streamClosedAt)");
+		// Finalization waits only for a stream that opened and has not closed.
+		expect(callback).toContain(
+			"session.streamGeneration > 0 && session.streamClosedAt === null",
+		);
+		expect(callback).toContain("if (streamMayDrain)");
 		expect(callback).toContain("preserveFailure: true");
 		expect(callback).toContain(
 			"expectedStreamGeneration: session.streamGeneration",

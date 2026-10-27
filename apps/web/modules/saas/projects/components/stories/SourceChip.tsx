@@ -38,9 +38,11 @@ export function sourceIcon(source: StorySource) {
 export function SourceChip({
 	source,
 	className,
+	variant = "badge",
 }: {
 	source: StorySource;
 	className?: string;
+	variant?: "badge" | "list";
 }) {
 	const label = STORY_SOURCE_LABELS[source];
 	const Icon = sourceIcon(source);
@@ -49,11 +51,18 @@ export function SourceChip({
 			<TooltipTrigger asChild>
 				<span
 					className={cn(
-						"inline-flex max-w-full items-center gap-1 rounded-full border border-border/60 bg-muted/30 px-1.5 py-0.5 font-medium text-muted-foreground/80",
+						variant === "list"
+							? "inline-flex max-w-full items-center gap-1 text-xs text-muted-foreground"
+							: "inline-flex max-w-full items-center gap-1 rounded-full border border-border/60 bg-muted/30 px-1.5 py-0.5 font-medium text-muted-foreground/80",
 						className,
 					)}
 				>
-					<Icon className="size-3 shrink-0 text-muted-foreground/60" />
+					<Icon
+						className={cn(
+							"size-3 shrink-0",
+							variant === "badge" && "text-muted-foreground/60",
+						)}
+					/>
 					<span className="truncate">{label}</span>
 				</span>
 			</TooltipTrigger>

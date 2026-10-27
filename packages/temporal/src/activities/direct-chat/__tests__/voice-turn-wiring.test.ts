@@ -13,6 +13,7 @@ import { TurnTimings, withTurnTimings } from "../../shared/turn-timing";
 const state = vi.hoisted(() => ({
 	captured: undefined as unknown,
 	provider: "VERCEL_GATEWAY",
+	maxOutputTokens: undefined as number | undefined,
 	modelString: "openai/gpt-6-luna",
 	enhance: undefined as unknown as ReturnType<typeof vi.fn>,
 }));
@@ -39,6 +40,7 @@ vi.mock("@repo/ai", () => {
 				modelString: state.modelString,
 				canonicalName: state.modelString,
 				contextWindow: 200_000,
+				maxOutputTokens: state.maxOutputTokens,
 				selectionSource: "test",
 			},
 			trackUsage: vi.fn(),
@@ -152,6 +154,7 @@ async function runTurn(overrides: Partial<DirectChatWorkflowInput> = {}) {
 
 beforeEach(() => {
 	state.provider = "VERCEL_GATEWAY";
+	state.maxOutputTokens = undefined;
 	state.modelString = "openai/gpt-6-luna";
 	state.enhance.mockClear();
 });
@@ -189,9 +192,13 @@ describe("direct chat: a spoken turn", () => {
 		const { timings } = await runTurn({ featureKey: "parlume" });
 		expect(Object.keys(timings.values).sort()).toEqual(
 			[
+				"direct.builtInToolsMs",
 				"direct.enhancerMs",
+				"direct.fabricToolsMs",
 				"direct.modelResolveMs",
 				"direct.preLlmMs",
+				"direct.prepareToolsMs",
+				"direct.skillsMs",
 				"llm.cachedInputTokens",
 				"llm.firstTextMs",
 				"llm.inputTokens",
@@ -219,6 +226,40 @@ describe("direct chat: an ordinary turn", () => {
 			expect(timings.values["direct.enhancerMs"]).toBeGreaterThanOrEqual(
 				0,
 			);
+		},
+	);
+});
+
+describe("direct chat: thinking within the catalog cap", () => {
+	it.each([
+		[8192, 5000],
+		[6024, 5000],
+		[5000, 3976],
+		[4096, 3072],
+		[2048, 1024],
+		[2047, undefined],
+		[1024, undefined],
+		[undefined, 5000],
+	])(
+		"fits thinking and answer room at limit %s",
+		async (limit, expectedThinking) => {
+			state.provider = "ANTHROPIC_DIRECT";
+			state.modelString = "claude-3-7-sonnet";
+			state.maxOutputTokens = limit;
+			const { request } = await runTurn({ reasoningMode: "pro" });
+			expect(request.maxOutputTokens).toBe(limit ?? 16000);
+			if (expectedThinking === undefined) {
+				expect(request.providerOptions).toBeUndefined();
+			} else {
+				expect(request.providerOptions).toEqual({
+					anthropic: {
+						thinking: {
+							type: "enabled",
+							budgetTokens: expectedThinking,
+						},
+					},
+				});
+			}
 		},
 	);
 });

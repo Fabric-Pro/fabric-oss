@@ -55,9 +55,6 @@ function feature(description: string, autoProposeAnswers = true) {
 		lastQuestionScanHash: null,
 		maturationV2OptedIn: true,
 		autoProposeAnswers,
-		cleanSpecApprovalMode: null,
-		decisionLogApprovalMode: null,
-		summaryQuestionsApprovalMode: null,
 	} as never;
 }
 

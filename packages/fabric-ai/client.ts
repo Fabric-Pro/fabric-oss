@@ -13,10 +13,12 @@
  */
 
 import {
+	dispatchBudgetSend,
 	guardDispatch,
 	rethrowIfDispatchStopped,
 	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
+import { patternBudgetRequest } from "./pattern-budget";
 import type {
 	ChatPrompt,
 	ChatRequest,
@@ -293,57 +295,61 @@ export class FabricClient {
 			temperature,
 		};
 
-		// Fabric uses SSE streaming, we need to collect all chunks
-		const signal = await guardDispatch();
-		// Awaiting the record check is itself an await: the guard's
-		// latched stops are checked again in the same run as the send.
-		throwIfDispatchStopped();
-		const response = await fetch(`${this.baseUrl}/chat`, {
-			method: "POST",
-			signal,
-			headers: this.getHeaders(),
-			body: JSON.stringify(request),
-		});
+		return dispatchBudgetSend({
+			request: patternBudgetRequest(input),
+			send: async (signal) => {
+				const response = await fetch(`${this.baseUrl}/chat`, {
+					method: "POST",
+					signal,
+					headers: this.getHeaders(),
+					body: JSON.stringify(request),
+				});
 
-		if (!response.ok) {
-			const errorBody = await response.text();
-			throw new Error(
-				`Fabric chat error (${response.status}): ${errorBody}`,
-			);
-		}
-
-		// Parse SSE stream
-		const text = await response.text();
-		const lines = text.split("\n").filter((line) => line.trim());
-		let result = "";
-
-		for (const line of lines) {
-			try {
-				const event = JSON.parse(line) as ChatStreamEvent;
-				if (event.type === "content") {
-					result += event.content;
-				} else if (event.type === "error") {
-					throw new Error(`Fabric pattern error: ${event.content}`);
+				if (!response.ok) {
+					const errorBody = await response.text();
+					throw new Error(
+						`Fabric chat error (${response.status}): ${errorBody}`,
+					);
 				}
-			} catch (_e) {
-				// Skip non-JSON lines (SSE metadata)
-				if (line.startsWith("data:")) {
+
+				// Parse SSE stream
+				const text = await response.text();
+				const lines = text.split("\n").filter((line) => line.trim());
+				let result = "";
+
+				for (const line of lines) {
 					try {
-						const data = line.slice(5).trim();
-						if (data) {
-							const event = JSON.parse(data) as ChatStreamEvent;
-							if (event.type === "content") {
-								result += event.content;
+						const event = JSON.parse(line) as ChatStreamEvent;
+						if (event.type === "content") {
+							result += event.content;
+						} else if (event.type === "error") {
+							throw new Error(
+								`Fabric pattern error: ${event.content}`,
+							);
+						}
+					} catch (_e) {
+						// Skip non-JSON lines (SSE metadata)
+						if (line.startsWith("data:")) {
+							try {
+								const data = line.slice(5).trim();
+								if (data) {
+									const event = JSON.parse(
+										data,
+									) as ChatStreamEvent;
+									if (event.type === "content") {
+										result += event.content;
+									}
+								}
+							} catch {
+								// Ignore parse errors for SSE format variations
 							}
 						}
-					} catch {
-						// Ignore parse errors for SSE format variations
 					}
 				}
-			}
-		}
 
-		return result;
+				return { result };
+			},
+		});
 	}
 
 	/**

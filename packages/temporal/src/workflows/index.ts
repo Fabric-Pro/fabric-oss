@@ -538,6 +538,10 @@ export {
 	type OrganizationDeleteCleanupWorkflowOutput,
 	organizationDeleteCleanupWorkflow,
 } from "./organization-deletion";
+export {
+	parlumeAutoJoinOccurrenceWorkflow,
+	parlumeAutoJoinPlannerWorkflow,
+} from "./parlume-auto-join";
 export { parlumeMeetingTurnWorkflow } from "./parlume-meeting-turn";
 export { parlumeNotesWorkflow } from "./parlume-notes";
 export { parlumeWarmupWorkflow } from "./parlume-warmup";

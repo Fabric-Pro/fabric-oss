@@ -2,10 +2,10 @@
  * Databricks Model Serving / Unity AI Gateway helpers.
  *
  * Databricks exposes OpenAI-compatible inference two ways:
- *  - Classic Model Serving (GA): `<host>/serving-endpoints` — endpoints are
+ *  - Classic Model Serving: `<host>/serving-endpoints` — endpoints are
  *    listed via the native admin API `GET <host>/api/2.0/serving-endpoints`
  *    (there is no OpenAI `/models` route on this surface).
- *  - Unity AI Gateway (Beta): a full path like `<host>/ai-gateway/mlflow/v1`
+ *  - Unity Gateway: a full path like `<host>/ai-gateway/mlflow/v1`
  *    — OpenAI-compatible; model discovery, when available, is `GET <base>/models`.
  *
  * Credential validity and model listing are DECOUPLED on purpose: listing
@@ -56,13 +56,8 @@ export function toDatabricksApiHost(baseUrl: string): string {
  */
 export const hasExplicitPath = hasDatabricksExplicitPath;
 
-/**
- * Resolve the OpenAI-compatible inference base URL. A bare workspace host
- * defaults to the GA classic path `<host>/serving-endpoints`; a URL that
- * already carries a path (e.g. the Unity AI Gateway) is respected verbatim.
- * Re-exported from `@repo/ai` so the inference-path contract has one owner.
- */
-export const toDatabricksInferenceBaseUrl = toDatabricksServingBaseUrl;
+// Inference callers supply the model ID; discovery remains model-less.
+export { toDatabricksInferenceBaseUrl } from "@repo/ai";
 
 async function authedGet(
 	url: string,
@@ -160,7 +155,7 @@ export async function listDatabricksModels(
 	const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const usesGateway = hasExplicitPath(baseUrl);
 	const url = usesGateway
-		? `${toDatabricksInferenceBaseUrl(baseUrl)}/models`
+		? `${toDatabricksServingBaseUrl(baseUrl)}/models`
 		: `${host}/api/2.0/serving-endpoints`;
 
 	const result = await authedGet(url, apiKey, timeoutMs);

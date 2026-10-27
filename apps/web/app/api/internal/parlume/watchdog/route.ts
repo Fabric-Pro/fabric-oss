@@ -1,8 +1,6 @@
-import {
-	getParlumeBridgeSettings,
-	leaveParlumeMeetingBot,
-} from "@repo/api/modules/projects/lib/parlume-attendee";
+import { leaveParlumeMeetingBot } from "@repo/api/modules/projects/lib/parlume-attendee";
 import { finalizeParlumeSession } from "@repo/api/modules/projects/lib/parlume-finalization";
+import { resolveParlumeAttendeeSettings } from "@repo/api/modules/projects/lib/parlume-provider-settings";
 import { db } from "@repo/database";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
@@ -34,6 +32,7 @@ export async function POST(request: NextRequest) {
 		},
 		select: {
 			id: true,
+			organizationId: true,
 			providerBotId: true,
 			status: true,
 			terminalCallbackAt: true,
@@ -90,13 +89,15 @@ export async function POST(request: NextRequest) {
 	if (leaveClaimed.count === 0) {
 		return NextResponse.json({ accepted: true, stale: true });
 	}
-	const settings = getParlumeBridgeSettings();
-	if (!settings) {
+	const attendee = await resolveParlumeAttendeeSettings(
+		session.organizationId,
+	);
+	if (!attendee) {
 		return NextResponse.json({ error: "Unavailable" }, { status: 503 });
 	}
 	try {
 		const leaveResult = await leaveParlumeMeetingBot({
-			settings,
+			attendee,
 			providerBotId: session.providerBotId,
 		});
 		if (leaveResult.kind === "TERMINAL") {

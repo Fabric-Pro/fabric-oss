@@ -1,9 +1,14 @@
 "use client";
 
 import { PageTourButton } from "@saas/get-started/components/PageTourButton";
+import { useFeatureFlag } from "@saas/shared/components/FeatureFlagProvider";
 import { getBillingCategoryLabel } from "@shared/lib/billing-categories";
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import {
+	keepPreviousData,
+	useInfiniteQuery,
+	useQuery,
+} from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@ui/components/card";
@@ -15,15 +20,11 @@ import {
 	TableHeader,
 	TableRow,
 } from "@ui/components/table";
-import {
-	Tooltip,
-	TooltipContent,
-	TooltipProvider,
-	TooltipTrigger,
-} from "@ui/components/tooltip";
+import { TooltipProvider } from "@ui/components/tooltip";
 import { format, formatDistanceToNow } from "date-fns";
-import { HelpCircleIcon, Loader2Icon } from "lucide-react";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { Loader2Icon } from "lucide-react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	Area,
 	AreaChart,
@@ -33,8 +34,10 @@ import {
 	XAxis,
 	YAxis,
 } from "recharts";
+import { AIOutcomes } from "./usage/AIOutcomes";
+import { isReplayNotFound, type Range } from "./usage/decision-replay";
+import { SummaryTile } from "./usage/SummaryTile";
 
-type Range = "7d" | "30d" | "90d" | "all";
 type GroupBy =
 	| "model"
 	| "provider"
@@ -103,78 +106,72 @@ function formatModel(raw: string | null | undefined): string {
 	return slash >= 0 ? raw.slice(slash + 1) : raw;
 }
 
-function SummaryTile({
-	label,
-	value,
-	subtitle,
-	tooltip,
-}: {
-	label: string;
-	value: string;
-	subtitle?: string;
-	tooltip?: ReactNode;
-}) {
-	return (
-		<Card className="bg-muted/40">
-			<CardHeader className="pb-1">
-				<CardTitle className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-					{label}
-					{tooltip ? (
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<button
-									type="button"
-									className="text-muted-foreground/60 hover:text-muted-foreground"
-									aria-label={`${label} details`}
-								>
-									<HelpCircleIcon className="h-3.5 w-3.5" />
-								</button>
-							</TooltipTrigger>
-							<TooltipContent className="max-w-xs text-xs">
-								{tooltip}
-							</TooltipContent>
-						</Tooltip>
-					) : null}
-				</CardTitle>
-			</CardHeader>
-			<CardContent>
-				<div className="font-display text-2xl font-semibold tabular-nums">
-					{value}
-				</div>
-				{subtitle ? (
-					<div className="mt-0.5 text-[11px] text-muted-foreground">
-						{subtitle}
-					</div>
-				) : null}
-			</CardContent>
-		</Card>
-	);
-}
-
 export function ProjectUsage({ projectId }: { projectId: string }) {
 	const [range, setRange] = useState<Range>("30d");
+	const flag = useFeatureFlag("DECISION_REPLAY");
+	const params = useSearchParams();
+	const pathname = usePathname();
+	const router = useRouter();
+	const [deniedProject, setDeniedProject] = useState<string | null>(null);
+	const onUnavailable = useCallback(
+		() => setDeniedProject(projectId),
+		[projectId],
+	);
+	const outcomesSummary = useQuery(
+		orpc.projects.decisionReplay.getSummary.queryOptions({
+			input: { projectId, range },
+			placeholderData: keepPreviousData,
+			staleTime: USAGE_STALE_TIME,
+			enabled: flag && deniedProject !== projectId,
+			retry: false,
+		}),
+	);
+	const notFound = isReplayNotFound(outcomesSummary.error);
+	useEffect(() => {
+		if (notFound) {
+			onUnavailable();
+		}
+	}, [notFound, onUnavailable]);
+	const showSwitch = flag && deniedProject !== projectId && !notFound;
+	const outcomes = showSwitch && params.get("usageView") === "outcomes";
+	const setView = (view: "cost" | "outcomes") => {
+		const next = new URLSearchParams(params.toString());
+		if (view === "outcomes") {
+			next.set("usageView", view);
+		} else {
+			next.delete("usageView");
+		}
+		const query = next.toString();
+		router.replace(`${pathname}${query ? `?${query}` : ""}`, {
+			scroll: false,
+		});
+	};
 	const [groupBy, setGroupBy] = useState<GroupBy>("model");
 
 	const summaryQuery = useQuery(
 		orpc.projects.usage.getSummary.queryOptions({
+			enabled: !outcomes,
 			input: { projectId, range },
 			staleTime: USAGE_STALE_TIME,
 		}),
 	);
 	const timeSeriesQuery = useQuery(
 		orpc.projects.usage.getTimeSeries.queryOptions({
+			enabled: !outcomes,
 			input: { projectId, range, bucket: "day" },
 			staleTime: USAGE_STALE_TIME,
 		}),
 	);
 	const breakdownQuery = useQuery(
 		orpc.projects.usage.getBreakdown.queryOptions({
+			enabled: !outcomes,
 			input: { projectId, range, groupBy },
 			staleTime: USAGE_STALE_TIME,
 		}),
 	);
 	const recentQuery = useInfiniteQuery(
 		orpc.projects.usage.listRecent.infiniteOptions({
+			enabled: !outcomes,
 			input: (cursor: string | undefined) => ({
 				projectId,
 				limit: 25,
@@ -189,6 +186,7 @@ export function ProjectUsage({ projectId }: { projectId: string }) {
 	);
 	const configuredQuery = useQuery(
 		orpc.projects.usage.getConfiguredModels.queryOptions({
+			enabled: !outcomes,
 			input: { projectId },
 			staleTime: CONFIGURED_MODELS_STALE_TIME,
 		}),
@@ -229,6 +227,7 @@ export function ProjectUsage({ projectId }: { projectId: string }) {
 		observer.observe(el);
 		return () => observer.disconnect();
 	}, [
+		outcomes,
 		recentQuery.hasNextPage,
 		recentQuery.isFetchingNextPage,
 		recentQuery.fetchNextPage,
@@ -265,19 +264,60 @@ export function ProjectUsage({ projectId }: { projectId: string }) {
 			<div className="space-y-8">
 				<header className="space-y-4">
 					<span className="editorial-label">Project · Usage</span>
+					{showSwitch && (
+						<fieldset
+							data-onboarding-target="usage-ai-outcomes"
+							aria-label="Usage view"
+							className="flex w-fit items-center gap-1 rounded-md border border-border bg-muted/40 p-1"
+						>
+							<Button
+								size="sm"
+								variant={outcomes ? "ghost" : "default"}
+								aria-pressed={!outcomes}
+								onClick={() => setView("cost")}
+							>
+								Cost
+							</Button>
+							<Button
+								size="sm"
+								variant={outcomes ? "default" : "ghost"}
+								aria-pressed={outcomes}
+								aria-label={
+									outcomesSummary.data?.waiting
+										? `AI outcomes, ${outcomesSummary.data?.waiting} waiting for review`
+										: "AI outcomes"
+								}
+								onClick={() => setView("outcomes")}
+							>
+								AI outcomes{" "}
+								{(outcomesSummary.data?.waiting ?? 0) > 0 && (
+									<Badge
+										variant="secondary"
+										className="text-xs"
+									>
+										{outcomesSummary.data?.waiting}
+									</Badge>
+								)}
+							</Button>
+						</fieldset>
+					)}
 					<div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
 						<div>
 							<div className="flex items-center gap-1.5">
 								<h2 className="font-serif text-[2.25rem] font-normal leading-tight tracking-tight text-foreground">
-									Usage &amp; cost
+									{outcomes ? "AI outcomes" : "Usage & cost"}
 								</h2>
+								{outcomes && (
+									<Badge variant="outline">Beta</Badge>
+								)}
 								<PageTourButton pageId="usage" />
 							</div>
 							<p className="mt-2 max-w-2xl text-sm text-muted-foreground">
-								AI spend attributed to this project across
-								chats, documents, agents, and workflows.
+								{outcomes
+									? "What people did with AI suggestions in this project."
+									: "AI spend attributed to this project across chats, documents, agents, and workflows."}
 							</p>
-							{configured && (
+							{!outcomes && configured && (
 								<div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
 									{configured.patternModel && (
 										<span>
@@ -306,8 +346,9 @@ export function ProjectUsage({ projectId }: { projectId: string }) {
 								</div>
 							)}
 						</div>
-						<div
+						<fieldset
 							data-onboarding-target="usage-range"
+							aria-label="Period"
 							className="flex flex-wrap items-center gap-1 rounded-md border border-border bg-muted/40 p-1"
 						>
 							{RANGE_OPTIONS.map((option) => (
@@ -320,342 +361,378 @@ export function ProjectUsage({ projectId }: { projectId: string }) {
 									}
 									size="sm"
 									className="h-8 px-3 text-xs"
+									aria-pressed={range === option.value}
 									onClick={() => setRange(option.value)}
 								>
 									{option.label}
 								</Button>
 							))}
-						</div>
+						</fieldset>
 					</div>
 				</header>
 
-				<div
-					data-onboarding-target="usage-summary"
-					className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5"
-				>
-					<SummaryTile
-						label="Platform spend"
-						value={formatUsd(platformCostCents)}
-						subtitle={
-							platformUnbilledCents > 0
-								? `incl. ${formatUsd(platformUnbilledCents)} unbilled`
-								: undefined
-						}
-						tooltip="Fabric-hosted AI usage for this project: included credit, Stripe-metered usage, and any unbilled platform usage. Does not include usage on your own API keys (shown separately)."
+				{outcomes ? (
+					<AIOutcomes
+						projectId={projectId}
+						range={range}
+						setRange={setRange}
+						summaryQuery={outcomesSummary}
+						onUnavailable={onUnavailable}
 					/>
-					<SummaryTile
-						label="BYOK usage"
-						value={formatUsd(byokCostCents)}
-						subtitle="On your own key · not billed by Fabric"
-					/>
-					<SummaryTile
-						label="Total tokens"
-						value={formatTokens(summary?.totalTokens ?? 0)}
-					/>
-					<SummaryTile
-						label="Total calls"
-						value={(summary?.totalCalls ?? 0).toLocaleString()}
-					/>
-					<SummaryTile
-						label="Success rate"
-						value={
-							summary?.successRate == null
-								? "—"
-								: formatPct(summary.successRate)
-						}
-					/>
-				</div>
-
-				<Card>
-					<CardHeader className="flex flex-row items-center justify-between pb-2">
-						<CardTitle className="text-base font-medium">
-							Cost over time
-						</CardTitle>
-						<span className="text-xs text-muted-foreground">
-							Daily buckets · USD
-						</span>
-					</CardHeader>
-					<CardContent>
-						{timeSeriesQuery.isLoading ? (
-							<div className="h-56 animate-pulse rounded bg-muted/40" />
-						) : chartData.length === 0 ? (
-							<div className="flex h-56 items-center justify-center text-sm text-muted-foreground">
-								No usage recorded in this range.
-							</div>
-						) : (
-							<div className="h-56 w-full">
-								<ResponsiveContainer width="100%" height="100%">
-									<AreaChart
-										data={chartData}
-										margin={{
-											top: 8,
-											right: 8,
-											left: 0,
-											bottom: 0,
-										}}
-									>
-										<defs>
-											<linearGradient
-												id="usd-gradient"
-												x1="0"
-												y1="0"
-												x2="0"
-												y2="1"
-											>
-												<stop
-													offset="0%"
-													stopColor="var(--primary)"
-													stopOpacity={0.35}
-												/>
-												<stop
-													offset="100%"
-													stopColor="var(--primary)"
-													stopOpacity={0}
-												/>
-											</linearGradient>
-										</defs>
-										<CartesianGrid
-											stroke="var(--border)"
-											strokeDasharray="3 3"
-											vertical={false}
-										/>
-										<XAxis
-											dataKey="label"
-											tick={{ fontSize: 11 }}
-											stroke="var(--muted-foreground)"
-										/>
-										<YAxis
-											tickFormatter={(value: number) =>
-												`$${value.toFixed(value < 1 ? 2 : 0)}`
-											}
-											tick={{ fontSize: 11 }}
-											stroke="var(--muted-foreground)"
-											width={52}
-										/>
-										<RechartsTooltip
-											contentStyle={{
-												background: "var(--card)",
-												border: "1px solid var(--border)",
-												borderRadius: 6,
-												fontSize: 12,
-											}}
-											labelStyle={{
-												color: "var(--foreground)",
-												fontWeight: 500,
-											}}
-											formatter={(value) => [
-												`$${Number(value ?? 0).toFixed(4)}`,
-												"Cost",
-											]}
-										/>
-										<Area
-											type="monotone"
-											dataKey="usd"
-											stroke="var(--primary)"
-											strokeWidth={2}
-											fill="url(#usd-gradient)"
-										/>
-									</AreaChart>
-								</ResponsiveContainer>
-							</div>
-						)}
-					</CardContent>
-				</Card>
-
-				<Card data-onboarding-target="usage-breakdown">
-					<CardHeader className="flex flex-row items-center justify-between pb-2">
-						<CardTitle className="text-base font-medium">
-							Breakdown
-						</CardTitle>
-						<div className="flex items-center gap-1 rounded-md border border-border bg-muted/40 p-0.5">
-							{GROUP_BY_OPTIONS.map((option) => (
-								<Button
-									key={option.value}
-									variant={
-										groupBy === option.value
-											? "default"
-											: "ghost"
-									}
-									size="sm"
-									className="h-7 px-2.5 text-xs"
-									onClick={() => setGroupBy(option.value)}
-								>
-									{option.label}
-								</Button>
-							))}
+				) : (
+					<>
+						<div
+							data-onboarding-target="usage-summary"
+							className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5"
+						>
+							<SummaryTile
+								label="Platform spend"
+								value={formatUsd(platformCostCents)}
+								subtitle={
+									platformUnbilledCents > 0
+										? `incl. ${formatUsd(platformUnbilledCents)} unbilled`
+										: undefined
+								}
+								tooltip="Fabric-hosted AI usage for this project: included credit, Stripe-metered usage, and any unbilled platform usage. Does not include usage on your own API keys (shown separately)."
+							/>
+							<SummaryTile
+								label="BYOK usage"
+								value={formatUsd(byokCostCents)}
+								subtitle="On your own key · not billed by Fabric"
+							/>
+							<SummaryTile
+								label="Total tokens"
+								value={formatTokens(summary?.totalTokens ?? 0)}
+							/>
+							<SummaryTile
+								label="Total calls"
+								value={(
+									summary?.totalCalls ?? 0
+								).toLocaleString()}
+							/>
+							<SummaryTile
+								label="Success rate"
+								value={
+									summary?.successRate == null
+										? "—"
+										: formatPct(summary.successRate)
+								}
+							/>
 						</div>
-					</CardHeader>
-					<CardContent>
-						{breakdownQuery.isLoading ? (
-							<div className="space-y-2">
-								{[0, 1, 2].map((i) => (
-									<div
-										key={i}
-										className="h-9 animate-pulse rounded bg-muted/40"
-									/>
-								))}
-							</div>
-						) : breakdown.length === 0 ? (
-							<div className="py-6 text-center text-sm text-muted-foreground">
-								No data to break down for this range.
-							</div>
-						) : (
-							<div className="space-y-2">
-								{breakdown.map((item) => {
-									const pct =
-										maxBreakdownCost === 0
-											? 0
-											: (item.costCents /
-													maxBreakdownCost) *
-												100;
-									return (
-										<div
-											key={item.key}
-											className="grid grid-cols-[minmax(0,1fr)_80px_90px_80px] items-center gap-3 rounded-md border border-border bg-card px-3 py-2 text-sm"
-										>
-											<div className="min-w-0 truncate font-medium">
-												{item.label}
-											</div>
-											<div className="tabular-nums text-muted-foreground">
-												{formatTokens(item.totalTokens)}
-											</div>
-											<div className="h-2 rounded-full bg-muted">
-												<div
-													className="h-full rounded-full bg-primary/70"
-													style={{ width: `${pct}%` }}
-												/>
-											</div>
-											<div className="text-right font-mono text-sm tabular-nums">
-												{formatUsd(item.costCents)}
-											</div>
-										</div>
-									);
-								})}
-							</div>
-						)}
-					</CardContent>
-				</Card>
 
-				<Card>
-					<CardHeader className="pb-2">
-						<CardTitle className="text-base font-medium">
-							Recent activity
-						</CardTitle>
-					</CardHeader>
-					<CardContent>
-						{recentQuery.isLoading ? (
-							<div className="h-24 animate-pulse rounded bg-muted/40" />
-						) : recent.length === 0 ? (
-							<div className="py-6 text-center text-sm text-muted-foreground">
-								No AI calls recorded for this project yet.
-							</div>
-						) : (
-							<div
-								ref={scrollContainerRef}
-								className="max-h-[480px] overflow-auto rounded-md border border-border"
-							>
-								<Table>
-									<TableHeader className="sticky top-0 z-10 bg-card">
-										<TableRow>
-											<TableHead className="text-xs uppercase tracking-wider">
-												When
-											</TableHead>
-											<TableHead className="text-xs uppercase tracking-wider">
-												Model
-											</TableHead>
-											<TableHead className="text-xs uppercase tracking-wider">
-												Task
-											</TableHead>
-											<TableHead className="text-xs uppercase tracking-wider">
-												Agent
-											</TableHead>
-											<TableHead className="text-right text-xs uppercase tracking-wider">
-												Tokens
-											</TableHead>
-											<TableHead className="text-right text-xs uppercase tracking-wider">
-												Cost
-											</TableHead>
-											<TableHead className="text-xs uppercase tracking-wider">
-												Billing
-											</TableHead>
-										</TableRow>
-									</TableHeader>
-									<TableBody>
-										{recent.map((item) => (
-											<TableRow
-												key={item.id}
-												className={
-													item.success
-														? ""
-														: "opacity-60"
-												}
-											>
-												<TableCell className="text-xs text-muted-foreground">
-													{formatDistanceToNow(
-														new Date(
-															item.createdAt,
-														),
-														{ addSuffix: true },
-													)}
-												</TableCell>
-												<TableCell className="font-mono text-xs">
-													{formatModel(
-														item.modelCanonicalName ??
-															item.providerModelId,
-													)}
-												</TableCell>
-												<TableCell className="text-xs">
-													{item.taskType ?? "—"}
-												</TableCell>
-												<TableCell className="text-xs text-muted-foreground">
-													{item.agentId ?? "—"}
-												</TableCell>
-												<TableCell className="text-right font-mono tabular-nums text-xs">
-													{formatTokens(
-														item.totalTokens,
-													)}
-												</TableCell>
-												<TableCell className="text-right font-mono tabular-nums text-xs">
-													{formatUsd(item.costCents)}
-												</TableCell>
-												<TableCell>
-													{item.billingCategory ? (
-														<Badge
-															variant="outline"
-															className="text-[10px]"
-														>
-															{getBillingCategoryLabel(
-																item.billingCategory,
-															)}
-														</Badge>
-													) : (
-														<span className="text-xs text-muted-foreground">
-															—
-														</span>
-													)}
-												</TableCell>
-											</TableRow>
-										))}
-									</TableBody>
-								</Table>
-								{recentQuery.hasNextPage ? (
-									<div
-										ref={loadMoreRef}
-										className="py-3 text-center"
-									>
-										{recentQuery.isFetchingNextPage ? (
-											<Loader2Icon className="mx-auto size-4 animate-spin text-muted-foreground" />
-										) : (
-											<span className="text-xs text-muted-foreground">
-												Load more
-											</span>
-										)}
+						<Card>
+							<CardHeader className="flex flex-row items-center justify-between pb-2">
+								<CardTitle className="text-base font-medium">
+									Cost over time
+								</CardTitle>
+								<span className="text-xs text-muted-foreground">
+									Daily buckets · USD
+								</span>
+							</CardHeader>
+							<CardContent>
+								{timeSeriesQuery.isLoading ? (
+									<div className="h-56 animate-pulse rounded bg-muted/40" />
+								) : chartData.length === 0 ? (
+									<div className="flex h-56 items-center justify-center text-sm text-muted-foreground">
+										No usage recorded in this range.
 									</div>
-								) : null}
-							</div>
-						)}
-					</CardContent>
-				</Card>
+								) : (
+									<div className="h-56 w-full">
+										<ResponsiveContainer
+											width="100%"
+											height="100%"
+										>
+											<AreaChart
+												data={chartData}
+												margin={{
+													top: 8,
+													right: 8,
+													left: 0,
+													bottom: 0,
+												}}
+											>
+												<defs>
+													<linearGradient
+														id="usd-gradient"
+														x1="0"
+														y1="0"
+														x2="0"
+														y2="1"
+													>
+														<stop
+															offset="0%"
+															stopColor="var(--primary)"
+															stopOpacity={0.35}
+														/>
+														<stop
+															offset="100%"
+															stopColor="var(--primary)"
+															stopOpacity={0}
+														/>
+													</linearGradient>
+												</defs>
+												<CartesianGrid
+													stroke="var(--border)"
+													strokeDasharray="3 3"
+													vertical={false}
+												/>
+												<XAxis
+													dataKey="label"
+													tick={{ fontSize: 11 }}
+													stroke="var(--muted-foreground)"
+												/>
+												<YAxis
+													tickFormatter={(
+														value: number,
+													) =>
+														`$${value.toFixed(value < 1 ? 2 : 0)}`
+													}
+													tick={{ fontSize: 11 }}
+													stroke="var(--muted-foreground)"
+													width={52}
+												/>
+												<RechartsTooltip
+													contentStyle={{
+														background:
+															"var(--card)",
+														border: "1px solid var(--border)",
+														borderRadius: 6,
+														fontSize: 12,
+													}}
+													labelStyle={{
+														color: "var(--foreground)",
+														fontWeight: 500,
+													}}
+													formatter={(value) => [
+														`$${Number(value ?? 0).toFixed(4)}`,
+														"Cost",
+													]}
+												/>
+												<Area
+													type="monotone"
+													dataKey="usd"
+													stroke="var(--primary)"
+													strokeWidth={2}
+													fill="url(#usd-gradient)"
+												/>
+											</AreaChart>
+										</ResponsiveContainer>
+									</div>
+								)}
+							</CardContent>
+						</Card>
+
+						<Card data-onboarding-target="usage-breakdown">
+							<CardHeader className="flex flex-row items-center justify-between pb-2">
+								<CardTitle className="text-base font-medium">
+									Breakdown
+								</CardTitle>
+								<div className="flex items-center gap-1 rounded-md border border-border bg-muted/40 p-0.5">
+									{GROUP_BY_OPTIONS.map((option) => (
+										<Button
+											key={option.value}
+											variant={
+												groupBy === option.value
+													? "default"
+													: "ghost"
+											}
+											size="sm"
+											className="h-7 px-2.5 text-xs"
+											onClick={() =>
+												setGroupBy(option.value)
+											}
+										>
+											{option.label}
+										</Button>
+									))}
+								</div>
+							</CardHeader>
+							<CardContent>
+								{breakdownQuery.isLoading ? (
+									<div className="space-y-2">
+										{[0, 1, 2].map((i) => (
+											<div
+												key={i}
+												className="h-9 animate-pulse rounded bg-muted/40"
+											/>
+										))}
+									</div>
+								) : breakdown.length === 0 ? (
+									<div className="py-6 text-center text-sm text-muted-foreground">
+										No data to break down for this range.
+									</div>
+								) : (
+									<div className="space-y-2">
+										{breakdown.map((item) => {
+											const pct =
+												maxBreakdownCost === 0
+													? 0
+													: (item.costCents /
+															maxBreakdownCost) *
+														100;
+											return (
+												<div
+													key={item.key}
+													className="grid grid-cols-[minmax(0,1fr)_80px_90px_80px] items-center gap-3 rounded-md border border-border bg-card px-3 py-2 text-sm"
+												>
+													<div className="min-w-0 truncate font-medium">
+														{item.label}
+													</div>
+													<div className="tabular-nums text-muted-foreground">
+														{formatTokens(
+															item.totalTokens,
+														)}
+													</div>
+													<div className="h-2 rounded-full bg-muted">
+														<div
+															className="h-full rounded-full bg-primary/70"
+															style={{
+																width: `${pct}%`,
+															}}
+														/>
+													</div>
+													<div className="text-right font-mono text-sm tabular-nums">
+														{formatUsd(
+															item.costCents,
+														)}
+													</div>
+												</div>
+											);
+										})}
+									</div>
+								)}
+							</CardContent>
+						</Card>
+
+						<Card>
+							<CardHeader className="pb-2">
+								<CardTitle className="text-base font-medium">
+									Recent activity
+								</CardTitle>
+							</CardHeader>
+							<CardContent>
+								{recentQuery.isLoading ? (
+									<div className="h-24 animate-pulse rounded bg-muted/40" />
+								) : recent.length === 0 ? (
+									<div className="py-6 text-center text-sm text-muted-foreground">
+										No AI calls recorded for this project
+										yet.
+									</div>
+								) : (
+									<div
+										ref={scrollContainerRef}
+										className="max-h-[480px] overflow-auto rounded-md border border-border"
+									>
+										<Table>
+											<TableHeader className="sticky top-0 z-10 bg-card">
+												<TableRow>
+													<TableHead className="text-xs uppercase tracking-wider">
+														When
+													</TableHead>
+													<TableHead className="text-xs uppercase tracking-wider">
+														Model
+													</TableHead>
+													<TableHead className="text-xs uppercase tracking-wider">
+														Task
+													</TableHead>
+													<TableHead className="text-xs uppercase tracking-wider">
+														Agent
+													</TableHead>
+													<TableHead className="text-right text-xs uppercase tracking-wider">
+														Tokens
+													</TableHead>
+													<TableHead className="text-right text-xs uppercase tracking-wider">
+														Cost
+													</TableHead>
+													<TableHead className="text-xs uppercase tracking-wider">
+														Billing
+													</TableHead>
+												</TableRow>
+											</TableHeader>
+											<TableBody>
+												{recent.map((item) => (
+													<TableRow
+														key={item.id}
+														className={
+															item.success
+																? ""
+																: "opacity-60"
+														}
+													>
+														<TableCell className="text-xs text-muted-foreground">
+															{formatDistanceToNow(
+																new Date(
+																	item.createdAt,
+																),
+																{
+																	addSuffix: true,
+																},
+															)}
+														</TableCell>
+														<TableCell className="font-mono text-xs">
+															{formatModel(
+																item.modelCanonicalName ??
+																	item.providerModelId,
+															)}
+														</TableCell>
+														<TableCell className="text-xs">
+															{item.taskType ??
+																"—"}
+														</TableCell>
+														<TableCell className="text-xs text-muted-foreground">
+															{item.agentId ??
+																"—"}
+														</TableCell>
+														<TableCell className="text-right font-mono tabular-nums text-xs">
+															{formatTokens(
+																item.totalTokens,
+															)}
+														</TableCell>
+														<TableCell className="text-right font-mono tabular-nums text-xs">
+															{formatUsd(
+																item.costCents,
+															)}
+														</TableCell>
+														<TableCell>
+															{item.billingCategory ? (
+																<Badge
+																	variant="outline"
+																	className="text-[10px]"
+																>
+																	{getBillingCategoryLabel(
+																		item.billingCategory,
+																	)}
+																</Badge>
+															) : (
+																<span className="text-xs text-muted-foreground">
+																	—
+																</span>
+															)}
+														</TableCell>
+													</TableRow>
+												))}
+											</TableBody>
+										</Table>
+										{recentQuery.hasNextPage ? (
+											<div
+												ref={loadMoreRef}
+												className="py-3 text-center"
+											>
+												{recentQuery.isFetchingNextPage ? (
+													<Loader2Icon className="mx-auto size-4 animate-spin text-muted-foreground" />
+												) : (
+													<span className="text-xs text-muted-foreground">
+														Load more
+													</span>
+												)}
+											</div>
+										) : null}
+									</div>
+								)}
+							</CardContent>
+						</Card>
+					</>
+				)}
 			</div>
 		</TooltipProvider>
 	);

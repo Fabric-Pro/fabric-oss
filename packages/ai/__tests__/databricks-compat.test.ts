@@ -14,6 +14,7 @@ import {
 	createDatabricksFetch,
 	createDatabricksSseTransform,
 	createReasoningStripper,
+	databricksPromptCacheForModel,
 	extractTextFromContentBlocks,
 	isReasoningModelName,
 	normalizeContentArrays,
@@ -2397,5 +2398,99 @@ describe("applyDatabricksPromptCacheMarkers — placement edge cases", () => {
 		]);
 		// Three markers already on the wire leave room for exactly one more.
 		expect(messages[3].content).toBe("next");
+	});
+});
+
+describe.each([
+	["shared", createDatabricksFetch],
+	["AI SDK", createVercelDatabricksFetch],
+] as const)("%s canonical prompt-cache decision", (_name, createFetch) => {
+	afterEach(() => vi.unstubAllEnvs());
+	it.each([
+		["custom-chat", true, true],
+		["claude-alias", false, false],
+		["custom-chat", false, false],
+		["claude-alias", undefined, true],
+		["custom-chat", undefined, false],
+	])(
+		"endpoint %s with decision %s caches: %s",
+		async (model, promptCache, expected) => {
+			vi.stubEnv("DATABRICKS_PROMPT_CACHE_DISABLED", "");
+			const baseFetch = vi
+				.fn<typeof fetch>()
+				.mockResolvedValue(new Response(null, { status: 204 }));
+			await createFetch(baseFetch, { promptCache })(
+				"https://example.com",
+				{
+					body: JSON.stringify({
+						model,
+						messages: [
+							{ role: "system", content: "Stable instructions" },
+							{ role: "user", content: "Hello" },
+						],
+					}),
+				},
+			);
+			const body = JSON.parse(String(baseFetch.mock.calls[0][1]?.body));
+			expect(JSON.stringify(body).includes('"cache_control"')).toBe(
+				expected,
+			);
+		},
+	);
+});
+
+describe("raw prompt-cache decisions", () => {
+	afterEach(() => vi.unstubAllEnvs());
+	it.each([
+		["custom-chat", true, true],
+		["claude-alias", false, false],
+		["claude-alias", undefined, true],
+		["custom-chat", undefined, false],
+	] as const)(
+		"%s with decision %s caches: %s",
+		(model, decision, expected) => {
+			vi.stubEnv("DATABRICKS_PROMPT_CACHE_DISABLED", "");
+			const makeBody = () => ({
+				model,
+				messages: [{ role: "system", content: "Stable instructions" }],
+			});
+			expect(
+				applyDatabricksPromptCacheMarkers(makeBody(), decision),
+			).toBe(expected);
+			const body = JSON.stringify(makeBody());
+			for (const transformed of [
+				stripUnsupportedRequestFields(body, undefined, decision),
+				stripVercelRequestFields(body, decision),
+			]) {
+				expect(transformed.includes('"cache_control"')).toBe(expected);
+			}
+		},
+	);
+	it("honors the environment kill switch over an explicit canonical Claude decision", () => {
+		vi.stubEnv("DATABRICKS_PROMPT_CACHE_DISABLED", "1");
+		expect(
+			applyDatabricksPromptCacheMarkers(
+				{
+					model: "custom-chat",
+					messages: [
+						{ role: "system", content: "Stable instructions" },
+					],
+				},
+				true,
+			),
+		).toBe(false);
+	});
+});
+
+describe("canonical Databricks prompt-cache decision helper", () => {
+	it.each([
+		["claude-sonnet-5", true],
+		["anthropic/CLAUDE-opus", true],
+		["llama-3-3-70b", false],
+		[undefined, undefined],
+		[null, undefined],
+		["", undefined],
+	] as const)("%s resolves to %s", (canonical, expected) => {
+		expect(databricksPromptCacheForModel(canonical)).toBe(expected);
 	});
 });

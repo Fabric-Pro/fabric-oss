@@ -1,0 +1,11 @@
+resources:
+  dashboards:
+    decision_replay:
+      display_name: Decision Replay (${bundle.target})
+      file_path: ../src/decision_replay.lvdash.json
+      warehouse_id: ${var.warehouse_id}
+      dataset_catalog: ${var.catalog}
+      dataset_schema: ${var.schema}
+      permissions:
+        - level: CAN_RUN
+          service_principal_name: ${var.embed_principal}

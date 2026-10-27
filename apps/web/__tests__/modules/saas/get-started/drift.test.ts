@@ -203,7 +203,7 @@ const launcherSource = [
 	"apps/web/modules/saas/projects/components/security/SecurityAccessibilityPage.tsx",
 	"apps/web/modules/saas/projects/components/ProjectDetails.tsx",
 	"apps/web/modules/saas/projects/components/outcomes/ProjectOutcomesTab.tsx",
-	"apps/web/modules/saas/projects/components/stories/StoriesRoadmap.tsx",
+	"apps/web/modules/saas/projects/components/stories/RoadmapHeader.tsx",
 	"apps/web/modules/saas/weave/components/WeaveDashboard.tsx",
 	"apps/web/modules/saas/daily-brief/components/DailyBriefHeader.tsx",
 	"apps/web/modules/saas/meeting-digest/components/MeetingDigestTab.tsx",
@@ -530,4 +530,11 @@ describe("get-started — coverage (new features can't ship untoured)", () => {
 			).toBe(true);
 		}
 	});
+});
+
+it("Usage starts with an unconditional component and shared range copy", () => {
+	const usage = GET_STARTED_PAGES.find((page) => page.tab === "usage");
+	expect(usage?.components[0].id).toBe("usage-range");
+	expect(usage?.components[0].conditional).not.toBe(true);
+	expect(usage?.components[0].body).not.toMatch(/outcome|Waiting proposals/i);
 });

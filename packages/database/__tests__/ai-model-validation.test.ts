@@ -267,6 +267,7 @@ const VERCEL_GATEWAY_OFFICIAL_MODELS = new Set([
 	"google/gemini-3-flash-preview",
 	"google/gemini-3-pro-image",
 	"google/gemini-3.1-pro-preview",
+	"google/gemini-4-argon",
 
 	// Meta Llama models (served via Groq but uses meta/ prefix)
 	"meta/llama-3.3-70b",
@@ -335,6 +336,7 @@ const OPENROUTER_OFFICIAL_MODELS = new Set([
 	"google/gemini-2.5-flash",
 	"google/gemini-3-flash-preview",
 	"google/gemini-3.1-pro-preview",
+	"google/gemini-4-argon",
 	"google/gemini-2.0-flash-001",
 	"google/gemini-pro-1.5",
 	"google/gemini-flash-1.5",
@@ -507,6 +509,7 @@ const GOOGLE_VERTEX_AI_OFFICIAL_MODELS = new Set([
 	"gemini-2.5-flash",
 	"gemini-3-flash-preview",
 	"gemini-3.1-pro-preview",
+	"gemini-4-argon",
 	"gemini-2.0-flash-001",
 	"gemini-1.5-pro-002",
 	"gemini-1.5-flash-002",

@@ -496,6 +496,9 @@ const COVERAGE_EXEMPTIONS: ReadonlyMap<string, string> = new Map([
  */
 const PRE_GATED_PROCEDURE_BASES: ReadonlySet<string> = new Set([
 	"projectUsageProcedure",
+	// `projectUsageProcedure.use(<DECISION_REPLAY flag gate>)` in
+	// modules/projects/procedures/decision-replay/shared.ts.
+	"decisionReplayProcedure",
 ]);
 
 type ProcedureFile = {

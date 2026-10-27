@@ -13,6 +13,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", () => ({ logAiUsageAsync: vi.fn() }));
 vi.mock("@repo/ai", () => ({
+	isVercelGatewayKey: (apiKey: string) => apiKey.startsWith("vck_"),
 	createGateway: () => {
 		const gateway = vi.fn((model: string) => ({ modelId: model }));
 		(
@@ -64,6 +65,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	vi.mocked(getRAGProviderConfig).mockResolvedValue({
 		apiKey: "gateway-key",
+		provider: "VERCEL_GATEWAY",
 	} as never);
 	vi.mocked(generateImage).mockResolvedValue({
 		image: { base64: "aGk=", uint8Array: new Uint8Array([1]) },

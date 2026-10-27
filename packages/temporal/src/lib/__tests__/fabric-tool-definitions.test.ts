@@ -187,6 +187,10 @@ describe("Fabric's tool definitions", () => {
 		expect(asking.map((tool) => [tool.name, tool.confirm])).toEqual([
 			["fabric_create_frame", { whenArgumentPresent: "runtimeTools" }],
 			["fabric_update_frame", { whenArgumentPresent: "runtimeTools" }],
+			[
+				"fabric_edit_frame_block",
+				{ whenArgumentPresent: "runtimeTools" },
+			],
 			["fabric_share_frame", "always"],
 		]);
 	});

@@ -2,8 +2,6 @@ import { createHash } from "node:crypto";
 import { ORPCError } from "@orpc/client";
 import {
 	db,
-	effectiveApprovalMode,
-	getApprovalPreference,
 	getFeatureMaturationState,
 	getLatestRunChangeSummary,
 	hasProjectAccess,
@@ -11,11 +9,9 @@ import {
 	isFeatureEnabled,
 	listDecisionLogThreads,
 	listQuestionAssignees,
-	type MaturationTab,
 	type MaturationTenantFilter,
 	parseQaAnalysis,
 	type QuestionAssignee,
-	type UserApprovalPreferenceModes,
 } from "@repo/database";
 import { combineCleanSpec } from "@repo/utils/clean-spec-content";
 import { z } from "zod";
@@ -26,19 +22,14 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
 import { countPendingDecisions } from "../../../lib/record-answer-in-spec";
-import {
-	type ApprovalModeMap,
-	DecisionLogThreadSchema,
-	EffectiveApprovalModesSchema,
-	QaAnalysisContentSchema,
-} from "./schemas";
+import { DecisionLogThreadSchema, QaAnalysisContentSchema } from "./schemas";
 import { serializeDecisionLogThread } from "./serializers";
 
 /**
  * `maturation.getEditorState` (§12, AC-2.1) — hydrate the three-tab editor for a
  * feature in a single round-trip: the Summary digest, the open questions/gaps
  * (OPEN-status Decision Log thread roots), the full threaded Decision Log,
- * the effective approval mode per tab (§5.3), and the Clean Spec (`description`
+ * and the Clean Spec (`description`
  * + `acceptanceCriteria`, §4.1 — there is no parallel `cleanSpecContent`).
  *
  * Read-only: this never writes, so it does not touch PM sync. Returns a
@@ -126,7 +117,6 @@ export const getEditorStateProcedure = tenantProtectedProcedure
 			// collapsed, restorable; never deleted.
 			possiblyResolvedQuestions: z.array(DecisionLogThreadSchema),
 			decisionLog: z.array(DecisionLogThreadSchema),
-			approvalModes: EffectiveApprovalModesSchema,
 			// Count of answers recorded but not yet merged into the Clean Spec body
 			// (the pending-decisions appendix) — drives the "X New Decisions" bar (#B).
 			// Increments on answer, returns to 0 when a refresh dissolves the appendix.
@@ -192,7 +182,6 @@ export const getEditorStateProcedure = tenantProtectedProcedure
 
 		const [
 			threads,
-			preference,
 			latestRun,
 			recommendationsEnabled,
 			project,
@@ -202,7 +191,6 @@ export const getEditorStateProcedure = tenantProtectedProcedure
 				tenantFilter,
 				userStoryId: input.storyId,
 			}),
-			getApprovalPreference({ tenantFilter }),
 			getLatestRunChangeSummary(input.storyId),
 			// #7/FR-15, #2300: gate the DISPLAY of AI answer options on
 			// AI_ANSWER_RECOMMENDATIONS, so turning it off hides
@@ -237,24 +225,6 @@ export const getEditorStateProcedure = tenantProtectedProcedure
 		const serializeOpts = {
 			includeRecommendations: recommendationsEnabled,
 		};
-
-		const userPref: UserApprovalPreferenceModes | null = preference
-			? {
-					cleanSpecMode: preference.cleanSpecMode,
-					decisionLogMode: preference.decisionLogMode,
-					summaryQuestionsMode: preference.summaryQuestionsMode,
-				}
-			: null;
-
-		const tabs: MaturationTab[] = [
-			"cleanSpec",
-			"decisionLog",
-			"summaryQuestions",
-		];
-		const approvalModes = tabs.reduce((acc, tab) => {
-			acc[tab] = effectiveApprovalMode(feature, userPref, tab);
-			return acc;
-		}, {} as ApprovalModeMap);
 
 		// Open questions/gaps are the OPEN-status thread roots — the subset of
 		// the Decision Log the PO still has to work (AC-2.1). Answered threads
@@ -366,7 +336,6 @@ export const getEditorStateProcedure = tenantProtectedProcedure
 			decisionLog: threads.map((t) =>
 				serializeDecisionLogThread(t, serializeOpts),
 			),
-			approvalModes,
 			pendingDecisionCount,
 			refreshNeeded,
 			latestRun: latestRun

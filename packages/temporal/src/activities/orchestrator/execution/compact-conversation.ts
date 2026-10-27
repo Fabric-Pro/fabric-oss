@@ -1,4 +1,6 @@
 import { getAIModelWithMetadata } from "@repo/ai";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import { clampRequestedOutputTokens } from "@repo/ai/lib/output-token-budget";
 import { heartbeat } from "@temporalio/activity";
 import { generateText } from "ai";
 import { publishExecutionEvent } from "../../../lib/redis-publisher";
@@ -80,30 +82,43 @@ Rules:
  * assistant message.
  */
 function renderMessagesAsTranscript(messages: IterativeMessage[]): string {
-	// Build tool-call-id → tool-name lookup for tool result attribution
 	const toolCallIdToName = new Map<string, string>();
-	for (const msg of messages) {
-		if (msg.role === "assistant" && msg.toolCalls) {
-			for (const tc of msg.toolCalls) {
-				toolCallIdToName.set(tc.id, tc.name);
-			}
-		}
-	}
 
 	const lines: string[] = [];
 	for (const msg of messages) {
 		if (msg.role === "user") {
 			lines.push(`USER: ${msg.content}`);
 		} else if (msg.role === "assistant") {
-			if (msg.content?.trim()) {
-				lines.push(`ASSISTANT: ${msg.content}`);
+			toolCallIdToName.clear();
+			for (const call of msg.toolCalls ?? []) {
+				toolCallIdToName.set(call.id, call.name);
 			}
-			if (msg.toolCalls) {
-				for (const tc of msg.toolCalls) {
-					const argPreview = JSON.stringify(tc.args).slice(0, 500);
-					lines.push(
-						`ASSISTANT_TOOL_CALL: ${tc.name}(${argPreview}${argPreview.length >= 500 ? "..." : ""})`,
-					);
+			const renderCall = (id: string) => {
+				const call = msg.toolCalls?.find(
+					(candidate) => candidate.id === id,
+				);
+				if (!call) {
+					return;
+				}
+				const argPreview = JSON.stringify(call.args).slice(0, 500);
+				lines.push(
+					`ASSISTANT_TOOL_CALL: ${call.name}(${argPreview}${argPreview.length >= 500 ? "..." : ""})`,
+				);
+			};
+			if (msg.assistantParts) {
+				for (const part of msg.assistantParts) {
+					if (part.type === "text") {
+						lines.push(`ASSISTANT: ${part.text}`);
+					} else {
+						renderCall(part.toolCallId);
+					}
+				}
+			} else {
+				if (msg.content?.trim()) {
+					lines.push(`ASSISTANT: ${msg.content}`);
+				}
+				for (const call of msg.toolCalls ?? []) {
+					renderCall(call.id);
 				}
 			}
 		} else if (msg.role === "tool") {
@@ -133,11 +148,12 @@ export async function compactConversationHistoryActivity(
 		};
 	}
 
-	const { model } = await getAIModelWithMetadata(
+	const { model, metadata } = await getAIModelWithMetadata(
 		{ taskType: "SIMPLE" },
 		{
 			userId,
 			organizationId,
+			callPurpose: AI_CALL_PURPOSES.compaction,
 			featureKey: "chat-agent",
 			...usageOriginFields(input),
 		},
@@ -163,7 +179,10 @@ export async function compactConversationHistoryActivity(
 			model: guarded.model,
 			instructions: SYSTEM_PROMPT,
 			prompt: `User's original task:\n${currentTask}\n\n=== EARLIER CONVERSATION TO COMPACT ===\n${transcript}\n=== END ===\n\nProduce the PROGRESS SO FAR summary now.`,
-			maxOutputTokens: maxSummaryTokens,
+			maxOutputTokens: clampRequestedOutputTokens(
+				maxSummaryTokens,
+				metadata,
+			),
 			temperature: 0.2,
 			// A cancelled activity aborts the request in flight.
 			abortSignal: activityAbortSignal(),

@@ -103,8 +103,9 @@ export function ParlumeSpendCard({
 				</>
 			)}
 			<p className="text-xs text-muted-foreground">
-				Covers agent turns, speech, meeting notes and meeting-provider
-				bot time.
+				Covers agent turns, realtime voice, speech, live transcription,
+				meeting notes and meeting-provider bot time. A live meeting's
+				bot and transcription time are added when it ends.
 			</p>
 		</Card>
 	);

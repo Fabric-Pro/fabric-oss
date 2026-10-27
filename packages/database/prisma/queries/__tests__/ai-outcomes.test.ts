@@ -65,6 +65,37 @@ describe("recordAiOutcome", () => {
 		});
 	});
 
+	it.each([undefined, null])(
+		"preserves a model and prompt on re-rating with %s metadata",
+		async (missing) => {
+			const stored = {
+				modelCanonicalName: "example-model",
+				promptVersionId: "example-prompt",
+				outcome: "RATED_UP",
+			};
+			upsertMock.mockImplementationOnce(async ({ update }) => {
+				for (const [key, value] of Object.entries(update)) {
+					if (value !== undefined) {
+						Object.assign(stored, { [key]: value });
+					}
+				}
+				return stored;
+			});
+			await recordAiOutcome({
+				...SUBJECT,
+				outcome: "RATED_DOWN",
+				modelCanonicalName: missing,
+				promptVersionId: missing,
+			});
+			expect(stored).toEqual({
+				modelCanonicalName: "example-model",
+				promptVersionId: "example-prompt",
+				outcome: "RATED_DOWN",
+				comment: null,
+			});
+		},
+	);
+
 	it("normalizes absent tenant scope to null rather than undefined", async () => {
 		await recordAiOutcome({ ...SUBJECT, outcome: "RATED_UP" });
 

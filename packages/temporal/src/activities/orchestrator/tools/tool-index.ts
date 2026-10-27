@@ -14,6 +14,8 @@
  * - Server-level invalidation
  */
 
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { db } from "@repo/database";
 import {
 	generateEmbedding,
@@ -790,9 +792,13 @@ export class ToolIndex {
 	): Promise<ToolSearchResult[]> {
 		// Generate query embedding - tenantContext is used internally to resolve
 		// embedding model and API key via getAIEmbeddingModelWithMetadata()
-		const result = await generateEmbedding(
-			query,
-			toolSearchUsage(options.tenantContext),
+		const result = await runWithAiCallPurpose(
+			AI_CALL_PURPOSES.capabilitySearchEmbedding,
+			() =>
+				generateEmbedding(
+					query,
+					toolSearchUsage(options.tenantContext),
+				),
 		);
 
 		// Search Qdrant. The enabled lists and the turned-off configs are
@@ -1822,9 +1828,9 @@ export class ToolIndex {
 		try {
 			// Batch generate embeddings (more efficient)
 			// tenantContext is used internally to resolve embedding model and API key
-			const result = await generateEmbeddings(
-				texts,
-				toolSearchUsage(tenantContext),
+			const result = await runWithAiCallPurpose(
+				AI_CALL_PURPOSES.capabilityIndexEmbedding,
+				() => generateEmbeddings(texts, toolSearchUsage(tenantContext)),
 			);
 
 			// Assign embeddings to entries

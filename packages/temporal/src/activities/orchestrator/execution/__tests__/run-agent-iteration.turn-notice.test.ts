@@ -98,12 +98,14 @@ function historyEndingInToolResult(userText: string): IterativeMessage[] {
 				},
 			],
 			timestamp: "2026-10-05T00:00:01Z",
+			iteration: 1,
 		},
 		{
 			role: "tool",
 			content: JSON.stringify({ messages: [] }),
 			toolCallId: "call-1",
 			timestamp: "2026-10-05T00:00:02Z",
+			iteration: 1,
 		},
 	];
 }
@@ -133,7 +135,7 @@ function buildInput(
 }
 
 interface StreamCall {
-	instructions: string;
+	instructions: string | import("ai").ModelMessage;
 	messages: Array<{ role: string; content: unknown }>;
 	toolChoice?: unknown;
 }
@@ -170,7 +172,11 @@ describe("runAgentIteration — turnNotice", () => {
 		]);
 		expect(call.messages.at(-1)).toEqual({ role: "user", content: NOTICE });
 		expect(occurrences(call, "BUDGET WARNING")).toBe(1);
-		expect(call.instructions).toBe("You are the project Advisor.");
+		expect(call.instructions).toMatchObject({
+			role: "system",
+			content: "You are the project Advisor.",
+			providerOptions: CACHE_BREAKPOINT,
+		});
 		// Never written into the conversation history it was handed.
 		expect(input.conversationHistory).toHaveLength(3);
 		expect(JSON.stringify(input.conversationHistory)).not.toContain(
@@ -260,10 +266,74 @@ function breakpointIndexes(call: StreamCall): number[] {
 }
 
 describe("runAgentIteration — Anthropic prompt-cache breakpoint", () => {
+	it.each([
+		["ANTHROPIC_DIRECT", "claude-sonnet-5"],
+		["VERCEL_GATEWAY", "anthropic/claude-sonnet-5"],
+	])(
+		"fingerprints stable, previous-request and rolling markers for %s",
+		async (provider, modelString) => {
+			vi.mocked(getAiModelWithSelection).mockResolvedValueOnce({
+				model: { __mockModel: true, modelId: modelString },
+				provider,
+				modelString,
+				canonicalName: modelString,
+			} as never);
+			const history = [
+				{ role: "user", content: "example", timestamp: "2026-01-01" },
+				...Array.from({ length: 24 }, (_, index) => ({
+					role: index % 2 ? "tool" : "assistant",
+					iteration: Math.floor(index / 2) + 1,
+					content: "example",
+					timestamp: "2026-01-01",
+					...(index % 2
+						? { toolCallId: `c${index - 1}` }
+						: {
+								toolCalls: [
+									{
+										id: `c${index}`,
+										name: "example",
+										args: {},
+									},
+								],
+							}),
+				})),
+			];
+			const call = await streamCallFor(
+				buildInput({
+					conversationHistory: history as never,
+					turnNotice: NOTICE,
+				}),
+			);
+			const { createRequestFingerprint } = await import(
+				"@repo/ai/lib/request-observation"
+			);
+			const fp = createRequestFingerprint({
+				modelId: modelString,
+				route: provider,
+				prompt: [
+					typeof call.instructions === "string"
+						? { role: "system", content: call.instructions }
+						: call.instructions,
+					...call.messages,
+				],
+			});
+			expect(fp.cacheMarkers).toEqual([
+				[1, 0],
+				[1, 23],
+				[1, 25],
+			]);
+			expect(call.messages.at(-1)).toEqual({
+				role: "user",
+				content: NOTICE,
+			});
+			expect(fp.cacheMarkers.length).toBeLessThanOrEqual(4);
+		},
+	);
+
 	it("marks the last conversation message, not the per-call notice", async () => {
 		const call = await streamCallFor(buildInput({ turnNotice: NOTICE }));
 
-		expect(breakpointIndexes(call)).toEqual([2]);
+		expect(breakpointIndexes(call)).toEqual([0, 2]);
 		expect(call.messages[2]).toMatchObject({
 			role: "tool",
 			providerOptions: CACHE_BREAKPOINT,
@@ -273,7 +343,7 @@ describe("runAgentIteration — Anthropic prompt-cache breakpoint", () => {
 
 	it("marks the last message when there is no notice", async () => {
 		const call = await streamCallFor(buildInput());
-		expect(breakpointIndexes(call)).toEqual([2]);
+		expect(breakpointIndexes(call)).toEqual([0, 2]);
 	});
 
 	it("does not mark the caller's conversation history", async () => {
@@ -338,6 +408,92 @@ describe("runAgentIteration — Anthropic prompt-cache breakpoint", () => {
 			canonicalName: "claude-sonnet-5",
 		} as never);
 		const call = await streamCallFor(buildInput());
-		expect(breakpointIndexes(call)).toEqual([2]);
+		expect(breakpointIndexes(call)).toEqual([0, 2]);
 	});
+});
+
+it.each([1, 3, 12])(
+	"marks the preceding request before a round of %s separate call/result pairs",
+	async (count) => {
+		const history = historyEndingInToolResult("Example request").map(
+			(m, i) => ({ ...m, ...(i > 0 ? { iteration: 1 } : {}) }),
+		);
+		for (let index = 0; index < count; index++) {
+			history.push(
+				{
+					role: "assistant",
+					content: "",
+					timestamp: "2026-01-01",
+					iteration: 2,
+					toolCalls: [
+						{ id: `new-${index}`, name: "example", args: {} },
+					],
+				},
+				{
+					role: "tool",
+					content: `result-${index}`,
+					toolCallId: `new-${index}`,
+					timestamp: "2026-01-01",
+					iteration: 2,
+				},
+			);
+		}
+		const call = await streamCallFor(
+			buildInput({
+				conversationHistory: history,
+				iteration: 3,
+				turnNotice: NOTICE,
+			}),
+		);
+		// Conversion preserves indices: one SDK message per workflow row, followed by the notice.
+		expect(call.messages).toHaveLength(history.length + 1);
+		expect(
+			call.messages.slice(0, history.length).map((m) => m.role),
+		).toEqual(history.map((m) => m.role));
+		expect(breakpointIndexes(call)).toEqual([2, history.length - 1]);
+		for (let index = 0; index < count; index++) {
+			expect(call.messages[3 + index * 2]).toMatchObject({
+				content: [
+					expect.objectContaining({ toolCallId: `new-${index}` }),
+				],
+			});
+			expect(call.messages[4 + index * 2]).toMatchObject({
+				content: [
+					expect.objectContaining({ toolCallId: `new-${index}` }),
+				],
+			});
+		}
+	},
+);
+
+it("keeps the preceding-request boundary before a correction round's assistant text and user note", async () => {
+	const history: IterativeMessage[] = [
+		...historyEndingInToolResult("Example request").map((m, i) => ({
+			...m,
+			...(i > 0 ? { iteration: 1 } : {}),
+		})),
+		{
+			role: "assistant",
+			content: "Example claim",
+			timestamp: "2026-01-01",
+			iteration: 2,
+		},
+		{
+			role: "user",
+			content: "Example correction",
+			timestamp: "2026-01-01",
+			iteration: 2,
+		},
+	];
+	const call = await streamCallFor(
+		buildInput({
+			conversationHistory: history,
+			iteration: 3,
+			turnNotice: NOTICE,
+		}),
+	);
+	expect(call.messages).toHaveLength(6);
+	expect(breakpointIndexes(call)).toEqual([2, 4]);
+	expect(call.messages[3].content).toBe("Example claim");
+	expect(call.messages[4].content).toBe("Example correction");
 });

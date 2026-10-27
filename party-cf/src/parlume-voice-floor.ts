@@ -1,7 +1,9 @@
 import {
 	type ParlumeAuraBinding,
+	ParlumeSentenceFeed,
 	playParlumeAuraSentences,
 	readParlumeSentenceLines,
+	readParlumeSentencePart,
 } from "./parlume-aura";
 import {
 	classifyParlumeBargeIn,
@@ -19,6 +21,8 @@ const VOICE_GENERATION_KEY = "voiceGeneration";
 const RESPONSE_PENDING_KEY = "responsePending";
 const PENDING_INTERRUPT_KEY = "pendingInterrupt";
 const MUTED_GENERATION_KEY = "mutedGeneration";
+/** The bridge's key for a speaker the meeting could not name. */
+export const UNKNOWN_SPEAKER = "unknown";
 
 export type ParlumeFloorStream = Pick<
 	ParlumeStreamConnection,
@@ -39,6 +43,8 @@ export interface ParlumeRealtimeVoice {
 	isResponding(): boolean;
 	/** A Fabric job it started on this voice generation is still running. */
 	hasJob(generation: number): boolean;
+	/** The speaker whose request it is answering, when one asked aloud. */
+	requesterKey(): string | null;
 	/**
 	 * Parlume was silenced: the outlet has already dropped `droppedBytes` of
 	 * queued speech. A cancel also ends the engine's running jobs.
@@ -81,6 +87,12 @@ export class ParlumeVoiceFloor<C> {
 	private mutedGeneration: number | null = null;
 	private playbackActive = false;
 	private responsePending = false;
+	// The speaker whose spoken request the classic reply answers. Only their
+	// words, or words addressed to Parlume, may stop it.
+	private requester: string | null = null;
+	// The latest reply sent in parts, kept after it ends so that a part
+	// arriving late is refused rather than starting a reply of its own.
+	private reply: { id: string; feed: ParlumeSentenceFeed } | null = null;
 
 	constructor(private readonly host: ParlumeVoiceFloorHost<C>) {}
 
@@ -161,10 +173,18 @@ export class ParlumeVoiceFloor<C> {
 		};
 	}
 
-	/** Starts a new reply generation; a spoken one holds the voice open. */
-	async beginReply(voice: boolean): Promise<number> {
+	/**
+	 * Starts a new reply generation; a spoken one holds the voice open.
+	 * `requester` is the speaker who asked aloud; a reply nobody asked aloud
+	 * for may be stopped by anyone.
+	 */
+	async beginReply(
+		voice: boolean,
+		requester: string | null = null,
+	): Promise<number> {
 		this.playbackEpoch++;
 		this.responsePending = voice;
+		this.requester = requester;
 		await this.host.storage.put({
 			[VOICE_GENERATION_KEY]: this.playbackEpoch,
 			[RESPONSE_PENDING_KEY]: voice,
@@ -176,6 +196,7 @@ export class ParlumeVoiceFloor<C> {
 	async interrupt(stream: ParlumeFloorStream): Promise<void> {
 		this.host.cancelEndpoint();
 		const dropped = this.clearOutlets();
+		this.reply?.feed.close();
 		this.playbackEpoch++;
 		this.playbackActive = false;
 		this.responsePending = false;
@@ -208,6 +229,8 @@ export class ParlumeVoiceFloor<C> {
 			return;
 		}
 		this.clearOutlets();
+		// A reply still waiting for its next part ends now, not when it comes.
+		this.reply?.feed.close();
 		this.playbackActive = false;
 		this.mutedGeneration = this.playbackEpoch;
 		const answering = this.responsePending;
@@ -263,6 +286,30 @@ export class ParlumeVoiceFloor<C> {
 		return false;
 	}
 
+	/**
+	 * Whether these words may stop the reply in progress: anyone's that
+	 * address Parlume, and the requester's once their segment is final.
+	 * Others talking among themselves while Parlume answers do not. A partial
+	 * is never taken as the requester's (`speakerKey` null): Teams reports who
+	 * starts and stops speaking seconds after the audio, so in a staging
+	 * meeting a guest's side talk, a second in, was still put down to the
+	 * requester who had just finished asking. A reply nobody asked for aloud,
+	 * or whose requester was never named, can be stopped by anyone.
+	 */
+	private mayStop(speakerKey: string | null, text: string): boolean {
+		const realtime = this.host.realtime();
+		const requester =
+			realtime?.isPlaying() || realtime?.isResponding()
+				? realtime.requesterKey()
+				: this.requester;
+		return (
+			requester === null ||
+			requester === UNKNOWN_SPEAKER ||
+			(speakerKey !== null && speakerKey === requester) ||
+			parseParlumeWake(text) !== null
+		);
+	}
+
 	// Speech only barges in while Parlume is audible, and only words that
 	// want the floor: an acknowledgement ("yeah", "got it") does not. While
 	// a request is being endpointed or answered, its speaker's continued
@@ -276,7 +323,8 @@ export class ParlumeVoiceFloor<C> {
 			input.text &&
 			!input.held() &&
 			this.speaking &&
-			classifyParlumeBargeIn(input.text) !== "ignore"
+			classifyParlumeBargeIn(input.text) !== "ignore" &&
+			this.mayStop(null, input.text)
 		) {
 			await this.mute(stream);
 		}
@@ -288,7 +336,12 @@ export class ParlumeVoiceFloor<C> {
 	 */
 	async onFinal(
 		stream: ParlumeFloorStream,
-		input: { fromBot: boolean; text: string; speakerId: string | null },
+		input: {
+			fromBot: boolean;
+			text: string;
+			speakerId: string | null;
+			speakerKey: string;
+		},
 	): Promise<ParlumeBargeIn> {
 		const bargeIn = input.fromBot
 			? "ignore"
@@ -300,11 +353,13 @@ export class ParlumeVoiceFloor<C> {
 		) {
 			await this.interrupt(stream);
 		}
-		if (bargeIn === "speech" && this.speaking) {
+		const mayStop =
+			bargeIn !== "ignore" && this.mayStop(input.speakerKey, input.text);
+		if (bargeIn === "speech" && mayStop && this.speaking) {
 			await this.mute(stream);
 		}
 		// "Stop", "never mind", "Parlume, wait": the answer is abandoned.
-		if (bargeIn === "cancel" && this.isAnswering()) {
+		if (bargeIn === "cancel" && mayStop && this.isAnswering()) {
 			this.host.log("info", "turn.cancelled_by_speech", {
 				sessionId: stream.sessionId,
 				botId: stream.botId,
@@ -332,6 +387,7 @@ export class ParlumeVoiceFloor<C> {
 		}
 		const epoch = ++this.playbackEpoch;
 		await this.host.storage.put(VOICE_GENERATION_KEY, epoch);
+		this.requester = null;
 		this.playbackActive = true;
 		try {
 			const playback = await playParlumeAuraSentences({
@@ -379,6 +435,11 @@ export class ParlumeVoiceFloor<C> {
 	 * played in order, the next while the current one plays. A sentence that
 	 * cannot be synthesized stops the reply and reports where, so the worker
 	 * can speak the rest through its own routes.
+	 *
+	 * A reply named by `x-parlume-reply` comes in numbered parts: part 0 starts
+	 * it and is answered when it has been played, every later part adds the
+	 * sentences that exist by then, and the part marked last ends it. Without
+	 * that header the body is the whole reply.
 	 */
 	async say(request: Request): Promise<Response> {
 		if (request.headers.get("content-type") !== "application/x-ndjson") {
@@ -387,16 +448,52 @@ export class ParlumeVoiceFloor<C> {
 				{ status: 400 },
 			);
 		}
+		const replyId = request.headers.get("x-parlume-reply");
+		const part = Number(request.headers.get("x-parlume-reply-part") ?? 0);
+		if (
+			replyId !== null &&
+			(!replyId || !Number.isSafeInteger(part) || part < 0)
+		) {
+			return Response.json(
+				{ error: "Invalid reply part" },
+				{ status: 400 },
+			);
+		}
+		if (replyId !== null && part > 0) {
+			return this.addReplyPart(request, replyId, part);
+		}
 		const target = await this.playbackTarget(request);
 		if (target instanceof Response) {
+			if (replyId !== null) {
+				this.endReply(replyId);
+			}
 			return target;
 		}
 		const { connection, outlet, epoch } = target;
-		if (!request.body) {
-			return Response.json(
-				{ error: "Missing sentences" },
-				{ status: 400 },
-			);
+		let sentences: AsyncIterable<string>;
+		let feed: ParlumeSentenceFeed | null = null;
+		if (replyId === null) {
+			if (!request.body) {
+				return Response.json(
+					{ error: "Missing sentences" },
+					{ status: 400 },
+				);
+			}
+			sentences = readParlumeSentenceLines(request.body);
+		} else {
+			feed = this.replyFeed(replyId);
+			const added = await this.readReplyPart(request, feed, 0);
+			if (added instanceof Response) {
+				return added;
+			}
+			// Started once only: a repeated first part would play it twice.
+			if (!added) {
+				return Response.json(
+					{ error: "Reply already started" },
+					{ status: 409 },
+				);
+			}
+			sentences = feed;
 		}
 		this.playbackActive = true;
 		const startedAt = Date.now();
@@ -406,7 +503,7 @@ export class ParlumeVoiceFloor<C> {
 		try {
 			const playback = await playParlumeAuraSentences({
 				ai: this.host.aura,
-				sentences: readParlumeSentenceLines(request.body),
+				sentences,
 				outlet,
 				isCurrent,
 			}).catch((error: unknown) => {
@@ -445,6 +542,8 @@ export class ParlumeVoiceFloor<C> {
 			});
 		} finally {
 			this.playbackActive = false;
+			// Parts that arrive after the reply was played are refused.
+			feed?.close();
 			// A reply handed back to the worker is not over: its replacement
 			// audio follows on this same generation.
 			if (!handedOver && epoch === this.playbackEpoch) {
@@ -452,6 +551,81 @@ export class ParlumeVoiceFloor<C> {
 				await this.host.storage.put(RESPONSE_PENDING_KEY, false);
 			}
 		}
+	}
+
+	/**
+	 * A later part of a reply sent in parts. It may arrive before the part
+	 * that starts the reply, and is kept for it; a part for a generation that
+	 * was spoken over or replaced, or for a reply already played, is refused.
+	 * `x-parlume-reply-cancel` withdraws the reply: what is queued is dropped.
+	 */
+	private async addReplyPart(
+		request: Request,
+		replyId: string,
+		part: number,
+	): Promise<Response> {
+		const epoch = Number(
+			request.headers.get("x-parlume-voice-generation") ??
+				this.playbackEpoch,
+		);
+		if (!this.isVoiceCurrent(epoch)) {
+			this.endReply(replyId);
+			return Response.json({ accepted: false });
+		}
+		const feed = this.replyFeed(replyId);
+		if (request.headers.get("x-parlume-reply-cancel") === "1") {
+			feed.fail(new Error("The reply was withdrawn"));
+			return Response.json({ accepted: true });
+		}
+		const added = await this.readReplyPart(request, feed, part);
+		return added instanceof Response
+			? added
+			: Response.json({ accepted: added });
+	}
+
+	private async readReplyPart(
+		request: Request,
+		feed: ParlumeSentenceFeed,
+		part: number,
+	): Promise<boolean | Response> {
+		let sentences: string[];
+		try {
+			sentences = await readParlumeSentencePart(request.body);
+		} catch {
+			feed.fail(new Error("Invalid sentence"));
+			return Response.json(
+				{ error: "Invalid sentences" },
+				{ status: 400 },
+			);
+		}
+		return feed.add(
+			part,
+			sentences,
+			request.headers.get("x-parlume-reply-last") === "1",
+		);
+	}
+
+	/**
+	 * Refuses the reply's later parts. A reply still being played under
+	 * another id is left alone: a stale part must not end it.
+	 */
+	private endReply(replyId: string): void {
+		if (
+			!this.reply ||
+			this.reply.id === replyId ||
+			this.reply.feed.closed
+		) {
+			this.replyFeed(replyId).close();
+		}
+	}
+
+	/** The feed of the reply sent in parts; a new reply ends the one before. */
+	private replyFeed(replyId: string): ParlumeSentenceFeed {
+		if (this.reply?.id !== replyId) {
+			this.reply?.feed.close();
+			this.reply = { id: replyId, feed: new ParlumeSentenceFeed() };
+		}
+		return this.reply.feed;
 	}
 
 	async speak(request: Request): Promise<Response> {

@@ -204,6 +204,9 @@ export async function getLinkedExternalIds(projectId: string): Promise<
 		externalMcpServerId: string | null;
 		externalPmTarget?: string | null;
 		externalUrl: string | null;
+		/** The link the native-status snapshot was read through (Fizzy #3088);
+		 *  the poll reads an unchanged ticket until it equals `externalId`. */
+		pmTicketStatusExternalId: string | null;
 	}>
 > {
 	const stories = await db.userStory.findMany({
@@ -218,6 +221,7 @@ export async function getLinkedExternalIds(projectId: string): Promise<
 			externalMcpServerId: true,
 			externalPmTarget: true,
 			externalUrl: true,
+			pmTicketStatusExternalId: true,
 		},
 	});
 
@@ -232,6 +236,7 @@ export async function getLinkedExternalIds(projectId: string): Promise<
 		externalMcpServerId: s.externalMcpServerId,
 		externalPmTarget: s.externalPmTarget,
 		externalUrl: s.externalUrl,
+		pmTicketStatusExternalId: s.pmTicketStatusExternalId,
 	}));
 }
 
@@ -266,6 +271,9 @@ export async function findFabricItemByExternalId(
 	 */
 	pmTicketTerminal: boolean;
 	pmTicketTerminalStatus: string | null;
+	/** Current native-status snapshot (Fizzy #3088), for the same no-op skip. */
+	pmTicketStatus: string | null;
+	pmTicketStatusExternalId: string | null;
 } | null> {
 	const select = {
 		id: true,
@@ -283,6 +291,8 @@ export async function findFabricItemByExternalId(
 			pmAutoHidden: true,
 			pmTicketTerminal: true,
 			pmTicketTerminalStatus: true,
+			pmTicketStatus: true,
+			pmTicketStatusExternalId: true,
 		},
 	});
 	if (story) {
@@ -295,6 +305,8 @@ export async function findFabricItemByExternalId(
 			pmAutoHidden: story.pmAutoHidden,
 			pmTicketTerminal: story.pmTicketTerminal,
 			pmTicketTerminalStatus: story.pmTicketTerminalStatus,
+			pmTicketStatus: story.pmTicketStatus,
+			pmTicketStatusExternalId: story.pmTicketStatusExternalId,
 		};
 	}
 

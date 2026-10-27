@@ -16,6 +16,7 @@
  * to start the workflow polling, but that lives in a different file — these
  * tests cover the per-row linking contract that has to happen at create time.
  */
+import { RETIRED_TYPE_MESSAGE } from "@repo/utils/document-type-catalog";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
@@ -382,6 +383,27 @@ describe("createContextProcedure — INTEGRATION rows we don't link", () => {
 				]),
 			}),
 		);
+	});
+});
+
+describe("createContextProcedure — retired document tag", () => {
+	it("refuses a context tagged as the retired Features type before creating it (Fizzy #2776)", async () => {
+		const handler = await loadHandler();
+		await expect(
+			handler({
+				input: {
+					projectId: "proj-1",
+					type: "INTEGRATION",
+					content: "# Notion page body",
+					metadata: { provider: "notion", documentTag: "USER_STORY" },
+				},
+				context: personalCtx,
+			}),
+		).rejects.toMatchObject({
+			code: "BAD_REQUEST",
+			message: RETIRED_TYPE_MESSAGE,
+		});
+		expect(mockCreateContext).not.toHaveBeenCalled();
 	});
 });
 

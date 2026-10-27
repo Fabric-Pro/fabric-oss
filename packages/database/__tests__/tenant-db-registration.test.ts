@@ -385,3 +385,15 @@ describe("Better Auth's OAuth tables stay off the tenant path, like session and 
 		},
 	);
 });
+
+describe("AI output provenance tenant registration", () => {
+	it("registers a user-owned and project-scoped model with RLS", () => {
+		expect(
+			setMembers(tenantDb, "const USER_OWNED_TABLES = new Set(["),
+		).toContain("AiOutputProvenance");
+		expect(tenantDb).toMatch(/AiOutputProvenance: "projectId",/);
+		expect(rls).toMatch(
+			/\{\s*name: "ai_output_provenance",\s*policy: "user_owned",?\s*\}/,
+		);
+	});
+});

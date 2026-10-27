@@ -147,25 +147,20 @@ export function isUniqueViolation(error: unknown): boolean {
  * `P2002 → "a run is already in flight"` would be a lie for the other. A caller
  * that cannot name the constraint must rethrow, not guess.
  *
- * EVERY LINE BELOW IS MEASURED, not inferred, and the difference was not
- * academic — the first draft of this function was written against a plausible
- * error shape and matched NOTHING, so it returned null for every conflict and
- * would have turned a routine double-click into a 500. Its unit test passed,
- * because the fixture encoded the same guess. What a real server actually
- * raises through this repo's driver adapter is:
+ * With adapter-pg 7.10.1, a named Postgres unique violation raises:
  *
  *   meta.target                                  undefined
  *   meta.driverAdapterError.cause.originalCode   "23505"
  *   meta.driverAdapterError.cause.kind           "UniqueConstraintViolation"
- *   meta.driverAdapterError.cause.constraint     { fields: ['"topicId"', ...] }
+ *   meta.driverAdapterError.cause.constraint     { index: "<name>" }
  *   meta.driverAdapterError.cause.originalMessage
  *       'duplicate key value violates unique constraint "<name>"'
  *
- * So the name lives in `originalMessage` and nowhere else: `constraint` is an
- * OBJECT carrying the column list, and the documented `target` is not populated
- * at all. Pinned by real-Postgres cases that provoke BOTH constraints and assert
- * each comes back under its own name — a mocked test cannot prove any of it,
- * because the shape being read is the thing in question.
+ * The adapter uses { fields: [...] } when Postgres supplies column details but
+ * no constraint name. Prefer the structured index to diagnostic parsing; retain
+ * target, older constraint forms and anchored message fallbacks for other
+ * configurations. The real-Postgres suite checks the adapter's index shape and
+ * removes originalMessage before checking this reader.
  */
 export function uniqueViolationConstraint(error: unknown): string | null {
 	if (!isUniqueViolation(error)) {
@@ -205,25 +200,21 @@ export function uniqueViolationConstraint(error: unknown): string | null {
 	if (typeof cause.constraint === "string") {
 		return cause.constraint;
 	}
-	if (
-		cause.constraint != null &&
-		typeof cause.constraint === "object" &&
-		typeof (cause.constraint as { name?: unknown }).name === "string"
-	) {
-		return (cause.constraint as { name: string }).name;
+	if (cause.constraint != null && typeof cause.constraint === "object") {
+		const constraint = cause.constraint as {
+			index?: unknown;
+			name?: unknown;
+		};
+		if (typeof constraint.index === "string") {
+			return constraint.index;
+		}
+		if (typeof constraint.name === "string") {
+			return constraint.name;
+		}
 	}
 
-	// The path this repo takes today, via `originalMessage`.
-	//
-	// ANCHORED on Postgres's own wording rather than "the first quoted token".
-	// On `originalMessage` the two are equivalent — measured, both return the
-	// constraint name — so the anchor buys nothing on the path normally taken.
-	// It earns its place on the two FALLBACKS: `detail` reads
-	// `Key ("topicId", "postType")=(…) already exists`, where an unanchored match
-	// returns `topicId`. That is the worse failure of the two available, because
-	// it is not a null a caller can see and rethrow on — it is a plausible-looking
-	// string that matches neither constraint and sends the caller down the
-	// rethrow path while appearing to have identified something.
+	// Anchor legacy diagnostic fallbacks on Postgres's unique-constraint wording.
+	// An arbitrary quoted token in detail may be a column name, such as topicId.
 	for (const field of [cause.originalMessage, cause.message, cause.detail]) {
 		if (typeof field !== "string") {
 			continue;

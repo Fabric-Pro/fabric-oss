@@ -1,6 +1,7 @@
 import { isAnthropicAdaptiveOnlyModel } from "@repo/agent-types";
 import {
 	type BudgetMetadata,
+	clampRequestedOutputTokens,
 	computeMaxOutputTokenBudget,
 	providerNeedsExplicitBudget,
 } from "@repo/ai/lib/output-token-budget";
@@ -59,7 +60,7 @@ export type DirectChatProviderOptions =
 const ANTHROPIC_THINKING_BUDGET_TOKENS = 5000;
 
 /**
- * Minimum `max_tokens` to pass to streamText when Anthropic thinking is
+ * Default `max_tokens` to pass to streamText when Anthropic thinking is
  * enabled. Anthropic enforces `thinking.budget_tokens < max_tokens`
  * strictly — submitting a request with the AI SDK's lower default (4096
  * for Claude) and thinking.budget_tokens=5000 fails with HTTP 400. The
@@ -73,9 +74,8 @@ const ANTHROPIC_THINKING_BUDGET_TOKENS = 5000;
  * launcher without setting max_tokens, which immediately broke
  * `executeDirectChatActivity` for every Claude-routed call. PR #1098
  * reverted reasoning to "balanced" as a hotfix. This constant is the
- * proper fix — paired with `getMaxOutputTokensForProviderOptions()`
- * below, it lets the caller pass a safe max_tokens whenever thinking
- * is enabled.
+ * starting budget; `resolveOutputTokenBudget` caps it to the catalog, and
+ * `fitThinkingToOutputBudget` adjusts fixed thinking to leave answer room.
  *
  * Exported for tests.
  */
@@ -89,10 +89,9 @@ export const ANTHROPIC_THINKING_MIN_MAX_TOKENS = 16000;
  * thinking opt-in was requested (caller can omit `maxOutputTokens` and
  * let the SDK pick its default).
  *
- * Keep this helper paired with `buildProviderOptions` — every call site
- * that consumes one should consume the other together. The pairing is
- * what prevents the "thinking enabled but max_tokens too small" 400
- * regression from re-occurring.
+ * This is the starting budget. `resolveOutputTokenBudget` applies the
+ * catalog cap, then `fitThinkingToOutputBudget` fits the thinking allowance
+ * and answer floor under that cap before dispatch.
  *
  * @param providerOptions - The value returned by `buildProviderOptions()`.
  */
@@ -130,10 +129,9 @@ export const DIRECT_CHAT_OUTPUT_TOKEN_CEILING = 16_384;
  * was cut off mid-sentence with no error and no way to tell it had
  * happened.
  *
- * Order matters. The thinking value wins whenever it is set: it is the
- * floor that keeps `max_tokens > thinking.budget_tokens`, and running it
- * through the budget helper's context-window clamp could drop it below the
- * thinking budget and bring back the HTTP 400 that PR #1098 hotfixed.
+ * The thinking value is capped by the catalog output limit and bypasses the
+ * context-window clamp. The caller then uses `fitThinkingToOutputBudget` to
+ * reduce or drop fixed thinking, reserving 1,024 tokens for the answer.
  *
  * The computed budget is deliberately limited to the providers that
  * substitute a small default. `computeMaxOutputTokenBudget` returns a number
@@ -155,7 +153,7 @@ export function resolveOutputTokenBudget(opts: {
 		opts.providerOptions,
 	);
 	if (thinkingFloor !== undefined) {
-		return thinkingFloor;
+		return clampRequestedOutputTokens(thinkingFloor, opts.metadata);
 	}
 	if (!providerNeedsExplicitBudget(opts.metadata.provider)) {
 		return undefined;
@@ -164,6 +162,41 @@ export function resolveOutputTokenBudget(opts: {
 		promptChars: opts.promptChars,
 		ceilingTokens: DIRECT_CHAT_OUTPUT_TOKEN_CEILING,
 	});
+}
+
+const MIN_FIXED_THINKING_TOKENS = 1_024;
+const THINKING_ANSWER_FLOOR_TOKENS = 1_024;
+
+/**
+ * Fit fixed thinking under the resolved output budget, leaving 1,024 tokens
+ * for the answer. Anthropic's fixed thinking needs at least 1,024 tokens;
+ * drop the thinking block when that and the answer floor cannot both fit.
+ * Adaptive thinking has no caller-specified token budget and is left alone.
+ */
+export function fitThinkingToOutputBudget(
+	providerOptions: DirectChatProviderOptions | undefined,
+	maxOutputTokens: number | undefined,
+): DirectChatProviderOptions | undefined {
+	const thinking = providerOptions?.anthropic?.thinking;
+	if (
+		!providerOptions ||
+		thinking?.type !== "enabled" ||
+		maxOutputTokens === undefined
+	) {
+		return providerOptions;
+	}
+	const budgetTokens = Math.min(
+		thinking.budgetTokens,
+		maxOutputTokens - THINKING_ANSWER_FLOOR_TOKENS,
+	);
+	if (budgetTokens < MIN_FIXED_THINKING_TOKENS) {
+		const { anthropic: _anthropic, ...otherOptions } = providerOptions;
+		return Object.keys(otherOptions).length > 0 ? otherOptions : undefined;
+	}
+	return {
+		...providerOptions,
+		anthropic: { thinking: { ...thinking, budgetTokens } },
+	};
 }
 
 /**

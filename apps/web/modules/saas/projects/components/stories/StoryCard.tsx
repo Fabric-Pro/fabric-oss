@@ -41,6 +41,8 @@ import {
 } from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
 import { formatDistanceToNowStrict } from "date-fns";
+import { de } from "date-fns/locale/de";
+import { enUS } from "date-fns/locale/en-US";
 import {
 	ArrowDownIcon,
 	ArrowLeftRightIcon,
@@ -70,8 +72,8 @@ import {
 	XIcon,
 } from "lucide-react";
 import { usePathname, useRouter } from "next/navigation";
-import { useTranslations } from "next-intl";
-import { memo, useEffect, useRef, useState } from "react";
+import { useLocale, useTranslations } from "next-intl";
+import { Fragment, memo, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
 	BACKLOG_CONTEXT_MENU_EVENT,
@@ -105,11 +107,9 @@ import type {
 } from "../../lib/stories/types";
 import {
 	DELIVERY_TRACK_META,
-	DELIVERY_TRACK_TONE_CLASSES,
+	DRAFTING_STAGE_META,
 	ESTIMATE_CONFIDENCE_META,
 	getMaturationStatus,
-	getPriorityLabel,
-	getSizeDescription,
 	getSizeLabel,
 	MATURATION_STATUS_META,
 	PRIORITY_OPTIONS,
@@ -133,14 +133,19 @@ import { PmSyncFailureSidePanel } from "./pm-sync/PmSyncFailureSidePanel";
 import { PmSyncPendingIndicator } from "./pm-sync/PmSyncPendingIndicator";
 import { useInvalidatePmSyncState } from "./pm-sync/use-invalidate-pm-sync-state";
 import { useLinkStoryPmItem } from "./pm-sync/use-link-story-pm-item";
+import { PriorityBand } from "./priority/PriorityBand";
 import { useAiReassessEligibility } from "./priority/useAiReassessEligibility";
 import { useAiReprioritizeStory } from "./priority/useAiReprioritizeStory";
 import { SourceChip } from "./SourceChip";
-import { StageProgress } from "./StageProgress";
 import { StoryContextActions } from "./StoryContextActions";
 import { useStoryDownloadActions } from "./StoryDownloadDropdown";
 import { StoryKindIcon } from "./StoryKindIcon";
 import { StoryKindRegenerationBadge } from "./StoryKindRegenerationBadge";
+import { STORY_LIST_GRID } from "./StoryList";
+import {
+	type SecondaryKind,
+	selectSecondaryMetadata,
+} from "./secondary-overflow";
 import {
 	useInvalidateStoryAfterRegeneration,
 	useStoryKindRegeneration,
@@ -301,8 +306,8 @@ type Props = {
 		tags?: boolean;
 		flags?: boolean;
 	};
-	/** Left-to-right order of the optional columns (drag-reorderable in the
-	 * settings gear). Defaults to the canonical order. */
+	/** Saved card-field order arranges secondary metadata. Primary columns
+	 * remain fixed; Title positions track and estimate in the secondary line. */
 	columnOrder?: RoadmapFieldKey[];
 	/** Maturation V2: render the dummy maturation status label (To Do /
 	 * Discovery / Done) in place of the five-stage StageProgress. Only passed
@@ -348,6 +353,8 @@ function StoryCardImpl({
 	const router = useRouter();
 	const pathname = usePathname();
 	const analytics = useAnalytics();
+	const locale = useLocale();
+	const tRow = useTranslations("projects.stories.listRow");
 	const tStories = useTranslations("tooltips.stories");
 	const tCommon = useTranslations("tooltips.common");
 	const tDownload = useTranslations("projects.stories.download");
@@ -358,7 +365,7 @@ function StoryCardImpl({
 	const lastActivityAt = story.lastEditedAt ?? story.createdAt;
 	// Per-format download actions for the kebab Download submenu. The hook
 	// is the same one `StoryDownloadDropdown` consumes, so the kebab and the
-	// in-context dropdowns always behave identically.
+	// in-context dropdowns both use useStoryDownloadActions.
 	const downloadActions = useStoryDownloadActions(story, {
 		id: projectId,
 		name: projectName ?? story.identifier,
@@ -375,6 +382,8 @@ function StoryCardImpl({
 	const [pmConflictPreview, setPmConflictPreview] =
 		useState<ConflictPreview | null>(null);
 	const inputRef = useRef<HTMLInputElement>(null);
+	const secondaryRef = useRef<HTMLDivElement>(null);
+	const [hiddenMetadata, setHiddenMetadata] = useState<string[]>([]);
 
 	// Kanban integration — queue the story then navigate (auto-pull fires on kanban:ready)
 	const { mutateAsync: queueForKanban, isPending: isQueuingForKanban } =
@@ -774,7 +783,7 @@ function StoryCardImpl({
 	// Relink: an override push that drops the link to the OTHER PM tool and
 	// creates a fresh card in the project's current tool. The failure panel's
 	// primary CTA for a "synced to a different PM tool" (PM_TOOL_MISMATCH) error,
-	// where a plain retry can never clear the mismatch. Mirrors the roadmap's
+	// where a plain retry does not clear the mismatch. Mirrors the roadmap's
 	// migrate-confirm flow so the editor chip + roadmap card behave the same.
 	const relinkMutation = useMutation({
 		mutationFn: async () => {
@@ -862,11 +871,6 @@ function StoryCardImpl({
 		},
 	});
 
-	const priorityLabel = getPriorityLabel(story.priority).replace(
-		/^P\d+\s*-\s*/i,
-		"",
-	);
-
 	// "Synced to {X}" must describe the tool that this specific row was
 	// actually synced to, not the project's currently configured PM tool.
 	// When a project switches integrations (e.g. Fizzy → ADO) historical
@@ -884,178 +888,716 @@ function StoryCardImpl({
 	const pmTerminalTooltip = story.pmTicketTerminalStatus
 		? `Marked ${story.pmTicketTerminalStatus} in ${linkedPmToolName}`
 		: `Reached a terminal status in ${linkedPmToolName}`;
+	const pmTicketStatusLabel = story.pmTicketStatus
+		? tRow("pmTicketStatus", {
+				tool: linkedPmToolName,
+				status: story.pmTicketStatus,
+			})
+		: null;
 
-	// The optional columns, in the user's chosen order, filtered to those that
-	// are enabled. Rendered as fixed-width cells (contiguous, just left of the
-	// kebab) so they line up into straight columns across every row regardless
-	// of how many sporadic badges precede them.
+	// Primary columns stay fixed. Saved card-field order arranges the secondary
+	// metadata, including track/estimate in the Title field's slot.
 	const fieldOrder = columnOrder ?? DEFAULT_ROADMAP_COLUMN_ORDER;
-	// Flex `order` for a field. The leading checkbox/icon/identifier stay at
-	// 0 (always first) and the kebab at 999 (always last); the orderable
-	// fields (Title + columns) sit between, by their position in fieldOrder.
-	const orderOf = (key: RoadmapFieldKey) => {
-		const i = fieldOrder.indexOf(key);
-		return i < 0 ? 50 : i + 1;
-	};
-	const effectiveColumnOrder = fieldOrder.filter(
-		(key): key is Exclude<RoadmapFieldKey, "title"> =>
-			key !== "title" && columns?.[key as RoadmapColumnKey] !== false,
-	);
+	const orderOf = (key: RoadmapFieldKey) => fieldOrder.indexOf(key) + 1;
+
+	const pointsSignal =
+		story.storyPoints != null ? (
+			<span
+				data-secondary-kind="points"
+				style={{ order: orderOf("size") }}
+			>
+				{tRow("points", { count: story.storyPoints })}
+			</span>
+		) : null;
 
 	const renderColumnCell = (key: RoadmapColumnKey) => {
 		switch (key) {
-			case "stage":
+			case "source":
 				return (
-					<div
-						key="stage"
-						style={{ order: orderOf("stage") }}
-						className="hidden w-40 shrink-0 items-center md:flex"
+					<span
+						key={key}
+						data-secondary-kind="source"
+						style={{ order: orderOf(key) }}
 					>
-						{maturationV2 ? (
-							(() => {
-								const meta =
-									MATURATION_STATUS_META[
-										getMaturationStatus(story)
-									];
-								return (
-									<span
-										className="inline-flex items-center gap-1.5 text-xs font-medium"
-										style={{ color: meta.color }}
-									>
-										<span
-											className="size-2 rounded-full shrink-0"
-											style={{
-												backgroundColor: meta.color,
-											}}
-										/>
-										{meta.label}
-									</span>
-								);
-							})()
-						) : (
-							<StageProgress
-								stage={story.draftingStage}
-								kind={story.kind}
-							/>
-						)}
-					</div>
+						<SourceChip source={story.source} variant="list" />
+					</span>
 				);
 			case "size":
 				return (
-					<div
-						key="size"
-						style={{ order: orderOf("size") }}
-						className="hidden w-12 shrink-0 items-center md:flex"
+					<span
+						key={key}
+						data-secondary-kind="size"
+						style={{ order: orderOf(key) }}
+						className="inline-flex items-center gap-2"
 					>
 						{story.size && (
-							<Tooltip>
-								<TooltipTrigger asChild>
-									<span className="rounded-full border border-border/60 bg-muted/40 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-muted-foreground">
-										{getSizeLabel(story.size)}
-									</span>
-								</TooltipTrigger>
-								<TooltipContent>
-									Size — {getSizeDescription(story.size)}
-								</TooltipContent>
-							</Tooltip>
-						)}
-					</div>
-				);
-			case "source":
-				return (
-					<div
-						key="source"
-						style={{ order: orderOf("source") }}
-						className="hidden w-32 shrink-0 items-center md:flex"
-					>
-						<SourceChip
-							source={story.source}
-							className="text-[10px]"
-						/>
-					</div>
-				);
-			case "sync":
-				// The PM sync STATUS chip (configurable + reorderable). Sits in a
-				// fixed-width column just before the always-on cloud toggle, so the
-				// chip reads as "near the cloud". The cloud itself is rendered in a
-				// permanent slot outside this switch (never hidden by config).
-				return (
-					<div
-						key="sync"
-						style={{ order: orderOf("sync") }}
-						className="hidden w-40 shrink-0 items-center justify-end gap-2 md:flex"
-					>
-						{story.lastPmSyncStatus === "PENDING" && (
-							<PmSyncPendingIndicator
-								className="shrink-0"
-								pmToolName={pmToolName}
-							/>
-						)}
-						{story.lastPmSyncStatus === "CONFLICT" && (
-							<PmSyncConflictBadge
-								className="shrink-0"
-								pmToolName={pmToolName}
-								loading={previewConflictMutation.isPending}
-								onClick={() => setConflictDialogOpen(true)}
-							/>
-						)}
-						{story.lastPmSyncStatus === "FAILED" && (
-							<PmSyncFailureBadge
-								className="shrink-0"
-								pmToolName={pmToolName}
-								onClick={() => setPmFailurePanelOpen(true)}
-							/>
-						)}
-					</div>
-				);
-			case "tags": {
-				// Read defensively for symmetry with StoryWorkspace — `tags`
-				// may be absent on partially-hydrated story payloads.
-				const tags = story.tags ?? [];
-				// An untagged row still renders the empty fixed-width cell, like
-				// every other column: the cells are anchored to the kebab, so
-				// dropping this one moves every cell before it out of line with
-				// the tagged rows.
-				const VISIBLE = 3;
-				const shown = tags.slice(0, VISIBLE);
-				const overflow = tags.length - shown.length;
-				return (
-					<div
-						key="tags"
-						style={{ order: orderOf("tags") }}
-						className="hidden w-40 shrink-0 flex-wrap items-center gap-1 md:flex"
-					>
-						{shown.map((tag) => (
-							<Badge
-								key={tag.id}
-								variant="secondary"
-								className="max-w-[7rem] truncate text-[10px]"
-							>
-								{tag.value}
-							</Badge>
-						))}
-						{overflow > 0 && (
-							<span className="text-[10px] text-muted-foreground">
-								+{overflow} more
+							<span>
+								{tRow("size")}: {getSizeLabel(story.size)}
 							</span>
 						)}
-					</div>
+					</span>
 				);
-			}
+			case "tags":
+				if (!story.tags?.length) {
+					return null;
+				}
+				return (
+					<span
+						key={key}
+						data-secondary-kind="tags"
+						data-secondary-label={story.tags
+							?.map((tag) => tag.value)
+							.join(", ")}
+						style={{ order: orderOf(key) }}
+						className="inline-flex items-center gap-2"
+					>
+						<span
+							data-tags-full
+							className="inline-flex items-center gap-2"
+						>
+							{(story.tags ?? []).slice(0, 2).map((tag) => (
+								<Badge
+									key={tag.id}
+									variant="outline"
+									className="bg-muted/50 px-1 py-0 text-xs font-sans"
+								>
+									{tag.value}
+								</Badge>
+							))}
+							{(story.tags?.length ?? 0) > 2 && (
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<button
+											type="button"
+											className="shrink-0 font-sans"
+											onClick={(event) =>
+												event.stopPropagation()
+											}
+											aria-label={story.tags
+												?.map((tag) => tag.value)
+												.join(", ")}
+										>
+											{tRow("moreTags", {
+												count:
+													(story.tags?.length ?? 0) -
+													2,
+											})}
+										</button>
+									</TooltipTrigger>
+									<TooltipContent>
+										{story.tags
+											?.map((tag) => tag.value)
+											.join(", ")}
+									</TooltipContent>
+								</Tooltip>
+							)}
+						</span>
+						<button
+							type="button"
+							data-tags-compact
+							style={{ display: "none" }}
+							className="hidden shrink-0 rounded border border-border/50 bg-muted/50 px-1 font-sans"
+							aria-label={story.tags
+								?.map((tag) => tag.value)
+								.join(", ")}
+							title={story.tags
+								?.map((tag) => tag.value)
+								.join(", ")}
+							onClick={(event) => event.stopPropagation()}
+						>
+							{tRow("tagCount", {
+								count: story.tags?.length ?? 0,
+							})}
+						</button>
+					</span>
+				);
 			default:
 				return null;
 		}
 	};
+	const stageMeta = maturationV2
+		? MATURATION_STATUS_META[getMaturationStatus(story)]
+		: DRAFTING_STAGE_META[story.draftingStage];
 
-	if (isDragging) {
-		return (
-			<div
-				ref={setNodeRef}
-				style={dragStyle}
-				className="h-[58px] rounded-xl border border-dashed border-primary/40 bg-primary/[0.06]"
-			/>
-		);
-	}
+	const trackSignals = (
+		<Fragment>
+			{/* Delivery track chip (hidden while unclassified) */}
+			{story.deliveryTrack && story.deliveryTrack !== "UNCLASSIFIED" && (
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<span
+							data-testid="delivery-track-chip"
+							data-secondary-kind="track"
+							style={{ order: orderOf("title") }}
+							className={cn(
+								"inline-flex items-center gap-1 text-xs text-muted-foreground",
+								story.deliveryTrack === "DEFER" &&
+									"line-through opacity-60",
+							)}
+						>
+							{tRow("track")}: {tRow(story.deliveryTrack)}
+						</span>
+					</TooltipTrigger>
+					<TooltipContent className="max-w-xs">
+						<p className="font-medium">
+							{DELIVERY_TRACK_META[story.deliveryTrack].label}
+							{story.trackSetBy
+								? ` · ${story.trackSetBy === "AI" ? "AI" : "Human"}`
+								: ""}
+						</p>
+						<p className="mt-1 text-xs text-muted-foreground">
+							{story.trackRationale?.trim() ||
+								DELIVERY_TRACK_META[story.deliveryTrack]
+									.description}
+						</p>
+						<p className="mt-1 text-xs text-muted-foreground">
+							{tStories(`track.${story.deliveryTrack}`)}
+						</p>
+					</TooltipContent>
+				</Tooltip>
+			)}
+
+			{/* Estimate confidence (inverted-loop Slice 7) */}
+			{story.estimateConfidence && (
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<span
+							data-testid="estimate-confidence-chip"
+							data-secondary-kind="estimate"
+							style={{ order: orderOf("title") }}
+							className="text-xs text-muted-foreground"
+						>
+							{tRow("estimate")}: {tRow(story.estimateConfidence)}
+						</span>
+					</TooltipTrigger>
+					<TooltipContent className="max-w-xs">
+						<p className="font-medium">
+							{
+								ESTIMATE_CONFIDENCE_META[
+									story.estimateConfidence
+								].label
+							}
+						</p>
+						<p className="mt-1 text-xs text-muted-foreground">
+							{
+								ESTIMATE_CONFIDENCE_META[
+									story.estimateConfidence
+								].description
+							}
+						</p>
+						<p className="mt-1 text-xs text-muted-foreground">
+							{tStories(`confidence.${story.estimateConfidence}`)}
+							{story.deliveryTrack === "SPIKE"
+								? ` ${tStories("confidenceSpikeLock")}`
+								: ""}
+						</p>
+					</TooltipContent>
+				</Tooltip>
+			)}
+		</Fragment>
+	);
+	const statusSignals = (
+		<div
+			data-secondary-kind="flags"
+			className="flex shrink-0 items-center gap-1 overflow-hidden [&>span]:px-1 [&>button]:px-1 [&>span]:text-[10.5px] [&>button]:text-[10.5px] [&>output]:text-[10.5px] [&>span]:rounded [&>button]:rounded [&>output]:rounded"
+			style={{ order: orderOf("flags") }}
+		>
+			{isOpeningDetails && (
+				<Loader2Icon className="size-3.5 animate-spin text-primary" />
+			)}
+
+			{/* Fizzy #2048 — the body redraft a type change
+								    started. Ungated by `columns.flags`: this is
+								    transient state about work happening right
+								    now, not a display preference, and a refused
+								    redraft is the only signal that the content
+								    on this card is still the old type's. */}
+			<StoryKindRegenerationBadge state={regeneration} />
+
+			{columns?.flags !== false && story.blocked && (
+				<BlockedBadge
+					tooltip={
+						story.blockedReason ?? "This work item is blocked."
+					}
+				/>
+			)}
+
+			{columns?.flags !== false &&
+				story.kind === "BUG" &&
+				story.needsMoreInfo && (
+					<NeedsMoreInfoBadge
+						tooltip={
+							<>
+								The AI couldn't act on this report yet. Edit the
+								description and click "Re-evaluate Bug".
+							</>
+						}
+					/>
+				)}
+
+			{/* Possible-duplicate chip (from the roadmap duplicate scan) */}
+			{columns?.flags !== false &&
+				duplicateInfo &&
+				duplicateInfo.count > 0 && (
+					<DuplicateBadge
+						count={duplicateInfo.count}
+						variant={
+							duplicateInfo.overlapOnly ? "overlap" : "duplicate"
+						}
+						tooltip={
+							duplicateInfo.partnerTitles.length > 0
+								? tDuplicates(
+										duplicateInfo.overlapOnly
+											? "chipTooltipOverlapKnown"
+											: "chipTooltipKnown",
+										{
+											titles: duplicateInfo.partnerTitles.join(
+												"; ",
+											),
+										},
+									)
+								: tDuplicates(
+										duplicateInfo.overlapOnly
+											? "chipTooltipOverlapGeneric"
+											: "chipTooltipGeneric",
+									)
+						}
+						onClick={duplicateInfo.onResolve}
+					/>
+				)}
+
+			{/* Declined-duplicate chip — this item was merged into a
+								    survivor and moved to the closed stage. */}
+			{columns?.flags !== false && story.mergedIntoStoryId && (
+				<DeclinedDuplicateBadge
+					mergedIntoIdentifier={mergedIntoIdentifier}
+				/>
+			)}
+
+			{/* PM terminal-status checkmark (card #1360). Shown whenever the
+							    linked ticket is terminal — independent of draftingStage, so
+							    it appears on hidden items under "Show Closed" too. */}
+			{story.pmTicketTerminal && (
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<span
+							className="flex shrink-0 items-center text-secondary"
+							role="img"
+							aria-label={pmTerminalTooltip}
+						>
+							<CircleCheckBigIcon className="size-3.5" />
+						</span>
+					</TooltipTrigger>
+					<TooltipContent>{pmTerminalTooltip}</TooltipContent>
+				</Tooltip>
+			)}
+
+			{/* Task count toggle */}
+			{totalTasks > 0 && (
+				<button
+					type="button"
+					onClick={(e) => {
+						e.stopPropagation();
+						setTasksExpanded(!tasksExpanded);
+					}}
+					className="flex shrink-0 items-center gap-0.5 rounded-md px-1 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-background/70 hover:text-foreground"
+				>
+					{tasksExpanded ? (
+						<ChevronDownIcon className="size-3" />
+					) : (
+						<ChevronRightIcon className="size-3" />
+					)}
+					<span>
+						{completedTasks}/{totalTasks}
+					</span>{" "}
+					<span>{tRow("tasks")}</span>
+				</button>
+			)}
+
+			{/* Aggregated agent status across tasks */}
+			{(() => {
+				const workingCount = story.tasks.filter((t) =>
+					ACTIVE_AGENT_STATUSES.has(t.agentStatus ?? ""),
+				).length;
+				const awaitingCount = story.tasks.filter((t) =>
+					AWAITING_AGENT_STATUSES.has(t.agentStatus ?? ""),
+				).length;
+				if (workingCount > 0) {
+					return (
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<button
+									type="button"
+									onClick={(e) => {
+										e.stopPropagation();
+										setTasksExpanded(true);
+									}}
+									className="flex shrink-0 items-center gap-1 rounded-full border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-primary/15"
+								>
+									<Loader2Icon className="size-3 animate-spin" />
+									{workingCount} agent
+									{workingCount > 1 ? "s" : ""} working
+								</button>
+							</TooltipTrigger>
+							<TooltipContent>
+								{workingCount} task
+								{workingCount > 1 ? "s" : ""} being worked on by
+								agents
+							</TooltipContent>
+						</Tooltip>
+					);
+				}
+				if (awaitingCount > 0) {
+					return (
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<button
+									type="button"
+									onClick={(e) => {
+										e.stopPropagation();
+										setTasksExpanded(true);
+									}}
+									className="flex shrink-0 items-center gap-1 rounded-full border border-highlight/20 bg-highlight/10 px-1.5 py-0.5 text-xs font-medium text-highlight transition-colors hover:bg-highlight/15"
+								>
+									<PauseIcon className="size-3" />
+									{awaitingCount} awaiting
+								</button>
+							</TooltipTrigger>
+							<TooltipContent>
+								{awaitingCount} task
+								{awaitingCount > 1 ? "s" : ""} waiting for
+								approval
+							</TooltipContent>
+						</Tooltip>
+					);
+				}
+				return null;
+			})()}
+
+			{taskSessionSummary.activeCount > 0 && (
+				<button
+					type="button"
+					onClick={(e) => {
+						e.stopPropagation();
+						setTasksExpanded(true);
+					}}
+					className="shrink-0 rounded-full border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-primary/15"
+				>
+					{taskSessionSummary.activeCount} task session
+					{taskSessionSummary.activeCount === 1 ? "" : "s"}
+				</button>
+			)}
+
+			{taskSessionSummary.reviewCount > 0 && (
+				<button
+					type="button"
+					onClick={(e) => {
+						e.stopPropagation();
+						setTasksExpanded(true);
+					}}
+					className="shrink-0 rounded-full border border-highlight/20 bg-highlight/10 px-1.5 py-0.5 text-xs font-medium text-highlight transition-colors hover:bg-highlight/15"
+				>
+					{taskSessionSummary.reviewCount} need review
+				</button>
+			)}
+
+			{/* Coding run status — clicking opens the timeline dialog;
+				    session/PR links are available inside that dialog,
+				    so the badge here is kept as a pure status indicator
+				    to avoid nesting <a> inside <button>. */}
+			{primaryTaskLabel && (
+				<button
+					type="button"
+					onClick={(e) => {
+						e.stopPropagation();
+						onCodingRunClick?.(story.latestCodingRun?.id ?? "");
+					}}
+					className="shrink-0 rounded-full border border-highlight/20 bg-highlight/10 px-1.5 py-0.5 text-xs font-medium text-highlight transition-colors hover:bg-highlight/15"
+				>
+					Primary task: {story.latestCodingRun?.storyTask?.identifier}
+				</button>
+			)}
+
+			{shouldShowCodingRun(story.latestCodingRun) &&
+				story.latestCodingRun && (
+					<div className="flex items-center gap-1 shrink-0">
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<button
+									type="button"
+									onClick={(e) => {
+										e.stopPropagation();
+										onCodingRunClick?.(
+											story.latestCodingRun?.id ?? "",
+										);
+									}}
+									className="shrink-0"
+								>
+									<CodingRunStatusBadge
+										status={
+											story.latestCodingRun
+												.status as Parameters<
+												typeof CodingRunStatusBadge
+											>[0]["status"]
+										}
+										provider={
+											story.latestCodingRun.provider
+										}
+										externalStatus={
+											story.latestCodingRun.externalStatus
+										}
+										providerMetadata={
+											story.latestCodingRun
+												.providerMetadata
+										}
+									/>
+								</button>
+							</TooltipTrigger>
+							<TooltipContent>
+								View coding run details
+							</TooltipContent>
+						</Tooltip>
+
+						{storyRunLinks?.projectUrl && (
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<a
+										href={storyRunLinks.projectUrl}
+										target="_blank"
+										rel="noopener noreferrer"
+										aria-label="Open linked Vibe project"
+										onClick={(e) => e.stopPropagation()}
+										className="text-muted-foreground hover:text-foreground"
+									>
+										<FolderKanbanIcon className="size-3" />
+									</a>
+								</TooltipTrigger>
+								<TooltipContent>
+									Open linked Vibe project
+								</TooltipContent>
+							</Tooltip>
+						)}
+						{storyRunLinks?.issueUrl && (
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<a
+										href={storyRunLinks.issueUrl}
+										target="_blank"
+										rel="noopener noreferrer"
+										aria-label="Open linked Vibe issue"
+										onClick={(e) => e.stopPropagation()}
+										className="text-muted-foreground hover:text-foreground"
+									>
+										<GitPullRequestArrowIcon className="size-3" />
+									</a>
+								</TooltipTrigger>
+								<TooltipContent>
+									Open linked Vibe issue
+								</TooltipContent>
+							</Tooltip>
+						)}
+					</div>
+				)}
+		</div>
+	);
+	const activitySignal = (
+		<span data-secondary-kind="activity" className="order-last">
+			{showProvenance && (
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<span className="text-xs text-muted-foreground tabular-nums">
+							{tRow(story.lastEditedAt ? "edited" : "created", {
+								age: formatDistanceToNowStrict(
+									new Date(lastActivityAt),
+									{
+										addSuffix: true,
+										locale: locale.startsWith("de")
+											? de
+											: enUS,
+									},
+								),
+							})}
+						</span>
+					</TooltipTrigger>
+					<TooltipContent>
+						<div className="space-y-1.5 text-[11px] leading-snug">
+							<p>
+								<span className="font-medium">Created</span>
+								{creatorName ? ` by ${creatorName}` : ""}
+								<br />
+								{new Date(story.createdAt).toLocaleString()}
+								<br />
+								<span className="text-muted-foreground/80">
+									{new Date(story.createdAt).toUTCString()}
+								</span>
+							</p>
+							{story.lastEditedAt ? (
+								<p>
+									<span className="font-medium">Updated</span>
+									{story.lastEditedByName
+										? ` by ${story.lastEditedByName}`
+										: ""}
+									<br />
+									{new Date(
+										story.lastEditedAt,
+									).toLocaleString()}
+									<br />
+									<span className="text-muted-foreground/80">
+										{new Date(
+											story.lastEditedAt,
+										).toUTCString()}
+									</span>
+									<br />
+									<span className="text-muted-foreground/80">
+										{formatLastEditSource(
+											story.lastEditedSource,
+											pmToolName ?? null,
+										)}
+									</span>
+								</p>
+							) : (
+								<p className="text-muted-foreground/80">
+									No edit recorded yet
+								</p>
+							)}
+						</div>
+					</TooltipContent>
+				</Tooltip>
+			)}
+		</span>
+	);
+
+	useEffect(() => {
+		const line = secondaryRef.current;
+		if (!line || typeof ResizeObserver === "undefined") {
+			return;
+		}
+		const fitSecondaryGroups = () => {
+			const budget = line.clientWidth;
+			if (budget <= 0) {
+				return;
+			}
+			const groups = Array.from(
+				line.querySelectorAll<HTMLElement>("[data-secondary-kind]"),
+			);
+			const tags = line.querySelector<HTMLElement>(
+				'[data-secondary-kind="tags"]',
+			);
+			const fullTags =
+				tags?.querySelector<HTMLElement>("[data-tags-full]");
+			const compactTags = tags?.querySelector<HTMLElement>(
+				"[data-tags-compact]",
+			);
+			for (const group of groups) {
+				group.style.display = "";
+				group.style.maxWidth = "";
+				for (const chip of Array.from(
+					group.children,
+				) as HTMLElement[]) {
+					chip.style.visibility = "";
+				}
+			}
+			if (fullTags) {
+				fullTags.style.display = "none";
+			}
+			if (compactTags) {
+				compactTags.style.display = "inline-flex";
+			}
+			const compactWidth = compactTags?.getBoundingClientRect().width;
+			if (fullTags) {
+				fullTags.style.display = "";
+			}
+			if (compactTags) {
+				compactTags.style.display = "none";
+			}
+			const measurements = groups
+				.map((group) => ({
+					kind: group.dataset.secondaryKind as SecondaryKind,
+					width: group.getBoundingClientRect().width,
+					compactWidth: group === tags ? compactWidth : undefined,
+				}))
+				.filter((item) => item.width > 0);
+			const { hidden, compactTags: collapseTags } =
+				selectSecondaryMetadata(measurements, budget);
+			const labels: string[] = [];
+			for (const group of groups) {
+				const kind = group.dataset.secondaryKind as SecondaryKind;
+				if (hidden.has(kind)) {
+					labels.push(
+						group.dataset.secondaryLabel ||
+							group.textContent?.trim() ||
+							"",
+					);
+				}
+				group.style.display = hidden.has(kind) ? "none" : "";
+			}
+			if (fullTags) {
+				fullTags.style.display = collapseTags ? "none" : "";
+			}
+			if (compactTags) {
+				compactTags.style.display = collapseTags
+					? "inline-flex"
+					: "none";
+			}
+			const flags = groups.find(
+				(group) => group.dataset.secondaryKind === "flags",
+			);
+			if (flags) {
+				const chips = Array.from(flags.children) as HTMLElement[];
+				const clippedAt = (reserveSummary: boolean) => {
+					flags.style.maxWidth = `${Math.max(0, budget - (reserveSummary ? 32 : 0))}px`;
+					const edge = flags.getBoundingClientRect().right;
+					return chips.filter(
+						(chip) => chip.getBoundingClientRect().right > edge,
+					);
+				};
+				let clipped = clippedAt(labels.length > 0);
+				if (labels.length === 0 && clipped.length > 0) {
+					clipped = clippedAt(true);
+				}
+				// Policy selection protects flags; clipping reserves the final
+				// affordance before collecting names of chips outside the line.
+				for (const chip of clipped) {
+					chip.style.visibility = "hidden";
+					labels.push(
+						chip.getAttribute("aria-label") ||
+							chip.textContent?.trim() ||
+							"",
+					);
+				}
+			}
+			const summary = line.querySelector<HTMLElement>(
+				"[data-overflow-summary]",
+			);
+			if (summary) {
+				summary.style.display = labels.length ? "inline-flex" : "none";
+			}
+			setHiddenMetadata((previous) =>
+				previous.join("; ") === labels.join("; ") ? previous : labels,
+			);
+		};
+		const observer = new ResizeObserver(fitSecondaryGroups);
+		observer.observe(line);
+		for (const group of line.querySelectorAll("[data-secondary-kind]")) {
+			observer.observe(group);
+		}
+		fitSecondaryGroups();
+		return () => observer.disconnect();
+	}, [
+		story,
+		columns,
+		columnOrder,
+		locale,
+		duplicateInfo,
+		mergedIntoIdentifier,
+		isOpeningDetails,
+		regeneration.isRunning,
+		regeneration.hasRecentFailure,
+		tasksExpanded,
+		showProvenance,
+		creatorName,
+		pmToolName,
+	]);
 
 	return (
 		<div
@@ -1068,25 +1610,32 @@ function StoryCardImpl({
 			// fix for scroll jank on large backlogs. The intrinsic-size hint
 			// keeps the scrollbar stable; `auto` remembers each row's last
 			// rendered height. dnd-kit is unaffected: the actively dragged row
-			// renders via the placeholder branch above (no containment).
-			className="group scroll-mt-32 [content-visibility:auto] [contain-intrinsic-size:auto_58px]"
+			// keeps its real geometry and keyboard activator mounted (no containment).
+			className={cn(
+				"group scroll-mt-32 [&:last-child_[data-row-layout]]:border-b-0",
+				isDragging
+					? "opacity-40"
+					: "[content-visibility:auto] [contain-intrinsic-size:auto_64px]",
+			)}
 		>
 			{/* Main row */}
 			<ContextMenu>
 				<ContextMenuTrigger asChild>
+					{/* biome-ignore lint/a11y/noStaticElementInteractions: Radix context trigger; row keyboard activation is conditional and child controls stay independent. */}
 					<div
 						className={cn(
-							"flex min-h-[58px] flex-wrap items-center gap-x-2 gap-y-1.5 rounded-xl border border-border/50 px-2.5 py-1.5 transition-colors cursor-pointer",
+							STORY_LIST_GRID,
+							"border-b border-border/50 h-16 grid-rows-[1.5rem_1.5rem] gap-y-1 py-1 transition-colors cursor-pointer",
 							// Zebra striping: alternate rows get a subtle tint so
 							// the dense list scans row-by-row.
 							zebra ? "bg-muted/25" : "bg-background/35",
 							"hover:border-border/70 hover:bg-background/60",
 							isSelected &&
 								"border-primary/20 bg-primary/[0.08] hover:bg-primary/[0.1]",
-							tasksExpanded && "rounded-b-none border-b-0",
 							isOpeningDetails &&
 								"pointer-events-none opacity-70",
 						)}
+						data-row-layout
 						onMouseDown={(e) => {
 							// FR-9: middle-click (button 1) opens the same destination in
 							// a new tab. Listening on `mousedown` instead of `auxclick`
@@ -1117,8 +1666,8 @@ function StoryCardImpl({
 										e: React.KeyboardEvent<HTMLDivElement>,
 									) => {
 										if (
-											e.key === "Enter" ||
-											e.key === " "
+											e.target === e.currentTarget &&
+											(e.key === "Enter" || e.key === " ")
 										) {
 											e.preventDefault();
 											openStoryDetails();
@@ -1129,215 +1678,92 @@ function StoryCardImpl({
 								}
 							: { tabIndex: 0 })}
 					>
-						{/* Drag handle — active only in manual Roadmap order. */}
-						{canReorder ? (
-							<button
-								type="button"
-								data-testid="story-card-drag-handle"
-								aria-label="Drag to reorder"
-								className="shrink-0 cursor-grab rounded-md p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-background/70 group-hover:opacity-50 hover:!opacity-100 active:cursor-grabbing"
-								{...attributes}
-								{...listeners}
-								onClick={(e) => e.stopPropagation()}
+						<div
+							data-column="selection"
+							className="col-start-1 row-start-1 flex items-center gap-2"
+						>
+							{/* Drag handle — active only in manual Roadmap order. */}
+							{canReorder ? (
+								<button
+									type="button"
+									data-testid="story-card-drag-handle"
+									aria-label="Drag to reorder"
+									className="shrink-0 cursor-grab rounded-md p-0.5 text-muted-foreground opacity-50 transition-opacity hover:bg-background/70 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
+									{...attributes}
+									{...listeners}
+									onClick={(e) => e.stopPropagation()}
+									onMouseDown={(e) => {
+										if (e.button === 1) {
+											e.stopPropagation();
+										}
+									}}
+								>
+									<GripVerticalIcon className="size-3.5" />
+								</button>
+							) : (
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<span className="flex shrink-0 cursor-not-allowed items-center p-0.5 text-muted-foreground/50">
+											<GripVerticalIcon className="size-3.5" />
+										</span>
+									</TooltipTrigger>
+									<TooltipContent>
+										Switch sort to “Roadmap order” to
+										drag-reorder.
+									</TooltipContent>
+								</Tooltip>
+							)}
+
+							{/* Checkbox */}
+							{/* biome-ignore lint/a11y/noStaticElementInteractions: Stops auxiliary clicks from reaching the row; Checkbox provides keyboard interaction. */}
+							<div
+								className="shrink-0"
 								onMouseDown={(e) => {
 									if (e.button === 1) {
 										e.stopPropagation();
 									}
 								}}
 							>
-								<GripVerticalIcon className="size-3.5" />
-							</button>
-						) : (
-							<Tooltip>
-								<TooltipTrigger asChild>
-									<span className="flex shrink-0 cursor-not-allowed items-center p-0.5 text-muted-foreground/20">
-										<GripVerticalIcon className="size-3.5" />
-									</span>
-								</TooltipTrigger>
-								<TooltipContent>
-									Switch sort to “Roadmap order” to
-									drag-reorder.
-								</TooltipContent>
-							</Tooltip>
-						)}
-
-						{/* Checkbox */}
-						<div
-							className="shrink-0"
-							onMouseDown={(e) => {
-								if (e.button === 1) {
-									e.stopPropagation();
-								}
-							}}
-						>
-							<Checkbox
-								checked={isSelected}
-								onCheckedChange={(checked) =>
-									onSelectionChange?.(
-										story.id,
-										checked === true,
-									)
-								}
-								onClick={(e) => e.stopPropagation()}
-								className={cn(
-									"size-3.5 transition-opacity",
-									!isSelected &&
-										"opacity-0 group-hover:opacity-60",
-								)}
-								aria-label={`Select ${story.identifier}`}
-							/>
-						</div>
-
-						{/* Leading kind indicator — Feature (Layers, tinted by
-						    priority) or Bug (destructive red). Replaces the old
-						    priority dot; the tooltip names the priority. */}
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<span className="flex shrink-0 items-center">
-									<StoryKindIcon
-										kind={story.kind}
-										priority={story.priority}
-										className="size-3.5"
-									/>
-								</span>
-							</TooltipTrigger>
-							<TooltipContent>
-								{story.kind === "BUG"
-									? `Bug · ${priorityLabel}`
-									: priorityLabel}
-							</TooltipContent>
-						</Tooltip>
-
-						{/* Delivery track chip (hidden while unclassified) */}
-						{story.deliveryTrack &&
-							story.deliveryTrack !== "UNCLASSIFIED" && (
-								<Tooltip>
-									<TooltipTrigger asChild>
-										<span
-											data-testid="delivery-track-chip"
-											className={cn(
-												"inline-flex shrink-0 items-center rounded-sm border px-1.5 py-px text-[10px] font-medium uppercase tracking-[0.12em] leading-4",
-												DELIVERY_TRACK_TONE_CLASSES[
-													DELIVERY_TRACK_META[
-														story.deliveryTrack
-													].tone
-												].chip,
-											)}
-										>
-											{
-												DELIVERY_TRACK_META[
-													story.deliveryTrack
-												].shortLabel
-											}
-										</span>
-									</TooltipTrigger>
-									<TooltipContent className="max-w-xs">
-										<p className="font-medium">
-											{
-												DELIVERY_TRACK_META[
-													story.deliveryTrack
-												].label
-											}
-											{story.trackSetBy
-												? ` · ${story.trackSetBy === "AI" ? "AI" : "Human"}`
-												: ""}
-										</p>
-										<p className="mt-1 text-xs text-muted-foreground">
-											{story.trackRationale?.trim() ||
-												DELIVERY_TRACK_META[
-													story.deliveryTrack
-												].description}
-										</p>
-										<p className="mt-1 text-xs text-muted-foreground">
-											{tStories(
-												`track.${story.deliveryTrack}`,
-											)}
-										</p>
-									</TooltipContent>
-								</Tooltip>
-							)}
-
-						{/* Identifier — with the always-on "last activity" date
-						    stacked beneath it on the roadmap (showProvenance). */}
-						{showProvenance ? (
-							<div className="flex w-[92px] shrink-0 flex-col justify-center leading-tight">
-								<span className="font-mono text-[11px] text-muted-foreground/50 tabular-nums">
-									{story.identifier}
-								</span>
-								<Tooltip>
-									<TooltipTrigger asChild>
-										<span className="truncate text-[10px] text-muted-foreground/60 tabular-nums">
-											{formatDistanceToNowStrict(
-												new Date(lastActivityAt),
-												{ addSuffix: true },
-											)}
-										</span>
-									</TooltipTrigger>
-									<TooltipContent>
-										<div className="space-y-1.5 text-[11px] leading-snug">
-											<p>
-												<span className="font-medium">
-													Created
-												</span>
-												{creatorName
-													? ` by ${creatorName}`
-													: ""}
-												<br />
-												{new Date(
-													story.createdAt,
-												).toLocaleString()}
-												<br />
-												<span className="text-muted-foreground/80">
-													{new Date(
-														story.createdAt,
-													).toUTCString()}
-												</span>
-											</p>
-											{story.lastEditedAt ? (
-												<p>
-													<span className="font-medium">
-														Updated
-													</span>
-													{story.lastEditedByName
-														? ` by ${story.lastEditedByName}`
-														: ""}
-													<br />
-													{new Date(
-														story.lastEditedAt,
-													).toLocaleString()}
-													<br />
-													<span className="text-muted-foreground/80">
-														{new Date(
-															story.lastEditedAt,
-														).toUTCString()}
-													</span>
-													<br />
-													<span className="text-muted-foreground/80">
-														{formatLastEditSource(
-															story.lastEditedSource,
-															pmToolName ?? null,
-														)}
-													</span>
-												</p>
-											) : (
-												<p className="text-muted-foreground/80">
-													No edit recorded yet
-												</p>
-											)}
-										</div>
-									</TooltipContent>
-								</Tooltip>
+								<Checkbox
+									checked={isSelected}
+									onCheckedChange={(checked) =>
+										onSelectionChange?.(
+											story.id,
+											checked === true,
+										)
+									}
+									onClick={(e) => e.stopPropagation()}
+									className={cn(
+										"size-3.5 transition-opacity",
+										!isSelected &&
+											"opacity-50 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100",
+									)}
+									aria-label={`Select ${story.identifier}`}
+								/>
 							</div>
-						) : (
-							<span className="w-[54px] shrink-0 font-mono text-[11px] text-muted-foreground/50 tabular-nums">
-								{story.identifier}
+						</div>
+						<div
+							data-column="item"
+							className="col-start-2 row-start-1 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground"
+						>
+							<StoryKindIcon
+								kind={story.kind}
+								priority={story.priority}
+								className="size-3.5 shrink-0"
+							/>
+							<span className="sr-only">
+								{tRow(story.kind === "BUG" ? "bug" : "feature")}
 							</span>
-						)}
+							<span className="shrink-0 whitespace-nowrap tabular-nums">
+								<span aria-hidden>#</span>
+								<span>{story.identifier}</span>
+							</span>
+						</div>
 
 						{/* Title */}
 						<div
-							className="flex-1 min-w-0"
-							style={{ order: orderOf("title") }}
+							data-column="title"
+							className="col-start-3 row-start-1 min-w-0"
 						>
 							{isRenaming && !disableInlineRename ? (
 								<input
@@ -1365,7 +1791,7 @@ function StoryCardImpl({
 											e.stopPropagation();
 											openStoryDetails();
 										}}
-										className="block min-w-0 text-left"
+										className="block min-w-0 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
 										aria-label={`Open details for ${story.title}`}
 									>
 										<span
@@ -1423,423 +1849,110 @@ function StoryCardImpl({
 						{/* Status-badge group (Needs more info, duplicates, story
 						    points, tasks, agent status). Positioned by the reorderable
 						    "flags" field — defaults to right after the title. */}
-						<div className="contents md:order-[60] md:flex md:basis-full md:flex-wrap md:items-center md:gap-x-2 md:gap-y-1.5 xl:contents xl:order-none">
-							<div
-								className="flex shrink-0 items-center gap-2"
-								style={{ order: orderOf("flags") }}
-							>
-								{isOpeningDetails && (
-									<Loader2Icon className="size-3.5 animate-spin text-primary" />
-								)}
-
-								{/* Fizzy #2048 — the body redraft a type change
-								    started. Ungated by `columns.flags`: this is
-								    transient state about work happening right
-								    now, not a display preference, and a refused
-								    redraft is the only signal that the content
-								    on this card is still the old type's. */}
-								<StoryKindRegenerationBadge
-									state={regeneration}
-								/>
-
-								{columns?.flags !== false && story.blocked && (
-									<BlockedBadge
-										tooltip={
-											story.blockedReason ??
-											"This work item is blocked."
-										}
-									/>
-								)}
-
-								{columns?.flags !== false &&
-									story.kind === "BUG" &&
-									story.needsMoreInfo && (
-										<NeedsMoreInfoBadge
-											tooltip={
-												<>
-													The AI couldn't act on this
-													report yet. Edit the
-													description and click
-													"Re-evaluate Bug".
-												</>
-											}
-										/>
-									)}
-
-								{/* Possible-duplicate chip (from the roadmap duplicate scan) */}
-								{columns?.flags !== false &&
-									duplicateInfo &&
-									duplicateInfo.count > 0 && (
-										<DuplicateBadge
-											count={duplicateInfo.count}
-											variant={
-												duplicateInfo.overlapOnly
-													? "overlap"
-													: "duplicate"
-											}
-											tooltip={
-												duplicateInfo.partnerTitles
-													.length > 0
-													? tDuplicates(
-															duplicateInfo.overlapOnly
-																? "chipTooltipOverlapKnown"
-																: "chipTooltipKnown",
-															{
-																titles: duplicateInfo.partnerTitles.join(
-																	"; ",
-																),
-															},
-														)
-													: tDuplicates(
-															duplicateInfo.overlapOnly
-																? "chipTooltipOverlapGeneric"
-																: "chipTooltipGeneric",
-														)
-											}
-											onClick={duplicateInfo.onResolve}
-										/>
-									)}
-
-								{/* Declined-duplicate chip — this item was merged into a
-								    survivor and moved to the closed stage. */}
-								{columns?.flags !== false &&
-									story.mergedIntoStoryId && (
-										<DeclinedDuplicateBadge
-											mergedIntoIdentifier={
-												mergedIntoIdentifier
-											}
-										/>
-									)}
-
-								{/* PM terminal-status checkmark (card #1360). Shown whenever the
-							    linked ticket is terminal — independent of draftingStage, so
-							    it appears on hidden items under "Show Closed" too. */}
-								{story.pmTicketTerminal && (
-									<Tooltip>
-										<TooltipTrigger asChild>
-											<span
-												className="flex shrink-0 items-center text-secondary"
-												role="img"
-												aria-label={pmTerminalTooltip}
-											>
-												<CircleCheckBigIcon className="size-3.5" />
-											</span>
-										</TooltipTrigger>
-										<TooltipContent>
-											{pmTerminalTooltip}
-										</TooltipContent>
-									</Tooltip>
-								)}
-
-								{/* Story points */}
-								{story.storyPoints != null && (
-									<span className="text-[10px] font-mono text-muted-foreground/60 shrink-0">
-										{story.storyPoints}pt
-									</span>
-								)}
-
-								{/* Estimate confidence (inverted-loop Slice 7) */}
-								{story.estimateConfidence && (
-									<Tooltip>
-										<TooltipTrigger asChild>
-											<span
-												data-testid="estimate-confidence-chip"
-												className={cn(
-													"inline-flex shrink-0 items-center rounded-sm border px-1 py-px text-[9px] font-medium uppercase tracking-[0.12em] leading-4",
-													ESTIMATE_CONFIDENCE_META[
-														story.estimateConfidence
-													].chipClass,
-												)}
-											>
-												{
-													ESTIMATE_CONFIDENCE_META[
-														story.estimateConfidence
-													].shortLabel
-												}
-											</span>
-										</TooltipTrigger>
-										<TooltipContent className="max-w-xs">
-											<p className="font-medium">
-												{
-													ESTIMATE_CONFIDENCE_META[
-														story.estimateConfidence
-													].label
-												}
-											</p>
-											<p className="mt-1 text-xs text-muted-foreground">
-												{
-													ESTIMATE_CONFIDENCE_META[
-														story.estimateConfidence
-													].description
-												}
-											</p>
-											<p className="mt-1 text-xs text-muted-foreground">
-												{tStories(
-													`confidence.${story.estimateConfidence}`,
-												)}
-												{story.deliveryTrack === "SPIKE"
-													? ` ${tStories("confidenceSpikeLock")}`
-													: ""}
-											</p>
-										</TooltipContent>
-									</Tooltip>
-								)}
-
-								{/* Task count toggle */}
-								{totalTasks > 0 && (
-									<button
-										type="button"
-										onClick={(e) => {
-											e.stopPropagation();
-											setTasksExpanded(!tasksExpanded);
-										}}
-										className="flex shrink-0 items-center gap-0.5 rounded-md px-1 py-0.5 text-[10px] text-muted-foreground/70 transition-colors hover:bg-background/70 hover:text-foreground"
-									>
-										{tasksExpanded ? (
-											<ChevronDownIcon className="size-3" />
-										) : (
-											<ChevronRightIcon className="size-3" />
-										)}
-										{completedTasks}/{totalTasks}
-									</button>
-								)}
-
-								{/* Aggregated agent status across tasks */}
-								{(() => {
-									const workingCount = story.tasks.filter(
-										(t) =>
-											ACTIVE_AGENT_STATUSES.has(
-												t.agentStatus ?? "",
-											),
-									).length;
-									const awaitingCount = story.tasks.filter(
-										(t) =>
-											AWAITING_AGENT_STATUSES.has(
-												t.agentStatus ?? "",
-											),
-									).length;
-									if (workingCount > 0) {
-										return (
-											<Tooltip>
-												<TooltipTrigger asChild>
-													<button
-														type="button"
-														onClick={(e) => {
-															e.stopPropagation();
-															setTasksExpanded(
-																true,
-															);
-														}}
-														className="flex shrink-0 items-center gap-1 rounded-full border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary transition-colors hover:bg-primary/15"
-													>
-														<Loader2Icon className="size-3 animate-spin" />
-														{workingCount} agent
-														{workingCount > 1
-															? "s"
-															: ""}{" "}
-														working
-													</button>
-												</TooltipTrigger>
-												<TooltipContent>
-													{workingCount} task
-													{workingCount > 1
-														? "s"
-														: ""}{" "}
-													being worked on by agents
-												</TooltipContent>
-											</Tooltip>
-										);
-									}
-									if (awaitingCount > 0) {
-										return (
-											<Tooltip>
-												<TooltipTrigger asChild>
-													<button
-														type="button"
-														onClick={(e) => {
-															e.stopPropagation();
-															setTasksExpanded(
-																true,
-															);
-														}}
-														className="flex shrink-0 items-center gap-1 rounded-full border border-highlight/20 bg-highlight/10 px-1.5 py-0.5 text-[10px] font-medium text-highlight transition-colors hover:bg-highlight/15"
-													>
-														<PauseIcon className="size-3" />
-														{awaitingCount} awaiting
-													</button>
-												</TooltipTrigger>
-												<TooltipContent>
-													{awaitingCount} task
-													{awaitingCount > 1
-														? "s"
-														: ""}{" "}
-													waiting for approval
-												</TooltipContent>
-											</Tooltip>
-										);
-									}
+						<div
+							data-row-secondary
+							ref={secondaryRef}
+							className="col-start-3 col-end-4 row-start-2 flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap text-xs text-muted-foreground [&>:empty]:hidden [&>*]:shrink-0 [&_[data-slot=badge]]:text-xs [&_[data-slot=badge]]:font-sans"
+						>
+							{fieldOrder.map((key) => {
+								if (key === "title") {
+									return (
+										<Fragment key={key}>
+											{trackSignals}
+										</Fragment>
+									);
+								}
+								if (key === "flags") {
+									return (
+										<Fragment key={key}>
+											{statusSignals}
+										</Fragment>
+									);
+								}
+								if (key === "size") {
+									return (
+										<Fragment key={key}>
+											{columns?.size !== false &&
+												renderColumnCell(key)}
+											{pointsSignal}
+										</Fragment>
+									);
+								}
+								if (columns?.[key] === false) {
 									return null;
-								})()}
-
-								{taskSessionSummary.activeCount > 0 && (
+								}
+								return renderColumnCell(key);
+							})}
+							{!fieldOrder.includes("size") && pointsSignal}
+							{activitySignal}
+							<Tooltip>
+								<TooltipTrigger asChild>
 									<button
 										type="button"
-										onClick={(e) => {
-											e.stopPropagation();
-											setTasksExpanded(true);
+										data-overflow-summary
+										style={{
+											order: 10000,
+											display: "none",
 										}}
-										className="shrink-0 rounded-full border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary transition-colors hover:bg-primary/15"
-									>
-										{taskSessionSummary.activeCount} task
-										session
-										{taskSessionSummary.activeCount === 1
-											? ""
-											: "s"}
-									</button>
-								)}
-
-								{taskSessionSummary.reviewCount > 0 && (
-									<button
-										type="button"
-										onClick={(e) => {
-											e.stopPropagation();
-											setTasksExpanded(true);
-										}}
-										className="shrink-0 rounded-full border border-highlight/20 bg-highlight/10 px-1.5 py-0.5 text-[10px] font-medium text-highlight transition-colors hover:bg-highlight/15"
-									>
-										{taskSessionSummary.reviewCount} need
-										review
-									</button>
-								)}
-
-								{/* Coding run status — clicking opens the timeline dialog;
-				    session/PR links are available inside that dialog,
-				    so the badge here is kept as a pure status indicator
-				    to avoid nesting <a> inside <button>. */}
-								{primaryTaskLabel && (
-									<button
-										type="button"
-										onClick={(e) => {
-											e.stopPropagation();
-											onCodingRunClick?.(
-												story.latestCodingRun?.id ?? "",
-											);
-										}}
-										className="shrink-0 rounded-full border border-highlight/20 bg-highlight/10 px-1.5 py-0.5 text-[10px] font-medium text-highlight transition-colors hover:bg-highlight/15"
-									>
-										Primary task:{" "}
-										{
-											story.latestCodingRun?.storyTask
-												?.identifier
+										className="w-6 shrink-0 items-center justify-center rounded border border-border/50 bg-muted/50 text-xs"
+										aria-label={tRow("hiddenMetadata", {
+											items: hiddenMetadata.join("; "),
+										})}
+										onClick={(event) =>
+											event.stopPropagation()
 										}
+									>
+										+{hiddenMetadata.length}
 									</button>
-								)}
-
-								{shouldShowCodingRun(story.latestCodingRun) &&
-									story.latestCodingRun && (
-										<div className="flex items-center gap-1 shrink-0">
-											<Tooltip>
-												<TooltipTrigger asChild>
-													<button
-														type="button"
-														onClick={(e) => {
-															e.stopPropagation();
-															onCodingRunClick?.(
-																story
-																	.latestCodingRun
-																	?.id ?? "",
-															);
-														}}
-														className="shrink-0"
-													>
-														<CodingRunStatusBadge
-															status={
-																story
-																	.latestCodingRun
-																	.status as Parameters<
-																	typeof CodingRunStatusBadge
-																>[0]["status"]
-															}
-															provider={
-																story
-																	.latestCodingRun
-																	.provider
-															}
-															externalStatus={
-																story
-																	.latestCodingRun
-																	.externalStatus
-															}
-															providerMetadata={
-																story
-																	.latestCodingRun
-																	.providerMetadata
-															}
-														/>
-													</button>
-												</TooltipTrigger>
-												<TooltipContent>
-													View coding run details
-												</TooltipContent>
-											</Tooltip>
-
-											{storyRunLinks?.projectUrl && (
-												<Tooltip>
-													<TooltipTrigger asChild>
-														<a
-															href={
-																storyRunLinks.projectUrl
-															}
-															target="_blank"
-															rel="noopener noreferrer"
-															aria-label="Open linked Vibe project"
-															onClick={(e) =>
-																e.stopPropagation()
-															}
-															className="text-muted-foreground/60 hover:text-foreground"
-														>
-															<FolderKanbanIcon className="size-3" />
-														</a>
-													</TooltipTrigger>
-													<TooltipContent>
-														Open linked Vibe project
-													</TooltipContent>
-												</Tooltip>
-											)}
-											{storyRunLinks?.issueUrl && (
-												<Tooltip>
-													<TooltipTrigger asChild>
-														<a
-															href={
-																storyRunLinks.issueUrl
-															}
-															target="_blank"
-															rel="noopener noreferrer"
-															aria-label="Open linked Vibe issue"
-															onClick={(e) =>
-																e.stopPropagation()
-															}
-															className="text-muted-foreground/60 hover:text-foreground"
-														>
-															<GitPullRequestArrowIcon className="size-3" />
-														</a>
-													</TooltipTrigger>
-													<TooltipContent>
-														Open linked Vibe issue
-													</TooltipContent>
-												</Tooltip>
-											)}
-										</div>
-									)}
-							</div>
-							{effectiveColumnOrder.map((key) =>
-								renderColumnCell(key),
+								</TooltipTrigger>
+								<TooltipContent>
+									{tRow("hiddenMetadata", {
+										items: hiddenMetadata.join("; "),
+									})}
+								</TooltipContent>
+							</Tooltip>
+						</div>
+						<div
+							data-column="priority"
+							className="col-start-4 row-start-1"
+						>
+							<PriorityBand
+								priority={story.priority}
+								className="text-xs normal-case tracking-normal"
+							/>
+						</div>
+						<div
+							data-column="stage"
+							className="col-start-5 row-start-1 min-w-0 text-xs"
+						>
+							{columns?.stage !== false && (
+								<span className="flex items-center gap-1.5">
+									<span
+										aria-hidden
+										className={cn(
+											"size-2 shrink-0 rounded-full",
+											getMaturationStatus(story) ===
+												"DISCOVERY"
+												? "bg-highlight"
+												: getMaturationStatus(story) ===
+														"DONE"
+													? "bg-success"
+													: "bg-muted-foreground",
+										)}
+									/>
+									<span
+										className="truncate"
+										title={stageMeta?.label}
+									>
+										{stageMeta?.label}
+									</span>
+								</span>
 							)}
 						</div>
-						{/* PM sync cloud toggle — ALWAYS shown (not a configurable
-							    column), in a permanent slot just before the kebab, the
-							    same way the kebab is always present. */}
-						<div className="hidden shrink-0 items-center md:order-[35] md:flex xl:order-[998]">
+						<div
+							data-column="pm"
+							className="col-start-6 row-start-1 flex min-w-0 items-center gap-1"
+						>
 							<PmSyncCloudToggle
 								storyId={story.id}
 								projectId={projectId}
@@ -1855,12 +1968,76 @@ function StoryCardImpl({
 								lastPmSyncError={story.lastPmSyncError ?? null}
 								lastSyncedAt={story.lastSyncedAt ?? null}
 								source="card"
+								className="shrink-0"
 								size="sm"
 								interactive={false}
 							/>
+							{/* Linked ticket's native PM status (Fizzy #3088):
+							    read-only text, kept apart from the sync chips. */}
+							{story.pmTicketStatus && (
+								<Tooltip>
+									<TooltipTrigger asChild>
+										{/* Focusable so a keyboard user can open the
+										    tooltip and read a truncated status. */}
+										<span
+											data-testid="pm-ticket-status"
+											// biome-ignore lint/a11y/noNoninteractiveTabindex: tooltip trigger for truncated text
+											tabIndex={0}
+											className="min-w-0 truncate rounded-sm text-[11px] text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+										>
+											<span aria-hidden>
+												{story.pmTicketStatus}
+											</span>
+											<span className="sr-only">
+												{pmTicketStatusLabel}
+											</span>
+										</span>
+									</TooltipTrigger>
+									<TooltipContent>
+										{pmTicketStatusLabel}
+									</TooltipContent>
+								</Tooltip>
+							)}
+							{columns?.sync !== false && (
+								<>
+									{story.lastPmSyncStatus === "FAILED" && (
+										<PmSyncFailureBadge
+											compactLabel={tRow("syncFailed")}
+											className="shrink-0 text-[11px] normal-case tracking-normal px-1 whitespace-nowrap"
+											pmToolName={pmToolName}
+											onClick={() =>
+												setPmFailurePanelOpen(true)
+											}
+										/>
+									)}
+									{story.lastPmSyncStatus === "CONFLICT" && (
+										<PmSyncConflictBadge
+											compactLabel={tRow("syncConflict")}
+											className="shrink-0 text-[11px] normal-case tracking-normal px-1 whitespace-nowrap"
+											pmToolName={pmToolName}
+											loading={
+												previewConflictMutation.isPending
+											}
+											onClick={() =>
+												setConflictDialogOpen(true)
+											}
+										/>
+									)}
+									{story.lastPmSyncStatus === "PENDING" && (
+										<PmSyncPendingIndicator
+											className="shrink-0 whitespace-nowrap text-[11px] normal-case tracking-normal px-1"
+											compactLabel={tRow("syncing")}
+											pmToolName={pmToolName}
+										/>
+									)}
+								</>
+							)}
 						</div>
 
-						<div className="shrink-0 order-[40] xl:order-[999]">
+						<div
+							data-column="actions"
+							className="col-start-7 row-start-1"
+						>
 							{/* Kebab menu */}
 							<DropdownMenu>
 								<Tooltip>
@@ -1869,7 +2046,7 @@ function StoryCardImpl({
 											<Button
 												variant="ghost"
 												size="icon"
-												className="size-6 shrink-0 rounded-md opacity-60 transition-opacity group-hover:opacity-100 xl:opacity-0 xl:group-hover:opacity-60 hover:!opacity-100 hover:bg-background/70"
+												className="size-6 shrink-0 rounded-md opacity-50 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 hover:bg-background/70"
 												onClick={(e) =>
 													e.stopPropagation()
 												}
@@ -2117,7 +2294,7 @@ function StoryCardImpl({
 												);
 											})}
 											{/* The per-item AI pass — this item only
-											    (never weighed against the list;
+											    (run independently of the list;
 											    that is the roadmap's Re-prioritize
 											    button). Hidden, declined and
 											    completed items can't be re-assessed
@@ -2228,7 +2405,7 @@ function StoryCardImpl({
 
 			{/* Expandable Tasks List */}
 			{tasksExpanded && totalTasks > 0 && (
-				<div className="space-y-1.5 rounded-b-xl border border-border/50 border-t-0 bg-background/25 py-2 pl-[120px] pr-4">
+				<div className="space-y-1.5 border-t border-border/50 bg-background/25 py-2 pl-48 pr-4">
 					{story.tasks.slice(0, 5).map((task) => (
 						<TaskPreviewItem
 							key={task.id}

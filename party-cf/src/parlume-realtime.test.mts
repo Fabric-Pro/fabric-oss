@@ -110,7 +110,12 @@ test("credentials need a client secret and a plain model name", () => {
 				expiresAt: 1,
 			}),
 		),
-		{ clientSecret: "ek_test", model: "gpt-realtime-2.1" },
+		{
+			clientSecret: "ek_test",
+			model: "gpt-realtime-2.1",
+			url: "https://api.openai.com/v1/realtime",
+			provider: "OPENAI_DIRECT",
+		},
 	);
 	for (const value of [
 		{ accepted: true },
@@ -123,11 +128,49 @@ test("credentials need a client secret and a plain model name", () => {
 	}
 });
 
-test("the upgrade carries the client secret as a header and as a subprotocol", () => {
+test("a secret minted on an Azure resource opens that resource, and no other host is trusted", () => {
+	const azure =
+		"https://example-resource.openai.azure.com/openai/v1/realtime";
+	assert.deepEqual(
+		plain(
+			realtime.parseParlumeRealtimeCredentials({
+				clientSecret: "ek_test",
+				model: "gpt-realtime-2.1",
+				realtimeUrl: azure,
+			}),
+		),
+		{
+			clientSecret: "ek_test",
+			model: "gpt-realtime-2.1",
+			url: azure,
+			provider: "AZURE_AI_FOUNDRY",
+		},
+	);
+	for (const realtimeUrl of [
+		"https://example.com/openai/v1/realtime",
+		"https://example-resource.openai.azure.com.example.com/openai/v1/realtime",
+		"http://example-resource.openai.azure.com/openai/v1/realtime",
+		"https://example-resource.openai.azure.com/openai/v1/realtime?api-key=x",
+		7,
+	]) {
+		assert.equal(
+			realtime.parseParlumeRealtimeCredentials({
+				clientSecret: "ek_test",
+				model: "gpt-realtime-2.1",
+				realtimeUrl,
+			}),
+			null,
+		);
+	}
+});
+
+test("the upgrade carries the client secret as a bearer header only", () => {
 	const upgrade = plain(
 		realtime.parlumeRealtimeUpgrade({
 			clientSecret: "ek_test",
 			model: "gpt-realtime-2.1",
+			url: "https://api.openai.com/v1/realtime",
+			provider: "OPENAI_DIRECT",
 		}),
 	);
 	assert.equal(
@@ -137,7 +180,6 @@ test("the upgrade carries the client secret as a header and as a subprotocol", (
 	assert.deepEqual(upgrade.headers, {
 		Upgrade: "websocket",
 		Authorization: "Bearer ek_test",
-		"Sec-WebSocket-Protocol": "realtime, openai-insecure-api-key.ek_test",
 	});
 });
 
@@ -283,4 +325,28 @@ test("audio deltas decode to PCM; unknown events are ignored", () => {
 		null,
 	);
 	assert.equal(realtime.parseParlumeRealtimeEvent("not json"), null);
+});
+
+test("an error keeps OpenAI's code, parameter and message for the log", () => {
+	assert.deepEqual(
+		plain(
+			realtime.parseParlumeRealtimeEvent(
+				JSON.stringify({
+					type: "error",
+					error: {
+						type: "invalid_request_error",
+						code: "invalid_parameter",
+						param: "session.audio.input.noise_reduction",
+						message: "Unsupported value.",
+					},
+				}),
+			),
+		),
+		{
+			type: "error",
+			code: "invalid_parameter",
+			param: "session.audio.input.noise_reduction",
+			message: "Unsupported value.",
+		},
+	);
 });

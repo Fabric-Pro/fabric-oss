@@ -78,9 +78,9 @@ export const EXECUTION_MODE_CONFIGS: Record<
 		stepTimeoutMs: 60000,
 		workflowTimeoutMs: 600000, // 10 minutes
 		// Iterative settings: Moderate limits
-		maxIterations: 15,
+		maxIterations: 30,
 		iterationTimeoutMs: 120000, // 2 minutes per iteration
-		maxTotalTokens: 500000,
+		maxTotalTokens: 1000000,
 	},
 	accurate: {
 		mode: "accurate",
@@ -133,3 +133,22 @@ export const EXECUTION_MODE_CONFIGS: Record<
 		maxTotalTokens: 1000000,
 	},
 };
+
+/** Replay gate for main-round accounting and the balanced limits introduced with it. */
+export const MAIN_ROUND_BUDGET_PATCH = "orch-main-round-budget-v1";
+
+/** The old balanced values remain part of the pre-marker replay contract. */
+export function executionModeConfig(
+	mode: ExecutionMode,
+	mainRoundBudget: boolean,
+	admittedTokenAllowance?: number,
+): ExecutionModeConfig {
+	const config =
+		EXECUTION_MODE_CONFIGS[mode] ?? EXECUTION_MODE_CONFIGS.balanced;
+	if (mainRoundBudget && admittedTokenAllowance !== undefined) {
+		return { ...config, maxTotalTokens: admittedTokenAllowance };
+	}
+	return !mainRoundBudget && config.mode === "balanced"
+		? { ...config, maxIterations: 15, maxTotalTokens: 500000 }
+		: config;
+}

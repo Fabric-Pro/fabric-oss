@@ -136,6 +136,12 @@ export const AiCreditAccountScalarFieldEnumSchema = z.enum(['id', 'organizationI
 
 export type AiCreditAccountScalarFieldEnum = z.infer<typeof AiCreditAccountScalarFieldEnumSchema>;
 
+// File: AiOutputProvenanceScalarFieldEnum.schema.ts
+
+export const AiOutputProvenanceScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'userId', 'projectId', 'subjectType', 'subjectId', 'agentId', 'modelCanonicalName', 'promptVersionId', 'createdAt', 'updatedAt'])
+
+export type AiOutputProvenanceScalarFieldEnum = z.infer<typeof AiOutputProvenanceScalarFieldEnumSchema>;
+
 // File: AiOutcomeEventScalarFieldEnum.schema.ts
 
 export const AiOutcomeEventScalarFieldEnumSchema = z.enum(['id', 'featureKey', 'outcome', 'subjectType', 'subjectId', 'modelCanonicalName', 'promptVersionId', 'comment', 'userId', 'organizationId', 'projectId', 'createdAt', 'updatedAt'])
@@ -282,7 +288,7 @@ export type ConversationTurnScalarFieldEnum = z.infer<typeof ConversationTurnSca
 
 // File: ConversationTurnAttemptScalarFieldEnum.schema.ts
 
-export const ConversationTurnAttemptScalarFieldEnumSchema = z.enum(['id', 'turnId', 'organizationId', 'userId', 'generation', 'kind', 'enforced', 'reservedTokens', 'status', 'inputTokens', 'outputTokens', 'workflowId', 'runId', 'activityId', 'activityAttempt', 'modelId', 'createdAt', 'settledAt'])
+export const ConversationTurnAttemptScalarFieldEnumSchema = z.enum(['id', 'turnId', 'organizationId', 'userId', 'generation', 'kind', 'enforced', 'reservedTokens', 'status', 'inputTokens', 'cacheReadTokens', 'outputTokens', 'workflowId', 'runId', 'activityId', 'activityAttempt', 'modelId', 'createdAt', 'settledAt'])
 
 export type ConversationTurnAttemptScalarFieldEnum = z.infer<typeof ConversationTurnAttemptScalarFieldEnumSchema>;
 
@@ -654,13 +660,19 @@ export type AtlasEdgeOverrideHistoryScalarFieldEnum = z.infer<typeof AtlasEdgeOv
 
 // File: ProjectLinkedMeetingScalarFieldEnum.schema.ts
 
-export const ProjectLinkedMeetingScalarFieldEnumSchema = z.enum(['id', 'projectId', 'joinUrl', 'subject', 'organizer', 'includedInDigest', 'linkedAt', 'deactivatedAt', 'deactivatedById', 'consecutiveFailures', 'lastErrorMessage', 'lastErrorAt', 'userId', 'organizationId'])
+export const ProjectLinkedMeetingScalarFieldEnumSchema = z.enum(['id', 'projectId', 'joinUrl', 'subject', 'organizer', 'includedInDigest', 'linkedAt', 'deactivatedAt', 'deactivatedById', 'consecutiveFailures', 'lastErrorMessage', 'lastErrorAt', 'userId', 'organizationId', 'parlumeAutoJoin', 'parlumeAutoJoinUserId', 'parlumeAutoJoinToolsReadOnly', 'parlumeAutoJoinSuggestions', 'parlumeAutoJoinError', 'parlumeAutoJoinErrorAt'])
 
 export type ProjectLinkedMeetingScalarFieldEnum = z.infer<typeof ProjectLinkedMeetingScalarFieldEnumSchema>;
 
+// File: OrganizationParlumeSettingsScalarFieldEnum.schema.ts
+
+export const OrganizationParlumeSettingsScalarFieldEnumSchema = z.enum(['id', 'organizationId', 'encryptedAttendeeApiKey', 'attendeeBaseUrl', 'teamsLoginMode', 'realtimeDeployment', 'updatedById', 'createdAt', 'updatedAt'])
+
+export type OrganizationParlumeSettingsScalarFieldEnum = z.infer<typeof OrganizationParlumeSettingsScalarFieldEnumSchema>;
+
 // File: ParlumeMeetingSessionScalarFieldEnum.schema.ts
 
-export const ParlumeMeetingSessionScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'agentKind', 'agentLabel', 'agentInstanceSId', 'agentInstanceVersionId', 'agentInstanceVersion', 'providerBotId', 'streamTokenDigest', 'status', 'wakePhrase', 'toolsReadOnly', 'suggestionsEnabled', 'endReason', 'lastError', 'joinedAt', 'hardStopAt', 'leaveRequestedAt', 'captureStoppedAt', 'terminalCallbackAt', 'streamClosedAt', 'streamGeneration', 'voiceGeneration', 'finalizationStartedAt', 'finalizedAt', 'transcriptContextId', 'providerDataDeletedAt', 'activeTurnId', 'endedAt', 'createdAt', 'updatedAt'])
+export const ParlumeMeetingSessionScalarFieldEnumSchema = z.enum(['id', 'projectId', 'organizationId', 'userId', 'agentKind', 'agentLabel', 'agentInstanceSId', 'agentInstanceVersionId', 'agentInstanceVersion', 'providerBotId', 'streamTokenDigest', 'status', 'wakePhrase', 'toolsReadOnly', 'suggestionsEnabled', 'endReason', 'lastError', 'joinedAt', 'hardStopAt', 'leaveRequestedAt', 'captureStoppedAt', 'terminalCallbackAt', 'streamClosedAt', 'streamGeneration', 'voiceGeneration', 'finalizationStartedAt', 'finalizedAt', 'transcriptContextId', 'providerDataDeletedAt', 'activeTurnId', 'endedAt', 'trigger', 'linkedMeetingId', 'occurrenceStart', 'createdAt', 'updatedAt'])
 
 export type ParlumeMeetingSessionScalarFieldEnum = z.infer<typeof ParlumeMeetingSessionScalarFieldEnumSchema>;
 
@@ -768,7 +780,7 @@ export type ProjectLinkedSlackChannelSeenMessageScalarFieldEnum = z.infer<typeof
 
 // File: PendingBacklogProposalScalarFieldEnum.schema.ts
 
-export const PendingBacklogProposalScalarFieldEnumSchema = z.enum(['id', 'projectId', 'source', 'status', 'proposal', 'summary', 'changeCount', 'sourceMetadata', 'appliedChangeIndexes', 'applyWorkflowId', 'applyStartedAt', 'applyError', 'errorClass', 'errorMessage', 'failedAt', 'createdAt', 'reviewedAt', 'reviewedBy', 'appliedAt', 'userId', 'organizationId'])
+export const PendingBacklogProposalScalarFieldEnumSchema = z.enum(['id', 'projectId', 'source', 'status', 'proposal', 'summary', 'changeCount', 'sourceMetadata', 'appliedChangeIndexes', 'applyWorkflowId', 'applyReviewId', 'applyReviewWorkflowId', 'applyStartedAt', 'applyError', 'errorClass', 'errorMessage', 'failedAt', 'createdAt', 'reviewedAt', 'reviewedBy', 'appliedAt', 'userId', 'organizationId'])
 
 export type PendingBacklogProposalScalarFieldEnum = z.infer<typeof PendingBacklogProposalScalarFieldEnumSchema>;
 
@@ -777,6 +789,24 @@ export type PendingBacklogProposalScalarFieldEnum = z.infer<typeof PendingBacklo
 export const PendingBacklogProposalApplicationScalarFieldEnumSchema = z.enum(['id', 'proposalId', 'changeIndex', 'createdEntityType', 'createdEntityId', 'action', 'createdAt'])
 
 export type PendingBacklogProposalApplicationScalarFieldEnum = z.infer<typeof PendingBacklogProposalApplicationScalarFieldEnumSchema>;
+
+// File: PendingBacklogProposalDuplicateResolutionScalarFieldEnum.schema.ts
+
+export const PendingBacklogProposalDuplicateResolutionScalarFieldEnumSchema = z.enum(['id', 'proposalId', 'changeIndex', 'existingEntityType', 'existingEntityId', 'createdAt'])
+
+export type PendingBacklogProposalDuplicateResolutionScalarFieldEnum = z.infer<typeof PendingBacklogProposalDuplicateResolutionScalarFieldEnumSchema>;
+
+// File: PendingBacklogProposalReviewScalarFieldEnum.schema.ts
+
+export const PendingBacklogProposalReviewScalarFieldEnumSchema = z.enum(['id', 'proposalId', 'reviewedBy', 'createdAt', 'offeredCount', 'offeredListComplete', 'selectedCount', 'syncToPM', 'pmConfig'])
+
+export type PendingBacklogProposalReviewScalarFieldEnum = z.infer<typeof PendingBacklogProposalReviewScalarFieldEnumSchema>;
+
+// File: PendingBacklogProposalReviewEntryScalarFieldEnum.schema.ts
+
+export const PendingBacklogProposalReviewEntryScalarFieldEnumSchema = z.enum(['id', 'reviewId', 'proposalId', 'offeredIndex', 'changeIndex', 'selected', 'change', 'pmSyncOverride'])
+
+export type PendingBacklogProposalReviewEntryScalarFieldEnum = z.infer<typeof PendingBacklogProposalReviewEntryScalarFieldEnumSchema>;
 
 // File: RecurringErrorSignatureScalarFieldEnum.schema.ts
 
@@ -948,7 +978,7 @@ export type ProjectStoryStatusScalarFieldEnum = z.infer<typeof ProjectStoryStatu
 
 // File: UserStoryScalarFieldEnum.schema.ts
 
-export const UserStoryScalarFieldEnumSchema = z.enum(['id', 'projectId', 'statusId', 'identifier', 'title', 'description', 'acceptanceCriteria', 'kind', 'priority', 'size', 'storyPoints', 'order', 'roadmapOrder', 'priorityOrder', 'priorityChangedAt', 'priorityChangeReason', 'labels', 'createdById', 'assigneeId', 'externalId', 'externalUrl', 'externalMcpServerId', 'externalPmTarget', 'pmAutoSyncEnabled', 'lastSyncedStatusId', 'pipelineExecutionId', 'source', 'originTestCaseId', 'bugFingerprint', 'sourceMeetingTranscriptId', 'createdFromProposalId', 'aiRecommendationBatchId', 'aiBatchProtectedAt', 'aiBatchProtectedById', 'firstHumanEditAt', 'sourceRef', 'proposalApplicationKey', 'sourceDependencyRaw', 'dependsOnRefs', 'dependsOnPhases', 'deliveryTrack', 'trackRationale', 'trackSetBy', 'trackUpdatedAt', 'estimateConfidence', 'aiGeneratedTitle', 'titleSource', 'releaseNotes', 'draftingStage', 'draftingStageUpdatedAt', 'maturationStatus', 'coverageOverrideReason', 'coverageOverrideById', 'coverageOverrideAt', 'pmTicketTerminal', 'pmTicketTerminalStatus', 'pmAutoHidden', 'version', 'needsMoreInfo', 'blocked', 'blockedReason', 'reporterName', 'reporterSource', 'reporterSourceUrl', 'lastSyncedPmHash', 'lastSyncedAt', 'lastPmSyncStatus', 'lastPmSyncError', 'lastPmSyncAttemptAt', 'lastPmSyncAttemptId', 'pmCreateClaimId', 'pmCreateClaimedAt', 'pmSyncPendingSince', 'pmStatusSyncBaseId', 'pmStatusSyncBaseAt', 'pmStatusSyncBaseLink', 'pmStatusSyncBaseFabricId', 'mergedIntoStoryId', 'lastEditedAt', 'lastEditedByName', 'lastEditedSource', 'summaryDigest', 'workingNotesContent', 'lastQuestionScanHash', 'lastSummaryHash', 'lastContextUpdateAt', 'maturationV2OptedIn', 'autoProposeAnswers', 'qaAnalysis', 'cleanSpecApprovalMode', 'decisionLogApprovalMode', 'summaryQuestionsApprovalMode', 'createdAt', 'updatedAt'])
+export const UserStoryScalarFieldEnumSchema = z.enum(['id', 'projectId', 'statusId', 'identifier', 'title', 'description', 'acceptanceCriteria', 'kind', 'priority', 'size', 'storyPoints', 'order', 'roadmapOrder', 'priorityOrder', 'priorityChangedAt', 'priorityChangeReason', 'labels', 'createdById', 'assigneeId', 'externalId', 'externalUrl', 'externalMcpServerId', 'externalPmTarget', 'pmAutoSyncEnabled', 'lastSyncedStatusId', 'pipelineExecutionId', 'source', 'originTestCaseId', 'bugFingerprint', 'sourceMeetingTranscriptId', 'createdFromProposalId', 'aiRecommendationBatchId', 'aiBatchProtectedAt', 'aiBatchProtectedById', 'firstHumanEditAt', 'sourceRef', 'proposalApplicationKey', 'sourceDependencyRaw', 'dependsOnRefs', 'dependsOnPhases', 'deliveryTrack', 'trackRationale', 'trackSetBy', 'trackUpdatedAt', 'estimateConfidence', 'aiGeneratedTitle', 'titleSource', 'releaseNotes', 'draftingStage', 'draftingStageUpdatedAt', 'maturationStatus', 'coverageOverrideReason', 'coverageOverrideById', 'coverageOverrideAt', 'pmTicketTerminal', 'pmTicketTerminalStatus', 'pmTicketStatus', 'pmTicketStatusExternalId', 'pmAutoHidden', 'version', 'needsMoreInfo', 'blocked', 'blockedReason', 'reporterName', 'reporterSource', 'reporterSourceUrl', 'lastSyncedPmHash', 'lastSyncedAt', 'lastPmSyncStatus', 'lastPmSyncError', 'lastPmSyncAttemptAt', 'lastPmSyncAttemptId', 'pmCreateClaimId', 'pmCreateClaimedAt', 'pmSyncPendingSince', 'pmStatusSyncBaseId', 'pmStatusSyncBaseAt', 'pmStatusSyncBaseLink', 'pmStatusSyncBaseFabricId', 'mergedIntoStoryId', 'lastEditedAt', 'lastEditedByName', 'lastEditedSource', 'summaryDigest', 'workingNotesContent', 'lastQuestionScanHash', 'lastSummaryHash', 'lastContextUpdateAt', 'maturationV2OptedIn', 'autoProposeAnswers', 'qaAnalysis', 'cleanSpecApprovalMode', 'decisionLogApprovalMode', 'summaryQuestionsApprovalMode', 'createdAt', 'updatedAt'])
 
 export type UserStoryScalarFieldEnum = z.infer<typeof UserStoryScalarFieldEnumSchema>;
 
@@ -1770,7 +1800,7 @@ export type ApprovalTemplateScalarFieldEnum = z.infer<typeof ApprovalTemplateSca
 
 // File: AiUsageLogScalarFieldEnum.schema.ts
 
-export const AiUsageLogScalarFieldEnumSchema = z.enum(['id', 'userId', 'organizationId', 'projectId', 'providerConfigId', 'provider', 'modelCanonicalName', 'providerModelId', 'taskType', 'agentId', 'conversationId', 'frameId', 'workflowExecutionId', 'featureKey', 'promptVersionId', 'jobType', 'inputTokens', 'outputTokens', 'totalTokens', 'cachedInputTokens', 'cacheCreationInputTokens', 'reasoningTokens', 'costCents', 'costMicroUsd', 'gatewayGenerationId', 'costIsActual', 'latencyMs', 'billingCategory', 'billingCustomerId', 'success', 'errorMessage', 'errorStatusCode', 'errorDetails', 'createdAt'])
+export const AiUsageLogScalarFieldEnumSchema = z.enum(['id', 'userId', 'organizationId', 'projectId', 'providerConfigId', 'provider', 'modelCanonicalName', 'providerModelId', 'taskType', 'agentId', 'conversationId', 'frameId', 'workflowExecutionId', 'featureKey', 'promptVersionId', 'jobType', 'callPurpose', 'inputTokens', 'outputTokens', 'totalTokens', 'cachedInputTokens', 'cacheCreationInputTokens', 'reasoningTokens', 'costCents', 'costMicroUsd', 'gatewayGenerationId', 'costIsActual', 'latencyMs', 'billingCategory', 'billingCustomerId', 'success', 'errorMessage', 'errorStatusCode', 'errorDetails', 'createdAt'])
 
 export type AiUsageLogScalarFieldEnum = z.infer<typeof AiUsageLogScalarFieldEnumSchema>;
 
@@ -2782,6 +2812,12 @@ export const AtlasCrossLinkStatusSchema = z.enum(['PENDING', 'RUNNING', 'READY',
 
 export type AtlasCrossLinkStatus = z.infer<typeof AtlasCrossLinkStatusSchema>;
 
+// File: ParlumeTeamsLoginMode.schema.ts
+
+export const ParlumeTeamsLoginModeSchema = z.enum(['ALWAYS', 'ONLY_IF_REQUIRED'])
+
+export type ParlumeTeamsLoginMode = z.infer<typeof ParlumeTeamsLoginModeSchema>;
+
 // File: ParlumeMeetingAgentKind.schema.ts
 
 export const ParlumeMeetingAgentKindSchema = z.enum(['FABRIC_AGENT', 'TEMPLATE_INSTANCE'])
@@ -2796,9 +2832,15 @@ export type ParlumeMeetingSessionStatus = z.infer<typeof ParlumeMeetingSessionSt
 
 // File: ParlumeMeetingEndReason.schema.ts
 
-export const ParlumeMeetingEndReasonSchema = z.enum(['STOPPED', 'REMOVED', 'IDLE', 'ACCESS_REVOKED', 'STREAM_ERROR', 'MAX_DURATION', 'PROVIDER_FAILED', 'START_FAILED'])
+export const ParlumeMeetingEndReasonSchema = z.enum(['STOPPED', 'REMOVED', 'IDLE', 'ACCESS_REVOKED', 'STREAM_ERROR', 'MAX_DURATION', 'PROVIDER_FAILED', 'START_FAILED', 'NOT_ADMITTED'])
 
 export type ParlumeMeetingEndReason = z.infer<typeof ParlumeMeetingEndReasonSchema>;
+
+// File: ParlumeSessionTrigger.schema.ts
+
+export const ParlumeSessionTriggerSchema = z.enum(['MANUAL', 'AUTO'])
+
+export type ParlumeSessionTrigger = z.infer<typeof ParlumeSessionTriggerSchema>;
 
 // File: ParlumeMeetingTurnStatus.schema.ts
 
@@ -4484,6 +4526,25 @@ export const AiCreditAccountSchema = z.object({
 export type AiCreditAccountType = z.infer<typeof AiCreditAccountSchema>;
 
 
+// File: AiOutputProvenance.schema.ts
+
+export const AiOutputProvenanceSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  projectId: z.string().nullish(),
+  subjectType: z.string(),
+  subjectId: z.string(),
+  agentId: z.string().nullish(),
+  modelCanonicalName: z.string().nullish(),
+  promptVersionId: z.string().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type AiOutputProvenanceType = z.infer<typeof AiOutputProvenanceSchema>;
+
+
 // File: AiOutcomeEvent.schema.ts
 
 export const AiOutcomeEventSchema = z.object({
@@ -4995,8 +5056,8 @@ export const ConversationTurnSchema = z.object({
   budgetContractVersion: z.number().int().nullish(),
   tokenAllowance: z.number().int().nullish(),
   finalizationReserveTokens: z.number().int().nullish(),
-  measuredTokens: z.bigint().default(BigInt(0)),
-  outstandingTokens: z.bigint().default(BigInt(0)),
+  measuredTokens: z.bigint().default(BigInt("0")),
+  outstandingTokens: z.bigint().default(BigInt("0")),
   budgetEnforcement: ConversationTurnBudgetEnforcementSchema.nullish(),
   createdAt: z.date(),
   updatedAt: z.date(),
@@ -5018,6 +5079,7 @@ export const ConversationTurnAttemptSchema = z.object({
   reservedTokens: z.number().int(),
   status: ConversationTurnAttemptStatusSchema.default("RESERVED"),
   inputTokens: z.number().int().nullish(),
+  cacheReadTokens: z.number().int().nullish(),
   outputTokens: z.number().int().nullish(),
   workflowId: z.string().nullish(),
   runId: z.string().nullish(),
@@ -6702,9 +6764,32 @@ export const ProjectLinkedMeetingSchema = z.object({
   lastErrorAt: z.date().nullish(),
   userId: z.string().nullish(),
   organizationId: z.string().nullish(),
+  parlumeAutoJoin: z.boolean(),
+  parlumeAutoJoinUserId: z.string().nullish(),
+  parlumeAutoJoinToolsReadOnly: z.boolean().default(true),
+  parlumeAutoJoinSuggestions: z.boolean().default(true),
+  parlumeAutoJoinError: z.string().nullish(),
+  parlumeAutoJoinErrorAt: z.date().nullish(),
 });
 
 export type ProjectLinkedMeetingType = z.infer<typeof ProjectLinkedMeetingSchema>;
+
+
+// File: OrganizationParlumeSettings.schema.ts
+
+export const OrganizationParlumeSettingsSchema = z.object({
+  id: z.string(),
+  organizationId: z.string(),
+  encryptedAttendeeApiKey: z.string().nullish(),
+  attendeeBaseUrl: z.string().nullish(),
+  teamsLoginMode: ParlumeTeamsLoginModeSchema.nullish(),
+  realtimeDeployment: z.string().nullish(),
+  updatedById: z.string().nullish(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type OrganizationParlumeSettingsType = z.infer<typeof OrganizationParlumeSettingsSchema>;
 
 
 // File: ParlumeMeetingSession.schema.ts
@@ -6741,6 +6826,9 @@ export const ParlumeMeetingSessionSchema = z.object({
   providerDataDeletedAt: z.date().nullish(),
   activeTurnId: z.string().nullish(),
   endedAt: z.date().nullish(),
+  trigger: ParlumeSessionTriggerSchema.default("MANUAL"),
+  linkedMeetingId: z.string().nullish(),
+  occurrenceStart: z.date().nullish(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
@@ -7175,6 +7263,8 @@ export const PendingBacklogProposalSchema = z.object({
   sourceMetadata: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
   appliedChangeIndexes: z.array(z.number().int()),
   applyWorkflowId: z.string().nullish(),
+  applyReviewId: z.string().nullish(),
+  applyReviewWorkflowId: z.string().nullish(),
   applyStartedAt: z.date().nullish(),
   applyError: z.string().nullish(),
   errorClass: z.string().nullish(),
@@ -7204,6 +7294,53 @@ export const PendingBacklogProposalApplicationSchema = z.object({
 });
 
 export type PendingBacklogProposalApplicationType = z.infer<typeof PendingBacklogProposalApplicationSchema>;
+
+
+// File: PendingBacklogProposalDuplicateResolution.schema.ts
+
+export const PendingBacklogProposalDuplicateResolutionSchema = z.object({
+  id: z.string(),
+  proposalId: z.string(),
+  changeIndex: z.number().int(),
+  existingEntityType: z.string().nullish(),
+  existingEntityId: z.string().nullish(),
+  createdAt: z.date(),
+});
+
+export type PendingBacklogProposalDuplicateResolutionType = z.infer<typeof PendingBacklogProposalDuplicateResolutionSchema>;
+
+
+// File: PendingBacklogProposalReview.schema.ts
+
+export const PendingBacklogProposalReviewSchema = z.object({
+  id: z.string(),
+  proposalId: z.string(),
+  reviewedBy: z.string(),
+  createdAt: z.date(),
+  offeredCount: z.number().int(),
+  offeredListComplete: z.boolean(),
+  selectedCount: z.number().int(),
+  syncToPM: z.boolean(),
+  pmConfig: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+});
+
+export type PendingBacklogProposalReviewType = z.infer<typeof PendingBacklogProposalReviewSchema>;
+
+
+// File: PendingBacklogProposalReviewEntry.schema.ts
+
+export const PendingBacklogProposalReviewEntrySchema = z.object({
+  id: z.string(),
+  reviewId: z.string(),
+  proposalId: z.string(),
+  offeredIndex: z.number().int(),
+  changeIndex: z.number().int().nullish(),
+  selected: z.boolean(),
+  change: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+  pmSyncOverride: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").nullish(),
+});
+
+export type PendingBacklogProposalReviewEntryType = z.infer<typeof PendingBacklogProposalReviewEntrySchema>;
 
 
 // File: RecurringErrorSignature.schema.ts
@@ -7859,6 +7996,8 @@ export const UserStorySchema = z.object({
   coverageOverrideAt: z.date().nullish(),
   pmTicketTerminal: z.boolean(),
   pmTicketTerminalStatus: z.string().nullish(),
+  pmTicketStatus: z.string().nullish(),
+  pmTicketStatusExternalId: z.string().nullish(),
   pmAutoHidden: z.boolean(),
   version: z.number().int().default(1),
   needsMoreInfo: z.boolean(),
@@ -9395,7 +9534,7 @@ export type MCPServerType = z.infer<typeof MCPServerSchema>;
 
 export const McpRegistryVersionSchema = z.object({
   id: z.number().int(),
-  version: z.bigint().default(BigInt(1)),
+  version: z.bigint().default(BigInt("1")),
   updatedAt: z.date(),
 });
 
@@ -10929,6 +11068,7 @@ export const AiUsageLogSchema = z.object({
   featureKey: z.string().nullish(),
   promptVersionId: z.string().nullish(),
   jobType: z.string().nullish(),
+  callPurpose: z.string().nullish(),
   inputTokens: z.number().int(),
   outputTokens: z.number().int(),
   totalTokens: z.number().int(),
@@ -10983,8 +11123,8 @@ export const AiUsageLimitCounterSchema = z.object({
   id: z.string(),
   limitId: z.string(),
   windowStart: z.date(),
-  usedTokens: z.bigint().default(BigInt(0)),
-  usedMicroUsd: z.bigint().default(BigInt(0)),
+  usedTokens: z.bigint().default(BigInt("0")),
+  usedMicroUsd: z.bigint().default(BigInt("0")),
   createdAt: z.date(),
   lastUpdatedAt: z.date(),
 });

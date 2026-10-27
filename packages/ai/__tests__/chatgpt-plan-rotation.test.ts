@@ -52,6 +52,7 @@ const state = vi.hoisted(() => ({
 	apiFallbackInteractive: "ASK" as "ASK" | "AUTO",
 	orgHasLlm: false,
 	apiModel: null as MockLanguageModelV4 | null,
+	apiOutputCap: 16384,
 }));
 
 vi.mock("@repo/logs", () => ({
@@ -144,7 +145,13 @@ vi.mock("@repo/database", () => ({
 	getUserModelPreference: async () => null,
 	getModelForTask: async (_userId: string, provider: string) =>
 		state.orgHasLlm && provider === ORG_PROVIDER.provider
-			? ORG_SELECTION
+			? {
+					...ORG_SELECTION,
+					model: {
+						...ORG_SELECTION.model,
+						maxOutputTokens: state.apiOutputCap,
+					},
+				}
 			: null,
 	organizationHasLlmApiProvider: async () => state.orgHasLlm,
 	touchChatGptPlanCredential: async () => {},
@@ -445,6 +452,7 @@ beforeEach(() => {
 	state.apiFallbackInteractive = "ASK";
 	state.orgHasLlm = false;
 	state.apiModel = null;
+	state.apiOutputCap = 16384;
 	state.limits.mockReset();
 });
 
@@ -1006,13 +1014,50 @@ describe("the plan's fallback model (Fizzy #3026)", () => {
 	});
 });
 
-describe('every plan spent mid-turn under "Use API billing" (Fizzy #3048)', () => {
+describe('plans exhausted mid-turn under "Use API billing" (Fizzy #3048)', () => {
 	beforeEach(() => {
 		state.accounts = [account("acc_A")];
 		state.apiFallbackInteractive = "AUTO";
 		state.orgHasLlm = true;
 		state.apiModel = apiModel("From the API");
 	});
+
+	it.each(["generate", "stream"] as const)(
+		"caps an unledgered API handoff during %s",
+		async (mode) => {
+			state.apiOutputCap = 8192;
+			openai({ "org:acc_A": refusedSpent });
+			const resolved = await getAIModelWithMetadata(
+				{ taskType: "CHAT" },
+				ELIGIBLE,
+			);
+			if (mode === "generate") {
+				expect(
+					(
+						await generateText({
+							model: resolved.model,
+							prompt: "Example",
+							maxOutputTokens: 16384,
+						})
+					).text,
+				).toBe("From the API");
+				expect(
+					state.apiModel?.doGenerateCalls[0]?.maxOutputTokens,
+				).toBe(8192);
+			} else {
+				expect(
+					await streamText({
+						model: resolved.model,
+						prompt: "Example",
+						maxOutputTokens: 16384,
+					}).text,
+				).toBe("From the API");
+				expect(state.apiModel?.doStreamCalls[0]?.maxOutputTokens).toBe(
+					8192,
+				);
+			}
+		},
+	);
 
 	it("moves a call the last plan refused before any output to the organization's provider, billed there", async () => {
 		const calls = openai({ "org:acc_A": refusedSpent });

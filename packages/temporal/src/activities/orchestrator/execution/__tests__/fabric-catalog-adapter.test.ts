@@ -150,7 +150,11 @@ describe("runFabricCatalogTool — live roadmap reads", () => {
 
 		expect(h.createFabricTool).toHaveBeenCalledWith(
 			"fabric_list_project_features",
-			{ userId: "u1", organizationId: "org-1", projectId: "p1" },
+			{
+				userId: "u1",
+				organizationId: "org-1",
+				projectId: "p1",
+			},
 		);
 		expect(res).toEqual({
 			success: false,

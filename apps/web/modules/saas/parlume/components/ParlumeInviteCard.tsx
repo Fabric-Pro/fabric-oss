@@ -1,6 +1,7 @@
 "use client";
 
-import { isTeamsMeetingUrl } from "@repo/api/modules/projects/lib/parlume-attendee";
+import { ORPCError } from "@orpc/client";
+import { isTeamsMeetingUrl } from "@repo/api/modules/projects/lib/parlume-meeting-url";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -31,6 +32,7 @@ import {
 	ParlumeAgentPicker,
 } from "./ParlumeAgentPicker";
 import { ParlumeModePicker } from "./ParlumeModePicker";
+import { ParlumeReadinessChecklist } from "./ParlumeReadinessChecklist";
 import { ParlumeSuggestionsToggle } from "./ParlumeSuggestionsToggle";
 
 function UrlHint({ url, valid }: { url: string; valid: boolean }) {
@@ -61,7 +63,14 @@ function UrlHint({ url, valid }: { url: string; valid: boolean }) {
  * Custom agents must carry this project's project-context binding; the server
  * rechecks that binding at start.
  */
-export function ParlumeInviteCard({ projectId }: { projectId: string }) {
+export function ParlumeInviteCard({
+	projectId,
+	settingsBasePath,
+}: {
+	projectId: string;
+	/** `/app/{org}/settings`, where the readiness checklist links to. */
+	settingsBasePath: string;
+}) {
 	const queryClient = useQueryClient();
 	const [agentSelection, setAgentSelection] = useState(FABRIC_AGENT_KIND);
 	const [meetingUrl, setMeetingUrl] = useState("");
@@ -80,6 +89,7 @@ export function ParlumeInviteCard({ projectId }: { projectId: string }) {
 	});
 	const agents = agentsQuery.data?.agents ?? [];
 	const operatorReady = agentsQuery.data?.operatorReady !== false;
+	const readiness = agentsQuery.data?.readiness;
 	const selectedAgent = agents.find(
 		(agent) => agentKey(agent) === agentSelection,
 	);
@@ -87,7 +97,7 @@ export function ParlumeInviteCard({ projectId }: { projectId: string }) {
 	const url = meetingUrl.trim();
 	const urlValid = isTeamsMeetingUrl(url);
 	const blockedReason = !operatorReady
-		? "Parlume is not configured for invitations in this environment"
+		? "Finish Parlume's setup first"
 		: !selectedAgent
 			? "Choose an agent first"
 			: !urlValid
@@ -123,12 +133,11 @@ export function ParlumeInviteCard({ projectId }: { projectId: string }) {
 				}),
 			]);
 		} catch (inviteError) {
-			const message =
-				inviteError instanceof Error ? inviteError.message : "";
+			// The server's own refusal names what to fix: a missing setting, or
+			// the meeting provider's reason. Anything else is a transport failure.
 			setError(
-				message.includes("not ready") ||
-					message.includes("needs a voice")
-					? "Parlume needs operator setup in this environment before it can join meetings."
+				inviteError instanceof ORPCError && inviteError.message
+					? inviteError.message
 					: "Parlume could not join this meeting. Check the link and try again.",
 			);
 		} finally {
@@ -148,15 +157,11 @@ export function ParlumeInviteCard({ projectId }: { projectId: string }) {
 				</p>
 			</CardHeader>
 			<CardContent className="space-y-6 p-6 pt-0">
-				{!operatorReady && (
-					<p
-						className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-						role="alert"
-					>
-						Parlume is not configured for invitations in this
-						environment. An operator must complete its media setup
-						before a meeting link can be used.
-					</p>
+				{!operatorReady && readiness && (
+					<ParlumeReadinessChecklist
+						readiness={readiness}
+						settingsBasePath={settingsBasePath}
+					/>
 				)}
 
 				<div className="space-y-2">

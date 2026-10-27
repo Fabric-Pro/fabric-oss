@@ -19,6 +19,7 @@
  * Run with: pnpm --filter web test modules/saas/mcp/lib/gateway/__tests__/platform-tool-write-permissions
  */
 
+import { RETIRED_TYPE_MESSAGE } from "@repo/utils/document-type-catalog";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -722,6 +723,27 @@ describe("an organization key stays inside its own organization on writes", () =
 
 			expect(result.isError).toBeUndefined();
 			expect(mocks.createDocument).toHaveBeenCalled();
+		});
+
+		it("refuses to create a retired Features document, without a write", async () => {
+			memberOfProjectInOrgA();
+
+			const result = await executePlatformTool(
+				"fabric_create_document",
+				{
+					projectId: "proj-1",
+					type: "USER_STORY",
+					title: "Features",
+					content: "Body",
+				},
+				orgKeyInA,
+			);
+
+			expect(result.isError).toBe(true);
+			expect(JSON.parse(text(result))).toEqual({
+				error: RETIRED_TYPE_MESSAGE,
+			});
+			expect(mocks.createDocument).not.toHaveBeenCalled();
 		});
 	});
 });

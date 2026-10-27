@@ -94,6 +94,7 @@ describe("NOT_FOR_PAGES", () => {
 		"fabric_publish_workflow",
 		"fabric_create_frame",
 		"fabric_update_frame",
+		"fabric_edit_frame_block",
 		"fabric_create_slideshow",
 		"fabric_get_identity",
 		"fabric_list_organizations",

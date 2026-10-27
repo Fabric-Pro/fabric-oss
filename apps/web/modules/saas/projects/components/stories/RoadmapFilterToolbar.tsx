@@ -7,9 +7,6 @@ import {
 	activeMoreFilterCount,
 	type RoadmapFilters,
 } from "../../lib/roadmap-filters";
-import { BacklogProposalsButton } from "./BacklogProposalsButton";
-import { PendingProposalsButton } from "./PendingProposalsButton";
-import { ReviewCenterInbox } from "./pm-sync/review-center/ReviewCenterInbox";
 import { RoadmapFilterToolbarView } from "./RoadmapFilterToolbarView";
 
 // The "More filters" disclosure open/closed state persists per browser; the
@@ -43,16 +40,11 @@ export type RoadmapFilterToolbarProps = {
 	aiFallbackNote?: string | null;
 	aiQueryTooShort?: boolean;
 	aiMinQueryLength?: number;
-	/** For the co-located "Review proposals" button (Teams channel monitor). */
 	projectId: string;
 	organizationId: string | null;
-	onOpenProposalsInbox: () => void;
-	/** Opens the proposals inbox focused on the Backlog section (Roadmap "Backlog (N)" pill). */
-	onOpenBacklog: () => void;
-	/** Optional slot rendered at the right of the top bar (sort, history, …). */
+	lanesCount?: number;
+	/** View and sort controls beside the results summary. */
 	trailing?: React.ReactNode;
-	/** Optional view switcher, sharing the result-count lane. */
-	viewSwitcher?: React.ReactNode;
 };
 
 export function RoadmapFilterToolbar({
@@ -78,10 +70,8 @@ export function RoadmapFilterToolbar({
 	aiMinQueryLength,
 	projectId,
 	organizationId,
-	onOpenProposalsInbox,
-	onOpenBacklog,
+	lanesCount,
 	trailing,
-	viewSwitcher,
 }: RoadmapFilterToolbarProps) {
 	// "More filters" disclosure — defaults collapsed; remembered per browser.
 	const [moreExpanded, setMoreExpanded] = useState(false);
@@ -158,23 +148,8 @@ export function RoadmapFilterToolbar({
 			moreExpanded={moreExpanded}
 			onToggleMore={onToggleMore}
 			moreCount={activeMoreFilterCount(filters)}
-			inbox={
-				<>
-					<ReviewCenterInbox />
-					<PendingProposalsButton
-						projectId={projectId}
-						organizationId={organizationId}
-						onOpenInbox={onOpenProposalsInbox}
-					/>
-					<BacklogProposalsButton
-						projectId={projectId}
-						organizationId={organizationId}
-						onOpenBacklog={onOpenBacklog}
-					/>
-				</>
-			}
 			trailing={trailing}
-			viewSwitcher={viewSwitcher}
+			lanesCount={lanesCount}
 			tagOptions={tagOptions}
 		/>
 	);

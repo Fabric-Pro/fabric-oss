@@ -24,6 +24,7 @@ interface ConversationDetail {
 		role: "user" | "assistant" | "system";
 		content: string;
 		timestamp: string;
+		metadata?: Record<string, unknown>;
 		toolCalls?: Array<{
 			id: string;
 			name: string;
@@ -234,6 +235,8 @@ export interface FabricTemporalOrchestratorChatProps {
 export interface CompletedExecution {
 	id: string;
 	userMessage: string;
+	/** Structured question when a saved-message fallback represents a clarification. */
+	userMessageClarification?: ClarificationTurn;
 	/**
 	 * Id of the live stream message that asked this turn, when the turn ran in
 	 * this session. The live list hides a user bubble by this id — never by its

@@ -362,6 +362,8 @@ export type McpToolFailureKind =
 	| "deadline_passed";
 
 export interface ExecuteMcpToolOutput {
+	/** Positive execution-time server/registry declaration; absent on old or unclassified results. */
+	readOnly?: true;
 	output: unknown;
 	durationMs: number;
 	success: boolean;

@@ -17,7 +17,7 @@ const bodySchema = z.object({
 type DeliveryOutcome = z.infer<typeof bodySchema>["outcome"];
 
 /** The bridge's confirmation window; a post seen later was reported missing first. */
-const CONFIRM_WINDOW_MS = 8_000;
+const CONFIRM_WINDOW_MS = 15_000;
 
 function deliveryNote(
 	tag: string,
@@ -82,10 +82,14 @@ export async function POST(request: NextRequest) {
 			select: { id: true, error: true },
 		}));
 	if (noted) {
+		// A late post replaces the "did not appear" note it was reported with.
+		const earlier = noted.error
+			?.replace(deliveryNote(tag, "unconfirmed", latencyMs), "")
+			.trim();
 		const note = deliveryNote(tag, outcome, latencyMs);
 		await db.parlumeMeetingTurn.update({
 			where: { id: noted.id },
-			data: { error: noted.error ? `${noted.error} ${note}` : note },
+			data: { error: earlier ? `${earlier} ${note}` : note },
 		});
 	}
 	return NextResponse.json({ accepted: true });

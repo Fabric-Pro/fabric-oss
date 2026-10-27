@@ -295,7 +295,9 @@ describe("audit.taxonomy handler", () => {
 		// + 1 org.brand_kit.site_fetched (the organization's own website
 		// fetched for the colours it declares; host and outcome code only,
 		// never page content, Fizzy #2946) = 216.
-		expect(result.actions).toHaveLength(216);
+		// + 1 project.parlume.auto_join_changed (a linked series' Parlume
+		// auto-join switched on or off, with its mode and suggestions) = 217.
+		expect(result.actions).toHaveLength(217);
 		expect(result.actions).toContain(
 			"backlog.recurring_errors.scan_failed",
 		);
@@ -354,6 +356,7 @@ describe("audit.taxonomy handler", () => {
 		expect(result.actions).toContain("project.parlume.session_started");
 		expect(result.actions).toContain("project.parlume.session_stopped");
 		expect(result.actions).toContain("project.parlume.action_confirmed");
+		expect(result.actions).toContain("project.parlume.auto_join_changed");
 		expect(result.actions).toContain(
 			"project.context.repository_sync_configured",
 		);

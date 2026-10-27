@@ -1,18 +1,17 @@
 /**
  * Tenant-Isolated Database Client
  *
- * This module provides a Prisma client extension that automatically:
- * 1. Applies tenant isolation filters to all queries (application-level)
- * 2. Sets RLS session variables before queries (database-level)
+ * This module provides a Prisma client extension with two layers of isolation:
+ * 1. Tenant filters on supported model operations (application-level)
+ * 2. Transaction-local tenant variables for PostgreSQL RLS policies
  *
- * This provides defense-in-depth: even if the application filter is bypassed,
- * the database RLS policies will still enforce isolation.
- *
- * Connection Pooling Safety (Neon/PgBouncer Compatible):
- * - Uses transaction-local settings (set_config with is_local=true)
- * - All tenant-aware queries are wrapped in $transaction()
- * - Variables automatically reset when transaction ends
- * - No risk of tenant context leaking between pooled connections
+ * When tenant context is present, a batch $transaction places the set_config
+ * statement and the extension's un-awaited query on the same connection.
+ * PostgreSQL resets these is_local=true settings at transaction end, allowing
+ * pooled connections to be reused without retaining this transaction's context.
+ * Queries without tenant context retain the base client's RLS behavior.
+ * The client extension rejects public $transaction calls; for transactional
+ * work use withRLSContext(db, tx => …) and issue every query through its tx.
  *
  * Usage:
  *   import { getTenantDb } from './tenant-db';
@@ -235,6 +234,7 @@ const USER_OWNED_TABLES = new Set([
 	"Workspace",
 	"WizardTempContext", // Temporary file storage during project wizard
 	"AiUsageLog", // Can have both userId and orgId - org admins see all org usage
+	"AiOutputProvenance",
 	"AiOutcomeEvent", // Human verdicts on AI output; same shape as AiUsageLog
 	"AgentExecutionStep", // Agent deployment execution steps
 	"AgentDeploymentTrigger", // Agent deployment triggers
@@ -270,6 +270,7 @@ const ORG_ONLY_TABLES = new Set([
 	"CloudProviderConfig",
 	"OrganizationRagProvider",
 	"OrganizationSearchProvider",
+	"OrganizationParlumeSettings",
 	"OrganizationApiKey",
 	"OrganizationModelPreference",
 	"OrganizationEvalBudget",
@@ -430,6 +431,7 @@ const PROJECT_SCOPED_TABLES: Record<string, string> = {
 	KanbanQueue: "projectId",
 	CodingRun: "projectId",
 	AiOutcomeEvent: "projectId",
+	AiOutputProvenance: "projectId",
 	GlossyEdition: "projectId",
 	GlossyBuild: "projectId",
 	GlossyVisualDecision: "projectId",
@@ -470,7 +472,19 @@ const PARENT_SCOPED_TABLES: Record<
 > = {
 	// project_stage_approver.userId is the *approver*, not a tenant column.
 	ProjectStageApprover: { relation: "project", projectPath: "projectId" },
+	PendingBacklogProposalDuplicateResolution: {
+		relation: "proposal",
+		projectPath: "proposal.projectId",
+	},
 	PendingBacklogProposalApplication: {
+		relation: "proposal",
+		projectPath: "proposal.projectId",
+	},
+	PendingBacklogProposalReview: {
+		relation: "proposal",
+		projectPath: "proposal.projectId",
+	},
+	PendingBacklogProposalReviewEntry: {
 		relation: "proposal",
 		projectPath: "proposal.projectId",
 	},
@@ -706,6 +720,7 @@ export function mergeWithTenantFilter(
 	modelName: string,
 	existingWhere: any,
 	access: "read" | "write" = "write",
+	preserveUniqueFields = false,
 ): any {
 	const tenantFilter = getTenantFilter(modelName);
 	const projectCarveOut = getProjectCarveOut(modelName);
@@ -714,14 +729,35 @@ export function mergeWithTenantFilter(
 		return existingWhere;
 	}
 
+	const merge = (filter: any): any => {
+		if (!existingWhere) {
+			return filter;
+		}
+		if (preserveUniqueFields) {
+			// WhereUniqueInput needs a unique selector outside boolean operators.
+			const existingAnd = existingWhere.AND;
+			return {
+				...existingWhere,
+				AND: [
+					...(existingAnd === undefined
+						? []
+						: Array.isArray(existingAnd)
+							? existingAnd
+							: [existingAnd]),
+					filter,
+				],
+			};
+		}
+		return { AND: [existingWhere, filter] };
+	};
+
 	// Handle scope-based tables specially
 	if (SCOPE_BASED_TABLES.has(modelName)) {
 		const ctx = getTenantContext();
 		const isOrgContext = ctx.type === "organization";
 		const orgScopeValue = SCOPE_ORG_VALUE[modelName] || "ORGANIZATION";
 
-		return {
-			...existingWhere,
+		return merge({
 			OR: [
 				{ scope: "SYSTEM" },
 				isOrgContext
@@ -731,7 +767,7 @@ export function mergeWithTenantFilter(
 						}
 					: { scope: "USER", userId: ctx.userId },
 			],
-		};
+		});
 	}
 
 	// Project-scoped tables with an active carve-out.
@@ -749,17 +785,11 @@ export function mergeWithTenantFilter(
 	if (projectCarveOut) {
 		if (!tenantFilter) {
 			// Case (b)
-			if (!existingWhere) {
-				return projectCarveOut;
-			}
-			return { AND: [existingWhere, projectCarveOut] };
+			return merge(projectCarveOut);
 		}
 		// Case (a)
 		const unionFilter = { OR: [tenantFilter, projectCarveOut] };
-		if (!existingWhere) {
-			return unionFilter;
-		}
-		return { AND: [existingWhere, unionFilter] };
+		return merge(unionFilter);
 	}
 
 	// Standard merge. A read of a table whose owner can share a row also
@@ -769,13 +799,7 @@ export function mergeWithTenantFilter(
 	const filter = sharedRead
 		? { OR: [tenantFilter, sharedRead] }
 		: tenantFilter;
-	if (!existingWhere) {
-		return filter;
-	}
-
-	return {
-		AND: [existingWhere, filter],
-	};
+	return merge(filter);
 }
 
 function getOrgSharedReadFilter(
@@ -793,45 +817,6 @@ function getOrgSharedReadFilter(
 }
 
 // ============================================================================
-// RLS Context Setting
-// ============================================================================
-
-/**
- * Execute SQL to set RLS session variables.
- * Should be called at the start of each transaction/connection.
- */
-export async function setRLSContext(client: PrismaClient): Promise<void> {
-	const ctx = getTenantContext();
-
-	if (!hasTenantContext()) {
-		// Set safe defaults that will block all access
-		await client.$executeRawUnsafe(
-			"SELECT set_config('app.tenant_type', 'none', true)",
-		);
-		await client.$executeRawUnsafe(
-			"SELECT set_config('app.tenant_id', '', true)",
-		);
-		await client.$executeRawUnsafe(
-			"SELECT set_config('app.user_id', '', true)",
-		);
-		return;
-	}
-
-	await client.$executeRawUnsafe(
-		`SELECT set_config('app.tenant_type', $1, true)`,
-		ctx.type,
-	);
-	await client.$executeRawUnsafe(
-		`SELECT set_config('app.tenant_id', $1, true)`,
-		ctx.tenantId ?? "",
-	);
-	await client.$executeRawUnsafe(
-		`SELECT set_config('app.user_id', $1, true)`,
-		ctx.userId ?? "",
-	);
-}
-
-// ============================================================================
 // Prisma Client Extension
 // ============================================================================
 
@@ -843,19 +828,30 @@ let _tenantDbInstance: ReturnType<typeof createTenantDb> | null = null;
  *
  * This extension provides TWO layers of protection:
  * 1. Application-level: Automatically injects tenant filters into WHERE clauses
- * 2. Database-level: Sets PostgreSQL session variables for RLS policies
+ * 2. Database-level: Supplies transaction-local variables to RLS policies
  *
- * Both layers work together for defense-in-depth security.
- *
- * Connection Pooling Safety:
- * - Uses $transaction() to wrap all tenant-aware operations
- * - Sets RLS variables with is_local=true (transaction-scoped)
- * - Variables automatically reset when transaction commits/rolls back
- * - Safe for use with Neon, PgBouncer, and other connection poolers
+ * With tenant context, the set_config statement and query PrismaPromise share
+ * a batch $transaction and connection. The query must remain un-awaited until
+ * submitted to that batch; an interactive transaction cannot bind query() to tx.
+ * PostgreSQL resets the local variables on commit/rollback. Without tenant
+ * context, the extension executes the query without adding a transaction.
+ * The client component below rejects $transaction, because per-operation
+ * batches would commit independently of a transaction started on this client.
+ * Tenant operations passed into a base-client transaction still run in their
+ * own transaction, and raw SQL on this client gets no tenant context. For
+ * transactional work use withRLSContext(db, tx => …) and issue every query
+ * through its tx.
  */
 function createTenantDb(baseClient: PrismaClient) {
-	return baseClient.$extends({
+	const extended = baseClient.$extends({
 		name: "tenant-isolation",
+		client: {
+			$transaction(): never {
+				throw new Error(
+					"Tenant database clients do not support $transaction; use withRLSContext(db, tx => …) with the base database client for transactional work.",
+				);
+			},
+		},
 
 		query: {
 			$allModels: {
@@ -868,45 +864,27 @@ function createTenantDb(baseClient: PrismaClient) {
 					model: string;
 					operation: string;
 					args: any;
-					query: (args: any) => Promise<any>;
+					query: (args: any) => Prisma.PrismaPromise<any>;
 				}) {
 					const ctx = getTenantContext();
 
-					// Execute query with transaction-local RLS context
-					// This is safe for connection pooling (Neon/PgBouncer)
+					// Execute the query and RLS context statement in one batch.
 					const executeWithRLSContext = async (
-						queryFn: () => Promise<any>,
+						queryFn: () => Prisma.PrismaPromise<any>,
 					) => {
 						if (!hasTenantContext()) {
 							return queryFn();
 						}
 
-						// Use interactive transaction to ensure RLS context is set
-						// and automatically cleaned up when transaction ends.
-						// is_local=true means variables are transaction-scoped and
-						// automatically reset on commit/rollback - no manual cleanup needed.
-						return baseClient.$transaction(
-							async (tx: Prisma.TransactionClient) => {
-								// Set RLS session variables with is_local=true (transaction-scoped)
-								// These automatically reset when the transaction ends,
-								// preventing any possibility of tenant context leakage
-								await tx.$executeRawUnsafe(
-									"SELECT set_config('app.tenant_type', $1, true)",
-									ctx.type,
-								);
-								await tx.$executeRawUnsafe(
-									"SELECT set_config('app.tenant_id', $1, true)",
-									ctx.tenantId ?? "",
-								);
-								await tx.$executeRawUnsafe(
-									"SELECT set_config('app.user_id', $1, true)",
-									ctx.userId ?? "",
-								);
-
-								// Execute the actual query within the transaction
-								return queryFn();
-							},
-						);
+						// Keep the query lazy so Prisma can attach the batch transaction.
+						const [, result] = await baseClient.$transaction([
+							baseClient.$executeRaw`SELECT
+								set_config('app.tenant_type', ${ctx.type}, true),
+								set_config('app.tenant_id', ${ctx.tenantId ?? ""}, true),
+								set_config('app.user_id', ${ctx.userId ?? ""}, true)`,
+							queryFn(),
+						]);
+						return result;
 					};
 
 					// Parent-scoped models have no tenant columns to filter
@@ -946,6 +924,8 @@ function createTenantDb(baseClient: PrismaClient) {
 							model,
 							modifiedArgs.where,
 							"read",
+							operation === "findUnique" ||
+								operation === "findUniqueOrThrow",
 						);
 						return executeWithRLSContext(() => query(modifiedArgs));
 					}
@@ -963,6 +943,8 @@ function createTenantDb(baseClient: PrismaClient) {
 						modifiedArgs.where = mergeWithTenantFilter(
 							model,
 							modifiedArgs.where,
+							"write",
+							operation === "update" || operation === "delete",
 						);
 						return executeWithRLSContext(() => query(modifiedArgs));
 					}
@@ -975,6 +957,7 @@ function createTenantDb(baseClient: PrismaClient) {
 			},
 		},
 	});
+	return extended as Omit<typeof extended, "$transaction">;
 }
 
 // ============================================================================

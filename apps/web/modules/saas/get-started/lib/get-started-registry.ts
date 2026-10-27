@@ -28,6 +28,7 @@ import {
 	LockIcon,
 	MapIcon,
 	MegaphoneIcon,
+	MicIcon,
 	NetworkIcon,
 	NewspaperIcon,
 	PenToolIcon,
@@ -124,6 +125,11 @@ export type GsRuntimeGates = {
 	 * `GsPageComponent.gatedCopy`).
 	 */
 	proposalArtifact: boolean;
+	/**
+	 * `PARLUME_MEETINGS`, resolved for the viewer's organization. Gates the
+	 * meeting assistant's settings page, which 404s where Parlume is off.
+	 */
+	parlumeMeetings: boolean;
 };
 
 /**
@@ -650,6 +656,17 @@ const SETTINGS_GROUP: GsGroup = {
 			href: settingsHref("ai-models"),
 		},
 		{
+			id: "settings-meeting-assistant",
+			label: "Meeting assistant",
+			description:
+				"Set up Parlume's meeting bot (your Attendee key, a self-hosted Attendee URL, how it signs in to Teams) and the Azure deployment its realtime voice runs on, with a test for each.",
+			icon: MicIcon,
+			cluster: "AI configuration",
+			scope: "org",
+			runtimeGate: "parlumeMeetings",
+			href: settingsHref("meeting-assistant"),
+		},
+		{
 			id: "settings-mcp",
 			label: "MCP Registry",
 			description:
@@ -881,19 +898,19 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				id: "roadmap-ai-update",
 				anchor: "roadmap-ai-update",
 				title: "AI Update — restructure in plain English",
-				body: "Say 'split the auth feature into three and add rate-limiting tasks' and it drafts the change — never applied silently: you review, approve, and can cancel mid-apply. It can even build the update from what was discussed in linked meetings and channels.",
+				body: "Use AI Update on the right of the Roadmap header. Say 'split the auth feature into three and add rate-limiting tasks' and it drafts the change — never applied silently: you review, approve, and can cancel mid-apply. It can even build the update from what was discussed in linked meetings and channels.",
 			},
 			{
 				id: "roadmap-add",
 				anchor: "roadmap-add",
-				title: "One Add button, on purpose",
-				body: "You don't pre-sort work — an AI classifier reads what you type and decides Bug vs Feature for you. (Backend still models these as features and tasks, shown as F-XXX.)",
+				title: "Add work item",
+				body: "Use Add work item beside AI Update in the header. You don't pre-sort work — an AI classifier reads what you type and decides Bug vs Feature for you. (Backend still models these as features and tasks, shown as F-XXX.)",
 			},
 			{
 				id: "roadmap-priority",
 				anchor: "roadmap-priority",
 				title: "Priority — what to work on next",
-				body: "The roadmap has two views. 'Work items' is your full list; 'Priority' is a shared, scored worklist of the same items, with blockers and open questions surfaced inline. 'Re-prioritize' asks the AI to re-assess every item's P0–P3 band together and writes back only what it actually moves — over the whole roadmap, or, when filters are on, whichever set you choose. The sparkle beside any priority control does the same for a single item on its own, without weighing the rest of the list. You can override any priority by hand with a comment, and every change is kept in a per-item history — so you can always see who changed it, when and why. Priority lives in Fabric and is never pushed to your PM tool.",
+				body: "The section switcher beside the Roadmap title has two views. 'Work items' is your full list; 'Priority' is a shared, scored worklist of the same items, with blockers and open questions surfaced inline. 'Re-prioritize' asks the AI to re-assess every item's P0–P3 band together and writes back only what it actually moves — over the whole roadmap, or, when filters are on, whichever set you choose. The sparkle beside any priority control does the same for a single item on its own, without weighing the rest of the list. You can override any priority by hand with a comment, and every change is kept in a per-item history — so you can always see who changed it, when and why. Priority lives in Fabric and is never pushed to your PM tool.",
 			},
 			{
 				id: "roadmap-board",
@@ -911,15 +928,14 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 			{
 				id: "roadmap-actions",
 				anchor: "roadmap-actions",
-				title: "More Roadmap actions",
-				body: "The ⋯ menu beside AI Update gathers Roadmap-wide actions, such as asking Fabric to recommend more feature candidates from the current context. It appears only when an action is available to you.",
-				conditional: true,
+				title: "Roadmap actions",
+				body: "The labelled Actions menu beside Add work item contains Classify delivery tracks, Scan for duplicates, Export estimate (Markdown or CSV), Refresh, History and Rejected proposals, plus available recommendation actions. Rejected proposals remain reachable when the pending queue is empty.",
 			},
 			{
 				id: "roadmap-review-proposals",
 				anchor: "roadmap-review-proposals",
 				title: "Your approval inbox",
-				body: "Roadmap changes proposed automatically — chiefly by the monitor watching your linked Teams/Slack channels — queue here. Nothing reaches the board until you approve it; the amber count means decisions are waiting.",
+				body: "Use Review proposals in the status row above the filters, beside the separate Sync issues queue. Roadmap changes proposed automatically — chiefly by the monitor watching your linked Teams/Slack channels — queue here. Nothing reaches the board until you approve it; the amber count means decisions are waiting.",
 				conditional: true,
 			},
 		],
@@ -1120,6 +1136,11 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				title: "Choose what's analyzed",
 				body: "Pick which meeting series feed the digest. A series can be included but still say 'no transcripts yet' until Fabric's scheduled sync pulls one — inclusion isn't instant.",
 				conditional: true,
+				gatedCopy: {
+					runtimeGate: "parlumeMeetings",
+					title: "Choose what's analyzed, and where Parlume joins",
+					body: "Pick which meeting series feed the digest — inclusion waits for Fabric's scheduled sync to pull a transcript. Where meeting agendas are on, each series can also have Parlume join every occurrence on its own, about a minute before it starts, using your Teams calendar and your permissions.",
+				},
 			},
 			{
 				id: "meeting-digest-view-toggle",
@@ -1438,16 +1459,25 @@ export const GET_STARTED_PAGES: readonly GsPage[] = [
 				id: "usage-range",
 				anchor: "usage-range",
 				title: "Time range",
-				body: "Scopes every tile, chart, and breakdown below to 7 / 30 / 90 days or all-time.",
+				body: "Choose 7 / 30 / 90 days or all-time for the selected view.",
+			},
+			{
+				id: "usage-ai-outcomes",
+				anchor: "usage-ai-outcomes",
+				title: "See what happened to AI suggestions",
+				body: "Switch between Cost and AI outcomes to review waiting proposals, acceptance, review time, and what stayed as applied.",
+				conditional: true,
 			},
 			{
 				id: "usage-summary",
+				conditional: true,
 				anchor: "usage-summary",
 				title: "Platform spend vs your own keys",
 				body: "The distinction that matters: usage on your own API keys (BYOK) runs on your account and Fabric doesn't bill it — shown separately from platform spend. Check here before worrying about a bill.",
 			},
 			{
 				id: "usage-breakdown",
+				conditional: true,
 				anchor: "usage-breakdown",
 				title: "Find what's burning budget",
 				body: "Re-pivot spend by model, provider, task type, or agent — the fastest way to spot which agent or task is driving cost.",

@@ -11,7 +11,9 @@
  * Both protocols invoke the same underlying LangGraph agent.
  */
 
+import { randomBytes } from "node:crypto";
 import { serve } from "@hono/node-server";
+import { isReasoningModelName } from "@repo/agent-types/databricks-compat";
 import { type Context, Hono } from "hono";
 import { cors } from "hono/cors";
 import { type A2AAgentExecutor, A2AServer } from "./a2a/server";
@@ -388,14 +390,65 @@ export interface UnifiedServerConfig {
 	maxAutonomyLevel?: "step" | "subtask" | "task" | "session";
 }
 
-/** Reserved graph context comes from the authenticated transport and token exchange. */
-function serverResolvedAgentConfig(
+/** Resolve model hints after body spreads, alongside reserved transport context. */
+function serverResolvedAgentConfig<T extends Record<string, unknown>>(
 	headers: Headers,
 	credentials: AICredentials | null,
+	effective: T,
+	hintSources: KeyBag[] = [effective],
+	options: { includeTransportSecrets?: boolean } = {},
 ) {
+	const exchangeModel =
+		credentials?.modelPinned === true ||
+		(credentials != null && effective.ai_model === credentials.model);
+	// A body-selected endpoint may carry its own formatting/cache hints. Trusting
+	// those adds no exposure: ai_model already chooses the endpoint, and these
+	// hints affect formatting and caching of the caller's own request.
+	// Cross-bag hints need a named, matching model; the effective config owns its hints.
+	const matchingSources = hintSources.filter(
+		(source) =>
+			source &&
+			(source === effective ||
+				(source.ai_model != null &&
+					source.ai_model === effective.ai_model)),
+	);
+	const bodyHint = (key: string): unknown => {
+		for (let i = matchingSources.length - 1; i >= 0; i--) {
+			const source = matchingSources[i];
+			if (source && Object.hasOwn(source, key)) return source[key];
+		}
+		return undefined;
+	};
+	const canonicalName = exchangeModel
+		? credentials?.canonicalModelName
+		: bodyHint("ai_canonical_model_name");
+	const reasoning = exchangeModel
+		? credentials?.modelPinned === true
+			? credentials.isReasoningModel
+			: canonicalName
+				? isReasoningModelName(String(canonicalName))
+				: undefined
+		: (bodyHint("ai_is_reasoning") ??
+			(headers.get("X-AI-Model") === effective.ai_model
+				? headers.get("X-AI-Is-Reasoning")
+				: undefined));
+
 	const baseUrl =
 		credentials?.baseUrl || headers.get("X-AI-Base-URL") || undefined;
 	return {
+		...effective,
+		ai_canonical_model_name:
+			typeof canonicalName === "string" && canonicalName
+				? canonicalName
+				: undefined,
+		ai_is_reasoning:
+			typeof reasoning === "boolean"
+				? reasoning
+				: reasoning === "true"
+					? true
+					: reasoning === "false"
+						? false
+						: undefined,
 		tenant_user_id: headers.get("X-Tenant-User-ID") || undefined,
 		tenant_organization_id:
 			headers.get("X-Tenant-Organization-ID") || undefined,
@@ -419,12 +472,15 @@ function serverResolvedAgentConfig(
 				: undefined,
 		// Reapply pinned credentials after the route's request-body spreads.
 		...(credentials?.modelPinned === true && {
-			ai_is_reasoning: credentials.isReasoningModel,
 			ai_model: credentials.model,
 			ai_provider: credentials.provider,
-			ai_api_key: credentials.apiKey,
+			...(options.includeTransportSecrets !== false && {
+				ai_api_key: credentials.apiKey,
+			}),
 		}),
-		ai_token: extractAIToken(headers) || undefined,
+		...(options.includeTransportSecrets !== false && {
+			ai_token: extractAIToken(headers) || undefined,
+		}),
 		// Usage logging falls back to the sanitized flat fields; body records are untrusted.
 		fabric_usage: undefined,
 	};
@@ -495,31 +551,15 @@ export interface AgentRuntimeConfig {
 		ai_provider?: string;
 		ai_deployment_name?: string;
 		/**
-		 * Whether the resolved model emits `<think>` reasoning tags (DeepSeek-R1),
-		 * derived from the CANONICAL identity upstream. Gates Databricks `<think>`
-		 * stripping when the serving alias is opaque (Bug #1942 review).
+		 * Whether the final ai_model emits `<think>` tags. serverResolvedAgentConfig
+		 * selects the pinned credentials, matching exchange identity, or the
+		 * body-selected model's hint. Preserves stripping for opaque aliases;
+		 * an absent hint leaves the builder's model-name fallback in control.
 		 */
 		ai_is_reasoning?: boolean;
+		ai_canonical_model_name?: string;
 		[key: string]: unknown;
 	};
-}
-
-/**
- * Coerce a reasoning flag that may arrive as a boolean (CopilotKit props) or a
- * string ("true"/"false" from the `X-AI-Is-Reasoning` header) to a boolean, or
- * `undefined` when unset/unrecognized (Bug #1942 review).
- */
-function coerceReasoningFlag(value: unknown): boolean | undefined {
-	if (typeof value === "boolean") {
-		return value;
-	}
-	if (value === "true") {
-		return true;
-	}
-	if (value === "false") {
-		return false;
-	}
-	return undefined;
 }
 
 /**
@@ -728,8 +768,7 @@ export function createUnifiedServer(
 		input: Parameters<LangGraphExecutor>[0],
 	): Parameters<LangGraphExecutor>[0] {
 		return {
-			...input,
-			...serverResolvedAgentConfig(c.req.raw.headers, null),
+			...serverResolvedAgentConfig(c.req.raw.headers, null, input),
 			// Preserve the legacy callbacks' existing tool credential exposure.
 			ai_token: input.ai_token,
 		};
@@ -1359,11 +1398,6 @@ export function createUnifiedServer(
 			c.req.header("X-AI-Model") || c.req.header("x-ai-model");
 		const headerAiProvider =
 			c.req.header("X-AI-Provider") || c.req.header("x-ai-provider");
-		// Canonical-derived "emits <think>" signal (Bug #1942 review). Header is a
-		// string ("true"/"false"); CopilotKit props pass a real boolean.
-		const headerAiIsReasoning =
-			c.req.header("X-AI-Is-Reasoning") ||
-			c.req.header("x-ai-is-reasoning");
 
 		// Token-based AI config (secure) - exchange token for API key
 		// Token is REQUIRED for AI operations - no fallback to insecure methods
@@ -1409,76 +1443,98 @@ export function createUnifiedServer(
 		// Build runtime config
 		// Priority: passed ai_api_key (override provider) > token exchange (default provider)
 		const runtimeConfig: AgentRuntimeConfig = {
-			configurable: {
-				// AI provider configuration
-				// When CopilotKit passes ai_api_key directly (override provider), use it
-				// Otherwise fall back to token exchange (default provider)
-				ai_api_key:
-					(configurable.ai_api_key as string | undefined) ||
-					(context.ai_api_key as string | undefined) ||
-					(properties.ai_api_key as string | undefined) ||
-					(topLevelBody.ai_api_key as string | undefined) ||
-					(input.ai_api_key as string | undefined) ||
-					exchangedCredentials?.apiKey,
-				ai_model:
-					exchangedCredentials?.model ||
-					headerAiModel ||
-					(configurable.ai_model as string | undefined) ||
-					(context.ai_model as string | undefined) ||
-					(properties.ai_model as string | undefined) ||
-					(topLevelBody.ai_model as string | undefined) ||
-					(input.ai_model as string | undefined),
-				ai_provider:
-					exchangedCredentials?.provider ||
-					headerAiProvider ||
-					(configurable.ai_provider as string | undefined) ||
-					(context.ai_provider as string | undefined) ||
-					(properties.ai_provider as string | undefined) ||
-					(topLevelBody.ai_provider as string | undefined) ||
-					(input.ai_provider as string | undefined),
-				// Coerce header string / prop boolean to a boolean (Bug #1942 review).
-				ai_is_reasoning: coerceReasoningFlag(
-					headerAiIsReasoning ??
-						configurable.ai_is_reasoning ??
-						context.ai_is_reasoning ??
-						properties.ai_is_reasoning ??
-						topLevelBody.ai_is_reasoning ??
-						input.ai_is_reasoning,
-				),
-				// Usage attribution is separate from the agent thread and A2A context.
-				usage_conversation_id: pickFirstString(
-					[configurable, context, properties, topLevelBody, input],
-					["usage_conversation_id"],
-				),
-				usage_project_id: pickFirstString(
-					[configurable, context, properties, topLevelBody, input],
-					["usage_project_id"],
-				),
-				usage_frame_id: pickFirstString(
-					[configurable, context, properties, topLevelBody, input],
-					["usage_frame_id"],
-				),
-				usage_feature_key: pickFirstString(
-					[configurable, context, properties, topLevelBody, input],
-					["usage_feature_key"],
-				),
-				// Project context for per-project AI usage attribution.
-				// A2A callers may pass either snake_case or camelCase.
-				project_id: pickFirstString(
-					[configurable, context, properties, topLevelBody, input],
-					["project_id", "projectId"],
-				),
-				// Spread any additional configurable properties
-				...configurable,
-				// Also spread context properties
-				...context,
-				// Also spread properties (lower priority than configurable)
-				...properties,
-				...serverResolvedAgentConfig(
-					c.req.raw.headers,
-					exchangedCredentials,
-				),
-			},
+			configurable: serverResolvedAgentConfig(
+				c.req.raw.headers,
+				exchangedCredentials,
+				{
+					// AI provider configuration
+					// When CopilotKit passes ai_api_key directly (override provider), use it
+					// Otherwise fall back to token exchange (default provider)
+					ai_api_key:
+						(configurable.ai_api_key as string | undefined) ||
+						(context.ai_api_key as string | undefined) ||
+						(properties.ai_api_key as string | undefined) ||
+						(topLevelBody.ai_api_key as string | undefined) ||
+						(input.ai_api_key as string | undefined) ||
+						exchangedCredentials?.apiKey,
+					ai_model:
+						exchangedCredentials?.model ||
+						headerAiModel ||
+						(configurable.ai_model as string | undefined) ||
+						(context.ai_model as string | undefined) ||
+						(properties.ai_model as string | undefined) ||
+						(topLevelBody.ai_model as string | undefined) ||
+						(input.ai_model as string | undefined),
+					ai_provider:
+						exchangedCredentials?.provider ||
+						headerAiProvider ||
+						(configurable.ai_provider as string | undefined) ||
+						(context.ai_provider as string | undefined) ||
+						(properties.ai_provider as string | undefined) ||
+						(topLevelBody.ai_provider as string | undefined) ||
+						(input.ai_provider as string | undefined),
+					// Usage attribution is separate from the agent thread and A2A context.
+					usage_conversation_id: pickFirstString(
+						[
+							configurable,
+							context,
+							properties,
+							topLevelBody,
+							input,
+						],
+						["usage_conversation_id"],
+					),
+					usage_project_id: pickFirstString(
+						[
+							configurable,
+							context,
+							properties,
+							topLevelBody,
+							input,
+						],
+						["usage_project_id"],
+					),
+					usage_frame_id: pickFirstString(
+						[
+							configurable,
+							context,
+							properties,
+							topLevelBody,
+							input,
+						],
+						["usage_frame_id"],
+					),
+					usage_feature_key: pickFirstString(
+						[
+							configurable,
+							context,
+							properties,
+							topLevelBody,
+							input,
+						],
+						["usage_feature_key"],
+					),
+					// Project context for per-project AI usage attribution.
+					// A2A callers may pass either snake_case or camelCase.
+					project_id: pickFirstString(
+						[
+							configurable,
+							context,
+							properties,
+							topLevelBody,
+							input,
+						],
+						["project_id", "projectId"],
+					),
+					// Spread any additional configurable properties
+					...configurable,
+					// Also spread context properties
+					...context,
+					// Also spread properties (lower priority than configurable)
+					...properties,
+				},
+				[input, topLevelBody, configurable, context, properties],
+			),
 		};
 
 		// Log where the AI config was sourced from
@@ -1601,14 +1657,25 @@ export function createUnifiedServer(
 							},
 						);
 						activeGenerator = platformStreamAgent(
-							{
-								messages,
-								threadId,
-								...input,
-								// Include readable contexts from useCopilotReadable (Fix 1.5e)
-								// fullBody.context contains the array of readable context objects
-								context: fullBody?.context,
-							},
+							serverResolvedAgentConfig(
+								c.req.raw.headers,
+								exchangedCredentials,
+								{
+									// Inherit the selected model; the resolver below binds its hints.
+									ai_model:
+										runtimeConfig.configurable?.ai_model,
+									messages,
+									threadId,
+									...input,
+
+									// Include readable contexts from useCopilotReadable (Fix 1.5e)
+									// fullBody.context contains the array of readable context objects
+									context: fullBody?.context,
+								},
+								[runtimeConfig.configurable, input],
+								// Platform input retains the base version's body-only credentials.
+								{ includeTransportSecrets: false },
+							),
 							runtimeConfig,
 						);
 
@@ -1819,15 +1886,18 @@ export function createUnifiedServer(
 		);
 
 		const rawResult = await invokeAgent(
-			{
-				messages,
-				threadId,
-				...input,
-				...serverResolvedAgentConfig(
-					c.req.raw.headers,
-					exchangedCredentials,
-				),
-			},
+			serverResolvedAgentConfig(
+				c.req.raw.headers,
+				exchangedCredentials,
+				{
+					// Inherit the selected model; the resolver below binds its hints.
+					ai_model: runtimeConfig.configurable?.ai_model,
+					messages,
+					threadId,
+					...input,
+				},
+				[runtimeConfig.configurable, input],
+			),
 			runtimeConfig,
 		);
 
@@ -2453,25 +2523,25 @@ export function createUnifiedServer(
 			// Priority: passed ai_api_key (override provider) > token exchange (default provider)
 			const enrichedBody = {
 				...body,
-				metadata: {
-					...body.metadata,
-					// AI config - prefer passed value (override), fallback to token exchange
-					ai_api_key:
-						body.metadata?.ai_api_key ||
-						exchangedCredentials?.apiKey,
-					ai_model:
-						exchangedCredentials?.model ||
-						headerAiModel ||
-						body.metadata?.ai_model,
-					ai_provider:
-						exchangedCredentials?.provider ||
-						headerAiProvider ||
-						body.metadata?.ai_provider,
-					...serverResolvedAgentConfig(
-						c.req.raw.headers,
-						exchangedCredentials,
-					),
-				},
+				metadata: serverResolvedAgentConfig(
+					c.req.raw.headers,
+					exchangedCredentials,
+					{
+						...body.metadata,
+						// AI config - prefer passed value (override), fallback to token exchange
+						ai_api_key:
+							body.metadata?.ai_api_key ||
+							exchangedCredentials?.apiKey,
+						ai_model:
+							exchangedCredentials?.model ||
+							headerAiModel ||
+							body.metadata?.ai_model,
+						ai_provider:
+							exchangedCredentials?.provider ||
+							headerAiProvider ||
+							body.metadata?.ai_provider,
+					},
+				),
 			};
 
 			const response = await handlers.sendMessage(
@@ -2536,25 +2606,25 @@ export function createUnifiedServer(
 			// Priority: passed ai_api_key (override provider) > token exchange (default provider)
 			const enrichedBody = {
 				...body,
-				metadata: {
-					...body.metadata,
-					// AI config - prefer passed value (override), fallback to token exchange
-					ai_api_key:
-						body.metadata?.ai_api_key ||
-						exchangedCredentials?.apiKey,
-					ai_model:
-						exchangedCredentials?.model ||
-						headerAiModel ||
-						body.metadata?.ai_model,
-					ai_provider:
-						exchangedCredentials?.provider ||
-						headerAiProvider ||
-						body.metadata?.ai_provider,
-					...serverResolvedAgentConfig(
-						c.req.raw.headers,
-						exchangedCredentials,
-					),
-				},
+				metadata: serverResolvedAgentConfig(
+					c.req.raw.headers,
+					exchangedCredentials,
+					{
+						...body.metadata,
+						// AI config - prefer passed value (override), fallback to token exchange
+						ai_api_key:
+							body.metadata?.ai_api_key ||
+							exchangedCredentials?.apiKey,
+						ai_model:
+							exchangedCredentials?.model ||
+							headerAiModel ||
+							body.metadata?.ai_model,
+						ai_provider:
+							exchangedCredentials?.provider ||
+							headerAiProvider ||
+							body.metadata?.ai_provider,
+					},
+				),
 			};
 
 			const response = handlers.sendMessageStream(
@@ -2752,48 +2822,69 @@ export function createUnifiedServer(
 				headerAiProvider,
 			});
 
+			const messageId = `msg_${Date.now()}_${randomBytes(16).toString("hex")}`;
+
 			// Build runtime config
 			// Priority: passed ai_api_key (override provider) > token exchange (default provider)
 			const runtimeConfig: AgentRuntimeConfig = {
-				configurable: {
-					// AI provider configuration
-					// When CopilotKit passes ai_api_key directly (override provider), use it
-					// Otherwise fall back to token exchange (default provider)
-					ai_api_key:
-						(bodyConfigurable.ai_api_key as string | undefined) ||
-						(bodyContext.ai_api_key as string | undefined) ||
-						(bodyForwardedProps.ai_api_key as string | undefined) ||
-						(bodyProperties.ai_api_key as string | undefined) ||
-						(body.ai_api_key as string | undefined) ||
-						exchangedCredentials?.apiKey,
-					ai_model:
-						exchangedCredentials?.model ||
-						headerAiModel ||
-						(bodyConfigurable.ai_model as string | undefined) ||
-						(bodyContext.ai_model as string | undefined) ||
-						(bodyForwardedProps.ai_model as string | undefined) ||
-						(bodyProperties.ai_model as string | undefined) ||
-						(body.ai_model as string | undefined),
-					ai_provider:
-						exchangedCredentials?.provider ||
-						headerAiProvider ||
-						(bodyConfigurable.ai_provider as string | undefined) ||
-						(bodyContext.ai_provider as string | undefined) ||
-						(bodyForwardedProps.ai_provider as
-							| string
-							| undefined) ||
-						(bodyProperties.ai_provider as string | undefined) ||
-						(body.ai_provider as string | undefined),
-					// Spread any additional config
-					...bodyConfigurable,
-					...bodyContext,
-					...bodyForwardedProps,
-					...bodyProperties,
-					...serverResolvedAgentConfig(
-						c.req.raw.headers,
-						exchangedCredentials,
-					),
-				},
+				configurable: serverResolvedAgentConfig(
+					c.req.raw.headers,
+					exchangedCredentials,
+					{
+						// AI provider configuration
+						// When CopilotKit passes ai_api_key directly (override provider), use it
+						// Otherwise fall back to token exchange (default provider)
+						ai_api_key:
+							(bodyConfigurable.ai_api_key as
+								| string
+								| undefined) ||
+							(bodyContext.ai_api_key as string | undefined) ||
+							(bodyForwardedProps.ai_api_key as
+								| string
+								| undefined) ||
+							(bodyProperties.ai_api_key as string | undefined) ||
+							(body.ai_api_key as string | undefined) ||
+							exchangedCredentials?.apiKey,
+						ai_model:
+							exchangedCredentials?.model ||
+							headerAiModel ||
+							(bodyConfigurable.ai_model as string | undefined) ||
+							(bodyContext.ai_model as string | undefined) ||
+							(bodyForwardedProps.ai_model as
+								| string
+								| undefined) ||
+							(bodyProperties.ai_model as string | undefined) ||
+							(body.ai_model as string | undefined),
+						ai_provider:
+							exchangedCredentials?.provider ||
+							headerAiProvider ||
+							(bodyConfigurable.ai_provider as
+								| string
+								| undefined) ||
+							(bodyContext.ai_provider as string | undefined) ||
+							(bodyForwardedProps.ai_provider as
+								| string
+								| undefined) ||
+							(bodyProperties.ai_provider as
+								| string
+								| undefined) ||
+							(body.ai_provider as string | undefined),
+						// Spread any additional config
+						...bodyConfigurable,
+						...bodyContext,
+						...bodyForwardedProps,
+						...bodyProperties,
+						// Assignment after request spreads keeps the reply id server-owned.
+						output_message_id: messageId,
+					},
+					[
+						body,
+						bodyConfigurable,
+						bodyContext,
+						bodyForwardedProps,
+						bodyProperties,
+					],
+				),
 			};
 
 			// Log where AI config came from
@@ -2914,8 +3005,7 @@ export function createUnifiedServer(
 							runId,
 						});
 
-						// Generate a unique message ID for this response
-						const messageId = `msg_${Date.now()}`;
+						// The response id was minted before building runtime config.
 						let hasStartedMessage = false;
 						let hasEmittedToolCalls = false;
 						// Names, not just the boolean: when a run ends having
@@ -2930,7 +3020,21 @@ export function createUnifiedServer(
 						// Use platform streaming if available
 						if (platformStreamAgent) {
 							const generator = platformStreamAgent(
-								{ messages, ...body },
+								serverResolvedAgentConfig(
+									c.req.raw.headers,
+									exchangedCredentials,
+									{
+										// Inherit the selected model; the resolver below binds its hints.
+										ai_model:
+											runtimeConfig.configurable
+												?.ai_model,
+										messages,
+										...body,
+									},
+									[runtimeConfig.configurable, body],
+									// Platform input retains the base version's body-only credentials.
+									{ includeTransportSecrets: false },
+								),
 								runtimeConfig,
 							);
 
@@ -3628,14 +3732,21 @@ export function createUnifiedServer(
 							}
 						} else if (streamAgent) {
 							// Use basic streaming
-							const generator = streamAgent({
-								messages,
-								...body,
-								...serverResolvedAgentConfig(
+							const generator = streamAgent(
+								serverResolvedAgentConfig(
 									c.req.raw.headers,
 									exchangedCredentials,
+									{
+										// Inherit the selected model; the resolver below binds its hints.
+										ai_model:
+											runtimeConfig.configurable
+												?.ai_model,
+										messages,
+										...body,
+									},
+									[runtimeConfig.configurable, body],
 								),
-							});
+							);
 
 							for await (const chunk of generator) {
 								if (!hasStartedMessage) {
@@ -3658,14 +3769,19 @@ export function createUnifiedServer(
 						} else {
 							// Non-streaming fallback
 							const result = await invokeAgent(
-								{
-									messages,
-									...body,
-									...serverResolvedAgentConfig(
-										c.req.raw.headers,
-										exchangedCredentials,
-									),
-								},
+								serverResolvedAgentConfig(
+									c.req.raw.headers,
+									exchangedCredentials,
+									{
+										// Inherit the selected model; the resolver below binds its hints.
+										ai_model:
+											runtimeConfig.configurable
+												?.ai_model,
+										messages,
+										...body,
+									},
+									[runtimeConfig.configurable, body],
+								),
 								runtimeConfig,
 							);
 

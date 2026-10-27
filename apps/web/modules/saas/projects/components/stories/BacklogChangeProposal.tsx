@@ -38,6 +38,7 @@ import {
 	buildProjectSettingsRoute,
 	buildStoryDetailsRoute,
 } from "../../lib/stories/routes";
+import { ProposalTimeline } from "../usage/ProposalTimeline";
 import {
 	BacklogChangeDetailDialog,
 	type SkippableField,
@@ -576,6 +577,7 @@ type Props = {
 		approvedChanges: ChangeItem[],
 		syncToPM: boolean,
 		pmSyncOverrides?: PmSyncOverrideMap,
+		approvedChangeIndexes?: number[],
 	) => void;
 	onReject: () => void;
 	/**
@@ -1226,6 +1228,7 @@ export function BacklogChangeProposal({
 			approvedChanges,
 			syncToPM,
 			Object.keys(overrides).length > 0 ? overrides : undefined,
+			selectedIndexes,
 		);
 	};
 
@@ -1705,6 +1708,13 @@ export function BacklogChangeProposal({
 					</p>
 				)}
 			</div>
+
+			{projectId && proposalId && (
+				<ProposalTimeline
+					projectId={projectId}
+					proposalId={proposalId}
+				/>
+			)}
 
 			{/* Async decision pre-check in flight (AI-Update sidebar): a subtle,
 				proposal-level "checking…" line so the check is visible instead of a

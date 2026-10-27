@@ -222,6 +222,22 @@ const EMPTY = {
 };
 
 describe("AiAdoptionDashboard", () => {
+	it("names report generation in usage views", async () => {
+		mockMetrics.mockResolvedValue({
+			...POPULATED,
+			usageByFeature: [
+				{
+					...POPULATED.usageByFeature[0],
+					featureKey: "report-generation",
+				},
+			],
+		});
+		renderDashboard();
+		expect(
+			await screen.findByText("Report generation"),
+		).toBeInTheDocument();
+	});
+
 	beforeEach(() => {
 		mockMetrics.mockReset();
 	});

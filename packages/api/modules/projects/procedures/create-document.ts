@@ -42,6 +42,10 @@ import { logger } from "@repo/logs";
 import { getTemporalClient } from "@repo/temporal";
 import type { AiChatExtractionOutcome } from "@repo/utils/ai-chat-attachment";
 import { contentIdentity } from "@repo/utils/content-identity";
+import {
+	isCreatableDocumentType,
+	RETIRED_TYPE_MESSAGE,
+} from "@repo/utils/document-type-catalog";
 import { z } from "zod";
 import { emitActivity, emitDocumentChange } from "../../../lib/realtime";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
@@ -180,6 +184,14 @@ export const createDocumentProcedure = tenantProtectedProcedure
 	)
 	.handler(async ({ input, context }) => {
 		const user = context.user;
+
+		// A retired type (Features, Fizzy #2776) is refused on every route
+		// before anything is written. Existing documents of it stay readable.
+		if (!isCreatableDocumentType(input.type)) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: RETIRED_TYPE_MESSAGE,
+			});
+		}
 
 		// QUEUED and GENERATING belong to generation runs; every route below
 		// that needs one writes it itself. Refused before anything is gated,

@@ -1,3 +1,4 @@
+import { clarificationOf } from "../../../lib/clarification-turns";
 import type { CompletedExecution } from "./types";
 
 /**
@@ -5,7 +6,11 @@ import type { CompletedExecution } from "./types";
  * Matched by message id: two turns asking the same thing are two bubbles.
  */
 export function selectLiveUserMessages<
-	TMessage extends { id: string; role: string },
+	TMessage extends {
+		id: string;
+		role: string;
+		metadata?: Record<string, unknown>;
+	},
 >(
 	messages: ReadonlyArray<TMessage>,
 	completedExecutions: ReadonlyArray<CompletedExecution | null | undefined>,
@@ -16,9 +21,17 @@ export function selectLiveUserMessages<
 			shownIds.add(execution.userMessageId);
 		}
 	}
-	return messages.filter(
-		(message) => message.role === "user" && !shownIds.has(message.id),
-	);
+	let questionId: string | undefined;
+	return messages.filter((message) => {
+		if (message.role !== "user") {
+			return false;
+		}
+		if (clarificationOf(message)) {
+			return !questionId || !shownIds.has(questionId);
+		}
+		questionId = message.id;
+		return !shownIds.has(message.id);
+	});
 }
 
 /**

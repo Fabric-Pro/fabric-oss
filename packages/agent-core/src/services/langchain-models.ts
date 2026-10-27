@@ -28,6 +28,7 @@ import {
 } from "@repo/agent-types/chatgpt-plan-fetch";
 import {
 	createDatabricksFetch,
+	databricksPromptCacheForModel,
 	isReasoningModelName,
 } from "@repo/agent-types/databricks-compat";
 import { Agent as UndiciAgent, fetch as undiciFetch } from "undici";
@@ -162,6 +163,8 @@ interface AiConfigResponse {
 	deploymentName?: string | null;
 	/** Whether the resolved model emits `<think>` tags (canonical-derived; Bug #1942). */
 	isReasoningModel?: boolean;
+	/** Resolved catalog identity; absent for legacy callers. */
+	canonicalModelName?: string;
 }
 
 /**
@@ -183,6 +186,8 @@ interface UserPreferenceResponse {
 	deploymentName?: string | null;
 	/** Whether the resolved model emits `<think>` tags (canonical-derived; Bug #1942). */
 	isReasoningModel?: boolean;
+	/** Resolved catalog identity; absent for legacy callers. */
+	canonicalModelName?: string;
 	/** Catalog output cap for the resolved model; null when the catalog is silent. */
 	maxOutputTokens?: number | null;
 	/** Catalog context window for the resolved model; null when unknown. */
@@ -293,6 +298,7 @@ async function fetchAiConfigFromApi(
 			baseUrl: data.gatewayUrl ?? undefined,
 			deploymentName: data.deploymentName || undefined,
 			isReasoningModel: data.isReasoningModel,
+			canonicalModelName: data.canonicalModelName,
 		};
 	} catch (error) {
 		console.error(
@@ -418,6 +424,8 @@ export interface RuntimeProviderConfig {
 	 * when absent.
 	 */
 	isReasoningModel?: boolean;
+	/** Resolved catalog identity; absent for legacy callers. */
+	canonicalModelName?: string;
 	/** Catalog output cap for the resolved model; undefined when unknown. */
 	maxOutputTokens?: number;
 	/** Catalog context window for the resolved model; undefined when unknown. */
@@ -1260,42 +1268,6 @@ function gatewayFetch(
 }
 
 /**
- * `fetch` for Databricks serving endpoints. Composes the Databricks compat shim
- * (`createDatabricksFetch` — strips the 400-triggering `stream_options` request
- * field AND flattens Claude's array-shaped response `delta.content` so
- * `@langchain/openai`'s stream loop doesn't drop every chunk as "non-string
- * content") over `gatewayFetch`, so the extended-timeout dispatcher still applies
- * to these (often long-running) inference calls.
- *
- * The shim lives in `@repo/agent-types` (`src/databricks-compat.ts`), shared
- * with `@repo/ai` — the agent bundle can't import `@repo/ai`, which the agent
- * tsup configs mark external. This path uses its default request-body rule (the
- * plain field strip), not `@repo/ai`'s Vercel-only one.
- *
- * `<think>` reasoning stripping is NOT enabled here — it's decided per model in
- * the DATABRICKS branch of `createProviderModel` (which knows the resolved
- * `isReasoningModel` signal), since a module singleton can't tell an R1 endpoint
- * from a Claude/Llama one (Bug #1942 review). This base fetch handles the
- * request-field strip + content-array flatten that ALL Databricks models need.
- */
-const databricksFetch: typeof fetch = createDatabricksFetch(gatewayFetch);
-
-/**
- * Databricks fetch WITH `<think>` reasoning stripping, for R1 endpoints. Built
- * lazily+cached so the common (non-reasoning) path keeps using `databricksFetch`.
- */
-let databricksFetchStripReasoningInstance: typeof fetch | undefined;
-function databricksReasoningFetch(): typeof fetch {
-	if (!databricksFetchStripReasoningInstance) {
-		databricksFetchStripReasoningInstance = createDatabricksFetch(
-			gatewayFetch,
-			{ stripReasoning: true },
-		);
-	}
-	return databricksFetchStripReasoningInstance;
-}
-
-/**
  * Check if a model is a reasoning model that requires the OpenAI-style
  * param strip (temperature + maxTokens omitted; uses max_completion_tokens
  * on the wire). Now reads `requiresParamStrip` from MODEL_FAMILIES.
@@ -1637,11 +1609,9 @@ function createUninstrumentedProviderModel(
 		);
 	}
 
-	// Databricks: OpenAI-compatible inference under the workspace host. A bare
-	// host defaults to the GA classic path <host>/serving-endpoints; a URL that
-	// already carries a path (e.g. the Unity AI Gateway <host>/ai-gateway/mlflow/v1)
-	// is used verbatim. Handled before the generic OpenAI-compatible block because
-	// that block uses baseUrl verbatim (never adds the serving-endpoints default).
+	// Mirror @repo/ai/lib/databricks-url without importing the Vercel AI SDK:
+	// catalog names route through Unity Gateway for root/classic URLs, custom
+	// endpoint names use classic serving, and other explicit paths are preserved.
 	if (provider === "DATABRICKS") {
 		if (!baseUrl) {
 			throw new Error(
@@ -1651,16 +1621,28 @@ function createUninstrumentedProviderModel(
 			);
 		}
 		const trimmedHost = baseUrl.trim().replace(/\/+$/, "");
-		let hasPath = false;
+		let servingBaseUrl: string;
 		try {
-			const { pathname } = new URL(trimmedHost);
-			hasPath = pathname !== "" && pathname !== "/";
+			const { origin, pathname } = new URL(trimmedHost);
+			if (
+				pathname === "/" ||
+				pathname === "" ||
+				pathname === "/serving-endpoints"
+			) {
+				const path = /^[^./]+\.[^./]+\.[^./]+$/.test(model)
+					? "/ai-gateway/mlflow/v1"
+					: "/serving-endpoints";
+				servingBaseUrl = `${origin}${path}`;
+			} else {
+				servingBaseUrl = trimmedHost;
+			}
 		} catch {
-			hasPath = trimmedHost.endsWith("/serving-endpoints");
+			servingBaseUrl = /\/serving-endpoints$|\/ai-gateway\//.test(
+				trimmedHost,
+			)
+				? trimmedHost
+				: `${trimmedHost}/serving-endpoints`;
 		}
-		const servingBaseUrl = hasPath
-			? trimmedHost
-			: `${trimmedHost}/serving-endpoints`;
 		// Omit `temperature` for ALL Databricks requests. Databricks-served
 		// Anthropic Claude models reject it outright (`400 BAD_REQUEST: Model
 		// us.anthropic.claude-... does not support the temperature parameter`),
@@ -1682,7 +1664,7 @@ function createUninstrumentedProviderModel(
 		const stripReasoning =
 			config.isReasoningModel ?? isReasoningModelName(model);
 		return new ChatOpenAI({
-			// Serving-endpoint name (Databricks endpoint names contain no "/").
+			// Catalog model ID or custom serving-endpoint name.
 			model,
 			apiKey,
 			maxTokens,
@@ -1692,12 +1674,14 @@ function createUninstrumentedProviderModel(
 				baseURL: servingBaseUrl,
 				// Databricks compat: strip `stream_options` + `parallel_tool_calls`
 				// (rejected with HTTP 400) from the request and flatten Claude's
-				// array-shaped response content so the stream loop doesn't drop
-				// every chunk. Both fetch variants route through gatewayFetch's
-				// extended timeout dispatcher. See `@repo/agent-types`' databricks-compat.
-				fetch: stripReasoning
-					? databricksReasoningFetch()
-					: databricksFetch,
+				// array-shaped response content for the stream loop. gatewayFetch
+				// supplies the extended timeout dispatcher.
+				fetch: createDatabricksFetch(gatewayFetch, {
+					stripReasoning,
+					promptCache: databricksPromptCacheForModel(
+						config.canonicalModelName,
+					),
+				}),
 			},
 			// Required so `hoistRawStopReason` (output-truncation.ts) can recover
 			// `choices[0].stop_reason` (with defensive fallback support for
@@ -1826,6 +1810,15 @@ function createUninstrumentedProviderModel(
 				temperature,
 				maxTokens,
 				maxRetries,
+				// The Anthropic SDK refuses a non-streaming request whose
+				// max_tokens could run past 10 minutes (about 21,333 tokens),
+				// before sending it. DEFAULT_OUTPUT_TOKEN_BUDGET is above that,
+				// so a plain invoke() on the default budget failed (Fizzy #3301). With
+				// streaming on, ChatAnthropic streams under invoke() and
+				// concatenates the chunks into the same message. Its
+				// withStructuredOutput() parser (1.5.9) reads the streamed
+				// tool_use block's empty input and fails; nothing calls it today.
+				streaming: true,
 			};
 			const finalKwargs = applyReasoningConfig(
 				baseKwargs,
@@ -1997,10 +1990,12 @@ export function extractProviderConfig(
 	const aiGatewayUrl = configurable.ai_gateway_url;
 	const aiProvider = configurable.ai_provider;
 	const aiDeploymentName = configurable.ai_deployment_name;
-	// Canonical-derived "emits <think>" signal from the CopilotKit route (Bug
-	// #1942 review). Present as a real boolean; absent for older callers (then
-	// the Databricks branch falls back to a name check on the alias).
+	// The unified-server boundary binds this boolean to the final ai_model:
+	// pinned credentials, a matching exchange, or body hints for its chosen model.
+	// An absent hint leaves Databricks stripping to the model-name fallback;
+	// a valid hint preserves reasoning stripping behind an opaque alias.
 	const aiIsReasoning = configurable.ai_is_reasoning;
+	const canonicalModelName = configurable.ai_canonical_model_name;
 	const pinnedCap = (key: string): number | undefined => {
 		const value = configurable[key];
 		return configurable.ai_model_pinned === true &&
@@ -2022,6 +2017,10 @@ export function extractProviderConfig(
 				: undefined,
 			isReasoningModel:
 				typeof aiIsReasoning === "boolean" ? aiIsReasoning : undefined,
+			canonicalModelName:
+				typeof canonicalModelName === "string" && canonicalModelName
+					? canonicalModelName
+					: undefined,
 			maxOutputTokens: pinnedCap("ai_max_output_tokens"),
 			contextWindow: pinnedCap("ai_context_window"),
 		};
@@ -2158,6 +2157,7 @@ export async function getAgentModelAsync(
 					providerConfig.baseUrl ||
 					undefined,
 				deploymentName: taskConfig.deploymentName || undefined,
+				canonicalModelName: taskConfig.canonicalModelName,
 				// Canonical-derived reasoning signal (Bug #1942 review); fall back
 				// to the runtime config's when the task endpoint doesn't supply it.
 				isReasoningModel:

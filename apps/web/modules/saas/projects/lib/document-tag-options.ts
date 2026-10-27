@@ -11,5 +11,4 @@ export const DOCUMENT_TAG_OPTIONS = [
 	{ value: "ARCHITECTURE", label: "Architecture" },
 	{ value: "TECHNICAL_SPEC", label: "Technical Spec" },
 	{ value: "API_SPEC", label: "API Spec" },
-	{ value: "USER_STORY", label: "Features" },
 ] as const;

@@ -5,15 +5,23 @@
  * managed embeddings) with plain query_text. Credentials come decrypted from
  * the WorkflowIntegration credential fetcher — never from env.
  */
+
 import { createHash } from "node:crypto";
 import { isIP } from "node:net";
+// This file runs as ESM ("type": "module") but @repo/ai and @repo/databricks
+// load as CJS, and Node's CJS lexer cannot see their named exports through
+// tsx's output — static named imports fail to link when the temporal worker
+// dynamically imports the executor registry (worker-dynamic-imports.test.ts).
+// Prefer real named exports (bundled pipelines: Next.js, vitest, tsup) and
+// fall back to unwrapping the CJS default (tsx).
+import * as turnBudgetEstimateModule from "@repo/ai/lib/turn-budget-estimate";
 import type { DatabricksTokenProvider } from "@repo/databricks";
-// This file runs as ESM ("type": "module") but @repo/databricks transpiles to
-// CJS, and Node's CJS lexer cannot see its named exports through tsx's output —
-// static named imports fail to link when the temporal worker dynamically
-// imports the executor registry. Prefer real named exports (bundled pipelines:
-// Next.js, vitest, tsup) and fall back to unwrapping the CJS default (tsx).
 import * as databricksModule from "@repo/databricks";
+import {
+	dispatchBudgetSend,
+	getDispatchGuard,
+	rethrowIfDispatchStopped,
+} from "@repo/utils/dispatch-guard";
 import { MAX_QUERY_INDEXES } from "./constants";
 
 const databricksExports =
@@ -24,6 +32,15 @@ const databricksExports =
 				.default ?? databricksModule);
 const { createOAuthM2MProvider, DatabricksApiClient } = databricksExports;
 type DatabricksApiClient = InstanceType<typeof DatabricksApiClient>;
+const { estimateEmbeddingRequestInputTokens } =
+	typeof turnBudgetEstimateModule.estimateEmbeddingRequestInputTokens ===
+	"function"
+		? turnBudgetEstimateModule
+		: ((
+				turnBudgetEstimateModule as {
+					default?: typeof turnBudgetEstimateModule;
+				}
+			).default ?? turnBudgetEstimateModule);
 
 export { MAX_QUERY_INDEXES } from "./constants";
 
@@ -203,6 +220,7 @@ function buildClient(
 	 * request is cached and shared by every caller of this host.
 	 */
 	beforeRequest?: () => Promise<void>,
+	query?: string,
 ): DatabricksApiClient {
 	const { host, clientId, clientSecret } = requireCredentials(credentials);
 	const secretDigest = createHash("sha256")
@@ -223,12 +241,46 @@ function buildClient(
 		}
 	}
 	const baseFetch = options?.fetchImpl;
-	const fetchImpl: typeof fetch | undefined = beforeRequest
-		? async (input, init) => {
-				await beforeRequest();
-				return (baseFetch ?? globalThis.fetch)(input, init);
-			}
-		: baseFetch;
+	const fetchImpl: typeof fetch | undefined =
+		beforeRequest || query !== undefined
+			? async (input, init) => {
+					// Only the query endpoint runs managed embeddings; metadata and
+					// OAuth retain their shared, unguarded request behaviour.
+					if (
+						query === undefined ||
+						!String(input).endsWith("/query")
+					) {
+						return (baseFetch ?? globalThis.fetch)(input, init);
+					}
+					await beforeRequest?.();
+					return dispatchBudgetSend({
+						request: {
+							modality: "embedding",
+							inputEstimate: estimateEmbeddingRequestInputTokens([
+								query,
+							]),
+							requestedOutputTokens: 0,
+							minOutputTokens: 0,
+							enforcesOutputCap: true,
+						},
+						signal: init?.signal ?? undefined,
+						send: async (signal) => {
+							const response = await (
+								baseFetch ?? globalThis.fetch
+							)(input, { ...init, signal });
+							if (getDispatchGuard()?.budget) {
+								// Consume this attempt before the API client's auth/rate retries.
+								// No embedding usage is returned, so the reservation stays charged.
+								const body = await response.clone().text();
+								if (response.ok && body) {
+									JSON.parse(body);
+								}
+							}
+							return { result: response };
+						},
+					});
+				}
+			: baseFetch;
 	return new DatabricksApiClient({ host, tokenProvider, fetchImpl });
 }
 
@@ -518,12 +570,15 @@ export async function queryDatabricksVectorIndexes(
 				}
 			}
 		: undefined;
-	// Shared index-metadata fetches go through an unguarded client: another
+	// Shared index-metadata fetches bypass the query-only wrapper: another
 	// caller may be coalesced onto the same request.
-	const client = buildClient(credentials, { fetchImpl: args.fetchImpl });
-	const searchClient = beforeRequest
-		? buildClient(credentials, { fetchImpl: args.fetchImpl }, beforeRequest)
-		: client;
+	const client = buildClient(
+		credentials,
+		{ fetchImpl: args.fetchImpl },
+		beforeRequest,
+		query,
+	);
+	const searchClient = client;
 	const { host } = requireCredentials(credentials);
 	const numResults = normalizeNumResults(args.numResults);
 
@@ -582,6 +637,13 @@ export async function queryDatabricksVectorIndexes(
 				}
 				successCount++;
 			} catch (error) {
+				try {
+					rethrowIfDispatchStopped(error);
+				} catch (stop) {
+					// Drain sibling index requests before propagating a ledger stop,
+					// as for a refusal from beforeRequest.
+					refusal ??= { error: stop };
+				}
 				if (refusal) {
 					// Refused (here or in a sibling): rethrown below, once
 					// every index already in flight has settled.

@@ -2,12 +2,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	findMany: vi.fn(),
+	turnCounts: vi.fn(),
 	preferences: vi.fn(),
 	projectAccess: vi.fn(),
 	workspaceAccess: vi.fn(),
 }));
 vi.mock("../prisma/client", () => ({
 	db: {
+		conversationTurn: { groupBy: mocks.turnCounts },
 		episodicMemory: { findMany: mocks.findMany },
 		orchestratorMemoryPreferences: { findFirst: mocks.preferences },
 	},
@@ -26,6 +28,7 @@ import {
 	getProjectEpisodes,
 	getRecentEpisodes,
 	getWorkspaceEpisodes,
+	renderOrchestratorMemoryContext,
 	searchEpisodicMemories,
 } from "../prisma/queries/orchestrator-memory";
 
@@ -57,6 +60,7 @@ function episode(
 beforeEach(() => {
 	vi.resetAllMocks();
 	mocks.findMany.mockResolvedValue([]);
+	mocks.turnCounts.mockResolvedValue([]);
 	mocks.preferences.mockResolvedValue({
 		preferences: {},
 		recentProjectIds: [],
@@ -196,5 +200,120 @@ describe("memory scope workspace arrays", () => {
 		).toEqual(rows.slice(1));
 		expect(mocks.projectAccess).toHaveBeenCalledTimes(1);
 		expect(mocks.workspaceAccess).toHaveBeenCalledTimes(2);
+	});
+});
+
+describe("recorded turns for repeat collapse", () => {
+	const question = "Do the same for the next one";
+	const row = (id: string, day: number) => ({
+		...episode(id, "example-project", "example-workspace"),
+		title: question,
+		summary: `${id} outcome`,
+		conversationEndedAt: new Date(`2026-10-${day}`),
+	});
+	it.each([
+		{
+			name: "two multi-turn follow-ups",
+			counts: [2, 3],
+			expected: ["match", "new"],
+		},
+		{
+			name: "single-turn and multi-turn follow-ups",
+			counts: [1, 2],
+			expected: ["match", "new"],
+		},
+		{
+			name: "a missing turn record",
+			counts: [1, undefined],
+			expected: ["match", "new"],
+		},
+		{
+			name: "no turn records",
+			counts: [undefined, undefined],
+			expected: ["match", "new"],
+		},
+		{ name: "single-turn repeats", counts: [1, 1], expected: ["new"] },
+		{
+			name: "a multi-turn member beside two single-turn members",
+			counts: [1, 1, 2],
+			expected: ["match", "new", "third"],
+		},
+	])("selects safely for $name", async ({ counts, expected }) => {
+		const rows = [
+			row("match", 16),
+			row("new", 19),
+			...(counts.length === 3 ? [row("third", 18)] : []),
+		];
+		mocks.findMany.mockImplementation(async ({ where }) =>
+			where.id ? rows : [],
+		);
+		mocks.turnCounts.mockResolvedValue(
+			rows.flatMap((episode, i) =>
+				counts[i] === undefined
+					? []
+					: [
+							{
+								conversationId: episode.conversationId,
+								_count: { _all: counts[i] },
+							},
+						],
+			),
+		);
+		const context = await buildOrchestratorMemoryContext({
+			userId: "example-user",
+			organizationId: "example-org",
+			relevantEpisodeIds: rows.map((episode) => episode.id),
+		});
+		const result = await renderOrchestratorMemoryContext(context);
+		expect(
+			result.context.relevantEpisodes.map((episode) => episode.id),
+		).toEqual(expected);
+		if (expected[0] === "match") {
+			expect(result.text.indexOf("match outcome")).toBeGreaterThan(-1);
+			expect(result.text.indexOf("match outcome")).toBeLessThan(
+				result.text.indexOf("new outcome"),
+			);
+		}
+	});
+
+	it("batches candidate conversation counts once with the memory load's owner and tenant", async () => {
+		const rows = [
+			row("match", 16),
+			row("new", 19),
+			{ ...row("short-a", 16), title: "yes" },
+			{ ...row("short-b", 19), title: "yes" },
+			{ ...row("other-scope", 19), projectId: "example-other-project" },
+			{
+				...row("unique", 19),
+				title: "List the example project reports today",
+			},
+		];
+		// Overlap between retrieval sections must not multiply queries or IDs.
+		mocks.findMany.mockResolvedValue(rows);
+		mocks.turnCounts.mockResolvedValue([
+			{ conversationId: "conversation-match", _count: { _all: 1 } },
+			{ conversationId: "conversation-new", _count: { _all: 1 } },
+		]);
+		const context = await buildOrchestratorMemoryContext({
+			userId: "example-user",
+			organizationId: "example-org",
+			relevantEpisodeIds: rows.map((episode) => episode.id),
+		});
+		expect(mocks.turnCounts).toHaveBeenCalledTimes(1);
+		expect(mocks.turnCounts).toHaveBeenCalledWith({
+			by: ["conversationId"],
+			where: {
+				conversationId: {
+					in: ["conversation-match", "conversation-new"],
+				},
+				userId: "example-user",
+				organizationId: "example-org",
+			},
+			_count: { _all: true },
+		});
+		const result = await renderOrchestratorMemoryContext(context);
+		expect(
+			result.context.relevantEpisodes.map((episode) => episode.id),
+		).toEqual(["new", "short-a", "short-b", "other-scope", "unique"]);
 	});
 });

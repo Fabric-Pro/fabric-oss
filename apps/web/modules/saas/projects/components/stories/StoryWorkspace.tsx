@@ -5,12 +5,19 @@ import {
 	useCopilotAction,
 	useCopilotReadable,
 } from "@copilotkit/react-core";
-import { CopilotSidebar, useChatContext } from "@copilotkit/react-ui";
+import { useChatContext } from "@copilotkit/react-ui";
 import { MessageRole, TextMessage } from "@copilotkit/runtime-client-gql";
+import { featureKeyForAgentId } from "@repo/ai/lib/feature-keys";
+import {
+	type DraftVerdictRecorder,
+	useConfirmChangesVerdict,
+	useConfirmChangesVerdictCard,
+} from "@saas/agents/copilot/useConfirmChangesVerdict";
 import { AttachmentRegistryProvider } from "@saas/shared/components/copilot/AttachmentRegistry";
 import { CopilotAssistantMessage } from "@saas/shared/components/copilot/CopilotAssistantMessage";
 import { useCopilotChatSession } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { AI_REQUEST_TOO_LARGE_EVENT } from "@saas/shared/components/copilot/CopilotFetchErrorInterceptor";
+import { CopilotReplyRatingSidebar } from "@saas/shared/components/copilot/CopilotReplyRatingSidebar";
 import { createCopilotSidebarInput } from "@saas/shared/components/copilot/CopilotSidebarInput";
 import { CopilotUserMessage } from "@saas/shared/components/copilot/CopilotUserMessage";
 import type { MessageAttachmentListItem } from "@saas/shared/components/copilot/MessageAttachmentList";
@@ -3964,9 +3971,14 @@ export function StoryWorkspace({
 	// operation-result message into the underlying AgentConversation
 	// when the user accepts or rejects the confirm_changes dialog
 	// below. Best-effort — never blocks the accept/reject UI flow.
-	// See `useConfirmChangesOperationResult.ts` for the full design
-	// notes (defensive null-conversationId guard, fresh operationKey
-	// per click, error-swallow policy).
+	// `useConfirmChangesOperationResult` skips chat writes without a conversation
+	// and swallows write failures; `useConfirmChangesVerdict` records separately.
+	const verdictFactory = useConfirmChangesVerdict({
+		surface: "feature-spec",
+		projectId,
+	});
+	const verdictFactoryRef = useRef(verdictFactory);
+	verdictFactoryRef.current = verdictFactory;
 	const recordConfirmChangesOutcome = useConfirmChangesOperationResult({
 		conversationId: activeAssistantConversationId,
 		projectId,
@@ -4012,7 +4024,9 @@ export function StoryWorkspace({
 		{
 			name: "confirm_changes",
 			renderAndWaitForResponse: ({ args, respond, status }) => {
+				const recordVerdict = verdictFactoryRef.current();
 				const handleReject = () => {
+					void recordVerdict(false);
 					isRefreshCleanSpecPendingRef.current = false;
 					setIsAwaitingConfirmation(false);
 					confirmCallbacksRef.current = null;
@@ -4174,6 +4188,8 @@ export function StoryWorkspace({
 						return;
 					}
 
+					void recordVerdict(true);
+
 					// #1929: the editor was built from a snapshot taken when the
 					// run started, so it carries no trace of a question answered
 					// while the run was in flight — and saving it over the spec
@@ -4253,9 +4269,8 @@ export function StoryWorkspace({
 					// best-effort and decides nothing here. Read via
 					// `recordOutcomeRef.current` (Copilot round-3 latest-ref
 					// fix) so the helper sees the freshest `conversationId`
-					// when the answer arrives. See
-					// `useConfirmChangesOperationResult.ts` for the full
-					// integration design. Every record of this accept carries
+					// when the answer arrives. The hook accepts `operationKey` in
+					// RecordOnResolveOptions. Each record of this accept carries
 					// one key, made now: the helper dedupes per operation, so
 					// a reject of another proposal recorded meanwhile never
 					// swallows it, and the server's per-key dedup covers a
@@ -4510,6 +4525,7 @@ export function StoryWorkspace({
 				};
 				return (
 					<ConfirmChanges
+						recordVerdict={recordVerdict}
 						args={args}
 						respond={respond}
 						status={status}
@@ -5514,7 +5530,14 @@ export function StoryWorkspace({
 					projectId={projectId}
 					organizationId={organizationId ?? null}
 				>
-					<CopilotSidebar
+					<CopilotReplyRatingSidebar
+						enabled={documentAssistantHistoryEnabled}
+						featureKey={
+							featureKeyForAgentId(
+								"project_document_generator",
+							) ?? "document-generation"
+						}
+						projectId={projectId}
 						AssistantMessage={AssistantMessageWithMark}
 						UserMessage={CopilotUserMessage}
 						Messages={CustomMessages}
@@ -8526,7 +8549,7 @@ export function StoryWorkspace({
 								onConfirm={() => convertKindMutation.mutate()}
 							/>
 						</div>
-					</CopilotSidebar>
+					</CopilotReplyRatingSidebar>
 
 					{/* Group F — persistent chat-history drawer. The drawer is the
 		    secondary surface for browsing prior conversations; only
@@ -8774,6 +8797,7 @@ function editorHasDiffMarks(
 
 // Confirmation dialog component - EXACT COPY of ag-ui-demo pattern
 interface ConfirmChangesProps {
+	recordVerdict: DraftVerdictRecorder;
 	args: any;
 	respond: any;
 	status: any;
@@ -8796,12 +8820,14 @@ interface ConfirmChangesProps {
 }
 
 function ConfirmChanges({
+	recordVerdict,
 	respond: _respond,
 	status,
 	onConfirm,
 	onReject,
 	canEdit,
 }: ConfirmChangesProps) {
+	useConfirmChangesVerdictCard(recordVerdict);
 	const [accepted, setAccepted] = useState<boolean | null>(null);
 	/** Which decision is currently being written, `null` when none is. */
 	const [resolving, setResolving] = useState<boolean | null>(null);

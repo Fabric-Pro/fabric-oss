@@ -105,11 +105,13 @@ export async function buildFabricProjectTabUrl(args: {
  * lands users in the personal route and fails to load the org-scoped page. Also
  * uses the same NEXT_PUBLIC_APP_URL → APP_URL → getBaseUrl() base chain, which
  * matters in the temporal-worker where getBaseUrl() alone would resolve to
- * localhost. Used by the newsletter chat-delivery teaser link.
+ * localhost. Used by the newsletter chat-delivery teaser link; with `sendId`
+ * the tab opens that one release note (`ReleaseNotesList` reads `releaseNote`).
  */
 export async function buildReleaseNotesUrl(args: {
 	projectId: string;
 	organizationId?: string | null;
+	sendId?: string;
 }): Promise<string> {
 	let slug: string | null = null;
 	if (args.organizationId) {
@@ -121,9 +123,12 @@ export async function buildReleaseNotesUrl(args: {
 	}
 	const base =
 		process.env.NEXT_PUBLIC_APP_URL || process.env.APP_URL || getBaseUrl();
+	const query = args.sendId
+		? `?tab=release-notes&releaseNote=${encodeURIComponent(args.sendId)}`
+		: "?tab=release-notes";
 	return slug
-		? `${base}/app/${slug}/projects/${args.projectId}?tab=release-notes`
-		: `${base}/app/projects/${args.projectId}?tab=release-notes`;
+		? `${base}/app/${slug}/projects/${args.projectId}${query}`
+		: `${base}/app/projects/${args.projectId}${query}`;
 }
 
 /**

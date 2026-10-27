@@ -78,11 +78,6 @@ jobs:
       - name: Install dependencies
         uses: ./.github/actions/pnpm-install
 
-      # The temporary OSV exception is valid only while the reviewed patch is
-      # locked, installed for every consumer, and copied into Docker installs.
-      - name: Verify braces security patch
-        run: node --test tooling/scripts/src/braces-patch.node-test.mjs
-
       - name: Verify dependency security fixes
         run: node --test tooling/scripts/src/dependency-security.node-test.mjs
 
@@ -91,6 +86,12 @@ jobs:
 
       - name: Verify multipart parser security fixes
         run: node --test tooling/scripts/src/busboy-security.node-test.mjs
+
+      - name: Decision Replay dashboard isolation and gold SQL
+        run: |
+          node --test scripts/__tests__/check-decision-replay-dashboards.test.mjs
+          node --test scripts/__tests__/decision-replay-gold.test.mjs
+          node scripts/check-decision-replay-dashboards.mjs
 
       - name: Format check
         run: pnpm format:check

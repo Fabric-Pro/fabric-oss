@@ -8,7 +8,7 @@
  * body will not render. Only the recalled data comes from code. Lookup,
  * rendering and the fallback are `resolveBoundPromptText`'s.
  *
- * Resolved inside activities, never in a workflow, so it adds no command to
+ * Resolved inside activities, so prompt lookup adds no command to
  * any workflow's history.
  */
 
@@ -20,12 +20,35 @@ import {
 	ORCHESTRATOR_MEMORY_FALLBACK_BODY,
 	ORCHESTRATOR_MEMORY_PROMPT_AGENT_KEY,
 } from "@repo/utils/orchestrator-memory-prompt";
-import { type BoundPromptScope, resolveBoundPromptText } from "./bound-prompt";
+import {
+	type BoundPromptScope,
+	type ResolvedBoundPrompt,
+	resolveBoundPromptText,
+} from "./bound-prompt";
+import { renderBoundPromptBody } from "./render-bound-prompt-body";
+
+/** One activity load uses one prompt version while trimming its episodes. */
+export type MemoryPromptBindingSnapshot = { resolved?: ResolvedBoundPrompt };
 
 export async function resolveOrchestratorMemoryPrompt(
-	input: BoundPromptScope & { variables: Record<string, unknown> },
+	input: BoundPromptScope & {
+		variables: Record<string, unknown>;
+		bindingSnapshot?: MemoryPromptBindingSnapshot;
+	},
 ): Promise<string> {
-	const { variables, ...scope } = input;
+	const { variables, bindingSnapshot, ...scope } = input;
+	if (bindingSnapshot?.resolved) {
+		const prompt = bindingSnapshot.resolved.prompt;
+		const rendered = await renderBoundPromptBody({
+			body: prompt?.version.content ?? ORCHESTRATOR_MEMORY_FALLBACK_BODY,
+			format: prompt?.format ?? "HANDLEBARS",
+			fallbackBody: ORCHESTRATOR_MEMORY_FALLBACK_BODY,
+			variables,
+			escape: false,
+			logTag: ORCHESTRATOR_MEMORY_PROMPT_AGENT_KEY,
+		});
+		return rendered.text.trim();
+	}
 	const resolved = await resolveBoundPromptText({
 		agentKey: ORCHESTRATOR_MEMORY_PROMPT_AGENT_KEY,
 		fallbackBody: ORCHESTRATOR_MEMORY_FALLBACK_BODY,
@@ -33,6 +56,9 @@ export async function resolveOrchestratorMemoryPrompt(
 		scope,
 		escape: false,
 	});
+	if (bindingSnapshot) {
+		bindingSnapshot.resolved = resolved;
+	}
 	return resolved.text.trim();
 }
 

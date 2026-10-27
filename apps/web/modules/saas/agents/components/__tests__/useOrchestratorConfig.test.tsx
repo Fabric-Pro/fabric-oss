@@ -95,6 +95,7 @@ function mountConfig(
 	cached = true,
 	organizationId: string | null = "example-org",
 	userId: string | null = "example-user",
+	reuseClient?: QueryClient,
 ) {
 	const preferences = {
 		exists: true,
@@ -106,16 +107,20 @@ function mountConfig(
 		enabledWorkspaceIds: ["example-workspace"],
 	};
 	mocks.get.mockResolvedValue(preferences);
-	const client = new QueryClient({
-		// Preserve new response references so refetches exercise the hook effects.
-		defaultOptions: { queries: { retry: false, structuralSharing: false } },
-	});
+	const client =
+		reuseClient ??
+		new QueryClient({
+			// Preserve new response references so refetches exercise the hook effects.
+			defaultOptions: {
+				queries: { retry: false, structuralSharing: false },
+			},
+		});
 	client.setQueryData(
 		sessionQueryKey,
 		userId ? { user: { id: userId } } : null,
 	);
 	// FabricAIClient seeds this same query with the SSR page's initialData.
-	if (cached) {
+	if (cached && !reuseClient) {
 		client.setQueryData(
 			["orchestrator-preferences", organizationId ?? null],
 			preferences,
@@ -143,6 +148,42 @@ async function settleLoad() {
 }
 
 describe("saved orchestrator agent preferences", () => {
+	it("hydrates saved lists on remount using the same query cache without another save", async () => {
+		const first = mountConfig(["example-old-agent"]);
+		await settleLoad();
+		mocks.update.mockClear();
+		act(() => {
+			first.result.current.handleDisableAllMcp();
+			first.result.current.handleDisableAllIntegrations();
+			first.result.current.handleDisableAllWorkspaces();
+			first.result.current.handleDisableAllAgents();
+			first.result.current.handleAgentToggle("example-new-agent", true);
+		});
+		await settleLoad();
+		expect(mocks.update).toHaveBeenCalledExactlyOnceWith({
+			organizationId: "example-org",
+			enabledMcpConfigIds: [],
+			enabledWorkspaceIds: [],
+			enabledAgentIds: ["example-new-agent"],
+		});
+		first.unmount();
+		const second = mountConfig(
+			["example-old-agent"],
+			true,
+			"example-org",
+			"example-user",
+			first.client,
+		);
+		await settleLoad();
+		expect.soft(second.result.current.enabledMcpConfigIds).toEqual([]);
+		expect.soft(second.result.current.enabledIntegrationIds).toEqual([]);
+		expect.soft(second.result.current.enabledWorkspaceIds).toEqual([]);
+		expect
+			.soft(second.result.current.enabledAgentIds)
+			.toEqual(["example-new-agent"]);
+		expect(mocks.update).toHaveBeenCalledTimes(1);
+	});
+
 	// Depends on including the URL organization in the preference read.
 	it("reads preferences for the page organization", async () => {
 		mountConfig([], false, "example-org-b");

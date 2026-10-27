@@ -141,9 +141,11 @@ describe("with a decision model", () => {
 		});
 		expect(h.getDecisionModel.mock.calls[0][0]).toMatchObject({
 			frameId: INPUT.frameId,
+			callPurpose: "completion-judge",
 		});
 		expect(h.getLanguageModel.mock.calls[0][1]).toMatchObject({
 			frameId: INPUT.frameId,
+			callPurpose: "completion-judge",
 		});
 		expect(h.getLanguageModel.mock.calls[0][1]).not.toHaveProperty(
 			"workflowExecutionId",
@@ -247,3 +249,20 @@ describe("a stopped turn", () => {
 		await expect(checkCompletionClaimActivity(INPUT)).rejects.toBe(stop);
 	});
 });
+
+it.each([false, true])(
+	"labels shared completion judges without a caller choice (fallback: %s)",
+	async (fallback) => {
+		decisionAnswer(fallback ? 0.5 : 0.97);
+		languageAnswer("yes");
+		await checkCompletionClaimActivity(INPUT);
+		expect(h.getDecisionModel.mock.calls[0][0].callPurpose).toBe(
+			"completion-judge",
+		);
+		if (fallback) {
+			expect(h.getLanguageModel.mock.calls[0][1].callPurpose).toBe(
+				"completion-judge",
+			);
+		}
+	},
+);

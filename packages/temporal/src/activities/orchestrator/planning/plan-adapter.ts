@@ -8,6 +8,7 @@
  */
 
 import { generateText } from "@repo/ai";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { logger } from "@repo/logs";
 import type { JourneyState, PlanModification } from "../journey/types";
 import type { TaskPlan, TaskStep } from "../types";
@@ -104,7 +105,14 @@ export async function analyzePlanModification(
 		totalSteps: currentPlan.steps.length,
 	});
 
-	const model = await getAiModel(userId, organizationId);
+	const model = await getAiModel(
+		userId,
+		organizationId,
+		false,
+		undefined,
+		undefined,
+		{ callPurpose: AI_CALL_PURPOSES.planAdaptation },
+	);
 
 	// Build context for the prompt
 	const completedSteps = currentPlan.steps

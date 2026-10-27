@@ -112,7 +112,7 @@ describe("getModel structured-output routing", () => {
 		expect(body).toHaveProperty("response_format.json_schema.strict", true);
 	});
 
-	it.each(["VERCEL_GATEWAY", "OPENROUTER", "CLOUDFLARE_AI"])(
+	it.each(["VERCEL_GATEWAY"])(
 		"%s forwards strict only for the confirmed OpenAI gateway upstream",
 		async (provider) => {
 			const body = await sentBody("openai/gpt-6.1-sol", {
@@ -125,6 +125,23 @@ describe("getModel structured-output routing", () => {
 				groq: { strictJsonSchema: false },
 				cerebras: { strictJsonSchema: false },
 			});
+		},
+	);
+
+	it.each(["OPENROUTER", "CLOUDFLARE_AI"])(
+		"%s uses non-strict Chat Completions schema at its connection",
+		async (provider) => {
+			const body = await sentBody("openai/gpt-6.1-sol", {
+				apiKey: "example-key",
+				provider,
+				baseUrl: "https://example.com/v1",
+			});
+			expect(body).toHaveProperty("response_format.type", "json_schema");
+			expect(body).toHaveProperty(
+				"response_format.json_schema.strict",
+				false,
+			);
+			expect(body).not.toHaveProperty("providerOptions");
 		},
 	);
 

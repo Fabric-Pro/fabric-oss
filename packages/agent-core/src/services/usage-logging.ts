@@ -53,6 +53,8 @@ export interface AgentUsageLogOptions {
 	agentId?: string;
 	conversationId?: string;
 	projectId?: string;
+	/** Set only by reply-producing chat calls, excluding summaries. */
+	outputMessageId?: string;
 	latencyMs?: number;
 }
 
@@ -185,16 +187,16 @@ export function extractUsageFromLangChainResponse(
 	};
 }
 
+// Tail promises are scoped to a server-minted reply id, rather than a user or
+// conversation, so unrelated usage requests keep their existing send behavior.
+const outputUsageSends = new Map<string, Promise<void>>();
+
 /**
- * Report one model call's token usage to the Fabric API.
- *
- * Guaranteed never to reject: every failure — transport, non-OK response, or
- * anything thrown while shaping the payload — is caught and logged here. That
- * is a contract callers rely on, because usage logging is observability and
- * nothing downstream reads the row back: callers may (and in the
- * project-document-generator hot path do) fire this without awaiting it, so a
- * rejection would surface as an unhandled rejection rather than a failed
- * request.
+ * Report usage without rejecting: the logger catches payload failures and the
+ * poster catches transport failures.
+ * Callers can fire-and-forget; calls with a reply id send in invocation order.
+ * A fast rating can precede the final provenance write. Re-rating reads the
+ * newer snapshot, while recordAiOutcome preserves existing non-null metadata.
  */
 export async function logAgentUsageFromRunnableConfig(
 	config: AgentUsageLoggerConfig | null | undefined,
@@ -202,17 +204,46 @@ export async function logAgentUsageFromRunnableConfig(
 	options: AgentUsageLogOptions,
 ): Promise<void> {
 	try {
-		await sendAgentUsageEvent(config, response, options);
+		// Snapshot before queueing: plan exchanges, config and response metadata can
+		// change while an earlier POST is pending. Only network work is deferred.
+		const request = buildAgentUsageEvent(config, response, options);
+		if (!request) {
+			return;
+		}
+		const send = () => postAgentUsageEvent(request);
+		const outputMessageId = request.outputMessageId;
+		if (!outputMessageId) {
+			await send();
+			return;
+		}
+		const previous = outputUsageSends.get(outputMessageId);
+		const pending = previous ? previous.then(send, send) : send();
+		outputUsageSends.set(outputMessageId, pending);
+		try {
+			await pending;
+		} finally {
+			// A completed earlier send must not remove a newer pending tail.
+			if (outputUsageSends.get(outputMessageId) === pending) {
+				outputUsageSends.delete(outputMessageId);
+			}
+		}
 	} catch (error) {
 		console.error("[AgentUsage] Failed to send usage event", error);
 	}
 }
 
-async function sendAgentUsageEvent(
+interface AgentUsagePost {
+	readonly url: string;
+	readonly aiToken: string;
+	readonly body: string;
+	readonly outputMessageId: string | undefined;
+}
+
+function buildAgentUsageEvent(
 	config: AgentUsageLoggerConfig | null | undefined,
 	response: unknown,
 	options: AgentUsageLogOptions,
-): Promise<void> {
+): AgentUsagePost | null {
 	const configurable = config?.configurable;
 	const nestedUsage = configurable?.fabric_usage;
 	// Flat fields are the graph's current config and win over the initial A2A
@@ -244,68 +275,79 @@ async function sendAgentUsageEvent(
 		typeof provider !== "string" ||
 		typeof model !== "string"
 	) {
-		return;
+		return null;
 	}
 
 	const usage = extractUsageFromLangChainResponse(response);
 	if (!usage) {
-		return;
+		return null;
 	}
 
 	const fabricBaseUrl = getDefaultFabricBaseUrl();
 
+	const outputMessageId = options.outputMessageId;
+	return {
+		url: `${fabricBaseUrl}/api/internal/ai-usage`,
+		aiToken,
+		outputMessageId,
+		body: JSON.stringify({
+			provider,
+			model,
+			taskType: options.taskType,
+			outputMessageId,
+			agentId: options.agentId,
+			conversationId:
+				options.conversationId ??
+				(typeof usageConfig?.usage_conversation_id === "string"
+					? usageConfig.usage_conversation_id
+					: undefined),
+			projectId:
+				(typeof usageConfig?.usage_project_id === "string"
+					? usageConfig.usage_project_id
+					: options.projectId) ??
+				(typeof configProjectId === "string"
+					? configProjectId
+					: undefined),
+			frameId:
+				typeof usageConfig?.usage_frame_id === "string"
+					? usageConfig.usage_frame_id
+					: undefined,
+			featureKey:
+				typeof usageConfig?.usage_feature_key === "string"
+					? usageConfig.usage_feature_key
+					: undefined,
+			latencyMs: options.latencyMs ?? 0,
+			inputTokens: usage.inputTokens,
+			outputTokens: usage.outputTokens,
+			totalTokens: usage.totalTokens,
+			cachedInputTokens: usage.cachedInputTokens,
+			cacheCreationInputTokens: usage.cacheCreationInputTokens,
+			reasoningTokens: usage.reasoningTokens,
+			gatewayGenerationId: usage.gatewayGenerationId,
+			billingMode:
+				typeof billingMode === "string" ? billingMode : undefined,
+			billingCustomerId:
+				typeof billingCustomerId === "string"
+					? billingCustomerId
+					: undefined,
+			// Which ChatGPT plan served the call (Fizzy #2770); Fabric
+			// records a shared account only when it is the token's own
+			// organization's.
+			planSource: typeof planSource === "string" ? planSource : undefined,
+		}),
+	};
+}
+
+async function postAgentUsageEvent(request: AgentUsagePost): Promise<void> {
 	try {
-		const response = await fetch(`${fabricBaseUrl}/api/internal/ai-usage`, {
+		const response = await fetch(request.url, {
 			method: "POST",
 			headers: {
 				"Content-Type": "application/json",
-				[AI_TOKEN_HEADER]: aiToken,
+				[AI_TOKEN_HEADER]: request.aiToken,
 			},
-			body: JSON.stringify({
-				provider,
-				model,
-				taskType: options.taskType,
-				agentId: options.agentId,
-				conversationId:
-					options.conversationId ??
-					(typeof usageConfig?.usage_conversation_id === "string"
-						? usageConfig.usage_conversation_id
-						: undefined),
-				projectId:
-					(typeof usageConfig?.usage_project_id === "string"
-						? usageConfig.usage_project_id
-						: options.projectId) ??
-					(typeof configProjectId === "string"
-						? configProjectId
-						: undefined),
-				frameId:
-					typeof usageConfig?.usage_frame_id === "string"
-						? usageConfig.usage_frame_id
-						: undefined,
-				featureKey:
-					typeof usageConfig?.usage_feature_key === "string"
-						? usageConfig.usage_feature_key
-						: undefined,
-				latencyMs: options.latencyMs ?? 0,
-				inputTokens: usage.inputTokens,
-				outputTokens: usage.outputTokens,
-				totalTokens: usage.totalTokens,
-				cachedInputTokens: usage.cachedInputTokens,
-				cacheCreationInputTokens: usage.cacheCreationInputTokens,
-				reasoningTokens: usage.reasoningTokens,
-				gatewayGenerationId: usage.gatewayGenerationId,
-				billingMode:
-					typeof billingMode === "string" ? billingMode : undefined,
-				billingCustomerId:
-					typeof billingCustomerId === "string"
-						? billingCustomerId
-						: undefined,
-				// Which ChatGPT plan served the call (Fizzy #2770); Fabric
-				// records a shared account only when it is the token's own
-				// organization's.
-				planSource:
-					typeof planSource === "string" ? planSource : undefined,
-			}),
+			body: request.body,
+			// Start the network timeout when this POST starts, after any queue wait.
 			signal: AbortSignal.timeout(10_000),
 		});
 

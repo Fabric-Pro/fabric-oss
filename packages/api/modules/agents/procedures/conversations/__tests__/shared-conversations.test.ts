@@ -916,3 +916,66 @@ describe("agents.conversations.setVisibility", () => {
 		expect(mocks.setAgentConversationVisibility).not.toHaveBeenCalled();
 	});
 });
+
+describe("shared clarification projection", () => {
+	it("shares only validated clarification strings matching the stored content", async () => {
+		mocks.getAgentConversationForViewer.mockResolvedValue({
+			...row(),
+			isOwn: false,
+			owner: OTHER,
+			messages: [
+				{
+					id: "clarification-1",
+					role: "user",
+					timestamp: "2026-10-01T10:00:00.000Z",
+					content: "Clarification — Which branch?: staging",
+					metadata: {
+						token: "private-metadata",
+						clarification: {
+							question: "Which branch?",
+							answer: "staging",
+							privateField: "private-value",
+						},
+					},
+				},
+			],
+		});
+		const result = (await invoke(GET, { id: "conv-1" })) as {
+			messages: Array<{ metadata?: unknown }>;
+		};
+		expect(result.messages[0].metadata).toEqual({
+			clarification: { question: "Which branch?", answer: "staging" },
+		});
+	});
+
+	it.each([
+		{ question: { invalid: true }, answer: "staging" },
+		{ question: "Which branch?", answer: 42 },
+		{ question: "Different question?", answer: "staging" },
+	])(
+		"omits malformed or mismatched clarification metadata %j",
+		async (clarification) => {
+			mocks.getAgentConversationForViewer.mockResolvedValue({
+				...row(),
+				isOwn: false,
+				owner: OTHER,
+				messages: [
+					{
+						id: "clarification-1",
+						role: "user",
+						timestamp: "2026-10-01T10:00:00.000Z",
+						content: "Clarification — Which branch?: staging",
+						metadata: {
+							clarification,
+							privateField: "private-value",
+						},
+					},
+				],
+			});
+			const result = (await invoke(GET, { id: "conv-1" })) as {
+				messages: Array<{ metadata?: unknown }>;
+			};
+			expect(result.messages[0].metadata).toBeUndefined();
+		},
+	);
+});

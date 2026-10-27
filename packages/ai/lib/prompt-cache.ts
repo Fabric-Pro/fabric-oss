@@ -290,3 +290,63 @@ function withoutCacheBreakpoint(message: ModelMessage): ModelMessage {
 			: rest
 	) as ModelMessage;
 }
+
+/** Advisor cache boundaries: system (at the call site), previous request when present, and rolling history. */
+export function withAdvisorCacheBreakpoints(
+	messages: readonly ModelMessage[],
+	previousRequestEnd?: number,
+): ModelMessage[] {
+	// Histories can carry provider metadata on content parts. Remove inherited markers
+	// before adding these two, so this helper plus cacheableSystem stays within four.
+	const cleanOptions = (value: unknown): unknown => {
+		if (Array.isArray(value)) {
+			return value.map(cleanOptions);
+		}
+		if (value !== null && typeof value === "object") {
+			return Object.fromEntries(
+				Object.entries(value)
+					.filter(
+						([key]) =>
+							key !== "cacheControl" && key !== "cache_control",
+					)
+					.map(([key, child]) => [key, cleanOptions(child)]),
+			);
+		}
+		return value;
+	};
+	const cleanPart = <T extends object>(part: T): T =>
+		"providerOptions" in part && part.providerOptions
+			? { ...part, providerOptions: cleanOptions(part.providerOptions) }
+			: part;
+	const prepared = messages.map(
+		(message) =>
+			({
+				...cleanPart(message),
+				...(Array.isArray(message.content)
+					? {
+							content: message.content.map((part) =>
+								cleanPart(part),
+							),
+						}
+					: {}),
+			}) as ModelMessage,
+	);
+
+	// The caller supplies a workflow round boundary; role scanning cannot
+	// distinguish separate assistant/tool pairs belonging to the same round.
+	if (
+		previousRequestEnd !== undefined &&
+		Number.isInteger(previousRequestEnd) &&
+		previousRequestEnd >= 0 &&
+		previousRequestEnd < prepared.length
+	) {
+		prepared[previousRequestEnd] = withCacheBreakpoint(
+			prepared[previousRequestEnd],
+		);
+	}
+	const last = prepared.length - 1;
+	if (last >= 0) {
+		prepared[last] = withCacheBreakpoint(prepared[last]);
+	}
+	return prepared;
+}

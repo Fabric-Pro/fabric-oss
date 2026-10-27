@@ -184,3 +184,16 @@ it("carries server-stamped model caps without falling back to input when runtime
 	expect(result).not.toHaveProperty("ai_max_output_tokens");
 	expect(result).not.toHaveProperty("ai_context_window");
 });
+
+it("carries the resolved canonical identity into delegated model config", () => {
+	const result = buildAgentConfigurable({
+		ai_canonical_model_name: "claude-sonnet-5",
+	});
+	expect(result.ai_canonical_model_name).toBe("claude-sonnet-5");
+	expect(
+		buildAgentConfigurable(
+			{ ai_canonical_model_name: "claude-sonnet-5" },
+			{},
+		).ai_canonical_model_name,
+	).toBeUndefined();
+});

@@ -146,6 +146,22 @@ describe("doneTurnEvent", () => {
 		});
 	});
 
+	it("keeps the truncation on a turn that also ended with a partial error (Fizzy #3273)", () => {
+		const result = {
+			partialError: "AI usage limit reached",
+			truncated: "output_limit" as const,
+		};
+
+		expect(partialTurnEvent(result)).toMatchObject({
+			type: "error",
+			partial: true,
+		});
+		expect(doneTurnEvent(result)).toMatchObject({
+			type: "done",
+			truncated: "output_limit",
+		});
+	});
+
 	it("says when every plan ran out mid-turn and API billing finished it (Fizzy #3048)", () => {
 		expect(doneTurnEvent({ apiBilling: { resetAt: null } })).toMatchObject({
 			type: "done",

@@ -17,7 +17,12 @@ import {
 	vi,
 } from "vitest";
 import { ParlumePage } from "../ParlumePage";
-import { liveSession, PROJECT_BASE_PATH, session } from "./fixtures";
+import {
+	liveSession,
+	PROJECT_BASE_PATH,
+	SETTINGS_BASE_PATH,
+	session,
+} from "./fixtures";
 
 const mocks = vi.hoisted(() => ({
 	listAgents: vi.fn(),
@@ -83,6 +88,7 @@ function showPage(canEdit = true) {
 			<ParlumePage
 				projectId="example-project"
 				projectBasePath={PROJECT_BASE_PATH}
+				settingsBasePath={SETTINGS_BASE_PATH}
 				canEdit={canEdit}
 			/>
 		</QueryClientProvider>,
@@ -94,6 +100,28 @@ const rowOf = (text: RegExp | string) =>
 	screen.getByText(text).closest("tr") as HTMLElement;
 
 describe("ParlumePage sessions table", () => {
+	it("marks a session auto-join started with its series", async () => {
+		mocks.listSessions.mockResolvedValue(
+			page([
+				session({
+					id: "auto",
+					trigger: "AUTO",
+					linkedMeeting: { subject: "Weekly sync" },
+				}),
+				session({ id: "manual", agentLabel: "Invited by hand" }),
+			]),
+		);
+		showPage();
+		await sessionsTable();
+
+		expect(
+			await screen.findByText("Auto-joined · Weekly sync"),
+		).toBeInTheDocument();
+		expect(
+			within(rowOf("Invited by hand")).queryByText(/Auto-joined/),
+		).not.toBeInTheDocument();
+	});
+
 	it.each([
 		["STOPPED", "Stopped by admin"],
 		["REMOVED", "Removed from meeting"],
@@ -103,12 +131,34 @@ describe("ParlumePage sessions table", () => {
 		["MAX_DURATION", "Reached 4-hour limit"],
 		["PROVIDER_FAILED", "Provider failed"],
 		["START_FAILED", "Never joined"],
+		["NOT_ADMITTED", "Not admitted from the lobby"],
 	])("labels end reason %s as the outcome", async (endReason, label) => {
 		mocks.listSessions.mockResolvedValue(
 			page([session({ endReason: endReason as "STOPPED" })]),
 		);
 		showPage();
 		expect(await screen.findByText(label)).toBeInTheDocument();
+	});
+
+	it("says nobody admitted Parlume when it timed out in the lobby", async () => {
+		const reason =
+			"Nobody admitted Parlume from the lobby within 10 minutes.";
+		mocks.listSessions.mockResolvedValue(
+			page([
+				session({
+					status: "FAILED",
+					endReason: "NOT_ADMITTED",
+					lastError: reason,
+				}),
+			]),
+		);
+		const user = userEvent.setup();
+		showPage();
+		await screen.findByText("Not admitted from the lobby");
+		await user.click(
+			within(rowOf("Not admitted from the lobby")).getByRole("button"),
+		);
+		expect(await screen.findByText(reason)).toBeInTheDocument();
 	});
 
 	it("shows when, which agent, mode, length, outcome and cost for each session", async () => {
@@ -170,6 +220,34 @@ describe("ParlumePage sessions table", () => {
 		expect(
 			within(rows[2]).getByRole("button", { expanded: false }),
 		).toBeInTheDocument();
+	});
+
+	it("marks a live session's cost as spend so far, and a finished one's as final", async () => {
+		mocks.listSessions.mockResolvedValue(
+			page([
+				liveSession({ id: "live", agentLabel: "Live assistant" }),
+				session({ id: "done", agentLabel: "Earlier assistant" }),
+			]),
+		);
+		mocks.usage.mockResolvedValue({
+			totalCostMicroUsd: 42_000,
+			calls: 6,
+			sessions: [
+				{ sessionId: "live", costMicroUsd: 30_000, calls: 4 },
+				{ sessionId: "done", costMicroUsd: 12_000, calls: 2 },
+			],
+		});
+		showPage();
+		const rows = within(await sessionsTable()).getAllByRole("row");
+
+		// The live card names the agent too, so the row is found by position.
+		const live = within(rows[1]);
+		expect(rows[1]).toHaveTextContent("Live assistant");
+		expect(await live.findByText("$0.03")).toBeInTheDocument();
+		expect(live.getByText("so far")).toBeInTheDocument();
+		const done = within(rowOf("Earlier assistant"));
+		expect(await done.findByText("$0.01")).toBeInTheDocument();
+		expect(done.queryByText("so far")).toBeNull();
 	});
 
 	it("opens a finished session to its error, notes and a link to the transcript", async () => {

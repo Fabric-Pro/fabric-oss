@@ -879,7 +879,8 @@ export const ACCOUNT_REGISTRY: AccountDefinition[] = [
 					},
 					{
 						name: "get_issue",
-						description: "Get a specific issue by number",
+						description:
+							"Get issue details: number, title, state/reason, author login, dates, html_url, body (6000 characters with a truncation note), label names, assignee logins, milestone title, comment count and an is_pull_request boolean.",
 						inputSchema: {
 							type: "object",
 							properties: {
@@ -901,7 +902,8 @@ export const ACCOUNT_REGISTRY: AccountDefinition[] = [
 					},
 					{
 						name: "get_pull_request",
-						description: "Get a specific pull request by number",
+						description:
+							"Get pull request details: number, title, state, draft/merge status, author login, head ref/SHA/label, head/base repository full names, base ref, merger login, merge commit SHA, auto-merge status/method, dates, html_url, body (up to 6000 characters with a truncation note), label names, pending reviewer requests (user logins and team slugs/names), assignee logins, milestone title, commit/change counts and comment counts.",
 						inputSchema: {
 							type: "object",
 							properties: {

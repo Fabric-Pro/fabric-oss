@@ -75,7 +75,7 @@ function convertArraySchema(propSchema: Record<string, unknown>): z.ZodType {
 
 /**
  * Convert a JSON Schema object type to a Zod object type.
- * Recursively handles nested property schemas.
+ * Recursively handles nested properties and explicit additional property schemas.
  */
 function convertObjectSchema(propSchema: Record<string, unknown>): z.ZodType {
 	const properties = propSchema.properties as
@@ -105,6 +105,23 @@ function convertObjectSchema(propSchema: Record<string, unknown>): z.ZodType {
 		zodProps[name] = zodType;
 	}
 
+	const additionalProperties = propSchema.additionalProperties;
+	if (additionalProperties === true) {
+		return z.looseObject(zodProps);
+	}
+	if (
+		additionalProperties &&
+		typeof additionalProperties === "object" &&
+		!Array.isArray(additionalProperties)
+	) {
+		return z
+			.object(zodProps)
+			.catchall(
+				jsonSchemaTypeToZod(
+					additionalProperties as Record<string, unknown>,
+				),
+			);
+	}
 	return z.object(zodProps);
 }
 

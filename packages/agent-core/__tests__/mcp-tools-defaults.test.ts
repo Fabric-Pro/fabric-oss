@@ -47,14 +47,24 @@ vi.mock("@repo/database", () => ({
 
 // mcp-tools.ts also imports from @repo/mcp for client creation — mock it
 // so the module load doesn't pull in real MCP client code.
-vi.mock("@repo/mcp", () => ({
+vi.mock("@repo/mcp", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@repo/mcp")>()),
 	closeMcpClient: vi.fn(),
 	createMcpClientForConfig: vi.fn(),
 }));
 
 import {
+	createMcpClientForConfig,
+	McpClientError,
+	OAuthAuthorizationRequiredError,
+} from "@repo/mcp";
+
+import {
 	getDefaultEnabledMcpConfigIds,
 	getDetailedMcpToolInfo,
+	getEnabledMcpConfigs,
+	getMcpClientResult,
+	getMcpConfigsNeedingReauth,
 	seedDefaultMcpConfigsForTenant,
 } from "../src/services/mcp-tools";
 
@@ -420,5 +430,142 @@ describe("seedDefaultMcpConfigsForTenant", () => {
 			},
 			select: { id: true },
 		});
+	});
+});
+
+describe("getEnabledMcpConfigs", () => {
+	it.each(["example-org", undefined])(
+		"scopes enabled discovery to the user and exclusive organization (%s)",
+		async (organizationId) => {
+			mockMcpConfigFindMany.mockResolvedValueOnce([]);
+			await getEnabledMcpConfigs({ userId: "user-1", organizationId });
+			expect(mockMcpConfigFindMany).toHaveBeenCalledWith({
+				where: {
+					userId: "user-1",
+					organizationId: organizationId ?? null,
+					enabled: true,
+					OR: [
+						{ authType: { not: "OAUTH2" } },
+						{ needsReauth: false },
+						{
+							mcpServer: {
+								key: { in: ["gitlab", "gitlab-official"] },
+							},
+						},
+					],
+				},
+				include: { mcpServer: true },
+				orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+			});
+		},
+	);
+	it("respects an explicit empty config selection without querying", async () => {
+		expect(
+			await getEnabledMcpConfigs({
+				userId: "user-1",
+				organizationId: "example-org",
+				enabledMcpConfigIds: [],
+			}),
+		).toEqual([]);
+		expect(mockMcpConfigFindMany).not.toHaveBeenCalled();
+	});
+});
+
+describe("getMcpClientResult diagnostics", () => {
+	it("preserves the server name and typed code for route logs", async () => {
+		vi.mocked(createMcpClientForConfig).mockRejectedValueOnce(
+			new McpClientError({
+				code: "AUTH_FAILED",
+				message: "Bearer secret-value",
+				serverName: "Example Server",
+			}),
+		);
+		expect(
+			await getMcpClientResult("config-1", "user-1", "example-org", {
+				access: "connect",
+			}),
+		).toEqual({
+			ok: false,
+			error: {
+				code: "AUTH_FAILED",
+				message: "Bearer secret-value",
+				serverName: "Example Server",
+			},
+		});
+	});
+	it("classifies an OAuth authorization request as requiring reconnection", async () => {
+		vi.mocked(createMcpClientForConfig).mockRejectedValueOnce(
+			new OAuthAuthorizationRequiredError({
+				configId: "config-1",
+				serverName: "Example Server",
+				authorizationUrl: "https://example.com/private",
+			}),
+		);
+		const result = await getMcpClientResult(
+			"config-1",
+			"user-1",
+			"example-org",
+		);
+		expect(result).toMatchObject({
+			ok: false,
+			error: {
+				code: "OAUTH_AUTH_REQUIRED",
+				serverName: "Example Server",
+			},
+		});
+		expect(JSON.stringify(result)).not.toContain(
+			"https://example.com/private",
+		);
+	});
+});
+
+describe("getMcpConfigsNeedingReauth", () => {
+	it.each(["example-org", undefined])(
+		"uses the exclusive tenant arm and optional config selection: %s",
+		async (organizationId) => {
+			const configs = [{ id: "example-config" }];
+			mockMcpConfigFindMany.mockResolvedValueOnce(configs);
+			expect(
+				await getMcpConfigsNeedingReauth({
+					userId: "example-user",
+					organizationId,
+					enabledMcpConfigIds: ["example-config"],
+				}),
+			).toEqual(configs);
+			expect(mockMcpConfigFindMany).toHaveBeenCalledWith({
+				where: {
+					userId: "example-user",
+					organizationId: organizationId ?? null,
+					enabled: true,
+					authType: "OAUTH2",
+					needsReauth: true,
+					mcpServer: {
+						key: { notIn: ["gitlab", "gitlab-official"] },
+					},
+					id: { in: ["example-config"] },
+				},
+				include: { mcpServer: true },
+				orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+			});
+		},
+	);
+	it("does not query for an empty config selection", async () => {
+		expect(
+			await getMcpConfigsNeedingReauth({
+				userId: "example-user",
+				enabledMcpConfigIds: [],
+			}),
+		).toEqual([]);
+		expect(mockMcpConfigFindMany).not.toHaveBeenCalled();
+	});
+	it("omits the id filter when no config selection is supplied", async () => {
+		mockMcpConfigFindMany.mockResolvedValueOnce([]);
+		await getMcpConfigsNeedingReauth({
+			userId: "example-user",
+			organizationId: "example-org",
+		});
+		expect(mockMcpConfigFindMany.mock.calls[0][0].where).not.toHaveProperty(
+			"id",
+		);
 	});
 });

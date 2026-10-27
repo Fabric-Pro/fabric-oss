@@ -46,6 +46,7 @@ vi.mock("@temporalio/workflow", () => ({
 			new Proxy({}, { get: (_target, name) => mocks.stub(String(name)) }),
 	),
 	workflowInfo: vi.fn(() => ({
+		startTime: new Date(Date.now()),
 		runId: "test-run-id",
 		unsafe: { isReplaying: false },
 	})),

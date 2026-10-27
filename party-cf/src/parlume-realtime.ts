@@ -34,12 +34,23 @@ const PARLUME_REALTIME_AUDIO = {
 	},
 } as const;
 
+// An Azure AI Foundry resource serves the same protocol under its v1 path.
+const AZURE_REALTIME_URL =
+	/^https:\/\/[a-z0-9-]{2,64}\.(?:openai\.azure\.com|cognitiveservices\.azure\.com|services\.ai\.azure\.com)\/openai\/v1\/realtime$/;
+
 export interface ParlumeRealtimeCredentials {
 	clientSecret: string;
 	model: string;
+	/** The realtime API the secret was minted on: OpenAI's or an Azure resource's. */
+	url: string;
+	provider: "OPENAI_DIRECT" | "AZURE_AI_FOUNDRY";
 }
 
-/** Fabric's `realtime-session` answer, or null when the meeting stays classic. */
+/**
+ * Fabric's `realtime-session` answer, or null when the meeting stays classic.
+ * The secret is only ever sent to OpenAI or an Azure resource; Fabric deployed
+ * before Azure hosts names no URL and means OpenAI.
+ */
 export function parseParlumeRealtimeCredentials(
 	value: unknown,
 ): ParlumeRealtimeCredentials | null {
@@ -52,13 +63,26 @@ export function parseParlumeRealtimeCredentials(
 	) {
 		return null;
 	}
-	return { clientSecret: value.clientSecret, model: value.model };
+	const url = value.realtimeUrl ?? REALTIME_URL;
+	if (
+		typeof url !== "string" ||
+		(url !== REALTIME_URL && !AZURE_REALTIME_URL.test(url))
+	) {
+		return null;
+	}
+	return {
+		clientSecret: value.clientSecret,
+		model: value.model,
+		url,
+		provider: url === REALTIME_URL ? "OPENAI_DIRECT" : "AZURE_AI_FOUNDRY",
+	};
 }
 
 /**
- * How the socket is opened. OpenAI accepts the client secret as a bearer
- * header or as a WebSocket subprotocol; both are sent, so the upgrade works
- * whichever one survives the Workers runtime.
+ * How the socket is opened: the client secret goes as a bearer header only.
+ * OpenAI closes a session that also carries it as a WebSocket subprotocol
+ * (4000 invalid_parameter, "only send one of protocol api key and
+ * Authorization header").
  * @public
  */
 export function parlumeRealtimeUpgrade(
@@ -68,11 +92,10 @@ export function parlumeRealtimeUpgrade(
 	headers: Record<string, string>;
 } {
 	return {
-		url: `${REALTIME_URL}?model=${encodeURIComponent(credentials.model)}`,
+		url: `${credentials.url}?model=${encodeURIComponent(credentials.model)}`,
 		headers: {
 			Upgrade: "websocket",
 			Authorization: `Bearer ${credentials.clientSecret}`,
-			"Sec-WebSocket-Protocol": `realtime, openai-insecure-api-key.${credentials.clientSecret}`,
 		},
 	};
 }
@@ -98,7 +121,7 @@ export async function openParlumeRealtimeSocket(
 	const response = await fetch(url, { headers });
 	const socket = response.webSocket;
 	if (!socket) {
-		throw new Error(`OpenAI Realtime answered HTTP ${response.status}`);
+		throw new Error(`Realtime host answered HTTP ${response.status}`);
 	}
 	socket.accept();
 	return socket;
@@ -194,7 +217,12 @@ export type ParlumeRealtimeEvent =
 			/** What Parlume said, for the summary a new session starts from. */
 			transcripts: string[];
 	  }
-	| { type: "error"; code: string | null };
+	| {
+			type: "error";
+			code: string | null;
+			param: string | null;
+			message: string | null;
+	  };
 
 function count(value: unknown): number {
 	return typeof value === "number" && Number.isFinite(value) && value > 0
@@ -333,15 +361,17 @@ export function parseParlumeRealtimeEvent(
 				...parseOutput(response.output),
 			};
 		}
-		case "error":
+		case "error": {
+			const error = isRecord(event.error) ? event.error : {};
+			const text = (value: unknown, max: number) =>
+				typeof value === "string" ? value.slice(0, max) : null;
 			return {
 				type: "error",
-				code:
-					isRecord(event.error) &&
-					typeof event.error.code === "string"
-						? event.error.code
-						: null,
+				code: text(error.code, 100),
+				param: text(error.param, 200),
+				message: text(error.message, 300),
 			};
+		}
 		default:
 			return null;
 	}

@@ -51,6 +51,8 @@
  */
 
 import { VENDOR_CONTEXT_MARKER } from "@repo/agent-types";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import {
 	companyContextReadyWhere,
 	db,
@@ -246,7 +248,15 @@ function selectVendorEntries(
  * throws, and gives up after `timeoutMs`: a hung embedding call or search
  * must not hold, or fail, whatever the caller is doing alongside it.
  */
-export async function searchCompanyContext(
+export function searchCompanyContext(
+	...args: Parameters<typeof searchCompanyContextInternal>
+): ReturnType<typeof searchCompanyContextInternal> {
+	return runWithAiCallPurpose(AI_CALL_PURPOSES.companyContextEmbedding, () =>
+		searchCompanyContextInternal(...args),
+	);
+}
+
+async function searchCompanyContextInternal(
 	input: CompanyContextSearchInput,
 ): Promise<CompanyContextSearchResult> {
 	try {

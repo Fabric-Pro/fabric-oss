@@ -62,6 +62,10 @@ import {
 	TURN_BUDGET_ESTIMATE,
 	toLanguageModelPrompt,
 } from "@repo/ai/lib/turn-budget-estimate";
+import {
+	cacheableSystem,
+	withAdvisorCacheBreakpoints,
+} from "@repo/ai/prompt-cache";
 import type { DispatchRequestSizer } from "@repo/utils/dispatch-guard";
 import type { ModelMessage } from "ai";
 import type { IterativeMessage } from "../../../workflows/orchestrator/types";
@@ -424,6 +428,7 @@ export async function planFinalizationRequest(args: {
 
 /** What a FINALIZATION round sends, set once the round has built it. */
 interface FinalizationRequest {
+	cacheSystemPrompt?: boolean;
 	instructions: string;
 	fullMessages: ModelMessage[];
 	fullMaxOutputTokens: number;
@@ -491,8 +496,12 @@ export function createFinalizationSizing(
 			? { maxOutputTokens: plan.maxOutputTokens }
 			: {
 					prompt: await toLanguageModelPrompt({
-						instructions: request.instructions,
-						messages: plan.messages,
+						instructions: request.cacheSystemPrompt
+							? cacheableSystem(request.instructions)
+							: request.instructions,
+						messages: request.cacheSystemPrompt
+							? withAdvisorCacheBreakpoints(plan.messages)
+							: plan.messages,
 					}),
 					maxOutputTokens: plan.maxOutputTokens,
 				};

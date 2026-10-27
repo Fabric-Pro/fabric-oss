@@ -1,11 +1,11 @@
 import { db } from "@repo/database";
 import type { ParlumeMeetingEndReason } from "@repo/database/prisma/generated/enums";
 import {
-	getParlumeBridgeSettings,
 	leaveParlumeMeetingBot,
 	type ParlumeMeetingBotLeaveResult,
 } from "./parlume-attendee";
 import { parlumeLog } from "./parlume-log";
+import { resolveParlumeAttendeeSettingsForSession } from "./parlume-provider-settings";
 
 const leavableStatuses = [
 	"JOINING",
@@ -49,13 +49,15 @@ export async function requestParlumeLeave(input: {
 	if (claimed.count === 0) {
 		return null;
 	}
-	const settings = getParlumeBridgeSettings();
 	try {
-		if (!settings) {
-			throw new Error("Parlume bridge configuration is unavailable.");
+		const attendee = await resolveParlumeAttendeeSettingsForSession(
+			input.session.id,
+		);
+		if (!attendee) {
+			throw new Error("Parlume provider configuration is unavailable.");
 		}
 		const result = await leaveParlumeMeetingBot({
-			settings,
+			attendee,
 			providerBotId: input.session.providerBotId,
 		});
 		parlumeLog("info", "leave.requested", {

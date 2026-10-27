@@ -20,7 +20,14 @@
  * startToClose timeout.
  */
 
-import { getAIModelWithMetadata } from "@repo/ai";
+import {
+	type AiFeatureKey,
+	type AiJobKey,
+	getAIModelWithMetadata,
+} from "@repo/ai";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
+import { clampRequestedOutputTokens } from "@repo/ai/lib/output-token-budget";
 import { classifyLimitError } from "@repo/ai/limits";
 import { heartbeat } from "@temporalio/activity";
 import { ApplicationFailure } from "@temporalio/common";
@@ -36,6 +43,9 @@ import {
 } from "../turn-dispatch";
 
 export interface SummarizeToolResultInput {
+	/** Product attribution supplied by the caller; older workflow payloads use chat-agent. */
+	featureKey?: AiFeatureKey;
+	jobType?: AiJobKey;
 	toolName: string;
 	toolResult: string;
 	userQuery: string;
@@ -156,12 +166,13 @@ export async function summarizeLargeToolResult(
 	};
 
 	try {
-		const { model: resolvedModel } = await getAIModelWithMetadata(
+		const { model: resolvedModel, metadata } = await getAIModelWithMetadata(
 			{ taskType: "SIMPLE" },
 			{
 				userId,
 				organizationId,
-				featureKey: "chat-agent",
+				featureKey: input.featureKey ?? "chat-agent",
+				jobType: input.jobType,
 				...usageOriginFields(input),
 			},
 		);
@@ -190,23 +201,30 @@ export async function summarizeLargeToolResult(
 			for (const chunk of chunks) {
 				const result = await callWithRateLimitRetry(
 					async () => {
-						return generateText({
-							model,
-							instructions: SYSTEM_PROMPT,
-							prompt: `Tool: ${toolName}\nUser's query: ${userQuery}\n\nCondense this chunk of tool output (part of a larger result). Preserve all key information relevant to the query.\n\n${chunk}`,
-							maxOutputTokens: Math.floor(
-								maxOutputLength / chunks.length / 4,
-							), // ~4 chars per token
-							temperature: 0.2,
-							maxRetries: 1,
-							// Caps a call started just before the deadline. An
-							// abort is a non-limit error → immediate rethrow →
-							// the caller's truncation fallback. Merged with the
-							// activity's cancellation, which aborts it too.
-							abortSignal: activityAbortSignal(
-								deadlineSignal(state, deps),
-							),
-						});
+						return runWithAiCallPurpose(
+							AI_CALL_PURPOSES.resultSummaryChunk,
+							() =>
+								generateText({
+									model,
+									instructions: SYSTEM_PROMPT,
+									prompt: `Tool: ${toolName}\nUser's query: ${userQuery}\n\nCondense this chunk of tool output (part of a larger result). Preserve all key information relevant to the query.\n\n${chunk}`,
+									maxOutputTokens: clampRequestedOutputTokens(
+										Math.floor(
+											maxOutputLength / chunks.length / 4,
+										),
+										metadata,
+									), // ~4 chars per token
+									temperature: 0.2,
+									maxRetries: 1,
+									// Caps a call started just before the deadline. An
+									// abort is a non-limit error → immediate rethrow →
+									// the caller's truncation fallback. Merged with the
+									// activity's cancellation, which aborts it too.
+									abortSignal: activityAbortSignal(
+										deadlineSignal(state, deps),
+									),
+								}),
+						);
 					},
 					state,
 					deps,
@@ -223,17 +241,24 @@ export async function summarizeLargeToolResult(
 			// Otherwise, do a final summarization pass on the combined summaries
 			const finalResult = await callWithRateLimitRetry(
 				async () => {
-					return generateText({
-						model,
-						instructions: SYSTEM_PROMPT,
-						prompt: `Tool: ${toolName}\nUser's query: ${userQuery}\n\nCondense these partial summaries into a single coherent summary:\n\n${combined}`,
-						maxOutputTokens: Math.floor(maxOutputLength / 4),
-						temperature: 0.2,
-						maxRetries: 1,
-						abortSignal: activityAbortSignal(
-							deadlineSignal(state, deps),
-						),
-					});
+					return runWithAiCallPurpose(
+						AI_CALL_PURPOSES.resultSummaryCombine,
+						() =>
+							generateText({
+								model,
+								instructions: SYSTEM_PROMPT,
+								prompt: `Tool: ${toolName}\nUser's query: ${userQuery}\n\nCondense these partial summaries into a single coherent summary:\n\n${combined}`,
+								maxOutputTokens: clampRequestedOutputTokens(
+									Math.floor(maxOutputLength / 4),
+									metadata,
+								),
+								temperature: 0.2,
+								maxRetries: 1,
+								abortSignal: activityAbortSignal(
+									deadlineSignal(state, deps),
+								),
+							}),
+					);
 				},
 				state,
 				deps,
@@ -245,17 +270,24 @@ export async function summarizeLargeToolResult(
 		// Single-pass summarization for results that fit in context
 		const result = await callWithRateLimitRetry(
 			async () => {
-				return generateText({
-					model,
-					instructions: SYSTEM_PROMPT,
-					prompt: `Tool: ${toolName}\nUser's query: ${userQuery}\n\nCondense this tool output while preserving all information relevant to the query:\n\n${source}`,
-					maxOutputTokens: Math.floor(maxOutputLength / 4),
-					temperature: 0.2,
-					maxRetries: 1,
-					abortSignal: activityAbortSignal(
-						deadlineSignal(state, deps),
-					),
-				});
+				return runWithAiCallPurpose(
+					AI_CALL_PURPOSES.resultSummarySingle,
+					() =>
+						generateText({
+							model,
+							instructions: SYSTEM_PROMPT,
+							prompt: `Tool: ${toolName}\nUser's query: ${userQuery}\n\nCondense this tool output while preserving all information relevant to the query:\n\n${source}`,
+							maxOutputTokens: clampRequestedOutputTokens(
+								Math.floor(maxOutputLength / 4),
+								metadata,
+							),
+							temperature: 0.2,
+							maxRetries: 1,
+							abortSignal: activityAbortSignal(
+								deadlineSignal(state, deps),
+							),
+						}),
+				);
 			},
 			state,
 			deps,

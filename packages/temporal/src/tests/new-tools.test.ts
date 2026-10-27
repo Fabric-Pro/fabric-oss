@@ -79,6 +79,7 @@ describe("Fabric AI Tools - New Tools Registration", () => {
 		const tools = getFabricAiTools();
 		for (const name of [
 			"fabric_update_frame",
+			"fabric_edit_frame_block",
 			"fabric_get_frame",
 			"fabric_list_frames",
 			"fabric_share_frame",
@@ -170,6 +171,7 @@ describe("Fabric AI Tools - New Tools Registration", () => {
 			"fabric_text_to_speech",
 			"fabric_create_frame",
 			"fabric_update_frame",
+			"fabric_edit_frame_block",
 			"fabric_get_frame",
 			"fabric_list_frames",
 			"fabric_share_frame",

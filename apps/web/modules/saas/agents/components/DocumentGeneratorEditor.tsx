@@ -20,6 +20,11 @@
  * See docs/DOCUMENT_EDITOR_STREAMING_PATTERN.md for the canonical implementation.
  */
 
+import {
+	type DraftVerdictRecorder,
+	useConfirmChangesVerdict,
+	useConfirmChangesVerdictCard,
+} from "@saas/agents/copilot/useConfirmChangesVerdict";
 import "@copilotkit/react-ui/styles.css";
 import "@saas/projects/components/DocumentEditor.css";
 
@@ -762,43 +767,58 @@ export function DocumentGeneratorEditor({
 	// The AI may return only partial content, but the editor has the full merged view
 	// with diff highlighting. getEditorMarkdownForSave() strips diff tags and gives us
 	// the final content (original - deletions + additions).
+	const verdictFactory = useConfirmChangesVerdict({
+		surface: "document-generator",
+	});
+	const verdictFactoryRef = useRef(verdictFactory);
+	verdictFactoryRef.current = verdictFactory;
 	useCopilotAction(
 		{
 			name: "confirm_changes",
-			renderAndWaitForResponse: ({ args, respond, status }) => (
-				<ConfirmChanges
-					args={args}
-					respond={respond}
-					status={status}
-					onReject={() => {
-						// Revert to baseline
-						const baseline = baselineRef.current;
-						editor?.commands.setContent(fromMarkdown(baseline));
-						setCurrentDocument(baseline);
-						setAgentState({ document: baseline });
-						console.log(
-							"[DocumentGeneratorEditor] Changes rejected, reverted to baseline",
-						);
-					}}
-					onConfirm={() => {
-						// Confirm: Get the merged content from editor (strips diff tags)
-						// This gives us: original content - deletions + additions
-						// No persistence path here (see note above);
-						// `?? ""` preserves prior behavior on a failed read.
-						const finalContent =
-							getEditorMarkdownForSave(editor) ?? "";
+			renderAndWaitForResponse: ({ args, respond, status }) => {
+				const recordVerdict = verdictFactoryRef.current();
+				return (
+					<ConfirmChanges
+						recordVerdict={recordVerdict}
+						args={args}
+						respond={respond}
+						status={status}
+						onReject={() => {
+							void recordVerdict(false);
+							// Revert to baseline
+							const baseline = baselineRef.current;
+							editor?.commands.setContent(fromMarkdown(baseline));
+							setCurrentDocument(baseline);
+							setAgentState({ document: baseline });
+							console.log(
+								"[DocumentGeneratorEditor] Changes rejected, reverted to baseline",
+							);
+						}}
+						onConfirm={() => {
+							// Confirm: Get the merged content from editor (strips diff tags)
+							// This gives us: original content - deletions + additions
+							// No persistence path here (see note above);
+							// `?? ""` preserves prior behavior on a failed read.
+							const extracted = getEditorMarkdownForSave(editor);
+							if (extracted !== null) {
+								void recordVerdict(true);
+							}
+							const finalContent = extracted ?? "";
 
-						// Set editor to clean content (no diff highlighting)
-						editor?.commands.setContent(fromMarkdown(finalContent));
-						setCurrentDocument(finalContent);
-						baselineRef.current = finalContent; // CRITICAL: Update baseline for follow-ups
-						setAgentState({ document: finalContent });
-						console.log(
-							"[DocumentGeneratorEditor] Changes accepted, baseline updated",
-						);
-					}}
-				/>
-			),
+							// Set editor to clean content (no diff highlighting)
+							editor?.commands.setContent(
+								fromMarkdown(finalContent),
+							);
+							setCurrentDocument(finalContent);
+							baselineRef.current = finalContent; // CRITICAL: Update baseline for follow-ups
+							setAgentState({ document: finalContent });
+							console.log(
+								"[DocumentGeneratorEditor] Changes accepted, baseline updated",
+							);
+						}}
+					/>
+				);
+			},
 		},
 		[agentState?.document],
 	);
@@ -970,6 +990,7 @@ export function DocumentGeneratorEditor({
 
 // ConfirmChanges component - follows ag-ui-demo pattern
 interface ConfirmChangesProps {
+	recordVerdict: DraftVerdictRecorder;
 	args: any;
 	respond: any;
 	status: any;
@@ -978,11 +999,13 @@ interface ConfirmChangesProps {
 }
 
 function ConfirmChanges({
+	recordVerdict,
 	respond,
 	status,
 	onReject,
 	onConfirm,
 }: ConfirmChangesProps) {
+	useConfirmChangesVerdictCard(recordVerdict);
 	const [accepted, setAccepted] = useState<boolean | null>(null);
 	const [hidden, setHidden] = useState(false);
 

@@ -24,13 +24,11 @@ const utilsConsumers = [
 ];
 const proxyConsumers = [
 	["express", "4.21.2"],
-	["express", "5.1.0"],
 	["express", "5.2.1"],
 ];
 const sourceMapConsumers = [
 	["@tailwindcss/node", "4.1.16"],
 	["css-tree", "3.2.1"],
-	["magicast", "0.3.5"],
 	["magicast", "0.5.3"],
 	["postcss", "8.5.26"],
 	["sass", "1.51.0"],
@@ -231,6 +229,49 @@ function verifyZodLockfile(text, yaml, semver) {
 			);
 		}
 	}
+	const isMapping = (value) =>
+		value !== null && typeof value === "object" && !Array.isArray(value);
+	assert.ok(
+		isMapping(lockfile.importers),
+		"Missing readable lockfile importers",
+	);
+	assert.ok(
+		Object.keys(lockfile.importers).length > 0,
+		"Empty lockfile importers",
+	);
+	let zodImporters = 0;
+	for (const [owner, metadata] of Object.entries(lockfile.importers)) {
+		assert.ok(isMapping(metadata), `Unreadable importer ${owner}`);
+		for (const group of [
+			"dependencies",
+			"devDependencies",
+			"optionalDependencies",
+		]) {
+			if (!(group in metadata)) {
+				continue;
+			}
+			assert.ok(
+				isMapping(metadata[group]),
+				`Unreadable importer ${owner} ${group}`,
+			);
+			if (!Object.hasOwn(metadata[group], "zod")) {
+				continue;
+			}
+			zodImporters++;
+			const dependency = metadata[group].zod;
+			const version =
+				isMapping(dependency) && typeof dependency.version === "string"
+					? dependency.version.split("(")[0]
+					: null;
+			assert.ok(
+				version !== null &&
+					semver.valid(version) !== null &&
+					semver.gte(version, "4.6.6"),
+				`Invalid or vulnerable first-party zod resolution: ${owner} (${group}) ${JSON.stringify(dependency)}; require >=4.6.6`,
+			);
+		}
+	}
+	assert.ok(zodImporters > 0, "No zod dependencies in lockfile importers");
 }
 
 test("zod advisory exception accepts only reviewed v3 or versions at least 4.6.6", () => {
@@ -266,7 +307,7 @@ test("zod lockfile guard rejects vulnerable and unreviewed resolutions", () => {
 		"semver",
 	);
 	const snippet = (version) =>
-		`packages:\n  zod@${version}: {}\nsnapshots:\n  zod@${version}: {}\n`;
+		`importers:\n  example-package:\n    dependencies:\n      zod:\n        version: 4.6.7\npackages:\n  zod@${version}: {}\nsnapshots:\n  zod@${version}: {}\n`;
 	assert.doesNotThrow(() =>
 		verifyZodLockfile(snippet("4.6.6"), yaml, semver),
 	);
@@ -284,6 +325,95 @@ test("zod lockfile guard rejects vulnerable and unreviewed resolutions", () => {
 		"packages: null\nsnapshots: null",
 	]) {
 		assert.throws(() => verifyZodLockfile(text, yaml, semver));
+	}
+});
+
+test("first-party zod importers require at least 4.6.6 and readable metadata", () => {
+	const yaml = installedConsumers("@changesets/parse", "1.0.0")[0].require(
+		"yaml",
+	);
+	const semver = installedConsumers("@changesets/cli", "3.0.1")[0].require(
+		"semver",
+	);
+	const fixture = (importers) =>
+		yaml.stringify({
+			packages: { "zod@3.25.76": {}, "zod@4.6.7": {} },
+			snapshots: { "zod@3.25.76": {}, "zod@4.6.7": {} },
+			importers,
+		});
+	for (const group of [
+		"dependencies",
+		"devDependencies",
+		"optionalDependencies",
+	]) {
+		for (const version of [
+			"4.6.6",
+			"4.6.7",
+			"4.7.0(peer@1.0.0)",
+			"5.0.0",
+		]) {
+			assert.doesNotThrow(() =>
+				verifyZodLockfile(
+					fixture({
+						"example-package": {
+							[group]: { zod: { specifier: "*", version } },
+						},
+					}),
+					yaml,
+					semver,
+				),
+			);
+		}
+		for (const dependency of [
+			{ version: "3.25.76" },
+			{ version: "3.25.75" },
+			{ version: "4.6.5" },
+			{ version: "4.6.6-rc.1" },
+			{ version: "invalid" },
+			{ version: 4 },
+			{},
+			null,
+			"4.6.7",
+		]) {
+			assert.throws(
+				() =>
+					verifyZodLockfile(
+						fixture({
+							"example-package": { [group]: { zod: dependency } },
+						}),
+						yaml,
+						semver,
+					),
+				/first-party zod/,
+			);
+		}
+		for (const metadata of [null, [], "unreadable"]) {
+			assert.throws(
+				() =>
+					verifyZodLockfile(
+						fixture({
+							"example-package": { [group]: metadata },
+						}),
+						yaml,
+						semver,
+					),
+				/importer/,
+			);
+		}
+	}
+	for (const importers of [
+		undefined,
+		null,
+		{},
+		[],
+		"unreadable",
+		{ "example-package": null },
+		{ "example-package": {} },
+	]) {
+		assert.throws(
+			() => verifyZodLockfile(fixture(importers), yaml, semver),
+			/importer/,
+		);
 	}
 });
 
@@ -887,3 +1017,80 @@ for (const [name, version] of sourceMapConsumers) {
 		}
 	});
 }
+
+// pnpm applies `patchedDependencies` only when the patch files are present at
+// install time, so every Docker stage that installs must copy `patches/` first
+// or the image silently ships the unpatched registry code.
+function verifyDockerfile(source, path) {
+	const stages = new Map();
+	let hasPatches = false;
+	let stageName;
+	for (const line of source.replace(/\\\n\s*/g, " ").split("\n")) {
+		const from = /^FROM\s+(\S+)(?:\s+AS\s+(\S+))?/i.exec(line);
+		if (from) {
+			hasPatches = stages.get(from[1]) === true;
+			stageName = from[2];
+		}
+		const copy =
+			/^COPY\s+(?:--from=(\S+)\s+)?(?:\/app\/)?patches\s+\.\/patches\/?\s*$/i.exec(
+				line,
+			);
+		if (copy) {
+			assert.ok(
+				!copy[1] || stages.get(copy[1]),
+				`${path}: patch source stage must contain patches`,
+			);
+			hasPatches = true;
+		}
+		if (/^RUN\s.*\bpnpm\s+(?:install|fetch)\b/.test(line)) {
+			assert.ok(
+				hasPatches,
+				`${path}: copy patches before pnpm install/fetch in every stage`,
+			);
+		}
+		if (stageName) {
+			stages.set(stageName, hasPatches);
+		}
+	}
+}
+
+function dockerfiles(directory) {
+	return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+		if (
+			entry.name.startsWith(".") ||
+			["node_modules", "__fixtures__"].includes(entry.name)
+		) {
+			return [];
+		}
+		const path = join(directory, entry.name);
+		if (entry.isDirectory()) {
+			return dockerfiles(path);
+		}
+		return entry.isFile() && entry.name.startsWith("Dockerfile")
+			? [path]
+			: [];
+	});
+}
+
+test("all Docker pnpm install stages receive the patches directory", () => {
+	const files = dockerfiles(root);
+	assert.ok(files.length > 0);
+	for (const path of files) {
+		verifyDockerfile(readFileSync(path, "utf8"), path);
+	}
+	const fixture =
+		"FROM node:22 AS builder\nCOPY patches ./patches\nRUN pnpm install\nFROM node:22 AS runtime\nCOPY --from=builder /app/patches ./patches\nRUN pnpm install --prod\n";
+	verifyDockerfile(fixture, "fixture");
+	assert.throws(() =>
+		verifyDockerfile(
+			fixture.replace("COPY patches ./patches\n", ""),
+			"fixture",
+		),
+	);
+	assert.throws(() =>
+		verifyDockerfile(
+			fixture.replace("COPY --from=builder /app/patches ./patches\n", ""),
+			"fixture",
+		),
+	);
+});

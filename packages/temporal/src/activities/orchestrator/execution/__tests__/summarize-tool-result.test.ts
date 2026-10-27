@@ -15,19 +15,25 @@
  * RetryError-wrapped provider errors is half of what is under test.
  */
 
+import { currentAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { ApplicationFailure } from "@temporalio/common";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const stubs = vi.hoisted(() => ({
 	generateTextMock: vi.fn(),
 	heartbeatMock: vi.fn(),
+	purposes: [] as (string | undefined)[],
 	getAIModelWithMetadataMock: vi.fn(async () => ({
 		model: { __mockModel: true },
+		metadata: { maxOutputTokens: undefined as number | undefined },
 	})),
 }));
 
 vi.mock("ai", () => ({
-	generateText: stubs.generateTextMock,
+	generateText: (...args: unknown[]) => {
+		stubs.purposes.push(currentAiCallPurpose());
+		return stubs.generateTextMock(...args);
+	},
 }));
 
 vi.mock("@repo/ai", () => ({
@@ -56,6 +62,7 @@ function buildInput(
 	overrides: Partial<SummarizeToolResultInput> = {},
 ): SummarizeToolResultInput {
 	return {
+		featureKey: "chat-agent",
 		toolName: "get_meeting_transcript",
 		toolResult: "a".repeat(1000),
 		userQuery: "What were the action items?",
@@ -107,11 +114,13 @@ beforeEach(() => {
 	// `...Once` entries queued, and clearAllMocks does not drain that queue — the
 	// leftovers would shift every call in the next test by one.
 	stubs.generateTextMock.mockReset();
+	stubs.purposes.length = 0;
 	stubs.heartbeatMock.mockReset();
 	stubs.getAIModelWithMetadataMock.mockReset();
 
 	stubs.getAIModelWithMetadataMock.mockResolvedValue({
 		model: { __mockModel: true },
+		metadata: { maxOutputTokens: undefined as number | undefined },
 	});
 	stubs.generateTextMock.mockResolvedValue({ text: "SUMMARY" });
 	vi.spyOn(console, "log").mockImplementation(() => {});
@@ -445,4 +454,107 @@ describe("summarizeLargeToolResult — usage attribution", () => {
 		expect(contexts[1]).not.toHaveProperty("frameId");
 		expect(contexts[1]).not.toHaveProperty("projectId");
 	});
+});
+
+it("labels single, chunk and combining requests on the reused summary model", async () => {
+	const { deps } = makeDeps();
+	await summarizeLargeToolResult(buildInput(), deps);
+	stubs.generateTextMock.mockResolvedValue({ text: "x".repeat(7000) });
+	await summarizeLargeToolResult(
+		buildInput({ toolResult: "x".repeat(CHUNK_LIMIT + 1) }),
+		deps,
+	);
+	expect(stubs.purposes).toEqual([
+		"result-summary-single",
+		"result-summary-chunk",
+		"result-summary-chunk",
+		"result-summary-combine",
+	]);
+	expect(stubs.getAIModelWithMetadataMock).toHaveBeenCalledTimes(2);
+});
+
+it.each(["chat-agent", "report-generation"] as const)(
+	"uses operation purposes and the caller feature key (%s) inside an ambient scope",
+	async (featureKey) => {
+		const { runWithAiCallPurpose } = await import(
+			"@repo/ai/lib/call-purpose-context"
+		);
+		const { deps } = makeDeps();
+		await runWithAiCallPurpose("main-round", async () => {
+			await summarizeLargeToolResult(buildInput({ featureKey }), deps);
+			stubs.generateTextMock.mockResolvedValue({
+				text: "x".repeat(7000),
+			});
+			await summarizeLargeToolResult(
+				buildInput({
+					featureKey,
+					toolResult: "x".repeat(CHUNK_LIMIT + 1),
+				}),
+				deps,
+			);
+		});
+		expect(stubs.purposes).toEqual([
+			"result-summary-single",
+			"result-summary-chunk",
+			"result-summary-chunk",
+			"result-summary-combine",
+		]);
+		for (const call of stubs.getAIModelWithMetadataMock.mock.calls) {
+			expect((call as unknown[])[1]).toMatchObject({ featureKey });
+		}
+	},
+);
+
+describe("result summary catalog cap", () => {
+	describe.each(["single", "chunk", "combine"] as const)(
+		"%s pass",
+		(mode) => {
+			it.each([8192, 32768, undefined])(
+				"caps output for model limit %s",
+				async (cap) => {
+					stubs.getAIModelWithMetadataMock.mockResolvedValueOnce({
+						model: { __mockModel: true },
+						metadata: { maxOutputTokens: cap },
+					});
+					if (mode === "combine") {
+						stubs.generateTextMock
+							.mockResolvedValueOnce({ text: "s".repeat(50000) })
+							.mockResolvedValueOnce({ text: "s".repeat(50000) })
+							.mockResolvedValueOnce({ text: "SUMMARY" });
+					} else {
+						stubs.generateTextMock.mockResolvedValue({
+							text: "SUMMARY",
+						});
+					}
+					await summarizeLargeToolResult(
+						buildInput({
+							toolResult: "a".repeat(
+								mode === "single" ? 1000 : CHUNK_LIMIT + 1,
+							),
+							maxOutputLength: 80000,
+						}),
+						makeDeps().deps,
+					);
+					const requested = stubs.generateTextMock.mock.calls.map(
+						(call) => call[0].maxOutputTokens,
+					);
+					if (mode === "single") {
+						expect(requested).toEqual(
+							cap === 8192 ? [8192] : [20000],
+						);
+					} else if (mode === "chunk") {
+						expect(requested).toEqual(
+							cap === 8192 ? [8192, 8192] : [10000, 10000],
+						);
+					} else {
+						expect(requested).toEqual(
+							cap === 8192
+								? [8192, 8192, 8192]
+								: [10000, 10000, 20000],
+						);
+					}
+				},
+			);
+		},
+	);
 });

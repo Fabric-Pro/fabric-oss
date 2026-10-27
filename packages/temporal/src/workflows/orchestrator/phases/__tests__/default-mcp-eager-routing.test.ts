@@ -51,6 +51,7 @@ vi.mock("@temporalio/workflow", () => ({
 	// stay undefined and are never invoked in this suite.
 	proxyActivities: vi.fn(() => activityStubs),
 	workflowInfo: vi.fn(() => ({
+		startTime: new Date(Date.now()),
 		runId: "test-run-id",
 		unsafe: { isReplaying: false },
 	})),

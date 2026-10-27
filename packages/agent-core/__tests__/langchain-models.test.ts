@@ -8,6 +8,15 @@ import {
 } from "@repo/agent-core/output-truncation";
 import { AZURE_OPENAI_API_VERSION } from "@repo/agent-types";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const { databricksBaseFetch } = vi.hoisted(() => ({
+	databricksBaseFetch: vi.fn(),
+}));
+vi.mock("undici", async () => ({
+	...(await vi.importActual<typeof import("undici")>("undici")),
+	fetch: databricksBaseFetch,
+}));
+
 import { isRetryableError } from "../src/retry";
 import type { RuntimeProviderConfig } from "../src/services/langchain-models";
 import {
@@ -941,6 +950,44 @@ describe("createProviderModel — direct Anthropic streamed usage", () => {
 		}).streamEvents("Say hello").usage;
 		expect(usage).toMatchObject({ input_tokens: 120, output_tokens: 1 });
 	});
+
+	// The SDK throws "Streaming is required for operations that may take
+	// longer than 10 minutes" for a non-streaming request above
+	// 3600 * max_tokens / 128000 > 600 seconds, i.e. about 21,333 tokens.
+	const ANTHROPIC_NONSTREAMING_TOKEN_LIMIT = Math.floor(
+		(600 * 128_000) / 3600,
+	);
+
+	it("streams under invoke() when the default budget exceeds the SDK's non-streaming limit", async () => {
+		const model = streamingAnthropicModel();
+		const params = (
+			model as unknown as {
+				invocationParams: (
+					opts: Record<string, unknown>,
+				) => Record<string, unknown>;
+			}
+		).invocationParams({});
+		expect(params.max_tokens).toBeGreaterThan(
+			ANTHROPIC_NONSTREAMING_TOKEN_LIMIT,
+		);
+		expect(params.stream).toBe(true);
+
+		(model as unknown as { batchClient: unknown }).batchClient = {
+			messages: {
+				create: async () => {
+					throw new Error(
+						"Streaming is required for operations that may take longer than 10 minutes.",
+					);
+				},
+			},
+		};
+		const result = await model.invoke("Say hello");
+		expect(result.text).toBe("Hello");
+		expect(result.usage_metadata).toMatchObject({
+			input_tokens: 120,
+			output_tokens: 12,
+		});
+	});
 });
 
 describe("createProviderModel — gateway wire body", () => {
@@ -1088,23 +1135,38 @@ describe("createProviderModel — DATABRICKS branch", () => {
 		);
 	});
 
-	it("DATABRICKS branch appends /serving-endpoints for a bare workspace host", () => {
-		const model = createProviderModel(
-			{
-				provider: "DATABRICKS",
-				model: "system.ai.claude-sonnet-5",
-				apiKey: "test-key",
-				baseUrl: "https://adb-123.4.azuredatabricks.net",
-			},
-			{},
-		) as ChatOpenAI;
-		const baseURL = (
-			model as unknown as { clientConfig?: { baseURL?: string } }
-		).clientConfig?.baseURL;
-		expect(baseURL).toBe(
-			"https://adb-123.4.azuredatabricks.net/serving-endpoints",
-		);
-	});
+	it.each([
+		["system.ai.claude-sonnet-5", "", "ai-gateway/mlflow/v1"],
+		[
+			"catalog.schema.model",
+			"/serving-endpoints///",
+			"ai-gateway/mlflow/v1",
+		],
+		["custom-chat", "", "serving-endpoints"],
+		["a.b", "", "serving-endpoints"],
+		["a.b.c.d", "", "serving-endpoints"],
+		["a..c", "", "serving-endpoints"],
+		["a.b.c/d", "", "serving-endpoints"],
+		["system.ai.model", "/proxy/v1", "proxy/v1"],
+		["custom-chat", "/ai-gateway/mlflow/v1", "ai-gateway/mlflow/v1"],
+	])(
+		"DATABRICKS routes %s at %s to %s",
+		(modelId, storedPath, expectedPath) => {
+			const model = createProviderModel(
+				{
+					provider: "DATABRICKS",
+					model: modelId,
+					apiKey: "test-key",
+					baseUrl: `https://example.cloud.databricks.com${storedPath}`,
+				},
+				{},
+			) as ChatOpenAI;
+			expect(
+				(model as unknown as { clientConfig?: { baseURL?: string } })
+					.clientConfig?.baseURL,
+			).toBe(`https://example.cloud.databricks.com/${expectedPath}`);
+		},
+	);
 
 	// Databricks-served Claude models reject `temperature` (HTTP 400), and a
 	// custom serving endpoint can front Claude under an arbitrary name that
@@ -2614,4 +2676,117 @@ it("records identities for direct and synchronous factory callers", () => {
 	for (const unrecorded of [undefined, null, "example-model", 1, {}]) {
 		expect(servedModelIdentity(unrecorded)).toBeUndefined();
 	}
+});
+
+describe("LangChain canonical prompt-cache decision", () => {
+	it.each([
+		["custom-chat", "claude-sonnet-5", false, true],
+		["claude-alias", "llama-3-3-70b", false, false],
+		["claude-alias", "deepseek-r1", true, false],
+		["claude-alias", undefined, false, true],
+		["custom-chat", undefined, false, false],
+	])(
+		"%s backed by %s (reasoning %s) caches: %s",
+		async (model, canonicalModelName, isReasoningModel, expected) => {
+			const fetchSpy = databricksBaseFetch.mockResolvedValue(
+				new Response(null, { status: 204 }),
+			);
+			try {
+				const instance = createProviderModel(
+					{
+						provider: "DATABRICKS",
+						apiKey: "example-key",
+						baseUrl: "https://example.com",
+						model,
+						canonicalModelName,
+						isReasoningModel,
+					},
+					{},
+				) as unknown as { clientConfig: { fetch: typeof fetch } };
+				await instance.clientConfig.fetch("https://example.com", {
+					body: JSON.stringify({
+						model,
+						messages: [
+							{ role: "system", content: "Stable instructions" },
+							{ role: "user", content: "Hello" },
+						],
+					}),
+				});
+				const body = String(fetchSpy.mock.calls[0][1]?.body);
+				expect(body.includes('"cache_control"')).toBe(expected);
+			} finally {
+				fetchSpy.mockReset();
+			}
+		},
+	);
+});
+
+it("extracts the canonical identity alongside the endpoint alias", () => {
+	expect(
+		extractProviderConfig({
+			configurable: {
+				ai_api_key: "example-key",
+				ai_model: "custom-chat",
+				ai_canonical_model_name: "claude-sonnet-5",
+			},
+		})?.canonicalModelName,
+	).toBe("claude-sonnet-5");
+});
+
+describe("canonical identity from model config APIs", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		vi.unstubAllEnvs();
+	});
+	it.each([false, true])(
+		"uses the resolved identity from the task API: %s",
+		async (task) => {
+			vi.stubEnv("FABRIC_API_URL", "https://fabric.example.com");
+			vi.stubEnv(
+				"AGENT_SERVICE_SECRET",
+				"example-service-secret-0123456789abcdef",
+			);
+			vi.stubGlobal(
+				"fetch",
+				vi.fn().mockResolvedValue(
+					Response.json({
+						provider: "DATABRICKS",
+						model: "custom-chat",
+						apiKey: "example-key",
+						gatewayUrl: "https://example.com",
+						canonicalModelName: "claude-sonnet-5",
+					}),
+				),
+			);
+			databricksBaseFetch.mockResolvedValue(
+				new Response(null, { status: 204 }),
+			);
+			const instance = (await getAgentModelAsync(
+				{
+					configurable: {
+						tenant_user_id: "example-cache-user",
+						...(task && {
+							ai_provider: "DATABRICKS",
+							ai_api_key: "example-key",
+							ai_model: "starting-model",
+							ai_canonical_model_name: "llama-3-3-70b",
+						}),
+					},
+				},
+				task ? { taskType: "CHAT" } : {},
+			)) as unknown as { clientConfig: { fetch: typeof fetch } };
+			await instance.clientConfig.fetch("https://example.com", {
+				body: JSON.stringify({
+					model: "custom-chat",
+					messages: [
+						{ role: "system", content: "Stable instructions" },
+					],
+				}),
+			});
+			expect(
+				String(databricksBaseFetch.mock.calls.at(-1)?.[1]?.body),
+			).toContain('"cache_control"');
+			databricksBaseFetch.mockReset();
+		},
+	);
 });

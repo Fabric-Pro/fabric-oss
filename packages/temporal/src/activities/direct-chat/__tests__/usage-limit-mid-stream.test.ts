@@ -25,6 +25,7 @@ import type { DirectChatWorkflowInput } from "../../../types";
 
 const state = vi.hoisted(() => ({
 	model: undefined as unknown,
+	perCallUsage: false,
 	resolutionError: undefined as Error | undefined,
 	conversionError: undefined as Error | undefined,
 	streamErrorAfterStep: undefined as Error | undefined,
@@ -32,6 +33,8 @@ const state = vi.hoisted(() => ({
 	streamErrorPartBeforeThrow: undefined as Error | undefined,
 	builtInTools: {} as Record<string, unknown>,
 	recordAggregateUsage: vi.fn(),
+	usageRows: vi.fn(),
+	builtInOptions: vi.fn(),
 }));
 
 vi.mock("@repo/agent-core/backend", () => ({
@@ -59,12 +62,25 @@ vi.mock("@repo/ai", async () => {
 			}));
 		},
 		enhancePromptWithFabric: async () => ({ fabricUsed: false }),
-		getAIModelWithMetadata: async () => {
+		getAIModelWithMetadata: async (
+			_options: unknown,
+			context: import("@repo/ai/lib/usage-logging-middleware").UsageLoggingContext,
+		) => {
 			if (state.resolutionError) {
 				throw state.resolutionError;
 			}
 			return {
-				model: state.model,
+				model: state.perCallUsage
+					? ai.wrapLanguageModel({
+							model: state.model as never,
+							middleware:
+								usageLogging.createUsageLoggingMiddleware({
+									...context,
+									provider: "OPENAI_DIRECT",
+									providerModelId: "example-main-model",
+								}),
+						})
+					: state.model,
 				metadata: {
 					provider: "OPENAI",
 					modelString: "gpt-test",
@@ -73,7 +89,19 @@ vi.mock("@repo/ai", async () => {
 					selectionSource: "test",
 				},
 				trackUsage: vi.fn(),
-				recordAggregateUsage: state.recordAggregateUsage,
+				recordAggregateUsage: (
+					record: import("@repo/ai/lib/usage-logging-middleware").AggregateUsageRecord,
+				) => {
+					state.recordAggregateUsage(record);
+					usageLogging.recordAggregateUsage(
+						{
+							...context,
+							provider: "OPENAI_DIRECT",
+							providerModelId: "example-model",
+						},
+						record,
+					);
+				},
 			};
 		},
 		getCurrentDateContext: () => "Today is October 8, 2026.",
@@ -131,6 +159,7 @@ vi.mock("@repo/ai/skills", () => ({
 	listAvailableSkills: async () => [],
 }));
 vi.mock("@repo/database", () => ({
+	logAiUsageAsync: state.usageRows,
 	ensureSensitiveOperationAuthority: vi.fn(),
 	getDefaultRagSettings: () => ({ similarityThreshold: 0.5 }),
 	getProjectRagSettings: vi.fn(),
@@ -149,7 +178,10 @@ vi.mock("../../shared/project-context-block", () => ({
 }));
 vi.mock("@temporalio/activity", () => ({ heartbeat: vi.fn() }));
 vi.mock("../built-in-tools", () => ({
-	createBuiltInTools: async () => state.builtInTools,
+	createBuiltInTools: async (options: unknown) => {
+		state.builtInOptions(options);
+		return state.builtInTools;
+	},
 }));
 vi.mock("../advisor-tools", () => ({
 	createAdvisorTools: () => ({}),
@@ -175,6 +207,20 @@ vi.mock("../../shared/databricks-knowledge", () => ({
 	loadAgentDatabricksBindings: async () => [],
 	mergeDatabricksBindings: () => [],
 }));
+vi.mock("../../agent-execution-core", () => ({
+	executeAgentTurn: vi.fn(),
+	buildKnowledgeContextPrompt: vi.fn(),
+}));
+vi.mock("../../deployment-execution", () => ({
+	buildExecutionContext: vi.fn(),
+	fetchKnowledge: vi.fn(),
+}));
+vi.mock("../fabric-turn-tools", () => ({
+	loadFabricToolsForTurn: async () => null,
+	fabricToolSources: () => ({}),
+	runApprovedAction: vi.fn(),
+	confirmationFromToolOutput: vi.fn(),
+}));
 vi.mock("../../shared/read-only-gate", () => ({
 	guardToolWriteForReadOnly: vi.fn(),
 }));
@@ -191,7 +237,7 @@ const USAGE = {
 };
 
 /** Step 1 of a tool turn: optional text, then a call to `lookup`. */
-function firstStep(text: string | null) {
+function firstStep(text: string | null, toolName = "lookup") {
 	return {
 		stream: simulateReadableStream({
 			chunks: [
@@ -210,7 +256,7 @@ function firstStep(text: string | null) {
 				{
 					type: "tool-call" as const,
 					toolCallId: "call-1",
-					toolName: "lookup",
+					toolName,
 					input: "{}",
 				},
 				{
@@ -293,6 +339,8 @@ beforeEach(() => {
 	state.toolErrorBeforeStreamFailure = undefined;
 	state.streamErrorPartBeforeThrow = undefined;
 	state.recordAggregateUsage.mockReset();
+	state.usageRows.mockReset();
+	state.builtInOptions.mockReset();
 	state.builtInTools = {
 		lookup: tool({
 			inputSchema: z.object({}),
@@ -759,3 +807,151 @@ describe("CHAT error precedence after a tool usage refusal", () => {
 		},
 	);
 });
+
+// Shares this file's real streamText loop; not a usage-limit case.
+describe("direct chat — text on both sides of a tool call", () => {
+	it("starts the text after the tool step as a new paragraph", async () => {
+		const provider = new MockLanguageModelV4({
+			doStream: async () =>
+				provider.doStreamCalls.length === 1
+					? firstStep("Let me check the roadmap.")
+					: {
+							stream: simulateReadableStream({
+								chunks: [
+									{
+										type: "stream-start" as const,
+										warnings: [],
+									},
+									{ type: "text-start" as const, id: "t2" },
+									{
+										type: "text-delta" as const,
+										id: "t2",
+										delta: "There is one open feature.",
+									},
+									{ type: "text-end" as const, id: "t2" },
+									{
+										type: "finish" as const,
+										finishReason: {
+											unified: "stop" as const,
+											raw: undefined,
+										},
+										usage: USAGE,
+									},
+								],
+							}),
+						},
+		});
+		useModel(provider, 2, limitError());
+
+		const result = await runTurn();
+
+		expect(provider.doStreamCalls).toHaveLength(2);
+		expect(result).toMatchObject({
+			success: true,
+			responseText:
+				"Let me check the roadmap.\n\nThere is one open feature.",
+		});
+	});
+});
+
+it.each(["Direct stream-route activity", "Parlume in-process"])(
+	"per-call main rows and unlabelled tools resist an enclosing scope via %s",
+	async (caller) => {
+		const { currentAiCallPurpose, runWithAiCallPurpose } = await import(
+			"@repo/ai/lib/call-purpose-context"
+		);
+		const { createUsageLoggingMiddleware } = await import(
+			"@repo/ai/lib/usage-logging-middleware"
+		);
+		const seen: (string | undefined)[] = [];
+		const toolUsage = createUsageLoggingMiddleware({
+			provider: "VERCEL_GATEWAY",
+			providerModelId: "example-tool-model",
+			featureKey: "code-index",
+		}) as any;
+		state.builtInTools = {
+			lookup: tool({
+				inputSchema: z.object({}),
+				execute: async () => {
+					seen.push(currentAiCallPurpose());
+					await toolUsage.wrapGenerate({
+						doGenerate: async () => ({
+							usage: {
+								inputTokens: 2,
+								outputTokens: 1,
+								totalTokens: 3,
+							},
+						}),
+					});
+					return { found: true };
+				},
+			}),
+		};
+		const provider = new MockLanguageModelV4({
+			doStream: async () => firstStep("Partial answer"),
+		});
+		useModel(provider, 1, limitError());
+		state.perCallUsage = true;
+		try {
+			await runWithAiCallPurpose("compaction", async () => {
+				if (caller === "Direct stream-route activity") {
+					await runTurn();
+				} else {
+					const { executeParlumeAgent } = await import(
+						"../../parlume-agent"
+					);
+					await executeParlumeAgent({
+						agent: {
+							kind: "FABRIC_AGENT",
+							enabledMcpConfigIds: [],
+							workspaceIds: [],
+							reasoningMode: "balanced",
+						} as any,
+						session: {
+							id: "example-session",
+							agentKind: "FABRIC_AGENT",
+							agentInstanceSId: null,
+							projectId: "example-project",
+							organizationId: "example-org",
+							userId: "example-user",
+						},
+						turnId: "example-turn",
+						message: "What is on the roadmap?",
+						voiceInstructions: "",
+						knowledgeContext: "",
+						history: [],
+						gathered: Promise.resolve([
+							{ mcpToolInfo: [] } as any,
+							{ context: "", memoryCount: 0 },
+							{ context: "", chunkCount: 0 },
+						]),
+					});
+				}
+			});
+		} finally {
+			state.perCallUsage = false;
+		}
+		// The turn-entry reset enforces isolation for tool work without an operation label.
+		expect(seen).toEqual([undefined]);
+		expect(state.usageRows).toHaveBeenCalledWith(
+			expect.objectContaining({
+				providerModelId: "example-main-model",
+				callPurpose: "direct-main",
+				inputTokens: 10,
+				outputTokens: 5,
+				featureKey:
+					caller === "Direct stream-route activity"
+						? "chat-agent"
+						: "parlume",
+			}),
+		);
+		expect(state.usageRows).toHaveBeenCalledWith(
+			expect.objectContaining({
+				providerModelId: "example-tool-model",
+				callPurpose: undefined,
+				featureKey: "code-index",
+			}),
+		);
+		expect(currentAiCallPurpose()).toBeUndefined();
+	},
+);

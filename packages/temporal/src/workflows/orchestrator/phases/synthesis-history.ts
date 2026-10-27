@@ -75,6 +75,7 @@ function groupIntoUnits(messages: IterativeMessage[]): IterativeMessage[][] {
  */
 export function buildSynthesisHistory(
 	history: IterativeMessage[],
+	preserveTurnMessages = false,
 ): IterativeMessage[] {
 	if (history.length === 0) {
 		return [];
@@ -88,6 +89,13 @@ export function buildSynthesisHistory(
 	);
 
 	const compacted = history.map((message, index): IterativeMessage => {
+		if (
+			preserveTurnMessages &&
+			(message.imageAttachments !== undefined ||
+				message.imageAttachmentDocumentIds !== undefined)
+		) {
+			return message;
+		}
 		let max: number = SYNTHESIS_INPUT.otherMessageMaxChars;
 		if (index === 0) {
 			max = SYNTHESIS_INPUT.firstMessageMaxChars;
@@ -98,7 +106,10 @@ export function buildSynthesisHistory(
 		}
 		return {
 			...message,
-			content: truncate(message.content, max),
+			content:
+				preserveTurnMessages && message.toolCalls?.length
+					? message.content
+					: truncate(message.content, max),
 			...(message.toolCalls
 				? {
 						toolCalls: message.toolCalls.map((call) => ({
@@ -115,7 +126,21 @@ export function buildSynthesisHistory(
 	let total = compacted.reduce((sum, m) => sum + messageChars(m), 0);
 	let dropped = 0;
 	while (total > SYNTHESIS_INPUT.maxTotalChars && units.length > 1) {
-		const unit = units.shift() ?? [];
+		const dropIndex = preserveTurnMessages
+			? units.findIndex(
+					(unit) =>
+						!unit.some(
+							(message) =>
+								message.imageAttachments !== undefined ||
+								message.imageAttachmentDocumentIds !==
+									undefined,
+						),
+				)
+			: 0;
+		if (dropIndex < 0) {
+			break;
+		}
+		const unit = units.splice(dropIndex, 1)[0] ?? [];
 		for (const message of unit) {
 			total -= messageChars(message);
 		}

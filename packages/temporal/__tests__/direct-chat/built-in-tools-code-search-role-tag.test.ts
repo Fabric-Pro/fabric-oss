@@ -1,3 +1,4 @@
+import { currentAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/ai", () => ({
@@ -77,7 +78,7 @@ vi.mock("@repo/rag/lib/project-contexts/client", () => ({
 import { createBuiltInTools } from "../../src/activities/direct-chat/built-in-tools";
 
 describe("code_search tool roleTag attribution", () => {
-	it("attaches live roleTag to results, citations, and excerpt headers", async () => {
+	it("retains roleTag and the code-search operation purpose", async () => {
 		mockFindManyIntegrations.mockResolvedValue([
 			{
 				id: "integ-legacy",
@@ -93,6 +94,12 @@ describe("code_search tool roleTag attribution", () => {
 			},
 		]);
 
+		const { generateEmbedding } = await import("@repo/rag/lib/embedding");
+		const purposes: (string | undefined)[] = [];
+		vi.mocked(generateEmbedding).mockImplementation(async () => {
+			purposes.push(currentAiCallPurpose());
+			return { embedding: [0.1, 0.2] } as any;
+		});
 		const tools = await createBuiltInTools({
 			projectId: "proj-123",
 			userId: "user-1",
@@ -106,6 +113,7 @@ describe("code_search tool roleTag attribution", () => {
 			query: "processPayment",
 		});
 
+		expect(purposes).toEqual(["code-search-embedding"]);
 		expect(output.success).toBe(true);
 		expect(output.results).toHaveLength(2);
 

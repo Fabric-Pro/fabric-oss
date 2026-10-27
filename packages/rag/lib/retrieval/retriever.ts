@@ -3,6 +3,8 @@
  * Combines embedding generation and vector search
  */
 
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { logger } from "@repo/logs";
 import { generateEmbedding } from "../embedding";
 import { generateSparseVector } from "../embedding/sparse";
@@ -69,16 +71,20 @@ export async function retrieveContext(
 		// Use full provider config if available, otherwise use legacy apiKey
 		const embeddingConfig = providerConfig || effectiveApiKey;
 
-		const embeddingResult = await generateEmbedding(
-			query,
-			{
-				userId,
-				organizationId,
-				featureKey: "knowledge-search",
-				tags: ["rag-query", "similarity-search"],
-				conversationId: options.conversationId,
-			},
-			embeddingConfig,
+		const embeddingResult = await runWithAiCallPurpose(
+			AI_CALL_PURPOSES.chatDocumentRetrievalEmbedding,
+			() =>
+				generateEmbedding(
+					query,
+					{
+						userId,
+						organizationId,
+						featureKey: "knowledge-search",
+						tags: ["rag-query", "similarity-search"],
+						conversationId: options.conversationId,
+					},
+					embeddingConfig,
+				),
 		);
 
 		logger.info(

@@ -39,8 +39,8 @@ export type PayloadSizeClass = "ok" | "warn" | "exceeds";
 /**
  * Serialized UTF-8 byte length of a value as Temporal's default data converter
  * would ship it. `JSON.stringify(...).length` alone undercounts multibyte text
- * (emoji/CJK are 2–4 wire bytes per UTF-16 unit); `Buffer.byteLength` measures
- * what actually crosses the wire.
+ * (emoji/CJK are 2–4 wire bytes per code point). Counting UTF-8 code points
+ * matches Buffer.byteLength without requiring Node globals in a workflow.
  */
 export function measureSerializedBytes(value: unknown): number {
 	const json = JSON.stringify(value);
@@ -48,7 +48,23 @@ export function measureSerializedBytes(value: unknown): number {
 		// undefined / functions / symbols serialize to nothing — nothing ships.
 		return 0;
 	}
-	return Buffer.byteLength(json, "utf8");
+	if (typeof Buffer !== "undefined") {
+		return Buffer.byteLength(json, "utf8");
+	}
+	let bytes = 0;
+	// JSON.stringify escapes lone surrogates, so the serialized string is valid Unicode.
+	for (const character of json) {
+		const codePoint = character.codePointAt(0) ?? 0;
+		bytes +=
+			codePoint <= 0x7f
+				? 1
+				: codePoint <= 0x7ff
+					? 2
+					: codePoint <= 0xffff
+						? 3
+						: 4;
+	}
+	return bytes;
 }
 
 export function classifyPayloadSize(bytes: number): PayloadSizeClass {

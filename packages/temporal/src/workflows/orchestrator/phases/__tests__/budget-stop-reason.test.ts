@@ -42,6 +42,7 @@ vi.mock("@temporalio/workflow", () => ({
 			new Proxy({}, { get: (_target, name) => mocks.stub(String(name)) }),
 	),
 	workflowInfo: vi.fn(() => ({
+		startTime: new Date(Date.now()),
 		runId: "test-run-id",
 		unsafe: { isReplaying: false },
 	})),
@@ -71,6 +72,8 @@ beforeEach(() => {
 	vi.mocked(log.error).mockClear();
 	vi.mocked(log.info).mockClear();
 	installDefaultStubs(mocks);
+	// These scenarios pin the pre-main-round budget contract.
+	mocks.off.add("orch-main-round-budget-v1");
 	mocks.stub("executeMcpTool").mockResolvedValue({
 		output: "export const launchFlag = true;",
 		success: true,

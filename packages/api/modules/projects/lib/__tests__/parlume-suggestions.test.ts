@@ -9,6 +9,9 @@ const mocks = vi.hoisted(() => ({
 	trackUsage: vi.fn(),
 	generate: vi.fn(),
 	retrieve: vi.fn(),
+	stories: vi.fn(),
+	storyCount: vi.fn(),
+	users: vi.fn(),
 	log: vi.fn(),
 }));
 
@@ -16,6 +19,8 @@ vi.mock("@repo/database", () => ({
 	db: {
 		parlumeMeetingSession: { findFirst: mocks.session },
 		parlumeMeetingSegment: { findMany: mocks.segments },
+		userStory: { findMany: mocks.stories, count: mocks.storyCount },
+		user: { findMany: mocks.users },
 	},
 	getBoundPromptForAgent: mocks.boundPrompt,
 	hasProjectAccess: mocks.hasAccess,
@@ -32,6 +37,7 @@ vi.mock("@repo/rag", () => ({
 vi.mock("../parlume-log", () => ({ parlumeLog: mocks.log }));
 
 import {
+	formatParlumeWorkItems,
 	normalizeParlumeSuggestion,
 	suggestParlumeMeetingContribution,
 } from "../parlume-suggestions";
@@ -56,37 +62,108 @@ beforeEach(() => {
 					{ text: "We said Friday.", speakerName: "Sam" },
 				],
 	);
-	mocks.retrieve.mockResolvedValue([{ content: "F-12 Export the roadmap" }]);
+	mocks.retrieve.mockResolvedValue([
+		{ type: "TEXT", content: "F-12 Export the roadmap" },
+	]);
+	mocks.stories.mockResolvedValue([
+		{
+			identifier: "F-12",
+			title: "Export the roadmap",
+			priority: "P1_HIGH",
+			assigneeId: "user-2",
+			status: { name: "In Progress" },
+		},
+		{
+			identifier: "F-14",
+			title: "Archive old sprints",
+			priority: "P3_LOW",
+			assigneeId: null,
+			status: { name: "Backlog" },
+		},
+	]);
+	mocks.storyCount.mockResolvedValue(2);
+	mocks.users.mockResolvedValue([{ id: "user-2", name: "Dana" }]);
 	mocks.boundPrompt.mockResolvedValue(null);
 	mocks.model.mockResolvedValue({
 		model: "fast-model",
 		trackUsage: mocks.trackUsage,
 	});
 	mocks.generate.mockResolvedValue({
-		object: { suggest: true, text: "F-12 covers the export." },
+		object: anchored,
 	});
 });
+
+const anchored = {
+	suggest: true,
+	text: "F-12 covers the export.",
+	speaker: "Alex",
+	quote: "who owns the export",
+	topic: "Export ownership",
+};
+
+const speech = [
+	{ text: "Who owns the export?", speakerName: "Alex" },
+	{ text: "We said Friday.", speakerName: "Sam" },
+];
 
 describe("normalizeParlumeSuggestion", () => {
 	it.each([
 		[
-			{ suggest: true, text: "  Ask   who owns it.  " },
-			{ suggest: true, text: "Ask who owns it." },
+			{
+				...anchored,
+				text: "  Ask   who owns it.  ",
+				quote: '"Who owns the export?"',
+			},
+			{
+				...anchored,
+				text: "Ask who owns it.",
+				quote: "Who owns the export?",
+			},
 		],
-		[{ suggest: true, text: "   " }, { suggest: false }],
+		[{ ...anchored, text: "   " }, { suggest: false }],
 		[{ suggest: true }, { suggest: false }],
-		[{ suggest: false, text: "Ignored" }, { suggest: false }],
+		[{ ...anchored, suggest: false }, { suggest: false }],
 		[{}, { suggest: false }],
 	])("reads %j leniently", (output, expected) => {
-		expect(normalizeParlumeSuggestion(output)).toEqual(expected);
+		expect(normalizeParlumeSuggestion(output, speech)).toEqual(expected);
+	});
+
+	// Anchored in the meeting, or nothing: the room must be able to tell which
+	// remark a suggestion answers, and an invented one points at nothing.
+	it.each([
+		["no quote", { ...anchored, quote: "" }],
+		["no topic", { ...anchored, topic: " " }],
+		["words nobody said", { ...anchored, quote: "the export is late" }],
+		["words put to the wrong speaker", { ...anchored, speaker: "Sam" }],
+	])("drops a suggestion with %s", (_label, output) => {
+		expect(normalizeParlumeSuggestion(output, speech)).toEqual({
+			suggest: false,
+		});
 	});
 
 	it("caps a long suggestion", () => {
-		const result = normalizeParlumeSuggestion({
-			suggest: true,
-			text: "x".repeat(900),
-		});
+		const result = normalizeParlumeSuggestion(
+			{ ...anchored, text: "x".repeat(900) },
+			speech,
+		);
 		expect(result.suggest && result.text).toHaveLength(500);
+	});
+});
+
+describe("formatParlumeWorkItems", () => {
+	const item = {
+		identifier: "F-3",
+		title: "  Ship   billing ",
+		priority: "P0_CRITICAL",
+		status: "In Progress",
+		owner: null,
+	};
+
+	it("says when there is nothing open and when the list is cut", () => {
+		expect(formatParlumeWorkItems([], 0)).toBe("No open work items.");
+		expect(formatParlumeWorkItems([item], 3)).toBe(
+			"F-3 | Ship billing | In Progress | p0 critical | owner: unassigned\n(2 more open work items not shown)",
+		);
 	});
 });
 
@@ -97,7 +174,7 @@ describe("suggestParlumeMeetingContribution", () => {
 				...input,
 				previous: ["Earlier idea"],
 			}),
-		).resolves.toEqual({ suggest: true, text: "F-12 covers the export." });
+		).resolves.toEqual(anchored);
 
 		expect(mocks.model).toHaveBeenCalledWith(
 			{ taskType: "SIMPLE", complexity: "simple" },
@@ -118,7 +195,36 @@ describe("suggestParlumeMeetingContribution", () => {
 		expect(prompt).toContain('source="chat"');
 		expect(prompt).toContain("Sam: Link to the spec?");
 		expect(prompt).toContain("F-12 Export the roadmap");
+		expect(prompt).toContain(
+			'<meeting_input source="work_items" trust="untrusted">\nF-12 | Export the roadmap | In Progress | p1 high | owner: Dana\nF-14 | Archive old sprints | Backlog | p3 low | owner: unassigned\n</meeting_input>',
+		);
 		expect(prompt).toContain('source="earlier_suggestions"');
+		expect(mocks.stories).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: { projectId: "project-1", status: { isFinal: false } },
+			}),
+		);
+	});
+
+	// On staging a project's passages were all transcripts of earlier meetings
+	// with the same remarks: what people said, not the project's state.
+	it("leaves earlier meetings' transcripts out of the project passages", async () => {
+		mocks.retrieve.mockResolvedValue([
+			{
+				type: "MEETING_TRANSCRIPT",
+				content: "Last week: nobody owns the export",
+			},
+			{ type: "TEXT", content: "Release plan: ship on Friday" },
+		]);
+
+		await suggestParlumeMeetingContribution(input);
+
+		const [{ prompt }] = mocks.generate.mock.calls[0];
+		expect(prompt).toContain("Release plan: ship on Friday");
+		expect(prompt).not.toContain("Last week: nobody owns the export");
+		expect(mocks.retrieve).toHaveBeenCalledWith(
+			expect.objectContaining({ diversify: true }),
+		);
 	});
 
 	it("uses the prompt bound for the organization when there is one", async () => {
@@ -208,13 +314,29 @@ describe("suggestParlumeMeetingContribution", () => {
 		mocks.retrieve.mockRejectedValue(new Error("No embeddings"));
 
 		await expect(suggestParlumeMeetingContribution(input)).resolves.toEqual(
-			{
-				suggest: true,
-				text: "F-12 covers the export.",
-			},
+			anchored,
 		);
 		expect(mocks.generate.mock.calls[0]?.[0].prompt).not.toContain(
 			'source="project"',
+		);
+	});
+
+	it("logs, without meeting text, a suggestion it dropped as unanchored", async () => {
+		mocks.generate.mockResolvedValue({
+			object: { ...anchored, quote: "nobody said this" },
+		});
+
+		await expect(suggestParlumeMeetingContribution(input)).resolves.toEqual(
+			{
+				suggest: false,
+			},
+		);
+		expect(mocks.log).toHaveBeenCalledWith(
+			"info",
+			"suggestion.unanchored",
+			{
+				sessionId: "session-1",
+			},
 		);
 	});
 });

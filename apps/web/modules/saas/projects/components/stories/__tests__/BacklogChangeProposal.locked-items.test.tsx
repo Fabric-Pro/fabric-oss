@@ -86,6 +86,7 @@ describe("BacklogChangeProposal — locked (already accepted) rows", () => {
 		await waitFor(() => expect(onApprove).toHaveBeenCalledTimes(1));
 		const submitted = onApprove.mock.calls[0]?.[0] as ChangeItem[];
 		expect(submitted.map((c) => c.title.to)).toEqual(["Alpha", "Charlie"]);
+		expect(onApprove.mock.calls[0]?.[3]).toEqual([0, 2]);
 	});
 
 	it("drops a locked row from a stale persisted selection", async () => {
@@ -179,6 +180,7 @@ describe("BacklogChangeProposal — locked (already accepted) rows", () => {
 		await waitFor(() => expect(onApprove).toHaveBeenCalledTimes(1));
 		const submitted = onApprove.mock.calls[0]?.[0] as ChangeItem[];
 		expect(submitted.map((c) => c.title.to)).toEqual(["Alpha", "Charlie"]);
+		expect(onApprove.mock.calls[0]?.[3]).toEqual([0, 2]);
 	});
 
 	it("shows no select-all control unless asked", () => {

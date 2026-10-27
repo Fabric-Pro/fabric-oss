@@ -1,6 +1,5 @@
 "use client";
 
-import { isDeprecatedDocumentType } from "@repo/utils/document-type-catalog";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
@@ -21,9 +20,7 @@ import {
 	LayoutIcon,
 	ServerIcon,
 	SwatchBookIcon,
-	UsersIcon,
 } from "lucide-react";
-import { DeprecatedDocumentTypeBadge } from "../FeaturesDeprecationNotice";
 import {
 	DOCUMENT_TIERS,
 	getPrerequisiteHint,
@@ -50,8 +47,6 @@ interface DocumentsStepProps {
 	updateFormData: (updates: Partial<ProjectFormData>) => void;
 	projectId?: string;
 	organizationId?: string;
-	/** Document type IDs to exclude from the list (e.g. ["USER_STORY"]) */
-	excludeDocTypes?: string[];
 }
 
 const DOCUMENT_TYPES = [
@@ -109,14 +104,6 @@ const DOCUMENT_TYPES = [
 		bgColor: "bg-orange-100 dark:bg-orange-900/20",
 	},
 	{
-		id: "USER_STORY",
-		title: "Features",
-		description: "Feature descriptions with acceptance criteria",
-		icon: UsersIcon,
-		color: "text-cyan-600 dark:text-cyan-400",
-		bgColor: "bg-cyan-100 dark:bg-cyan-900/20",
-	},
-	{
 		id: "API_SPEC",
 		title: "API Specification",
 		description:
@@ -132,7 +119,6 @@ export function DocumentsStep({
 	updateFormData,
 	projectId,
 	organizationId,
-	excludeDocTypes,
 }: DocumentsStepProps) {
 	// In edit mode, query existing imported documents
 	const { data: existingDocsData } = useQuery({
@@ -181,10 +167,7 @@ export function DocumentsStep({
 		...existingCompleteTypes,
 	]);
 
-	// Filter out excluded document types
-	const visibleDocTypes = excludeDocTypes
-		? DOCUMENT_TYPES.filter((d) => !excludeDocTypes.includes(d.id))
-		: DOCUMENT_TYPES;
+	const visibleDocTypes = DOCUMENT_TYPES;
 
 	const toggleDocument = (docId: string) => {
 		// Don't toggle imported documents
@@ -373,11 +356,6 @@ export function DocumentsStep({
 										</div>
 										<CardTitle className="flex items-center gap-2 text-base">
 											{doc.title}
-											{isDeprecatedDocumentType(
-												doc.id,
-											) && (
-												<DeprecatedDocumentTypeBadge />
-											)}
 										</CardTitle>
 									</CardHeader>
 									<CardContent className="space-y-2">

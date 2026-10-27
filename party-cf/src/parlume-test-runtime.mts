@@ -24,11 +24,18 @@ const LOCAL_MODULES = new Set([
 /**
  * The Durable Object depends on partyserver's runtime; tests load the bridge
  * through a transpiled CommonJS shim with just enough of that runtime, and
- * every other bridge module as written. Network calls go to `fetch`.
+ * every other bridge module as written. Network calls go to `fetch`, and logs
+ * to `console`, silent by default.
  */
 export function loadParlumeModule(
 	path: string,
 	fetch: (...args: unknown[]) => Promise<Response>,
+	console: Pick<Console, "info" | "warn" | "error" | "log"> = {
+		info() {},
+		warn() {},
+		error() {},
+		log() {},
+	},
 ): Record<string, unknown> {
 	const exports: Record<string, unknown> = {};
 	const source = ts.transpileModule(
@@ -55,7 +62,7 @@ export function loadParlumeModule(
 			};
 		}
 		if (LOCAL_MODULES.has(id)) {
-			return loadParlumeModule(`${id}.ts`, fetch);
+			return loadParlumeModule(`${id}.ts`, fetch, console);
 		}
 		throw new Error(`Unexpected import: ${id}`);
 	};
@@ -73,7 +80,7 @@ export function loadParlumeModule(
 		TextDecoder,
 		crypto,
 		fetch,
-		console: { info() {}, warn() {}, error() {}, log() {} },
+		console,
 		// The audio outlet ticks for as long as a bot is connected; its timers
 		// must not keep a finished test process alive.
 		setTimeout: (run: () => void, milliseconds: number) =>

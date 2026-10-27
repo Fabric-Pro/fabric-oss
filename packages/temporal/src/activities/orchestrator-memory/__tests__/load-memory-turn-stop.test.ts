@@ -112,6 +112,7 @@ describe("loadOrchestratorMemoryActivity", () => {
 			conversationStartedAt: new Date(0),
 		});
 		expect(getAIEmbeddingModel).toHaveBeenCalledWith({
+			callPurpose: "memory-storage-embedding",
 			userId: INPUT.userId,
 			organizationId: INPUT.organizationId,
 			...usageOrigin,
@@ -138,6 +139,7 @@ describe("loadOrchestratorMemoryActivity", () => {
 			usageOrigin,
 		});
 		expect(getAIEmbeddingModel).toHaveBeenCalledWith({
+			callPurpose: "memory-search-embedding",
 			userId: INPUT.userId,
 			organizationId: INPUT.organizationId,
 			...usageOrigin,
@@ -197,6 +199,9 @@ it.each(["conversation-example", undefined])(
 			],
 			conversationStartedAt: new Date(0),
 		});
+		expect(vi.mocked(getAIModel).mock.calls[0][1]?.callPurpose).toBe(
+			"memory-summary",
+		);
 		expect(vi.mocked(getAIModel).mock.calls[0][1]?.conversationId).toBe(
 			usageConversationId,
 		);

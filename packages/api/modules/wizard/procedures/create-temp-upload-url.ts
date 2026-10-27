@@ -10,6 +10,7 @@ import {
 	resolveContextUploadMime,
 	UPLOAD_SIZE_LIMITS,
 } from "@repo/utils";
+import { isCreatableDocumentType } from "@repo/utils/document-type-catalog";
 import { z } from "zod";
 import {
 	Permissions,
@@ -18,7 +19,10 @@ import {
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
 
-const VALID_DOCUMENT_TAGS = ProjectDocumentTypeSchema.options;
+// A tag turns the upload into a document, so a retired type is no tag (Fizzy #2776).
+const VALID_DOCUMENT_TAGS = ProjectDocumentTypeSchema.options.filter(
+	isCreatableDocumentType,
+);
 
 export const createTempUploadUrlProcedure = tenantProtectedProcedure
 	// Evaluated against the organization named in the input, not the

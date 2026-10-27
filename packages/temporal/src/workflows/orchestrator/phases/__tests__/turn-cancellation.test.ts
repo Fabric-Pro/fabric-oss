@@ -56,6 +56,7 @@ vi.mock("@temporalio/workflow", () => ({
 			new Proxy({}, { get: (_target, name) => mocks.stub(String(name)) }),
 	),
 	workflowInfo: vi.fn(() => ({
+		startTime: new Date(Date.now()),
 		runId: "test-run-id",
 		unsafe: { isReplaying: false },
 	})),
@@ -138,7 +139,7 @@ describe("a stop inside the iterative phase is never converted into an answer", 
 		).toMatchObject({ turnScope: TURN.turnScope });
 	});
 
-	it("passes legacy lookup turn scope with usage origin disabled, and nothing new without a turn", async () => {
+	it("preserves lookup turn scope with usage origin disabled", async () => {
 		mocks.off.add(USAGE_ORIGIN_PATCH);
 		const lookups = () => {
 			mocks
@@ -234,7 +235,8 @@ describe("a stop inside the iterative phase is never converted into an answer", 
 			mocks.stub("retrieveProjectContextsActivity").mock.calls[0]?.[5],
 		).toEqual(scope);
 
-		// A run with no turn schedules them exactly as before.
+		// Without a turn, the argument-count assertions below enforce that the
+		// workflow schedules the positional lookups with their base arguments.
 		installDefaultStubs(mocks);
 		mocks.off.add(USAGE_ORIGIN_PATCH);
 		lookups();
@@ -259,6 +261,9 @@ describe("a stop inside the iterative phase is never converted into an answer", 
 		expect(
 			mocks.stub("retrieveWorkspaceDocumentsActivity").mock.calls[0],
 		).toHaveLength(7);
+		expect(
+			mocks.stub("retrieveWorkspaceDocumentsActivity").mock.calls[0]?.[7],
+		).toBeUndefined();
 		expect(
 			mocks.stub("retrieveProjectContextsActivity").mock.calls[0],
 		).toHaveLength(5);

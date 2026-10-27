@@ -14,6 +14,7 @@ import {
 import { synthesizeToolSpeech } from "../../../../lib/text-to-speech";
 import {
 	createFirstClassFrame,
+	editFirstClassFrameBlock,
 	getFirstClassFrame,
 	listFirstClassFrames,
 	shareFirstClassFrame,
@@ -1259,6 +1260,28 @@ export class FabricAiHandler implements StepHandler {
 					throw new Error(frameResult.error);
 				}
 				result = frameResult.response;
+				toolCalls.push({
+					id: `fabric-update-frame-${Date.now()}`,
+					name: toolName,
+					args: stepInputs || {},
+					result: frameResult,
+					status: "success",
+					durationMs: Date.now() - frameStartTime,
+				});
+				break;
+			}
+
+			case "fabric_edit_frame_block": {
+				const frameStartTime = Date.now();
+				const frameResult = await editFirstClassFrameBlock({
+					args: stepInputs,
+					userId: input.userId,
+					organizationId: input.organizationId || undefined,
+				});
+				if ("error" in frameResult) {
+					throw new Error(frameResult.error);
+				}
+				result = JSON.stringify(frameResult);
 				toolCalls.push({
 					id: `fabric-update-frame-${Date.now()}`,
 					name: toolName,

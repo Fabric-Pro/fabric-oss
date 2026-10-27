@@ -1,10 +1,12 @@
 import { orpcClient } from "@shared/lib/orpc-client";
+import type { QueryClient } from "@tanstack/react-query";
 import {
 	dismissSyncError,
 	executeWithRetry,
 	showSyncError,
 	showSyncSuccess,
 } from "../hooks/useAgentConfigPersistence";
+import { setCachedOrchestratorPreferenceLists } from "./interface-mode-preference";
 
 const PREFERENCE_FIELDS = [
 	"enabledMcpConfigIds",
@@ -24,6 +26,7 @@ type Queue = {
 	flushWanted: boolean;
 	status: Status;
 	getSessionUserId: SessionUserGetter;
+	queryClient: QueryClient;
 	listeners: Set<(status: Status) => void>;
 };
 
@@ -33,7 +36,11 @@ const keyFor = (owner: Owner) => `${owner.userId}:${owner.organizationId}`;
 const hasFields = (fields: OrchestratorPreferenceFields) =>
 	PREFERENCE_FIELDS.some((field) => fields[field] !== undefined);
 
-function getQueue(owner: Owner, getSessionUserId: SessionUserGetter): Queue {
+function getQueue(
+	owner: Owner,
+	getSessionUserId: SessionUserGetter,
+	queryClient: QueryClient,
+): Queue {
 	const key = keyFor(owner);
 	let queue = queues.get(key);
 	if (!queue) {
@@ -44,11 +51,13 @@ function getQueue(owner: Owner, getSessionUserId: SessionUserGetter): Queue {
 			flushWanted: false,
 			status: "idle",
 			getSessionUserId,
+			queryClient,
 			listeners: new Set(),
 		};
 		queues.set(key, queue);
 	}
 	queue.getSessionUserId = getSessionUserId;
+	queue.queryClient = queryClient;
 	return queue;
 }
 
@@ -63,8 +72,9 @@ export function subscribeOrchestratorPreferenceSaveQueue(
 	owner: Owner,
 	getSessionUserId: SessionUserGetter,
 	listener: (status: Status) => void,
+	queryClient: QueryClient,
 ): () => void {
-	const queue = getQueue(owner, getSessionUserId);
+	const queue = getQueue(owner, getSessionUserId, queryClient);
 	queue.listeners.add(listener);
 	listener(queue.status);
 	return () => {
@@ -76,8 +86,9 @@ export function enqueueOrchestratorPreferences(
 	owner: Owner,
 	fields: OrchestratorPreferenceFields,
 	getSessionUserId: SessionUserGetter,
+	queryClient: QueryClient,
 ): void {
-	const queue = getQueue(owner, getSessionUserId);
+	const queue = getQueue(owner, getSessionUserId, queryClient);
 	queue.pending = { ...queue.pending, ...fields };
 	if (queue.status === "success" || queue.status === "dropped") {
 		notify(queue, "idle");
@@ -146,6 +157,27 @@ export async function flushOrchestratorPreferences(
 			"[OrchestratorConfig] Database sync failed after retries:",
 			error,
 		);
+	}
+	if (
+		outcome === "sent" &&
+		queues.get(key) === queue &&
+		queue.getSessionUserId() === owner.userId
+	) {
+		try {
+			await setCachedOrchestratorPreferenceLists(
+				queue.queryClient,
+				owner.organizationId,
+				fields,
+				() =>
+					queues.get(key) === queue &&
+					queue.getSessionUserId() === owner.userId,
+			);
+		} catch (error) {
+			console.error(
+				"[OrchestratorConfig] Preferences cache update failed:",
+				error,
+			);
+		}
 	}
 	// A reset must also retire already-running test batches.
 	if (queues.get(key) !== queue) {

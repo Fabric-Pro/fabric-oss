@@ -5,7 +5,7 @@
  * serialized arguments (Fizzy #2578).
  *
  * `read-only-exempt-v1`:
- * - never scans a Fabric-owned read — one the loop runs itself or routes to
+ * - exempts a Fabric-owned read from scanning — one the loop runs itself or routes to
  *   the Fabric catalog. A same-named tool on another MCP server is scanned.
  * - keeps substring matching on the tool name, so `bulkdelete` is a delete.
  * - matches arguments by word, with inflections, so "deleted" counts and
@@ -118,7 +118,7 @@ describe("plain prose in arguments is not destructive", () => {
 		},
 	);
 
-	it("splits acronyms and camelCase words where it always did", () => {
+	it("splits acronyms and camelCase at word boundaries", () => {
 		// `XML_Delete_All`: an acronym, then camelCase.
 		expect(
 			assessToolCallRisk(
@@ -127,7 +127,7 @@ describe("plain prose in arguments is not destructive", () => {
 				THIRD_PARTY,
 			).riskLevel,
 		).toBe("critical");
-		// `API_Keys`: the split never lands inside a word.
+		// `API_Keys`: the split keeps this word intact.
 		expect(
 			assessToolCallRisk(
 				{ name: "jira_lookup", args: { note: "APIKeys" } },
@@ -272,9 +272,11 @@ describe("replay safety", () => {
 
 	it("picks the new rules only behind their patch marker", () => {
 		expect(source).toMatch(
-			/assessToolCallRisk\(\s*toolCall,\s*autonomyLevel,\s*patched\("orch-risk-read-only-exempt-v1"\)\s*\?\s*\{\s*rules: patched\("orch-risk-fabric-gated-v1"\)\s*\?\s*"fabric-gated-v2"\s*:\s*"read-only-exempt-v1",/,
+			/const riskOptions:\s*RiskAssessmentOptions\s*=\s*patched\(\s*"orch-risk-read-only-exempt-v1",?\s*\)\s*\?\s*\{\s*rules: patched\(\s*"orch-risk-fabric-gated-v1",?\s*\)\s*\?\s*"fabric-gated-v2"\s*:\s*"read-only-exempt-v1",/,
 		);
-		expect(source).toMatch(/:\s*\{ rules: "legacy" \},?\s*\)/);
+		expect(source).toMatch(
+			/:\s*\{ rules: "legacy" \};\s*let riskAssessment = assessToolCallRisk\(\s*toolCall,\s*autonomyLevel,\s*riskOptions,?\s*\)/,
+		);
 	});
 
 	it("takes the routing from the loop's dispatch, not from the name alone", () => {

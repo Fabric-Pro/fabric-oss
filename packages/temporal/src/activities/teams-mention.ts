@@ -7,7 +7,7 @@
  * - saveTeamsThreadMappingContext: Persist conversation context for a Teams thread
  */
 
-import { db, isProjectReadOnly } from "@repo/database";
+import { db, isProjectReadOnly, type Prisma } from "@repo/database";
 import { executeMicrosoftTeamsTool } from "@repo/integrations/microsoft";
 
 // =============================================================================
@@ -184,7 +184,7 @@ export async function saveTeamsThreadMappingContext({
 					conversationHistory,
 					lastUpdated: new Date().toISOString(),
 					platform: "teams",
-				} as unknown as import("@prisma/client/runtime/library").InputJsonValue,
+				} as unknown as Prisma.InputJsonValue,
 			},
 		});
 		return { success: true };

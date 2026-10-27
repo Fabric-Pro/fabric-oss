@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
 	type ParlumeAuraBinding,
+	ParlumeSentenceFeed,
 	playParlumeAuraSentences,
 	readParlumeSentenceLines,
 } from "./parlume-aura.ts";
@@ -469,4 +470,58 @@ test("refuses more sentences than a reply can hold", async () => {
 			// Reading.
 		}
 	}, /Too much text/);
+});
+
+async function readFeed(feed: ParlumeSentenceFeed): Promise<string[]> {
+	const read: string[] = [];
+	for await (const sentence of feed) {
+		read.push(sentence);
+	}
+	return read;
+}
+
+test("a reply's parts are read in part order, however they arrive, up to the last", async () => {
+	const feed = new ParlumeSentenceFeed();
+
+	assert.equal(feed.add(2, ["Third."], true), true);
+	assert.equal(feed.add(0, ["First."], false), true);
+	const reading = readFeed(feed);
+	assert.equal(feed.add(1, ["Second."], false), true);
+
+	assert.deepEqual(await reading, ["First.", "Second.", "Third."]);
+	assert.equal(feed.add(3, ["Late."], false), false);
+});
+
+test("a part already taken, or one for a closed reply, is refused", async () => {
+	const feed = new ParlumeSentenceFeed();
+
+	assert.equal(feed.add(0, ["First."], false), true);
+	assert.equal(feed.add(0, ["First again."], false), false);
+	feed.close();
+
+	assert.equal(feed.add(1, ["Second."], true), false);
+	assert.deepEqual(await readFeed(feed), ["First."]);
+});
+
+test("a reply whose next part never comes ends with what it has", async () => {
+	const feed = new ParlumeSentenceFeed(30);
+	feed.add(0, ["First."], false);
+
+	assert.deepEqual(await readFeed(feed), ["First."]);
+	assert.equal(feed.closed, true);
+});
+
+test("a failed reply fails its reader, and so does one with more sentences than a reply can hold", async () => {
+	const withdrawn = new ParlumeSentenceFeed();
+	withdrawn.add(0, ["First."], false);
+	withdrawn.fail(new Error("withdrawn"));
+	await assert.rejects(readFeed(withdrawn), /withdrawn/);
+
+	const long = new ParlumeSentenceFeed();
+	long.add(
+		0,
+		Array.from({ length: 41 }, () => "Hi."),
+		true,
+	);
+	await assert.rejects(readFeed(long), /Too much text/);
 });

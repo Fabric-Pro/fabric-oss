@@ -13,11 +13,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
 	generateText: vi.fn(),
 	getAiModelWithSelection: vi.fn(),
+	getAIModelWithMetadata: vi.fn(),
 	findMany: vi.fn(),
 }));
 
 vi.mock("@repo/ai", () => ({
 	generateText: (...a: unknown[]) => mocks.generateText(...a),
+	getAIModelWithMetadata: (...a: unknown[]) =>
+		mocks.getAIModelWithMetadata(...a),
 	isStepCount: vi.fn(),
 }));
 vi.mock("@repo/database", () => ({
@@ -124,6 +127,26 @@ describe.each(Object.entries(runners))("%s prompt cache", (_name, run) => {
 		});
 		mocks.getAiModelWithSelection.mockReset();
 		mocks.findMany.mockReset();
+	});
+
+	it("resolves deep research through the shared selector without a purpose", async () => {
+		const actual = await vi.importActual<
+			typeof import("../../orchestrator/utils/model-selector")
+		>("../../orchestrator/utils/model-selector");
+		mocks.getAiModelWithSelection.mockImplementation(
+			actual.getAiModelWithSelection,
+		);
+		mocks.getAIModelWithMetadata.mockReset().mockResolvedValue({
+			model: {},
+			metadata: { provider: "OPENAI", modelString: "example-model" },
+			trackUsage: vi.fn(),
+		});
+		mocks.findMany.mockResolvedValue([]);
+		await run().catch(() => undefined);
+		expect(mocks.generateText).toHaveBeenCalledOnce();
+		expect(
+			mocks.getAIModelWithMetadata.mock.calls[0][1].callPurpose,
+		).toBeUndefined();
 	});
 
 	it("keeps the hard-coded task type when selecting the model", async () => {

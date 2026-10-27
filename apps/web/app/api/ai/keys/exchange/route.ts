@@ -47,6 +47,8 @@ import { NextResponse } from "next/server";
 export const runtime = "nodejs";
 
 interface ExchangeResponse {
+	/** Resolved catalog identity for model-family capabilities. */
+	canonicalModelName?: string;
 	modelPinned?: true;
 	isReasoningModel?: boolean;
 	maxOutputTokens?: number | null;
@@ -330,6 +332,7 @@ export async function POST(
 			...(modelPinned && { modelPinned: true }),
 			apiKey: decryptedApiKey, // Decrypted API key - ready to use
 			provider: providerToUse || "unknown",
+			canonicalModelName: metadata.canonicalName,
 			model: model, // Full model string compatible with the provider
 			expiresIn,
 			billingMode: metadata.billingMode,

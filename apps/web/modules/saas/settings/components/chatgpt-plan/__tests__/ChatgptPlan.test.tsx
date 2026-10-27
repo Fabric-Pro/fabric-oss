@@ -1,3 +1,4 @@
+import de from "@repo/i18n/translations/de.json";
 import en from "@repo/i18n/translations/en.json";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
@@ -638,4 +639,13 @@ describe("ChatGPT plan reconnect notice on a full-bleed page", () => {
 			),
 		).toBeNull();
 	});
+});
+
+it.each([
+	["en", en],
+	["de", de],
+])("%s consumer translations name report generation", (_language, messages) => {
+	expect(messages.settings.chatgptPlanWindow.consumers).toHaveProperty(
+		"report-generation",
+	);
 });

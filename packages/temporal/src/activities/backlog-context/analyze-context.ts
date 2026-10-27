@@ -27,6 +27,7 @@ import {
 	normalizeBacklogTitle,
 	recordAudit,
 	recordProposalApplication,
+	recordProposalDuplicateResolution,
 	TERMINAL_DRAFTING_STAGES,
 	tenantWhere,
 	updateStory,
@@ -3788,6 +3789,24 @@ async function applyBacklogChangesWithMergeSignal(
 		const dedupKey = normalizeBacklogTitle(change.title.to);
 		const dup = dedupKey ? dedupStories.get(dedupKey) : undefined;
 		if (dup) {
+			if (policyProposalId) {
+				try {
+					await recordProposalDuplicateResolution({
+						proposalId: policyProposalId,
+						changeIndex: proposalIndexFor(originalIndex),
+						existingEntityId: dup.id,
+					});
+				} catch {
+					logger.warn(
+						"Failed to record proposal duplicate resolution",
+						{
+							proposalId: policyProposalId,
+							changeIndex: proposalIndexFor(originalIndex),
+						},
+					);
+				}
+			}
+
 			logger.warn(
 				`[Backlog Apply] Skipping duplicate CREATE${logContext} — title matches existing item`,
 				{
@@ -4341,6 +4360,26 @@ async function applyBacklogChangesWithMergeSignal(
 						select: { id: true, identifier: true, title: true },
 					});
 					if (alreadySuperseded) {
+						if (policyProposalId) {
+							try {
+								await recordProposalDuplicateResolution({
+									proposalId: policyProposalId,
+									changeIndex:
+										proposalIndexFor(originalIndex),
+									existingEntityId: alreadySuperseded.id,
+								});
+							} catch {
+								logger.warn(
+									"Failed to record proposal duplicate resolution",
+									{
+										proposalId: policyProposalId,
+										changeIndex:
+											proposalIndexFor(originalIndex),
+									},
+								);
+							}
+						}
+
 						logger.warn(
 							"[Backlog Apply] Terminal redirect skipped — closed ticket already superseded (idempotent)",
 							{
@@ -4655,8 +4694,8 @@ async function applyBacklogChangesWithMergeSignal(
 	}
 
 	// A recommended feature whose title already exists on the Roadmap counts as
-	// resolved, so the batch can still close. Recorded in the index mirror
-	// only: an application row would carry the existing item's id into the
+	// resolved, so the batch can still close. Recorded in the duplicate ledger and index mirror:
+	// an application row would carry the existing item's id into the
 	// PM-sync map as though this apply had created it.
 	if (isRecommendation && policyProposalId && skippedDuplicates.length > 0) {
 		await appendAppliedChangeIndexes(

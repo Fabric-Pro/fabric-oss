@@ -6,6 +6,7 @@
  */
 
 import { generateText } from "@repo/ai";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import type {
 	AnalyzeContextRequirementsInput,
 	ContextRequirements,
@@ -28,7 +29,14 @@ export async function analyzeContextRequirements(
 ): Promise<ContextRequirements> {
 	console.log("[Orchestrator] Analyzing context requirements for task");
 
-	const model = await getAiModel(input.userId, input.organizationId);
+	const model = await getAiModel(
+		input.userId,
+		input.organizationId,
+		false,
+		undefined,
+		undefined,
+		{ callPurpose: AI_CALL_PURPOSES.requirements },
+	);
 
 	// Format available capabilities for the prompt
 	const capabilityContext = formatCapabilities(

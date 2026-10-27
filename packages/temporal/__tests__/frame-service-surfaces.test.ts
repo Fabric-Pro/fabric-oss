@@ -53,6 +53,7 @@ import {
 } from "../src/activities/shared/frame-args";
 import {
 	createFirstClassFrame,
+	editFirstClassFrameBlock,
 	getFirstClassFrame,
 	listFirstClassFrames,
 	updateFirstClassFrame,
@@ -965,5 +966,165 @@ describe("the addresses a frame is handed back with", () => {
 				/\/share\/frame\/tok-public\/embed$/,
 			),
 		});
+	});
+});
+
+describe("partial frame block edit service", () => {
+	const editInput = {
+		userId: USER,
+		organizationId: ORG,
+		args: {
+			frameId: "frame-1",
+			blockId: "page",
+			edits: [{ oldText: "page", newText: "links" }],
+		},
+	};
+	beforeEach(() => {
+		mocks.getFrameById.mockResolvedValue(frameRecord());
+		mocks.updateFrame.mockResolvedValue(frameRecord());
+	});
+	it("uses the update path with a read timestamp fence and returns no source", async () => {
+		const result = await editFirstClassFrameBlock(editInput);
+		expect(result).toMatchObject({
+			frameId: "frame-1",
+			blockId: "page",
+			replacements: [1],
+			chars: 12,
+		});
+		expect(JSON.stringify(result)).not.toContain("<p>");
+		expect(result).not.toHaveProperty("versionId");
+		expect(mocks.updateFrame).toHaveBeenCalledWith(
+			expect.objectContaining({
+				expectedUpdatedAt: new Date("2026-10-14T10:00:00Z"),
+				blocks: [{ id: "page", type: "html", content: "<p>links</p>" }],
+			}),
+		);
+	});
+	it("forwards the caller's expectedUpdatedAt to the write's stale-read check", async () => {
+		await editFirstClassFrameBlock({
+			...editInput,
+			args: {
+				...editInput.args,
+				expectedUpdatedAt: "2026-10-14T10:00:00Z",
+			},
+		});
+		expect(mocks.updateFrame).toHaveBeenCalledWith(
+			expect.objectContaining({
+				requestedUpdatedAt: new Date("2026-10-14T10:00:00Z"),
+			}),
+		);
+	});
+	it("keeps other saved blocks unchanged, including blank blocks", async () => {
+		const blank = {
+			id: "example-empty",
+			type: "html",
+			title: "",
+			content: "",
+		};
+		mocks.getFrameById.mockResolvedValue(
+			frameRecord({ document: { blocks: [...blocks, blank] } }),
+		);
+		await editFirstClassFrameBlock(editInput);
+		expect(mocks.updateFrame.mock.calls[0][0].blocks[1]).toEqual(blank);
+	});
+
+	it("saves nothing when a later edit fails", async () => {
+		expect(
+			await editFirstClassFrameBlock({
+				...editInput,
+				args: {
+					...editInput.args,
+					edits: [
+						...editInput.args.edits,
+						{ oldText: "missing", newText: "x" },
+					],
+				},
+			}),
+		).toMatchObject({ error: expect.stringContaining("Edit 2 matched 0") });
+		expect(mocks.updateFrame).not.toHaveBeenCalled();
+	});
+	it("explains how to remove an emptied block", async () => {
+		expect(
+			await editFirstClassFrameBlock({
+				...editInput,
+				args: {
+					...editInput.args,
+					edits: [{ oldText: "<p>page</p>", newText: "" }],
+				},
+			}),
+		).toEqual({
+			error: "Edit would leave block page empty; use fabric_update_frame to remove a block.",
+		});
+		expect(mocks.updateFrame).not.toHaveBeenCalled();
+	});
+	it("refuses excessive chained growth without saving", async () => {
+		mocks.getFrameById.mockResolvedValue(
+			frameRecord({
+				document: {
+					blocks: [{ id: "page", type: "html", content: "a" }],
+				},
+			}),
+		);
+		expect(
+			await editFirstClassFrameBlock({
+				...editInput,
+				args: {
+					...editInput.args,
+					edits: Array.from({ length: 20 }, () => ({
+						oldText: "a",
+						newText: "aa",
+						replaceAll: true,
+					})),
+				},
+			}),
+		).toMatchObject({
+			error: expect.stringContaining(
+				"Edit 20 would exceed block limit of 1000000",
+			),
+		});
+		expect(mocks.updateFrame).not.toHaveBeenCalled();
+	});
+	it("returns an unchanged receipt without calling the write", async () => {
+		expect(
+			await editFirstClassFrameBlock({
+				...editInput,
+				args: {
+					...editInput.args,
+					edits: [{ oldText: "page", newText: "page" }],
+				},
+			}),
+		).toMatchObject({
+			unchanged: true,
+			updatedAt: "2026-10-14T10:00:00.000Z",
+			frameId: "frame-1",
+			blockId: "page",
+		});
+		expect(mocks.updateFrame).not.toHaveBeenCalled();
+	});
+	it("refuses a stale timestamp even when the edit changes nothing", async () => {
+		expect(
+			await editFirstClassFrameBlock({
+				...editInput,
+				args: {
+					...editInput.args,
+					expectedUpdatedAt: "2026-10-13T00:00:00Z",
+					edits: [{ oldText: "page", newText: "page" }],
+				},
+			}),
+		).toMatchObject({ error: expect.stringContaining("Re-read") });
+		expect(mocks.updateFrame).not.toHaveBeenCalled();
+	});
+
+	it("returns an outline through the normal read authorization without content", async () => {
+		mocks.getAccessibleFrameById.mockResolvedValue(frameRecord());
+		const result = await getFirstClassFrame({
+			...editInput,
+			args: { frameId: "frame-1", outline: true },
+		});
+		expect(result).toMatchObject({
+			updatedAt: "2026-10-14T10:00:00.000Z",
+			blocks: [{ id: "page", type: "html", chars: 11 }],
+		});
+		expect(JSON.stringify(result)).not.toContain("content");
 	});
 });

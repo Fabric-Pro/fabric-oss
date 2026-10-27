@@ -20,7 +20,7 @@ interface ParityFixture {
  * SHARED PARITY FIXTURES — keep byte-identical with the copy in
  * `apps/web/modules/saas/projects/lib/__tests__/story-content.test.ts`.
  *
- * `splitCleanSpec` (Decision→Spec patch path) and `parseStoryContent` (editor)
+ * `splitCleanSpec` (backend normalization) and `parseStoryContent` (editor)
  * state a byte-compatibility contract and have already drifted once. The two
  * packages cannot import each other's splitter, so the contract is pinned by
  * running the SAME table of documents against each splitter and asserting the

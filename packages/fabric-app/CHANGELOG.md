@@ -1,5 +1,99 @@
 # fabric-app
 
+## 1.16.30
+
+### Patch Changes
+
+- 93a250e: The Advisor's per-turn token allowance now counts Gemini image generation, Perplexity searches and Databricks knowledge searches, and charges a conservative estimate for each delegation to another agent and each Fabric AI pattern run, so these tools are no longer left out of the allowance.
+- 93a250e: Advisor answers can keep earlier tool results unchanged within a size limit, behind a setting that is off by default, so more of each request can be read from the prompt cache; each request now records its cache use.
+- 93a250e: Usage records distinguish chat-document, project-context, execution-search, and code-search query embeddings by operation, alongside answer generation, summaries, analysis, and media generation. Report generation and analysis now have their own feature attribution in usage views.
+- 93a250e: An answered Advisor clarifying question now shows as the question and your answer instead of as a message you typed.
+- 93a250e: The Advisor can now change part of a page block in place instead of resending the whole block, so edits to large pages take fewer steps.
+- 93a250e: Advisor answers count prompt tokens read from the cache at a tenth of their size against the per-answer allowance, and with the history setting on they keep earlier tool results until a much larger size before one reset, so long answers stop less often and read more from the prompt cache.
+- 93a250e: Advisor memory now collapses repeated questions in the same project and workspace scope only when each conversation has one recorded turn, keeping short replies and conversations with multiple or missing turn records separate.
+- 93a250e: Advisor answers use smaller memory context by combining repeated past conversations and limiting the space used by recalled episodes.
+- 93a250e: Advisor answers respect each model's output limit, preventing failures on models with smaller output budgets.
+- 93a250e: Advisor answers in balanced mode can now take up to 30 steps, background checks no longer use those steps up, and an answer that reaches its limit offers Continue in the same chat, which picks up from where it stopped.
+- 93a250e: Advisor settings now keep a saved agent, MCP server or workspace selection after you leave the chat and come back, instead of showing the previous selection and sending it back on the next change.
+- 93a250e: Advisor answers skip an unused lookup of past executions, and the Sources tab no longer lists that lookup as a source. The completion summary continues to identify memory context supplied to the model.
+- 93a250e: Advisor answers retain the model's notes between tool calls and keep unchanged attached images available in later steps.
+- 93a250e: Fix agents such as the data analyst failing on Anthropic with "Streaming is required for operations that may take longer than 10 minutes" by streaming direct Anthropic model calls.
+- 93a250e: Update the Aspire AppHost to 13.6.4, which fixes local resources that could fail to start or stop updating and moves MessagePack to a release that resolves GHSA-qhrr-8q5h-9q3h.
+- 93a250e: Retrying a failed partial backlog apply now re-applies only the changes the reviewer selected, preserving their edits and PM sync choices. Approving a backlog proposal records the offered changes and the reviewer's selection.
+- 93a250e: Use the unmodified upstream braces dependency again, now that the advisory its local nesting-depth patch addressed has been withdrawn as not practically exploitable.
+- 93a250e: Advisor GitHub pull request and issue details return only the fields a question needs, and feature lists can be sorted by most recently updated.
+- 93a250e: Approving or rejecting an AI draft now counts toward AI outcome reporting.
+- 93a250e: Copilot reply ratings are now exported for AI quality analytics as Copilot reply ratings instead of an unknown subject type.
+- 93a250e: Ratings on Copilot replies now record which AI model wrote the reply, so AI quality reports can compare models.
+- 93a250e: Copilot replies in project documents, features and the Publishing topic assistant can now be rated thumbs-up or thumbs-down, and each rating is saved for AI quality tracking.
+- 93a250e: The data analyst agent can now use the read-only tools of your organization's connected MCP servers when Fabric AI delegates a task to it, and Fabric now keeps those servers' credentials instead of passing them to the agent.
+- 93a250e: The data analyst now tells users which of their MCP servers need reconnecting or are otherwise unavailable, can use tools from STDIO-based MCP servers, and passes those servers' tool errors back to the model so it can correct the call.
+- 93a250e: The Data Analyst agent now shows the model each connected MCP tool's real parameters, so tools that need arguments can be called correctly and any extra keys a tool's schema allows reach the tool.
+- 93a250e: Databricks requests with a resolved model identity now decide prompt caching by model family, with endpoint-name detection retained as a fallback.
+- 93a250e: Databricks connections configured with a bare workspace URL or the classic serving path now send Unity Catalog models through Unity Gateway, avoiding endpoint-not-found errors while preserving custom serving endpoints.
+- 93a250e: Databricks Vector Search now appears under Knowledge & Docs on the Integrations page instead of a separate Action integrations section.
+- 93a250e: Add project-scoped AI decision outcomes, a proposal review queue and timeline, and secure dashboard embedding for Decision Replay.
+- 93a250e: Add AI outcome summaries, a proposal review queue, embedded trends, and proposal decision timelines to project Usage and the Roadmap inbox.
+- 93a250e: Preserve sidebar direct-apply proposal identifiers in Decision Replay capture so proposal decisions, applied changes, and subsequent story edits remain linked.
+- 93a250e: Add a Databricks deployment bundle with Decision Replay gold tables and a project-scoped embeddable analytics dashboard.
+- 93a250e: Count the application's human acceptance and recoverable rejection paths in Decision Replay daily metrics, and display user-facing proposal outcomes in the dashboard.
+- 93a250e: The Decision Replay database migration now applies on hosts where migrations run as a non-superuser role; its capture preflight refuses to run inside a tenant context instead of clearing it.
+- 93a250e: The Trends dashboard in project Usage is now tall enough to show its longest page without an inner scrollbar on desktop screens, and it says it refreshes on a schedule, so new decisions can take several hours to appear, instead of promising a refresh about an hour after each decision.
+- 93a250e: Decision Replay now records which suggested changes a reviewer selected, which changes were already on the roadmap, and items created from Teams and Slack approvals, while the proposal timeline summarizes each review in one line.
+- 93a250e: Fabric AI no longer asks you to approve a delegated task as a possible deletion just because the task quotes words such as "remove", and a delegation that fails or is cancelled now shows as an error instead of a normal answer.
+- 93a250e: Updated the URI and IP address parsing libraries used during JSON schema validation and rate limiting to releases that reject malformed and spoofed input.
+- 93a250e: Direct chat now says an answer was cut short, and offers to continue it, even when the same turn also ended with an error such as a tool reaching its AI usage limit.
+- 93a250e: Some background AI jobs on Vercel AI Gateway (publishing suggestions, living-document refreshes, scheduled newsletters and recurring-error scans) now request the lower-cost flex tier where the model supports it.
+- 93a250e: Fixed a crash in background processing when listing Fabric's own tools took too long; the Advisor now continues without those tools instead of stalling.
+- 93a250e: Gemini 4 Argon is now available in AI model settings through Google Vertex AI, OpenRouter and Vercel AI Gateway.
+- 93a250e: Zendesk and Intercom no longer appear in the Integrations list for new connections; organizations that already connected them keep access.
+- 93a250e: Model calls on OpenRouter and Cloudflare AI Gateway connections now go to the provider's own endpoint instead of Vercel AI Gateway.
+- 93a250e: Advisor's Simple mode now says when a reply finished on API billing because every ChatGPT plan ran out mid-turn.
+- 93a250e: Parlume's chat suggestions now name the topic, the speaker and the words they answer, and are posted at most every five minutes.
+- 93a250e: Parlume auto-join can no longer be switched on for a meeting series whose syncing is stopped, and the series explains why.
+- 93a250e: Parlume can now join every occurrence of a linked Teams meeting series on its own, switched on per series in Meeting Digest's Configure meetings.
+- 93a250e: Parlume's realtime voice runs on an Azure AI Foundry resource, and only the requester or words addressed to Parlume stop its answers.
+- 93a250e: Parlume keeps listening while it posts to the Teams chat: posts are pasted rather than typed, and audio gaps reach the transcriber as silence.
+- 93a250e: Parlume bills meeting-bot time from the invite, waits ten minutes in the lobby, and shows its costs with clear names and no false latency.
+- 93a250e: Parlume's standard voice answers sooner: requests start on Flux's early end-of-turn, and the agent's lookups run alongside the meeting context.
+- 93a250e: Parlume says it is working on a request once rather than over and over, and its realtime voice sounds more like a person on the call.
+- 93a250e: Parlume no longer loses words or misplaces speakers after its transcription stream reconnects.
+- 93a250e: While Parlume speaks, other attendees' side talk no longer cuts it off: a partial transcript stops it only when it addresses Parlume.
+- 93a250e: Organizations set up Parlume's meeting bot and voice in Settings → Meeting assistant, and the Parlume page lists what is missing.
+- 93a250e: Parlume's realtime voice connects again, and spoken chat post commands such as "Parlume read P one" work in both voices.
+- 93a250e: Parlume's realtime voice tries Azure before OpenAI, and unattributed side talk or a stray "Parlume, stop" no longer interrupts or starts a turn.
+- 93a250e: Parlume switches to its standard voice when realtime sessions keep closing right after they open, instead of reconnecting forever in silence.
+- 93a250e: Parlume's realtime voice no longer answers side talk because of a wake phrase it had already answered.
+- 93a250e: Saying "Parlume, stop" while Parlume answers in the realtime voice stops it without starting a new reply.
+- 93a250e: Parlume's chat suggestions arrive sooner after the remark they answer and no longer fail when the model reasons before answering.
+- 93a250e: Parlume's chat suggestion pass now runs as soon as enough has been said, not on the next once-a-minute check.
+- 93a250e: Parlume's chat suggestions now draw on the project's open work items, so they can answer questions such as what has the highest priority or who owns a feature.
+- 93a250e: Parlume no longer loses the sentence being spoken when transcription reconnects, and its realtime voice keeps the meeting's context across a bridge restart.
+- 93a250e: Parlume hands spoken requests to Fabric faster and reads less project text before answering.
+- 93a250e: Parlume speaks as soon as its first sentence is ready, takes "go P3" and "more on P3" by voice, and posts readable chat messages.
+- 93a250e: Parlume answers "Parlume, …" requests even when the transcript drops the comma, and answers in the standard voice while its realtime voice reconnects.
+- 93a250e: Parlume now hears "Hey Parlume" when transcription writes it as "A Parlume", and no longer mistakes its own chat tags (P1, P2) for work item IDs.
+- 93a250e: Features and bugs linked to a ticket in your PM tool now show that ticket's current status, such as In Progress or QA, read-only in the card's PM column, exactly as the PM tool reports it.
+- 93a250e: Upgrade the database layer to Prisma ORM 7.10.1, with migrations still connecting through the direct, non-pooled database URL.
+- 93a250e: A database transaction whose COMMIT or ROLLBACK fails, such as a serialization failure or a dropped connection, now returns its connection to the pool instead of holding it until the process restarts.
+- 93a250e: Database writes started during a web request now keep the function alive until their transaction finishes, reducing interrupted writes that leave transactions open and block migrations.
+- 93a250e: Recording when an AI provider was last used no longer leaves a database transaction open after a request ends, which could block schema migrations during a deploy.
+- 93a250e: Project Usage now counts AI outcomes per change, showing Changes accepted as a count such as 5 of 8, changes not selected or already on the roadmap, and partly applied proposals. The Databricks dashboard includes matching change outcomes and acceptance counts.
+- 93a250e: Fabric can now record the history of AI suggestions and their outcomes behind an off-by-default Decision Replay flag.
+- 93a250e: The Advisor's Sources tab shows readable names and fitting icons for project context and other sources in new answers; sources in earlier saved conversations keep their stored names and get the fitting icon.
+- 93a250e: Advisor answers no longer stop early when a model writes its next tool call in a supported text format; Fabric now runs that call. Direct chat uses the same recovery, preserving prose before and between calls while omitting text after the last recovered call.
+- 93a250e: The "Read the full release notes" link in Slack and Teams release-notes posts now opens that specific release note in the project instead of the release notes list.
+- 93a250e: The retired Features document type is no longer offered when creating a document or setting up a project, and new Features documents can no longer be created through the API; existing Features documents remain readable.
+- 93a250e: Removed the unused backlogged-proposals count endpoint, which the Roadmap stopped reading when rejected proposals moved into its Actions menu.
+- 93a250e: The unused Feature Maturation approval-mode API endpoints, which were never wired into the app, have been removed, along with the retired patch-based Clean Spec update path; answers continue to be recorded in the Clean Spec as before.
+- 93a250e: The project Roadmap header is simpler: the main actions sit beside the title, an Actions menu holds the less frequent tools, and proposals, stage approvals and sync issues appear together only when something needs review. Filters fit in one compact row, and each date filter now opens a single range calendar with quick presets instead of separate start and end pickers.
+- 93a250e: Roadmap list rows now line up in labelled columns for item, title, priority, stage and PM sync, so titles start at the same place on every row and show the real priority. Details such as track, estimate, flags, tags and source sit on one labelled line under the title; when space runs short, the least important details collapse into a "+N" summary while flags stay visible.
+- 93a250e: The code-execution sandbox image now runs Node.js 22.23.4 and Bun 1.4.4, which fix a Brotli decoder vulnerability (CVE-2026-111497).
+- 93a250e: The tenant-isolated database client now accepts lookups, updates and deletes by unique key, and keeps a caller's own OR conditions on scoped tables, instead of rejecting the query or dropping the caller's filter.
+- 93a250e: The tenant-isolated database client now passes the tenant context to PostgreSQL row-level security policies for each model query it runs, and rejects transactions it cannot keep atomic.
+- 93a250e: Agent tools whose input schema explicitly allows extra keys now receive those keys instead of having them silently dropped before the tool runs.
+- 93a250e: The data analyst, document generator, and Weave agents now validate input with the patched validation library.
+
 ## 1.16.29
 
 ### Patch Changes

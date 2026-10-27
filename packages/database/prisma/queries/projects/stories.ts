@@ -535,8 +535,9 @@ export async function listStorySummaries(options: {
 	 * `identifier`: numeric-aware identifier order ({@link compareStoryIdentifiers}),
 	 * so `F-094` comes before `F-100`. The column is text, so this sorts the
 	 * matching ids in memory before loading the page.
+	 * `updated`: newest update first, then unique id, ordered in the database.
 	 */
-	orderBy?: "board" | "identifier";
+	orderBy?: "board" | "identifier" | "updated";
 }) {
 	const {
 		projectId,
@@ -603,7 +604,10 @@ export async function listStorySummaries(options: {
 					db.userStory.findMany({
 						where,
 						select: STORY_SUMMARY_SELECT,
-						orderBy: [{ statusId: "asc" }, { order: "asc" }],
+						orderBy:
+							orderBy === "updated"
+								? [{ updatedAt: "desc" }, { id: "asc" }]
+								: [{ statusId: "asc" }, { order: "asc" }],
 						take: limit,
 						skip: offset,
 					}),

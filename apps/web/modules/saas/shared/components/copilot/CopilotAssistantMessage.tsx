@@ -21,6 +21,7 @@ import { deriveDiagramTitle } from "../../../projects/components/excalidraw-auto
 import { useActiveTipTapEditor } from "../../../projects/components/excalidraw-auto-insert/useActiveTipTapEditor";
 import { useChatScopedProjectFromCopilotChat } from "../../../projects/components/excalidraw-auto-insert/useChatScopedProject";
 import { useCopilotChatSession } from "./CopilotChatSessionProvider";
+import { useCopilotReplyRatingState } from "./CopilotReplyRatingContext";
 import {
 	formatMessageTimestamp,
 	type TimestampSource,
@@ -303,6 +304,10 @@ export function makeCopilotAssistantMessage(
 		} = props;
 
 		const [copied, setCopied] = useState(false);
+		const rating = useCopilotReplyRatingState();
+		const vote = message?.id ? rating?.getVote(message.id) : undefined;
+		// CopilotKit supplies callback wrappers even without a host rating handler.
+		const canRate = Boolean(message?.id && rating?.canRate(message.id));
 
 		const content = message?.content || "";
 		const subComponent = message?.generativeUI?.();
@@ -721,52 +726,82 @@ export function makeCopilotAssistantMessage(
 												{tTooltips("copy")}
 											</TooltipContent>
 										</Tooltip>
-										{onThumbsUp && (
-											<Tooltip>
-												<TooltipTrigger asChild>
-													<button
-														type="button"
-														className="copilotKitMessageControlButton"
-														onClick={() =>
-															message &&
-															onThumbsUp(message)
-														}
-														aria-label={
-															labels.thumbsUp
-														}
-													>
-														{icons.thumbsUpIcon}
-													</button>
-												</TooltipTrigger>
-												<TooltipContent>
-													{tCopilot("thumbsUp")}
-												</TooltipContent>
-											</Tooltip>
-										)}
-										{onThumbsDown && (
-											<Tooltip>
-												<TooltipTrigger asChild>
-													<button
-														type="button"
-														className="copilotKitMessageControlButton"
-														onClick={() =>
-															message &&
-															onThumbsDown(
-																message,
-															)
-														}
-														aria-label={
-															labels.thumbsDown
-														}
-													>
-														{icons.thumbsDownIcon}
-													</button>
-												</TooltipTrigger>
-												<TooltipContent>
-													{tCopilot("thumbsDown")}
-												</TooltipContent>
-											</Tooltip>
-										)}
+										{onThumbsUp &&
+											canRate &&
+											content.trim() && (
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<button
+															type="button"
+															className={`copilotKitMessageControlButton rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring ${vote === "RATED_UP" ? "active bg-primary text-primary-foreground" : ""}`}
+															aria-pressed={
+																vote ===
+																"RATED_UP"
+															}
+															aria-disabled={
+																message
+																	? rating?.isPending(
+																			message.id,
+																		)
+																	: false
+															}
+															onClick={() =>
+																message &&
+																onThumbsUp(
+																	message,
+																)
+															}
+															aria-label={
+																labels.thumbsUp
+															}
+														>
+															{icons.thumbsUpIcon}
+														</button>
+													</TooltipTrigger>
+													<TooltipContent>
+														{tCopilot("thumbsUp")}
+													</TooltipContent>
+												</Tooltip>
+											)}
+										{onThumbsDown &&
+											canRate &&
+											content.trim() && (
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<button
+															type="button"
+															className={`copilotKitMessageControlButton rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring ${vote === "RATED_DOWN" ? "active bg-primary text-primary-foreground" : ""}`}
+															aria-pressed={
+																vote ===
+																"RATED_DOWN"
+															}
+															aria-disabled={
+																message
+																	? rating?.isPending(
+																			message.id,
+																		)
+																	: false
+															}
+															onClick={() =>
+																message &&
+																onThumbsDown(
+																	message,
+																)
+															}
+															aria-label={
+																labels.thumbsDown
+															}
+														>
+															{
+																icons.thumbsDownIcon
+															}
+														</button>
+													</TooltipTrigger>
+													<TooltipContent>
+														{tCopilot("thumbsDown")}
+													</TooltipContent>
+												</Tooltip>
+											)}
 									</div>
 								)}
 							</div>

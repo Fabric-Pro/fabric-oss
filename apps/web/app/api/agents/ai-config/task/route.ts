@@ -144,6 +144,7 @@ export async function GET(req: NextRequest) {
 			deploymentName: providerConfig.deploymentName || null,
 			// Canonical-derived "emits <think>" signal (Bug #1942 review).
 			isReasoningModel: isReasoningModelName(metadata.canonicalName),
+			canonicalModelName: metadata.canonicalName,
 			// Catalog output cap, so the agent can size its budget against the
 			// model it actually got instead of a hard-coded literal. Without
 			// this the LangChain path fell back to 4,000 output tokens for

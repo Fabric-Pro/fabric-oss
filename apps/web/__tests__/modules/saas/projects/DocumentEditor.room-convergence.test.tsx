@@ -147,6 +147,8 @@ const harness = await vi.hoisted(async () => {
 		postRecords: false,
 		/** The server's `agents.conversations.recordOperationResult`. */
 		recordOperationResult: vi.fn(),
+		confirmDraft: vi.fn(),
+		serializationMode: null as null | "null" | "empty",
 		/** The chat's live messages, as CopilotKit holds them. */
 		chatMessages: [] as Array<Record<string, unknown>>,
 		/** The server's `agents.conversations.recordDiffOutcome`. */
@@ -378,6 +380,9 @@ function makeOrpcProxy(): any {
 				return build([...path, prop]);
 			},
 			apply(_target, _thisArg, args: unknown[]) {
+				if (path.join(".") === "ai.feedback.confirmDraft") {
+					return harness.confirmDraft(args[0]);
+				}
 				if (
 					path.join(".") ===
 					"agents.conversations.recordOperationResult"
@@ -777,6 +782,25 @@ import {
 } from "@saas/projects/components/proposal-artifact/generation-run-awareness";
 import { transactionTouches } from "@saas/projects/components/proposal-artifact/room-convergence-helpers";
 import { fromMarkdown } from "@saas/projects/lib/diff-utils";
+
+vi.mock("@saas/projects/lib/editor-markdown-save", async (importOriginal) => {
+	const actual =
+		await importOriginal<
+			typeof import("@saas/projects/lib/editor-markdown-save")
+		>();
+	return {
+		...actual,
+		getEditorMarkdownForSave: (
+			...args: Parameters<typeof actual.getEditorMarkdownForSave>
+		) =>
+			harness.serializationMode === "null"
+				? null
+				: harness.serializationMode === "empty"
+					? ""
+					: actual.getEditorMarkdownForSave(...args),
+	};
+});
+
 import { getEditorMarkdownForSave } from "@saas/projects/lib/editor-markdown-save";
 import { ROOM_BODY_FRAGMENT } from "@saas/projects/lib/room-body-fragment";
 import { createCollaborativeExtensions } from "@saas/projects/lib/tiptap-extensions";
@@ -1230,6 +1254,8 @@ beforeEach(() => {
 	harness.blankSavedBodyFrames = [];
 	harness.postRecords = false;
 	harness.recordOperationResult.mockReset();
+	harness.confirmDraft.mockReset();
+	harness.serializationMode = null;
 	harness.chatMessages = [];
 	harness.recordDiffOutcome.mockReset();
 	harness.reviewBarProps = null;
@@ -5574,6 +5600,10 @@ describe("an assistant proposal accepted in a room (Fizzy #2946)", () => {
 				tab,
 				`${editorBody(tab)}\n\nA second accepted paragraph.`,
 			);
+			expect(harness.confirmDraft).toHaveBeenCalledTimes(2);
+			expect(harness.confirmDraft.mock.calls[0]?.[0]?.draftId).not.toBe(
+				harness.confirmDraft.mock.calls[1]?.[0]?.draftId,
+			);
 			expect(saveCalls).toHaveLength(1);
 			expect(harness.recordOutcome).not.toHaveBeenCalled();
 
@@ -6080,6 +6110,65 @@ describe("an assistant proposal accepted in a room (Fizzy #2946)", () => {
 			second.unmount();
 		});
 
+		it("records a human Reject once", async () => {
+			await persistRoom(BODY_A, savedStamp());
+			const tab = await openTab("tab");
+			await settle(200);
+			const chat = chatFor(tab);
+			await propose(tab);
+			const respond = vi.fn();
+			await chat.open(respond);
+
+			await chat.reject();
+			expect(respond).toHaveBeenCalledWith({ accepted: false });
+			expect(harness.confirmDraft).toHaveBeenCalledTimes(1);
+			expect(harness.confirmDraft).toHaveBeenCalledWith(
+				expect.objectContaining({
+					surface: "document",
+					verdict: "rejected",
+				}),
+			);
+			chat.unmount();
+		});
+		it.each(["null", "empty"] as const)(
+			"records no human verdict for %s extraction on Approve",
+			async (mode) => {
+				await persistRoom(BODY_A, savedStamp());
+				const tab = await openTab("tab");
+				await settle(200);
+				const chat = chatFor(tab);
+				await propose(tab);
+				const respond = vi.fn();
+				await chat.open(respond);
+				harness.serializationMode = mode;
+				try {
+					await chat.confirm();
+				} finally {
+					harness.serializationMode = null;
+				}
+				expect(respond).toHaveBeenCalledWith({ accepted: false });
+				expect(harness.confirmDraft).not.toHaveBeenCalled();
+				expect(saveCalls).toEqual([]);
+				chat.unmount();
+			},
+		);
+		it("records no human verdict for the unchanged-document machine gate", async () => {
+			await persistRoom(BODY_A, savedStamp());
+			const tab = await openTab("tab");
+			await settle(200);
+			await propose(tab, BODY_A);
+			const respond = vi.fn();
+			await act(async () => {
+				tab.actions.get("confirm_changes")?.renderAndWaitForResponse({
+					args: {},
+					status: "executing",
+					respond,
+				});
+			});
+			expect(respond).toHaveBeenCalledWith({ accepted: false });
+			expect(harness.confirmDraft).not.toHaveBeenCalled();
+			expect(saveCalls).toEqual([]);
+		});
 		it("stamps the person's choice on the card's tool call, accepted or rejected, for the chat's outcome chip", async () => {
 			await persistRoom(BODY_A, savedStamp());
 			const tab = await openTab("tab", {

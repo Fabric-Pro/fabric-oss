@@ -188,8 +188,14 @@ vi.mock("../../../../orpc/procedures", () => {
 	const builder: Record<string, unknown> = {};
 	builder.use = () => builder;
 	builder.route = () => builder;
-	builder.input = () => builder;
-	builder.handler = (fn: unknown) => ({ handler: fn });
+	builder.input = (schema: unknown) => {
+		builder.inputSchema = schema;
+		return builder;
+	};
+	builder.handler = (fn: unknown) => ({
+		handler: fn,
+		inputSchema: builder.inputSchema,
+	});
 	return {
 		tenantProtectedProcedure: builder,
 		resolveOrganizationId: (orgId: string | null | undefined) =>
@@ -265,6 +271,25 @@ beforeEach(() => {
 	mockWorkflowStart.mockResolvedValue({ workflowId: "wf-1" });
 	mockGetTemporalClient.mockResolvedValue({
 		workflow: { start: mockWorkflowStart },
+	});
+});
+
+describe("startExistingSetupProcedure — input", () => {
+	it("drops the retired Features type from a draft's selection (Fizzy #2776)", async () => {
+		const mod = await import("../start-existing-setup");
+		const { inputSchema } = mod.startExistingSetupProcedure as unknown as {
+			inputSchema: {
+				parse: (v: unknown) => { selectedDocumentTypes: string[] };
+			};
+		};
+
+		const parsed = inputSchema.parse({
+			projectId: "proj-1",
+			projectName: "Example Project",
+			selectedDocumentTypes: ["PRD", "USER_STORY", "ARCHITECTURE"],
+		});
+
+		expect(parsed.selectedDocumentTypes).toEqual(["PRD", "ARCHITECTURE"]);
 	});
 });
 

@@ -13,6 +13,7 @@ const { warmParlumeSession } = proxyActivities<typeof activities>({
  */
 export async function parlumeWarmupWorkflow(input: {
 	sessionId: string;
+	actingGrant?: string;
 }): Promise<void> {
 	try {
 		await warmParlumeSession(input);

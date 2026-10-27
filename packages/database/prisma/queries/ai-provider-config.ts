@@ -422,7 +422,7 @@ export const AI_PROVIDER_METADATA: Record<
 		requiresBaseUrl: true,
 		baseUrlPlaceholder: "https://{workspace-id}.cloud.databricks.com",
 		baseUrlHelp:
-			"Your Databricks workspace URL — a bare host defaults to /serving-endpoints. Advanced: enter a full path like /ai-gateway/mlflow/v1 to use the Unity AI Gateway.",
+			"A bare workspace URL routes catalog models (system.ai.*) through Unity Gateway and custom endpoint names through /serving-endpoints. Explicit gateway or proxy paths are preserved.",
 		supportsServicePrincipal: true,
 		clientIdPlaceholder: "00000000-0000-0000-0000-000000000000",
 		clientSecretPlaceholder: "dose...",

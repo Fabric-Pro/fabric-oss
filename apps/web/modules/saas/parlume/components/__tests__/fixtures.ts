@@ -5,6 +5,7 @@ import type {
 } from "../../lib/parlume-format";
 
 export const PROJECT_BASE_PATH = "/app/example-org/projects/example-project";
+export const SETTINGS_BASE_PATH = "/app/example-org/settings";
 
 export function session(
 	overrides: Partial<ParlumeSession> = {},
@@ -24,6 +25,8 @@ export function session(
 		leaveRequestedAt: null,
 		endedAt: new Date("2026-09-30T10:30:00Z"),
 		transcriptContextId: null,
+		trigger: "MANUAL",
+		linkedMeeting: null,
 		createdAt: new Date("2026-09-30T09:59:00Z"),
 		updatedAt: new Date("2026-09-30T10:30:00Z"),
 		requestCount: 0,

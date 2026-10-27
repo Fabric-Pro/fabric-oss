@@ -12,6 +12,7 @@
  */
 
 import { generateText } from "@repo/ai";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { logger } from "@repo/logs";
 import { getAiModel, safeParseJson } from "../utils";
 import type {
@@ -308,7 +309,14 @@ export async function analyzeJourneyInput(
 	// Use LLM to analyze ambiguous cases
 	if (!hasContinuationIndicator) {
 		try {
-			const model = await getAiModel(userId, organizationId);
+			const model = await getAiModel(
+				userId,
+				organizationId,
+				false,
+				undefined,
+				undefined,
+				{ callPurpose: AI_CALL_PURPOSES.journey },
+			);
 			const response = await generateText({
 				model,
 				instructions: `You analyze user messages to determine if they continue an existing task or start a new one.

@@ -31,7 +31,7 @@ vi.mock("@repo/database", () => ({
 	},
 }));
 
-vi.mock("@repo/temporal", () => ({
+vi.mock("@repo/temporal/client", () => ({
 	getTemporalClient: async () => ({
 		workflow: { start: mocks.workflowStart },
 	}),
@@ -292,7 +292,18 @@ describe("Parlume realtime voice jobs", () => {
 		const response = await POST(request(job));
 
 		expect(response.status).toBe(200);
-		expect(await response.json()).toEqual({ accepted: true });
+		expect(await response.json()).toEqual({
+			accepted: true,
+			// Each step's milliseconds since the handler started, for the
+			// bridge's dispatch log.
+			timing: {
+				sessionMs: expect.any(Number),
+				turnMs: expect.any(Number),
+				claimMs: expect.any(Number),
+				temporalClientMs: expect.any(Number),
+				workflowStartMs: expect.any(Number),
+			},
+		});
 		expect(mocks.turnCreateMany.mock.calls[0]?.[0].data).toMatchObject({
 			replyChannel: "VOICE",
 			requestText: "What was decided?",

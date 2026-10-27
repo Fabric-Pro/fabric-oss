@@ -17,7 +17,50 @@ vi.mock("@repo/database", async (importOriginal) => {
 	};
 });
 
-import { toConfigRows } from "@repo/api/modules/projects/procedures/meeting-digest/list-configurable-meetings";
+import {
+	toConfigRows,
+	toParlumeAutoJoinState,
+} from "@repo/api/modules/projects/procedures/meeting-digest/list-configurable-meetings";
+
+describe("toParlumeAutoJoinState", () => {
+	const row = {
+		deactivatedAt: null,
+		parlumeAutoJoin: true,
+		parlumeAutoJoinToolsReadOnly: false,
+		parlumeAutoJoinSuggestions: true,
+		parlumeAutoJoinError: "Reconnect Microsoft in Settings → Integrations.",
+		parlumeAutoJoinErrorAt: new Date("2026-10-27T09:00:00Z"),
+		parlumeAutoJoinUser: { id: "user-1", name: "Dev Example" },
+	};
+
+	it("names who turned auto-join on and carries its last error", () => {
+		expect(toParlumeAutoJoinState(row)).toEqual({
+			enabled: true,
+			toolsReadOnly: false,
+			suggestionsEnabled: true,
+			enabledBy: { id: "user-1", name: "Dev Example" },
+			error: "Reconnect Microsoft in Settings → Integrations.",
+			errorAt: new Date("2026-10-27T09:00:00Z"),
+			syncStopped: false,
+		});
+	});
+
+	it("marks a series whose syncing is stopped", () => {
+		expect(
+			toParlumeAutoJoinState({
+				...row,
+				deactivatedAt: new Date("2026-10-01T00:00:00Z"),
+			}).syncStopped,
+		).toBe(true);
+	});
+
+	it("names no enabler while the switch is off", () => {
+		expect(
+			toParlumeAutoJoinState({ ...row, parlumeAutoJoin: false })
+				.enabledBy,
+		).toBeNull();
+	});
+});
 
 describe("toConfigRows", () => {
 	beforeEach(() => vi.clearAllMocks());

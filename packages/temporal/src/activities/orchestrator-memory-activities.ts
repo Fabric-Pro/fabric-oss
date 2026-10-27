@@ -15,6 +15,8 @@
 
 import { createHash } from "node:crypto";
 import { generateText } from "@repo/ai";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import {
 	type ExecutionSummary,
 	executionExists,
@@ -251,9 +253,10 @@ export async function generateLLMSummary(
 			false,
 			undefined,
 			undefined,
-			input.conversationId || input.frameId || input.projectId
-				? usageOriginFields(input)
-				: undefined,
+			{
+				...usageOriginFields(input),
+				callPurpose: AI_CALL_PURPOSES.trajectorySummary,
+			},
 		);
 		const result = await generateText({
 			model,
@@ -351,20 +354,24 @@ export async function embedAndStoreTrajectory(
 		];
 
 		// Generate embedding - credentials are fetched internally by generateEmbedding()
-		const embeddingResult = await generateEmbedding(
-			summary,
-			{
-				userId,
-				organizationId,
-				...usageOriginFields(input),
-				featureKey: "chat-agent",
-				tags: [
-					"orchestrator-memory",
-					"execution-summary",
-					outcome === "failure" ? "failure" : "success",
-				],
-			},
-			undefined, // providerConfig is no longer needed
+		const embeddingResult = await runWithAiCallPurpose(
+			AI_CALL_PURPOSES.trajectoryEmbedding,
+			() =>
+				generateEmbedding(
+					summary,
+					{
+						userId,
+						organizationId,
+						...usageOriginFields(input),
+						featureKey: "chat-agent",
+						tags: [
+							"orchestrator-memory",
+							"execution-summary",
+							outcome === "failure" ? "failure" : "success",
+						],
+					},
+					undefined, // providerConfig is no longer needed
+				),
 		);
 
 		// Store in Qdrant
@@ -430,18 +437,22 @@ export async function searchSemanticMemory(
 
 	try {
 		// Generate embedding - credentials are fetched internally by generateEmbedding()
-		const embeddingResult = await generateEmbedding(
-			query,
-			withDefaultFeature(
-				{
-					userId,
-					organizationId,
-					...secondaryUsageFields(input),
-					tags: ["orchestrator-memory", "semantic-search"],
-				},
-				"chat-agent",
-			),
-			undefined, // providerConfig is no longer needed
+		const embeddingResult = await runWithAiCallPurpose(
+			AI_CALL_PURPOSES.executionSearchEmbedding,
+			() =>
+				generateEmbedding(
+					query,
+					withDefaultFeature(
+						{
+							userId,
+							organizationId,
+							...secondaryUsageFields(input),
+							tags: ["orchestrator-memory", "semantic-search"],
+						},
+						"chat-agent",
+					),
+					undefined, // providerConfig is no longer needed
+				),
 		);
 
 		// Search Qdrant

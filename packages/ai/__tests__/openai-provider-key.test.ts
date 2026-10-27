@@ -38,7 +38,10 @@ vi.mock("@repo/logs", () => ({
 	logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 
-import { resolveOpenAiApiKey } from "../lib/openai-provider-key";
+import {
+	resolveAzureOpenAiResource,
+	resolveOpenAiApiKey,
+} from "../lib/openai-provider-key";
 
 /** The "nothing configured" shape `getAiProviderApiKeyByProvider` returns. */
 const EMPTY_PROVIDER_CONFIG = {
@@ -148,5 +151,55 @@ describe("resolveOpenAiApiKey", () => {
 		const key = await resolveOpenAiApiKey({ userId: "user-1" });
 
 		expect(key).toBe("");
+	});
+});
+
+describe("resolveAzureOpenAiResource", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+	});
+
+	it("returns the resource's origin and its decrypted key", async () => {
+		getAiProviderApiKeyByProviderMock.mockResolvedValue({
+			...EMPTY_PROVIDER_CONFIG,
+			apiKey: "encrypted:azure-key",
+			provider: "AZURE_AI_FOUNDRY",
+			baseUrl:
+				"https://example-resource.openai.azure.com/openai/deployments/chat/chat/completions?api-version=2025-01-01-preview",
+			deploymentName: "chat",
+		});
+
+		await expect(
+			resolveAzureOpenAiResource({
+				userId: "user-1",
+				organizationId: "org-1",
+			}),
+		).resolves.toEqual({
+			origin: "https://example-resource.openai.azure.com",
+			apiKey: "azure-key",
+		});
+		expect(getAiProviderApiKeyByProviderMock).toHaveBeenCalledWith({
+			userId: "user-1",
+			organizationId: "org-1",
+			provider: "AZURE_AI_FOUNDRY",
+		});
+	});
+
+	it("returns null without an endpoint or an API key", async () => {
+		getAiProviderApiKeyByProviderMock.mockResolvedValueOnce({
+			...EMPTY_PROVIDER_CONFIG,
+			apiKey: "encrypted:azure-key",
+		});
+		getAiProviderApiKeyByProviderMock.mockResolvedValueOnce({
+			...EMPTY_PROVIDER_CONFIG,
+			baseUrl: "https://example-resource.openai.azure.com",
+		});
+
+		await expect(
+			resolveAzureOpenAiResource({ userId: "user-1" }),
+		).resolves.toBeNull();
+		await expect(
+			resolveAzureOpenAiResource({ userId: "user-1" }),
+		).resolves.toBeNull();
 	});
 });

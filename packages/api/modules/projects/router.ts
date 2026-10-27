@@ -58,7 +58,6 @@ import { cancelPendingProposalProcedure } from "./procedures/backlog/cancel-pend
 import { cancelProposalDraftProcedure } from "./procedures/backlog/cancel-proposal-draft";
 import { dismissFailedProposalProcedure } from "./procedures/backlog/dismiss-failed-proposal";
 import { generateRecommendationsProcedure } from "./procedures/backlog/generate-recommendations";
-import { getBacklogProposalsCountProcedure } from "./procedures/backlog/get-backlog-proposals-count";
 import { getFailedProposalsCountProcedure } from "./procedures/backlog/get-failed-proposals-count";
 import { getProposalDraftsProcedure } from "./procedures/backlog/get-proposal-drafts";
 import { listBacklogAuditHistoryProcedure } from "./procedures/backlog/history-audit-list";
@@ -134,6 +133,12 @@ import { createProjectProcedure } from "./procedures/create-project";
 import { deleteProjectDatabricksKnowledgeProcedure } from "./procedures/databricks-knowledge/delete-databricks-knowledge";
 import { getProjectDatabricksKnowledgeProcedure } from "./procedures/databricks-knowledge/get-databricks-knowledge";
 import { saveProjectDatabricksKnowledgeProcedure } from "./procedures/databricks-knowledge/save-databricks-knowledge";
+import {
+	getSummaryProcedure as getDecisionReplaySummaryProcedure,
+	getEmbedTokenProcedure,
+	getProposalTimelineProcedure,
+	listNeedsReviewProcedure,
+} from "./procedures/decision-replay";
 import {
 	getDecisionsViewProcedure,
 	updateDecisionsViewProcedure,
@@ -255,17 +260,17 @@ import {
 	rejectInstructionProposalProcedure,
 } from "./procedures/instructions/proposals";
 import { publishSnapshotProcedure } from "./procedures/instructions/publish-snapshot";
-import { getDirectInstructionRepositoryCommitParentProcedure } from "./procedures/instructions/repository/get-commit-parent";
-import { getDirectInstructionRepositoryFileProcedure } from "./procedures/instructions/repository/get-file";
-import { getDirectInstructionRepositoryStateProcedure } from "./procedures/instructions/repository/get-state";
 import {
 	previewInstructionFileRestoreProcedure,
 	restoreInstructionFileProcedure,
 } from "./procedures/instructions/repository/file-history-procedures";
+import { getDirectInstructionRepositoryCommitParentProcedure } from "./procedures/instructions/repository/get-commit-parent";
+import { getDirectInstructionRepositoryFileProcedure } from "./procedures/instructions/repository/get-file";
+import { getDirectInstructionRepositoryStateProcedure } from "./procedures/instructions/repository/get-state";
 import { listDirectInstructionRepositoryCommitsProcedure } from "./procedures/instructions/repository/list-commits";
 import { listDirectInstructionRepositoryFilesProcedure } from "./procedures/instructions/repository/list-files";
-import { readDirectInstructionRepositoryFilesProcedure } from "./procedures/instructions/repository/read-files";
 import { listDirectInstructionRepositoryPullRequestsProcedure } from "./procedures/instructions/repository/list-pull-requests";
+import { readDirectInstructionRepositoryFilesProcedure } from "./procedures/instructions/repository/read-files";
 import { compareInstructionRepositoryCommitsProcedure } from "./procedures/instructions/repository-sync/compare-commits";
 import { configureRepositorySyncProcedure } from "./procedures/instructions/repository-sync/configure";
 import { disableRepositorySyncProcedure } from "./procedures/instructions/repository-sync/disable";
@@ -317,6 +322,7 @@ import {
 	saveAgendaProcedure,
 	setActionItemCompletedProcedure,
 	setIncludedProcedure,
+	setParlumeAutoJoinProcedure,
 } from "./procedures/meeting-digest";
 // Meeting transcript sync procedures
 import {
@@ -424,8 +430,8 @@ import { editProposalVisualProcedure } from "./procedures/proposal-artifact/edit
 import { exportProposalProcedure } from "./procedures/proposal-artifact/export";
 import { getProposalExportStatusProcedure } from "./procedures/proposal-artifact/export-status";
 import { getProposalAnalysisProcedure } from "./procedures/proposal-artifact/get-analysis";
-import { getProposalStyleProcedure } from "./procedures/proposal-artifact/get-style";
 import { getProposalBrandSourcesProcedure } from "./procedures/proposal-artifact/get-brand-sources";
+import { getProposalStyleProcedure } from "./procedures/proposal-artifact/get-style";
 import { getProposalThemeFontProcedure } from "./procedures/proposal-artifact/get-theme-font";
 import { getProposalThemeTokensProcedure } from "./procedures/proposal-artifact/get-theme-tokens";
 import { listProposalVisualSpecsProcedure } from "./procedures/proposal-artifact/list-visual-specs";
@@ -645,21 +651,18 @@ import { listDuplicatesProcedure } from "./procedures/stories/list-duplicates";
 import { listMeetingReferencesProcedure } from "./procedures/stories/list-meeting-references";
 import { listStoriesProcedure } from "./procedures/stories/list-stories";
 // Feature Maturation V2 — three-tab editor backend (spec 2026-06-09 §12)
-import { acceptCleanSpecPatchProcedure } from "./procedures/stories/maturation/accept-clean-spec-patch";
 import { amendAnswerProcedure } from "./procedures/stories/maturation/amend-answer";
 import { answerQuestionProcedure } from "./procedures/stories/maturation/answer-question";
 import { appendDecisionEntryProcedure } from "./procedures/stories/maturation/append-decision-entry";
 import { ensureSeededProcedure } from "./procedures/stories/maturation/ensure-seeded";
 import { evaluateAiReadinessProcedure } from "./procedures/stories/maturation/evaluate-ai-readiness";
 import { generateQaAnalysisProcedure } from "./procedures/stories/maturation/generate-qa-analysis";
-import { getApprovalModeProcedure } from "./procedures/stories/maturation/get-approval-mode";
 import { getEditorStateProcedure } from "./procedures/stories/maturation/get-editor-state";
 import { listDecisionLogProcedure } from "./procedures/stories/maturation/list-decision-log";
 import { listQaAnalysisVersionsProcedure } from "./procedures/stories/maturation/list-qa-analysis-versions";
 import { recordChangeNoteProcedure } from "./procedures/stories/maturation/record-change-note";
 import { restoreQuestionProcedure } from "./procedures/stories/maturation/restore-question";
 import { searchAssignableMembersProcedure } from "./procedures/stories/maturation/search-assignable-members";
-import { setApprovalModeProcedure } from "./procedures/stories/maturation/set-approval-mode";
 import { setAutoProposeAnswersProcedure } from "./procedures/stories/maturation/set-auto-propose-answers";
 import { setQuestionAssigneesProcedure } from "./procedures/stories/maturation/set-question-assignees";
 import { setWorkingNotesProcedure } from "./procedures/stories/maturation/set-working-notes";
@@ -1187,6 +1190,9 @@ export const projectsRouter = {
 		listDigest: listDigestProcedure,
 		getMeeting: getMeetingProcedure,
 		setIncluded: setIncludedProcedure,
+		// Parlume joins a linked series' occurrences on its own. The same
+		// permission as inviting it by hand, since every join is one.
+		setParlumeAutoJoin: setParlumeAutoJoinProcedure,
 		listConfigurable: listConfigurableMeetingsProcedure,
 		extractInsights: extractInsightsProcedure,
 		setActionItemCompleted: setActionItemCompletedProcedure,
@@ -1425,7 +1431,6 @@ export const projectsRouter = {
 		// Failed-proposal recovery (AI Update sidebar + Teams/Slack failures)
 		proposals: {
 			failedCount: getFailedProposalsCountProcedure,
-			backlogCount: getBacklogProposalsCountProcedure,
 			retry: retryFailedProposalProcedure,
 			retryAllFailed: retryAllFailedProposalsProcedure,
 			dismiss: dismissFailedProposalProcedure,
@@ -2040,12 +2045,10 @@ export const projectsRouter = {
 		},
 
 		// Feature Maturation V2 — three-tab editor (TG3 non-gated backend).
-		// Decision Log / working-notes / approval-mode writes are PM-sync
-		// isolated (§7.7); only Clean Spec edits sync, fired by TG4.
+		// Decision Log and working-notes writes are PM-sync isolated (§7.7).
+		// Maturation runs sync the integrated Clean Spec.
 		maturation: {
 			getEditorState: getEditorStateProcedure,
-			getApprovalMode: getApprovalModeProcedure,
-			setApprovalMode: setApprovalModeProcedure,
 			listDecisionLog: listDecisionLogProcedure,
 			appendDecisionEntry: appendDecisionEntryProcedure,
 			answerQuestion: answerQuestionProcedure,
@@ -2054,7 +2057,6 @@ export const projectsRouter = {
 			setWorkingNotes: setWorkingNotesProcedure,
 			summarizeChanges: summarizeChangesProcedure,
 			recordChangeNote: recordChangeNoteProcedure,
-			acceptCleanSpecPatch: acceptCleanSpecPatchProcedure,
 			restoreQuestion: restoreQuestionProcedure,
 			searchAssignableMembers: searchAssignableMembersProcedure,
 			setQuestionAssignees: setQuestionAssigneesProcedure,
@@ -2201,6 +2203,13 @@ export const projectsRouter = {
 			updateProposalSettings:
 				updateRepositorySyncProposalSettingsProcedure,
 		},
+	},
+
+	decisionReplay: {
+		getSummary: getDecisionReplaySummaryProcedure,
+		listNeedsReview: listNeedsReviewProcedure,
+		getProposalTimeline: getProposalTimelineProcedure,
+		getEmbedToken: getEmbedTokenProcedure,
 	},
 
 	// AI usage reporting (per-project cost attribution)

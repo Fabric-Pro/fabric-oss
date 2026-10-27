@@ -1216,6 +1216,9 @@ async function executeIntegrationTool(
 
 		return {
 			success: true,
+			...(operationDefinition.access === "READ"
+				? { readOnly: true as const }
+				: {}),
 			output: result.data,
 			durationMs: Date.now() - startTime,
 			cached: false,
@@ -1742,6 +1745,14 @@ async function executeMcpToolImpl(
 		// its token allowance; a no-op outside a turn.
 		throwIfDispatchStopped();
 		try {
+			const { GITHUB_ACCOUNT } = await import("@repo/mcp-registry");
+			const declarations = GITHUB_ACCOUNT.mcps
+				.flatMap((mcp) => mcp.tools ?? [])
+				.filter((tool) => tool.name === methodName);
+			const declaredReadOnly =
+				declarations.length === 1 && declarations[0].readOnly === true;
+			// Registry loading is async; recheck admission before the provider call.
+			throwIfDispatchStopped();
 			const output = await executeGitHubTool(
 				methodName,
 				input.args || {},
@@ -1775,6 +1786,7 @@ async function executeMcpToolImpl(
 			}
 
 			return {
+				...(declaredReadOnly ? { readOnly: true as const } : {}),
 				output,
 				durationMs,
 				success: true,
@@ -2412,6 +2424,7 @@ async function executeMcpToolImpl(
 			}
 
 			return {
+				...(readOnly ? { readOnly: true as const } : {}),
 				output,
 				durationMs,
 				success: !isMcpError,

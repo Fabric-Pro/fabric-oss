@@ -18,6 +18,7 @@ vi.mock("@repo/database", () => ({
 	createStory: vi.fn(),
 	updateStory: vi.fn(),
 	recordAudit: vi.fn(),
+	recordProposalDuplicateResolution: vi.fn(),
 	recordProposalApplication: vi.fn(),
 	getBoundPromptForAgent: vi.fn(),
 	normalizeBacklogTitle: (t: string) => t.toLowerCase().trim(),

@@ -340,7 +340,8 @@ describe("AiUsageActivityView — billing source", () => {
 			screen.queryByText("OPENAI_CHATGPT_PLAN"),
 		).not.toBeInTheDocument();
 		expect(screen.getAllByText("On plan")).toHaveLength(1);
-		expect(screen.getByText("OPENAI_DIRECT")).toBeInTheDocument();
+		expect(screen.getByText("OpenAI")).toBeInTheDocument();
+		expect(screen.queryByText("OPENAI_DIRECT")).not.toBeInTheDocument();
 	});
 });
 

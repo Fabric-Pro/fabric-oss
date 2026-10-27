@@ -3563,14 +3563,18 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 			invokeMessages,
 			runnableConfig,
 		);
-		// Fire-and-forget — see the budget-gate call site above. This is the
-		// hottest of the five: it runs on every one of the up-to-21 turns.
+		// Fire-and-forget; the usage logger orders writes for this reply id.
 		void logAgentUsageFromRunnableConfig(runnableConfig, response, {
 			model,
 			taskType: "TOOL_CALLING",
 			agentId: "project_document_generator",
 			latencyMs: Date.now() - generationStart,
 			projectId: state.projectId || undefined,
+			outputMessageId:
+				typeof runnableConfig.configurable?.output_message_id ===
+				"string"
+					? runnableConfig.configurable.output_message_id
+					: undefined,
 		});
 
 		// Lift the gateway's stop/finish reason out of the raw response envelope
@@ -3768,13 +3772,18 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 					guardMessages,
 					runnableConfig,
 				);
-				// Fire-and-forget — see the main invocation above.
+				// Fire-and-forget; the usage logger preserves reply provenance order.
 				void logAgentUsageFromRunnableConfig(runnableConfig, response, {
 					model,
 					taskType: "TOOL_CALLING",
 					agentId: "project_document_generator:finalize_guard",
 					latencyMs: Date.now() - generationStart,
 					projectId: state.projectId || undefined,
+					outputMessageId:
+						typeof runnableConfig.configurable
+							?.output_message_id === "string"
+							? runnableConfig.configurable.output_message_id
+							: undefined,
 				});
 				hoistRawStopReason(response);
 			}
@@ -3824,7 +3833,7 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 					fallbackMessages,
 					runnableConfig,
 				);
-				// Fire-and-forget — see the main invocation above.
+				// Fire-and-forget; the usage logger preserves reply provenance order.
 				void logAgentUsageFromRunnableConfig(runnableConfig, response, {
 					model,
 					taskType: "TOOL_CALLING",
@@ -3832,6 +3841,11 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 						"project_document_generator:finalize_guard_fallback",
 					latencyMs: Date.now() - generationStart,
 					projectId: state.projectId || undefined,
+					outputMessageId:
+						typeof runnableConfig.configurable
+							?.output_message_id === "string"
+							? runnableConfig.configurable.output_message_id
+							: undefined,
 				});
 				hoistRawStopReason(response);
 
@@ -3944,13 +3958,18 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 				retryMessages,
 				runnableConfig,
 			);
-			// Fire-and-forget — see the main invocation above.
+			// Fire-and-forget; the usage logger preserves reply provenance order.
 			void logAgentUsageFromRunnableConfig(runnableConfig, response, {
 				model: retryModel,
 				taskType: "TOOL_CALLING",
 				agentId: "project_document_generator:truncation_retry",
 				latencyMs: Date.now() - generationStart,
 				projectId: state.projectId || undefined,
+				outputMessageId:
+					typeof runnableConfig.configurable?.output_message_id ===
+					"string"
+						? runnableConfig.configurable.output_message_id
+						: undefined,
 			});
 			hoistRawStopReason(response);
 

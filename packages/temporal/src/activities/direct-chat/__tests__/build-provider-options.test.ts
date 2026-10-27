@@ -367,3 +367,25 @@ describe("buildProviderOptions — adaptive-only Claude", () => {
 		);
 	});
 });
+
+describe("thinking budget catalog cap", () => {
+	it.each([8192, 32768, undefined])(
+		"caps Direct thinking output at model limit %s",
+		(cap) => {
+			expect(
+				resolveOutputTokenBudget({
+					providerOptions: buildProviderOptions(
+						"ANTHROPIC_DIRECT",
+						"claude-3-7-sonnet",
+						"pro",
+					),
+					metadata: {
+						provider: "ANTHROPIC_DIRECT",
+						maxOutputTokens: cap,
+					},
+					promptChars: 4000,
+				}),
+			).toBe(cap === 8192 ? 8192 : ANTHROPIC_THINKING_MIN_MAX_TOKENS);
+		},
+	);
+});

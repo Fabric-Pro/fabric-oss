@@ -4781,6 +4781,7 @@ export async function syncStoryToPM(
 										: null,
 									isClosed: n.isClosed,
 									labels: n.labels,
+									displayStatus: n.displayStatus,
 								},
 								fabricItem: {
 									entityType: "STORY",

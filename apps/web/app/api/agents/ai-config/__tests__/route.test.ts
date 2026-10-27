@@ -68,6 +68,7 @@ vi.mock("@repo/payments", () => ({
 
 // Import the route AFTER the mocks are registered.
 import { GET } from "../route";
+import { GET as GET_TASK } from "../task/route";
 
 const USER_ID = "user_123";
 
@@ -78,7 +79,7 @@ function makeRequest(): NextRequest {
 
 function setupModel(provider: string | undefined, modelString = "some-model") {
 	getAIModelWithMetadataMock.mockResolvedValue({
-		metadata: { provider, modelString },
+		metadata: { provider, modelString, canonicalName: "claude-sonnet-5" },
 		trackUsage: vi.fn(),
 	});
 }
@@ -105,6 +106,21 @@ describe("GET /api/agents/ai-config — gatewayUrl resolution", () => {
 		});
 	});
 
+	it("returns the canonical identity with a task-specific endpoint alias", async () => {
+		setupModel("DATABRICKS", "custom-chat");
+		setupProviderConfig({ baseUrl: "https://example.com" });
+		const response = await GET_TASK(
+			new Request(
+				"https://example.com/api/agents/ai-config/task?taskType=CHAT",
+			) as NextRequest,
+		);
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({
+			model: "custom-chat",
+			canonicalModelName: "claude-sonnet-5",
+		});
+	});
+
 	it("returns 401 when the signed-tenant auth fails", async () => {
 		verifySignedTenantRequestMock.mockReturnValue({
 			ok: false,
@@ -127,6 +143,7 @@ describe("GET /api/agents/ai-config — gatewayUrl resolution", () => {
 
 		expect(res.status).toBe(200);
 		expect(body.provider).toBe("DATABRICKS");
+		expect(body.canonicalModelName).toBe("claude-sonnet-5");
 		expect(body.gatewayUrl).toBeNull();
 		// The core of the bug: the Databricks key must never be routed to OpenRouter.
 		expect(body.gatewayUrl).not.toBe("https://openrouter.ai/api/v1");
