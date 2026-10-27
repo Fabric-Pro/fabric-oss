@@ -1,4 +1,11 @@
-# Fabric Agents execution bridge acceptance
+# Fabric Agents Execution Bridge & Delegation Guide
+
+End-to-end configuration, UI delegation workflow, delivery guarantees, and automated acceptance for executing coding runs on Fabric Agents (`fabric-agent-server`).
+
+- **Audience**: Platform engineers, AI/Backend developers, and project leads
+- **Owner**: Agent & Platform team
+
+---
 
 This consumer uses the existing Fabric Agents `/sessions` compatibility API. The
 server delegates to ordinary Fabric workspaces and the native session manager;
@@ -27,6 +34,25 @@ Ask is the server's default permission policy. Resolve native tool approvals,
 authentication and input requests in the authenticated Fabric desktop. A text
 reply is not an approval. Unattended Execute requires deliberate service-host
 policy; request JSON cannot elevate permissions.
+
+## Delegating Work in the Fabric UI
+
+Once `BACKGROUND_AGENTS_URL` and `BACKGROUND_AGENTS_INTERNAL_SECRET` are configured and the project has a connected GitHub repository:
+
+1. **Project Implementation Defaults (`Project Settings → Implementation Defaults`)**:
+   - Select **Remote execution — Fabric Agents** as the default implementation path (or **Local execution — Local development** when queueing work for `fabric-kanban`).
+   - Optionally set a default checkout directory if the server maps a pre-existing repository path.
+2. **Direct Feature & Task Implementation (`Start work → Fabric Agents`)**:
+   - On any published feature in the **Stories / Coding** tab (or via **Implement** on an individual task row), open **Start work → Fabric Agents**.
+   - **Task assignment**: Choose either the entire feature (all open tasks) or a single focused task.
+   - **Fabric Agents backend**: Select **Server default**, **Claude Max**, **Codex**, **Cursor**, **Antigravity**, **Factory Droid**, **Grok**, or **Kimi**.
+   - Click **Delegate to Fabric Agents** to create an isolated git worktree on a dedicated `feat/<slug>` branch and start the session.
+3. **Approved Weave Plans (`Plan with Weave → Approve → Fabric Agents`)**:
+   - After approving a feature-linked Weave plan, click **Fabric Agents** on the plan card to delegate multi-step execution and monitor it in the Weave execution monitor.
+4. **Live Progress, Follow-Up Replies, and Deep-Linking**:
+   - Open the session dialog from the feature or task badge to view the 4-stage execution progress stepper (`1. Worktree & session` → `2. Implementing task` → `3. Pull Request` → `4. Completed`).
+   - When the session pauses for clarification (`AWAITING_REVIEW`), use the inline reply form to send follow-up instructions with durable prompt receipt tracking.
+   - Click **Open in Fabric Agents** (`fabricagents://workspace/<desktop-workspace-id>/...`) to open the live session in the Fabric Agents desktop application, or click **View PR** once the pull request is opened.
 
 ## Delivery and recovery
 
