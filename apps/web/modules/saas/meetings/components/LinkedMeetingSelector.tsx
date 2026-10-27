@@ -73,6 +73,12 @@ const DATE_RANGE_OPTIONS: { value: DateRange; label: string }[] = [
 	{ value: "90", label: "Last 90 days" },
 ];
 
+/**
+ * Upcoming meetings are listed too, so a series can be linked (and Parlume
+ * set to join it) before its first meeting.
+ */
+const UPCOMING_DAYS = 14;
+
 function formatDate(dateStr: string | null): string {
 	if (!dateStr) {
 		return "Unknown date";
@@ -129,6 +135,7 @@ export function LinkedMeetingSelector({
 				projectId,
 				organizationId,
 				daysBack: Number(dateRange),
+				daysAhead: UPCOMING_DAYS,
 			});
 			return {
 				softError: result.error ?? null,
@@ -287,7 +294,7 @@ export function LinkedMeetingSelector({
 				{/* Date range selector */}
 				<div className="flex items-center justify-between gap-2">
 					<p className="text-sm text-muted-foreground">
-						Showing meetings from:
+						Showing the next {UPCOMING_DAYS} days and meetings from:
 					</p>
 					<Select
 						value={dateRange}

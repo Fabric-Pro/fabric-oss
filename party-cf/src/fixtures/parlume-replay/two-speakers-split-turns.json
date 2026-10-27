@@ -1,0 +1,148 @@
+{
+	"source": "Hand-written, not a recording: the two-speaker dialogue as it would arrive if Flux ended Dev Example's turn before QA Example's question. Real Flux merged the two into one turn in every recording (see two-speakers.json); this fixture keeps the bridge's wake, attribution and early-start path covered.",
+	"audio": [{ "at": 0, "seconds": 9.5 }],
+	"speech": [
+		{
+			"at": 0.25,
+			"deliveredAt": 0.55,
+			"name": "Dev Example",
+			"id": "participant-1",
+			"speaking": true
+		},
+		{
+			"at": 5.9,
+			"deliveredAt": 6.2,
+			"name": "QA Example",
+			"id": "participant-2",
+			"speaking": true
+		},
+		{
+			"at": 6.1,
+			"deliveredAt": 6.4,
+			"name": "Dev Example",
+			"id": "participant-1",
+			"speaking": false
+		},
+		{
+			"at": 8.25,
+			"deliveredAt": 8.55,
+			"name": "QA Example",
+			"id": "participant-2",
+			"speaking": false
+		}
+	],
+	"flux": [
+		{
+			"at": 0.62,
+			"event": {
+				"event": "StartOfTurn",
+				"turn_index": 0,
+				"audio_window_start": 0,
+				"audio_window_end": 0.56,
+				"transcript": "The",
+				"words": [{ "word": "The", "start": 0.32, "end": 0.48 }],
+				"end_of_turn_confidence": 0.02
+			}
+		},
+		{
+			"at": 2.1,
+			"event": {
+				"event": "Update",
+				"turn_index": 0,
+				"audio_window_start": 0,
+				"audio_window_end": 2.04,
+				"transcript": "The staging deploy finished last night",
+				"words": [
+					{ "word": "The", "start": 0.32, "end": 0.48 },
+					{ "word": "staging", "start": 0.48, "end": 0.9 },
+					{ "word": "deploy", "start": 0.9, "end": 1.3 },
+					{ "word": "finished", "start": 1.3, "end": 1.62 },
+					{ "word": "last", "start": 1.62, "end": 1.8 },
+					{ "word": "night", "start": 1.8, "end": 2.0 }
+				],
+				"end_of_turn_confidence": 0.11
+			}
+		},
+		{
+			"at": 6.3,
+			"event": {
+				"event": "EndOfTurn",
+				"turn_index": 0,
+				"audio_window_start": 0,
+				"audio_window_end": 6.24,
+				"transcript": "The staging deploy finished last night, and the fabric team is still reading the logs.",
+				"words": [
+					{ "word": "The", "start": 0.32, "end": 0.48 },
+					{ "word": "staging", "start": 0.48, "end": 0.9 },
+					{ "word": "deploy", "start": 0.9, "end": 1.3 },
+					{ "word": "finished", "start": 1.3, "end": 1.62 },
+					{ "word": "last", "start": 1.62, "end": 1.8 },
+					{ "word": "night,", "start": 1.8, "end": 2.0 },
+					{ "word": "and", "start": 2.4, "end": 2.56 },
+					{ "word": "the", "start": 2.56, "end": 2.66 },
+					{ "word": "fabric", "start": 2.66, "end": 3.08 },
+					{ "word": "team", "start": 3.08, "end": 3.36 },
+					{ "word": "is", "start": 3.36, "end": 3.5 },
+					{ "word": "still", "start": 3.5, "end": 4.0 },
+					{ "word": "reading", "start": 4.6, "end": 5.04 },
+					{ "word": "the", "start": 5.04, "end": 5.2 },
+					{ "word": "logs.", "start": 5.62, "end": 5.95 }
+				],
+				"end_of_turn_confidence": 0.81
+			}
+		},
+		{
+			"at": 6.7,
+			"event": {
+				"event": "StartOfTurn",
+				"turn_index": 1,
+				"audio_window_start": 6.24,
+				"audio_window_end": 6.64,
+				"transcript": "Parlume",
+				"words": [{ "word": "Parlume", "start": 6.02, "end": 6.44 }],
+				"end_of_turn_confidence": 0.03
+			}
+		},
+		{
+			"at": 8.45,
+			"event": {
+				"event": "EagerEndOfTurn",
+				"turn_index": 1,
+				"audio_window_start": 6.24,
+				"audio_window_end": 8.4,
+				"transcript": "Parlume, what is the status of F-12?",
+				"words": [
+					{ "word": "Parlume,", "start": 6.02, "end": 6.44 },
+					{ "word": "what", "start": 6.6, "end": 6.78 },
+					{ "word": "is", "start": 6.78, "end": 6.9 },
+					{ "word": "the", "start": 6.9, "end": 6.98 },
+					{ "word": "status", "start": 6.98, "end": 7.42 },
+					{ "word": "of", "start": 7.42, "end": 7.54 },
+					{ "word": "F-12?", "start": 7.54, "end": 8.1 }
+				],
+				"end_of_turn_confidence": 0.56
+			}
+		},
+		{
+			"at": 8.9,
+			"event": {
+				"event": "EndOfTurn",
+				"turn_index": 1,
+				"audio_window_start": 6.24,
+				"audio_window_end": 8.8,
+				"transcript": "Parlume, what is the status of F-12?",
+				"words": [
+					{ "word": "Parlume,", "start": 6.02, "end": 6.44 },
+					{ "word": "what", "start": 6.6, "end": 6.78 },
+					{ "word": "is", "start": 6.78, "end": 6.9 },
+					{ "word": "the", "start": 6.9, "end": 6.98 },
+					{ "word": "status", "start": 6.98, "end": 7.42 },
+					{ "word": "of", "start": 7.42, "end": 7.54 },
+					{ "word": "F-12?", "start": 7.54, "end": 8.1 }
+				],
+				"end_of_turn_confidence": 0.84
+			}
+		}
+	],
+	"questions": [{ "speaker": "QA Example", "contains": "F-12" }]
+}

@@ -1260,3 +1260,73 @@ describe("a personal key opted in for when the plan is spent (Fizzy #3085)", () 
 		).resolves.toBeNull();
 	});
 });
+
+describe("answer account preference", () => {
+	it("keeps an eligible preferred account when another account has a lower usage share", async () => {
+		db.accounts = [account("acc_1"), account("acc_2")];
+		db.usage = new Map([
+			["acc_1", 20],
+			["acc_2", 10],
+		]);
+		const result = await pickChatGptPlanSource(interactive, {
+			preferredSource: orgSource("acc_1").source,
+		});
+		expect(result).toMatchObject(orgSource("acc_1"));
+	});
+	it.each(["disabled", "disconnected", "spent", "fair-share"])(
+		"rotates a preferred account that is %s",
+		async (reason) => {
+			db.accounts = [account("acc_1"), account("acc_2")];
+			if (reason === "disabled") {
+				db.accounts[0].enabled = false;
+			}
+			if (reason === "disconnected") {
+				db.accounts[0].status = "NEEDS_RECONNECT";
+			}
+			if (reason === "spent") {
+				db.open.set("ORG:acc_1", IN_AN_HOUR);
+			}
+			if (reason === "fair-share") {
+				db.accounts[0].maxMemberSharePct = 10;
+				db.calibrated.add("acc_1");
+				db.usage.set("acc_1", 200_000);
+				db.byUser.set("acc_1", { user_1: 200_000 });
+			}
+			const result = await pickChatGptPlanSource(interactive, {
+				preferredSource: orgSource("acc_1").source,
+			});
+			expect(result).toMatchObject(orgSource("acc_2"));
+		},
+	);
+});
+
+it("does not replace an eligible shared preference when an own plan is connected mid-answer", async () => {
+	db.accounts = [account("acc_1")];
+	db.ownUse = { includeBackgroundJobs: false, credentialStatus: "ACTIVE" };
+	const result = await pickChatGptPlanSource(interactive, {
+		preferredSource: orgSource("acc_1").source,
+	});
+	expect(result).toMatchObject(orgSource("acc_1"));
+});
+it("refuses a disconnected own preference through resolveOwnChatGptPlan", async () => {
+	db.ownUse = {
+		includeBackgroundJobs: false,
+		credentialStatus: "NEEDS_RECONNECT",
+	};
+	await expect(
+		pickChatGptPlanSource(interactive, {
+			preferredSource: { kind: "user", userId: interactive.userId },
+		}),
+	).rejects.toThrow("reconnect");
+	await expect(pickChatGptPlanSource(interactive)).rejects.toThrow(
+		"reconnect",
+	);
+});
+it("does not treat an eligibility lookup failure as permission to change the answer route", async () => {
+	db.failPool = true;
+	await expect(
+		pickChatGptPlanSource(interactive, {
+			preferredSource: orgSource("acc_1").source,
+		}),
+	).rejects.toThrow("database down");
+});

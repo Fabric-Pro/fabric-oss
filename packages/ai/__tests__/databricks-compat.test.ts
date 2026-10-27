@@ -1915,7 +1915,7 @@ describe("applyDatabricksPromptCacheMarkers", () => {
 		]);
 	});
 
-	it("marks the last message of a multi-message system run", () => {
+	it("marks the first and last messages of a multi-message system run", () => {
 		const body: Record<string, unknown> = {
 			model: "databricks-claude-sonnet-4-5",
 			messages: [
@@ -1926,7 +1926,9 @@ describe("applyDatabricksPromptCacheMarkers", () => {
 		};
 		expect(applyDatabricksPromptCacheMarkers(body)).toBe(true);
 		const [first, second] = messagesOf(body);
-		expect(first.content).toBe("first");
+		expect(first.content).toEqual([
+			{ type: "text", text: "first", cache_control: EPHEMERAL },
+		]);
 		expect((second.content as TextBlock[])[0].cache_control).toEqual(
 			EPHEMERAL,
 		);
@@ -2080,7 +2082,7 @@ describe("applyDatabricksPromptCacheMarkers", () => {
 		expect(latest.content).toHaveLength(1);
 	});
 
-	it("injects at most two breakpoints", () => {
+	it("injects at most two breakpoints for one leading system message", () => {
 		const body: Record<string, unknown> = {
 			model: "databricks-claude-sonnet-4-5",
 			messages: [
@@ -2493,4 +2495,167 @@ describe("canonical Databricks prompt-cache decision helper", () => {
 	] as const)("%s resolves to %s", (canonical, expected) => {
 		expect(databricksPromptCacheForModel(canonical)).toBe(expected);
 	});
+});
+
+describe("split leading system prompt cache markers", () => {
+	afterEach(() => vi.unstubAllEnvs());
+	const markerCount = (body: unknown) =>
+		(JSON.stringify(body).match(/"cache_control"/g) ?? []).length;
+	const text = (value: string) => [
+		{ type: "text", text: value, cache_control: EPHEMERAL },
+	];
+	it.each([2, 3])(
+		"marks first and last of %i leading systems and retains the rolling user marker",
+		(count) => {
+			const body = {
+				model: "databricks-claude-sonnet-4-5",
+				messages: [
+					...Array.from({ length: count }, (_, i) => ({
+						role: "system",
+						content: `Example instructions ${i}`,
+					})),
+					{ role: "user", content: "Example question" },
+				],
+				tools: [
+					{ type: "function", function: { name: "example_lookup" } },
+				],
+			};
+			const expected = structuredClone(body) as Record<string, any>;
+			expected.messages[0].content = text("Example instructions 0");
+			expected.messages[count - 1].content = text(
+				`Example instructions ${count - 1}`,
+			);
+			expected.messages[count].content = text("Example question");
+			const wire = JSON.stringify(body);
+			expect(stripUnsupportedRequestFields(wire)).toBe(
+				JSON.stringify(expected),
+			);
+			expect(stripVercelRequestFields(wire)).toBe(
+				JSON.stringify(expected),
+			);
+			expect(applyDatabricksPromptCacheMarkers(body)).toBe(true);
+			expect(JSON.stringify(body)).toBe(JSON.stringify(expected));
+			expect(markerCount(body)).toBe(3);
+			expect(applyDatabricksPromptCacheMarkers(body)).toBe(false);
+			expect(JSON.stringify(body)).toBe(JSON.stringify(expected));
+		},
+	);
+	it("retains the assistant tool-call rolling marker before a trailing tool result", () => {
+		const body: Record<string, any> = {
+			model: "databricks-claude-sonnet-4-5",
+			messages: [
+				{ role: "system", content: "Example reusable" },
+				{ role: "system", content: "Example variable" },
+				{ role: "user", content: "Example question" },
+				{
+					role: "assistant",
+					content: null,
+					tool_calls: [
+						{
+							id: "example-call",
+							type: "function",
+							function: {
+								name: "example_lookup",
+								arguments: "{}",
+							},
+						},
+					],
+				},
+				{
+					role: "tool",
+					tool_call_id: "example-call",
+					content: "Example result",
+				},
+			],
+		};
+		const expected = structuredClone(body);
+		expected.messages[0].content = text("Example reusable");
+		expected.messages[1].content = text("Example variable");
+		expected.messages[3].tool_calls[0].cache_control = EPHEMERAL;
+		applyDatabricksPromptCacheMarkers(body);
+		expect(JSON.stringify(body)).toBe(JSON.stringify(expected));
+		expect(markerCount(body)).toBe(3);
+	});
+	it("keeps a one-shot variable request free of a rolling marker", () => {
+		const body: Record<string, any> = {
+			model: "databricks-claude-sonnet-4-5",
+			messages: [
+				{ role: "system", content: "Example reusable" },
+				{ role: "system", content: "Example variable" },
+				{ role: "user", content: "Example question" },
+			],
+		};
+		applyDatabricksPromptCacheMarkers(body);
+		expect(body.messages[0].content).toEqual(text("Example reusable"));
+		expect(body.messages[1].content).toEqual(text("Example variable"));
+		expect(body.messages[2].content).toBe("Example question");
+		expect(markerCount(body)).toBe(2);
+	});
+	it.each([0, 1, 2, 3, 4])(
+		"preserves existing marker priorities with %i already present",
+		(existing) => {
+			const body: Record<string, any> = {
+				model: "databricks-claude-sonnet-4-5",
+				messages: [
+					{ role: "system", content: "Example reusable" },
+					{ role: "system", content: "Example variable" },
+					...Array.from({ length: existing }, (_, i) => ({
+						role: "user",
+						content: text(`Example existing ${i}`),
+					})),
+					{ role: "user", content: "Example tail" },
+				],
+				tools: [
+					{ type: "function", function: { name: "example_lookup" } },
+				],
+			};
+			const expected = structuredClone(body);
+			let remaining = 4 - existing;
+			if (remaining > 0) {
+				expected.messages[1].content = text("Example variable");
+				remaining--;
+			}
+			if (remaining > 0) {
+				expected.messages.at(-1).content = text("Example tail");
+				remaining--;
+			}
+			if (remaining > 0) {
+				expected.messages[0].content = text("Example reusable");
+			}
+			applyDatabricksPromptCacheMarkers(body);
+			expect(JSON.stringify(body)).toBe(JSON.stringify(expected));
+			expect(markerCount(body)).toBeLessThanOrEqual(4);
+		},
+	);
+	it.each([
+		["shared", stripUnsupportedRequestFields],
+		["vercel", stripVercelRequestFields],
+	] as const)(
+		"keeps single-system wire bytes unchanged through %s",
+		(_route, rewrite) => {
+			const input = {
+				model: "databricks-claude-sonnet-4-5",
+				messages: [
+					{ role: "system", content: "Example instructions" },
+					{ role: "user", content: "Example question" },
+				],
+				tools: [
+					{ type: "function", function: { name: "example_lookup" } },
+				],
+				max_tokens: 99,
+				stream_options: { include_usage: true },
+			};
+			// Frozen pre-change wire payload: both existing markers, identical field order.
+			const legacy = JSON.stringify({
+				model: input.model,
+				messages: [
+					{ role: "system", content: text("Example instructions") },
+					{ role: "user", content: text("Example question") },
+				],
+				tools: input.tools,
+				max_tokens: 99,
+			});
+			expect(rewrite(JSON.stringify(input))).toBe(legacy);
+		},
+	);
 });

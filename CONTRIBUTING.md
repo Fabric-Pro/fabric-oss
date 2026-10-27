@@ -280,7 +280,7 @@ git commit -s -m "Your commit message"
 
 This appends a `Signed-off-by: Your Name <you@example.com>` trailer, which must match the commit author. A DCO check runs on every PR and is required before merge. Exemptions are limited to merge commits and an authenticated automation allowlist: the changesets release PR, Dependabot, and the corporate OSS Relay App on same-repository `relay/**` branches. The relay path is a corporate contribution authorized out of band and uses `Submitted-on-behalf-of`; it is not DCO and the App does not certify on a human's behalf. Conflict resolutions inside merge commits are not certified, so prefer rebasing over merging when updating your branch. Unsigned PR commits cannot merge.
 
-We squash-merge. The DCO check validates each of your PR commits before merge, and maintainers carry your `Signed-off-by` trailer and `Co-authored-by` credit into the squash commit message — a maintainer cannot certify on your behalf.
+Imported commits keep your authorship and `Signed-off-by` trailers. Public release commits are currently authored by the relay bot with company credit (`Submitted-on-behalf-of`); per-contributor credit in those commits is planned but not yet available. When your change is published, maintainers close your public PR with a link to the published change.
 
 ## Pull Request Process
 
@@ -289,8 +289,29 @@ We squash-merge. The DCO check validates each of your PR commits before merge, a
 3. Run quality checks (`type-check`, `lint`, `format`)
 4. Run relevant tests
 5. Sign off every commit (`git commit -s`, see DCO above)
-6. Submit a PR with a clear title and description
+6. Submit a PR against public `master` with a clear title and description
 7. Address review feedback
+
+### How your pull request lands
+
+1. Open your PR against `master` in the public repository. Public CI runs on it,
+   and the PR remains the discussion record through publication. For user-visible
+   changes, include a [changeset](packages/fabric-app/README.md#how-to-add-a-changelog-entry)
+   for maintainers to carry into the import.
+2. A maintainer reviews the PR publicly and approves a specific commit for
+   import. If you push more commits after approval, they need fresh approval.
+   Maintainers either refresh the import before it lands or handle the new
+   commits as a follow-up; import approval does not follow a moving branch.
+3. A maintainer imports the approved commits into the private integration branch,
+   preserving your authorship and sign-off, and runs additional validation that
+   needs private infrastructure. Adaptations are kept as separate commits.
+   Actionable feedback returns to your public PR with private details removed.
+   The `imported` label marks the import.
+4. Your change reaches public `master` in a later release batch. A maintainer
+   adds the `published` label and closes your PR with a link to the published
+   commit. This closure means your contribution was accepted; the public PR
+   itself is not merged directly.
+5. Direct merges into public `master` are reserved for maintainer emergencies.
 
 ### PR Description
 

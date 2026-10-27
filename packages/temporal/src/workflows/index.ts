@@ -544,6 +544,7 @@ export {
 } from "./parlume-auto-join";
 export { parlumeMeetingTurnWorkflow } from "./parlume-meeting-turn";
 export { parlumeNotesWorkflow } from "./parlume-notes";
+export { parlumeRecapWorkflow } from "./parlume-recap";
 export { parlumeWarmupWorkflow } from "./parlume-warmup";
 // QA pipeline-results sync (cards 1834/1688) — live pull of CI Test Runs into the
 // ingestion engine + RCA→BUG.

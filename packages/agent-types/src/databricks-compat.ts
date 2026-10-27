@@ -128,13 +128,12 @@ export function stripDatabricksUnsupportedFields(
 const MAX_ANTHROPIC_CACHE_BREAKPOINTS = 4;
 
 /**
- * Breakpoints this shim will inject: one after the system block (caches
- * tools + system instructions) and one rolling breakpoint at the tail of the
- * conversation (caches the accumulated history). Deliberately well under
- * {@link MAX_ANTHROPIC_CACHE_BREAKPOINTS} so a caller adding its own markers
- * still fits.
+ * Up to three injected breakpoints: the end of the system run, a rolling
+ * conversation boundary, and the first system message when that run is split.
+ * The existing-marker count also limits injection to the remaining room under
+ * {@link MAX_ANTHROPIC_CACHE_BREAKPOINTS}.
  */
-const MAX_INJECTED_CACHE_BREAKPOINTS = 2;
+const MAX_INJECTED_CACHE_BREAKPOINTS = 3;
 
 /** Env kill-switch: any truthy value disables prompt-cache marker injection. */
 const PROMPT_CACHE_DISABLED_ENV = "DATABRICKS_PROMPT_CACHE_DISABLED";
@@ -377,7 +376,7 @@ export function databricksPromptCacheForModel(
  *
  * WHAT it places (at most {@link MAX_INJECTED_CACHE_BREAKPOINTS}):
  *  1. On the last message of the leading `system` run — caches tools + the system
- *     prompt, the largest stable prefix in almost every call this repo makes.
+ *     prompt.
  *  2. A rolling breakpoint on the last cacheable conversation turn — each request
  *     extends the cached prefix, so multi-turn agent loops read the previous
  *     turn's cache instead of re-billing the whole history. Earlier breakpoints
@@ -385,6 +384,9 @@ export function databricksPromptCacheForModel(
  *     Placed only when a later request could read it back — see
  *     {@link rollingBreakpointCanPayOff}; on a one-shot completion the write is
  *     a pure surcharge, because its trailing turn never recurs.
+ *  3. On the first message when the leading system run has several messages,
+ *     if marker budget remains after the existing two placements. This lets a
+ *     reusable first block be read when later system blocks change next turn.
  *
  * Each marker goes on the LAST block of the target message that can hold one —
  * text or image alike — so a `[text, image_url]` turn is cached in full rather
@@ -474,11 +476,24 @@ export function applyDatabricksPromptCacheMarkers(
 				);
 				if (outcome === "injected") {
 					mutated = true;
+					budget--;
 					break;
 				}
 				if (outcome === "already-marked") {
 					break;
 				}
+			}
+		}
+
+		// Preserve the existing placements' priority when callers supplied markers.
+		// A single leading system message keeps its previous wire representation.
+		if (lastSystemIndex > 0 && budget > 0) {
+			if (
+				markMessageForCaching(
+					messages[0] as Record<string, unknown>,
+				) === "injected"
+			) {
+				mutated = true;
 			}
 		}
 

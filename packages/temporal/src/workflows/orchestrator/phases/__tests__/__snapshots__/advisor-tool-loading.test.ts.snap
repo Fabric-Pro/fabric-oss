@@ -4,6 +4,7 @@ exports[`measures tool loading: '30 tools attached' 1`] = `
 {
   "agentSearchRuns": 0,
   "agentSearchRunsUsed": 0,
+  "agentSearchSkips": 0,
   "changes": [],
   "distinctToolLists": 1,
   "executedToolCalls": 1,
@@ -25,6 +26,7 @@ exports[`measures tool loading: '30 tools attached' 1`] = `
   "initialToolsHash": "c576e6fb",
   "integrationSearchRuns": 0,
   "integrationSearchRunsUsed": 0,
+  "integrationSearchSkips": 0,
   "searchToolsCalls": 0,
   "searches": [],
   "stubCatalogOverlap": [
@@ -43,6 +45,7 @@ exports[`measures tool loading: '31 tools with discovery' 1`] = `
 {
   "agentSearchRuns": 1,
   "agentSearchRunsUsed": 0,
+  "agentSearchSkips": 0,
   "changes": [
     {
       "causes": [
@@ -79,6 +82,7 @@ exports[`measures tool loading: '31 tools with discovery' 1`] = `
   "initialToolsHash": "bf77b8fc",
   "integrationSearchRuns": 1,
   "integrationSearchRunsUsed": 0,
+  "integrationSearchSkips": 0,
   "searchToolsCalls": 1,
   "searches": [
     {
@@ -87,11 +91,13 @@ exports[`measures tool loading: '31 tools with discovery' 1`] = `
       ],
       "addedCount": 1,
       "addedMore": 0,
+      "agentSearchReason": "weak_tool_result",
       "executedAdded": [
         "example_tool_0",
       ],
       "executedAddedCount": 1,
       "executedAddedMore": 0,
+      "integrationSearchReason": "weak_tool_result",
       "round": 1,
     },
   ],
@@ -116,6 +122,7 @@ exports[`measures tool loading: 'catalog overlaps project tool' 1`] = `
 {
   "agentSearchRuns": 1,
   "agentSearchRunsUsed": 0,
+  "agentSearchSkips": 0,
   "changes": [
     {
       "causes": [
@@ -141,10 +148,9 @@ exports[`measures tool loading: 'catalog overlaps project tool' 1`] = `
   ],
   "executionsMore": 0,
   "finalStubCatalogOverlap": {
-    "count": 2,
+    "count": 1,
     "more": 0,
     "names": [
-      "fabric_get_project_document",
       "example_tool_0",
     ],
   },
@@ -153,6 +159,7 @@ exports[`measures tool loading: 'catalog overlaps project tool' 1`] = `
   "initialToolsHash": "bf77b8fc",
   "integrationSearchRuns": 1,
   "integrationSearchRunsUsed": 0,
+  "integrationSearchSkips": 0,
   "searchToolsCalls": 1,
   "searches": [
     {
@@ -161,23 +168,25 @@ exports[`measures tool loading: 'catalog overlaps project tool' 1`] = `
       ],
       "addedCount": 1,
       "addedMore": 0,
+      "agentSearchReason": "weak_tool_result",
       "executedAdded": [
         "example_tool_0",
       ],
       "executedAddedCount": 1,
       "executedAddedMore": 0,
+      "integrationSearchReason": "weak_tool_result",
       "round": 1,
     },
   ],
   "stubCatalogOverlap": [
     {
       "afterSearch": 0,
-      "count": 1,
+      "count": 0,
       "round": 1,
     },
     {
       "afterSearch": 1,
-      "count": 2,
+      "count": 1,
       "round": 1,
     },
   ],
@@ -190,6 +199,7 @@ exports[`measures tool loading: 'two discoveries' 1`] = `
 {
   "agentSearchRuns": 2,
   "agentSearchRunsUsed": 0,
+  "agentSearchSkips": 0,
   "changes": [
     {
       "causes": [
@@ -239,6 +249,7 @@ exports[`measures tool loading: 'two discoveries' 1`] = `
   "initialToolsHash": "bf77b8fc",
   "integrationSearchRuns": 2,
   "integrationSearchRunsUsed": 0,
+  "integrationSearchSkips": 0,
   "searchToolsCalls": 2,
   "searches": [
     {
@@ -247,11 +258,13 @@ exports[`measures tool loading: 'two discoveries' 1`] = `
       ],
       "addedCount": 1,
       "addedMore": 0,
+      "agentSearchReason": "weak_tool_result",
       "executedAdded": [
         "example_tool_0",
       ],
       "executedAddedCount": 1,
       "executedAddedMore": 0,
+      "integrationSearchReason": "weak_tool_result",
       "round": 1,
     },
     {
@@ -260,11 +273,13 @@ exports[`measures tool loading: 'two discoveries' 1`] = `
       ],
       "addedCount": 1,
       "addedMore": 0,
+      "agentSearchReason": "weak_tool_result",
       "executedAdded": [
         "example_tool_1",
       ],
       "executedAddedCount": 1,
       "executedAddedMore": 0,
+      "integrationSearchReason": "weak_tool_result",
       "round": 3,
     },
   ],
@@ -307,9 +322,9 @@ exports[`tool loading baseline > pins requests before instrumentation: '31 tools
 
 exports[`tool loading baseline > pins requests before instrumentation: 'catalog overlaps project tool' 1`] = `
 [
-  "275e44abdf4dd417f41aaebf555d8349f6af76ed80a0df2235301f0a9a29f2ba",
-  "ff9453a7402113e81132f1e167372cde5c6734c19cb29ace24c34746c74adbf9",
-  "fa922fff261dbf153ff0a0409b83aa6fba06324f471ca14524200ea13060fb1a",
+  "dcd1619eaf3490206e1b3b410154a096c87d0276d041b7bd1127d740c4b5b786",
+  "3c2b29dd3ea58b1bca2d5b157fb2a8a53b35a39b0d4bdf4382d4236a32ec055f",
+  "5f7a62fe24ce1ff49b1cb1fe13891e80bee8eb1f9ad1651d47a8a245d2b6cf1a",
 ]
 `;
 

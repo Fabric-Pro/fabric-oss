@@ -42,6 +42,26 @@ export interface ParlumeTranscript {
 	 * back ("resumed") when the speaker goes on. Neither is final.
 	 */
 	tentative?: "eager" | "resumed";
+	/** Each word's time, when Flux reported valid ones. */
+	words?: { startMs: number; endMs: number }[];
+}
+
+/**
+ * When the word at `offset` in the text was spoken, or null when Flux's word
+ * times do not line up with the text's words.
+ */
+export function parlumeTranscriptTimeAt(
+	transcript: ParlumeTranscript,
+	offset: number,
+): number | null {
+	const tokens = (text: string) => text.split(/\s+/).filter(Boolean);
+	if (transcript.words?.length !== tokens(transcript.text).length) {
+		return null;
+	}
+	const before = transcript.text.slice(0, offset);
+	// An offset inside a word belongs to that word.
+	const index = tokens(before).length - (/\S$/.test(before) ? 1 : 0);
+	return transcript.words[index]?.startMs ?? null;
 }
 
 export interface ParlumeTranscriptionSocket {
@@ -77,18 +97,19 @@ interface FluxEvent {
 	transcript: string;
 	windowStart: number | null;
 	windowEnd: number | null;
-	wordBounds: { start: number; end: number } | null;
+	/** Each word's start and end, in seconds on Flux's clock. */
+	words: { start: number; end: number }[] | null;
 }
 
-function readWordBounds(
+function readWords(
 	words: unknown,
 	windowEnd: number | null,
-): FluxEvent["wordBounds"] {
+): FluxEvent["words"] {
 	if (!Array.isArray(words) || words.length === 0) {
 		return null;
 	}
 	const values: unknown[] = words;
-	let start: number | null = null;
+	const bounds: { start: number; end: number }[] = [];
 	let end = 0;
 	let previousStart = 0;
 	for (const word of values) {
@@ -112,10 +133,10 @@ function readWordBounds(
 			return null;
 		}
 		previousStart = word.start;
-		start ??= word.start;
 		end = word.end;
+		bounds.push({ start: word.start, end: word.end });
 	}
-	return start === null ? null : { start, end };
+	return bounds;
 }
 
 function readFluxEvent(data: unknown): FluxEvent | null {
@@ -154,7 +175,7 @@ function readFluxEvent(data: unknown): FluxEvent | null {
 				? fields.audio_window_start
 				: null,
 		windowEnd,
-		wordBounds: readWordBounds(fields.words, windowEnd),
+		words: readWords(fields.words, windowEnd),
 	};
 }
 
@@ -523,21 +544,26 @@ export class ParlumeTranscriber {
 			}
 			return anchor.epochMs + fluxMs - anchor.fluxMs;
 		};
-		const wordBounds = event.transcript ? event.wordBounds : null;
-		const startMs = wordBounds
-			? at(wordBounds.start)
+		const words = event.transcript
+			? event.words?.map((word) => ({
+					startMs: at(word.start),
+					endMs: at(word.end),
+				}))
+			: undefined;
+		const startMs = words
+			? words[0].startMs
 			: (this.turnStarts.get(event.turnIndex) ?? at(event.windowStart));
-		const endMs = at(wordBounds?.end ?? event.windowEnd);
+		const endMs = words?.at(-1)?.endMs ?? at(event.windowEnd);
+		const timing = { startMs, endMs, ...(words && { words }) };
 		if (event.event === "StartOfTurn" || event.event === "Update") {
-			if (wordBounds || !this.turnStarts.has(event.turnIndex)) {
+			if (words || !this.turnStarts.has(event.turnIndex)) {
 				this.turnStarts.set(event.turnIndex, startMs);
 			}
 			if (event.event === "StartOfTurn" || event.transcript) {
 				this.options.onTranscript({
 					text: event.transcript,
 					isFinal: false,
-					startMs,
-					endMs,
+					...timing,
 				});
 			}
 			return;
@@ -546,8 +572,7 @@ export class ParlumeTranscriber {
 			this.options.onTranscript({
 				text: event.transcript,
 				isFinal: false,
-				startMs,
-				endMs,
+				...timing,
 				tentative:
 					event.event === "EagerEndOfTurn" ? "eager" : "resumed",
 			});
@@ -562,8 +587,7 @@ export class ParlumeTranscriber {
 			this.options.onTranscript({
 				text: event.transcript,
 				isFinal: true,
-				startMs,
-				endMs,
+				...timing,
 			});
 		}
 	}

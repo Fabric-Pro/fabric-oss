@@ -1414,7 +1414,7 @@ function fixAIMarkdownIssues(text: string): string {
 	return fixed;
 }
 
-const BULLET_PATTERN = /^(\s*)(?:[-*+]|\d+\.)\s+(\S.*)$/;
+const BULLET_PATTERN = /^(\s*)([-*+]|\d+\.)\s+(\S.*)$/;
 // Detects any of the 4 diff marker tokens (DIFF_ADD_START / _END /
 // DIFF_DEL_START / _END). All four are wrapped by U+200B (ZWSP) on both
 // sides of the inner ADD_/DEL_ token, so a single regex anchored by ZWSP
@@ -1428,6 +1428,9 @@ const looksLikeContinuation = (s: string): boolean =>
 	/^[a-z(["'.,;:?!\]]/.test(s);
 
 const endsSentence = (s: string): boolean => /[.!?]["')\]]?$/.test(s.trimEnd());
+
+const endsEnumeration = (s: string): boolean =>
+	/[,;]["')\]]?$/.test(s.trimEnd());
 
 const countDoubleStars = (s: string): number => (s.match(/\*\*/g) || []).length;
 
@@ -1547,14 +1550,21 @@ const joinSepForSplitMarkup = (
  *      bullet split into multiple bullets at column boundaries.
  *
  * Both shapes are handled here. The walk is greedy: while the running bullet
- * body has no sentence terminator, we keep consuming continuation candidates
- * (orphan paragraph or continuation bullet) into it.
+ * body has no sentence terminator, we consume continuation candidates
+ * (orphan paragraph or continuation bullet) subject to the guards below.
  *
  * Conservative heuristics on what counts as a continuation:
  *   - leading `[a-z(["',;:.?!\]]` only — capital-letter starts read as
  *     intentional new sentences and are left alone.
  *   - the parent bullet must not already end with `.`, `?`, or `!` (allowing
  *     a trailing closing quote or bracket).
+ *
+ *   - for sibling list items without split bold/inline-code markup, an ordered
+ *     marker (`\d+.`) on either line or a parent body ending in `,` or `;`
+ *     (allowing a trailing closing quote or bracket) stops the walk. These
+ *     guards preserve user-authored enumerated lists (Fizzy #3397).
+ *   - sibling list items need at least three words in each body, unless
+ *     split markup provides the repair signal.
  *
  * Runs at LOAD time only (inside `fromMarkdown`), not in the save pipeline,
  * because save-time editor content reflects user intent that we shouldn't
@@ -1587,7 +1597,7 @@ export function mergeOrphanBulletContinuations(text: string): string {
 
 		// Greedy walk: consume continuation fragments into this bullet.
 		let merged = line.trimEnd();
-		let body = bulletMatch[2];
+		let body = bulletMatch[3];
 		let cursor = i + 1;
 
 		while (cursor < lines.length && !endsSentence(body)) {
@@ -1622,7 +1632,7 @@ export function mergeOrphanBulletContinuations(text: string): string {
 				// continuation marker, OR if we're rejoining split markup.
 				// Otherwise treat as a sibling list item and stop.
 				const isFragment =
-					looksLikeContinuation(candidateBullet[2]) || !!splitMarkup;
+					looksLikeContinuation(candidateBullet[3]) || !!splitMarkup;
 				if (!isFragment) {
 					break;
 				}
@@ -1634,14 +1644,23 @@ export function mergeOrphanBulletContinuations(text: string): string {
 				// Skip this guard for split-markup repairs — the markup
 				// mismatch is unambiguous.
 				if (!splitMarkup) {
+					// Explicit numbering and enumerating punctuation indicate
+					// separate items, even when the next body starts lowercase.
+					if (
+						/^\d+\.$/.test(bulletMatch[2]) ||
+						/^\d+\.$/.test(candidateBullet[2]) ||
+						endsEnumeration(body)
+					) {
+						break;
+					}
 					if (
 						wordCount(body) < 3 ||
-						wordCount(candidateBullet[2]) < 3
+						wordCount(candidateBullet[3]) < 3
 					) {
 						break;
 					}
 				}
-				const fragment = candidateBullet[2].trim();
+				const fragment = candidateBullet[3].trim();
 				const sep = splitMarkup
 					? joinSepForSplitMarkup(splitMarkup, body, fragment)
 					: " ";

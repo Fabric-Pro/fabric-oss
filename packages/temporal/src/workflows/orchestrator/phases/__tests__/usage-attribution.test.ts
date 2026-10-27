@@ -79,7 +79,7 @@ describe("Advisor usage attribution", () => {
 							{
 								name: "search_tools",
 								args: {
-									query: "launch",
+									query: "Find agents and integrations for the launch",
 									projectId: "forged-project",
 									frameId: "forged-frame",
 									usageOrigin: {

@@ -282,6 +282,18 @@ describe("retryAllFailedProposalsProcedure — mixed-result aggregation", () => 
 		expect(mocks.recordProposalDuplicateResolution).toHaveBeenCalledWith(
 			expect.objectContaining({ existingEntityId: "story-existing" }),
 		);
+		// The dedup-only APPLIED flip carries the reviewer, so decision
+		// capture records a human approval.
+		expect(mocks.proposalUpdate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({ id: "dedup-row" }),
+				data: expect.objectContaining({
+					status: "APPLIED",
+					reviewedBy: "user-1",
+					reviewedAt: expect.any(Date),
+				}),
+			}),
+		);
 	});
 });
 

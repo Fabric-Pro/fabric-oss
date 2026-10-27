@@ -188,8 +188,6 @@ const EXEMPT: ReadonlyMap<string, string> = new Map([
 	["organization_deployment_quota", "latent-RLS backfill (H8); org-only"],
 	["agent_memory_file", "latent-RLS backfill (H8); org+user"],
 	["agent_memory_edit", "latent-RLS backfill (H8); org+user"],
-	["orchestrator_memory_preferences", "latent-RLS backfill (H8); org+user"],
-	["episodic_memory", "latent-RLS backfill (H8); org+user"],
 	["data_connection_credential", "latent-RLS backfill (H8); org+user"],
 	["external_api_usage_log", "latent-RLS backfill (H8); org+user"],
 	["kanban_queue", "latent-RLS backfill (H8); org-only"],

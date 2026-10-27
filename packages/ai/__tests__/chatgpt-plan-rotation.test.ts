@@ -70,9 +70,11 @@ vi.mock("@repo/payments", () => ({
 vi.mock("@repo/database", () => ({
 	GATEWAY_PROVIDERS: ["VERCEL_GATEWAY", "OPENROUTER", "CLOUDFLARE_AI"],
 	getActiveModels: vi.fn(),
+	getModelByCanonicalName: vi.fn(),
 	getAiProviderApiKey: async () =>
 		state.orgHasLlm ? ORG_PROVIDER : { provider: null },
-	getAiProviderApiKeyByProvider: vi.fn(),
+	getAiProviderApiKeyByProvider: async () =>
+		state.orgHasLlm ? ORG_PROVIDER : { provider: null },
 	getEmbeddingProviderConfig: vi.fn(),
 	getProviderModelIdForCanonical: vi.fn(),
 	getSystemAiProviderApiKey: vi.fn(),
@@ -1219,3 +1221,266 @@ describe('plans exhausted mid-turn under "Use API billing" (Fizzy #3048)', () =>
 		).resolves.toMatchObject({ text: "From the API" });
 	});
 });
+
+describe("answer route stickiness", () => {
+	it("keeps the initial fair-share pick despite changes in relative usage", async () => {
+		const calls = openai({
+			"org:acc_A": () => answered("From A"),
+			"org:acc_B": () => answered("From B"),
+		});
+		const first = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			ELIGIBLE,
+		);
+		state.usage = new Map([
+			["acc_A", 1000],
+			["acc_B", 1],
+		]);
+		__resetChatGptPlanWindowCache();
+		const next = await getAIModelWithMetadata(
+			{ taskType: "CHAT", answerSnapshot: first.metadata.answerSnapshot },
+			ELIGIBLE,
+		);
+		const result = await generateText({
+			model: next.model,
+			prompt: "Example",
+		});
+		expect(result.text).toBe("From A");
+		expect(calls).toEqual(["org:acc_A"]);
+		expect(next.metadata.answerRouteChanges).toEqual([]);
+	});
+	it("rotates a disabled account once and records opaque fingerprints", async () => {
+		const calls = openai({ "org:acc_B": () => answered("From B") });
+		const first = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			ELIGIBLE,
+		);
+		state.accounts[0].enabled = false;
+		const next = await getAIModelWithMetadata(
+			{ taskType: "CHAT", answerSnapshot: first.metadata.answerSnapshot },
+			ELIGIBLE,
+		);
+		await generateText({ model: next.model, prompt: "Example" });
+		const third = await getAIModelWithMetadata(
+			{ taskType: "CHAT", answerSnapshot: next.metadata.answerSnapshot },
+			ELIGIBLE,
+		);
+		await generateText({ model: third.model, prompt: "Example" });
+		expect(calls).toEqual(["org:acc_B", "org:acc_B"]);
+		expect(next.metadata.answerRouteChanges).toEqual([
+			{
+				cause: "plan_account_rotation",
+				reason: "account_ineligible",
+				from: expect.stringMatching(/^[a-f0-9]{12}$/),
+				to: expect.stringMatching(/^[a-f0-9]{12}$/),
+			},
+		]);
+		expect(third.metadata.answerRouteChanges).toEqual([]);
+		const { logger } = await import("@repo/logs");
+		const logged = vi
+			.mocked(logger.info)
+			.mock.calls.filter(
+				([event]) => event === "advisor.answer_route_change",
+			);
+		expect(logged).toHaveLength(1);
+		expect(JSON.stringify(logged)).not.toContain("acc_A");
+		expect(JSON.stringify(logged)).not.toContain("acc_B");
+	});
+	it("retains a rotation within the same resolved answer model for its next request", async () => {
+		const calls = openai({
+			"org:acc_A": refusedSpent,
+			"org:acc_B": () => answered("From B"),
+		});
+		const first = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			ELIGIBLE,
+		);
+		const next = await getAIModelWithMetadata(
+			{ taskType: "CHAT", answerSnapshot: first.metadata.answerSnapshot },
+			ELIGIBLE,
+		);
+		await generateText({ model: next.model, prompt: "Example" });
+		await generateText({ model: next.model, prompt: "Example again" });
+		expect(calls).toEqual(["org:acc_A", "org:acc_B", "org:acc_B"]);
+		expect(next.metadata.answerSnapshot?.planSource).toMatchObject({
+			accountId: "acc_B",
+		});
+		expect(next.metadata.answerRouteChanges).toMatchObject([
+			{ cause: "plan_account_rotation", reason: "plan_exhausted" },
+		]);
+	});
+});
+
+it("rechecks a pinned account's eligibility before another request on the same model", async () => {
+	const calls = openai({
+		"org:acc_A": () => answered("From A"),
+		"org:acc_B": () => answered("From B"),
+	});
+	const first = await getAIModelWithMetadata({ taskType: "CHAT" }, ELIGIBLE);
+	const next = await getAIModelWithMetadata(
+		{ taskType: "CHAT", answerSnapshot: first.metadata.answerSnapshot },
+		ELIGIBLE,
+	);
+	await generateText({ model: next.model, prompt: "Example" });
+	state.accounts[0].enabled = false;
+	await generateText({ model: next.model, prompt: "Example again" });
+	expect(calls).toEqual(["org:acc_A", "org:acc_B"]);
+	expect(next.metadata.answerRouteChanges).toMatchObject([
+		{ cause: "plan_account_rotation", reason: "account_ineligible" },
+	]);
+});
+
+it("records one API-billing handoff and keeps its route for the next round", async () => {
+	state.accounts = [account("acc_A")];
+	state.orgHasLlm = true;
+	state.apiFallbackInteractive = "AUTO";
+	state.apiModel = apiModel("API reply");
+	const calls = openai({ "org:acc_A": refusedSpent });
+	const first = await getAIModelWithMetadata({ taskType: "CHAT" }, ELIGIBLE);
+	const next = await getAIModelWithMetadata(
+		{ taskType: "CHAT", answerSnapshot: first.metadata.answerSnapshot },
+		ELIGIBLE,
+	);
+	await generateText({ model: next.model, prompt: "Example" });
+	expect(next.metadata.answerSnapshot?.provider).toBe("OPENAI_DIRECT");
+	expect(next.metadata.answerRouteChanges).toMatchObject([
+		{ cause: "api_billing_handoff", reason: "plan_exhausted" },
+	]);
+	const { logger } = await import("@repo/logs");
+	expect(
+		vi
+			.mocked(logger.info)
+			.mock.calls.filter(
+				([event]) => event === "advisor.answer_route_change",
+			),
+	).toHaveLength(1);
+	const third = await getAIModelWithMetadata(
+		{ taskType: "CHAT", answerSnapshot: next.metadata.answerSnapshot },
+		ELIGIBLE,
+	);
+	await generateText({ model: third.model, prompt: "Example again" });
+	expect(third.metadata.answerRouteChanges).toEqual([]);
+	expect(calls).toEqual(["org:acc_A"]);
+});
+
+it("records the fallback model that serves a forced model refresh", async () => {
+	const models: string[] = [];
+	openai({
+		"org:acc_A": (model) => {
+			models.push(model);
+			if (model === "gpt-6-astra") {
+				return answered("Fallback reply");
+			}
+			state.fallbackModel = "gpt-6-astra";
+			return refusedModel();
+		},
+	});
+	const first = await getAIModelWithMetadata({ taskType: "CHAT" }, ELIGIBLE);
+	const next = await getAIModelWithMetadata(
+		{ taskType: "CHAT", answerSnapshot: first.metadata.answerSnapshot },
+		ELIGIBLE,
+	);
+	await generateText({ model: next.model, prompt: "Example", maxRetries: 0 });
+	expect(models).toEqual(["gpt-6.1-sol", "gpt-6.1-sol", "gpt-6-astra"]);
+	expect(next.metadata.answerSnapshot).toMatchObject({
+		modelString: "gpt-6-astra",
+		reResolved: true,
+	});
+	await generateText({
+		model: next.model,
+		prompt: "Example again",
+		maxRetries: 0,
+	});
+	expect(models).toEqual([
+		"gpt-6.1-sol",
+		"gpt-6.1-sol",
+		"gpt-6-astra",
+		"gpt-6-astra",
+	]);
+	expect(next.metadata.answerRouteChanges?.map((c) => c.cause)).toEqual([
+		"model_unavailable",
+		"plan_model_fallback",
+	]);
+});
+
+it("checks the serving account's usage limits after an answer has rotated", async () => {
+	const calls = openai({
+		"org:acc_A": refusedSpent,
+		"org:acc_B": () => answered("From B"),
+	});
+	const first = await getAIModelWithMetadata({ taskType: "CHAT" }, ELIGIBLE);
+	const next = await getAIModelWithMetadata(
+		{ taskType: "CHAT", answerSnapshot: first.metadata.answerSnapshot },
+		ELIGIBLE,
+	);
+	await generateText({ model: next.model, prompt: "Example" });
+	state.limits.mockImplementation(async ({ providerConfigId }) => {
+		if (providerConfigId === "acc_A") {
+			throw new Error("Retired account limit");
+		}
+	});
+	await expect(
+		generateText({ model: next.model, prompt: "Example again" }),
+	).resolves.toMatchObject({ text: "From B" });
+	expect(calls).toEqual(["org:acc_A", "org:acc_B", "org:acc_B"]);
+	state.limits.mockImplementation(async ({ providerConfigId }) => {
+		if (providerConfigId === "acc_B") {
+			throw new Error("Serving account limit");
+		}
+	});
+	await expect(
+		generateText({ model: next.model, prompt: "Example denied" }),
+	).rejects.toThrow("Serving account limit");
+	expect(calls).toEqual(["org:acc_A", "org:acc_B", "org:acc_B"]);
+});
+
+it.each([false, true])(
+	"refuses an own-plan disconnect mid-answer (shared pool=%s)",
+	async (shared) => {
+		const { ChatGptPlanAuthError } = await import(
+			"../lib/chatgpt-plan/oauth"
+		);
+		state.ownUse = {
+			includeBackgroundJobs: false,
+			credentialStatus: "ACTIVE",
+		};
+		state.accounts = shared ? [account("acc_A")] : [];
+		state.orgHasLlm = true;
+		state.apiFallbackInteractive = "AUTO";
+		state.apiModel = apiModel("Unapproved API reply");
+		const calls = openai({
+			"user:user_1": () => answered("Own reply"),
+			"org:acc_A": () => answered("Unapproved shared reply"),
+		});
+		const first = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			ELIGIBLE,
+		);
+		const current = await getAIModelWithMetadata(
+			{ taskType: "CHAT", answerSnapshot: first.metadata.answerSnapshot },
+			ELIGIBLE,
+		);
+		await generateText({ model: current.model, prompt: "Example" });
+		state.ownUse.credentialStatus = "NEEDS_RECONNECT";
+		await expect(
+			generateText({
+				model: current.model,
+				prompt: "Example again",
+				maxRetries: 0,
+			}),
+		).rejects.toBeInstanceOf(ChatGptPlanAuthError);
+		await expect(
+			getAIModelWithMetadata(
+				{
+					taskType: "CHAT",
+					answerSnapshot: current.metadata.answerSnapshot,
+				},
+				ELIGIBLE,
+			),
+		).rejects.toBeInstanceOf(ChatGptPlanAuthError);
+		expect(calls).toEqual(["user:user_1"]);
+		expect(state.apiModel.doGenerateCalls).toHaveLength(0);
+		expect(current.metadata.planSpentApiBilling).toBeUndefined();
+		expect(current.metadata.answerRouteChanges).toEqual([]);
+	},
+);

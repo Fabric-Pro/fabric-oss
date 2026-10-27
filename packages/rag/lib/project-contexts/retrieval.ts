@@ -48,6 +48,8 @@ const DEFAULT_DIVERSE_MAX_CONTEXTS = 8;
 const DIVERSE_CANDIDATE_CHUNKS = 120;
 
 export interface ProjectContextRetrievalOptions {
+	/** Retain matching chunk text and scores alongside the full body (opt-in). */
+	includeMatchedPassages?: boolean;
 	conversationId?: string;
 	usageOrigin?: Pick<
 		TenantContext,
@@ -102,6 +104,8 @@ export interface ProjectContextRetrievalOptions {
 }
 
 export interface RetrievedContext {
+	/** Matching chunks in search relevance order; absent unless requested. */
+	matchedPassages?: Array<{ content: string; score: number }>;
 	id: string;
 	type: string;
 	content: string;
@@ -282,7 +286,21 @@ export async function retrieveProjectContexts(
 		// than to a context row. Carried from the point payload, because the id
 		// alone cannot say which table holds it.
 		const bundleIdById = new Map<string, string>();
+		const passagesById = new Map<
+			string,
+			Array<{ content: string; score: number }>
+		>();
 		for (const result of searchResults) {
+			if (options.includeMatchedPassages && result.content?.trim()) {
+				const passages = passagesById.get(result.contextId) ?? [];
+				if (!passages.some((p) => p.content === result.content)) {
+					passages.push({
+						content: result.content,
+						score: result.score,
+					});
+				}
+				passagesById.set(result.contextId, passages);
+			}
 			if (scoreById.has(result.contextId)) {
 				continue;
 			}
@@ -293,8 +311,8 @@ export async function retrieveProjectContexts(
 			orderedIds.push(result.contextId);
 		}
 
-		// Vector store as an index of ids; the text always comes back from
-		// Postgres. Three tables can hold it:
+		// Full bodies and source metadata still come from Postgres; optional
+		// matched passages above come from the vector hits. Three tables hold bodies:
 		//   - `ProjectContext` — the ordinary case.
 		//   - `ProjectContextUrlPage` — per-page URL chunks are embedded with
 		//     their own page id, which `getRetrievableContextById` falls back to.
@@ -335,6 +353,9 @@ export async function retrieveProjectContexts(
 
 			contexts.push({
 				id: context.id,
+				...(options.includeMatchedPassages
+					? { matchedPassages: passagesById.get(orderedIds[i]) ?? [] }
+					: {}),
 				type: effectiveType,
 				content: context.content,
 				score: scoreById.get(orderedIds[i]) ?? 0,

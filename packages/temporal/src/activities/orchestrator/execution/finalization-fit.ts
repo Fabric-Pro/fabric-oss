@@ -1,3 +1,7 @@
+import {
+	type EffectiveToolCalls,
+	historyCallIndex,
+} from "../../../workflows/orchestrator/advisor-call-tool";
 /**
  * Sizing the Advisor's finalization synthesis to the room its turn's token
  * ledger has left.
@@ -174,13 +178,9 @@ function argsLabel(args: unknown): string {
 function prioritizedFindings(
 	history: IterativeMessage[],
 	qIndex: number,
+	effectiveToolCalls?: EffectiveToolCalls,
 ): Finding[] {
-	const calls = new Map<string, { name: string; args: unknown }>();
-	for (const message of history) {
-		for (const call of message.toolCalls ?? []) {
-			calls.set(call.id, { name: call.name, args: call.args });
-		}
-	}
+	const calls = historyCallIndex(history, effectiveToolCalls);
 	const current: Finding[] = [];
 	const pruned: Finding[] = [];
 	const earlier: Finding[] = [];
@@ -268,6 +268,7 @@ export async function planFinalizationRequest(args: {
 	/** The output the request as built asks for. */
 	fullMaxOutputTokens: number;
 	history: IterativeMessage[];
+	effectiveToolCalls?: EffectiveToolCalls;
 	question?: string;
 }): Promise<FinalizationPlan> {
 	const { room, instructions } = args;
@@ -300,7 +301,11 @@ export async function planFinalizationRequest(args: {
 	const wholeQuestion =
 		args.question?.trim() ||
 		(qIndex >= 0 ? (args.history[qIndex]?.content ?? "") : "");
-	const candidates = prioritizedFindings(args.history, qIndex);
+	const candidates = prioritizedFindings(
+		args.history,
+		qIndex,
+		args.effectiveToolCalls,
+	);
 	let question = wholeQuestion;
 	const estimateWith = (selected: Selected[], asked = question) =>
 		estimate([
@@ -433,6 +438,7 @@ interface FinalizationRequest {
 	fullMessages: ModelMessage[];
 	fullMaxOutputTokens: number;
 	history: IterativeMessage[];
+	effectiveToolCalls?: EffectiveToolCalls;
 }
 
 /**

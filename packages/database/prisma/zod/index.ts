@@ -2016,7 +2016,7 @@ export type OrchestratorMemoryPreferencesScalarFieldEnum = z.infer<typeof Orches
 
 // File: EpisodicMemoryScalarFieldEnum.schema.ts
 
-export const EpisodicMemoryScalarFieldEnumSchema = z.enum(['id', 'userId', 'organizationId', 'projectId', 'workspaceId', 'conversationId', 'agentId', 'title', 'summary', 'keyTopics', 'userIntents', 'outcome', 'messageCount', 'turnCount', 'toolsUsed', 'agentsUsed', 'conversationStartedAt', 'conversationEndedAt', 'createdAt', 'qdrantPointId', 'qdrantCollection'])
+export const EpisodicMemoryScalarFieldEnumSchema = z.enum(['id', 'userId', 'organizationId', 'projectId', 'workspaceId', 'conversationId', 'agentId', 'turnSections', 'title', 'summary', 'keyTopics', 'userIntents', 'outcome', 'recordedExecutionIds', 'messageCount', 'turnCount', 'toolsUsed', 'agentsUsed', 'conversationStartedAt', 'conversationEndedAt', 'createdAt', 'qdrantPointId', 'qdrantCollection'])
 
 export type EpisodicMemoryScalarFieldEnum = z.infer<typeof EpisodicMemoryScalarFieldEnumSchema>;
 
@@ -11926,11 +11926,13 @@ export const EpisodicMemorySchema = z.object({
   workspaceId: z.string().nullish(),
   conversationId: z.string(),
   agentId: z.string().nullish(),
+  turnSections: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10").default("{}"),
   title: z.string(),
   summary: z.string(),
   keyTopics: z.array(z.string()),
   userIntents: z.array(z.string()),
   outcome: z.string(),
+  recordedExecutionIds: z.array(z.string()),
   messageCount: z.number().int(),
   turnCount: z.number().int(),
   toolsUsed: z.array(z.string()),

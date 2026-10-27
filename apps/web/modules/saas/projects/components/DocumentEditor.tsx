@@ -185,6 +185,7 @@ import {
 	preserveEditorVisualSlots,
 	VisualSlotControlsGate,
 } from "../lib/tiptap-visual-slot-extension";
+import { whenEditorEditable } from "../lib/when-editor-editable";
 import { CollaborationStatus } from "./CollaborationStatus";
 import { CopilotHistoryDrawer } from "./copilot/CopilotHistoryDrawer";
 import { CopilotPersistenceHook } from "./copilot/CopilotPersistenceHook";
@@ -211,14 +212,23 @@ import {
 import {
 	appliesAttachedRunBody,
 	isRoomBodyEmpty,
+	newProposalReview,
+	peerReviewsHeldOver,
+	peerReviewsProposal,
+	proposalReviewerName,
 	publishGenerationRunRole,
+	publishProposalReview,
 	publishRoomPeer,
 	publishRoomSaveInFlight,
+	ROOM_CONVERGENCE_TIMINGS,
 	type RoomStamp,
 	readRoomStamp,
+	roomHasOtherEditor,
+	roomReviewsProposal,
 	sameRoomStamp,
 	writeRoomStamp,
 } from "./proposal-artifact/generation-run-awareness";
+import { ProposalReviewElsewhereStatus } from "./proposal-artifact/ProposalReviewElsewhereStatus";
 import { RoomSavedBody } from "./proposal-artifact/RoomSavedBody";
 import { RoomUpdatingStatus } from "./proposal-artifact/RoomUpdatingStatus";
 import {
@@ -355,11 +365,128 @@ const ASSISTANT_FINISHING_SHOW_DELAY_MS = 300;
 const ASSISTANT_FINISHING_ARM_MS = 10_000;
 
 /**
+ * How long a proposal the assistant streamed into the editor stays under
+ * review for the other editors in the room once its run ends without its
+ * confirm card, which can render after the run's last frame (Fizzy #2946).
+ * Past it, no card is coming: what the run streamed stays in the editor, as
+ * it always did, and no longer holds the other editors.
+ */
+const ASSISTANT_PROPOSAL_CARD_WAIT_MS = 2_000;
+
+/**
  * How often, at most, the raw markdown view reads the editor's body again
  * while changes keep reaching the editor — a colleague typing (Fizzy #2946):
  * each read runs Turndown over the whole document.
  */
 const RAW_VIEW_FOLLOW_MS = 150;
+
+/**
+ * The reason the assistant's `regenerate_document` call is answered with
+ * when another editor in the room reviews a proposal (Fizzy #2946).
+ */
+const REGENERATION_HELD_ELSEWHERE = "heldElsewhere";
+
+/**
+ * What the chat says of an answered `regenerate_document` call, as keys of
+ * `projects.documentEditorRun.regenerationCall`.
+ */
+type RegenerationCallOutcome = "completed" | "notApplied" | "heldElsewhere";
+
+/**
+ * Whether the chat's last turn holds a `confirm_changes` call that nothing
+ * has answered yet: its confirm card is on its way (Fizzy #2946). Reads both
+ * shapes the chat keeps a call in — an action execution message, or an
+ * assistant message's `toolCalls` — and its answer as a later message that
+ * names the call.
+ */
+function hasUnansweredConfirmCall(
+	messages: ReadonlyArray<unknown> | null | undefined,
+): boolean {
+	if (!messages) {
+		return false;
+	}
+	const answered = new Set<string>();
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i] as {
+			role?: unknown;
+			id?: unknown;
+			name?: unknown;
+			toolCallId?: unknown;
+			actionExecutionId?: unknown;
+			toolCalls?: unknown;
+			isActionExecutionMessage?: () => boolean;
+		} | null;
+		if (!message) {
+			continue;
+		}
+		if (message.role === "user") {
+			return false;
+		}
+		for (const id of [message.toolCallId, message.actionExecutionId]) {
+			if (typeof id === "string") {
+				answered.add(id);
+			}
+		}
+		const calls: Array<{ id: unknown; name: unknown }> = [];
+		if (
+			typeof message.isActionExecutionMessage === "function" &&
+			message.isActionExecutionMessage()
+		) {
+			calls.push({ id: message.id, name: message.name });
+		} else if (Array.isArray(message.toolCalls)) {
+			for (const raw of message.toolCalls as Array<{
+				id?: unknown;
+				name?: unknown;
+				function?: { name?: unknown };
+			} | null>) {
+				calls.push({
+					id: raw?.id,
+					name: raw?.name ?? raw?.function?.name,
+				});
+			}
+		}
+		for (const call of calls) {
+			if (
+				call.name === "confirm_changes" &&
+				typeof call.id === "string" &&
+				!answered.has(call.id)
+			) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+/**
+ * What became of an answered `regenerate_document` call, from its answer:
+ * the object the editor answered with, or its JSON once the chat was read
+ * back from the conversation. An answer that says nothing reads as
+ * completed, as every answer did before (Fizzy #2946).
+ */
+function regenerationCallOutcome(result: unknown): RegenerationCallOutcome {
+	let answer = result;
+	if (typeof answer === "string") {
+		try {
+			answer = JSON.parse(answer);
+		} catch {
+			return "completed";
+		}
+	}
+	if (!answer || typeof answer !== "object") {
+		return "completed";
+	}
+	const { accepted, reason } = answer as {
+		accepted?: unknown;
+		reason?: unknown;
+	};
+	if (accepted !== false) {
+		return "completed";
+	}
+	return reason === REGENERATION_HELD_ELSEWHERE
+		? "heldElsewhere"
+		: "notApplied";
+}
 
 /** Why the switch between the rich and the raw view waits (Fizzy #2946). */
 const VIEW_SWITCH_HELD_TEXT =
@@ -576,6 +703,7 @@ type SaveBlockReason =
 	| "regenerating"
 	| "review"
 	| "proposal"
+	| "proposalElsewhere"
 	| "runLive"
 	| "reconnecting"
 	| "updatingToLatest"
@@ -1684,6 +1812,13 @@ interface DocumentEditorInnerProps {
 type PageLeave = { flush: (() => void) | null; left: boolean };
 
 /**
+ * What an editor put back into the room when it rejected its own review
+ * on its way out (Fizzy #2946): the body, or `null` when an update using
+ * context put its own back.
+ */
+type PutBack = { body: string | null };
+
+/**
  * A run's identity, the document's `generationStartedAt`, as an ISO string,
  * or `null` when the server named none (Fizzy #2946).
  */
@@ -2257,6 +2392,11 @@ function DocumentEditorInner({
 			confirm: boolean;
 			onUnavailable: () => void;
 			/**
+			 * Nothing went because another editor reviews an assistant
+			 * proposal (Fizzy #2946); `onUnavailable` when not given.
+			 */
+			onHeld?: () => void;
+			/**
 			 * Whether the save still applies over the base it would name,
 			 * resolved when it goes. `false`: nothing is sent, and
 			 * `onDeclined` says why.
@@ -2751,27 +2891,123 @@ function DocumentEditorInner({
 	});
 	// hasPendingConfirm: generation is done, Confirm Changes dialog is showing
 	const [hasPendingConfirm, setHasPendingConfirm] = useState(false);
+	// An assistant proposal under review in an editor in the room, as the
+	// editors publish it (see `peerReviewsProposal`, Fizzy #2946): whether
+	// another editor reviews one, and whether any does, this one included.
+	// Read from the room's awareness when it changes, never at render: a
+	// colleague's cursor moving renders nothing.
+	// Also who reviews the one that holds this editor, as the status says.
+	const [peerReviewing, setPeerReviewing] = useState(false);
+	const [roomReviewing, setRoomReviewing] = useState(false);
+	const [peerReviewerName, setPeerReviewerName] = useState<string | null>(
+		null,
+	);
+	// And whether anyone else in the room may edit: someone a review here
+	// holds (see the idle limit below).
+	const [otherEditorInRoom, setOtherEditorInRoom] = useState(false);
+	useEffect(() => {
+		const awareness = roomStampsOn ? provider?.awareness : null;
+		const read = () => {
+			setPeerReviewing(peerReviewsProposal(awareness));
+			setRoomReviewing(roomReviewsProposal(awareness));
+			setPeerReviewerName(proposalReviewerName(awareness));
+			setOtherEditorInRoom(roomHasOtherEditor(awareness));
+		};
+		read();
+		if (
+			typeof awareness?.on !== "function" ||
+			typeof awareness.off !== "function"
+		) {
+			return;
+		}
+		awareness.on("change", read);
+		return () => awareness.off("change", read);
+	}, [roomStampsOn, provider]);
+	// While another editor reviews an assistant proposal, this one holds
+	// still: the room holds that proposal, which typing here would build on
+	// and a save from here would write unanswered — and a Reject there would
+	// not take back out of the saved document. Never for a client that may
+	// not edit: it holds still already.
+	// Nor does anything else write the body here meanwhile: a regeneration, a
+	// version restore, this editor's own assistant (see `assistantRunHeldRef`).
+	const proposalUnderReviewElsewhere = peerReviewing && canEdit !== false;
+	// The same, from the room's awareness as it stands at this moment, for
+	// what is decided when it goes — a save, a write into the body: a review
+	// reaches the room before its body does, and this editor renders it a
+	// moment later.
+	const peerReviewHoldsNow = (): boolean =>
+		roomStampsOn &&
+		canEdit !== false &&
+		peerReviewsProposal(provider?.awareness);
+	const peerReviewHoldsNowRef = useRef(peerReviewHoldsNow);
+	peerReviewHoldsNowRef.current = peerReviewHoldsNow;
+	// This editor's own review, by its identity while it is published. The
+	// first write of a proposal into the room publishes it at once, before
+	// that write, so the other editors hold before its body reaches them
+	// (see `proposalUnderReviewHere`).
+	const ownReviewRef = useRef<string | null>(null);
+	const publishOwnReviewNow = () => {
+		if (!roomStampsOn) {
+			return;
+		}
+		ownReviewRef.current ??= newProposalReview();
+		publishProposalReview(provider?.awareness, ownReviewRef.current);
+	};
+	const publishOwnReviewNowRef = useRef(publishOwnReviewNow);
+	publishOwnReviewNowRef.current = publishOwnReviewNow;
+	const proposalElsewhereHeldId = useId();
+	// The assistant has put a proposal of its own into this editor — a
+	// streamed frame or its final diff — that no confirm card holds yet
+	// (Fizzy #2946). In a room the other editors see it at once, so it is
+	// under review for them from the first frame (see `proposalUnderReviewHere`)
+	// until the card takes it over, or the run ends without one.
+	const [assistantWritesHere, setAssistantWritesHere] = useState(false);
 	// An assistant proposal under review holds saves back as a regeneration's
 	// review does (Fizzy #2946): the editor holds the proposal, which a save
 	// would write before anyone accepted it, and a Reject would not undo.
-	const runSaveBlockReason: SaveBlockReason | null = isRegenerating
+	// So do the frames a room's editor holds while their run's card is on
+	// its way: they are that proposal, unanswered. Also one under review in
+	// another editor in the room.
+	// `runSaveBlockBesidesOwnReview` is the same without this editor's own
+	// review: what still holds a save once that review is taken back.
+	const ownReviewBlocksSaves =
+		hasPendingConfirm ||
+		(roomStampsOn && assistantWritesHere && !isLoading);
+	const runSaveBlockBesidesOwnReview: SaveBlockReason | null = isRegenerating
 		? "regenerating"
 		: showConfirmDialog || isConfirming || rejectPending
 			? "review"
-			: hasPendingConfirm
-				? "proposal"
+			: proposalUnderReviewElsewhere
+				? "proposalElsewhere"
 				: isRunStillWriting
 					? "runLive"
 					: enableCollaboration && (!provider || !isCollabSynced)
 						? "reconnecting"
 						: null;
+	const runSaveBlockReason: SaveBlockReason | null =
+		runSaveBlockBesidesOwnReview === "regenerating" ||
+		runSaveBlockBesidesOwnReview === "review"
+			? runSaveBlockBesidesOwnReview
+			: ownReviewBlocksSaves
+				? "proposal"
+				: runSaveBlockBesidesOwnReview;
 	const saveBlockedId = useId();
 	// Callbacks for the DiffReviewBar to trigger accept/reject. Each says
-	// what the proposal was answered with.
+	// what the proposal was answered with; an Accept that cannot go yet says
+	// `null`, and the proposal stays unanswered.
 	const confirmCallbacksRef = useRef<{
-		accept: () => boolean;
+		accept: () => boolean | null;
 		reject: () => boolean;
+		/**
+		 * Withdraws the proposal, writing nothing into the room: another
+		 * editor's review begun at the same moment holds over this one.
+		 */
+		withdraw: () => void;
 	} | null>(null);
+	// The proposal the confirm card under review holds, as the assistant
+	// proposed it: put into the room again if another editor that withdrew
+	// its own wrote over it (see `reassertOwnReview`).
+	const reviewedProposalRef = useRef<string | null>(null);
 	// Whether the current executing confirm has already been processed (armed a
 	// card OR resolved as a no-op). Gates the one-time arm side effects so they
 	// don't re-run on every render while the tool call is executing, and signals
@@ -2804,6 +3040,9 @@ function DocumentEditorInner({
 	// Ref to store the respond function from regenerate_document action
 	// This is called when user accepts/rejects in RegenerationConfirmDialog
 	const regenerationRespondRef = runState.respondRef;
+	// A chat regeneration answered as not started because another editor
+	// reviewed a proposal (Fizzy #2946), until its call is no longer executing.
+	const regenerationHeldRef = useRef(false);
 
 	// Ref for image upload handler — allows editorProps (created before handler) to access it
 	const imageUploadRef = useRef<((files: FileList) => Promise<void>) | null>(
@@ -2853,7 +3092,24 @@ function DocumentEditorInner({
 	// Using state alone causes race conditions because setCurrentDocument is async
 	// but Effect 3 needs the baseline immediately when agentState changes.
 	const baselineRef = useRef<string>("");
+	// The body the assistant's run in this editor started from, kept apart
+	// from `baselineRef`, which follows the editor once the run ends
+	// (Effect 4): what a run that streamed in and ended without its confirm
+	// card is taken back to (Fizzy #2946).
+	const assistantRunBaselineRef = useRef<string>("");
 	const wasLoadingRef = useRef(false);
+	// The assistant's run in this editor began, or wrote, while another
+	// editor reviewed a proposal (Fizzy #2946): it worked from the body the
+	// room held then, that proposal included, so nothing it proposes is put
+	// in, and its confirm is answered as not applied. Cleared when a run
+	// starts with nothing held.
+	const assistantRunHeldRef = useRef(false);
+	const assistantProposalHeld = useCallback((): boolean => {
+		if (peerReviewHoldsNowRef.current()) {
+			assistantRunHeldRef.current = true;
+		}
+		return assistantRunHeldRef.current;
+	}, []);
 
 	// View mode state for raw/rich toggle
 	const [viewMode, setViewMode] = useState<"rich" | "raw">("rich");
@@ -3570,6 +3826,8 @@ function DocumentEditorInner({
 		savedRun: runIdentity(document?.generationStartedAt),
 		savedAt: documentDataUpdatedAt,
 		runLive: isRunStillWriting || isRegenerating,
+		// A viewer shows the saved body of a room behind it as before.
+		proposalUnderReview: roomReviewing && canEdit !== false,
 		ownSaveInFlight: isSaving || adoptingBase,
 		hasLocalTyping,
 		refetchSaved: refetchSavedDocument,
@@ -3584,13 +3842,17 @@ function DocumentEditorInner({
 	// A save from a room that is behind the saved document would be refused,
 	// or write an older body; saves wait until the room is back on it, and
 	// until a body adopted from the server is named by its stamp.
-	const saveBlockReason: SaveBlockReason | null =
-		runSaveBlockReason ??
-		(roomConvergence && soloBaseStale
+	const roomSaveBlockReason: SaveBlockReason | null =
+		roomConvergence && soloBaseStale
 			? "staleBase"
 			: roomConvergence && (adoptingBase || roomStatus !== "inSync")
 				? "updatingToLatest"
-				: null);
+				: null;
+	const saveBlockReason: SaveBlockReason | null =
+		runSaveBlockReason ?? roomSaveBlockReason;
+	// What holds a save besides this editor's own review (see above).
+	const saveBlockBesidesOwnReview: SaveBlockReason | null =
+		runSaveBlockBesidesOwnReview ?? roomSaveBlockReason;
 	// What the editor shows meanwhile: the saved body, read-only, instead of
 	// the room's older one, once the room is being replaced (or cannot be).
 	// While the stale rule only looks a second time, only at the end of a
@@ -3608,20 +3870,25 @@ function DocumentEditorInner({
 		roomStatus === "behindReadOnly" ||
 		(roomStatus === "checking" && checkingView === "savedBody");
 	// The editor takes no input while the room is replaced, nor at the end of
-	// a run while the room still holds the body before it, and never from a
-	// client that may not edit it.
+	// a run while the room still holds the body before it, nor while another
+	// editor reviews an assistant proposal, and never from a client that may
+	// not edit it.
 	const roomFreezesEditor =
 		roomStampsOn &&
 		(roomStatus === "updating" ||
 			roomStatus === "failed" ||
 			roomStatus === "behindReadOnly" ||
 			(roomStatus === "checking" && checkingView !== "room") ||
+			proposalUnderReviewElsewhere ||
 			canEdit === false);
 	// Typing that waited for the room, or for the answer to an assistant
 	// proposal, is saved once saves may go again: the autosave that fell
 	// due meanwhile stood down without rescheduling (Fizzy #2946). After a
 	// proposal only when no save of its own went — an accept sends one, and
-	// a failed save is retried by the person, not on its own.
+	// a failed save is retried by the person, not on its own. After one
+	// another editor reviewed, nothing here: this editor takes input again,
+	// and the update `setEditable` emits runs the dirty check, which
+	// schedules the autosave (see `onUpdate`).
 	const previousSaveBlockRef = useRef(saveBlockReason);
 	useEffect(() => {
 		const previous = previousSaveBlockRef.current;
@@ -4980,6 +5247,7 @@ function DocumentEditorInner({
 			// Reset scroll tracking for new streaming session
 			// This clears the "user scrolled away" flag so auto-scroll works
 			resetScrollTracking();
+			assistantRunHeldRef.current = peerReviewHoldsNowRef.current();
 
 			const baseline = getEditorMarkdownForSave(editor);
 			// Null means serialization failed. Do NOT overwrite the
@@ -4988,8 +5256,21 @@ function DocumentEditorInner({
 			// AI's raw output unfiltered, and a later Reject would then restore
 			// that empty string, wiping real content. Keep the last-known-good
 			// baseline instead.
-			if (baseline !== null) {
+			// A run started while the frames of one before it that ended
+			// without a card are still in a room's editor, not yet taken back
+			// (Fizzy #2946): both are diffed against, and taken back to, the
+			// body from before the first.
+			const carriesOver =
+				roomStampsOn &&
+				assistantWritesHere &&
+				!hasPendingConfirm &&
+				assistantRunBaselineRef.current !== "";
+			if (carriesOver) {
+				baselineRef.current = assistantRunBaselineRef.current;
+				setCurrentDocument(assistantRunBaselineRef.current);
+			} else if (baseline !== null) {
 				baselineRef.current = baseline;
+				assistantRunBaselineRef.current = baseline;
 				setCurrentDocument(baseline); // Keep state in sync for other uses
 			} else {
 				toast.error(
@@ -5017,8 +5298,11 @@ function DocumentEditorInner({
 			if (
 				baseline.trim().length > 0 &&
 				newDocument.trim().length > 0 &&
-				toAgentDocument(baseline) !== newDocument
+				toAgentDocument(baseline) !== newDocument &&
+				!assistantProposalHeld()
 			) {
+				setAssistantWritesHere(true);
+				publishOwnReviewNowRef.current();
 				// TipTap's setContent calls flushSync internally; deferring to a
 				// microtask moves it out of the useEffect's render phase, where
 				// React would otherwise throw "flushSync was called from inside
@@ -5073,7 +5357,9 @@ function DocumentEditorInner({
 			// Skip if baseline is empty (shouldn't happen, but safety check)
 			if (baseline.trim().length === 0) {
 				// No baseline - just show the new content without diff
-				if (newDocument.trim().length > 0) {
+				if (newDocument.trim().length > 0 && !assistantProposalHeld()) {
+					setAssistantWritesHere(true);
+					publishOwnReviewNowRef.current();
 					applyProgrammaticContent(editor, newDocument, "assistant", {
 						slotSource: baseline,
 					});
@@ -5089,6 +5375,13 @@ function DocumentEditorInner({
 				return;
 			}
 
+			// Another editor's proposal under review is in the room: this
+			// one's frames stay out of it (see `assistantRunHeldRef`).
+			if (assistantProposalHeld()) {
+				return;
+			}
+			setAssistantWritesHere(true);
+			publishOwnReviewNowRef.current();
 			applyProgrammaticContent(editor, newDocument, "assistant", {
 				slotSource: baseline,
 				render: (preserved) =>
@@ -5112,12 +5405,16 @@ function DocumentEditorInner({
 		// would otherwise clobber the freshly-delivered proposed document with
 		// the stale baseline — the write-back half of the RC2 race. The confirm
 		// handler owns delivery of the proposed content in that window.
+		// Nor while frames the assistant streamed in still wait for their
+		// card (Fizzy #2946): the baseline is what a card that comes late
+		// diffs against, and what frames with no card are taken back to.
 		if (
 			!isLoading &&
 			!isRegenerating &&
 			editor &&
 			!hasPendingConfirm &&
-			!confirmArmedRef.current
+			!confirmArmedRef.current &&
+			!assistantWritesHere
 		) {
 			const editorMarkdown = getEditorMarkdownForSave(editor);
 			// Null means serialization failed on this edit — skip
@@ -5136,7 +5433,13 @@ function DocumentEditorInner({
 			}
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [editorDocRef, isLoading, isRegenerating, hasPendingConfirm]);
+	}, [
+		editorDocRef,
+		isLoading,
+		isRegenerating,
+		hasPendingConfirm,
+		assistantWritesHere,
+	]);
 
 	// Sync raw content when currentContent changes (from editor updates)
 	useEffect(() => {
@@ -5428,9 +5731,12 @@ function DocumentEditorInner({
 					documentId,
 					organizationId,
 					onProgress: (percent) => {
-						editor.commands.updateImageUpload(uploadId, {
-							progress: percent,
-						});
+						// Not while the editor takes no input (see below).
+						if (editor.isEditable) {
+							editor.commands.updateImageUpload(uploadId, {
+								progress: percent,
+							});
+						}
 					},
 				});
 
@@ -5443,6 +5749,15 @@ function DocumentEditorInner({
 						s3Keys: [s3Key],
 					});
 				const signedUrl = urls.urls[s3Key];
+
+				// An upload that finishes while the editor takes no input — a
+				// run writes the document, another editor reviews an assistant
+				// proposal (Fizzy #2946) — waits for it with its placeholder in
+				// place: the room is not written meanwhile. The stored image is
+				// kept either way; an editor closed first inserts nothing.
+				if (!(await whenEditorEditable(editor))) {
+					return;
+				}
 
 				// Remove placeholder and insert actual image with all attrs at once.
 				// Using insertContent (not setImage + updateAttributes) because
@@ -5468,11 +5783,14 @@ function DocumentEditorInner({
 			} catch (error) {
 				const message =
 					error instanceof Error ? error.message : "Upload failed";
+				toast.error(`Failed to upload ${file.name}: ${message}`);
+				if (!(await whenEditorEditable(editor))) {
+					return;
+				}
 				editor.commands.updateImageUpload(uploadId, {
 					error: message,
 					progress: 0,
 				});
-				toast.error(`Failed to upload ${file.name}: ${message}`);
 			}
 		}
 	};
@@ -6166,6 +6484,11 @@ function DocumentEditorInner({
 		// Its review diff is rendered into this editor too, so a slot the
 		// proposal re-anchors must not be split by the word diff.
 		diffPartialText: diffKeepingVisualSlotsWhole,
+		// Nothing of it goes into the room while another editor reviews a
+		// proposal, judged when it would go; and this editor's own review
+		// is published before its diff does (Fizzy #2946).
+		heldElsewhere: () => peerReviewHoldsNowRef.current(),
+		beforePreview: () => publishOwnReviewNowRef.current(),
 		onSaved: (savedVersion) => {
 			// The hook puts the confirmed body in the editor.
 			editorBodyVersionRef.current = savedVersion;
@@ -6181,6 +6504,355 @@ function DocumentEditorInner({
 	});
 	// Keep the ref in sync so the onUpdate + triggerAutoSave guards can read it.
 	isContextUpdateActiveRef.current = contextUpdate.isActive;
+
+	// The confirm card takes over a proposal the assistant streamed in. A run
+	// that ends without one leaves nothing to answer, once the card has had
+	// a moment to render after the run's last frame. In a room, what it
+	// streamed is taken back out then, as a Reject would (Fizzy #2946): it
+	// was never offered for an answer, and once this editor's review leaves
+	// the room the other editors would save it. The editor alone keeps it,
+	// as it always did: nobody else saves it unseen there.
+	// A card on its way is waited for: while the chat's last turn holds a
+	// `confirm_changes` call nothing has answered, the frames stay under
+	// review until the card takes them over — for at most
+	// `proposalCardLateLimitMs` after the run ended. A run that failed after
+	// its last update named the call never runs it, so the call stays
+	// unanswered for good; past the limit its frames are taken back too (in
+	// a room; alone, the editor keeps them and stops waiting).
+	const internalMessagesRef = useRef(internalMessagesForToolCallMatcher);
+	internalMessagesRef.current = internalMessagesForToolCallMatcher;
+	useEffect(() => {
+		if (hasPendingConfirm) {
+			setAssistantWritesHere(false);
+			return;
+		}
+		if (!assistantWritesHere || isLoading) {
+			return;
+		}
+		let timer: ReturnType<typeof setTimeout> | null = null;
+		const endedAt = Date.now();
+		const decide = () => {
+			if (
+				hasUnansweredConfirmCall(internalMessagesRef.current) &&
+				Date.now() - endedAt <
+					ROOM_CONVERGENCE_TIMINGS.proposalCardLateLimitMs
+			) {
+				timer = setTimeout(decide, ASSISTANT_PROPOSAL_CARD_WAIT_MS);
+				return;
+			}
+			timer = null;
+			takeBackRunFramesRef.current(true);
+		};
+		timer = setTimeout(decide, ASSISTANT_PROPOSAL_CARD_WAIT_MS);
+		return () => {
+			if (timer !== null) {
+				clearTimeout(timer);
+			}
+		};
+	}, [assistantWritesHere, isLoading, hasPendingConfirm]);
+
+	// Tell the other editors in the room that an assistant proposal is under
+	// review here (see `peerReviewsProposal`, Fizzy #2946), by an identity of
+	// the review, until it is answered or this editor goes: the chat's, from
+	// the assistant's first frame in this editor through its confirm card,
+	// one review without a gap; and an update using context from the moment
+	// it starts drafting — its diff is built from the body this editor holds
+	// then, so typing elsewhere meanwhile would be replaced by it. A sync
+	// loss unmounts this editor and withdraws it, and the editor mounted
+	// again does not publish it again: the review's state is this editor's,
+	// and the call the chat renders again is armed anew against a body that
+	// already holds the proposal, which reads as no change.
+	const proposalUnderReviewHere =
+		hasPendingConfirm || assistantWritesHere || contextUpdate.isActive;
+	useEffect(() => {
+		if (!roomStampsOn || !proposalUnderReviewHere) {
+			return;
+		}
+		const awareness = provider?.awareness;
+		ownReviewRef.current ??= newProposalReview();
+		publishProposalReview(awareness, ownReviewRef.current);
+		return () => {
+			ownReviewRef.current = null;
+			publishProposalReview(awareness, null);
+		};
+	}, [roomStampsOn, proposalUnderReviewHere, provider]);
+
+	// Two editors that began a review before either heard of the other's
+	// settle it the same way everywhere (see `newProposalReview`, Fizzy
+	// #2946). The one whose review does not hold withdraws its own: its card
+	// is answered as not applied, its stream stops, its update using context
+	// is dropped — and none of them writes the room, which holds the other
+	// review's proposal.
+	useEffect(() => {
+		if (!proposalUnderReviewElsewhere || !proposalUnderReviewHere) {
+			return;
+		}
+		confirmCallbacksRef.current?.withdraw();
+		assistantRunHeldRef.current = true;
+		setAssistantWritesHere(false);
+		if (contextUpdate.isActive) {
+			contextUpdate.withdraw();
+		}
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [proposalUnderReviewElsewhere, proposalUnderReviewHere]);
+
+	// The editor whose review holds puts its proposal into the room again
+	// whenever an editor that withdrew its own wrote into the room before it
+	// heard of this one: what that editor wrote is replaced, so the room
+	// holds this review's proposal alone. Its review began before its first
+	// write, so its writes reach this editor after its review does.
+	const reassertOwnReview = () => {
+		const ed = liveEditorOrNull(editorRef.current);
+		if (!ed) {
+			return;
+		}
+		const baseline = baselineRef.current;
+		const proposed = hasPendingConfirm
+			? reviewedProposalRef.current
+			: assistantWritesHere
+				? agentDocumentRef.current
+				: null;
+		if (proposed) {
+			isDiffReviewEditRef.current = true;
+			applyProgrammaticContent(ed, proposed, "assistant", {
+				slotSource: baseline,
+				render: (preserved) =>
+					fromMarkdown(
+						diffKeepingVisualSlotsWhole(
+							baseline,
+							preserved,
+							hasPendingConfirm,
+						),
+					),
+			});
+			isDiffReviewEditRef.current = false;
+		} else if (contextUpdate.isActive) {
+			contextUpdate.reassert();
+		}
+	};
+	const reassertOwnReviewRef = useRef(reassertOwnReview);
+	reassertOwnReviewRef.current = reassertOwnReview;
+	useEffect(() => {
+		if (!roomStampsOn || !ydoc || !proposalUnderReviewHere) {
+			return;
+		}
+		let due = false;
+		const onTransaction = (transaction: Y.Transaction) => {
+			if (transaction.local || due) {
+				return;
+			}
+			const withdrawn = peerReviewsHeldOver(provider?.awareness);
+			if (withdrawn.size === 0) {
+				return;
+			}
+			const wroteHere = [...transaction.afterState].some(
+				([client, clock]) =>
+					withdrawn.has(client) &&
+					(transaction.beforeState.get(client) ?? 0) < clock,
+			);
+			if (!wroteHere) {
+				return;
+			}
+			due = true;
+			queueMicrotask(() => {
+				due = false;
+				reassertOwnReviewRef.current();
+			});
+		};
+		ydoc.on("afterTransaction", onTransaction);
+		return () => ydoc.off("afterTransaction", onTransaction);
+	}, [roomStampsOn, ydoc, proposalUnderReviewHere, provider]);
+
+	// Leaving the page while this editor's own review is unanswered rejects
+	// it (Fizzy #2946), and so does a run that ends without its confirm card
+	// (see above). The room holds the proposal, diff marks included, and
+	// once this editor's review leaves the room the other editors no longer
+	// hold for it: the first keystroke there would save the proposal as if
+	// it was accepted. So the body from before the proposal goes back into
+	// the room on the way out, as a Reject puts it back, and the review is
+	// withdrawn at once — the chat's, streamed in or on its confirm card,
+	// from the body the run started from; an update using context, from the
+	// body its preview was drafted from. Never over another editor's review
+	// that holds over this one: the room holds that one's proposal. The chat
+	// goes with the page, so its call is not answered from here.
+	// Called by leaving within the app (see `PageLeave`), by the page going
+	// for good, and by the end of a run with no card: a sync loss unmounts
+	// this editor without any of them, and the editor mounted again finds
+	// the room as it was. An Accept, a Reject or a withdrawal has already
+	// answered the review. Says what it put back, when it did: the body, or
+	// `null` when the update using context's hook put its own back.
+	// A run that was held put nothing of its own in, so it has nothing to
+	// take back; nor does an update using context whose confirm is being
+	// saved: it is answered.
+	const putBackBodyBeforeOwnReview = (): PutBack | null => {
+		if (
+			!roomStampsOn ||
+			!ydoc ||
+			peerReviewHoldsNowRef.current() ||
+			assistantRunHeldRef.current
+		) {
+			return null;
+		}
+		const cardWaits =
+			hasPendingConfirm && confirmCallbacksRef.current !== null;
+		const contextWaits =
+			contextUpdate.isActive && !contextUpdate.isApplyingNow();
+		if (!cardWaits && !assistantWritesHere && !contextWaits) {
+			return null;
+		}
+		const ed = liveEditorOrNull(editorRef.current);
+		if (!ed) {
+			return null;
+		}
+		let body: string | null = null;
+		if (cardWaits || assistantWritesHere) {
+			// The card's proposal goes back to the body its review started
+			// from, as its Reject does; frames with no card yet, to the body
+			// the run started from (the editor's own follows them once the
+			// run ends).
+			const before = cardWaits
+				? baselineRef.current || currentDocumentRef.current
+				: assistantRunBaselineRef.current ||
+					baselineRef.current ||
+					currentDocumentRef.current;
+			confirmCallbacksRef.current = null;
+			applyProgrammaticContent(ed, fromMarkdown(before), "server");
+			body = before;
+		} else if (contextUpdate.showingDiff) {
+			contextUpdate.reject();
+		} else {
+			// Still drafting: the editor holds the body it is drafted from.
+			contextUpdate.withdraw();
+		}
+		ownReviewRef.current = null;
+		publishProposalReview(provider?.awareness, null);
+		return { body };
+	};
+	const putBackBodyBeforeOwnReviewRef = useRef(putBackBodyBeforeOwnReview);
+	putBackBodyBeforeOwnReviewRef.current = putBackBodyBeforeOwnReview;
+	// Frames a run streamed in with no card to answer them are taken back
+	// (see the wait for a card above): the agent's document goes back with
+	// them, so the run its next turn starts does not stream them in again.
+	// Said, unless the idle limit says why.
+	const takeBackRunFrames = (say: boolean) => {
+		const putBack = putBackBodyBeforeOwnReviewRef.current();
+		const body = putBack?.body;
+		if (typeof body === "string") {
+			setAgentStateRef.current((prev) => ({ ...prev, document: body }));
+			if (say) {
+				toast.info(tRun("assistantRunTakenBack"));
+			}
+		}
+		setAssistantWritesHere(false);
+	};
+	const takeBackRunFramesRef = useRef(takeBackRunFrames);
+	takeBackRunFramesRef.current = takeBackRunFrames;
+	// Closing the tab or reloading it runs no cleanup: the same, as the page
+	// goes. Not when it is kept to come back to (the back-forward cache): it
+	// would come back still showing the review.
+	useEffect(() => {
+		const onPageHide = (event: PageTransitionEvent) => {
+			if (!event.persisted) {
+				putBackBodyBeforeOwnReviewRef.current();
+			}
+		};
+		window.addEventListener("pagehide", onPageHide);
+		return () => window.removeEventListener("pagehide", onPageHide);
+	}, []);
+
+	// A proposal waiting for its answer holds the other editors in the room
+	// for at most `proposalReviewIdleLimitMs` with nothing done here (see
+	// `PROPOSAL_REVIEW_IDLE_LIMIT_MS`, Fizzy #2946): past it, this editor
+	// answers it as rejected — the confirm card's, through the card's own
+	// Reject, stamped on its tool call as the review bar and the card stamp
+	// their answers, so the chat's outcome chip says so; an update using
+	// context's diff; or frames still waiting for their card — and says so.
+	// Only
+	// while another editor that may edit is in the room: alone, nobody is
+	// held. A key, a pointer, the wheel, a scroll, or the tab coming back
+	// into view starts the wait again. Never while another editor's review
+	// holds this one: its Reject would not write the room.
+	const reviewAwaitsAnswer =
+		roomStampsOn &&
+		canEdit !== false &&
+		otherEditorInRoom &&
+		(hasPendingConfirm ||
+			(assistantWritesHere && !isLoading) ||
+			(contextUpdate.showingDiff && !contextUpdate.isApplying));
+	const rejectContextUpdateRef = useRef(contextUpdate.reject);
+	rejectContextUpdateRef.current = contextUpdate.reject;
+	const isContextApplyingNowRef = useRef(contextUpdate.isApplyingNow);
+	isContextApplyingNowRef.current = contextUpdate.isApplyingNow;
+	const hasPendingConfirmRef = useRef(hasPendingConfirm);
+	hasPendingConfirmRef.current = hasPendingConfirm;
+	const stampReviewOutcome = useDiffOutcomeStamp();
+	const stampReviewOutcomeRef = useRef(stampReviewOutcome);
+	stampReviewOutcomeRef.current = stampReviewOutcome;
+	useEffect(() => {
+		if (!reviewAwaitsAnswer) {
+			return;
+		}
+		let timer: ReturnType<typeof setTimeout> | null = null;
+		const expire = () => {
+			timer = null;
+			if (peerReviewHoldsNowRef.current()) {
+				arm();
+				return;
+			}
+			const card = confirmCallbacksRef.current;
+			if (card) {
+				const audit = diffOutcomeAuditRef.current;
+				if (card.reject() === false) {
+					void stampReviewOutcomeRef.current(audit, "rejected");
+				}
+			} else if (hasPendingConfirmRef.current) {
+				// Its card is being answered, or its callbacks are gone with
+				// it: nothing of the card's to answer from here.
+				return;
+			} else if (isContextUpdateActiveRef.current) {
+				if (isContextApplyingNowRef.current()) {
+					return;
+				}
+				rejectContextUpdateRef.current();
+			} else {
+				takeBackRunFramesRef.current(false);
+			}
+			toast.info(tRun("proposalReviewTimedOut"));
+		};
+		const arm = () => {
+			if (timer !== null) {
+				clearTimeout(timer);
+			}
+			timer = setTimeout(
+				expire,
+				ROOM_CONVERGENCE_TIMINGS.proposalReviewIdleLimitMs,
+			);
+		};
+		const onVisibility = () => {
+			if (window.document.visibilityState === "visible") {
+				arm();
+			}
+		};
+		const activity = ["keydown", "pointerdown", "wheel", "scroll"] as const;
+		arm();
+		for (const event of activity) {
+			window.addEventListener(event, arm, true);
+		}
+		window.document.addEventListener("visibilitychange", onVisibility);
+		return () => {
+			if (timer !== null) {
+				clearTimeout(timer);
+			}
+			for (const event of activity) {
+				window.removeEventListener(event, arm, true);
+			}
+			window.document.removeEventListener(
+				"visibilitychange",
+				onVisibility,
+			);
+		};
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [reviewAwaitsAnswer]);
 
 	// Diff review-mode toggle (inline / side-by-side / full preview). Pure view
 	// state — switching never mutates the editor doc or the pending diff. One
@@ -6480,6 +7152,22 @@ function DocumentEditorInner({
 				}
 			: request.onSettled;
 		const send = () => {
+			// What the editor holds is not saved while another editor
+			// reviews a proposal — the room holds that proposal — judged by
+			// the room as it is when this save would go (Fizzy #2946). As
+			// for a room without a stamp, nothing goes and the text stays
+			// unsaved.
+			if (
+				request.savesEditor !== undefined &&
+				peerReviewHoldsNowRef.current()
+			) {
+				saveInFlightRef.current = false;
+				saveAgainRef.current = null;
+				setHasUnsavedChanges(true);
+				(request.onHeld ?? onUnavailable)();
+				onSettled?.();
+				return;
+			}
 			const base = resolveSaveBaseRef.current();
 			if (base === "unavailable") {
 				// Nothing goes, so the save asked for meanwhile does not
@@ -6537,10 +7225,15 @@ function DocumentEditorInner({
 	// the app did not land: nobody is in the editor to see the text left
 	// unsaved, so it is said, with the text to copy.
 	// One toast per document: it replaces the warning that kept raw-view
-	// edits, and a second failure after leaving replaces the first.
-	const notifyLeaveSaveFailed = (text: string) => {
+	// edits, and a second failure after leaving replaces the first. Also
+	// the text left unsaved by leaving while another editor reviewed a
+	// proposal, with words of its own.
+	const notifyLeaveSaveFailed = (
+		text: string,
+		message: string = tRoom("leaveSaveFailed"),
+	) => {
 		const id = rawOfferToastId;
-		toast.error(tRoom("leaveSaveFailed"), {
+		toast.error(message, {
 			id,
 			duration: Number.POSITIVE_INFINITY,
 			...(text.trim()
@@ -6566,6 +7259,10 @@ function DocumentEditorInner({
 	// document, or the room is behind the saved one), or when the editor
 	// holds what was last saved.
 	const flushOnLeave = () => {
+		// This editor's own review, unanswered, is rejected on the way out
+		// (see `putBackBodyBeforeOwnReview`), and only the body from before
+		// it can be saved: below.
+		const putBack = putBackBodyBeforeOwnReviewRef.current();
 		// Raw-view edits on a body the editor moved past are not saved over
 		// it on the way out: nobody asked to. They are said to be unsaved,
 		// with the text as it stands now to copy, in place of the warning
@@ -6582,6 +7279,75 @@ function DocumentEditorInner({
 			)
 		) {
 			notifyLeaveSaveFailed(rawContentRef.current);
+			return;
+		}
+		// The body put back holds typing from here that no save covered: it
+		// is saved on the way out, the proposal never. The editor's own
+		// reason to hold saves (the proposal under review) is gone with it.
+		// Not while anything else holds saves: a run writing the document —
+		// judged by the document as last read, not only as last rendered —
+		// the room behind the saved body, or off its server.
+		if (putBack) {
+			const before = putBack.body;
+			const latest = documentRef.current ?? document;
+			const runWritesNow = isGenerationRunStillWriting({
+				status: latest?.status ?? "",
+				generationStartedAt: latest?.generationStartedAt,
+				updatedAt: latest?.updatedAt,
+			});
+			if (
+				before !== null &&
+				saveBlockBesidesOwnReview === null &&
+				!runWritesNow &&
+				canEdit === true &&
+				document &&
+				hasLocalTyping() &&
+				before.trim() !== lastSavedContentRef.current.trim()
+			) {
+				if (autoSaveTimeoutRef.current) {
+					clearTimeout(autoSaveTimeoutRef.current);
+					autoSaveTimeoutRef.current = null;
+				}
+				leaveContentRef.current = before;
+				sendDirectSaveRef.current({
+					confirm: false,
+					savesEditor: before,
+					build: (base) =>
+						buildDocumentSaveInput({
+							projectId,
+							documentId,
+							content: before,
+							isManualSave: false,
+							base,
+						}),
+					onUnavailable: () => notifyLeaveSaveFailed(before),
+				});
+			}
+			return;
+		}
+		// Left while another editor reviews an assistant proposal (Fizzy
+		// #2946): nothing is sent — the room holds that proposal, unanswered,
+		// in the text a save would carry — and typing here that no save
+		// covered is said to be unsaved, with the text to copy. The editor's
+		// text holds the proposal too, and the message says so; edits of the
+		// raw view's own are copied as they are.
+		if (
+			(saveBlockReason === "proposalElsewhere" ||
+				(saveBlockReason === null && peerReviewHoldsNow())) &&
+			roomStampsOn &&
+			canEdit === true &&
+			hasLocalTyping()
+		) {
+			const ownRawText = rawEditPending();
+			const text = readLocalText();
+			if (text?.trim()) {
+				notifyLeaveSaveFailed(
+					text,
+					ownRawText
+						? tRoom("leaveSaveFailed")
+						: tRoom("leaveWhileProposalElsewhere"),
+				);
+			}
 			return;
 		}
 		if (
@@ -6821,10 +7587,16 @@ function DocumentEditorInner({
 		}
 		// Refused while a regeneration owns the document (see
 		// `saveBlockReason`). A person who asked is told why; the unsaved
-		// state stays, so the text is saved once the block lifts.
-		if (saveBlockReason !== null) {
+		// state stays, so the text is saved once the block lifts. Also while
+		// another editor reviews a proposal by the room as it is now, before
+		// this editor rendered it (see `peerReviewHoldsNow`): an autosave due
+		// then, or the save before an assistant run, would write it.
+		const blockReason: SaveBlockReason | null =
+			saveBlockReason ??
+			(peerReviewHoldsNow() ? "proposalElsewhere" : null);
+		if (blockReason !== null) {
 			if (isManualSaveRef.current) {
-				toast.info(tRun(`saveBlocked.${saveBlockReason}`));
+				toast.info(tRun(`saveBlocked.${blockReason}`));
 			}
 			isManualSaveRef.current = false;
 			shouldRedirectAfterSaveRef.current = false;
@@ -7518,6 +8290,12 @@ function DocumentEditorInner({
 	// Direct regeneration handler - called by the Regenerate button (bypasses agent)
 	const handleDirectRegenerate = async () => {
 		if (isRegenerating || isLoading) {
+			return;
+		}
+		// Not while another editor reviews a proposal (Fizzy #2946): the run's
+		// body would replace it in the room before anyone answered it.
+		if (peerReviewHoldsNowRef.current()) {
+			toast.info(tRun("proposalElsewhereHeld"));
 			return;
 		}
 
@@ -8334,7 +9112,32 @@ function DocumentEditorInner({
 					required: true,
 				},
 			],
-			renderAndWaitForResponse: ({ args, respond, status }) => {
+			renderAndWaitForResponse: ({ args, respond, status, result }) => {
+				// Not while another editor reviews a proposal (Fizzy #2946), as
+				// for the Regenerate button: the call is answered once as not
+				// started, and never starts one, also once that review is over.
+				// The answer says why, for the assistant and for the chat's
+				// line about the call (see `regenerationCallOutcome`).
+				if (status !== "executing") {
+					regenerationHeldRef.current = false;
+				} else if (regenerationHeldRef.current) {
+					return <>{null}</>;
+				} else if (
+					peerReviewHoldsNowRef.current() &&
+					!regenerationTriggeredRef.current &&
+					!isRegenerating
+				) {
+					regenerationHeldRef.current = true;
+					queueMicrotask(() => {
+						toast.info(tRun("proposalElsewhereHeld"));
+						respond?.({
+							accepted: false,
+							reason: REGENERATION_HELD_ELSEWHERE,
+						});
+					});
+					return <>{null}</>;
+				}
+
 				// Always update respond ref to latest (it may change between renders)
 				if (respond) {
 					regenerationRespondRef.current = respond;
@@ -8384,11 +9187,15 @@ function DocumentEditorInner({
 					}, 0);
 				}
 
-				// If status is "complete", don't show anything (action is done)
+				// Once the call is answered, what became of it: a regeneration
+				// that was refused, failed or rejected is not said to have
+				// completed (Fizzy #2946).
 				if (status === "complete") {
 					return (
 						<div className="p-3 bg-muted/50 rounded-lg text-sm text-muted-foreground">
-							Document regeneration completed.
+							{tRun(
+								`regenerationCall.${regenerationCallOutcome(result)}`,
+							)}
 						</div>
 					);
 				}
@@ -8493,19 +9300,53 @@ function DocumentEditorInner({
 					respond?.(result);
 					return result.accepted;
 				};
+				// Answered as not applied, writing nothing into the room (Fizzy
+				// #2946): a run that worked from another editor's unanswered
+				// proposal, or a review that another one begun at the same
+				// moment holds over. The agent's document goes back to what the
+				// editor holds, as a Reject's does — or, for a review withdrawn,
+				// to the body from before its proposal, which the editor may
+				// still hold a frame of: every answer resumes the agent for one
+				// more short run, which would otherwise stream the declined
+				// proposal in.
+				const answerNotApplied = (
+					kept: string = getEditorMarkdownForSave(
+						editorRef.current,
+					) ?? baselineRef.current,
+				): boolean => {
+					setHasPendingConfirm(false);
+					confirmCallbacksRef.current = null;
+					toast.info(tRun("proposalElsewhereHeld"));
+					setAgentState((prev) => ({
+						...prev,
+						document: kept,
+					}));
+					void recordOutcomeRef.current({
+						accepted: false,
+						summary: ACCEPT_OUTCOME_SUMMARIES.heldElsewhere,
+					});
+					return answer({ accepted: false });
+				};
+				const handleWithdraw = () => {
+					answerNotApplied(baselineRef.current);
+				};
 				const handleReject = () => {
 					void recordVerdict(false);
 					setHasPendingConfirm(false);
 					confirmCallbacksRef.current = null;
 					// Reject: Restore the baseline content — the document as it
-					// stood before the assistant ran, slots included.
+					// stood before the assistant ran, slots included. Not over
+					// the room while another editor's review holds over this one
+					// (Fizzy #2946): the room holds that review's proposal now.
 					const fallback =
 						baselineRef.current || currentDocumentRef.current;
-					applyProgrammaticContent(
-						editorRef.current,
-						fromMarkdown(fallback),
-						"server",
-					);
+					if (!peerReviewHoldsNowRef.current()) {
+						applyProgrammaticContent(
+							editorRef.current,
+							fromMarkdown(fallback),
+							"server",
+						);
+					}
 					setAgentState((prev) => ({
 						...prev,
 						document: fallback,
@@ -8519,7 +9360,14 @@ function DocumentEditorInner({
 					return answer({ accepted: false });
 				};
 
-				const handleAccept = () => {
+				const handleAccept = (): boolean | null => {
+					// Not while another editor reviews a proposal (Fizzy #2946):
+					// the accepted body would be put in and saved over it. The
+					// proposal stays unanswered here, to accept once that one is.
+					if (peerReviewHoldsNowRef.current()) {
+						toast.info(tRun("proposalElsewhereHeld"));
+						return null;
+					}
 					// Confirm: Get the merged content from editor (strips diff tags)
 					const currentEditor = editorRef.current;
 					const finalContent =
@@ -8722,6 +9570,13 @@ function DocumentEditorInner({
 								);
 								recordNotSent();
 							},
+							// Waited behind a save in flight while another
+							// editor's review began: it stays in the editor,
+							// unsaved, for a later save.
+							onHeld: () => {
+								toast.info(tRun("proposalElsewhereHeld"));
+								recordNotSent();
+							},
 							onSaved: () => {
 								recordOutcome({
 									accepted: true,
@@ -8758,8 +9613,18 @@ function DocumentEditorInner({
 							proposedDoc,
 							toAgentDocument(baseline),
 						);
-						confirmNoOpRef.current = noOp;
-						if (noOp) {
+						// A run that began, or wrote, while another editor
+						// reviewed a proposal worked from that unanswered
+						// proposal: nothing of it is put in (Fizzy #2946). The
+						// call is answered as not applied, and said so.
+						const heldElsewhere = !noOp && assistantProposalHeld();
+						confirmNoOpRef.current = noOp || heldElsewhere;
+						if (heldElsewhere) {
+							confirmCallbacksRef.current = null;
+							queueMicrotask(() => {
+								answerNotApplied();
+							});
+						} else if (noOp) {
 							// No-op gate (I1): never present an actionable card for an
 							// unchanged document (a bare model-initiated confirm, or an
 							// edit that collapsed to baseline). Resolve the tool call
@@ -8778,8 +9643,17 @@ function DocumentEditorInner({
 							confirmCallbacksRef.current = {
 								accept: handleAccept,
 								reject: handleReject,
+								withdraw: handleWithdraw,
 							};
+							reviewedProposalRef.current = proposedDoc;
 							queueMicrotask(() => {
+								// Another editor's review, begun first, reached
+								// this one meanwhile: this proposal does not go in.
+								if (assistantProposalHeld()) {
+									confirmNoOpRef.current = true;
+									answerNotApplied();
+									return;
+								}
 								// Apply the reviewed diff from the arming path (I2/RC2)
 								// so delivery no longer hinges on Effect 2's microtask
 								// beating Effect 4's write-back. Idempotent with Effect
@@ -8810,6 +9684,7 @@ function DocumentEditorInner({
 											);
 									if (!editorAlreadyMerged) {
 										isDiffReviewEditRef.current = true;
+										publishOwnReviewNowRef.current();
 										applyProgrammaticContent(
 											currentEditor,
 											proposedDoc,
@@ -8857,6 +9732,7 @@ function DocumentEditorInner({
 							confirmCallbacksRef.current = {
 								accept: handleAccept,
 								reject: handleReject,
+								withdraw: handleWithdraw,
 							};
 							setHasPendingConfirm(true);
 						}}
@@ -8912,6 +9788,11 @@ function DocumentEditorInner({
 
 				if (!editor) {
 					return "Editor is not available. The diagram was not inserted.";
+				}
+				// Not while another editor reviews a proposal (Fizzy #2946).
+				if (peerReviewHoldsNowRef.current()) {
+					toast.info(tRun("proposalElsewhereHeld"));
+					return "Another tab is reviewing an assistant proposal for this document. The diagram was not inserted.";
 				}
 
 				// Insert Mermaid code block at cursor via the editor
@@ -9204,7 +10085,13 @@ function DocumentEditorInner({
 																	disabled={
 																		isSaving ||
 																		isRegenerating ||
-																		isGenerationRunning
+																		isGenerationRunning ||
+																		proposalUnderReviewElsewhere
+																	}
+																	aria-describedby={
+																		proposalUnderReviewElsewhere
+																			? proposalElsewhereHeldId
+																			: undefined
 																	}
 																	className="h-8 gap-1.5 text-xs"
 																>
@@ -9263,8 +10150,14 @@ function DocumentEditorInner({
 																		isRegenerating ||
 																		isGenerationRunning ||
 																		contextUpdate.isActive ||
+																		proposalUnderReviewElsewhere ||
 																		viewMode ===
 																			"raw"
+																	}
+																	aria-describedby={
+																		proposalUnderReviewElsewhere
+																			? proposalElsewhereHeldId
+																			: undefined
 																	}
 																	className="h-8 gap-1.5 text-xs"
 																>
@@ -9384,7 +10277,13 @@ function DocumentEditorInner({
 																disabled={
 																	isSaving ||
 																	isRegenerating ||
-																	isGenerationRunning
+																	isGenerationRunning ||
+																	proposalUnderReviewElsewhere
+																}
+																aria-describedby={
+																	proposalUnderReviewElsewhere
+																		? proposalElsewhereHeldId
+																		: undefined
 																}
 															>
 																<RefreshCw
@@ -9401,8 +10300,14 @@ function DocumentEditorInner({
 																	isRegenerating ||
 																	isGenerationRunning ||
 																	contextUpdate.isActive ||
+																	proposalUnderReviewElsewhere ||
 																	viewMode ===
 																		"raw"
+																}
+																aria-describedby={
+																	proposalUnderReviewElsewhere
+																		? proposalElsewhereHeldId
+																		: undefined
 																}
 															>
 																{contextUpdate.isLoading ? (
@@ -10519,7 +11424,10 @@ function DocumentEditorInner({
 								// run-guarded document — the ten-minute rule
 								// for a silent run is the editor's, not the
 								// server's — and this tab's own regeneration
-								// or its review owns the body until it ends.
+								// or its review owns the body until it ends;
+								// and while another editor reviews an
+								// assistant proposal, which the restored body
+								// would replace in the room.
 								restoreBlockedReason={
 									isGenerationRunning &&
 									isRunGuardedDocumentType(
@@ -10530,7 +11438,9 @@ function DocumentEditorInner({
 												showConfirmDialog ||
 												isConfirming
 											? "regenerating"
-											: null
+											: proposalUnderReviewElsewhere
+												? "proposalElsewhere"
+												: null
 								}
 								onVersionRestored={(
 									restoredContent: string,
@@ -10678,10 +11588,18 @@ function DocumentEditorInner({
 
 						{/* Page-chrome sync slot — Yjs sync status pill. Lives on the
 			  breadcrumb row alongside the project-presence indicators. */}
+						{/* While another editor reviews an assistant proposal, why
+						    this one holds still; the room's own state comes
+						    first (Fizzy #2946). */}
 						{syncSlot &&
 							enableCollaboration &&
 							createPortal(
-								roomStatus === "inSync" ? (
+								roomStatus === "inSync" &&
+									proposalUnderReviewElsewhere ? (
+									<ProposalReviewElsewhereStatus
+										reviewerName={peerReviewerName}
+									/>
+								) : roomStatus === "inSync" ? (
 									<CollaborationStatus
 										isConnected={isCollabConnected}
 										isSynced={isCollabSynced}
@@ -11008,6 +11926,16 @@ function DocumentEditorInner({
 								})(),
 								saveSlot,
 							)}
+						{/* Why Regenerate and Update using context wait while
+						    another editor reviews a proposal (Fizzy #2946). */}
+						{proposalUnderReviewElsewhere && (
+							<span
+								id={proposalElsewhereHeldId}
+								className="sr-only"
+							>
+								{tRun("proposalElsewhereHeld")}
+							</span>
+						)}
 						{/* Polite live region — announces scroll-to-mention navigation to screen readers */}
 						<div
 							role="status"
@@ -11186,8 +12114,11 @@ interface ConfirmChangesProps {
 	args: any;
 	respond: any;
 	status: any;
-	/** Each says what the proposal was answered with. */
-	onConfirm: () => boolean;
+	/**
+	 * Each says what the proposal was answered with; `null` from an Accept
+	 * that cannot go yet, which leaves the card as it was.
+	 */
+	onConfirm: () => boolean | null;
 	onReject: () => boolean;
 	originalLength?: number;
 	newLength?: number;
@@ -11226,6 +12157,10 @@ function ConfirmChanges({
 		const audit = outcomeAuditRef?.current;
 		setUserChoice(choice);
 		const accepted = choice === "accepted" ? onConfirm() : onReject();
+		if (accepted === null) {
+			setUserChoice(null);
+			return;
+		}
 		void stampDiffOutcome(audit, accepted ? "accepted" : "rejected");
 	};
 

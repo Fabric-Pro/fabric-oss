@@ -157,32 +157,15 @@ const MCP_SERVICE_KEYWORDS = [
 /**
  * Keywords that suggest browser automation is needed.
  */
-const BROWSER_KEYWORDS = [
-	"browser",
-	"navigate",
-	"click",
-	"fill form",
-	"screenshot",
-	"dom",
-	"webpage",
-	"website",
-	"login",
-	"automate web",
-];
+const BROWSER_KEYWORDS =
+	/\b(?:browsers?|navigat(?:e|es|ed|ing)|click(?:s|ed|ing)?|fill form|screenshots?|dom|webpages?|websites?|logins?|automate web)\b/i;
 
 /**
  * Keywords that suggest code execution is needed.
  */
-const CODE_KEYWORDS = [
-	"execute code",
-	"run python",
-	"run javascript",
-	"script",
-	"calculate",
-	"compute",
-	"analyze data",
-	"process file",
-];
+// Preserve JavaScript file tasks previously detected through the script substring.
+const CODE_KEYWORDS =
+	/\b(?:execute code|run python\d?|javascript|scripts?|calculat(?:e|es|ed|ing)|comput(?:e|es|ed|ing)|analyze data|process file)\b/i;
 
 /**
  * Keywords that suggest workspace access is needed.
@@ -224,14 +207,10 @@ export function analyzeStepRequirements(step: TaskStep): TaskRequirements {
 	}
 
 	// Detect browser needs
-	const needsBrowserAutomation = BROWSER_KEYWORDS.some((kw) =>
-		descLower.includes(kw),
-	);
+	const needsBrowserAutomation = BROWSER_KEYWORDS.test(descLower);
 
 	// Detect code execution needs
-	const needsCodeExecution = CODE_KEYWORDS.some((kw) =>
-		descLower.includes(kw),
-	);
+	const needsCodeExecution = CODE_KEYWORDS.test(descLower);
 
 	// Detect workspace needs
 	const needsWorkspaceAccess = WORKSPACE_KEYWORDS.some((kw) =>

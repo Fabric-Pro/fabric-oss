@@ -734,3 +734,63 @@ it("filters suppressed names from both diagnostic maps without mutating either m
 		finalStubCatalogOverlap: { count: 1, names: ["example_read"], more: 0 },
 	});
 });
+
+it("logs first-request tool/schema and reusable hashes in the turn summary", () => {
+	const summaryFor = (tools: unknown[]) => {
+		const s = state();
+		recordAdvisorRequests(s, {
+			reusableSystemHash: "0123456789abcdef",
+			requests: [
+				{
+					iteration: 1,
+					activityAttempt: 1,
+					request: 1,
+					estimatedInputTokens: 10,
+					fingerprint: createRequestFingerprint({
+						modelId: "example-model",
+						route: "example-route",
+						prompt: [],
+						tools,
+					}),
+				},
+			],
+		});
+		// Later synthesis has no reusable prompt and must not replace the main hash.
+		recordAdvisorRequests(s, { requests: [] });
+		recordAdvisorTurnSummary(s);
+		return vi
+			.mocked(log.info)
+			.mock.calls.filter(
+				([event]) => event === "advisor.turn_cache_summary",
+			)
+			.at(-1)?.[1] as Record<string, unknown>;
+	};
+	const tool = {
+		name: "example_tool",
+		inputSchema: {
+			type: "object",
+			properties: { value: { type: "string" } },
+		},
+	};
+	const first = summaryFor([tool]);
+	expect(first.reusableSystemHash).toBe("0123456789abcdef");
+	expect(first.toolsHash).toMatch(/^[a-f0-9]{8}$/);
+	expect(summaryFor([{ ...tool, name: "other_tool" }]).toolsHash).not.toBe(
+		first.toolsHash,
+	);
+	expect(
+		summaryFor([{ ...tool, inputSchema: { type: "object" } }]).toolsHash,
+	).not.toBe(first.toolsHash);
+	expect(
+		summaryFor([tool, { ...tool, name: "other_tool" }]).toolsHash,
+	).not.toBe(summaryFor([{ ...tool, name: "other_tool" }, tool]).toolsHash);
+	expect(
+		JSON.stringify(
+			vi
+				.mocked(log.info)
+				.mock.calls.filter(
+					([event]) => event === "advisor.turn_cache_summary",
+				),
+		),
+	).not.toContain("example_tool");
+});

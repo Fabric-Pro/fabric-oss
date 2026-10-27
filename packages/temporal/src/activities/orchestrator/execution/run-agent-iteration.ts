@@ -25,7 +25,6 @@ import {
 import type { ModelRequestObservation } from "@repo/ai/lib/request-shape";
 import { classifyLimitError, type LimitSignal } from "@repo/ai/limits";
 import {
-	cacheableSystem,
 	isPromptCacheTarget,
 	withAdvisorCacheBreakpoints,
 } from "@repo/ai/prompt-cache";
@@ -37,10 +36,15 @@ import {
 import { runWithDispatchRequestSizer } from "@repo/utils/dispatch-guard";
 import { Context, heartbeat } from "@temporalio/activity";
 import { CancelledFailure } from "@temporalio/common";
-import type { ModelMessage } from "ai";
+import { asSchema, type ModelMessage } from "ai";
 import { publishExecutionEvent } from "../../../lib/redis-publisher";
 import type { DirectChatUsageLimitRefusal } from "../../../types";
+import type {
+	AdvisorAnswerSnapshot,
+	AdvisorAnswerUpdate,
+} from "../../../workflows/orchestrator/advisor-answer-snapshot";
 import { estimateIterationInputTokens } from "../../../workflows/orchestrator/advisor-history-retention";
+import { normalizeAdvisorToolDefinition } from "../../../workflows/orchestrator/advisor-tool-definition";
 import { isInlineDiagramRequest } from "../../../workflows/orchestrator/diagram-rendering";
 import type {
 	AssistantResponsePart,
@@ -66,6 +70,8 @@ import {
 import type { OrchestratorHeartbeatDetails } from "../types";
 import { getAiModelWithSelection } from "../utils";
 import { createFinalizationSizing } from "./finalization-fit";
+import { repairAdvisorToolCall } from "./repair-advisor-tool-call";
+import { buildIterationSystemPrompt } from "./system-prompt";
 import {
 	budgetImageAttachments,
 	omittedImagesNote,
@@ -156,6 +162,8 @@ export interface AgentToolCall {
  * What every iteration result may also carry about its token accounting.
  */
 interface IterationAccounting {
+	/** Short hash of reusable system bytes after skills are attached. */
+	reusableSystemHash?: string;
 	/** Optional for rolling workers; indices address this activity's input history. */
 	imageAttachmentUpdates?: Array<{
 		messageIndex: number;
@@ -193,7 +201,13 @@ interface IterationAccounting {
 /**
  * Result of a single agent iteration
  */
-export type AgentIterationResult = IterationAccounting &
+export type AgentIterationResult = {
+	answerUpdate?: AdvisorAnswerUpdate;
+	offeredToolDefinitions?: Record<
+		string,
+		import("../../../workflows/orchestrator/advisor-tool-definition").NormalizedToolDefinition
+	>;
+} & IterationAccounting &
 	(
 		| {
 				type: "response";
@@ -250,6 +264,10 @@ export type AgentIterationResult = IterationAccounting &
  * Input for the agent iteration activity
  */
 export interface RunAgentIterationInput {
+	callToolMode?: true;
+	admittedWrapperTargets?: string[];
+	effectiveToolCalls?: import("../../../workflows/orchestrator/advisor-call-tool").EffectiveToolCalls;
+	answerSnapshot?: AdvisorAnswerSnapshot;
 	/** Opt-in recorded by the workflow patch; absent retains the legacy result shape. */
 	preserveTurnMessages?: true;
 	/** Resolve the references carried by the source user message. */
@@ -265,6 +283,8 @@ export interface RunAgentIterationInput {
 	availableTools: Record<string, unknown>;
 	/** System prompt with context */
 	systemPrompt: string;
+	/** Optional for rolling workers; systemPrompt retains the full legacy text. */
+	systemPromptParts?: { reusable: string; variable: string };
 	/** User ID for model resolution */
 	userId: string;
 	/** Organization ID for tenant-aware model resolution */
@@ -393,77 +413,11 @@ function convertToolsToAiSdkFormat(
 		// jsonSchema() accepts any valid JSON Schema without Zod conversion,
 		// preventing silent tool drops when schemas are complex (arrays, anyOf, $ref, etc.)
 		if ("description" in toolDef) {
-			const rawSchema = (toolDef as RawToolDefinition).inputSchema || {};
-			// Unwrap MCP protocol's jsonSchema wrapper if present
-			const unwrapped =
-				rawSchema.jsonSchema && typeof rawSchema.jsonSchema === "object"
-					? (rawSchema.jsonSchema as Record<string, unknown>)
-					: rawSchema;
-
-			// Ensure OpenAI-compatible object schema: must have type="object" and properties
-			// (OpenAI rejects schemas that are {} or { type: "object" } without properties)
-			const schemaToUse: Record<string, unknown> = {
-				type: "object",
-				properties: {},
-				...unwrapped,
-			};
-			if (!schemaToUse.properties) {
-				schemaToUse.properties = {};
-			}
-
-			// Patch create_view: the MCP server schema may be missing entirely (when
-			// discovered via vector search with no cached inputSchema) or may declare
-			// elements as { type: "string" } which the AI SDK strips when the LLM
-			// generates an array — resulting in args: {} reaching executeMcpTool.
-			// Always inject elements as a required array; normalizeExcalidrawCreateViewArgs()
-			// in execute-mcp-tool.ts converts it to a JSON string before the MCP call.
-			if (toolName === "create_view") {
-				const props = schemaToUse.properties as Record<
-					string,
-					Record<string, unknown>
-				>;
-				props.elements = {
-					type: "array",
-					items: { type: "object" },
-					description:
-						"Array of Excalidraw element objects. Each element MUST have: type, id (unique string), x, y, width, height. " +
-						"To add text inside a shape: label: {text: 'My Label', fontSize: 16} — works on rectangle, ellipse, diamond, arrow. " +
-						"Types: 'rectangle', 'ellipse', 'diamond', 'arrow' (needs points:[[0,0],[dx,dy]]), 'text' (needs text field, NOT label). " +
-						"Optional: backgroundColor, strokeColor, strokeWidth, roughness (0=clean 1=hand-drawn), roundness:{type:3} for rounded corners. " +
-						"Colors: '#dbe4ff'=blue '#d3f9d8'=green '#f3d9fa'=purple '#fff3bf'=yellow '#e7f5ff'=light-blue '#ebfbee'=light-green. " +
-						"Always start with: {type:'cameraUpdate', width:800, height:600, x:0, y:0}.",
-				};
-				const req = schemaToUse.required as string[] | undefined;
-				if (!req) {
-					schemaToUse.required = ["elements"];
-				} else if (!req.includes("elements")) {
-					req.push("elements");
-				}
-			}
-
-			const isCreateView = toolName === "create_view";
-			const baseDescription =
-				(toolDef as RawToolDefinition).description || toolName;
-			const toolDescription = isCreateView
-				? `${baseDescription}
-
-CRITICAL QUALITY RULES:
-1. Create 15-30+ elements. Never 3-5 bare unlabeled boxes.
-2. NODE rectangles/ellipses/diamonds MUST use label:{text:"...",fontSize:16} for text inside them.
-3. CONTAINER zones (large background rects) use a separate text element for their title at top-left — NOT label, because label centers and overlaps nodes inside the container.
-4. Structure: CONTAINER rect (w:820 h:200, strokeWidth:1), TEXT title at top-left of container, NODE rects (w:160 h:60) with labels, ARROWs between tiers.
-5. Colors: Tier1 container=#e7f5ff nodes=#dbe4ff stroke=#4263eb | Tier2 container=#f3f0ff nodes=#f3d9fa stroke=#ae3ec9 | Tier3 container=#ebfbee nodes=#d3f9d8 stroke=#2f9e44
-
-EXAMPLE (container title as text, nodes use label):
-{type:"cameraUpdate", width:1200, height:900, x:0, y:0}
-{type:"rectangle", id:"c1", x:50, y:50, width:820, height:200, backgroundColor:"#e7f5ff", strokeColor:"#4263eb", strokeWidth:1, opacity:80}
-{type:"text", id:"ct1", x:70, y:62, text:"Presentation Tier (Client)", fontSize:16, strokeColor:"#4263eb"}
-{type:"rectangle", id:"n1", x:100, y:110, width:160, height:60, backgroundColor:"#dbe4ff", strokeColor:"#4263eb", label:{text:"Web Browser",fontSize:16}}
-{type:"rectangle", id:"n2", x:310, y:110, width:160, height:60, backgroundColor:"#dbe4ff", strokeColor:"#4263eb", label:{text:"Mobile App",fontSize:16}}
-{type:"rectangle", id:"n3", x:520, y:110, width:160, height:60, backgroundColor:"#dbe4ff", strokeColor:"#4263eb", label:{text:"Desktop App",fontSize:16}}
-{type:"arrow", id:"a1", x:460, y:250, width:0, height:80, points:[[0,0],[0,80]], label:{text:"HTTP / REST",fontSize:14}}
-— repeat for each tier below (y increments ~280px per tier)`
-				: baseDescription;
+			const { description: toolDescription, inputSchema: schemaToUse } =
+				normalizeAdvisorToolDefinition(
+					toolName,
+					toolDef as RawToolDefinition,
+				);
 
 			aiSdkTools[toolName] = tool({
 				description: toolDescription,
@@ -752,6 +706,19 @@ function convertToAiSdkMessages(messages: IterativeMessage[]): AiSdkMessage[] {
 export async function runAgentIteration(
 	input: RunAgentIterationInput,
 ): Promise<AgentIterationResult> {
+	let reusableSystemHash: string | undefined;
+	const captureReusableSystem = (text: string) => {
+		reusableSystemHash = createHash("sha256")
+			.update(text)
+			.digest("hex")
+			.slice(0, 16);
+	};
+	let selected:
+		| Awaited<ReturnType<typeof getAiModelWithSelection>>
+		| undefined;
+	const captureSelection = (value: NonNullable<typeof selected>) => {
+		selected = value;
+	};
 	const sizing =
 		input.budgetAttemptKind === "FINALIZATION" && input.turnScope
 			? createFinalizationSizing(
@@ -775,24 +742,57 @@ export async function runAgentIteration(
 		() =>
 			sizing
 				? runWithDispatchRequestSizer(sizing.sizer, () =>
-						runAgentIterationRound(input, sizing),
+						runAgentIterationRound(
+							input,
+							sizing,
+							captureSelection,
+							captureReusableSystem,
+						),
 					)
-				: runAgentIterationRound(input),
+				: runAgentIterationRound(
+						input,
+						undefined,
+						captureSelection,
+						captureReusableSystem,
+					),
 		(error, requests) => {
 			const failure =
 				findTurnBudgetExhausted(error) ??
 				findTurnNotDispatchable(error) ??
 				(error instanceof CancelledFailure ? error : undefined);
 			// Keep the refusal's first detail and retry policy intact; older workflows ignore this suffix.
-			if (requests.length > 0 && failure?.details) {
+			const answerUpdate =
+				input.answerSnapshot && selected
+					? {
+							model: selected.answerSnapshot?.(),
+							changes: selected.answerRouteChanges?.(),
+						}
+					: undefined;
+			if (
+				(requests.length > 0 || answerUpdate || reusableSystemHash) &&
+				failure?.details
+			) {
 				failure.details.push({
-					advisorRequestDiagnosticsV1: { requests },
+					advisorRequestDiagnosticsV1: {
+						requests,
+						...(reusableSystemHash ? { reusableSystemHash } : {}),
+						...(answerUpdate ? { answerUpdate } : {}),
+					},
 				});
 			}
 		},
 	);
 	const result = {
 		...observed.result,
+		...(reusableSystemHash ? { reusableSystemHash } : {}),
+		...(input.answerSnapshot && selected
+			? {
+					answerUpdate: {
+						model: selected.answerSnapshot?.(),
+						changes: selected.answerRouteChanges?.(),
+					},
+				}
+			: {}),
 		requests: observed.requests,
 		...(observed.requests.length > 0
 			? {
@@ -822,6 +822,10 @@ export async function runAgentIteration(
 async function runAgentIterationRound(
 	input: RunAgentIterationInput,
 	finalizationSizing?: ReturnType<typeof createFinalizationSizing>,
+	captureSelection?: (
+		selection: Awaited<ReturnType<typeof getAiModelWithSelection>>,
+	) => void,
+	captureReusableSystem?: (text: string) => void,
 ): Promise<AgentIterationResult> {
 	const {
 		conversationHistory,
@@ -899,7 +903,13 @@ async function runAgentIterationRound(
 	// Skipped when `enableSkillTools === false`, e.g. the synthesis phase
 	// which passes `availableTools: {}` to force a pure text response.
 	let skillsSystemBlock: string | null = null;
-	if (enableSkillTools) {
+	if (enableSkillTools && input.answerSnapshot) {
+		Object.assign(
+			aiSdkTools,
+			convertToolsToAiSdkFormat(input.answerSnapshot.skills.tools),
+		);
+		skillsSystemBlock = input.answerSnapshot.skills.systemBlock;
+	} else if (enableSkillTools) {
 		try {
 			const availableSkills = await listAvailableSkills({
 				userId,
@@ -946,6 +956,28 @@ async function runAgentIterationRound(
 		);
 	}
 
+	const offeredToolDefinitions = input.callToolMode
+		? Object.fromEntries(
+				await Promise.all(
+					Object.entries(aiSdkTools).map(
+						async ([name, definition]) => {
+							const def = definition as {
+								description?: string;
+								inputSchema: Parameters<typeof asSchema>[0];
+							};
+							return [
+								name,
+								{
+									description: def.description ?? name,
+									inputSchema: await asSchema(def.inputSchema)
+										.jsonSchema,
+								},
+							];
+						},
+					),
+				),
+			)
+		: undefined;
 	const aiSdkToolCount = Object.keys(aiSdkTools).length;
 	// Resolve the model AFTER the effective tool set is known so a
 	// tool-capable model is chosen whenever any tool (caller-supplied or
@@ -963,6 +995,7 @@ async function runAgentIterationRound(
 				...usageOriginFields(input),
 				callPurpose: input.callPurpose ?? AI_CALL_PURPOSES.mainRound,
 			},
+			input.answerSnapshot?.model,
 		);
 	} catch (error) {
 		const refusal = findAiUsageLimitError(error);
@@ -977,6 +1010,7 @@ async function runAgentIterationRound(
 			usage: { inputTokens: 0, outputTokens: 0 },
 		};
 	}
+	captureSelection?.(selection);
 	const {
 		model,
 		provider: modelProvider,
@@ -1326,6 +1360,15 @@ async function runAgentIterationRound(
 		const effectiveSystemPrompt = skillsSystemBlock
 			? `${systemPrompt}\n\n${skillsSystemBlock}`
 			: systemPrompt;
+		const system = buildIterationSystemPrompt({
+			systemPrompt,
+			systemPromptParts: input.systemPromptParts,
+			skillsSystemBlock: skillsSystemBlock ?? "",
+			promptCacheTarget,
+		});
+		if (system.reusable !== undefined) {
+			captureReusableSystem?.(system.reusable);
+		}
 
 		// Collect response text, tool calls, and errors from the stream.
 		// Declared outside the retry loop so the post-loop handlers see the
@@ -1393,6 +1436,9 @@ async function runAgentIterationRound(
 				fullMessages: messages as ModelMessage[],
 				fullMaxOutputTokens: roundMaxOutputTokens,
 				history: conversationHistory,
+				...(input.effectiveToolCalls
+					? { effectiveToolCalls: input.effectiveToolCalls }
+					: {}),
 			});
 		}
 
@@ -1445,12 +1491,22 @@ async function runAgentIterationRound(
 
 			const stream = streamText({
 				model: guardedModel.model,
-				instructions: promptCacheTarget
-					? cacheableSystem(effectiveSystemPrompt)
-					: effectiveSystemPrompt,
+				instructions: system.instructions,
 				messages: messages as any,
 				tools: aiSdkToolCount > 0 ? (aiSdkTools as any) : undefined,
 				toolChoice,
+				...(input.callToolMode
+					? {
+							repairToolCall: repairAdvisorToolCall({
+								admitted: [
+									...(input.admittedWrapperTargets ?? []),
+									...Object.keys(aiSdkTools),
+								],
+								suppressed: suppressedToolNames,
+								forced: typeof toolChoice === "object",
+							}),
+						}
+					: {}),
 				stopWhen: isStepCount(maxStepsPerIteration),
 				maxOutputTokens: roundMaxOutputTokens,
 				// A cancelled activity aborts the request in flight.
@@ -1722,7 +1778,10 @@ async function runAgentIterationRound(
 		// `aggregatedUsage` declaration above the retry loop.
 		const usage = aggregatedUsage;
 		const planSpent = selection.planSpentApiBilling();
-		const accounting: IterationAccounting = {
+		const accounting: IterationAccounting & {
+			offeredToolDefinitions?: typeof offeredToolDefinitions;
+		} = {
+			...(input.callToolMode ? { offeredToolDefinitions } : {}),
 			...(input.preserveTurnImages ? { imageAttachmentUpdates } : {}),
 			...(usageUnknown ? { usageUnknown: true as const } : {}),
 			...(planSpent

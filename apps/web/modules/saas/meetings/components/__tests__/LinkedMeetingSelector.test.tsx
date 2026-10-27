@@ -87,6 +87,18 @@ describe("LinkedMeetingSelector", () => {
 		).not.toBeDisabled();
 	});
 
+	it("asks for the next two weeks too, so a series can be linked before it first meets", async () => {
+		renderSelector();
+		await screen.findByText("FABRIC | DSU");
+
+		expect(listMeetingsMock).toHaveBeenCalledWith(
+			expect.objectContaining({ daysBack: 30, daysAhead: 14 }),
+		);
+		expect(
+			screen.getByText(/Showing the next 14 days/),
+		).toBeInTheDocument();
+	});
+
 	it("marks an already-linked meeting as linked and non-selectable", async () => {
 		// A second, unlinked meeting keeps at least one meeting selectable so
 		// this exercises the "linked row" rendering rather than the

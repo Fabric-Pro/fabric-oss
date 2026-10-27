@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { APICallError, generateText, wrapLanguageModel } from "ai";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -22,7 +23,135 @@ const request = {
 	toolChoice: { type: "auto" },
 	sessionKey: sentinel,
 };
+function expectedPart(value: unknown) {
+	const serialized = JSON.stringify(value);
+	return {
+		hash: createHash("sha256").update(serialized).digest("hex"),
+		bytes: Buffer.byteLength(serialized),
+	};
+}
 describe("request fingerprints", () => {
+	it("classifies provider developer text as ordered system parts", () => {
+		const prompt = [
+			{ role: "developer", content: "first instruction" },
+			{ role: "user", content: "question" },
+			{ role: "system", content: "second instruction" },
+			{ role: "developer", content: "third instruction" },
+		];
+		const developerOnly = createRequestFingerprint({
+			...request,
+			prompt: [prompt[0], prompt[1]],
+		});
+		expect(
+			developerOnly.system.reduce((sum, part) => sum + part.bytes, 0),
+		).toBeGreaterThan(0);
+		const fp = createRequestFingerprint({ ...request, prompt });
+		expect(
+			fp.system.reduce((sum, part) => sum + part.bytes, 0),
+		).toBeGreaterThan(0);
+		expect(fp.system).toEqual(
+			[
+				"first instruction",
+				"second instruction",
+				"third instruction",
+			].map(expectedPart),
+		);
+		expect(fp.messages).toEqual(
+			createRequestFingerprint({ ...request, prompt: [prompt[1]] })
+				.messages,
+		);
+		expect(
+			firstRequestChange(
+				fp,
+				createRequestFingerprint({
+					...request,
+					prompt: [
+						{ ...prompt[0], content: "changed" },
+						...prompt.slice(1),
+					],
+				}),
+			),
+		).toEqual({ section: "system", index: 0 });
+	});
+	it("preserves the system-only fingerprint", () => {
+		const input = {
+			modelId: "example-model",
+			route: "example-route",
+			prompt: [{ role: "system", content: "instruction" }],
+		};
+		expect(createRequestFingerprint(input)).toEqual({
+			boundary: "provider",
+			modelHash: expectedPart(input.modelId).hash,
+			routeHash: expectedPart(input.route).hash,
+			tools: [],
+			system: [expectedPart("instruction")],
+			messages: [],
+			cacheMarkers: [],
+			toolChoice: {
+				hash: createHash("sha256").update("").digest("hex"),
+				bytes: 0,
+			},
+			bytes: Buffer.byteLength(JSON.stringify(input)),
+		});
+	});
+	it("classifies Responses wire developer input as ordered system parts", async () => {
+		const body = {
+			model: "example-model",
+			instructions: "",
+			input: [
+				{
+					role: "developer",
+					content: [
+						{ type: "input_text", text: "first instruction" },
+					],
+				},
+				{
+					role: "user",
+					content: [{ type: "input_text", text: "question" }],
+				},
+				{ role: "developer", content: "second instruction" },
+				{ role: "developer", content: "third instruction" },
+			],
+		};
+		const observed = await observeModelRequests(
+			{ iteration: 1, activityAttempt: 1 },
+			async () => {
+				await createRequestObservationMiddleware().wrapGenerate?.({
+					params: { prompt: [] },
+					model: { provider: "plan", modelId: body.model },
+					doGenerate: async () => {
+						observeRequestWire(body, "example-route", null);
+						observeRequestWire(
+							{ ...body, instructions: "prepended instruction" },
+							"example-route",
+							null,
+						);
+						return { usage: {} };
+					},
+				} as never);
+			},
+		);
+		const fp = observed.requests[0].fingerprint;
+		expect(fp.boundary).toBe("wire");
+		expect(
+			fp.system.reduce((sum, part) => sum + part.bytes, 0),
+		).toBeGreaterThan(0);
+		expect(fp.system).toEqual(
+			[
+				body.input[0].content,
+				body.input[2].content,
+				body.input[3].content,
+			].map(expectedPart),
+		);
+		expect(fp.messages).toEqual(
+			createRequestFingerprint({ ...request, prompt: [body.input[1]] })
+				.messages,
+		);
+		expect(observed.requests[1].fingerprint.system).toEqual([
+			expectedPart("prepended instruction"),
+			...fp.system,
+		]);
+	});
 	it("is stable and contains hashes and sizes without prompt text", () => {
 		const a = createRequestFingerprint(request);
 		expect(createRequestFingerprint(request)).toEqual(a);

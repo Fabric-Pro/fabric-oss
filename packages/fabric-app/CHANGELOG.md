@@ -1,5 +1,29 @@
 # fabric-app
 
+## 1.16.31
+
+### Patch Changes
+
+- 15f1014: Advisor answers keep the same skills and model for every step of an answer, so later steps can reuse the prompt cache.
+- 15f1014: The Advisor can run tools it finds through search without changing its tool list mid-answer, behind a setting that is off by default.
+- 15f1014: Project knowledge search returns the passages that match from each source and names how to read a whole source where one can be read; feature lists stop at a size limit and continue on the next page, and feature details arrive as an overview with paged descriptions, acceptance criteria and tasks.
+- 15f1014: Advisor memory keeps each conversation under its main request and summarizes its recent turns instead of only its last message.
+- 15f1014: Protect Advisor conversation summaries and memory preferences with user-scoped database row-level security, including paged history and organization-specific settings requests.
+- 15f1014: Advisor tool search skips the extra agent and integration searches when a tool already matches the request well or the request names a tool exactly, and the tool list in the prompt no longer repeats tools that are already attached.
+- 15f1014: Advisor request logs on routes that send the system prompt as a developer message now record the system prompt in its own section, so prompt changes are attributed correctly.
+- 15f1014: Advisor follow-up answers read more of their prompt from the provider cache, because the parts of the system prompt that change each turn now come after the parts that stay the same.
+- 15f1014: A task whose model runs on an Azure AI Foundry provider other than the default now uses that provider's deployment name instead of the model name.
+- 15f1014: Retrying a failed backlog proposal whose changes are all already on the roadmap now records the retry as the reviewer's approval, so Decision Replay counts it as approved like any other retry.
+- 15f1014: Numbered list items, and list items that follow an item ending in a comma or semicolon, now stay separate when a document is reopened instead of being joined to the item above.
+- 15f1014: Linking meetings to a project now lists the next 14 days of your Teams calendar too, so a new series can be linked, and Parlume set to join it, before it first meets.
+- 15f1014: The conversation memory settings page now pages through all of a user's saved conversations instead of only the 10 newest, and expanded summaries keep their line breaks.
+- 15f1014: Parlume now answers a "Parlume, …" spoken right after another participant's sentence, and answers the person who asked it.
+- 15f1014: Parlume opens a recurring meeting with a short "Since last time" chat post: what the last meeting decided and left open, and what moved since.
+- 15f1014: Planner routing no longer treats words such as "decode" or "transcript" as a request for browser or code execution.
+- 15f1014: Planner routing no longer sends a request to an assigned tool server's full tool list when only a connected integration matched it.
+- 15f1014: While an assistant proposal is being written or reviewed in one tab of a shared document, the document's other open tabs hold still until it is answered: they take no input, do not save, and do not regenerate, restore a version or apply their own assistant's changes, and they say who is reviewing. Leaving the document mid-review, or leaving the proposal unanswered for ten minutes while another tab waits, rejects it, so an unanswered proposal is not saved from another tab.
+- 15f1014: Advisor routing searches integrations when tool search only returned a fallback list, so a request no assigned tool can handle can still reach a matching integration.
+
 ## 1.16.30
 
 ### Patch Changes

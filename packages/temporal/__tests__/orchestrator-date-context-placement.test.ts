@@ -158,14 +158,16 @@ describe("orchestrator initialization date context", () => {
 	});
 
 	it("keeps the date out of the Fabric basePrompt and after the composed prompt", async () => {
-		// Step 4 may replace the whole prompt with Fabric's composedPrompt. The
-		// date must not be in what Fabric receives (it would sit inside the
-		// composed text, i.e. before later segments) and must still land last.
+		// composeFabricPrompt appends enrichment to a supplied base. Under
+		// the stable-prefix marker initialization requests that enrichment
+		// alone, then retains the same combined ordering and trailing date.
 		const COMPOSED_PREFIX = "[Fabric composed]";
 		activityStubs.applyFabricPatternEnrichment.mockImplementation(
 			async ({ basePrompt }: { basePrompt: string }) => ({
 				fabricAvailable: true,
-				composedPrompt: `${COMPOSED_PREFIX}\n\n${basePrompt}`,
+				composedPrompt: [basePrompt, COMPOSED_PREFIX]
+					.filter(Boolean)
+					.join("\n\n"),
 				cacheHits: 0,
 				components: { pattern: "summarize" },
 			}),
@@ -177,7 +179,15 @@ describe("orchestrator initialization date context", () => {
 			activityStubs.applyFabricPatternEnrichment.mock.calls[0][0];
 		expect(basePrompt).not.toContain("Today is ");
 
-		expect(prompt.startsWith(COMPOSED_PREFIX)).toBe(true);
+		expect(prompt.startsWith(`${BASE_PROMPT}\n\n${POLICY_ADDITIONS}`)).toBe(
+			true,
+		);
+		expect(prompt.indexOf(COMPOSED_PREFIX)).toBeGreaterThan(
+			prompt.indexOf(POLICY_ADDITIONS),
+		);
+		expect(prompt.indexOf(COMPOSED_PREFIX)).toBeLessThan(
+			prompt.indexOf(WORKFLOW_GUIDANCE),
+		);
 		const dateIndex = prompt.lastIndexOf("Today is ");
 		expect(prompt.indexOf(WORKFLOW_GUIDANCE)).toBeLessThan(dateIndex);
 		expect(prompt.indexOf(MEMORY_PROMPT)).toBeLessThan(dateIndex);

@@ -174,7 +174,7 @@ describe("listProjectFeatures", () => {
 		);
 		expect(res).toEqual({
 			summary:
-				"41 items on the roadmap matching these filters; 41 items closed and hidden, already excluded from total — report 41, never subtract the hidden count. total covers every page, not just the items below.",
+				"41 items on the roadmap matching these filters; 41 items closed and hidden, already excluded from total — report 41, never subtract the hidden count. total covers every page, not just the items below. Returned 1 of 41 items. Continue with offset=1 and the same filters and sort.",
 			features: [
 				{
 					id: "s-1",
@@ -192,6 +192,7 @@ describe("listProjectFeatures", () => {
 			total: 41,
 			hiddenCount: 41,
 			hasMore: true,
+			nextOffset: 1,
 		});
 	});
 
@@ -252,7 +253,7 @@ describe("listProjectFeatures", () => {
 
 		expect(res).toMatchObject({
 			summary:
-				"1 item, closed items included; declined items are never listed.",
+				"1 item, closed items included; declined items are never listed. Returned 1 of 1 items.",
 		});
 	});
 
@@ -494,4 +495,527 @@ describe("featureIdentifierCandidates", () => {
 	it("leaves a non-identifier reference alone", () => {
 		expect(ids("cm1abcdef")).toEqual(["cm1abcdef"]);
 	});
+});
+
+describe("compact feature results", () => {
+	it("stops a list at the serialized budget and continues at the first omitted row", async () => {
+		const rows = Array.from({ length: 100 }, (_, i) => ({
+			...summary,
+			id: `s-${i}`,
+			identifier: `F-${i}`,
+			title: "Checkout requirement ".repeat(8),
+		}));
+		h.listStorySummaries.mockResolvedValue({ stories: rows, total: 150 });
+		h.storyFindMany.mockResolvedValue(
+			rows.map((r) => ({
+				id: r.id,
+				description: "Detailed requirement ".repeat(20),
+			})),
+		);
+		const result = (await listProjectFeatures(
+			{ limit: 100, offset: 7 },
+			CTX,
+		)) as {
+			features: typeof rows;
+			nextOffset: number;
+			hasMore: boolean;
+			summary: string;
+		};
+		expect(JSON.stringify(result).length).toBeLessThanOrEqual(10000);
+		expect(result.features.length).toBeGreaterThan(0);
+		expect(result.features.length).toBeLessThan(100);
+		expect(result.hasMore).toBe(true);
+		expect(result.nextOffset).toBe(7 + result.features.length);
+		expect(result.features.map((r) => r.id)).toEqual(
+			rows.slice(0, result.features.length).map((r) => r.id),
+		);
+		expect(result.summary).toContain(
+			`Returned ${result.features.length} of 150`,
+		);
+		expect(result.summary).toContain(`offset=${result.nextOffset}`);
+	});
+	it("returns a complete page when it fits", async () => {
+		h.listStorySummaries.mockResolvedValue({
+			stories: [summary],
+			total: 1,
+		});
+		const result = await listProjectFeatures({}, CTX);
+		expect(result).toMatchObject({
+			features: [
+				expect.objectContaining({
+					id: "s-1",
+					title: "Checkout",
+					status: "In Review",
+				}),
+			],
+			hasMore: false,
+		});
+		expect(result).not.toHaveProperty("nextOffset");
+	});
+	it.each([
+		["main text", 18000, 5],
+		["many tasks", 3000, 80],
+	] as const)(
+		"fits detail with %s and marks field cuts",
+		async (_label, chars, tasks) => {
+			const fixture = {
+				...story,
+				description: "Requirement\n".repeat(chars / 12),
+				acceptanceCriteria: "Acceptance\n".repeat(chars / 11),
+				tasks: Array.from({ length: tasks }, (_, i) => ({
+					...story.tasks[1],
+					identifier: `TASK-${i}`,
+					description: "Task implementation details. ".repeat(30),
+				})),
+			};
+			h.getStoryById.mockResolvedValue(fixture);
+			const result = (await getProjectFeature(
+				{ feature: "s-1" },
+				CTX,
+			)) as {
+				truncations: { field: string; shown: number; total: number }[];
+				description: string | null;
+				acceptanceCriteria: string | null;
+				tasks: Array<{ description: string | null }>;
+			};
+			expect(JSON.stringify(result).length).toBeLessThanOrEqual(10000);
+			expect(result.truncations.length).toBeGreaterThan(0);
+			for (const cut of result.truncations) {
+				expect(cut.field).toBeTruthy();
+				if (cut.field === "tasks[].description") {
+					expect(cut).toMatchObject({
+						count: result.tasks.length,
+						next: { section: "tasks", offset: 0 },
+					});
+					continue;
+				}
+				expect(cut.shown).toBeLessThan(cut.total);
+				if (cut.field === "tasks") {
+					expect(cut.shown).toBe(result.tasks.length);
+					expect(cut.total).toBe(fixture.tasks.length);
+				} else {
+					const index = cut.field.match(
+						/^tasks\[(\d+)\]\.description$/,
+					)?.[1];
+					const field = cut.field as
+						| "description"
+						| "acceptanceCriteria";
+					const original =
+						index === undefined
+							? fixture[field].trim()
+							: fixture.tasks[Number(index)].description.trim();
+					const shown =
+						index === undefined
+							? result[field]
+							: result.tasks[Number(index)].description;
+					expect(cut.total).toBe(original.length);
+					expect(cut.shown).toBe(shown ? shown.length - 1 : 0);
+				}
+			}
+			if (_label === "main text") {
+				expect(result.tasks.every((t) => t.description === null)).toBe(
+					true,
+				);
+				expect(result.truncations.map((c) => c.field)).toContain(
+					"description",
+				);
+				expect(result.truncations.map((c) => c.field)).toContain(
+					"acceptanceCriteria",
+				);
+			}
+			expect(
+				result.truncations.some((c) => c.field.startsWith("tasks")),
+			).toBe(true);
+		},
+	);
+	it("preserves a small feature detail exactly", async () => {
+		h.getStoryById.mockResolvedValue(story);
+		expect(await getProjectFeature({ feature: "s-1" }, CTX)).toEqual({
+			id: story.id,
+			identifier: story.identifier,
+			title: story.title,
+			kind: story.kind,
+			onRoadmap: true,
+			status: story.status.name,
+			statusIsFinal: false,
+			priority: story.priority,
+			size: story.size,
+			storyPoints: story.storyPoints,
+			draftingStage: story.draftingStage,
+			description: story.description,
+			acceptanceCriteria: story.acceptanceCriteria,
+			externalUrl: null,
+			tasksSummary: "1/2 tasks done",
+			tasks: [
+				{
+					identifier: "TASK-001",
+					title: "API",
+					isCompleted: true,
+					description: null,
+					subtasks: "0/0 done",
+				},
+				{
+					identifier: "TASK-002",
+					title: "UI",
+					isCompleted: false,
+					description: "Form",
+					subtasks: "1/2 done",
+				},
+			],
+			updatedAt: story.updatedAt,
+		});
+	});
+});
+
+it("retains feature identity when task metadata and cut markers nearly fill the budget", async () => {
+	for (const count of [50, 62, 80, 160]) {
+		h.getStoryById.mockResolvedValue({
+			...story,
+			description: "Requirement ".repeat(250),
+			acceptanceCriteria: "Acceptance ".repeat(250),
+			tasks: Array.from({ length: count }, (_, i) => ({
+				...story.tasks[1],
+				identifier: `TASK-${i}`,
+				description: "Task details ".repeat(60),
+			})),
+		});
+		const result = await getProjectFeature({ feature: "s-1" }, CTX);
+		expect(result, `task count ${count}`).toHaveProperty("id", "s-1");
+		expect(JSON.stringify(result).length).toBeLessThanOrEqual(10000);
+	}
+});
+
+type PageContinuation = {
+	section: "description" | "acceptanceCriteria" | "tasks";
+	offset: number;
+};
+type DetailPage = {
+	content: string;
+	offset: number;
+	hasMore: boolean;
+	nextOffset: number;
+	tasks: Array<{ identifier: string; description: string | null }>;
+};
+type DetailOverview = {
+	description: string;
+	acceptanceCriteria: string;
+	tasks: DetailPage["tasks"];
+	truncations: Array<{
+		field: string;
+		shown: number;
+		total: number;
+		next: PageContinuation;
+	}>;
+};
+
+describe("feature detail continuation", () => {
+	it.each(["description", "acceptanceCriteria"] as const)(
+		"reassembles %s from the overview and character pages",
+		async (section) => {
+			const text = "A launch requirement with emoji 🚀.\n"
+				.repeat(900)
+				.trim();
+			h.getStoryById.mockResolvedValue({
+				...story,
+				[section]: text,
+				tasks: [],
+			});
+			const overview = (await getProjectFeature(
+				{ feature: "s-1" },
+				CTX,
+			)) as DetailOverview;
+			const cut = overview.truncations.find((c) => c.field === section);
+			if (!cut) {
+				throw new Error("Expected an overview text continuation");
+			}
+			expect(cut.next).toEqual({ section, offset: cut.shown });
+			let offset = cut.next.offset;
+			let reconstructed = overview[section].slice(0, -1);
+			do {
+				const page = (await getProjectFeature(
+					{ feature: "s-1", section, offset },
+					CTX,
+				)) as DetailPage;
+				expect(JSON.stringify(page).length).toBeLessThanOrEqual(10000);
+				expect(page.offset).toBe(offset);
+				reconstructed += page.content;
+				if (!page.hasMore) {
+					break;
+				}
+				expect(page.nextOffset).toBeGreaterThan(offset);
+				offset = page.nextOffset;
+			} while (offset < Array.from(text).length);
+			expect(reconstructed).toBe(text);
+		},
+	);
+
+	it("returns a section remainder that fits whole, without a further page", async () => {
+		const criteria = "- a\n- b\n- c";
+		h.getStoryById.mockResolvedValue({
+			...story,
+			acceptanceCriteria: criteria,
+			tasks: [],
+		});
+		const page = (await getProjectFeature(
+			{ feature: "s-1", section: "acceptanceCriteria", offset: 0 },
+			CTX,
+		)) as DetailPage;
+		expect(page.content).toBe(criteria);
+		expect(page.hasMore).toBe(false);
+		expect(page).not.toHaveProperty("nextOffset");
+	});
+
+	it("pages tasks by index and exposes continuations for omitted rows and task descriptions", async () => {
+		const tasks = Array.from({ length: 160 }, (_, i) => ({
+			...story.tasks[1],
+			identifier: `TASK-${i}`,
+			description: "Implementation detail. ".repeat(80),
+		}));
+		h.getStoryById.mockResolvedValue({ ...story, tasks });
+		const overview = (await getProjectFeature(
+			{ feature: "s-1" },
+			CTX,
+		)) as DetailOverview;
+		const cuts = overview.truncations as Array<{
+			field: string;
+			shown: number;
+			total: number;
+			next: { section: string; offset: number };
+		}>;
+		expect(cuts.find((c) => c.field === "tasks")).toMatchObject({
+			shown: overview.tasks.length,
+			total: tasks.length,
+			next: { section: "tasks", offset: overview.tasks.length },
+		});
+		expect(
+			cuts.find((c) => c.field === "tasks[].description")?.next,
+		).toEqual({ section: "tasks", offset: 0 });
+		const read: string[] = [];
+		let offset = 0;
+		do {
+			const page = (await getProjectFeature(
+				{ feature: "s-1", section: "tasks", offset },
+				CTX,
+			)) as DetailPage;
+			expect(JSON.stringify(page).length).toBeLessThanOrEqual(10000);
+			for (const task of page.tasks) {
+				read.push(task.identifier);
+				expect(task.description).toBe(tasks[0].description.trim());
+			}
+			if (!page.hasMore) {
+				break;
+			}
+			expect(page.nextOffset).toBeGreaterThan(offset);
+			offset = page.nextOffset;
+		} while (offset < tasks.length);
+		expect(read).toEqual(tasks.map((t) => t.identifier));
+	});
+
+	it("gives a section continuation when overview metadata alone exceeds the budget", async () => {
+		h.getStoryById.mockResolvedValue({
+			...story,
+			title: "Metadata ".repeat(2000),
+		});
+		const overview = (await getProjectFeature({ feature: "s-1" }, CTX)) as {
+			error: string;
+			next: PageContinuation;
+		};
+		expect(overview.error).toBeTruthy();
+		expect(overview.next).toEqual({ section: "description", offset: 0 });
+		const page = (await getProjectFeature(
+			{ feature: "s-1", ...overview.next },
+			CTX,
+		)) as DetailPage;
+		expect(page.content).toBe(story.description);
+		expect(JSON.stringify(page).length).toBeLessThanOrEqual(10000);
+	});
+
+	it("names a usable feature read when a single list row exceeds the budget", async () => {
+		h.listStorySummaries.mockResolvedValue({
+			stories: [{ ...summary, title: "Metadata ".repeat(2000) }],
+			total: 1,
+		});
+		const result = (await listProjectFeatures({}, CTX)) as Record<
+			string,
+			unknown
+		>;
+		expect(result.error).toContain("fabric_get_project_feature");
+		expect(result.feature).toBe("s-1");
+	});
+
+	it("gives a concrete task and UI action for a task too large to page by index", async () => {
+		h.getStoryById.mockResolvedValue({
+			...story,
+			tasks: [
+				{ ...story.tasks[0], description: "Huge task ".repeat(3000) },
+			],
+		});
+		const result = (await getProjectFeature(
+			{ feature: "s-1", section: "tasks", offset: 0 },
+			CTX,
+		)) as Record<string, unknown>;
+		expect(result.error).toContain("roadmap");
+		expect(result.task).toBe("TASK-001");
+		expect(result.feature).toBe("s-1");
+		expect(JSON.stringify(result).length).toBeLessThanOrEqual(10000);
+	});
+});
+
+it("keeps recovery arguments in error text for the Advisor's string-only error projection", async () => {
+	h.getStoryById.mockResolvedValue({
+		...story,
+		title: "Metadata ".repeat(2000),
+	});
+	const detail = (await getProjectFeature({ feature: "s-1" }, CTX)) as {
+		error: string;
+	};
+	expect(detail.error).toContain(
+		'fabric_get_project_feature({"feature":"s-1","section":"description","offset":0})',
+	);
+	h.listStorySummaries.mockResolvedValue({
+		stories: [{ ...summary, title: "Metadata ".repeat(2000) }],
+		total: 2,
+	});
+	const list = (await listProjectFeatures({}, CTX)) as { error: string };
+	expect(list.error).toContain(
+		'fabric_get_project_feature({"feature":"s-1","section":"description","offset":0})',
+	);
+	expect(list.error).toContain("offset=1");
+	h.getStoryById.mockResolvedValue({
+		...story,
+		tasks: [
+			{ ...story.tasks[0], description: "Huge task ".repeat(3000) },
+			story.tasks[1],
+		],
+	});
+	const tasks = (await getProjectFeature(
+		{ feature: "s-1", section: "tasks", offset: 0 },
+		CTX,
+	)) as { error: string };
+	expect(tasks.error).toContain("TASK-001");
+	expect(tasks.error).toContain("F-040");
+	expect(tasks.error).toContain(
+		'fabric_get_project_feature({"feature":"s-1","section":"tasks","offset":1})',
+	);
+});
+
+it("aggregates task description omissions without spending the main text budget on per-task notes", async () => {
+	const tasks = Array.from({ length: 40 }, (_, i) => ({
+		...story.tasks[1],
+		identifier: `TASK-${i}`,
+		description: "T".repeat(900),
+	}));
+	h.getStoryById.mockResolvedValue({
+		...story,
+		description: "D".repeat(2500),
+		acceptanceCriteria: "A".repeat(1000),
+		tasks,
+	});
+	const result = (await getProjectFeature(
+		{ feature: "s-1" },
+		CTX,
+	)) as DetailOverview;
+	expect(result.description).toBe("D".repeat(2500));
+	expect(result.acceptanceCriteria).toBe("A".repeat(1000));
+	expect(result.tasks).toHaveLength(40);
+	expect(result.truncations).toEqual([
+		{
+			field: "tasks[].description",
+			count: 40,
+			next: { section: "tasks", offset: 0 },
+		},
+	]);
+	expect(JSON.stringify(result.truncations).length).toBeLessThan(150);
+	expect(JSON.stringify(result).length).toBeLessThanOrEqual(10000);
+});
+
+it("uses Unicode characters for the task description opening cap", async () => {
+	const description = `😀${"x".repeat(400)}`;
+	h.getStoryById.mockResolvedValue({
+		...story,
+		tasks: [{ ...story.tasks[1], description }],
+	});
+	const result = (await getProjectFeature(
+		{ feature: "s-1" },
+		CTX,
+	)) as DetailOverview;
+	expect(result.tasks[0].description).toBe(`😀${"x".repeat(298)}…`);
+});
+
+it("reconstructs overview text with an astral character exactly across the cut", async () => {
+	const fixture = {
+		...story,
+		description: "x".repeat(18000),
+		acceptanceCriteria: null,
+		tasks: [],
+	};
+	h.getStoryById.mockResolvedValue(fixture);
+	const baseline = (await getProjectFeature(
+		{ feature: "s-1" },
+		CTX,
+	)) as DetailOverview;
+	const baselineCut = baseline.truncations.find(
+		(c) => c.field === "description",
+	);
+	if (!baselineCut) {
+		throw new Error("Expected an overview continuation");
+	}
+	const boundary = baselineCut.shown;
+	const text = `${"x".repeat(boundary - 1)}😀${"y".repeat(18000 - boundary)}`;
+	h.getStoryById.mockResolvedValue({ ...fixture, description: text });
+	const overview = (await getProjectFeature(
+		{ feature: "s-1" },
+		CTX,
+	)) as DetailOverview;
+	const cut = overview.truncations.find((c) => c.field === "description");
+	if (!cut) {
+		throw new Error("Expected an overview continuation");
+	}
+	let reconstructed = overview.description.slice(0, -1);
+	expect(reconstructed).not.toMatch(/[\uD800-\uDBFF]$/);
+	expect(Array.from(reconstructed)).toHaveLength(cut.shown);
+	let offset = cut.next.offset;
+	for (;;) {
+		const page = (await getProjectFeature(
+			{ feature: "s-1", section: "description", offset },
+			CTX,
+		)) as DetailPage;
+		reconstructed += page.content;
+		if (!page.hasMore) {
+			break;
+		}
+		offset = page.nextOffset;
+	}
+	expect(reconstructed).toBe(text);
+});
+
+it("starts the grouped task continuation at the first affected index", async () => {
+	h.getStoryById.mockResolvedValue({
+		...story,
+		tasks: [
+			{ ...story.tasks[1], description: "Short" },
+			{ ...story.tasks[1], description: null },
+			{ ...story.tasks[1], description: "Long".repeat(100) },
+			{ ...story.tasks[1], description: "Longer".repeat(100) },
+		],
+	});
+	const result = (await getProjectFeature(
+		{ feature: "s-1" },
+		CTX,
+	)) as DetailOverview;
+	expect(result.truncations).toEqual([
+		{
+			field: "tasks[].description",
+			count: 2,
+			next: { section: "tasks", offset: 2 },
+		},
+	]);
+	const page = (await getProjectFeature(
+		{ feature: "s-1", ...result.truncations[0].next },
+		CTX,
+	)) as DetailPage;
+	expect(page.tasks.map((t) => t.description)).toEqual([
+		"Long".repeat(100),
+		"Longer".repeat(100),
+	]);
 });

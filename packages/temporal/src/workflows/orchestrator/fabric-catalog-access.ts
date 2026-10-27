@@ -91,14 +91,21 @@ const LOOP_BUILT_IN_READ_TOOLS = new Set([
 	"workspace_rag_query",
 	"workspace_rag_summarize",
 	"search_tools",
+	"get_tool_schema",
 	"search_slack_messages",
 	"search_teams_messages",
 	"fabric_list_meeting_transcripts",
 ]);
 
 /** Whether the loop runs this tool itself rather than through MCP. */
-export function isLoopBuiltInReadTool(name: string): boolean {
-	return LOOP_BUILT_IN_READ_TOOLS.has(name);
+export function isLoopBuiltInReadTool(
+	name: string,
+	toolSchemaEnabled = true,
+): boolean {
+	return (
+		(name !== "get_tool_schema" || toolSchemaEnabled) &&
+		LOOP_BUILT_IN_READ_TOOLS.has(name)
+	);
 }
 
 /**

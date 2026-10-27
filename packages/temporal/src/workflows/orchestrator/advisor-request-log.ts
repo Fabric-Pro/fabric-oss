@@ -5,6 +5,8 @@ import {
 } from "@repo/ai/lib/request-shape";
 import { chargedConversationInputTokens } from "@repo/utils/conversation-turn-charge";
 import { log } from "@temporalio/workflow";
+import type { AdvisorAnswerUpdate } from "./advisor-answer-snapshot";
+import type { SecondaryToolSearchRunReason } from "./tool-search-relevance";
 import type { WorkflowState } from "./types";
 
 const TOKEN_FIELDS = [
@@ -72,6 +74,8 @@ export function recordAdvisorTurnSummary(state: WorkflowState): void {
 		historyDecision: state.advisorHistoryDecision,
 		mainRounds: totals.mainRounds,
 		toolLoading: toolLoadingSummary(state),
+		toolsHash: state.advisorToolLoading?.initialToolsHash,
+		reusableSystemHash: state.advisorReusableSystemHash,
 		chargedInputTokens: totals.chargedInputTokens,
 		chargedTokens: state.turnLedger
 			? state.turnLedger.measured + state.turnLedger.outstanding
@@ -101,14 +105,35 @@ export function recordAdvisorTurnSummary(state: WorkflowState): void {
 			!state.pendingHandoff,
 	});
 }
-/** Older activity results contain neither of these optional diagnostic fields. */
+/** Older activity results can omit these diagnostic fields. */
 export function recordAdvisorRequests(
 	state: WorkflowState,
 	result: {
+		answerUpdate?: AdvisorAnswerUpdate;
+		reusableSystemHash?: string;
 		requests?: ModelRequestObservation[];
 		requestSizing?: { extraInputTokens: number; contextWindow?: number };
 	},
 ): void {
+	state.advisorReusableSystemHash ??= result.reusableSystemHash;
+	if (state.advisorAnswerSnapshot && result.answerUpdate) {
+		if (result.answerUpdate.model) {
+			state.advisorAnswerSnapshot = {
+				...state.advisorAnswerSnapshot,
+				model: result.answerUpdate.model,
+			};
+		}
+		if (result.answerUpdate.changes?.length) {
+			const m = toolMetrics(state);
+			m.routeChanges ??= [];
+			m.routeChanges.push(
+				...result.answerUpdate.changes.map((change) => ({
+					...change,
+					round: state.currentIteration,
+				})),
+			);
+		}
+	}
 	if (result.requestSizing) {
 		state.advisorRequestSizing = result.requestSizing;
 	}
@@ -126,7 +151,13 @@ export function recordAdvisorRequests(
 		state.advisorPreviousCacheReadTokens = undefined;
 	}
 	for (const request of result.requests ?? []) {
-		recordToolRequest(state, request);
+		// A synthesis deliberately sends no tools; it is outside the main-loop list contract.
+		if (
+			!state.advisorCallToolMode ||
+			request.fingerprint.tools.length > 0
+		) {
+			recordToolRequest(state, request);
+		}
 		if (
 			state.advisorBoundedHistoryV2Enabled ||
 			state.advisorWeightedAllowanceEnabled
@@ -237,6 +268,8 @@ export function recordAdvisorFailureRequests(
 			const diagnostics = (
 				detail as {
 					advisorRequestDiagnosticsV1?: {
+						answerUpdate?: AdvisorAnswerUpdate;
+						reusableSystemHash?: string;
 						requests?: ModelRequestObservation[];
 					};
 				} | null
@@ -257,10 +290,37 @@ export interface AdvisorToolSearch {
 	added: string[];
 	changed: string[];
 	executedAdded: string[];
-	agentSearch: { ran: boolean; tools: string[]; used: string[] };
-	integrationSearch: { ran: boolean; tools: string[]; used: string[] };
+	agentSearch: {
+		ran: boolean;
+		reason?: SecondaryToolSearchRunReason;
+		skipped?: "exact_tool_name" | "unrelated";
+		tools: string[];
+		used: string[];
+	};
+	integrationSearch: {
+		ran: boolean;
+		reason?: SecondaryToolSearchRunReason;
+		skipped?: "exact_tool_name" | "unrelated";
+		tools: string[];
+		used: string[];
+	};
 }
 export interface AdvisorToolLoadingMetrics {
+	callToolCalls?: number;
+	getToolSchemaCalls?: number;
+	refusals?: Partial<
+		Record<import("./advisor-call-tool").RefusalReason, number>
+	>;
+	bindingConflicts?: number;
+	snapshotFailures?: Array<{
+		cause: "snapshot_unavailable";
+		errorType: string;
+	}>;
+	routeChanges?: Array<
+		import("@repo/ai/lib/answer-model-snapshot").AnswerRouteChange & {
+			round: number;
+		}
+	>;
 	catalog: string[];
 	initialNames: string[];
 	initialToolCount?: number;
@@ -307,6 +367,34 @@ function toolMetrics(state: WorkflowState): AdvisorToolLoadingMetrics {
 		pendingSearchChanges: [],
 	};
 	return state.advisorToolLoading;
+}
+/** Snapshot failures carry type metadata only; provider error messages stay out of summaries. */
+export function recordAdvisorSnapshotFailure(
+	state: WorkflowState,
+	error: unknown,
+): string {
+	const seen = new Set<unknown>();
+	let cursor = error;
+	let errorType = "UnknownError";
+	while (cursor && typeof cursor === "object" && !seen.has(cursor)) {
+		seen.add(cursor);
+		const failure = cursor as {
+			type?: unknown;
+			name?: unknown;
+			cause?: unknown;
+		};
+		if (typeof failure.type === "string") {
+			errorType = failure.type;
+		} else if (typeof failure.name === "string") {
+			errorType = failure.name;
+		}
+		cursor = failure.cause;
+	}
+	errorType = errorType.slice(0, 80);
+	const m = toolMetrics(state);
+	m.snapshotFailures ??= [];
+	m.snapshotFailures.push({ cause: "snapshot_unavailable", errorType });
+	return errorType;
 }
 export function recordAdvisorToolCatalog(
 	state: WorkflowState,
@@ -367,9 +455,11 @@ export function finishAdvisorToolSearch(
 		);
 	const visibleBefore = visible(before);
 	const visibleAfter = visible(after);
-	search.added = Object.keys(visibleAfter).filter(
-		(name) => !(name in visibleBefore),
-	);
+	if (!state.advisorCallToolMode) {
+		search.added = Object.keys(visibleAfter).filter(
+			(name) => !(name in visibleBefore),
+		);
+	}
 	search.changed = Object.keys(visibleAfter).filter(
 		(name) =>
 			JSON.stringify(visibleAfter[name]) !==
@@ -384,13 +474,16 @@ export function finishAdvisorToolSearch(
 export function recordAdvisorToolExecution(
 	state: WorkflowState,
 	name: string,
+	provenance?: "initial" | "discovery",
 ): void {
 	const m = toolMetrics(state);
-	const origin = m.initialNames.includes(name)
-		? "initial"
-		: m.searches.some((s) => s.added.includes(name))
-			? "discovery"
-			: "other";
+	const origin =
+		provenance ??
+		(m.initialNames.includes(name)
+			? "initial"
+			: m.searches.some((s) => s.added.includes(name))
+				? "discovery"
+				: "other");
 	const execution = m.executions.find(
 		(e) => e.name === name && e.origin === origin,
 	);
@@ -511,6 +604,18 @@ function toolLoadingSummary(state: WorkflowState) {
 		const executedAdded = sampleNames(search.executedAdded);
 		return {
 			round: search.round,
+			...(search.agentSearch.reason
+				? { agentSearchReason: search.agentSearch.reason }
+				: {}),
+			...(search.integrationSearch.reason
+				? { integrationSearchReason: search.integrationSearch.reason }
+				: {}),
+			...(search.agentSearch.skipped
+				? { agentSearchSkipped: search.agentSearch.skipped }
+				: {}),
+			...(search.integrationSearch.skipped
+				? { integrationSearchSkipped: search.integrationSearch.skipped }
+				: {}),
 			added,
 			addedCount: search.added.length,
 			addedMore: search.added.length - added.length,
@@ -525,6 +630,18 @@ function toolLoadingSummary(state: WorkflowState) {
 		ADVISOR_TOOL_SUMMARY_NAME_LIMIT,
 	);
 	return {
+		...(state.advisorCallToolMode
+			? {
+					callToolCalls: m.callToolCalls ?? 0,
+					getToolSchemaCalls: m.getToolSchemaCalls ?? 0,
+					refusals: m.refusals ?? {},
+					bindingConflicts: m.bindingConflicts ?? 0,
+				}
+			: {}),
+		...(m.snapshotFailures?.length
+			? { snapshotFailures: m.snapshotFailures }
+			: {}),
+		...(m.routeChanges?.length ? { routeChanges: m.routeChanges } : {}),
 		initialToolCount: m.initialToolCount,
 		initialSchemaBytes: m.initialSchemaBytes,
 		initialToolsHash: m.initialToolsHash,
@@ -534,6 +651,11 @@ function toolLoadingSummary(state: WorkflowState) {
 		changes: m.changes,
 		searchToolsCalls: m.searches.length,
 		searches,
+		agentSearchSkips: m.searches.filter((s) => s.agentSearch.skipped)
+			.length,
+		integrationSearchSkips: m.searches.filter(
+			(s) => s.integrationSearch.skipped,
+		).length,
 		agentSearchRuns: m.searches.filter((s) => s.agentSearch.ran).length,
 		agentSearchRunsUsed: m.searches.filter(
 			(s) => s.agentSearch.used.length > 0,

@@ -34,6 +34,7 @@ export async function POST(request: NextRequest) {
 			organizationId: true,
 			projectId: true,
 			toolsReadOnly: true,
+			linkedMeetingId: true,
 		},
 	});
 	if (
@@ -97,6 +98,13 @@ export async function POST(request: NextRequest) {
 				},
 			});
 		});
+		// A meeting of a linked series opens with one "Since last time" post.
+		if (session.linkedMeetingId) {
+			after(async () => {
+				const { startParlumeRecap } = await import("../recap");
+				await startParlumeRecap(id);
+			});
+		}
 	}
 	return NextResponse.json({
 		valid: true,

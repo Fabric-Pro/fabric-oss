@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	findMany: vi.fn(),
+	pageFindMany: vi.fn(),
+	transaction: vi.fn(),
+	count: vi.fn(),
 	turnCounts: vi.fn(),
 	preferences: vi.fn(),
 	projectAccess: vi.fn(),
@@ -9,11 +12,17 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("../prisma/client", () => ({
 	db: {
+		$transaction: mocks.transaction,
 		conversationTurn: { groupBy: mocks.turnCounts },
-		episodicMemory: { findMany: mocks.findMany },
+		episodicMemory: { findMany: mocks.findMany, count: mocks.count },
 		orchestratorMemoryPreferences: { findFirst: mocks.preferences },
 	},
 }));
+vi.mock("../src/tenant-db", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../src/tenant-db")>();
+	const { db } = await import("../prisma/client");
+	return { ...actual, getTenantDb: () => db };
+});
 vi.mock("../prisma/queries/projects/projects", () => ({
 	hasProjectAccess: mocks.projectAccess,
 }));
@@ -25,6 +34,7 @@ import {
 	buildOrchestratorMemoryContext,
 	type EpisodeSummary,
 	filterAccessibleMemoryScopes,
+	getEpisodesPage,
 	getProjectEpisodes,
 	getRecentEpisodes,
 	getWorkspaceEpisodes,
@@ -60,6 +70,15 @@ function episode(
 beforeEach(() => {
 	vi.resetAllMocks();
 	mocks.findMany.mockResolvedValue([]);
+	mocks.transaction.mockImplementation(async (callback) =>
+		callback({
+			episodicMemory: {
+				findMany: mocks.pageFindMany,
+				count: mocks.count,
+			},
+			$executeRawUnsafe: async () => 0,
+		}),
+	);
 	mocks.turnCounts.mockResolvedValue([]);
 	mocks.preferences.mockResolvedValue({
 		preferences: {},
@@ -316,4 +335,110 @@ describe("recorded turns for repeat collapse", () => {
 			result.context.relevantEpisodes.map((episode) => episode.id),
 		).toEqual(["new", "short-a", "short-b", "other-scope", "unique"]);
 	});
+});
+
+describe("settings episode pagination", () => {
+	it.each(["example-org", null])(
+		"pages after access filtering and counts only accessible rows (%s)",
+		async (organizationId) => {
+			const rows = [
+				episode("example-revoked", "example-revoked-project"),
+				episode("example-first", "example-project"),
+				episode(
+					"example-revoked-workspace",
+					null,
+					"example-revoked-workspace",
+				),
+				episode(
+					"example-second",
+					"example-project",
+					"example-workspace",
+				),
+				episode("example-third"),
+			];
+			const where = {
+				userId: "example-user",
+				organizationId,
+				AND: [
+					{
+						OR: [
+							{ projectId: null },
+							{ projectId: { in: ["example-project"] } },
+						],
+					},
+					{
+						OR: [
+							{ workspaceId: null },
+							{ workspaceId: { in: ["example-workspace"] } },
+						],
+					},
+				],
+			};
+			// Validate the Prisma boundary, then supply the matching ordered rows.
+			mocks.findMany.mockImplementation(async (args) => {
+				expect(args).toEqual({
+					where: { userId: "example-user", organizationId },
+					select: { projectId: true, workspaceId: true },
+					distinct: ["projectId", "workspaceId"],
+				});
+				return rows;
+			});
+			mocks.pageFindMany.mockImplementation(async (args) => {
+				expect(args.where).toEqual(where);
+				expect(args.orderBy).toEqual([
+					{ conversationEndedAt: "desc" },
+					{ id: "desc" },
+				]);
+				return [rows[1], rows[3], rows[4]].slice(
+					args.skip,
+					args.skip + args.take,
+				);
+			});
+			mocks.count.mockImplementation(async (args) => {
+				expect(args).toEqual({ where });
+				return 3;
+			});
+			mocks.projectAccess.mockImplementation(
+				async (id) => id === "example-project",
+			);
+			mocks.workspaceAccess.mockImplementation(async (id) => {
+				if (id === "example-revoked-workspace") {
+					throw new Error("unavailable");
+				}
+				return true;
+			});
+			const first = await getEpisodesPage(
+				"example-user",
+				organizationId,
+				2,
+				0,
+			);
+			expect(first.episodes.map((row) => row.id)).toEqual([
+				"example-first",
+				"example-second",
+			]);
+			expect(first.total).toBe(3);
+			expect(mocks.transaction).toHaveBeenCalledExactlyOnceWith(
+				expect.any(Function),
+				{ isolationLevel: "RepeatableRead" },
+			);
+			expect(mocks.projectAccess).toHaveBeenCalledTimes(2);
+			expect(mocks.workspaceAccess).toHaveBeenCalledTimes(2);
+			expect(mocks.projectAccess).toHaveBeenCalledWith(
+				"example-project",
+				"example-user",
+				organizationId ?? undefined,
+			);
+			const second = await getEpisodesPage(
+				"example-user",
+				organizationId,
+				2,
+				2,
+			);
+			expect(second.episodes.map((row) => row.id)).toEqual([
+				"example-third",
+			]);
+			expect(second.total).toBe(3);
+		},
+	);
 });

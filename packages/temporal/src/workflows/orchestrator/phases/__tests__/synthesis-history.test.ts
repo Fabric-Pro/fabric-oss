@@ -172,7 +172,7 @@ describe("budget-exhausted synthesis wiring", () => {
 			'const keepSynthesisTurnMessages = patched("orch-keep-turn-synthesis-v1");',
 		);
 		expect(source).toMatch(
-			/const synthesisHistory = compactSynthesis\s*\?\s*\(?keepSynthesisTurnMessages\s*\?\s*buildSynthesisHistory\(conversationHistory, true\)\s*:\s*buildSynthesisHistory\(conversationHistory\)\)?\s*:\s*conversationHistory;/,
+			/const synthesisHistory = compactSynthesis\s*\?\s*\(?keepSynthesisTurnMessages\s*\?\s*buildSynthesisHistory\(\s*conversationHistory,\s*true,\s*state.advisorEffectiveCalls,?\s*\)\s*:\s*buildSynthesisHistory\(\s*conversationHistory,\s*false,\s*state.advisorEffectiveCalls,?\s*\)\)?\s*:\s*conversationHistory;/,
 		);
 	});
 

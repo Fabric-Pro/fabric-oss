@@ -135,6 +135,17 @@ rounds. The activity's map conversion preserves message indices; vision alters
 parts only, and the host note is appended after marking. Without round tags,
 only the rolling history anchor is used.
 
+With `ADVISOR_TOOL_LOADING=call_tool`, new runs keep the provider's tool list
+fixed for the whole answer. `search_tools` returns tool definitions as text
+instead of attaching the tools, and two fixed tools act on what it found:
+`get_tool_schema` returns a found tool's definition and `call_tool` runs it.
+`call_tool` reaches only tools the request itself offered, or that search
+returned on an earlier request of the same answer, with the first binding kept.
+The real tool is resolved before risk checks, approval and dispatch, and history
+keeps the `call_tool` wrapper. Leave the setting unset in shared environments
+until tool bindings are re-checked right before dispatch and tool arguments are
+validated against the tool's schema.
+
 With `ADVISOR_HISTORY_RETENTION=bounded`, new runs retain earlier tool results
 until the decision below selects a rewrite. A reset keeps the last three tool
 pairs, the existing recent-iteration exemption, skill bodies, paged source

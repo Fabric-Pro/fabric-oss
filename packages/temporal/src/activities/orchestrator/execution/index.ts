@@ -89,6 +89,7 @@ export {
 	type RunAgentIterationInput,
 	runAgentIteration,
 } from "./run-agent-iteration";
+export { snapshotAdvisorAnswerActivity } from "./snapshot-advisor-answer";
 export {
 	type ExecuteStrategyInput,
 	type ExecuteStrategyOutput,

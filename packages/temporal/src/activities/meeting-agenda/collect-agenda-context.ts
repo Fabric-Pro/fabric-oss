@@ -1,6 +1,10 @@
 import { db, tenantWhere } from "@repo/database";
 import { logger } from "@repo/logs";
 import { heartbeat } from "@temporalio/activity";
+import {
+	findPriorSeriesTranscripts,
+	readTextItems,
+} from "./prior-series-transcripts";
 
 /**
  * Context assembly for pre-meeting agenda generation (#1901).
@@ -98,26 +102,6 @@ export interface AgendaContext {
 	};
 }
 
-/**
- * Meeting insight columns are Json, written by extract-meeting-insights against
- * meetingDecisionSchema / meetingOpenQuestionSchema. They predate any runtime
- * validation on read, so treat them as untrusted: a malformed blob must degrade
- * to an empty list, never abort agenda generation.
- */
-function readTextItems(value: unknown): string[] {
-	if (!Array.isArray(value)) return [];
-	return value
-		.map((item) =>
-			item && typeof item === "object" && "text" in item
-				? (item as { text?: unknown }).text
-				: undefined,
-		)
-		.filter(
-			(text): text is string =>
-				typeof text === "string" && text.length > 0,
-		);
-}
-
 /** Takes cap+1 rows so truncation is detectable rather than assumed. */
 function applyCap<T>(
 	rows: T[],
@@ -145,13 +129,8 @@ export async function collectAgendaContextActivity(
 
 	heartbeat(`collectAgendaContext: ${linkedMeetingId}`);
 
-	// Half-open window, [floor, occurrenceStart). The exclusive upper bound is
-	// what stops a meeting being fed its OWN transcript as history: generateAgenda
-	// allows generation up to an hour after the occurrence starts, by which point
-	// that transcript may already have synced. Both bounds also exclude rows with
-	// a NULL meetingDate — which matters more than it looks, because Postgres
-	// sorts NULLs FIRST on `ORDER BY meetingDate DESC`, so before this filter
-	// three undated transcripts could displace every real occurrence.
+	// Half-open window, [floor, occurrenceStart): see findPriorSeriesTranscripts
+	// for why both bounds matter.
 	const windowFloor = new Date(
 		occurrenceStart.getTime() -
 			PRIOR_MEETING_WINDOW_DAYS * 24 * 60 * 60 * 1000,
@@ -162,41 +141,15 @@ export async function collectAgendaContextActivity(
 	// scan below must exclude. Sequencing costs one extra round trip; the
 	// collector benchmarks flat at ~2ms across 0-5 occurrences, so this is not
 	// where the time goes.
-	const transcripts = await db.projectMeetingTranscript.findMany({
-		where: {
-			projectId,
-			linkedMeetingId,
-			project: tenant,
-			meetingDate: { gte: windowFloor, lt: occurrenceStart },
-		},
-		orderBy: { meetingDate: "desc" },
+	const transcripts = await findPriorSeriesTranscripts({
+		projectId,
+		organizationId,
+		userId,
+		linkedMeetingId,
+		since: windowFloor,
+		before: occurrenceStart,
 		take: PRIOR_MEETING_CAP,
-		select: {
-			id: true,
-			meetingSubject: true,
-			meetingDate: true,
-			summary: true,
-			extractedDecisions: true,
-			extractedQuestions: true,
-			// Old business (#2105 FR2). Nested rather than a separate query: the
-			// index path is already there — @@index([linkedMeetingId]) on the
-			// transcript, @@index([transcriptId]) on the item. Tenancy comes from
-			// the parent's `project: tenant` filter, matching how the project-wide
-			// scan below reaches tenancy through a relation.
-			actionItems: {
-				where: { completedAt: null },
-				orderBy: { orderIndex: "asc" },
-				// Bound the READ, not just the flattened result: one pathological
-				// meeting must not pull thousands of rows.
-				take: CARRIED_ITEM_CAP + 1,
-				select: {
-					id: true,
-					text: true,
-					tentativeOwnerName: true,
-					dueHint: true,
-				},
-			},
-		},
+		actionItemCap: CARRIED_ITEM_CAP,
 	});
 
 	// Old business, newest occurrence first — `transcripts` is already ordered

@@ -1,0 +1,103 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`preserves the pre-change combined prompt {"company":true} 1`] = `
+"Example persona
+
+Policy instructions
+
+Integration guidance
+
+Company context hint
+
+Today is Tuesday, October 20, 2026."
+`;
+
+exports[`preserves the pre-change combined prompt {"instance":true} 1`] = `
+"Example persona
+
+Policy instructions
+
+Instance skills
+
+Integration guidance
+
+Today is Tuesday, October 20, 2026."
+`;
+
+exports[`preserves the pre-change combined prompt {"memory":"<orchestrator_memory>Example memory</orchestrator_memory>"} 1`] = `
+"Example persona
+
+Policy instructions
+
+Integration guidance
+
+<orchestrator_memory>Example memory</orchestrator_memory>
+
+Today is Tuesday, October 20, 2026."
+`;
+
+exports[`preserves the pre-change combined prompt {"pattern":"Pattern text"} 1`] = `
+"Example persona
+
+Policy instructions
+
+Pattern text
+
+Integration guidance
+
+Today is Tuesday, October 20, 2026."
+`;
+
+exports[`preserves the pre-change combined prompt {"project":true,"memory":"<orchestrator_memory>Example memory</orchestrator_memory>","pattern":"Pattern text","instance":true,"company":true} 1`] = `
+"Example persona
+
+Policy instructions
+
+<project_context>
+Project: Example project
+This conversation is attached to the project "Example project". "This project", "the project" or "our project" means it — use it without asking which project.
+Description: Example description
+Available contexts: 2, Generated documents: 2
+Use the project_rag_query tool to search for detailed project context when needed.
+</project_context>
+
+Instance skills
+
+Pattern text
+
+Integration guidance
+
+<orchestrator_memory>Example memory</orchestrator_memory>
+
+Company context hint
+
+Today is Tuesday, October 20, 2026."
+`;
+
+exports[`preserves the pre-change combined prompt {"project":true} 1`] = `
+"Example persona
+
+Policy instructions
+
+<project_context>
+Project: Example project
+This conversation is attached to the project "Example project". "This project", "the project" or "our project" means it — use it without asking which project.
+Description: Example description
+Available contexts: 2, Generated documents: 2
+Use the project_rag_query tool to search for detailed project context when needed.
+</project_context>
+
+Integration guidance
+
+Today is Tuesday, October 20, 2026."
+`;
+
+exports[`preserves the pre-change combined prompt {} 1`] = `
+"Example persona
+
+Policy instructions
+
+Integration guidance
+
+Today is Tuesday, October 20, 2026."
+`;

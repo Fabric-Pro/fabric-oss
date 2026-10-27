@@ -267,8 +267,16 @@ Never add AI attribution or generated-by footers. Follow
 [CONTRIBUTING.md](CONTRIBUTING.md) and the
 [pull-request template](.github/PULL_REQUEST_TEMPLATE.md).
 
-While private staging release is enabled (`STAGING_RELEASE_ENABLED`), feature
-work lands on the protected `staging` integration branch, not `master`. The
+### Public contributors
+
+Contributors working only in the public repository follow
+[CONTRIBUTING.md](CONTRIBUTING.md) and open PRs against `master`. The `staging`,
+branch-update, and merge rules below do not apply to them.
+
+### Maintainers and internal developers
+
+While private staging release is enabled (`STAGING_RELEASE_ENABLED`), internal
+feature work lands on the protected `staging` integration branch, not `master`. The
 release-cycle runbook in the ops repository is authoritative and changes; read
 it before delivering.
 Complete that runbook's outgoing publication preflight before the first relay;
@@ -284,7 +292,11 @@ report all blockers together and rerun after changes.
 - A PR that is merely behind `staging` merges as is; do not update it just to
   catch up. Resolve a real conflict by merging `staging` in
   (`gh pr update-branch`), never a rebase or force-push.
-- Developers do not open OSS PRs or post `/relay`.
+- Internal work continues through `staging`, without developer-posted `/relay`.
+  Review public PRs in the public repository and import approved commits; direct
+  merges into public `master` are reserved for the maintainer emergency exception
+  documented in [CONTRIBUTING.md](CONTRIBUTING.md#how-your-pull-request-lands).
+  The contribution import runbook in the ops repository holds the import steps.
 - A merged PR is not a deployment. Verify the staging deployment of that exact
   revision before calling ordinary feature work deployed on staging. Batch
   release candidates use immutable CI-only validation and do not require a

@@ -39,6 +39,9 @@ const INTEGRATION_TESTS = [
 	// Advisor turn saves racing on one conversation under a row lock
 	// (Fizzy #2949); a mocked client cannot show the lock honoured.
 	"__tests__/save-conversation-turn.integration.test.ts",
+	// Episode creation races require real unique-index and row-lock contention.
+	"__tests__/orchestrator-memory-concurrency.integration.test.ts",
+	"__tests__/advisor-memory-queries.integration.test.ts",
 	// PM-sync status writes outside a run: which rows a NULL-aware
 	// "not PENDING" predicate matches (a mocked client cannot show SQL's
 	// three-valued comparison).

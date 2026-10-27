@@ -57,7 +57,10 @@ import { VersionDiffViewer } from "./VersionDiffViewer";
  * queued or writing the document, which refuses the restore anyway, or this
  * tab's own regeneration is under way or waiting for its review.
  */
-export type RestoreBlockedReason = "runLive" | "regenerating";
+export type RestoreBlockedReason =
+	| "runLive"
+	| "regenerating"
+	| "proposalElsewhere";
 
 interface DocumentVersionHistoryProps {
 	open: boolean;
@@ -157,7 +160,9 @@ export function DocumentVersionHistory({
 			? t("restoreBlocked.runLive")
 			: restoreBlockedReason === "regenerating"
 				? t("restoreBlocked.regenerating")
-				: null;
+				: restoreBlockedReason === "proposalElsewhere"
+					? t("restoreBlocked.proposalElsewhere")
+					: null;
 	const restoreBlocked = restoreBlockedText !== null;
 	const rowRestoreBlockedId = useId();
 	const dialogRestoreBlockedId = useId();

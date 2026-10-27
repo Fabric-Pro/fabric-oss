@@ -32,7 +32,9 @@ function addressedText(text: string, toBot: boolean): string | null {
 	if (mention) {
 		return text.slice(mention[0].length).trim();
 	}
-	const wake = parseParlumeWake(text);
+	// A typed message has one author and its address up front; a "Parlume,"
+	// further on is more likely quoted or pasted than said to Parlume.
+	const wake = parseParlumeWake(text, { midTurn: false });
 	if (wake !== null) {
 		return wake;
 	}

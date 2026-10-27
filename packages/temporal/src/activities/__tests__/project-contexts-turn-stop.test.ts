@@ -10,12 +10,14 @@
  */
 
 import { getDispatchGuard } from "@repo/utils/dispatch-guard";
+import { log } from "@temporalio/activity";
 import { ApplicationFailure } from "@temporalio/common";
 import { MockActivityEnvironment } from "@temporalio/testing";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	retrieveProjectContexts: vi.fn(),
+	contextMetaHeader: vi.fn(() => ""),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -29,7 +31,7 @@ vi.mock("@repo/database", () => ({
 
 vi.mock("@repo/rag", () => ({
 	retrieveProjectContexts: mocks.retrieveProjectContexts,
-	contextMetaHeader: () => "",
+	contextMetaHeader: mocks.contextMetaHeader,
 }));
 
 import type { SecondaryUsageInput } from "../../workflows/orchestrator/usage-attribution";
@@ -66,11 +68,12 @@ function retrieve(
 		TURN_SCOPE.organizationId,
 		5,
 		options,
-	);
+	) as Promise<{ context: string; chunkCount: number }>;
 }
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mocks.contextMetaHeader.mockReturnValue("");
 });
 
 describe("retrieveProjectContextsActivity", () => {
@@ -159,4 +162,181 @@ describe("retrieveProjectContextsActivity", () => {
 			chunkCount: 0,
 		});
 	});
+});
+
+describe("compact project knowledge results", () => {
+	it("returns matched passages with eight large sources inside the serialized budget", async () => {
+		const sources = Array.from({ length: 8 }, (_, i) => ({
+			id: `source-${i}`,
+			type: "TEXT",
+			filename: `plan-${i}.md`,
+			content: "WHOLE BODY ".repeat(2000),
+			matchedPassages: [
+				{
+					content: `BEST-${i} ${"matching requirement\n".repeat(150)}`,
+					score: 1 - i / 100,
+				},
+				{
+					content: `EXTRA-${i} ${"supporting detail\n".repeat(60)}`,
+					score: 0.5 - i / 100,
+				},
+			],
+		}));
+		mocks.retrieveProjectContexts.mockResolvedValue(sources);
+		const result = await retrieve();
+		expect(result.context).not.toContain("WHOLE BODY");
+		expect(JSON.stringify(result).length).toBeLessThanOrEqual(10000);
+		for (let i = 0; i < 8; i++) {
+			expect(result.context).toContain(`BEST-${i}`);
+			expect(result.context).toContain(`source-${i}`);
+		}
+		expect(result.context).toContain("fabric_get_project_source");
+		expect(mocks.retrieveProjectContexts).toHaveBeenCalledWith(
+			expect.objectContaining({ includeMatchedPassages: true }),
+		);
+	});
+	it("fills spare budget with an older-point body and names its omission", async () => {
+		mocks.retrieveProjectContexts.mockResolvedValue([
+			{
+				id: "source-old",
+				type: "TEXT",
+				filename: "old.md",
+				content: `${"Opening line\n".repeat(1000)}BODY TAIL`,
+				matchedPassages: [],
+			},
+		]);
+		const result = await retrieve();
+		expect(result.context).toContain("Opening line");
+		expect(result.context).not.toContain("BODY TAIL");
+		expect(result.context).toContain("Content omitted");
+		expect(result.context).toContain(
+			'fabric_get_project_source({"source":"source-old"})',
+		);
+		expect(JSON.stringify(result).length).toBeGreaterThanOrEqual(9995);
+		expect(JSON.stringify(result).length).toBeLessThanOrEqual(10000);
+	});
+	it("preserves Parlume body heads even when matched passages are available", async () => {
+		mocks.retrieveProjectContexts.mockResolvedValue([
+			{
+				id: "source-1",
+				content: `Original body\n${"x".repeat(300)}`,
+				filename: "plan.md",
+				matchedPassages: [{ content: "MATCH ONLY", score: 1 }],
+			},
+		]);
+		const result = await retrieve({ maxPassageChars: 100 });
+		expect(result.context).toContain(`Original body\n${"x".repeat(86)}`);
+		expect(result.context).not.toContain("MATCH ONLY");
+		expect(
+			mocks.retrieveProjectContexts.mock.calls[0][0]
+				.includeMatchedPassages,
+		).not.toBe(true);
+	});
+	it("budgets injected summaries and does not advertise synthetic ids as readable sources", async () => {
+		mocks.retrieveProjectContexts.mockResolvedValue([
+			{
+				id: "summary-1",
+				type: "PROJECT_SUMMARY",
+				metadata: { isSummary: true },
+				content: "Summary detail\n".repeat(2000),
+				sourceTitle: "Compressed project history",
+			},
+			{
+				id: "bundle-1",
+				type: "SLACK_CHANNEL",
+				metadata: {
+					conversationBundleId: "bundle-1",
+					parentContextId: "parent-channel",
+				},
+				content: "Bundle head",
+				matchedPassages: [{ content: "Bundle match", score: 0.9 }],
+			},
+			{
+				id: "page-1",
+				type: "LINK",
+				metadata: {
+					parentContextId: "parent-crawl",
+					pageUrl: "https://example.com/plan",
+				},
+				content: "Indexed page",
+				matchedPassages: [{ content: "Page match", score: 0.8 }],
+			},
+		]);
+		const result = await retrieve();
+		expect(JSON.stringify(result).length).toBeLessThanOrEqual(10000);
+		expect(result.context).toContain("Summary detail");
+		expect(result.context).toContain("Bundle match");
+		expect(result.context).toContain(
+			'fabric_get_project_source({"source":"parent-channel"})',
+		);
+		expect(result.context).toContain(
+			'fabric_get_project_source({"source":"parent-crawl"})',
+		);
+		expect(result.context.split("\n\n---\n\n")[0]).not.toContain(
+			"fabric_get_project_source",
+		);
+	});
+});
+
+it("retains source naming and metadata and adds further passages by relevance", async () => {
+	mocks.contextMetaHeader.mockReturnValue(
+		"[Source type: Requirements]\n[Source guidance: Focus on launch]\n",
+	);
+	mocks.retrieveProjectContexts.mockResolvedValue([
+		{
+			id: "source-a",
+			type: "TEXT",
+			sourcePath: "docs/plan.md",
+			filename: "wrong.md",
+			sourceTitle: "Wrong title",
+			content: "Whole body omitted",
+			matchedPassages: [
+				{ content: "Best A", score: 0.99 },
+				{ content: "Lower detail ".repeat(800), score: 0.6 },
+			],
+		},
+		{
+			id: "source-b",
+			type: "TEXT",
+			sourceTitle: "Launch notes",
+			content: "Whole body omitted",
+			matchedPassages: [
+				{ content: "Best B", score: 0.9 },
+				{ content: "Higher detail ".repeat(600), score: 0.8 },
+			],
+		},
+	]);
+	const result = await retrieve();
+	expect(result.context).toContain("### From: docs/plan.md");
+	expect(result.context).not.toContain("wrong.md");
+	expect(result.context).toContain(
+		"[Source type: Requirements]\n[Source guidance: Focus on launch]",
+	);
+	expect(result.context).toContain("Best A");
+	expect(result.context).toContain("Best B");
+	expect(result.context).toContain("Higher detail ".repeat(600).trimEnd());
+	expect(result.context).not.toContain("Lower detail ".repeat(800));
+	expect(JSON.stringify(result).length).toBeLessThanOrEqual(10000);
+});
+
+it("logs a successful compact project retrieval", async () => {
+	const info = vi.spyOn(log, "info");
+	mocks.retrieveProjectContexts.mockResolvedValue([
+		{
+			id: "source-log",
+			type: "TEXT",
+			score: 1,
+			content: "Head",
+			matchedPassages: [{ content: "Match", score: 1 }],
+		},
+	]);
+	try {
+		await retrieve();
+		expect(info).toHaveBeenCalledWith(
+			"[ProjectRAG] Retrieved project context",
+			expect.objectContaining({ resultCount: 1, projectId: "project-1" }),
+		);
+	} finally {
+		info.mockRestore();
+	}
 });

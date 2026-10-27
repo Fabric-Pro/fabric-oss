@@ -171,6 +171,7 @@ async function pickFromPool(params: {
 	userId: string;
 	audience: ChatGptPlanAudience;
 	exclude: ReadonlySet<string>;
+	preferredSource?: PlanSourceRef;
 }): Promise<PoolOutcome> {
 	const { organizationId, audience, exclude } = params;
 	if (!(await isFeatureEnabled("CHATGPT_PLAN", organizationId))) {
@@ -258,7 +259,15 @@ async function pickFromPool(params: {
 		audience === "background"
 			? byUse.filter((account) => share(account.id) <= ceiling)
 			: byUse;
-	const pick = (withinHeadroom.length > 0 ? withinHeadroom : byUse)[0];
+	// Eligibility (including fair share) was checked above. Usage ordering chooses
+	// the initial account; an answer preference survives changes in relative use.
+	const preferred = params.preferredSource;
+	const sticky =
+		preferred?.kind === "org" && preferred.organizationId === organizationId
+			? open.find((account) => account.id === preferred.accountId)
+			: undefined;
+	const pick =
+		sticky ?? (withinHeadroom.length > 0 ? withinHeadroom : byUse)[0];
 	return {
 		pick: pick ? refOf(pick.id) : null,
 		exhausted: false,
@@ -287,7 +296,10 @@ async function pickFromPool(params: {
  */
 export async function pickChatGptPlanSource(
 	context: PickChatGptPlanSourceContext,
-	options: { exclude?: Iterable<string> } = {},
+	options: {
+		exclude?: Iterable<string>;
+		preferredSource?: PlanSourceRef;
+	} = {},
 ): Promise<ChatGptPlanSourcePick | ChatGptPlanSourcesExhausted | null> {
 	const { organizationId } = context;
 	if (!organizationId || isAiImpersonatedRequest()) {
@@ -301,6 +313,30 @@ export async function pickChatGptPlanSource(
 	const audience: ChatGptPlanAudience =
 		context.planEligible === true ? "interactive" : "background";
 
+	// Connecting an own plan during an answer does not displace a still-eligible
+	// shared account. Pool filtering checks the caller's organization and policy.
+	if (
+		own === "own" &&
+		options.preferredSource?.kind === "org" &&
+		(audience === "interactive" ||
+			(context.jobType &&
+				PLAN_POOL_BACKGROUND_JOB_TYPES.includes(context.jobType)))
+	) {
+		const preferred = await pickFromPool({
+			organizationId,
+			userId: context.userId,
+			audience,
+			exclude,
+			preferredSource: options.preferredSource,
+		});
+		if (
+			preferred.pick &&
+			planSourceKey(preferred.pick) ===
+				planSourceKey(options.preferredSource)
+		) {
+			return { source: preferred.pick };
+		}
+	}
 	let ownPlanSpent: SubscriptionPlanExhaustedError | undefined;
 	if (own === "own") {
 		const ownRef: PlanSourceRef = { kind: "user", userId: context.userId };
@@ -353,8 +389,12 @@ export async function pickChatGptPlanSource(
 					userId: context.userId,
 					audience,
 					exclude,
+					preferredSource: options.preferredSource,
 				});
 	} catch (error) {
+		if (options.preferredSource) {
+			throw error;
+		}
 		logger.warn(
 			"[chatgpt-plan] Shared plan lookup failed; not using shared plans",
 			{
@@ -575,7 +615,10 @@ export function chatGptPlanPoolExhaustedMessage(resetAt: Date | null): string {
  */
 export async function chatGptPlanSourceForCall(
 	context: PickChatGptPlanSourceContext,
-	options: { exclude?: Iterable<string> } = {},
+	options: {
+		exclude?: Iterable<string>;
+		preferredSource?: PlanSourceRef;
+	} = {},
 ): Promise<ChatGptPlanSourcePick | ChatGptPlanPersonalKeyPick | null> {
 	const plan = await pickChatGptPlanSource(context, options);
 	if (plan === null || "source" in plan) {

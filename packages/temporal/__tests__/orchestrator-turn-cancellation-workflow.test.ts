@@ -38,6 +38,7 @@
  */
 
 import { resolve } from "node:path";
+import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
 import { Context } from "@temporalio/activity";
 import { WorkflowExecutionAlreadyStartedError } from "@temporalio/client";
 import { ApplicationFailure, CancelledFailure } from "@temporalio/common";
@@ -49,6 +50,7 @@ import {
 } from "@temporalio/worker";
 import { MockLanguageModelV4 } from "ai/test";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { WORKFLOW } from "../src/workflows/orchestrator/orchestrator-config";
 import type {
 	OrchestratorWorkflowInput,
 	OrchestratorWorkflowOutput,
@@ -61,14 +63,30 @@ const provider = vi.hoisted(() => ({
 	model: undefined as unknown,
 	abortedAt: undefined as number | undefined,
 	requests: 0,
+	resolutionError: undefined as Error | undefined,
 }));
 vi.mock("../src/activities/orchestrator/utils", () => ({
-	getAiModelWithSelection: vi.fn(async () => ({
-		model: provider.model,
-		provider: "ANTHROPIC_DIRECT",
-		modelString: "example-model",
-		canonicalName: "example-model",
-	})),
+	getAiModelWithSelection: vi.fn(async () => {
+		if (provider.resolutionError) {
+			throw provider.resolutionError;
+		}
+		return {
+			model: provider.model,
+			provider: "ANTHROPIC_DIRECT",
+			modelString: "example-model",
+			canonicalName: "example-model",
+			answerSnapshot: () => ({
+				provider: "ANTHROPIC_DIRECT",
+				modelString: "example-model",
+				canonicalName: "example-model",
+				configId: "example-config",
+				configSource: "organization",
+				routeHash: "example-route",
+			}),
+			answerRouteChanges: () => [],
+			planSpentApiBilling: () => undefined,
+		};
+	}),
 }));
 vi.mock("@repo/ai/skills", () => ({
 	listAvailableSkills: vi.fn(async () => []),
@@ -84,6 +102,7 @@ vi.mock("@repo/database", async (importOriginal) => ({
 }));
 
 import { runAgentIteration } from "../src/activities/orchestrator/execution/run-agent-iteration";
+import { snapshotAdvisorAnswerActivity } from "../src/activities/orchestrator/execution/snapshot-advisor-answer";
 
 /** A provider request that only ends when its abort signal fires. */
 function installHangingProvider() {
@@ -139,6 +158,7 @@ const USAGE = { inputTokens: 10, outputTokens: 5 };
 
 type RoundBehaviour =
 	| "real_round_hanging_provider"
+	| "real_round_usage_limit"
 	| "answer"
 	| "refuse_dispatch"
 	/** The main round's request does not fit the turn's token allowance. */
@@ -176,6 +196,7 @@ function budgetRefusal() {
 const FINAL_ANSWER = `## Summary\n\nThe launch is on the 12th. ${"Evidence. ".repeat(30)}`;
 
 interface Recorder {
+	snapshotAttempts: number;
 	rounds: Array<Record<string, unknown>>;
 	finalized: Array<Record<string, unknown>>;
 	otherModelCalls: string[];
@@ -196,6 +217,7 @@ type PlannerBehaviour = "hang_until_cancelled" | "refuse_dispatch";
 type DeadlineSite = "round" | "tool" | "compaction" | "approval";
 
 interface ScenarioOptions {
+	snapshotFailure?: "generic" | "not_found" | "usage_limit";
 	legacyRouting?: boolean;
 	routingEmpty?: boolean;
 	memoryPrompt?: string;
@@ -220,8 +242,9 @@ interface ScenarioOptions {
 	/** The plan needs approval; cancel after its pendingApproval query is set. */
 	planNeedsApproval?: boolean;
 	/** The step fails (not a stop), recovery classifies it retryable and
-	 * waits out a back-off (marks hanging) before retrying. */
+	 * waits out a back-off before retrying. */
 	stepFailsRetryably?: boolean;
+	recoveryActivity?: "classifyFailureActivity" | "getRetryDelayActivity";
 	/** The starter's `turnGeneration`. */
 	turnGeneration?: number | null;
 	/** After a budget stop: how the FINALIZATION synthesis behaves. */
@@ -387,19 +410,25 @@ function plannerActivities(opts: ScenarioOptions, rec: Recorder) {
 		// Recovery runs only after a step fails for a reason that is not a
 		// stop; the Stop scenarios assert that recovery is not called.
 		classifyFailureActivity: opts.stepFailsRetryably
-			? vi.fn(async () => {
-					const calls = rec.planner.classifyFailureActivity ?? [];
-					calls.push({});
-					rec.planner.classifyFailureActivity = calls;
-					return { type: "transient", isRetryable: true };
-				})
+			? plannerActivity(
+					rec,
+					"classifyFailureActivity",
+					opts.recoveryActivity === "classifyFailureActivity"
+						? "hang_until_cancelled"
+						: undefined,
+					() => ({ type: "transient", isRetryable: true }),
+				)
 			: record("classifyFailureActivity"),
 		// Recovery sleeps this long before retrying the step.
 		getRetryDelayActivity: opts.stepFailsRetryably
-			? vi.fn(async () => {
-					rec.hangingStarted = true;
-					return 20_000;
-				})
+			? plannerActivity(
+					rec,
+					"getRetryDelayActivity",
+					opts.recoveryActivity === "getRetryDelayActivity"
+						? "hang_until_cancelled"
+						: undefined,
+					() => 20_000,
+				)
 			: record("getRetryDelayActivity"),
 		cleanupWeaveResourcesActivity: vi.fn(async () => undefined),
 	};
@@ -464,6 +493,15 @@ function buildActivities(opts: ScenarioOptions, rec: Recorder, testEnv = env) {
 		recordExecution: vi.fn(async () => undefined),
 		createEpisodeFromExecutionActivity: vi.fn(async () => undefined),
 		extractAndLearnPatternsActivity: vi.fn(async () => ({ count: 0 })),
+		snapshotAdvisorAnswerActivity: async (
+			req: Parameters<typeof snapshotAdvisorAnswerActivity>[0],
+		) => {
+			rec.snapshotAttempts++;
+			if (opts.snapshotFailure === "generic") {
+				throw new Error("Example snapshot failure");
+			}
+			return snapshotAdvisorAnswerActivity(req);
+		},
 		preloadMcpToolsForConfigsActivity: vi.fn(async () => []),
 		// Initialization — an empty, healthy environment.
 		preloadResourcesActivity: vi.fn(async () => {
@@ -750,7 +788,20 @@ async function runScenario(opts: ScenarioOptions) {
 	const testEnv = opts.deadlineSite
 		? await TestWorkflowEnvironment.createTimeSkipping()
 		: env;
+	provider.resolutionError =
+		opts.snapshotFailure === "usage_limit"
+			? new AiUsageLimitExceededError({
+					message: "Example HARD usage limit",
+					limitId: "example-limit",
+					dimension: "TOKENS",
+					window: "MONTHLY",
+					used: 100n,
+					max: 100n,
+					manageLimitsUrl: "https://example.com/manage-limits",
+				})
+			: undefined;
 	const rec: Recorder = {
+		snapshotAttempts: 0,
 		rounds: [],
 		finalized: [],
 		otherModelCalls: [],
@@ -797,13 +848,17 @@ async function runScenario(opts: ScenarioOptions) {
 		event: string;
 		details: Record<string, unknown>;
 	}> = [];
+	const activities = buildActivities(opts, rec, testEnv);
+	if (opts.snapshotFailure === "not_found") {
+		Reflect.deleteProperty(activities, "snapshotAdvisorAnswerActivity");
+	}
 	const worker = await Worker.create({
 		connection: testEnv.nativeConnection,
 		taskQueue,
 		workflowBundle: opts.legacyRouting
 			? legacyRoutingBundle
 			: workflowBundle,
-		activities: buildActivities(opts, rec, testEnv),
+		activities,
 		sinks: {
 			defaultWorkerLogger: {
 				info: {
@@ -819,8 +874,26 @@ async function runScenario(opts: ScenarioOptions) {
 				},
 				trace: { fn: () => {} },
 				debug: { fn: () => {} },
-				warn: { fn: () => {} },
-				error: { fn: () => {} },
+				warn: {
+					fn: (
+						_info: unknown,
+						event: string,
+						details: Record<string, unknown>,
+					) => {
+						if (event.startsWith("advisor.")) {
+							cacheLogs.push({ event, details });
+						}
+					},
+				},
+				error: {
+					fn: (
+						_info: unknown,
+						event: string,
+						details: Record<string, unknown>,
+					) => {
+						cacheLogs.push({ event, details });
+					},
+				},
 			},
 		},
 		// As the production orchestrator queue (worker.ts).
@@ -878,6 +951,24 @@ async function runScenario(opts: ScenarioOptions) {
 							approvalId: "example-approval",
 							stepId: "plan-approval",
 						});
+					} else if (
+						opts.stepFailsRetryably &&
+						!opts.recoveryActivity
+					) {
+						// Observe the workflow's capped back-off timer, after
+						// the delay activity result has been consumed. Time skipping
+						// stays locked until handle.result() below.
+						const history = await handle.fetchHistory();
+						expect(
+							history.events?.some(
+								(event) =>
+									Number(
+										event.timerStartedEventAttributes
+											?.startToFireTimeout?.seconds,
+									) ===
+									WORKFLOW.maxRetryDelayMs / 1000,
+							),
+						).toBe(true);
 					} else {
 						expect(rec.hangingStarted).toBe(true);
 					}
@@ -1230,8 +1321,55 @@ describe("orchestratorExecutionWorkflow — Stop on a chat turn", () => {
 		expect(rec.finalized[0]).toMatchObject({ outcome: "CANCELLED" });
 	}, 120_000);
 
+	it.each(["classifyFailureActivity", "getRetryDelayActivity"] as const)(
+		"Planner: a native cancel during in-flight %s ends cancelled without retry",
+		async (recoveryActivity) => {
+			const { output, temporalStatus, rec, history } = await runScenario({
+				behaviour: "answer",
+				withTurn: true,
+				executionMode: "save_reuse",
+				stepFailsRetryably: true,
+				recoveryActivity,
+				cancelWhenHanging: true,
+			});
+			expect(output.ok).toBe(true);
+			expect(
+				(output as { value: OrchestratorWorkflowOutput }).value.status,
+			).toBe("cancelled");
+			expect(temporalStatus).toBe("COMPLETED");
+			expect(rec.planner.executeStep).toHaveLength(1);
+			expect(rec.planner[recoveryActivity]).toHaveLength(1);
+			const events = history.events ?? [];
+			const scheduled = events.find(
+				(event) =>
+					event.activityTaskScheduledEventAttributes?.activityType
+						?.name === recoveryActivity,
+			);
+			expect(scheduled).toBeDefined();
+			const cancelled = events.find(
+				(event) =>
+					event.workflowExecutionCancelRequestedEventAttributes,
+			);
+			expect(cancelled).toBeDefined();
+			expect(Number(scheduled?.eventId)).toBeLessThan(
+				Number(cancelled?.eventId),
+			);
+			if (recoveryActivity === "classifyFailureActivity") {
+				expect(rec.planner.getRetryDelayActivity).toBeUndefined();
+			}
+			expect(
+				history.events?.some(
+					(event) => event.timerStartedEventAttributes,
+				),
+			).toBe(false);
+			expect(rec.finalized).toHaveLength(1);
+			expect(rec.finalized[0]).toMatchObject({ outcome: "CANCELLED" });
+		},
+		30_000,
+	);
+
 	it("Planner: a native cancel during a recovery back-off ends 'cancelled' and retries nothing", async () => {
-		const { output, temporalStatus, rec } = await runScenario({
+		const { output, temporalStatus, rec, history } = await runScenario({
 			behaviour: "answer",
 			withTurn: true,
 			executionMode: "save_reuse",
@@ -1242,6 +1380,19 @@ describe("orchestratorExecutionWorkflow — Stop on a chat turn", () => {
 		const value = (output as { value: OrchestratorWorkflowOutput }).value;
 		expect(value.status).toBe("cancelled");
 		expect(temporalStatus).toBe("COMPLETED");
+		const events = history.events ?? [];
+		const timer = events.find((event) => event.timerStartedEventAttributes);
+		const cancelled = events.find(
+			(event) => event.workflowExecutionCancelRequestedEventAttributes,
+		);
+		expect(
+			timer?.timerStartedEventAttributes?.startToFireTimeout?.seconds?.toString(),
+		).toBe(String(WORKFLOW.maxRetryDelayMs / 1000));
+		expect(cancelled).toBeDefined();
+		expect(Number(timer?.eventId)).toBeLessThan(Number(cancelled?.eventId));
+		expect(events.some((event) => event.timerFiredEventAttributes)).toBe(
+			false,
+		);
 		// The failed attempt only: the back-off was cut short, no retry.
 		expect(rec.planner.executeStep).toHaveLength(1);
 		expect(rec.finalized[0]).toMatchObject({ outcome: "CANCELLED" });
@@ -1298,6 +1449,7 @@ describe("orchestratorExecutionWorkflow — Stop on a chat turn", () => {
 		const taskQueue = `orchestrator-turn-reuse-${taskQueueSeq++}`;
 		const workflowId = "orch-00000000-0000-4000-8000-0000000000ff";
 		const rec: Recorder = {
+			snapshotAttempts: 0,
 			rounds: [],
 			finalized: [],
 			otherModelCalls: [],
@@ -1974,4 +2126,101 @@ describe("Advisor routing lookup patch", () => {
 			).rejects.toThrow(/nondeterminism|TMPRL1100/i);
 		},
 	);
+});
+
+describe("optional answer snapshot failures", () => {
+	it("continues the answer on the per-round path after generic snapshot failure", async () => {
+		const { output, rec, cacheLogs } = await runScenario({
+			behaviour: "answer",
+			withTurn: true,
+			snapshotFailure: "generic",
+		});
+		expect(output).toMatchObject({
+			ok: true,
+			value: { status: "completed", response: "The 12th." },
+		});
+		expect(rec.snapshotAttempts).toBe(3);
+		expect(rec.rounds).toHaveLength(1);
+		expect(rec.rounds[0]).not.toHaveProperty("answerSnapshot");
+		const summary = cacheLogs.find(
+			(l) => l.event === "advisor.turn_cache_summary",
+		);
+		expect(summary?.details.toolLoading).toMatchObject({
+			snapshotFailures: [
+				{ cause: "snapshot_unavailable", errorType: "Error" },
+			],
+		});
+	});
+	it("restores the round's structured usage refusal after snapshot resolution hits a HARD limit", async () => {
+		const { output, rec, cacheLogs } = await runScenario({
+			behaviour: "real_round_usage_limit",
+			withTurn: true,
+			snapshotFailure: "usage_limit",
+		});
+		expect(output).toMatchObject({
+			ok: true,
+			value: {
+				status: "failed",
+				error: "LLM stream error: Example HARD usage limit",
+				usageLimit: {
+					message: "Example HARD usage limit",
+					limitId: "example-limit",
+					dimension: "TOKENS",
+					window: "MONTHLY",
+					used: "100",
+					max: "100",
+					manageLimitsUrl: "https://example.com/manage-limits",
+				},
+			},
+		});
+		expect(rec.rounds).toHaveLength(1);
+		expect(rec.rounds[0]).not.toHaveProperty("answerSnapshot");
+		expect(cacheLogs.map((l) => l.event)).not.toContain(
+			"Orchestrator workflow failed",
+		);
+		const summary = cacheLogs.find(
+			(l) => l.event === "advisor.turn_cache_summary",
+		);
+		expect(summary?.details.toolLoading).toMatchObject({
+			snapshotFailures: [
+				{
+					cause: "snapshot_unavailable",
+					errorType: "AiUsageLimitExceededError",
+				},
+			],
+		});
+	});
+	it("continues after the unregistered snapshot activity exhausts its retry policy", async () => {
+		const { output, rec, history, cacheLogs } = await runScenario({
+			behaviour: "answer",
+			withTurn: true,
+			snapshotFailure: "not_found",
+		});
+		expect(output).toMatchObject({
+			ok: true,
+			value: { status: "completed", response: "The 12th." },
+		});
+		expect(rec.rounds).toHaveLength(1);
+		expect(rec.rounds[0]).not.toHaveProperty("answerSnapshot");
+		const scheduled = history.events?.find(
+			(e) =>
+				e.activityTaskScheduledEventAttributes?.activityType?.name ===
+				"snapshotAdvisorAnswerActivity",
+		);
+		const attempt = history.events?.find(
+			(e) =>
+				String(
+					e.activityTaskStartedEventAttributes?.scheduledEventId,
+				) === String(scheduled?.eventId),
+		)?.activityTaskStartedEventAttributes?.attempt;
+		expect(attempt).toBe(3);
+		const summary = cacheLogs.find(
+			(l) => l.event === "advisor.turn_cache_summary",
+		);
+		expect(summary?.details.toolLoading).toMatchObject({
+			snapshotFailures: [
+				{ cause: "snapshot_unavailable", errorType: "NotFoundError" },
+			],
+		});
+	});
 });

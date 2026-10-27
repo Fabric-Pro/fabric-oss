@@ -220,17 +220,24 @@ describe("initialization", () => {
 		});
 	});
 
-	it("keeps the hint when a matched pattern replaces the prompt", async () => {
+	it("keeps the base and hint when a matched pattern enriches the prompt", async () => {
 		stubInitialization({ hint: HINT });
-		mocks.stub("applyFabricPatternEnrichment").mockResolvedValue({
-			fabricAvailable: true,
-			composedPrompt: "Composed pattern prompt",
-			cacheHits: 0,
-			components: { pattern: "summarize" },
-		});
+		// composeFabricPrompt appends enrichment to basePrompt when supplied.
+		mocks
+			.stub("applyFabricPatternEnrichment")
+			.mockImplementation(async ({ basePrompt }) => ({
+				fabricAvailable: true,
+				composedPrompt: [basePrompt, "Composed pattern prompt"]
+					.filter(Boolean)
+					.join("\n\n"),
+				cacheHits: 0,
+				components: { pattern: "summarize" },
+			}));
 		const { prompt } = await initialize({ companyContextAdvisor: true });
 
-		expect(prompt.startsWith("Composed pattern prompt")).toBe(true);
+		expect(
+			prompt.startsWith(`${BASE_PROMPT}\n\nComposed pattern prompt`),
+		).toBe(true);
 		expect(prompt.split("\n\n").at(-2)).toBe(HINT);
 	});
 

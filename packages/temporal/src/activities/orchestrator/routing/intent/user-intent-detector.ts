@@ -154,18 +154,8 @@ const SERVICE_NAMES = [
 ];
 
 // Code/browser execution indicators
-const CODE_EXECUTION_INDICATORS = [
-	"run code",
-	"execute code",
-	"run python",
-	"run javascript",
-	"run script",
-	"execute script",
-	"browser automation",
-	"automate browser",
-	"click on",
-	"navigate to",
-];
+const CODE_EXECUTION_INDICATORS =
+	/\b(?:run code|execute code|run python\d?|run javascript|run scripts?|execute scripts?|browsers? automation|automate browsers?|click(?:s|ed|ing)? on|navigat(?:e|es|ed|ing) to)\b/i;
 
 // Document generation indicators
 const DOC_GENERATION_INDICATORS = [
@@ -288,7 +278,7 @@ export function detectUserIntent(message: string): UserIntent {
 	}
 
 	// Code/browser execution capability
-	if (CODE_EXECUTION_INDICATORS.some((ind) => messageLower.includes(ind))) {
+	if (CODE_EXECUTION_INDICATORS.test(messageLower)) {
 		mentionedCapabilities.push("code_execution");
 	}
 

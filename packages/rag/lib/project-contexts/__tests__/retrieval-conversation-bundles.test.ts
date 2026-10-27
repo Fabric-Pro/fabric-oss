@@ -311,3 +311,23 @@ describe("retrieveProjectContexts — captured conversation bundles", () => {
 		expect(results.map((ctx) => ctx.id)).toEqual(["ctx-prd"]);
 	});
 });
+
+it("keeps bundle chunk passages with the same opt-in and older-point fallback as documents", async () => {
+	vi.mocked(searchSimilarProjectContexts).mockResolvedValue([
+		{ ...bundleHit("bundle-org", 0.9), content: "Matched bundle message" },
+		contextHit("ctx-prd", 0.8),
+		{ ...bundleHit("bundle-org", 0.7), content: "Further bundle message" },
+	]);
+	const result = await retrieveProjectContexts({
+		...orgOptions,
+		includeMatchedPassages: true,
+	});
+	expect(result[0]).toMatchObject({
+		content: BUNDLE_TEXT,
+		matchedPassages: [
+			{ content: "Matched bundle message", score: 0.9 },
+			{ content: "Further bundle message", score: 0.7 },
+		],
+	});
+	expect(result[1]).toHaveProperty("matchedPassages", []);
+});

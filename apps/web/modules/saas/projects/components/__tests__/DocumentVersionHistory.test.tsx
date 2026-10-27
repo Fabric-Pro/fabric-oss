@@ -382,7 +382,7 @@ const refusal = (code: string, dataCode?: string, message = "server words") =>
 	});
 
 describe("DocumentVersionHistory — Restore waits for the run (Fizzy #2946)", () => {
-	const REASONS = ["runLive", "regenerating"] as const;
+	const REASONS = ["runLive", "regenerating", "proposalElsewhere"] as const;
 
 	it.each(REASONS)(
 		"closes off the row's Restore and says why, on the button itself (%s)",

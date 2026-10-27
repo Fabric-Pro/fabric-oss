@@ -123,6 +123,7 @@ export async function executeInitializationPhase(
 		lettaAgentId: string | null;
 		enrichedMessage: string;
 		enrichedSystemPrompt: string;
+		systemPromptParts?: WorkflowState["systemPromptParts"];
 		preloadedResources: PreloadedResources;
 		/** Short summary of the attached project, for the clarity gate. */
 		clarityProjectContext?: string;
@@ -372,6 +373,17 @@ export async function executeInitializationPhase(
 		let enrichedSystemPrompt = patched("orchestrator-advisor-identity-v1")
 			? orchestratorBasePrompt(input.systemPrompt)
 			: input.systemPrompt || "";
+		const stableSystemPrefix = patched("advisor-stable-system-prefix-v1");
+		const systemPromptParts = stableSystemPrefix
+			? { reusable: enrichedSystemPrompt, variable: "" }
+			: undefined;
+		const appendPart = (kind: "reusable" | "variable", text: string) => {
+			if (systemPromptParts && text) {
+				systemPromptParts[kind] = systemPromptParts[kind]
+					? `${systemPromptParts[kind]}\n\n${text}`
+					: text;
+			}
+		};
 		let clarityProjectContext: string | undefined;
 
 		// Capture today's date so the LLM knows "today". Rendered date-only and
@@ -452,6 +464,7 @@ export async function executeInitializationPhase(
 			enrichedMessage = enrichment.enrichedMessage || input.message;
 			// Append policy additions to existing system prompt (don't overwrite custom instructions)
 			if (enrichment.systemPromptAdditions) {
+				appendPart("reusable", enrichment.systemPromptAdditions);
 				enrichedSystemPrompt = enrichedSystemPrompt
 					? `${enrichedSystemPrompt}\n\n${enrichment.systemPromptAdditions}`
 					: enrichment.systemPromptAdditions;
@@ -492,7 +505,8 @@ export async function executeInitializationPhase(
 					},
 				);
 				if (projectMetadata) {
-					const projectContext = [
+					const countsLine = `Available contexts: ${projectMetadata.contextCount}, Generated documents: ${projectMetadata.documentCount}`;
+					const projectContextLines = [
 						"<project_context>",
 						`Project: ${projectMetadata.name}`,
 						patched("orchestrator-clarity-project-context-v1")
@@ -526,12 +540,13 @@ export async function executeInitializationPhase(
 						projectMetadata.codeAnalysisStatus
 							? `Code Analysis: ${projectMetadata.codeAnalysisStatus}`
 							: null,
-						`Available contexts: ${projectMetadata.contextCount}, Generated documents: ${projectMetadata.documentCount}`,
 						"Use the project_rag_query tool to search for detailed project context when needed.",
 						"</project_context>",
-					]
-						.filter(Boolean)
-						.join("\n");
+					].filter(Boolean);
+					appendPart("reusable", projectContextLines.join("\n"));
+					appendPart("variable", countsLine);
+					projectContextLines.splice(-2, 0, countsLine);
+					const projectContext = projectContextLines.join("\n");
 
 					enrichedSystemPrompt = enrichedSystemPrompt
 						? `${enrichedSystemPrompt}\n\n${projectContext}`
@@ -590,6 +605,11 @@ export async function executeInitializationPhase(
 				});
 
 				if (instanceMemory.fileCount > 0) {
+					if (systemPromptParts) {
+						systemPromptParts.reusable = systemPromptParts.reusable
+							? `${systemPromptParts.reusable}${instanceMemory.memoryPrompt}`
+							: instanceMemory.memoryPrompt.trim();
+					}
 					enrichedSystemPrompt = enrichedSystemPrompt
 						? `${enrichedSystemPrompt}${instanceMemory.memoryPrompt}`
 						: instanceMemory.memoryPrompt.trim();
@@ -634,7 +654,7 @@ export async function executeInitializationPhase(
 				message: input.message,
 				userId: input.userId,
 				organizationId: input.organizationId,
-				basePrompt: enrichedSystemPrompt,
+				basePrompt: stableSystemPrefix ? "" : enrichedSystemPrompt,
 				enableAutoDetection: true,
 			});
 
@@ -644,7 +664,16 @@ export async function executeInitializationPhase(
 					fabricEnrichment.components.strategy ||
 					fabricEnrichment.components.context
 				) {
-					enrichedSystemPrompt = fabricEnrichment.composedPrompt;
+					// Request standalone enrichment under the marker; do not infer
+					// segments by parsing the combined Planner prompt.
+					if (stableSystemPrefix) {
+						appendPart("variable", fabricEnrichment.composedPrompt);
+						enrichedSystemPrompt += fabricEnrichment.composedPrompt
+							? `${enrichedSystemPrompt ? "\n\n" : ""}${fabricEnrichment.composedPrompt}`
+							: "";
+					} else {
+						enrichedSystemPrompt = fabricEnrichment.composedPrompt;
+					}
 
 					log.info("Fabric AI pattern enrichment applied", {
 						strategy: fabricEnrichment.components.strategy,
@@ -709,6 +738,7 @@ export async function executeInitializationPhase(
 		// This is generic — works for all current and future integrations.
 		// ======================================================================
 		if (preloadedResources.workflowGuidance) {
+			appendPart("reusable", preloadedResources.workflowGuidance);
 			enrichedSystemPrompt = enrichedSystemPrompt
 				? `${enrichedSystemPrompt}\n\n${preloadedResources.workflowGuidance}`
 				: preloadedResources.workflowGuidance;
@@ -719,6 +749,7 @@ export async function executeInitializationPhase(
 		// Add user preferences and relevant past conversations to system prompt
 		// ======================================================================
 		if (orchestratorMemoryPrompt.length > 0) {
+			appendPart("variable", orchestratorMemoryPrompt);
 			enrichedSystemPrompt = enrichedSystemPrompt
 				? `${enrichedSystemPrompt}\n\n${orchestratorMemoryPrompt}`
 				: orchestratorMemoryPrompt;
@@ -746,6 +777,7 @@ export async function executeInitializationPhase(
 		// ======================================================================
 		const companyContextHint = preloadedResources.companyContext?.hint;
 		if (companyContextHint && offersCompanyContext) {
+			appendPart("reusable", companyContextHint);
 			enrichedSystemPrompt = enrichedSystemPrompt
 				? `${enrichedSystemPrompt}\n\n${companyContextHint}`
 				: companyContextHint;
@@ -753,10 +785,10 @@ export async function executeInitializationPhase(
 
 		// ======================================================================
 		// Step 5b: Append date context LAST
-		// Mirrors agent-execution-core/context-builder.ts — every segment above
-		// is stable across calls within a session, so keeping the date at the
-		// tail leaves the longest possible cacheable prefix for the provider.
+		// Retain the legacy ordering for Planner and older activity workers.
+		// The iterative loop uses the separately collected parts under its marker.
 		// ======================================================================
+		appendPart("variable", currentDateContext);
 		enrichedSystemPrompt = enrichedSystemPrompt
 			? `${enrichedSystemPrompt}\n\n${currentDateContext}`
 			: currentDateContext;
@@ -886,6 +918,7 @@ export async function executeInitializationPhase(
 				lettaAgentId,
 				enrichedMessage,
 				enrichedSystemPrompt,
+				...(systemPromptParts ? { systemPromptParts } : {}),
 				preloadedResources,
 				clarityProjectContext,
 			},

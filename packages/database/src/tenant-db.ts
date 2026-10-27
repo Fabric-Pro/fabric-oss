@@ -21,6 +21,7 @@
  *   const configs = await tenantDb.mCPConfig.findMany(); // Automatically filtered!
  */
 
+import { db } from "../prisma/client";
 import type { Prisma, PrismaClient } from "../prisma/generated/client";
 import { getTenantContext, hasTenantContext } from "./tenant-context";
 
@@ -65,6 +66,8 @@ const PER_USER_ORG_TABLES = new Set([
 	"BrowserTask", // A user's browser-automation jobs
 	"AgentConversation", // A user's conversation with an agent
 	"ConversationTurn", // One Advisor chat turn of a user's conversation
+	"EpisodicMemory", // A user's Advisor conversation summaries
+	"OrchestratorMemoryPreferences", // Includes the user's learned patterns
 	"ConversationTurnAttempt", // One model request a user's chat turn reserved
 	"DocumentEval", // An eval run initiated by a specific user
 	"AgentWorkspaceFile", // A user's virtual workspace artifacts
@@ -974,9 +977,9 @@ function createTenantDb(baseClient: PrismaClient) {
  * // Only returns configs for the current tenant!
  */
 export function getTenantDb() {
-	// Import the base client lazily to avoid circular dependencies
-	const { db } = require("../prisma/client");
-
+	// Statically imported: the Next.js bundler compiles the client as an async
+	// module, and a lazy require() there returns a pending promise, not `db`.
+	// The client module is lazy itself, so importing it opens no connection.
 	if (!_tenantDbInstance) {
 		_tenantDbInstance = createTenantDb(db);
 	}
@@ -1000,10 +1003,12 @@ export function createTenantDbClient(baseClient: PrismaClient) {
  * - Wraps the callback in a transaction with transaction-local RLS variables
  * - Variables automatically reset when transaction ends
  * - Safe for use with Neon, PgBouncer, and other connection poolers
+ * Pass isolation through options so it is selected before the context statements.
  */
 export async function withRLSContext<T>(
 	client: PrismaClient,
 	callback: (tx: Prisma.TransactionClient) => Promise<T>,
+	options?: Parameters<PrismaClient["$transaction"]>[1],
 ): Promise<T> {
 	const ctx = getTenantContext();
 
@@ -1023,7 +1028,7 @@ export async function withRLSContext<T>(
 				ctx.userId ?? "",
 			);
 		} else {
-			// Set safe defaults that will block all access
+			// No tenant context: tenant policies deny access unless the role bypasses them.
 			await tx.$executeRawUnsafe(
 				"SELECT set_config('app.tenant_type', 'none', true)",
 			);
@@ -1036,7 +1041,7 @@ export async function withRLSContext<T>(
 		}
 
 		return callback(tx);
-	});
+	}, options);
 }
 
 // ============================================================================

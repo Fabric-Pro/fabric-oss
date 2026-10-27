@@ -15,6 +15,10 @@ import {
 } from "../turn-dispatch";
 
 export interface CompactConversationInput {
+	effectiveToolCallPreviews?: Record<
+		string,
+		{ name: string; argumentPreview: string } | null
+	>;
 	/** Turns to fold into the summary. Should already exclude the original user message. */
 	oldTurns: IterativeMessage[];
 	/** The user's original task — anchors the summary so it stays goal-relevant */
@@ -81,7 +85,34 @@ Rules:
  * results are quoted with their tool name resolved from the preceding
  * assistant message.
  */
-function renderMessagesAsTranscript(messages: IterativeMessage[]): string {
+function renderMessagesAsTranscript(
+	messages: IterativeMessage[],
+	effective?: CompactConversationInput["effectiveToolCallPreviews"],
+): string {
+	const seen = new Set<string>();
+	const ambiguous = new Set<string>();
+	for (const message of messages) {
+		for (const call of message.toolCalls ?? []) {
+			if (seen.has(call.id)) {
+				ambiguous.add(call.id);
+			}
+			seen.add(call.id);
+		}
+	}
+	const identity = (
+		call: NonNullable<IterativeMessage["toolCalls"]>[number],
+	) =>
+		effective && ambiguous.has(call.id)
+			? undefined
+			: call.name === "call_tool" && effective
+				? (effective[call.id] ?? undefined)
+				: {
+						name: call.name,
+						argumentPreview: JSON.stringify(call.args).slice(
+							0,
+							500,
+						),
+					};
 	const toolCallIdToName = new Map<string, string>();
 
 	const lines: string[] = [];
@@ -91,7 +122,10 @@ function renderMessagesAsTranscript(messages: IterativeMessage[]): string {
 		} else if (msg.role === "assistant") {
 			toolCallIdToName.clear();
 			for (const call of msg.toolCalls ?? []) {
-				toolCallIdToName.set(call.id, call.name);
+				toolCallIdToName.set(
+					call.id,
+					identity(call)?.name ?? "unknown_tool",
+				);
 			}
 			const renderCall = (id: string) => {
 				const call = msg.toolCalls?.find(
@@ -100,9 +134,10 @@ function renderMessagesAsTranscript(messages: IterativeMessage[]): string {
 				if (!call) {
 					return;
 				}
-				const argPreview = JSON.stringify(call.args).slice(0, 500);
+				const resolved = identity(call);
+				const argPreview = resolved?.argumentPreview ?? "";
 				lines.push(
-					`ASSISTANT_TOOL_CALL: ${call.name}(${argPreview}${argPreview.length >= 500 ? "..." : ""})`,
+					`ASSISTANT_TOOL_CALL: ${resolved?.name ?? "unknown_tool"}(${argPreview}${argPreview.length >= 500 ? "..." : ""})`,
 				);
 			};
 			if (msg.assistantParts) {
@@ -159,7 +194,10 @@ export async function compactConversationHistoryActivity(
 		},
 	);
 
-	const transcript = renderMessagesAsTranscript(oldTurns);
+	const transcript = renderMessagesAsTranscript(
+		oldTurns,
+		input.effectiveToolCallPreviews,
+	);
 
 	heartbeat({ phase: "compacting" });
 

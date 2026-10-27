@@ -232,3 +232,38 @@ describe("createBuiltInTools — live roadmap reads", () => {
 		);
 	});
 });
+
+it.each(["Direct", "Advisor catalog"] as const)(
+	"passes validated section/offset through %s to the shared read",
+	async (engine) => {
+		const args = { feature: "F-040", section: "tasks", offset: 3 };
+		h.getProjectFeature.mockResolvedValue({
+			section: "tasks",
+			offset: 3,
+			tasks: [],
+		});
+		const tools = await createBuiltInTools(CTX);
+		const built = tools.fabric_get_project_feature as Executable & {
+			inputSchema: { parse: (value: unknown) => Record<string, unknown> };
+		};
+		const parsed = built.inputSchema.parse(args);
+		expect(parsed).toEqual(args);
+		if (engine === "Direct") {
+			await built.execute(parsed);
+		} else {
+			const { runFabricCatalogTool } = await import(
+				"../../src/activities/orchestrator/execution/fabric-catalog-adapter"
+			);
+			const result = await runFabricCatalogTool({
+				toolName: "fabric_get_project_feature",
+				args: parsed,
+				...CTX,
+			});
+			expect(result.success).toBe(true);
+		}
+		expect(h.getProjectFeature).toHaveBeenCalledWith(args, {
+			projectId: "p-1",
+			userId: "user-1",
+		});
+	},
+);

@@ -8,11 +8,15 @@
  * - Get episodic memory history
  */
 
+import { os } from "@orpc/server";
 import {
+	createOrganizationContext,
+	createPersonalContext,
 	deleteEpisodicMemory,
+	getEpisodesPage,
 	getOrchestratorMemoryPreferences,
-	getRecentEpisodes,
 	removeLearnedPattern,
+	runWithTenantContext,
 	searchEpisodicMemories,
 	updateOrchestratorMemoryPreferences,
 } from "@repo/database";
@@ -21,7 +25,7 @@ import { deleteEpisodeEmbedding } from "@repo/rag/lib/vector-store/episodic-memo
 import { z } from "zod";
 import {
 	Permissions,
-	requirePermission,
+	requireInputOrgPermission,
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
@@ -59,6 +63,32 @@ const searchEpisodesSchema = z.object({
 	limit: z.number().min(1).max(20).default(10),
 });
 
+// Installed after requireInputOrgPermission: scope query filters and SQL RLS
+// variables to the verified page organization, including multi-tab requests.
+const withMemoryTenantContext = os
+	.$context<{
+		user: { id: string };
+		session: { activeOrganizationId?: string | null };
+	}>()
+	.middleware(async ({ context, next }, input: unknown) => {
+		const organizationId = resolveOrganizationId(
+			(input as { organizationId?: string | null } | undefined)
+				?.organizationId,
+			context.session,
+		);
+		const tenantContext = organizationId
+			? createOrganizationContext(organizationId, context.user.id)
+			: createPersonalContext(context.user.id);
+		return runWithTenantContext(tenantContext, () =>
+			next({
+				context: {
+					tenantContext,
+					memoryOrganizationId: organizationId,
+				},
+			}),
+		);
+	});
+
 // =============================================================================
 // PROCEDURES
 // =============================================================================
@@ -67,7 +97,8 @@ const searchEpisodesSchema = z.object({
  * Get orchestrator memory preferences for the current user
  */
 export const getPreferences = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_READ))
+	.use(requireInputOrgPermission(Permissions.AGENT_READ))
+	.use(withMemoryTenantContext)
 	.route({
 		method: "GET",
 		path: "/orchestrator/memory/preferences",
@@ -78,11 +109,8 @@ export const getPreferences = tenantProtectedProcedure
 			organizationId: z.string().nullable().optional(),
 		}),
 	)
-	.handler(async ({ input, context }) => {
-		const orgId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
+	.handler(async ({ context }) => {
+		const orgId = context.memoryOrganizationId;
 
 		const preferences = await getOrchestratorMemoryPreferences(
 			context.user.id,
@@ -99,7 +127,8 @@ export const getPreferences = tenantProtectedProcedure
  * Update orchestrator memory preferences
  */
 export const updatePreferences = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_UPDATE))
+	.use(requireInputOrgPermission(Permissions.AGENT_UPDATE))
+	.use(withMemoryTenantContext)
 	.route({
 		method: "POST",
 		path: "/orchestrator/memory/preferences",
@@ -107,10 +136,7 @@ export const updatePreferences = tenantProtectedProcedure
 	})
 	.input(preferencesUpdateSchema)
 	.handler(async ({ input, context }) => {
-		const orgId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
+		const orgId = context.memoryOrganizationId;
 
 		const updated = await updateOrchestratorMemoryPreferences(
 			context.user.id,
@@ -134,7 +160,8 @@ export const updatePreferences = tenantProtectedProcedure
  * Clear all learned patterns (reset to defaults)
  */
 export const clearLearnedPatterns = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_UPDATE))
+	.use(requireInputOrgPermission(Permissions.AGENT_UPDATE))
+	.use(withMemoryTenantContext)
 	.route({
 		method: "POST",
 		path: "/orchestrator/memory/preferences/clear-patterns",
@@ -145,11 +172,8 @@ export const clearLearnedPatterns = tenantProtectedProcedure
 			organizationId: z.string().nullable().optional(),
 		}),
 	)
-	.handler(async ({ input, context }) => {
-		const orgId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
+	.handler(async ({ context }) => {
+		const orgId = context.memoryOrganizationId;
 
 		const _updated = await updateOrchestratorMemoryPreferences(
 			context.user.id,
@@ -169,7 +193,8 @@ export const clearLearnedPatterns = tenantProtectedProcedure
  * Get recent episodic memories (conversation history)
  */
 export const getEpisodes = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_READ))
+	.use(requireInputOrgPermission(Permissions.AGENT_READ))
+	.use(withMemoryTenantContext)
 	.route({
 		method: "GET",
 		path: "/orchestrator/memory/episodes",
@@ -177,28 +202,22 @@ export const getEpisodes = tenantProtectedProcedure
 	})
 	.input(episodesQuerySchema)
 	.handler(async ({ input, context }) => {
-		const orgId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
+		const orgId = context.memoryOrganizationId;
 
-		const episodes = await getRecentEpisodes(
+		return getEpisodesPage(
 			context.user.id,
 			orgId,
 			input.limit,
+			input.offset,
 		);
-
-		return {
-			episodes,
-			total: episodes.length,
-		};
 	});
 
 /**
  * Search episodic memories by keyword
  */
 export const searchEpisodes = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_READ))
+	.use(requireInputOrgPermission(Permissions.AGENT_READ))
+	.use(withMemoryTenantContext)
 	.route({
 		method: "POST",
 		path: "/orchestrator/memory/episodes/search",
@@ -206,10 +225,7 @@ export const searchEpisodes = tenantProtectedProcedure
 	})
 	.input(searchEpisodesSchema)
 	.handler(async ({ input, context }) => {
-		const orgId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
+		const orgId = context.memoryOrganizationId;
 
 		const episodes = await searchEpisodicMemories({
 			userId: context.user.id,
@@ -230,7 +246,8 @@ export const searchEpisodes = tenantProtectedProcedure
  * Delete a specific learned pattern
  */
 export const deletePattern = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_UPDATE))
+	.use(requireInputOrgPermission(Permissions.AGENT_UPDATE))
+	.use(withMemoryTenantContext)
 	.route({
 		method: "DELETE",
 		path: "/orchestrator/memory/preferences/patterns",
@@ -243,10 +260,7 @@ export const deletePattern = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const orgId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
+		const orgId = context.memoryOrganizationId;
 
 		await removeLearnedPattern(context.user.id, orgId, input.pattern);
 
@@ -260,7 +274,8 @@ export const deletePattern = tenantProtectedProcedure
  * Delete a specific episode from conversation memory
  */
 export const deleteEpisode = tenantProtectedProcedure
-	.use(requirePermission(Permissions.AGENT_UPDATE))
+	.use(requireInputOrgPermission(Permissions.AGENT_UPDATE))
+	.use(withMemoryTenantContext)
 	.route({
 		method: "DELETE",
 		path: "/orchestrator/memory/episodes",
@@ -273,10 +288,7 @@ export const deleteEpisode = tenantProtectedProcedure
 		}),
 	)
 	.handler(async ({ input, context }) => {
-		const orgId = resolveOrganizationId(
-			input.organizationId,
-			context.session,
-		);
+		const orgId = context.memoryOrganizationId;
 
 		const deleted = await deleteEpisodicMemory(
 			input.episodeId,

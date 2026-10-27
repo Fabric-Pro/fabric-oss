@@ -452,6 +452,7 @@ export * from "./publishing-refine";
 export * from "./parlume";
 export * from "./parlume-auto-join";
 export * from "./parlume-notes";
+export * from "./parlume-recap";
 export * from "./parlume-warmup";
 export * from "./publishing-short-post";
 export * from "./publishing-stakeholder-email";
@@ -913,6 +914,7 @@ export {
 	// Workspace document retrieval
 	retrieveWorkspaceDocumentsActivity,
 	runAgentIteration,
+	snapshotAdvisorAnswerActivity,
 	saveTrajectory,
 	// Tool, Agent & Integration Discovery (semantic search)
 	searchAvailableAgents,

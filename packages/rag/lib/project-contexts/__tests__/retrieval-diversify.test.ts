@@ -249,3 +249,39 @@ describe("retrieveProjectContexts — diversify", () => {
 		expect(res).toEqual(reranked);
 	});
 });
+
+it("retains matched passages in relevance order only when requested", async () => {
+	vi.mocked(searchSimilarProjectContexts).mockResolvedValue([
+		{
+			contextId: "ctx-prd",
+			projectId: "p1",
+			score: 0.9,
+			type: "FILE",
+			content: "Best passage",
+		},
+		{ contextId: "ctx-notes", projectId: "p1", score: 0.8, type: "TEXT" },
+		{
+			contextId: "ctx-prd",
+			projectId: "p1",
+			score: 0.7,
+			type: "FILE",
+			content: "Further passage",
+		},
+	]);
+	const options = {
+		...baseOptions,
+		diversify: true,
+		includeMatchedPassages: true,
+	};
+	const result = await retrieveProjectContexts(options);
+	expect(result[0]).toMatchObject({
+		content: "content-of-ctx-prd",
+		matchedPassages: [
+			{ content: "Best passage", score: 0.9 },
+			{ content: "Further passage", score: 0.7 },
+		],
+	});
+	expect(result[1]).toHaveProperty("matchedPassages", []);
+	const legacy = await retrieveProjectContexts(baseOptions);
+	expect(legacy[0]).not.toHaveProperty("matchedPassages");
+});

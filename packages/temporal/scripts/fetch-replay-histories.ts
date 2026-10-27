@@ -31,6 +31,7 @@ import { Client, Connection } from "@temporalio/client";
 // the replayer's historyFromJSON can parse back.
 import { historyToJSON } from "@temporalio/common/lib/proto-utils";
 import { getTemporalConfig } from "../src/client";
+import { hasWorkflowTaskToReplay } from "./replay-history";
 
 const FIXTURES_DIR = join(
 	__dirname,
@@ -123,6 +124,8 @@ async function pullBatch(
 	limitPerType: number,
 	bucket: Bucket,
 	counts: Counts,
+	fixturesDir = FIXTURES_DIR,
+	unstartedCounts = new Map<string, number>(),
 ): Promise<{ saved: number; skipped: number }> {
 	if (limitPerType <= 0) {
 		return { saved: 0, skipped: 0 };
@@ -177,7 +180,11 @@ async function pullBatch(
 				summary.runId,
 			);
 			const history = await handle.fetchHistory();
-			const typeDir = join(FIXTURES_DIR, safeFilename(type));
+			if (!hasWorkflowTaskToReplay(history)) {
+				unstartedCounts.set(type, (unstartedCounts.get(type) ?? 0) + 1);
+				continue;
+			}
+			const typeDir = join(fixturesDir, safeFilename(type));
 			const file = join(
 				typeDir,
 				`${bucket}__${safeFilename(summary.workflowId)}__${safeFilename(summary.runId)}.json`,
@@ -223,11 +230,12 @@ async function pullBatch(
 	return { saved, skipped };
 }
 
-async function fetchHistories(
+export async function fetchHistories(
 	client: Client,
 	perType: number,
 	perTypeRunning: number,
 	sinceDays: number,
+	fixturesDir = FIXTURES_DIR,
 ) {
 	const sinceIso = new Date(
 		Date.now() - sinceDays * 24 * 60 * 60 * 1000,
@@ -242,12 +250,15 @@ async function fetchHistories(
 	const runningQuery = `ExecutionStatus = "Running" AND StartTime > "${sinceIso}"`;
 
 	const counts: Counts = new Map();
+	const unstartedCounts = new Map<string, number>();
 	const closed = await pullBatch(
 		client,
 		closedQuery,
 		perType,
 		"closed",
 		counts,
+		fixturesDir,
+		unstartedCounts,
 	);
 	const running = await pullBatch(
 		client,
@@ -255,8 +266,15 @@ async function fetchHistories(
 		perTypeRunning,
 		"running",
 		counts,
+		fixturesDir,
+		unstartedCounts,
 	);
 
+	for (const [type, count] of unstartedCounts) {
+		console.log(
+			`[fetch] ${type}: skipped ${count} histories — no started workflow task (not replay coverage)`,
+		);
+	}
 	return {
 		counts,
 		total: closed.saved + running.saved,
@@ -328,7 +346,9 @@ async function main() {
 	}
 }
 
-main().catch((err) => {
-	console.error("[fetch] failed:", err);
-	process.exit(1);
-});
+if (require.main === module) {
+	main().catch((err) => {
+		console.error("[fetch] failed:", err);
+		process.exit(1);
+	});
+}

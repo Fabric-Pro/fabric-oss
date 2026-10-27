@@ -3,13 +3,17 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	deleteRow: vi.fn(),
+	page: vi.fn(),
+	recent: vi.fn(),
 	deleteVector: vi.fn(),
 	warn: vi.fn(),
 }));
-vi.mock("@repo/database", () => ({
+vi.mock("@repo/database", async () => ({
+	...(await import("@repo/database/src/tenant-context")),
 	deleteEpisodicMemory: mocks.deleteRow,
 	getOrchestratorMemoryPreferences: vi.fn(),
-	getRecentEpisodes: vi.fn(),
+	getRecentEpisodes: mocks.recent,
+	getEpisodesPage: mocks.page,
 	removeLearnedPattern: vi.fn(),
 	searchEpisodicMemories: vi.fn(),
 	updateOrchestratorMemoryPreferences: vi.fn(),
@@ -23,7 +27,7 @@ vi.mock("../../../../orpc/procedures", () => ({
 		user: { id: string };
 		session: { activeOrganizationId: string };
 	}>(),
-	requirePermission: () => os.middleware(async ({ next }) => next()),
+	requireInputOrgPermission: () => os.middleware(async ({ next }) => next()),
 	Permissions: { AGENT_READ: "agent.read", AGENT_UPDATE: "agent.update" },
 	resolveOrganizationId: (
 		_input: unknown,
@@ -31,7 +35,7 @@ vi.mock("../../../../orpc/procedures", () => ({
 	) => session.activeOrganizationId,
 }));
 
-import { deleteEpisode } from "../memory-preferences";
+import { deleteEpisode, getEpisodes } from "../memory-preferences";
 
 const invoke = () =>
 	deleteEpisode["~orpc"].handler({
@@ -42,10 +46,12 @@ const invoke = () =>
 		context: {
 			user: { id: "user-example-1" },
 			session: { activeOrganizationId: "example-org" },
+			memoryOrganizationId: "example-org",
 		},
 	});
 beforeEach(() => {
 	vi.resetAllMocks();
+	mocks.recent.mockResolvedValue([]);
 	mocks.deleteRow.mockResolvedValue(true);
 	mocks.deleteVector.mockResolvedValue(true);
 });
@@ -96,4 +102,33 @@ describe("deleteEpisode vector cleanup", () => {
 		});
 		expect(mocks.deleteVector).not.toHaveBeenCalled();
 	});
+});
+
+it("passes the offset and resolved tenant through and returns the accessible total", async () => {
+	mocks.page.mockResolvedValue({
+		episodes: [{ id: "example-second-page" }],
+		total: 23,
+	});
+	const result = await getEpisodes["~orpc"].handler({
+		input: {
+			organizationId: "example-untrusted-org",
+			limit: 10,
+			offset: 10,
+		},
+		context: {
+			user: { id: "example-user" },
+			session: { activeOrganizationId: "example-org" },
+			memoryOrganizationId: "example-org",
+		},
+	});
+	expect(result).toEqual({
+		episodes: [{ id: "example-second-page" }],
+		total: 23,
+	});
+	expect(mocks.page).toHaveBeenCalledWith(
+		"example-user",
+		"example-org",
+		10,
+		10,
+	);
 });

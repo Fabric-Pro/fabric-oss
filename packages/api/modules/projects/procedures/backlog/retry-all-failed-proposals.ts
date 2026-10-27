@@ -342,10 +342,14 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 
 			if (workflowChanges.length === 0) {
 				// Full-dedup short-circuit — mark APPLIED, no workflow start.
+				// Stamp the reviewer like the APPLYING claim does, so decision
+				// capture records this retry as a human approval.
 				const claimed = await db.pendingBacklogProposal.updateMany({
 					where: retryWhere,
 					data: {
 						status: "APPLIED",
+						reviewedAt: new Date(),
+						reviewedBy: user.id,
 						appliedAt: new Date(),
 						applyError: null,
 						appliedChangeIndexes: mergedApplied,

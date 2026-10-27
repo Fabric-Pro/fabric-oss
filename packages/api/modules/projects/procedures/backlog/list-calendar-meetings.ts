@@ -18,7 +18,8 @@ import {
  * List calendar meetings for the backlog updater meeting selector.
  *
  * Calls the Microsoft Graph API to list recent calendar events
- * from the last 30 days that have a joinUrl (Teams online meetings).
+ * from the last 30 days that have a joinUrl (Teams online meetings), and
+ * upcoming ones too when `daysAhead` is set.
  *
  * AUTHORIZATION: Uses hasProjectAccess() - verifies org membership + project access
  */
@@ -38,6 +39,11 @@ export const listCalendarMeetingsProcedure = tenantProtectedProcedure
 			organizationId: z.string().nullable().optional(),
 			/** Number of days back to fetch meetings. Defaults to 30. Max 90. */
 			daysBack: z.number().int().min(1).max(90).optional().default(30),
+			/**
+			 * Days ahead to include as well, so a series can be linked before
+			 * it first meets. Defaults to 0: past meetings only.
+			 */
+			daysAhead: z.number().int().min(0).max(30).optional().default(0),
 			/**
 			 * When true, bypass the per-user server cache and fetch fresh from
 			 * Microsoft Graph (used by the manual "Refresh" control in the UI).
@@ -73,6 +79,7 @@ export const listCalendarMeetingsProcedure = tenantProtectedProcedure
 
 		// List calendar meetings from the requested date range (default 30 days)
 		const daysBack = input.daysBack ?? 30;
+		const daysAhead = input.daysAhead ?? 0;
 
 		// Serve from the per-user short-TTL cache unless the caller forces a
 		// refresh. The cache transparently no-ops when Redis isn't configured,
@@ -82,6 +89,7 @@ export const listCalendarMeetingsProcedure = tenantProtectedProcedure
 				user.id,
 				sourceOrganizationId ?? null,
 				daysBack,
+				daysAhead,
 			);
 			if (cached) {
 				return { meetings: cached };
@@ -93,12 +101,15 @@ export const listCalendarMeetingsProcedure = tenantProtectedProcedure
 			const rangeStart = new Date(
 				now.getTime() - daysBack * 24 * 60 * 60 * 1000,
 			);
+			const rangeEnd = new Date(
+				now.getTime() + daysAhead * 24 * 60 * 60 * 1000,
+			);
 
 			const result = (await executeMicrosoftTeamsTool(
 				"list_calendar_meetings",
 				{
 					startDate: rangeStart.toISOString(),
-					endDate: now.toISOString(),
+					endDate: rangeEnd.toISOString(),
 				},
 				user.id,
 				sourceOrganizationId,
@@ -137,6 +148,7 @@ export const listCalendarMeetingsProcedure = tenantProtectedProcedure
 				sourceOrganizationId ?? null,
 				daysBack,
 				meetings,
+				daysAhead,
 			);
 
 			return { meetings };

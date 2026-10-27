@@ -15,6 +15,7 @@ import {
 	readConvergenceClaim,
 	readRoomStamp,
 	roomAwarenessSignature,
+	roomReviewsProposal,
 	roomStampKey,
 	sameRoomStamp,
 	writeConvergenceClaim,
@@ -85,6 +86,12 @@ interface RoomConvergenceOptions {
 	/** When the document query last answered. */
 	savedAt: number;
 	runLive: boolean;
+	/**
+	 * An editor in the room, this one included, reviews an assistant
+	 * proposal (see `roomReviewsProposal`): the room holds that proposal over
+	 * the saved body, unanswered, and is not replaced while it does.
+	 */
+	proposalUnderReview?: boolean;
 	ownSaveInFlight: boolean;
 	/** Typed in this editor since its last save. */
 	hasLocalTyping: () => boolean;
@@ -317,6 +324,13 @@ export function useRoomConvergence(options: RoomConvergenceOptions): {
 		const timings = ROOM_CONVERGENCE_TIMINGS;
 		const now = Date.now();
 		const ownId = room.clientID;
+		// An assistant proposal under review holds every write of the body
+		// below (Fizzy #2946), as the option says and as the room's
+		// awareness says now: a review and its body can reach this editor,
+		// and a timer of this one fire, before it renders that review.
+		const reviewHoldsBody = () =>
+			o.proposalUnderReview === true ||
+			(o.canEdit === true && roomReviewsProposal(o.awareness));
 		const stamp = readRoomStamp(room);
 		const claim = readConvergenceClaim(room);
 		const claimForSaved =
@@ -400,6 +414,16 @@ export function useRoomConvergence(options: RoomConvergenceOptions): {
 					? memo.applied
 					: null;
 			if (applied && claimForSaved?.clientId === ownId) {
+				// Not while an assistant proposal is under review (Fizzy
+				// #2946): the room holds that proposal over the body this
+				// editor applied, so the body reads back changed, and applying
+				// it again would replace the proposal. It is read back once the
+				// proposal is answered.
+				if (reviewHoldsBody()) {
+					clearTimer();
+					setStatus("inSync");
+					return;
+				}
 				// This editor's convergence: its body is read back once the
 				// claim had time to meet a concurrent one, and again whenever
 				// another editor's convergence merges in — two editors that
@@ -592,7 +616,13 @@ export function useRoomConvergence(options: RoomConvergenceOptions): {
 			// this stale episode back for one fall-through interval at most:
 			// a save that never answers, a client that keeps naming new
 			// bases, or many clients do not hold a stale room for good.
-			let peerSavesHoldUntil = o.runLive
+			// An assistant proposal under review holds it back as a run does,
+			// for as long as it is published (Fizzy #2946): the room holds the
+			// proposal, which a convergence would replace before anyone
+			// answered it. A stale room is looked at afresh once it is
+			// answered.
+			const heldBack = o.runLive || reviewHoldsBody();
+			let peerSavesHoldUntil = heldBack
 				? null
 				: peerRoomSavesHoldUntil(o.awareness, memo.peerSavesSeen, now);
 			if (peerSavesHoldUntil !== null) {
@@ -603,7 +633,7 @@ export function useRoomConvergence(options: RoomConvergenceOptions): {
 						? Math.min(peerSavesHoldUntil, capUntil)
 						: null;
 			}
-			if (o.runLive || peerSavesHoldUntil !== null) {
+			if (heldBack || peerSavesHoldUntil !== null) {
 				resetWaiting(memo);
 				if (peerSavesHoldUntil !== null) {
 					schedule(peerSavesHoldUntil - now);
@@ -710,6 +740,14 @@ export function useRoomConvergence(options: RoomConvergenceOptions): {
 		if (o.canEdit !== true) {
 			clearTimer();
 			setStatus("behindReadOnly");
+			return;
+		}
+		// Also when the claimant of a convergence went quiet: nothing replaces
+		// a proposal under review (see above).
+		if (reviewHoldsBody()) {
+			resetWaiting(memo);
+			clearTimer();
+			setStatus("inSync");
 			return;
 		}
 		memo.staleSince ??= now;
@@ -913,6 +951,7 @@ export function useRoomConvergence(options: RoomConvergenceOptions): {
 		options.savedRun,
 		options.savedAt,
 		options.runLive,
+		options.proposalUnderReview,
 		options.ownSaveInFlight,
 		options.editor,
 		options.canEdit,

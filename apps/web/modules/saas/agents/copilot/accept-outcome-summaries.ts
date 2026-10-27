@@ -6,8 +6,8 @@
  *
  * Recorded through `useConfirmChangesOperationResult`: `saved`, `advanced`
  * and `stageRequested` as a success, `failed`, `failedOfferedToCopy` and
- * `failedEditorClosed` as a failure, `unsaved` as partial, `undone` as
- * cancelled.
+ * `failedEditorClosed` as a failure, `unsaved` as partial, `undone` and
+ * `heldElsewhere` as cancelled.
  */
 export const ACCEPT_OUTCOME_SUMMARIES = {
 	saved: "Changes applied.",
@@ -36,4 +36,10 @@ export const ACCEPT_OUTCOME_SUMMARIES = {
 	 * never sent: the editor's own text went instead.
 	 */
 	undone: "The accepted changes were undone before they were saved.",
+	/**
+	 * Never put in: another editor of the document reviewed an assistant
+	 * proposal of its own while this one was made (the document editor).
+	 */
+	heldElsewhere:
+		"Not applied: another tab was reviewing an assistant proposal.",
 } as const;

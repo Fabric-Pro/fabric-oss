@@ -142,7 +142,7 @@ export function createRequestFingerprint(input: {
 						message?.type === "reasoning"
 					? "assistant"
 					: "other");
-		if (role === "system") {
+		if (role === "system" || role === "developer") {
 			system.push(part(message.content));
 		} else {
 			messages.push({

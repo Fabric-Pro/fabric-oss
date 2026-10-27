@@ -180,6 +180,17 @@ export interface ConvergenceClaim {
 	failedAt?: number;
 }
 
+/**
+ * How long a proposal under review holds the other editors in the room at
+ * most, with no input in the editor that reviews it (Fizzy #2946). A review
+ * left open — a tab left in the background with its confirm card up — would
+ * otherwise hold every other editor still for as long as that tab stays
+ * open. Only the reviewing editor releases it, by answering the proposal as
+ * rejected: another editor that stopped holding on its own would save the
+ * unanswered proposal its room holds.
+ */
+const PROPOSAL_REVIEW_IDLE_LIMIT_MS = 10 * 60_000;
+
 /** How long each step of the stale rule and the election waits. */
 export const ROOM_CONVERGENCE_TIMINGS = {
 	/**
@@ -211,6 +222,19 @@ export const ROOM_CONVERGENCE_TIMINGS = {
 	 * the room as it is before it makes one more attempt of its own.
 	 */
 	failedClaimExpiryMs: 30_000,
+	/**
+	 * How long an assistant proposal may wait for its answer, with nothing
+	 * done in the editor that reviews it, before that editor answers it as
+	 * rejected (see `PROPOSAL_REVIEW_IDLE_LIMIT_MS`).
+	 */
+	proposalReviewIdleLimitMs: PROPOSAL_REVIEW_IDLE_LIMIT_MS,
+	/**
+	 * How long frames the assistant streamed into an editor wait, once its
+	 * run ended, for the confirm card its chat announced (Fizzy #2946). A
+	 * run that failed after naming the call never runs it, and its frames
+	 * would otherwise stay under review for good.
+	 */
+	proposalCardLateLimitMs: 20_000,
 } as const;
 
 /** The part of a Yjs document the room record reads and writes. */
@@ -429,11 +453,246 @@ export function peerRoomSavesInFlight(
 	return saves;
 }
 
+/*
+ * An assistant proposal under review (Fizzy #2946).
+ *
+ * A proposal is reviewed in the editor that asked for it: its text, diff
+ * marks included, is in that editor's body, so it is in the room, and every
+ * other editor shows it before anyone has answered it. A save from any of
+ * them would write it, and a later Reject restores the reviewing editor but
+ * not the saved document. So the reviewing editor publishes the proposal in
+ * its awareness state until it is answered or the editor goes, and every
+ * other editor holds still meanwhile: no input, no saves, and no
+ * convergence that would replace the proposal.
+ *
+ * Two editors that begin a review at once settle which one holds the same
+ * way everywhere (see `newProposalReview`).
+ *
+ * A role whose editor is gone does not hold anyone for long: closing the tab
+ * withdraws its awareness state, the collaboration server withdraws a
+ * client's states when its connection closes, and a client that stops
+ * renewing its state (every 15 s) is dropped by every other client 30 s
+ * after its last renewal (y-protocols' `outdatedTimeout`). An editor that
+ * does not know the field ignores it, and holds nothing.
+ */
+
+/**
+ * The awareness field an editor publishes the assistant proposal it reviews
+ * in: an identity of that review, or `null` when it reviews none.
+ */
+export const PROPOSAL_REVIEW_AWARENESS_FIELD = "proposalReview";
+
+/**
+ * A new review's identity: when it began, by this editor's clock, and a
+ * random part — `<ms>:<uuid>`.
+ *
+ * Two editors can begin a review before either has heard of the other's.
+ * Every editor then settles it the same way, from what both published: the
+ * review that began first holds, the smaller client id breaking a tie, and
+ * the other withdraws its own. Clocks may differ between machines; every
+ * editor still picks the same one.
+ */
+export function newProposalReview(now: number = Date.now()): string {
+	return `${now}:${crypto.randomUUID()}`;
+}
+
+/**
+ * Publish the proposal this editor reviews, by an identity of the review,
+ * or clear it with `null`. Sends nothing when that is already published.
+ */
+export function publishProposalReview(
+	awareness: GenerationRunAwareness | null | undefined,
+	review: string | null,
+): void {
+	if (!awareness) {
+		return;
+	}
+	const published =
+		awareness.getLocalState()?.[PROPOSAL_REVIEW_AWARENESS_FIELD] ?? null;
+	if (published !== review) {
+		awareness.setLocalStateField(PROPOSAL_REVIEW_AWARENESS_FIELD, review);
+	}
+}
+
+function publishedReview(
+	state: Record<string, unknown> | null | undefined,
+): string | null {
+	const review = state?.[PROPOSAL_REVIEW_AWARENESS_FIELD];
+	return typeof review === "string" && review.length > 0 ? review : null;
+}
+
+/** When a review began; one without a time is taken to begin last. */
+function reviewStartedAt(review: string): number {
+	const startedAt = Number(review.slice(0, review.indexOf(":")));
+	return review.includes(":") && Number.isFinite(startedAt)
+		? startedAt
+		: Number.POSITIVE_INFINITY;
+}
+
+/** Whether review `a`, published by client `aClient`, holds over `b`'s. */
+function reviewHoldsOver(
+	a: string,
+	aClient: number,
+	b: string,
+	bClient: number,
+): boolean {
+	const aAt = reviewStartedAt(a);
+	const bAt = reviewStartedAt(b);
+	return aAt !== bAt ? aAt < bAt : aClient < bClient;
+}
+
+/**
+ * The reviews other editors in the room publish, by client. Only a client
+ * that published that it may edit counts — a filter, not a guarantee, as
+ * for `peerRoomSavesInFlight`: a viewer cannot ask for a proposal, and one
+ * that publishes a review anyway would hold every editor in the room.
+ */
+function peerReviews(
+	awareness: GenerationRunAwareness,
+): Array<{ clientId: number; review: string }> {
+	const reviews: Array<{ clientId: number; review: string }> = [];
+	for (const [clientId, state] of awareness.getStates()) {
+		const review = publishedReview(state);
+		if (
+			clientId !== awareness.clientID &&
+			review !== null &&
+			readRoomPeer(state)?.canEdit
+		) {
+			reviews.push({ clientId, review });
+		}
+	}
+	return reviews;
+}
+
+/**
+ * Whether another editor's review holds this editor. Its own review never
+ * does; another one does unless this editor reviews one of its own that
+ * holds over it (see `newProposalReview`) — the editor whose review holds
+ * is never held by the one that withdraws.
+ */
+export function peerReviewsProposal(
+	awareness: GenerationRunAwareness | null | undefined,
+): boolean {
+	if (!awareness) {
+		return false;
+	}
+	const own = publishedReview(awareness.getLocalState());
+	return peerReviews(awareness).some(
+		({ clientId, review }) =>
+			own === null ||
+			reviewHoldsOver(review, clientId, own, awareness.clientID),
+	);
+}
+
+/**
+ * The name of the person whose review holds this editor (see
+ * `peerReviewsProposal`), as their editor publishes it with its cursor:
+ * the earliest of those reviews, as every editor settles it. `null` when no
+ * review holds this editor, or the one that does names nobody — no name,
+ * or the "Anonymous" an editor publishes without one.
+ */
+export function proposalReviewerName(
+	awareness: GenerationRunAwareness | null | undefined,
+): string | null {
+	if (!awareness) {
+		return null;
+	}
+	const own = publishedReview(awareness.getLocalState());
+	let holding: { clientId: number; review: string } | null = null;
+	for (const peer of peerReviews(awareness)) {
+		if (
+			(own === null ||
+				reviewHoldsOver(
+					peer.review,
+					peer.clientId,
+					own,
+					awareness.clientID,
+				)) &&
+			(holding === null ||
+				reviewHoldsOver(
+					peer.review,
+					peer.clientId,
+					holding.review,
+					holding.clientId,
+				))
+		) {
+			holding = peer;
+		}
+	}
+	if (holding === null) {
+		return null;
+	}
+	const user = awareness.getStates().get(holding.clientId)?.user as
+		| { name?: unknown }
+		| null
+		| undefined;
+	const name = typeof user?.name === "string" ? user.name.trim() : "";
+	// What an editor without a signed-in name publishes names nobody.
+	return name.length > 0 && name !== "Anonymous" ? name : null;
+}
+
+/**
+ * Whether another client in the room published that it may edit: someone
+ * a proposal under review here holds still (see `peerReviews` for what the
+ * filter guarantees).
+ */
+export function roomHasOtherEditor(
+	awareness: GenerationRunAwareness | null | undefined,
+): boolean {
+	if (!awareness) {
+		return false;
+	}
+	for (const [clientId, state] of awareness.getStates()) {
+		if (clientId !== awareness.clientID && readRoomPeer(state)?.canEdit) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * The other editors whose reviews this editor's own review holds over:
+ * they withdraw theirs, and what they wrote into the room before they did
+ * is theirs to be replaced (see `newProposalReview`). Empty when this
+ * editor reviews nothing.
+ */
+export function peerReviewsHeldOver(
+	awareness: GenerationRunAwareness | null | undefined,
+): Set<number> {
+	const held = new Set<number>();
+	const own = awareness ? publishedReview(awareness.getLocalState()) : null;
+	if (!awareness || own === null) {
+		return held;
+	}
+	for (const { clientId, review } of peerReviews(awareness)) {
+		if (reviewHoldsOver(own, awareness.clientID, review, clientId)) {
+			held.add(clientId);
+		}
+	}
+	return held;
+}
+
+/**
+ * Whether any editor in the room, this one included, reviews an assistant
+ * proposal: the room holds text nobody has answered yet, which a convergence
+ * must not take for a room behind the saved document.
+ */
+export function roomReviewsProposal(
+	awareness: GenerationRunAwareness | null | undefined,
+): boolean {
+	return (
+		!!awareness &&
+		(publishedReview(awareness.getLocalState()) !== null ||
+			peerReviews(awareness).length > 0)
+	);
+}
+
 /**
  * The part of the room's awareness the convergence reads, as one string:
  * who is in the room, and what each client published as its peer state,
- * its save in flight and its run role. Equal strings mean nothing the
- * convergence reads changed — a cursor or a selection moved, say.
+ * its save in flight, its run role and the proposal it reviews. Equal
+ * strings mean nothing the convergence reads changed — a cursor or a
+ * selection moved, say.
  */
 export function roomAwarenessSignature(
 	awareness: GenerationRunAwareness | null | undefined,
@@ -448,6 +707,7 @@ export function roomAwarenessSignature(
 			state?.[ROOM_PEER_AWARENESS_FIELD] ?? null,
 			state?.[ROOM_SAVE_AWARENESS_FIELD] ?? null,
 			state?.[GENERATION_RUN_AWARENESS_FIELD] ?? null,
+			state?.[PROPOSAL_REVIEW_AWARENESS_FIELD] ?? null,
 		]);
 	return JSON.stringify(entries);
 }

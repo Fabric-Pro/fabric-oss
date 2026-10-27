@@ -1,3 +1,7 @@
+import {
+	type EffectiveToolCalls,
+	historyCallIndex,
+} from "../advisor-call-tool";
 /**
  * Inputs for the answer the iterative loop writes when a turn runs out of its
  * budget.
@@ -76,6 +80,7 @@ function groupIntoUnits(messages: IterativeMessage[]): IterativeMessage[][] {
 export function buildSynthesisHistory(
 	history: IterativeMessage[],
 	preserveTurnMessages = false,
+	effectiveToolCalls?: EffectiveToolCalls,
 ): IterativeMessage[] {
 	if (history.length === 0) {
 		return [];
@@ -88,6 +93,9 @@ export function buildSynthesisHistory(
 		toolIndexes.slice(-SYNTHESIS_INPUT.recentToolResults),
 	);
 
+	const identities = effectiveToolCalls
+		? historyCallIndex(history, effectiveToolCalls)
+		: undefined;
 	const compacted = history.map((message, index): IterativeMessage => {
 		if (
 			preserveTurnMessages &&
@@ -112,10 +120,23 @@ export function buildSynthesisHistory(
 					: truncate(message.content, max),
 			...(message.toolCalls
 				? {
-						toolCalls: message.toolCalls.map((call) => ({
-							...call,
-							args: compactArgs(call.args),
-						})),
+						toolCalls: message.toolCalls.map((call) => {
+							const effective = identities?.get(call.id);
+							return {
+								...call,
+								args:
+									effectiveToolCalls &&
+									call.name === "call_tool" &&
+									effective
+										? {
+												name: effective.name,
+												arguments: compactArgs(
+													effective.args,
+												),
+											}
+										: compactArgs(call.args),
+							};
+						}),
 					}
 				: {}),
 		};

@@ -275,10 +275,14 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 				new Set([...alreadyApplied, ...newlyApplied]),
 			);
 			// Close only a still-FAILED row; a concurrent dispatch owns its claim.
+			// Stamp the reviewer like the APPLYING claim does, so decision
+			// capture records this retry as a human approval.
 			const finalized = await db.pendingBacklogProposal.updateMany({
 				where: retryWhere,
 				data: {
 					status: "APPLIED",
+					reviewedAt: new Date(),
+					reviewedBy: user.id,
 					appliedAt: new Date(),
 					applyError: null,
 					appliedChangeIndexes: mergedApplied,

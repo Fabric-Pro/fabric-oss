@@ -4,6 +4,7 @@ import {
 	ParlumeTranscriber,
 	type ParlumeTranscript,
 	type ParlumeTranscriptionSocket,
+	parlumeTranscriptTimeAt,
 } from "./parlume-transcriber.ts";
 
 class FakeSocket implements ParlumeTranscriptionSocket {
@@ -130,6 +131,7 @@ test("a gap in the meeting audio keeps the stream hearing silence a second behin
 		isFinal: true,
 		startMs: 8_010,
 		endMs: 8_070,
+		words: [{ startMs: 8_010, endMs: 8_070 }],
 	});
 	transcriber.close();
 });
@@ -378,6 +380,10 @@ test("a stream that drops mid-sentence replays that sentence to the next one, no
 		isFinal: true,
 		startMs: 12_000,
 		endMs: 14_000,
+		words: [
+			{ startMs: 12_000, endMs: 12_180 },
+			{ startMs: 13_480, endMs: 14_000 },
+		],
 	});
 });
 
@@ -411,6 +417,10 @@ for (const initialEvent of ["Update", "StartOfTurn"]) {
 			isFinal: false,
 			startMs: 71_100,
 			endMs: 72_000,
+			words: [
+				{ startMs: 71_100, endMs: 71_400 },
+				{ startMs: 71_500, endMs: 72_000 },
+			],
 		});
 		for (const event of ["Update", "EndOfTurn"]) {
 			socket.flux({
@@ -430,6 +440,11 @@ for (const initialEvent of ["Update", "StartOfTurn"]) {
 				isFinal: event === "EndOfTurn",
 				startMs: 71_050,
 				endMs: 73_200,
+				words: [
+					{ startMs: 71_050, endMs: 71_400 },
+					{ startMs: 71_500, endMs: 72_000 },
+					{ startMs: 72_500, endMs: 73_200 },
+				],
 			});
 		}
 	});
@@ -511,6 +526,7 @@ test("word bounds accept stream zero without processed windows and reject overfl
 		isFinal: true,
 		startMs: 50_000,
 		endMs: 50_200,
+		words: [{ startMs: 50_000, endMs: 50_200 }],
 	});
 	for (const interval of [
 		'"start":1e400,"end":1e400',
@@ -550,10 +566,72 @@ test("word bounds use each reconnected socket's first audio epoch", async () => 
 	await flush();
 	sockets[0].flux({ ...event, event: "EndOfTurn" });
 	sockets[1].flux({ ...event, event: "EndOfTurn" });
+	const heard = (isFinal: boolean, startMs: number) => ({
+		text: "hello",
+		isFinal,
+		startMs,
+		endMs: startMs + 500,
+		words: [{ startMs, endMs: startMs + 500 }],
+	});
 	assert.deepEqual(transcripts, [
-		{ text: "hello", isFinal: false, startMs: 51_000, endMs: 51_500 },
-		{ text: "hello", isFinal: true, startMs: 51_000, endMs: 51_500 },
-		{ text: "hello", isFinal: true, startMs: 81_000, endMs: 81_500 },
+		heard(false, 51_000),
+		heard(true, 51_000),
+		heard(true, 81_000),
 	]);
+	transcriber.close();
+});
+
+test("each word keeps its time, so a word partway through the turn can be placed", async () => {
+	const socket = new FakeSocket();
+	const { transcriber, transcripts } = setup(async () => socket);
+	transcriber.send(new ArrayBuffer(2_560), 50_000);
+	await flush();
+	const text = "We call it done. Parlume, what is next?";
+	const words = [
+		{ word: "We", start: 1, end: 1.2 },
+		{ word: "call", start: 1.2, end: 1.4 },
+		{ word: "it", start: 1.4, end: 1.5 },
+		{ word: "done.", start: 1.5, end: 1.8 },
+		{ word: "Parlume,", start: 2.4, end: 2.8 },
+		{ word: "what", start: 2.8, end: 3 },
+		{ word: "is", start: 3, end: 3.1 },
+		{ word: "next?", start: 3.1, end: 3.5 },
+	];
+	for (const event of ["EagerEndOfTurn", "EndOfTurn"]) {
+		socket.flux({ event, turn_index: 0, transcript: text, words });
+	}
+	assert.equal(transcripts.length, 2);
+	for (const transcript of transcripts) {
+		assert.equal(transcript.words?.length, words.length);
+		assert.deepEqual(transcript.words?.[4], {
+			startMs: 52_400,
+			endMs: 52_800,
+		});
+		assert.equal(
+			parlumeTranscriptTimeAt(transcript, text.indexOf("Parlume")),
+			52_400,
+		);
+		// Inside a word is that word.
+		assert.equal(
+			parlumeTranscriptTimeAt(transcript, text.indexOf("arlume")),
+			52_400,
+		);
+		assert.equal(parlumeTranscriptTimeAt(transcript, 0), 51_000);
+	}
+	// Words that do not line up with the text place nothing.
+	assert.equal(
+		parlumeTranscriptTimeAt(
+			{ ...transcripts[0], words: transcripts[0].words?.slice(1) },
+			text.indexOf("Parlume"),
+		),
+		null,
+	);
+	assert.equal(
+		parlumeTranscriptTimeAt(
+			{ text, isFinal: true, startMs: 51_000, endMs: 53_500 },
+			text.indexOf("Parlume"),
+		),
+		null,
+	);
 	transcriber.close();
 });

@@ -189,6 +189,89 @@ describe("provider-mismatch fallback key", () => {
 		});
 	});
 
+	describe("deployment routing", () => {
+		const context = {
+			userId: "example-user",
+			organizationId: "example-org",
+		};
+		const defaultAzureConfig = {
+			...TENANT_OWNED_CONFIG,
+			provider: "AZURE_AI_FOUNDRY",
+			deploymentName: "example-default-deployment",
+			baseUrl: "https://example.openai.azure.com",
+		};
+
+		it("uses the Azure fallback's deployment name", async () => {
+			getTaskDefaultModelMock.mockResolvedValue({
+				id: "example-model",
+				canonicalName: "gpt-4o-mini",
+				providerMappings: [
+					{
+						provider: "AZURE_AI_FOUNDRY",
+						providerModelId: "gpt-4o-mini",
+					},
+				],
+			});
+			getAiProviderApiKeyByProviderMock.mockResolvedValue({
+				...TENANT_OWNED_CONFIG,
+				provider: "AZURE_AI_FOUNDRY",
+				deploymentName: "example-deployment",
+				baseUrl: "https://example.openai.azure.com",
+			});
+
+			const resolved = await resolveModelWithProvider("CHAT", context);
+			expect(resolved).toMatchObject({
+				provider: "AZURE_AI_FOUNDRY",
+				deploymentName: "example-deployment",
+				baseUrl: "https://example.openai.azure.com",
+			});
+		});
+
+		it("does not carry an Azure deployment onto a non-Azure fallback", async () => {
+			getAiProviderApiKeyMock.mockResolvedValue(defaultAzureConfig);
+			getAiProviderApiKeyByProviderMock.mockResolvedValue(
+				TENANT_OWNED_CONFIG,
+			);
+			const resolved = await resolveModelWithProvider("CHAT", context);
+			expect(resolved.provider).toBe("VERCEL_GATEWAY");
+			expect(resolved.deploymentName).toBeNull();
+		});
+
+		it.each(["missing", "platform", "throws", "personal-key"])(
+			"clears deployment and config identity when fallback credentials are %s",
+			async (mode) => {
+				getAiProviderApiKeyMock.mockResolvedValue(defaultAzureConfig);
+				if (mode === "throws") {
+					getAiProviderApiKeyByProviderMock.mockRejectedValueOnce(
+						new Error("example lookup failure"),
+					);
+				} else {
+					getAiProviderApiKeyByProviderMock.mockResolvedValue(
+						mode === "platform"
+							? PLATFORM_SERVED_CONFIG
+							: EMPTY_PROVIDER_CONFIG,
+					);
+				}
+				const resolved = await resolveModelWithProvider(
+					"CHAT",
+					context,
+					mode === "personal-key"
+						? { providerConfig: defaultAzureConfig }
+						: undefined,
+				);
+				expect(resolved).toMatchObject({
+					apiKey: null,
+					clientId: null,
+					encryptedClientSecret: null,
+					baseUrl: null,
+					deploymentName: null,
+					configId: null,
+					configSource: null,
+				});
+			},
+		);
+	});
+
 	describe("embedding (SYSTEM entry point)", () => {
 		it("never reaches the fallback at all — a mismatch is fatal first", async () => {
 			// Why the refusal above needs no embedding exemption: a provider

@@ -109,3 +109,49 @@ it("renders response notes and calls in order and attributes results to their re
 	);
 	expect(prompt).toContain("TOOL_RESULT[second_tool]: second evidence");
 });
+
+it.each([false, true])(
+	"renders recorded effective previews and fails closed on duplicate ids (%s)",
+	async (duplicate) => {
+		const call = {
+			id: "example-wrapper",
+			name: "call_tool",
+			args: { name: "untrusted_name", arguments: { limit: "100" } },
+		};
+		await compactConversationHistoryActivity({
+			oldTurns: [
+				{
+					role: "assistant",
+					content: "",
+					toolCalls: duplicate ? [call, call] : [call],
+					timestamp: "2026-01-01",
+				},
+				{
+					role: "tool",
+					toolCallId: call.id,
+					content: "Example evidence",
+					timestamp: "2026-01-01",
+				},
+			],
+			currentTask: "Read",
+			userId: "example-user",
+			maxSummaryTokens: 4000,
+			effectiveToolCallPreviews: {
+				[call.id]: {
+					name: "example_read",
+					argumentPreview: '{"limit":"100"}',
+				},
+			},
+		});
+		const prompt = (
+			mocks.generateText.mock.calls[0][0] as { prompt: string }
+		).prompt;
+		expect(prompt).toContain(
+			duplicate
+				? "TOOL_RESULT[unknown_tool]"
+				: "TOOL_RESULT[example_read]",
+		);
+		expect(prompt).not.toContain("untrusted_name");
+		expect(prompt).not.toContain("ASSISTANT_TOOL_CALL: call_tool");
+	},
+);

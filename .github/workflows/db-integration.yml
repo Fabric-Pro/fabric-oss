@@ -329,6 +329,7 @@ jobs:
         run: |
           pnpm --filter @repo/database exec vitest run \
             __tests__/rls-isolation.test.ts \
+            __tests__/advisor-memory-queries.integration.test.ts \
             --passWithNoTests=false \
             --reporter=dot \
             --reporter=json --outputFile=rls-isolation-results.json
@@ -382,7 +383,8 @@ jobs:
           // Isolation" cases (shared plan accounts and pooling policy are
           // org-only: same-org read, other-org and personal read nothing,
           // no cross-org write).
-          const EXPECTED = 68;
+          // Advisor memory: 18 policy cases and five restricted query-path cases.
+          const EXPECTED = 91;
           const j = JSON.parse(fs.readFileSync("packages/database/rls-isolation-results.json","utf8"));
           const files = j.testResults?.length ?? 0;
           const total = j.numTotalTests ?? 0;
@@ -390,7 +392,7 @@ jobs:
           const skipped = (j.numSkippedTests ?? 0) + (j.numPendingTests ?? 0);
           const todo = j.numTodoTests ?? 0;
           console.log(`rls-isolation: ${files} file(s), total=${total} passed=${passed} skipped=${skipped} todo=${todo}`);
-          if (files !== 1) { console.error("::error::expected exactly 1 test file"); process.exit(1); }
+          if (files !== 2) { console.error("::error::expected exactly 2 test files"); process.exit(1); }
           if (skipped > 0) { console.error("::error::suite self-skipped — false pass"); process.exit(1); }
           if (todo > 0) { console.error("::error::a case is .todo — coverage silently dropped"); process.exit(1); }
           if (total !== EXPECTED || passed !== EXPECTED) {

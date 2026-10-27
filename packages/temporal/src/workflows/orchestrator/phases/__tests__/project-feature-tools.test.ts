@@ -16,9 +16,10 @@ import {
 	fabricCatalogAuthority,
 	resolveFabricCatalogRoute,
 } from "../../../../activities/orchestrator/execution/fabric-catalog-adapter";
-import { jsonSchemaToZod } from "../../../../activities/orchestrator/utils/schema-utils";
 import { getFabricAiTools } from "../../../../activities/orchestrator/tools/fabric-ai-tools";
+import { jsonSchemaToZod } from "../../../../activities/orchestrator/utils/schema-utils";
 import {
+	PROJECT_FEATURE_GET_DESCRIPTION,
 	PROJECT_FEATURE_GET_INPUT_SCHEMA,
 	PROJECT_FEATURE_LIST_INPUT_SCHEMA,
 } from "../../project-feature-tool-schemas";
@@ -130,5 +131,82 @@ describe("classified as reads everywhere a gate looks", () => {
 		["fabric_get_project_feature", { feature: "F-040" }],
 	] as const)("%s needs no risk approval", (name, args) => {
 		expect(assessToolCallRisk({ name, args }).requiresApproval).toBe(false);
+	});
+});
+
+describe("feature detail paging patch compatibility", () => {
+	it.each([false, true])(
+		"sends the expected feature definition with paging marker=%s",
+		(enabled) => {
+			const legacy = JSON.parse(
+				readFileSync(
+					join(
+						__dirname,
+						"fixtures/project-feature-detail-legacy.json",
+					),
+					"utf8",
+				),
+			);
+			const constants = {
+				PROJECT_FEATURE_LIST_DESCRIPTION: "list",
+				PROJECT_FEATURE_LIST_INPUT_SCHEMA,
+				PROJECT_FEATURE_GET_DESCRIPTION,
+				PROJECT_FEATURE_GET_INPUT_SCHEMA,
+				LEGACY_PROJECT_FEATURE_GET_DESCRIPTION: legacy.description,
+				LEGACY_PROJECT_FEATURE_GET_INPUT_SCHEMA: legacy.inputSchema,
+			};
+			const start = loop.indexOf(
+				'if (patched("orch-project-feature-tools-v1"))',
+			);
+			const registration = loop.slice(
+				start,
+				loop.indexOf("\n\t\t}\n", start) + 4,
+			);
+			const calls: string[] = [];
+			const execute = new Function(
+				...Object.keys(constants),
+				"patched",
+				"const discoveredTools={}; const discoveredToolConfigIds={}; let projectFeatureToolsRegistered=false;" +
+					registration +
+					";return discoveredTools;",
+			);
+			const registered = execute(
+				...Object.values(constants),
+				(id: string) => {
+					calls.push(id);
+					return id === "orch-project-feature-tools-v1" || enabled;
+				},
+			);
+			expect(calls).toContain("orch-project-feature-detail-paging-v1");
+			const definition = registered.fabric_get_project_feature;
+			if (enabled) {
+				expect(definition.inputSchema.properties.section.enum).toEqual([
+					"description",
+					"acceptanceCriteria",
+					"tasks",
+				]);
+				expect(definition.inputSchema.properties.offset).toMatchObject({
+					type: "integer",
+					minimum: 0,
+				});
+				expect(definition.description).toContain("truncations[].next");
+			} else {
+				expect(JSON.stringify(definition)).toBe(JSON.stringify(legacy));
+			}
+		},
+	);
+
+	it("advertises paging in the shared Direct/catalog definition", () => {
+		const definition = getFabricAiTools().find(
+			(t) => t.name === "fabric_get_project_feature",
+		);
+		if (!definition?.inputSchema) {
+			throw new Error("Missing feature detail schema");
+		}
+		const parse = jsonSchemaToZod(definition.inputSchema);
+		expect(
+			parse.parse({ feature: "F-040", section: "tasks", offset: 3 }),
+		).toEqual({ feature: "F-040", section: "tasks", offset: 3 });
+		expect(definition.description).toContain("truncations[].next");
 	});
 });

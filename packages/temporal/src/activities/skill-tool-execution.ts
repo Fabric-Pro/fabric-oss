@@ -19,6 +19,8 @@ import {
 } from "@repo/ai/skills";
 
 export interface ExecuteSkillToolInput {
+	answerSnapshotEnabled?: boolean;
+	cachedResult?: ExecuteSkillToolOutput;
 	toolName: "list_skills" | "load_skill" | "read_skill_file";
 	args: Record<string, unknown>;
 	userId: string;
@@ -46,7 +48,18 @@ export async function executeSkillToolActivity(
 		if (!slug) {
 			throw new Error("load_skill: missing required arg 'slug'");
 		}
-		const bundle = await loadSkillBundle(slug, ctx);
+		const bundle = await loadSkillBundle(
+			slug,
+			ctx,
+			input.answerSnapshotEnabled ? { fresh: true } : {},
+		);
+		if (
+			input.answerSnapshotEnabled &&
+			input.cachedResult?.kind === "bundle" &&
+			input.cachedResult.bundle.slug === slug
+		) {
+			return input.cachedResult;
+		}
 		return { kind: "bundle", bundle };
 	}
 
@@ -58,7 +71,19 @@ export async function executeSkillToolActivity(
 				"read_skill_file: requires both 'slug' and 'path' args",
 			);
 		}
-		const file = await readSkillFile(slug, path, ctx);
+		const file = await readSkillFile(
+			slug,
+			path,
+			ctx,
+			input.answerSnapshotEnabled ? { fresh: true } : {},
+		);
+		if (
+			input.answerSnapshotEnabled &&
+			input.cachedResult?.kind === "file" &&
+			input.cachedResult.file.path === path
+		) {
+			return input.cachedResult;
+		}
 		return { kind: "file", file };
 	}
 

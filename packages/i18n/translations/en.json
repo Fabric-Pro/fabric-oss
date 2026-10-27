@@ -11,7 +11,7 @@
 		"invite": {
 			"suggestions": {
 				"label": "Chat suggestions",
-				"description": "Parlume may offer a short suggestion in the meeting chat now and then. It speaks one only when someone replies “go”."
+				"description": "Parlume may offer a short suggestion in the meeting chat now and then, and opens a recurring meeting with a recap of the last one. It reads them aloud only when someone asks."
 			}
 		}
 	},
@@ -8964,6 +8964,7 @@
 				"regenerating": "Saving is paused while this document is being regenerated.",
 				"review": "Accept or reject the regenerated version before saving.",
 				"proposal": "Accept or reject the assistant's proposed changes before saving.",
+				"proposalElsewhere": "Another tab is reviewing an assistant proposal for this document. Saving resumes when it is answered.",
 				"runLive": "Saving is paused while a generation run writes this document. It resumes when the run finishes.",
 				"reconnecting": "Saving is paused until the editor is reconnected to the collaboration server.",
 				"updatingToLatest": "Saving is paused while the editor updates to the latest saved version.",
@@ -8979,6 +8980,14 @@
 			},
 			"staleRunSave": "This document's generation has not reported for ten minutes. Saving now ends that run.",
 			"assistantFinishing": "The assistant is finishing…",
+			"proposalElsewhereHeld": "Another tab is reviewing an assistant proposal for this document. Try again once it is answered.",
+			"proposalReviewTimedOut": "The assistant's proposed changes were not applied: they waited 10 minutes without an answer, and other tabs were holding for them.",
+			"assistantRunTakenBack": "The assistant stopped before offering its changes, so what it had written so far was taken back out of the document.",
+			"regenerationCall": {
+				"completed": "Document regeneration completed.",
+				"notApplied": "Document regeneration was not applied.",
+				"heldElsewhere": "Not started: another tab was reviewing an assistant proposal."
+			},
 			"rejectEmptyBody": "There is no earlier version to go back to, so the regenerated version was kept and nothing was changed.",
 			"rejectRunLive": "A new generation of this document has started, so the regenerated version was kept and nothing was changed.",
 			"rejectReviewStale": "This document changed after this review opened, so nothing was reverted. The latest version is kept.",
@@ -8989,6 +8998,8 @@
 		},
 		"documentEditorRoom": {
 			"updating": "Updating to the latest version…",
+			"proposalElsewhere": "An assistant proposal is under review in another tab. Editing resumes when it is answered.",
+			"proposalElsewhereBy": "{name} is reviewing an assistant proposal for this document in another tab. Editing resumes when it is answered.",
 			"updateFailed": "The editor could not be updated to the latest version.",
 			"reloadLatest": "Reload latest version",
 			"reload": "Reload",
@@ -8996,6 +9007,7 @@
 			"saveConflictRoom": "Your changes were not saved: the document changed in the meantime. The editor is updating to the latest version.",
 			"saveConflictSolo": "Your changes were not saved: the document changed in the meantime. Copy your text, then reload to see the latest version.",
 			"leaveSaveFailed": "Your last changes to this document were not saved after you left it. Copy them to keep them.",
+			"leaveWhileProposalElsewhere": "Your last changes to this document were not saved: you left it while another tab was reviewing an assistant proposal. Copy them to keep them; the copy also holds that proposal.",
 			"rawEditsStale": {
 				"message": "The document changed while you were editing its markdown. Your edits here are not saved, and they will not be saved on their own: copy them to keep them."
 			},
@@ -9016,11 +9028,14 @@
 		"versionHistory": {
 			"restoreBlocked": {
 				"runLive": "Restore is unavailable while a generation run is queued or writing this document. It becomes available again when the run finishes.",
-				"regenerating": "Restore is unavailable while a regeneration started here is in progress or waiting for your review. It becomes available again once that is done."
+				"regenerating": "Restore is unavailable while a regeneration started here is in progress or waiting for your review. It becomes available again once that is done.",
+				"proposalElsewhere": "Restore is unavailable while another tab reviews an assistant proposal for this document. It becomes available again once the proposal is answered."
 			}
 		},
 		"updateWithContext": {
 			"readFailed": "Couldn't read the document content. Try again or reload the page.",
+			"heldElsewhere": "Another tab is reviewing an assistant proposal for this document. Try again once it is answered.",
+			"changedMeanwhile": "The document changed while this update was being drafted, so it was not shown. Try again.",
 			"syncing": "The document is still syncing with the latest saved version. Try again in a moment.",
 			"noUpdates": "No updates found — the document already reflects the latest context.",
 			"previewFailed": "Couldn't fetch the latest context. Try again.",

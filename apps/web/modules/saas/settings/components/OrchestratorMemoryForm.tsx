@@ -128,7 +128,14 @@ export function OrchestratorMemoryForm({
 	});
 
 	// Fetch episodes with pagination
-	const { data: episodesData, isLoading: episodesLoading } = useQuery({
+	const {
+		data: episodesData,
+		isLoading: episodesLoading,
+		isFetching: episodesFetching,
+		isSuccess: episodesSuccess,
+		isError: episodesError,
+		refetch: refetchEpisodes,
+	} = useQuery({
 		queryKey: [
 			"orchestrator-memory-episodes",
 			organizationId,
@@ -144,6 +151,32 @@ export function OrchestratorMemoryForm({
 		staleTime: 60 * 1000,
 		gcTime: 5 * 60 * 1000,
 	});
+
+	const episodeTotal = episodesData?.total;
+	const lastEpisodeOffset =
+		Math.max(0, Math.ceil((episodeTotal ?? 0) / EPISODES_PER_PAGE) - 1) *
+		EPISODES_PER_PAGE;
+	const episodePageOutOfRange =
+		episodeTotal !== undefined && episodeOffset > lastEpisodeOffset;
+
+	useEffect(() => {
+		// Cached totals can be out of date while this offset is revalidating, so
+		// correct only from a finished fetch. A failed refresh keeps the data last
+		// fetched for this offset, which is the newest total available.
+		if (
+			!episodesFetching &&
+			(episodesSuccess || episodesError) &&
+			episodePageOutOfRange
+		) {
+			setEpisodeOffset(lastEpisodeOffset);
+		}
+	}, [
+		episodesSuccess,
+		episodesError,
+		episodesFetching,
+		episodePageOutOfRange,
+		lastEpisodeOffset,
+	]);
 
 	// Search episodes
 	const {
@@ -628,7 +661,7 @@ export function OrchestratorMemoryForm({
 					)}
 
 				{/* Episode List */}
-				{episodesLoading ? (
+				{episodesLoading || episodePageOutOfRange ? (
 					<div className="space-y-2">
 						<Skeleton className="h-20 w-full" />
 						<Skeleton className="h-20 w-full" />
@@ -697,7 +730,7 @@ export function OrchestratorMemoryForm({
 							</Button>
 						</div>
 					</>
-				) : (
+				) : episodesSuccess && episodeTotal === 0 ? (
 					<div className="text-center py-8 text-muted-foreground">
 						<HistoryIcon className="size-8 mx-auto mb-2 opacity-50" />
 						<p>No conversation history yet</p>
@@ -705,7 +738,19 @@ export function OrchestratorMemoryForm({
 							Start using Fabric AI to build conversation memory
 						</p>
 					</div>
-				)}
+				) : episodesError ? (
+					<div className="text-center py-8 text-muted-foreground">
+						<p>Conversation history could not be loaded.</p>
+						<Button
+							variant="outline"
+							size="sm"
+							className="mt-2"
+							onClick={() => refetchEpisodes()}
+						>
+							Try again
+						</Button>
+					</div>
+				) : null}
 			</Card>
 		</div>
 	);
@@ -816,7 +861,9 @@ function EpisodeCard({
 							<h4 className="text-xs font-medium text-muted-foreground mb-1">
 								Summary
 							</h4>
-							<p className="text-sm">{episode.summary}</p>
+							<p className="text-sm whitespace-pre-line">
+								{episode.summary}
+							</p>
 						</div>
 
 						{/* User Intents */}

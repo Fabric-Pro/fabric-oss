@@ -255,6 +255,39 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 		});
 	});
 
+	it.each(
+		[undefined, "call_tool", "other"].flatMap((setting) =>
+			["stream", "start"].map((route) => ({ setting, route })),
+		),
+	)(
+		"stamps server tool loading setting $setting through $route",
+		async ({ setting, route }) => {
+			vi.stubEnv("ADVISOR_TOOL_LOADING", setting);
+			try {
+				if (route === "stream") {
+					await readEvents(
+						await post(
+							newTurnBody({ toolLoadingMode: "call_tool" }),
+						),
+					);
+				} else {
+					const { POST } = await import(
+						"../../app/api/agents/fabric-ai/orchestrator-temporal/route"
+					);
+					const response = await POST(
+						request(newTurnBody({ toolLoadingMode: "call_tool" })),
+					);
+					expect(response.status).toBe(200);
+				}
+				expect(m.start.mock.calls[0]?.[1].args[0].toolLoadingMode).toBe(
+					setting === "call_tool" ? "call_tool" : undefined,
+				);
+			} finally {
+				vi.unstubAllEnvs();
+			}
+		},
+	);
+
 	it.each([undefined, "bounded", "other"])(
 		"records server history retention setting %s for chat turns",
 		async (setting) => {

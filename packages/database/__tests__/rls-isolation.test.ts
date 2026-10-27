@@ -172,6 +172,153 @@ describe("PostgreSQL RLS Policies", () => {
 		});
 	});
 
+	describe.each(["episodic_memory", "orchestrator_memory_preferences"])(
+		"Advisor memory RLS: %s",
+		(table) => {
+			const prefix = `example-${table}`;
+			const owners = [
+				["personal", TEST_USERS.userA, null],
+				["colleague-personal", TEST_USERS.userB, null],
+				["own", TEST_USERS.userA, TEST_ORGS.orgA],
+				["colleague", TEST_USERS.userB, TEST_ORGS.orgA],
+				["other-org", TEST_USERS.userA, TEST_ORGS.orgB],
+			] as const;
+			const context = {
+				type: "organization",
+				tenantId: TEST_ORGS.orgA,
+				userId: TEST_USERS.userA,
+			} as const;
+			// table comes from the fixed describe.each list above.
+			const selectIds = (tx: Prisma.TransactionClient) =>
+				tx.$queryRawUnsafe<{ id: string }[]>(
+					`SELECT id FROM "${table}" ORDER BY id`,
+				);
+
+			beforeAll(async () => {
+				for (const [key, userId, organizationId] of owners) {
+					const ownership = {
+						id: `${prefix}-${key}`,
+						userId,
+						organizationId,
+					};
+					if (table === "episodic_memory") {
+						await db.episodicMemory.create({
+							data: {
+								...ownership,
+								conversationId: `${prefix}-conversation-${key}`,
+								title: "Example conversation",
+								summary: "Example summary",
+								keyTopics: [],
+								userIntents: [],
+								outcome: "completed",
+								messageCount: 2,
+								turnCount: 1,
+								toolsUsed: [],
+								agentsUsed: [],
+								conversationStartedAt: new Date(),
+							},
+						});
+					} else {
+						await db.orchestratorMemoryPreferences.create({
+							data: {
+								...ownership,
+								recentProjectIds: [],
+								recentWorkspaceIds: [],
+							},
+						});
+					}
+				}
+			});
+
+			afterAll(async () => {
+				await db.$executeRawUnsafe(
+					`DELETE FROM "${table}" WHERE id LIKE $1`,
+					`${prefix}-%`,
+				);
+			});
+
+			it("enables and forces RLS with a tenant policy", async () => {
+				const rows = await db.$queryRaw<
+					{ enabled: boolean; forced: boolean; policy: boolean }[]
+				>`
+					SELECT c.relrowsecurity AS enabled, c.relforcerowsecurity AS forced,
+					EXISTS (SELECT 1 FROM pg_policy p WHERE p.polrelid = c.oid
+					AND p.polname = 'tenant_isolation') AS policy
+					FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+					WHERE n.nspname = 'public' AND c.relname = ${table}`;
+				expect(rows).toEqual([
+					{ enabled: true, forced: true, policy: true },
+				]);
+			});
+
+			it("reads only the requesting user's organization rows", async () => {
+				expect(await asRlsRole(context, selectIds)).toEqual([
+					{ id: `${prefix}-own` },
+				]);
+			});
+
+			it("reads only the requesting user's organization-less rows", async () => {
+				expect(
+					await asRlsRole(
+						{
+							type: "personal",
+							tenantId: TEST_USERS.userA,
+							userId: TEST_USERS.userA,
+						},
+						selectIds,
+					),
+				).toEqual([{ id: `${prefix}-personal` }]);
+			});
+
+			it("fails closed without tenant context", async () => {
+				expect(await asRlsRole({ type: "none" }, selectIds)).toEqual(
+					[],
+				);
+			});
+
+			it.each(["colleague", "other-org"])(
+				"cannot update %s rows",
+				async (key) => {
+					const count = await asRlsRole(context, (tx) =>
+						tx.$executeRawUnsafe(
+							`UPDATE "${table}" SET "userId" = "userId" WHERE id = $1`,
+							`${prefix}-${key}`,
+						),
+					);
+					expect(count).toBe(0);
+				},
+			);
+
+			it("can update its own organization row", async () => {
+				const count = await asRlsRole(context, (tx) =>
+					tx.$executeRawUnsafe(
+						`UPDATE "${table}" SET "userId" = "userId" WHERE id = $1`,
+						`${prefix}-own`,
+					),
+				);
+				expect(count).toBe(1);
+			});
+
+			it.each([
+				["userId", TEST_USERS.userB],
+				["organizationId", TEST_ORGS.orgB],
+			])(
+				"cannot transfer its row's %s outside its context",
+				async (column, value) => {
+					await expect(
+						asRlsRole(context, (tx) =>
+							tx.$executeRawUnsafe(
+								`UPDATE "${table}" SET "${column}" = $1 WHERE id = $2`,
+								value,
+								`${prefix}-own`,
+							),
+						),
+					).rejects.toThrow(/row-level security/);
+				},
+			);
+		},
+	);
+
 	describe("MCPConfig RLS Isolation", () => {
 		let personalConfigA: string;
 		let orgAConfigA: string;

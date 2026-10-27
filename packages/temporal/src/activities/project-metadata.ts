@@ -27,6 +27,7 @@ import {
 	startTurnHeartbeat,
 	type TurnScope,
 } from "./orchestrator/turn-dispatch";
+import { compactProjectContextPassages } from "./shared/project-context-passages";
 import { headAtLineBreak } from "./shared/text-head";
 
 export async function getProjectMetadataActivity(
@@ -246,10 +247,26 @@ async function retrieveProjectContextsForTool(
 			// Previously implicit in the diversify branch; now stated, because a
 			// background caller wants the opposite.
 			skipRerank: true,
+			...(!usage?.maxPassageChars
+				? { includeMatchedPassages: true }
+				: {}),
 		});
 
 		if (!results || results.length === 0) {
 			return { context: "", chunkCount: 0 };
+		}
+
+		log.info("[ProjectRAG] Retrieved project context", {
+			resultCount: results.length,
+			projectId,
+		});
+
+		if (!usage?.maxPassageChars) {
+			return compactProjectContextPassages(
+				results,
+				PROJECT_CONTEXT_RESULTS_HEADER,
+				contextMetaHeader,
+			);
 		}
 
 		const formattedResults = results
@@ -292,11 +309,6 @@ async function retrieveProjectContextsForTool(
 				},
 			)
 			.join("\n\n---\n\n");
-
-		log.info("[ProjectRAG] Retrieved project context", {
-			resultCount: results.length,
-			projectId,
-		});
 
 		return {
 			context: `${PROJECT_CONTEXT_RESULTS_HEADER}\n\n${formattedResults}`,

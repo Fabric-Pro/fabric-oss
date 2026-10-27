@@ -1,14 +1,16 @@
 import { planConversationTurnReservation } from "@repo/database/prisma/queries/lib/conversation-turn-room";
+import { measureSerializedBytes } from "../../lib/payload-size-guard";
+import { type EffectiveToolCalls, historyCallIndex } from "./advisor-call-tool";
 import { isFabricOwnedRead } from "./fabric-catalog-access";
+import { TOOL_RESULTS } from "./orchestrator-config";
 import {
-	assessToolCallRisk,
 	type AutonomyLevel,
+	assessToolCallRisk,
 	type RiskAssessmentOptions,
 } from "./risk-assessment";
-import { TOOL_RESULTS } from "./orchestrator-config";
 import { PAGED_BODY_READ_TOOLS } from "./tool-result-progression";
 import type { IterativeMessage } from "./types";
-import { measureSerializedBytes } from "../../lib/payload-size-guard";
+
 const PROTECTED_HISTORY_TOOLS = new Set([
 	"load_skill",
 	"read_skill_file",
@@ -214,6 +216,7 @@ export function boundedHistoryV2Decision<
 		lastRewrite?: number;
 		/** The options used at this call's existing approval gate; missing means unclassified. */
 		riskOptionsByToolCallId?: ReadonlyMap<string, RiskAssessmentOptions>;
+		effectiveToolCalls?: EffectiveToolCalls;
 		autonomyLevel?: AutonomyLevel;
 	},
 ) {
@@ -247,17 +250,7 @@ export function boundedHistoryV2Decision<
 					? "allowance"
 					: "tokens";
 	const history: IterativeMessage[] = input.request.conversationHistory;
-	type RecordedCall = NonNullable<IterativeMessage["toolCalls"]>[number];
-	const calls = new Map<string, RecordedCall | null>();
-	for (const message of history) {
-		if (message.role !== "assistant") {
-			continue;
-		}
-		for (const call of message.toolCalls ?? []) {
-			// A duplicate id cannot identify one recorded operation unambiguously.
-			calls.set(call.id, calls.has(call.id) ? null : call);
-		}
-	}
+	const calls = historyCallIndex(history, input.effectiveToolCalls, true);
 	const pairedResults = history.filter(
 		(message) =>
 			message.role === "tool" &&
@@ -289,7 +282,8 @@ export function boundedHistoryV2Decision<
 			continue;
 		}
 		const options = call
-			? input.riskOptionsByToolCallId?.get(call.id)
+			? (input.riskOptionsByToolCallId?.get(call.id) ??
+				input.effectiveToolCalls?.[call.id]?.riskOptions)
 			: undefined;
 		// A recorded executor declaration also certifies external reads. Low risk
 		// alone does not: content writes and unknown tool names can be low risk.
