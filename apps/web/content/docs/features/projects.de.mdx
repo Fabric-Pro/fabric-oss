@@ -286,6 +286,18 @@ Externe Tools verbinden:
 - **GitHub** — Mit Repository verknüpfen
 - **Slack** — Benachrichtigungen senden
 
+### Coding-Läufe an Fabric Agents delegieren
+
+Wenn Ihr Projekt mit einem GitHub-Repository verknüpft und mit einer **Fabric Agents (`fabric-agent-server`)**-Laufzeitumgebung verbunden ist, können Sie Implementierungsaufgaben direkt aus dem Projekt delegieren:
+
+1. **Implementierungsstandards konfigurieren**: Wählen Sie unter **Projekteinstellungen → Implementierungsstandards** die Option **Remote-Ausführung — Fabric Agents** (verbunden über `BACKGROUND_AGENTS_URL` und `BACKGROUND_AGENTS_INTERNAL_SECRET`).
+2. **Feature- oder Aufgaben-Sitzung starten**: Öffnen Sie ein veröffentlichtes Feature und klicken Sie auf **Arbeit starten → Fabric Agents** (oder auf **Implementieren** in einer Aufgabenzeile).
+   - Wählen Sie den **Aufgabenbereich** (gesamtes Feature oder einzelne Aufgabe).
+   - Wählen Sie das **Fabric Agents-Backend** (**Server-Standard**, **Claude Max**, **Codex**, **Cursor**, **Antigravity**, **Factory Droid**, **Grok** oder **Kimi**).
+   - Klicken Sie auf **An Fabric Agents delegieren**.
+3. **Genehmigte Weave-Pläne delegieren**: Genehmigen Sie unter **Mit Weave planen** einen mit einem Feature verknüpften Plan und klicken Sie auf **Fabric Agents**, um die mehrstufige Ausführung zu übergeben.
+4. **Status überwachen, antworten und Pull Requests öffnen**: Klicken Sie auf das Sitzungs-Badge, um den 4-stufigen Fortschritt (`Worktree & Sitzung` → `Aufgabe implementieren` → `Pull Request` → `Abgeschlossen`) zu verfolgen, bei Rückfragen direkt zu antworten, die Live-Sitzung in der Fabric Agents Desktop-App zu öffnen und zum erstellten GitHub Pull Request zu wechseln.
+
 ## Best Practices
 
 ### Projektorganisation
