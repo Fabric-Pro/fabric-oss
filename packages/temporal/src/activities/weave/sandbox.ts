@@ -6,8 +6,10 @@
  * to create and manage coding execution sessions.
  */
 
+import { db } from "@repo/database";
 import { repoForgeFromUrl } from "../../lib/repo-forge";
 import { getBackgroundAgentsProvider } from "./get-background-provider";
+import { authorizeWeaveRuntime } from "./runtime-authorization";
 
 export interface CreateSandboxInput {
 	userId: string;
@@ -91,16 +93,24 @@ export async function createSandboxActivity(
 	}
 
 	const { repoOwner, repoName } = parseRepoUrl(input.repoUrl);
+	const { execution, workflow } = await authorizeWeaveRuntime(input);
 	const provider = getProvider();
 
 	const { sessionId } = await provider.createSession({
 		repoOwner,
 		repoName,
 		title: "Weave execution session",
+		codingRunId: `weave:${execution.id}:sandbox`,
+		workflowId: workflow.workflowId,
+		organizationId: input.organizationId ?? undefined,
 		branch: input.branch,
 		userId: input.userId,
 	});
 
+	await db.weaveExecution.update({
+		where: { id: execution.id },
+		data: { sandboxSessionId: sessionId },
+	});
 	return { sessionId, workDir: "" };
 }
 
