@@ -45,10 +45,11 @@ export const sendFollowUpProcedure = tenantProtectedProcedure
 		z.object({
 			id: z.string(),
 			message: z.string().min(1).max(4000),
+			promptId: z.string().uuid(),
 			organizationId: z.string().nullable().optional(),
 		}),
 	)
-	.output(z.object({ sent: z.boolean() }))
+	.output(z.object({ sent: z.boolean(), messageId: z.string().optional() }))
 	.handler(async ({ input, context }) => {
 		const { user } = context;
 		const organizationId = resolveOrganizationId(
@@ -76,7 +77,7 @@ export const sendFollowUpProcedure = tenantProtectedProcedure
 		}
 
 		const allowedStatuses = ["RUNNING", "AWAITING_REVIEW", "PR_OPENED"];
-		if (!allowedStatuses.includes(run.status) || run.completedAt) {
+		if (!allowedStatuses.includes(run.status)) {
 			throw new ORPCError("BAD_REQUEST", {
 				message: `Cannot send follow-up to a session with status: ${run.status}`,
 			});
@@ -102,10 +103,11 @@ export const sendFollowUpProcedure = tenantProtectedProcedure
 					"@repo/temporal/coding-execution"
 				);
 				const provider = getCodingExecutionProvider(run.provider);
-				await provider.sendPrompt(
+				const receipt = await provider.sendPrompt(
 					run.providerSessionId,
 					input.message,
 					user.id,
+					{ promptId: input.promptId },
 				);
 				if (run.status === "AWAITING_REVIEW") {
 					await updateCodingRunStatus(run.id, "RUNNING");
@@ -113,9 +115,29 @@ export const sendFollowUpProcedure = tenantProtectedProcedure
 				await addCodingRunEvent(run.id, "follow_up_sent", {
 					authorId: user.id,
 					contentLength: input.message.length,
+					promptId: input.promptId,
+					...(receipt ? { messageId: receipt.messageId } : {}),
 				});
-				return { sent: true };
+				return {
+					sent: true,
+					...(receipt ? { messageId: receipt.messageId } : {}),
+				};
 			} catch (error) {
+				if (
+					error &&
+					typeof error === "object" &&
+					"code" in error &&
+					(error.code === "RECOVERY_REQUIRED" ||
+						error.code === "INPUT_REQUIRED")
+				) {
+					throw new ORPCError("CONFLICT", {
+						message:
+							error instanceof Error
+								? error.message
+								: "Open the existing Fabric session to continue.",
+						data: { errorCode: error.code },
+					});
+				}
 				throw new ORPCError("INTERNAL_SERVER_ERROR", {
 					message: `Failed to send follow-up: ${
 						error instanceof Error ? error.message : String(error)

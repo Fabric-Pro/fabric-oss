@@ -35,6 +35,10 @@ import {
 	asProviderMetadata,
 	formatPrimaryTaskLabel,
 } from "../../lib/implementation-session-runtime";
+import {
+	clearPendingCodingPrompt,
+	getPendingCodingPrompt,
+} from "../../lib/pending-coding-prompt";
 import { asSpikeRunView } from "../../lib/spike-runs";
 import { SpikeRunCard } from "./SpikeRunCard";
 
@@ -116,13 +120,17 @@ export function CodingRunTimeline({
 
 	const sendFollowUp = useMutation({
 		mutationFn: async (message: string) => {
-			return orpcClient.codingRuns.sendFollowUp({
+			const pending = await getPendingCodingPrompt(codingRunId, message);
+			const result = await orpcClient.codingRuns.sendFollowUp({
 				id: codingRunId,
 				message,
+				promptId: pending.promptId,
 				organizationId: organizationId ?? null,
 			});
+			return { ...result, pending };
 		},
-		onSuccess: () => {
+		onSuccess: (result) => {
+			clearPendingCodingPrompt(result.pending);
 			setFollowUpMessage("");
 			queryClient.invalidateQueries({
 				queryKey: ["codingRun", codingRunId],
@@ -185,7 +193,9 @@ export function CodingRunTimeline({
 	const backgroundAgentsUrl = process.env.NEXT_PUBLIC_BACKGROUND_AGENTS_URL;
 	const sessionUrl =
 		run.externalUrl ||
-		(run.providerSessionId && backgroundAgentsUrl
+		(run.provider !== "BACKGROUND_AGENTS" &&
+		run.providerSessionId &&
+		backgroundAgentsUrl
 			? `${backgroundAgentsUrl}/session/${run.providerSessionId}`
 			: null);
 	const eventCount = run.events?.length ?? 0;
@@ -208,7 +218,9 @@ export function CodingRunTimeline({
 	const isFabricAgentsSession =
 		run.provider === "BACKGROUND_AGENTS" ||
 		Boolean(sessionUrl?.startsWith("fabric-agent://"));
-	const isDeepLink = Boolean(sessionUrl?.startsWith("fabric-agent://"));
+	const isDeepLink = Boolean(
+		sessionUrl && /^fabric(?:agents[0-9]*|-agent):\/\//.test(sessionUrl),
+	);
 	const primaryTaskLabel = formatPrimaryTaskLabel(run.storyTask);
 	const failureReason = extractRunFailureReason(
 		run.events,

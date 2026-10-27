@@ -104,6 +104,9 @@ export function getProviderCapabilities(
 /**
  * Base interface for all coding execution providers
  */
+// biome-ignore lint/suspicious/noConfusingVoidType: Existing local providers return Promise<void>.
+export type PromptDeliveryResult = void | { messageId: string };
+
 export interface CodingExecutionProvider {
 	/**
 	 * Capability flags (plan §F4). Read via `getProviderCapabilities()`.
@@ -131,7 +134,8 @@ export interface CodingExecutionProvider {
 		sessionId: string,
 		content: string,
 		authorId: string,
-	): Promise<void>;
+		options?: { promptId: string },
+	): Promise<PromptDeliveryResult>;
 
 	/**
 	 * Gets the current status of a session

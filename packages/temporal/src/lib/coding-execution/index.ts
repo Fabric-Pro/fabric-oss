@@ -55,11 +55,13 @@ export {
 // Error types
 export {
 	AuthError,
+	InputRequiredError,
 	NetworkError,
 	PortUnavailableError,
 	ProviderError,
 	type ProviderErrorCode,
 	RateLimitError,
+	RecoveryRequiredError,
 	RuntimeNotFoundError,
 	SessionValidationError,
 	TimeoutError,

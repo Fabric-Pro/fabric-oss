@@ -6,6 +6,7 @@
 import type { Prisma } from "@repo/database";
 import {
 	addCodingRunEvent,
+	canEditProject,
 	createCodingRun,
 	db,
 	isProjectReadOnly,
@@ -20,7 +21,7 @@ import {
 	READ_ONLY_MODE_ERROR_CODE,
 	READ_ONLY_MODE_MESSAGE,
 } from "@repo/utils/read-only-mode";
-import { ApplicationFailure } from "@temporalio/activity";
+import { ApplicationFailure, Context } from "@temporalio/activity";
 import {
 	AuthError,
 	RuntimeNotFoundError,
@@ -426,7 +427,67 @@ export async function sendExecutionPrompt(
 	// the connected repository — same gate as createExecutionSession.
 	await failIfProjectReadOnly(input.projectId);
 	const provider = getCodingExecutionProvider(input.provider);
-	await provider.sendPrompt(input.sessionId, input.content, input.authorId);
+	if (input.provider !== "BACKGROUND_AGENTS") {
+		await provider.sendPrompt(
+			input.sessionId,
+			input.content,
+			input.authorId,
+		);
+		return;
+	}
+	// Activity identity is stable across retries, including worker restarts.
+	const info = Context.current().info;
+	if (!info.workflowExecution) {
+		throw new Error("Prompt delivery requires a workflow identity");
+	}
+	const promptId = `${info.workflowExecution.workflowId}:${info.workflowExecution.runId}:${info.activityId}`;
+	const run = await db.codingRun.findFirst({
+		where: {
+			OR: [
+				{ workflowId: info.workflowExecution.workflowId },
+				...(info.workflowExecution.workflowId.startsWith("coding-run-")
+					? [
+							{
+								id: info.workflowExecution.workflowId.slice(
+									"coding-run-".length,
+								),
+								workflowId: null,
+							},
+						]
+					: []),
+			],
+			providerSessionId: input.sessionId,
+			provider: input.provider,
+			userId: input.authorId,
+			...(input.projectId ? { projectId: input.projectId } : {}),
+		},
+		select: { id: true, projectId: true },
+	});
+	if (!run || !(await canEditProject(run.projectId, input.authorId))) {
+		throw ApplicationFailure.nonRetryable(
+			"Prompt has no authorized coding run",
+			"INVALID_SESSION",
+		);
+	}
+	const receipt = await provider.sendPrompt(
+		input.sessionId,
+		input.content,
+		input.authorId,
+		{ promptId },
+	);
+	if (receipt) {
+		await db.codingRunEvent.upsert({
+			where: { id: `prompt-receipt:${run.id}:${promptId}` },
+			create: {
+				id: `prompt-receipt:${run.id}:${promptId}`,
+				codingRunId: run.id,
+				eventType: "prompt_accepted",
+				providerEventId: receipt.messageId,
+				payloadJson: { promptId, messageId: receipt.messageId },
+			},
+			update: {},
+		});
+	}
 }
 
 export async function pollExecutionStatus(

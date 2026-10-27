@@ -6,7 +6,13 @@ import {
 	getFabricAgentsDefaultConnection,
 	getFabricAgentsDefaultModel,
 } from "./env";
-import { AuthError, NetworkError, SessionValidationError } from "./errors";
+import {
+	AuthError,
+	InputRequiredError,
+	NetworkError,
+	RecoveryRequiredError,
+	SessionValidationError,
+} from "./errors";
 import type {
 	CodingExecutionProvider,
 	CodingExecutionProviderCapabilities,
@@ -16,22 +22,10 @@ import type {
 } from "./provider";
 import { validateCreateSessionParams } from "./schemas";
 
-/**
- * Plan §F4 decision for Fabric Agents (`BACKGROUND_AGENTS`): `pushBranchWithoutPr` is true.
- *
- * Session creation prepares an isolated git worktree on `fabric-agent-server`
- * for the execution branch (`feat/<slug>` or `fabric-spike/<runId>`), and the
- * agent pushes through git in its worktree — whether a PR is opened is decided
- * by the prompt, not by the runtime. The spike prompt instructs the agent to
- * push `fabric-spike/<runId>` and not open a PR; `syncSpikeArtifacts` then
- * verifies the branch exists on GitHub by reading the deliverables from it
- * and fails the run closed when they are missing. Exported as a constant so
- * the API can read the flag without constructing the adapter (whose
- * constructor requires `BACKGROUND_AGENTS_URL`).
- */
+/** Branch-only delivery must be qualified against the replacement runtime before offering spikes. */
 export const FABRIC_BACKGROUND_CAPABILITIES: CodingExecutionProviderCapabilities =
 	{
-		pushBranchWithoutPr: true,
+		pushBranchWithoutPr: false,
 	};
 
 export class FabricBackgroundAdapter implements CodingExecutionProvider {
@@ -98,6 +92,15 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 
 		if (!res.ok) {
 			const text = await res.text();
+			let code: unknown;
+			try {
+				code = JSON.parse(text).code;
+			} catch {
+				/* Non-JSON transport failure. */
+			}
+			if (code === "recovery_required") {
+				throw new RecoveryRequiredError();
+			}
 			if (res.status === 401 || res.status === 403) {
 				throw new AuthError(
 					"BACKGROUND_AGENTS",
@@ -159,7 +162,14 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 		sessionId: string,
 		content: string,
 		authorId: string,
-	): Promise<void> {
+		options?: { promptId: string },
+	): Promise<{ messageId: string }> {
+		if (!options?.promptId?.trim()) {
+			throw new SessionValidationError(
+				"BACKGROUND_AGENTS",
+				"A stable promptId is required",
+			);
+		}
 		const encodedSessionId = encodeURIComponent(sessionId);
 		debugLog("Sending prompt to background agent", {
 			sessionId,
@@ -172,12 +182,30 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 			{
 				method: "POST",
 				headers: getAuthHeaders(this.controlPlaneSecret),
-				body: JSON.stringify({ content, authorId, source: "fabric" }),
+				signal: AbortSignal.timeout(30_000),
+				body: JSON.stringify({
+					content,
+					authorId,
+					source: "fabric",
+					promptId: options.promptId,
+				}),
 			},
 		);
 
 		if (!res.ok) {
 			const text = await res.text();
+			let code: unknown;
+			try {
+				code = JSON.parse(text).code;
+			} catch {
+				/* Non-JSON transport failure. */
+			}
+			if (code === "recovery_required") {
+				throw new RecoveryRequiredError();
+			}
+			if (code === "input_required") {
+				throw new InputRequiredError();
+			}
 			if (res.status === 404) {
 				throw new SessionValidationError(
 					"BACKGROUND_AGENTS",
@@ -197,6 +225,20 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 				new Error(text),
 			);
 		}
+		let receipt: { messageId?: unknown };
+		try {
+			receipt = await res.json();
+		} catch {
+			throw new RecoveryRequiredError();
+		}
+		if (
+			!receipt ||
+			typeof receipt.messageId !== "string" ||
+			!receipt.messageId.trim()
+		) {
+			throw new RecoveryRequiredError();
+		}
+		return { messageId: receipt.messageId };
 	}
 
 	async getSessionStatus(sessionId: string): Promise<SessionStatus> {
