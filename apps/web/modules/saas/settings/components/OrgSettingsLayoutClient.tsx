@@ -15,6 +15,7 @@ const settingsPageTitles: Record<string, string> = {
 	"company-context": "Company context",
 	"rag-providers": "RAG Providers",
 	"search-providers": "Search Providers",
+	"meeting-assistant": "Meeting assistant",
 	openapi: "OpenAPI Services",
 	agents: "Agent Registry",
 	prompts: "Prompts",

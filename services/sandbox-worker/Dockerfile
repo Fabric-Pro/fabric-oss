@@ -1,4 +1,4 @@
-FROM docker.io/cloudflare/sandbox:0.6.7
+FROM docker.io/cloudflare/sandbox:0.12.14
 
 # Install Claude Code CLI for AI-assisted code changes
 RUN npm install -g @anthropic-ai/claude-code
@@ -59,14 +59,9 @@ RUN git config --global init.defaultBranch main \
 # the failure would otherwise be the "Executable doesn't exist" one this whole
 # layer exists to prevent.
 #
-# Cost after trimming, measured with `docker history` on the built image:
-# **735 MB** for this layer (was 1.15 GB) and **2.52 GB** total (was 3.11 GB),
-# from a 761 MB base. The image saves more than the layer because dropping the
-# npm cache and /tmp shrinks earlier layers' contribution too.
-#
-# Cloudflare caps an image at the instance's disk size and `standard-3`
-# (wrangler.toml) allows 16 GB, so this sits well under the ceiling — but on
-# `basic` (4 GB) it would not deploy.
+# Cloudflare caps an image at the instance's disk size. The built image is about
+# 2.85 GB (`docker image ls`, on the 0.12.14 base), which fits `standard-3` (wrangler.toml, 16 GB) but would not deploy on
+# `basic` (4 GB).
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 # `apt-get update` first: the tools layer above ends with `rm -rf

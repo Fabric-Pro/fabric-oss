@@ -64,8 +64,8 @@ vi.mock("@repo/database", () => ({
 		channelId: string;
 	}) => markChatDelivery(i),
 	listChatDeliveriesForSend: async () => ledger,
-	buildReleaseNotesUrl: async () =>
-		"https://app.test/app/projects/p?tab=release-notes",
+	buildReleaseNotesUrl: async (a: { sendId?: string }) =>
+		`https://app.test/app/projects/p?tab=release-notes&releaseNote=${a.sendId}`,
 }));
 const postToTeams = vi.fn();
 // Test file lives in newsletter/__tests__/, two levels below activities/ — the
@@ -227,6 +227,14 @@ it("posts to a linked Slack + Teams target using the linking user's identity", a
 			teamId: "TT",
 			channelId: "TC",
 			userId: "teamsUser",
+		}),
+	);
+	// The teaser links to THIS release note, not the generic list (Fizzy #2286).
+	expect(renderNewsletterChatMessage).toHaveBeenCalledWith(
+		expect.anything(),
+		expect.objectContaining({
+			platform: "TEAMS",
+			link: "https://app.test/app/projects/p?tab=release-notes&releaseNote=s",
 		}),
 	);
 	// Trigger-independence + actor proof: credentials are resolved with the

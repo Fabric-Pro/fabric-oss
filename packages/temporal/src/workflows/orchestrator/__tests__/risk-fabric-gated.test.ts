@@ -151,7 +151,10 @@ describe("replay safety", () => {
 
 	it("picks the new rules only behind their own marker, inside the one the earlier rules sit behind", () => {
 		expect(source).toMatch(
-			/patched\("orch-risk-read-only-exempt-v1"\)\s*\?\s*\{\s*rules: patched\("orch-risk-fabric-gated-v1"\)\s*\?\s*"fabric-gated-v2"\s*:\s*"read-only-exempt-v1",/,
+			/const riskOptions:\s*RiskAssessmentOptions\s*=\s*patched\(\s*"orch-risk-read-only-exempt-v1",?\s*\)\s*\?\s*\{\s*rules: patched\(\s*"orch-risk-fabric-gated-v1",?\s*\)\s*\?\s*"fabric-gated-v2"\s*:\s*"read-only-exempt-v1",/,
+		);
+		expect(source).toMatch(
+			/:\s*\{ rules: "legacy" \};\s*let riskAssessment = assessToolCallRisk\(\s*toolCall,\s*autonomyLevel,\s*riskOptions,?\s*\)/,
 		);
 	});
 

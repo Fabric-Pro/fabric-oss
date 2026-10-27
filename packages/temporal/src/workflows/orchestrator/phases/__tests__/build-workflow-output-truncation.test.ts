@@ -33,6 +33,7 @@ vi.mock("@temporalio/workflow", () => ({
 	patched: vi.fn(() => true),
 	proxyActivities: vi.fn(() => ({})),
 	workflowInfo: vi.fn(() => ({
+		startTime: new Date(Date.now()),
 		runId: "test-run-id",
 		unsafe: { isReplaying: false },
 	})),

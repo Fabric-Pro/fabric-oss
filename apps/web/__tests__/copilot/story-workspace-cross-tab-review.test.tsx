@@ -27,6 +27,7 @@
  */
 
 import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
 	act,
 	fireEvent,
@@ -41,7 +42,21 @@ import {
 // see the provider's doc-comment and Fizzy #2389), so each render mounts the
 // real provider over this file's mocked `useCopilotChatInternal`.
 function render(ui: Parameters<typeof rtlRender>[0]) {
-	return rtlRender(ui, { wrapper: CopilotChatSessionProvider });
+	const queryClient = new QueryClient({
+		defaultOptions: {
+			queries: { retry: false },
+			mutations: { retry: false },
+		},
+	});
+	return rtlRender(ui, {
+		wrapper: ({ children }) => (
+			<QueryClientProvider client={queryClient}>
+				<CopilotChatSessionProvider>
+					{children}
+				</CopilotChatSessionProvider>
+			</QueryClientProvider>
+		),
+	});
 }
 
 import type { ReactNode } from "react";
@@ -52,6 +67,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // ---------------------------------------------------------------------------
 
 const {
+	confirmDraft,
+	serializationFailure,
 	copilotStore,
 	queryStore,
 	serverStore,
@@ -65,6 +82,8 @@ const {
 	recordOutcome,
 	stageEnhance,
 } = vi.hoisted(() => ({
+	confirmDraft: vi.fn(),
+	serializationFailure: { active: false },
 	/**
 	 * Stands in for the CopilotKit agent run. The mocked `useCopilotChat` /
 	 * `useCoAgent` read this during render, so mutating it and re-rendering
@@ -227,6 +246,25 @@ vi.mock("@copilotkit/runtime-client-gql", () => ({
 	TextMessage: class {},
 }));
 
+vi.mock(
+	"../../modules/saas/projects/lib/editor-markdown-save",
+	async (importOriginal) => {
+		const actual =
+			await importOriginal<
+				typeof import("../../modules/saas/projects/lib/editor-markdown-save")
+			>();
+		return {
+			...actual,
+			getEditorMarkdownForSave: (
+				...args: Parameters<typeof actual.getEditorMarkdownForSave>
+			) =>
+				serializationFailure.active
+					? null
+					: actual.getEditorMarkdownForSave(...args),
+		};
+	},
+);
+
 // ---------------------------------------------------------------------------
 // The splice `handleAccept` performs before it writes. Delegates to the real
 // implementation unless a test arms a failure.
@@ -302,6 +340,9 @@ vi.mock("@shared/lib/orpc-client", async () => {
 	const serve = (target: object, depth: number): unknown =>
 		new Proxy(target, {
 			get: (t, prop, receiver) => {
+				if (depth === 0 && prop === "ai") {
+					return { feedback: { confirmDraft } };
+				}
 				const value = Reflect.get(t, prop, receiver);
 				if (prop !== served[depth]) {
 					return value;
@@ -958,6 +999,38 @@ describe("StoryWorkspace — reaching a pending review from any maturation tab",
 				name: "pendingReview.reviewAria",
 			}),
 		).toBeInTheDocument();
+	});
+
+	it.each([
+		["pendingReview.approveAria", "accepted"],
+		["pendingReview.rejectAria", "rejected"],
+	])(
+		"records one human verdict from %s without a conversation",
+		async (button, verdict) => {
+			confirmDraft.mockClear();
+			await pendingReviewOnQuestionsTab();
+			await click(bannerButton(button));
+			expect(confirmDraft).toHaveBeenCalledTimes(1);
+			expect(confirmDraft).toHaveBeenCalledWith(
+				expect.objectContaining({
+					surface: "feature-spec",
+					verdict,
+					draftId: expect.any(String),
+				}),
+			);
+		},
+	);
+	it("records no verdict for the null-content machine decline", async () => {
+		confirmDraft.mockClear();
+		await pendingReviewOnQuestionsTab();
+		serializationFailure.active = true;
+		try {
+			await click(bannerButton("pendingReview.approveAria"));
+			expect(respondSpy).toHaveBeenCalledWith({ accepted: false });
+			expect(confirmDraft).not.toHaveBeenCalled();
+		} finally {
+			serializationFailure.active = false;
+		}
 	});
 
 	it("renders no approve or reject control on any tab without edit permission", async () => {

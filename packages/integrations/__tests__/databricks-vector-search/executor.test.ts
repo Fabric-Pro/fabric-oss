@@ -1,3 +1,5 @@
+import { estimateEmbeddingRequestInputTokens } from "@repo/ai/lib/turn-budget-estimate";
+import { runWithDispatchGuard } from "@repo/utils/dispatch-guard";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	__resetDatabricksVectorSearchCachesForTests,
@@ -939,5 +941,80 @@ describe("queryDatabricksVectorIndexes beforeRequest (a caller that may be told 
 		expect(error).toBe(refusal);
 		expect(posts).toHaveLength(1);
 		expect(postsAfterStop).toHaveLength(0);
+	});
+});
+
+describe("managed embedding turn reservations", () => {
+	it("reserves query retries separately without charging OAuth or index metadata", async () => {
+		const reserve = vi.fn(async () => ({
+			attemptId: `attempt-${reserve.mock.calls.length}`,
+			outputCap: 0,
+		}));
+		const markUnknown = vi.fn(async () => {});
+		const settle = vi.fn(async () => {});
+		const atSend: number[] = [];
+		let queryCount = 0;
+		const fetchImpl = vi.fn(async (url: unknown) => {
+			if (String(url).includes("/oidc/")) {
+				return tokenResponse();
+			}
+			if (!String(url).endsWith("/query")) {
+				return jsonResponse({
+					primary_key: "id",
+					delta_sync_index_spec: {
+						embedding_source_columns: [{ name: "content" }],
+					},
+				});
+			}
+			atSend.push(reserve.mock.calls.length);
+			queryCount++;
+			if (queryCount === 1) {
+				return new Response("retry", {
+					status: 503,
+					headers: { "Retry-After": "0" },
+				});
+			}
+			return jsonResponse({
+				manifest: {
+					columns: [
+						{ name: "id" },
+						{ name: "content" },
+						{ name: "score" },
+					],
+				},
+				result: { data_array: [["1", "answer", 1]] },
+			});
+		});
+		const result = await runWithDispatchGuard(
+			{
+				key: "example-turn",
+				assertDispatchable: async () => {},
+				abortSignal: () => undefined,
+				rethrowIfStopped: () => {},
+				budget: {
+					reserve,
+					markUnknown,
+					settle,
+					release: vi.fn(async () => {}),
+				},
+			},
+			() =>
+				queryDatabricksVectorIndexes(CREDS, {
+					indexNames: ["catalog.schema.docs"],
+					query: "test query",
+					fetchImpl,
+				}),
+		);
+		expect(result.chunks).toHaveLength(1);
+		expect(atSend).toEqual([1, 2]);
+		expect(reserve).toHaveBeenCalledWith({
+			modality: "embedding",
+			inputEstimate: estimateEmbeddingRequestInputTokens(["test query"]),
+			requestedOutputTokens: 0,
+			minOutputTokens: 0,
+			enforcesOutputCap: true,
+		});
+		expect(markUnknown.mock.calls).toEqual([["attempt-1"], ["attempt-2"]]);
+		expect(settle).not.toHaveBeenCalled();
 	});
 });

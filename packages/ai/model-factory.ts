@@ -15,6 +15,7 @@ import { createDeepSeek } from "@ai-sdk/deepseek";
 import { createGroq } from "@ai-sdk/groq";
 import { createOpenAI } from "@ai-sdk/openai";
 import { createTypeSafeAi } from "@ai-sdk/typesafe-ai";
+import { databricksPromptCacheForModel } from "@repo/agent-types/databricks-compat";
 import type {
 	EmbeddingModel,
 	Experimental_DecisionModel,
@@ -33,21 +34,24 @@ import {
 import { resolveAzureDeploymentTarget } from "./lib/azure-foundry-url";
 import { createDatabricksFetch } from "./lib/databricks-compat";
 import {
-	toDatabricksServingBaseUrl,
+	toDatabricksInferenceBaseUrl,
 	toDatabricksWorkspaceHost,
 } from "./lib/databricks-url";
 import { createEmptyToolInputRepairMiddleware } from "./lib/empty-tool-input-middleware";
+import { createGatewayFlexMiddleware } from "./lib/gateway-service-tier";
 import { createLLMTelemetryMiddleware } from "./lib/llm-telemetry-middleware";
 import {
 	createAnthropicStructuredOutputLimitsMiddleware,
 	createPromptSteeredStructuredOutputMiddleware,
 	databricksModelNeedsPromptSteeredStructuredOutput,
 } from "./lib/prompt-steered-structured-output-middleware";
+import { createRequestObservationMiddleware } from "./lib/request-observation";
 import {
 	createStrictJsonSchemaMiddleware,
 	relaxIncompatibleStrictJsonSchema,
 } from "./lib/strict-json-schema-middleware";
 import { structuredOutputCapabilityFor } from "./lib/structured-output-capabilities";
+import { createTextToolCallRecoveryMiddleware } from "./lib/text-tool-call-middleware";
 
 /**
  * Reasoning model patterns that need middleware extraction
@@ -314,6 +318,7 @@ function wrapWithProviderMiddleware(
 	viaGateway = false,
 	promptSteerStructuredOutput = false,
 	endpointScope = viaGateway ? "vercel-ai-gateway" : "openai-default",
+	serviceTier?: "flex",
 ): LanguageModel {
 	// The middleware array below applies repair, a no-op when a provider emits
 	// tool calls correctly: `@ai-sdk/openai@3` silently drops a streamed call whose
@@ -324,10 +329,21 @@ function wrapWithProviderMiddleware(
 			provider: resolvedProvider ?? nameProvider,
 			model: modelName,
 		}),
+		// Caller tools remain visible here; normalization and empty-input repair run inside.
+		createTextToolCallRecoveryMiddleware(),
 		createEmptyToolInputRepairMiddleware(),
 	];
 
-	if (viaGateway && gatewayModelRejectsSampling(modelName)) {
+	if (viaGateway && serviceTier === "flex") {
+		middleware.push(createGatewayFlexMiddleware());
+	}
+
+	if (
+		(viaGateway ||
+			(resolvedProvider &&
+				isCompatibleGatewayProvider(resolvedProvider))) &&
+		gatewayModelRejectsSampling(modelName)
+	) {
 		middleware.push(createAdaptiveClaudeSamplingMiddleware());
 	}
 
@@ -369,6 +385,8 @@ function wrapWithProviderMiddleware(
 			endpointScope,
 		),
 	);
+
+	middleware.push(createRequestObservationMiddleware(endpointScope));
 
 	// Type assertion needed due to AI SDK type constraints
 	return wrapLanguageModel({
@@ -420,10 +438,57 @@ export type ProviderType =
 	| "CLOUDFLARE_AI";
 
 /**
- * Check if a provider type is a gateway provider (routes to other providers)
+ * Check for gateways served through OpenAI-compatible connection endpoints
  */
-function isGatewayProviderType(provider: string): boolean {
-	return ["VERCEL_GATEWAY", "OPENROUTER", "CLOUDFLARE_AI"].includes(provider);
+function isCompatibleGatewayProvider(provider: string): boolean {
+	return provider === "OPENROUTER" || provider === "CLOUDFLARE_AI";
+}
+
+function compatibleGatewayBaseURL(
+	provider: string,
+	baseUrl?: string | null,
+): string {
+	if (baseUrl) {
+		return baseUrl;
+	}
+	if (provider === "OPENROUTER") {
+		return "https://openrouter.ai/api/v1";
+	}
+	throw new Error(
+		"Cloudflare AI Gateway requires a base URL. Please configure your gateway endpoint in Settings → AI Providers.",
+	);
+}
+
+const compatibleGatewayProviderCache = new Map<
+	string,
+	ReturnType<typeof createOpenAI>
+>();
+
+function getCompatibleGatewayProvider(
+	provider: string,
+	apiKey: string,
+	baseURL: string,
+	headers?: Record<string, string>,
+): ReturnType<typeof createOpenAI> {
+	const cacheKey = JSON.stringify([
+		provider,
+		baseURL,
+		apiKey,
+		Object.entries(headers ?? {}).sort(([left], [right]) =>
+			left.localeCompare(right),
+		),
+	]);
+	let client = compatibleGatewayProviderCache.get(cacheKey);
+	if (!client) {
+		client = createOpenAI({
+			apiKey,
+			baseURL,
+			headers,
+			fetch: gatewayFetch,
+		});
+		compatibleGatewayProviderCache.set(cacheKey, client);
+	}
+	return client;
 }
 
 /**
@@ -485,16 +550,6 @@ const databricksProviderCache = new Map<
 	string,
 	ReturnType<typeof createOpenAI>
 >();
-
-/**
- * Shared fetch for Databricks providers: applies the Vercel-path request-body
- * rule (strips `stream_options`/`parallel_tool_calls`, drops `temperature`,
- * relaxes incompatible explicit-strict JSON schemas), injects Claude prompt-cache
- * markers, and
- * flattens Claude's non-standard `delta.content` reasoning arrays to plain text.
- * See lib/databricks-compat.ts and `@repo/agent-types`' databricks-compat.ts.
- */
-const databricksFetch = createDatabricksFetch();
 
 /**
  * Check if an API key is a Vercel AI Gateway key
@@ -596,18 +651,20 @@ function getCerebrasProviderWithKey(
 }
 
 /**
- * Get or create a Databricks provider for a specific API key + workspace host.
+ * Get or create a Databricks provider for an API key and resolved inference URL.
  * Databricks Model Serving (Mosaic AI Gateway) is OpenAI-compatible and uses
  * standard Bearer auth (the default for createOpenAI) — no api-key header or
- * api-version query param (unlike Azure). The serving-endpoint name is passed
- * as the model in the request body.
+ * api-version query param (unlike Azure). The catalog model or serving-endpoint
+ * name is passed as the model in the request body.
  */
 function getDatabricksProviderWithKey(
 	apiKey: string,
 	baseUrl: string,
+	modelId: string,
+	promptCache?: boolean,
 ): ReturnType<typeof createOpenAI> {
-	const servingUrl = toDatabricksServingBaseUrl(baseUrl);
-	const cacheKey = `${apiKey}::${servingUrl}`;
+	const servingUrl = toDatabricksInferenceBaseUrl(baseUrl, modelId);
+	const cacheKey = `${apiKey}::${servingUrl}::${promptCache}`;
 	if (!databricksProviderCache.has(cacheKey)) {
 		// Evict oldest-first before inserting. Map preserves insertion order, so
 		// the first key is the least recently CREATED — good enough here, since
@@ -624,7 +681,7 @@ function getDatabricksProviderWithKey(
 			createOpenAI({
 				apiKey,
 				baseURL: servingUrl,
-				fetch: databricksFetch,
+				fetch: createDatabricksFetch(undefined, { promptCache }),
 			}),
 		);
 	}
@@ -710,7 +767,8 @@ function extractProvider(modelStr: string): string {
  * and direct providers (OpenAI, Anthropic, Groq, DeepSeek).
  *
  * When a provider is specified:
- * - Gateway providers: Routes through the gateway with the model name formatted appropriately
+ * - Vercel Gateway: Uses the gateway SDK and its model-name formatting
+ * - OpenRouter/Cloudflare: Uses Chat Completions at the connection endpoint with the full model ID
  * - Direct providers: Uses the provider's SDK directly with the API key
  *
  * When no provider is specified:
@@ -789,6 +847,7 @@ export function getModel(
 		 * can be opaque aliases, so capability gates prefer this when present.
 		 */
 		canonicalModelName?: string | null;
+		serviceTier?: "flex";
 	},
 ): LanguageModel {
 	if (!modelName) {
@@ -805,8 +864,8 @@ export function getModel(
 	if (context?.apiKey && context?.provider) {
 		const provider = context.provider;
 
-		if (isGatewayProviderType(provider)) {
-			// Gateway providers - route through gateway
+		if (provider === "VERCEL_GATEWAY") {
+			// Vercel's SDK uses its own gateway protocol.
 			const gateway = getGatewayProvider(context.apiKey, context.headers);
 			const baseModel = gateway(formatModelName(normalizedModel));
 			return wrapWithProviderMiddleware(
@@ -816,16 +875,17 @@ export function getModel(
 				provider,
 				context.isReasoningModel,
 				true,
+				false,
+				undefined,
+				context.serviceTier,
 			);
 		}
 
-		// Direct providers - use provider SDK directly
-		// BUT: If the API key is a gateway key, we MUST route through the gateway
-		// regardless of what provider was configured (this is a configuration mismatch)
+		// A Vercel key takes precedence over the configured provider endpoint.
 		const isGatewayKey = isVercelGatewayKey(context.apiKey);
 
 		if (isGatewayKey) {
-			// API key is a gateway key - MUST use gateway routing with prefixed model name
+			// Route the Vercel key with a prefixed model name.
 			console.warn(
 				`[AI] Provider "${provider}" configured but API key is a Vercel Gateway key. ` +
 					`Routing through gateway instead. Model: ${normalizedModel}`,
@@ -839,6 +899,30 @@ export function getModel(
 				provider,
 				context.isReasoningModel,
 				true,
+				false,
+				undefined,
+				context.serviceTier,
+			);
+		}
+
+		if (isCompatibleGatewayProvider(provider)) {
+			const baseURL = compatibleGatewayBaseURL(provider, context.baseUrl);
+			const client = getCompatibleGatewayProvider(
+				provider,
+				context.apiKey,
+				baseURL,
+				context.headers,
+			);
+			// Preserve the provider/model ID, matching the LangChain gateway path.
+			return wrapWithProviderMiddleware(
+				client.chat(model),
+				model,
+				modelProvider,
+				provider,
+				context.isReasoningModel,
+				false,
+				false,
+				endpointScopeFor(baseURL),
 			);
 		}
 
@@ -969,15 +1053,20 @@ export function getModel(
 						"Databricks requires a base URL (workspace host). Please configure your Databricks workspace URL in Settings → AI Providers.",
 					);
 				}
-				// modelWithoutPrefix is the serving-endpoint name (e.g.
-				// "databricks-meta-llama-3-3-70b-instruct"). .chat() forces the
+				// modelWithoutPrefix is the catalog ID or serving-endpoint name.
+				// .chat() forces the
 				// chat/completions path — Databricks has no OpenAI Responses API.
 				endpointScope = endpointScopeFor(
-					toDatabricksServingBaseUrl(context.baseUrl),
+					toDatabricksInferenceBaseUrl(
+						context.baseUrl,
+						modelWithoutPrefix,
+					),
 				);
 				baseModel = getDatabricksProviderWithKey(
 					context.apiKey,
 					context.baseUrl,
+					modelWithoutPrefix,
+					databricksPromptCacheForModel(context.canonicalModelName),
 				).chat(modelWithoutPrefix);
 				break;
 			}
@@ -1025,6 +1114,9 @@ export function getModel(
 			undefined,
 			context?.isReasoningModel,
 			true,
+			false,
+			undefined,
+			context?.serviceTier,
 		);
 	}
 
@@ -1125,8 +1217,8 @@ export function getGatewaySpeechModel(
 /**
  * Get an Embedding model instance based on the model name and provider configuration.
  *
- * This function properly handles both gateway providers (Vercel Gateway, OpenRouter)
- * and direct providers (OpenAI).
+ * OpenRouter and Cloudflare embeddings use the configured connection endpoint.
+ * Vercel embeddings retain the gateway SDK and its OpenAI model prefix.
  *
  * Note: Supports OpenAI, Azure AI Foundry, and gateway providers for embeddings.
  *
@@ -1157,7 +1249,10 @@ export function getEmbeddingModel(
 
 	// If API key and provider are specified, route appropriately
 	if (context?.apiKey && context?.provider) {
-		if (isGatewayProviderType(context.provider)) {
+		if (
+			context.provider === "VERCEL_GATEWAY" ||
+			isVercelGatewayKey(context.apiKey)
+		) {
 			const gateway = getGatewayProvider(context.apiKey, context.headers);
 			// Model may already have provider prefix (e.g., "openai/text-embedding-3-small")
 			// Only add prefix if not already present
@@ -1170,6 +1265,19 @@ export function getEmbeddingModel(
 				provider: context.provider,
 			});
 			return gateway.textEmbeddingModel(embeddingModelId);
+		}
+
+		if (isCompatibleGatewayProvider(context.provider)) {
+			const baseURL = compatibleGatewayBaseURL(
+				context.provider,
+				context.baseUrl,
+			);
+			return getCompatibleGatewayProvider(
+				context.provider,
+				context.apiKey,
+				baseURL,
+				context.headers,
+			).embeddingModel(model);
 		}
 
 		// Azure AI Foundry - uses OpenAI SDK with custom base URL and api-version
@@ -1232,9 +1340,7 @@ export function getEmbeddingModel(
 			return azureProvider.embedding(azureEmbeddingTarget.model);
 		}
 
-		// Databricks - OpenAI-compatible serving endpoints under the workspace host.
-		// The embedding serving-endpoint name (e.g. "databricks-gte-large-en") is
-		// passed as the model in the request body.
+		// Databricks uses the catalog ID or serving-endpoint name as the body model.
 		if (context.provider === "DATABRICKS") {
 			if (!context.baseUrl) {
 				throw new Error(
@@ -1244,6 +1350,8 @@ export function getEmbeddingModel(
 			return getDatabricksProviderWithKey(
 				context.apiKey,
 				context.baseUrl,
+				model,
+				false,
 			).embedding(model);
 		}
 
@@ -1279,11 +1387,10 @@ export function getEmbeddingModel(
 /**
  * Get an Image model instance based on the model name and provider configuration.
  *
- * This function properly handles both gateway providers (Vercel Gateway, OpenRouter)
- * and direct providers (OpenAI).
+ * This function supports OpenAI image models through direct OpenAI or Vercel keys.
  *
- * Note: Currently only OpenAI provides image models (DALL-E), but the function is designed
- * to support future providers that may offer image generation.
+ * OpenRouter and Cloudflare connections are refused here because their image
+ * output protocols are not implemented by this OpenAI image helper.
  *
  * @param {string} modelName - The image model identifier (e.g., "dall-e-3", "openai/dall-e-3")
  * @param {object} context - Context for API key and provider routing
@@ -1322,7 +1429,16 @@ export function getImageModel(
 
 	// If API key is provided, route based on provider type
 	if (context?.apiKey) {
-		// Currently only OpenAI supports image models, so use OpenAI provider
+		if (
+			context.provider &&
+			isCompatibleGatewayProvider(context.provider) &&
+			!isVercelGatewayKey(context.apiKey)
+		) {
+			throw new Error(
+				`Image generation through getImageModel is not supported for ${context.provider}. Use a supported image provider connection.`,
+			);
+		}
+		// Use the OpenAI image API for supported OpenAI/Vercel keys.
 		// getOpenAIProviderWithKey already handles gateway vs direct based on key prefix
 		const provider = getOpenAIProviderWithKey(context.apiKey);
 		return provider.image(modelWithoutPrefix);

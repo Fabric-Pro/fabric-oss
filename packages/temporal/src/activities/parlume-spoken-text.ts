@@ -78,6 +78,48 @@ export class ReplayableSentences {
 }
 
 /**
+ * Sentences taken in batches of whatever already exists: each `next` waits
+ * for at least one sentence, or for the end, then takes every sentence that
+ * is ready by the next turn of the event loop without waiting for more.
+ */
+export class AvailableSentences {
+	private pending: Promise<IteratorResult<string>> | null = null;
+
+	constructor(private readonly source: AsyncIterator<string>) {}
+
+	async next(): Promise<{ sentences: string[]; last: boolean }> {
+		const sentences: string[] = [];
+		for (;;) {
+			this.pending ??= this.source.next();
+			const pulling = this.pending;
+			if (sentences.length > 0 && !(await settlesNow(pulling))) {
+				return { sentences, last: false };
+			}
+			const result = await pulling;
+			this.pending = null;
+			if (result.done) {
+				return { sentences, last: true };
+			}
+			sentences.push(result.value);
+		}
+	}
+}
+
+async function settlesNow(promise: Promise<unknown>): Promise<boolean> {
+	let settled = false;
+	promise.then(
+		() => {
+			settled = true;
+		},
+		() => {
+			settled = true;
+		},
+	);
+	await new Promise<void>((resolve) => setImmediate(resolve));
+	return settled;
+}
+
+/**
  * The answer as speakable sentences, released one by one while the agent is
  * still writing, so the first sentence can be synthesized and played before
  * the rest exists. Iterating ends after `end()`, once everything pushed has
@@ -186,7 +228,12 @@ export class ParlumeSentenceQueue implements AsyncIterable<string> {
 		if (this.ended || !this.pending) {
 			return;
 		}
-		this.release(this.pending);
+		// The agent's next words, after the tool, are written as a new block
+		// with no space before them: kept apart from these as written.
+		this.release(
+			this.pending,
+			/\s$/.test(this.pending) ? this.pending : `${this.pending} `,
+		);
 		this.pending = "";
 		this.wake();
 	}

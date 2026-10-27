@@ -13,13 +13,14 @@ vi.mock("@repo/storage", () => ({
 	uploadFile: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("@repo/ai", () => ({
-	createGateway: () => {
+	isVercelGatewayKey: (apiKey: string) => apiKey.startsWith("vck_"),
+	createGateway: vi.fn(() => {
 		const gateway = vi.fn((model: string) => ({ modelId: model }));
 		(
 			gateway as unknown as { imageModel: (m: string) => unknown }
 		).imageModel = (m: string) => ({ modelId: m });
 		return gateway;
-	},
+	}),
 	generateImage: vi.fn(),
 	generateText: vi.fn(),
 	getAIModelWithMetadata: vi.fn(),
@@ -48,6 +49,7 @@ describe("executeAiGenerateImageStep — usage markers (Fizzy #1894)", () => {
 		logAiUsageAsync.mockReset();
 		vi.mocked(getRAGProviderConfig).mockResolvedValue({
 			apiKey: "gateway-key",
+			provider: "VERCEL_GATEWAY",
 		} as never);
 	});
 
@@ -107,4 +109,43 @@ describe("executeAiGenerateImageStep — usage markers (Fizzy #1894)", () => {
 			errorMessage: "No image generated",
 		});
 	});
+});
+
+it.each(["OPENROUTER", "CLOUDFLARE_AI"])(
+	"refuses %s keys before constructing a Vercel image client",
+	async (provider) => {
+		const { createGateway, getRAGProviderConfig } = await import(
+			"@repo/ai"
+		);
+		vi.mocked(createGateway).mockClear();
+		vi.mocked(getRAGProviderConfig).mockResolvedValue({
+			provider,
+			apiKey: "example-key",
+			baseUrl: "https://example.com/v1",
+		} as never);
+		const result = await executeAiGenerateImageStep(PARAMS);
+		expect(result.success).toBe(false);
+		expect(result.error).toContain("requires a VERCEL_GATEWAY connection");
+		expect(createGateway).not.toHaveBeenCalled();
+	},
+);
+
+it("accepts a Vercel key stored under OPENAI_DIRECT", async () => {
+	const { createGateway, generateImage, generateText, getRAGProviderConfig } =
+		await import("@repo/ai");
+	vi.mocked(createGateway).mockClear();
+	vi.mocked(getRAGProviderConfig).mockResolvedValue({
+		provider: "OPENAI_DIRECT",
+		apiKey: "vck_example_key",
+	} as never);
+	vi.mocked(generateText).mockResolvedValue({
+		text: "example",
+		files: [{ uint8Array: new Uint8Array([1]), mediaType: "image/png" }],
+	} as never);
+	vi.mocked(generateImage).mockResolvedValue({
+		image: { base64: "aGk=", uint8Array: new Uint8Array([1]) },
+	} as never);
+	const result = await executeAiGenerateImageStep(PARAMS);
+	expect(result.success).toBe(true);
+	expect(createGateway).toHaveBeenCalledWith({ apiKey: "vck_example_key" });
 });

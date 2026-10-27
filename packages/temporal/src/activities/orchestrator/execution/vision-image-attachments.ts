@@ -1,102 +1,210 @@
 /**
- * Vision image attachments for the orchestrator agent loop.
- *
- * The Nexus / Loom orchestrator historically fed the model only the RAG-extracted
- * *text* of an attached image (an OCR/description), never the pixels — so a
- * vision-capable model could not actually SEE the image. This helper resolves the
- * image-typed chat documents attached to the current turn into raw bytes and
- * splices them onto the last user message so the model receives the real pixels,
- * matching what the direct-chat path (`direct-chat/ai-execution.ts`) already does.
- * The RAG description remains the fallback for non-vision models.
- *
- * Storing raw `Uint8Array` (NOT a `data:` URL string): Vercel AI SDK 5's
- * `convertToLanguageModelPrompt` runs `downloadAssets` over every string-typed
- * `image` part, and `validateDownloadUrl` rejects the `data:` scheme with
- * "URL scheme must be http or https". Passing the raw bytes skips the URL fetcher
- * entirely — the provider adapters (OpenAI / Anthropic / Azure) base64-encode the
- * buffer themselves before sending.
- *
- * (The direct-chat path carries an equivalent inline implementation; it can adopt
- * this helper in a future consolidation.)
+ * Image bytes for Advisor rounds. Patched callers pin the SHA-256, MIME type,
+ * and transformation version to the source user message. Legacy callers use
+ * the last-user splice on their first round. Raw byte arrays let provider
+ * adapters encode file parts without an SDK URL download.
  */
 
+import { createHash } from "node:crypto";
 import { logger } from "@repo/logs";
+import type { ImageAttachmentReference } from "../../../workflows/orchestrator/types";
 
 export type ResolvedImageAttachment = {
 	filename: string | null;
 	mediaType: string;
 	bytes: Uint8Array;
+	reference?: ImageAttachmentReference;
 };
 
 /**
- * Download the image-typed chat documents among `documentIds`, tenant-scoped to
- * the caller. Non-image documents are ignored. Individual download failures are
- * logged and skipped so one bad blob never aborts the whole response. Restricted
- * to the IDs explicitly forwarded for the current message — older attachments are
- * intentionally not re-resolved here (the caller gates on the first iteration so
- * we don't pay vision-token cost on every follow-up turn).
+ * Resolve caller-owned image documents in the request's organization. Pinned
+ * requests follow documentIds order and reject changed byte identities. Failed
+ * downloads are logged and omitted so the answer can continue with other images.
  */
+export type ImageAttachmentResolution =
+	| {
+			status: "resolved";
+			documentId: string;
+			attachment: ResolvedImageAttachment;
+	  }
+	| {
+			status: "permanently_gone";
+			documentId: string;
+			reason:
+				| "missing"
+				| "hash_mismatch"
+				| "mime_mismatch"
+				| "transformation_mismatch"
+				| "missing_reference";
+	  }
+	| {
+			status: "temporarily_unavailable";
+			documentId: string;
+			reason: "query_error" | "download_error";
+	  };
+
+interface PinnedImageOptions {
+	references?: ImageAttachmentReference[];
+	/** IDs whose initial byte capture has not succeeded yet. */
+	captureDocumentIds?: string[];
+}
+
+export function resolveImageAttachments(
+	documentIds: string[],
+	userId: string,
+	organizationId?: string,
+): Promise<ResolvedImageAttachment[]>;
+export function resolveImageAttachments(
+	documentIds: string[],
+	userId: string,
+	organizationId: string | undefined,
+	pinned: PinnedImageOptions,
+): Promise<ImageAttachmentResolution[]>;
 export async function resolveImageAttachments(
 	documentIds: string[],
 	userId: string,
 	organizationId?: string,
-): Promise<ResolvedImageAttachment[]> {
+	pinned?: PinnedImageOptions,
+): Promise<ResolvedImageAttachment[] | ImageAttachmentResolution[]> {
 	if (documentIds.length === 0) {
 		return [];
 	}
-
-	const { db } = await import("@repo/database");
-	const docs = await db.chatDocument.findMany({
-		where: {
-			id: { in: documentIds },
-			userId,
-			organizationId: organizationId ?? null,
-			mimeType: { startsWith: "image/" },
-		},
-		select: { id: true, filename: true, mimeType: true, s3Path: true },
-	});
-
-	if (docs.length === 0) {
-		return [];
+	let docs: Array<{
+		id: string;
+		filename: string | null;
+		mimeType: string | null;
+		s3Path: string | null;
+	}>;
+	try {
+		const { db } = await import("@repo/database");
+		docs = await db.chatDocument.findMany({
+			where: {
+				id: { in: documentIds },
+				userId,
+				organizationId: organizationId ?? null,
+				mimeType: { startsWith: "image/" },
+			},
+			select: { id: true, filename: true, mimeType: true, s3Path: true },
+			orderBy: { id: "asc" },
+		});
+	} catch (error) {
+		if (!pinned) {
+			throw error;
+		}
+		return documentIds.map((documentId): ImageAttachmentResolution => {
+			logger.warn("[VisionAttachments] Image temporarily unavailable", {
+				documentId,
+				reason: "query_error",
+			});
+			return {
+				status: "temporarily_unavailable",
+				documentId,
+				reason: "query_error",
+			};
+		});
 	}
-
+	const orderedDocs = pinned
+		? documentIds.map((id) => docs.find((doc) => doc.id === id))
+		: docs;
 	const { downloadFile } = await import("@repo/storage");
 	const { config } = await import("@repo/config");
 	const bucket = config.storage.bucketNames.chatDocuments;
-
-	const settled = await Promise.all(
-		docs.map(async (doc) => {
-			if (!doc.s3Path || !doc.mimeType) {
-				return null;
-			}
-			try {
-				const { data } = await downloadFile(doc.s3Path, { bucket });
-				const bytes = new Uint8Array(
-					data.buffer,
-					data.byteOffset,
-					data.byteLength,
+	const outcomes = await Promise.all(
+		orderedDocs.map(
+			async (doc, index): Promise<ImageAttachmentResolution> => {
+				const documentId = doc?.id ?? documentIds[index];
+				const gone = (
+					reason: Extract<
+						ImageAttachmentResolution,
+						{ status: "permanently_gone" }
+					>["reason"],
+				): ImageAttachmentResolution => {
+					if (pinned) {
+						logger.warn("[VisionAttachments] Image omitted", {
+							documentId,
+							reason,
+						});
+					}
+					return { status: "permanently_gone", documentId, reason };
+				};
+				if (!doc || !doc.s3Path || !doc.mimeType) {
+					return gone("missing");
+				}
+				const expected = pinned?.references?.find(
+					(ref) => ref.documentId === doc.id,
 				);
-				return {
-					filename: doc.filename,
-					mediaType: doc.mimeType,
-					bytes,
-				} satisfies ResolvedImageAttachment;
-			} catch (err) {
-				logger.warn(
-					"[VisionAttachments] Failed to download image attachment — model will not see this image",
-					{
-						documentId: doc.id,
-						error: err instanceof Error ? err.message : String(err),
-					},
-				);
-				return null;
-			}
-		}),
+				if (expected) {
+					if (expected.mimeType !== doc.mimeType) {
+						return gone("mime_mismatch");
+					}
+					if (expected.transformationVersion !== "original-v1") {
+						return gone("transformation_mismatch");
+					}
+				} else if (
+					pinned?.references &&
+					!pinned.captureDocumentIds?.includes(doc.id)
+				) {
+					return gone("missing_reference");
+				}
+				try {
+					const { data } = await downloadFile(doc.s3Path, { bucket });
+					const bytes = new Uint8Array(
+						data.buffer,
+						data.byteOffset,
+						data.byteLength,
+					);
+					let reference: ImageAttachmentReference | undefined;
+					if (pinned) {
+						reference = {
+							documentId: doc.id,
+							contentHash: createHash("sha256")
+								.update(bytes)
+								.digest("hex"),
+							mimeType: doc.mimeType,
+							transformationVersion: "original-v1",
+						};
+						if (
+							expected &&
+							expected.contentHash !== reference.contentHash
+						) {
+							return gone("hash_mismatch");
+						}
+					}
+					return {
+						status: "resolved",
+						documentId,
+						attachment: {
+							filename: doc.filename,
+							mediaType: doc.mimeType,
+							bytes,
+							...(reference ? { reference } : {}),
+						},
+					};
+				} catch (error) {
+					logger.warn(
+						"[VisionAttachments] Failed to download image attachment — model will not see this image",
+						{
+							documentId,
+							error:
+								error instanceof Error
+									? error.message
+									: String(error),
+						},
+					);
+					return {
+						status: "temporarily_unavailable",
+						documentId,
+						reason: "download_error",
+					};
+				}
+			},
+		),
 	);
-
-	return settled.filter(
-		(att): att is NonNullable<typeof att> => att !== null,
-	);
+	return pinned
+		? outcomes
+		: outcomes.flatMap((outcome) =>
+				outcome.status === "resolved" ? [outcome.attachment] : [],
+			);
 }
 
 /**
@@ -200,7 +308,22 @@ export function spliceImagePartsIntoLastUserMessage(
 		return 0;
 	}
 
-	const target = messages[lastUserIdx] as { role: "user"; content: unknown };
+	return spliceImagePartsIntoMessage(
+		messages[lastUserIdx],
+		attachments,
+		note,
+	);
+}
+
+/** Expand images on the workflow's source message without changing its text or neighbors. */
+export function spliceImagePartsIntoMessage(
+	target: { content?: unknown },
+	attachments: ResolvedImageAttachment[],
+	note?: string | null,
+): number {
+	if (attachments.length === 0 && !note) {
+		return 0;
+	}
 	const existingText =
 		typeof target.content === "string"
 			? [{ type: "text" as const, text: target.content }]

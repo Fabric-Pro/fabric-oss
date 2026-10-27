@@ -54,6 +54,10 @@ function sessionIn(status: string) {
 			.digest("hex"),
 		status,
 		hardStopAt: new Date("2030-01-01T00:00:00.000Z"),
+		userId: "u1",
+		organizationId: "o1",
+		projectId: "p1",
+		toolsReadOnly: true,
 	});
 }
 
@@ -77,7 +81,13 @@ describe("Parlume stream verification: warm-up", () => {
 		await mocks.afterCallbacks[0]?.();
 		expect(mocks.warm).toHaveBeenCalledWith({
 			origin: "https://fabric.example",
-			sessionId: "s1",
+			session: {
+				id: "s1",
+				userId: "u1",
+				organizationId: "o1",
+				projectId: "p1",
+				toolsReadOnly: true,
+			},
 		});
 	});
 

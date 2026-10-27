@@ -10,7 +10,13 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { formatShortDate } from "../../lib/parlume-format";
 import { ParlumePage } from "../ParlumePage";
-import { liveSession, PROJECT_BASE_PATH, request, session } from "./fixtures";
+import {
+	liveSession,
+	PROJECT_BASE_PATH,
+	request,
+	SETTINGS_BASE_PATH,
+	session,
+} from "./fixtures";
 
 const mocks = vi.hoisted(() => ({
 	listAgents: vi.fn(),
@@ -54,6 +60,7 @@ function showPage(canEdit = true) {
 			<ParlumePage
 				projectId="example-project"
 				projectBasePath={PROJECT_BASE_PATH}
+				settingsBasePath={SETTINGS_BASE_PATH}
 				canEdit={canEdit}
 			/>
 		</QueryClientProvider>,
@@ -336,7 +343,7 @@ describe("ParlumePage spend", () => {
 		expect(screen.queryByText(/calls?\b/)).toBeNull();
 		expect(
 			screen.getByText(
-				"Covers agent turns, speech, meeting notes and meeting-provider bot time.",
+				"Covers agent turns, realtime voice, speech, live transcription, meeting notes and meeting-provider bot time. A live meeting's bot and transcription time are added when it ends.",
 			),
 		).toBeInTheDocument();
 	});

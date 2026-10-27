@@ -217,7 +217,8 @@ export function ParlumeLiveCard({
 							: formatCost(costMicroUsd)}
 					</dd>
 					<dd className="text-xs text-muted-foreground">
-						Bot time is added after the meeting.
+						Bot and transcription time are added when the meeting
+						ends.
 					</dd>
 				</div>
 			</dl>

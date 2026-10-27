@@ -179,7 +179,7 @@ test("a missing post is checked on the alarm too, and refuses later posts when t
 	await instance.onStart();
 	await instance.onRequest(control("chat", { message: "The link" }));
 	const realNow = Date.now;
-	Date.now = () => realNow() + 9_000;
+	Date.now = () => realNow() + 16_000;
 	try {
 		await instance.onAlarm();
 	} finally {

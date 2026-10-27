@@ -52,6 +52,7 @@ vi.mock("../../utils", () => ({
 		provider: "ANTHROPIC_DIRECT",
 		modelString: "claude-sonnet-5",
 		canonicalName: "claude-sonnet-5",
+		planSpentApiBilling: () => undefined,
 	})),
 }));
 

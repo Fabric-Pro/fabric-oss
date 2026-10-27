@@ -63,6 +63,7 @@ vi.mock("../utils", () => ({
 		provider: "ANTHROPIC_DIRECT",
 		modelString: "example-model",
 		canonicalName: "example-model",
+		planSpentApiBilling: () => undefined,
 	})),
 }));
 

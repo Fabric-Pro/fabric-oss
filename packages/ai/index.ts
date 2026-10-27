@@ -116,6 +116,7 @@ export {
 // --- Databricks base-URL normalization (from lib/databricks-url) ---
 export {
 	hasDatabricksExplicitPath,
+	toDatabricksInferenceBaseUrl,
 	toDatabricksServingBaseUrl,
 	toDatabricksWorkspaceHost,
 } from "./lib/databricks-url";
@@ -225,6 +226,7 @@ export {
 // the AI SDK's provider routing (e.g. the TTS endpoint).
 export {
 	AUDIO_PROVIDER_REQUIRED,
+	resolveAzureOpenAiResource,
 	resolveOpenAiApiKey,
 } from "./lib/openai-provider-key";
 // --- Output-token budget helper (from lib/output-token-budget) ---

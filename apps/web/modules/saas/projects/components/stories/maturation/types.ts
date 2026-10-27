@@ -4,7 +4,7 @@
  * These mirror the `maturation.getEditorState` Zod output DTO
  * (`packages/api/.../maturation/schemas.ts`) but are declared here so the panel
  * components don't deep-import API-package internals. The shapes are kept in
- * lock-step with `DecisionLogThreadSchema` / `EffectiveApprovalModesSchema`;
+ * lock-step with `DecisionLogThreadSchema`;
  * the procedure's Zod `.output()` is the runtime source of truth.
  */
 
@@ -37,20 +37,6 @@ type DecisionLogReply = {
 	supersedesId: string | null;
 };
 
-type CleanSpecPropagationStatus =
-	| "applied"
-	| "pending"
-	| "refused"
-	| "noop"
-	| "skipped"
-	| "error";
-
-type CleanSpecPropagationSummary = {
-	status: CleanSpecPropagationStatus;
-	appliedSummaries: string[];
-	pendingPatchCount: number;
-} | null;
-
 export type AnswerSource = "AI_SUGGESTED" | "AI_EDITED" | "MANUAL";
 
 type DecisionLogRoot = DecisionLogReply & {
@@ -58,7 +44,6 @@ type DecisionLogRoot = DecisionLogReply & {
 	topic: string | null;
 	questionId: string | null;
 	decidedBy: string | null;
-	cleanSpecPropagation: CleanSpecPropagationSummary;
 	// AI answer recommendations for an OPEN question (#7). 0–4 candidate answers,
 	// each with a justification (FR-2). Empty = no recommendation (plain question).
 	suggestedOptions: SuggestedAnswerOption[];

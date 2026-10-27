@@ -1,8 +1,7 @@
 /**
  * Deterministic answer → Clean Spec write (Feature Maturation V2, notebook model).
  *
- * Replaces the per-answer LLM scoped-patch (`propagate-decision-to-spec.ts`, now
- * dormant). When the PO answers a question, the Q+A is recorded — without any
+ * When the PO answers a question, the Q+A is recorded — without any
  * model call — into a transient `## Resolved Decisions (pending integration)`
  * appendix at the END of `description`. The NEXT maturation run reads it (the AI
  * sees only the spec), dissolves each decision into the right body section (or

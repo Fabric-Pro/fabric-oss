@@ -36,9 +36,12 @@ vi.mock("@repo/storage", () => ({ uploadFile: vi.fn() }));
 vi.mock("../../src/lib/lifecycle-dispatcher", () => ({
 	dispatchLifecycleEvent: vi.fn(),
 }));
-vi.mock("../../src/activities/orchestrator/utils", () => ({
-	jsonSchemaToZod: () => ({}),
-}));
+vi.mock("../../src/activities/orchestrator/utils", async () => {
+	const { jsonSchemaToZod } = await import(
+		"../../src/activities/orchestrator/utils/schema-utils"
+	);
+	return { jsonSchemaToZod: vi.fn(jsonSchemaToZod) };
+});
 vi.mock("../../src/activities/shared/frame-service", () => ({
 	createFirstClassFrame: vi.fn(),
 	getFirstClassFrame: vi.fn(),
@@ -161,10 +164,40 @@ describe("createBuiltInTools — live roadmap reads", () => {
 		}
 	});
 
+	it("passes the sort schema into Direct chat input validation", async () => {
+		const { jsonSchemaToZod } = await import(
+			"../../src/activities/orchestrator/utils"
+		);
+		const tools = await createBuiltInTools(CTX);
+		const definition = tools.fabric_list_project_features as unknown as {
+			inputSchema: { parse: (args: unknown) => unknown };
+		};
+		expect(definition.inputSchema.parse({ sort: "updated" })).toEqual({
+			sort: "updated",
+		});
+		expect(() =>
+			definition.inputSchema.parse({ sort: "oldest" }),
+		).toThrow();
+		expect(definition.inputSchema.parse({})).toEqual({});
+		expect(jsonSchemaToZod).toHaveBeenCalledWith(
+			expect.objectContaining({
+				properties: expect.objectContaining({
+					sort: expect.objectContaining({
+						enum: ["identifier", "updated"],
+					}),
+				}),
+			}),
+		);
+	});
+
 	it("runs the list read against the chat's project, ignoring a model-supplied one", async () => {
 		h.listProjectFeatures.mockResolvedValue({ features: [], total: 0 });
 		const tools = await createBuiltInTools(CTX);
-		const args = { status: "In Review", projectId: "someone-elses" };
+		const args = {
+			status: "In Review",
+			sort: "updated",
+			projectId: "someone-elses",
+		};
 
 		await (tools.fabric_list_project_features as Executable).execute(args);
 

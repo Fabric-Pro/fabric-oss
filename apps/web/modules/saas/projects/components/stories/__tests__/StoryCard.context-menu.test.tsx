@@ -125,6 +125,7 @@ vi.mock("../../coding-runs/CodingRunStatusBadge", () => ({
 }));
 
 vi.mock("next-intl", () => ({
+	useLocale: () => "en",
 	useTranslations: () => {
 		const t = (k: string) => {
 			// Render the leaf `openInNewTab` to the human-readable label so

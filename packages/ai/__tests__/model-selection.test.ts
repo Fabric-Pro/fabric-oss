@@ -198,13 +198,15 @@ vi.mock("@ai-sdk/openai", () => ({
 			baseURL: config?.baseURL,
 			apiKey: config?.apiKey,
 		}));
-		mockProvider.embedding = vi.fn((modelName: string) => ({
-			modelId: modelName,
-			type: "embedding",
-			provider: "openai",
-			baseURL: config?.baseURL,
-			apiKey: config?.apiKey,
-		}));
+		mockProvider.embeddingModel = mockProvider.embedding = vi.fn(
+			(modelName: string) => ({
+				modelId: modelName,
+				type: "embedding",
+				provider: "openai",
+				baseURL: config?.baseURL,
+				apiKey: config?.apiKey,
+			}),
+		);
 		mockProvider.image = vi.fn((modelName: string) => ({
 			modelId: modelName,
 			type: "image",
@@ -348,13 +350,15 @@ async function getModelFunctions() {
 				baseURL: config?.baseURL,
 				apiKey: config?.apiKey,
 			}));
-			mockProvider.embedding = vi.fn((modelName: string) => ({
-				modelId: modelName,
-				type: "embedding",
-				provider: "openai",
-				baseURL: config?.baseURL,
-				apiKey: config?.apiKey,
-			}));
+			mockProvider.embeddingModel = mockProvider.embedding = vi.fn(
+				(modelName: string) => ({
+					modelId: modelName,
+					type: "embedding",
+					provider: "openai",
+					baseURL: config?.baseURL,
+					apiKey: config?.apiKey,
+				}),
+			);
 			mockProvider.image = vi.fn((modelName: string) => ({
 				modelId: modelName,
 				type: "image",
@@ -510,6 +514,7 @@ describe("getModel - Gateway Providers", () => {
 			const model = getModel(TEST_MODELS.GPT4O, {
 				apiKey: "cf_test_key",
 				provider: "CLOUDFLARE_AI",
+				baseUrl: "https://example.com/cloudflare/openai",
 			});
 
 			expect(model).toBeDefined();
@@ -1183,12 +1188,18 @@ describe("All Supported Provider Types", () => {
 			const model = getModel(TEST_MODELS.GPT4O, {
 				apiKey: key,
 				provider: provider,
+				baseUrl:
+					provider === "CLOUDFLARE_AI"
+						? "https://example.com/cloudflare/openai"
+						: undefined,
 			});
 
 			expect(model).toBeDefined();
 
-			if (isGateway) {
-				// Gateway providers format model names with prefix
+			if (provider === "OPENROUTER" || provider === "CLOUDFLARE_AI") {
+				expect(model.modelId).toBe(TEST_MODELS.GPT4O);
+			} else if (isGateway) {
+				// Vercel formats unprefixed model names for its gateway.
 				expect(model.modelId).toContain("/");
 			} else if (provider === "OPENAI_DIRECT") {
 				// Direct OpenAI uses model name as-is

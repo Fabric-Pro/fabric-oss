@@ -12,6 +12,7 @@ import {
 	rethrowIfDispatchStopped,
 	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
+import { A2A_SUBMISSION_TOKEN_ALLOWANCE } from "../../delegation/submission-token-allowance";
 import type { ExecuteStepInput, ExecuteStepOutput } from "../../types";
 import type {
 	HandlerContext,
@@ -153,6 +154,7 @@ export class WeaveQueryHandler implements StepHandler {
 				organizationId: input.organizationId ?? null,
 			},
 			{
+				submissionTokenAllowance: A2A_SUBMISSION_TOKEN_ALLOWANCE,
 				trustedDestination: true,
 				// The Weave reader answers with its own model calls. Inside a
 				// chat turn that has stopped or used its token allowance the

@@ -174,6 +174,7 @@ describe("Direct chat and the Orchestrator ask about a Fabric tool the same way"
 	it.each([
 		"fabric_create_frame",
 		"fabric_update_frame",
+		"fabric_edit_frame_block",
 		"fabric_duplicate_frame",
 	])(
 		"asks about %s only when the call gives the page tools",

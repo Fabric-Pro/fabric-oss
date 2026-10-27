@@ -11,11 +11,26 @@ import type {
 } from "../lib/types";
 import { LINKED_MEETINGS_QUERY_KEY } from "./use-linked-meeting-join-urls";
 
+export interface ParlumeAutoJoinSettings {
+	enabled: boolean;
+	toolsReadOnly: boolean;
+	suggestionsEnabled: boolean;
+}
+
 export interface ConfigMeeting {
 	linkedMeetingId: string;
 	subject: string | null;
 	includedInDigest: boolean;
 	lastMeetingDate: Date | string | null;
+	parlumeAutoJoin?: ParlumeAutoJoinState | null;
+}
+
+/** A series' Parlume auto-join switch, as listConfigurable returns it. */
+export interface ParlumeAutoJoinState extends ParlumeAutoJoinSettings {
+	enabledBy: { id: string; name: string } | null;
+	error: string | null;
+	errorAt: Date | string | null;
+	syncStopped: boolean;
 }
 
 export function useMeetingDigest({
@@ -92,6 +107,25 @@ export function useMeetingDigest({
 					],
 				}),
 			]);
+		},
+		[projectId, organizationId, queryClient],
+	);
+
+	const setParlumeAutoJoin = useCallback(
+		async (linkedMeetingId: string, settings: ParlumeAutoJoinSettings) => {
+			await orpcClient.projects.meetingDigest.setParlumeAutoJoin({
+				projectId,
+				organizationId,
+				linkedMeetingId,
+				...settings,
+			});
+			await queryClient.invalidateQueries({
+				queryKey: [
+					"projects.meetingDigest.listConfigurable",
+					projectId,
+					organizationId,
+				],
+			});
 		},
 		[projectId, organizationId, queryClient],
 	);
@@ -365,6 +399,7 @@ export function useMeetingDigest({
 		isLoading,
 		isError,
 		setIncluded,
+		setParlumeAutoJoin,
 		unlinkMeeting,
 		refreshAfterLink,
 		onActionItemToggled,

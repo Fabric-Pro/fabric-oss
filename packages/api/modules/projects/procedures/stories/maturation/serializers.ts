@@ -1,47 +1,4 @@
 import type { DecisionLogThread } from "@repo/database";
-import type { CleanSpecPropagationSummary } from "./schemas";
-
-const PROPAGATION_STATUSES = [
-	"applied",
-	"pending",
-	"refused",
-	"noop",
-	"skipped",
-	"error",
-] as const;
-
-/**
- * Derive the editor-facing Clean-Spec propagation summary from a decision root's
- * `metadata.cleanSpecPropagation` (written by TG4 / the accept flow). Returns
- * `null` for decisions that never ran propagation (e.g. an OPEN question).
- */
-function derivePropagation(
-	metadata: DecisionLogThread["root"]["metadata"],
-): CleanSpecPropagationSummary {
-	if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
-		return null;
-	}
-	const prop = (metadata as Record<string, unknown>).cleanSpecPropagation;
-	if (!prop || typeof prop !== "object" || Array.isArray(prop)) {
-		return null;
-	}
-	const p = prop as Record<string, unknown>;
-	const status = PROPAGATION_STATUSES.find((s) => s === p.status);
-	if (!status) {
-		return null;
-	}
-	return {
-		status,
-		appliedSummaries: Array.isArray(p.appliedSummaries)
-			? p.appliedSummaries.filter(
-					(s): s is string => typeof s === "string",
-				)
-			: [],
-		pendingPatchCount: Array.isArray(p.pendingPatches)
-			? p.pendingPatches.length
-			: 0,
-	};
-}
 
 interface SuggestedOption {
 	text: string;
@@ -140,7 +97,6 @@ export function serializeDecisionLogThread(
 			sourceProvenance: thread.root.sourceProvenance,
 			createdAt: thread.root.createdAt,
 			supersedesId: thread.root.supersedesId,
-			cleanSpecPropagation: derivePropagation(thread.root.metadata),
 			suggestedOptions: includeRecommendations
 				? deriveRecommendation(thread.root.metadata).suggestedOptions
 				: [],

@@ -27,8 +27,8 @@ export interface RecordAiOutcomeParams {
  *
  * Upsert rather than insert: the unique key is (feature, subject, user), so a
  * user changing their mind updates their single row instead of leaving two
- * contradictory ones. The model/prompt snapshot is refreshed on update because
- * the verdict that counts is the latest one.
+ * contradictory ones. Non-null model/prompt snapshots refresh on update;
+ * missing provenance leaves an existing snapshot intact.
  */
 export async function recordAiOutcome(params: RecordAiOutcomeParams) {
 	const {
@@ -67,8 +67,8 @@ export async function recordAiOutcome(params: RecordAiOutcomeParams) {
 		},
 		update: {
 			outcome,
-			modelCanonicalName: modelCanonicalName ?? null,
-			promptVersionId: promptVersionId ?? null,
+			modelCanonicalName: modelCanonicalName ?? undefined,
+			promptVersionId: promptVersionId ?? undefined,
 			comment: comment ?? null,
 		},
 		select: { id: true, outcome: true, createdAt: true, updatedAt: true },

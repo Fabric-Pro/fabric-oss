@@ -171,6 +171,7 @@ describe("getAIDecisionModelWithMetadata", () => {
 		const resolved = await getAIDecisionModelWithMetadata({
 			userId: "user-1",
 			organizationId: "org-1",
+			callPurpose: "completion-judge",
 		});
 
 		expect(getAiProviderApiKeyByProviderMock).toHaveBeenCalledWith({
@@ -201,6 +202,7 @@ describe("getAIDecisionModelWithMetadata", () => {
 				organizationId: "org-1",
 				provider: "VERCEL_GATEWAY",
 				providerModelId: "typesafe-ai/jev",
+				callPurpose: "completion-judge",
 				taskType: "DECISION",
 			}),
 			{ answeringModelCanonicalNames: {} },

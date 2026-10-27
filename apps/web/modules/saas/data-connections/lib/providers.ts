@@ -481,6 +481,8 @@ export const HIDDEN_INTEGRATION_PROVIDERS: readonly DataConnectionProvider[] = [
 	"SNOWFLAKE",
 	"BIGQUERY",
 	"GONG",
+	"ZENDESK",
+	"INTERCOM",
 ];
 
 const HIDDEN_INTEGRATION_PROVIDER_SET: ReadonlySet<DataConnectionProvider> =

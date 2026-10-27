@@ -36,7 +36,7 @@ export function isPmTicketMissingError(
 /**
  * Whether a PM-sync error means the item is linked to a DIFFERENT PM tool than
  * the project's current one (the backend `PM_TOOL_MISMATCH` — "synced to a
- * different PM tool"). A plain retry can never clear this: it just pushes to the
+ * different PM tool"). A plain retry does not clear this: it just pushes to the
  * current tool again and re-hits the mismatch. The failure panel uses this to
  * offer "Push & relink" (an override push that drops the old link and creates a
  * fresh card in the current tool) instead of a dead Retry. Presentation-only.
@@ -72,7 +72,7 @@ export function isPmLegacyOtherToolLinkError(
  * is not linked to: the backend's `create_orphan` and `create_unconfirmed`
  * failures. The work item then keeps a create claim, and every push refuses to
  * create again until the user clears it, with Unlink & re-create or, while the
- * item has no PM link, Link to existing item — so a plain retry can never
+ * item has no PM link, Link to existing item — so a plain retry does not
  * clear this. Every such message ends by naming Unlink & re-create, which is
  * what this keys on. Presentation-only.
  */
@@ -89,6 +89,7 @@ type Props = {
 	onClick?: () => void;
 	className?: string;
 	pmToolName?: string;
+	compactLabel?: string;
 };
 
 /**
@@ -97,7 +98,10 @@ type Props = {
  * the rejection reason) live inside the failure panel it opens on click.
  */
 export const PmSyncFailureBadge = forwardRef<HTMLButtonElement, Props>(
-	function PmSyncFailureBadge({ onClick, className, pmToolName }, ref) {
+	function PmSyncFailureBadge(
+		{ onClick, className, pmToolName, compactLabel },
+		ref,
+	) {
 		const ariaLabel = pmToolName
 			? `PM sync failed — open ${pmToolName} sync error details`
 			: "PM sync failed — open error details";
@@ -111,6 +115,7 @@ export const PmSyncFailureBadge = forwardRef<HTMLButtonElement, Props>(
 					onClick?.();
 				}}
 				aria-label={ariaLabel}
+				title={compactLabel ? ariaLabel : undefined}
 				className={cn(
 					"inline-flex items-center gap-1.5 rounded-md border bg-muted px-2 py-0.5",
 					"text-[10px] font-medium uppercase tracking-[0.18em]",
@@ -120,7 +125,7 @@ export const PmSyncFailureBadge = forwardRef<HTMLButtonElement, Props>(
 				)}
 			>
 				<CloudOffIcon className="size-3" aria-hidden="true" />
-				PM sync failed
+				{compactLabel ?? "PM sync failed"}
 			</button>
 		);
 	},

@@ -53,7 +53,10 @@ function turnStopped() {
 
 /** Runs the activity in an activity context (its logger needs one). */
 function retrieve(
-	options?: SecondaryUsageInput & { turnScope?: typeof TURN_SCOPE },
+	options?: SecondaryUsageInput & {
+		turnScope?: typeof TURN_SCOPE;
+		maxPassageChars?: number;
+	},
 ) {
 	return new MockActivityEnvironment().run(
 		retrieveProjectContextsActivity,
@@ -120,6 +123,32 @@ describe("retrieveProjectContextsActivity", () => {
 		await retrieve({ turnScope: TURN_SCOPE });
 
 		expect(guardKey).toBeDefined();
+	});
+
+	it("keeps only the opening of each passage when asked to, cut at a line break", async () => {
+		const long = `First line of the plan.\n${"x".repeat(80)}\n${"y".repeat(400)}`;
+		mocks.retrieveProjectContexts.mockResolvedValue([
+			{ content: long, filename: "plan.md" },
+			{ content: "Short note.", filename: "note.md" },
+		]);
+
+		const capped = await retrieve({ maxPassageChars: 200 });
+		const whole = await retrieve();
+
+		expect(capped).toEqual({
+			context: expect.stringContaining(
+				`First line of the plan.\n${"x".repeat(80)}\n\n---\n\n### From: note.md\nShort note.`,
+			),
+			chunkCount: 2,
+		});
+		expect(capped).toEqual({
+			context: expect.not.stringContaining("yyyy"),
+			chunkCount: 2,
+		});
+		expect(whole).toEqual({
+			context: expect.stringContaining("y".repeat(400)),
+			chunkCount: 2,
+		});
 	});
 
 	it("keeps the empty result for a caller with no turn", async () => {

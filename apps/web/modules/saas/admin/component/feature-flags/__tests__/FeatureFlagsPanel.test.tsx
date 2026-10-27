@@ -8,6 +8,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FeatureFlagsPanel } from "../FeatureFlagsPanel";
+import { OrgFeatureFlagsPanel } from "../OrgFeatureFlagsPanel";
 
 const setMutate = vi.fn();
 const resetMutate = vi.fn();
@@ -86,6 +87,26 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
 		admin: {
 			featureFlags: {
+				listForOrg: {
+					queryKey: () => ["example-org-flags"],
+					queryOptions: () => ({
+						queryKey: ["example-org-flags"],
+						queryFn: async () => ({
+							flags: [
+								flagRow({
+									envVar: null,
+									orgOverride: undefined,
+								}),
+							],
+						}),
+					}),
+				},
+				setForOrg: {
+					mutationOptions: () => ({ mutationFn: setMutate }),
+				},
+				clearForOrg: {
+					mutationOptions: () => ({ mutationFn: resetMutate }),
+				},
 				list: {
 					queryOptions: () => ({
 						queryKey: [LIST_PATH, { input: {}, type: "query" }],
@@ -108,13 +129,17 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 	},
 }));
 
-function renderPanel() {
+function renderPanel(org = false) {
 	const client = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
 	return render(
 		<QueryClientProvider client={client}>
-			<FeatureFlagsPanel />
+			{org ? (
+				<OrgFeatureFlagsPanel organizationId="example-org" />
+			) : (
+				<FeatureFlagsPanel />
+			)}
 		</QueryClientProvider>,
 	);
 }
@@ -389,4 +414,17 @@ describe("@orpc/tanstack-query key semantics (mock fidelity guard)", () => {
 			flags: [flagRow({ enabled: false })],
 		});
 	});
+});
+
+describe("override-only flag explanation", () => {
+	it.each([false, true])(
+		"shows no environment fallback in the organization panel=%s",
+		async (org) => {
+			listQueryFn = async () => ({ flags: [flagRow({ envVar: null })] });
+			renderPanel(org);
+			expect(
+				await screen.findByText(/no environment fallback/i),
+			).toBeInTheDocument();
+		},
+	);
 });

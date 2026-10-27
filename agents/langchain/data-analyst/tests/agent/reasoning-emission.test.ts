@@ -57,7 +57,6 @@ const baseState = {
 	response: "",
 	error: null,
 	mcpTools: [],
-	mcpClients: [],
 	chartArtifacts: [],
 	connectionSuggestions: [],
 	availableDataSources: [],
@@ -268,16 +267,16 @@ describe("data-analyst agentNode — reasoning emission", () => {
 		expect(result.response).toBe("Final analysis.");
 	});
 
-	it("routes to cleanup when a model requests tools past the budget", () => {
+	it("ends the graph when a model requests tools past the budget", () => {
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const state = {
 			...baseState,
 			messages: messagesWithToolRounds(MAX_TOOL_ITERATIONS + 1),
 		};
 
-		expect(shouldContinue(state as never)).toBe("cleanup");
+		expect(shouldContinue(state as never)).toBe("__end__");
 		expect(warnSpy).toHaveBeenCalledWith(
-			"[DataAnalyst] Tool iteration limit exceeded; routing to cleanup",
+			"[DataAnalyst] Tool iteration limit exceeded; ending graph",
 			{
 				toolRounds: MAX_TOOL_ITERATIONS + 1,
 				maxToolIterations: MAX_TOOL_ITERATIONS,
@@ -286,9 +285,9 @@ describe("data-analyst agentNode — reasoning emission", () => {
 	});
 
 	it("keeps the recursion limit above the graph's required superstep floor", () => {
-		expect(DEFAULT_RECURSION_LIMIT).toBe(48);
+		expect(DEFAULT_RECURSION_LIMIT).toBe(47);
 		expect(DEFAULT_RECURSION_LIMIT).toBeGreaterThanOrEqual(
-			2 * MAX_TOOL_ITERATIONS + 1 + 2,
+			2 * MAX_TOOL_ITERATIONS + 1 + 1,
 		);
 	});
 });

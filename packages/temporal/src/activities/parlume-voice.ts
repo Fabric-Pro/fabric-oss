@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
 	AUDIO_PROVIDER_REQUIRED,
 	getAISpeechModel,
@@ -9,7 +10,7 @@ import { z } from "zod";
 import { PARLUME_PCM_SAMPLE_RATE, pcmFromWav } from "./parlume-audio";
 import { recordParlumeAuraUsage } from "./parlume-aura-usage";
 import { parlumeActivityLog } from "./parlume-log";
-import { ReplayableSentences } from "./parlume-spoken-text";
+import { AvailableSentences, ReplayableSentences } from "./parlume-spoken-text";
 import {
 	recordTurnSpeechSentence,
 	type SpeechSentenceTiming,
@@ -524,54 +525,119 @@ const auraResultSchema = z.object({
 		.default([]),
 });
 
-function ndjsonSentences(
-	sentences: AsyncGenerator<string>,
-): ReadableStream<Uint8Array> {
-	const encoder = new TextEncoder();
-	return new ReadableStream<Uint8Array>({
-		async pull(controller) {
-			const next = await sentences.next();
-			if (next.done) {
-				controller.close();
-				return;
-			}
-			controller.enqueue(
-				encoder.encode(`${JSON.stringify({ text: next.value })}\n`),
-			);
+const auraPartResponse = z.object({ accepted: z.boolean() });
+
+type AuraPart = {
+	reply: string;
+	index: number;
+	sentences?: string[];
+	last?: boolean;
+	cancel?: boolean;
+};
+
+/** One numbered part of a reply sent to the bridge's `say` endpoint. */
+function sendAuraPart(
+	input: SpeakInput,
+	secret: string,
+	part: AuraPart,
+	signal: AbortSignal,
+): Promise<Response> {
+	return fetch(bridgeControlUrl(input.sessionId, "say"), {
+		method: "POST",
+		headers: {
+			Authorization: `Bearer ${secret}`,
+			"content-type": "application/x-ndjson",
+			"x-parlume-voice-generation": String(input.voiceGeneration ?? 0),
+			"x-parlume-reply": part.reply,
+			"x-parlume-reply-part": String(part.index),
+			...(part.last ? { "x-parlume-reply-last": "1" } : {}),
+			...(part.cancel ? { "x-parlume-reply-cancel": "1" } : {}),
 		},
-		async cancel() {
-			await sentences.return(undefined);
-		},
+		body: (part.sentences ?? [])
+			.map((text) => `${JSON.stringify({ text })}\n`)
+			.join(""),
+		signal,
 	});
 }
+
+type AuraOutcome =
+	| { done: Playback }
+	| { resumeAt: number; firstAudioAt?: number; played?: boolean };
 
 /**
  * Sends the sentences as text to the bridge, which synthesizes them with
  * Deepgram Aura on Workers AI and plays them: the audio never travels through
  * this worker. Returns the playback, or where the bridge stopped when Aura
  * could not speak a sentence, so another route can continue from there.
+ *
+ * The reply goes as numbered parts, each sent the moment its sentences exist:
+ * the edge in front of the bridge holds a streamed request body until it
+ * ends, so a reply sent as one streamed body was heard only once the agent
+ * had finished. The first part's answer is the playback of the whole reply.
  */
 async function speakThroughAura(
 	input: SpeakInput,
 	sentences: ReplayableSentences,
 	secret: string,
 	startedAt: number,
-): Promise<{ done: Playback } | { resumeAt: number; firstAudioAt?: number }> {
-	const requested = sentences.from(0);
+): Promise<AuraOutcome> {
+	const reply = randomUUID();
+	const parts = new AvailableSentences(sentences.from(0));
+	let nextPart = 1;
+	// The bridge has answered for the reply: no more parts are sent.
+	let settled = false;
+	// A sentence did not reach the bridge while it was still listening.
+	let undelivered = false;
+	const sendRest = async () => {
+		for (;;) {
+			const part = await parts.next();
+			if (settled) {
+				undelivered ||= part.sentences.length > 0;
+				return;
+			}
+			const response = await sendAuraPart(
+				input,
+				secret,
+				{ reply, index: nextPart++, ...part },
+				withSignal(input.signal, 15_000),
+			);
+			const accepted =
+				response.ok &&
+				auraPartResponse.safeParse(await response.json()).data
+					?.accepted === true;
+			if (!accepted) {
+				undelivered ||= part.sentences.length > 0;
+				return;
+			}
+			if (part.last) {
+				return;
+			}
+		}
+	};
+	let opened = false;
 	try {
-		const response = await fetch(bridgeControlUrl(input.sessionId, "say"), {
-			method: "POST",
-			headers: {
-				Authorization: `Bearer ${secret}`,
-				"content-type": "application/x-ndjson",
-				"x-parlume-voice-generation": String(
-					input.voiceGeneration ?? 0,
-				),
-			},
-			body: ndjsonSentences(requested),
-			duplex: "half",
-			signal: withSignal(input.signal, 90_000),
-		} as RequestInit & { duplex: "half" });
+		const first = await parts.next();
+		opened = true;
+		const opening = sendAuraPart(
+			input,
+			secret,
+			{ reply, index: 0, ...first },
+			withSignal(input.signal, 90_000),
+		);
+		const rest = first.last
+			? Promise.resolve()
+			: sendRest().catch((error: unknown) => {
+					undelivered = true;
+					if (!input.signal?.aborted) {
+						parlumeActivityLog("warn", "speech.part_failed", {
+							sessionId: input.sessionId,
+							route: "aura",
+							error: errorMessage(error),
+						});
+					}
+				});
+		const response = await opening;
+		settled = true;
 		if (!response.ok) {
 			throw new Error(
 				`Aura speech request failed (HTTP ${response.status}).`,
@@ -608,26 +674,56 @@ async function speakThroughAura(
 				? result.firstAudioAt - startedAt
 				: null,
 		});
-		if (result.failedAt === undefined) {
+		if (result.failedAt !== undefined) {
+			parlumeActivityLog("warn", "speech.route_failed", {
+				sessionId: input.sessionId,
+				route: "aura",
+				failedAt: result.failedAt,
+				error: result.error ?? null,
+			});
 			return {
-				done: {
-					played: result.played,
-					interrupted: result.interrupted,
-					muted: result.muted,
-					heard: result.heard,
-					firstAudioAt: result.firstAudioAt,
-				},
+				resumeAt: result.failedAt,
+				firstAudioAt: result.firstAudioAt,
 			};
 		}
-		parlumeActivityLog("warn", "speech.route_failed", {
-			sessionId: input.sessionId,
-			route: "aura",
-			failedAt: result.failedAt,
-			error: result.error ?? null,
-		});
-		return { resumeAt: result.failedAt, firstAudioAt: result.firstAudioAt };
+		// Played to its end, yet a sentence never reached the bridge (it
+		// stopped waiting for the next part): the rest goes another way.
+		if (result.played) {
+			await rest;
+			if (undelivered) {
+				parlumeActivityLog("warn", "speech.route_failed", {
+					sessionId: input.sessionId,
+					route: "aura",
+					failedAt: result.sentences.length,
+					error: "A sentence did not reach the bridge",
+				});
+				return {
+					resumeAt: result.sentences.length,
+					firstAudioAt: result.firstAudioAt,
+					played: true,
+				};
+			}
+		}
+		return {
+			done: {
+				played: result.played,
+				interrupted: result.interrupted,
+				muted: result.muted,
+				heard: result.heard,
+				firstAudioAt: result.firstAudioAt,
+			},
+		};
 	} catch (error) {
 		if (input.signal?.aborted) {
+			// The bridge drops what it queued of a reply the turn gave up on.
+			if (opened) {
+				sendAuraPart(
+					input,
+					secret,
+					{ reply, index: nextPart, cancel: true },
+					AbortSignal.timeout(5_000),
+				).catch(() => {});
+			}
 			throw error;
 		}
 		parlumeActivityLog("warn", "speech.route_failed", {
@@ -638,7 +734,7 @@ async function speakThroughAura(
 		});
 		return { resumeAt: 0 };
 	} finally {
-		await requested.return(undefined);
+		settled = true;
 	}
 }
 
@@ -669,6 +765,7 @@ export async function speakParlumeResponse(
 	// reply spoken over there counts only what Aura played before it.
 	return {
 		...rest,
+		played: rest.played || aura.played === true,
 		...(rest.muted ? { heard: aura.resumeAt } : {}),
 		firstAudioAt: aura.firstAudioAt ?? rest.firstAudioAt,
 	};

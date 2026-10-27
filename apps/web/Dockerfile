@@ -12,7 +12,7 @@
 # =============================================================================
 FROM node:22-slim AS deps
 
-# Install OpenSSL for Prisma (required for libssl detection)
+# Install certificates and OpenSSL for the build-time Prisma CLI.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openssl \
     ca-certificates \
@@ -27,7 +27,7 @@ WORKDIR /app
 # @prisma/client, @opentelemetry/*, etc. to the root node_modules. Without it
 # pnpm's default strict isolation leaves @prisma/client unreachable from web (web
 # doesn't declare it — it's @repo/database's dep), so `next build`'s type-check
-# fails with "Cannot find module '@prisma/client/runtime/library'".
+# can fail to resolve the generated client's Prisma runtime imports.
 # Those patterns lived in .npmrc until the pnpm 11 migration.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY patches ./patches
@@ -184,9 +184,8 @@ RUN cd apps/web && NODE_OPTIONS=--max-old-space-size=12288 node --max-old-space-
 # =============================================================================
 FROM node:22-slim AS production
 
-# Install OpenSSL for Prisma runtime
+# Node handles TLS for the JavaScript driver; keep system CA certificates.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    openssl \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 

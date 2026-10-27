@@ -11,6 +11,8 @@
  * this build does not know yet (older/newer app versions write concurrently).
  */
 export const AI_FEATURE_KEYS = [
+	/** Data gathering, analysis and tool-result summaries for report runs. */
+	"report-generation",
 	/** Feature maturation runs: question extraction, spec analysis. */
 	"maturation",
 	/** AI recommended answers for maturation questions. */
@@ -127,6 +129,12 @@ export const AI_FEATURE_KEYS = [
 	 * channel proposal contradicts a decision the project already logged.
 	 */
 	"decision-precheck",
+	/** Interactive prompt rewriting. */
+	"prompt-enhancement",
+	/** Verdicts on drafts from the organization agents' document editor (built-in
+	 * document_generator and custom agents). No AGENT_FEATURE_KEYS mapping: the
+	 * editor runs custom agents too, so its usage rows have no single key. */
+	"agent-document-generation",
 ] as const;
 
 export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];
@@ -139,6 +147,7 @@ export type AiFeatureKey = (typeof AI_FEATURE_KEYS)[number];
 const AGENT_FEATURE_KEYS: ReadonlyMap<string, AiFeatureKey> = new Map([
 	["project_document_generator", "document-generation"],
 	["backlog_updater", "backlog-update"],
+	["prompt_enhancer", "prompt-enhancement"],
 ]);
 
 /** The feature an agent's usage row belongs to, judged by its agent id. */

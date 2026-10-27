@@ -9,15 +9,15 @@
  */
 
 import { embed, getAIEmbeddingModel } from "@repo/ai";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import {
-	buildMemoryContextPromptVariables,
 	buildOrchestratorMemoryContext,
 	createEpisodicMemory,
 	type EpisodeSummary,
 	getOrchestratorMemoryPreferences,
-	getRecentEpisodes,
 	learnPattern,
 	type OrchestratorMemoryPreferencesData,
+	renderOrchestratorMemoryContext,
 	updateEpisodeQdrantReference,
 	updateOrchestratorMemoryPreferences,
 	updateRecentActivity,
@@ -34,7 +34,10 @@ import {
 	type SecondaryUsageInput,
 	secondaryUsageFields,
 } from "../../workflows/orchestrator/usage-attribution";
-import { resolveOrchestratorMemoryPrompt } from "../lib/memory-context-prompt";
+import {
+	type MemoryPromptBindingSnapshot,
+	resolveOrchestratorMemoryPrompt,
+} from "../lib/memory-context-prompt";
 import {
 	rethrowIfTurnStopped,
 	startTurnHeartbeat,
@@ -87,7 +90,9 @@ export interface LoadOrchestratorMemoryInput extends SecondaryUsageInput {
 export interface LoadOrchestratorMemoryOutput {
 	preferences: OrchestratorMemoryPreferencesData;
 	memoryContextPrompt: string;
+	/** Rendered query, project and workspace episodes after deduplication and trimming. */
 	relevantEpisodes: EpisodeSummary[];
+	/** Rendered recent episodes not retained in a higher-priority section. */
 	recentEpisodes: EpisodeSummary[];
 }
 
@@ -175,21 +180,13 @@ async function loadOrchestratorMemory(
 	});
 
 	try {
-		// Step 1: Get hot preferences (always fast)
+		// Step 1: Get hot preferences
 		const preferences = await getOrchestratorMemoryPreferences(
 			userId,
 			organizationId,
 		);
 
-		// Step 2: Get recent episodes
-		const recentEpisodes = await getRecentEpisodes(
-			userId,
-			organizationId,
-			5,
-		);
-
-		// Step 3: Search for semantically relevant episodes (if we have a query)
-		const _relevantEpisodes: EpisodeSummary[] = [];
+		// Search for semantically relevant episodes when a query is available.
 		let relevantEpisodeIds: string[] = [];
 
 		if (currentQuery && currentQuery.trim().length > 10) {
@@ -219,26 +216,40 @@ async function loadOrchestratorMemory(
 		});
 
 		// Step 5: Render the memory-context prompt against the recalled data
-		const memoryContextPrompt = await resolveOrchestratorMemoryPrompt({
-			userId,
-			organizationId: organizationId ?? undefined,
-			projectId: projectId ?? undefined,
-			variables: buildMemoryContextPromptVariables(memoryContext),
-		});
+		const bindingSnapshot: MemoryPromptBindingSnapshot = {};
+		const rendered = await renderOrchestratorMemoryContext(
+			memoryContext,
+			(variables) =>
+				resolveOrchestratorMemoryPrompt({
+					userId,
+					organizationId: organizationId ?? undefined,
+					projectId: projectId ?? undefined,
+					variables,
+					bindingSnapshot,
+				}),
+		);
+		const memoryContextPrompt = rendered.text;
+		// Include retained scoped episodes in the existing relevant-count bucket.
+		const relevantEpisodes = [
+			...rendered.context.relevantEpisodes,
+			...rendered.context.projectEpisodes,
+			...rendered.context.workspaceEpisodes,
+		];
+		const recentEpisodes = rendered.context.recentEpisodes;
 
 		logger.info("[OrchestratorMemory] Memory context loaded", {
 			hasPreferences:
 				!!preferences.responseStyle ||
 				Object.keys(preferences.preferences).length > 0,
 			recentEpisodeCount: recentEpisodes.length,
-			relevantEpisodeCount: memoryContext.relevantEpisodes.length,
+			relevantEpisodeCount: relevantEpisodes.length,
 			promptLength: memoryContextPrompt.length,
 		});
 
 		return {
 			preferences,
 			memoryContextPrompt,
-			relevantEpisodes: memoryContext.relevantEpisodes,
+			relevantEpisodes,
 			recentEpisodes,
 		};
 	} catch (error) {
@@ -292,6 +303,7 @@ export async function searchEpisodicMemoryActivity(
 		// Generate embedding for the query
 		const embeddingModel = await getAIEmbeddingModel({
 			userId,
+			callPurpose: AI_CALL_PURPOSES.memorySearchEmbedding,
 			featureKey: "chat-agent",
 			...secondaryUsageFields(input),
 			organizationId: organizationId ?? undefined,
@@ -373,6 +385,7 @@ export async function createEpisodicMemoryActivity(
 		const embeddingText = `${input.title}\n\n${input.summary}\n\nTopics: ${input.keyTopics.join(", ")}`;
 		const embeddingModel = await getAIEmbeddingModel({
 			userId: input.userId,
+			callPurpose: AI_CALL_PURPOSES.memoryStorageEmbedding,
 			featureKey: "chat-agent",
 			...secondaryUsageFields(input),
 			organizationId: input.organizationId || undefined,
@@ -629,6 +642,7 @@ export async function summarizeConversationActivity(
 			{ taskType: "SIMPLE" },
 			{
 				userId: input.userId,
+				callPurpose: AI_CALL_PURPOSES.memorySummary,
 				...secondaryUsageFields(input),
 				organizationId: input.organizationId || undefined,
 			},

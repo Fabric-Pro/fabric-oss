@@ -19,6 +19,8 @@ import {
 	NoSuchToolError,
 	streamText,
 } from "@repo/ai";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import {
 	invalidateMcpClientCache,
@@ -29,6 +31,7 @@ import {
 	throwIfDispatchStopped,
 } from "@repo/utils/dispatch-guard";
 import { heartbeat } from "@temporalio/activity";
+import { wrapLanguageModel } from "ai";
 import type { z } from "zod";
 import { makeToolLoopPrepareStep } from "../../../agentic-loop/step-cache-breakpoint";
 import { guardToolWriteForReadOnly } from "../../../shared/read-only-gate";
@@ -815,9 +818,11 @@ export class McpToolHandler implements StepHandler {
 			true,
 			undefined,
 			undefined,
-			input.conversationId
-				? { conversationId: input.conversationId }
-				: undefined,
+			{
+				...(input.conversationId
+					? { conversationId: input.conversationId }
+					: {}),
+			},
 		);
 		console.log(
 			`[McpToolHandler] Model selection took ${Date.now() - modelStartTime}ms`,
@@ -869,7 +874,26 @@ export class McpToolHandler implements StepHandler {
 		sendStepHeartbeat("executing");
 
 		const result = streamText({
-			model,
+			// Scope only the model request; tool execution chooses its own purpose.
+			// The raw model remains available for the argument-repair operation.
+			model: wrapLanguageModel({
+				model: model as Parameters<
+					typeof wrapLanguageModel
+				>[0]["model"],
+				middleware: {
+					specificationVersion: "v4",
+					wrapStream: ({ doStream }) =>
+						runWithAiCallPurpose(
+							AI_CALL_PURPOSES.toolHandlerGeneration,
+							doStream,
+						),
+					wrapGenerate: ({ doGenerate }) =>
+						runWithAiCallPurpose(
+							AI_CALL_PURPOSES.toolHandlerGeneration,
+							doGenerate,
+						),
+				},
+			}),
 			stopWhen: isStepCount(executionContext.maxSteps),
 			instructions: executionContext.systemPrompt,
 			prompt: executionContext.stepPrompt,
@@ -919,20 +943,24 @@ export class McpToolHandler implements StepHandler {
 					}
 
 					// Use generateObject with the tool's schema to repair the input
-					const { object: repairedArgs } = await generateObject({
-						model,
-						schema: tool.inputSchema as z.ZodType,
-						prompt: [
-							`The model tried to call the tool "${toolCall.toolName}" with the following inputs:`,
-							typeof toolCall.input === "string"
-								? toolCall.input
-								: JSON.stringify(toolCall.input),
-							`But the input was malformed. Error: ${error instanceof Error ? error.message : String(error)}`,
-							"The tool accepts the following schema:",
-							JSON.stringify(inputSchema(toolCall)),
-							"Please fix the inputs to match the schema exactly.",
-						].join("\n"),
-					});
+					const { object: repairedArgs } = await runWithAiCallPurpose(
+						AI_CALL_PURPOSES.toolArgumentRepair,
+						() =>
+							generateObject({
+								model,
+								schema: tool.inputSchema as z.ZodType,
+								prompt: [
+									`The model tried to call the tool "${toolCall.toolName}" with the following inputs:`,
+									typeof toolCall.input === "string"
+										? toolCall.input
+										: JSON.stringify(toolCall.input),
+									`But the input was malformed. Error: ${error instanceof Error ? error.message : String(error)}`,
+									"The tool accepts the following schema:",
+									JSON.stringify(inputSchema(toolCall)),
+									"Please fix the inputs to match the schema exactly.",
+								].join("\n"),
+							}),
+					);
 
 					console.log(
 						`[McpToolHandler] Successfully repaired tool call "${toolCall.toolName}"`,
@@ -1594,9 +1622,12 @@ export class McpToolHandler implements StepHandler {
 			false,
 			undefined,
 			undefined,
-			input.conversationId
-				? { conversationId: input.conversationId }
-				: undefined,
+			{
+				...(input.conversationId
+					? { conversationId: input.conversationId }
+					: {}),
+				callPurpose: AI_CALL_PURPOSES.handlerFallback,
+			},
 		);
 
 		const response = await generateText({

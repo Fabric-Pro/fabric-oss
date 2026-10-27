@@ -2,14 +2,14 @@
  * Registration guard for the Coding Instructions lifecycle reaper schedule
  * (Fizzy #2550).
  *
- * The sweep is only real if it is actually scheduled, and every failure this
- * file covers is silent in production: a registration function nobody calls, a
+ * The sweep needs to be scheduled. Registration failures can be silent
+ * in production: a registration function nobody calls, a
  * `workflowType` no worker can resolve, a task queue nothing polls, an
  * `already exists` rejection that fails worker startup on the second boot of
- * every environment.
+ * an environment.
  *
  * `registerSystemSchedules()` opens a real connection, so the SDK is mocked —
- * and everything the factory touches is created inside `vi.hoisted`, because
+ * and the factory dependencies are created inside `vi.hoisted`, because
  * Vitest hoists `vi.mock` factories above module-scope declarations and
  * `ScheduleClient` must be a real class (`new ScheduleClient(...)`). See the
  * sibling `conversation-bundle-embedding-sweep-schedule.test.ts` for the
@@ -17,7 +17,7 @@
  */
 
 import type { ScheduleClient } from "@temporalio/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 const { scheduleCreate, FakeScheduleAlreadyRunning, FakeScheduleClient } =
 	vi.hoisted(() => {
@@ -56,6 +56,13 @@ import {
 	registerSystemSchedules,
 } from "../src/schedules";
 
+// The worker barrel loads the provider/database dependency graph. Give that
+// setup its own budget under parallel transforms; assertions keep the test timeout.
+let activities: typeof import("../src/activities");
+beforeAll(async () => {
+	activities = await import("../src/activities");
+}, 120_000);
+
 function fakeClient(create = scheduleCreate): ScheduleClient {
 	return { create } as unknown as ScheduleClient;
 }
@@ -66,12 +73,12 @@ afterEach(() => {
 });
 
 describe("the Coding Instructions reaper schedule", () => {
-	it("creates the schedule with EXACTLY this payload and nothing else", async () => {
+	it("creates the expected schedule payload", async () => {
 		await registerProjectInstructionReaperSchedule(fakeClient());
 
 		expect(scheduleCreate).toHaveBeenCalledTimes(1);
 		// `toEqual` on the WHOLE argument, not a field-by-field walk. The
-		// schedule is created ONCE per environment and never updated, so an
+		// existing-schedule path does not update the payload, so an
 		// extra field — a stray second cron expression, `state.paused: true` —
 		// is as unfixable as a wrong one.
 		expect(scheduleCreate.mock.calls[0][0]).toEqual({
@@ -105,7 +112,7 @@ describe("the Coding Instructions reaper schedule", () => {
 	});
 
 	it("runs hourly, off the daily retention cluster", async () => {
-		// Hourly because an abandoned upload keeps the tab polling for every
+		// Hourly because an abandoned upload keeps the tab polling for a
 		// viewer until something closes it out; minute 40 keeps it clear of
 		// the 03:00/03:15/03:45/04:15/04:45 jobs that share this queue.
 		expect(PROJECT_INSTRUCTION_REAPER_CRON_SCHEDULE).toBe("40 * * * *");
@@ -124,10 +131,9 @@ describe("the Coding Instructions reaper schedule", () => {
 
 	it("names an activity the top-level activities barrel registers", async () => {
 		// `worker.ts` registers `import * as activities from "./activities"`.
-		// An activity exported only from its own module is never registered,
+		// An activity exported only from its own module is not registered by worker.ts,
 		// and the workflow's `proxyActivities` call then fails at RUNTIME
 		// while type-checking still passes.
-		const activities = await import("../src/activities");
 		expect(Object.keys(activities)).toContain("reapInstructionSnapshots");
 		// The stranded sync-receipt pass (Fizzy #2672), and ONLY its activity:
 		// the module's constants must not become schedulable activities.
@@ -177,7 +183,7 @@ describe("the Coding Instructions reaper schedule", () => {
 	it("cannot outlive its own trigger interval", async () => {
 		// `overlap: "SKIP"` is only safe while a run is bounded strictly under
 		// the gap between triggers — otherwise one wedged run silently
-		// swallows every subsequent tick.
+		// can swallow subsequent ticks.
 		const workflowSrc = await import("node:fs").then((fs) =>
 			fs.readFileSync(
 				new URL(
@@ -216,7 +222,7 @@ describe("the Coding Instructions reaper schedule", () => {
 		const startToClose = Number(
 			workflowSrc.match(/startToCloseTimeout:\s*"(\d+) minutes"/)?.[1],
 		);
-		// Strictly inside the start-to-close window, or it can never fire.
+		// Strictly inside the start-to-close window, or the activity can finish before it fires.
 		expect(Number(heartbeat?.[1])).toBeLessThan(startToClose);
 	});
 
@@ -224,7 +230,7 @@ describe("the Coding Instructions reaper schedule", () => {
 		const create = vi
 			.fn()
 			.mockRejectedValue(new FakeScheduleAlreadyRunning("exists"));
-		// The SECOND boot of every environment takes this path.
+		// A second boot with an existing schedule takes this path.
 		await expect(
 			registerProjectInstructionReaperSchedule(fakeClient(create)),
 		).resolves.toBeUndefined();
@@ -245,7 +251,7 @@ describe("the Coding Instructions reaper schedule", () => {
 		const ids = scheduleCreate.mock.calls.map(
 			(call) => (call[0] as { scheduleId: string }).scheduleId,
 		);
-		// The registration function can be perfect and still never run.
+		// A correct registration function can still be omitted from startup.
 		expect(ids).toContain(PROJECT_INSTRUCTION_REAPER_SCHEDULE_ID);
 	});
 });

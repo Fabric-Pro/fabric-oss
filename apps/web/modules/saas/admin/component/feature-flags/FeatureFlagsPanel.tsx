@@ -178,7 +178,11 @@ export function FeatureFlagsPanel() {
 						</p>
 						<p className="text-muted-foreground text-xs">
 							{SOURCE_LABEL[flag.source] ?? flag.source} ·{" "}
-							<code>{flag.envVar}</code>
+							{flag.envVar === null ? (
+								<span>No environment fallback</span>
+							) : (
+								<code>{flag.envVar}</code>
+							)}
 						</p>
 						{flag.note && (
 							<p className="text-highlight text-xs">

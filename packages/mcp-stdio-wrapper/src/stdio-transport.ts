@@ -58,6 +58,16 @@ interface PendingRequest {
 const DEFAULT_STARTUP_TIMEOUT_MS = 30 * 1000; // 30 seconds
 const DEFAULT_REQUEST_TIMEOUT_MS = 30 * 1000; // 30 seconds
 
+export class StdioRpcError extends Error {
+	constructor(
+		public readonly code: number,
+		message: string,
+	) {
+		super(`MCP error ${code}: ${message}`);
+		this.name = "StdioRpcError";
+	}
+}
+
 export class StdioTransport {
 	private process: ChildProcess | null = null;
 	private readline: Interface | null = null;
@@ -366,8 +376,9 @@ export class StdioTransport {
 
 					if (response.error) {
 						pending.reject(
-							new Error(
-								`MCP error ${response.error.code}: ${response.error.message}`,
+							new StdioRpcError(
+								response.error.code,
+								response.error.message,
 							),
 						);
 					} else {

@@ -635,13 +635,13 @@ Two paths. Pick one.
    kubectl rollout restart deployment/web -n fabric
    ```
 3. Visit `http://$ALB_HOSTNAME`, click "Sign in with Google" (or whichever provider you configured), complete the OAuth flow.
-4. Promote yourself to admin. The pod that has Prisma + `DATABASE_URL` is `temporal-worker`:
+4. Promote yourself to admin. The pod that has Prisma + `DIRECT_URL` is `temporal-worker`:
    ```bash
    kubectl exec -it -n fabric deploy/temporal-worker -- /bin/sh
 
    # Inside the pod:
    pnpm --filter @repo/database exec prisma db execute \
-     --stdin --schema=./prisma/schema.prisma <<'SQL'
+     --stdin <<'SQL'
    UPDATE "User" SET role = 'admin' WHERE email = 'you@example.com';
    SQL
    ```

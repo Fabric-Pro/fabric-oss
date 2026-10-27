@@ -7,8 +7,8 @@ import {
 	useCopilotChatInternal,
 	useCopilotReadable,
 } from "@copilotkit/react-core";
-import { CopilotSidebar } from "@copilotkit/react-ui";
 import { normalizeDocumentType, type ProjectContext } from "@repo/agent-types";
+import { featureKeyForAgentId } from "@repo/ai/lib/feature-keys";
 import { countDocumentWords } from "@repo/utils/document-word-count";
 import {
 	DOCUMENT_GENERATION_IN_PROGRESS,
@@ -22,8 +22,14 @@ import {
 } from "@repo/utils/glossy/visual-slots";
 import { normalizeForComparison } from "@repo/utils/normalize-for-comparison";
 import { preserveVisualMarkers } from "@repo/utils/proposal-artifact/visual-identity";
+import {
+	type DraftVerdictRecorder,
+	useConfirmChangesVerdict,
+	useConfirmChangesVerdictCard,
+} from "@saas/agents/copilot/useConfirmChangesVerdict";
 import { AttachmentRegistryProvider } from "@saas/shared/components/copilot/AttachmentRegistry";
 import { CopilotAssistantMessage } from "@saas/shared/components/copilot/CopilotAssistantMessage";
+import { CopilotReplyRatingSidebar } from "@saas/shared/components/copilot/CopilotReplyRatingSidebar";
 import { createCopilotSidebarInput } from "@saas/shared/components/copilot/CopilotSidebarInput";
 import { CopilotUserMessage } from "@saas/shared/components/copilot/CopilotUserMessage";
 import type { MessageAttachmentListItem } from "@saas/shared/components/copilot/MessageAttachmentList";
@@ -8446,6 +8452,12 @@ function DocumentEditorInner({
 	// need that guarantee, but it costs nothing and keeps the wire-up
 	// consistent with how other latest-ref patterns in this codebase
 	// would behave if they ever became durable.
+	const verdictFactory = useConfirmChangesVerdict({
+		surface: "document",
+		projectId,
+	});
+	const verdictFactoryRef = useRef(verdictFactory);
+	verdictFactoryRef.current = verdictFactory;
 	const recordConfirmChangesOutcome = useConfirmChangesOperationResult({
 		conversationId: activeAssistantConversationId,
 		projectId,
@@ -8470,6 +8482,7 @@ function DocumentEditorInner({
 		{
 			name: "confirm_changes",
 			renderAndWaitForResponse: ({ args, respond, status }) => {
+				const recordVerdict = verdictFactoryRef.current();
 				// Every answer resumes the agent for one more short run, which the
 				// editor waits out read-only: the status beside Save says so (see
 				// `assistantAnswered`, Fizzy #2946).
@@ -8481,6 +8494,7 @@ function DocumentEditorInner({
 					return result.accepted;
 				};
 				const handleReject = () => {
+					void recordVerdict(false);
 					setHasPendingConfirm(false);
 					confirmCallbacksRef.current = null;
 					// Reject: Restore the baseline content — the document as it
@@ -8548,6 +8562,8 @@ function DocumentEditorInner({
 						void recordOutcomeRef.current({ accepted: false });
 						return answer({ accepted: false });
 					}
+
+					void recordVerdict(true);
 
 					setHasPendingConfirm(false);
 					confirmCallbacksRef.current = null;
@@ -8829,6 +8845,7 @@ function DocumentEditorInner({
 
 				return (
 					<ConfirmChanges
+						recordVerdict={recordVerdict}
 						args={args}
 						respond={respond}
 						status={status}
@@ -9000,7 +9017,14 @@ function DocumentEditorInner({
 						projectId={projectId}
 						organizationId={organizationId ?? null}
 					>
-						<CopilotSidebar
+						<CopilotReplyRatingSidebar
+							enabled={documentAssistantHistoryEnabled}
+							featureKey={
+								featureKeyForAgentId(
+									"project_document_generator",
+								) ?? "document-generation"
+							}
+							projectId={projectId}
 							AssistantMessage={AssistantMessageWithMark}
 							UserMessage={CopilotUserMessage}
 							Messages={CustomMessages}
@@ -10563,7 +10587,7 @@ function DocumentEditorInner({
 									setShowVersionHistory(false);
 								}}
 							/>
-						</CopilotSidebar>
+						</CopilotReplyRatingSidebar>
 
 						{/* Group F — persistent chat-history drawer. The drawer is
 			    the secondary surface for browsing prior conversations;
@@ -11158,6 +11182,7 @@ function RegenerationConfirmDialog({
 
 // Confirmation dialog component - matches reference implementation
 interface ConfirmChangesProps {
+	recordVerdict: DraftVerdictRecorder;
 	args: any;
 	respond: any;
 	status: any;
@@ -11173,6 +11198,7 @@ interface ConfirmChangesProps {
 }
 
 function ConfirmChanges({
+	recordVerdict,
 	respond,
 	status,
 	onConfirm,
@@ -11183,6 +11209,7 @@ function ConfirmChanges({
 	onDone,
 	outcomeAuditRef,
 }: ConfirmChangesProps) {
+	useConfirmChangesVerdictCard(recordVerdict);
 	// Track user's choice locally, but also derive from status
 	// This handles the case where component is recreated after action re-registration
 	const [userChoice, setUserChoice] = useState<

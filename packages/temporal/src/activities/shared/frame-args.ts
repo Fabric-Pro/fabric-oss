@@ -295,11 +295,7 @@ function normalizeInputBlocks(
 		if (!content || content.trim().length === 0) {
 			continue;
 		}
-		if (
-			/^\[content omitted: \d+ chars - rendered to frame\]$/.test(
-				content.trim(),
-			)
-		) {
+		if (containsFrameHistoryPlaceholder(content, true)) {
 			return {
 				ok: false,
 				error: "A block contains an internal history placeholder instead of page content. Provide actual block content; read the saved frame with `fabric_get_frame` or regenerate the page.",
@@ -454,4 +450,134 @@ export function validateUpdateFrameArgs(
 			...(runtimeTools.value ? { runtimeTools: runtimeTools.value } : {}),
 		},
 	};
+}
+
+/** Shared with block normalization so retained history cannot become saved source. */
+export function containsFrameHistoryPlaceholder(
+	content: string,
+	wholeContent = false,
+): boolean {
+	const match = content.match(
+		/\[content omitted: \d+ chars - rendered to frame\]/,
+	);
+	return match !== null && (!wholeContent || match[0] === content.trim());
+}
+
+export interface FrameBlockEdit {
+	oldText: string;
+	newText: string;
+	replaceAll?: boolean;
+}
+
+export function validateEditFrameBlockArgs(
+	args: Record<string, unknown> | undefined,
+):
+	| {
+			ok: true;
+			value: {
+				frameId: string;
+				blockId: string;
+				edits: FrameBlockEdit[];
+				expectedUpdatedAt?: Date;
+			};
+	  }
+	| { ok: false; error: string } {
+	const frameId = getNonEmptyString(args, ["frameId"]);
+	const blockId = getNonEmptyString(args, ["blockId"]);
+	if (!frameId || !blockId) {
+		return { ok: false, error: "frameId and blockId are required." };
+	}
+	const edits = args?.edits;
+	if (!Array.isArray(edits) || edits.length < 1 || edits.length > 20) {
+		return { ok: false, error: "edits must contain 1–20 items." };
+	}
+	for (const [index, edit] of edits.entries()) {
+		if (
+			!edit ||
+			typeof edit.oldText !== "string" ||
+			edit.oldText.length === 0 ||
+			typeof edit.newText !== "string" ||
+			(edit.replaceAll !== undefined &&
+				typeof edit.replaceAll !== "boolean")
+		) {
+			return {
+				ok: false,
+				error: `Edit ${index + 1} requires non-empty oldText, string newText and optional boolean replaceAll.`,
+			};
+		}
+		if (
+			containsFrameHistoryPlaceholder(edit.oldText) ||
+			containsFrameHistoryPlaceholder(edit.newText)
+		) {
+			return {
+				ok: false,
+				error: `Edit ${index + 1} contains an internal history placeholder.`,
+			};
+		}
+	}
+	const expected = args?.expectedUpdatedAt;
+	if (
+		expected !== undefined &&
+		(typeof expected !== "string" ||
+			!/^\d{4}-\d{2}-\d{2}T/.test(expected) ||
+			!Number.isFinite(Date.parse(expected)))
+	) {
+		return {
+			ok: false,
+			error: "expectedUpdatedAt must be an ISO timestamp.",
+		};
+	}
+	return {
+		ok: true,
+		value: {
+			frameId,
+			blockId,
+			edits,
+			...(typeof expected === "string"
+				? { expectedUpdatedAt: new Date(expected) }
+				: {}),
+		},
+	};
+}
+
+export function applyFrameBlockEdits(
+	content: string,
+	edits: FrameBlockEdit[],
+): { content: string; replacements: number[] } {
+	const limit = Math.max(1_000_000, content.length);
+	let updatedContent = content;
+	const replacements: number[] = [];
+	for (const [index, edit] of edits.entries()) {
+		if (!edit.oldText.length) {
+			throw new Error(`Edit ${index + 1} requires non-empty oldText.`);
+		}
+		let count = 0;
+		const stride = edit.replaceAll ? edit.oldText.length : 1;
+		for (
+			let at = updatedContent.indexOf(edit.oldText);
+			at !== -1;
+			at = updatedContent.indexOf(edit.oldText, at + stride)
+		) {
+			count++;
+		}
+		if (count === 0 || (!edit.replaceAll && count !== 1)) {
+			throw new Error(
+				`Edit ${index + 1} matched ${count} occurrences; re-read the block and provide unique oldText or replaceAll.`,
+			);
+		}
+		const projectedLength =
+			updatedContent.length +
+			count * (edit.newText.length - edit.oldText.length);
+		if (projectedLength > limit) {
+			throw new Error(
+				`Edit ${index + 1} would exceed block limit of ${limit} characters.`,
+			);
+		}
+		updatedContent = updatedContent.replaceAll(
+			edit.oldText,
+			() => edit.newText,
+		);
+		replacements.push(count);
+	}
+	return { content: updatedContent, replacements };
 }

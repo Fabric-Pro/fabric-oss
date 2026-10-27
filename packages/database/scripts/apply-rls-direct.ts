@@ -177,6 +177,12 @@ async function applyRLS() {
 		console.log("\n🔐 Enabling RLS on tenant-aware tables...");
 
 		const tables = [
+			// Migration-only export schema; no Prisma delegate or tenant-db model.
+			{
+				name: "decision_event",
+				policy: "export_org_only",
+				schema: "lakehouse_export",
+			},
 			// Strict isolation: EITHER userId OR orgId, never both
 			{ name: "mcp_config", policy: "per_user_within_org" },
 			{ name: "mcp_server", policy: "per_user_within_org_with_system" },
@@ -390,6 +396,9 @@ async function applyRLS() {
 			{ name: "parlume_meeting_segment", policy: "user_owned" }, // Final live transcript segments
 			{ name: "parlume_meeting_turn", policy: "user_owned" }, // Project-scoped spoken agent responses
 			{ name: "parlume_action", policy: "user_owned" },
+			// One row of meeting-bot settings per organization. No userId
+			// (`updatedById` is attribution); organizationId is NOT NULL.
+			{ name: "organization_parlume_settings", policy: "org_only" },
 			{ name: "deleted_meeting_archive", policy: "user_owned" }, // 7-day recovery window for unlinked meetings (#2355)
 			{ name: "project_linked_teams_channel", policy: "user_owned" }, // Teams channels monitored for feature extraction
 			{ name: "project_linked_slack_channel", policy: "user_owned" }, // Slack channels monitored for feature extraction
@@ -675,6 +684,18 @@ async function applyRLS() {
 				name: "pending_backlog_proposal_application",
 				policy: "proposal_parent",
 			}, // Applied-change ledger, scoped by parent proposal
+			{
+				name: "pending_backlog_proposal_duplicate_resolution",
+				policy: "proposal_parent",
+			},
+			{
+				name: "pending_backlog_proposal_review",
+				policy: "proposal_parent",
+			},
+			{
+				name: "pending_backlog_proposal_review_entry",
+				policy: "proposal_parent",
+			},
 			{ name: "document_lock", policy: "user_owned" }, // Document locks
 			{ name: "browser_task", policy: "per_user_within_org" },
 			{ name: "template_instance", policy: "user_owned" },
@@ -699,6 +720,7 @@ async function applyRLS() {
 			// an org row carries both userId (who judged) and organizationId,
 			// a personal row carries userId with organizationId NULL.
 			{ name: "ai_outcome_event", policy: "user_owned" },
+			{ name: "ai_output_provenance", policy: "user_owned" },
 			// AI usage limits are XOR-scoped (one of organizationId/userId is non-null)
 			// because limits express centralized policy, not per-user-within-org caps.
 			{ name: "ai_usage_limit", policy: "strict" },
@@ -813,18 +835,21 @@ async function applyRLS() {
 		];
 
 		for (const table of tables) {
+			const schema = "schema" in table ? table.schema : "public";
+			const ownerManagedExport = table.policy === "export_org_only";
+			const tableSql = `"${schema}"."${table.name}"`;
 			try {
 				// Enable RLS
 				await db.$executeRawUnsafe(
-					`ALTER TABLE "${table.name}" ENABLE ROW LEVEL SECURITY`,
+					`ALTER TABLE ${tableSql} ENABLE ROW LEVEL SECURITY`,
 				);
 				await db.$executeRawUnsafe(
-					`ALTER TABLE "${table.name}" FORCE ROW LEVEL SECURITY`,
+					`ALTER TABLE ${tableSql} ${ownerManagedExport ? "NO FORCE" : "FORCE"} ROW LEVEL SECURITY`,
 				);
 
 				// Drop existing policy if exists
 				await db.$executeRawUnsafe(
-					`DROP POLICY IF EXISTS tenant_isolation ON "${table.name}"`,
+					`DROP POLICY IF EXISTS tenant_isolation ON ${tableSql}`,
 				);
 
 				// Create appropriate policy based on type
@@ -834,10 +859,35 @@ async function applyRLS() {
 				let extraPolicies: { name: string; sql: string }[] = [];
 
 				switch (table.policy) {
+					case "export_org_only":
+						policySQL = `CREATE POLICY tenant_isolation ON ${tableSql}
+							USING (current_setting('app.tenant_type', true) = 'organization'
+								AND organization_id = current_setting('app.tenant_id', true))
+							WITH CHECK (current_setting('app.tenant_type', true) = 'organization'
+								AND organization_id = current_setting('app.tenant_id', true))`;
+						// Workers capture through SECURITY DEFINER triggers, so only reads
+						// are granted here. Provisioned roles need the extra schema explicitly.
+						if (appRlsBypass) {
+							await db.$executeRawUnsafe(
+								"GRANT USAGE ON SCHEMA lakehouse_export TO fabric_app",
+							);
+							await db.$executeRawUnsafe(
+								`GRANT SELECT ON ${tableSql} TO fabric_app`,
+							);
+						}
+						if (workerEnabled) {
+							await db.$executeRawUnsafe(
+								"GRANT USAGE ON SCHEMA lakehouse_export TO fabric_worker",
+							);
+							await db.$executeRawUnsafe(
+								`GRANT SELECT ON ${tableSql} TO fabric_worker`,
+							);
+						}
+						break;
 					case "strict":
 						// USING = read/update/delete, WITH CHECK = insert/update
 						policySQL = `
-							CREATE POLICY tenant_isolation ON "${table.name}"
+							CREATE POLICY tenant_isolation ON ${tableSql}
 							USING (
 								CASE current_tenant_type()
 									WHEN 'organization' THEN
@@ -863,7 +913,7 @@ async function applyRLS() {
 						// Read: can see system + own tenant data
 						// Write: can ONLY write to own tenant data (not system)
 						policySQL = `
-							CREATE POLICY tenant_isolation ON "${table.name}"
+							CREATE POLICY tenant_isolation ON ${tableSql}
 							USING (
 								"isSystemProvided" = true
 								OR
@@ -895,7 +945,7 @@ async function applyRLS() {
 						const orgScopeValue =
 							(table as any).orgScope || "ORGANIZATION";
 						policySQL = `
-							CREATE POLICY tenant_isolation ON "${table.name}"
+							CREATE POLICY tenant_isolation ON ${tableSql}
 							USING (
 								scope = 'SYSTEM'
 								OR
@@ -924,7 +974,7 @@ async function applyRLS() {
 
 					case "user_owned":
 						policySQL = `
-							CREATE POLICY tenant_isolation ON "${table.name}"
+							CREATE POLICY tenant_isolation ON ${tableSql}
 							USING (
 								CASE current_tenant_type()
 									WHEN 'organization' THEN
@@ -949,7 +999,7 @@ async function applyRLS() {
 					case "author_owned":
 						// Same as user_owned but uses authorId instead of userId
 						policySQL = `
-							CREATE POLICY tenant_isolation ON "${table.name}"
+							CREATE POLICY tenant_isolation ON ${tableSql}
 							USING (
 								CASE current_tenant_type()
 									WHEN 'organization' THEN
@@ -974,7 +1024,7 @@ async function applyRLS() {
 					case "org_only_owned":
 						// For tables that only filter by organizationId (no userId/authorId for personal)
 						policySQL = `
-							CREATE POLICY tenant_isolation ON "${table.name}"
+							CREATE POLICY tenant_isolation ON ${tableSql}
 							USING (
 								CASE current_tenant_type()
 									WHEN 'organization' THEN
@@ -1000,7 +1050,7 @@ async function applyRLS() {
 						// Read: can see public + own tenant data
 						// Write: can ONLY write to own tenant data (cannot set isPublic=true via RLS)
 						policySQL = `
-							CREATE POLICY tenant_isolation ON "${table.name}"
+							CREATE POLICY tenant_isolation ON ${tableSql}
 							USING (
 								"isPublic" = true
 								OR
@@ -1026,7 +1076,7 @@ async function applyRLS() {
 
 					case "org_only":
 						policySQL = `
-							CREATE POLICY tenant_isolation ON "${table.name}"
+							CREATE POLICY tenant_isolation ON ${tableSql}
 							USING (
 								CASE current_tenant_type()
 									WHEN 'organization' THEN
@@ -1049,7 +1099,7 @@ async function applyRLS() {
 						// metric inherits that shape — both branches require
 						// userId to match.
 						policySQL = `
-							CREATE POLICY tenant_isolation ON "${table.name}"
+							CREATE POLICY tenant_isolation ON ${tableSql}
 							USING (
 								EXISTS (
 									SELECT 1
@@ -1088,7 +1138,7 @@ async function applyRLS() {
 						// counter follows. Mirrors the eval_metric → document_eval
 						// pattern above.
 						policySQL = `
-								CREATE POLICY tenant_isolation ON "${table.name}"
+								CREATE POLICY tenant_isolation ON ${tableSql}
 								USING (
 									EXISTS (
 										SELECT 1
@@ -1125,7 +1175,7 @@ async function applyRLS() {
 						// parent project row via projectId. Same EXISTS pattern
 						// as test_result_event, one level up the tree.
 						policySQL = `
-							CREATE POLICY tenant_isolation ON "${table.name}"
+							CREATE POLICY tenant_isolation ON ${tableSql}
 							USING (
 								EXISTS (
 									SELECT 1
@@ -1165,7 +1215,7 @@ async function applyRLS() {
 						// than nested EXISTS so the planner sees a single
 						// subquery, matching how the one-hop policies read.
 						policySQL = `
-							CREATE POLICY tenant_isolation ON "${table.name}"
+							CREATE POLICY tenant_isolation ON ${tableSql}
 							USING (
 								EXISTS (
 									SELECT 1
@@ -1216,7 +1266,7 @@ async function applyRLS() {
 							)
 						`;
 						policySQL = `
-							CREATE POLICY tenant_isolation ON "${table.name}"
+							CREATE POLICY tenant_isolation ON ${tableSql}
 							USING (${predicate})
 							WITH CHECK (${predicate})
 						`;
@@ -1244,7 +1294,7 @@ async function applyRLS() {
 							)
 						`;
 						policySQL = `
-							CREATE POLICY tenant_isolation ON "${table.name}"
+							CREATE POLICY tenant_isolation ON ${tableSql}
 							USING (${predicate})
 							WITH CHECK (${predicate})
 						`;
@@ -1274,7 +1324,7 @@ async function applyRLS() {
 							)
 						`;
 						policySQL = `
-							CREATE POLICY tenant_isolation ON "${table.name}"
+							CREATE POLICY tenant_isolation ON ${tableSql}
 							USING (${predicate})
 							WITH CHECK (${predicate})
 						`;
@@ -1288,7 +1338,7 @@ async function applyRLS() {
 						// rows; personal sees own rows with no org). Same EXISTS pattern
 						// as eval_metric / ai_usage_limit_counter.
 						policySQL = `
-							CREATE POLICY tenant_isolation ON "${table.name}"
+							CREATE POLICY tenant_isolation ON ${tableSql}
 							USING (
 								EXISTS (
 									SELECT 1
@@ -1325,7 +1375,7 @@ async function applyRLS() {
 						// Read: can see system + own tenant data
 						// Write: can ONLY write to own tenant data (not system)
 						policySQL = `
-							CREATE POLICY tenant_isolation ON "${table.name}"
+							CREATE POLICY tenant_isolation ON ${tableSql}
 							USING (
 								"isSystemProvided" = true
 								OR
@@ -1356,7 +1406,7 @@ async function applyRLS() {
 						// In org context: user's records within the org (userId + organizationId)
 						// In personal context: user's personal records (userId + organizationId IS NULL)
 						policySQL = `
-							CREATE POLICY tenant_isolation ON "${table.name}"
+							CREATE POLICY tenant_isolation ON ${tableSql}
 							USING (
 								CASE current_tenant_type()
 									WHEN 'organization' THEN
@@ -1402,7 +1452,7 @@ async function applyRLS() {
 						// table owners bypass FORCE RLS), or operate via
 						// `adminProcedure` which uses the direct connection.
 						policySQL = `
-							CREATE POLICY tenant_isolation ON "${table.name}"
+							CREATE POLICY tenant_isolation ON ${tableSql}
 							USING (false)
 							WITH CHECK (false)
 						`;
@@ -1485,35 +1535,45 @@ async function applyRLS() {
 				await db.$executeRawUnsafe(policySQL);
 				for (const extra of extraPolicies) {
 					await db.$executeRawUnsafe(
-						`DROP POLICY IF EXISTS ${extra.name} ON "${table.name}"`,
+						`DROP POLICY IF EXISTS ${extra.name} ON ${tableSql}`,
 					);
 					await db.$executeRawUnsafe(extra.sql);
 				}
 
-				// Worker bypass policy (policy-mode alternative to the BYPASSRLS attribute).
+				// Export writes use the table owner; non-owner reads retain tenant filtering.
+				// Other tables use the policy-mode alternative to BYPASSRLS.
 				// Always drop so switching back to bypassrls mode cleans up.
 				await db.$executeRawUnsafe(
-					`DROP POLICY IF EXISTS worker_bypass ON "${table.name}"`,
+					`DROP POLICY IF EXISTS worker_bypass ON ${tableSql}`,
 				);
-				if (workerEnabled && workerRlsMode === "policy") {
+				if (
+					!ownerManagedExport &&
+					workerEnabled &&
+					workerRlsMode === "policy"
+				) {
 					await db.$executeRawUnsafe(
-						`CREATE POLICY worker_bypass ON "${table.name}" FOR ALL TO fabric_worker USING (true) WITH CHECK (true)`,
+						`CREATE POLICY worker_bypass ON ${tableSql} FOR ALL TO fabric_worker USING (true) WITH CHECK (true)`,
 					);
 				}
 
 				// App bypass policy (managed Postgres hosts where fabric_app has no
 				// implicit RLS bypass). Always drop so disabling the flag cleans up.
 				await db.$executeRawUnsafe(
-					`DROP POLICY IF EXISTS app_bypass ON "${table.name}"`,
+					`DROP POLICY IF EXISTS app_bypass ON ${tableSql}`,
 				);
-				if (appRlsBypass) {
+				if (!ownerManagedExport && appRlsBypass) {
 					await db.$executeRawUnsafe(
-						`CREATE POLICY app_bypass ON "${table.name}" FOR ALL TO fabric_app USING (true) WITH CHECK (true)`,
+						`CREATE POLICY app_bypass ON ${tableSql} FOR ALL TO fabric_app USING (true) WITH CHECK (true)`,
 					);
 				}
 
 				console.log(`   ✓ ${table.name}`);
 			} catch (error: any) {
+				// A failed export policy/grant must block deployment, rather
+				// than report success with an incomplete export isolation policy.
+				if (schema === "lakehouse_export") {
+					throw error;
+				}
 				if (error.message?.includes("does not exist")) {
 					// FAIL LOUD (SOC 2 CC6.1 / M-A2): an allowlist entry that
 					// targets a nonexistent relation means its RLS policy is NOT
@@ -1522,7 +1582,7 @@ async function applyRLS() {
 					// openapi_service / openapi_service_config went unprotected.
 					// Surface the mismatch so it is fixed, never shipped.
 					throw new Error(
-						`RLS target "${table.name}" does not exist — the allowlist entry must use the physical (snake_case @@map) table name. Original error: ${error.message}`,
+						`RLS target ${tableSql} does not exist — the allowlist entry must use the physical (snake_case @@map) table name. Original error: ${error.message}`,
 					);
 				}
 				console.log(`   ✗ ${table.name}: ${error.message}`);

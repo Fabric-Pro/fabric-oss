@@ -2,6 +2,7 @@ import { confirmSubscriptionProcedure } from "./procedures/confirm-subscription"
 import { approveSendProcedure } from "./procedures/sends-approve";
 import { chatDeliveriesProcedure } from "./procedures/sends-chat-deliveries";
 import { listSendsProcedure } from "./procedures/sends-list";
+import { memberGetSendProcedure } from "./procedures/sends-member-get";
 import { memberListSendsProcedure } from "./procedures/sends-member-list";
 import { listPendingSendsProcedure } from "./procedures/sends-pending-list";
 import { rejectSendProcedure } from "./procedures/sends-reject";
@@ -31,6 +32,7 @@ export const newsletterRouter = {
 	sends: {
 		list: listSendsProcedure,
 		memberList: memberListSendsProcedure,
+		memberGet: memberGetSendProcedure,
 		sendNow: sendNowProcedure,
 		pending: listPendingSendsProcedure,
 		approve: approveSendProcedure,

@@ -1363,12 +1363,27 @@ it("reads current PM configuration and completion callback from a memoised revie
 	chat.refresh();
 	let done = Promise.resolve<unknown>(undefined);
 	act(() => {
-		done = h.proposal.onApprove(proposal.changes, true);
+		done = h.proposal.onApprove(
+			proposal.changes,
+			true,
+			{ 0: { skip: true } },
+			[0],
+		);
 	});
 	await tick(3000);
 	await done;
 	expect(h.apply).toHaveBeenCalledWith(
-		expect.objectContaining({ syncToPM: true, pmConfig: options.pmConfig }),
+		expect.objectContaining({
+			syncToPM: true,
+			pmConfig: options.pmConfig,
+			approvedChangeIndexes: [0],
+			pmSyncOverrides: { 0: { skip: true } },
+			offeredChanges: proposal.changes.map((c) => ({
+				action: c.action,
+				type: c.type,
+				title: c.title.to,
+			})),
+		}),
 	);
 	expect(newCallback).toHaveBeenCalledTimes(1);
 	expect(oldCallback).not.toHaveBeenCalled();

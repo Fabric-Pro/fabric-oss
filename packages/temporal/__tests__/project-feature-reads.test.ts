@@ -39,6 +39,7 @@ const {
 const CTX = { projectId: "p-1", userId: "u-1" };
 
 const summary = {
+	updatedAt: new Date("2026-09-20T00:00:00Z"),
 	id: "s-1",
 	identifier: "F-040",
 	title: "Checkout",
@@ -129,6 +130,30 @@ describe("access", () => {
 });
 
 describe("listProjectFeatures", () => {
+	it("passes updated ordering to the query before paging and returns update time", async () => {
+		const result = await listProjectFeatures(
+			{ sort: "updated", offset: 5, limit: 5 },
+			CTX,
+		);
+		expect(h.listStorySummaries).toHaveBeenCalledWith(
+			expect.objectContaining({
+				orderBy: "updated",
+				offset: 5,
+				limit: 5,
+			}),
+		);
+		expect(result).toMatchObject({
+			features: [{ updatedAt: "2026-09-20T00:00:00.000Z" }],
+		});
+	});
+
+	it("rejects an unsupported sort", async () => {
+		expect(await listProjectFeatures({ sort: "oldest" }, CTX)).toEqual({
+			error: 'sort must be "identifier" or "updated".',
+		});
+		expect(h.listStorySummaries).not.toHaveBeenCalled();
+	});
+
 	it("filters by status NAME, case-insensitively, within the project", async () => {
 		const res = await listProjectFeatures(
 			{ status: "in review", limit: 10 },
@@ -161,6 +186,7 @@ describe("listProjectFeatures", () => {
 					draftingStage: "PUBLISHED",
 					tasks: "1/3 done",
 					description: "Pay with a saved card.",
+					updatedAt: "2026-09-20T00:00:00.000Z",
 				},
 			],
 			total: 41,

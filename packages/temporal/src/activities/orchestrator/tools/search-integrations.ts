@@ -10,6 +10,8 @@
  * - Hybrid scoring combines keyword + semantic relevance
  */
 
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import type { WorkflowIntegrationProvider } from "@repo/database";
 import {
 	canUseWorkflowIntegrations,
@@ -542,10 +544,14 @@ async function runIntegrationSearch(
 			organizationId: input.organizationId,
 		};
 		// Credentials are fetched internally by generateEmbedding()
-		const result = await generateEmbedding(
-			input.query,
-			toolSearchUsage(tenantContext),
-			undefined,
+		const result = await runWithAiCallPurpose(
+			AI_CALL_PURPOSES.capabilitySearchEmbedding,
+			() =>
+				generateEmbedding(
+					input.query,
+					toolSearchUsage(tenantContext),
+					undefined,
+				),
 		);
 		queryEmbedding = result.embedding;
 	} catch (error) {
@@ -576,10 +582,14 @@ async function runIntegrationSearch(
 				organizationId: input.organizationId,
 			};
 			// Credentials are fetched internally by generateEmbeddings()
-			const results = await generateEmbeddings(
-				integrationTexts,
-				toolSearchUsage(tenantContext),
-				undefined,
+			const results = await runWithAiCallPurpose(
+				AI_CALL_PURPOSES.capabilityIndexEmbedding,
+				() =>
+					generateEmbeddings(
+						integrationTexts,
+						toolSearchUsage(tenantContext),
+						undefined,
+					),
 			);
 			integrationEmbeddings = results.embeddings;
 		} catch (error) {

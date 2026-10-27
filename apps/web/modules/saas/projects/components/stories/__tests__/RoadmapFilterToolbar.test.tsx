@@ -1,64 +1,18 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { EMPTY_ROADMAP_FILTERS } from "../../../lib/roadmap-filters";
-import { DEFAULT_ROADMAP_SORT } from "../../../lib/roadmap-sorts";
-
-// The toolbar renders <ReviewCenterInbox />, which derives its projectId from
-// the route, reads tenant context, and polls `reviewCenter.count`. Stub the
-// count to 0 so the inbox renders nothing and these tests stay focused on the
-// filter/sort UI.
-vi.mock("next/navigation", () => ({
-	useParams: () => ({ id: "project_1" }),
-	useRouter: () => ({
-		push: vi.fn(),
-		replace: vi.fn(),
-		prefetch: vi.fn(),
-		back: vi.fn(),
-	}),
-	usePathname: () => "/",
-	useSearchParams: () => new URLSearchParams(),
-}));
-
-vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
-	useOrganizationContext: () => ({ organizationId: null, basePath: "/app" }),
-}));
-
-// The toolbar also renders <PendingProposalsButton />, which polls the Teams
-// channel monitor proposal count. Stub it to 0 so the button renders nothing in
-// the sort/filter-focused suites; the consolidation suite overrides it.
-const pendingProposalsCount = vi.fn().mockResolvedValue({ count: 0 });
+import {
+	EMPTY_ROADMAP_FILTERS,
+	type RoadmapFilters,
+} from "../../../lib/roadmap-filters";
 
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		projects: {
-			reviewCenter: {
-				count: vi.fn().mockResolvedValue({
-					conflictsCount: 0,
-					failuresCount: 0,
-					pullDriftCount: 0,
-					total: 0,
-				}),
-			},
-			teamsChannelMonitor: {
-				pendingProposals: {
-					count: (...args: unknown[]) =>
-						pendingProposalsCount(...args),
-				},
-			},
-			// Since oRPC 1.15 the tanstack-query utils proxy descends only where
-			// the underlying client actually has a node — it consults the client
-			// instead of fabricating the path. The real client proxy has every
-			// path, so a client mock that omits one is the unfaithful side: omit
-			// `stories` here and `orpc.projects.stories` is `undefined`, which
-			// makes the wrapper below throw "Cannot create proxy with a
-			// non-object as target". Keep this in step with the paths this
-			// subtree reads.
 			stories: {
-				tags: {
-					list: vi.fn().mockResolvedValue({ tags: [] }),
-				},
+				tags: { list: vi.fn().mockResolvedValue({ tags: [] }) },
 			},
 		},
 	},
@@ -132,13 +86,14 @@ beforeAll(() => {
 	}
 });
 
+const locale = vi.hoisted(() => ({ value: "en" }));
 beforeEach(() => {
+	locale.value = "en";
 	// The panel's open/closed state persists in localStorage; clear it so each
-	// test starts from the default (expanded).
+	// test starts from the default (collapsed).
 	try {
 		localStorage.clear();
 	} catch {}
-	pendingProposalsCount.mockResolvedValue({ count: 0 });
 });
 
 function renderToolbar(
@@ -147,9 +102,6 @@ function renderToolbar(
 	const onFiltersChange = vi.fn();
 	const onClearAll = vi.fn();
 	const onRemoveFilter = vi.fn();
-	const onSortChange = vi.fn();
-	const onResetSort = vi.fn();
-	const onOpenProposalsInbox = vi.fn();
 	const client = new QueryClient({
 		defaultOptions: { queries: { retry: false } },
 	});
@@ -163,13 +115,8 @@ function renderToolbar(
 				totalCount={5}
 				filteredCount={5}
 				hasActiveFilters={false}
-				sort={DEFAULT_ROADMAP_SORT}
-				onSortChange={onSortChange}
-				isSortDefault={true}
-				onResetSort={onResetSort}
 				projectId="project_1"
 				organizationId={null}
-				onOpenProposalsInbox={onOpenProposalsInbox}
 				{...overrides}
 			/>
 		</QueryClientProvider>,
@@ -179,9 +126,7 @@ function renderToolbar(
 		onFiltersChange,
 		onClearAll,
 		onRemoveFilter,
-		onSortChange,
-		onResetSort,
-		onOpenProposalsInbox,
+		client,
 	};
 }
 
@@ -217,7 +162,7 @@ describe("RoadmapFilterToolbar — result count", () => {
 			onShowHidden,
 		});
 		const btn = screen.getByRole("button", {
-			name: /3 hidden also match/i,
+			name: "Show 3 hidden",
 		});
 		expect(btn).toBeInTheDocument();
 		await user.click(btn);
@@ -229,7 +174,7 @@ describe("RoadmapFilterToolbar — result count", () => {
 			hiddenMatchCount: 0,
 		});
 		expect(
-			screen.queryByText(/hidden also match/i),
+			screen.queryByRole("button", { name: /Show .* hidden/ }),
 		).not.toBeInTheDocument();
 	});
 
@@ -286,15 +231,25 @@ describe("RoadmapFilterToolbar — result count", () => {
 describe("RoadmapFilterToolbar — primary facets (always inline)", () => {
 	it("renders Type / Priority / Stage inline by default", () => {
 		renderToolbar();
-		expect(screen.getByText("Type")).toBeInTheDocument();
-		expect(screen.getByText("Priority")).toBeInTheDocument();
-		expect(screen.getByText("Stage")).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /^Type:/ }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /^Priority:/ }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /^Stage:/ }),
+		).toBeInTheDocument();
 	});
 
 	it("keeps the secondary facets hidden until 'More filters' is opened", () => {
 		renderToolbar();
-		expect(screen.queryByText("Source")).not.toBeInTheDocument();
-		expect(screen.queryByText("Sync")).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /^Source:/ }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /^Sync:/ }),
+		).not.toBeInTheDocument();
 		expect(
 			screen.getByRole("button", { name: /more filters/i }),
 		).toHaveAttribute("aria-expanded", "false");
@@ -303,7 +258,7 @@ describe("RoadmapFilterToolbar — primary facets (always inline)", () => {
 	it("selecting a Type option emits onFiltersChange", async () => {
 		const user = userEvent.setup();
 		const { onFiltersChange } = renderToolbar();
-		await user.click(screen.getByRole("button", { name: "Type filter" }));
+		await user.click(screen.getByRole("button", { name: /^Type:/ }));
 		await user.click(await screen.findByRole("option", { name: "Bug" }));
 		expect(onFiltersChange).toHaveBeenCalledWith({ kind: ["BUG"] });
 	});
@@ -313,12 +268,18 @@ describe("RoadmapFilterToolbar — More filters disclosure", () => {
 	it("expands the secondary facets when 'More filters' is clicked", async () => {
 		const user = userEvent.setup();
 		renderToolbar();
-		expect(screen.queryByText("Source")).not.toBeInTheDocument();
-		await user.click(screen.getByRole("button", { name: /more filters/i }));
-		expect(screen.getByText("Sync")).toBeInTheDocument();
-		expect(screen.getByText("Source")).toBeInTheDocument();
 		expect(
-			screen.getByRole("button", { name: /more filters/i }),
+			screen.queryByRole("button", { name: /^Source:/ }),
+		).not.toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: /more filters/i }));
+		expect(
+			screen.getByRole("button", { name: /^Sync:/ }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /^Source:/ }),
+		).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /fewer filters/i }),
 		).toHaveAttribute("aria-expanded", "true");
 	});
 
@@ -339,18 +300,22 @@ describe("RoadmapFilterToolbar — More filters disclosure", () => {
 		const user = userEvent.setup();
 		const { unmount } = renderToolbar();
 		await user.click(screen.getByRole("button", { name: /more filters/i }));
-		expect(screen.getByText("Source")).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /^Source:/ }),
+		).toBeInTheDocument();
 		unmount();
 		renderToolbar();
 		// Fresh mount reads the stored "expanded" preference.
-		expect(screen.getByText("Source")).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /^Source:/ }),
+		).toBeInTheDocument();
 	});
 
 	it("selecting a flag from the Flags dropdown inside More filters emits onFiltersChange", async () => {
 		const user = userEvent.setup();
 		const { onFiltersChange } = renderToolbar();
 		await user.click(screen.getByRole("button", { name: /more filters/i }));
-		await user.click(screen.getByRole("button", { name: "Flags filter" }));
+		await user.click(screen.getByRole("button", { name: /^Flags:/ }));
 		await user.click(
 			await screen.findByRole("option", { name: "Missing description" }),
 		);
@@ -363,24 +328,28 @@ describe("RoadmapFilterToolbar — More filters disclosure", () => {
 		});
 	});
 
-	it("renders 'Recently added' and 'Date Modified' (not 'Recently changed')", async () => {
+	it("renders 'Added' and 'Edited' (not 'Recently changed')", async () => {
 		const user = userEvent.setup();
 		renderToolbar();
 		await user.click(screen.getByRole("button", { name: /more filters/i }));
-		expect(screen.getByText("Recently approved")).toBeInTheDocument();
-		expect(screen.getByText("Recently added")).toBeInTheDocument();
-		expect(screen.getByText("Date Modified")).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: /Approved/ }),
+		).toHaveTextContent("Approved: Any time");
+		expect(screen.getByRole("button", { name: /Added/ })).toHaveTextContent(
+			"Added: Any time",
+		);
+		expect(
+			screen.getByRole("button", { name: /Edited/ }),
+		).toHaveTextContent("Edited: Any time");
 		expect(screen.queryByText("Recently changed")).not.toBeInTheDocument();
 	});
 
-	it("selecting 'Recently added: 30d' emits onChange({ recentlyAdded: 30 })", async () => {
+	it("selecting 'Added: 30d' emits onChange({ recentlyAdded: 30 })", async () => {
 		const user = userEvent.setup();
 		const { onFiltersChange } = renderToolbar();
 		await user.click(screen.getByRole("button", { name: /more filters/i }));
-		const group = screen.getByRole("radiogroup", {
-			name: "Recently added",
-		});
-		await user.click(within(group).getByRole("radio", { name: "30d" }));
+		await user.click(screen.getByRole("button", { name: /Added/ }));
+		await user.click(screen.getByRole("option", { name: "Last 30 days" }));
 		expect(onFiltersChange).toHaveBeenCalledWith({ recentlyAdded: 30 });
 	});
 });
@@ -411,36 +380,6 @@ describe("RoadmapFilterToolbar — active chips + clear", () => {
 	});
 });
 
-describe("RoadmapFilterToolbar — consolidated inbox entry points", () => {
-	it("renders the moved Review proposals button in the inbox slot (next to the Review Center inbox)", async () => {
-		// The Review Center inbox hides at total 0 (module-level mock); the
-		// proposals button renders once its non-zero count resolves. This proves
-		// the button now lives on the filter row's inbox slot, not the main
-		// toolbar.
-		pendingProposalsCount.mockResolvedValue({ count: 2 });
-
-		renderToolbar();
-
-		expect(
-			await screen.findByRole("button", {
-				name: /Review 2 pending proposals/,
-			}),
-		).toBeInTheDocument();
-	});
-
-	it("fires onOpenProposalsInbox when the moved Review proposals button is clicked", async () => {
-		pendingProposalsCount.mockResolvedValue({ count: 1 });
-		const user = userEvent.setup();
-		const { onOpenProposalsInbox } = renderToolbar();
-
-		const button = await screen.findByRole("button", {
-			name: /Review 1 pending proposal/,
-		});
-		await user.click(button);
-		expect(onOpenProposalsInbox).toHaveBeenCalledTimes(1);
-	});
-});
-
 describe("RoadmapFilterToolbar — search input autofill guard", () => {
 	// Regression guard: browsers were treating the roadmap search box as a
 	// credential/email field and offering to prefill the user's saved account.
@@ -448,8 +387,143 @@ describe("RoadmapFilterToolbar — search input autofill guard", () => {
 	// field, not a login input. See docs/plans — roadmap search autofill fix.
 	it("marks the search input as a non-credential search field", () => {
 		renderToolbar();
-		const search = screen.getByLabelText("Search roadmap items");
+		const search = screen.getByLabelText("Search work items");
+		expect(search).toHaveAccessibleName("Search work items");
 		expect(search).toHaveAttribute("type", "search");
 		expect(search).toHaveAttribute("autocomplete", "off");
 	});
+});
+
+vi.mock("next-intl", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("next-intl")>();
+	const { default: en } = await import("@repo/i18n/translations/en.json");
+	const { default: de } = await import("@repo/i18n/translations/de.json");
+	return {
+		...actual,
+		useLocale: () => locale.value,
+		useTranslations: (namespace: string) =>
+			actual.createTranslator({
+				locale: locale.value,
+				messages: locale.value === "de" ? de : en,
+				namespace,
+			}),
+	};
+});
+
+it("shows facets and all date controls together with More filters, and hides both with Fewer filters", async () => {
+	const user = userEvent.setup();
+	renderToolbar();
+	for (let attempt = 0; attempt < 2; attempt++) {
+		await user.click(screen.getByRole("button", { name: /More filters/ }));
+		expect(
+			screen.getByRole("button", { name: /^Sync:/ }),
+		).toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: "Dates" }),
+		).not.toBeInTheDocument();
+		for (const name of [/Approved/, /Added/, /Edited/]) {
+			expect(screen.getByRole("button", { name })).toHaveTextContent(
+				"Any time",
+			);
+		}
+
+		for (const name of [
+			"Created: Any",
+			"Last activity: Any",
+			"Last synced: Any",
+		]) {
+			expect(screen.getByRole("button", { name })).toBeInTheDocument();
+		}
+
+		await user.click(screen.getByRole("button", { name: /Fewer filters/ }));
+		expect(
+			screen.queryByRole("button", { name: /^Sync:/ }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /Edited/ }),
+		).not.toBeInTheDocument();
+		expect(
+			screen.queryByRole("button", { name: /^Created:/ }),
+		).not.toBeInTheDocument();
+	}
+});
+
+it("keeps the summary and sort/view controls on one results row", () => {
+	renderToolbar({
+		trailing: <button type="button">Sort results</button>,
+		lanesCount: 3,
+	});
+	const row = screen.getByTestId("roadmap-filter-count").parentElement
+		?.parentElement?.parentElement;
+	expect(row).toContainElement(
+		screen.getByRole("button", { name: "Sort results" }),
+	);
+	expect(row).toHaveTextContent("5 work items · 3 lanes");
+});
+
+it.each([false, true])(
+	"joins results summary separators with lanes=%s",
+	(lanes) => {
+		renderToolbar({
+			totalCount: 12,
+			filteredCount: 12,
+			lanesCount: lanes ? 3 : undefined,
+		});
+		const result = screen.getByTestId("roadmap-filter-count").parentElement;
+		expect(result?.textContent).toBe(
+			lanes ? "12 work items · 3 lanes" : "12 work items",
+		);
+	},
+);
+it("keeps the recency trigger mounted and focused after clearing its last active filter", async () => {
+	const user = userEvent.setup();
+	function Filters() {
+		const [filters, setFilters] = useState<RoadmapFilters>({
+			...EMPTY_ROADMAP_FILTERS,
+			recentlyChanged: 7,
+		});
+		return (
+			<RoadmapFilterToolbar
+				filters={filters}
+				onFiltersChange={(next) =>
+					setFilters((prev) => ({ ...prev, ...next }))
+				}
+				onClearAll={vi.fn()}
+				onRemoveFilter={vi.fn()}
+				totalCount={5}
+				filteredCount={5}
+				hasActiveFilters
+				projectId="project_1"
+				organizationId={null}
+			/>
+		);
+	}
+	const client = new QueryClient({
+		defaultOptions: { queries: { retry: false } },
+	});
+	render(
+		<QueryClientProvider client={client}>
+			<Filters />
+		</QueryClientProvider>,
+	);
+	await user.click(screen.getByRole("button", { name: /More filters/ }));
+	const trigger = screen.getByRole("button", { name: /Edited/ });
+	await user.click(trigger);
+	await user.click(screen.getByRole("option", { name: "Any time" }));
+	expect(trigger).toBeInTheDocument();
+	expect(trigger).toHaveTextContent("Any time");
+	expect(trigger).toHaveFocus();
+});
+
+it("translates the search label, placeholder and passive hidden count into German", () => {
+	locale.value = "de";
+	renderToolbar({ hiddenMatchCount: 3 });
+	expect(screen.getByText("3 ausgeblendet")).toBeInTheDocument();
+	const search = screen.getByRole("searchbox", {
+		name: "Arbeitselemente suchen",
+	});
+	expect(search).toHaveAttribute(
+		"placeholder",
+		"Nach Titel, ID oder Stichwort suchen…",
+	);
 });

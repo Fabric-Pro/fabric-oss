@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
 	getTaskDefaultModel: vi.fn(),
 	getModel: vi.fn(),
 	sourceForCall: vi.fn(),
+	updateProviderLastUsed: vi.fn(),
+	waitUntil: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -31,10 +33,12 @@ vi.mock("@repo/database", () => ({
 	getProviderModelIdForCanonical: vi.fn(async () => null),
 	getSystemAiProviderApiKey: vi.fn(),
 	getTaskDefaultModel: mocks.getTaskDefaultModel,
-	updateProviderLastUsed: vi.fn(() => Promise.resolve()),
+	updateProviderLastUsed: mocks.updateProviderLastUsed,
 	logAiUsageAsync: vi.fn(),
 	isFeatureEnabled: vi.fn(async () => true),
 }));
+
+vi.mock("@vercel/functions", () => ({ waitUntil: mocks.waitUntil }));
 
 vi.mock("@repo/payments", () => ({
 	assertWithinAiUsageLimits: vi.fn(),
@@ -132,6 +136,40 @@ beforeEach(() => {
 	mocks.getAiProviderApiKey.mockResolvedValue(ORG_KEY);
 	mocks.getModelForTask.mockResolvedValue(SELECTION);
 	mocks.sourceForCall.mockResolvedValue(null);
+	mocks.updateProviderLastUsed.mockResolvedValue(1);
+});
+
+describe("getAIModelWithMetadata trackUsage", () => {
+	// On Vercel a bare promise can be frozen between the UPDATE and its
+	// COMMIT once the response is sent, stranding an idle transaction that
+	// blocks migrations (Fizzy #3263). The bump must outlive the response.
+	it("hands the last-used bump to waitUntil without waiting for it", async () => {
+		const { trackUsage } = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			CONTEXT,
+		);
+
+		expect(trackUsage()).toBeUndefined();
+
+		expect(mocks.updateProviderLastUsed).toHaveBeenCalledWith({
+			configId: "cfg-org",
+			source: "organization",
+		});
+		expect(mocks.waitUntil).toHaveBeenCalledTimes(1);
+		await expect(mocks.waitUntil.mock.calls[0][0]).resolves.toBe(1);
+	});
+
+	it("registers a promise that settles even when the write fails", async () => {
+		mocks.updateProviderLastUsed.mockRejectedValue(new Error("db down"));
+		const { trackUsage } = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			CONTEXT,
+		);
+
+		trackUsage();
+
+		await expect(mocks.waitUntil.mock.calls[0][0]).resolves.toBeUndefined();
+	});
 });
 
 describe("getAIModelWithMetadata on a plan-spent personal key", () => {

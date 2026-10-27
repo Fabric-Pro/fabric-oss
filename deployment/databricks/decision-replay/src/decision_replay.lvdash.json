@@ -1,0 +1,1025 @@
+{
+	"datasets": [
+		{
+			"name": "funnel",
+			"displayName": "Funnel",
+			"queryLines": [
+				"SELECT COUNT(*) AS proposals, SUM(CASE WHEN first_human_review_at IS NOT NULL THEN 1 ELSE 0 END) AS reviewed, SUM(CASE WHEN applied_at IS NOT NULL THEN 1 ELSE 0 END) AS applied FROM suggestion_journey WHERE project_id = __aibi_external_value"
+			]
+		},
+		{
+			"name": "statuses",
+			"displayName": "Statuses",
+			"queryLines": [
+				"SELECT final_outcome, COUNT(*) AS proposals FROM suggestion_journey WHERE project_id = __aibi_external_value GROUP BY final_outcome ORDER BY proposals DESC"
+			]
+		},
+		{
+			"name": "daily",
+			"displayName": "Daily",
+			"queryLines": [
+				"SELECT decision_day, proposed, approved, rejected, applied, failed, superseded, median_review_latency_seconds / 3600.0 AS median_review_hours, applied_cohort_count, mature_applied_count, share_applied_edited_within_7d FROM project_decision_daily WHERE project_id = __aibi_external_value ORDER BY decision_day"
+			]
+		},
+		{
+			"name": "ratings",
+			"displayName": "Ratings",
+			"queryLines": [
+				"SELECT feature_key, model, prompt_version_id, event_type, outcome, event_count FROM rating_outcomes WHERE project_id = __aibi_external_value ORDER BY event_count DESC"
+			]
+		},
+		{
+			"name": "duplicates",
+			"displayName": "Duplicates",
+			"queryLines": [
+				"SELECT feature_key, model, prompt_version_id, outcome, link_count FROM duplicate_outcomes WHERE project_id = __aibi_external_value ORDER BY link_count DESC"
+			]
+		},
+		{
+			"name": "changes_accepted",
+			"displayName": "Changes accepted",
+			"queryLines": [
+				"SELECT SUM(change_accepted) AS accepted, SUM(change_decided) AS decided FROM project_decision_daily WHERE project_id = __aibi_external_value"
+			]
+		},
+		{
+			"name": "change_statuses",
+			"displayName": "Change outcomes",
+			"queryLines": [
+				"SELECT CASE outcome WHEN 'applied' THEN 'Applied' WHEN 'notSelected' THEN 'Not selected' WHEN 'alreadyOnRoadmap' THEN 'Already on roadmap' WHEN 'failed' THEN 'Failed' WHEN 'inProgress' THEN 'In progress' WHEN 'rejected' THEN 'Rejected' WHEN 'superseded' THEN 'Superseded' WHEN 'pending' THEN 'Pending' ELSE 'Pending' END AS outcome, COUNT(*) AS changes FROM change_outcomes WHERE project_id = __aibi_external_value GROUP BY outcome ORDER BY changes DESC"
+			]
+		}
+	],
+	"pages": [
+		{
+			"name": "overview",
+			"displayName": "Decisions over time",
+			"pageType": "PAGE_TYPE_CANVAS",
+			"layoutVersion": "GRID_V1",
+			"layout": [
+				{
+					"widget": {
+						"name": "overview_title",
+						"multilineTextboxSpec": {
+							"lines": ["# Decisions over time"]
+						}
+					},
+					"position": {
+						"x": 0,
+						"y": 0,
+						"width": 12,
+						"height": 1
+					}
+				},
+				{
+					"widget": {
+						"name": "overview_description",
+						"multilineTextboxSpec": {
+							"lines": [
+								"Captured events only. Changes accepted and decided show the acceptance numerator and denominator. Change outcomes start at first review recording; incomplete sidebar reviews are excluded. Applied/failed/in progress are accepted; not selected/rejected complete the denominator. Daily counts reflect decision day, not native rolling periods."
+							]
+						}
+					},
+					"position": {
+						"x": 0,
+						"y": 1,
+						"width": 12,
+						"height": 1
+					}
+				},
+				{
+					"widget": {
+						"name": "funnel_proposals",
+						"queries": [
+							{
+								"name": "main_query",
+								"query": {
+									"datasetName": "funnel",
+									"fields": [
+										{
+											"name": "proposals",
+											"expression": "`proposals`"
+										}
+									],
+									"disaggregated": true
+								}
+							}
+						],
+						"spec": {
+							"version": 2,
+							"widgetType": "counter",
+							"encodings": {
+								"value": {
+									"fieldName": "proposals",
+									"displayName": "Observed proposals",
+									"format": {
+										"type": "number",
+										"decimalPlaces": {
+											"type": "max",
+											"places": 0
+										}
+									}
+								}
+							},
+							"frame": {
+								"title": "Observed proposals",
+								"showTitle": true
+							}
+						}
+					},
+					"position": {
+						"x": 0,
+						"y": 2,
+						"width": 4,
+						"height": 3
+					}
+				},
+				{
+					"widget": {
+						"name": "funnel_reviewed",
+						"queries": [
+							{
+								"name": "main_query",
+								"query": {
+									"datasetName": "funnel",
+									"fields": [
+										{
+											"name": "reviewed",
+											"expression": "`reviewed`"
+										}
+									],
+									"disaggregated": true
+								}
+							}
+						],
+						"spec": {
+							"version": 2,
+							"widgetType": "counter",
+							"encodings": {
+								"value": {
+									"fieldName": "reviewed",
+									"displayName": "Human-reviewed",
+									"format": {
+										"type": "number",
+										"decimalPlaces": {
+											"type": "max",
+											"places": 0
+										}
+									}
+								}
+							},
+							"frame": {
+								"title": "Human-reviewed",
+								"showTitle": true
+							}
+						}
+					},
+					"position": {
+						"x": 4,
+						"y": 2,
+						"width": 4,
+						"height": 3
+					}
+				},
+				{
+					"widget": {
+						"name": "funnel_applied",
+						"queries": [
+							{
+								"name": "main_query",
+								"query": {
+									"datasetName": "funnel",
+									"fields": [
+										{
+											"name": "applied",
+											"expression": "`applied`"
+										}
+									],
+									"disaggregated": true
+								}
+							}
+						],
+						"spec": {
+							"version": 2,
+							"widgetType": "counter",
+							"encodings": {
+								"value": {
+									"fieldName": "applied",
+									"displayName": "Applied at least once",
+									"format": {
+										"type": "number",
+										"decimalPlaces": {
+											"type": "max",
+											"places": 0
+										}
+									}
+								}
+							},
+							"frame": {
+								"title": "Applied at least once",
+								"showTitle": true
+							}
+						}
+					},
+					"position": {
+						"x": 8,
+						"y": 2,
+						"width": 4,
+						"height": 3
+					}
+				},
+				{
+					"widget": {
+						"name": "daily_volume",
+						"queries": [
+							{
+								"name": "main_query",
+								"query": {
+									"datasetName": "daily",
+									"fields": [
+										{
+											"name": "decision_day",
+											"expression": "`decision_day`"
+										},
+										{
+											"name": "proposed",
+											"expression": "`proposed`"
+										},
+										{
+											"name": "applied",
+											"expression": "`applied`"
+										}
+									],
+									"disaggregated": true
+								}
+							}
+						],
+						"spec": {
+							"version": 3,
+							"widgetType": "line",
+							"encodings": {
+								"x": {
+									"fieldName": "decision_day",
+									"scale": {
+										"type": "temporal"
+									}
+								},
+								"y": {
+									"scale": {
+										"type": "quantitative"
+									},
+									"fields": [
+										{
+											"fieldName": "proposed",
+											"displayName": "Proposed"
+										},
+										{
+											"fieldName": "applied",
+											"displayName": "Applied"
+										}
+									]
+								}
+							},
+							"frame": {
+								"title": "Daily proposal and application events",
+								"showTitle": true
+							}
+						}
+					},
+					"position": {
+						"x": 0,
+						"y": 5,
+						"width": 6,
+						"height": 6
+					}
+				},
+				{
+					"widget": {
+						"name": "current_status",
+						"queries": [
+							{
+								"name": "main_query",
+								"query": {
+									"datasetName": "statuses",
+									"fields": [
+										{
+											"name": "final_outcome",
+											"expression": "`final_outcome`"
+										},
+										{
+											"name": "proposals",
+											"expression": "`proposals`"
+										}
+									],
+									"disaggregated": true
+								}
+							}
+						],
+						"spec": {
+							"version": 3,
+							"widgetType": "bar",
+							"encodings": {
+								"x": {
+									"fieldName": "final_outcome",
+									"scale": {
+										"type": "categorical"
+									}
+								},
+								"y": {
+									"scale": {
+										"type": "quantitative"
+									},
+									"fields": [
+										{
+											"fieldName": "proposals",
+											"displayName": "Proposals"
+										}
+									]
+								},
+								"color": {
+									"fieldName": "final_outcome",
+									"scale": {
+										"type": "categorical",
+										"mappings": [
+											{
+												"value": "Pending",
+												"color": "#949494"
+											},
+											{
+												"value": "Approved",
+												"color": "#737373"
+											},
+											{
+												"value": "Applying",
+												"color": "#949494"
+											},
+											{
+												"value": "Applied",
+												"color": "#258850"
+											},
+											{
+												"value": "Rejected",
+												"color": "#db3329"
+											},
+											{
+												"value": "Failed",
+												"color": "#949494"
+											},
+											{
+												"value": "Superseded",
+												"color": "#949494"
+											},
+											{
+												"value": "Unknown",
+												"color": "#949494"
+											}
+										]
+									}
+								}
+							},
+							"frame": {
+								"title": "Current proposal status",
+								"showTitle": true
+							}
+						}
+					},
+					"position": {
+						"x": 6,
+						"y": 5,
+						"width": 6,
+						"height": 6
+					}
+				},
+				{
+					"widget": {
+						"name": "changes_accepted_counter",
+						"queries": [
+							{
+								"name": "main_query",
+								"query": {
+									"datasetName": "changes_accepted",
+									"fields": [
+										{
+											"name": "accepted",
+											"expression": "`accepted`"
+										}
+									],
+									"disaggregated": true
+								}
+							}
+						],
+						"spec": {
+							"version": 2,
+							"widgetType": "counter",
+							"encodings": {
+								"value": {
+									"fieldName": "accepted",
+									"displayName": "Changes accepted",
+									"format": {
+										"type": "number",
+										"decimalPlaces": {
+											"type": "max",
+											"places": 0
+										}
+									}
+								}
+							},
+							"frame": {
+								"title": "Changes accepted",
+								"showTitle": true
+							}
+						}
+					},
+					"position": {
+						"x": 0,
+						"y": 11,
+						"width": 6,
+						"height": 3
+					}
+				},
+				{
+					"widget": {
+						"name": "changes_decided_counter",
+						"queries": [
+							{
+								"name": "main_query",
+								"query": {
+									"datasetName": "changes_accepted",
+									"fields": [
+										{
+											"name": "decided",
+											"expression": "`decided`"
+										}
+									],
+									"disaggregated": true
+								}
+							}
+						],
+						"spec": {
+							"version": 2,
+							"widgetType": "counter",
+							"encodings": {
+								"value": {
+									"fieldName": "decided",
+									"displayName": "Changes decided (denominator)",
+									"format": {
+										"type": "number",
+										"decimalPlaces": {
+											"type": "max",
+											"places": 0
+										}
+									}
+								}
+							},
+							"frame": {
+								"title": "Changes decided (denominator)",
+								"showTitle": true
+							}
+						}
+					},
+					"position": {
+						"x": 6,
+						"y": 11,
+						"width": 6,
+						"height": 3
+					}
+				},
+				{
+					"widget": {
+						"name": "change_outcomes_breakdown",
+						"queries": [
+							{
+								"name": "main_query",
+								"query": {
+									"datasetName": "change_statuses",
+									"fields": [
+										{
+											"name": "outcome",
+											"expression": "`outcome`"
+										},
+										{
+											"name": "changes",
+											"expression": "`changes`"
+										}
+									],
+									"disaggregated": true
+								}
+							}
+						],
+						"spec": {
+							"version": 3,
+							"widgetType": "bar",
+							"encodings": {
+								"x": {
+									"fieldName": "outcome",
+									"scale": {
+										"type": "categorical"
+									}
+								},
+								"y": {
+									"scale": {
+										"type": "quantitative"
+									},
+									"fields": [
+										{
+											"fieldName": "changes",
+											"displayName": "Changes"
+										}
+									]
+								},
+								"color": {
+									"fieldName": "outcome",
+									"scale": {
+										"type": "categorical",
+										"mappings": [
+											{
+												"value": "Applied",
+												"color": "#258850"
+											},
+											{
+												"value": "Not selected",
+												"color": "#a26f15"
+											},
+											{
+												"value": "Already on roadmap",
+												"color": "#737373"
+											},
+											{
+												"value": "Failed",
+												"color": "#949494"
+											},
+											{
+												"value": "In progress",
+												"color": "#949494"
+											},
+											{
+												"value": "Rejected",
+												"color": "#db3329"
+											},
+											{
+												"value": "Superseded",
+												"color": "#949494"
+											},
+											{
+												"value": "Pending",
+												"color": "#949494"
+											}
+										]
+									}
+								}
+							},
+							"frame": {
+								"title": "Change outcomes",
+								"showTitle": true
+							}
+						}
+					},
+					"position": {
+						"x": 0,
+						"y": 14,
+						"width": 12,
+						"height": 6
+					}
+				}
+			]
+		},
+		{
+			"name": "latency",
+			"displayName": "Review latency",
+			"pageType": "PAGE_TYPE_CANVAS",
+			"layoutVersion": "GRID_V1",
+			"layout": [
+				{
+					"widget": {
+						"name": "latency_title",
+						"multilineTextboxSpec": {
+							"lines": ["# Review latency"]
+						}
+					},
+					"position": {
+						"x": 0,
+						"y": 0,
+						"width": 12,
+						"height": 1
+					}
+				},
+				{
+					"widget": {
+						"name": "latency_description",
+						"multilineTextboxSpec": {
+							"lines": [
+								"First captured human review minus proposal time. Seven-day edit share uses applied cohorts with a complete seven-day observation window, as of the last refresh."
+							]
+						}
+					},
+					"position": {
+						"x": 0,
+						"y": 1,
+						"width": 12,
+						"height": 1
+					}
+				},
+				{
+					"widget": {
+						"name": "latency_trend",
+						"queries": [
+							{
+								"name": "main_query",
+								"query": {
+									"datasetName": "daily",
+									"fields": [
+										{
+											"name": "decision_day",
+											"expression": "`decision_day`"
+										},
+										{
+											"name": "median_review_hours",
+											"expression": "`median_review_hours`"
+										}
+									],
+									"disaggregated": true
+								}
+							}
+						],
+						"spec": {
+							"version": 3,
+							"widgetType": "line",
+							"encodings": {
+								"x": {
+									"fieldName": "decision_day",
+									"scale": {
+										"type": "temporal"
+									}
+								},
+								"y": {
+									"scale": {
+										"type": "quantitative"
+									},
+									"fields": [
+										{
+											"fieldName": "median_review_hours",
+											"displayName": "Median hours"
+										}
+									]
+								}
+							},
+							"frame": {
+								"title": "Median review latency by review day",
+								"showTitle": true
+							}
+						}
+					},
+					"position": {
+						"x": 0,
+						"y": 2,
+						"width": 12,
+						"height": 6
+					}
+				},
+				{
+					"widget": {
+						"name": "latency_cohorts",
+						"queries": [
+							{
+								"name": "main_query",
+								"query": {
+									"datasetName": "daily",
+									"fields": [
+										{
+											"name": "decision_day",
+											"expression": "`decision_day`"
+										},
+										{
+											"name": "median_review_hours",
+											"expression": "`median_review_hours`"
+										},
+										{
+											"name": "applied_cohort_count",
+											"expression": "`applied_cohort_count`"
+										},
+										{
+											"name": "mature_applied_count",
+											"expression": "`mature_applied_count`"
+										},
+										{
+											"name": "share_applied_edited_within_7d",
+											"expression": "`share_applied_edited_within_7d`"
+										}
+									],
+									"disaggregated": true
+								}
+							}
+						],
+						"spec": {
+							"version": 2,
+							"widgetType": "table",
+							"encodings": {
+								"columns": [
+									{
+										"fieldName": "decision_day",
+										"displayName": "UTC day"
+									},
+									{
+										"fieldName": "median_review_hours",
+										"displayName": "Median review hours"
+									},
+									{
+										"fieldName": "applied_cohort_count",
+										"displayName": "Applied cohort"
+									},
+									{
+										"fieldName": "mature_applied_count",
+										"displayName": "Full 7-day window"
+									},
+									{
+										"fieldName": "share_applied_edited_within_7d",
+										"displayName": "Edited within 7 days",
+										"format": {
+											"type": "number-percent",
+											"decimalPlaces": {
+												"type": "max",
+												"places": 1
+											}
+										}
+									}
+								]
+							},
+							"frame": {
+								"title": "Review latency and applied cohorts",
+								"showTitle": true
+							}
+						}
+					},
+					"position": {
+						"x": 0,
+						"y": 8,
+						"width": 12,
+						"height": 7
+					}
+				}
+			]
+		},
+		{
+			"name": "ratings",
+			"displayName": "AI ratings",
+			"pageType": "PAGE_TYPE_CANVAS",
+			"layoutVersion": "GRID_V1",
+			"layout": [
+				{
+					"widget": {
+						"name": "ratings_title",
+						"multilineTextboxSpec": {
+							"lines": ["# AI ratings"]
+						}
+					},
+					"position": {
+						"x": 0,
+						"y": 0,
+						"width": 12,
+						"height": 1
+					}
+				},
+				{
+					"widget": {
+						"name": "ratings_description",
+						"multilineTextboxSpec": {
+							"lines": [
+								"Counts rating events, re-ratings and clears. This is a transition history, not a current vote balance. Missing model or prompt metadata remains empty."
+							]
+						}
+					},
+					"position": {
+						"x": 0,
+						"y": 1,
+						"width": 12,
+						"height": 1
+					}
+				},
+				{
+					"widget": {
+						"name": "rating_details",
+						"queries": [
+							{
+								"name": "main_query",
+								"query": {
+									"datasetName": "ratings",
+									"fields": [
+										{
+											"name": "feature_key",
+											"expression": "`feature_key`"
+										},
+										{
+											"name": "model",
+											"expression": "`model`"
+										},
+										{
+											"name": "prompt_version_id",
+											"expression": "`prompt_version_id`"
+										},
+										{
+											"name": "event_type",
+											"expression": "`event_type`"
+										},
+										{
+											"name": "outcome",
+											"expression": "`outcome`"
+										},
+										{
+											"name": "event_count",
+											"expression": "`event_count`"
+										}
+									],
+									"disaggregated": true
+								}
+							}
+						],
+						"spec": {
+							"version": 2,
+							"widgetType": "table",
+							"encodings": {
+								"columns": [
+									{
+										"fieldName": "feature_key",
+										"displayName": "Feature"
+									},
+									{
+										"fieldName": "model",
+										"displayName": "Model"
+									},
+									{
+										"fieldName": "prompt_version_id",
+										"displayName": "Prompt version"
+									},
+									{
+										"fieldName": "event_type",
+										"displayName": "Transition"
+									},
+									{
+										"fieldName": "outcome",
+										"displayName": "Outcome"
+									},
+									{
+										"fieldName": "event_count",
+										"displayName": "Events"
+									}
+								]
+							},
+							"frame": {
+								"title": "Rating transitions by feature, model and prompt",
+								"showTitle": true
+							}
+						}
+					},
+					"position": {
+						"x": 0,
+						"y": 2,
+						"width": 12,
+						"height": 7
+					}
+				}
+			]
+		},
+		{
+			"name": "duplicates",
+			"displayName": "Duplicates",
+			"pageType": "PAGE_TYPE_CANVAS",
+			"layoutVersion": "GRID_V1",
+			"layout": [
+				{
+					"widget": {
+						"name": "duplicates_title",
+						"multilineTextboxSpec": {
+							"lines": ["# Duplicates"]
+						}
+					},
+					"position": {
+						"x": 0,
+						"y": 0,
+						"width": 12,
+						"height": 1
+					}
+				},
+				{
+					"widget": {
+						"name": "duplicates_description",
+						"multilineTextboxSpec": {
+							"lines": [
+								"One latest outcome per duplicate link. Feature, model and prompt are empty because duplicate capture does not export them."
+							]
+						}
+					},
+					"position": {
+						"x": 0,
+						"y": 1,
+						"width": 12,
+						"height": 1
+					}
+				},
+				{
+					"widget": {
+						"name": "duplicate_details",
+						"queries": [
+							{
+								"name": "main_query",
+								"query": {
+									"datasetName": "duplicates",
+									"fields": [
+										{
+											"name": "outcome",
+											"expression": "`outcome`"
+										},
+										{
+											"name": "link_count",
+											"expression": "`link_count`"
+										},
+										{
+											"name": "feature_key",
+											"expression": "`feature_key`"
+										},
+										{
+											"name": "model",
+											"expression": "`model`"
+										},
+										{
+											"name": "prompt_version_id",
+											"expression": "`prompt_version_id`"
+										}
+									],
+									"disaggregated": true
+								}
+							}
+						],
+						"spec": {
+							"version": 2,
+							"widgetType": "table",
+							"encodings": {
+								"columns": [
+									{
+										"fieldName": "outcome",
+										"displayName": "Current outcome"
+									},
+									{
+										"fieldName": "link_count",
+										"displayName": "Links"
+									},
+									{
+										"fieldName": "feature_key",
+										"displayName": "Feature"
+									},
+									{
+										"fieldName": "model",
+										"displayName": "Model"
+									},
+									{
+										"fieldName": "prompt_version_id",
+										"displayName": "Prompt version"
+									}
+								]
+							},
+							"frame": {
+								"title": "Latest outcome of each duplicate link",
+								"showTitle": true
+							}
+						}
+					},
+					"position": {
+						"x": 0,
+						"y": 2,
+						"width": 12,
+						"height": 7
+					}
+				}
+			]
+		}
+	],
+	"uiSettings": {
+		"genieSpace": {
+			"isEnabled": false,
+			"enablementMode": "DISABLED"
+		},
+		"theme": {
+			"canvasBackgroundColor": {
+				"light": "#ffffff",
+				"dark": "#1c1c1c"
+			},
+			"widgetBackgroundColor": {
+				"light": "#ffffff",
+				"dark": "#222222"
+			},
+			"widgetBorderColor": {
+				"light": "#e5e5e5",
+				"dark": "#2e2e2e"
+			},
+			"fontColor": {
+				"light": "#0d0d0d",
+				"dark": "#ececec"
+			},
+			"selectionColor": {
+				"light": "#b30000",
+				"dark": "#ff8577"
+			},
+			"visualizationColors": ["#737373", "#258850", "#a26f15", "#db3329"],
+			"widgetHeaderAlignment": "LEFT"
+		}
+	}
+}

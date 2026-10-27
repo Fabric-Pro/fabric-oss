@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const h = vi.hoisted(() => ({
 	handlers: {} as Record<string, (args: any) => Promise<any>>,
 	rows: new Map<string, any>(),
+	reviews: new Map<string, any>(),
 	sessions: new Map<string, any>(),
 	createSession: vi.fn(),
 	sessionUpdateMany: vi.fn(),
@@ -17,8 +18,8 @@ const h = vi.hoisted(() => ({
 
 // Only the Prisma boundary is replaced: finalization and cancellation use the
 // real query helpers against the state left by the procedure's writes.
-vi.mock("../../../../../../database/prisma/client", () => ({
-	db: {
+vi.mock("../../../../../../database/prisma/client", () => {
+	const client = {
 		pendingBacklogProposalApplication: { findMany: async () => [] },
 		pendingBacklogProposal: {
 			findUnique: async ({ where }: any) => h.rows.get(where.id) ?? null,
@@ -26,8 +27,32 @@ vi.mock("../../../../../../database/prisma/client", () => ({
 				Object.assign(h.rows.get(where.id), data),
 			updateMany: (...args: any[]) => h.updateMany(...args),
 		},
-	},
-}));
+		pendingBacklogProposalReviewEntry: {
+			createMany: async ({ data }: any) => {
+				for (const entry of data) {
+					h.reviews.get(entry.reviewId).entries.push(entry);
+				}
+				return { count: data.length };
+			},
+		},
+		pendingBacklogProposalReview: {
+			create: async ({ data }: any) => {
+				const review = {
+					...data,
+					id: `example-review-${h.reviews.size}`,
+					entries: [] as any[],
+				};
+				h.reviews.set(review.id, review);
+				return review;
+			},
+			findFirst: async ({ where }: any) => {
+				const review = h.reviews.get(where.id);
+				return review?.proposalId === where.proposalId ? review : null;
+			},
+		},
+	};
+	return { db: { ...client, $transaction: async (run: any) => run(client) } };
+});
 vi.mock("@repo/database", async () => {
 	const queries = await import(
 		"../../../../../../database/prisma/queries/projects/pending-backlog-proposals"
@@ -36,6 +61,8 @@ vi.mock("@repo/database", async () => {
 		const row = {
 			status: "PENDING",
 			applyWorkflowId: null,
+			applyReviewId: null,
+			applyReviewWorkflowId: null,
 			applyStartedAt: null,
 			reviewedAt: null,
 			createdAt: new Date(),
@@ -48,6 +75,7 @@ vi.mock("@repo/database", async () => {
 	};
 	return {
 		...queries,
+		recordProposalDuplicateResolution: vi.fn(),
 		db: {
 			$transaction: async (run: any) =>
 				run({
@@ -180,6 +208,8 @@ function seed(status = "FAILED", extra = {}) {
 		sourceMetadata: {},
 		appliedChangeIndexes: [],
 		applyWorkflowId: "example-old-workflow",
+		applyReviewId: null,
+		applyReviewWorkflowId: null,
 		applyStartedAt: null,
 		reviewedAt: null,
 		...extra,
@@ -190,6 +220,7 @@ function seed(status = "FAILED", extra = {}) {
 beforeEach(() => {
 	vi.resetAllMocks();
 	h.rows.clear();
+	h.reviews.clear();
 	h.sessions.clear();
 	h.createSession.mockImplementation(async (data: any) => {
 		const row = {
@@ -898,4 +929,25 @@ describe("lost fresh claim session cleanup", () => {
 			expect(h.finalizeSession).not.toHaveBeenCalled();
 		},
 	);
+});
+
+it("review-transaction failure preserves a concurrent claimant", async () => {
+	h.updateMany.mockImplementationOnce(async ({ where }: any) => {
+		const row = h.rows.get(where.id);
+		row.status = "APPLYING";
+		row.applyWorkflowId = "example-concurrent-claimant";
+		throw new Error("example review transaction failure");
+	});
+	await expect(
+		call("apply", {
+			proposalId: undefined,
+			approvedChanges: [change],
+			syncToPM: false,
+		}),
+	).rejects.toMatchObject({ code: "INTERNAL_SERVER_ERROR" });
+	expect([...h.rows.values()][0]).toMatchObject({
+		status: "APPLYING",
+		applyWorkflowId: "example-concurrent-claimant",
+	});
+	expect(h.start).not.toHaveBeenCalled();
 });

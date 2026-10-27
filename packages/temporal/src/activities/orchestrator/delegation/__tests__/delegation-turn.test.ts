@@ -46,7 +46,6 @@ vi.mock("@repo/agent-core", async () => {
 });
 vi.mock("@repo/ai", () => ({
 	DEFAULT_BASE_URLS: {},
-	GATEWAY_PROVIDERS: [],
 	getAIModelWithMetadata: vi.fn(async () => ({
 		metadata: { provider: "ANTHROPIC_DIRECT", modelId: "example-model" },
 		trackUsage: vi.fn(),
@@ -530,3 +529,20 @@ it.each([
 		expect(JSON.stringify(result)).not.toContain("example-other-secret");
 	},
 );
+
+it("does not send a Vercel endpoint hint for Cloudflare", async () => {
+	const { getAIModelWithMetadata } = await import("@repo/ai");
+	vi.mocked(getAIModelWithMetadata).mockResolvedValueOnce({
+		metadata: { provider: "CLOUDFLARE_AI", modelString: "openai/gpt-4o" },
+		trackUsage: vi.fn(),
+	} as never);
+	h.isExternal = false;
+	let headers: Headers | undefined;
+	h.onSend.value = async (init) => {
+		headers = new Headers(init?.headers);
+		return json({ id: "task-1", status: "completed", messages: [] });
+	};
+	await delegate(false);
+	expect(headers?.get("X-AI-Provider")).toBe("CLOUDFLARE_AI");
+	expect(headers?.has("X-AI-Base-URL")).toBe(false);
+});

@@ -55,8 +55,9 @@ export interface StreamOutcome {
 	/** `toolCalls` with anything left mid-flight settled as an error. */
 	toolCalls: DirectChatToolCall[];
 	/**
-	 * The provider failed after part of the answer had streamed. The turn
-	 * keeps that text, but this is why it stopped short.
+	 * The provider failed, or a tool's AI usage limit refused it, after part
+	 * of the answer had streamed. The turn keeps that text, but this is why
+	 * it stopped short. It can come with `truncated`.
 	 */
 	partialError?: string;
 	/**
@@ -76,7 +77,8 @@ function isUnfinished(toolCall: DirectChatToolCall): boolean {
 }
 
 /**
- * Whether a turn that finished without an error stopped on a limit.
+ * Whether a turn that produced something stopped on a limit, with or
+ * without a partial error.
  *
  * `finishReason` is the LAST step's reason. `length` means the output
  * ceiling cut the answer. `tool-calls` on the final step means the model
@@ -141,13 +143,17 @@ export function resolveStreamOutcome(input: StreamOutcomeInput): StreamOutcome {
 	// provider's message entirely. It is not a failed turn either — that
 	// would fire the tools-off retry and restart the answer from scratch.
 	if (producedSomething) {
+		// A tool's limit refusal is a partial error on a stream that itself
+		// finished normally, so that stream can still have stopped on a limit;
+		// the user needs both notices (Fizzy #3273).
+		const truncated = resolveTruncation(input);
 		if (streamErrorMessage) {
 			return {
 				toolCalls: settledToolCalls,
 				partialError: streamErrorMessage,
+				...(truncated ? { truncated } : {}),
 			};
 		}
-		const truncated = resolveTruncation(input);
 		return truncated
 			? { toolCalls: settledToolCalls, truncated }
 			: { toolCalls: settledToolCalls };

@@ -8,6 +8,11 @@ import {
 } from "@copilotkit/react-core";
 import { CopilotSidebar } from "@copilotkit/react-ui";
 import { promptContentProblem } from "@repo/utils/prompt-content";
+import {
+	type DraftVerdictRecorder,
+	useConfirmChangesVerdict,
+	useConfirmChangesVerdictCard,
+} from "@saas/agents/copilot/useConfirmChangesVerdict";
 import { CopilotAssistantMessageForPromptEnhancer } from "@saas/shared/components/copilot/CopilotAssistantMessage";
 import "@copilotkit/react-ui/styles.css";
 import "./PromptContentEnhancer.css";
@@ -366,48 +371,59 @@ export function PromptContentEnhancer({
 	});
 
 	// Confirmation action
+	const verdictFactory = useConfirmChangesVerdict({
+		surface: "prompt-enhancer",
+	});
+	const verdictFactoryRef = useRef(verdictFactory);
+	verdictFactoryRef.current = verdictFactory;
 	useCopilotAction(
 		{
 			name: "confirm_changes",
-			renderAndWaitForResponse: ({ args, respond, status }) => (
-				<ConfirmChanges
-					args={args}
-					respond={respond}
-					status={status}
-					onConfirm={() => {
-						// Reset diff state - user accepted changes
-						showingDiffRef.current = false;
-						const newContent =
-							agentStateRef.current?.streamingContent || "";
-						setCurrentContent(newContent);
-						setDisplayContent(escapeForDisplay(newContent));
-						// Update baseline to new content
-						baselineRef.current = newContent;
-						if (agentStateRef.current) {
-							setAgentState({
-								...agentStateRef.current,
-								currentContent: newContent,
-								enhancedContent: newContent,
-								streamingContent: newContent,
-							} as AgentState);
-						}
-						onSave(newContent);
-					}}
-					onReject={() => {
-						// Reset diff state - user rejected changes
-						showingDiffRef.current = false;
-						const oldContent = currentContentRef.current;
-						setDisplayContent(escapeForDisplay(oldContent));
-						if (agentStateRef.current) {
-							setAgentState({
-								...agentStateRef.current,
-								streamingContent: oldContent,
-								enhancedContent: oldContent,
-							} as AgentState);
-						}
-					}}
-				/>
-			),
+			renderAndWaitForResponse: ({ args, respond, status }) => {
+				const recordVerdict = verdictFactoryRef.current();
+				return (
+					<ConfirmChanges
+						recordVerdict={recordVerdict}
+						args={args}
+						respond={respond}
+						status={status}
+						onConfirm={() => {
+							void recordVerdict(true);
+							// Reset diff state - user accepted changes
+							showingDiffRef.current = false;
+							const newContent =
+								agentStateRef.current?.streamingContent || "";
+							setCurrentContent(newContent);
+							setDisplayContent(escapeForDisplay(newContent));
+							// Update baseline to new content
+							baselineRef.current = newContent;
+							if (agentStateRef.current) {
+								setAgentState({
+									...agentStateRef.current,
+									currentContent: newContent,
+									enhancedContent: newContent,
+									streamingContent: newContent,
+								} as AgentState);
+							}
+							onSave(newContent);
+						}}
+						onReject={() => {
+							void recordVerdict(false);
+							// Reset diff state - user rejected changes
+							showingDiffRef.current = false;
+							const oldContent = currentContentRef.current;
+							setDisplayContent(escapeForDisplay(oldContent));
+							if (agentStateRef.current) {
+								setAgentState({
+									...agentStateRef.current,
+									streamingContent: oldContent,
+									enhancedContent: oldContent,
+								} as AgentState);
+							}
+						}}
+					/>
+				);
+			},
 		},
 		[agentState?.streamingContent],
 	);
@@ -621,6 +637,7 @@ export function PromptContentEnhancer({
 }
 
 interface ConfirmChangesProps {
+	recordVerdict: DraftVerdictRecorder;
 	args: any;
 	respond: any;
 	status: any;
@@ -629,11 +646,13 @@ interface ConfirmChangesProps {
 }
 
 function ConfirmChanges({
+	recordVerdict,
 	respond,
 	status,
 	onReject,
 	onConfirm,
 }: ConfirmChangesProps) {
+	useConfirmChangesVerdictCard(recordVerdict);
 	const [userChoice, setUserChoice] = useState<
 		"accepted" | "rejected" | null
 	>(null);

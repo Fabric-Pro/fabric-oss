@@ -3,7 +3,7 @@ import {
 	type AttachmentWarningRecord,
 	appendAppliedChangeIndexes,
 	buildBacklogDedupGuard,
-	claimPendingProposalForApply,
+	claimPendingProposalWithReview,
 	db,
 	getAppliedChangeIndexes,
 	getPendingBacklogProposal,
@@ -11,6 +11,8 @@ import {
 	markPendingProposalApplied,
 	markPendingProposalFailed,
 	markProposalApplyDispatched,
+	recordProposalApplication,
+	recordProposalDuplicateResolution,
 	type SkippedDuplicate,
 	setPendingProposalAttachmentResult,
 	updateStory,
@@ -61,26 +63,19 @@ import {
 	type ChangeItem,
 	changeItemSchema,
 } from "../backlog/change-item-schema";
+import {
+	buildProposalReviewEntries,
+	PROPOSAL_REVIEW_MAX_CHANGES,
+	resolveApprovedChangeIndexes,
+} from "../backlog/proposal-review";
 import { backlogApplyWorkflowId } from "../backlog/workflow-id";
 
 /**
  * AUTHORIZATION: `requireProjectPermission(PROJECT_UPDATE)` — only project
  * owners/editors can approve proposals.
  *
- * Approves a PendingBacklogProposal (plan §F3 claim protocol):
- *
- *   1. Generate the deterministic apply workflow id.
- *   2. Claim the row: PENDING | FAILED → APPLYING stamped with that id. A
- *      concurrent approve (or a row already reviewed) loses the CAS and gets
- *      CONFLICT — nothing was mutated for the loser.
- *   3. Start `backlogApplyChangesWorkflow` with ALL remaining changes
- *      (creates and updates). Every mutation happens inside the claimant
- *      workflow and is recorded per change index, so a crash or retry
- *      never duplicates a story.
- *   4. The workflow finalises the row (APPLIED | FAILED); only the claimant
- *      may do so.
- *
- * Source-agnostic: works for Teams channel/chat and scope-document proposals.
+ * Claims the proposal and records the review before inline creates or workflow updates.
+ * The attempt id binds the submission even when no update workflow is needed.
  */
 
 // ---------------------------------------------------------------------------
@@ -431,6 +426,10 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 			organizationId: z.string().nullable().optional(),
 			proposalId: z.string(),
 			approvedChanges: z.array(changeItemSchema),
+			approvedChangeIndexes: z
+				.array(z.number().int().min(0).max(PROPOSAL_REVIEW_MAX_CHANGES))
+				.max(PROPOSAL_REVIEW_MAX_CHANGES)
+				.optional(),
 			// Optional opt-out for PM sync. Undefined ⇒ sync if PM is wired
 			// up — matches user intent ("approved proposals sync when the PM
 			// tool is configured"). Explicit `false` skips. Explicit `true`
@@ -546,6 +545,7 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 		// place: set `type: "feature"`, drop the parent-epic references, and
 		// warn for auditability. `"epic"` stays in `changeItemSchema` for
 		// backward-compat with stored proposals.
+		const submittedChanges = structuredClone(input.approvedChanges);
 		if (forbidEpics) {
 			for (const change of input.approvedChanges) {
 				if ((change as { type: string }).type === "epic") {
@@ -614,31 +614,19 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 		// approved change maps to a DISTINCT stored index. (Same
 		// action+title+parentFeature rows are interchangeable for
 		// index-bookkeeping, so which-of-the-two is harmless.)
-		const usedIndexes = new Set<number>();
-		const indexedChanges = input.approvedChanges.map((change, position) => {
-			let index = -1;
-			for (let i = 0; i < proposalChanges.length; i++) {
-				const c = proposalChanges[i];
-				if (!c || usedIndexes.has(i)) {
-					continue;
-				}
-				if (matchesStored(c, change)) {
-					index = i;
-					usedIndexes.add(i);
-					break;
-				}
-			}
-			return { change, index, position };
-		});
-		// Reject approvals that don't line up with the stored proposal — the
-		// proposal may have been superseded or the client sent stale data.
-		for (const entry of indexedChanges) {
-			if (entry.index < 0) {
-				throw new ORPCError("BAD_REQUEST", {
-					message: `Approved change "${entry.change.title.to}" not found in proposal — it may be stale. Re-open the proposal.`,
-				});
-			}
-		}
+		const indexes = resolveApprovedChangeIndexes(
+			proposalChanges,
+			input.approvedChanges,
+			input.approvedChangeIndexes,
+			matchesStored,
+		);
+		const indexedChanges = input.approvedChanges.map(
+			(change, position) => ({
+				change,
+				index: indexes[position]!,
+				position,
+			}),
+		);
 
 		// Authoritative applied set = application table ∪ legacy mirror.
 		const alreadyApplied = await getAppliedChangeIndexes(input.proposalId);
@@ -660,10 +648,32 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 		// creates below run exactly once. The claim carries the apply
 		// workflow id that the update dispatch (below) will use.
 		const workflowId = backlogApplyWorkflowId(input.projectId);
-		const claimed = await claimPendingProposalForApply({
+		const claimed = await claimPendingProposalWithReview({
 			proposalId: input.proposalId,
 			reviewedBy: user.id,
 			applyWorkflowId: workflowId,
+			admitBacklog: true,
+			syncToPM:
+				input.syncToPM ??
+				!!(
+					project.projectManagementMcpConfigId &&
+					project.projectManagementContainerId
+				),
+			pmConfig:
+				input.pmConfig ??
+				(project.projectManagementMcpConfigId &&
+				project.projectManagementContainerId
+					? {
+							mcpConfigId: project.projectManagementMcpConfigId,
+							containerId: project.projectManagementContainerId,
+						}
+					: undefined),
+			offeredListComplete: true,
+			entries: buildProposalReviewEntries(
+				proposalChanges,
+				submittedChanges,
+				indexes,
+			),
 		});
 		if (!claimed) {
 			throw new ORPCError("CONFLICT", {
@@ -745,6 +755,24 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 					change.title.to,
 				);
 				if (collision) {
+					try {
+						await recordProposalDuplicateResolution({
+							proposalId: input.proposalId,
+							changeIndex: index,
+							existingEntityId: collision.existingId,
+							existingEntityType:
+								dedupFamily === "BUG" ? "bug" : "story",
+						});
+					} catch {
+						logger.warn(
+							"Failed to record proposal duplicate resolution",
+							{
+								proposalId: input.proposalId,
+								changeIndex: index,
+							},
+						);
+					}
+
 					logger.warn(
 						"[approvePendingProposal:teams] Skipping duplicate CREATE — title matches existing item",
 						{
@@ -883,6 +911,26 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 							? true
 							: undefined,
 				});
+				try {
+					await recordProposalApplication(
+						db,
+						{
+							proposalId: input.proposalId,
+							changeIndex: index,
+							action: "create",
+							createdEntityType:
+								story.kind === "BUG" ? "bug" : "story",
+							createdEntityId: story.id,
+						},
+						{ skipDuplicates: true },
+					);
+				} catch {
+					logger.warn("Failed to record proposal application", {
+						proposalId: input.proposalId,
+						changeIndex: index,
+					});
+				}
+
 				createdStoryIds.push(story.id);
 				if (sourceMeetingTranscript) {
 					// Post-create stamp (not a createStoryFromProposal param) to keep the

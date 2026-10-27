@@ -35,6 +35,7 @@ import {
 } from "../lib/chat-turn-truncation";
 import {
 	type ChatGptPlanApiBilling,
+	parseChatGptPlanApiBilling,
 	readChatGptPlanApiBilling,
 } from "../lib/chatgpt-plan-api-billing";
 import { formatClarificationTurn } from "../lib/clarification-turns";
@@ -147,6 +148,8 @@ const TURN_IN_PROGRESS_NOTICE =
 	"Your message was not sent: another message in this conversation is already being answered, possibly in another tab. Send yours when that answer finishes.";
 
 interface SendMessageOverrides {
+	/** Server turn to continue; only sent on the initial request for this message. */
+	continueFromTurnId?: string;
 	/**
 	 * The conversation this send belongs to, when it was created for this
 	 * send and the hook's `conversationId` option has not caught up.
@@ -161,6 +164,7 @@ interface SendMessageOverrides {
 }
 
 export interface OrchestratorStreamMessage {
+	metadata?: Record<string, unknown>;
 	id: string;
 	role: "user" | "assistant";
 	content: string;
@@ -233,11 +237,13 @@ interface LimitSignalSummary {
 		warning?: string;
 		estimatedCost?: number;
 	};
-	budgetLimit?: "tokens" | "iterations";
+	budgetLimit?: "tokens" | "iterations" | "time";
 }
 
 export interface OrchestratorStreamState {
 	executionId: string | null;
+	turnId?: string;
+	turnGeneration?: number | null;
 	status:
 		| "idle"
 		| "running"
@@ -327,7 +333,7 @@ export interface OrchestratorStreamState {
 	 * it has one. A completed turn that stopped on its allowance shows it: the
 	 * chat says so and offers no new-chat workaround, the user can ask to
 	 * continue in this chat. A cancelled turn keeps the payload it stored but
-	 * shows no card for it (`budgetStopToShow`).
+	 * uses terminal status to decide its card (`budgetStopToShow`).
 	 */
 	budgetStop?: TurnBudgetStop;
 	/**
@@ -456,28 +462,15 @@ const ORCHESTRATOR_STREAM_ENDPOINT =
 	"/api/agents/fabric-ai/orchestrator-temporal/stream";
 
 /**
- * Resume budgets (issue #2269 option 2).
- *
- * Every `stream_timeout` follows a full 600s server window, so five of them
- * puts a ~1h ceiling on a single turn — long enough for the runs that
- * motivated this, bounded enough that a stuck workflow can't reconnect
- * forever. Unclean closes (platform kill, transport hiccup) get their own,
- * much smaller budget because they can recur in tight succession; it resets
- * on delivered progress, so a long healthy run that flaps once mid-window
- * doesn't spend the allowance a genuinely broken connection needs to hit.
+ * Fifteen timeout resumes allow sixteen 10-minute server windows (160 minutes),
+ * covering the two-hour execution timeout plus 40 minutes of margin.
+ * Unclean closes have a smaller consecutive budget, reset by delivered progress.
  */
-const MAX_TIMEOUT_RESUMES = 5;
+const MAX_TIMEOUT_RESUMES = 15;
 const MAX_UNCLEAN_RESUMES = 3;
 const UNCLEAN_RESUME_DELAY_MS = 2000;
-/**
- * Hard backstop across BOTH budgets that nothing resets. The per-budget
- * counters are the normal bound; this one exists because the unclean counter
- * resets on delivered progress, and a replayed stream can deliver the same
- * progress every window forever. Five timeout resumes plus a healthy margin
- * of genuine flap recoveries stays well under 12 — only a pathological
- * handshake-then-drop or replay-only loop ever reaches it.
- */
-const MAX_TOTAL_RESUMES = 12;
+/** The total counter allows the timeout budget plus nine transport recoveries. */
+const MAX_TOTAL_RESUMES = 24;
 /**
  * Events the server re-sends on every window, so receiving one proves
  * nothing about the connection's health and must not refill the
@@ -941,6 +934,8 @@ export function useOrchestratorStream(
 				tokenBudget: undefined,
 				handoffRecommended: undefined,
 				budgetStop: undefined,
+				turnId: undefined,
+				turnGeneration: undefined,
 				contextCompactions: [],
 				apiBilling: undefined,
 			}));
@@ -949,7 +944,7 @@ export function useOrchestratorStream(
 			// (issue #2269). Deliberately NOT routed through the `error` event
 			// handler: that one overwrites the assistant body with
 			// `Error: <msg>`, discarding everything the run streamed before
-			// the window closed — up to an hour of work on a long turn.
+			// the window closed — potentially a long turn's worth of work.
 			// Mirrors `stop()`'s shape instead: freeze the message where it
 			// is, keep stepResults / artifacts, and record the reason in
 			// `state.result.error` for the failure notice.
@@ -1104,6 +1099,7 @@ export function useOrchestratorStream(
 					inlineAttachmentContexts,
 					projectId: projectId || undefined,
 					conversationId: effectiveConversationId,
+					continueFromTurnId: overrides?.continueFromTurnId,
 					attachedImageUrls,
 					// UI surface that started this run. Read by the
 					// orchestrator workflow to scope the up-front clarifying
@@ -1716,6 +1712,14 @@ export function useOrchestratorStream(
 					setState((prev) => ({
 						...prev,
 						executionId: data.executionId,
+						turnId:
+							typeof data.turnId === "string"
+								? data.turnId
+								: prev.turnId,
+						turnGeneration:
+							typeof data.turnGeneration === "number"
+								? data.turnGeneration
+								: prev.turnGeneration,
 					}));
 					// The resume loop in `sendMessage` can't read
 					// `state.executionId` — see `executionIdRef`.
@@ -2218,10 +2222,16 @@ export function useOrchestratorStream(
 						// from the turn record on a reconnect, kept whatever the
 						// status: it is the row's record of what the turn used.
 						// Whether a card shows it is decided by the status (a
-						// stopped turn shows none; see `budgetStopToShow`).
+						// only terminal turns offer continuation; see `budgetStopToShow`).
 						budgetStop:
 							parseTurnBudgetStop(data.budgetStop) ??
 							prev.budgetStop,
+						// Every plan ran out mid-turn and API billing finished
+						// it; the turn's first response could not say so
+						// (Fizzy #3048).
+						apiBilling:
+							parseChatGptPlanApiBilling(data.apiBilling) ??
+							prev.apiBilling,
 					}));
 
 					// Mark assistant message as done streaming and set content
@@ -2421,7 +2431,7 @@ export function useOrchestratorStream(
 						// route sends on a failed turn's `error` event, live and
 						// on a reconnect, exactly as on a `completed` one. Kept
 						// as the record of what the turn used; a failed turn
-						// shows no budget card (`budgetStopToShow`).
+						// uses terminal status for its card (`budgetStopToShow`).
 						budgetStop:
 							parseTurnBudgetStop(data.budgetStop) ??
 							prev.budgetStop,
@@ -2562,6 +2572,12 @@ export function useOrchestratorStream(
 						...prev,
 						{
 							id: `msg-${Date.now()}-clarification`,
+							metadata: {
+								clarification: {
+									question: answeredQuestion,
+									answer: answer.trim(),
+								},
+							},
 							role: "user",
 							content: formatClarificationTurn({
 								question: answeredQuestion,

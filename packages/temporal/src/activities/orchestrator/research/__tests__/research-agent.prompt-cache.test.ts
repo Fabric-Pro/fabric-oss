@@ -95,6 +95,9 @@ describe("research agent prompt cache", () => {
 			"user-1",
 			"org-1",
 			true,
+			undefined,
+			undefined,
+			{ callPurpose: "research" },
 		);
 	});
 

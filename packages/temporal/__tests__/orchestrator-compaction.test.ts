@@ -8,6 +8,7 @@
  * fallback).
  */
 
+import { patched } from "@temporalio/workflow";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const activityStubs = vi.hoisted(() => ({
@@ -21,7 +22,7 @@ vi.mock("@temporalio/workflow", () => ({
 		error: vi.fn(),
 		debug: vi.fn(),
 	},
-	patched: vi.fn(() => true),
+	patched: vi.fn((id: string) => id !== "orch-keep-turn-compaction-v1"),
 	proxyActivities: vi.fn(() => activityStubs),
 	workflowInfo: vi.fn(() => ({ unsafe: { isReplaying: false } })),
 	startChild: vi.fn(),
@@ -29,6 +30,7 @@ vi.mock("@temporalio/workflow", () => ({
 }));
 
 import {
+	answerUnpairedToolCalls,
 	maybeCompactConversationHistory,
 	trimLeadingOrphans,
 	trimTrailingOrphans,
@@ -82,6 +84,9 @@ function buildState(overrides: Partial<WorkflowState> = {}): WorkflowState {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	vi.mocked(patched).mockImplementation(
+		(id: string) => id !== "orch-keep-turn-compaction-v1",
+	);
 	activityStubs.compactConversationHistoryActivity.mockResolvedValue({
 		summaryText: "PROGRESS SO FAR — established context.",
 		usage: { inputTokens: 1234, outputTokens: 567 },
@@ -132,6 +137,57 @@ describe("trimTrailingOrphans", () => {
 
 	it("handles empty slice", () => {
 		expect(trimTrailingOrphans([])).toEqual([]);
+	});
+});
+
+describe("answerUnpairedToolCalls", () => {
+	const at = "2026-10-25T00:00:00.000Z";
+	const twoCalls: IterativeMessage = {
+		role: "assistant",
+		content: "",
+		toolCalls: [
+			{ id: "tc-1", name: "fabric_get_frame", args: {} },
+			{ id: "tc-2", name: "fabric_edit_frame_block", args: {} },
+		],
+		timestamp: at,
+		iteration: 7,
+	};
+
+	it("answers a call the deadline left without a result, after the recorded ones", () => {
+		const history: IterativeMessage[] = [
+			{ role: "user", content: "edit the page", timestamp: at },
+			twoCalls,
+			{
+				role: "tool",
+				content: "outline",
+				toolCallId: "tc-1",
+				timestamp: at,
+			},
+		];
+		answerUnpairedToolCalls(history, "interrupted — outcome unknown");
+		expect(history).toHaveLength(4);
+		expect(history[3]).toMatchObject({
+			role: "tool",
+			toolCallId: "tc-2",
+			content:
+				"fabric_edit_frame_block was interrupted — outcome unknown.",
+			iteration: 7,
+		});
+	});
+
+	it("leaves a fully answered turn and a text reply unchanged", () => {
+		const answered: IterativeMessage[] = [
+			twoCalls,
+			{ role: "tool", content: "a", toolCallId: "tc-1", timestamp: at },
+			{ role: "tool", content: "b", toolCallId: "tc-2", timestamp: at },
+		];
+		answerUnpairedToolCalls(answered, "x");
+		expect(answered).toHaveLength(3);
+		const text: IterativeMessage[] = [
+			{ role: "assistant", content: "done", timestamp: at },
+		];
+		answerUnpairedToolCalls(text, "x");
+		expect(text).toHaveLength(1);
 	});
 });
 
@@ -488,5 +544,72 @@ describe("maybeCompactConversationHistory — failure paths", () => {
 		expect(history).toHaveLength(originalLength);
 		expect(state.iterationCosts).toHaveLength(0);
 		expect(state.lastCompactionIteration).toBe(10);
+	});
+});
+
+describe("response-group compaction", () => {
+	it("moves a cut inside multiple results back before their response and keeps its notes", async () => {
+		vi.mocked(patched).mockReturnValue(true);
+		const response = msg(
+			"assistant",
+			"The evidence supports a comparison.",
+			{
+				toolCalls: [
+					{ id: "example-a", name: "read_a", args: {} },
+					{ id: "example-b", name: "read_b", args: {} },
+				],
+			},
+		);
+		const history = [
+			userMsg(),
+			...Array.from({ length: 5 }, () => assistantText("older")),
+			response,
+			toolResult("example-a"),
+			toolResult("example-b"),
+			...Array.from({ length: 5 }, () => assistantText("recent")),
+		];
+		await maybeCompactConversationHistory(
+			buildState(),
+			history,
+			10,
+			95_000,
+			100_000,
+			"example-user",
+		);
+		const compacted =
+			activityStubs.compactConversationHistoryActivity.mock.calls[0][0]
+				.oldTurns;
+		expect(compacted).not.toContain(response);
+		expect(history.slice(2, 5)).toEqual([
+			response,
+			toolResult("example-a"),
+			toolResult("example-b"),
+		]);
+	});
+
+	it("keeps the attachment-carrying user message when prior history precedes it", async () => {
+		vi.mocked(patched).mockReturnValue(true);
+		const source = msg("user", "Compare these diagrams", {
+			imageAttachments: [],
+		} as Partial<IterativeMessage>);
+		const history = [
+			userMsg("Earlier turn"),
+			assistantText("Earlier answer"),
+			source,
+			...Array.from({ length: 12 }, () => assistantText("round")),
+		];
+		await maybeCompactConversationHistory(
+			buildState(),
+			history,
+			10,
+			95_000,
+			100_000,
+			"example-user",
+		);
+		expect(history[2]).toBe(source);
+		expect(
+			activityStubs.compactConversationHistoryActivity.mock.calls[0][0]
+				.currentTask,
+		).toBe(source.content);
 	});
 });

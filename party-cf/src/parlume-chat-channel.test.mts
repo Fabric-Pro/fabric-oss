@@ -11,11 +11,15 @@ type Channel = {
 	receive(body: unknown): Promise<Response>;
 	checkDeliveries(): Promise<void>;
 	runSuggestionPass(input: { enabled: boolean }): Promise<void>;
-	nextWakeAt(): Promise<number | null>;
-	noteSpeechSegment(): void;
+	nextWakeAt(input: { suggestions: boolean }): Promise<number | null>;
+	noteSpeechSegment(): boolean;
 	beginChatTurn(generation: number): void;
 	isChatTurnCurrent(generation: number): boolean;
 	isAvailable(): Promise<boolean>;
+	spokenReference(command: {
+		kind: "say" | "go" | "more";
+		tag: string;
+	}): Promise<{ kind: "speak" | "ask"; text: string } | null>;
 };
 
 const UNAVAILABLE =
@@ -139,7 +143,7 @@ test("a post is tagged, sent through Fabric and reported only as queued", async 
 			},
 		],
 	);
-	assert.deepEqual(meeting.wakes, [1_008_000, 1_008_000]);
+	assert.deepEqual(meeting.wakes, [1_015_000, 1_015_000]);
 	assert.equal(meeting.events("chat.forwarded")[0]?.meta.delivery, "queued");
 });
 
@@ -186,7 +190,7 @@ test("a post's own tag coming back confirms it and is never treated as a request
 test("with nothing ever seen in the chat, a missing post marks it unavailable, Parlume says so once, and later posts are refused at once", async () => {
 	const meeting = harness();
 	await meeting.channel.send({ message: "The link", turnId: "turn-1" });
-	meeting.clock.now += 7_999;
+	meeting.clock.now += 14_999;
 	await meeting.channel.checkDeliveries();
 	assert.equal(meeting.reports().length, 0);
 
@@ -194,7 +198,7 @@ test("with nothing ever seen in the chat, a missing post marks it unavailable, P
 	await meeting.channel.checkDeliveries();
 	await meeting.channel.checkDeliveries();
 
-	assert.equal(meeting.events("chat.unconfirmed")[0]?.meta.latencyMs, 8_000);
+	assert.equal(meeting.events("chat.unconfirmed")[0]?.meta.latencyMs, 15_000);
 	assert.equal(meeting.events("chat.unavailable").length, 1);
 	assert.deepEqual(
 		meeting.reports().map((r) => r.body.outcome),
@@ -212,7 +216,7 @@ test("with nothing ever seen in the chat, a missing post marks it unavailable, P
 test("a message from anyone clears the unavailable mark", async () => {
 	const meeting = harness();
 	await meeting.channel.send({ message: "The link" });
-	meeting.clock.now += 8_000;
+	meeting.clock.now += 15_000;
 	await meeting.channel.checkDeliveries();
 
 	await meeting.channel.receive(chatMessage("Can anyone see this?"));
@@ -228,7 +232,7 @@ test("a missing post in a chat that works is only unconfirmed", async () => {
 	const meeting = harness();
 	await meeting.channel.receive(chatMessage("Morning all"));
 	await meeting.channel.send({ message: "The link", turnId: "turn-1" });
-	meeting.clock.now += 9_000;
+	meeting.clock.now += 16_000;
 
 	await meeting.channel.checkDeliveries();
 
@@ -243,7 +247,7 @@ test("a missing post in a chat that works is only unconfirmed", async () => {
 test("the unavailable notice waits until Parlume is not speaking, and is retried if it could not be said", async () => {
 	const meeting = harness();
 	await meeting.channel.send({ message: "The link" });
-	meeting.clock.now += 8_000;
+	meeting.clock.now += 15_000;
 	meeting.state.busy = true;
 	await meeting.channel.checkDeliveries();
 	assert.deepEqual(meeting.spoken, []);
@@ -307,7 +311,12 @@ test("say, go, more and stop act on tagged posts; an unknown tag and an unaddres
 	assert.deepEqual(meeting.spoken, ["F-12 ships Friday."]);
 	assert.deepEqual(
 		meeting.turns.map((turn) => [turn.text, turn.replyChannel]),
-		[["More detail on P1: F-12 ships Friday.", "CHAT"]],
+		[
+			[
+				"More detail on what Parlume posted in the meeting chat as P1 (the label of that chat message, not a work item ID): F-12 ships Friday.",
+				"CHAT",
+			],
+		],
 	);
 	assert.equal(meeting.interrupts(), 1);
 	assert.equal(
@@ -347,6 +356,48 @@ test("a held change is posted with its go handle, and go asks for it again in th
 	assert.equal(meeting.events("chat.held_already_run").length, 1);
 });
 
+test("a spoken reference gets the same post action for the caller to answer by voice", async () => {
+	const meeting = harness();
+	await meeting.channel.send({
+		message: "Two open features: F-12 and F-13.",
+	});
+	await meeting.channel.send({
+		held: {
+			action: "create the work item “Export”",
+			request: "create a work item called Export",
+		},
+		turnId: "turn-1",
+	});
+
+	assert.deepEqual(
+		plain(await meeting.channel.spokenReference({ kind: "go", tag: "P1" })),
+		{ kind: "speak", text: "Two open features: F-12 and F-13." },
+	);
+	assert.deepEqual(
+		plain(
+			await meeting.channel.spokenReference({ kind: "more", tag: "P1" }),
+		),
+		{
+			kind: "ask",
+			text: "More detail on what Parlume posted in the meeting chat as P1 (the label of that chat message, not a work item ID): Two open features: F-12 and F-13.",
+		},
+	);
+	assert.deepEqual(
+		plain(await meeting.channel.spokenReference({ kind: "go", tag: "P2" })),
+		{ kind: "ask", text: "create a work item called Export" },
+	);
+	assert.equal(
+		await meeting.channel.spokenReference({ kind: "go", tag: "P2" }),
+		null,
+	);
+	assert.equal(
+		await meeting.channel.spokenReference({ kind: "say", tag: "P9" }),
+		null,
+	);
+	assert.deepEqual(meeting.turns, []);
+	assert.deepEqual(meeting.spoken, []);
+});
+
 test("a held change without its request is refused", async () => {
 	const meeting = harness();
 
@@ -363,7 +414,7 @@ test("the chat counts as available until a post goes unseen in a silent chat", a
 	assert.equal(await meeting.channel.isAvailable(), true);
 
 	await meeting.channel.send({ message: "Here is F-12." });
-	meeting.clock.now += 8_000;
+	meeting.clock.now += 15_000;
 	await meeting.channel.checkDeliveries();
 
 	assert.equal(await meeting.channel.isAvailable(), false);
@@ -376,21 +427,21 @@ test("a suggestion pass asks Fabric only when due, posts one with its go handle,
 				? Response.json({
 						suggest: true,
 						text: "F-12 already covers this.",
+						speaker: "Sam",
+						quote: "we still need an export",
+						topic: "Roadmap export",
 					})
 				: Response.json({ accepted: true }),
 	});
 	const suggests = () =>
 		meeting.requests.filter((r) => r.path.endsWith("/suggest"));
 	await meeting.channel.receive(chatMessage("Morning"));
+	meeting.channel.noteSpeechSegment();
 	await meeting.channel.runSuggestionPass({ enabled: true });
-	for (let index = 0; index < 3; index++) {
-		meeting.channel.noteSpeechSegment();
-	}
-	meeting.clock.now += 89_999;
-	await meeting.channel.runSuggestionPass({ enabled: true });
-	assert.equal(suggests().length, 0);
+	assert.equal(suggests().length, 0, "one remark is not enough");
 
-	meeting.clock.now += 1;
+	// The first pass runs as soon as enough is said, with no interval to wait.
+	meeting.channel.noteSpeechSegment();
 	await meeting.channel.runSuggestionPass({ enabled: true });
 
 	assert.deepEqual(suggests()[0]?.body, {
@@ -400,14 +451,16 @@ test("a suggestion pass asks Fabric only when due, posts one with its go handle,
 	});
 	assert.equal(
 		meeting.posts()[0]?.body.message,
-		'[P1] Suggestion: F-12 already covers this. (reply "go P1" and I\'ll say it)',
+		'[P1] Suggestion on Roadmap export, re Sam: "we still need an export". F-12 already covers this. (reply "go P1" and I\'ll say it)',
 	);
 	await meeting.channel.receive(chatMessage("go P1"));
 	await flush();
-	assert.deepEqual(meeting.spoken, ["F-12 already covers this."]);
+	assert.deepEqual(meeting.spoken, [
+		"Sam, on Roadmap export: F-12 already covers this.",
+	]);
 
-	// The counter starts again: no pass until three more segments.
-	meeting.clock.now += 90_000;
+	// The counter starts again: no pass until two more segments.
+	meeting.clock.now += 45_000;
 	await meeting.channel.runSuggestionPass({ enabled: true });
 	assert.equal(suggests().length, 1);
 });
@@ -419,6 +472,9 @@ test("suggestions are skipped while disabled, busy or with the chat unavailable,
 				? Response.json({
 						suggest: true,
 						text: "Ask who owns the export.",
+						speaker: "Alex",
+						quote: "someone should do the export",
+						topic: "Export owner",
 					})
 				: Response.json({ accepted: true }),
 	});
@@ -428,7 +484,7 @@ test("suggestions are skipped while disabled, busy or with the chat unavailable,
 		for (let index = 0; index < 3; index++) {
 			meeting.channel.noteSpeechSegment();
 		}
-		meeting.clock.now += 90_000;
+		meeting.clock.now += 300_000;
 		await meeting.channel.runSuggestionPass({ enabled });
 	};
 	await meeting.channel.receive(chatMessage("Morning"));
@@ -453,7 +509,7 @@ test("suggestions are skipped while disabled, busy or with the chat unavailable,
 test("no suggestion pass while the chat is unavailable", async () => {
 	const meeting = harness();
 	await meeting.channel.send({ message: "The link" });
-	meeting.clock.now += 8_000;
+	meeting.clock.now += 15_000;
 	await meeting.channel.checkDeliveries();
 	for (let index = 0; index < 3; index++) {
 		meeting.channel.noteSpeechSegment();
@@ -468,28 +524,56 @@ test("no suggestion pass while the chat is unavailable", async () => {
 	);
 });
 
-test("at most twelve suggestions an hour", async () => {
+test("at most one suggestion every two minutes, ten an hour", async () => {
+	const points = [
+		"F-3 ships on Friday.",
+		"Dana owns billing.",
+		"The login bug is fixed in staging.",
+		"Mobile was descoped last sprint.",
+		"Security review passed Monday.",
+		"Exports use the CSV template.",
+		"Search indexing runs nightly.",
+		"Pricing moved to the next quarter.",
+		"Onboarding emails go out weekly.",
+		"The audit log keeps ninety days.",
+		"Reports render as PDF now.",
+		"Webhooks retry three times.",
+		"Dark mode landed in October.",
+		"Invoices close at month end.",
+	];
 	let index = 0;
 	const meeting = harness({
-		fabric: (path) =>
-			path.endsWith("/suggest")
-				? Response.json({
-						suggest: true,
-						text: `Distinct point ${index++} about item ${"abcdefghijklmnop"[index]}`,
-					})
-				: Response.json({ accepted: true }),
+		fabric: (path) => {
+			if (!path.endsWith("/suggest")) {
+				return Response.json({ accepted: true });
+			}
+			const point = index++;
+			return Response.json({
+				suggest: true,
+				text: points[point],
+				speaker: "Sam",
+				quote: `question ${point}`,
+				topic: `Topic ${point}`,
+			});
+		},
 	});
 	await meeting.channel.receive(chatMessage("Morning"));
 	await meeting.channel.runSuggestionPass({ enabled: true });
-	for (let pass = 0; pass < 14; pass++) {
-		for (let segment = 0; segment < 3; segment++) {
-			meeting.channel.noteSpeechSegment();
+	const passEvery = async (ms: number, passes: number) => {
+		for (let pass = 0; pass < passes; pass++) {
+			for (let segment = 0; segment < 3; segment++) {
+				meeting.channel.noteSpeechSegment();
+			}
+			meeting.clock.now += ms;
+			await meeting.channel.runSuggestionPass({ enabled: true });
 		}
-		meeting.clock.now += 90_000;
-		await meeting.channel.runSuggestionPass({ enabled: true });
-	}
+	};
+	// A pass every 45 seconds for 90 seconds: one post, then quiet.
+	await passEvery(45_000, 2);
+	assert.equal(meeting.posts().length, 1);
 
-	assert.equal(meeting.posts().length, 12);
+	await passEvery(120_000, 12);
+	assert.equal(meeting.posts().length, 10);
 });
 
 test("a chat request is being answered until its final post or two minutes", async () => {
@@ -514,9 +598,67 @@ test("a chat request is being answered until its final post or two minutes", asy
 
 test("the next wake is the earliest future delivery deadline or suggestion pass", async () => {
 	const meeting = harness();
-	assert.equal(await meeting.channel.nextWakeAt(), 1_090_000);
+	const wake = (suggestions = true) =>
+		meeting.channel.nextWakeAt({ suggestions });
+	assert.equal(await wake(), null, "nothing said: no pass to wake for");
+
+	assert.equal(meeting.channel.noteSpeechSegment(), false);
+	assert.equal(meeting.channel.noteSpeechSegment(), true, "enough said");
+	assert.equal(meeting.channel.noteSpeechSegment(), false);
+	assert.equal(await wake(), 1_005_000, "the first pass: right away");
+	assert.equal(await wake(false), null, "suggestions off");
+
+	meeting.state.busy = true;
+	await meeting.channel.runSuggestionPass({ enabled: true });
+	meeting.clock.now += 60_000;
+	assert.equal(
+		await wake(),
+		1_065_000,
+		"due but busy: shortly, not in a tight loop",
+	);
+	meeting.state.busy = false;
+	await meeting.channel.runSuggestionPass({ enabled: true });
+	meeting.channel.noteSpeechSegment();
+	meeting.channel.noteSpeechSegment();
+	assert.equal(await wake(), 1_105_000, "the pass interval after a pass");
+
 	await meeting.channel.send({ message: "The link" });
-	assert.equal(await meeting.channel.nextWakeAt(), 1_008_000);
+	assert.equal(await wake(false), 1_075_000);
+});
+
+test("a due pass waits for the gap after the last post, not for the next timer", async () => {
+	const meeting = harness({
+		fabric: (path) =>
+			path.endsWith("/suggest")
+				? Response.json({
+						suggest: true,
+						text: "F-12 already covers this.",
+						speaker: "Sam",
+						quote: "we still need an export",
+						topic: "Roadmap export",
+					})
+				: Response.json({ accepted: true }),
+	});
+	await meeting.channel.receive(chatMessage("Morning"));
+	await meeting.channel.runSuggestionPass({ enabled: true });
+	meeting.channel.noteSpeechSegment();
+	meeting.channel.noteSpeechSegment();
+	meeting.clock.now += 45_000;
+	await meeting.channel.runSuggestionPass({ enabled: true });
+	assert.equal(meeting.posts().length, 1);
+	const postedAt = meeting.clock.now;
+	await meeting.channel.receive(
+		chatMessage(String(meeting.posts()[0]?.body.message), {
+			senderName: "Fabric Parlume",
+		}),
+	);
+
+	meeting.channel.noteSpeechSegment();
+	meeting.channel.noteSpeechSegment();
+	assert.equal(
+		await meeting.channel.nextWakeAt({ suggestions: true }),
+		postedAt + 120_000,
+	);
 });
 
 test("malformed bodies are refused", async () => {

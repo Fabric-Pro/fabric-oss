@@ -22,6 +22,7 @@ import type * as orchestratorMemoryActivities from "../../../activities/orchestr
 import type * as postOperationResultModule from "../../../activities/post-operation-result";
 import type * as weaveActivities from "../../../activities/weave";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "../../ai-non-retryable-errors";
+import { advisorChargedUsage } from "../turn-budget";
 import { orchestratorErrorMessage } from "../usage-limit";
 
 const { destroySandboxActivity, updateWeaveExecutionActivity } =
@@ -1113,7 +1114,7 @@ export function buildWorkflowOutput(
 		state.degradedCapabilities,
 	);
 
-	// Compute a final token-budget snapshot from iterationCosts so
+	// Compute the final budget snapshot with the same marker-gated measure so
 	// the UI can render TokenBudgetCard even on successful runs, and include any
 	// accumulated LimitSignals (provider or internal) for banner/toast rendering.
 	const tokenBudget = buildFinalTokenBudget(state);
@@ -1156,13 +1157,15 @@ export function buildWorkflowOutput(
 		// renders it without any new-chat workaround.
 		...(state.budgetStop ? { budgetStop: state.budgetStop } : {}),
 		...(state.truncated ? { truncated: state.truncated } : {}),
+		...(state.apiBilling ? { apiBilling: state.apiBilling } : {}),
 	};
 }
 
 /**
- * Final token-budget snapshot for the workflow output. Based solely on
- * iteration costs (which iterative-execution maintains). For non-iterative
- * runs `iterationCosts` is empty and we return undefined — no card to show.
+ * Final token-budget snapshot: under the recorded weighted marker, use the
+ * ledger usage plus later recorded costs, and the turn allowance. Older histories
+ * use iteration costs. For non-iterative runs `iterationCosts` is empty and we
+ * return undefined — no card to show.
  */
 function buildFinalTokenBudget(
 	state: WorkflowState,
@@ -1170,11 +1173,16 @@ function buildFinalTokenBudget(
 	if (state.iterationCosts.length === 0) {
 		return undefined;
 	}
-	const used = state.iterationCosts.reduce(
-		(sum, ic) => sum + ic.inputTokens + ic.outputTokens,
-		0,
-	);
-	const total = BUDGET.defaultMaxTotalTokens;
+	const used =
+		advisorChargedUsage(state) ??
+		state.iterationCosts.reduce(
+			(sum, ic) => sum + ic.inputTokens + ic.outputTokens,
+			0,
+		);
+	const total =
+		state.advisorWeightedAllowanceEnabled && state.turnLedger
+			? state.turnLedger.allowance
+			: BUDGET.defaultMaxTotalTokens;
 	// usagePercentage is a decimal in [0, 1] to match the TokenBudgetCard
 	// convention (which multiplies by 100 for display).
 	const usagePercentage = total > 0 ? Math.min(used / total, 1) : 0;
@@ -1224,7 +1232,8 @@ function buildPlanningAuditSummary(
 		(s) =>
 			s.type === "semantic_memory" ||
 			s.type === "letta_memory" ||
-			s.type === "trajectory_reuse",
+			s.type === "trajectory_reuse" ||
+			s.type === "orchestrator_memory",
 	);
 	const usedResearch = usedSources.some((s) => s.type === "web_research");
 
@@ -1234,8 +1243,14 @@ function buildPlanningAuditSummary(
 		headline = "Reusing similar past execution";
 	} else if (usedResearch) {
 		headline = "Created with fresh web research";
-	} else if (usedMemory) {
+	} else if (
+		usedSources.some(
+			(s) => s.type === "semantic_memory" || s.type === "letta_memory",
+		)
+	) {
 		headline = "Created using past experience";
+	} else if (usedMemory) {
+		headline = "Created with memory context";
 	} else if (usedSources.some((s) => s.type === "workspace_rag")) {
 		headline = "Created using workspace knowledge";
 	}
@@ -1288,8 +1303,12 @@ function buildPlanningAuditSummary(
  */
 function formatSourceType(type: string): string {
 	const labels: Record<string, string> = {
+		orchestrator_memory: "Orchestrator Memory",
 		user_input: "User Input",
 		workspace_rag: "Workspace Documents",
+		project_context: "Project Context",
+		agent_template: "Agent Template",
+		fabric_pattern: "Fabric Patterns",
 		semantic_memory: "Past Executions",
 		letta_memory: "Keyword Memory",
 		trajectory_reuse: "Similar Trajectory",

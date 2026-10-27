@@ -1,10 +1,10 @@
 /**
- * Post-generate script to fix Decimal handling in generated Zod schemas
- * The prisma-zod-generator uses z.instanceof(Prisma.Decimal,..) which requires
+ * Preserve scalar Decimal validation and JSON defaults in generated Zod schemas.
+ * The prisma-zod-generator's Decimal validators require
  * importing Prisma from the generated client. This creates bundler issues with
  * Next.js Turbopack.
  * Instead of adding the Prisma import, we replace Prisma.Decimal usage with
- * z.string which is sufficient for validation (Prisma accepts string decimals).
+ * string/number validators (Prisma accepts scalar decimal values).
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
@@ -20,6 +20,7 @@ const decimalReplacement =
 const decimalPatterns = [
 	/z\.instanceof\(Prisma\.Decimal,\s*\{[\s\S]*?\}\)/g,
 	/z\.instanceof\(Prisma\.Decimal,\s*\{[\s\S]*?\}\)\.nullish\(\)/g,
+	/z\.custom<InstanceType<typeof Prisma\.Decimal>>\(\(\w+\) => Prisma\.Decimal\.isDecimal\(\w+\),\s*\{[\s\S]*?\}\)/g,
 ];
 
 let totalReplacements = 0;
@@ -58,12 +59,19 @@ if (bigintMatches?.length) {
 	);
 }
 
-// Remove any existing Prisma import if present (no longer needed)
-if (content.includes("import { Prisma } from '../generated/client';")) {
-	content = content.replace(
-		"import { Prisma } from '../generated/client';\n",
-		"",
-	);
+// Preserve the existing JSON-string defaults for empty JSON fields. Generator
+// 3.x emits parsed arrays/objects; changing omitted-input results belongs in a
+// separate API contract change, rather than a dependency upgrade.
+content = content.replace(
+	/(z\.unknown\(\)[^\n]*\.default\()(\[\]|\{\})(\))/g,
+	(_match, head, value, tail) => `${head}${JSON.stringify(value)}${tail}`,
+);
+
+// Decimal repairs leave no Prisma references, so drop the generator's import.
+const prismaImport =
+	/import \{ Prisma \} from ['"]\.\.\/generated\/(?:client|browser)['"];\r?\n/g;
+if (prismaImport.test(content)) {
+	content = content.replace(prismaImport, "");
 	console.log("Removed unused Prisma import from zod/index.ts");
 }
 

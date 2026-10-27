@@ -5,14 +5,10 @@
  * stop's wording. Counts are tokens; `outstanding` is not measured usage
  * (unsettled reservations and requests whose usage is unknown).
  */
-export interface TurnBudgetStop {
-	kind: "token_allowance";
-	allowance: number;
-	measured: number;
-	outstanding: number;
-	enforcement: "ENFORCED" | "MEASURED_ONLY" | null;
-	stopReason: "allowance_exhausted" | "finalization_unavailable";
-}
+import type { OrchestratorWorkflowOutput } from "@repo/temporal";
+export type TurnBudgetStop = NonNullable<
+	OrchestratorWorkflowOutput["budgetStop"]
+>;
 
 function count(value: unknown): number | null {
 	return typeof value === "number" && Number.isFinite(value) && value >= 0
@@ -28,6 +24,36 @@ export function parseTurnBudgetStop(
 		return undefined;
 	}
 	const record = value as Record<string, unknown>;
+	if (record.version !== undefined && record.version !== 1) {
+		return undefined;
+	}
+	if (
+		record.version === 1 &&
+		(record.kind === "round_limit" ||
+			record.kind === "token_budget" ||
+			record.kind === "time_limit")
+	) {
+		const used = count(record.used);
+		const limit = count(record.limit);
+		if (used === null || limit === null) {
+			return undefined;
+		}
+		if (record.kind === "round_limit" || record.kind === "time_limit") {
+			return { version: 1, kind: record.kind, used, limit };
+		}
+		const maxTokens = count(record.maxTokens);
+		const reservedTokens = count(record.reservedTokens);
+		return maxTokens === null || reservedTokens === null
+			? undefined
+			: {
+					version: 1,
+					kind: "token_budget",
+					used,
+					limit,
+					maxTokens,
+					reservedTokens,
+				};
+	}
 	const allowance = count(record.allowance);
 	const measured = count(record.measured);
 	const outstanding = count(record.outstanding);
@@ -41,6 +67,7 @@ export function parseTurnBudgetStop(
 	}
 	return {
 		kind: "token_allowance",
+		...(record.version === 1 ? { version: 1 as const } : {}),
 		allowance,
 		measured,
 		outstanding,
@@ -56,15 +83,14 @@ export function parseTurnBudgetStop(
 	};
 }
 
-/**
- * The stop the chat shows a budget card for: only a turn that completed. A
- * cancelled or failed turn keeps its stored payload (the live event and a
- * reconnect both carry what the row stores) and shows no budget card,
- * because it did not end on its allowance as far as the user is concerned.
- */
+/** Only terminal turns can offer a budget continuation. */
 export function budgetStopToShow(
 	status: string,
 	budgetStop: TurnBudgetStop | undefined,
 ): TurnBudgetStop | undefined {
-	return status === "completed" ? budgetStop : undefined;
+	return ["completed", "limited", "failed", "cancelled"].includes(
+		status.toLowerCase(),
+	)
+		? budgetStop
+		: undefined;
 }

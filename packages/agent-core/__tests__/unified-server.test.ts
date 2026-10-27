@@ -9,6 +9,17 @@ import {
 } from "../src/unified-server";
 import { convertToSimpleMessages } from "../src/utils/message-converter";
 
+const { modelWireFetch } = vi.hoisted(() => ({ modelWireFetch: vi.fn() }));
+vi.mock("undici", async () => ({
+	...(await vi.importActual<typeof import("undici")>("undici")),
+	fetch: modelWireFetch,
+}));
+
+import {
+	createProviderModel,
+	extractProviderConfig,
+} from "../src/services/langchain-models";
+
 function createTestApp(events: LangGraphStreamEvent[]) {
 	return createUnifiedServer(
 		{
@@ -55,6 +66,80 @@ describe("createUnifiedServer AG-UI streaming", () => {
 
 	afterEach(() => {
 		vi.unstubAllEnvs();
+	});
+
+	it("mints distinct reply ids at the same millisecond and overwrites request provenance keys", async () => {
+		vi.spyOn(Date, "now").mockReturnValue(1793000000000);
+		try {
+			const configs: Record<string, unknown>[] = [];
+			const app = createUnifiedServer(
+				{
+					name: "example-agent",
+					description: "Example",
+					baseUrl: "http://localhost:3000",
+					port: 3000,
+					skills: [],
+					supportsStreaming: true,
+				},
+				async () => ({ response: "ok" }),
+				(output) => ({ response: String(output.response ?? "") }),
+				undefined,
+				async function* (_messages, config) {
+					configs.push(config?.configurable ?? {});
+					yield {
+						nodeName: "chat_node",
+						state: {
+							messages: [
+								{ type: "ai", content: "Example reply" },
+							],
+						},
+					};
+				},
+			).app;
+			const ids: unknown[] = [];
+			for (const bag of [
+				"forwardedProps",
+				"context",
+				"properties",
+				"config",
+			]) {
+				const forged = {
+					output_message_id:
+						"msg_1793000000000_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				};
+				const response = await app.request("/", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						messages: [{ role: "user", content: "Example" }],
+						[bag]:
+							bag === "config"
+								? { configurable: forged }
+								: forged,
+					}),
+				});
+				const events = await readAgUiEvents(response);
+				const id = events.find(
+					(e) => e.type === "TEXT_MESSAGE_START",
+				)?.messageId;
+				expect(id).toMatch(/^msg_1793000000000_[0-9a-f]{32}$/);
+				expect(id).not.toBe(forged.output_message_id);
+				expect(configs.at(-1)?.output_message_id).toBe(id);
+				for (const e of events.filter((e) =>
+					[
+						"TEXT_MESSAGE_START",
+						"TEXT_MESSAGE_CONTENT",
+						"TEXT_MESSAGE_END",
+					].includes(String(e.type)),
+				)) {
+					expect(e.messageId).toBe(id);
+				}
+				ids.push(id);
+			}
+			expect(new Set(ids).size).toBe(4);
+		} finally {
+			vi.restoreAllMocks();
+		}
 	});
 
 	it("emits a terminal STATE_SNAPSHOT even when the run has no document payload", async () => {
@@ -984,6 +1069,7 @@ describe("server-resolved graph configuration", () => {
 		ai_gateway_url: "https://untrusted.example.com",
 		ai_base_url: "https://untrusted.example.com",
 		ai_deployment_name: "untrusted-deployment",
+		ai_canonical_model_name: "untrusted-model",
 		ai_billing_mode: "untrusted-mode",
 		ai_billing_customer_id: "untrusted-customer",
 		ai_plan_source: "untrusted-plan",
@@ -1025,6 +1111,7 @@ describe("server-resolved graph configuration", () => {
 							expiresIn: 300,
 							baseUrl: "https://resolved.example.com",
 							deploymentName: "resolved-deployment",
+							canonicalModelName: "claude-sonnet-5",
 							billingMode: "resolved-mode",
 							billingCustomerId: "resolved-customer",
 							planSource: "resolved-plan",
@@ -1159,6 +1246,15 @@ describe("server-resolved graph configuration", () => {
 					: undefined;
 		const expected = {
 			ai_model_pinned: effectiveSource === "exchange" ? true : undefined,
+			ai_canonical_model_name:
+				effectiveSource === "exchange"
+					? "claude-sonnet-5"
+					: !legacy &&
+							(source === "key-only" ||
+								(source === "absent" &&
+									!path.startsWith("/a2a/")))
+						? undefined
+						: "untrusted-model",
 			ai_max_output_tokens:
 				effectiveSource === "exchange" ? 8192 : undefined,
 			ai_context_window:
@@ -1212,7 +1308,10 @@ describe("server-resolved graph configuration", () => {
 		// Synchronous callbacks may ignore the optional runtime argument.
 		if (input) {
 			for (const key of Object.keys(untrusted)) {
-				if (key === "ai_model_pinned") {
+				if (
+					key === "ai_model_pinned" ||
+					key === "ai_canonical_model_name"
+				) {
 					continue;
 				}
 				expect(input[key], key).not.toBe(
@@ -1227,9 +1326,12 @@ describe("server-resolved graph configuration", () => {
 				(source) => ({ path, source }),
 			),
 		),
-	)("ignores body metadata on $path ($source)", async ({ path, source }) => {
-		await request(path, source);
-	});
+	)(
+		"protects reserved body metadata on $path ($source)",
+		async ({ path, source }) => {
+			await request(path, source);
+		},
+	);
 	it.each(
 		["/runs/stream", "/threads/example-thread/runs/stream", "/"].flatMap(
 			(path) =>
@@ -1492,4 +1594,539 @@ describe("converted graph messages for CopilotKit", () => {
 			],
 		});
 	});
+});
+
+describe("model hint source selection", () => {
+	let requestCounter = 0;
+	beforeEach(() => {
+		modelWireFetch.mockReset();
+		vi.stubEnv("AGENT_API_KEY", "");
+		vi.stubEnv("AGENT_API_KEYS", "");
+		vi.stubEnv("AGENT_HMAC_SECRET", "");
+	});
+	afterEach(() => {
+		vi.unstubAllEnvs();
+		vi.restoreAllMocks();
+	});
+	const routes = [
+		["/runs/stream", "sync"],
+		["/runs/stream", "platform"],
+		["/threads/example-thread/runs/stream", "sync"],
+		["/threads/example-thread/runs/stream", "platform"],
+		["/", "sync"],
+		["/", "basic"],
+		["/", "platform"],
+		["/a2a/send", "sync"],
+		["/a2a/send/stream", "sync"],
+		["/a2a/send/stream", "basic"],
+		["/runs", "sync"],
+		["/threads/example-thread/runs", "sync"],
+		["/run", "sync"],
+		["/invoke", "sync"],
+		["/stream", "sync"],
+		["/stream", "basic"],
+	] as const;
+	it.each(
+		routes.flatMap(([path, mode]) =>
+			[
+				"cache-forward",
+				"cache-reverse",
+				"reasoning-forward",
+				"reasoning-reverse",
+			].flatMap((direction) =>
+				[
+					"body-no-hints",
+					"body-stale-hints",
+					"body-model-less-hints",
+					"body-canonical-only",
+					"body-reasoning-only",
+					"body-hints",
+					"exchange-no-body",
+					"exchange-same-body",
+					"pinned",
+					"no-exchange",
+				].map((source) => ({ path, mode, direction, source })),
+			),
+		),
+	)(
+		"$path ($mode) selects $source hints in $direction",
+		async ({ path, mode, direction, source }) => {
+			const exchangeIsClaude = direction === "cache-forward";
+			const exchangeIsReasoning = direction === "reasoning-forward";
+			const exchangeCanonical = exchangeIsClaude
+				? "claude-sonnet-5"
+				: exchangeIsReasoning
+					? "deepseek-r1"
+					: "llama-3-3-70b";
+			const bodyCanonical =
+				direction === "cache-reverse"
+					? "claude-sonnet-5"
+					: direction === "reasoning-reverse"
+						? "deepseek-r1"
+						: "llama-3-3-70b";
+			const legacy = [
+				"/runs",
+				"/threads/example-thread/runs",
+				"/run",
+				"/invoke",
+				"/stream",
+			].includes(path);
+			const credentials = {
+				apiKey: "example-key",
+				provider: "DATABRICKS",
+				model: "exchange-alias",
+				canonicalModelName: exchangeCanonical,
+				...(source === "pinned" && {
+					modelPinned: true,
+					isReasoningModel: exchangeIsReasoning,
+				}),
+				baseUrl: "https://example.com",
+				expiresIn: 300,
+			};
+			const exchange = vi
+				.spyOn(
+					await import("../src/services/token-exchange"),
+					"getAICredentialsFromHeaders",
+				)
+				.mockResolvedValue(
+					source === "no-exchange" ? null : credentials,
+				);
+			const captured: Array<Record<string, unknown>> = [];
+			const invoke = vi.fn(async (input, config) => {
+				captured.push(input, config?.configurable ?? {});
+				return { response: "done" };
+			});
+			const { app } = createUnifiedServer(
+				{
+					name: "example-agent",
+					description: "Example",
+					baseUrl: "http://localhost:3000",
+					port: 3000,
+					skills: [],
+				},
+				invoke,
+				() => ({ response: "done" }),
+				mode === "basic"
+					? async function* (input) {
+							captured.push(input);
+							yield { type: "text", content: "done" };
+						}
+					: undefined,
+				mode === "platform"
+					? async function* (input, config) {
+							captured.push(input, config?.configurable ?? {});
+							yield {
+								nodeName: "end",
+								state: {
+									messages: [
+										{ role: "assistant", content: "done" },
+									],
+								},
+							};
+						}
+					: undefined,
+			);
+			const forwarded = {
+				...(source !== "exchange-no-body" && {
+					ai_model:
+						source === "exchange-same-body"
+							? credentials.model
+							: source === "body-no-hints"
+								? bodyCanonical === "claude-sonnet-5"
+									? "databricks-claude-sonnet-5"
+									: bodyCanonical === "deepseek-r1"
+										? "databricks-deepseek-r1"
+										: "databricks-llama"
+								: source === "body-model-less-hints"
+									? "llama-endpoint"
+									: "body-alias",
+				}),
+				ai_provider: "DATABRICKS",
+				ai_api_key: "example-key",
+				...([
+					"body-hints",
+					"pinned",
+					"no-exchange",
+					"exchange-same-body",
+				].includes(source) && {
+					ai_canonical_model_name: bodyCanonical,
+					ai_is_reasoning: direction === "reasoning-reverse",
+				}),
+				...(source === "body-canonical-only" && {
+					ai_canonical_model_name: bodyCanonical,
+				}),
+				...(source === "body-reasoning-only" && {
+					ai_is_reasoning: direction === "reasoning-reverse",
+				}),
+			};
+			const staleOrForwarded =
+				source === "body-stale-hints"
+					? {
+							...forwarded,
+							ai_model: "stale-alias",
+							ai_canonical_model_name: exchangeCanonical,
+							ai_is_reasoning: exchangeIsReasoning,
+						}
+					: forwarded;
+			const messages = [{ role: "user", content: "hello" }];
+			const body = path.startsWith("/a2a/")
+				? {
+						message: {
+							role: "user",
+							parts: [{ type: "text", text: "hello" }],
+						},
+						metadata: forwarded,
+					}
+				: {
+						...forwarded,
+						messages,
+						input: { ...forwarded, messages },
+						config: { configurable: staleOrForwarded },
+						configurable: staleOrForwarded,
+						context:
+							source === "body-model-less-hints"
+								? {
+										ai_canonical_model_name:
+											"claude-sonnet-5",
+										ai_is_reasoning: true,
+									}
+								: forwarded,
+						properties: forwarded,
+						forwardedProps: forwarded,
+					};
+			const response = await app.request(path, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-AI-Token": "example-token",
+					"X-AI-Is-Reasoning": "true",
+					"X-Real-IP": `192.0.2.${(++requestCounter % 250) + 1}`,
+					"X-AI-Base-URL": "https://example.com",
+				},
+				body: JSON.stringify(body),
+			});
+			await response.text();
+			expect(response.status).toBe(200);
+			const selected = captured.filter(
+				(record) => record.ai_api_key === "example-key",
+			);
+			expect(selected.length).toBeGreaterThan(0);
+			const exchangeWins =
+				!legacy &&
+				source !== "no-exchange" &&
+				(source === "pinned" ||
+					source === "exchange-no-body" ||
+					source === "exchange-same-body" ||
+					path.startsWith("/a2a/"));
+			const canonical = exchangeWins
+				? exchangeCanonical
+				: forwarded.ai_canonical_model_name;
+			const reasoning = exchangeWins
+				? exchangeIsReasoning
+				: forwarded.ai_is_reasoning;
+			const finalModel = exchangeWins
+				? credentials.model
+				: forwarded.ai_model;
+			for (const record of selected) {
+				expect(record.ai_model).toBe(finalModel);
+				expect(record.ai_canonical_model_name).toBe(canonical);
+				expect(record.ai_is_reasoning).toBe(reasoning);
+				if (!finalModel) continue;
+				modelWireFetch.mockResolvedValueOnce(
+					Response.json({
+						choices: [
+							{
+								message: {
+									content: "<think>private</think>visible",
+								},
+							},
+						],
+					}),
+				);
+				const providerConfig = extractProviderConfig({
+					configurable: record,
+				});
+				expect(providerConfig).toBeDefined();
+				const builder = createProviderModel(
+					providerConfig ?? { apiKey: "", model: "" },
+				) as unknown as { clientConfig: { fetch: typeof fetch } };
+				const wireResponse = await builder.clientConfig.fetch(
+					"https://example.com/serving-endpoints/chat/invocations",
+					{
+						method: "POST",
+						body: JSON.stringify({
+							model: finalModel,
+							messages: [
+								{
+									role: "system",
+									content: "Stable instructions",
+								},
+								{ role: "user", content: "hello" },
+							],
+						}),
+					},
+				);
+				const sent = String(
+					modelWireFetch.mock.calls.at(-1)?.[1]?.body,
+				);
+				expect(sent.includes('"cache_control"')).toBe(
+					canonical === "claude-sonnet-5" ||
+						(canonical === undefined &&
+							finalModel === "databricks-claude-sonnet-5"),
+				);
+				const wire = await wireResponse.json();
+				expect(wire.choices[0].message.content).toBe(
+					(reasoning ?? finalModel === "databricks-deepseek-r1")
+						? "visible"
+						: "<think>private</think>visible",
+				);
+			}
+			expect(exchange).toHaveBeenCalledTimes(legacy ? 0 : 1);
+		},
+	);
+});
+
+// Task Planner and Story Breakdown project the boolean directly into the sync
+// model builder, without resolving a task model. Exercise that path on CopilotKit props.
+describe("opaque CopilotKit reasoning alias (Bug #1942)", () => {
+	beforeEach(() => {
+		modelWireFetch.mockReset();
+		vi.stubEnv("AGENT_API_KEY", "");
+		vi.stubEnv("AGENT_API_KEYS", "");
+		vi.stubEnv("AGENT_HMAC_SECRET", "");
+	});
+	afterEach(() => {
+		vi.unstubAllEnvs();
+		vi.restoreAllMocks();
+	});
+	it.each(["properties", "header"])(
+		"strips think tags with Task Planner style construction for prod-chat (%s)",
+		async (hintSource) => {
+			vi.spyOn(
+				await import("../src/services/token-exchange"),
+				"getAICredentialsFromHeaders",
+			).mockResolvedValue({
+				apiKey: "example-key",
+				provider: "DATABRICKS",
+				model: "other-model",
+				canonicalModelName: "llama-3-3-70b",
+				baseUrl: "https://example.com",
+				expiresIn: 300,
+			});
+			modelWireFetch.mockResolvedValueOnce(
+				Response.json({
+					choices: [
+						{
+							message: {
+								content:
+									"<think>private reasoning</think>Public answer",
+							},
+						},
+					],
+				}),
+			);
+			let visible: string | undefined;
+			const { app } = createUnifiedServer(
+				{
+					name: "example-planner",
+					description: "Example",
+					baseUrl: "http://localhost:3000",
+					port: 3000,
+					skills: [],
+				},
+				async (_input, runtime) => {
+					const configurable = runtime?.configurable ?? {};
+					// Same projection as Task Planner's analyze node; no task config API.
+					const model = createProviderModel({
+						provider: String(configurable.ai_provider),
+						apiKey: String(configurable.ai_api_key),
+						model: String(configurable.ai_model),
+						baseUrl: String(configurable.ai_gateway_url),
+						isReasoningModel:
+							typeof configurable.ai_is_reasoning === "boolean"
+								? configurable.ai_is_reasoning
+								: undefined,
+					}) as unknown as { clientConfig: { fetch: typeof fetch } };
+					const response = await model.clientConfig.fetch(
+						"https://example.com",
+						{
+							method: "POST",
+							body: JSON.stringify({
+								model: "prod-chat",
+								messages: [
+									{ role: "user", content: "Plan this" },
+								],
+							}),
+						},
+					);
+					visible = (await response.json()).choices[0].message
+						.content;
+					return { response: visible };
+				},
+				(output) => ({ response: String(output.response) }),
+			);
+			const response = await app.request("/runs/stream", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-AI-Token": "example-token",
+					"X-AI-Model": "prod-chat",
+					...(hintSource === "header" && {
+						"X-AI-Is-Reasoning": "true",
+					}),
+					"X-Real-IP": "192.0.2.194",
+				},
+				body: JSON.stringify({
+					input: {
+						messages: [{ role: "user", content: "Plan this" }],
+					},
+					properties: {
+						ai_api_key: "example-key",
+						ai_provider: "DATABRICKS",
+						ai_model: "prod-chat",
+						...(hintSource === "properties" && {
+							ai_is_reasoning: true,
+						}),
+						ai_canonical_model_name: "deepseek-r1",
+					},
+				}),
+			});
+			await response.text();
+			expect(response.status).toBe(200);
+			expect(visible).toBe("Public answer");
+		},
+	);
+});
+
+describe("executor input credential boundary", () => {
+	beforeEach(() => {
+		vi.stubEnv("AGENT_API_KEY", "");
+		vi.stubEnv("AGENT_API_KEYS", "");
+		vi.stubEnv("AGENT_HMAC_SECRET", "");
+	});
+	afterEach(() => {
+		vi.unstubAllEnvs();
+		vi.restoreAllMocks();
+	});
+	const cases = [
+		{ path: "/runs/stream", mode: "platform", pinned: false },
+		{ path: "/runs/stream", mode: "sync", pinned: false },
+		{
+			path: "/threads/example-thread/runs/stream",
+			mode: "platform",
+			pinned: false,
+		},
+		{
+			path: "/threads/example-thread/runs/stream",
+			mode: "sync",
+			pinned: false,
+		},
+		{ path: "/", mode: "platform", pinned: false },
+		{ path: "/", mode: "basic", pinned: false },
+		{ path: "/", mode: "sync", pinned: false },
+		{ path: "/runs/stream", mode: "platform", pinned: true },
+		{
+			path: "/threads/example-thread/runs/stream",
+			mode: "platform",
+			pinned: true,
+		},
+		{ path: "/", mode: "platform", pinned: true },
+	];
+	it.each(cases)(
+		"keeps the exchanged key out of executor input on $path ($mode, pinned=$pinned)",
+		async ({ path, mode, pinned }) => {
+			vi.spyOn(
+				await import("../src/services/token-exchange"),
+				"getAICredentialsFromHeaders",
+			).mockResolvedValue({
+				apiKey: "example-decrypted-key",
+				provider: "DATABRICKS",
+				model: "prod-chat",
+				canonicalModelName: "deepseek-r1",
+				baseUrl: "https://example.com",
+				expiresIn: 300,
+				...(pinned && { modelPinned: true, isReasoningModel: true }),
+			});
+			let executorInput: Record<string, unknown> | undefined;
+			let runtime: Record<string, unknown> | undefined;
+			const { app } = createUnifiedServer(
+				{
+					name: "example-secret-boundary",
+					description: "Example",
+					baseUrl: "http://localhost:3000",
+					port: 3000,
+					skills: [],
+				},
+				async (input, config) => {
+					executorInput = input;
+					runtime = config?.configurable;
+					return { response: "done" };
+				},
+				() => ({ response: "done" }),
+				mode === "basic"
+					? async function* (input) {
+							executorInput = input;
+							yield { type: "text", content: "done" };
+						}
+					: undefined,
+				mode === "platform"
+					? async function* (input, config) {
+							executorInput = input;
+							runtime = config?.configurable;
+							yield {
+								nodeName: "end",
+								state: {
+									messages: [
+										{ role: "assistant", content: "done" },
+									],
+								},
+							};
+						}
+					: undefined,
+			);
+			const messages = [{ role: "user", content: "hello" }];
+			const response = await app.request(path, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"X-AI-Token": "example-server-token",
+					"X-Real-IP": "192.0.2.250",
+				},
+				body: JSON.stringify({
+					messages,
+					input: { messages },
+					config: {
+						configurable: {
+							runtime_only_secret: "example-runtime-secret",
+						},
+					},
+				}),
+			});
+			await response.text();
+			expect(response.status).toBe(200);
+			expect(executorInput).toBeDefined();
+			expect(executorInput).not.toHaveProperty("ai_api_key");
+			expect(JSON.stringify(executorInput)).not.toContain(
+				"example-decrypted-key",
+			);
+			expect(executorInput).not.toHaveProperty("runtime_only_secret");
+			expect(executorInput).toMatchObject({
+				ai_model: "prod-chat",
+				ai_canonical_model_name: "deepseek-r1",
+				ai_is_reasoning: true,
+			});
+			if (mode === "platform") {
+				// ad8539063 platform inputs had body fields rather than transport secrets.
+				expect(executorInput).not.toHaveProperty("ai_token");
+			} else {
+				expect(executorInput?.ai_token).toBe("example-server-token");
+			}
+			if (mode !== "basic") {
+				expect(runtime?.ai_api_key).toBe("example-decrypted-key");
+				expect(runtime?.runtime_only_secret).toBe(
+					"example-runtime-secret",
+				);
+			}
+		},
+	);
 });

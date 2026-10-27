@@ -12,6 +12,10 @@
  */
 
 import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
+import {
+	type DispatchBudgetRequest,
+	runWithDispatchGuard,
+} from "@repo/utils/dispatch-guard";
 import { generateText, isStepCount, streamText, tool } from "ai";
 import { MockLanguageModelV4, simulateReadableStream } from "ai/test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -339,6 +343,48 @@ describe("getAIModelWithMetadata — per-request usage-limit check", () => {
 	});
 });
 
+describe("resolved catalog output reservation", () => {
+	it("passes the resolved model cap into the factory ledger middleware", async () => {
+		getModelForTaskMock.mockResolvedValue({
+			...SELECTION,
+			model: { ...SELECTION.model, maxOutputTokens: 8192 },
+		});
+		const requests: DispatchBudgetRequest[] = [];
+		const resolved = await getAIModelWithMetadata(
+			{ taskType: "CHAT" },
+			CONTEXT,
+		);
+		await runWithDispatchGuard(
+			{
+				key: "example-turn",
+				assertDispatchable: async () => undefined,
+				rethrowIfStopped: () => undefined,
+				abortSignal: () => undefined,
+				budget: {
+					reserve: async (request) => {
+						requests.push(request);
+						return {
+							attemptId: "example-attempt",
+							outputCap: request.requestedOutputTokens,
+						};
+					},
+					settle: async () => undefined,
+					markUnknown: async () => undefined,
+					release: async () => undefined,
+				},
+			},
+			() =>
+				generateText({
+					model: resolved.model,
+					prompt: "Example",
+					maxRetries: 0,
+				}),
+		);
+		expect(requests[0]?.requestedOutputTokens).toBe(8192);
+		expect(model.doGenerateCalls[0]?.maxOutputTokens).toBe(8192);
+	});
+});
+
 describe("model override catalog identity", () => {
 	beforeEach(() => {
 		getAiProviderApiKeyMock.mockResolvedValue({
@@ -368,6 +414,35 @@ describe("model override catalog identity", () => {
 		getModelByCanonicalNameMock.mockResolvedValue(null);
 		getCanonicalNameForProviderModelIdMock.mockResolvedValue(null);
 	});
+
+	it.each(["example-small-model", "system.ai.example-small-model"])(
+		"uses the override model output cap for %s",
+		async (override) => {
+			getProviderModelMappingForCanonicalMock.mockResolvedValue({
+				exists: override === "example-small-model",
+				providerModelId:
+					override === "example-small-model"
+						? "system.ai.example-small-model"
+						: null,
+			});
+			getCanonicalNameForProviderModelIdMock.mockResolvedValue(
+				"example-small-model",
+			);
+			getModelByCanonicalNameMock.mockResolvedValue({
+				canonicalName: "example-small-model",
+				maxOutputTokens: 8192,
+			});
+			const resolved = await getAIModelWithMetadata(
+				{ taskType: "CHAT", modelOverride: override },
+				CONTEXT,
+			);
+			expect(resolved.metadata.canonicalName).toBe("example-small-model");
+			expect(resolved.metadata.maxOutputTokens).toBe(8192);
+			expect(resolved.metadata.modelString).toBe(
+				"system.ai.example-small-model",
+			);
+		},
+	);
 
 	it.each([
 		["system.ai.claude-sonnet-5", "claude-sonnet-5", false],
@@ -414,13 +489,18 @@ describe("model override catalog identity", () => {
 			expect(
 				getProviderModelMappingForCanonicalMock,
 			).toHaveBeenCalledTimes(1);
-			expect(getModelByCanonicalNameMock).not.toHaveBeenCalled();
+			if (mapped || canonicalName !== override) {
+				expect(
+					getModelByCanonicalNameMock,
+				).toHaveBeenCalledExactlyOnceWith(canonicalName);
+			} else {
+				expect(getModelByCanonicalNameMock).not.toHaveBeenCalled();
+			}
 			expect(getProviderModelIdForCanonicalMock).not.toHaveBeenCalled();
 			if (mapped) {
 				expect(
 					getCanonicalNameForProviderModelIdMock,
 				).not.toHaveBeenCalled();
-				expect(getModelByCanonicalNameMock).not.toHaveBeenCalled();
 			} else {
 				expect(
 					getCanonicalNameForProviderModelIdMock,
@@ -440,7 +520,9 @@ describe("model override catalog identity", () => {
 		);
 		expect(resolved.metadata.canonicalName).toBe("claude-sonnet-5");
 		expect(resolved.metadata.modelString).toBe("claude-sonnet-5");
-		expect(getModelByCanonicalNameMock).not.toHaveBeenCalled();
+		expect(getModelByCanonicalNameMock).toHaveBeenCalledExactlyOnceWith(
+			"claude-sonnet-5",
+		);
 		expect(getProviderModelMappingForCanonicalMock).toHaveBeenCalledTimes(
 			1,
 		);

@@ -556,9 +556,10 @@ export interface DirectChatWorkflowOutput {
 	 */
 	toolsFailedThisTurn?: { summary?: string };
 	/**
-	 * The provider failed after part of the answer had already streamed. The
-	 * turn still returns its partial text (`success: true`, so the tools-off
-	 * retry does not restart it from scratch), and this says why it stopped.
+	 * The provider failed, or a tool's AI usage limit refused it, after part
+	 * of the answer had already streamed. The turn still returns its partial
+	 * text (`success: true`, so the tools-off retry does not restart it from
+	 * scratch), and this says why it stopped. It can come with `truncated`.
 	 */
 	partialError?: string;
 	/** Provider limit behind `error` / `partialError`, when it was one. */

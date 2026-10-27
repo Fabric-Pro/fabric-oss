@@ -18,6 +18,7 @@
  */
 
 import { getAiProviderApiKeyByProvider } from "@repo/database";
+import { normalizeAzureEndpoint } from "./azure-foundry-url";
 import {
 	hasProviderCredentials,
 	resolveProviderApiKey,
@@ -71,4 +72,33 @@ export async function resolveOpenAiApiKey({
 	}
 
 	return "";
+}
+
+/**
+ * The tenant's Azure AI Foundry resource and its plaintext key, for a direct
+ * call to the resource's OpenAI v1 API (Parlume's realtime voice). Only an
+ * API key counts: Azure has no service-principal sign-in here. Null when the
+ * tenant has no Azure AI Foundry provider with an endpoint and a key.
+ */
+export async function resolveAzureOpenAiResource({
+	userId,
+	organizationId,
+}: {
+	userId: string;
+	organizationId?: string | null;
+}): Promise<{ origin: string; apiKey: string } | null> {
+	const providerConfig = await getAiProviderApiKeyByProvider({
+		userId,
+		organizationId,
+		provider: "AZURE_AI_FOUNDRY",
+	});
+	if (!providerConfig.apiKey || !providerConfig.baseUrl) {
+		return null;
+	}
+	return {
+		origin: normalizeAzureEndpoint(providerConfig.baseUrl).origin,
+		apiKey: await resolveProviderApiKey(providerConfig, {
+			lenientDecrypt: true,
+		}),
+	};
 }

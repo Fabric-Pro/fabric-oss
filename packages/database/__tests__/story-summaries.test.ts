@@ -54,6 +54,87 @@ beforeEach(() => {
 });
 
 describe("listStorySummaries", () => {
+	it("requests updated order and a unique tie-breaker before database paging", async () => {
+		const rows = [
+			{ id: "c", identifier: "F-001", updatedAt: new Date("2026-01-01") },
+			{ id: "b", identifier: "F-002", updatedAt: new Date("2026-01-03") },
+			{ id: "a", identifier: "F-003", updatedAt: new Date("2026-01-03") },
+		];
+		// Model the database's requested ORDER BY, then OFFSET/LIMIT. A missing
+		// database order or an activity-side sort cannot produce these pages.
+		storyFindMany.mockImplementation(
+			async ({ orderBy, take, skip, select }) => {
+				expect(orderBy).toEqual([{ updatedAt: "desc" }, { id: "asc" }]);
+				expect(select.updatedAt).toBe(true);
+				return [...rows]
+					.sort(
+						(a, b) =>
+							b.updatedAt.getTime() - a.updatedAt.getTime() ||
+							a.id.localeCompare(b.id),
+					)
+					.slice(skip, skip + take);
+			},
+		);
+		storyCount.mockResolvedValue(3);
+		const first = await listStorySummaries({
+			projectId: "proj-1",
+			orderBy: "updated",
+			limit: 1,
+		});
+		const second = await listStorySummaries({
+			projectId: "proj-1",
+			orderBy: "updated",
+			limit: 1,
+			offset: 1,
+		});
+		const third = await listStorySummaries({
+			projectId: "proj-1",
+			orderBy: "updated",
+			limit: 1,
+			offset: 2,
+		});
+		expect(
+			[first, second, third].flatMap((page) =>
+				page.stories.map((row) => row.id),
+			),
+		).toEqual(["a", "b", "c"]);
+		expect(first.total).toBe(3);
+		expect(storyFindMany).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: { projectId: "proj-1" },
+				take: 1,
+				skip: 1,
+			}),
+		);
+	});
+
+	it("preserves numeric identifier ordering across pages", async () => {
+		const rows = [
+			{ id: "a", identifier: "F-100" },
+			{ id: "b", identifier: "F-9" },
+			{ id: "c", identifier: "F-094" },
+		];
+		storyFindMany.mockImplementation(async ({ where }) =>
+			where.id
+				? rows.filter((row) => where.id.in.includes(row.id))
+				: rows,
+		);
+		const first = await listStorySummaries({
+			projectId: "proj-1",
+			orderBy: "identifier",
+			limit: 2,
+		});
+		const second = await listStorySummaries({
+			projectId: "proj-1",
+			orderBy: "identifier",
+			limit: 2,
+			offset: 2,
+		});
+		expect(
+			[...first.stories, ...second.stories].map((row) => row.identifier),
+		).toEqual(["F-9", "F-094", "F-100"]);
+	});
+
 	it("loads only metadata and exact aggregate task counts", async () => {
 		const result = await listStorySummaries({ projectId: "proj-1" });
 

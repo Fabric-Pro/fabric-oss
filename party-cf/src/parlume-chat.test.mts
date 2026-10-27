@@ -54,14 +54,31 @@ const suggestions = loadParlumeModule("./parlume-suggestions.ts", fetch) as {
 		state: unknown,
 		input: { now: number; newSegments: number },
 	): boolean;
-	parseParlumeSuggestion(body: unknown): string | null;
+	parseParlumeSuggestion(body: unknown): Suggestion | null;
 	isNearDuplicateParlumeSuggestion(
 		state: unknown,
-		text: string,
+		suggestion: Pick<Suggestion, "text" | "quote">,
 		now: number,
 	): boolean;
-	acceptParlumeSuggestion(state: unknown, text: string, now: number): void;
-	formatParlumeSuggestion(tag: string, text: string): string;
+	acceptParlumeSuggestion(
+		state: unknown,
+		suggestion: Pick<Suggestion, "text" | "quote">,
+		now: number,
+	): void;
+	formatParlumeSuggestion(tag: string, suggestion: Suggestion): string;
+	spokenParlumeSuggestion(suggestion: Suggestion): string;
+};
+type Suggestion = {
+	text: string;
+	speaker: string;
+	quote: string;
+	topic: string;
+};
+const roadmapExport: Suggestion = {
+	text: "F-12 already covers the roadmap export.",
+	speaker: "Sam",
+	quote: "we still need an export",
+	topic: "Roadmap export",
 };
 
 function message(overrides: Partial<Message> = {}): Message {
@@ -134,6 +151,25 @@ test("posts are numbered per session and tagged within the chat's limit", () => 
 	assert.equal(chat.parlumeChatTag("I mean [P12]"), null);
 });
 
+test("a post reaches the chat as one readable line, without Markdown", () => {
+	// The shape of a real answer that showed literal asterisks and lost its
+	// line breaks in a Teams meeting.
+	const body = [
+		"There is **one feature** on the project roadmap.",
+		"",
+		"---",
+		"## Verify edits keep references",
+		"- **Status:** Backlog",
+		"- **Priority:** Medium",
+		"Keeps `[S1]` and __[S2]__ intact.",
+	].join("\n");
+
+	assert.equal(
+		chat.composeParlumeChatMessage("P2", body),
+		"[P2] There is one feature on the project roadmap. Verify edits keep references • Status: Backlog • Priority: Medium Keeps `[S1]` and [S2] intact.",
+	);
+});
+
 test("a post is confirmed by its own tag coming back, and keeps fifty at most", () => {
 	const state = chat.emptyParlumeChatState();
 	for (let index = 0; index < 55; index++) {
@@ -180,16 +216,16 @@ test("the same message id is seen once", () => {
 	);
 });
 
-test("an unseen post goes unconfirmed after eight seconds, and marks the chat unavailable only if the chat never showed anything", () => {
+test("an unseen post goes unconfirmed after fifteen seconds, and marks the chat unavailable only if the chat never showed anything", () => {
 	const quiet = chat.emptyParlumeChatState();
 	chat.recordParlumeChatPost(
 		quiet,
 		{ text: "One", turnId: "turn-1", kind: "reply" },
 		1_000,
 	);
-	assert.equal(chat.nextParlumeChatDeadline(quiet), 1_000 + 8_000);
-	assert.equal(chat.expireParlumeChatPosts(quiet, 8_999).expired.length, 0);
-	const expired = chat.expireParlumeChatPosts(quiet, 9_000);
+	assert.equal(chat.nextParlumeChatDeadline(quiet), 1_000 + 15_000);
+	assert.equal(chat.expireParlumeChatPosts(quiet, 15_999).expired.length, 0);
+	const expired = chat.expireParlumeChatPosts(quiet, 16_000);
 	assert.deepEqual(plain(expired.expired.map((post) => post.tag)), ["P1"]);
 	assert.equal(expired.becameUnavailable, true);
 	assert.equal(quiet.unavailable, true);
@@ -202,7 +238,7 @@ test("an unseen post goes unconfirmed after eight seconds, and marks the chat un
 		{ text: "One", turnId: null, kind: "reply" },
 		1_000,
 	);
-	const unconfirmed = chat.expireParlumeChatPosts(busy, 9_000);
+	const unconfirmed = chat.expireParlumeChatPosts(busy, 16_000);
 	assert.equal(unconfirmed.expired.length, 1);
 	assert.equal(unconfirmed.becameUnavailable, false);
 	assert.equal(busy.unavailable, false);
@@ -215,7 +251,7 @@ test("any later message clears the unavailable mark, and a late echo is reported
 		{ text: "One", turnId: null, kind: "reply" },
 		0,
 	);
-	chat.expireParlumeChatPosts(state, 8_000);
+	chat.expireParlumeChatPosts(state, 15_000);
 	assert.equal(state.unavailable, true);
 
 	const observation = plain(
@@ -291,49 +327,66 @@ test("chat commands: tags are handles, anything else must be addressed", () => {
 	assert.equal(parse("let's stop here"), null);
 });
 
-test("a suggestion pass is due after ninety seconds and three new segments, twelve an hour at most", () => {
+test("a suggestion pass is due on two new segments, 45 seconds after the last pass; one is posted every two minutes, ten an hour at most", () => {
 	const state = suggestions.emptyParlumeSuggestionState(0);
-	const due = (now: number, newSegments = 3) =>
+	const due = (now: number, newSegments = 2) =>
 		suggestions.isParlumeSuggestionPassDue(state, { now, newSegments });
-	assert.equal(due(89_999), false);
-	assert.equal(due(90_000, 2), false);
-	assert.equal(due(90_000), true);
-	for (let index = 0; index < 12; index++) {
+	assert.equal(due(0, 1), false);
+	assert.equal(due(0), true, "the first pass waits for no interval");
+	state.lastPassAt = 0;
+	assert.equal(due(44_999), false);
+	assert.equal(due(45_000), true);
+	suggestions.acceptParlumeSuggestion(state, roadmapExport, 0);
+	assert.equal(due(119_999), false, "two minutes after the last post");
+	assert.equal(due(120_000), true);
+	for (let index = 1; index < 10; index++) {
 		suggestions.acceptParlumeSuggestion(
 			state,
-			`Distinct idea number ${index}`,
-			index * 1_000,
+			{ text: `Distinct idea number ${index}`, quote: `remark ${index}` },
+			index * 120_000,
 		);
 	}
-	assert.equal(due(90_000), false);
-	assert.equal(due(60 * 60 * 1000 + 1_000), true);
+	assert.equal(due(1_200_000), false, "ten within the hour");
+	assert.equal(due(60 * 60 * 1000 + 120_000), true);
 });
 
-test("a suggestion is read leniently and a near-duplicate is recognized", () => {
+test("a suggestion is read leniently, names the remark it answers, and a near-duplicate is recognized", () => {
+	assert.deepEqual(
+		{
+			...suggestions.parseParlumeSuggestion({
+				suggest: true,
+				...roadmapExport,
+				text: "  F-12 already covers   the roadmap export. ",
+			}),
+		},
+		roadmapExport,
+	);
+	assert.equal(
+		suggestions.parseParlumeSuggestion({
+			...roadmapExport,
+			suggest: false,
+		}),
+		null,
+	);
 	assert.equal(
 		suggestions.parseParlumeSuggestion({
 			suggest: true,
-			text: "  Ask  Sam. ",
+			text: "Ask Sam.",
 		}),
-		"Ask Sam.",
-	);
-	assert.equal(
-		suggestions.parseParlumeSuggestion({ suggest: false, text: "x" }),
 		null,
+		"a suggestion that names no remark is not posted",
 	);
-	assert.equal(suggestions.parseParlumeSuggestion({ suggest: true }), null);
 	assert.equal(suggestions.parseParlumeSuggestion("yes"), null);
 
 	const state = suggestions.emptyParlumeSuggestionState(0);
-	suggestions.acceptParlumeSuggestion(
-		state,
-		"F-12 already covers the roadmap export.",
-		0,
-	);
+	suggestions.acceptParlumeSuggestion(state, roadmapExport, 0);
 	assert.equal(
 		suggestions.isNearDuplicateParlumeSuggestion(
 			state,
-			"F-12 already covers the roadmap export!",
+			{
+				text: "F-12 already covers the roadmap export!",
+				quote: "something else",
+			},
 			1_000,
 		),
 		true,
@@ -341,13 +394,32 @@ test("a suggestion is read leniently and a near-duplicate is recognized", () => 
 	assert.equal(
 		suggestions.isNearDuplicateParlumeSuggestion(
 			state,
-			"Nobody owns the Friday deadline yet.",
+			{
+				text: "The export is on the roadmap.",
+				quote: "We still need an export",
+			},
+			1_000,
+		),
+		true,
+		"a remark already answered",
+	);
+	assert.equal(
+		suggestions.isNearDuplicateParlumeSuggestion(
+			state,
+			{
+				text: "Nobody owns the Friday deadline yet.",
+				quote: "by Friday",
+			},
 			1_000,
 		),
 		false,
 	);
 	assert.equal(
-		suggestions.formatParlumeSuggestion("P4", "Ask Sam."),
-		'Suggestion: Ask Sam. (reply "go P4" and I\'ll say it)',
+		suggestions.formatParlumeSuggestion("P4", roadmapExport),
+		'Suggestion on Roadmap export, re Sam: "we still need an export". F-12 already covers the roadmap export. (reply "go P4" and I\'ll say it)',
+	);
+	assert.equal(
+		suggestions.spokenParlumeSuggestion(roadmapExport),
+		"Sam, on Roadmap export: F-12 already covers the roadmap export.",
 	);
 });

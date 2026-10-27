@@ -1,14 +1,19 @@
 # Data Analyst Agent - Fabric Integration Architecture
 
+Fabric integration and runtime architecture for the Data Analyst agent.
+
+- **Audience**: Agent developers
+- **Owner**: Fabric engineering
+
 ## Overview
 
 The Data Analyst Agent has been integrated with Fabric's agent infrastructure to support:
 
 1. **A2A Protocol** - Agent-to-Agent communication for orchestrator integration
 2. **AG-UI Protocol** - For CopilotKit frontend integration
-3. **Fabric MCP** - Uses user's configured MCP servers instead of Composio
+3. **Fabric MCP** - Lists and calls read-only tools through Fabric's internal proxy
 4. **Token Exchange** - AI provider configuration via secure token exchange
-5. **Multi-Tenancy** - Proper tenant isolation for personal and organization contexts
+5. **Multi-Tenancy** - Token user scoped to the token's organization
 
 ## Architecture Diagram
 
@@ -36,6 +41,7 @@ graph TB
 
     subgraph "Fabric Infrastructure"
         TokenExchange[Token Exchange<br/>/api/ai/keys/exchange]
+        MCPProxy[Read-only MCP Proxy<br/>/api/internal/mcp-tools]
         MCPRegistry[MCP Config Registry<br/>@repo/database]
         MCPClient[MCP Client Factory<br/>@repo/mcp]
     end
@@ -69,7 +75,8 @@ graph TB
 
     %% Agent Flow
     Graph --> ToolDiscovery
-    ToolDiscovery --> MCPRegistry
+    ToolDiscovery --> MCPProxy
+    MCPProxy --> MCPRegistry
     MCPRegistry --> MCPClient
     MCPClient --> HubSpot
     MCPClient --> Attio
@@ -84,7 +91,7 @@ graph TB
     TokenExchange --> Azure
 
     AgentNode --> ToolNode
-    ToolNode --> MCPClient
+    ToolNode --> MCPProxy
 
     style UnifiedServer fill:#4f46e5,stroke:#4338ca,color:#fff
     style Graph fill:#10b981,stroke:#059669,color:#fff
@@ -116,32 +123,41 @@ GET  /health                   // Health check
 
 A LangGraph StateGraph with the following nodes:
 
-1. **discover_tools** - Loads MCP tools from user's configured servers
+1. **discover_tools** - Lists read-only tools through the Fabric proxy
 2. **agent** - Reasoning node with tool calling
-3. **tools** - Executes MCP tools
-4. **cleanup** - Closes MCP client connections
+3. **tools** - Executes read-only tools through the Fabric proxy
 
 ### 3. MCP Integration
 
-Instead of Composio, the agent uses Fabric's MCP system:
+The LangGraph service has no database access or direct MCP connections. It sends
+`X-AI-Token` to `POST /api/internal/mcp-tools` on `RUNTIME_API_URL` (falling back
+to `FABRIC_API_URL`). The proxy derives the user and organization from that token;
+a token without an organization is refused.
 
-```typescript
-// Get user's configured MCP servers
-const configs = await listMcpConfigsForTenant({
-  userId,
-  organizationId,
-});
+- `{ operation: "list" }` returns `{ servers: [{ configId, name, serverName, tools }] }`.
+- `{ operation: "call", configId, toolName, arguments }` returns `{ result }`, the raw MCP call result.
 
-// Create cached MCP client
-const { client } = await getCachedMcpClientForConfig({
-  configId: config.id,
-  userId,
-  organizationId,
-});
+Fabric loads the user's enabled configs within that organization in stable order,
+using the shared OAuth reauthentication rule (including GitLab personal
+connections). It opens guarded clients with `connect` access for both listing
+and calls, so discovery requires the same permission as execution. Tool listing
+follows pagination with a 100-page and
+repeated-cursor bound. Fabric filters tools using explicit `readOnlyHint: true`
+and rechecks the requested tool on the call client immediately before execution.
+Missing or false hints are refused. Connections close in `finally` blocks;
+failing configs are omitted from discovery.
 
-// Get tools from MCP server
-const tools = await client.tools();
-```
+The agent adapts each server's raw definitions to `loadMcpTools`, which projects
+input schemas to provider-safe JSON Schema and allocates unique tool names.
+Execution sends the original tool name and arguments back to Fabric. Non-OK
+responses become model-visible errors with the tool name and HTTP status.
+For 409 (reconnect required), 422 (a server JSON-RPC tool error), and 429 (rate
+limit), the agent also includes the proxy's message or error, bounded to 500
+characters. Other failures stay generic. Fabric logs the failure stage, server
+name where known, and typed error code or error name without logging raw errors.
+A tool result with `isError: true` passes through as a normal 200 response.
+Fabric retains MCP API keys and OAuth tokens;
+the agent does not decrypt them and needs no encryption key for this path.
 
 ### 4. Token Exchange
 
@@ -223,14 +239,13 @@ The agent exposes these skills for orchestrator discovery:
 
 ### Removed Dependencies
 
-- `@composio/core` - Replaced by `@repo/mcp`
+- `@composio/core` - Tool discovery is handled by the Fabric proxy
+- Direct `@repo/utils` and `@modelcontextprotocol/sdk` dependencies - The LangGraph graph no longer decrypts MCP keys or constructs transports
 
 ### New Dependencies
 
 - `@repo/agent-core` - Unified server, model factory
 - `@repo/agent-runtime` - Multi-tenant runtime
-- `@repo/database` - MCP config queries
-- `@repo/mcp` - MCP client factory
 - `@repo/ai-token` - Token exchange
 
 ### Breaking Changes

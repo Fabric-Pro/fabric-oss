@@ -12,7 +12,7 @@
 --
 -- Run by the `Migration drift` job in .github/workflows/unit-tests.yml.
 -- Locally, against a database migrated with `prisma migrate deploy`:
---   npx prisma db execute --file ./scripts/assert-handwritten-constraints.sql --schema=./prisma/schema.prisma
+--   npx prisma db execute --file ./scripts/assert-handwritten-constraints.sql
 DO $$
 DECLARE
   expected CONSTANT text[][] := ARRAY[

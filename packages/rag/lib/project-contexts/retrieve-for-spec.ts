@@ -12,6 +12,8 @@
  */
 
 import { getEmbeddingRAGProviderConfig } from "@repo/ai";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import {
 	fetchCredentialsByIdInTenant,
 	getRetrievableContextById,
@@ -630,16 +632,20 @@ export async function retrieveRelevantContextsForSpec(
 		: Promise.resolve(EMPTY_DATABRICKS_RESULT);
 
 	try {
-		const embeddingResult = await generateEmbeddings(
-			queryTexts,
-			{
-				userId,
-				organizationId,
-				projectId,
-				featureKey: "knowledge-search",
-				tags: ["rag-query", "spec-update"],
-			},
-			providerConfig,
+		const embeddingResult = await runWithAiCallPurpose(
+			AI_CALL_PURPOSES.projectRetrievalEmbedding,
+			() =>
+				generateEmbeddings(
+					queryTexts,
+					{
+						userId,
+						organizationId,
+						projectId,
+						featureKey: "knowledge-search",
+						tags: ["rag-query", "spec-update"],
+					},
+					providerConfig,
+				),
 		);
 		const embeddings = embeddingResult.embeddings ?? [];
 		if (embeddings.length === 0) {

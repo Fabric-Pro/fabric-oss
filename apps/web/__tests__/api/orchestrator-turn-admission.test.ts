@@ -47,10 +47,14 @@ const m = vi.hoisted(() => ({
 	getConversationTurnForExecution: vi.fn(),
 	getConversationTurnOwnerForExecution: vi.fn(),
 	getConversationTurnByKey: vi.fn(),
+	continuationSnapshot: vi.fn(),
 }));
 
 vi.mock("@saas/auth/lib/server", () => ({
 	getSession: () => m.getSession(),
+}));
+vi.mock("@repo/api/lib/rate-limit", () => ({
+	checkRateLimit: vi.fn(async () => ({ allowed: true })),
 }));
 vi.mock("@repo/ai", () => ({
 	getAIModelWithMetadata: (...args: unknown[]) =>
@@ -70,6 +74,8 @@ vi.mock("@repo/temporal", () => ({
 }));
 vi.mock("@repo/database", () => ({
 	CARRIED_OVER_MARKER_PREFIX: "[carried-over]",
+	getConversationTurnContinuationSnapshot: (...args: unknown[]) =>
+		m.continuationSnapshot(...args),
 	db: {
 		agentConversation: { findFirst: m.conversationFindFirst },
 		member: { findFirst: m.memberFindFirst },
@@ -238,6 +244,7 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 		m.getConversationTurnForExecution.mockResolvedValue(null);
 		m.getConversationTurnOwnerForExecution.mockResolvedValue(null);
 		m.getConversationTurnByKey.mockResolvedValue(null);
+		m.continuationSnapshot.mockReset();
 		m.start.mockImplementation(
 			async (_name: string, opts: { workflowId: string }) =>
 				completedHandle(opts.workflowId),
@@ -246,6 +253,359 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 		m.getTemporalClient.mockResolvedValue({
 			workflow: { start: m.start, getHandle: m.getHandle },
 		});
+	});
+
+	it.each([undefined, "bounded", "other"])(
+		"records server history retention setting %s for chat turns",
+		async (setting) => {
+			vi.stubEnv("ADVISOR_HISTORY_RETENTION", setting);
+			try {
+				await readEvents(
+					await post(newTurnBody({ historyRetention: "bounded" })),
+				);
+				const started = m.start.mock.calls.find(
+					(call) => call[0] === "orchestratorExecutionWorkflow",
+				);
+				expect(started?.[1].args[0].historyRetention).toBe(
+					setting === "bounded" ? "bounded" : undefined,
+				);
+			} finally {
+				vi.unstubAllEnvs();
+			}
+		},
+	);
+	it("leaves the legacy Weave starter off with the setting enabled", async () => {
+		vi.stubEnv("ADVISOR_HISTORY_RETENTION", "bounded");
+		try {
+			await readEvents(
+				await post(
+					newTurnBody({
+						executionMode: "weave",
+						historyRetention: "bounded",
+					}),
+				),
+			);
+			expect(
+				m.start.mock.calls[0]?.[1].args[0].historyRetention,
+			).toBeUndefined();
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	});
+
+	it.each(["balanced", "weave"])(
+		"starts %s with two hours for deadline drain",
+		async (executionMode) => {
+			await readEvents(await post(newTurnBody({ executionMode })));
+			expect(m.start).toHaveBeenCalledWith(
+				"orchestratorExecutionWorkflow",
+				expect.objectContaining({
+					workflowExecutionTimeout: "2 hours",
+				}),
+			);
+		},
+	);
+
+	const stopped = () =>
+		turnRow({
+			id: "stopped-example",
+			generation: 1,
+			status: "LIMITED",
+			questionText: "Add links to the report",
+			responseText:
+				"## What I did\n- Read example report.\n## What's still needed\n- Save links.",
+			budgetStop: {
+				version: 1,
+				kind: "round_limit",
+				used: 30,
+				limit: 30,
+			},
+		});
+	const continuationBody = () =>
+		newTurnBody({
+			message: "Continue",
+			continueFromTurnId: "stopped-example",
+			summary: "CLIENT FORGED SUMMARY",
+		});
+	it.each([
+		{ version: 1, kind: "time_limit", used: 2700, limit: 2700 },
+		{ version: 1, kind: "round_limit", used: 30, limit: 30 },
+		{
+			version: 1,
+			kind: "token_budget",
+			used: 992001,
+			limit: 992000,
+			maxTokens: 1000000,
+			reservedTokens: 8000,
+		},
+		{
+			kind: "token_allowance",
+			allowance: 500000,
+			measured: 490000,
+			outstanding: 0,
+			enforcement: "ENFORCED",
+			stopReason: "allowance_exhausted",
+		},
+	])(
+		"continues from the owner's latest stopped server turn with a new allowance: %j",
+		async (budgetStop) => {
+			const source = { ...stopped(), budgetStop };
+			m.admitConversationTurn.mockImplementation(
+				async (args: { executionId: string }) => ({
+					outcome: "created",
+					turn: turnRow({
+						executionId: args.executionId,
+						startToken: START_TOKEN,
+						generation: 2,
+					}),
+				}),
+			);
+			m.continuationSnapshot
+				.mockResolvedValueOnce({ source, latest: source })
+				.mockResolvedValue({
+					source,
+					latest: turnRow({ generation: 2 }),
+				});
+			const response = await post(continuationBody());
+			await response.text();
+			expect(response.status).toBe(200);
+			const started = m.start.mock.calls.find(
+				(c) => c[0] === "orchestratorExecutionWorkflow",
+			);
+			expect(started).toBeDefined();
+			const history = JSON.stringify(started?.[1].args[0].history);
+			expect(history).toContain(source.questionText);
+			expect(history).toContain(
+				source.responseText.replace(/\n/g, "\\n"),
+			);
+			expect(history).not.toContain("CLIENT FORGED SUMMARY");
+			expect(history).toContain("What's still needed");
+			expect(m.continuationSnapshot).toHaveBeenCalledTimes(2);
+			expect(
+				m.admitConversationTurn.mock.calls[0][0].budget.tokenAllowance,
+			).toBe(1_000_000);
+		},
+	);
+	it("preserves the original request, parent context and both summaries across two Continues", async () => {
+		const original = "Add direct links to the example cards";
+		const first =
+			"## Summary\nFirst saved progress: the example cards were located.";
+		const second =
+			"## Summary\nSecond saved progress: two links were saved.";
+		const parent =
+			"Example parent context: preserve existing card identifiers.";
+		let generation = 0;
+		m.conversationFindFirst.mockResolvedValue({
+			id: CONVERSATION_ID,
+			organizationId: ORG_ID,
+			carriedOverSummary: parent,
+		});
+		m.admitConversationTurn.mockImplementation(
+			async (args: { executionId: string; clientRequestKey: string }) => {
+				generation++;
+				return {
+					outcome: "created",
+					turn: turnRow({
+						id: `example-chain-${generation}`,
+						executionId: args.executionId,
+						clientRequestKey: args.clientRequestKey,
+						generation,
+						startToken: START_TOKEN,
+					}),
+				};
+			},
+		);
+		m.start.mockImplementation(
+			async (_name: string, opts: { workflowId: string }) =>
+				completedHandle(opts.workflowId, {
+					status: "completed",
+					response:
+						generation === 1
+							? first
+							: generation === 2
+								? second
+								: "Finished",
+					toolCalls: [],
+				}),
+		);
+		m.continuationSnapshot.mockImplementation(
+			async (args: { turnId: string }) => {
+				const sourceGeneration =
+					args.turnId === "example-chain-1" ? 1 : 2;
+				const source = turnRow({
+					id: args.turnId,
+					generation: sourceGeneration,
+					status: "LIMITED",
+					questionText:
+						sourceGeneration === 1 ? original : "Continue",
+					responseText: sourceGeneration === 1 ? first : second,
+					budgetStop: {
+						version: 1,
+						kind: "round_limit",
+						used: 30,
+						limit: 30,
+					},
+				});
+				return {
+					source,
+					latest:
+						generation === sourceGeneration
+							? source
+							: turnRow({
+									id: `example-chain-${generation}`,
+									generation,
+								}),
+				};
+			},
+		);
+		await readEvents(
+			await post(
+				newTurnBody({
+					message: original,
+					clientRequestKey: "example-chain-request-1",
+				}),
+			),
+		);
+		await readEvents(
+			await post(
+				newTurnBody({
+					message: "Continue",
+					clientRequestKey: "example-chain-request-2",
+					continueFromTurnId: "example-chain-1",
+					history: [
+						{ role: "user", content: original },
+						{ role: "assistant", content: first },
+					],
+				}),
+			),
+		);
+		await readEvents(
+			await post(
+				newTurnBody({
+					message: "Continue",
+					clientRequestKey: "example-chain-request-3",
+					continueFromTurnId: "example-chain-2",
+					summary: "CLIENT FORGED SUMMARY",
+					history: [
+						{ role: "user", content: original },
+						{ role: "assistant", content: first },
+						{ role: "user", content: "Continue" },
+						{ role: "assistant", content: second },
+					],
+				}),
+			),
+		);
+		const starts = m.start.mock.calls.filter(
+			(c) => c[0] === "orchestratorExecutionWorkflow",
+		);
+		expect(starts).toHaveLength(3);
+		const modelHistory = starts[2][1].args[0].history as Array<{
+			role: string;
+			content: string;
+		}>;
+		expect(modelHistory.some((h) => h.content === original)).toBe(true);
+		expect(
+			modelHistory.some(
+				(h) => h.role === "assistant" && h.content === first,
+			),
+		).toBe(true);
+		expect(
+			modelHistory.some(
+				(h) => h.role === "assistant" && h.content === second,
+			),
+		).toBe(true);
+		expect(modelHistory[0].content).toContain(parent);
+		expect(modelHistory.at(-1)?.content).toContain(second);
+		expect(modelHistory.at(-1)?.content).not.toContain(
+			"CLIENT FORGED SUMMARY",
+		);
+		expect(modelHistory.at(-1)?.content).not.toContain("Original request:");
+	});
+
+	it("rejects continueFromTurnId on the non-stream starter", async () => {
+		const { POST } = await import(
+			"../../app/api/agents/fabric-ai/orchestrator-temporal/route"
+		);
+		const response = await POST(request(continuationBody()));
+		expect(response.status).toBe(400);
+		expect(await response.json()).toMatchObject({
+			code: "INVALID_BUDGET_CONTINUATION",
+		});
+		expect(m.start).not.toHaveBeenCalled();
+	});
+	it("reattaches a retry of the continuation key without a second start", async () => {
+		const source = stopped();
+		const latest = turnRow({
+			generation: 2,
+			status: "COMPLETED",
+			responseText: "Finished",
+		});
+		m.continuationSnapshot.mockResolvedValue({ source, latest });
+		m.admitConversationTurn.mockResolvedValue({
+			outcome: "existing",
+			turn: latest,
+		});
+		m.getConversationTurnForExecution.mockResolvedValue(latest);
+		const response = await post(continuationBody());
+		await response.text();
+		expect(response.status).toBe(200);
+		expect(m.start).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["another user", { userId: "example-other-user" }, false],
+		[
+			"another organization",
+			{ organizationId: "example-other-org" },
+			false,
+		],
+		[
+			"another conversation",
+			{ conversationId: "example-other-conversation" },
+			false,
+		],
+		["non-latest turn", {}, true],
+		["no stop", { budgetStop: null }, false],
+		["still running", { status: "ACTIVE" }, false],
+		[
+			"unknown stop kind",
+			{ budgetStop: { version: 1, kind: "future" } },
+			false,
+		],
+	])(
+		"rejects %s before admitting or starting",
+		async (_name, change, newer) => {
+			const source = { ...stopped(), ...change };
+			m.continuationSnapshot.mockResolvedValue({
+				source,
+				latest: newer
+					? turnRow({ id: "newer", generation: 3 })
+					: source,
+			});
+			const response = await post(continuationBody());
+			expect(response.status).toBeGreaterThanOrEqual(400);
+			expect(response.status).toBeLessThan(500);
+			expect(await response.json()).toMatchObject({
+				code: "INVALID_BUDGET_CONTINUATION",
+			});
+			expect(m.admitConversationTurn).not.toHaveBeenCalled();
+			expect(m.start).not.toHaveBeenCalled();
+		},
+	);
+	it("rechecks the source immediately before workflow start", async () => {
+		const source = stopped();
+		m.continuationSnapshot
+			.mockResolvedValueOnce({ source, latest: source })
+			.mockResolvedValue({
+				source,
+				latest: turnRow({ id: "newer", generation: 9 }),
+			});
+		const response = await post(continuationBody());
+		expect(response.status).toBe(409);
+		expect(await response.json()).toMatchObject({
+			code: "INVALID_BUDGET_CONTINUATION",
+		});
+		expect(m.start).not.toHaveBeenCalled();
 	});
 
 	afterEach(() => {
@@ -583,6 +943,52 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 		});
 	});
 
+	it.each([
+		{ version: 1, kind: "time_limit", used: 2700, limit: 2700 },
+		{ version: 1, kind: "round_limit", used: 30, limit: 30 },
+		{
+			version: 1,
+			kind: "token_budget",
+			used: 992001,
+			limit: 992000,
+			maxTokens: 1000000,
+			reservedTokens: 8000,
+		},
+	] as const)(
+		"keeps the older browser handoff on stored-turn reconnect for %j",
+		async (budgetStop) => {
+			m.getConversationTurnForExecution.mockResolvedValue(
+				turnRow({
+					status: "LIMITED",
+					budgetStop,
+					responseText: "Server-owned progress",
+					terminalAt: new Date(),
+				}),
+			);
+			const events = await readEvents(
+				await post({
+					executionId: EXEC_A,
+					organizationId: ORG_ID,
+					conversationId: CONVERSATION_ID,
+				}),
+			);
+			expect(events.find((e) => e.type === "completed")).toMatchObject({
+				budgetStop,
+				handoffRecommended: {
+					reason: expect.stringMatching(
+						budgetStop.kind === "time_limit"
+							? /^Time limit reached:/
+							: budgetStop.kind === "round_limit"
+								? /^Iteration limit reached:/
+								: /^Token budget exceeded:/,
+					),
+					summary: "Server-owned progress",
+				},
+			});
+			expect(m.start).not.toHaveBeenCalled();
+		},
+	);
+
 	it("admits a new turn with the token allowance of its validated mode, and hands the workflow the turn's generation", async () => {
 		await readEvents(await post(newTurnBody()));
 
@@ -590,8 +996,8 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 			expect.objectContaining({
 				budget: {
 					contractVersion: 1,
-					// balanced: maxTotalTokens 500,000, reserve 8,000 (unchanged).
-					tokenAllowance: 500_000,
+					// New balanced admissions: 1,000,000 tokens with an 8,000-token reserve.
+					tokenAllowance: 1_000_000,
 					finalizationReserveTokens: 8_000,
 				},
 			}),
@@ -601,6 +1007,26 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 			{ args: [Record<string, unknown>] },
 		];
 		expect(options.args[0]).toMatchObject({ turnGeneration: 1 });
+	});
+
+	it("passes a pre-change turn's frozen allowance to a newly started workflow", async () => {
+		m.admitConversationTurn.mockImplementation(
+			async (args: { executionId: string }) => ({
+				outcome: "created",
+				turn: turnRow({
+					executionId: args.executionId,
+					startToken: START_TOKEN,
+					tokenAllowance: 500000,
+				}),
+			}),
+		);
+		await readEvents(await post(newTurnBody()));
+		const started = m.start.mock.calls.find(
+			(c) => c[0] === "orchestratorExecutionWorkflow",
+		);
+		expect(started?.[1].args[0]).toMatchObject({
+			turnTokenAllowance: 500000,
+		});
 	});
 
 	it("forwards the structured token-allowance stop on the live completed event", async () => {

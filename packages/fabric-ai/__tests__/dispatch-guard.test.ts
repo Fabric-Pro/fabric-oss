@@ -582,3 +582,78 @@ describe("with no guard, behaviour is unchanged", () => {
 		expect(result.success).toBe(false);
 	});
 });
+
+describe("non-streaming pattern turn reservations", () => {
+	it.each(["full", "delegated"])(
+		"reserves the %s submission before fetch and retains its surrogate charge",
+		async (mode) => {
+			const { guard } = createGuard();
+			const reserve = vi.fn(async () => ({
+				attemptId: "pattern-attempt",
+				outputCap: null,
+			}));
+			const markUnknown = vi.fn(async () => {});
+			const settle = vi.fn(async () => {});
+			const ledgered = {
+				...guard,
+				budget: {
+					reserve,
+					markUnknown,
+					settle,
+					release: vi.fn(async () => {}),
+				},
+			};
+			hoisted.getAIModelWithMetadata.mockResolvedValue({
+				model: languageModel(),
+				metadata: {
+					modelString: "openai/gpt-example",
+					provider: "OPENAI_DIRECT",
+				},
+				trackUsage: vi.fn(),
+			});
+			let reservedAtSend = 0;
+			fetchMock.mockImplementation(
+				async (_url: unknown, init?: RequestInit) => {
+					if (init?.method === "OPTIONS") {
+						return new Response(null, { status: 405 });
+					}
+					reservedAtSend = reserve.mock.calls.length;
+					return new Response(
+						JSON.stringify({
+							type: "content",
+							content: "analysis",
+						}),
+					);
+				},
+			);
+			const result = await runWithDispatchGuard(ledgered, () =>
+				mode === "full"
+					? executePatternFull({
+							input: "test",
+							pattern: "summarize",
+							fabricConfig: { baseUrl: BASE_URL },
+						})
+					: executeFabricPattern({
+							mode: "delegated",
+							input: "test",
+							pattern: "summarize",
+							userContext: USER_CONTEXT,
+							fabricConfig: { baseUrl: BASE_URL },
+						}),
+			);
+			expect(result.success).toBe(true);
+			expect(reservedAtSend).toBe(1);
+			expect(reserve).toHaveBeenCalledWith(
+				expect.objectContaining({
+					modality: "external",
+					inputEstimate: 4001,
+					requestedOutputTokens: 8192,
+					minOutputTokens: 8192,
+					enforcesOutputCap: false,
+				}),
+			);
+			expect(markUnknown).toHaveBeenCalledWith("pattern-attempt");
+			expect(settle).not.toHaveBeenCalled();
+		},
+	);
+});

@@ -50,7 +50,10 @@ vi.mock("@repo/temporal", () => ({
 
 vi.mock("@repo/api/modules/projects/lib/parlume-attendee", () => ({
 	deleteParlumeMeetingBotData: mocks.deleteProviderData,
-	getParlumeBridgeSettings: mocks.getSettings,
+}));
+
+vi.mock("@repo/api/modules/projects/lib/parlume-provider-settings", () => ({
+	resolveParlumeAttendeeSettings: mocks.getSettings,
 }));
 
 import { finalizeParlumeSession } from "@repo/api/modules/projects/lib/parlume-finalization";
@@ -64,14 +67,21 @@ beforeEach(() => {
 		userId: "user-1",
 		providerBotId: "bot-1",
 		status: "ACTIVE",
+		joinedAt: new Date("2026-10-01T17:01:00Z"),
 		transcriptContextId: null,
 		providerDataDeletedAt: null,
+		createdAt: new Date("2026-10-01T17:00:00Z"),
 	});
 	mocks.sessionUpdateMany.mockResolvedValue({ count: 1 });
 	mocks.segmentFindMany.mockResolvedValue([]);
 	mocks.turnFindMany.mockResolvedValue([]);
 	mocks.actionFindMany.mockResolvedValue([]);
-	mocks.getSettings.mockReturnValue({ apiKey: "test-key" });
+	mocks.getSettings.mockResolvedValue({
+		apiKey: "test-key",
+		baseUrl: "https://attendee.example.com",
+		teamsLoginMode: null,
+		source: "environment",
+	});
 	mocks.deleteProviderData.mockResolvedValue(undefined);
 });
 
@@ -81,7 +91,7 @@ describe("Parlume empty transcript finalization", () => {
 
 		expect(mocks.contextCreate).not.toHaveBeenCalled();
 		expect(mocks.workflowStart).not.toHaveBeenCalled();
-		expect(mocks.sessionUpdate).toHaveBeenCalledWith(
+		expect(mocks.sessionUpdateMany).toHaveBeenCalledWith(
 			expect.objectContaining({
 				data: expect.objectContaining({
 					status: "ENDED",
@@ -90,7 +100,7 @@ describe("Parlume empty transcript finalization", () => {
 			}),
 		);
 		expect(mocks.deleteProviderData).toHaveBeenCalledWith({
-			settings: { apiKey: "test-key" },
+			attendee: expect.objectContaining({ apiKey: "test-key" }),
 			providerBotId: "bot-1",
 		});
 		expect(mocks.sessionUpdate).toHaveBeenCalledWith(

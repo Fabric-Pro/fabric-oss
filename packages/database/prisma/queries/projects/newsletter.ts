@@ -127,9 +127,9 @@ export async function setPublicWidgetState(
 	client: Tx,
 ): Promise<{ changed: boolean; token: string; version: number }> {
 	// FOR UPDATE only serializes inside an interactive transaction. The base
-	// PrismaClient exposes `$transaction`; a TransactionClient does not — reject a
-	// non-tx client loudly rather than silently losing the lock guarantee.
-	if ("$transaction" in client) {
+	// Prisma's ITXClientDenyList excludes `$connect` from transaction clients;
+	// `$transaction` is available for nested transactions in Prisma 7.
+	if ("$connect" in client) {
 		throw new Error(
 			"setPublicWidgetState requires a transaction client (call inside db.$transaction)",
 		);
@@ -962,17 +962,29 @@ export async function countNewsletterSends(projectId: string, status?: string) {
 // PENDING (content null) rendered as a "being prepared" row. Excludes SKIPPED_EMPTY/FAILED.
 const MEMBER_VISIBLE_SEND_STATUSES = ["SENT", "PARTIAL", "PENDING"] as const;
 
+const memberSendsWhere = (projectId: string) => ({
+	projectId,
+	status: { in: [...MEMBER_VISIBLE_SEND_STATUSES] },
+});
+
+// member-safe projection — NO aiUsageTokens / temporalWorkflowId /
+// triggeredByUserId / errorMessage / dedupeKey. content is included because
+// the in-app detail modal renders it. Shared by the list and the deep-link get.
+const MEMBER_SEND_SELECT = {
+	id: true,
+	status: true,
+	createdAt: true,
+	content: true,
+} as const;
+
 /** Exported for unit testing the args shape without a DB. */
 export function buildMemberSendsListArgs(
 	projectId: string,
 	{ limit = 15, offset = 0 }: { limit?: number; offset?: number },
 ) {
 	return {
-		where: { projectId, status: { in: [...MEMBER_VISIBLE_SEND_STATUSES] } },
-		// member-safe projection — NO aiUsageTokens / temporalWorkflowId /
-		// triggeredByUserId / errorMessage / dedupeKey. content is included because
-		// the in-app detail modal renders it.
-		select: { id: true, status: true, createdAt: true, content: true },
+		where: memberSendsWhere(projectId),
+		select: MEMBER_SEND_SELECT,
 		orderBy: [{ createdAt: "desc" as const }, { id: "desc" as const }],
 		take: limit,
 		skip: offset,
@@ -988,10 +1000,20 @@ export async function listNewsletterSendsForMembers(
 	);
 }
 
-export async function countNewsletterSendsForMembers(projectId: string) {
-	return db.newsletterSend.count({
-		where: { projectId, status: { in: [...MEMBER_VISIBLE_SEND_STATUSES] } },
+/** One member-visible send, for a release-note deep link. projectId in the
+ *  where-clause is the cross-project guard: a foreign sendId returns null. */
+export async function getNewsletterSendForMembers(
+	projectId: string,
+	sendId: string,
+) {
+	return db.newsletterSend.findFirst({
+		where: { id: sendId, ...memberSendsWhere(projectId) },
+		select: MEMBER_SEND_SELECT,
 	});
+}
+
+export async function countNewsletterSendsForMembers(projectId: string) {
+	return db.newsletterSend.count({ where: memberSendsWhere(projectId) });
 }
 
 // Public release-notes archive (fabric.pro /release-notes): ONLY published sends

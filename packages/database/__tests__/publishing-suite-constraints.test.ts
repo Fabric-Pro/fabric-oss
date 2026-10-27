@@ -506,12 +506,8 @@ it.skipIf(!RUN_DB)(
 		await db.publishingChatDelivery.create({
 			data: { ...base, status: "SENT", deliveredAt: new Date() },
 		});
-		// ASSERTED ON THE ERROR'S SHAPE, NOT ITS TEXT, and the difference is the
-		// ORM rather than a preference. The CHECK cases above match on the
-		// constraint NAME because Postgres puts it in the message and Prisma passes
-		// that through; a UNIQUE violation is intercepted and re-rendered as P2002
-		// with a field list, so the index name never appears and a name regex would
-		// be red here for a reason that has nothing to do with the database.
+		// Prisma 7 adapter errors identify the violated index instead of listing
+		// its columns. Check the error and the live index definition separately.
 		const error = await db.publishingChatDelivery
 			.create({ data: { ...base, status: "SENDING" } })
 			.then(() => null)
@@ -520,24 +516,44 @@ it.skipIf(!RUN_DB)(
 					e as { code?: string; message?: string; meta?: unknown },
 			);
 		expect(error?.code).toBe("P2002");
-		// All four columns of the claim key. Checking the code alone would pass
-		// against a unique constraint on any subset — including one that omitted
-		// channelId, which would refuse a SECOND channel in the same cycle and
-		// break the broadcast rather than protect it.
-		//
-		// BOTH carriers are searched because Prisma 6.18 uses only one of them and
-		// does not document which: on this error `meta.target` comes back empty and
-		// the column list is in the message. Reading both keeps the case honest if a
-		// later version moves it back.
-		const target = `${error?.message ?? ""} ${JSON.stringify(error?.meta ?? {})}`;
-		for (const column of [
-			"cycleId",
-			"platform",
-			"externalTeamId",
-			"channelId",
-		]) {
-			expect(target).toContain(column);
-		}
+		expect(error?.meta).toMatchObject({
+			driverAdapterError: {
+				cause: {
+					kind: "UniqueConstraintViolation",
+					constraint: {
+						index: "publishing_chat_delivery_cycle_channel_key",
+					},
+				},
+			},
+		});
+		const metadata = error?.meta as {
+			driverAdapterError: { cause: Record<string, unknown> };
+		};
+		const cause = { ...metadata.driverAdapterError.cause };
+		delete cause.originalMessage;
+		expect(
+			uniqueViolationConstraint({
+				code: error?.code,
+				meta: { driverAdapterError: { cause } },
+			}),
+		).toBe("publishing_chat_delivery_cycle_channel_key");
+		// The catalog assertion enforces the full claim key: a narrower UNIQUE
+		// index would also raise P2002 but incorrectly refuse a second channel.
+		const indexes = await db.$queryRaw<Array<{ columns: string[] }>>`
+			SELECT array_agg(a.attname::text ORDER BY k.ordinality) AS columns
+			FROM pg_index i
+			JOIN pg_class c ON c.oid = i.indexrelid
+			JOIN pg_namespace n ON n.oid = c.relnamespace
+			CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY k(attnum, ordinality)
+			JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+			WHERE c.relname = 'publishing_chat_delivery_cycle_channel_key'
+			  AND n.nspname = current_schema() AND i.indisunique
+			GROUP BY i.indexrelid`;
+		expect(indexes).toEqual([
+			{
+				columns: ["cycleId", "platform", "externalTeamId", "channelId"],
+			},
+		]);
 	},
 );
 

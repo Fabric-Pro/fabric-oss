@@ -2,6 +2,9 @@
 
 The complete contract between the deployment and the application.
 
+- **Audience**: Deployment operators and application engineers
+- **Owner**: Platform team
+
 ## 1. Where env vars come from
 
 Pods running in the `fabric` namespace receive env vars from three sources, merged in this order (later sources win when names collide):
@@ -35,7 +38,7 @@ The table below lists the **functional consumer** for each variable: where the v
 | `NODE_ENV` | ConfigMap | yes | Fixed at `"production"` |
 | `NEXT_PUBLIC_SITE_URL` | ConfigMap | yes (HTTPS) | Rendered from `global.siteUrl` if set (explicit override, precedence over domain; ingress stays host-less), else `https://<global.domain>` when domain set, else empty. |
 | `DATABASE_URL` | Secret | yes | Auto-populated by Terraform (`aws_secretsmanager_secret_version.database`); verify-full TLS against the mounted RDS CA bundle (§3.1) |
-| `DIRECT_URL` | Secret | yes | Same database as `DATABASE_URL`, in Prisma's TLS form; read only by `prisma migrate` (§3.1) |
+| `DIRECT_URL` | Secret | yes | Same database as `DATABASE_URL`, in Prisma's TLS form; used by Prisma CLI database commands through `prisma.config.ts` (§3.1) |
 | `BETTER_AUTH_SECRET` | Secret | yes | `openssl rand -base64 48` |
 | `BRUTE_FORCE_IP_LOCKOUT_CAP` | ConfigMap | no | Default `3` |
 | `REDIS_URL` | Secret (`redis` group) | yes | `rediss://default:<token>@<endpoint>:6379` — Terraform-managed |
@@ -115,6 +118,11 @@ The table below lists the **functional consumer** for each variable: where the v
 | `GITHUB_WEBHOOK_SECRET` | Secret | no | Required if GitHub push webhooks used |
 | `TEAMS_WEBHOOK_VERIFICATION_TOKEN` | Secret | no | Required if Teams integration enabled |
 | `DATABRICKS_HOST` | ConfigMap | no | Workspace URL — required only for Databricks-backed features |
+| `DECISION_REPLAY_DATABRICKS_HOST` | Vercel env, staging + prod | no | HTTPS workspace origin only; no path, query or credentials. Missing/invalid configuration makes the embed unavailable. |
+| `DECISION_REPLAY_DATABRICKS_WORKSPACE_ID` | Vercel env, staging + prod | no | Workspace id for the external embedding token exchange. |
+| `DECISION_REPLAY_DASHBOARD_ID` | Vercel env, staging + prod | no | Published Decision Replay dashboard id. |
+| `DECISION_REPLAY_EMBED_CLIENT_ID` | Vercel env, staging + prod | no | Dedicated gold-only embedding principal, separate from `DATABRICKS_CLIENT_ID`. |
+| `DECISION_REPLAY_EMBED_CLIENT_SECRET` | Vercel env, staging + prod | no | Server-only embedding principal secret; separate from `DATABRICKS_CLIENT_SECRET`. Also keys opaque viewer ids. |
 | `DATABRICKS_CLIENT_ID` | ConfigMap | no | Service principal OAuth M2M client ID |
 | `DATABRICKS_CLIENT_SECRET` | Secret | no | Service principal OAuth M2M client secret |
 | `DATABRICKS_TOKEN` | Secret | no | PAT alternative; takes precedence over OAuth when set |

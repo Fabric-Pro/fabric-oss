@@ -10,7 +10,7 @@
  */
 
 import { DynamicStructuredTool } from "@langchain/core/tools";
-import { z } from "zod/v4";
+import { z } from "zod";
 
 /**
  * Connection suggestion artifact for prompting user to connect an integration
@@ -91,19 +91,71 @@ function queryMentionsConfig(
 	return false;
 }
 
+export type UnavailableMcpServer = { name: string; code: string };
+
+const reconnectCodes = new Set([
+	"OAUTH_AUTH_REQUIRED",
+	"CONFIG_DISABLED",
+	"AUTH_FAILED",
+	"API_KEY_MISSING",
+	"OAUTH_ERROR",
+	"INVALID_TWILIO_CREDENTIALS",
+]);
+
+// BLOCKED_URL is left out because it also wraps DNS lookup failures, and
+// STDIO_WRAPPER_NOT_CONFIGURED because it is a deployment setting.
+const configurationCodes = new Set([
+	"INVALID_URL",
+	"NO_SERVER_URL",
+	"NO_STDIO_COMMAND",
+]);
+
+function unavailableInstruction(code: string): string {
+	if (reconnectCodes.has(code)) {
+		return "needs reconnecting in Settings > MCP Servers";
+	}
+	if (
+		code === "MCP_PERMISSION_DENIED" ||
+		code === "ORGANIZATION_MEMBERSHIP_REQUIRED"
+	) {
+		return "is inaccessible because the user lacks access; ask an organization admin";
+	}
+	if (code === "RATE_LIMIT") {
+		return "is rate limited; try again later";
+	}
+	if (configurationCodes.has(code)) {
+		return "is misconfigured; check its settings in Settings > MCP Servers or ask an organization admin";
+	}
+	return "is temporarily unavailable; try again later";
+}
+
+function queryMentionsFullName(query: string, name: string): boolean {
+	const words = (value: string) =>
+		value.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+	const queryWords = words(query);
+	const nameWords = words(name);
+	return (
+		nameWords.length > 0 &&
+		queryWords.some((_, index) =>
+			nameWords.every((word, offset) => queryWords[index + offset] === word),
+		)
+	);
+}
+
 /**
  * Create the list_data_sources tool
  * Lists all available data sources the user has connected
  */
 export function createListDataSourcesTool(
 	connectedMcpConfigs: Array<{ name: string; serverName?: string }>,
+	unavailableServers: UnavailableMcpServer[] = [],
 ): DynamicStructuredTool {
 	return new DynamicStructuredTool({
 		name: "list_data_sources",
 		description: [
 			"List all available data sources that the user has connected.",
 			"Use this tool first to understand what data sources are available for analysis.",
-			"Returns a list of connected MCP servers/integrations.",
+			"Returns connected MCP servers/integrations and configured servers needing attention.",
 		].join(" "),
 		schema: z.object({}),
 		func: async () => {
@@ -113,9 +165,28 @@ export function createListDataSourcesTool(
 				configName: c.name,
 			}));
 
+			const unavailable = unavailableServers.map(({ name, code }) => ({
+				name,
+				code,
+				message: `${name} ${unavailableInstruction(code)}.`,
+			}));
+			const attentionMessage = unavailable
+				.map((server) => server.message)
+				.join(" ");
+			if (sources.length === 0 && unavailable.length > 0) {
+				return JSON.stringify({
+					connected: false,
+					sources,
+					count: 0,
+					unavailable,
+					message: `No data sources are working. ${attentionMessage}`,
+				});
+			}
+
 			if (sources.length === 0) {
 				return JSON.stringify({
 					connected: false,
+					unavailable,
 					message:
 						"No data sources connected. The user needs to connect integrations in Settings > MCP Servers to enable data analysis.",
 					hint: "Ask the user what data sources they'd like to connect, or suggest they visit Settings > MCP Servers.",
@@ -124,9 +195,10 @@ export function createListDataSourcesTool(
 
 			return JSON.stringify({
 				connected: true,
+				unavailable,
 				sources,
 				count: sources.length,
-				message: `Found ${sources.length} connected data source(s): ${sources.map((s) => s.displayName).join(", ")}. You can use tools from these sources to fetch and analyze data.`,
+				message: `Found ${sources.length} connected data source(s): ${sources.map((s) => s.displayName).join(", ")}. You can use tools from these sources to fetch and analyze data.${attentionMessage ? ` ${attentionMessage}` : ""}`,
 			});
 		},
 	});
@@ -142,6 +214,7 @@ export function createListDataSourcesTool(
 export function createSuggestConnectionTool(
 	connectedMcpConfigs: Array<{ name: string; serverName?: string }>,
 	fabricApiUrl: string,
+	unavailableServers: UnavailableMcpServer[] = [],
 ): DynamicStructuredTool {
 	return new DynamicStructuredTool({
 		name: "suggest_connection",
@@ -188,6 +261,16 @@ export function createSuggestConnectionTool(
 				return JSON.stringify({
 					success: false,
 					message: `${displayName} is already connected. You can use its tools for analysis.`,
+				});
+			}
+
+			const unavailable = unavailableServers.find((server) =>
+				queryMentionsFullName(input.integration, server.name),
+			);
+			if (unavailable) {
+				return JSON.stringify({
+					success: false,
+					message: `${getDisplayName(unavailable.name)} is configured but ${unavailableInstruction(unavailable.code)}.`,
 				});
 			}
 

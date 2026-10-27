@@ -17,6 +17,8 @@ import {
 	getAIEmbeddingModelWithMetadata,
 	logEmbeddingUsageAsync,
 } from "@repo/ai";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import {
 	db,
 	getRetrievableConversationBundleById,
@@ -66,10 +68,14 @@ export async function retrieveProjectContexts(
 		// Generate embedding for the task query
 		const queryText = `Task: ${taskTitle}\n${taskDescription}`;
 		const embeddingStart = Date.now();
-		const { embedding: queryEmbedding, usage } = await embed({
-			model: embeddingModel,
-			value: queryText,
-		});
+		const { embedding: queryEmbedding, usage } = await runWithAiCallPurpose(
+			AI_CALL_PURPOSES.projectRetrievalEmbedding,
+			() =>
+				embed({
+					model: embeddingModel,
+					value: queryText,
+				}),
+		);
 		logEmbeddingUsageAsync({
 			context: { userId, organizationId },
 			metadata,

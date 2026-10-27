@@ -13,6 +13,7 @@
  */
 
 import { generateText } from "@repo/ai";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { logger } from "@repo/logs";
 import type { CreateTaskPlanInput, TaskPlan, TaskStep } from "../types";
 import { getAiModel, safeParseJson } from "../utils";
@@ -260,7 +261,14 @@ export async function createMultiModelPlan(
 
 async function createDraftPlan(input: CreateTaskPlanInput): Promise<PlanDraft> {
 	const startTime = Date.now();
-	const model = await getAiModel(input.userId, input.organizationId);
+	const model = await getAiModel(
+		input.userId,
+		input.organizationId,
+		false,
+		undefined,
+		undefined,
+		{ callPurpose: AI_CALL_PURPOSES.planGeneration },
+	);
 
 	const systemPrompt = `You are an expert task planner. Create a concise execution plan for the given task.
 
@@ -348,7 +356,14 @@ async function reviewPlan(
 	input: CreateTaskPlanInput,
 ): Promise<PlanReview> {
 	const startTime = Date.now();
-	const model = await getAiModel(input.userId, input.organizationId);
+	const model = await getAiModel(
+		input.userId,
+		input.organizationId,
+		false,
+		undefined,
+		undefined,
+		{ callPurpose: AI_CALL_PURPOSES.planCritique },
+	);
 
 	const systemPrompt = `You are a senior technical reviewer. Analyze the execution plan and identify issues.
 
@@ -427,7 +442,14 @@ async function refinePlan(
 	input: CreateTaskPlanInput,
 	maxIterations: number,
 ): Promise<RefinedPlan> {
-	const model = await getAiModel(input.userId, input.organizationId);
+	const model = await getAiModel(
+		input.userId,
+		input.organizationId,
+		false,
+		undefined,
+		undefined,
+		{ callPurpose: AI_CALL_PURPOSES.planRefinement },
+	);
 	let currentPlan = originalPlan;
 	let refinementCount = 0;
 	const changesApplied: string[] = [];

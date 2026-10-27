@@ -3,6 +3,7 @@
 import { MIN_DESCRIPTION_LENGTH } from "@repo/api/modules/projects/lib/readiness/thresholds";
 import type { EngagementProfile } from "@repo/database/prisma/generated/enums";
 import { DEFAULT_NEW_PROJECT_PROFILE } from "@repo/database/src/engagement-profiles";
+import { isCreatableDocumentType } from "@repo/utils/document-type-catalog";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { useConfirmationAlert } from "@saas/shared/components/ConfirmationAlertProvider";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -707,7 +708,13 @@ export function ProjectCreationWizard({
 			onRestore: (snapshot) => {
 				const fd = snapshot.formData as ProjectFormData;
 				if (fd) {
-					setFormData(fd);
+					// A draft saved before Features was retired may still select it.
+					setFormData({
+						...fd,
+						documents: (fd.documents ?? []).filter(
+							isCreatableDocumentType,
+						),
+					});
 				}
 				if (snapshot.currentStep) {
 					setCurrentStep(snapshot.currentStep);
@@ -1000,7 +1007,9 @@ export function ProjectCreationWizard({
 				? (wizardState.selectedAzureDevOpsRepos as AzureDevOpsRepo[])
 				: null;
 			const wizardDocuments = Array.isArray(wizardState?.documents)
-				? (wizardState.documents as string[])
+				? (wizardState.documents as string[]).filter(
+						isCreatableDocumentType,
+					)
 				: null;
 			const wizardTempContextIds = Array.isArray(
 				wizardState?.tempContextIds,

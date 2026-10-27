@@ -182,3 +182,27 @@ describe("stoppedAnswerText", () => {
 		).toBeUndefined();
 	});
 });
+
+it("leaves completed clarification exchanges to their execution", () => {
+	const messages = [
+		{ id: "question", role: "user" },
+		{
+			id: "clarification",
+			role: "user",
+			metadata: {
+				clarification: { question: "Which branch?", answer: "staging" },
+			},
+		},
+	];
+	expect(
+		selectLiveUserMessages(messages, [
+			{
+				id: "execution",
+				userMessage: "Check branch",
+				userMessageId: "question",
+				stepResults: [],
+				completedAt: new Date(),
+			},
+		]),
+	).toEqual([]);
+});

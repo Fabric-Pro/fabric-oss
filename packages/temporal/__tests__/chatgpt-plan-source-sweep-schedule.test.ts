@@ -12,7 +12,7 @@
 
 import { readFileSync } from "node:fs";
 import type { ScheduleClient } from "@temporalio/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 const { scheduleCreate, FakeScheduleAlreadyRunning, FakeScheduleClient } =
 	vi.hoisted(() => {
@@ -58,6 +58,13 @@ import {
 	registerSystemSchedules,
 } from "../src/schedules";
 
+// The worker barrel loads the provider/database dependency graph. Give that
+// setup its own budget under parallel transforms; assertions keep the test timeout.
+let activities: typeof import("../src/activities");
+beforeAll(async () => {
+	activities = await import("../src/activities");
+}, 120_000);
+
 function fakeClient(create = scheduleCreate): ScheduleClient {
 	return { create } as unknown as ScheduleClient;
 }
@@ -91,7 +98,7 @@ afterEach(() => {
 });
 
 describe("the ChatGPT plan source-row sweep schedule", () => {
-	it("creates the schedule with EXACTLY this payload and nothing else", async () => {
+	it("creates the expected schedule payload", async () => {
 		await registerChatGptPlanSourceSweepSchedule(fakeClient());
 
 		expect(scheduleCreate).toHaveBeenCalledTimes(1);
@@ -132,8 +139,8 @@ describe("the ChatGPT plan source-row sweep schedule", () => {
 		expect(CHATGPT_PLAN_SOURCE_SWEEP_EXECUTION_TIMEOUT_MS).toBeLessThan(
 			interval,
 		);
-		// A run at its page cap, every call at its worst with all retries,
-		// still fits, so a slow but healthy walk is never terminated.
+		// A run at its page cap, with calls at their worst and all retries,
+		// still fits within the configured workflow timeout.
 		const callWorst = chatGptPlanSourceSweepActivityCallWorstCaseMs();
 		const { startToCloseTimeout, retry } =
 			CHATGPT_PLAN_SOURCE_SWEEP_ACTIVITY_OPTIONS;
@@ -176,7 +183,6 @@ describe("the ChatGPT plan source-row sweep schedule", () => {
 	});
 
 	it("names an activity the top-level activities barrel registers, and only it", async () => {
-		const activities = await import("../src/activities");
 		expect(Object.keys(activities)).toContain(
 			"sweepChatGptPlanSourceRowsActivity",
 		);

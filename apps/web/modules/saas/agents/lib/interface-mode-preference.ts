@@ -1,5 +1,6 @@
 import type { UiMode } from "@repo/database";
 import type { QueryClient } from "@tanstack/react-query";
+import type { OrchestratorPreferenceFields } from "./orchestrator-preference-save-queue";
 
 /**
  * The cache key both the full page and the ⌘J drawer read the user's
@@ -32,4 +33,32 @@ export function setCachedUiMode(
 				? { ...previous, uiMode: next, exists: true }
 				: previous,
 	);
+}
+
+/**
+ * Publishes confirmed list changes without replacing modes owned by other surfaces.
+ * Cancel older reads before merging; an unresolved first load needs a full refetch.
+ */
+export async function setCachedOrchestratorPreferenceLists(
+	queryClient: QueryClient,
+	organizationId: string,
+	fields: OrchestratorPreferenceFields,
+	isCurrent: () => boolean,
+) {
+	const queryKey = orchestratorPreferencesQueryKey(organizationId);
+	await queryClient.cancelQueries({ queryKey });
+	if (!isCurrent()) {
+		return;
+	}
+	const previous = queryClient.getQueryData(queryKey);
+	if (previous && typeof previous === "object") {
+		queryClient.setQueryData(queryKey, {
+			...previous,
+			...fields,
+			exists: true,
+		});
+	} else {
+		// Not awaited: a slow or hung read must not hold the save queue.
+		void queryClient.invalidateQueries({ queryKey });
+	}
 }

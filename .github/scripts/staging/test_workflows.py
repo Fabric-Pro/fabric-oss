@@ -29,6 +29,7 @@ class StagingWorkflowContracts(unittest.TestCase):
                      for step in job.get('steps', []) if step.get('id') == 'prisma-client-cache']
         self.assertEqual(len(consumers), 2)
         expected_inputs = {
+            'packages/database/prisma.config.ts',
             'packages/database/prisma/schema.prisma',
             'packages/database/prisma/zod-generator.config.json',
             'packages/database/prisma/tsconfig.generated.json',
@@ -94,7 +95,7 @@ class StagingWorkflowContracts(unittest.TestCase):
         text = (ROOT / 'turbo.json').read_text()
         config = json.loads(re.sub(r'^\s*//[^\n]*', '', text, flags=re.MULTILINE))
         inputs = config['tasks']['generate']['inputs']
-        for path in ['package.json', 'tsconfig.json', 'scripts/generate-client.mts',
+        for path in ['package.json', 'tsconfig.json', 'prisma.config.ts', 'scripts/generate-client.mts',
                      'scripts/fix-zod-imports.ts', 'prisma/schema.prisma',
                      'prisma/zod-generator.config.json', 'prisma/tsconfig.generated.json',
                      '$TURBO_ROOT$/tooling/typescript/base.json',
@@ -455,6 +456,25 @@ esac
                     'IMAGE_NAME': 'ghcr.io/example/snapshots/example',
                 }, capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode != 0, expected != 0, result.stderr)
+
+    def test_sbom_scan_retries_once_and_fails_the_job_on_a_second_failure(self):
+        for name in ['private-staging-images.yml', 'oss-snapshot-images.yml']:
+            with self.subTest(workflow=name):
+                steps = workflow(name)['jobs']['build']['steps']
+                names = [step.get('name') for step in steps]
+                first_index = names.index('Generate SPDX SBOM from pushed digest')
+                first, retry = steps[first_index], steps[first_index + 1]
+                self.assertEqual(retry['name'], 'Retry SPDX SBOM from pushed digest')
+                self.assertEqual(first['id'], 'sbom')
+                self.assertEqual(first['continue-on-error'], 'true')
+                self.assertEqual(retry['if'], "steps.sbom.outcome == 'failure'")
+                # The retry is the last attempt, so its failure fails the job.
+                self.assertNotIn('continue-on-error', retry)
+                self.assertEqual(retry['uses'], first['uses'])
+                self.assertEqual(retry['with'], first['with'])
+                # Exactly one retry: no third attempt.
+                self.assertEqual([step.get('uses') for step in steps].count(first['uses']), 2)
+                self.assertLess(first_index + 1, names.index('Attest build provenance'))
 
     def test_disk_reclaim_and_prune_run_only_below_the_free_space_floor(self):
         job = workflow('private-staging-images.yml')['jobs']['build']

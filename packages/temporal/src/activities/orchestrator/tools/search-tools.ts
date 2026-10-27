@@ -14,6 +14,8 @@
  */
 
 import { closeMcpClientSafe, getMcpClient } from "@repo/agent-core/backend";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { db } from "@repo/database";
 import { GITHUB_ACCOUNT, MICROSOFT_TEAMS_ACCOUNT } from "@repo/mcp-registry";
 import type { TenantContext } from "@repo/rag/lib/embedding/types";
@@ -350,14 +352,18 @@ export async function findRelevantServersBySemantic(
 			organizationId,
 		});
 
-		const embeddingResult = await generateEmbeddings(
-			[query],
-			toolSearchUsage({
-				userId,
-				organizationId,
-				...secondaryUsageFields(options),
-			}),
-			providerConfig,
+		const embeddingResult = await runWithAiCallPurpose(
+			AI_CALL_PURPOSES.capabilitySearchEmbedding,
+			() =>
+				generateEmbeddings(
+					[query],
+					toolSearchUsage({
+						userId,
+						organizationId,
+						...secondaryUsageFields(options),
+					}),
+					providerConfig,
+				),
 		);
 
 		if (

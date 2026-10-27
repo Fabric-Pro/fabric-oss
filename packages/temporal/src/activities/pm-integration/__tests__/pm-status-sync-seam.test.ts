@@ -388,6 +388,8 @@ function linkedStory(overrides: Row = {}): Row {
 		pmAutoHidden: false,
 		pmTicketTerminal: false,
 		pmTicketTerminalStatus: null,
+		pmTicketStatus: null,
+		pmTicketStatusExternalId: null,
 		lastSyncedPmHash: computePmHash(
 			ISSUE_JSON.title,
 			ISSUE_JSON.description,
@@ -733,6 +735,12 @@ describe("AC11 round trip: Fabric move → push → poll", () => {
 		]);
 		expect(storedStory("story-7").pmStatusSyncBaseId).toBe("st-progress");
 
+		// The native-status snapshot (Fizzy #3088) was already recorded by an
+		// earlier poll, so only a status-sync echo could write below.
+		const seeded = storedStory("story-7");
+		seeded.pmTicketStatus = "workflow::in-review";
+		seeded.pmTicketStatusExternalId = seeded.externalId;
+
 		const mark = fakeStore.calls.length;
 		await runPoll();
 
@@ -764,9 +772,13 @@ describe("AC11 round trip: Fabric move → push → poll", () => {
 
 		expect(outcomeCounts().moved).toBe(1);
 		expect(storedStory("story-7").statusId).toBe("st-done");
+		// The native-status snapshot (Fizzy #3088) follows the label, then the
+		// status-sync move.
 		expect(userStoryWritesSince(moveMark).map((c) => c.method)).toEqual([
+			"update",
 			"updateMany",
 		]);
+		expect(storedStory("story-7").pmTicketStatus).toBe("workflow::done");
 	});
 });
 

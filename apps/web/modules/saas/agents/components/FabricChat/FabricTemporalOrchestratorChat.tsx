@@ -56,7 +56,7 @@ import { FabricLogo } from "@saas/shared/components/FabricLogo";
 import { RobotIcon } from "@saas/shared/components/icons/RobotIcon";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import {
@@ -138,11 +138,19 @@ import {
 } from "../../lib/chat-image-upload";
 import { parseTurnTruncation } from "../../lib/chat-turn-truncation";
 import { parseChatGptPlanApiBilling } from "../../lib/chatgpt-plan-api-billing";
-import { formatClarificationTurn } from "../../lib/clarification-turns";
+import {
+	clarificationOf,
+	formatClarificationTurn,
+	parseClarificationTurn,
+} from "../../lib/clarification-turns";
 import { getSelectedOrchestratorToolIds } from "../../lib/orchestrator-conversation-tools";
-import { budgetStopToShow } from "../../lib/turn-budget-stop";
+import {
+	budgetStopToShow,
+	parseTurnBudgetStop,
+} from "../../lib/turn-budget-stop";
 // CUGA-specific components
 import { type CugaExecutionState, CugaExecutionView } from "../cuga";
+import { buildArtifactSources } from "./artifact-sources";
 import { CarriedOverContextBanner } from "./CarriedOverContextBanner";
 import { ContextCompactionNotice } from "./ContextCompactionNotice";
 import { ConversationHandoffCard } from "./ConversationHandoffCard";
@@ -170,7 +178,6 @@ import {
 	PhaseIndicator,
 	// Planning transparency & visualization
 	REASONING_TO_EXECUTION,
-	type SourceReference,
 	type TemporalOrchestratorActivityState,
 } from "./orchestrator";
 import {
@@ -195,6 +202,7 @@ import {
 	type ToolCallItem,
 	ToolCallList,
 } from "./shared";
+import { AnsweredClarification } from "./shared/AnsweredClarification";
 import { ApiBillingNotice } from "./shared/ApiBillingNotice";
 import { TruncationNotice } from "./shared/TruncationNotice";
 import { toToolCallItems } from "./shared/tool-call-items";
@@ -780,9 +788,7 @@ export function FabricTemporalOrchestratorChat({
 		onStopFailed: handleStopFailed,
 		onTurnRefused: handleTurnRefused,
 	});
-	// The token-allowance stop a card shows: only a completed turn's (a
-	// stopped turn keeps its stored stop and shows none).
-	const shownBudgetStop = budgetStopToShow(state.status, state.budgetStop);
+	// The live and saved cards below are scoped to the latest terminal turn.
 
 	// F2 — chat scope for the Excalidraw auto-insert
 	// button. The Loom orchestrator carries `attachedProjectId` +
@@ -937,6 +943,71 @@ export function FabricTemporalOrchestratorChat({
 		staleTime: 30_000,
 	});
 
+	const queryClient = useQueryClient();
+
+	useEffect(() => {
+		if (
+			conversationId &&
+			["completed", "failed", "cancelled"].includes(state.status)
+		) {
+			void queryClient.invalidateQueries({
+				queryKey: [
+					"orchestrator-conversation-meta",
+					conversationId,
+					organizationId,
+				],
+			});
+		}
+	}, [
+		conversationId,
+		organizationId,
+		queryClient,
+		state.status,
+		state.executionId,
+	]);
+
+	const savedLatestTurn = (
+		(conversationData ?? activeConversation)?.metadata as
+			| {
+					latestTurn?: {
+						id: string;
+						executionId: string;
+						status: string;
+						generation?: number;
+						budgetStop: unknown;
+						responseText?: string;
+					};
+			  }
+			| undefined
+	)?.latestTurn;
+	const liveTurnIsLatest =
+		Boolean(state.executionId) &&
+		(!savedLatestTurn ||
+			state.executionId === savedLatestTurn.executionId ||
+			(state.turnGeneration != null &&
+				savedLatestTurn.generation != null &&
+				state.turnGeneration > savedLatestTurn.generation));
+	const canShowSavedStop =
+		!isLoading &&
+		!isRunning &&
+		(state.status === "idle" ||
+			(state.turnGeneration != null &&
+				savedLatestTurn?.generation != null &&
+				savedLatestTurn.generation > state.turnGeneration));
+	const shownBudgetStop = liveTurnIsLatest
+		? budgetStopToShow(state.status, state.budgetStop)
+		: canShowSavedStop &&
+				savedLatestTurn &&
+				["COMPLETED", "LIMITED", "FAILED", "CANCELLED"].includes(
+					savedLatestTurn.status,
+				)
+			? parseTurnBudgetStop(savedLatestTurn.budgetStop)
+			: undefined;
+	const stoppedTurnId = liveTurnIsLatest ? state.turnId : savedLatestTurn?.id;
+	const stopSummary = liveTurnIsLatest
+		? (state.result?.response ?? state.handoffRecommended?.summary ?? "")
+		: (savedLatestTurn?.responseText ?? "");
+
 	const handleProjectRemoved = useCallback(() => {
 		setAttachedProjectId(null);
 		onProjectRemove?.();
@@ -1001,42 +1072,14 @@ export function FabricTemporalOrchestratorChat({
 	}, [currentStep, partykitStepProgress, isRunning]);
 
 	// Convert planning audit sources to SourceReference format for ArtifactsPanel
-	const artifactSources = useMemo((): SourceReference[] => {
-		// Map source types from planning audit to artifact source types
-		const sourceTypeMap: Record<string, SourceReference["type"]> = {
-			workspace_rag: "workspace",
-			semantic_memory: "memory",
-			letta_memory: "memory",
-			trajectory_reuse: "memory",
-			negative_memory: "memory",
-			web_research: "web",
-			mcp_tool_discovery: "code",
-			agent_capabilities: "code",
-			policy_enrichment: "document",
-			user_input: "document",
-		};
-
-		// Get sources from current execution (if planning audit available)
-		const currentSources = planningAudit?.sourcesUsed || [];
-
-		// Get sources from completed executions (for persistence across refresh)
-		const completedSources = completedExecutions.flatMap(
-			(exec) => exec.sourcesUsed || [],
-		);
-
-		// Combine and dedupe
-		const allSources = [
-			...new Set([...currentSources, ...completedSources]),
-		];
-
-		return allSources.map((source, idx) => ({
-			id: `source-${idx}`,
-			title: source,
-			type:
-				sourceTypeMap[source.toLowerCase().replace(/ /g, "_")] ||
-				"document",
-		}));
-	}, [planningAudit, completedExecutions]);
+	const artifactSources = useMemo(
+		() =>
+			buildArtifactSources(
+				planningAudit?.sourcesUsed || [],
+				completedExecutions,
+			),
+		[planningAudit, completedExecutions],
+	);
 
 	// Convert workflow artifacts to DocumentArtifact format for ArtifactsPanel
 	const documentArtifacts = useMemo((): DocumentArtifact[] => {
@@ -1246,6 +1289,16 @@ export function FabricTemporalOrchestratorChat({
 					? metadata.executions
 					: [];
 
+				// The server can project message-only history as message-result records.
+				// Join by message id so structured display survives that projection.
+				const savedMessages = activeConversation.messages ?? [];
+				const projectedClarifications = new Map(
+					savedMessages.map((message) => [
+						`message-result-${message.id}`,
+						clarificationOf(message),
+					]),
+				);
+
 				// Build completedExecutions from persisted execution records
 				let restoredExecutions: CompletedExecution[] = rawExecutions
 					.filter(
@@ -1258,6 +1311,9 @@ export function FabricTemporalOrchestratorChat({
 					.map((exec: any) => ({
 						id: exec.id,
 						userMessage: exec.userMessage,
+						userMessageClarification: projectedClarifications.get(
+							exec.id,
+						),
 						imageUrls: exec.imageUrls,
 						stepResults: exec.stepResults || [],
 						response: exec.finalResponse,
@@ -1306,7 +1362,10 @@ export function FabricTemporalOrchestratorChat({
 						// rebuild `history`, so dropping these here would
 						// silently reintroduce the re-ask (Fizzy #2406).
 						clarifications: Array.isArray(exec.clarifications)
-							? exec.clarifications
+							? exec.clarifications.flatMap((value: unknown) => {
+									const turn = parseClarificationTurn(value);
+									return turn ? [turn] : [];
+								})
 							: undefined,
 						truncated: parseTurnTruncation(exec.truncated),
 						apiBilling: parseChatGptPlanApiBilling(exec.apiBilling),
@@ -1349,6 +1408,7 @@ export function FabricTemporalOrchestratorChat({
 					const msgs: Array<{
 						role: string;
 						content: string;
+						metadata?: Record<string, unknown>;
 					}> = Array.isArray((activeConversation as any).messages)
 						? (activeConversation as any).messages
 						: [];
@@ -1363,6 +1423,7 @@ export function FabricTemporalOrchestratorChat({
 							fallbackExecutions.push({
 								id: `msg-fallback-${i}`,
 								userMessage: msg.content,
+								userMessageClarification: clarificationOf(msg),
 								stepResults: [],
 								response: assistantContent,
 								completedAt: new Date(
@@ -1724,7 +1785,7 @@ export function FabricTemporalOrchestratorChat({
 
 				// Clarifying questions answered during this run, recorded as
 				// their own user-role turns between the request and the reply.
-				// They are the user's words, they belong in the transcript, and
+				// Their structured display data belongs in the transcript, and
 				// persisting them is what lets the next turn's clarity gate see
 				// that the question is already settled (Fizzy #2406). The
 				// wording matches what the workflow writes into its own journey
@@ -1734,6 +1795,7 @@ export function FabricTemporalOrchestratorChat({
 						id: generateMessageId(),
 						role: "user" as const,
 						content: formatClarificationTurn(c),
+						metadata: { clarification: c },
 						timestamp: execution.startedAt,
 					}),
 				);
@@ -2593,7 +2655,10 @@ export function FabricTemporalOrchestratorChat({
 
 	// `prompt` is set by an in-thread action such as Continue; the composer's
 	// Send passes its click event, which is not a string.
-	const handleSendMessage = async (prompt?: unknown) => {
+	const handleSendMessage = async (
+		prompt?: unknown,
+		continueFromTurnId?: string,
+	) => {
 		const text = typeof prompt === "string" ? prompt : input;
 		if (!text.trim() || isLoading) {
 			return;
@@ -2609,7 +2674,7 @@ export function FabricTemporalOrchestratorChat({
 		pendingMessageRef.current = content;
 
 		// Check if this should be sent as a follow-up to an in-progress execution
-		if (isFollowUpEnabled && !isComplete) {
+		if (!continueFromTurnId && isFollowUpEnabled && !isComplete) {
 			const isModification = hasModificationIndicators(content);
 			const success = await sendFollowUp(content, isModification);
 			if (success) {
@@ -2896,7 +2961,12 @@ export function FabricTemporalOrchestratorChat({
 					? inlineAttachmentContexts
 					: undefined,
 				turnConversationId
-					? { conversationId: turnConversationId }
+					? {
+							conversationId: turnConversationId,
+							...(continueFromTurnId
+								? { continueFromTurnId }
+								: {}),
+						}
 					: undefined,
 			);
 		} finally {
@@ -3204,65 +3274,86 @@ export function FabricTemporalOrchestratorChat({
 										className="space-y-4"
 									>
 										{/* User's question */}
-										{execution.userMessage && (
-											<Message
-												from="user"
-												className="py-2"
-											>
-												<MessageContent
-													variant="flat"
-													className="max-w-[70%]"
+										{execution.userMessageClarification ? (
+											<AnsweredClarification
+												turn={
+													execution.userMessageClarification
+												}
+											/>
+										) : (
+											execution.userMessage && (
+												<Message
+													from="user"
+													className="py-2"
 												>
-													{execution.imageUrls &&
-														execution.imageUrls
-															.length > 0 && (
-															<div className="flex gap-2 mb-2 flex-wrap">
-																{execution.imageUrls.map(
-																	(url) => (
-																		<button
-																			key={
-																				url
-																			}
-																			type="button"
-																			onClick={() =>
-																				setLightboxImageUrl(
-																					storagePathToProxyUrl(
+													<MessageContent
+														variant="flat"
+														className="max-w-[70%]"
+													>
+														{execution.imageUrls &&
+															execution.imageUrls
+																.length > 0 && (
+																<div className="flex gap-2 mb-2 flex-wrap">
+																	{execution.imageUrls.map(
+																		(
+																			url,
+																		) => (
+																			<button
+																				key={
+																					url
+																				}
+																				type="button"
+																				onClick={() =>
+																					setLightboxImageUrl(
+																						storagePathToProxyUrl(
+																							url,
+																							organizationId,
+																						),
+																					)
+																				}
+																				className="cursor-pointer"
+																			>
+																				<Image
+																					src={storagePathToProxyUrl(
 																						url,
 																						organizationId,
-																					),
-																				)
-																			}
-																			className="cursor-pointer"
-																		>
-																			<Image
-																				src={storagePathToProxyUrl(
-																					url,
-																					organizationId,
-																				)}
-																				alt="Attached"
-																				width={
-																					80
-																				}
-																				height={
-																					80
-																				}
-																				unoptimized
-																				className="h-20 w-20 rounded-md border object-cover transition-shadow hover:ring-2 hover:ring-primary"
-																			/>
-																		</button>
-																	),
-																)}
-															</div>
-														)}
-													<Response>
-														{execution.userMessage}
-													</Response>
-												</MessageContent>
-												<MessageAvatar
-													src={userAvatarSrc}
-													name={userDisplayName}
+																					)}
+																					alt="Attached"
+																					width={
+																						80
+																					}
+																					height={
+																						80
+																					}
+																					unoptimized
+																					className="h-20 w-20 rounded-md border object-cover transition-shadow hover:ring-2 hover:ring-primary"
+																				/>
+																			</button>
+																		),
+																	)}
+																</div>
+															)}
+														<Response>
+															{
+																execution.userMessage
+															}
+														</Response>
+													</MessageContent>
+													<MessageAvatar
+														src={userAvatarSrc}
+														name={userDisplayName}
+													/>
+												</Message>
+											)
+										)}
+
+										{execution.clarifications?.map(
+											(turn, index) => (
+												<AnsweredClarification
+													key={`${execution.id}-clarification-${index}`}
+													turn={turn}
 												/>
-											</Message>
+											),
 										)}
 
 										{/* Execution Plan (if available) */}
@@ -3733,6 +3824,15 @@ export function FabricTemporalOrchestratorChat({
 
 							{/* Current user message (only if not in completedExecutions) */}
 							{liveUserMessages.map((message) => {
+								const clarification = clarificationOf(message);
+								if (clarification) {
+									return (
+										<AnsweredClarification
+											key={message.id}
+											turn={clarification}
+										/>
+									);
+								}
 								return (
 									<Message
 										key={message.id}
@@ -4809,35 +4909,34 @@ export function FabricTemporalOrchestratorChat({
 				{/* Input Area - Using shared ChatInput component */}
 				<div className="border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 p-2 sm:p-4">
 					<div className="max-w-4xl mx-auto min-w-0">
-						{/* "Continue in new chat" handoff CTA. Renders above the
-							input when the orchestrator hit its hard token-budget cap
-							and produced an exhaustion synthesis. Clicking creates a
-							sibling conversation pre-seeded with the summary as
-							carried-over context, then navigates the user there. */}
-						{/* Never for a stopped turn: it ended because the user
-							stopped it, not because the thread ran out of budget. */}
-						{/* A turn that used its token allowance shows the same
-							card with no new-chat action: the user continues
-							here. Only a completed turn: a stopped one keeps its
-							stored stop but shows no budget card. */}
-						{(state.handoffRecommended || shownBudgetStop) &&
-							state.status !== "cancelled" &&
+						{(shownBudgetStop ||
+							(liveTurnIsLatest && state.handoffRecommended)) &&
+							!isLoading &&
+							(shownBudgetStop || state.status !== "cancelled") &&
 							conversationId && (
 								<ConversationHandoffCard
 									parentConversationId={conversationId}
 									reason={
 										state.handoffRecommended?.reason ?? ""
 									}
-									summary={
-										state.handoffRecommended?.summary ?? ""
-									}
+									summary={stopSummary}
 									budgetStop={shownBudgetStop}
 									organizationId={organizationId}
-									onContinue={(newConversationId) => {
+									busy={isPreparingSend || isLoading}
+									onContinueInChat={
+										shownBudgetStop && stoppedTurnId
+											? () =>
+													handleSendMessage(
+														"Continue",
+														stoppedTurnId,
+													)
+											: undefined
+									}
+									onContinue={(newConversationId) =>
 										onConversationCreated?.(
 											newConversationId,
-										);
-									}}
+										)
+									}
 								/>
 							)}
 						<ChatInput

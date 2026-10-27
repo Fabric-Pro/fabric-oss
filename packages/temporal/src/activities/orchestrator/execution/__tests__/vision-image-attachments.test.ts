@@ -105,3 +105,38 @@ describe("resolveImageAttachments", () => {
 		expect(findMany).not.toHaveBeenCalled();
 	});
 });
+
+it("classifies a MIME change as permanent before attempting a failing blob read", async () => {
+	findMany.mockResolvedValue([
+		{
+			id: "example-image",
+			filename: "example.jpg",
+			mimeType: "image/jpeg",
+			s3Path: "example.jpg",
+		},
+	]);
+	downloadFile.mockRejectedValue(new Error("temporary blob failure"));
+	const outcomes = await resolveImageAttachments(
+		["example-image"],
+		"example-user",
+		"example-org",
+		{
+			references: [
+				{
+					documentId: "example-image",
+					contentHash: "example-hash",
+					mimeType: "image/png",
+					transformationVersion: "original-v1",
+				},
+			],
+		},
+	);
+	expect(outcomes).toEqual([
+		{
+			status: "permanently_gone",
+			documentId: "example-image",
+			reason: "mime_mismatch",
+		},
+	]);
+	expect(downloadFile).not.toHaveBeenCalled();
+});

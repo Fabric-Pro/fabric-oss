@@ -102,10 +102,13 @@ describe("ReviewCenterInbox (7.1)", () => {
 		renderInbox();
 
 		const button = await screen.findByRole("button", {
-			name: "Review Center: 3 items to review",
+			name: "Sync issues 3",
 		});
 		expect(button).toBeInTheDocument();
-		expect(button).toHaveTextContent("3");
+		expect(button).toHaveTextContent("Sync issues 3");
+		expect(button).toHaveClass("border", "h-8", "text-sm");
+		expect(button.querySelector("span")).not.toHaveClass("text-xs");
+		expect(button.querySelector("[class*=animate-ping]")).toBeNull();
 	});
 
 	it("renders nothing when the actionable count is zero", async () => {
@@ -115,7 +118,7 @@ describe("ReviewCenterInbox (7.1)", () => {
 		// Give the query a tick to resolve, then assert no button rendered.
 		await waitFor(() => expect(reviewCenterCount).toHaveBeenCalled());
 		expect(
-			screen.queryByRole("button", { name: /Review Center/ }),
+			screen.queryByRole("button", { name: /Sync issues/ }),
 		).not.toBeInTheDocument();
 		expect(container.querySelector("button")).toBeNull();
 	});
@@ -126,7 +129,7 @@ describe("ReviewCenterInbox (7.1)", () => {
 
 		expect(
 			await screen.findByRole("button", {
-				name: "Review Center: 1 item to review",
+				name: "Sync issues 1",
 			}),
 		).toBeInTheDocument();
 	});
@@ -137,7 +140,7 @@ describe("ReviewCenterInbox (7.1)", () => {
 		renderInbox();
 
 		const button = await screen.findByRole("button", {
-			name: "Review Center: 2 items to review",
+			name: "Sync issues 2",
 		});
 		await user.click(button);
 
@@ -145,4 +148,16 @@ describe("ReviewCenterInbox (7.1)", () => {
 			await screen.findByRole("dialog", { name: /Items to review/ }),
 		).toBeInTheDocument();
 	});
+});
+
+vi.mock("next-intl", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("next-intl")>();
+	const { default: messages } = await import(
+		"@repo/i18n/translations/en.json"
+	);
+	return {
+		...actual,
+		useTranslations: (namespace: string) =>
+			actual.createTranslator({ locale: "en", messages, namespace }),
+	};
 });

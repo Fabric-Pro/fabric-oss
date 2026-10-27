@@ -4,7 +4,7 @@
  * Called by the LangGraph agent's tool_node to search Slack messages
  * for a project. Reuses the existing searchProjectSlackMessages function.
  *
- * Auth: Uses X-AI-Token JWT (same as /api/mcp/configs). Body-based userId is not
+ * Auth: Uses X-AI-Token JWT (same as /api/internal/mcp-tools). Body-based userId is not
  * accepted to prevent impersonation.
  *
  * Pattern: Mirrors /api/internal/teams-search

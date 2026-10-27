@@ -156,7 +156,7 @@ export async function processDataForRag(
 					{
 						userId,
 						organizationId,
-						featureKey: "knowledge-index",
+						featureKey: "report-generation",
 						tags: ["report-data"],
 					},
 					embeddingConfig,

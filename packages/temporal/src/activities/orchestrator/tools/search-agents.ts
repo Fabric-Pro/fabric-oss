@@ -10,6 +10,8 @@
  * - Hybrid scoring combines keyword + semantic relevance
  */
 
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { getAgentsWithEmbeddings, updateAgentEmbedding } from "@repo/database";
 import { generateEmbedding } from "@repo/rag/lib/embedding/generator";
 import type { TenantContext } from "@repo/rag/lib/embedding/types";
@@ -263,10 +265,14 @@ async function runAgentSearch(
 				);
 			}
 			// Credentials are fetched internally by generateEmbedding()
-			const result = await generateEmbedding(
-				input.query,
-				toolSearchUsage(tenantContext),
-				undefined,
+			const result = await runWithAiCallPurpose(
+				AI_CALL_PURPOSES.capabilitySearchEmbedding,
+				() =>
+					generateEmbedding(
+						input.query,
+						toolSearchUsage(tenantContext),
+						undefined,
+					),
 			);
 			queryEmbedding = result.embedding;
 			resolvedEmbeddingModel = result.model;
@@ -361,10 +367,14 @@ async function runAgentSearch(
 						organizationId: input.organizationId,
 					};
 					const text = buildAgentSearchText(agent);
-					const result = await generateEmbedding(
-						text,
-						toolSearchUsage(tenantContext),
-						undefined,
+					const result = await runWithAiCallPurpose(
+						AI_CALL_PURPOSES.capabilityIndexEmbedding,
+						() =>
+							generateEmbedding(
+								text,
+								toolSearchUsage(tenantContext),
+								undefined,
+							),
 					);
 					const embedding = result.embedding;
 

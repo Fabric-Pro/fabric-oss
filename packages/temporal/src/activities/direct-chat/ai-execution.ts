@@ -30,6 +30,8 @@ import {
 	DEFAULT_MODEL_CAPABILITIES,
 	getModelCapabilities,
 } from "@repo/ai/capabilities";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import { classifyLimitError } from "@repo/ai/limits";
 import {
@@ -105,6 +107,7 @@ import {
 	recordTurnUsage,
 	recordTurnValue,
 	recordTurnValueOnce,
+	timeTurnStep,
 } from "../shared/turn-timing";
 import { isVoiceTurn } from "../shared/voice-turn-policy";
 import { createAdvisorTools } from "./advisor-tools";
@@ -115,6 +118,7 @@ import {
 } from "./background-heartbeat";
 import {
 	buildProviderOptions,
+	fitThinkingToOutputBudget,
 	isAnthropicProvider,
 	resolveOutputTokenBudget,
 } from "./build-provider-options";
@@ -763,14 +767,16 @@ export async function executeDirectChatActivity(
 	});
 	try {
 		const run = () =>
-			runDirectChatTurn({
-				input,
-				mcpToolInfo,
-				memoryContext,
-				toolSuggestionContext,
-				backgroundHeartbeat,
-				cancellation,
-			});
+			runWithAiCallPurpose(undefined, () =>
+				runDirectChatTurn({
+					input,
+					mcpToolInfo,
+					memoryContext,
+					toolSuggestionContext,
+					backgroundHeartbeat,
+					cancellation,
+				}),
+			);
 		// Under the turn's dispatch guard, a cancel also refuses the model
 		// requests, MCP sends and writes made anywhere inside the turn (see
 		// `turn-cancellation.ts`). A guard the caller already installed is
@@ -948,10 +954,8 @@ async function runDirectChatTurnBody(
 			totalAvailable: mcpToolInfo.length,
 		});
 
-		const mcpResult = await loadMcpToolsFromServers(
-			serversToLoad,
-			userId,
-			organizationId,
+		const mcpResult = await timeTurnStep("direct.mcpLoadMs", () =>
+			loadMcpToolsFromServers(serversToLoad, userId, organizationId),
 		);
 		mcpTools = mcpResult.tools;
 		toolToServerMap = mcpResult.toolToServerMap;
@@ -1106,7 +1110,9 @@ async function runDirectChatTurnBody(
 	// rules. A turn that loads them carries no in-process copy of the workflow
 	// tools, and when the load fails the turn goes on without them. Every other
 	// caller keeps the tools it always had.
-	const fabricPlatform = await loadFabricToolsForTurn(input);
+	const fabricPlatform = await timeTurnStep("direct.fabricToolsMs", () =>
+		loadFabricToolsForTurn(input),
+	);
 	if (fabricPlatform) {
 		cleanups.push(() => fabricPlatform.close());
 	}
@@ -1118,18 +1124,23 @@ async function runDirectChatTurnBody(
 	const advisorTools = createAdvisorTools(userId, organizationId);
 
 	// Create built-in tools (web search, etc.)
-	const inProcessBuiltInTools = await createBuiltInTools({
-		usageConversationId: input.usageConversationId ?? conversationId,
-		userId,
-		organizationId,
-		enabledFabricToolIds,
-		additionalFabricToolIds: input.additionalFabricToolIds,
-		workspaceIds,
-		projectId,
-		// The interactive chat: the project is the one the user attached.
-		includeProjectFeatureReads: true,
-		preferredRepositoryUrl: input.preferredRepositoryUrl,
-	});
+	const inProcessBuiltInTools = await timeTurnStep(
+		"direct.builtInToolsMs",
+		() =>
+			createBuiltInTools({
+				usageConversationId:
+					input.usageConversationId ?? conversationId,
+				userId,
+				organizationId,
+				enabledFabricToolIds,
+				additionalFabricToolIds: input.additionalFabricToolIds,
+				workspaceIds,
+				projectId,
+				// The interactive chat: the project is the one the user attached.
+				includeProjectFeatureReads: true,
+				preferredRepositoryUrl: input.preferredRepositoryUrl,
+			}),
+	);
 	// A tool Fabric MCP offers replaces the in-process one of the same name.
 	const builtInTools = {
 		...inProcessBuiltInTools,
@@ -1158,7 +1169,9 @@ async function runDirectChatTurnBody(
 	let availableSkills: SkillSummary[] = [];
 	let skillTools: Record<string, unknown> = {};
 	try {
-		availableSkills = await listAvailableSkills({ userId, organizationId });
+		availableSkills = await timeTurnStep("direct.skillsMs", () =>
+			listAvailableSkills({ userId, organizationId }),
+		);
 		if (availableSkills.length > 0) {
 			skillTools = createSkillTools({ userId, organizationId });
 			logger.info(`Skills in scope: ${availableSkills.length}`, {
@@ -1324,10 +1337,12 @@ async function runDirectChatTurnBody(
 			});
 		},
 	});
-	const preparedResponse = await prepareAgentTools(allTools, {
-		...toolToServerMap,
-		...fabricToolSources(fabricPlatform),
-	});
+	const preparedResponse = await timeTurnStep("direct.prepareToolsMs", () =>
+		prepareAgentTools(allTools, {
+			...toolToServerMap,
+			...fabricToolSources(fabricPlatform),
+		}),
+	);
 	if (preparedResponse !== undefined) {
 		return {
 			success: true,
@@ -1380,6 +1395,7 @@ async function runDirectChatTurnBody(
 			organizationId,
 			projectId,
 			featureKey: input.featureKey ?? "chat-agent",
+			callPurpose: AI_CALL_PURPOSES.directMain,
 			conversationId: input.usageConversationId ?? conversationId,
 			...(input.usageFrameId ? { frameId: input.usageFrameId } : {}),
 			// Unset, not false: inside a run a person started, the run's own
@@ -1787,6 +1803,9 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 	try {
 		const toolCalls: DirectChatToolCall[] = [];
 		let responseText = "";
+		// Text resuming after a tool step starts a new paragraph, or the steps'
+		// sentences run together ("Let me check.There are two").
+		let stepBreakPending = false;
 		let pendingConfirmation: DirectChatWorkflowOutput["pendingConfirmation"];
 
 		const convertedMessages = await convertToModelMessages(
@@ -1850,17 +1869,16 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 		// enabled on this request. Order matters: see PR #1177 (excalidraw
 		// chat-node fix) — Anthropic rejects `thinking: enabled` paired
 		// with `tool_choice: {type:"tool"}` with HTTP 400.
-		const providerOptions = buildProviderOptions(
+		const requestedProviderOptions = buildProviderOptions(
 			metadata.provider,
 			metadata.modelString,
 			reasoningMode as "lite" | "balanced" | "pro" | undefined,
 			input.featureKey,
 		);
-		// Paired with `providerOptions` — see `resolveOutputTokenBudget` for
-		// why the thinking value has to win over the computed budget, and why
-		// omitting `max_tokens` entirely silently truncated long answers.
+		// Resolve the catalog-capped output budget, then fit fixed thinking
+		// below it with answer room before choosing tools and sending the request.
 		const maxOutputTokens = resolveOutputTokenBudget({
-			providerOptions,
+			providerOptions: requestedProviderOptions,
 			metadata,
 			promptChars:
 				fullSystemContextLength +
@@ -1869,6 +1887,11 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 					?.map((entry: { content: string }) => entry.content)
 					.join("").length ?? 0),
 		});
+
+		const providerOptions = fitThinkingToOutputBudget(
+			requestedProviderOptions,
+			maxOutputTokens,
+		);
 
 		// The forced tool_choice is demoted to "auto" when thinking is on,
 		// even if the prompt heuristic matched. Tested by
@@ -2087,6 +2110,11 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 						"llm.firstTextMs",
 						Date.now() - llmStartedAt,
 					);
+					if (stepBreakPending && /\S$/.test(responseText)) {
+						responseText += "\n\n";
+						observeAgentText("\n\n");
+					}
+					stepBreakPending = false;
 				}
 				observeAgentText(part.text || "");
 				textPartCount++;
@@ -2285,6 +2313,7 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 				});
 			} else if (part.type === "start-step") {
 				aggregateUsage.startStep();
+				stepBreakPending = true;
 			} else if (part.type === "custom") {
 				aggregateUsage.addStreamStartUsage(part);
 			} else if (part.type === "finish-step") {

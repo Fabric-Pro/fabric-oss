@@ -219,6 +219,12 @@ const FABRIC_AI_TOOLS = [
 		category: "Frames",
 	},
 	{
+		id: "fabric_edit_frame_block",
+		name: "Edit Frame Block",
+		description: "Apply text edits to one saved frame block",
+		category: "Frames",
+	},
+	{
 		id: "fabric_get_frame",
 		name: "Get Frame",
 		description: "Retrieve a frame by ID to view its content",
@@ -1652,9 +1658,9 @@ const SYNC_DEBOUNCE_MS = 500;
  *   session-user drop.
  * - localStorage is a cache. DB hydration replaces it only when the DB has any
  *   preferences or the owner has unsent fields. Agents require a non-empty DB
- *   list or an unsent selection, including an explicitly empty one. Values already
- *   sent are not written back to the preferences query cache, so a remount can
- *   still hydrate from an older cached response.
+ *   list or an unsent selection, including an explicitly empty one. Confirmed saves
+ *   cancel older preference reads and merge sent lists into the shared cache;
+ *   an unresolved cache entry is invalidated for a full refetch.
  */
 export function useOrchestratorConfig(
 	organizationId?: string,
@@ -1913,8 +1919,9 @@ export function useOrchestratorConfig(
 			(status) => {
 				setSyncStatus(status === "dropped" ? "idle" : status);
 			},
+			queryClient,
 		);
-	}, [saveOwner, getSessionUserId]);
+	}, [saveOwner, getSessionUserId, queryClient]);
 
 	const retrySyncNow = useCallback(() => {
 		if (syncTimeoutRef.current) {
@@ -1938,13 +1945,18 @@ export function useOrchestratorConfig(
 			if (!saveOwner) {
 				return;
 			}
-			enqueueOrchestratorPreferences(saveOwner, prefs, getSessionUserId);
+			enqueueOrchestratorPreferences(
+				saveOwner,
+				prefs,
+				getSessionUserId,
+				queryClient,
+			);
 			if (syncTimeoutRef.current) {
 				clearTimeout(syncTimeoutRef.current);
 			}
 			syncTimeoutRef.current = setTimeout(retrySyncNow, SYNC_DEBOUNCE_MS);
 		},
-		[saveOwner, getSessionUserId, retrySyncNow],
+		[saveOwner, getSessionUserId, queryClient, retrySyncNow],
 	);
 
 	// Track if we've already applied DB preferences to prevent re-applying

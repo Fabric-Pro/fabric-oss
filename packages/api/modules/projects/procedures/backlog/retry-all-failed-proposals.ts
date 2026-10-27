@@ -5,11 +5,14 @@ import {
 	buildBacklogDedupGuard,
 	db,
 	finalizeBacklogUpdateSession,
+	getAppliedChangeIndexes,
 	getPendingBacklogProposal,
+	getPendingProposalReview,
 	inferDedupFamily,
 	listFailedProposals,
 	markProposalApplyDispatched,
-	returnFailedRecommendationToReview,
+	recordProposalDuplicateResolution,
+	returnFailedProposalToReview,
 } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
 import { describeSyncErrorForUser } from "@repo/temporal/pm-sync-user-error";
@@ -22,6 +25,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 import { isChannelMonitorSource } from "../../lib/channel-monitor-source";
+import type { PmSyncOverride } from "./change-item-schema";
 
 const RETRY_BATCH_LIMIT = 50;
 
@@ -160,7 +164,7 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 			return { error } as { error: unknown };
 		});
 
-		for (const proposal of tenantOwned) {
+		proposalLoop: for (const proposal of tenantOwned) {
 			// Re-read the latest state in case another retry call landed
 			// between the listFailedProposals call and this iteration.
 			const fresh = await getPendingBacklogProposal(proposal.id);
@@ -176,18 +180,40 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 				continue;
 			}
 
-			// A recommendation batch goes back to review instead of replaying:
-			// its stored changes don't record which candidates were selected.
-			if (fresh.source === "ROADMAP_RECOMMENDATION") {
-				const returned = await returnFailedRecommendationToReview(
-					fresh.id,
-				);
+			const boundReview =
+				!!fresh.applyReviewId &&
+				fresh.applyReviewWorkflowId === fresh.applyWorkflowId;
+			const review =
+				fresh.source !== "ROADMAP_RECOMMENDATION" && boundReview
+					? await getPendingProposalReview(
+							fresh.id,
+							fresh.applyReviewId!,
+						)
+					: null;
+			const retryWhere = {
+				id: fresh.id,
+				status: "FAILED" as const,
+				applyWorkflowId: fresh.applyWorkflowId ?? null,
+				applyReviewId: fresh.applyReviewId ?? null,
+			};
+			if (
+				fresh.source === "ROADMAP_RECOMMENDATION" ||
+				(!review &&
+					(!!fresh.applyReviewId ||
+						fresh.source !== "AI_UPDATE_SIDEBAR"))
+			) {
+				const returned = await returnFailedProposalToReview(fresh.id, {
+					applyWorkflowId: fresh.applyWorkflowId ?? null,
+					applyReviewId: fresh.applyReviewId ?? null,
+				});
 				results.push({
 					proposalId: proposal.id,
 					workflowId: null,
 					status: returned ? "returned_to_review" : "error",
 					message: returned
-						? "Returned to review — select the features to accept again."
+						? fresh.source === "ROADMAP_RECOMMENDATION"
+							? "Returned to review — select the features to accept again."
+							: "Returned to review — select the changes to apply again."
 						: "Skipped — proposal is no longer FAILED",
 				});
 				continue;
@@ -201,7 +227,7 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 			)
 				? (proposalPayload?.changes as StoredChange[])
 				: [];
-			if (storedChanges.length === 0) {
+			if (!review && storedChanges.length === 0) {
 				results.push({
 					proposalId: proposal.id,
 					workflowId: null,
@@ -212,22 +238,74 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 			}
 			const sourceMetadata = (fresh.sourceMetadata ??
 				{}) as StoredSourceMetadata;
-			const alreadyApplied = new Set(fresh.appliedChangeIndexes ?? []);
+			const alreadyApplied = await getAppliedChangeIndexes(fresh.id);
+			for (const index of fresh.appliedChangeIndexes ?? []) {
+				alreadyApplied.add(index);
+			}
+			const replayEntries = review
+				? review.entries
+						.filter((entry) => entry.selected)
+						.map((entry) => ({
+							change: entry.change as unknown as StoredChange,
+							index: entry.changeIndex,
+							override:
+								entry.pmSyncOverride as PmSyncOverride | null,
+						}))
+				: storedChanges.map((change, index) => ({
+						change,
+						index,
+						override: null,
+					}));
+			const syncSettings = review
+				? {
+						syncToPM: review.syncToPM,
+						pmConfig:
+							review.pmConfig as StoredSourceMetadata["pmConfig"],
+					}
+				: sourceMetadata;
+			const workflowOverrides: Record<number, PmSyncOverride> = {};
 
 			const dedupGuard = await buildBacklogDedupGuard(input.projectId);
+			const duplicateResolutions: Parameters<
+				typeof recordProposalDuplicateResolution
+			>[0][] = [];
+			const recordDuplicates = async () => {
+				for (const resolution of duplicateResolutions) {
+					try {
+						await recordProposalDuplicateResolution(resolution);
+					} catch {
+						console.warn(
+							"Failed to record proposal duplicate resolution",
+							{
+								proposalId: resolution.proposalId,
+								changeIndex: resolution.changeIndex,
+							},
+						);
+					}
+				}
+			};
 			const newlyApplied: number[] = [];
 			const workflowChanges: StoredChange[] = [];
 			const workflowIndexes: number[] = [];
 			let dedupCollisionCount = 0;
 
-			for (let i = 0; i < storedChanges.length; i++) {
+			for (const entry of replayEntries) {
+				const i = entry.index;
+				const change = entry.change;
+				if (i === null || !change) {
+					results.push({
+						proposalId: fresh.id,
+						workflowId: null,
+						status: "error",
+						message:
+							"Selected review entry has no stored change or index",
+					});
+					continue proposalLoop;
+				}
 				if (alreadyApplied.has(i)) {
 					continue;
 				}
-				const change = storedChanges[i];
-				if (!change) {
-					continue;
-				}
+
 				if (change.action === "create") {
 					const family = inferDedupFamily({
 						kindOverride: change.kindOverride ?? null,
@@ -238,27 +316,34 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 						change.title.to,
 					);
 					if (collision) {
+						duplicateResolutions.push({
+							proposalId: fresh.id,
+							changeIndex: i,
+							existingEntityId: collision.existingId,
+							existingEntityType:
+								family === "BUG" ? "bug" : "story",
+						});
 						// Soft dedup-success — no UserStory mutation.
 						newlyApplied.push(i);
 						dedupCollisionCount += 1;
 						continue;
 					}
 				}
+				if (entry.override) {
+					workflowOverrides[workflowChanges.length] = entry.override;
+				}
 				workflowChanges.push(change);
 				workflowIndexes.push(i);
 			}
 
 			const mergedApplied = Array.from(
-				new Set([
-					...(fresh.appliedChangeIndexes ?? []),
-					...newlyApplied,
-				]),
+				new Set([...alreadyApplied, ...newlyApplied]),
 			);
 
 			if (workflowChanges.length === 0) {
 				// Full-dedup short-circuit — mark APPLIED, no workflow start.
 				const claimed = await db.pendingBacklogProposal.updateMany({
-					where: { id: fresh.id, status: "FAILED" },
+					where: retryWhere,
 					data: {
 						status: "APPLIED",
 						appliedAt: new Date(),
@@ -275,6 +360,7 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 					});
 					continue;
 				}
+				await recordDuplicates();
 				// This terminal flip bypasses the apply workflow's finalize
 				// activity, so finalize any session-history row directly (best-
 				// effort, no-op when none exists) to avoid a stuck APPLYING row.
@@ -316,12 +402,15 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 			const newWorkflowId = `backlog-apply-retry-all-${input.projectId}-${fresh.id}-${Date.now()}`;
 			try {
 				const claimed = await db.pendingBacklogProposal.updateMany({
-					where: { id: fresh.id, status: "FAILED" },
+					where: retryWhere,
 					data: {
 						status: "APPLYING",
 						reviewedAt: new Date(),
 						reviewedBy: user.id,
 						applyWorkflowId: newWorkflowId,
+						...(review
+							? { applyReviewWorkflowId: newWorkflowId }
+							: {}),
 						// Until start returns, the watchdog measures this
 						// unconfirmed claim from the fresh reviewedAt.
 						applyStartedAt: null,
@@ -343,6 +432,8 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 					continue;
 				}
 
+				await recordDuplicates();
+
 				const handle = await client.workflow.start(
 					"backlogApplyChangesWorkflow",
 					withCorrelationMemo({
@@ -361,10 +452,11 @@ export const retryAllFailedProposalsProcedure = tenantProtectedProcedure
 									undefined,
 								approvedChanges: workflowChanges,
 								approvedChangeIndexes: workflowIndexes,
-								syncToPM: Boolean(sourceMetadata.syncToPM),
-								pmConfig: sourceMetadata.pmConfig
+								syncToPM: Boolean(syncSettings.syncToPM),
+								pmSyncOverrides: workflowOverrides,
+								pmConfig: syncSettings.pmConfig
 									? {
-											...sourceMetadata.pmConfig,
+											...syncSettings.pmConfig,
 											containerName:
 												project.projectManagementContainerName ??
 												undefined,

@@ -2,6 +2,9 @@
 
 This guide covers optional support for running Fabric's PostgreSQL on **Databricks Lakebase** and the shared `@repo/databricks` auth package for workspace authentication.
 
+- **Audience**: deployment operators and database engineers
+- **Owner**: Platform
+
 ---
 
 ## 1. Workspace authentication
@@ -44,6 +47,8 @@ Run the following SQL against the Lakebase direct (unpooled) endpoint as the adm
 -- Application runtime role (used in DATABASE_URL)
 CREATE ROLE fabric_app LOGIN PASSWORD '<strong-random>';
 GRANT CONNECT ON DATABASE databricks_postgres TO fabric_app;
+-- Migrations run as fabric_app; CREATE lets them add schemas (lakehouse_export).
+GRANT CREATE ON DATABASE databricks_postgres TO fabric_app;
 GRANT USAGE ON SCHEMA public TO fabric_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO fabric_app;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
@@ -199,3 +204,158 @@ In Azure Container Apps deployments, the `deploy-azure-container-apps.yml` workf
 A separate, optional GitHub secret, `WORKER_DATABASE_URL`, carries the `fabric_worker` connection string itself (the direct endpoint is recommended). The deploy workflows sync it to Key Vault as `worker-database-url`, which the temporal worker and `weave-planners` containers read as their `DATABASE_URL` — distinct from the `database-url` secret the rest of the app uses. When unset it falls back to `DATABASE_URL`, so environments where the worker shares the app's role (Neon) are unaffected. On Lakebase in policy mode this secret is required: the `worker_bypass` policies from §2.5 are scoped `TO fabric_worker`, so a worker connecting as `fabric_app` would be blocked by `FORCE ROW LEVEL SECURITY`.
 
 See `ENVIRONMENT-VARIABLES.md` §3.14 for the full JSON contract and `AWS-DEPLOYMENT.md` for the Secrets Manager `put-secret-value` workflow.
+
+
+## 5. Decision Replay change feed
+
+Decision Replay capture is off by default. Enable `DECISION_REPLAY` through an
+organization override (for example, `example-org`) or a global override. The
+organization value takes precedence, including an explicit false. This flag has
+no environment fallback: PostgreSQL triggers resolve the two override tables
+at write time. Application readers can cache those values for up to 10 seconds.
+An unresolved organization skips capture even when the global override is true.
+
+The migration creates `lakehouse_export.decision_event` outside Prisma's managed
+`public` schema. Its row triggers capture proposal creation and status changes,
+applied changes (including inline Teams and Slack approvals), proposal reviews
+(`proposal_reviewed`), offered review entries (`change_reviewed`), changes already
+on the roadmap (`change_deduplicated`), ratings and re-ratings, cleared ratings,
+duplicate detection, dismissal and resolution,
+and semantic edits to stories created from proposals. The edit clock is
+`lastEditedAt`, rather than the operational `updatedAt`; derived summaries and
+hashes do not count as edits. Actor provenance comes from `lastEditedSource`;
+the stored editor name is omitted because it is not an actor id.
+
+Review payloads contain source, offered and selected counts, and whether the
+list was complete. Entry payloads contain review id, offered/change indexes and
+selection only. Duplicate resolutions contain change index and an allowlisted
+entity type; they use a separate source table from applications so existing
+roadmap items do not enter PM creation sync. Titles, change JSON, PM overrides,
+and duplicate target ids are omitted from the export. Entry capture uses one
+statement trigger over each inserted batch, resolving tenant and capture flag
+per proposal. The native timeline excludes entry events before its limit and
+summarizes each review, with up to 20 not-selected titles from tenant-scoped
+public review entries or the stored proposal's change list. The Databricks gold
+queries use these reviews, entries, applications and deduplications for
+[change-level outcomes](../../deployment/databricks/decision-replay/README.md#change-level-outcome-rules),
+with coverage beginning at each project's first recorded review.
+
+The capture and purge functions share the table's migration owner and use a
+fixed search path. RLS is enabled without FORCE on this export table: the owner's
+reads and writes are unfiltered so erasure needs no bypass grants, including
+before `deploy:rls` runs. Non-owner roles use the organization tenant policy;
+`deploy:rls` preserves this owner exemption and omits export bypass policies.
+Workers insert through SECURITY DEFINER triggers; they need no direct export
+INSERT permission. An event insert failure produces a warning containing only
+SQLSTATE and lets the business write proceed. Warnings identify capture errors;
+malformed scope identifiers and attribution skips are silent and emit no warning.
+Erasure failures instead abort the parent deletion. Server-scoped capture requires
+a project with a non-null organization and skips conflicting row organizations.
+Client ratings require their own non-null session organization; a supplied project
+must belong to that organization. A NULL session organization never inherits a
+caller's project organization.
+Outcome feature keys and subject types use explicit allowlists; model and prompt
+references must exist in their catalogs. Subject and related-subject ids must be
+CUID- or UUID-shaped, or exactly `backlog-apply-op-[0-9a-f]{64}` for sidebar
+direct-apply proposals; events captured before migration
+`20261025090000_decision_replay_apply_op_ids` keep NULL for those ids and cannot
+be relinked. All other id columns and payload `createdEntityId` retain the
+CUID/UUID rule. Unknown metadata uses fallback values while capture continues.
+A NULL model remains NULL; only a non-null model missing from the catalog becomes
+`unknown`.
+
+### Required capture preflight
+
+Before enabling `DECISION_REPLAY` on each host, run as the migration/function
+owner, after applying that host's RLS policies, without relying on a request's
+tenant context:
+
+```sql
+SELECT * FROM lakehouse_export.capture_preflight() ORDER BY table_name;
+```
+
+Require `passed = true` for every row. Run it from a session with no tenant
+context: the SECURITY DEFINER probe raises SQLSTATE `55000` unless `app.tenant_type`
+is unset, empty or `none` and `app.tenant_id` and `app.user_id` are unset or empty.
+It probes `project`, `pending_backlog_proposal`, `prompt_version`,
+`user`, `organization` and `ai_model`. The two feature-flag override tables are
+excluded because they are RLS-exempt control tables that may normally be empty.
+FORCE RLS also applies to owners of source tables: an owner with neither bypass
+privileges nor an applicable policy can see no projects or prompt versions,
+causing silent capture gaps or missing metadata. Lakebase's documented `app_bypass` setup lets
+`fabric_app` see these rows; the preflight adds no bypass policy.
+
+Run the preflight when these probed source and catalog tables contain data.
+`owner_sees_rows` is an exact RLS-filtered existence check, and `passed` equals
+that result. An empty table reports `owner_sees_rows = false` and `passed = false`,
+even for an unrestricted owner. No row estimates are used to decide a pass.
+Re-run after owner, privilege or policy changes and when initially empty tables
+gain data. This is a visibility check, not proof of all trigger behavior.
+
+### Feed setup
+
+Enable the **Lakebase Change Data Feed preview** for the workspace before
+creating a feed. Create a destination Unity Catalog catalog whose managed
+location is on an **external location**; a catalog using **Default Storage**
+is not supported for this feed. Grant the configuring identity the required
+source and destination privileges through the Databricks administration flow.
+Feed configuration is an operator action outside the Fabric migration.
+
+With a CLI version supporting the preview:
+
+```bash
+databricks postgres create-cdf-config \
+  projects/example_project/branches/example_branch/databases/example_database \
+  example_catalog example_schema lakehouse_export \
+  --cdf-config-id decision_replay
+```
+
+CDF config ids must match `[a-z][a-z0-9_]{0,62}`. Scope this feed to
+`lakehouse_export`. Configuring that schema does not export `public` tables.
+The capture migration sets `REPLICA IDENTITY FULL` only on `decision_event`;
+the integration guard rejects FULL identity on any `public` table. A supported
+table needs at least one row before it starts streaming.
+
+Export columns use scalar types, with approved structured metadata in `jsonb`.
+PostgreSQL arrays arrive as array-literal strings in Delta, so the export table
+has no array columns. `jsonb` arrives as a JSON string, `timestamptz` as a
+timestamp, and enum values as label strings.
+
+### Clean restart and schema evolution
+
+For a deliberate clean restart:
+
+1. Delete the CDF config. This also drops its logical replication slot.
+2. Identify and drop that feed's stale `lb_*_history` tables in the destination
+   schema. Confirm the exact destination tables before removing them.
+3. Recreate the config with the same source and destination settings.
+
+Recreating the config without dropping stale destination history tables creates
+`_1`-suffixed tables rather than replacing the old tables.
+
+Adding, dropping, or changing the type of an exported column causes a
+re-snapshot: Delta history is replaced with the current PostgreSQL rows. Keep
+export schema changes rare and preferably additive. Ordinary event UPDATE,
+DELETE and TRUNCATE are rejected; organization/project hard deletion purges the
+corresponding events, and user deletion redacts `actor_id`. These erasures use
+fail-closed SECURITY DEFINER triggers with a transaction-local purge setting
+reset immediately after their statement. Operator DDL can bypass the guards;
+restrict table/trigger changes to migration operators.
+
+Purges and redactions stream as `delete` / `update_*` rows. The `lb_*_history`
+Delta table still contains earlier images. Databricks-side erasure requires the
+clean restart above to re-snapshot current PostgreSQL state, plus the downstream
+analytics rebuilding current/gold state. The manually deployed
+[Decision Replay bundle](../../deployment/databricks/decision-replay/README.md)
+handles those downstream replacements and the project-scoped embedded dashboard.
+Gold daily `approved` counts distinct proposals accepted by a person (approved
+or applied): human status changes into APPROVED, APPLYING or APPLIED. Daily
+`rejected` includes REJECTED and BACKLOG by any actor; BACKLOG is the app's
+recoverable "Move to Rejected". Each metric counts a proposal once per
+project/day. The dashboard groups the user-facing `final_outcome`, mapping
+BACKLOG to Rejected while preserving internal `final_status`; `needs_review`
+continues to select only PENDING. See the bundle's
+[metric definitions](../../deployment/databricks/decision-replay/README.md#refresh-ordering-and-metrics)
+for the complete outcome mapping and cohort semantics.
+
+Disabling capture through the flag does not disable erasure triggers.

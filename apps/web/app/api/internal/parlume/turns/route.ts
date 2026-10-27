@@ -1,6 +1,9 @@
 import { mintParlumeActingGrantForTurn } from "@repo/api/lib/agent-service-auth";
 import { db } from "@repo/database";
-import { getTemporalClient } from "@repo/temporal";
+// Not the package root, which re-exports dozens of activity modules: a
+// meeting's turn often lands on an instance that has not served this route
+// yet, and that instance loads whatever this file imports before answering.
+import { getTemporalClient } from "@repo/temporal/client";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
@@ -49,6 +52,14 @@ function turnDedupeKey(
 }
 
 export async function POST(request: NextRequest) {
+	// Milliseconds since the handler started, per step. The bridge logs them
+	// with its own handoff time, which also counts the network and the
+	// platform's routing to this function.
+	const startedAt = performance.now();
+	const timing: Record<string, number> = {};
+	const mark = (step: string) => {
+		timing[step] = Math.round(performance.now() - startedAt);
+	};
 	if (
 		!isParlumeServiceRequestAuthorized(
 			request.headers.get("X-Agent-Service-Token"),
@@ -80,6 +91,7 @@ export async function POST(request: NextRequest) {
 			toolsReadOnly: true,
 		},
 	});
+	mark("sessionMs");
 	if (!session) {
 		return NextResponse.json({ accepted: false });
 	}
@@ -109,6 +121,7 @@ export async function POST(request: NextRequest) {
 		where: { sessionId_dedupeKey: { sessionId: session.id, dedupeKey } },
 		select: { id: true, status: true, error: true },
 	});
+	mark("turnMs");
 	if (!turn) {
 		return NextResponse.json(
 			{ error: "Turn persistence failed" },
@@ -147,6 +160,7 @@ export async function POST(request: NextRequest) {
 			voiceGeneration: parsed.data.voiceGeneration,
 		},
 	});
+	mark("claimMs");
 	if (claimed.count === 0) {
 		await db.parlumeMeetingTurn.update({
 			where: { id: turn.id },
@@ -160,6 +174,7 @@ export async function POST(request: NextRequest) {
 	}
 	try {
 		const temporal = await getTemporalClient();
+		mark("temporalClientMs");
 		// Same queue as direct chat: the worker flushes activity heartbeats every
 		// second there, and nothing polls a queue named "default".
 		await temporal.workflow.start("parlumeMeetingTurnWorkflow", {
@@ -189,7 +204,8 @@ export async function POST(request: NextRequest) {
 				},
 			],
 		});
-		return NextResponse.json({ accepted: true });
+		mark("workflowStartMs");
+		return NextResponse.json({ accepted: true, timing });
 	} catch {
 		await db.$transaction([
 			db.parlumeMeetingTurn.update({

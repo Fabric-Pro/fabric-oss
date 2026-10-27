@@ -49,6 +49,10 @@ export interface PmWorkItemState {
 	 *  MCP tool. The workflow forwards it opaquely; the status-sync leaf's
 	 *  linked-issue check (AC8) reads it. Absent = fetched with the switch off. */
 	itemUrl?: string | null;
+	/** The ticket's status as the tool shows it (Fizzy #3088), from
+	 *  `normalizePolledState`. Absent on a verdict fetched before it existed:
+	 *  reconcile then falls back to `state`. */
+	displayStatus?: string | null;
 }
 
 /** The Fabric entity a polled ADO item resolves to (from `findFabricItemByExternalId`). */
@@ -69,6 +73,9 @@ export interface FabricItemRef {
 	 */
 	pmTicketTerminal?: boolean;
 	pmTicketTerminalStatus?: string | null;
+	/** Current native-status snapshot (Fizzy #3088); same optional fail-safe. */
+	pmTicketStatus?: string | null;
+	pmTicketStatusExternalId?: string | null;
 }
 
 export interface ReconcileStoryTerminalInput {
@@ -141,6 +148,24 @@ export function classifyPmItem(
 }
 
 /**
+ * The linked ticket's status for the read-only card display (Fizzy #3088):
+ * the per-tool `displayStatus` from `normalizePolledState`, never mapped to a
+ * Fabric status. A verdict without it (fetched before it existed) falls back
+ * to the raw `state`.
+ */
+export function pmTicketDisplayStatus(item: {
+	state: string;
+	displayStatus?: string | null;
+}): string | null {
+	const status = (
+		item.displayStatus !== undefined
+			? (item.displayStatus ?? "")
+			: item.state
+	).trim();
+	return status.length > 0 ? status : null;
+}
+
+/**
  * Reconcile a single STORY's terminal status against its linked PM item.
  *
  * Snapshots `pmTicketTerminal` for the roadmap checkmark, then:
@@ -187,11 +212,18 @@ export async function reconcileStoryTerminalStatus(
 	// Either field `undefined` means the caller built this ref by hand (not
 	// from `findFabricItemByExternalId`) — fail safe and always write. Both
 	// must be present: a partial snapshot must not be mistaken for a match.
+	// The native status (Fizzy #3088) rides the same write and the same skip:
+	// a non-terminal move ("To Do" → "QA") must still write.
+	const ticketStatus = pmTicketDisplayStatus(item);
 	const isNoOpWrite =
 		fabricItem.pmTicketTerminal !== undefined &&
 		fabricItem.pmTicketTerminalStatus !== undefined &&
+		fabricItem.pmTicketStatus !== undefined &&
+		fabricItem.pmTicketStatusExternalId !== undefined &&
 		fabricItem.pmTicketTerminal === isTerminal &&
-		fabricItem.pmTicketTerminalStatus === targetTerminalStatus;
+		fabricItem.pmTicketTerminalStatus === targetTerminalStatus &&
+		fabricItem.pmTicketStatus === ticketStatus &&
+		fabricItem.pmTicketStatusExternalId === item.externalId;
 
 	if (!isNoOpWrite) {
 		await db.userStory.update({
@@ -199,6 +231,8 @@ export async function reconcileStoryTerminalStatus(
 			data: {
 				pmTicketTerminal: isTerminal,
 				pmTicketTerminalStatus: targetTerminalStatus,
+				pmTicketStatus: ticketStatus,
+				pmTicketStatusExternalId: item.externalId,
 			},
 		});
 	}

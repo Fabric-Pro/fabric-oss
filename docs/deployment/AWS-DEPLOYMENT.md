@@ -647,11 +647,11 @@ There are two ways to bootstrap an admin: OAuth-first or seed-first. Pick one.
 3. Log into the app via "Sign in with Google".
 4. Promote yourself to admin:
    ```bash
-   # Get an interactive shell into the pod that has Prisma + the DATABASE_URL.
+   # Get an interactive shell into the pod that has Prisma + DIRECT_URL.
    kubectl exec -it -n fabric deploy/temporal-worker -- /bin/sh
    # Inside the pod:
    pnpm --filter @repo/database exec prisma db execute \
-     --stdin --schema=./prisma/schema.prisma <<'SQL'
+     --stdin <<'SQL'
    UPDATE "User" SET role = 'admin' WHERE email = 'you@example.com';
    SQL
    ```

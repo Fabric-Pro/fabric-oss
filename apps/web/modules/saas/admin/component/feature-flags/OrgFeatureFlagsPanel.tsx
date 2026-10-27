@@ -217,7 +217,11 @@ export function OrgFeatureFlagsPanel({
 							</Badge>
 							<span>
 								{SOURCE_LABEL[flag.source] ?? flag.source} ·{" "}
-								<code>{flag.envVar}</code>
+								{flag.envVar === null ? (
+									<span>No environment fallback</span>
+								) : (
+									<code>{flag.envVar}</code>
+								)}
 							</span>
 						</p>
 						{flag.note && (

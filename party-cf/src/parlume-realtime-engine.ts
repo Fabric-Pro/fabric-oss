@@ -17,7 +17,17 @@ const ROTATE_AFTER_MS = 55 * 60 * 1000;
 const ROTATE_DEADLINE_MS = 59 * 60 * 1000;
 const ROTATE_RETRY_MS = 5_000;
 const RECONNECT_BACKOFF_MS = [1_000, 3_000, 10_000];
+const STABLE_SESSION_MS = 30_000;
 const MAX_SUMMARY_LINES = 40;
+// A wake phrase heard in a partial is answered when the voice hears the
+// speaker stop. Flux refreshes it several times a second while they speak;
+// one this stale was left by a partial that arrived after its own final, and
+// on staging it answered other attendees' side talk ten seconds later.
+const ARM_TTL_MS = 5_000;
+// While Fabric works, Parlume says it is on it at most this often. Each answer
+// that started a job, and each that found one busy, used to say so again:
+// three lines in six seconds for one request in a staging meeting.
+const HOLDING_INTERVAL_MS = 10_000;
 const MAX_LINE_CHARS = 400;
 const MAX_REQUEST_CHARS = 2_000;
 const MAX_CHAT_POST_CHARS = 3_900;
@@ -99,6 +109,12 @@ type ParlumeRealtimeChatResult =
 	| { posted: true; tag: string }
 	| { posted: false; reason: string };
 
+export interface ParlumeRealtimeContext {
+	lines: string[];
+	jobs: Array<{ job: string; generation: number }>;
+	jobCounter: number;
+}
+
 export interface ParlumeRealtimeEngineHost {
 	/** A client secret for a new session, or null when there is none to have. */
 	credentials(): Promise<ParlumeRealtimeCredentials | null>;
@@ -119,6 +135,8 @@ export interface ParlumeRealtimeEngineHost {
 	postChat(text: string): Promise<ParlumeRealtimeChatResult>;
 	readChat(): Array<{ from: string | null; text: string }>;
 	reportUsage(usage: ParlumeRealtimeUsage): void;
+	/** Keeps the context a restarted bridge restores; see `restore`. */
+	saveContext(context: ParlumeRealtimeContext): void;
 	/** Realtime is gone for good: the meeting carries on with the classic engine. */
 	fallBack(reason: string): void;
 	log(
@@ -170,15 +188,23 @@ export class ParlumeRealtimeEngine implements ParlumeRealtimeVoice {
 	private audioItem: { itemId: string; bytes: number } | null = null;
 	private playing = false;
 	private playToken = 0;
-	private armed: { requester: string | null; speakerKey: string } | null =
-		null;
+	/** Refreshed by every partial that addresses Parlume; see `ARM_TTL_MS`. */
+	private armed: {
+		requester: string | null;
+		speakerKey: string;
+		at: number;
+	} | null = null;
 	/** The speaker last answered, until anyone speaks again. */
 	private answered: string | null = null;
+	/** The speaker whose spoken request is being answered, when one asked aloud. */
+	private requester: string | null = null;
 	private speechSinceAnswer = false;
 	private vadSpeaking = false;
 	private lastRequester: string | null = null;
 	private jobs = new Map<string, { generation: number }>();
 	private jobCounter = 0;
+	/** When Parlume last said aloud that it was working on a Fabric job. */
+	private heldAt = Number.NEGATIVE_INFINITY;
 	private lines: string[] = [];
 	private connectedAt = 0;
 	private reconnectAttempts = 0;
@@ -201,8 +227,25 @@ export class ParlumeRealtimeEngine implements ParlumeRealtimeVoice {
 		return this.status === "active" || this.status === "reconnecting";
 	}
 
+	/** A session is open and hearing the meeting now. */
+	get connected(): boolean {
+		return this.status === "active" && this.client?.isOpen === true;
+	}
+
+	/**
+	 * Carries on from the context the bridge saved before its Durable Object
+	 * restarted: the meeting so far, and the Fabric jobs still running.
+	 */
+	restore(context: ParlumeRealtimeContext): void {
+		this.lines = context.lines.slice(-MAX_SUMMARY_LINES);
+		this.jobs = new Map(
+			context.jobs.map(({ job, generation }) => [job, { generation }]),
+		);
+		this.jobCounter = context.jobCounter;
+	}
+
 	async start(): Promise<{ ok: true } | { ok: false; reason: string }> {
-		const failure = await this.connect(false);
+		const failure = await this.connect();
 		if (failure !== null) {
 			this.status = "stopped";
 			return { ok: false, reason: failure };
@@ -242,6 +285,7 @@ export class ParlumeRealtimeEngine implements ParlumeRealtimeVoice {
 		if (this.lines.length > MAX_SUMMARY_LINES) {
 			this.lines.splice(0, this.lines.length - MAX_SUMMARY_LINES);
 		}
+		this.saveContext();
 	}
 
 	/**
@@ -264,17 +308,57 @@ export class ParlumeRealtimeEngine implements ParlumeRealtimeVoice {
 		) {
 			return;
 		}
+		if (!this.armed) {
+			this.host.log("info", "realtime.armed", {
+				endOfTurn: input.endOfTurn,
+				requesterKnown: input.requester !== null,
+			});
+		}
 		this.armed = {
 			requester: input.requester,
 			speakerKey: input.speakerKey,
+			at: this.host.now(),
 		};
 		if (input.endOfTurn) {
 			this.answerArmed();
 		}
 	}
 
+	/** "Parlume, stop" addressed Parlume, but it is not a request to answer. */
+	disarm(): void {
+		this.armed = null;
+	}
+
+	/**
+	 * A spoken request the bridge resolved itself, such as "more on P3". The
+	 * voice may already be answering the same utterance from its wake phrase;
+	 * that answer heard the request too, so it is not answered twice.
+	 */
+	respondToRequest(
+		speaker: string | null,
+		speakerKey: string,
+		text: string,
+	): Promise<boolean> {
+		if (this.answered === speakerKey && !this.speechSinceAnswer) {
+			this.host.log("info", "realtime.request_already_answered", {});
+			return Promise.resolve(false);
+		}
+		this.armed = null;
+		this.answered = speakerKey;
+		this.speechSinceAnswer = false;
+		this.requester = null;
+		this.lastRequester = speaker;
+		return this.respond("wake", [
+			{
+				role: "user",
+				text: `${speaker ?? "A participant"} asked:\n${fence("request", "", text)}`,
+			},
+		]);
+	}
+
 	/** A chat message that asked to be answered aloud. */
 	respondToChat(speaker: string | null, text: string): Promise<boolean> {
+		this.requester = null;
 		this.lastRequester = speaker;
 		return this.respond("chat", [
 			{
@@ -286,6 +370,7 @@ export class ParlumeRealtimeEngine implements ParlumeRealtimeVoice {
 
 	/** Reads a chat post aloud, in Parlume's realtime voice. */
 	say(text: string): Promise<boolean> {
+		this.requester = null;
 		return this.respond("say", [
 			{
 				role: "system",
@@ -300,6 +385,7 @@ export class ParlumeRealtimeEngine implements ParlumeRealtimeVoice {
 			return false;
 		}
 		this.jobs.delete(input.job);
+		this.saveContext();
 		this.host.log("info", "realtime.job_result", {
 			job: input.job,
 			status: input.status,
@@ -331,6 +417,10 @@ export class ParlumeRealtimeEngine implements ParlumeRealtimeVoice {
 			this.queue.length > 0 ||
 			this.jobs.size > 0
 		);
+	}
+
+	requesterKey(): string | null {
+		return this.requester;
 	}
 
 	hasJob(generation: number): boolean {
@@ -367,7 +457,19 @@ export class ParlumeRealtimeEngine implements ParlumeRealtimeVoice {
 				queued.resolve(false);
 			}
 			this.jobs.clear();
+			this.saveContext();
 		}
+	}
+
+	private saveContext(): void {
+		this.host.saveContext({
+			lines: [...this.lines],
+			jobs: [...this.jobs].map(([job, { generation }]) => ({
+				job,
+				generation,
+			})),
+			jobCounter: this.jobCounter,
+		});
 	}
 
 	private answerArmed(): void {
@@ -376,7 +478,13 @@ export class ParlumeRealtimeEngine implements ParlumeRealtimeVoice {
 			return;
 		}
 		this.armed = null;
+		const ageMs = this.host.now() - armed.at;
+		if (ageMs > ARM_TTL_MS) {
+			this.host.log("info", "realtime.arm_expired", { ageMs });
+			return;
+		}
 		this.answered = armed.speakerKey;
+		this.requester = armed.speakerKey;
 		this.speechSinceAnswer = false;
 		this.lastRequester = armed.requester;
 		// Flux heard the end of the request before OpenAI's turn detection did:
@@ -465,7 +573,11 @@ export class ParlumeRealtimeEngine implements ParlumeRealtimeVoice {
 				this.finish(event);
 				return;
 			case "error":
-				this.host.log("warn", "realtime.error", { code: event.code });
+				this.host.log("warn", "realtime.error", {
+					code: event.code,
+					param: event.param,
+					message: event.message,
+				});
 				// A response the server refused to create never reports done.
 				if (this.inFlight && this.inFlight.id === null) {
 					this.inFlight.resolve(false);
@@ -554,18 +666,51 @@ export class ParlumeRealtimeEngine implements ParlumeRealtimeVoice {
 		}
 		inFlight.resolve(completed);
 		if (completed && event.functionCalls.length > 0) {
-			void this.answerCalls(event.functionCalls);
+			void this.answerCalls(event.functionCalls, inFlight.heard);
 		}
 		this.pump();
 	}
 
-	private async answerCalls(calls: ParlumeRealtimeFunctionCall[]) {
-		const items: ConversationItem[] = [];
+	/**
+	 * Answers the session's tool calls. A call that only started a Fabric job,
+	 * or found one running, gets its answer quietly when the response that
+	 * made it already spoke, or when Parlume said it was on it moments ago;
+	 * otherwise the session would say so once more.
+	 */
+	private async answerCalls(
+		calls: ParlumeRealtimeFunctionCall[],
+		spoke: boolean,
+	) {
+		const items: Array<{ callId: string; output: object }> = [];
+		let holdingOnly = true;
 		for (const call of calls) {
-			items.push({
-				callId: call.callId,
-				output: await this.runTool(call),
+			const output = await this.runTool(call);
+			holdingOnly &&=
+				"status" in output &&
+				(output.status === "started" || output.status === "busy");
+			items.push({ callId: call.callId, output });
+		}
+		const now = this.host.now();
+		if (holdingOnly && spoke) {
+			this.heldAt = now;
+		}
+		const client = this.client;
+		if (
+			holdingOnly &&
+			client?.isOpen &&
+			(spoke || now - this.heldAt < HOLDING_INTERVAL_MS)
+		) {
+			for (const item of items) {
+				client.addFunctionOutput(item.callId, item.output);
+			}
+			this.host.log("info", "realtime.holding_skipped", {
+				spoke,
+				sinceHeldMs: spoke ? 0 : now - this.heldAt,
 			});
+			return;
+		}
+		if (holdingOnly) {
+			this.heldAt = now;
 		}
 		void this.respond("tool", items);
 	}
@@ -615,6 +760,7 @@ export class ParlumeRealtimeEngine implements ParlumeRealtimeVoice {
 		const job = `J${++this.jobCounter}`;
 		const generation = this.host.generation();
 		this.jobs.set(job, { generation });
+		this.saveContext();
 		this.host.log("info", "realtime.job_started", {
 			job,
 			voiceGeneration: generation,
@@ -641,7 +787,7 @@ export class ParlumeRealtimeEngine implements ParlumeRealtimeVoice {
 	}
 
 	/** Opens a session; returns why it could not, or null once it is live. */
-	private async connect(seed: boolean): Promise<string | null> {
+	private async connect(): Promise<string | null> {
 		const credentials = await this.host.credentials();
 		if (!credentials) {
 			return "no_credentials";
@@ -672,9 +818,7 @@ export class ParlumeRealtimeEngine implements ParlumeRealtimeVoice {
 			},
 		);
 		client.configure();
-		if (seed) {
-			this.seed(client);
-		}
+		const seeded = this.seed(client);
 		const previous = this.client;
 		this.client = client;
 		previous?.close("replaced");
@@ -683,16 +827,19 @@ export class ParlumeRealtimeEngine implements ParlumeRealtimeVoice {
 		this.scheduleRotation(ROTATE_AFTER_MS);
 		this.host.log("info", "realtime.connected", {
 			model: credentials.model,
-			seeded: seed,
+			seeded,
 		});
 		return null;
 	}
 
-	/** A new session starts from what the meeting has said so far. */
-	private seed(client: ParlumeRealtimeClient): void {
+	/**
+	 * A new session starts from what the meeting has said so far; false when
+	 * nothing has been said yet.
+	 */
+	private seed(client: ParlumeRealtimeClient): boolean {
 		const running = [...this.jobs.keys()];
 		if (this.lines.length === 0 && running.length === 0) {
-			return;
+			return false;
 		}
 		client.addMessage(
 			"system",
@@ -708,6 +855,7 @@ export class ParlumeRealtimeEngine implements ParlumeRealtimeVoice {
 				.filter(Boolean)
 				.join("\n"),
 		);
+		return true;
 	}
 
 	private scheduleRotation(delayMs: number): void {
@@ -727,7 +875,7 @@ export class ParlumeRealtimeEngine implements ParlumeRealtimeVoice {
 			this.scheduleRotation(ROTATE_RETRY_MS);
 			return;
 		}
-		const failure = await this.connect(true);
+		const failure = await this.connect();
 		this.host.log(failure ? "warn" : "info", "realtime.reconnect", {
 			reason: "session_limit",
 			ok: failure === null,
@@ -747,7 +895,13 @@ export class ParlumeRealtimeEngine implements ParlumeRealtimeVoice {
 			return;
 		}
 		this.status = "reconnecting";
-		this.host.log("warn", "realtime.dropped", { detail });
+		const upMs = this.host.now() - this.connectedAt;
+		this.host.log("warn", "realtime.dropped", { detail, upMs });
+		// Only a session that held counts as recovered: one OpenAI closes as
+		// soon as it opens would otherwise be reopened forever.
+		if (upMs >= STABLE_SESSION_MS) {
+			this.reconnectAttempts = 0;
+		}
 		this.scheduleReconnect();
 	}
 
@@ -764,7 +918,7 @@ export class ParlumeRealtimeEngine implements ParlumeRealtimeVoice {
 			if (this.status !== "reconnecting") {
 				return;
 			}
-			const failure = await this.connect(true);
+			const failure = await this.connect();
 			this.host.log(failure ? "warn" : "info", "realtime.reconnect", {
 				reason: "dropped",
 				attempt: attempt + 1,
@@ -777,7 +931,6 @@ export class ParlumeRealtimeEngine implements ParlumeRealtimeVoice {
 			}
 			if (this.status === "reconnecting") {
 				this.status = "active";
-				this.reconnectAttempts = 0;
 				this.pump();
 			}
 		}, delay);

@@ -18,6 +18,8 @@
  * Set mode via FABRIC_AI_MODE environment variable.
  */
 
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import {
 	analyzeYouTube,
 	checkFabricAIHealth,
@@ -892,7 +894,15 @@ export async function scrapeUrlActivity(
  * is provided, or the scrape fails. The user's delegation setting is not
  * consulted.
  */
-export async function scrapeAndAnalyzeActivity(
+export function scrapeAndAnalyzeActivity(
+	...args: Parameters<typeof scrapeAndAnalyzeActivityInternal>
+): ReturnType<typeof scrapeAndAnalyzeActivityInternal> {
+	return runWithAiCallPurpose(AI_CALL_PURPOSES.scrapeAnalysis, () =>
+		scrapeAndAnalyzeActivityInternal(...args),
+	);
+}
+
+async function scrapeAndAnalyzeActivityInternal(
 	input: ScrapeAndAnalyzeInput,
 ): Promise<ScrapeAndAnalyzeOutput> {
 	const startTime = Date.now();
@@ -1097,7 +1107,15 @@ export async function searchWebActivity(
  * when none is configured, no user ID is provided, or the provider fails or
  * returns nothing. The user's delegation setting is not consulted.
  */
-export async function searchAndAnalyzeActivity(
+export function searchAndAnalyzeActivity(
+	...args: Parameters<typeof searchAndAnalyzeActivityInternal>
+): ReturnType<typeof searchAndAnalyzeActivityInternal> {
+	return runWithAiCallPurpose(AI_CALL_PURPOSES.searchAnalysis, () =>
+		searchAndAnalyzeActivityInternal(...args),
+	);
+}
+
+async function searchAndAnalyzeActivityInternal(
 	input: SearchAndAnalyzeInput,
 ): Promise<SearchAndAnalyzeOutput> {
 	const startTime = Date.now();

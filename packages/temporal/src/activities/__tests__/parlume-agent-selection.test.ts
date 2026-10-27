@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
 	session: vi.fn(),
 	hasAccess: vi.fn(),
 	load: vi.fn(),
+	gather: vi.fn(),
 	execute: vi.fn(),
 	retrieve: vi.fn(),
 	speak: vi.fn(),
@@ -53,6 +54,7 @@ vi.mock("@temporalio/activity", () => ({
 }));
 vi.mock("../parlume-agent", () => ({
 	loadParlumeAgent: mocks.load,
+	gatherParlumeAgentContext: mocks.gather,
 	executeParlumeAgent: mocks.execute,
 }));
 vi.mock("../parlume-actions", () => ({
@@ -140,6 +142,31 @@ function timingLog() {
 }
 
 describe("Parlume meeting turns", () => {
+	it("starts the agent's own lookups while the meeting context is still being gathered", async () => {
+		let releaseProjectKnowledge = () => {};
+		mocks.retrieve.mockImplementation(
+			() =>
+				new Promise((resolve) => {
+					releaseProjectKnowledge = () =>
+						resolve({ context: "Project knowledge" });
+				}),
+		);
+		const gathered = Promise.resolve([]);
+		mocks.gather.mockReturnValue(gathered);
+		const running = executeParlumeMeetingTurn({ turnId: "turn" });
+		await vi.waitFor(() => expect(mocks.retrieve).toHaveBeenCalled());
+		expect(mocks.gather).toHaveBeenCalledWith(
+			{ kind: "FABRIC_AGENT", revision: "current-revision" },
+			turn().session,
+			"What is the plan?",
+		);
+		releaseProjectKnowledge();
+		await running;
+		expect(mocks.execute).toHaveBeenCalledWith(
+			expect.objectContaining({ gathered }),
+		);
+	});
+
 	it("uses the selected current agent, project knowledge and transcript", async () => {
 		await executeParlumeMeetingTurn({ turnId: "turn" });
 		expect(mocks.load).toHaveBeenCalledWith(turn().session);
@@ -421,6 +448,7 @@ describe("Parlume meeting turns", () => {
 			"user",
 			"org",
 			3,
+			{ maxPassageChars: 1_500 },
 		);
 		const segmentQuery = mocks.segments.mock.calls[0]?.[0];
 		const windowMs =

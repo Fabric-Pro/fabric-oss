@@ -80,9 +80,24 @@ Once it is in, the page shows a live card: how long Parlume has been in the meet
 
 ## Talk to Parlume
 
-Start with one of the wake phrases: **"Hey Fabric"**, **"Hey Parlume"** or **"Hey Fabric Parlume"**. You can ask in the same breath ("Hey Fabric, what is the status of F-142?") or say the wake phrase, pause, and then ask; Parlume waits until you have finished speaking. Wake phrases are matched by sound, so the usual ways a transcript misspells "Fabric" or "Parlume" still work, while words like "fabrication" or "parliament" do not wake it.
+Start with one of the wake phrases: **"Hey Fabric"**, **"Hey Parlume"** or **"Hey Fabric Parlume"**. You can ask in the same breath ("Hey Fabric, what is the status of F-142?") or say the wake phrase, pause, and then ask; Parlume waits until you have finished speaking. Starting with just the name also works ("Parlume, what changed today?"), even when the transcript drops the comma; a sentence about Parlume, such as "Parlume is slow today", does not wake it. Wake phrases are matched by sound, so the usual ways a transcript misspells "Fabric" or "Parlume" still work, while words like "fabrication" or "parliament" do not wake it.
 
 Spoken answers are short: one or two sentences. When there is more to say, such as a list, a link or a longer explanation, Parlume speaks the headline and posts the rest to the meeting chat as one tagged post.
+
+### Voice and chat
+
+Parlume answers in the way it was asked. A spoken request gets a spoken answer, with any detail in the chat alongside it. A typed request gets its answer in the chat, unless it asks to be said aloud. When Parlume is only listening, it never speaks up on its own: something useful it notices goes to the chat as a short [suggestion](#suggestions), and you decide whether to hear it. Every post carries a tag such as `[P3]`, and you can refer to it by voice ("Parlume, tell me more about P3") or in the chat (`more P3`).
+
+```mermaid
+flowchart LR
+    S["Spoken request<br/>'Hey Parlume, …'"] --> V["Spoken answer"]
+    V -. "lists, links, detail" .-> C["Tagged chat post<br/>[P5]"]
+    T["Typed request<br/>'@Fabric Parlume …'"] --> C
+    L["Parlume listening"] --> G["Suggestion in chat<br/>[P8] Suggestion: …"]
+    G -- "'go P8' typed or said" --> V
+    G -- "'more P8' typed" --> C
+    G -- "'tell me more about P8' said" --> V
+```
 
 ### Realtime voice and standard voice
 
@@ -90,9 +105,9 @@ Parlume has two ways of speaking, and picks one automatically for each meeting.
 
 The **realtime voice** is used when your organization has an OpenAI key set up in [AI Providers](/docs/features/ai-providers). It is a speech-to-speech session that listens to the meeting continuously and answers in the same session, so you can go back and forth with it the way you would with a colleague. It speaks only when someone addresses it. When a question needs the project's data or a change, it hands the request to the Fabric agent, says a short holding line such as "Let me check that", and the meeting carries on while Fabric works. When the result arrives, Parlume says it. One lookup runs at a time; if you ask for another meanwhile, Parlume tells you it is still on the first. An answer longer than a few sentences is also posted to the chat in full.
 
-The **standard voice** is used otherwise, and whenever the realtime voice cannot start. It transcribes what was said, runs the agent, and speaks the answer a sentence at a time as the agent writes it.
+The **standard voice** is used otherwise, and whenever the realtime voice cannot start. It transcribes what was said, runs the agent, and speaks the answer a sentence at a time as the agent writes it. The first sentence plays as soon as it is written, so a short line such as "Let me check the roadmap" covers the time the agent spends looking things up.
 
-A realtime session lasts up to an hour, so Parlume renews it at a quiet moment before then and carries the conversation over. If the connection drops and cannot be restored after a few attempts, Parlume switches to the standard voice for the rest of the meeting.
+A realtime session lasts up to an hour, so Parlume renews it at a quiet moment before then and carries the conversation over. While the connection is being restored, the standard voice answers, so a question asked in that moment is not lost. If the connection cannot be restored after a few attempts, Parlume switches to the standard voice for the rest of the meeting.
 
 ```mermaid
 sequenceDiagram
@@ -137,7 +152,9 @@ Every message Parlume posts starts with a tag, `[P1]`, `[P2]` and so on, numbere
 
 ### Ask Parlume to post something
 
-Ask out loud for something to go in the chat: "put the link to F-123 in the chat" or "post that summary". This works in Read-only meetings too, because it changes nothing in Fabric. Parlume sends at most three messages per answer. Links to work items, documents, Context sources and the project's tabs are built from the meeting's own project after an access check; a reference to another project is refused. Parlume says it has sent the message, and confirms it when the message appears in the chat. A post that never appeared, or appeared late, is noted on its request in the Requests list.
+Ask out loud for something to go in the chat: "put the link to F-123 in the chat" or "post that summary". This works in Read-only meetings too, because it changes nothing in Fabric. Parlume sends at most three messages per answer. Links to work items, documents, Context sources and the project's tabs are built from the meeting's own project after an access check; a reference to another project is refused. Parlume says it has sent the message, and confirms it when the message appears in the chat, usually within a few seconds. A post that has not appeared within 15 seconds is noted on its request in the Requests list; if it shows up later, the note says when.
+
+Posts are plain text. Teams receives each post as a single line, so Parlume drops Markdown emphasis and separates list items with bullets.
 
 ### Type to Parlume
 
@@ -159,6 +176,8 @@ These short commands work whether or not you address Parlume:
 | `go P4` | Speaks suggestion P4, or asks again for a change Parlume held back. |
 | `stop` | Cancels what Parlume is answering, like a spoken "stop". |
 
+You can say the same commands after a wake phrase: "Parlume, read P3", "Parlume, go P4" or "Parlume, tell me more about P3". A spoken command is answered aloud, in either voice. Speech recognition may write the tag as "P3", "P 3" or "P three", and may drop the pause after "Parlume"; all of them work.
+
 ### Parlume reads the chat
 
 Parlume stores every chat message with the meeting's transcript, on the same timeline as the speech around it. Each request, spoken or typed, gets the most recent chat messages as context, so "Parlume, what did they write in the chat?" works.
@@ -169,7 +188,7 @@ With **Chat suggestions** on, Parlume looks at the conversation about every 90 s
 
 `[P8] Suggestion: … (reply "go P8" and I'll say it)`
 
-It posts at most one suggestion per pass and twelve an hour, skips one that repeats a suggestion from the last hour, and speaks a suggestion only when someone replies `go`. A suggestion is written by a model from what was said, so it can be wrong, and something said in the meeting can steer it. It can only be posted or read aloud; it cannot call tools or change anything.
+It posts at most one suggestion per pass and twelve an hour, skips one that repeats a suggestion from the last hour, and speaks a suggestion only when someone replies `go P8` or says "Parlume, go P8". To ask about it instead, type `more P8` or say "Parlume, tell me more about P8". A suggestion is written by a model from what was said, so it can be wrong, and something said in the meeting can steer it. It can only be posted or read aloud; it cannot call tools or change anything.
 
 Organization administrators can edit the instructions behind suggestions and the realtime voice in the [Prompt Library](/docs/features/prompts), as **Parlume Meeting Suggestions** and **Parlume Realtime Voice** under Meetings & Intake.
 

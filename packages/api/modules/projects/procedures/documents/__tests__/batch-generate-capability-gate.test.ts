@@ -11,6 +11,7 @@
  * gather, the database and Temporal are stood in for.
  */
 
+import { RETIRED_TYPE_MESSAGE } from "@repo/utils/document-type-catalog";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const { mocks } = vi.hoisted(() => ({
@@ -157,5 +158,18 @@ describe("batchGenerate — the capability door", () => {
 		});
 		expect(mocks.documentCreate).not.toHaveBeenCalled();
 		expect(mocks.workflowStart).not.toHaveBeenCalled();
+	});
+
+	it("names the gate behind the message it reports, not another type's", async () => {
+		const refusal = batch(["USER_STORY", "API_SPEC"]);
+
+		await expect(refusal).rejects.toMatchObject({
+			code: "PRECONDITION_FAILED",
+			message: RETIRED_TYPE_MESSAGE,
+			data: { gate: null },
+		});
+		await expect(batch(["API_SPEC", "USER_STORY"])).rejects.toMatchObject({
+			data: { gate: { reasonKey: "documents.no-api-source" } },
+		});
 	});
 });

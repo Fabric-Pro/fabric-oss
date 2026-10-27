@@ -6,8 +6,10 @@ const mocks = vi.hoisted(() => ({
 	hasAccess: vi.fn(),
 	boundPrompt: vi.fn(),
 	key: vi.fn(),
+	azure: vi.fn(),
 	log: vi.fn(),
 	fetch: vi.fn(),
+	deployment: vi.fn(),
 }));
 
 vi.mock("@repo/database", () => ({
@@ -19,13 +21,24 @@ vi.mock("@repo/database", () => ({
 	hasProjectAccess: mocks.hasAccess,
 	logAiUsageAsync: vi.fn(),
 }));
-vi.mock("@repo/ai", () => ({ resolveOpenAiApiKey: mocks.key }));
+vi.mock("@repo/ai", () => ({
+	resolveOpenAiApiKey: mocks.key,
+	resolveAzureOpenAiResource: mocks.azure,
+}));
 vi.mock("../parlume-log", () => ({ parlumeLog: mocks.log }));
+vi.mock("../parlume-provider-settings", () => ({
+	resolveParlumeRealtimeDeployment: mocks.deployment,
+}));
 
 import { PARLUME_REALTIME_VOICE_FALLBACK_BODY } from "@repo/utils/parlume-realtime-voice-prompt";
-import { createParlumeRealtimeSession } from "../parlume-realtime-session";
+import {
+	checkParlumeRealtimeHosts,
+	createParlumeRealtimeSession,
+} from "../parlume-realtime-session";
 
 const ORG_KEY = "sk-org-secret-key";
+const AZURE_KEY = "0123456789abcdef0123456789abcdef";
+const AZURE_ORIGIN = "https://example-resource.openai.azure.com";
 const input = { sessionId: "session-1", botId: "bot-1" };
 
 beforeEach(() => {
@@ -41,6 +54,11 @@ beforeEach(() => {
 	});
 	mocks.hasAccess.mockResolvedValue(true);
 	mocks.key.mockResolvedValue(ORG_KEY);
+	mocks.azure.mockResolvedValue(null);
+	mocks.deployment.mockResolvedValue({
+		deployment: "gpt-realtime-2.1",
+		source: "default",
+	});
 	mocks.boundPrompt.mockResolvedValue(null);
 	mocks.segments.mockResolvedValue([
 		{ speakerName: "Dev One" },
@@ -59,8 +77,8 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
-function mintRequest() {
-	const [url, init] = mocks.fetch.mock.calls[0] as [string, RequestInit];
+function mintRequest(call = 0) {
+	const [url, init] = mocks.fetch.mock.calls[call] as [string, RequestInit];
 	return {
 		url,
 		headers: init.headers as Record<string, string>,
@@ -77,6 +95,7 @@ describe("createParlumeRealtimeSession", () => {
 			clientSecret: "ek_minted",
 			expiresAt: 1_900_000_000,
 			model: "gpt-realtime-2.1",
+			realtimeUrl: "https://api.openai.com/v1/realtime",
 		});
 		expect(mocks.key).toHaveBeenCalledWith({
 			userId: "user-1",
@@ -149,7 +168,145 @@ describe("createParlumeRealtimeSession", () => {
 		expect(bound.startsWith("Organization voice rules.")).toBe(true);
 	});
 
-	it("stays classic without an OpenAI key, and never calls OpenAI", async () => {
+	it("mints on the organization's Azure resource first, from the deployment named after the model, even with an OpenAI key", async () => {
+		mocks.azure.mockResolvedValue({
+			origin: AZURE_ORIGIN,
+			apiKey: AZURE_KEY,
+		});
+
+		const result = await createParlumeRealtimeSession(input);
+
+		expect(result).toEqual(
+			expect.objectContaining({
+				engine: "realtime",
+				clientSecret: "ek_minted",
+				realtimeUrl: `${AZURE_ORIGIN}/openai/v1/realtime`,
+			}),
+		);
+		const { url, headers, body } = mintRequest();
+		expect(url).toBe(`${AZURE_ORIGIN}/openai/v1/realtime/client_secrets`);
+		expect(headers["api-key"]).toBe(AZURE_KEY);
+		expect(headers.Authorization).toBeUndefined();
+		expect(body.session.model).toBe("gpt-realtime-2.1");
+		expect(mocks.fetch).toHaveBeenCalledTimes(1);
+	});
+
+	it("names the organization's own Azure deployment, and keeps the model id on OpenAI", async () => {
+		mocks.azure.mockResolvedValue({
+			origin: AZURE_ORIGIN,
+			apiKey: AZURE_KEY,
+		});
+		mocks.deployment.mockResolvedValue({
+			deployment: "example-realtime",
+			source: "organization",
+		});
+
+		const result = await createParlumeRealtimeSession(input);
+
+		expect(mocks.deployment).toHaveBeenCalledWith("org-1");
+		expect(result).toEqual(
+			expect.objectContaining({ model: "example-realtime" }),
+		);
+		expect(mintRequest().body.session.model).toBe("example-realtime");
+
+		mocks.fetch.mockReset();
+		mocks.fetch
+			.mockResolvedValueOnce(
+				Response.json(
+					{
+						error: {
+							code: "DeploymentNotFound",
+							message: "missing",
+						},
+					},
+					{ status: 404 },
+				),
+			)
+			.mockResolvedValueOnce(
+				Response.json({
+					value: "ek_openai",
+					expires_at: 1_900_000_000,
+				}),
+			);
+
+		const fallback = await createParlumeRealtimeSession(input);
+
+		expect(fallback).toEqual(
+			expect.objectContaining({ model: "gpt-realtime-2.1" }),
+		);
+		expect(mintRequest(1).body.session.model).toBe("gpt-realtime-2.1");
+	});
+
+	it("falls back to the OpenAI key when the Azure resource has no realtime deployment, and masks the Azure key in the log", async () => {
+		mocks.azure.mockResolvedValue({
+			origin: AZURE_ORIGIN,
+			apiKey: AZURE_KEY,
+		});
+		mocks.fetch
+			.mockResolvedValueOnce(
+				Response.json(
+					{
+						error: {
+							code: "OpperationNotSupported",
+							message:
+								"The realtime operation does not work with the specified model.",
+						},
+					},
+					{ status: 400 },
+				),
+			)
+			.mockResolvedValueOnce(
+				Response.json({
+					value: "ek_openai",
+					expires_at: 1_900_000_000,
+				}),
+			);
+
+		const result = await createParlumeRealtimeSession(input);
+
+		expect(result).toEqual(
+			expect.objectContaining({
+				clientSecret: "ek_openai",
+				realtimeUrl: "https://api.openai.com/v1/realtime",
+			}),
+		);
+		expect(mintRequest(0).url).toBe(
+			`${AZURE_ORIGIN}/openai/v1/realtime/client_secrets`,
+		);
+		expect(mintRequest(1).url).toBe(
+			"https://api.openai.com/v1/realtime/client_secrets",
+		);
+		expect(mocks.log).toHaveBeenCalledWith(
+			"warn",
+			"realtime.mint_failed",
+			expect.objectContaining({
+				provider: "AZURE_AI_FOUNDRY",
+				status: 400,
+			}),
+		);
+
+		mocks.fetch.mockReset();
+		mocks.log.mockReset();
+		mocks.key.mockResolvedValue("");
+		mocks.fetch.mockResolvedValue(
+			Response.json(
+				{
+					error: {
+						code: "401",
+						message: `Access denied for ${AZURE_KEY}`,
+					},
+				},
+				{ status: 401 },
+			),
+		);
+		await expect(createParlumeRealtimeSession(input)).resolves.toEqual({
+			engine: "classic",
+			reason: "mint_failed",
+		});
+		expect(JSON.stringify(mocks.log.mock.calls)).not.toContain(AZURE_KEY);
+	});
+
+	it("stays classic without an OpenAI key or an Azure resource, and calls no host", async () => {
 		mocks.key.mockResolvedValue("");
 		await expect(createParlumeRealtimeSession(input)).resolves.toEqual({
 			engine: "classic",
@@ -198,12 +355,14 @@ describe("createParlumeRealtimeSession", () => {
 		expect(mocks.log).toHaveBeenCalledWith("warn", "realtime.mint_failed", {
 			sessionId: "session-1",
 			botId: "bot-1",
+			provider: "OPENAI_DIRECT",
 			status: 401,
 			refusal: {
 				code: "invalid_api_key",
 				type: "invalid_request_error",
 				message: "bad key sk-…",
 			},
+			error: null,
 		});
 		mocks.fetch.mockRejectedValue(new Error(`network ${ORG_KEY}`));
 		await createParlumeRealtimeSession(input);
@@ -214,5 +373,79 @@ describe("createParlumeRealtimeSession", () => {
 		expect(
 			JSON.stringify([result, minted, mocks.log.mock.calls]),
 		).not.toContain(ORG_KEY);
+	});
+});
+
+describe("checkParlumeRealtimeHosts", () => {
+	const tenant = { userId: "user-1", organizationId: "org-1" };
+
+	it("mints a bare client secret on every host and reports each one, opening no session", async () => {
+		mocks.azure.mockResolvedValue({
+			origin: AZURE_ORIGIN,
+			apiKey: AZURE_KEY,
+		});
+		mocks.deployment.mockResolvedValue({
+			deployment: "example-realtime",
+			source: "organization",
+		});
+		mocks.fetch.mockImplementation(async (url: string) =>
+			url.startsWith(AZURE_ORIGIN)
+				? Response.json(
+						{
+							error: {
+								code: "DeploymentNotFound",
+								message: `No deployment for ${AZURE_KEY}`,
+							},
+						},
+						{ status: 404 },
+					)
+				: Response.json({ value: "ek_check", expires_at: 1 }),
+		);
+
+		const hosts = await checkParlumeRealtimeHosts(tenant);
+
+		expect(hosts).toEqual([
+			{
+				provider: "AZURE_AI_FOUNDRY",
+				model: "example-realtime",
+				ok: false,
+				status: 404,
+				message: expect.stringContaining("No deployment for"),
+			},
+			{
+				provider: "OPENAI_DIRECT",
+				model: "gpt-realtime-2.1",
+				ok: true,
+				status: null,
+				message: null,
+			},
+		]);
+		expect(JSON.stringify(hosts)).not.toContain(AZURE_KEY);
+		expect(JSON.stringify(hosts)).not.toContain("ek_check");
+		for (const call of [0, 1]) {
+			const { body } = mintRequest(call);
+			expect(Object.keys(body.session).sort()).toEqual(["model", "type"]);
+		}
+	});
+
+	it("reports a host it could not reach by the error's name", async () => {
+		mocks.fetch.mockRejectedValue(new TypeError(`fetch failed ${ORG_KEY}`));
+
+		const [host] = await checkParlumeRealtimeHosts(tenant);
+
+		expect(host).toEqual({
+			provider: "OPENAI_DIRECT",
+			model: "gpt-realtime-2.1",
+			ok: false,
+			status: null,
+			message: "TypeError",
+		});
+	});
+
+	it("returns no hosts when the organization has no realtime provider", async () => {
+		mocks.key.mockResolvedValue("");
+
+		await expect(checkParlumeRealtimeHosts(tenant)).resolves.toEqual([]);
+		expect(mocks.fetch).not.toHaveBeenCalled();
 	});
 });

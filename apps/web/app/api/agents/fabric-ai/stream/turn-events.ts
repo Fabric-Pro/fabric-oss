@@ -59,8 +59,8 @@ export function failedTurnEvent(result: TurnResult): TurnErrorEvent {
 }
 
 /**
- * For a turn that answered but was cut short by a provider error after some
- * text had streamed. Without it the preamble read as a finished answer and
+ * For a turn that answered but was cut short by a provider error, or a tool's
+ * AI usage-limit refusal, after some text had streamed. Without it the preamble read as a finished answer and
  * the cause was never shown (review F22/F26).
  */
 export function partialTurnEvent(result: TurnResult): TurnErrorEvent | null {

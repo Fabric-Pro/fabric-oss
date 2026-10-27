@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { PROPOSAL_REVIEW_MAX_CHANGES } from "../proposal-review";
 
 const h = vi.hoisted(() => ({
 	handler: null as any,
@@ -69,7 +70,24 @@ vi.mock("@repo/database", () => ({
 	finalizeBacklogUpdateSession: (...args: any[]) =>
 		h.finalizeSession(...args),
 	markProposalApplyDispatched: (...args: any[]) => h.stamp(...args),
-	claimPendingProposalForApply: vi.fn(),
+	claimPendingProposalWithReview: async (params: any) => {
+		const row = h.rows.get(params.proposalId);
+		const matches = (w: any): boolean =>
+			Object.entries(w).every(([key, value]: any) =>
+				key === "OR" ? value.some(matches) : row[key] === value,
+			);
+		if (!row || !matches(params.claimWhere)) return false;
+		Object.assign(row, {
+			status: "APPLYING",
+			applyWorkflowId: params.applyWorkflowId,
+			applyStartedAt: null,
+			reviewedBy: params.reviewedBy,
+			reviewedAt: new Date(),
+			applyReviewId: row.applyReviewId ?? "example-review",
+			applyReviewWorkflowId: params.applyWorkflowId,
+		});
+		return true;
+	},
 	finalizeClaimedProposal: vi.fn(),
 	getAppliedChangeIndexes: vi.fn(),
 	getBoundPromptForAgent: vi.fn(),
@@ -281,6 +299,16 @@ describe("apply operation identity", () => {
 		},
 		{ pmSyncOverrides: { "0": { pushAnyway: true } } },
 		{ conversationId: "example-other-conversation" },
+		{ approvedChangeIndexes: [1] },
+		{
+			offeredChanges: [
+				{
+					action: "create",
+					type: "feature",
+					title: "Different selection",
+				},
+			],
+		},
 	])("rejects key reuse with changed inputs %j", async (changed) => {
 		await call();
 		await expect(call(changed)).rejects.toMatchObject({ code: "CONFLICT" });
@@ -374,4 +402,59 @@ describe("apply operation identity", () => {
 		expect(h.rows.size).toBe(3);
 		vi.restoreAllMocks();
 	});
+});
+
+it.each([
+	{
+		offeredChanges: Array.from(
+			{ length: PROPOSAL_REVIEW_MAX_CHANGES + 1 },
+			() => ({
+				action: "create",
+				type: "feature",
+				title: "Example",
+			}),
+		),
+	},
+
+	{ approvedChangeIndexes: [-1] },
+	{ approvedChangeIndexes: [0.5] },
+	{ approvedChangeIndexes: [2 ** 31 + 1] },
+	{
+		approvedChangeIndexes: Array.from(
+			{ length: PROPOSAL_REVIEW_MAX_CHANGES + 1 },
+			() => 0,
+		),
+	},
+])(
+	"rejects oversized offered metadata and invalid positions at the schema boundary",
+	(invalid) => {
+		expect(h.schema.safeParse({ ...input, ...invalid }).success).toBe(
+			false,
+		);
+	},
+);
+
+it("accepts an overlong unselected AI title", () => {
+	expect(
+		h.schema.safeParse({
+			...input,
+			approvedChangeIndexes: [0],
+			offeredChanges: [
+				{ action: "create", type: "feature", title: "Selected" },
+				{ action: "create", type: "feature", title: "x".repeat(5000) },
+			],
+		}).success,
+	).toBe(true);
+});
+
+it("returns BAD_REQUEST 400 for an int32-overflow index through oRPC validation", async () => {
+	const { call, os } = await import("@orpc/server");
+	const effect = vi.fn();
+	await expect(
+		call(os.input(h.schema).handler(effect), {
+			...input,
+			approvedChangeIndexes: [2 ** 31 + 1],
+		}),
+	).rejects.toMatchObject({ code: "BAD_REQUEST", status: 400 });
+	expect(effect).not.toHaveBeenCalled();
 });

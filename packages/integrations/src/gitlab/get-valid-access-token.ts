@@ -80,9 +80,8 @@ interface ProjectRepoIntegrationAccessor {
 
 // Inner tx-client shape passed to the `$transaction` callback. Deliberately
 // narrow — only the accessors used inside the locked body. `$transaction`
-// is OMITTED so the type forbids re-opening a nested transaction (Prisma's
-// real `TransactionClient` does not expose `$transaction`; calling it would
-// throw at runtime).
+// is omitted so this local interface keeps the refresh body inside the
+// existing advisory-lock transaction.
 interface TxClient {
 	// $executeRaw (not $queryRaw): the advisory-lock SELECT returns `void`, which
 	// the pg driver adapter's $queryRaw cannot deserialize.

@@ -17,6 +17,7 @@ import {
 } from "./parlume-chat";
 import {
 	type ParlumeReplyChannel,
+	type ParlumeTaggedCommand,
 	parseParlumeChatCommand,
 } from "./parlume-chat-commands";
 import { isRecord } from "./parlume-stream-auth";
@@ -24,17 +25,21 @@ import {
 	acceptParlumeSuggestion,
 	emptyParlumeSuggestionState,
 	formatParlumeSuggestion,
+	hasParlumeSuggestionMaterial,
 	isNearDuplicateParlumeSuggestion,
 	isParlumeSuggestionPassDue,
-	PARLUME_SUGGESTION_INTERVAL_MS,
+	nextParlumeSuggestionPassAt,
 	type ParlumeSuggestionState,
 	parseParlumeSuggestion,
+	spokenParlumeSuggestion,
 } from "./parlume-suggestions";
 
 const CHAT_STATE_KEY = "chat";
 const SUGGESTION_STATE_KEY = "chatSuggestions";
 /** A chat request still counts as being answered for at most this long. */
 const CHAT_TURN_MAX_MS = 2 * 60 * 1000;
+/** The soonest a suggestion pass runs, and how long it waits while Parlume is busy. */
+const SUGGESTION_RETRY_MS = 5_000;
 const MAX_OUTBOUND_CHARS = 8_000;
 const MAX_TURN_ID_CHARS = 128;
 const MAX_HELD_ACTION_CHARS = 200;
@@ -46,6 +51,11 @@ export interface ParlumeChatBot {
 	sessionId: string;
 	botId: string;
 }
+
+/** What a tagged command asks for: a post read aloud, or a request to run. */
+export type ParlumePostAction =
+	| { kind: "speak"; text: string }
+	| { kind: "ask"; text: string };
 
 export interface ParlumeChatTurn {
 	text: string;
@@ -171,8 +181,13 @@ export class ParlumeChatChannel {
 
 	constructor(private readonly host: ParlumeChatHost) {}
 
-	noteSpeechSegment(): void {
+	/** True when this segment is the one that makes a suggestion pass worth running. */
+	noteSpeechSegment(): boolean {
 		this.newSegments++;
+		return (
+			hasParlumeSuggestionMaterial(this.newSegments) &&
+			!hasParlumeSuggestionMaterial(this.newSegments - 1)
+		);
 	}
 
 	beginChatTurn(generation: number): void {
@@ -381,38 +396,52 @@ export class ParlumeChatChannel {
 				previous: suggestions.recent.map((entry) => entry.text),
 			},
 		);
-		const text = response
+		const suggestion = response
 			? parseParlumeSuggestion(await response.json().catch(() => null))
 			: null;
 		const duplicate =
-			text !== null &&
-			isNearDuplicateParlumeSuggestion(suggestions, text, now);
+			suggestion !== null &&
+			isNearDuplicateParlumeSuggestion(suggestions, suggestion, now);
 		this.host.log("info", "suggestion.pass", {
 			...bot,
 			answered: response !== null,
-			suggested: text !== null,
+			suggested: suggestion !== null,
 			duplicate,
 		});
-		if (!text || duplicate || this.host.isBusy()) {
+		if (!suggestion || duplicate || this.host.isBusy()) {
 			return;
 		}
-		acceptParlumeSuggestion(suggestions, text, now);
+		acceptParlumeSuggestion(suggestions, suggestion, now);
 		await this.saveSuggestionState();
 		await this.post(bot, {
-			text,
+			text: spokenParlumeSuggestion(suggestion),
 			turnId: null,
 			kind: "suggestion",
-			compose: (tag) => formatParlumeSuggestion(tag, text),
+			compose: (tag) => formatParlumeSuggestion(tag, suggestion),
 		});
 	}
 
 	/** The next time the Durable Object's alarm should fire for the chat. */
-	async nextWakeAt(): Promise<number | null> {
+	async nextWakeAt(input: { suggestions: boolean }): Promise<number | null> {
 		const now = this.host.now();
-		const deadline = nextParlumeChatDeadline(await this.chatState());
-		const suggestions = await this.suggestionState();
+		const chat = await this.chatState();
+		const deadline = nextParlumeChatDeadline(chat);
+		// A pass waits for speech, not for a timer: with too little said since
+		// the last one there is nothing to wake for, and the segment that
+		// changes that schedules the wake. Once due, a pass Parlume could not
+		// run (it was busy) is tried again shortly.
 		const nextPass =
-			suggestions.lastPassAt + PARLUME_SUGGESTION_INTERVAL_MS;
+			input.suggestions &&
+			!chat.unavailable &&
+			hasParlumeSuggestionMaterial(this.newSegments)
+				? Math.max(
+						nextParlumeSuggestionPassAt(
+							await this.suggestionState(),
+							now,
+						),
+						now + SUGGESTION_RETRY_MS,
+					)
+				: null;
 		const future = [deadline, nextPass].filter(
 			(at): at is number => at !== null && at > now,
 		);
@@ -519,27 +548,59 @@ export class ParlumeChatChannel {
 		}
 	}
 
-	/**
-	 * `go` on a change Parlume held back asks for it again, as a request typed
-	 * in the chat, once; on any other post it reads the post aloud as `say` does.
-	 */
+	/** A typed command's request is answered in the chat. */
 	private async actOnPost(
 		bot: ParlumeChatBot,
-		command: "say" | "go" | "more",
+		command: ParlumeTaggedCommand["kind"],
 		post: ParlumeChatPost,
 		turn: Pick<
 			ParlumeChatTurn,
 			"speakerName" | "speakerId" | "chatMessageId"
 		>,
 	): Promise<void> {
+		const action = await this.postAction(bot, command, post);
+		if (action?.kind === "speak") {
+			await this.host.speak(action.text);
+		} else if (action?.kind === "ask") {
+			await this.host.dispatchTurn({
+				...turn,
+				text: action.text,
+				replyChannel: "CHAT",
+			});
+		}
+	}
+
+	/**
+	 * What a spoken "go P3", "read P3" or "more on P3" asks for. The caller
+	 * answers it by voice. Null when this meeting has no such post, or the
+	 * change it held back was already asked for again.
+	 */
+	async spokenReference(
+		command: ParlumeTaggedCommand,
+	): Promise<ParlumePostAction | null> {
+		const post = findParlumeChatPost(await this.chatState(), command.tag);
+		const bot = await this.host.bot();
+		if (!post || !bot) {
+			return null;
+		}
+		return this.postAction(bot, command.kind, post);
+	}
+
+	/**
+	 * `go` on a change Parlume held back asks for it again, once; on any other
+	 * post it reads the post aloud as `say` does. `more` asks about the post.
+	 */
+	private async postAction(
+		bot: ParlumeChatBot,
+		command: ParlumeTaggedCommand["kind"],
+		post: ParlumeChatPost,
+	): Promise<ParlumePostAction | null> {
 		switch (command) {
 			case "say":
-				await this.host.speak(post.text);
-				return;
+				return { kind: "speak", text: post.text };
 			case "go": {
 				if (post.kind !== "held") {
-					await this.host.speak(post.text);
-					return;
+					return { kind: "speak", text: post.text };
 				}
 				const request = post.request;
 				if (!request) {
@@ -547,24 +608,19 @@ export class ParlumeChatChannel {
 						...bot,
 						tag: post.tag,
 					});
-					return;
+					return null;
 				}
 				post.request = undefined;
 				await this.saveChatState();
-				await this.host.dispatchTurn({
-					...turn,
-					text: request,
-					replyChannel: "CHAT",
-				});
-				return;
+				return { kind: "ask", text: request };
 			}
+			// The agent took "P1" for a work item it could not find ("There is
+			// no P1 identifier"): the tag is only the post's label in the chat.
 			case "more":
-				await this.host.dispatchTurn({
-					...turn,
-					text: `More detail on ${post.tag}: ${post.text}`,
-					replyChannel: "CHAT",
-				});
-				return;
+				return {
+					kind: "ask",
+					text: `More detail on what Parlume posted in the meeting chat as ${post.tag} (the label of that chat message, not a work item ID): ${post.text}`,
+				};
 			default: {
 				const unreachable: never = command;
 				return unreachable;

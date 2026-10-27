@@ -317,8 +317,9 @@ export async function breakdownNode(
 					baseUrl: configurable.ai_gateway_url
 						? String(configurable.ai_gateway_url)
 						: undefined,
-					// Canonical-derived reasoning signal (Bug #1942 review): gates
-					// Databricks <think> stripping when the serving alias is opaque.
+					// The unified-server boundary binds this hint to the final ai_model.
+					// This node uses it directly without a task-model lookup, so
+					// reasoning stripping also works behind an opaque alias.
 					isReasoningModel:
 						typeof configurable.ai_is_reasoning === "boolean"
 							? configurable.ai_is_reasoning

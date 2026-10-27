@@ -16,6 +16,8 @@ export type ParlumeChatCommand =
 	| { kind: "more"; tag: string }
 	| { kind: "ask"; text: string; replyChannel: ParlumeReplyChannel };
 
+export type ParlumeTaggedCommand = Extract<ParlumeChatCommand, { tag: string }>;
+
 // Teams renders an @mention as the bot's display name, with or without the @.
 const MENTION = /^\s*@\s*(?:fabric\s+parlume|fabric|parlume)\b[\s,:;.!?–—-]*/i;
 const DISPLAY_NAME = /^\s*fabric\s+parlume\b[\s,:;.!?–—-]*/i;

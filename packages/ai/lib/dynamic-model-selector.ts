@@ -16,6 +16,10 @@ import {
 	embeddingModelFitsVectorStore,
 	UnsupportedEmbeddingModelError,
 } from "./embedding-dimensions";
+import {
+	GATEWAY_FLEX_JOB_TYPES,
+	gatewayFlexDisabled,
+} from "./gateway-service-tier";
 import { buildProviderModelString } from "./provider-model-string";
 
 export { buildProviderModelString } from "./provider-model-string";
@@ -27,6 +31,7 @@ import {
 	getAiProviderApiKeyByProvider,
 	getCanonicalNameForProviderModelId,
 	getEmbeddingProviderConfig,
+	getModelByCanonicalName,
 	getModelForTask,
 	getOrganizationSystemAiProviderApiKey,
 	getOrgDecisionProvider,
@@ -38,6 +43,8 @@ import {
 	TEXT_TASK_TYPES,
 } from "@repo/database";
 import { assertWithinAiUsageLimits } from "@repo/payments";
+import { waitUntil } from "@vercel/functions";
+import type { AiCallPurpose } from "./call-purpose";
 import type { AiFeatureKey } from "./feature-keys";
 import type { AiJobKey } from "./job-keys";
 
@@ -1071,6 +1078,7 @@ import {
 	wrapModelWithDispatchGuard,
 } from "./dispatch-guard-middleware";
 import { aiApiFallbackApproved, currentAiJobType } from "./job-context";
+import { createTextToolCallRecoveryMiddleware } from "./text-tool-call-middleware";
 import {
 	wrapDecisionModelWithTurnBudget,
 	wrapEmbeddingModelWithTurnBudget,
@@ -1137,6 +1145,8 @@ export interface AIOperationContext {
 	 * Use a key from AI_JOB_TYPES.
 	 */
 	jobType?: AiJobKey;
+	/** Usage-only attribution; excluded from routing and budget decisions. */
+	callPurpose?: AiCallPurpose;
 	/**
 	 * This one bulk run may use the organization's provider once every shared
 	 * ChatGPT plan is spent ("Run now on API billing"). Unset follows the run
@@ -1220,17 +1230,16 @@ export interface AIModelMetadata {
 	/** The canonical model name for display */
 	canonicalName: string;
 	/**
-	 * The catalog output-token cap of the config-resolved model. Intentionally
-	 * left undefined when a `modelOverride` is used — the override model's cap
-	 * may differ from the config-resolved model's.
+	 * Catalog output-token cap of the resolved model, including known overrides.
+	 * Unset when the actual model has no known catalog limit.
 	 */
 	maxOutputTokens?: number;
 	/**
 	 * The catalog context-window size (total tokens) of the config-resolved
 	 * model. Used to clamp requested output budgets so a large input plus a
 	 * large output budget can't over-ask the model's context. Intentionally
-	 * left undefined when a `modelOverride` is used — same rationale as
-	 * `maxOutputTokens`: the override model's context window may differ.
+	 * left undefined when a `modelOverride` is used because the override
+	 * model's context window may differ from the configured model's.
 	 */
 	contextWindow?: number;
 	/**
@@ -1531,6 +1540,7 @@ export async function getAIDecisionModelWithMetadata(
 						billingCustomerId: metadata.billingCustomerId,
 						featureKey: context.featureKey,
 						promptVersionId: context.promptVersionId,
+						callPurpose: context.callPurpose,
 						jobType: context.jobType,
 					},
 					{
@@ -1563,12 +1573,14 @@ export async function getAIDecisionModelWithMetadata(
 		metadata,
 		trackUsage: () => {
 			if (providerConfig.configId) {
-				updateProviderLastUsed({
-					configId: providerConfig.configId,
-					source: "organization",
-				}).catch(() => {
-					// Tracking is best effort and must not affect a completed evaluation.
-				});
+				waitUntil(
+					updateProviderLastUsed({
+						configId: providerConfig.configId,
+						source: "organization",
+					}).catch(() => {
+						// Tracking is best effort and must not affect a completed evaluation.
+					}),
+				);
 			}
 		},
 	};
@@ -1640,10 +1652,11 @@ function withAmbientJobType(
 
 /** The context plan routing reads: unset eligibility follows the member's own interactive request. */
 function planRoutingContext(context: AIOperationContext): AIOperationContext {
-	return context.planEligible === undefined &&
-		isAiInteractiveRequestFor(context.userId)
-		? { ...context, planEligible: true }
-		: context;
+	const { callPurpose: _callPurpose, ...routingContext } = context;
+	return routingContext.planEligible === undefined &&
+		isAiInteractiveRequestFor(routingContext.userId)
+		? { ...routingContext, planEligible: true }
+		: routingContext;
 }
 
 /**
@@ -1727,6 +1740,14 @@ export async function getAIModelWithMetadata(
 	// organization shares. Embeddings also stay on the organization's provider
 	// because vectors from different models would not be comparable.
 	const routingContext = planRoutingContext(context);
+	const serviceTier =
+		context.jobType !== undefined &&
+		GATEWAY_FLEX_JOB_TYPES.has(context.jobType) &&
+		routingContext.planEligible !== true &&
+		!isAiInteractiveRequestFor(context.userId) &&
+		!gatewayFlexDisabled()
+			? "flex"
+			: undefined;
 	// Every plan is spent and the member's own key stands in (Fizzy #3085).
 	let personalKey: ChatGptPlanPersonalKeyPick | null = null;
 	if (
@@ -1741,6 +1762,7 @@ export async function getAIModelWithMetadata(
 				options,
 				routingContext,
 				plan.source,
+				context.callPurpose,
 			);
 		}
 		personalKey = plan;
@@ -1841,6 +1863,16 @@ export async function getAIModelWithMetadata(
 				config.provider,
 			)) ?? apiModelOverride;
 	}
+	let resolvedMaxOutputTokens = config.maxOutputTokens;
+	if (apiModelOverride && canonicalName !== config.canonicalName) {
+		// The configured model's cap belongs to a different model. Reuse the
+		// identity resolved above; only known overrides need a catalog read.
+		const overrideModel =
+			overrideExistsInCatalog || canonicalName !== apiModelOverride
+				? await getModelByCanonicalName(canonicalName)
+				: null;
+		resolvedMaxOutputTokens = overrideModel?.maxOutputTokens ?? undefined;
+	}
 	const selectionSource = apiModelOverride
 		? "override"
 		: config.selectionSource;
@@ -1868,6 +1900,7 @@ export async function getAIModelWithMetadata(
 	// endpoint alias like `prod-chat` that evades the R1 name patterns; Bug #1942
 	// review). getModel prefers this over its own name heuristic.
 	const model = getModel(finalModelString, {
+		serviceTier,
 		userId: context.userId,
 		organizationId: context.organizationId,
 		apiKey: decryptedApiKey,
@@ -1887,7 +1920,7 @@ export async function getAIModelWithMetadata(
 		configSource: config.configSource,
 		selectionSource,
 		canonicalName,
-		maxOutputTokens: apiModelOverride ? undefined : config.maxOutputTokens,
+		maxOutputTokens: resolvedMaxOutputTokens,
 		contextWindow: apiModelOverride ? undefined : config.contextWindow,
 		billingMode: billingState.mode,
 		// Always null: the Stripe-metered mode is unreachable now that the
@@ -1904,12 +1937,14 @@ export async function getAIModelWithMetadata(
 	// Step 7: Create trackUsage helper
 	const trackUsage = () => {
 		if (config.configId && config.configSource) {
-			updateProviderLastUsed({
-				configId: config.configId,
-				source: config.configSource,
-			}).catch(() => {
-				// Silently ignore - tracking is best-effort
-			});
+			waitUntil(
+				updateProviderLastUsed({
+					configId: config.configId,
+					source: config.configSource,
+				}).catch(() => {
+					// Silently ignore - tracking is best-effort
+				}),
+			);
 		}
 	};
 
@@ -1931,6 +1966,7 @@ export async function getAIModelWithMetadata(
 		billingCustomerId: metadata.billingCustomerId,
 		featureKey: context.featureKey,
 		promptVersionId: context.promptVersionId,
+		callPurpose: context.callPurpose,
 		jobType: context.jobType,
 		conversationId: context.conversationId,
 		frameId: context.frameId,
@@ -1959,7 +1995,10 @@ export async function getAIModelWithMetadata(
 				usageLogging === "aggregate"
 					? model
 					: wrapModelWithUsageLogging(model, usageLoggingContext),
-				{ enforcesOutputCap: true },
+				{
+					enforcesOutputCap: true,
+					maxOutputTokens: metadata.maxOutputTokens,
+				},
 			),
 			() => assertWithinAiUsageLimits(limitScope),
 		),
@@ -1994,6 +2033,7 @@ async function getChatGptPlanModelWithMetadata(
 	options: GetAIModelWithMetadataOptions,
 	context: AIOperationContext,
 	source: PlanSourceRef,
+	callPurpose?: AiCallPurpose,
 ): Promise<AIModelResult | AggregateAIModelResult> {
 	const taskType = mapTaskTypeToDb(options.taskType as string);
 	const providerConfigId = source.kind === "org" ? source.accountId : null;
@@ -2057,6 +2097,7 @@ async function getChatGptPlanModelWithMetadata(
 		billingCustomerId: null,
 		featureKey: context.featureKey,
 		promptVersionId: context.promptVersionId,
+		callPurpose,
 		jobType: context.jobType,
 		conversationId: context.conversationId,
 		frameId: context.frameId,
@@ -2239,7 +2280,8 @@ async function getChatGptPlanModelWithMetadata(
 		model: build(source, { ...usageLoggingContext }) as Parameters<
 			typeof wrapLanguageModel
 		>[0]["model"],
-		middleware: perRequest,
+		// Outside perRequest to cover plan rotation and the plan model, which bypasses getModel.
+		middleware: [createTextToolCallRecoveryMiddleware(), perRequest],
 	});
 	// Per-request limit check, placed as in `getAIModelWithMetadata`. It uses
 	// the account resolved here because every request this model makes starts
@@ -2407,12 +2449,14 @@ export async function getAIEmbeddingModelWithMetadata(
 	// Create trackUsage helper
 	const trackUsage = () => {
 		if (config.configId && config.configSource) {
-			updateProviderLastUsed({
-				configId: config.configId,
-				source: config.configSource,
-			}).catch(() => {
-				// Silently ignore - tracking is best-effort
-			});
+			waitUntil(
+				updateProviderLastUsed({
+					configId: config.configId,
+					source: config.configSource,
+				}).catch(() => {
+					// Silently ignore - tracking is best-effort
+				}),
+			);
 		}
 	};
 
@@ -2441,6 +2485,7 @@ export async function getAIEmbeddingModelWithMetadata(
 				billingCategory: getAiBillingCategory(metadata),
 				billingCustomerId: metadata.billingCustomerId,
 				featureKey: context.featureKey,
+				callPurpose: context.callPurpose,
 				jobType: context.jobType,
 			}),
 		),

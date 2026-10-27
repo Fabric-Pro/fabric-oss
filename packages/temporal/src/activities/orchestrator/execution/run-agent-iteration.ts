@@ -9,13 +9,25 @@
  * the next action based on actual results from previous iterations.
  */
 
+import { createHash } from "node:crypto";
 import { isStepCount, jsonSchema, streamText, tool } from "@repo/ai";
 import { getModelCapabilities } from "@repo/ai/capabilities";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
+import { clampRequestedOutputTokens } from "@repo/ai/lib/output-token-budget";
+import {
+	observeModelRequests,
+	requestModelContextWindow,
+	setRequestAdditions,
+	setRequestContextWindow,
+	setRequestStreamAttempt,
+} from "@repo/ai/lib/request-observation";
+import type { ModelRequestObservation } from "@repo/ai/lib/request-shape";
 import { classifyLimitError, type LimitSignal } from "@repo/ai/limits";
 import {
+	cacheableSystem,
 	isPromptCacheTarget,
-	withRollingCacheBreakpoint,
+	withAdvisorCacheBreakpoints,
 } from "@repo/ai/prompt-cache";
 import {
 	buildSkillsSystemBlock,
@@ -23,12 +35,16 @@ import {
 	listAvailableSkills,
 } from "@repo/ai/skills";
 import { runWithDispatchRequestSizer } from "@repo/utils/dispatch-guard";
-import { heartbeat } from "@temporalio/activity";
+import { Context, heartbeat } from "@temporalio/activity";
+import { CancelledFailure } from "@temporalio/common";
 import type { ModelMessage } from "ai";
 import { publishExecutionEvent } from "../../../lib/redis-publisher";
 import type { DirectChatUsageLimitRefusal } from "../../../types";
+import { estimateIterationInputTokens } from "../../../workflows/orchestrator/advisor-history-retention";
 import { isInlineDiagramRequest } from "../../../workflows/orchestrator/diagram-rendering";
 import type {
+	AssistantResponsePart,
+	ImageAttachmentReference,
 	IterativeMessage,
 	OrchestratorBudgetAttemptKind,
 	TurnLedgerSnapshot,
@@ -43,6 +59,7 @@ import {
 	guardTurnModel,
 	readTurnLedgerSnapshot,
 	rethrowIfTurnStopped,
+	speaksBudgetContract,
 	type TurnScope,
 	throwIfActivityCancelled,
 } from "../turn-dispatch";
@@ -52,8 +69,10 @@ import { createFinalizationSizing } from "./finalization-fit";
 import {
 	budgetImageAttachments,
 	omittedImagesNote,
+	type ResolvedImageAttachment,
 	resolveImageAttachments,
 	spliceImagePartsIntoLastUserMessage,
+	spliceImagePartsIntoMessage,
 } from "./vision-image-attachments";
 
 function sanitizeProviderError(message: string): string {
@@ -137,6 +156,18 @@ export interface AgentToolCall {
  * What every iteration result may also carry about its token accounting.
  */
 interface IterationAccounting {
+	/** Optional for rolling workers; indices address this activity's input history. */
+	imageAttachmentUpdates?: Array<{
+		messageIndex: number;
+		attachments: ImageAttachmentReference[];
+		/** Original ID order while initial capture still has temporary failures. */
+		pendingDocumentIds?: string[];
+		note?: string;
+	}>;
+	/** Physical provider sends, with unknown counts omitted and content represented by hashes. */
+	requests?: ModelRequestObservation[];
+	/** Recorded sizing of activity-only additions, for the workflow's next request estimate. */
+	requestSizing?: { extraInputTokens: number; contextWindow?: number };
 	/**
 	 * Set when at least one attempt's usage could not be read (the provider
 	 * reported none, or the request failed after it was sent). `usage` then
@@ -151,6 +182,12 @@ interface IterationAccounting {
 	 * tokens.
 	 */
 	ledger?: TurnLedgerSnapshot;
+	/**
+	 * Every ChatGPT plan ran out during this round and its calls moved to
+	 * the organization's API billing (Fizzy #3048). `resetAt` is when the
+	 * plans reset, as ISO 8601, or null when that is unknown.
+	 */
+	apiBilling?: { resetAt: string | null };
 }
 
 /**
@@ -182,6 +219,8 @@ export type AgentIterationResult = IterationAccounting &
 		| {
 				type: "tool_calls";
 				toolCalls: AgentToolCall[];
+				/** Absent on activities from before the turn-message patch. */
+				assistantParts?: AssistantResponsePart[];
 				usage: {
 					inputTokens: number;
 					outputTokens: number;
@@ -211,6 +250,15 @@ export type AgentIterationResult = IterationAccounting &
  * Input for the agent iteration activity
  */
 export interface RunAgentIterationInput {
+	/** Opt-in recorded by the workflow patch; absent retains the legacy result shape. */
+	preserveTurnMessages?: true;
+	/** Resolve the references carried by the source user message. */
+	preserveTurnImages?: true;
+	/** Usage-only distinction for workflow synthesis calls. */
+	callPurpose?:
+		| typeof AI_CALL_PURPOSES.mainRound
+		| typeof AI_CALL_PURPOSES.synthesis
+		| typeof AI_CALL_PURPOSES.synthesisRetry;
 	/** Conversation history including user message and previous tool results */
 	conversationHistory: IterativeMessage[];
 	/** Available tools in AI SDK format */
@@ -247,6 +295,8 @@ export interface RunAgentIterationInput {
 	 * "Unable to generate synthesis."
 	 */
 	enableSkillTools?: boolean;
+	/** Structured final summary; enabled by the workflow synthesis marker. */
+	synthesisOutput?: boolean;
 	/**
 	 * Tool names to drop from the final `aiSdkTools` map handed to
 	 * `streamText`. Defense in depth for surface-aware routing helpers
@@ -526,23 +576,6 @@ export function toolCallsForLog(calls: readonly AgentToolCall[]): unknown[] {
 }
 
 /**
- * Build a lookup map from toolCallId to toolName from all assistant messages
- */
-function buildToolCallIdToNameMap(
-	messages: IterativeMessage[],
-): Map<string, string> {
-	const map = new Map<string, string>();
-	for (const msg of messages) {
-		if (msg.role === "assistant" && msg.toolCalls) {
-			for (const tc of msg.toolCalls) {
-				map.set(tc.id, tc.name);
-			}
-		}
-	}
-	return map;
-}
-
-/**
  * Convert iterative messages to AI SDK CoreMessage format
  *
  * The AI SDK expects a specific format for messages:
@@ -555,9 +588,15 @@ function buildToolCallIdToNameMap(
  */
 function convertToAiSdkMessages(messages: IterativeMessage[]): AiSdkMessage[] {
 	// Build lookup map for tool names (tool messages don't store the tool name)
-	const toolCallIdToName = buildToolCallIdToNameMap(messages);
+	const toolCallIdToName = new Map<string, string>();
 
 	return messages.map((msg) => {
+		if (msg.role === "assistant" && msg.toolCalls?.length) {
+			toolCallIdToName.clear();
+			for (const call of msg.toolCalls) {
+				toolCallIdToName.set(call.id, call.name);
+			}
+		}
 		// Tool result messages - must use array format with tool-result type
 		if (msg.role === "tool") {
 			// Parse the content if it's a JSON string, otherwise use as-is
@@ -648,9 +687,22 @@ function convertToAiSdkMessages(messages: IterativeMessage[]): AiSdkMessage[] {
 				});
 			}
 
+			const orderedParts = msg.assistantParts?.flatMap((part) => {
+				if (part.type === "text") {
+					return part.text.trim().length > 0
+						? ([part] as Array<TextPart | ToolCallPart>)
+						: [];
+				}
+				const call = contentParts.find(
+					(candidate) =>
+						candidate.type === "tool-call" &&
+						candidate.toolCallId === part.toolCallId,
+				);
+				return call ? [call] : [];
+			});
 			return {
 				role: "assistant" as const,
-				content: contentParts,
+				content: orderedParts ?? contentParts,
 			};
 		}
 
@@ -707,11 +759,57 @@ export async function runAgentIteration(
 					input.finalizationQuestion,
 				)
 			: undefined;
-	const result = sizing
-		? await runWithDispatchRequestSizer(sizing.sizer, () =>
-				runAgentIterationRound(input, sizing),
-			)
-		: await runAgentIterationRound(input);
+	let activityAttempt = 1;
+	let activityIdHash: string | undefined;
+	try {
+		const info = Context.current().info;
+		activityAttempt = info.attempt;
+		activityIdHash = createHash("sha256")
+			.update(info.activityId)
+			.digest("hex");
+	} catch {
+		/* Unit calls have no activity context. */
+	}
+	const observed = await observeModelRequests(
+		{ iteration: input.iteration, activityAttempt, activityIdHash },
+		() =>
+			sizing
+				? runWithDispatchRequestSizer(sizing.sizer, () =>
+						runAgentIterationRound(input, sizing),
+					)
+				: runAgentIterationRound(input),
+		(error, requests) => {
+			const failure =
+				findTurnBudgetExhausted(error) ??
+				findTurnNotDispatchable(error) ??
+				(error instanceof CancelledFailure ? error : undefined);
+			// Keep the refusal's first detail and retry policy intact; older workflows ignore this suffix.
+			if (requests.length > 0 && failure?.details) {
+				failure.details.push({
+					advisorRequestDiagnosticsV1: { requests },
+				});
+			}
+		},
+	);
+	const result = {
+		...observed.result,
+		requests: observed.requests,
+		...(observed.requests.length > 0
+			? {
+					requestSizing: {
+						extraInputTokens: Math.max(
+							observed.extraInputTokens,
+							...observed.requests.map(
+								(request) =>
+									request.estimatedInputTokens -
+									estimateIterationInputTokens(input),
+							),
+						),
+						contextWindow: observed.requests.at(-1)?.contextWindow,
+					},
+				}
+			: {}),
+	};
 	// Read after the round: a stream's finish is held until its settlement
 	// is written, or for at most the settlement timeout
 	// (turn-budget-middleware.ts). A settlement still in flight then counts
@@ -861,9 +959,10 @@ async function runAgentIterationRound(
 			hasTools,
 			modelOverride,
 			undefined,
-			input.conversationId || input.frameId || input.projectId
-				? usageOriginFields(input)
-				: undefined,
+			{
+				...usageOriginFields(input),
+				callPurpose: input.callPurpose ?? AI_CALL_PURPOSES.mainRound,
+			},
 		);
 	} catch (error) {
 		const refusal = findAiUsageLimitError(error);
@@ -885,6 +984,16 @@ async function runAgentIterationRound(
 		canonicalName: modelCanonicalName,
 	} = selection;
 
+	const roundMaxOutputTokens = clampRequestedOutputTokens(
+		ROUND_MAX_OUTPUT_TOKENS,
+		selection,
+	);
+
+	setRequestContextWindow(
+		selection.contextWindow ??
+			requestModelContextWindow(modelCanonicalName ?? modelString),
+	);
+
 	// The model every provider request of this round goes through: checked
 	// against the turn record before each physical request when the round
 	// belongs to a chat turn (see guardTurnModel).
@@ -893,12 +1002,137 @@ async function runAgentIterationRound(
 	// Convert conversation history to AI SDK format
 	let messages = convertToAiSdkMessages(conversationHistory);
 
-	// Vision: when the user attached image documents this turn, show the pixels
-	// to vision-capable models by splicing them onto the last user message — so
-	// the model SEES the image rather than relying only on its RAG-extracted
-	// description. Non-vision models skip this and keep the description fallback.
-	// Best-effort: any failure logs and proceeds text-only.
-	if (attachedDocumentIds.length > 0) {
+	// Patched turns expand byte-checked references on their source user message.
+	// Unpatched callers retain the first-round splice on the last user message.
+	const imageAttachmentUpdates: NonNullable<
+		IterationAccounting["imageAttachmentUpdates"]
+	> = [];
+	const hasImageAttachments = conversationHistory.some(
+		(message) =>
+			message.imageAttachments?.length ||
+			message.imageAttachmentDocumentIds?.length,
+	);
+	// preserveTurnImages is supplied by the workflow's synthesis patch.
+	// Omission follows the recorded contract, including when ledger reads fail.
+	const omitFinalizationImages = Boolean(
+		input.preserveTurnImages &&
+			input.budgetAttemptKind === "FINALIZATION" &&
+			input.turnScope &&
+			speaksBudgetContract(input.turnScope) &&
+			hasImageAttachments,
+	);
+	if (omitFinalizationImages) {
+		console.log(
+			"[AgentIteration] Image attachments omitted for ledgered finalization",
+			{
+				reason: "ledger_finalization",
+			},
+		);
+	} else if (input.preserveTurnImages) {
+		const requestImages: ResolvedImageAttachment[] = [];
+		const modelId =
+			(model as { modelId?: string }).modelId ?? modelOverride ?? "";
+		for (
+			let messageIndex = 0;
+			messageIndex < conversationHistory.length;
+			messageIndex++
+		) {
+			const source = conversationHistory[messageIndex];
+			if (
+				source.role !== "user" ||
+				(!source.imageAttachmentDocumentIds && !source.imageAttachments)
+			) {
+				continue;
+			}
+			let attachments = source.imageAttachments ?? [];
+			let pendingDocumentIds = source.imageAttachmentDocumentIds;
+			let note = source.imageAttachmentNote;
+			if (getModelCapabilities(modelId).vision) {
+				try {
+					const ids =
+						source.imageAttachmentDocumentIds ??
+						source.imageAttachments?.map((ref) => ref.documentId) ??
+						[];
+					const outcomes = await resolveImageAttachments(
+						ids,
+						userId,
+						organizationId,
+						{
+							references: source.imageAttachments,
+							captureDocumentIds:
+								source.imageAttachmentDocumentIds?.filter(
+									(id) =>
+										!source.imageAttachments?.some(
+											(ref) => ref.documentId === id,
+										),
+								),
+						},
+					);
+					const resolved = outcomes.flatMap((outcome) =>
+						outcome.status === "resolved"
+							? [outcome.attachment]
+							: [],
+					);
+					const selection = budgetImageAttachments([
+						...requestImages,
+						...resolved,
+					]);
+					const kept = selection.kept.slice(requestImages.length);
+					const omitted = selection.omitted;
+					requestImages.push(...kept);
+					attachments = outcomes.flatMap((outcome) => {
+						if (outcome.status === "resolved") {
+							return kept.includes(outcome.attachment) &&
+								outcome.attachment.reference
+								? [outcome.attachment.reference]
+								: [];
+						}
+						if (outcome.status === "temporarily_unavailable") {
+							const previous = source.imageAttachments?.find(
+								(ref) => ref.documentId === outcome.documentId,
+							);
+							return previous ? [previous] : [];
+						}
+						return [];
+					});
+					const incompleteCapture = outcomes.some(
+						(outcome) =>
+							outcome.status === "temporarily_unavailable" &&
+							!source.imageAttachments?.some(
+								(ref) => ref.documentId === outcome.documentId,
+							),
+					);
+					pendingDocumentIds = incompleteCapture
+						? outcomes
+								.filter(
+									(outcome) =>
+										outcome.status ===
+											"temporarily_unavailable" ||
+										(outcome.status === "resolved" &&
+											kept.includes(outcome.attachment)),
+								)
+								.map((outcome) => outcome.documentId)
+						: undefined;
+					note ??= omittedImagesNote(omitted) ?? undefined;
+					spliceImagePartsIntoMessage(
+						messages[messageIndex],
+						kept,
+						note,
+					);
+				} catch {
+					console.warn(
+						"[AgentIteration] Turn image resolution failed; omitting images from this request",
+					);
+				}
+			}
+			imageAttachmentUpdates.push({
+				messageIndex,
+				attachments,
+				...(pendingDocumentIds?.length ? { pendingDocumentIds } : {}),
+				...(note ? { note } : {}),
+			});
+		}
+	} else if (attachedDocumentIds.length > 0) {
 		const modelId =
 			(model as { modelId?: string }).modelId ?? modelOverride ?? "";
 		if (getModelCapabilities(modelId).vision) {
@@ -941,16 +1175,24 @@ async function runAgentIterationRound(
 		}
 	}
 
-	// Anthropic caches a prompt only up to an explicit breakpoint; OpenAI and
-	// Gemini cache a stable prefix with no marker. One rolling breakpoint on
-	// the last conversation message caches tools, system prompt and history,
-	// so the next round of the turn can read that prefix back. It goes on
-	// before the host note below, which changes from call to call: a prefix
-	// ending in the note would not match the next round's request. Same gate
-	// as direct chat: Bedrock, Foundry and other gateways use request adapters
-	// that do not take the marker.
-	if (isPromptCacheTarget(modelProvider, modelString)) {
-		messages = withRollingCacheBreakpoint(messages) as AiSdkMessage[];
+	// convertToAiSdkMessages uses map with one return per input row; the
+	// vision splice changes parts only. Thus workflow indices still address
+	// SDK messages here, before the host note is appended. A round may contain
+	// multiple call/result pairs or assistant text plus a correction note.
+	// Tools built above carry no cache markers; the system below adds the third.
+	const promptCacheTarget = isPromptCacheTarget(modelProvider, modelString);
+	if (promptCacheTarget) {
+		const newestRound = conversationHistory.at(-1)?.iteration;
+		const roundStart =
+			newestRound === undefined
+				? -1
+				: conversationHistory.findIndex(
+						(message) => message.iteration === newestRound,
+					);
+		messages = withAdvisorCacheBreakpoints(
+			messages as ModelMessage[],
+			roundStart - 1,
+		) as AiSdkMessage[];
 	}
 
 	// The per-call host note goes last, after the vision splice so no image
@@ -1066,6 +1308,21 @@ async function runAgentIterationRound(
 		// Use streamText to enable real-time text delta publishing via Redis
 		// maxTokens set high to allow long outputs (e.g. full HTML pages).
 		// Without this the provider default may silently truncate responses.
+		setRequestAdditions({
+			systemCharacters: skillsSystemBlock
+				? skillsSystemBlock.length + 2
+				: 0,
+			callerToolNames: Object.keys(availableTools),
+			skillToolNames: skillsSystemBlock
+				? Object.keys(aiSdkTools).filter((name) =>
+						[
+							"list_skills",
+							"load_skill",
+							"read_skill_file",
+						].includes(name),
+					)
+				: [],
+		});
 		const effectiveSystemPrompt = skillsSystemBlock
 			? `${systemPrompt}\n\n${skillsSystemBlock}`
 			: systemPrompt;
@@ -1074,6 +1331,9 @@ async function runAgentIterationRound(
 		// Declared outside the retry loop so the post-loop handlers see the
 		// final attempt's state.
 		let responseText = "";
+		let assistantParts: AssistantResponsePart[] = [];
+		let lastTextSegmentId: string | undefined;
+		let pendingTextSegmentId: string | undefined;
 		let toolCallsToExecute: AgentToolCall[] = [];
 		// Counts provider-reported tool-call defects within a single attempt:
 		// an unparsable/unknown tool call (AI SDK marks it `invalid`) or a
@@ -1124,12 +1384,14 @@ async function runAgentIterationRound(
 			finalizationSizing &&
 			aiSdkToolCount === 0 &&
 			!input.turnNotice &&
-			attachedDocumentIds.length === 0
+			(omitFinalizationImages ||
+				(attachedDocumentIds.length === 0 && !hasImageAttachments))
 		) {
 			finalizationSizing.prepare({
+				cacheSystemPrompt: promptCacheTarget,
 				instructions: effectiveSystemPrompt,
 				fullMessages: messages as ModelMessage[],
-				fullMaxOutputTokens: ROUND_MAX_OUTPUT_TOKENS,
+				fullMaxOutputTokens: roundMaxOutputTokens,
 				history: conversationHistory,
 			});
 		}
@@ -1145,8 +1407,12 @@ async function runAgentIterationRound(
 		// `aggregatedUsage` (declared before the try) is the running total.
 
 		for (let attempt = 1; attempt <= MAX_STREAM_ATTEMPTS; attempt++) {
+			setRequestStreamAttempt(attempt);
 			// Reset per-attempt state
 			responseText = "";
+			assistantParts = [];
+			lastTextSegmentId = undefined;
+			pendingTextSegmentId = undefined;
 			toolCallsToExecute = [];
 			invalidToolCallCount = 0;
 			toolErrorCount = 0;
@@ -1179,26 +1445,56 @@ async function runAgentIterationRound(
 
 			const stream = streamText({
 				model: guardedModel.model,
-				instructions: effectiveSystemPrompt,
+				instructions: promptCacheTarget
+					? cacheableSystem(effectiveSystemPrompt)
+					: effectiveSystemPrompt,
 				messages: messages as any,
 				tools: aiSdkToolCount > 0 ? (aiSdkTools as any) : undefined,
 				toolChoice,
 				stopWhen: isStepCount(maxStepsPerIteration),
-				maxOutputTokens: ROUND_MAX_OUTPUT_TOKENS,
+				maxOutputTokens: roundMaxOutputTokens,
 				// A cancelled activity aborts the request in flight.
 				abortSignal: activityAbortSignal(),
 			});
 
 			// Process the full stream for text deltas, tool calls, and errors
 			for await (const part of stream.stream) {
-				if (part.type === "text-delta") {
-					responseText += part.text || "";
+				if (part.type === "text-start") {
+					pendingTextSegmentId = part.id;
+				} else if (part.type === "text-delta") {
+					const text = part.text || "";
+					const segmentId = pendingTextSegmentId ?? part.id;
+					const separator =
+						input.synthesisOutput &&
+						text &&
+						responseText &&
+						lastTextSegmentId !== undefined &&
+						segmentId !== lastTextSegmentId &&
+						!/\s$/.test(responseText) &&
+						!/^\s/.test(text)
+							? "\n\n"
+							: "";
+					responseText += separator + text;
+					if (separator || text) {
+						const previous = assistantParts.at(-1);
+						if (previous?.type === "text") {
+							previous.text += separator + text;
+						} else {
+							assistantParts.push({
+								type: "text",
+								text: separator + text,
+							});
+						}
+					}
+					if (text) {
+						lastTextSegmentId = segmentId;
+					}
 
 					// Publish text delta via Redis pub/sub for real-time streaming
 					if (input.executionId && part.text) {
 						publishExecutionEvent(input.executionId, {
 							event: "execution.text_delta",
-							data: { text: part.text },
+							data: { text: separator + part.text },
 						});
 					}
 
@@ -1224,6 +1520,10 @@ async function runAgentIterationRound(
 					} else {
 						// Collect tool calls - these tools have no execute function,
 						// so they are "pending" and will be executed by the workflow
+						assistantParts.push({
+							type: "tool-call",
+							toolCallId: part.toolCallId,
+						});
 						toolCallsToExecute.push({
 							id: part.toolCallId,
 							name: part.toolName,
@@ -1421,9 +1721,18 @@ async function runAgentIterationRound(
 		// The aggregate across all attempts, not just the last one — see the
 		// `aggregatedUsage` declaration above the retry loop.
 		const usage = aggregatedUsage;
-		const accounting: IterationAccounting = usageUnknown
-			? { usageUnknown: true }
-			: {};
+		const planSpent = selection.planSpentApiBilling();
+		const accounting: IterationAccounting = {
+			...(input.preserveTurnImages ? { imageAttachmentUpdates } : {}),
+			...(usageUnknown ? { usageUnknown: true as const } : {}),
+			...(planSpent
+				? {
+						apiBilling: {
+							resetAt: planSpent.resetAt?.toISOString() ?? null,
+						},
+					}
+				: {}),
+		};
 
 		// Path A: usage/finishReason rejected — provider returned no usable output.
 		if (resolveError) {
@@ -1516,13 +1825,17 @@ async function runAgentIterationRound(
 			return {
 				type: "tool_calls",
 				toolCalls: toolCallsToExecute,
+				...(input.preserveTurnMessages ? { assistantParts } : {}),
 				usage,
 				...accounting,
 			};
 		}
 
 		// No tool calls - this is the final response
-		const finalText = responseText || "Task completed.";
+		const assembledText = input.synthesisOutput
+			? normalizeSynthesisText(responseText)
+			: responseText;
+		const finalText = assembledText || "Task completed.";
 		console.log(
 			`[AgentIteration] Returning final response (${finalText.length} chars)`,
 		);
@@ -1601,4 +1914,67 @@ async function runAgentIterationRound(
 			clearInterval(backgroundHeartbeatId);
 		}
 	}
+}
+
+/** Removes a synthesis preamble and separates its required section headings. */
+function normalizeSynthesisText(text: string): string {
+	const lines: string[] = [];
+	let firstSection = -1;
+	let fence: { character: string; length: number } | undefined;
+	let inlineTicks = 0;
+	const scanInlineCode = (line: string) => {
+		for (const run of line.matchAll(/`+/g)) {
+			if (inlineTicks === 0) {
+				inlineTicks = run[0].length;
+			} else if (run[0].length === inlineTicks) {
+				inlineTicks = 0;
+			}
+		}
+	};
+	for (const line of text.split("\n")) {
+		if (/^(?: {4}|\t|[ \t]*>)/.test(line)) {
+			lines.push(line);
+			continue;
+		}
+		const delimiter = /^[ \t]{0,3}(`{3,}|~{3,})/.exec(line);
+		if (fence) {
+			if (
+				delimiter &&
+				delimiter[1][0] === fence.character &&
+				delimiter[1].length >= fence.length &&
+				line.slice(delimiter[0].length).trim() === ""
+			) {
+				fence = undefined;
+			}
+			lines.push(line);
+			continue;
+		}
+		if (delimiter && inlineTicks === 0) {
+			fence = { character: delimiter[1][0], length: delimiter[1].length };
+			lines.push(line);
+			continue;
+		}
+		const heading =
+			/## (Summary|What I did|What's still needed)[ \t]*\r?$/.exec(line);
+		if (!heading) {
+			scanInlineCode(line);
+			lines.push(line);
+			continue;
+		}
+		const before = line.slice(0, heading.index);
+		scanInlineCode(before);
+		if (inlineTicks !== 0 || /#$/.test(before)) {
+			lines.push(line);
+			continue;
+		}
+		if (before) {
+			lines.push(before, "");
+		}
+		// The repaired heading is now at line start, outside code.
+		if (firstSection === -1) {
+			firstSection = lines.length;
+		}
+		lines.push(line.slice(heading.index));
+	}
+	return lines.slice(firstSection < 0 ? 0 : firstSection).join("\n");
 }

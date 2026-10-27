@@ -28,6 +28,7 @@ const OFF: GsRuntimeGates = {
 	todoList: false,
 	glossyEdition: false,
 	proposalArtifact: false,
+	parlumeMeetings: false,
 };
 const ON: GsRuntimeGates = { ...OFF, glossyEdition: true };
 
@@ -84,6 +85,7 @@ describe("Get Started — Glossy edition page-tour component", () => {
 			todoList: true,
 			glossyEdition: false,
 			proposalArtifact: true,
+			parlumeMeetings: true,
 		};
 		expect(componentIds(everyOtherGateOn)).not.toContain(
 			"documents-glossy",

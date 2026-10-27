@@ -77,13 +77,14 @@ describe("LlmHandler — usage attribution", () => {
 		expect(args[0]).toBe("user-1");
 		expect(args[1]).toBe("org-1");
 		expect(args[5]).toEqual({
+			callPurpose: "handler-generation",
 			conversationId: "conv-1",
 			frameId: "frame-1",
 		});
 		expect(args[5]).not.toHaveProperty("workflowExecutionId");
 	});
 
-	it("passes no attribution without a conversation, never the execution ID", async () => {
+	it("passes only the call purpose without a conversation", async () => {
 		await new LlmHandler().execute({
 			input: buildInput(),
 			variables: {},
@@ -92,7 +93,7 @@ describe("LlmHandler — usage attribution", () => {
 		});
 
 		const args = h.getAiModel.mock.calls[0];
-		expect(args[5]).toBeUndefined();
+		expect(args[5]).toEqual({ callPurpose: "handler-generation" });
 		expect(JSON.stringify(args)).not.toContain("exec-1");
 	});
 });

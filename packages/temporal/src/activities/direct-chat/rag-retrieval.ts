@@ -5,6 +5,8 @@
  */
 
 import { getRAGProviderConfig } from "@repo/ai";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import {
 	db,
 	filterWorkspaceIdsForTenant,
@@ -305,7 +307,9 @@ export async function retrieveWorkspaceDocumentsActivity(
 	documentIds?: string[],
 	topKOverride?: number,
 	minSimilarityOverride?: number,
-	options?: SecondaryUsageInput & { turnScope?: TurnScope },
+	options?: SecondaryUsageInput & {
+		turnScope?: TurnScope;
+	},
 ): Promise<{
 	context: string;
 	chunkCount: number;
@@ -315,15 +319,19 @@ export async function retrieveWorkspaceDocumentsActivity(
 	const stopHeartbeat = startTurnHeartbeat(turnScope);
 	try {
 		return await runWithTurnDispatch(turnScope, () =>
-			retrieveWorkspaceDocuments(
-				message,
-				userId,
-				organizationId,
-				requestedWorkspaceIds,
-				documentIds,
-				topKOverride,
-				minSimilarityOverride,
-				options,
+			runWithAiCallPurpose(
+				AI_CALL_PURPOSES.workspaceRetrievalEmbedding,
+				() =>
+					retrieveWorkspaceDocuments(
+						message,
+						userId,
+						organizationId,
+						requestedWorkspaceIds,
+						documentIds,
+						topKOverride,
+						minSimilarityOverride,
+						options,
+					),
 			),
 		);
 	} finally {

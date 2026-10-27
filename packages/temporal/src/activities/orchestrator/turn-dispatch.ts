@@ -58,9 +58,11 @@
  * failure. It travels like a stop — the guard aborts its sibling requests
  * and every catch that consults `rethrowIfTurnStopped` (or the guard's
  * `rethrowIfStopped`) rethrows it — but it is not a cancellation: the
- * workflow answers it with its budget exit. Models built
- * outside the factory (the image activity's gateway models, raw HTTP calls
- * through `guardDispatch`) are checked but not reserved.
+ * workflow answers it with its budget exit. Token-billed gateway image
+ * models opt into the same middleware. Direct Gemini image generation,
+ * A2A submissions, non-streaming Fabric AI patterns, Perplexity integration
+ * requests and Databricks managed-embedding queries use `dispatchBudgetSend`.
+ * Other raw sends do not gain accounting from the stop guard alone.
  */
 
 import {
@@ -475,7 +477,7 @@ function activityAttribution(): {
 }
 
 /** True when the scope carries the budget contract this code speaks. */
-function speaksBudgetContract(turnScope: TurnScope): boolean {
+export function speaksBudgetContract(turnScope: TurnScope): boolean {
 	return (
 		turnScope.budgetContractVersion ===
 		ORCHESTRATOR_TURN_BUDGET_CONTRACT_VERSION
@@ -557,8 +559,8 @@ function turnLedgerBudget(
 	return {
 		attemptKind: attemptKind ?? "AUXILIARY",
 		reserve: async (request) => {
-			// Only a language request takes the activity's kind: an embedding
-			// or a typed decision is always auxiliary work.
+			// Only a language request takes the activity's kind: an embedding,
+			// a typed decision or external remote work is auxiliary work.
 			const kind =
 				request.modality === "language"
 					? (attemptKind ?? "AUXILIARY")

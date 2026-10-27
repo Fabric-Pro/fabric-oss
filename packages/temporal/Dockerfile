@@ -8,7 +8,7 @@
 # =============================================================================
 FROM node:22-slim AS base
 
-# Install OpenSSL for Prisma and pnpm
+# Install certificates, OpenSSL for the Prisma CLI, and pnpm.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openssl \
     ca-certificates \
@@ -71,7 +71,7 @@ RUN pnpm install --frozen-lockfile --filter @repo/temporal...
 # it reran a five-minute generate on every change. tsconfig.json is one of
 # those inputs: the generator takes the client's import extensions from it.
 FROM base AS prisma
-COPY packages/database/tsconfig.json ./packages/database/
+COPY packages/database/tsconfig.json packages/database/prisma.config.ts ./packages/database/
 COPY packages/database/prisma/schema.prisma packages/database/prisma/zod-generator.config.json packages/database/prisma/tsconfig.generated.json ./packages/database/prisma/
 COPY packages/database/prisma/zod ./packages/database/prisma/zod
 COPY packages/database/scripts/generate-client.mts packages/database/scripts/fix-zod-imports.ts ./packages/database/scripts/
@@ -107,7 +107,7 @@ RUN grep -rq "storyPriorityChange" packages/database/prisma/generated/ || \
 # hits. Linked copies with no RUN after them do not need those layers unpacked.
 FROM node:22-slim AS runtime-deps
 
-# Install OpenSSL for Prisma runtime, git for code indexing clone, and other tools.
+# Install OpenSSL for the Prisma migration CLI, git for code indexing, and tools.
 #
 # python3 + pip + Semgrep are REQUIRED for the Security & Accessibility feature's
 # Semgrep SAST code scan (runSemgrepScanActivity): the activity shells out to the

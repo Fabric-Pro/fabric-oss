@@ -2,7 +2,7 @@
  * Orchestrator Memory Queries
  *
  * Database operations for the Orchestrator's hybrid memory system:
- * - Tier 1 (Hot): User preferences - always loaded
+ * - Tier 1 (Hot): User preferences - loaded with context
  * - Tier 3 (Cold): Episodic memory - searchable past conversations
  *
  * Multi-tenant isolation:
@@ -12,6 +12,8 @@
  * - Workspace scope: workspaceId for workspace-specific episodes
  */
 
+import { ORCHESTRATOR_MEMORY_FALLBACK_BODY } from "@repo/utils/orchestrator-memory-prompt";
+import { renderTemplate } from "@repo/utils/template-renderer";
 import { db } from "../client";
 import type { Prisma } from "../generated/client";
 import { hasProjectAccess } from "./projects/projects";
@@ -42,6 +44,8 @@ export interface EpisodeSummary {
 	outcome: string;
 	messageCount: number;
 	turnCount: number;
+	/** Count from tenant-scoped ConversationTurn rows, populated on memory load. */
+	recordedTurnCount?: number;
 	toolsUsed: string[];
 	agentsUsed: string[];
 	conversationStartedAt: Date;
@@ -725,13 +729,47 @@ export async function buildOrchestratorMemoryContext(params: {
 			: Promise.resolve([]),
 	]);
 
-	return {
+	const context = {
 		preferences,
 		recentEpisodes,
 		projectEpisodes,
 		workspaceEpisodes,
 		relevantEpisodes,
 	};
+	const conversationIds = [
+		...new Set(
+			[...repeatGroups(context).values()]
+				.filter((group) => group.length > 1)
+				.flatMap((group) =>
+					group.map((episode) => episode.conversationId),
+				),
+		),
+	].sort(compareText);
+	// No record is evidence of unknown history, not a single-turn conversation.
+	// ConversationTurn has a required organization; absent tenant scope fails closed.
+	const counts =
+		organizationId && conversationIds.length > 0
+			? await db.conversationTurn.groupBy({
+					by: ["conversationId"],
+					where: {
+						conversationId: { in: conversationIds },
+						userId,
+						organizationId,
+					},
+					_count: { _all: true },
+				})
+			: [];
+	const countByConversation = new Map(
+		counts.map((row) => [row.conversationId, row._count._all]),
+	);
+	for (const section of MEMORY_SECTION_PRIORITY) {
+		context[section] = context[section].map((episode) => ({
+			...episode,
+			recordedTurnCount:
+				countByConversation.get(episode.conversationId) ?? 0,
+		}));
+	}
+	return context;
 }
 
 /**
@@ -759,13 +797,201 @@ export type MemoryContextPromptVariables = {
 	relevant_conversations: string;
 };
 
-export function buildMemoryContextPromptVariables(context: {
+export type OrchestratorMemoryContext = {
 	preferences: OrchestratorMemoryPreferencesData;
 	recentEpisodes: EpisodeSummary[];
 	projectEpisodes: EpisodeSummary[];
 	workspaceEpisodes: EpisodeSummary[];
 	relevantEpisodes: EpisodeSummary[];
-}): MemoryContextPromptVariables {
+};
+
+// Query relevance, then scoped context, then general recency.
+const MEMORY_SECTION_PRIORITY = [
+	"relevantEpisodes",
+	"projectEpisodes",
+	"workspaceEpisodes",
+	"recentEpisodes",
+] as const;
+
+// Between the observed 7.3 KB and 13.2 KB prompts; measured in UTF-8 bytes.
+export const MAX_ORCHESTRATOR_MEMORY_BYTES = 8192;
+
+// Short replies are not task identities; require a longer question to collapse.
+const MIN_REPEAT_TITLE_WORDS = 5;
+
+function normalizedText(text: string): string {
+	return text.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
+function repeatTaskKey(episode: EpisodeSummary): string | null {
+	const title = normalizedText(episode.title);
+	if (title.split(" ").length < MIN_REPEAT_TITLE_WORDS) {
+		return null;
+	}
+	return JSON.stringify([
+		episode.projectId ?? null,
+		episode.workspaceId ?? null,
+		title,
+	]);
+}
+
+function repeatGroups(context: OrchestratorMemoryContext) {
+	const groups = new Map<string, EpisodeSummary[]>();
+	const ids = new Set<string>();
+	for (const section of MEMORY_SECTION_PRIORITY) {
+		for (const episode of context[section]) {
+			if (ids.has(episode.id)) {
+				continue;
+			}
+			ids.add(episode.id);
+			const key = repeatTaskKey(episode);
+			if (key !== null) {
+				const group = groups.get(key) ?? [];
+				group.push(episode);
+				groups.set(key, group);
+			}
+		}
+	}
+	return groups;
+}
+
+function compareText(a: string, b: string): number {
+	return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function episodeOrder(a: EpisodeSummary, b: EpisodeSummary): number {
+	const time = (episode: EpisodeSummary) =>
+		new Date(
+			episode.conversationEndedAt ?? episode.conversationStartedAt,
+		).getTime();
+	return (
+		time(b) - time(a) ||
+		compareText(a.id, b.id) ||
+		compareText(a.title, b.title) ||
+		compareText(a.summary, b.summary) ||
+		compareText(JSON.stringify(a.keyTopics), JSON.stringify(b.keyTopics))
+	);
+}
+
+function deduplicateMemoryContext(
+	input: OrchestratorMemoryContext,
+): OrchestratorMemoryContext {
+	const context: OrchestratorMemoryContext = {
+		...input,
+		relevantEpisodes: [],
+		projectEpisodes: [],
+		workspaceEpisodes: [],
+		recentEpisodes: [],
+	};
+	const collapsibleTasks = new Set(
+		[...repeatGroups(input)]
+			.filter(
+				([, group]) =>
+					group.length > 1 &&
+					group.every((episode) => episode.recordedTurnCount === 1),
+			)
+			.map(([key]) => key),
+	);
+	const ids = new Set<string>();
+	const tasks = new Map<
+		string,
+		{ section: (typeof MEMORY_SECTION_PRIORITY)[number]; index: number }
+	>();
+	for (const section of MEMORY_SECTION_PRIORITY) {
+		// Relevant episodes arrive in vector-search rank order. Other sections use
+		// newest-first order with explicit tie-breaks, independent of query row order.
+		const episodes =
+			section === "relevantEpisodes"
+				? input[section]
+				: [...input[section]].sort(episodeOrder);
+		for (const episode of episodes) {
+			// Preserve ID precedence for copies of the same retrieved episode.
+			if (ids.has(episode.id)) {
+				continue;
+			}
+			ids.add(episode.id);
+			const task = repeatTaskKey(episode);
+			if (task === null || !collapsibleTasks.has(task)) {
+				context[section].push(episode);
+				continue;
+			}
+			const placement = tasks.get(task);
+			if (placement) {
+				const entries = context[placement.section];
+				if (episodeOrder(episode, entries[placement.index]) < 0) {
+					entries[placement.index] = episode;
+				}
+			} else {
+				// First occurrence owns the best section and relevant search rank;
+				// later attempts can replace its content without moving that slot.
+				tasks.set(task, { section, index: context[section].length });
+				context[section].push(episode);
+			}
+		}
+	}
+	for (const section of MEMORY_SECTION_PRIORITY) {
+		if (section !== "relevantEpisodes") {
+			context[section].sort(episodeOrder);
+		}
+	}
+	return context;
+}
+
+/**
+ * Bound the resolved text, including template headings, by removing complete
+ * entries from the lowest-priority section. Preferences and template-only
+ * text are preserved if they alone exceed the budget.
+ */
+export async function renderOrchestratorMemoryContext(
+	input: OrchestratorMemoryContext,
+	render: (
+		variables: MemoryContextPromptVariables,
+	) => Promise<string> = async (variables) => {
+		const result = await renderTemplate({
+			format: "HANDLEBARS",
+			template: ORCHESTRATOR_MEMORY_FALLBACK_BODY,
+			variables,
+			escape: false,
+		});
+		if (result.error) {
+			throw new Error(result.error);
+		}
+		return result.rendered.trim();
+	},
+): Promise<{ text: string; context: OrchestratorMemoryContext }> {
+	const context = deduplicateMemoryContext(input);
+	let text = await render(memoryContextPromptVariables(context));
+	for (const section of [...MEMORY_SECTION_PRIORITY].reverse()) {
+		while (
+			Buffer.byteLength(text, "utf8") > MAX_ORCHESTRATOR_MEMORY_BYTES &&
+			context[section].length > 0
+		) {
+			// The tail is the lowest search rank, or the oldest scoped/recent entry.
+			context[section].pop();
+			text = await render(memoryContextPromptVariables(context));
+		}
+	}
+	// A bound template can intentionally omit a section. Count only lines present
+	// in the resolved prompt, rather than retrieved rows or hidden variables.
+	for (const section of MEMORY_SECTION_PRIORITY) {
+		const line =
+			section === "relevantEpisodes" ? relevantEpisodeLine : episodeLine;
+		context[section] = context[section].filter((episode) =>
+			text.includes(line(episode)),
+		);
+	}
+	return { text, context };
+}
+
+export function buildMemoryContextPromptVariables(
+	input: OrchestratorMemoryContext,
+): MemoryContextPromptVariables {
+	return memoryContextPromptVariables(deduplicateMemoryContext(input));
+}
+
+function memoryContextPromptVariables(
+	context: OrchestratorMemoryContext,
+): MemoryContextPromptVariables {
 	const { responseStyle, verbosity, codeLanguage, timezone } =
 		context.preferences;
 	const preferenceLines = [
@@ -781,11 +1007,7 @@ export function buildMemoryContextPromptVariables(context: {
 		.slice(-10)
 		.map((pattern) => `- ${pattern}`);
 
-	const relevantLines = context.relevantEpisodes.map((episode) =>
-		episode.keyTopics.length > 0
-			? `${episodeLine(episode)}\n  Topics: ${episode.keyTopics.join(", ")}`
-			: episodeLine(episode),
-	);
+	const relevantLines = context.relevantEpisodes.map(relevantEpisodeLine);
 
 	const hasRecalledConversations =
 		context.recentEpisodes.length > 0 ||
@@ -826,6 +1048,13 @@ function episodeLine(episode: EpisodeSummary): string {
 		? new Date(episode.conversationEndedAt).toISOString().slice(0, 10)
 		: "ongoing";
 	return `- [${date}] ${episode.title}: ${episode.summary}`;
+}
+
+function relevantEpisodeLine(episode: EpisodeSummary): string {
+	const line = episodeLine(episode);
+	return episode.keyTopics.length > 0
+		? `${line}\n  Topics: ${episode.keyTopics.join(", ")}`
+		: line;
 }
 
 // =============================================================================

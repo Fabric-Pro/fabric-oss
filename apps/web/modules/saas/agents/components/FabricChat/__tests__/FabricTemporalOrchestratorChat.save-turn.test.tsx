@@ -321,6 +321,9 @@ describe("FabricTemporalOrchestratorChat — a turn whose conversation is create
 				status: "completed",
 				executionId: "orch-exec-late",
 				result: { response: "Three merges." },
+				answeredClarifications: [
+					{ question: "Which branch?", answer: "staging" },
+				],
 			},
 		});
 		rerender(
@@ -352,8 +355,14 @@ describe("FabricTemporalOrchestratorChat — a turn whose conversation is create
 		expect(saved.execution.id).toBe("orch-exec-late");
 		expect(saved.messages.map((m) => [m.role, m.content])).toEqual([
 			["user", "What changed this week?"],
+			["user", "Clarification — Which branch?: staging"],
 			["assistant", "Three merges."],
 		]);
+		expect(saved.messages[1]).toMatchObject({
+			metadata: {
+				clarification: { question: "Which branch?", answer: "staging" },
+			},
+		});
 		// Seeded under the same id, so the server keeps one copy.
 		expect(saved.messages[0]?.id).toBe(created.messages[0]?.id);
 		expect(saved.removeMessageIds).toBeUndefined();

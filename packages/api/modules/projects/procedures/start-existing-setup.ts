@@ -37,6 +37,7 @@ import {
 import { getGitLabConnectionToken } from "@repo/integrations/gitlab";
 import { getTemporalClient } from "@repo/temporal";
 import { encryptApiKey } from "@repo/utils";
+import { isCreatableDocumentType } from "@repo/utils/document-type-catalog";
 import { assertSafeOutboundUrlResolved } from "@repo/utils/url-security";
 import { z } from "zod";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
@@ -99,7 +100,12 @@ export const startExistingSetupProcedure = tenantProtectedProcedure
 			// project's own organization (see the handler).
 			organizationId: z.string().nullable().optional(),
 			repoUrls: z.array(z.string()).default([]),
-			selectedDocumentTypes: z.array(z.string()).default([]),
+			// A retired type (Features, Fizzy #2776) from a wizard draft saved
+			// before it was retired is dropped rather than generated.
+			selectedDocumentTypes: z
+				.array(z.string())
+				.default([])
+				.transform((types) => types.filter(isCreatableDocumentType)),
 			projectTypes: z.array(z.string()).default([]),
 			projectName: z.string(),
 			documentPrompts: z

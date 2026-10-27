@@ -329,6 +329,33 @@ describe("getParentScopedFilter (tenant-db extension)", () => {
 			},
 		);
 	});
+	it("scopes PendingBacklogProposalDuplicateResolution by organization in org context", async () => {
+		await runWithTenantContext(
+			createOrganizationContext("org-2", "user-2"),
+			async () => {
+				expect(
+					getParentScopedFilter(
+						"PendingBacklogProposalDuplicateResolution",
+					),
+				).toEqual({ proposal: { organizationId: "org-2" } });
+			},
+		);
+	});
+
+	it("scopes PendingBacklogProposalDuplicateResolution by user AND null org in personal context", async () => {
+		await runWithTenantContext(
+			createPersonalContext("user-2"),
+			async () => {
+				expect(
+					getParentScopedFilter(
+						"PendingBacklogProposalDuplicateResolution",
+					),
+				).toEqual({
+					proposal: { userId: "user-2", organizationId: null },
+				});
+			},
+		);
+	});
 
 	it("scopes ProjectMemoryWriteEntry through its write, by organization or by user and null org", async () => {
 		await runWithTenantContext(
@@ -558,5 +585,78 @@ describe("org_only_with_project_guest_read policy SQL (Brand kit, Fizzy #2589)",
 		// A SELECT policy cannot admit a write: no WITH CHECK, no FOR ALL.
 		expect(guestRead).not.toContain("WITH CHECK");
 		expect(guestRead).not.toContain("FOR ALL");
+	});
+});
+
+describe.each([
+	["PendingBacklogProposalReview", "pending_backlog_proposal_review"],
+	[
+		"PendingBacklogProposalReviewEntry",
+		"pending_backlog_proposal_review_entry",
+	],
+])("review parent isolation: %s", (model, table) => {
+	it("uses the proposal tenant predicate for reads and writes", () => {
+		const { using, withCheck } = splitPolicy(
+			buildParentScopedPolicySQL(table, "proposal_parent"),
+		);
+		for (const predicate of [using, withCheck]) {
+			expect(predicate).toContain(`b."id" = "${table}"."proposalId"`);
+			expect(predicate).toContain(
+				'b."organizationId" = current_tenant_id()',
+			);
+			expect(predicate).toContain(
+				'b."userId" = current_user_id() AND b."organizationId" IS NULL',
+			);
+			expect(predicate).toContain("ELSE false");
+		}
+	});
+	it("registers the RLS table", async () => {
+		const { readFileSync } = await import("node:fs");
+		const sql = normalize(
+			readFileSync(
+				new URL("../scripts/apply-rls-direct.ts", import.meta.url),
+				"utf8",
+			),
+		);
+		expect(sql).toMatch(
+			new RegExp(`name: "${table}", policy: "proposal_parent"`),
+		);
+	});
+	it("filters through the proposal in organization context", async () => {
+		await runWithTenantContext(
+			createOrganizationContext("example-org", "example-user"),
+			async () => {
+				expect(getParentScopedFilter(model)).toEqual({
+					proposal: { organizationId: "example-org" },
+				});
+			},
+		);
+	});
+	it("filters user and null organization in the fail-closed personal context", async () => {
+		await runWithTenantContext(
+			createPersonalContext("example-user"),
+			async () => {
+				expect(getParentScopedFilter(model)).toEqual({
+					proposal: { userId: "example-user", organizationId: null },
+				});
+			},
+		);
+	});
+	it("uses proposal project ids for invited guests", async () => {
+		const ctx = createPersonalContext("example-guest");
+		ctx.allowedProjectIds.push("example-project");
+		await runWithTenantContext(ctx, async () => {
+			expect(getParentScopedFilter(model)).toEqual({
+				OR: [
+					{
+						proposal: {
+							userId: "example-guest",
+							organizationId: null,
+						},
+					},
+					{ proposal: { projectId: { in: ["example-project"] } } },
+				],
+			});
+		});
 	});
 });

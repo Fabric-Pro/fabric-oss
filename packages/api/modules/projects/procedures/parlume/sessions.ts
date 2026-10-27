@@ -1,11 +1,5 @@
-import { createHash, createHmac, randomBytes } from "node:crypto";
 import { ORPCError } from "@orpc/server";
-import {
-	AUDIO_PROVIDER_REQUIRED,
-	getAISpeechModel,
-	resolveOpenAiApiKey,
-} from "@repo/ai";
-import { db, getBuiltInToolConfig, isFeatureEnabled } from "@repo/database";
+import { db, isFeatureEnabled } from "@repo/database";
 import { z } from "zod";
 import { recordAuditFromRequest } from "../../../../lib/audit";
 import {
@@ -13,23 +7,26 @@ import {
 	requireProjectPermission,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-import {
-	armParlumeMeetingBridge,
-	getParlumeBridgeSettings,
-	isTeamsMeetingUrl,
-	leaveParlumeMeetingBot,
-	startParlumeMeetingBot,
-} from "../../lib/parlume-attendee";
+import { leaveParlumeMeetingBot } from "../../lib/parlume-attendee";
 import { finalizeParlumeSession } from "../../lib/parlume-finalization";
 import { parlumeLog } from "../../lib/parlume-log";
+import { resolveParlumeAttendeeSettings } from "../../lib/parlume-provider-settings";
+import {
+	getParlumeReadiness,
+	isParlumeReady,
+} from "../../lib/parlume-readiness";
+import {
+	FABRIC_AGENT_KIND,
+	FABRIC_AGENT_LABEL,
+	isBoundToProject,
+	sessionSelect,
+	startParlumeMeetingSession,
+	TEMPLATE_INSTANCE_KIND,
+} from "../../lib/parlume-start";
 import { sweepOverdueParlumeSessions } from "../../lib/parlume-sweep";
 
 const projectInput = z.object({ projectId: z.string() });
-const PARLUME_MAX_DURATION_MS = 4 * 60 * 60 * 1000;
 const SESSIONS_PAGE_SIZE = 5;
-const FABRIC_AGENT_KIND = "FABRIC_AGENT";
-const TEMPLATE_INSTANCE_KIND = "TEMPLATE_INSTANCE";
-const FABRIC_AGENT_LABEL = "Fabric Agent — this project";
 
 type ParlumeAgentOption = {
 	label: string;
@@ -49,52 +46,6 @@ type ParlumeAgentOption = {
 	  }
 );
 
-function assertNever(value: never): never {
-	throw new Error(`Unsupported Parlume agent kind: ${value}`);
-}
-
-// Speech goes through the organization's AI Gateway when it has one, and falls
-// back to its direct OpenAI key; either makes Parlume able to answer aloud.
-async function hasParlumeVoice(
-	userId: string,
-	organizationId: string,
-): Promise<boolean> {
-	return (
-		(await getAISpeechModel({ userId, organizationId })) !== null ||
-		Boolean(await resolveOpenAiApiKey({ userId, organizationId }))
-	);
-}
-
-function digestStreamToken(token: string): string {
-	return createHash("sha256").update(token).digest("hex");
-}
-
-function callbackSecret(serviceSecret: string, sessionId: string): string {
-	return createHmac("sha256", serviceSecret)
-		.update(`parlume-callback:${sessionId}`)
-		.digest("base64url");
-}
-
-const sessionSelect = {
-	id: true,
-	agentKind: true,
-	agentLabel: true,
-	agentInstanceSId: true,
-	status: true,
-	wakePhrase: true,
-	toolsReadOnly: true,
-	suggestionsEnabled: true,
-	endReason: true,
-	lastError: true,
-	joinedAt: true,
-	hardStopAt: true,
-	leaveRequestedAt: true,
-	endedAt: true,
-	transcriptContextId: true,
-	createdAt: true,
-	updatedAt: true,
-} as const;
-
 export async function requireParlumeProject(projectId: string) {
 	const project = await db.project.findFirst({
 		where: { id: projectId },
@@ -109,46 +60,6 @@ export async function requireParlumeProject(projectId: string) {
 		});
 	}
 	return { id: project.id, organizationId: project.organizationId };
-}
-
-function isBoundToProject(
-	toolConnections: unknown,
-	projectId: string,
-): boolean {
-	return (
-		getBuiltInToolConfig(toolConnections, "project-context")?.projectId ===
-		projectId
-	);
-}
-
-async function requireProjectAgent(input: {
-	projectId: string;
-	organizationId: string;
-	userId: string;
-	agentInstanceSId: string;
-}) {
-	const agent = await db.agentTemplateInstance.findFirst({
-		where: {
-			sId: input.agentInstanceSId,
-			organizationId: input.organizationId,
-			userId: input.userId,
-			status: "ACTIVE",
-		},
-		orderBy: { version: "desc" },
-		select: {
-			id: true,
-			sId: true,
-			name: true,
-			version: true,
-			toolConnections: true,
-		},
-	});
-	if (!agent || !isBoundToProject(agent.toolConnections, input.projectId)) {
-		throw new ORPCError("NOT_FOUND", {
-			message: "Project-bound Fabric Agent not found.",
-		});
-	}
-	return agent;
 }
 
 const startSessionInput = projectInput
@@ -179,54 +90,6 @@ const startSessionInput = projectInput
 			});
 		}
 	});
-
-async function resolveParlumeAgentSelection(input: {
-	projectId: string;
-	organizationId: string;
-	userId: string;
-	agentKind?: typeof FABRIC_AGENT_KIND | typeof TEMPLATE_INSTANCE_KIND;
-	agentInstanceSId?: string;
-}) {
-	const agentKind = input.agentKind ?? TEMPLATE_INSTANCE_KIND;
-	switch (agentKind) {
-		case FABRIC_AGENT_KIND:
-			if (input.agentInstanceSId) {
-				throw new ORPCError("BAD_REQUEST", {
-					message:
-						"The built-in Fabric Agent cannot be combined with a custom agent.",
-				});
-			}
-			return {
-				agentKind,
-				agentLabel: FABRIC_AGENT_LABEL,
-				agentInstanceSId: null,
-				agentInstanceVersionId: null,
-				agentInstanceVersion: null,
-			};
-		case TEMPLATE_INSTANCE_KIND: {
-			if (!input.agentInstanceSId) {
-				throw new ORPCError("BAD_REQUEST", {
-					message: "Choose a custom Fabric Agent.",
-				});
-			}
-			const agent = await requireProjectAgent({
-				projectId: input.projectId,
-				organizationId: input.organizationId,
-				agentInstanceSId: input.agentInstanceSId,
-				userId: input.userId,
-			});
-			return {
-				agentKind,
-				agentLabel: agent.name,
-				agentInstanceSId: agent.sId,
-				agentInstanceVersionId: agent.id,
-				agentInstanceVersion: agent.version,
-			};
-		}
-		default:
-			return assertNever(agentKind);
-	}
-}
 
 export const listParlumeAgentsProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.PROJECT_MEMBERS_MANAGE))
@@ -268,9 +131,10 @@ export const listParlumeAgentsProcedure = tenantProtectedProcedure
 			}
 		}
 
-		const operatorReady =
-			Boolean(getParlumeBridgeSettings()) &&
-			(await hasParlumeVoice(context.user.id, project.organizationId));
+		const readiness = await getParlumeReadiness({
+			userId: context.user.id,
+			organizationId: project.organizationId,
+		});
 		const customAgents = [...agents.values()].map<ParlumeAgentOption>(
 			(agent) => ({
 				kind: TEMPLATE_INSTANCE_KIND,
@@ -294,7 +158,8 @@ export const listParlumeAgentsProcedure = tenantProtectedProcedure
 			agents: input.includeBuiltIn
 				? [builtInAgent, ...customAgents]
 				: customAgents,
-			operatorReady,
+			operatorReady: isParlumeReady(readiness),
+			readiness,
 		};
 	});
 
@@ -419,176 +284,20 @@ export const startParlumeSessionProcedure = tenantProtectedProcedure
 	.input(startSessionInput)
 	.handler(async ({ input, context }) => {
 		const project = await requireParlumeProject(input.projectId);
-		if (!isTeamsMeetingUrl(input.meetingUrl)) {
-			throw new ORPCError("BAD_REQUEST", {
-				message: "Enter a Microsoft Teams meeting link.",
-			});
-		}
-
-		const settings = getParlumeBridgeSettings();
-		if (!settings) {
-			throw new ORPCError("CONFLICT", {
-				message:
-					"Parlume is not ready for invitations in this environment. Ask an operator to configure its media bridge.",
-			});
-		}
-
-		const agent = await resolveParlumeAgentSelection({
-			projectId: input.projectId,
-			organizationId: project.organizationId,
-			agentKind: input.agentKind,
-			agentInstanceSId: input.agentInstanceSId,
-			userId: context.user.id,
-		});
-		if (!(await hasParlumeVoice(context.user.id, project.organizationId))) {
-			throw new ORPCError("CONFLICT", {
-				message: AUDIO_PROVIDER_REQUIRED.parlumeVoice,
-			});
-		}
-		const streamToken = randomBytes(32).toString("base64url");
-		const hardStopAt = new Date(Date.now() + PARLUME_MAX_DURATION_MS);
-		const session = await db.parlumeMeetingSession.create({
-			data: {
+		return startParlumeMeetingSession(
+			{
 				projectId: input.projectId,
 				organizationId: project.organizationId,
 				userId: context.user.id,
-				agentKind: agent.agentKind,
-				agentLabel: agent.agentLabel,
-				agentInstanceSId: agent.agentInstanceSId,
-				agentInstanceVersionId: agent.agentInstanceVersionId,
-				agentInstanceVersion: agent.agentInstanceVersion,
-				streamTokenDigest: digestStreamToken(streamToken),
+				meetingUrl: input.meetingUrl,
+				agentKind: input.agentKind,
+				agentInstanceSId: input.agentInstanceSId,
 				toolsReadOnly: input.toolsReadOnly,
 				suggestionsEnabled: input.suggestionsEnabled,
-				hardStopAt,
+				trigger: "MANUAL",
 			},
-			select: { id: true },
-		});
-
-		let providerBotId: string | null = null;
-		try {
-			await armParlumeMeetingBridge({
-				settings,
-				sessionId: session.id,
-				hardStopAt,
-			});
-			providerBotId = await startParlumeMeetingBot({
-				settings,
-				sessionId: session.id,
-				meetingUrl: input.meetingUrl,
-				streamToken,
-				callbackSecret: callbackSecret(
-					settings.serviceSecret,
-					session.id,
-				),
-				hardStopAt,
-			});
-			// A stop can arrive while the provider is creating the bot. Claim the
-			// transition only from PENDING: a concurrent stop moves the row to
-			// LEAVING, and the bot must then leave before we report it ended.
-			const claimed = await db.parlumeMeetingSession.updateMany({
-				where: { id: session.id, status: "PENDING" },
-				data: { providerBotId, status: "JOINING" },
-			});
-			if (claimed.count === 0) {
-				try {
-					await leaveParlumeMeetingBot({ settings, providerBotId });
-					await db.parlumeMeetingSession.update({
-						where: { id: session.id },
-						data: {
-							providerBotId,
-							status: "LEAVING",
-						},
-					});
-				} catch {
-					await db.parlumeMeetingSession.update({
-						where: { id: session.id },
-						data: {
-							providerBotId,
-							status: "STOP_FAILED",
-							lastError:
-								"Parlume could not leave the meeting. Retry stop.",
-						},
-					});
-				}
-				return {
-					session: await db.parlumeMeetingSession.findUniqueOrThrow({
-						where: { id: session.id },
-						select: sessionSelect,
-					}),
-				};
-			}
-			const started = await db.parlumeMeetingSession.findUniqueOrThrow({
-				where: { id: session.id },
-				select: sessionSelect,
-			});
-			recordAuditFromRequest(context, {
-				action: "project.parlume.session_started",
-				category: "project",
-				organizationId: project.organizationId,
-				projectId: input.projectId,
-				resource: { type: "parlume_meeting_session", id: session.id },
-				metadata: {
-					agentKind: agent.agentKind,
-					agentLabel: agent.agentLabel,
-					...(agent.agentInstanceSId
-						? {
-								agentInstanceSId: agent.agentInstanceSId,
-								agentInstanceVersion:
-									agent.agentInstanceVersion,
-							}
-						: {}),
-					toolsReadOnly: input.toolsReadOnly,
-					suggestionsEnabled: input.suggestionsEnabled,
-					hardStopAt: hardStopAt.toISOString(),
-				},
-			});
-			parlumeLog("info", "session.started", {
-				sessionId: session.id,
-				botId: providerBotId,
-				agentKind: agent.agentKind,
-				toolsReadOnly: input.toolsReadOnly,
-				hardStopAt: hardStopAt.toISOString(),
-			});
-			return { session: started };
-		} catch (error) {
-			parlumeLog("error", "start.failed", {
-				sessionId: session.id,
-				botId: providerBotId,
-				error: error instanceof Error ? error.message : String(error),
-			});
-			if (providerBotId) {
-				try {
-					await leaveParlumeMeetingBot({ settings, providerBotId });
-				} catch {
-					// The persisted FAILED state below is the operator's signal to
-					// reconcile a bot that could not be cleaned up after a DB error.
-				}
-			}
-			const markedFailed = await db.parlumeMeetingSession.updateMany({
-				where: { id: session.id, status: "PENDING" },
-				data: {
-					status: "FAILED",
-					endReason: "START_FAILED",
-					lastError:
-						"Parlume could not start. Retry after checking its operator configuration.",
-					endedAt: new Date(),
-				},
-			});
-			if (markedFailed.count === 0 && !providerBotId) {
-				// A stop arrived before the provider returned an id and provider
-				// creation failed, so there is no bot left for the start request to
-				// reconcile. Finish the requested stop rather than stranding it in
-				// LEAVING forever.
-				await db.parlumeMeetingSession.updateMany({
-					where: { id: session.id, status: "LEAVING" },
-					data: { status: "ENDED", endedAt: new Date() },
-				});
-			}
-			throw new ORPCError("INTERNAL_SERVER_ERROR", {
-				message: "Parlume could not join the meeting.",
-			});
-		}
+			context,
+		);
 	});
 
 export const stopParlumeSessionProcedure = tenantProtectedProcedure
@@ -661,13 +370,17 @@ export const stopParlumeSessionProcedure = tenantProtectedProcedure
 			// LEAVING, leaves the newly-created bot, then marks this row ENDED.
 			return { session: leaving };
 		}
-		const settings = getParlumeBridgeSettings();
 		try {
-			if (!settings) {
-				throw new Error("Parlume bridge configuration is unavailable.");
+			const attendee = await resolveParlumeAttendeeSettings(
+				project.organizationId,
+			);
+			if (!attendee) {
+				throw new Error(
+					"Parlume provider configuration is unavailable.",
+				);
 			}
 			const leaveResult = await leaveParlumeMeetingBot({
-				settings,
+				attendee,
 				providerBotId: session.providerBotId,
 			});
 			const terminalFailure =

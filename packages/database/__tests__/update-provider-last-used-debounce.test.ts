@@ -1,25 +1,19 @@
-/**
- * Unit tests for `updateProviderLastUsed`'s one-minute debounce.
- *
- * Prod measured this as the single most expensive statement in the app
- * (54,102 calls / 14 days, 3.8ms mean, 17% of app DB time) because every AI
- * model call updated a 3-row table and concurrent calls serialized on the row
- * lock. The fix swaps the unconditional `update` for a conditional
- * `updateMany` (id + "never touched or touched before the debounce cutoff")
- * so a call inside the window takes no row lock at all.
- *
- * Run with: pnpm --filter @repo/database test __tests__/update-provider-last-used-debounce.test.ts
- */
-
+/** Unit tests for the provider last-used autocommit write and debounce predicate. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { orgUpdateMany, userUpdateMany } = vi.hoisted(() => ({
-	orgUpdateMany: vi.fn(),
-	userUpdateMany: vi.fn(),
-}));
+const { executeRaw, orgUpdateMany, userUpdateMany, transaction } = vi.hoisted(
+	() => ({
+		executeRaw: vi.fn(),
+		orgUpdateMany: vi.fn(),
+		userUpdateMany: vi.fn(),
+		transaction: vi.fn(),
+	}),
+);
 
 vi.mock("../prisma/client", () => ({
 	db: {
+		$executeRaw: executeRaw,
+		$transaction: transaction,
 		cloudProviderConfig: { updateMany: orgUpdateMany },
 		userCloudProviderConfig: { updateMany: userUpdateMany },
 	},
@@ -28,11 +22,11 @@ vi.mock("../prisma/client", () => ({
 import { updateProviderLastUsed } from "../prisma/queries/ai-gateway";
 
 const NOW = new Date("2026-09-02T12:00:00.000Z");
-const CUTOFF = new Date(NOW.getTime() - 60_000);
+const CUTOFF = new Date("2026-09-02T11:59:00.000Z");
 
 beforeEach(() => {
-	orgUpdateMany.mockReset();
-	userUpdateMany.mockReset();
+	vi.resetAllMocks();
+	executeRaw.mockResolvedValue(1);
 	orgUpdateMany.mockResolvedValue({ count: 1 });
 	userUpdateMany.mockResolvedValue({ count: 1 });
 	vi.useFakeTimers();
@@ -43,54 +37,44 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-describe("updateProviderLastUsed — debounce", () => {
-	it("organization source: updateMany with id + null-or-older-than-cutoff guard and lastUsedAt = now", async () => {
-		await updateProviderLastUsed({
-			configId: "cfg-org-1",
-			source: "organization",
-		});
+describe("updateProviderLastUsed — autocommit debounce", () => {
+	it.each([
+		["organization", "cloud_provider_config"],
+		["user", "user_cloud_provider_config"],
+	] as const)(
+		"%s source: binds now, id and cutoff in one conditional autocommit statement",
+		async (source, table) => {
+			await updateProviderLastUsed({ configId: "cfg-1", source });
 
-		expect(orgUpdateMany).toHaveBeenCalledWith({
-			where: {
-				id: "cfg-org-1",
-				OR: [{ lastUsedAt: null }, { lastUsedAt: { lt: CUTOFF } }],
-			},
-			data: { lastUsedAt: NOW },
-		});
-		expect(userUpdateMany).not.toHaveBeenCalled();
-	});
+			expect(orgUpdateMany).not.toHaveBeenCalled();
+			expect(userUpdateMany).not.toHaveBeenCalled();
+			expect(transaction).not.toHaveBeenCalled();
+			expect(executeRaw).toHaveBeenCalledTimes(1);
+			const [strings, ...parameters] = executeRaw.mock.calls[0];
+			expect(strings.raw).toBeDefined();
+			expect(strings.join("?").replace(/\s+/g, " ").trim()).toBe(
+				`UPDATE "${table}" SET "lastUsedAt" = ? WHERE "id" = ? AND ("lastUsedAt" IS NULL OR "lastUsedAt" < ?)`,
+			);
+			expect(parameters).toEqual([NOW, "cfg-1", CUTOFF]);
+		},
+	);
 
-	it("user source: updateMany with id + null-or-older-than-cutoff guard and lastUsedAt = now", async () => {
-		await updateProviderLastUsed({
-			configId: "cfg-user-1",
-			source: "user",
-		});
+	it.each(["organization", "user"] as const)(
+		"%s source: returns 0 when no row passes the debounce predicate",
+		async (source) => {
+			executeRaw.mockResolvedValue(0);
+			await expect(
+				updateProviderLastUsed({ configId: "cfg-1", source }),
+			).resolves.toBe(0);
+		},
+	);
 
-		expect(userUpdateMany).toHaveBeenCalledWith({
-			where: {
-				id: "cfg-user-1",
-				OR: [{ lastUsedAt: null }, { lastUsedAt: { lt: CUTOFF } }],
-			},
-			data: { lastUsedAt: NOW },
-		});
-		expect(orgUpdateMany).not.toHaveBeenCalled();
-	});
-
-	it("returns the affected row count from updateMany (0 when the row was touched inside the debounce window)", async () => {
-		orgUpdateMany.mockResolvedValue({ count: 0 });
-		const n = await updateProviderLastUsed({
-			configId: "cfg-org-1",
-			source: "organization",
-		});
-		expect(n).toBe(0);
-	});
-
-	it("returns 1 when the row was actually updated", async () => {
-		userUpdateMany.mockResolvedValue({ count: 1 });
-		const n = await updateProviderLastUsed({
-			configId: "cfg-user-1",
-			source: "user",
-		});
-		expect(n).toBe(1);
-	});
+	it.each(["organization", "user"] as const)(
+		"%s source: returns 1 when the row is updated",
+		async (source) => {
+			await expect(
+				updateProviderLastUsed({ configId: "cfg-1", source }),
+			).resolves.toBe(1);
+		},
+	);
 });

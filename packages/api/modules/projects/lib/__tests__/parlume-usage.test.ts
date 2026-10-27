@@ -1,3 +1,4 @@
+import { AI_USAGE_MODELS_WITHOUT_REQUEST_LATENCY } from "@repo/database/prisma/queries/ai-usage-latency";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ logUsage: vi.fn() }));
@@ -67,17 +68,23 @@ beforeEach(() => {
 });
 
 describe("recordParlumeMeetingProviderUsage", () => {
-	it("prices bot time and its transcription, filed under the session", () => {
+	const session = {
+		sessionId: "session-1",
+		userId: "user-1",
+		organizationId: "org-1",
+		projectId: "project-1",
+	};
+
+	it("bills the bot from the invite, lobby included, and transcription from the stream", () => {
 		recordParlumeMeetingProviderUsage({
-			sessionId: "session-1",
-			userId: "user-1",
-			organizationId: "org-1",
-			projectId: "project-1",
+			...session,
+			requestedAt: new Date("2026-09-30T16:50:00Z"),
 			joinedAt: new Date("2026-09-30T17:00:00Z"),
 			endedAt: new Date("2026-09-30T17:30:00Z"),
 			success: true,
 		});
 
+		expect(mocks.logUsage).toHaveBeenCalledTimes(2);
 		expect(mocks.logUsage).toHaveBeenCalledWith({
 			userId: "user-1",
 			organizationId: "org-1",
@@ -90,8 +97,8 @@ describe("recordParlumeMeetingProviderUsage", () => {
 			inputTokens: 0,
 			outputTokens: 0,
 			totalTokens: 0,
-			costUsd: PARLUME_ATTENDEE_USD_PER_HOUR / 2,
-			latencyMs: 30 * 60 * 1000,
+			costUsd: (40 / 60) * PARLUME_ATTENDEE_USD_PER_HOUR,
+			latencyMs: 0,
 			success: true,
 		});
 		expect(mocks.logUsage).toHaveBeenCalledWith(
@@ -101,28 +108,44 @@ describe("recordParlumeMeetingProviderUsage", () => {
 				featureKey: "parlume",
 				conversationId: "session-1",
 				costUsd: 30 * PARLUME_TRANSCRIPTION_USD_PER_MINUTE,
+				latencyMs: 0,
 			}),
 		);
 	});
 
-	it("records a bot that never joined at zero cost", () => {
+	it("bills a bot that waited in the lobby and never streamed, with no transcription", () => {
 		recordParlumeMeetingProviderUsage({
-			sessionId: "session-1",
-			userId: "user-1",
-			organizationId: "org-1",
-			projectId: "project-1",
+			...session,
+			requestedAt: new Date("2026-09-30T17:00:00Z"),
 			joinedAt: null,
-			endedAt: new Date("2026-09-30T17:30:00Z"),
+			endedAt: new Date("2026-09-30T17:10:00Z"),
 			success: false,
 		});
 
 		expect(mocks.logUsage).toHaveBeenCalledTimes(1);
 		expect(mocks.logUsage).toHaveBeenCalledWith(
 			expect.objectContaining({
-				costUsd: 0,
+				providerModelId: "attendee/teams-bot",
+				costUsd: PARLUME_ATTENDEE_USD_PER_HOUR / 6,
 				latencyMs: 0,
 				success: false,
 			}),
 		);
+	});
+
+	it("files both rows under models the AI usage page keeps out of latency", () => {
+		recordParlumeMeetingProviderUsage({
+			...session,
+			requestedAt: new Date("2026-09-30T17:00:00Z"),
+			joinedAt: new Date("2026-09-30T17:01:00Z"),
+			endedAt: new Date("2026-09-30T17:30:00Z"),
+			success: true,
+		});
+
+		for (const [row] of mocks.logUsage.mock.calls) {
+			expect(AI_USAGE_MODELS_WITHOUT_REQUEST_LATENCY).toContain(
+				row.providerModelId,
+			);
+		}
 	});
 });

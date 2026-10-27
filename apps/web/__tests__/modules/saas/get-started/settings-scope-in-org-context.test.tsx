@@ -91,6 +91,7 @@ describe("get-started drawer — account settings in organization context", () =
 					todoList: false,
 					glossyEdition: false,
 					proposalArtifact: false,
+					parlumeMeetings: false,
 				}}
 			/>,
 		);
@@ -113,6 +114,7 @@ describe("get-started drawer — account settings in organization context", () =
 					todoList: false,
 					glossyEdition: false,
 					proposalArtifact: false,
+					parlumeMeetings: false,
 				}}
 			/>,
 		);
@@ -135,6 +137,7 @@ describe("get-started drawer — account settings in organization context", () =
 					todoList: false,
 					glossyEdition: false,
 					proposalArtifact: false,
+					parlumeMeetings: false,
 				}}
 			/>,
 		);
@@ -175,6 +178,7 @@ describe("get-started drawer — account settings in organization context", () =
 					todoList: false,
 					glossyEdition: false,
 					proposalArtifact: false,
+					parlumeMeetings: false,
 				}}
 			/>,
 		);
@@ -192,6 +196,7 @@ describe("get-started drawer — account settings in organization context", () =
 					todoList: false,
 					glossyEdition: false,
 					proposalArtifact: false,
+					parlumeMeetings: false,
 				}}
 			/>,
 		);

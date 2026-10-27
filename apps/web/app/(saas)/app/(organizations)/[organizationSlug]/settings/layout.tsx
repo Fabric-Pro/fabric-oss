@@ -30,6 +30,7 @@ import {
 	KeyIcon,
 	LinkIcon,
 	LockKeyholeIcon,
+	MicIcon,
 	ScrollTextIcon,
 	SearchIcon,
 	Settings2Icon,
@@ -94,6 +95,12 @@ export default async function SettingsLayout({
 	// 404s. Every member sees the entry; the page is read-only for non-admins.
 	const companyContextEnabled = await isFeatureEnabled(
 		"COMPANY_CONTEXT",
+		organization.id,
+	);
+	// The meeting assistant's settings exist only where Parlume is rolled out;
+	// the page 404s otherwise.
+	const parlumeEnabled = await isFeatureEnabled(
+		"PARLUME_MEETINGS",
 		organization.id,
 	);
 
@@ -170,6 +177,17 @@ export default async function SettingsLayout({
 					href: `${organizationSettingsBasePath}/search-providers`,
 					icon: <SearchIcon className="size-4 opacity-50" />,
 				},
+				...(parlumeEnabled
+					? [
+							{
+								title: t(
+									"settings.menu.organization.meetingAssistant",
+								),
+								href: `${organizationSettingsBasePath}/meeting-assistant`,
+								icon: <MicIcon className="size-4 opacity-50" />,
+							},
+						]
+					: []),
 			],
 		},
 		{

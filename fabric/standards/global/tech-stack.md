@@ -45,7 +45,7 @@ This document defines the official technology stack for the Fabric Portal projec
 | Category | Technology | Version | Purpose |
 |----------|------------|---------|---------|
 | **Primary Database** | PostgreSQL | 16+ | Relational database |
-| **ORM** | Prisma | 6.18.0 | Database ORM with Zod generation |
+| **ORM** | Prisma | 7.10.1 | Database ORM with Zod generation |
 | **Vector Database** | Qdrant | Latest | RAG/embeddings storage |
 | **File Storage** | AWS S3 | - | Document/avatar storage |
 | **Caching** | - | - | (Not currently implemented) |

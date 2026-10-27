@@ -105,9 +105,19 @@ The application supports four different AI frameworks:
 
 Tools are executed via Fabric's MCP Tool Router. The system automatically routes to the appropriate framework handler based on your selection. Rate limiting (10 requests per minute) is applied per user session.
 
-### Fabric Tool Router Integration
+### LangGraph MCP Integration
 
-The agent connects to Fabric's tool router to access MCP tools:
+The deployed LangGraph agent lists and calls read-only tools through
+`POST /api/internal/mcp-tools` using `X-AI-Token`. Fabric derives the user and
+organization from the token, retains MCP credentials, and requires explicit
+`readOnlyHint: true` both during discovery and immediately before execution.
+The service uses `RUNTIME_API_URL`, falling back to `FABRIC_API_URL`, and does
+not need an encryption key for MCP tool access. See
+[Fabric integration architecture](ARCHITECTURE-FABRIC.md) for the request shapes.
+
+### Standalone Chat Tool Router Integration
+
+The standalone Next.js chat route connects to Fabric's tool router to access MCP tools:
 
 ```typescript
 const toolSession = await getFabricToolSession(userId, organizationId);

@@ -7,8 +7,11 @@ import { isRecord } from "./parlume-stream-auth";
 
 /** The most a post may hold, tag included. */
 const PARLUME_CHAT_MAX_CHARS = 4_000;
-/** How long a post may take to appear in the meeting chat. */
-export const PARLUME_CHAT_CONFIRM_MS = 8_000;
+/**
+ * How long a post may take to appear in the meeting chat. Short posts echo
+ * back in four to five seconds; a long one has taken over eight.
+ */
+export const PARLUME_CHAT_CONFIRM_MS = 15_000;
 export const PARLUME_CHAT_UNAVAILABLE_LINE =
 	"I can't write in this meeting's chat. Guests may not have chat here.";
 const MAX_TRACKED_POSTS = 50;
@@ -132,10 +135,29 @@ export function normalizeParlumeChatTag(ref: string): string | null {
 	return match ? `P${Number(match[1])}` : null;
 }
 
+/**
+ * The meeting chat receives a post as one typed line: Markdown shows as
+ * literal asterisks and line breaks are lost. So emphasis and rules go, and
+ * each line follows the one before it, a list item after a bullet.
+ */
+function plainParlumeChatText(body: string): string {
+	return body
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter((line) => line && !/^([-*_])\1{2,}$/.test(line))
+		.map((line) =>
+			line
+				.replace(/^#{1,6}\s+/, "")
+				.replace(/^[-*+]\s+/, "• ")
+				.replace(/(\*\*|__)(.+?)\1/g, "$2"),
+		)
+		.join(" ");
+}
+
 export function composeParlumeChatMessage(tag: string, body: string): string {
 	const prefix = `[${tag}] `;
 	const room = PARLUME_CHAT_MAX_CHARS - prefix.length;
-	const text = body.trim();
+	const text = plainParlumeChatText(body);
 	return `${prefix}${text.length > room ? `${text.slice(0, room - 1)}…` : text}`;
 }
 

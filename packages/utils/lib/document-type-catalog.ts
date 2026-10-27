@@ -21,8 +21,8 @@
  * The map is keyed by the schema's own union, so a type added to the enum and
  * not to this file is a compile error rather than a silent gap — that is the
  * property the catalog exists for. Keep the entry order: it is the order the
- * create flow's type dropdown presents, which is why deprecated types sit at
- * the end.
+ * create flow's type dropdown presents. Deprecated types are left out of that
+ * dropdown and sit at the end of the map.
  *
  * This lives in a shared package rather than the web app because the server
  * needs the same labels to default a document's title (see
@@ -72,8 +72,9 @@ export type DocumentTypeCatalogEntry = {
 	/** Presentational only — never load-bearing for behavior. */
 	icon: string;
 	/**
-	 * Still creatable and still readable, but no longer the recommended path.
-	 * Surfaces that show the type mark it; nothing refuses it. Never fold the
+	 * Retired: existing documents of the type stay readable and carry the
+	 * marker, but no new one can be created — the create flow does not offer
+	 * it and the server refuses it (`isCreatableDocumentType`). Never fold the
 	 * marker into `label`: that is also the server's default document title.
 	 */
 	deprecated?: true;
@@ -143,8 +144,8 @@ export const DOCUMENT_TYPE_CATALOG: Record<
 		icon: "🧩",
 	},
 	// Deprecated: feature recommendations now live in Roadmap. Existing
-	// Features documents stay readable as historical snapshots, and the type
-	// stays creatable.
+	// Features documents stay readable as historical snapshots; new ones
+	// cannot be created (Fizzy #2776).
 	USER_STORY: {
 		label: "Features",
 		shortLabel: "Feature",
@@ -153,12 +154,15 @@ export const DOCUMENT_TYPE_CATALOG: Record<
 	},
 };
 
-/** The catalog as an ordered list, for rendering a type picker. */
+/** The creatable types as an ordered list, for rendering the create flow's type picker. */
 export const DOCUMENT_TYPE_OPTIONS: readonly ({
 	value: ProjectDocumentTypeName;
-} & DocumentTypeCatalogEntry)[] = Object.entries(DOCUMENT_TYPE_CATALOG).map(
-	([value, entry]) => ({ value: value as ProjectDocumentTypeName, ...entry }),
-);
+} & DocumentTypeCatalogEntry)[] = Object.entries(DOCUMENT_TYPE_CATALOG)
+	.filter(([, entry]) => !entry.deprecated)
+	.map(([value, entry]) => ({
+		value: value as ProjectDocumentTypeName,
+		...entry,
+	}));
 
 /**
  * The display label for a type.
@@ -189,6 +193,21 @@ export function isDeprecatedDocumentType(type: string): boolean {
 		>
 	)[type];
 	return entry?.deprecated === true;
+}
+
+/** What a create path answers when asked for a type `isCreatableDocumentType` refuses. */
+export const RETIRED_TYPE_MESSAGE =
+	"This document type is no longer available for new documents. Feature recommendations live in the project's Roadmap.";
+
+/**
+ * Whether a new document of this type may be created. Only a known,
+ * non-deprecated type is; reading or updating an existing document never asks.
+ */
+export function isCreatableDocumentType(type: string): boolean {
+	return (
+		Object.hasOwn(DOCUMENT_TYPE_CATALOG, type) &&
+		!isDeprecatedDocumentType(type)
+	);
 }
 
 /** The dense display label for a type. Falls back exactly as `documentTypeLabel`. */

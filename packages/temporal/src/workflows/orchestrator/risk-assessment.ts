@@ -30,6 +30,7 @@ export interface RiskAssessmentResult {
 	riskLevel: "low" | "medium" | "high" | "critical";
 	requiresApproval: boolean;
 	reason?: string;
+	keywordHits?: { name: string[]; args: string[] };
 }
 
 export type AutonomyLevel = "CONSERVATIVE" | "BALANCED" | "AUTONOMOUS";
@@ -140,6 +141,7 @@ const RISK_EXEMPT_TOOLS = new Set([
 	"fabric_create_frame",
 	"fabric_create_slideshow",
 	"fabric_update_frame",
+	"fabric_edit_frame_block",
 	"fabric_get_frame",
 	"fabric_list_frames",
 	"fabric_share_frame",
@@ -258,6 +260,11 @@ export function assessToolCallRisk(
 	// Check for bulk operations and capture matched keywords
 	const matchedBulk = BULK_KEYWORDS.filter((kw) => inName(kw) || inArgs(kw));
 	const isBulk = matchedBulk.length > 0;
+	const keywords = [...matchedDestructive, ...matchedBulk];
+	const keywordHits = {
+		name: [...keywords.filter(inName), ...MODIFY_KEYWORDS.filter(inName)],
+		args: keywords.filter(inArgs),
+	};
 
 	// Build keyword source info (tool name vs args)
 	const describeMatches = (keywords: string[], label: string) => {
@@ -292,6 +299,7 @@ export function assessToolCallRisk(
 			riskLevel,
 			requiresApproval:
 				autonomyConfig.approveRiskLevels.includes(riskLevel),
+			keywordHits,
 			reason: isBulk
 				? `This action will delete or remove items in bulk using ${toolCall.name}. Please review before proceeding.`
 				: `This action may delete or remove data using ${toolCall.name}. Please confirm to proceed.`,
@@ -307,6 +315,7 @@ export function assessToolCallRisk(
 			riskLevel,
 			requiresApproval:
 				autonomyConfig.approveRiskLevels.includes(riskLevel),
+			keywordHits,
 			reason: `This action will modify multiple items using ${toolCall.name}. Please review before proceeding.`,
 		};
 	}

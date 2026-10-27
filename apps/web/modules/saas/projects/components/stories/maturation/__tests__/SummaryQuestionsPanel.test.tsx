@@ -32,7 +32,6 @@ function openQuestion(
 			topic,
 			questionId: `q_${id}`,
 			decidedBy: null,
-			cleanSpecPropagation: null,
 			suggestedOptions: [],
 		},
 		replies: [],

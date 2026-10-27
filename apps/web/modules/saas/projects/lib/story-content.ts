@@ -39,9 +39,10 @@
  * helper's docstring) and would corrupt the stored document.
  *
  * Byte-compatibility contract: the backend's `splitCleanSpec`
- * (`packages/api/modules/projects/lib/clean-spec-content.ts`) must split any
- * document exactly the way `parseStoryContent` does — the Decision→Spec patch
- * path applies offsets computed against the combined document the editor shows.
+ * (`packages/utils/lib/clean-spec-content.ts`) must split any document exactly
+ * the way `parseStoryContent` does — backend drafting splits model drafts into
+ * description and acceptance criteria with it, and the editor must agree on
+ * where that boundary falls.
  * The two files used to hold that contract as two hand-synced copies of the
  * heading regex, and it drifted (the editor was broadened to `#{1,6}` while the
  * backend stayed at `#{1,2}`). The normalization half of the contract is now a

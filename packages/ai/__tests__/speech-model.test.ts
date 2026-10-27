@@ -2,11 +2,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	getConfig: vi.fn(),
+	waitUntil: vi.fn(),
 	updateLastUsed: vi.fn(),
 	billing: vi.fn(),
 	speechModel: vi.fn(),
 	resolveKey: vi.fn(),
 }));
+
+vi.mock("@vercel/functions", () => ({ waitUntil: mocks.waitUntil }));
 
 vi.mock("@repo/database", () => ({
 	getAiProviderApiKeyByProvider: mocks.getConfig,
@@ -61,11 +64,29 @@ describe("getAISpeechModel", () => {
 		);
 		expect(result?.modelId).toBe("openai/tts-1");
 
-		result?.trackUsage();
+		expect(result?.trackUsage()).toBeUndefined();
+		expect(mocks.waitUntil).toHaveBeenCalledTimes(1);
+		await expect(mocks.waitUntil.mock.calls[0][0]).resolves.toBeUndefined();
 		expect(mocks.updateLastUsed).toHaveBeenCalledWith({
 			configId: "gateway-config",
 			source: "organization",
 		});
+	});
+
+	it("registers the pending bump without waiting and handles a failed write", async () => {
+		let rejectWrite!: (reason: Error) => void;
+		mocks.updateLastUsed.mockReturnValue(
+			new Promise<void>((_resolve, reject) => {
+				rejectWrite = reject;
+			}),
+		);
+		const result = await getAISpeechModel(context);
+
+		expect(result?.trackUsage()).toBeUndefined();
+		expect(mocks.waitUntil).toHaveBeenCalledTimes(1);
+		const registered = mocks.waitUntil.mock.calls[0][0];
+		rejectWrite(new Error("example write failure"));
+		await expect(registered).resolves.toBeUndefined();
 	});
 
 	it.each([

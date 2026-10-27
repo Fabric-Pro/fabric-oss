@@ -1,0 +1,324 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`measures tool loading: '30 tools attached' 1`] = `
+{
+  "agentSearchRuns": 0,
+  "agentSearchRunsUsed": 0,
+  "changes": [],
+  "distinctToolLists": 1,
+  "executedToolCalls": 1,
+  "executions": [
+    {
+      "count": 1,
+      "name": "example_tool_0",
+      "origin": "initial",
+    },
+  ],
+  "executionsMore": 0,
+  "finalStubCatalogOverlap": {
+    "count": 0,
+    "more": 0,
+    "names": [],
+  },
+  "initialSchemaBytes": 19368,
+  "initialToolCount": 44,
+  "initialToolsHash": "c576e6fb",
+  "integrationSearchRuns": 0,
+  "integrationSearchRunsUsed": 0,
+  "searchToolsCalls": 0,
+  "searches": [],
+  "stubCatalogOverlap": [
+    {
+      "afterSearch": 0,
+      "count": 0,
+      "round": 1,
+    },
+  ],
+  "stubCatalogUsed": false,
+  "toolListChanges": 0,
+}
+`;
+
+exports[`measures tool loading: '31 tools with discovery' 1`] = `
+{
+  "agentSearchRuns": 1,
+  "agentSearchRunsUsed": 0,
+  "changes": [
+    {
+      "causes": [
+        "search_tools",
+      ],
+      "hash": "e9bbe09a",
+      "round": 2,
+    },
+  ],
+  "distinctToolLists": 2,
+  "executedToolCalls": 2,
+  "executions": [
+    {
+      "count": 1,
+      "name": "search_tools",
+      "origin": "initial",
+    },
+    {
+      "count": 1,
+      "name": "example_tool_0",
+      "origin": "discovery",
+    },
+  ],
+  "executionsMore": 0,
+  "finalStubCatalogOverlap": {
+    "count": 1,
+    "more": 0,
+    "names": [
+      "example_tool_0",
+    ],
+  },
+  "initialSchemaBytes": 16028,
+  "initialToolCount": 14,
+  "initialToolsHash": "bf77b8fc",
+  "integrationSearchRuns": 1,
+  "integrationSearchRunsUsed": 0,
+  "searchToolsCalls": 1,
+  "searches": [
+    {
+      "added": [
+        "example_tool_0",
+      ],
+      "addedCount": 1,
+      "addedMore": 0,
+      "executedAdded": [
+        "example_tool_0",
+      ],
+      "executedAddedCount": 1,
+      "executedAddedMore": 0,
+      "round": 1,
+    },
+  ],
+  "stubCatalogOverlap": [
+    {
+      "afterSearch": 0,
+      "count": 0,
+      "round": 1,
+    },
+    {
+      "afterSearch": 1,
+      "count": 1,
+      "round": 1,
+    },
+  ],
+  "stubCatalogUsed": true,
+  "toolListChanges": 1,
+}
+`;
+
+exports[`measures tool loading: 'catalog overlaps project tool' 1`] = `
+{
+  "agentSearchRuns": 1,
+  "agentSearchRunsUsed": 0,
+  "changes": [
+    {
+      "causes": [
+        "search_tools",
+      ],
+      "hash": "e9bbe09a",
+      "round": 2,
+    },
+  ],
+  "distinctToolLists": 2,
+  "executedToolCalls": 2,
+  "executions": [
+    {
+      "count": 1,
+      "name": "search_tools",
+      "origin": "initial",
+    },
+    {
+      "count": 1,
+      "name": "example_tool_0",
+      "origin": "discovery",
+    },
+  ],
+  "executionsMore": 0,
+  "finalStubCatalogOverlap": {
+    "count": 2,
+    "more": 0,
+    "names": [
+      "fabric_get_project_document",
+      "example_tool_0",
+    ],
+  },
+  "initialSchemaBytes": 16028,
+  "initialToolCount": 14,
+  "initialToolsHash": "bf77b8fc",
+  "integrationSearchRuns": 1,
+  "integrationSearchRunsUsed": 0,
+  "searchToolsCalls": 1,
+  "searches": [
+    {
+      "added": [
+        "example_tool_0",
+      ],
+      "addedCount": 1,
+      "addedMore": 0,
+      "executedAdded": [
+        "example_tool_0",
+      ],
+      "executedAddedCount": 1,
+      "executedAddedMore": 0,
+      "round": 1,
+    },
+  ],
+  "stubCatalogOverlap": [
+    {
+      "afterSearch": 0,
+      "count": 1,
+      "round": 1,
+    },
+    {
+      "afterSearch": 1,
+      "count": 2,
+      "round": 1,
+    },
+  ],
+  "stubCatalogUsed": true,
+  "toolListChanges": 1,
+}
+`;
+
+exports[`measures tool loading: 'two discoveries' 1`] = `
+{
+  "agentSearchRuns": 2,
+  "agentSearchRunsUsed": 0,
+  "changes": [
+    {
+      "causes": [
+        "search_tools",
+      ],
+      "hash": "e9bbe09a",
+      "round": 2,
+    },
+    {
+      "causes": [
+        "search_tools",
+      ],
+      "hash": "94333cb1",
+      "round": 4,
+    },
+  ],
+  "distinctToolLists": 3,
+  "executedToolCalls": 4,
+  "executions": [
+    {
+      "count": 2,
+      "name": "search_tools",
+      "origin": "initial",
+    },
+    {
+      "count": 1,
+      "name": "example_tool_0",
+      "origin": "discovery",
+    },
+    {
+      "count": 1,
+      "name": "example_tool_1",
+      "origin": "discovery",
+    },
+  ],
+  "executionsMore": 0,
+  "finalStubCatalogOverlap": {
+    "count": 2,
+    "more": 0,
+    "names": [
+      "example_tool_0",
+      "example_tool_1",
+    ],
+  },
+  "initialSchemaBytes": 16028,
+  "initialToolCount": 14,
+  "initialToolsHash": "bf77b8fc",
+  "integrationSearchRuns": 2,
+  "integrationSearchRunsUsed": 0,
+  "searchToolsCalls": 2,
+  "searches": [
+    {
+      "added": [
+        "example_tool_0",
+      ],
+      "addedCount": 1,
+      "addedMore": 0,
+      "executedAdded": [
+        "example_tool_0",
+      ],
+      "executedAddedCount": 1,
+      "executedAddedMore": 0,
+      "round": 1,
+    },
+    {
+      "added": [
+        "example_tool_1",
+      ],
+      "addedCount": 1,
+      "addedMore": 0,
+      "executedAdded": [
+        "example_tool_1",
+      ],
+      "executedAddedCount": 1,
+      "executedAddedMore": 0,
+      "round": 3,
+    },
+  ],
+  "stubCatalogOverlap": [
+    {
+      "afterSearch": 0,
+      "count": 0,
+      "round": 1,
+    },
+    {
+      "afterSearch": 1,
+      "count": 1,
+      "round": 1,
+    },
+    {
+      "afterSearch": 2,
+      "count": 2,
+      "round": 3,
+    },
+  ],
+  "stubCatalogUsed": true,
+  "toolListChanges": 2,
+}
+`;
+
+exports[`tool loading baseline > pins requests before instrumentation: '30 tools attached' 1`] = `
+[
+  "da27dfd237d1013a18e8ddc51696416d9bdd67f1c1bcef7f72f415cbeb9127cc",
+  "37d43103b849d7f59d4bad9aedd692cc30735d01c60c856f7be2ea13578de5e3",
+]
+`;
+
+exports[`tool loading baseline > pins requests before instrumentation: '31 tools with discovery' 1`] = `
+[
+  "5da4b82f47acd0374c03a4b3a940e0d9d26a80a6dedb27026f90f1187abf6d44",
+  "2342131c4c483feed031db32300377154f9fad8feb3215b53dbc35f352c8eed9",
+  "8327b2bbc61c99d35a362d2da2e84b4e91175dde5ea52b0e53b305aae91456ed",
+]
+`;
+
+exports[`tool loading baseline > pins requests before instrumentation: 'catalog overlaps project tool' 1`] = `
+[
+  "275e44abdf4dd417f41aaebf555d8349f6af76ed80a0df2235301f0a9a29f2ba",
+  "ff9453a7402113e81132f1e167372cde5c6734c19cb29ace24c34746c74adbf9",
+  "fa922fff261dbf153ff0a0409b83aa6fba06324f471ca14524200ea13060fb1a",
+]
+`;
+
+exports[`tool loading baseline > pins requests before instrumentation: 'two discoveries' 1`] = `
+[
+  "5da4b82f47acd0374c03a4b3a940e0d9d26a80a6dedb27026f90f1187abf6d44",
+  "2342131c4c483feed031db32300377154f9fad8feb3215b53dbc35f352c8eed9",
+  "8327b2bbc61c99d35a362d2da2e84b4e91175dde5ea52b0e53b305aae91456ed",
+  "07cfd6bc2366fbeede0b298a18a5de76942d8740d719b2c6e42c7293317280ee",
+  "7de81337b205d063a68203c67f841ad69d49ef10ca044260cd37fb2a02248d29",
+]
+`;

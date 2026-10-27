@@ -14,6 +14,7 @@ import {
 	db,
 	hasProjectAccess,
 	isProjectReadOnly,
+	type Prisma,
 	resolveWorkflowIntegrationForProvider,
 } from "@repo/database";
 import { channelRegistry } from "@repo/integrations";
@@ -213,7 +214,7 @@ export async function saveSlackThreadMappingContext({
 				contextJson: {
 					conversationHistory,
 					lastUpdated: new Date().toISOString(),
-				} as unknown as import("@prisma/client/runtime/library").InputJsonValue,
+				} as unknown as Prisma.InputJsonValue,
 			},
 		});
 		return { success: true };

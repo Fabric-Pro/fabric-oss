@@ -40,27 +40,7 @@ export function PendingProposalsButton({
 	const hasEntranceFiredRef = useRef(false);
 	const tStories = useTranslations("tooltips.stories");
 
-	const { data } = useQuery({
-		queryKey: [
-			"teams-channel-monitor-pending-proposals-count",
-			projectId,
-			organizationId,
-		],
-		queryFn: async () => {
-			const result =
-				await orpcClient.projects.teamsChannelMonitor.pendingProposals.count(
-					{
-						projectId,
-						organizationId,
-					},
-				);
-			return result as { count: number };
-		},
-		refetchInterval: 30_000,
-		refetchOnWindowFocus: true,
-	});
-
-	const count = data?.count ?? 0;
+	const count = usePendingProposalsCount(projectId, organizationId);
 
 	// Fire the entrance fade exactly once, on the first transition from 0 → n.
 	useEffect(() => {
@@ -89,7 +69,6 @@ export function PendingProposalsButton({
 					]
 						.filter(Boolean)
 						.join(" ")}
-					aria-label={`Review ${count} pending proposal${count === 1 ? "" : "s"}`}
 					data-onboarding-target="roadmap-review-proposals"
 				>
 					<InboxIcon className="size-4" />
@@ -99,4 +78,32 @@ export function PendingProposalsButton({
 			<TooltipContent>{tStories("reviewProposals")}</TooltipContent>
 		</Tooltip>
 	);
+}
+
+function usePendingProposalsCount(
+	projectId: string,
+	organizationId: string | null,
+) {
+	const { data } = useQuery({
+		queryKey: [
+			"teams-channel-monitor-pending-proposals-count",
+			projectId,
+			organizationId,
+		],
+		queryFn: async () => {
+			const result =
+				await orpcClient.projects.teamsChannelMonitor.pendingProposals.count(
+					{
+						projectId,
+						organizationId,
+					},
+				);
+			return result as { count: number };
+		},
+		enabled: !!projectId,
+		refetchInterval: 30_000,
+		refetchOnWindowFocus: true,
+	});
+
+	return data?.count ?? 0;
 }

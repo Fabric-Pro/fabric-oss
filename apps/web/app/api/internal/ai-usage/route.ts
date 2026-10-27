@@ -11,6 +11,7 @@ import {
 	getModelByCanonicalName,
 	getProjectAccessContext,
 	logAiUsage,
+	recordAiOutputProvenance,
 } from "@repo/database";
 import { NextResponse } from "next/server";
 import { z } from "zod";
@@ -23,6 +24,8 @@ const bodySchema = z.object({
 	model: z.string().min(1),
 	taskType: z.string().min(1),
 	agentId: z.string().optional(),
+	// Malformed provenance metadata is ignored without rejecting usage.
+	outputMessageId: z.unknown().optional(),
 	conversationId: z.string().optional(),
 	projectId: z.string().optional(),
 	frameId: z.string().min(1).max(200).optional(),
@@ -220,6 +223,29 @@ export async function POST(request: Request) {
 			...(body.provider === "OPENAI_CHATGPT_PLAN" && { costUsd: 0 }),
 			success: true,
 		});
+
+		if (
+			verified.claims.org &&
+			typeof body.outputMessageId === "string" &&
+			/^msg_[1-9][0-9]{12}_[0-9a-f]{32}$/.test(body.outputMessageId)
+		) {
+			try {
+				await recordAiOutputProvenance({
+					organizationId: verified.claims.org,
+					userId: verified.claims.sub,
+					projectId: verifiedProjectId,
+					subjectType: "copilot-message",
+					subjectId: body.outputMessageId,
+					agentId: body.agentId,
+					modelCanonicalName,
+				});
+			} catch (error) {
+				console.warn(
+					"[Internal AI Usage] Failed to record output provenance",
+					error,
+				);
+			}
+		}
 
 		return NextResponse.json({ ok: true });
 	} catch (error) {

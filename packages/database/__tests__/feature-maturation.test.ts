@@ -10,9 +10,6 @@
  *   - Soft-delete exclusion from the thread fetch.
  *   - XOR tenant isolation (org rows invisible to the personal-context filter,
  *     and vice-versa).
- *   - Approval-preference upsert (create then update keyed on the unique index).
- *   - Effective-mode resolution fall-through matrix (feature override → user
- *     default → hard default).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -21,13 +18,9 @@ import {
 	amendQuestionAnswer,
 	appendDecisionLogReply,
 	createDecisionLogEntry,
-	effectiveApprovalMode,
-	getApprovalPreference,
 	getOpenDecisionsForStories,
-	HARD_DEFAULT_APPROVAL_MODE,
 	listDecisionLogThreads,
 	softDeleteDecisionLogEntry,
-	upsertApprovalPreference,
 } from "../prisma/queries/feature-maturation";
 import { hasReachableDatabaseUrl } from "./_helpers/db-availability";
 
@@ -98,9 +91,6 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 
 		afterAll(async () => {
 			await db.decisionLogEntry.deleteMany({
-				where: { userId: { in: [USER_ID, OTHER_USER_ID] } },
-			});
-			await db.maturationApprovalPreference.deleteMany({
 				where: { userId: { in: [USER_ID, OTHER_USER_ID] } },
 			});
 			await db.userStory.deleteMany({ where: { createdById: USER_ID } });
@@ -332,107 +322,6 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 			});
 		});
 
-		describe("MaturationApprovalPreference upsert", () => {
-			it("creates then updates a per-user default keyed on (userId, organizationId)", async () => {
-				const created = await upsertApprovalPreference({
-					tenantFilter: orgTenant,
-					summaryQuestionsMode: "AUTO_ACCEPT",
-				});
-				expect(created.summaryQuestionsMode).toBe("AUTO_ACCEPT");
-				// Untouched fields keep their DB defaults.
-				expect(created.cleanSpecMode).toBe("AUTO_ACCEPT");
-				expect(created.autoAcceptAll).toBe(false);
-
-				const updated = await upsertApprovalPreference({
-					tenantFilter: orgTenant,
-					autoAcceptAll: true,
-				});
-				expect(updated.id).toBe(created.id);
-				expect(updated.autoAcceptAll).toBe(true);
-				// Prior write preserved (only provided fields change).
-				expect(updated.summaryQuestionsMode).toBe("AUTO_ACCEPT");
-
-				const read = await getApprovalPreference({
-					tenantFilter: orgTenant,
-				});
-				expect(read?.id).toBe(created.id);
-			});
-
-			it("keeps org and personal preferences as separate rows", async () => {
-				await upsertApprovalPreference({
-					tenantFilter: personalTenant,
-					cleanSpecMode: "MANUAL",
-				});
-
-				const personal = await getApprovalPreference({
-					tenantFilter: personalTenant,
-				});
-				const org = await getApprovalPreference({
-					tenantFilter: orgTenant,
-				});
-
-				expect(personal?.cleanSpecMode).toBe("MANUAL");
-				expect(org?.cleanSpecMode).toBe("AUTO_ACCEPT");
-				expect(personal?.id).not.toBe(org?.id);
-			});
-		});
-
-		describe("effectiveApprovalMode resolution", () => {
-			it("falls through to the hard default when no override or preference exists", () => {
-				expect(effectiveApprovalMode(null, null, "cleanSpec")).toBe(
-					HARD_DEFAULT_APPROVAL_MODE.cleanSpec,
-				);
-				expect(
-					effectiveApprovalMode(null, null, "summaryQuestions"),
-				).toBe("MANUAL");
-				expect(effectiveApprovalMode(null, null, "decisionLog")).toBe(
-					"AUTO_ACCEPT",
-				);
-			});
-
-			it("prefers the per-user default over the hard default", () => {
-				const userPref = {
-					cleanSpecMode: "MANUAL" as const,
-					decisionLogMode: "AUTO_ACCEPT" as const,
-					summaryQuestionsMode: "AUTO_ACCEPT" as const,
-				};
-				expect(effectiveApprovalMode(null, userPref, "cleanSpec")).toBe(
-					"MANUAL",
-				);
-				expect(
-					effectiveApprovalMode(null, userPref, "summaryQuestions"),
-				).toBe("AUTO_ACCEPT");
-			});
-
-			it("prefers the per-feature override over everything", () => {
-				const feature = {
-					cleanSpecApprovalMode: "MANUAL" as const,
-					decisionLogApprovalMode: null,
-					summaryQuestionsApprovalMode: null,
-				};
-				const userPref = {
-					cleanSpecMode: "AUTO_ACCEPT" as const,
-					decisionLogMode: "MANUAL" as const,
-					summaryQuestionsMode: "AUTO_ACCEPT" as const,
-				};
-				// Feature override wins for cleanSpec.
-				expect(
-					effectiveApprovalMode(feature, userPref, "cleanSpec"),
-				).toBe("MANUAL");
-				// No feature override → falls to user default for decisionLog.
-				expect(
-					effectiveApprovalMode(feature, userPref, "decisionLog"),
-				).toBe("MANUAL");
-				// No feature override → falls to the user default.
-				expect(
-					effectiveApprovalMode(
-						feature,
-						userPref,
-						"summaryQuestions",
-					),
-				).toBe("AUTO_ACCEPT");
-			});
-		});
 		describe("getOpenDecisionsForStories", () => {
 			// Its own story: the shared `storyId` above accumulates roots from
 			// the threading and XOR tests (including a deliberate personal-tenant

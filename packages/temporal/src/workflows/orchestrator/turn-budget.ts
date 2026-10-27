@@ -19,10 +19,40 @@ import { ActivityFailure, ApplicationFailure } from "@temporalio/common";
 import { TURN_BUDGET_EXHAUSTED_TYPE } from "./turn-contract";
 import type {
 	OrchestratorBudgetAttemptKind,
-	TurnBudgetStop,
 	TurnLedgerSnapshot,
 	WorkflowState,
 } from "./types";
+
+/** Capture which recorded costs the authoritative reading already includes. */
+export function recordTurnLedgerReading(
+	state: WorkflowState,
+	snapshot: TurnLedgerSnapshot,
+): void {
+	state.turnLedger = snapshot;
+	state.turnLedgerCostIndex = state.iterationCosts.length;
+}
+
+/**
+ * The weighted reading plus costs recorded after it. Those later costs use
+ * raw tokens conservatively; a new reading advances the index to avoid
+ * counting usage again once the ledger includes it. Older state without a
+ * captured index keeps its reading unchanged.
+ */
+export function advisorChargedUsage(state: WorkflowState): number | undefined {
+	if (!state.advisorWeightedAllowanceEnabled || !state.turnLedger) {
+		return undefined;
+	}
+	return (
+		state.turnLedger.measured +
+		state.turnLedger.outstanding +
+		state.iterationCosts
+			.slice(state.turnLedgerCostIndex ?? state.iterationCosts.length)
+			.reduce(
+				(sum, cost) => sum + cost.inputTokens + cost.outputTokens,
+				0,
+			)
+	);
+}
 
 /** The message of the ledger's own `internal_budget` signal. */
 export const LEDGER_SIGNAL_MESSAGE = "This turn used its token allowance";
@@ -92,22 +122,24 @@ export function refusedFinalization(error: unknown): boolean {
 export function recordTurnBudgetStop(
 	state: WorkflowState,
 	snapshot: TurnLedgerSnapshot | undefined,
-	stopReason: TurnBudgetStop["stopReason"],
+	stopReason: "allowance_exhausted" | "finalization_unavailable",
 ): void {
 	if (snapshot) {
-		state.turnLedger = snapshot;
+		recordTurnLedgerReading(state, snapshot);
 	}
 	const reading = state.turnLedger;
 	const allowance = reading?.allowance ?? 0;
 	const measured = reading?.measured ?? 0;
 	state.budgetStop = {
 		kind: "token_allowance",
+		...(state.advisorBudgetEnabled ? { version: 1 as const } : {}),
 		allowance,
 		measured,
 		outstanding: reading?.outstanding ?? 0,
 		enforcement: reading?.enforcement ?? null,
 		stopReason:
-			state.budgetStop?.stopReason === "finalization_unavailable"
+			state.budgetStop?.kind === "token_allowance" &&
+			state.budgetStop.stopReason === "finalization_unavailable"
 				? "finalization_unavailable"
 				: stopReason,
 	};
@@ -144,7 +176,7 @@ export function refreshTurnBudgetStop(
 	state: WorkflowState,
 	snapshot?: TurnLedgerSnapshot,
 ): void {
-	if (state.budgetStop) {
+	if (state.budgetStop?.kind === "token_allowance") {
 		recordTurnBudgetStop(state, snapshot, state.budgetStop.stopReason);
 	}
 }

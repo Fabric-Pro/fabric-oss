@@ -1,4 +1,15 @@
-# Data Analyst Agent - Architecture Documentation
+# Data Analyst Agent - Standalone Chat Architecture
+
+Framework comparison for the standalone Next.js chat application.
+
+- **Audience**: Agent developers
+- **Owner**: Fabric engineering
+
+For the deployed LangGraph service (`lib/agent/graph.ts`), use the
+[Fabric integration architecture](ARCHITECTURE-FABRIC.md). That service lists
+and calls read-only MCP tools through Fabric's `/api/internal/mcp-tools` proxy
+with `X-AI-Token`; Fabric retains the server credentials. The framework-specific
+flows below concern the standalone chat handlers.
 
 ## Project Summary
 

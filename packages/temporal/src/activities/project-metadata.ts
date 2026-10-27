@@ -27,6 +27,7 @@ import {
 	startTurnHeartbeat,
 	type TurnScope,
 } from "./orchestrator/turn-dispatch";
+import { headAtLineBreak } from "./shared/text-head";
 
 export async function getProjectMetadataActivity(
 	projectId: string,
@@ -189,7 +190,11 @@ export async function retrieveProjectContextsActivity(
 	userId: string,
 	organizationId: string | undefined,
 	topK?: number,
-	options?: SecondaryUsageInput & { turnScope?: TurnScope },
+	options?: SecondaryUsageInput & {
+		turnScope?: TurnScope;
+		/** Each passage keeps at most this many characters, cut at a line or sentence break. */
+		maxPassageChars?: number;
+	},
 ): Promise<{ context: string; chunkCount: number }> {
 	const turnScope = options?.turnScope;
 	const stopHeartbeat = startTurnHeartbeat(turnScope);
@@ -215,7 +220,7 @@ async function retrieveProjectContextsForTool(
 	userId: string,
 	organizationId: string | undefined,
 	topK: number | undefined,
-	usage?: SecondaryUsageInput,
+	usage?: SecondaryUsageInput & { maxPassageChars?: number },
 ): Promise<{ context: string; chunkCount: number }> {
 	try {
 		const { retrieveProjectContexts, contextMetaHeader } = await import(
@@ -280,7 +285,10 @@ async function retrieveProjectContextsForTool(
 						`Context ${i + 1}`;
 					// Type label + AI guidance (#1888): metadata arrives
 					// flag-gated from retrieval; header is "" when unset.
-					return `### From: ${source}\n${contextMetaHeader(r)}${r.content}`;
+					const content = usage?.maxPassageChars
+						? headAtLineBreak(r.content, usage.maxPassageChars)
+						: r.content;
+					return `### From: ${source}\n${contextMetaHeader(r)}${content}`;
 				},
 			)
 			.join("\n\n---\n\n");

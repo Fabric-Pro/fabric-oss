@@ -16,6 +16,7 @@ vi.mock("@dnd-kit/sortable", () => ({
 }));
 
 vi.mock("next-intl", () => ({
+	useLocale: () => "en",
 	useTranslations: () => {
 		const t = (key: string) => key;
 		(t as unknown as { rich: (key: string) => string }).rich = (

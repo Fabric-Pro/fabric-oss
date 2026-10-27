@@ -36,6 +36,7 @@
 	"devDependencies": {
 		"@biomejs/biome": "2.3.3",
 		"@changesets/cli": "^3.0.1",
+		"@duckdb/node-api": "1.4.5-r.1",
 		"@repo/tsconfig": "workspace:*",
 		"@repo/tsgo": "workspace:*",
 		"@types/node": "^24.10.0",

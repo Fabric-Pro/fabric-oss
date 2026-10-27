@@ -20,6 +20,7 @@ import {
 	generateText,
 	getAIModelWithMetadata,
 	getRAGProviderConfig,
+	isVercelGatewayKey,
 } from "@repo/ai";
 import { logAiUsageAsync } from "@repo/database";
 import type { NodeExecutionResult, StepParams } from "../../types";
@@ -59,6 +60,15 @@ export async function executeAiGenerateImageStep(
 			userId: params.userId,
 			organizationId: params.organizationId,
 		});
+
+		if (
+			providerConfig.provider !== "VERCEL_GATEWAY" &&
+			!isVercelGatewayKey(providerConfig.apiKey)
+		) {
+			throw new Error(
+				"This image generation path requires a VERCEL_GATEWAY connection or a Vercel gateway key. Configure one in Settings → AI Providers.",
+			);
+		}
 
 		const apiKey = providerConfig.apiKey;
 

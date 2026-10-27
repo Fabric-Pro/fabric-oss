@@ -151,6 +151,7 @@ export async function GET(req: NextRequest) {
 			// Canonical-derived "emits <think>" signal (Bug #1942 review): resolved
 			// from the canonical identity, not the (possibly opaque) serving alias.
 			isReasoningModel: isReasoningModelName(metadata.canonicalName),
+			canonicalModelName: metadata.canonicalName,
 		});
 	} catch (error) {
 		console.error("[AI Config API] Error:", error);

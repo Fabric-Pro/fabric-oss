@@ -3,6 +3,7 @@ import {
 	updateProviderLastUsed,
 } from "@repo/database";
 import { getTenantAiGatewayBillingState } from "@repo/payments";
+import { waitUntil } from "@vercel/functions";
 import { getGatewaySpeechModel } from "../model-factory";
 import { resolveProviderApiKey } from "./databricks-oauth";
 
@@ -52,12 +53,14 @@ export async function getAISpeechModel(context: {
 		configId: providerConfig.configId ?? null,
 		trackUsage: () => {
 			if (providerConfig.configId) {
-				updateProviderLastUsed({
-					configId: providerConfig.configId,
-					source: "organization",
-				}).catch(() => {
-					// Best effort, like the language-model path.
-				});
+				waitUntil(
+					updateProviderLastUsed({
+						configId: providerConfig.configId,
+						source: "organization",
+					}).catch(() => {
+						// Best effort, like the language-model path.
+					}),
+				);
 			}
 		},
 	};

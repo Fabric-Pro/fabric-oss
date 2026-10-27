@@ -39,6 +39,7 @@ vi.mock("@dnd-kit/sortable", () => ({
 }));
 
 vi.mock("next-intl", () => ({
+	useLocale: () => "en",
 	useTranslations: () => {
 		const t = (key: string) => key;
 		// PmSyncCloudToggle calls `t.rich(...)` for tooltip bodies; tests here

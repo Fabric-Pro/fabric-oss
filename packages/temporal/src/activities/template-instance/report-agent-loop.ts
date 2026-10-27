@@ -15,6 +15,7 @@
 
 import type { AiJobKey } from "@repo/ai";
 import { getCurrentDateContext, streamText, tool } from "@repo/ai";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
 import { withRollingCacheBreakpoint } from "@repo/ai/prompt-cache";
 import { db, resolveReportMcpConfig } from "@repo/database";
 import { getCachedMcpClientForConfig } from "@repo/mcp";
@@ -1689,6 +1690,10 @@ export async function executeAgentDataGatheringLoop(
 			true,
 			undefined,
 			jobType,
+			{
+				featureKey: "report-generation",
+				callPurpose: AI_CALL_PURPOSES.dataGathering,
+			},
 		);
 
 		// --- Structured logging: Activity start ---
@@ -2088,6 +2093,8 @@ export async function executeAgentDataGatheringLoop(
 									},
 								);
 								const summary = await summarizeLargeToolResult({
+									featureKey: "report-generation",
+									jobType,
 									toolName,
 									toolResult: summarizerInput,
 									userQuery: userMessage,

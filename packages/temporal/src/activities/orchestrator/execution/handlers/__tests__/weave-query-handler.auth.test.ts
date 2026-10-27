@@ -34,6 +34,9 @@ it("opts the environment-configured Weave reader into service authentication", a
 		"https://readers.example.com/thread",
 		expect.objectContaining({ role: "user" }),
 		{ userId: input.userId, organizationId: input.organizationId },
-		expect.objectContaining({ trustedDestination: true }),
+		expect.objectContaining({
+			trustedDestination: true,
+			submissionTokenAllowance: 25_000,
+		}),
 	);
 });

@@ -499,6 +499,7 @@ describe("a tool no page may call", () => {
 		"fabric_create_workflow",
 		"fabric_publish_workflow",
 		"fabric_update_frame",
+		"fabric_edit_frame_block",
 		"fabric_request_authority",
 	])("refuses %s even though the stored page declares it", async (name) => {
 		const { embed, replies } = renderShell({ runtimeTools: [name] });

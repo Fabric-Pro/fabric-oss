@@ -8,6 +8,8 @@
  * Uses @repo/rag embedding generator which routes through Vercel AI Gateway.
  */
 
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { logger } from "@repo/logs";
 import { generateEmbedding, generateEmbeddings } from "@repo/rag";
 
@@ -207,14 +209,18 @@ export async function getOrGenerateEmbedding(
 	// Generate new embedding
 	logger.info(`[CapabilityEmbeddings] Generating embedding for: ${cacheKey}`);
 	try {
-		const result = await generateEmbedding(
-			text,
-			{
-				userId,
-				organizationId,
-				featureKey: "tool-search",
-			},
-			apiKey,
+		const result = await runWithAiCallPurpose(
+			AI_CALL_PURPOSES.capabilitySearchEmbedding,
+			() =>
+				generateEmbedding(
+					text,
+					{
+						userId,
+						organizationId,
+						featureKey: "tool-search",
+					},
+					apiKey,
+				),
 		);
 
 		// Cache the result
@@ -275,14 +281,18 @@ export async function getOrGenerateEmbeddings(
 
 	try {
 		const texts = toGenerate.map((item) => item.text);
-		const batchResult = await generateEmbeddings(
-			texts,
-			{
-				userId,
-				organizationId,
-				featureKey: "tool-search",
-			},
-			apiKey,
+		const batchResult = await runWithAiCallPurpose(
+			AI_CALL_PURPOSES.capabilityIndexEmbedding,
+			() =>
+				generateEmbeddings(
+					texts,
+					{
+						userId,
+						organizationId,
+						featureKey: "tool-search",
+					},
+					apiKey,
+				),
 		);
 
 		// Cache and add to results

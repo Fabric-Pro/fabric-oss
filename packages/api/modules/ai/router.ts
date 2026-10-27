@@ -9,6 +9,7 @@ import { getDocumentDownloadUrl } from "./procedures/documents/get-download-url"
 import { listDocuments } from "./procedures/documents/list-documents";
 import { processDocument } from "./procedures/documents/process-document";
 import { uploadDocument } from "./procedures/documents/upload";
+import { confirmAiDraft } from "./procedures/feedback/confirm-draft";
 import {
 	clearAiOutputRating,
 	listAiOutputRatings,
@@ -45,6 +46,7 @@ export const aiRouter = {
 		},
 	},
 	feedback: {
+		confirmDraft: confirmAiDraft,
 		rate: rateAiOutput,
 		clear: clearAiOutputRating,
 		list: listAiOutputRatings,

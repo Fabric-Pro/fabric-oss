@@ -7,10 +7,14 @@ import { useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Card } from "@ui/components/card";
 import { SettingsIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { formatNewsletterSendStatus } from "./newsletter-send-status";
 import { ReleaseNoteDetailModal } from "./ReleaseNoteDetailModal";
 import { navigateToProjectSettingsTab } from "./settings-tab-navigation";
+import { useConsumeSearchParam } from "./stories/use-consume-search-param";
+
+/** `?releaseNote=<sendId>` — set by the Slack/Teams teaser link (`buildReleaseNotesUrl`). */
+const RELEASE_NOTE_PARAM = "releaseNote";
 
 type Props = {
 	project: {
@@ -71,6 +75,36 @@ export function ReleaseNotesList({ project }: Props) {
 			},
 		}),
 	);
+
+	// A chat teaser links to one note, which may sit past the first page, so it
+	// is fetched on its own. A note that no longer resolves just leaves the list.
+	const deepLink = useConsumeSearchParam(RELEASE_NOTE_PARAM);
+	const { data: linkedSend } = useQuery(
+		orpc.newsletter.sends.memberGet.queryOptions({
+			input: {
+				projectId: project.id,
+				organizationId: orgId,
+				sendId: deepLink?.value ?? "",
+			},
+			enabled: deepLink !== null,
+			retry: false,
+		}),
+	);
+	// Open once per link followed: a refetch (window refocus) hands back a new
+	// object and must not reopen a modal the user already closed.
+	const openedSeq = useRef<number | null>(null);
+	const deepLinkSeq = deepLink?.seq;
+	useEffect(() => {
+		if (
+			deepLinkSeq === undefined ||
+			!linkedSend?.content ||
+			openedSeq.current === deepLinkSeq
+		) {
+			return;
+		}
+		openedSeq.current = deepLinkSeq;
+		setSelected(linkedSend as MemberSend);
+	}, [linkedSend, deepLinkSeq]);
 
 	const sends = (data?.sends ?? []) as MemberSend[];
 	const total = data?.total ?? 0;

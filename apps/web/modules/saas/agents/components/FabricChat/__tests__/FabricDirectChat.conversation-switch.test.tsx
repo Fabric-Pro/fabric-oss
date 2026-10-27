@@ -15,6 +15,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor } from "@testing-library/react";
 import type { Editor } from "@tiptap/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { TRUNCATION_NOTICE_COPY } from "../../../lib/chat-turn-truncation";
 import type { FrameLaunchContext } from "../../../lib/expand-handoff";
 
 // Capture every render of the button so the test can assert on its
@@ -629,5 +630,35 @@ describe("FabricDirectChat — reopening a saved conversation", () => {
 		expect(view.container.textContent).toContain(
 			"activity Heartbeat timeout",
 		);
+	});
+
+	it("keeps the cut-short and API billing notices on a saved partial failure (Fizzy #3273)", async () => {
+		const { ui } = harness();
+		const failed = conversation("conv_T", [
+			["user", "summarize every project"],
+			["assistant", "Here is the first half of the summary"],
+		]);
+		Object.assign(failed.messages[1], {
+			streamStatus: "error",
+			metadata: {
+				errorMessage: "AI usage limit reached",
+				truncated: "output_limit",
+				apiBilling: { resetAt: null },
+			},
+		});
+
+		const view = render(ui("conv_T", failed));
+
+		await waitFor(() => {
+			expect(view.container.textContent).toContain(
+				"AI usage limit reached",
+			);
+		});
+		expect(view.container.textContent).toContain(
+			TRUNCATION_NOTICE_COPY.output_limit,
+		);
+		expect(
+			view.getByTestId("chatgpt-plan-api-billing-notice"),
+		).toBeInTheDocument();
 	});
 });

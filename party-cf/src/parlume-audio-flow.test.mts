@@ -1,180 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { loadParlumeModule } from "./parlume-test-runtime.mts";
-
-class FakeFlux {
-	accepted = false;
-	sent: number[] = [];
-	private listeners = new Map<string, ((event: unknown) => void)[]>();
-	accept() {
-		this.accepted = true;
-	}
-	send(data: ArrayBuffer) {
-		this.sent.push(data.byteLength);
-	}
-	close() {}
-	addEventListener(type: string, listener: (event: unknown) => void) {
-		this.listeners.set(type, [
-			...(this.listeners.get(type) ?? []),
-			listener,
-		]);
-	}
-	turn(event: Record<string, unknown>) {
-		for (const listener of this.listeners.get("message") ?? []) {
-			listener({ data: JSON.stringify(event) });
-		}
-	}
-}
-
-type Bridge = {
-	onStart(): Promise<void>;
-	onConnect(conn: unknown, ctx: { request: { url: string } }): Promise<void>;
-	onMessage(
-		conn: unknown,
-		message: string | ArrayBuffer | ArrayBufferView,
-	): Promise<void>;
-	onRequest(request: Request): Promise<Response>;
-	onClose(conn: unknown, code?: number, reason?: string): Promise<void>;
-};
-
-function meeting(
-	options: {
-		verify?: () => Promise<Response>;
-		aura?: (text: string, index: number) => Response | Promise<Response>;
-	} = {},
-) {
-	const auraCalls: Array<{ inputs: unknown; options: unknown }> = [];
-	const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
-	const fetch = async (url: unknown, init: unknown) => {
-		const path = new URL(String(url)).pathname;
-		const body = JSON.parse(String((init as RequestInit).body));
-		requests.push({ path, body });
-		if (path.endsWith("/verify-stream")) {
-			return (
-				(await options.verify?.()) ??
-				Response.json({
-					valid: true,
-					hardStopAt: new Date(Date.now() + 3_600_000).toISOString(),
-					streamGeneration: 1,
-				})
-			);
-		}
-		return Response.json({ accepted: true });
-	};
-	const data = new Map<string, unknown>();
-	const storage = {
-		get: async (key: string) => data.get(key),
-		put: async (key: string | Record<string, unknown>, value?: unknown) => {
-			if (typeof key === "string") {
-				data.set(key, value);
-			} else {
-				for (const [k, v] of Object.entries(key)) {
-					data.set(k, v);
-				}
-			}
-		},
-		delete: async (key: string) => data.delete(key),
-		setAlarm: async () => {},
-	};
-	const meetingOptions = options;
-	const flux = new FakeFlux();
-	const transcription: Array<{
-		model: string;
-		inputs: unknown;
-		options: unknown;
-	}> = [];
-	const { Parlume } = loadParlumeModule("./parlume.ts", fetch) as {
-		Parlume: new (ctx: unknown, env: unknown) => Bridge;
-	};
-	const bridge = new Parlume(
-		{ storage },
-		{
-			FABRIC_API_URL: "https://fabric.example",
-			AGENT_SERVICE_SECRET: "service-secret",
-			AI: {
-				run: async (
-					model: string,
-					inputs: unknown,
-					options: unknown,
-				) => {
-					if (model === "@cf/deepgram/aura-2-en") {
-						auraCalls.push({ inputs, options });
-						const text = (inputs as { text: string }).text;
-						return (
-							(await meetingOptions.aura?.(
-								text,
-								auraCalls.length - 1,
-							)) ?? new Response(new Uint8Array(4_800))
-						);
-					}
-					transcription.push({ model, inputs, options });
-					return { status: 101, webSocket: flux };
-				},
-			},
-		},
-	);
-	const sent: string[] = [];
-	const closed: number[] = [];
-	const bot = {
-		send: (message: string) => sent.push(message),
-		close: (code: number) => closed.push(code),
-	};
-	return {
-		bridge,
-		bot,
-		flux,
-		sent,
-		closed,
-		requests,
-		transcription,
-		auraCalls,
-	};
-}
-
-// Objects built inside the sandboxed bridge have that realm's prototypes.
-const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
-const flush = () => new Promise((resolve) => setImmediate(resolve));
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const STREAM_URL =
-	"wss://bridge.example.com/parties/parlume/session-1?token=stream-token";
-
-// Attendee's mixed-audio message: one 10 ms chunk at 16 kHz, stamped when it
-// was packaged. Flux receives the meeting audio in 80 ms batches.
-function audio(
-	timestampMs: number,
-	options: { botId?: string; sampleRate?: number; bytes?: number } = {},
-) {
-	const { botId = "bot_abc123", sampleRate = 16_000, bytes = 320 } = options;
-	return JSON.stringify({
-		trigger: "realtime_audio.mixed",
-		bot_id: botId,
-		data: {
-			chunk: Buffer.alloc(bytes).toString("base64"),
-			timestamp_ms: timestampMs,
-			sample_rate: sampleRate,
-		},
-	});
-}
-
-function control(
-	action: string,
-	body: unknown,
-	headers: Record<string, string> = {},
-) {
-	return new Request(
-		`https://bridge.example.com/parties/parlume/session-1?action=${action}`,
-		{
-			method: "POST",
-			headers: {
-				Authorization: "Bearer service-secret",
-				"content-type": "application/json",
-				...headers,
-			},
-			body: JSON.stringify(body),
-		},
-	);
-}
+import {
+	answeringMeeting,
+	audio,
+	type Bridge,
+	connectedMeeting,
+	control,
+	flush,
+	meeting,
+	plain,
+	STREAM_URL,
+	say,
+	sleep,
+} from "./parlume-meeting-harness.mts";
 
 test("the bot's audio is verified on its first chunk, transcribed, attributed, and a woken request reaches Fabric", async () => {
 	const { bridge, bot, flux, requests, transcription } = meeting();
@@ -214,6 +52,7 @@ test("the bot's audio is verified on its first chunk, transcribed, attributed, a
 		encoding: "linear16",
 		sample_rate: "16000",
 		keyterm: "Parlume",
+		eager_eot_threshold: "0.5",
 	});
 	assert.equal(flux.accepted, true);
 	assert.deepEqual(flux.sent, [2_560]);
@@ -453,6 +292,8 @@ test("chunks that arrive while the stream is being verified are verified once an
 	releaseVerification();
 	await Promise.all(arrivals);
 	await flush();
+	// Held audio reaches Flux at three times real time: 300 ms in 100 ms.
+	await new Promise((resolve) => setTimeout(resolve, 120));
 
 	assert.equal(
 		requests.filter((r) => r.path.endsWith("/verify-stream")).length,
@@ -655,41 +496,6 @@ test("a reply before the bot has streamed any meeting audio is refused", async (
 	assert.deepEqual(sent, []);
 	await bridge.onClose(bot, 1000, "done");
 });
-
-function say(
-	sentences: string[],
-	headers: Record<string, string> = {},
-	generation = "0",
-) {
-	return new Request(
-		"https://bridge.example.com/parties/parlume/session-1?action=say",
-		{
-			method: "POST",
-			headers: {
-				Authorization: "Bearer service-secret",
-				"content-type": "application/x-ndjson",
-				"x-parlume-voice-generation": generation,
-				...headers,
-			},
-			body: sentences
-				.map((text) => `${JSON.stringify({ text })}\n`)
-				.join(""),
-		},
-	);
-}
-
-async function connectedMeeting(options: Parameters<typeof meeting>[0] = {}) {
-	const harness = meeting(options);
-	await harness.bridge.onStart();
-	await harness.bridge.onConnect(harness.bot, {
-		request: { url: STREAM_URL },
-	});
-	for (let end = 1_000_010; end <= 1_000_080; end += 10) {
-		await harness.bridge.onMessage(harness.bot, audio(end));
-	}
-	await flush();
-	return harness;
-}
 
 test("sentences sent as text are synthesized by Aura and played as frames on the bot's socket", async () => {
 	const { bridge, bot, sent, auraCalls } = await connectedMeeting();
@@ -923,39 +729,54 @@ test("a chat post the bridge reads aloud itself is reported to Fabric as Aura us
 	await bridge.onClose(bot, 1000, "done");
 });
 
-// Aura that takes about 800 ms to stream one sentence, so speech can land on it.
-const slowAura = () =>
-	new Response(
-		new ReadableStream<Uint8Array>({
-			async start(controller) {
-				for (let part = 0; part < 20; part++) {
-					controller.enqueue(new Uint8Array(4_800));
-					await sleep(40);
-				}
-				controller.close();
-			},
-		}),
-	);
+test("a spoken reference to a chat post reads it aloud, or asks about it as a spoken request", async () => {
+	const { bridge, bot, flux, requests, auraCalls } = await connectedMeeting();
+	const keepAlive = setInterval(() => {}, 1_000);
+	await bridge.onRequest(control("chat", { message: "Here is F-12." }));
 
-async function answeringMeeting() {
-	const harness = await connectedMeeting({ aura: slowAura });
-	harness.flux.turn({
+	flux.turn({
 		event: "EndOfTurn",
 		turn_index: 0,
-		audio_window_start: 0.01,
-		audio_window_end: 0.05,
-		transcript: "Hey Fabric, what is the plan?",
+		audio_window_start: 0.5,
+		audio_window_end: 1.5,
+		transcript: "Parlume, read P one.",
+	});
+	for (let waited = 0; waited < 2_000 && !auraCalls.length; waited += 20) {
+		await sleep(20);
+	}
+	assert.deepEqual(
+		auraCalls.map((call) => (call.inputs as { text: string }).text),
+		["Here is F-12."],
+	);
+
+	flux.turn({
+		event: "EndOfTurn",
+		turn_index: 1,
+		audio_window_start: 2,
+		audio_window_end: 3.5,
+		transcript: "Hey Parlume, tell me more about P1.",
 	});
 	for (
 		let waited = 0;
-		waited < 2_000 &&
-		!harness.requests.some((r) => r.path.endsWith("/turns"));
+		waited < 3_000 && !requests.some((r) => r.path.endsWith("/turns"));
 		waited += 20
 	) {
 		await sleep(20);
 	}
-	return harness;
-}
+	clearInterval(keepAlive);
+
+	const turns = requests.filter((r) => r.path.endsWith("/turns"));
+	assert.deepEqual(
+		turns.map((r) => [r.body.text, r.body.replyChannel]),
+		[
+			[
+				"More detail on what Parlume posted in the meeting chat as P1 (the label of that chat message, not a work item ID): Here is F-12.",
+				"VOICE",
+			],
+		],
+	);
+	await bridge.onClose(bot, 1000, "done");
+});
 
 const generationState = async (bridge: Bridge, voiceGeneration: number) =>
 	plain(

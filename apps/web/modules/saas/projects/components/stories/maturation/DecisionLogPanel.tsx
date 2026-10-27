@@ -232,8 +232,7 @@ export function DecisionLogPanel({ threads, onAmend, amendingId }: Props) {
 
 /**
  * A single decision thread card — compact two-column: the question (+ meta +
- * status) on the LEFT, the answer(s) on the RIGHT. Stacks on narrow screens. The
- * "Changed:" spec-propagation summary sits as a full-width footer when present.
+ * status) on the LEFT, the answer(s) on the RIGHT. Stacks on narrow screens.
  */
 function DecisionThreadCard({
 	thread,
@@ -245,7 +244,6 @@ function DecisionThreadCard({
 	amendingId?: string | null;
 }) {
 	const t = useTranslations("projects.stories.maturation.decisionLog");
-	const changed = thread.root.cleanSpecPropagation?.appliedSummaries ?? [];
 	// The turn currently being amended (its id), plus the draft text.
 	const [amendTargetId, setAmendTargetId] = useState<string | null>(null);
 	const [draft, setDraft] = useState("");
@@ -587,21 +585,6 @@ function DecisionThreadCard({
 					)}
 				</div>
 			</div>
-
-			{changed.length > 0 && (
-				<div className="mt-2 rounded-md bg-muted/50 px-3 py-2">
-					<p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
-						{t("changed")}
-					</p>
-					<ul className="mt-1 space-y-0.5">
-						{changed.map((c) => (
-							<li key={c} className="text-sm text-foreground">
-								{c}
-							</li>
-						))}
-					</ul>
-				</div>
-			)}
 		</li>
 	);
 }

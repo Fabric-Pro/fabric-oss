@@ -44,6 +44,7 @@ vi.mock("@temporalio/activity", () => ({
 }));
 vi.mock("../parlume-agent", () => ({
 	loadParlumeAgent: mocks.load,
+	gatherParlumeAgentContext: () => undefined,
 	executeParlumeAgent: mocks.execute,
 }));
 vi.mock("../parlume-actions", () => ({

@@ -130,11 +130,8 @@ describe("extractUsageFromLangChainResponse", () => {
 });
 
 /**
- * `logAgentUsageFromRunnableConfig` is called without `await` on the
- * project-document-generator's hot path (the usage row is observability and
- * nothing reads it back), so a rejection there would surface as an unhandled
- * rejection and take the agent process down rather than losing one row. The
- * function's contract is therefore that it never rejects.
+ * Chat and summarization send usage without awaiting it. The logger catches
+ * failures so telemetry does not reject into those callers.
  */
 describe("logAgentUsageFromRunnableConfig — never rejects", () => {
 	const config = {
@@ -632,4 +629,424 @@ it("resolves planSource using the effective recorded provider", async () => {
 		vi.unstubAllGlobals();
 		__resetChatGptPlanExchanges();
 	}
+});
+
+describe("reply provenance usage payload", () => {
+	afterEach(() => vi.unstubAllGlobals());
+	it("sends the reply id only when the call explicitly opts in", async () => {
+		const bodies: Record<string, unknown>[] = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_url, init) => {
+				bodies.push(JSON.parse(init.body));
+				return new Response(null, { status: 204 });
+			}),
+		);
+		const id = "msg_1793000000000_0123456789abcdef0123456789abcdef";
+		const config = {
+			configurable: {
+				ai_token: "example-token",
+				ai_provider: "VERCEL_GATEWAY",
+				ai_model: "example-model",
+				output_message_id: id,
+			},
+		};
+		const response = {
+			usage_metadata: {
+				input_tokens: 2,
+				output_tokens: 1,
+				total_tokens: 3,
+			},
+		};
+		await logAgentUsageFromRunnableConfig(config, response, {
+			model: undefined,
+			taskType: "TOOL_CALLING",
+			outputMessageId: id,
+		});
+		await logAgentUsageFromRunnableConfig(config, response, {
+			model: undefined,
+			taskType: "SIMPLE",
+		});
+		expect(bodies[0].outputMessageId).toBe(id);
+		expect(bodies[1]).not.toHaveProperty("outputMessageId");
+	});
+});
+
+describe("reply usage send ordering", () => {
+	afterEach(() => vi.unstubAllGlobals());
+	const config = {
+		configurable: {
+			ai_token: "example-token",
+			ai_provider: "VERCEL_GATEWAY",
+			ai_model: "example-model",
+		},
+	};
+	const response = {
+		usage_metadata: { input_tokens: 2, output_tokens: 1, total_tokens: 3 },
+	};
+	const options = {
+		model: undefined,
+		taskType: "TOOL_CALLING",
+		outputMessageId: "msg_1793000000000_0123456789abcdef0123456789abcdef",
+	};
+	it("sends the same reply's calls in order while other usage proceeds independently", async () => {
+		let releaseFirst!: () => void;
+		const firstPost = new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+		const received: string[] = [];
+		const post = vi.fn(async (_url, init) => {
+			const body = JSON.parse(init.body);
+			received.push(body.agentId);
+			if (body.agentId === "example-first") {
+				await firstPost;
+			}
+			return new Response(null, { status: 204 });
+		});
+		vi.stubGlobal("fetch", post);
+		const first = logAgentUsageFromRunnableConfig(config, response, {
+			...options,
+			agentId: "example-first",
+		});
+		const second = logAgentUsageFromRunnableConfig(config, response, {
+			...options,
+			agentId: "example-final",
+		});
+		const otherReply = logAgentUsageFromRunnableConfig(config, response, {
+			...options,
+			outputMessageId:
+				"msg_1793000000000_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			agentId: "example-other-reply",
+		});
+		const unchained = logAgentUsageFromRunnableConfig(config, response, {
+			...options,
+			outputMessageId: undefined,
+			agentId: "example-side-call",
+		});
+		try {
+			expect(received).toEqual([
+				"example-first",
+				"example-other-reply",
+				"example-side-call",
+			]);
+			await Promise.all([otherReply, unchained]);
+		} finally {
+			releaseFirst();
+			await Promise.all([first, second, otherReply, unchained]);
+		}
+		expect(received).toEqual([
+			"example-first",
+			"example-other-reply",
+			"example-side-call",
+			"example-final",
+		]);
+	});
+	it("retains a newer pending tail, then removes the settled chain so a fresh send starts immediately", async () => {
+		const releases: (() => void)[] = [];
+		const post = vi.fn(
+			() =>
+				new Promise<Response>((resolve) => {
+					releases.push(() =>
+						resolve(new Response(null, { status: 204 })),
+					);
+				}),
+		);
+		vi.stubGlobal("fetch", post);
+		const sends: Promise<void>[] = [];
+		try {
+			sends.push(
+				logAgentUsageFromRunnableConfig(config, response, options),
+			);
+			sends.push(
+				logAgentUsageFromRunnableConfig(config, response, options),
+			);
+			expect(post).toHaveBeenCalledTimes(1);
+			releases[0]();
+			await sends[0];
+			await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(2));
+			sends.push(
+				logAgentUsageFromRunnableConfig(config, response, options),
+			);
+			expect(post).toHaveBeenCalledTimes(2);
+			releases[1]();
+			await sends[1];
+			await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(3));
+			releases[2]();
+			await Promise.all(sends);
+			// A retained settled tail would defer this POST to a microtask. Immediate
+			// start proves the completed reply's queue entry was removed.
+			sends.push(
+				logAgentUsageFromRunnableConfig(config, response, options),
+			);
+			expect(post).toHaveBeenCalledTimes(4);
+			releases[3]();
+			await sends[3];
+		} finally {
+			// Complete any requests admitted before a failed assertion, including tails.
+			post.mockImplementation(
+				async () => new Response(null, { status: 204 }),
+			);
+			for (const release of releases) {
+				release();
+			}
+			await Promise.all(sends);
+		}
+	});
+	it("continues the chain after a failed POST and cleans it up", async () => {
+		const post = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("example-network-failure"))
+			.mockResolvedValue(new Response(null, { status: 204 }));
+		vi.stubGlobal("fetch", post);
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const first = logAgentUsageFromRunnableConfig(
+				config,
+				response,
+				options,
+			);
+			const second = logAgentUsageFromRunnableConfig(
+				config,
+				response,
+				options,
+			);
+			await expect(Promise.all([first, second])).resolves.toEqual([
+				undefined,
+				undefined,
+			]);
+			expect(post).toHaveBeenCalledTimes(2);
+			const fresh = logAgentUsageFromRunnableConfig(
+				config,
+				response,
+				options,
+			);
+			expect(post).toHaveBeenCalledTimes(3);
+			await fresh;
+		} finally {
+			error.mockRestore();
+		}
+	});
+});
+
+describe("usage payload call-time snapshots", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		vi.unstubAllEnvs();
+		__resetChatGptPlanExchanges();
+	});
+	it("keeps the queued call's serving plan when a later call re-exchanges plans", async () => {
+		const root = "example-root-access-token";
+		const remember = (planSource: string) =>
+			rememberChatGptPlanExchange({
+				accessToken: root,
+				aiToken: "example-token",
+				fabricBaseUrl: "http://localhost:3000",
+				planSource,
+				expiresInSeconds: 60,
+			});
+		remember("org:example-call-time-account");
+		let releaseFirst!: () => void;
+		const firstPost = new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+		const bodies: Record<string, unknown>[] = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_url, init) => {
+				bodies.push(JSON.parse(init.body));
+				if (bodies.length === 1) {
+					await firstPost;
+				}
+				return new Response(null, { status: 204 });
+			}),
+		);
+		const config = {
+			configurable: {
+				ai_token: "example-token",
+				ai_provider: "OPENAI_CHATGPT_PLAN",
+				ai_model: "example-model",
+				ai_api_key: root,
+			},
+		};
+		const response = {
+			usage_metadata: {
+				input_tokens: 2,
+				output_tokens: 1,
+				total_tokens: 3,
+			},
+		};
+		const options = {
+			model: undefined,
+			taskType: "TOOL_CALLING",
+			outputMessageId:
+				"msg_1793000000000_0123456789abcdef0123456789abcdef",
+		};
+		const first = logAgentUsageFromRunnableConfig(
+			config,
+			response,
+			options,
+		);
+		const queued = logAgentUsageFromRunnableConfig(
+			config,
+			response,
+			options,
+		);
+		try {
+			expect(bodies).toHaveLength(1);
+			remember("org:example-later-account");
+		} finally {
+			releaseFirst();
+			await Promise.all([first, queued]);
+		}
+		expect(bodies).toHaveLength(2);
+		expect(bodies[1].planSource).toBe("org:example-call-time-account");
+	});
+	it.each([true, false])(
+		"captures config, options, response, model identity and destination before state changes (queued=%s)",
+		async (queued) => {
+			vi.stubEnv("FABRIC_API_URL", "http://localhost:3000");
+			let releaseFirst!: () => void;
+			const firstPost = new Promise<void>((resolve) => {
+				releaseFirst = resolve;
+			});
+			const received: {
+				url: string;
+				token: string | undefined;
+				body: Record<string, unknown>;
+			}[] = [];
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async (url, init) => {
+					const body = JSON.parse(init.body);
+					received.push({
+						url: String(url),
+						token: init.headers["X-AI-Token"],
+						body,
+					});
+					if (body.agentId === "example-blocker") {
+						await firstPost;
+					}
+					return new Response(null, { status: 204 });
+				}),
+			);
+			const outputMessageId =
+				"msg_1793000000000_0123456789abcdef0123456789abcdef";
+			const model = {};
+			recordServedModel(model, {
+				provider: "VERCEL_GATEWAY",
+				model: "example-call-time-model",
+			});
+			const fabricUsage = {
+				ai_token: "example-call-time-token",
+				ai_provider: "GROQ",
+				ai_model: "example-fallback-model",
+				ai_billing_mode: "example-call-time-billing",
+				ai_billing_customer_id: "example-call-time-customer",
+				ai_plan_source: "org:example-configured-account",
+				project_id: "example-config-project",
+				usage_conversation_id: "example-config-conversation",
+				usage_project_id: "example-call-time-project",
+				usage_frame_id: "example-call-time-frame",
+				usage_feature_key: "document-generation",
+			};
+			const config = { configurable: { fabric_usage: fabricUsage } };
+			const response = {
+				usage_metadata: {
+					input_tokens: 10,
+					output_tokens: 2,
+					total_tokens: 12,
+					input_token_details: { cache_read: 3, cache_creation: 4 },
+					output_token_details: { reasoning: 1 },
+				},
+				response_metadata: {
+					gateway: { generationId: "example-call-time-generation" },
+				},
+			};
+			const options = {
+				model,
+				taskType: "TOOL_CALLING",
+				outputMessageId: queued ? outputMessageId : undefined,
+				agentId: "example-call-time-agent",
+				conversationId: "example-call-time-conversation",
+				projectId: "example-options-project",
+				latencyMs: 42,
+			};
+			const first = queued
+				? logAgentUsageFromRunnableConfig(config, response, {
+						...options,
+						agentId: "example-blocker",
+					})
+				: Promise.resolve();
+			const send = logAgentUsageFromRunnableConfig(
+				config,
+				response,
+				options,
+			);
+			try {
+				Object.assign(fabricUsage, {
+					ai_token: "example-later-token",
+					ai_provider: "ANTHROPIC_DIRECT",
+					ai_model: "example-later-model",
+					ai_billing_mode: "example-later-billing",
+					ai_billing_customer_id: "example-later-customer",
+					ai_plan_source: "org:example-later-account",
+					project_id: "example-later-project",
+					usage_conversation_id: "example-later-conversation",
+					usage_project_id: "example-later-project",
+					usage_frame_id: "example-later-frame",
+					usage_feature_key: "clean-spec",
+				});
+				Object.assign(options, {
+					model: {},
+					taskType: "SIMPLE",
+					agentId: "example-later-agent",
+					conversationId: "example-later-conversation",
+					projectId: "example-later-project",
+					latencyMs: 99,
+				});
+				response.usage_metadata.input_tokens = 99;
+				response.usage_metadata.output_tokens = 99;
+				response.usage_metadata.total_tokens = 198;
+				response.usage_metadata.input_token_details.cache_read = 99;
+				response.usage_metadata.input_token_details.cache_creation = 99;
+				response.usage_metadata.output_token_details.reasoning = 99;
+				response.response_metadata.gateway.generationId =
+					"example-later-generation";
+				recordServedModel(model, {
+					provider: "GROQ",
+					model: "example-later-served-model",
+				});
+				vi.stubEnv("FABRIC_API_URL", "http://localhost:3001");
+			} finally {
+				releaseFirst();
+				await Promise.all([first, send]);
+			}
+			expect(received.at(-1)).toEqual({
+				url: "http://localhost:3000/api/internal/ai-usage",
+				token: "example-call-time-token",
+				body: {
+					provider: "VERCEL_GATEWAY",
+					model: "example-call-time-model",
+					taskType: "TOOL_CALLING",
+					...(queued ? { outputMessageId } : {}),
+					agentId: "example-call-time-agent",
+					conversationId: "example-call-time-conversation",
+					projectId: "example-call-time-project",
+					frameId: "example-call-time-frame",
+					featureKey: "document-generation",
+					latencyMs: 42,
+					inputTokens: 10,
+					outputTokens: 2,
+					totalTokens: 12,
+					cachedInputTokens: 3,
+					cacheCreationInputTokens: 4,
+					reasoningTokens: 1,
+					gatewayGenerationId: "example-call-time-generation",
+					billingMode: "example-call-time-billing",
+					billingCustomerId: "example-call-time-customer",
+					planSource: "org:example-configured-account",
+				},
+			});
+		},
+	);
 });

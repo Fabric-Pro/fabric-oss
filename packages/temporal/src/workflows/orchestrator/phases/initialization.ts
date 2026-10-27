@@ -6,7 +6,7 @@
  * - Orchestrator memory loading (preferences + episodic memory)
  * - Workspace document context retrieval
  * - Letta memory initialization
- * - Hybrid routing suggestions
+ * - Legacy hybrid routing suggestions during replay
  * - Policy enrichment
  */
 
@@ -104,7 +104,7 @@ const { getProjectMetadataActivity } = proxyActivities<
  * 1. Preloading all resources (MCP tools, agents, preferences) - ONCE for entire workflow
  * 2. Retrieving workspace document context (RAG)
  * 3. Initializing Letta memory for semantic search
- * 4. Getting hybrid routing suggestions from past executions
+ * 4. Replaying legacy hybrid routing suggestions when recorded
  * 5. Applying policy enrichment
  */
 export async function executeInitializationPhase(
@@ -333,13 +333,16 @@ export async function executeInitializationPhase(
 				});
 			}
 
-			// Get hybrid routing suggestions
-			await getHybridRoutingSuggestionsAndUpdate(
-				state,
-				input,
-				lettaAgentId,
-				updateProgress,
-			);
+			// Preserve the activity and audit writes when replaying histories
+			// recorded before this marker. New turns skip the unused lookup.
+			if (!patched("orch-skip-unused-routing-v1")) {
+				await getHybridRoutingSuggestionsAndUpdate(
+					state,
+					input,
+					lettaAgentId,
+					updateProgress,
+				);
+			}
 		} catch (error) {
 			rethrowTurnStop(error, turn);
 			log.warn(

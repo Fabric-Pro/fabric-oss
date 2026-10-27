@@ -13,11 +13,7 @@
 
 import { A2AClient, type AIConfig, SecureA2AClient } from "@repo/agent-core";
 import { sanitizeMcpErrorMessage } from "@repo/agent-core/utils/sanitize-error";
-import {
-	DEFAULT_BASE_URLS,
-	GATEWAY_PROVIDERS,
-	getAIModelWithMetadata,
-} from "@repo/ai";
+import { DEFAULT_BASE_URLS, getAIModelWithMetadata } from "@repo/ai";
 import {
 	isAiImpersonatedRequest,
 	isAiInteractiveRequestFor,
@@ -49,6 +45,8 @@ import {
 	publishToolStart,
 } from "../utils/partykit-publisher";
 import { resolveAgentEndpoint } from "./resolve-endpoint";
+
+import { A2A_SUBMISSION_TOKEN_ALLOWANCE } from "./submission-token-allowance";
 
 // Regular A2A client for health checks (no auth needed for /.well-known/agent.json)
 const a2aClient = new A2AClient({ timeout: 120000 });
@@ -358,18 +356,10 @@ async function delegateViaA2A(
 				jobType: currentAiJobType(),
 			});
 
-			// Determine the correct base URL for the provider
-			// Gateway providers use their gateway URLs, direct providers use their API URLs
+			// Only send a known provider default as a hint. The agent's token
+			// exchange resolves custom endpoints (including Cloudflare's required URL).
 			const provider = metadata.provider || "VERCEL_GATEWAY";
-			const isGateway = GATEWAY_PROVIDERS.includes(
-				provider as (typeof GATEWAY_PROVIDERS)[number],
-			);
-
-			// For gateways, use the gateway URL
-			// For direct providers (Cerebras, Groq, etc.), use their API URL
-			const baseUrl =
-				DEFAULT_BASE_URLS[provider] ||
-				(isGateway ? "https://ai-gateway.vercel.sh/v1" : undefined);
+			const baseUrl = DEFAULT_BASE_URLS[provider];
 
 			aiConfig = {
 				token: aiToken,
@@ -508,6 +498,7 @@ async function delegateViaA2A(
 			},
 			tenantContext,
 			{
+				submissionTokenAllowance: A2A_SUBMISSION_TOKEN_ALLOWANCE,
 				metadata: {
 					orchestratorContext: delegationContext,
 					usage_conversation_id: usageOrigin.conversationId,

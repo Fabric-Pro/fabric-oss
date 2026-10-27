@@ -3,6 +3,10 @@ import { isAiImpersonatedRequest } from "@repo/ai/lib/chatgpt-plan/interactive-c
 import { issueAIToken } from "@repo/ai-token";
 import { db } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
+import {
+	isCreatableDocumentType,
+	RETIRED_TYPE_MESSAGE,
+} from "@repo/utils/document-type-catalog";
 import { z } from "zod";
 import { withCorrelationMemo } from "../../../../lib/temporal-correlation";
 import {
@@ -138,17 +142,37 @@ export const batchGenerateDocumentsProcedure = tenantProtectedProcedure
 
 		const refusalFor = (
 			type: string,
-		): { reasonKey: string | null; message: string } | undefined => {
+		):
+			| {
+					reasonKey: string | null;
+					message: string;
+					gate: (typeof refused)[number]["gate"] | null;
+			  }
+			| undefined => {
+			// A retired type (Features, Fizzy #2776) can still arrive from a
+			// wizard draft saved before it was retired; skip it like a refusal.
+			if (!isCreatableDocumentType(type)) {
+				return {
+					reasonKey: null,
+					message: RETIRED_TYPE_MESSAGE,
+					gate: null,
+				};
+			}
 			if (type === "PROPOSAL" && proposalRefusal) {
 				return {
 					reasonKey: PROPOSAL_PROMPT_NOT_BOUND_REASON_KEY,
 					message: proposalRefusal,
+					gate: null,
 				};
 			}
 			const key = documentCapabilityKey(type);
 			const entry = key ? refusedKeys.get(key) : undefined;
 			return entry
-				? { reasonKey: entry.gate.reasonKey, message: entry.message }
+				? {
+						reasonKey: entry.gate.reasonKey,
+						message: entry.message,
+						gate: entry.gate,
+					}
 				: undefined;
 		};
 
@@ -157,16 +181,27 @@ export const batchGenerateDocumentsProcedure = tenantProtectedProcedure
 		);
 		const skipped = input.documents.flatMap((doc) => {
 			const refusal = refusalFor(doc.type);
-			return refusal ? [{ type: doc.type, ...refusal }] : [];
+			return refusal
+				? [
+						{
+							type: doc.type,
+							reasonKey: refusal.reasonKey,
+							message: refusal.message,
+						},
+					]
+				: [];
 		});
 		if (documents.length === 0 && skipped.length > 0) {
 			// Nothing left to run. A structured refusal naming the first missing
 			// source is the honest answer; an empty workflow would not be. An
-			// unbound Proposal prompt is not a capability gate, so a batch
-			// refused only for that carries no gate.
+			// unbound Proposal prompt or a retired type is not a capability
+			// gate, so the gate is the one behind the message, or none.
 			throw new ORPCError("PRECONDITION_FAILED", {
 				message: skipped[0].message,
-				data: { gate: refused[0]?.gate ?? null, skipped },
+				data: {
+					gate: refusalFor(skipped[0].type)?.gate ?? null,
+					skipped,
+				},
 			});
 		}
 

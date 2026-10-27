@@ -43,6 +43,8 @@ import type {
 	LanguageModel,
 } from "ai";
 import { wrapEmbeddingModel, wrapLanguageModel } from "ai";
+import type { AiCallPurpose } from "./call-purpose";
+import { currentAiCallPurpose } from "./call-purpose-context";
 
 /** Everything the interceptor needs to attribute a call, captured at model resolution. */
 export interface UsageLoggingContext {
@@ -70,6 +72,8 @@ export interface UsageLoggingContext {
 	 * Undefined = user-initiated. Use a key from AI_JOB_TYPES.
 	 */
 	jobType?: string;
+	/** Usage-only purpose within the feature or job. */
+	callPurpose?: AiCallPurpose;
 	/**
 	 * The call's known cost, recorded instead of a catalog estimate. Zero for
 	 * a member's own ChatGPT plan, which no API bill carries.
@@ -540,6 +544,7 @@ function emit(
 			featureKey: context.featureKey,
 			promptVersionId: context.promptVersionId,
 			jobType: context.jobType,
+			callPurpose: context.callPurpose,
 			billingCategory: context.billingCategory ?? null,
 			billingCustomerId: context.billingCustomerId ?? null,
 			inputTokens: usage.inputTokens,
@@ -610,12 +615,14 @@ export function createUsageLoggingMiddleware(
 		}: {
 			doGenerate: () => Promise<Record<string, unknown>>;
 		}) => {
+			// Purpose is fixed per invocation; plan rotation may still update the other fields.
+			const callPurpose = context.callPurpose ?? currentAiCallPurpose();
 			const start = Date.now();
 			try {
 				const result = await doGenerate();
 				try {
 					emit(
-						context,
+						{ ...context, callPurpose },
 						normalizeUsage(result.usage),
 						Date.now() - start,
 						true,
@@ -635,7 +642,7 @@ export function createUsageLoggingMiddleware(
 				try {
 					const described = describeModelCallError(error);
 					emit(
-						context,
+						{ ...context, callPurpose },
 						normalizeUsage(undefined),
 						Date.now() - start,
 						false,
@@ -655,6 +662,8 @@ export function createUsageLoggingMiddleware(
 		}: {
 			doStream: () => Promise<Record<string, unknown>>;
 		}) => {
+			// Purpose is fixed per invocation; plan rotation may still update the other fields.
+			const callPurpose = context.callPurpose ?? currentAiCallPurpose();
 			const start = Date.now();
 			let result: Record<string, unknown>;
 			try {
@@ -666,7 +675,7 @@ export function createUsageLoggingMiddleware(
 				try {
 					const described = describeModelCallError(error);
 					emit(
-						context,
+						{ ...context, callPurpose },
 						normalizeUsage(undefined),
 						Date.now() - start,
 						false,
@@ -728,7 +737,7 @@ export function createUsageLoggingMiddleware(
 				settled = true;
 				try {
 					emit(
-						context,
+						{ ...context, callPurpose },
 						normalizeUsage(usage),
 						Date.now() - start,
 						success,
@@ -914,6 +923,8 @@ export function createEmbeddingUsageLoggingMiddleware(
 		}: {
 			doEmbed: () => Promise<Record<string, unknown>>;
 		}) => {
+			// Purpose is fixed per invocation; plan rotation may still update the other fields.
+			const callPurpose = context.callPurpose ?? currentAiCallPurpose();
 			const start = Date.now();
 			const result = await doEmbed();
 			try {
@@ -922,7 +933,7 @@ export function createEmbeddingUsageLoggingMiddleware(
 						?.tokens,
 				);
 				emit(
-					context,
+					{ ...context, callPurpose },
 					{
 						inputTokens: tokens,
 						outputTokens: 0,
@@ -1024,13 +1035,15 @@ export function wrapEvaluationModelWithUsageLogging(
 		modelId: model.modelId,
 		supportedQuestionTypes: model.supportedQuestionTypes,
 		doDecide: async (callOptions) => {
+			// Purpose is fixed per invocation; plan rotation may still update the other fields.
+			const callPurpose = context.callPurpose ?? currentAiCallPurpose();
 			const start = Date.now();
 			try {
 				const result = await doDecide(callOptions);
 				try {
 					emit(
 						contextForAnsweringModel(
-							context,
+							{ ...context, callPurpose },
 							result.response?.modelId,
 							options,
 						),
@@ -1048,7 +1061,7 @@ export function wrapEvaluationModelWithUsageLogging(
 				try {
 					const described = describeModelCallError(error);
 					emit(
-						context,
+						{ ...context, callPurpose },
 						normalizeUsage(undefined),
 						Date.now() - start,
 						false,

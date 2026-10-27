@@ -16,8 +16,12 @@ vi.mock("@repo/database", () => ({
 }));
 
 vi.mock("../parlume-attendee", () => ({
-	getParlumeBridgeSettings: () => mocks.settings(),
 	leaveParlumeMeetingBot: (...args: unknown[]) => mocks.leave(...args),
+}));
+
+vi.mock("../parlume-provider-settings", () => ({
+	resolveParlumeAttendeeSettingsForSession: (...args: unknown[]) =>
+		mocks.settings(...args),
 }));
 
 vi.mock("../parlume-log", () => ({
@@ -32,10 +36,17 @@ const session = {
 	streamGeneration: 2,
 };
 
+const attendee = {
+	apiKey: "org-key",
+	baseUrl: "https://attendee.example.com",
+	teamsLoginMode: null,
+	source: "organization",
+};
+
 beforeEach(() => {
 	vi.resetAllMocks();
 	mocks.updateMany.mockResolvedValue({ count: 1 });
-	mocks.settings.mockReturnValue({ apiKey: "operator-key" });
+	mocks.settings.mockResolvedValue(attendee);
 	mocks.leave.mockResolvedValue({ kind: "LEAVE_REQUESTED" });
 });
 
@@ -63,9 +74,28 @@ describe("requestParlumeLeave", () => {
 				captureStoppedAt: expect.any(Date),
 			},
 		});
+		expect(mocks.settings).toHaveBeenCalledWith("session-1");
 		expect(mocks.leave).toHaveBeenCalledWith({
-			settings: { apiKey: "operator-key" },
+			attendee,
 			providerBotId: "bot-1",
+		});
+	});
+
+	it("marks the stop failed when no Attendee settings resolve for the session", async () => {
+		mocks.settings.mockResolvedValue(null);
+
+		await expect(
+			requestParlumeLeave({
+				session,
+				reason: "STOPPED",
+				lastError: null,
+				captureStopped: true,
+			}),
+		).rejects.toThrow("Parlume provider configuration is unavailable.");
+		expect(mocks.leave).not.toHaveBeenCalled();
+		expect(mocks.updateMany).toHaveBeenLastCalledWith({
+			where: { id: "session-1", status: "LEAVING" },
+			data: { status: "STOP_FAILED" },
 		});
 	});
 

@@ -6,6 +6,8 @@
  */
 
 import { tool } from "@repo/ai";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import {
 	canCreateProjectStory,
@@ -38,6 +40,7 @@ import { canReadChatProject } from "../shared/chat-project-access";
 import { getFabricToolDefinitionMap } from "../shared/fabric-content-tools";
 import {
 	createFirstClassFrame,
+	editFirstClassFrameBlock,
 	getFirstClassFrame,
 	listFirstClassFrames,
 	shareFirstClassFrame,
@@ -447,17 +450,21 @@ export async function createCodeSearchTool(
 				);
 
 				const query = args.query;
-				const embeddingResult = await generateEmbedding(
-					query,
-					withDefaultFeature(
-						{
-							conversationId: context.usageConversationId,
-							userId,
-							organizationId,
-							...secondaryUsageFields(context),
-						},
-						"code-index",
-					),
+				const embeddingResult = await runWithAiCallPurpose(
+					AI_CALL_PURPOSES.codeSearchEmbedding,
+					() =>
+						generateEmbedding(
+							query,
+							withDefaultFeature(
+								{
+									conversationId: context.usageConversationId,
+									userId,
+									organizationId,
+									...secondaryUsageFields(context),
+								},
+								"code-index",
+							),
+						),
 				);
 				const collectionName = await ensureCollection(
 					"project-contexts",
@@ -1569,6 +1576,17 @@ export async function createFabricTool(
 				inputSchema: jsonSchemaToZod(toolDefinition.inputSchema),
 				execute: async (args: Record<string, unknown>) =>
 					updateFirstClassFrame({ args, userId, organizationId }),
+			} as unknown as Parameters<typeof tool>[0]),
+		};
+	}
+
+	if (toolId === "fabric_edit_frame_block") {
+		return {
+			fabric_edit_frame_block: tool({
+				description: toolDefinition.description || toolId,
+				inputSchema: jsonSchemaToZod(toolDefinition.inputSchema),
+				execute: async (args: Record<string, unknown>) =>
+					editFirstClassFrameBlock({ args, userId, organizationId }),
 			} as unknown as Parameters<typeof tool>[0]),
 		};
 	}

@@ -269,3 +269,50 @@ describe("updateFrame", () => {
 		expect(mocks.findOrganization).not.toHaveBeenCalled();
 	});
 });
+
+describe("frame update timestamp fence", () => {
+	it("checks the requested timestamp immediately before versioning", async () => {
+		await expect(
+			updateFrame({
+				id: ROW.id,
+				userId: ROW.userId,
+				organizationId: ROW.organizationId,
+				expectedUpdatedAt: ROW.updatedAt,
+				requestedUpdatedAt: new Date(0),
+				title: "Example",
+			}),
+		).rejects.toThrow("Re-read");
+		expect(mocks.historyCreate).not.toHaveBeenCalled();
+		expect(mocks.updateFile).not.toHaveBeenCalled();
+	});
+	it("uses the read timestamp in the conditional write and reports a conflict on a concurrent change", async () => {
+		mocks.updateFile.mockRejectedValueOnce({ code: "P2025" });
+		await expect(
+			updateFrame({
+				id: ROW.id,
+				userId: ROW.userId,
+				organizationId: ROW.organizationId,
+				expectedUpdatedAt: ROW.updatedAt,
+				title: "Example",
+			}),
+		).rejects.toThrow("Re-read");
+		expect(mocks.updateFile).toHaveBeenCalledWith(
+			expect.objectContaining({
+				where: expect.objectContaining({ updatedAt: ROW.updatedAt }),
+			}),
+		);
+	});
+	it("does not add history for unchanged content", async () => {
+		mocks.findFrame.mockResolvedValue({
+			...ROW,
+			content: JSON.stringify(JSON.parse(ROW.content), null, 2),
+		});
+		await updateFrame({
+			id: ROW.id,
+			userId: ROW.userId,
+			organizationId: ROW.organizationId,
+			expectedUpdatedAt: ROW.updatedAt,
+		});
+		expect(mocks.historyCreate).not.toHaveBeenCalled();
+	});
+});

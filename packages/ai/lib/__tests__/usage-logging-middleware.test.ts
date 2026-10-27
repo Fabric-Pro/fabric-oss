@@ -86,6 +86,26 @@ function mw() {
 describe("usage-logging middleware — wrapGenerate", () => {
 	beforeEach(() => logAiUsageAsync.mockReset());
 
+	it("writes the usage-context call purpose separately from feature and job", async () => {
+		const context = {
+			...CTX,
+			featureKey: "chat-agent",
+			jobType: "scheduled-report",
+			callPurpose: "intent-clarity" as const,
+		};
+		const middleware = createUsageLoggingMiddleware(context) as any;
+		await middleware.wrapGenerate({
+			doGenerate: async () => ({
+				usage: { inputTokens: 10, outputTokens: 2, totalTokens: 12 },
+			}),
+		});
+		expect(logAiUsageAsync.mock.calls[0][0]).toMatchObject({
+			featureKey: "chat-agent",
+			jobType: "scheduled-report",
+			callPurpose: "intent-clarity",
+		});
+	});
+
 	it("logs one row with the full token breakdown, including cache reads/writes", async () => {
 		// AI SDK 7's top-level `LanguageModelUsage`: flat totals with the cache
 		// and reasoning splits under `inputTokenDetails`/`outputTokenDetails`.

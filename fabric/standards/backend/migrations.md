@@ -64,15 +64,48 @@ invalid for the real object.
   the model. Prisma does not read either, and an `@@index` standing in for a
   partial index makes every `migrate dev` try to create it again.
 
+A migration-only schema outside Prisma's managed `public` schema is a deliberate
+exception: `lakehouse_export.decision_event` is the CDF export contract and must
+not be added through `schemas` / `@@schema`. Its migration owns its columns,
+constraints, triggers, and replica identity. The RLS coverage guard separately
+inventories export tables from migration SQL. Validate the same CI drift command
+below after replay; a public datamodel does not compare the extra schema.
+
 The `Migration drift` job fails the required `unit-tests` check when the
 replayed chain and the datamodel differ, or when one of those constraints
 loses its shape. To check locally, run this from `packages/database` with the
-URL of an empty, disposable database — Prisma wipes the shadow database it is
-given:
+URL of an empty, disposable database in `SHADOW_DATABASE_URL`. Set `DIRECT_URL`
+to a separate disposable database. The local helper below removes
+`lakehouse_export` before Prisma reuses its shadow database; raw Prisma resets
+only its managed schema and otherwise leaves this extra schema behind. The
+helper accepts only loopback PostgreSQL URLs without query parameters and
+`example_*` database names. It deletes data and must not target a shared database:
 
 ```bash
-npx prisma migrate diff --from-migrations ./prisma/migrations --to-schema-datamodel ./prisma/schema.prisma --shadow-database-url "postgresql://postgres:postgres@localhost:5432/shadow" --script --exit-code
+DIRECT_URL="postgresql://postgres:postgres@localhost:5432/example_direct" \
+SHADOW_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/example_shadow" \
+node scripts/prisma-disposable.mjs diff
 ```
 
 Exit code 0 means no drift; 2 means drift, and the printed SQL is what
 `migrate dev` would generate.
+
+For a complete local reset of an explicitly disposable database, use the same
+helper so the export schema is removed before migration replay:
+
+```bash
+DIRECT_URL="postgresql://postgres:postgres@localhost:5432/example_direct" \
+node scripts/prisma-disposable.mjs reset --force
+```
+
+The helper leaves tracked migration SQL unchanged; Prisma performs the local
+history reset and replay. AI callers must also satisfy Prisma's reset-consent guard. CI's Migration drift job replays
+into a fresh database and compares with `--from-config-datasource`, so it does
+not reuse a shadow database.
+
+For your own normal local database (whose name the disposable helper rejects),
+check that the connection targets your local instance, then run
+`DROP SCHEMA IF EXISTS lakehouse_export CASCADE;` there before a plain
+`prisma migrate reset` or accepting the reset offered by `prisma migrate dev`.
+This deletes local capture history; do not run this recovery on a shared database.
+Prisma otherwise leaves the extra schema behind and replay fails at `CREATE SCHEMA`.

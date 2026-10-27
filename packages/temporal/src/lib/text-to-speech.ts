@@ -3,6 +3,11 @@ import {
 	AUDIO_PROVIDER_REQUIRED,
 	resolveOpenAiApiKey,
 } from "@repo/ai";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import {
+	currentAiCallPurpose,
+	runWithAiCallPurpose,
+} from "@repo/ai/lib/call-purpose-context";
 import { logAiUsageAsync } from "@repo/database";
 import {
 	guardDispatch,
@@ -38,7 +43,15 @@ export type TextToSpeechResult =
  * `AiUsageLog` row; the speech endpoint reports no tokens, so the row carries
  * the per-character cost instead.
  */
-export async function synthesizeToolSpeech(
+export function synthesizeToolSpeech(
+	...args: Parameters<typeof synthesizeToolSpeechInternal>
+): ReturnType<typeof synthesizeToolSpeechInternal> {
+	return runWithAiCallPurpose(AI_CALL_PURPOSES.speechGeneration, () =>
+		synthesizeToolSpeechInternal(...args),
+	);
+}
+
+async function synthesizeToolSpeechInternal(
 	request: TextToSpeechRequest,
 ): Promise<TextToSpeechResult> {
 	const apiKey = await resolveOpenAiApiKey({
@@ -96,6 +109,7 @@ function recordSpeechUsage(
 	outcome: { chars: number; latencyMs: number; error?: string },
 ): void {
 	logAiUsageAsync({
+		callPurpose: currentAiCallPurpose(),
 		userId: request.userId,
 		organizationId: request.organizationId ?? undefined,
 		conversationId: request.usageConversationId,

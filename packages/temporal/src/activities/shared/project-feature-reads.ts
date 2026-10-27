@@ -257,6 +257,11 @@ export async function listProjectFeatures(
 		return NO_ACCESS;
 	}
 
+	const sort = args.sort ?? "identifier";
+	if (sort !== "identifier" && sort !== "updated") {
+		return { error: 'sort must be "identifier" or "updated".' };
+	}
+
 	const priority = readString(args.priority);
 	if (priority && !PRIORITIES.includes(priority as Priority)) {
 		return {
@@ -307,7 +312,7 @@ export async function listProjectFeatures(
 			excludeDraftingStages: includeHidden
 				? ["DECLINED"]
 				: ["DECLINED", "CLOSED"],
-			orderBy: "identifier",
+			orderBy: sort,
 			limit,
 			offset,
 		}),
@@ -343,6 +348,7 @@ export async function listProjectFeatures(
 			hasMore,
 		}),
 		features: stories.map((story) => ({
+			updatedAt: story.updatedAt.toISOString(),
 			id: story.id,
 			identifier: story.identifier,
 			title: story.title,

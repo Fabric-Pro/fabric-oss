@@ -82,6 +82,75 @@ describe("MCP STDIO wrapper initialization", () => {
 		assert.deepEqual(credentialDirs, []);
 	});
 
+	it("keeps the child pooled after JSON-RPC errors from tools/call and tools/list", async () => {
+		const app = createServer();
+		const script = `
+			const rl = require("node:readline").createInterface({ input: process.stdin });
+			rl.on("line", (line) => {
+				const msg = JSON.parse(line);
+				if (msg.id === undefined) return;
+				const reply = msg.method === "tools/call" || msg.method === "tools/list"
+					? { error: { code: -32602, message: "Invalid example query" } }
+					: { result: { pid: process.pid } };
+				process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, ...reply }) + "\\n");
+			});
+		`;
+		const call = (method: string) =>
+			app.request("https://example.com/mcp/call", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					command: process.execPath,
+					args: ["-e", script],
+					method,
+					userId: "example-user",
+					organizationId: "example-org",
+					configId: "example-rpc-error",
+				}),
+			});
+		const first = await (await call("ping")).json();
+		for (const method of ["tools/call", "tools/list"]) {
+			const response = await call(method);
+			assert.equal(response.status, 200);
+			assert.deepEqual(await response.json(), {
+				success: false,
+				error: "MCP error -32602: Invalid example query",
+			});
+			assert.equal(getProcessPool().getStats().size, 1);
+		}
+		assert.deepEqual(await (await call("ping")).json(), first);
+	});
+	it("evicts a pooled child that exits during a tool call", async () => {
+		const app = createServer();
+		const script = `
+			const rl = require("node:readline").createInterface({ input: process.stdin });
+			rl.on("line", (line) => {
+				const msg = JSON.parse(line);
+				if (msg.id === undefined) return;
+				if (msg.method === "tools/call") { process.exit(1); return; }
+				process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} }) + "\\n");
+			});
+		`;
+		const response = await app.request("https://example.com/mcp/call", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				command: process.execPath,
+				args: ["-e", script],
+				method: "tools/call",
+				userId: "example-user",
+				organizationId: "example-org",
+				configId: "example-transport-error",
+			}),
+		});
+		assert.equal(response.status, 500);
+		assert.deepEqual(await response.json(), {
+			success: false,
+			error: "Process exited unexpectedly",
+		});
+		assert.equal(getProcessPool().getStats().size, 0);
+	});
+
 	it("respawns the pooled server when a call brings new credentials, and deletes the old credential files", async () => {
 		const app = createServer();
 		const configId = `example-respawn-${process.pid}`;

@@ -10,6 +10,14 @@
  * tests pin the activity to it, so a foreign id never reaches the settings
  * lookup, the embedding call or the Qdrant search.
  */
+
+import {
+	currentAiCallPurpose,
+	runWithAiCallPurpose,
+} from "@repo/ai/lib/call-purpose-context";
+import { createEmbeddingUsageLoggingMiddleware } from "@repo/ai/lib/usage-logging-middleware";
+import { wrapEmbeddingModel } from "ai";
+import { MockEmbeddingModelV4 } from "ai/test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -17,13 +25,21 @@ const mocks = vi.hoisted(() => ({
 	getEffectiveRagSettings: vi.fn(),
 	searchMultipleWorkspaces: vi.fn(),
 	generateEmbedding: vi.fn(),
+	rows: vi.fn(),
 }));
 
-// Full mocks, no `importOriginal`: the activity reads only these names, and
-// loading the real barrels would boot the Prisma pool and the provider registry
-// for a test that needs neither.
+// Stub data and provider boundaries, and import the retrieval implementation
+// directly so its purpose scope runs without loading the RAG barrel.
 vi.mock("@repo/database", () => ({
-	db: { workspaceDocumentChunk: { findMany: vi.fn() } },
+	logAiUsageAsync: mocks.rows,
+	db: {
+		workspaceDocumentChunk: { findMany: vi.fn() },
+		chatDocument: {
+			findMany: vi.fn(async () => [
+				{ id: "doc-example", filename: "example.txt", status: "READY" },
+			]),
+		},
+	},
 	filterWorkspaceIdsForTenant: (...args: unknown[]) =>
 		mocks.filterWorkspaceIdsForTenant(...args),
 	getDefaultRagSettings: () => ({ topK: 5, similarityThreshold: 0.3 }),
@@ -32,7 +48,33 @@ vi.mock("@repo/database", () => ({
 }));
 
 vi.mock("@repo/ai", () => ({
-	getRAGProviderConfig: vi.fn().mockResolvedValue({}),
+	getRAGProviderConfig: vi.fn().mockResolvedValue({ apiKey: "example-key" }),
+	getAIEmbeddingModelWithMetadata: async (
+		context: Record<string, unknown>,
+	) => ({
+		model: wrapEmbeddingModel({
+			model: new MockEmbeddingModelV4({
+				doEmbed: async () => ({
+					embeddings: [[0.1]],
+					usage: { tokens: 1 },
+					warnings: [],
+				}),
+			}),
+			middleware: createEmbeddingUsageLoggingMiddleware({
+				...context,
+				provider: "VERCEL_GATEWAY",
+				providerModelId: "example-embedding",
+			}),
+		}),
+		metadata: {
+			canonicalName: "text-embedding-3-small",
+			modelString: "openai/text-embedding-3-small",
+			provider: "VERCEL_GATEWAY",
+			selectionSource: "system_default",
+		},
+		trackUsage: vi.fn(),
+	}),
+	logEmbeddingUsageAsync: vi.fn(),
 }));
 
 vi.mock("@repo/rag/lib/workspace-documents/store", () => ({
@@ -40,12 +82,22 @@ vi.mock("@repo/rag/lib/workspace-documents/store", () => ({
 		mocks.searchMultipleWorkspaces(...args),
 }));
 
-vi.mock("@repo/rag", () => ({
+vi.mock("@repo/rag/lib/vector-store", () => ({
+	searchSimilarChunks: async () => [],
+}));
+
+vi.mock("@repo/rag", async () => ({
 	generateEmbedding: (...args: unknown[]) => mocks.generateEmbedding(...args),
+	formatContextForLLM: () => "context",
+	retrieveContext: (await import("@repo/rag/lib/retrieval/retriever"))
+		.retrieveContext,
 	generateSparseVector: () => ({ indices: [], values: [] }),
 }));
 
-import { retrieveWorkspaceDocumentsActivity } from "../rag-retrieval";
+import {
+	retrieveRagContextForDirectChatActivity,
+	retrieveWorkspaceDocumentsActivity,
+} from "../rag-retrieval";
 
 // Which organization hosts each workspace in these tests.
 const HOSTING_ORGANIZATION: Record<string, string | null> = {
@@ -79,6 +131,44 @@ describe("retrieveWorkspaceDocumentsActivity tenant filter", () => {
 		mocks.generateEmbedding.mockResolvedValue({ embedding: [0.1, 0.2] });
 		mocks.searchMultipleWorkspaces.mockResolvedValue([]);
 	});
+
+	it.each([
+		["Direct workflow", { usageConversationId: "example-chat" }],
+		["Parlume", undefined],
+		[
+			"Orchestrator",
+			{
+				usageConversationId: "example-chat",
+				usageOrigin: { featureKey: "chat-agent" as const },
+			},
+		],
+		[
+			"alternate feature attribution",
+			{ usageOrigin: { featureKey: "report-generation" as const } },
+		],
+	])(
+		"workspace operation owns its label via %s under another scope",
+		async (_caller, options) => {
+			const seen: (string | undefined)[] = [];
+			mocks.generateEmbedding.mockImplementation(async () => {
+				seen.push(currentAiCallPurpose());
+				return { embedding: [0.1] };
+			});
+			await runWithAiCallPurpose("compaction", () =>
+				retrieveWorkspaceDocumentsActivity(
+					"query",
+					"user-example",
+					"example-org-a",
+					["ws-a"],
+					undefined,
+					undefined,
+					undefined,
+					options,
+				),
+			);
+			expect(seen).toEqual(["workspace-retrieval-embedding"]);
+		},
+	);
 
 	it("searches only the workspaces hosted by the caller's organization", async () => {
 		await retrieveWorkspaceDocumentsActivity(
@@ -168,4 +258,40 @@ describe("retrieveWorkspaceDocumentsActivity tenant filter", () => {
 			).toBe(usageConversationId);
 		},
 	);
+	it("labels knowledge-fetcher workspace embeddings by the retrieval operation", async () => {
+		const seen: (string | undefined)[] = [];
+		mocks.generateEmbedding.mockImplementation(async () => {
+			seen.push(currentAiCallPurpose());
+			return { embedding: [0.1] };
+		});
+		const { fetchKnowledgeSources } = await import(
+			"../../agent-execution-core/knowledge-fetcher"
+		);
+		await fetchKnowledgeSources({
+			executionId: "example-execution",
+			userId: "example-user",
+			organizationId: "example-org-a",
+			knowledgeSources: [],
+			workspaceIds: ["ws-a"],
+			query: "example",
+		});
+		expect(seen).toEqual(["workspace-retrieval-embedding"]);
+	});
+});
+
+it("attached-document retrieval owns its label under an enclosing scope", async () => {
+	mocks.rows.mockClear();
+	await runWithAiCallPurpose("compaction", () =>
+		retrieveRagContextForDirectChatActivity(
+			"query",
+			"user-example",
+			"example-org-a",
+			"chat-example",
+			["doc-example"],
+		),
+	);
+	expect(mocks.rows).toHaveBeenCalledTimes(1);
+	expect(mocks.rows.mock.calls[0][0]).toMatchObject({
+		callPurpose: "chat-document-retrieval-embedding",
+	});
 });

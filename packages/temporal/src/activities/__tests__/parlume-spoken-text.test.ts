@@ -64,6 +64,32 @@ describe("flushing a sentence before a tool runs", () => {
 
 		await expect(collect(queue)).resolves.toEqual(["Creat"]);
 	});
+
+	it("keeps the words before a tool apart from the agent's words after it, as written", () => {
+		const spoken = new ParlumeSpokenReply(new ParlumeSentenceQueue(800));
+		spoken.push("Let me check the roadmap's open features.");
+		spoken.speech.flush();
+		// The agent's next block starts with no space of its own.
+		spoken.push("There's **one open feature** on the project roadmap.");
+		spoken.end();
+
+		expect(spoken.unheardText(0)).toBe(
+			"Let me check the roadmap's open features. There's **one open feature** on the project roadmap.",
+		);
+	});
+
+	it("keeps an overflowing block before a tool apart from the next one", () => {
+		const queue = new ParlumeSentenceQueue(10);
+		queue.push("I'll check the roadmap for all features.");
+		queue.flush();
+		queue.push("I'll retrieve the feature's full details.");
+		queue.flush();
+		queue.end();
+
+		expect(queue.overflowText).toBe(
+			"I'll check the roadmap for all features. I'll retrieve the feature's full details.",
+		);
+	});
 });
 
 describe("Parlume spoken sentences", () => {

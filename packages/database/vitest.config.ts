@@ -5,6 +5,8 @@ import { defineConfig } from "vitest/config";
 // DATABASE_URL. They have dedicated scripts (`test:rls`, etc.) for local
 // or integration-CI invocation.
 const INTEGRATION_TESTS = [
+	"__tests__/decision-replay.integration.test.ts",
+	"__tests__/decision-replay-capture.integration.test.ts",
 	"__tests__/workflow-integration-usage-scope.integration.test.ts",
 	"__tests__/authority.test.ts",
 	"__tests__/authority-policy.test.ts",
@@ -20,6 +22,8 @@ const INTEGRATION_TESTS = [
 	"__tests__/rls/incident-tables.test.ts",
 	// Governed stage-request RLS regression (real Postgres, NOSUPERUSER role).
 	"__tests__/rls-stage-requests.integration.test.ts",
+	// Tenant extension batch transaction context (restricted LOGIN role).
+	"__tests__/tenant-db-rls-context.integration.test.ts",
 	// Discovery run posting vs cancel vs completion under real row locks.
 	"__tests__/discovery-run-contention.integration.test.ts",
 	// Workflow execution in-flight cap under concurrent reservations (a

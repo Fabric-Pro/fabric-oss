@@ -11,10 +11,8 @@
  * ## The rules every emission here obeys
  *
  * **A metrics write may never fail the action it describes.** Each function is
- * total: it swallows everything, logs a warning, and resolves. That is the same
- * contract `accept-clean-spec-patch.ts` states at its own call site, hoisted
- * here so a new emission point cannot forget it — a `try`/`catch` a caller has
- * to remember is a guard that holds until somebody adds the fifth caller.
+ * total: it swallows everything, logs a warning, and resolves. This module
+ * enforces that contract at every emission point so callers cannot forget it.
  *
  * **Emit AFTER the mutation commits.** Every caller records once its own write
  * has returned successfully, so a dropped row costs one measurement and the

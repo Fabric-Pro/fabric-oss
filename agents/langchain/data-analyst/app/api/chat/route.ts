@@ -11,7 +11,7 @@ import { openai } from "@ai-sdk/openai";
 import { anthropic } from "@ai-sdk/anthropic";
 import { google } from "@ai-sdk/google";
 import { createMCPClient } from "@ai-sdk/mcp";
-import { z } from "zod/v4";
+import { z } from "zod";
 import { auth } from "@/lib/auth";
 import { DEFAULT_MODEL, getAnthropicModelName } from "@/lib/constants";
 import { handleClaudeAgentsFramework } from "@/lib/frameworks/claude-agents";

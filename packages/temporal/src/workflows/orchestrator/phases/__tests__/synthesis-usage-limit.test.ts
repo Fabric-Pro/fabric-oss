@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
 	const activities = new Map<string, ReturnType<typeof vi.fn>>();
@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => {
 	};
 });
 vi.mock("@temporalio/workflow", () => ({
+	workflowInfo: () => ({ startTime: new Date(0) }),
 	log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 	patched: vi.fn((id: string) => !mocks.off.has(id)),
 	proxyActivities: vi.fn(
@@ -36,6 +37,8 @@ import { installDefaultStubs } from "./advisor-scenario-harness";
 
 beforeEach(() => {
 	installDefaultStubs(mocks);
+	// These scenarios pin the pre-main-round budget contract.
+	mocks.off.add("orch-main-round-budget-v1");
 	vi.mocked(patched).mockClear();
 	mocks.stub("preloadMcpToolsForConfigsActivity").mockResolvedValue([]);
 });
@@ -51,6 +54,8 @@ describe("a usage refusal during final synthesis", () => {
 				[false, false],
 			]) {
 				installDefaultStubs(mocks);
+				// These scenarios pin the pre-main-round budget contract.
+				mocks.off.add("orch-main-round-budget-v1");
 				vi.mocked(patched).mockClear();
 				mocks
 					.stub("preloadMcpToolsForConfigsActivity")
@@ -189,8 +194,15 @@ describe("a usage refusal during final synthesis", () => {
 					]?.[0],
 				).toMatchObject({
 					availableTools: {},
+					callPurpose: "synthesis",
 					enableSkillTools: false,
 				});
+				if (!skipEnabled) {
+					expect(
+						mocks.stub("runAgentIteration").mock.calls.at(-1)?.[0],
+					).toMatchObject({ callPurpose: "synthesis-retry" });
+				}
+
 				expect(patched).toHaveBeenCalledWith(
 					"orch-synthesis-usage-limit-skip-v1",
 				);
@@ -200,9 +212,7 @@ describe("a usage refusal during final synthesis", () => {
 						shouldContinue: false,
 						usageLimit: { limitId: "example-limit" },
 					});
-					if (caller === "budget") {
-						expect(state.budgetStop?.measured).toBe(475000);
-					}
+					expect(state.budgetStop).toBeUndefined();
 					continue;
 				}
 				expect(result.success).toBe(true);
@@ -213,4 +223,58 @@ describe("a usage refusal during final synthesis", () => {
 			}
 		},
 	);
+});
+
+afterEach(() => vi.restoreAllMocks());
+
+it("clears the round stop when the synthesis retry reaches a usage limit", async () => {
+	vi.spyOn(Date, "now").mockReturnValue(0);
+	const input = {
+		executionId: "example-execution",
+		turnId: "example-turn",
+		userId: "example-user",
+		organizationId: "example-org",
+		message: "Summarize progress",
+		history: [],
+		executionMode: "balanced" as const,
+	};
+	const state = createInitialState(input);
+	state.advisorBudgetEnabled = true;
+	state.mainRounds = 1;
+	mocks
+		.stub("runAgentIteration")
+		.mockResolvedValueOnce({
+			type: "response",
+			content: "Short",
+			usage: { inputTokens: 1, outputTokens: 1 },
+		})
+		.mockResolvedValueOnce({
+			type: "stream_error",
+			message: "AI usage limit exceeded",
+			partialResponse: "",
+			usage: { inputTokens: 0, outputTokens: 0 },
+			usageLimit: {
+				message: "AI usage limit exceeded",
+				limitId: "example-limit",
+				dimension: "TOKENS",
+				window: "DAILY",
+				used: "10",
+				max: "10",
+				manageLimitsUrl: "",
+			},
+		});
+	const result = await executeIterativePhase(
+		state,
+		input,
+		{ maxIterations: 1, maxTotalTokens: 1000000 } as never,
+		{} as never,
+		vi.fn(),
+		vi.fn(),
+		() => false,
+	);
+	expect(result).toMatchObject({
+		success: false,
+		usageLimit: { limitId: "example-limit" },
+	});
+	expect(state.budgetStop).toBeUndefined();
 });

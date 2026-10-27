@@ -104,7 +104,7 @@ export const FABRIC_FRAME_TOOL_DEFINITIONS = defineFabricTools([
 	{
 		name: "fabric_update_frame",
 		description:
-			"Updates title, description, blocks or runtimeTools; omitted fields stay. frameId defaults to open Workspace. Runtime: see fabric_create_frame.",
+			"Updates title, description, blocks or runtimeTools; omitted fields stay. To change text inside a block use fabric_edit_frame_block. frameId defaults to open Workspace. Runtime: see fabric_create_frame.",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -121,13 +121,45 @@ export const FABRIC_FRAME_TOOL_DEFINITIONS = defineFabricTools([
 		confirm: ASK_WHEN_GIVEN_TOOLS,
 	},
 	{
+		name: "fabric_edit_frame_block",
+		description:
+			"Replaces exact text in one saved block without resending it. First read fabric_get_frame outline:true, then the block's source window. oldText must match once unless replaceAll. Pass the latest read or edit updatedAt as expectedUpdatedAt; on conflict re-read.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				frameId: { type: "string", minLength: 1 },
+				blockId: { type: "string", minLength: 1 },
+				edits: {
+					type: "array",
+					minItems: 1,
+					maxItems: 20,
+					items: {
+						type: "object",
+						properties: {
+							oldText: { type: "string", minLength: 1 },
+							newText: { type: "string" },
+							replaceAll: { type: "boolean" },
+						},
+						required: ["oldText", "newText"],
+					},
+				},
+				expectedUpdatedAt: { type: "string", format: "date-time" },
+			},
+			required: ["frameId", "blockId", "edits"],
+		},
+		annotations: REWRITE,
+		scope: "frames:write",
+		confirm: ASK_WHEN_GIVEN_TOOLS,
+	},
+	{
 		name: "fabric_get_frame",
 		description:
-			"Reads blocks/surface/tools and published share URL. frameId defaults to open Workspace. For edits read offset:0,limit:6000; blockId defaults to first. Follow nextOffset; join only matching updatedAt chunks, restarting on change. Never edit summaries.",
+			"Reads blocks/surface/tools and published share URL. frameId defaults to open Workspace. outline:true lists block ids/types/sizes only. For edits read blockId with offset:0,limit:6000, follow nextOffset, restart on updatedAt change, then use fabric_edit_frame_block. Never edit summaries.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				frameId: { type: "string" },
+				outline: { type: "boolean" },
 				blockId: { type: "string", minLength: 1 },
 				offset: { type: "integer", minimum: 0 },
 				limit: { type: "integer", minimum: 1, maximum: 6_000 },

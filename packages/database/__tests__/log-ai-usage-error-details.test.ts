@@ -97,6 +97,21 @@ describe("logAiUsage — errorDetails redaction, success gating, and size cap", 
 		usageLogCreate.mockResolvedValue({ id: "usage-1" });
 	});
 
+	it("persists call purpose without replacing feature or job attribution", async () => {
+		const usage = {
+			...BASE_USAGE,
+			featureKey: "chat-agent",
+			jobType: "scheduled-report",
+			callPurpose: "intent-clarity",
+		};
+		await logAiUsage(usage);
+		expect(usageLogCreate.mock.calls[0][0].data).toMatchObject({
+			featureKey: "chat-agent",
+			jobType: "scheduled-report",
+			callPurpose: "intent-clarity",
+		});
+	});
+
 	it("redacts a sensitive-shaped key nested inside errorDetails before persisting", async () => {
 		await logAiUsage({
 			...BASE_USAGE,

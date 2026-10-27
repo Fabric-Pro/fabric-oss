@@ -65,7 +65,11 @@ const updateArgs = { frameId: "frame-1", title: "Renamed" };
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	mocks.updateFrame.mockResolvedValue({ id: "frame-1", title: "Renamed" });
+	mocks.updateFrame.mockResolvedValue({
+		id: "frame-1",
+		title: "Renamed",
+		updatedAt: new Date("2026-10-14T10:00:00Z"),
+	});
 	mocks.shareFrame.mockResolvedValue({
 		ok: true,
 		scope: "PUBLIC",

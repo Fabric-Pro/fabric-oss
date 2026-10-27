@@ -6,6 +6,8 @@
  * from project integrations and calls the code search APIs.
  */
 
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { findAiUsageLimitError } from "@repo/ai/lib/find-usage-limit-error";
 import type { RepositoryStructure } from "@repo/connectors";
 // Static, not `await import(...)`: the worker runs under tsx, where a dynamic
@@ -185,12 +187,16 @@ export class CodeSearchHandler implements StepHandler {
 			"@repo/rag/lib/project-contexts/client"
 		);
 
-		const embeddingResult = await generateEmbedding(query, {
-			conversationId: usageConversationId,
-			userId,
-			organizationId: organizationId ?? undefined,
-			featureKey: "code-index",
-		});
+		const embeddingResult = await runWithAiCallPurpose(
+			AI_CALL_PURPOSES.codeSearchEmbedding,
+			() =>
+				generateEmbedding(query, {
+					conversationId: usageConversationId,
+					userId,
+					organizationId: organizationId ?? undefined,
+					featureKey: "code-index",
+				}),
+		);
 
 		const collectionName = await ensureCollection(
 			"project-contexts",

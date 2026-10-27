@@ -13,7 +13,7 @@ type TurnResult = Pick<
 	| "terminalReason"
 	| "createdAt"
 	| "limitSignalSummary"
->;
+> & { budgetStop?: Prisma.JsonValue };
 
 function object(value: unknown): Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -46,6 +46,26 @@ export function hydrateConversationTurnResults(
 		: [];
 	const messages = [...originalMessages];
 	const metadata = { ...object(conversation.metadata) };
+	const latest = [...turns]
+		.sort(
+			(a, b) =>
+				(b.generation ?? -1) - (a.generation ?? -1) ||
+				b.createdAt.getTime() - a.createdAt.getTime(),
+		)
+		.find((t) => t.generation !== null && t.executionId !== null);
+	if (latest) {
+		metadata.latestTurn = {
+			id: latest.id,
+			executionId: latest.executionId,
+			status: latest.status,
+			generation: latest.generation,
+			budgetStop: latest.budgetStop ?? null,
+			questionText: latest.questionText,
+			responseText: latest.responseText,
+		};
+	} else {
+		delete metadata.latestTurn;
+	}
 	const executions: unknown[] = Array.isArray(metadata.executions)
 		? [...metadata.executions]
 		: [];
@@ -70,7 +90,9 @@ export function hydrateConversationTurnResults(
 				generation > turn.generation
 			);
 		};
-	let changed = false;
+	let changed =
+		latest !== undefined ||
+		object(conversation.metadata).latestTurn !== undefined;
 	for (const turn of turns) {
 		const id = turn.executionId;
 		if (!id) {

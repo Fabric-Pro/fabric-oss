@@ -2,18 +2,18 @@
  * Registration guard for the MCP OAuth-state cleanup schedule.
  *
  * The cleanup used to be a Vercel cron route, so it ran only where Vercel Cron
- * triggered it (`apps/web/vercel.json`); the Docker/Azure build never purged
+ * triggered it (`apps/web/vercel.json`); the Docker/Azure build did not purge
  * expired rows. It is now a Temporal schedule registered at worker startup.
  * Failures this file covers are silent in production: a registration function
  * nobody calls, a `workflowType` no worker resolves, an activity the worker
- * never registers, an `already exists` rejection that fails the second boot,
+ * does not register, an `already exists` rejection that fails the second boot,
  * and the old cron still being declared (a double run).
  *
  * Mocks mirror `pm-sync-stuck-watchdog-schedule.test.ts`.
  */
 
 import type { ScheduleClient } from "@temporalio/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 const { scheduleCreate, FakeScheduleAlreadyRunning, FakeScheduleClient } =
 	vi.hoisted(() => {
@@ -50,6 +50,13 @@ import {
 	registerSystemSchedules,
 } from "../src/schedules";
 
+// The worker barrel loads the provider/database dependency graph. Give that
+// setup its own budget under parallel transforms; assertions keep the test timeout.
+let activities: typeof import("../src/activities");
+beforeAll(async () => {
+	activities = await import("../src/activities");
+}, 120_000);
+
 function fakeClient(create = scheduleCreate): ScheduleClient {
 	return { create } as unknown as ScheduleClient;
 }
@@ -60,7 +67,7 @@ afterEach(() => {
 });
 
 describe("the MCP OAuth-state cleanup schedule", () => {
-	it("creates the schedule with exactly this payload", async () => {
+	it("creates the expected schedule payload", async () => {
 		await registerMcpOAuthStateCleanupSchedule(fakeClient());
 
 		expect(scheduleCreate).toHaveBeenCalledTimes(1);
@@ -96,7 +103,6 @@ describe("the MCP OAuth-state cleanup schedule", () => {
 	});
 
 	it("uses an activity the top-level activities barrel registers, and nothing else from its module", async () => {
-		const activities = await import("../src/activities");
 		expect(Object.keys(activities)).toContain(
 			"cleanupExpiredMcpOAuthStatesActivity",
 		);

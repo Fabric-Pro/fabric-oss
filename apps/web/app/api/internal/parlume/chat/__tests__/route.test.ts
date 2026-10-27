@@ -12,8 +12,12 @@ vi.mock("@repo/database", () => ({
 }));
 
 vi.mock("@repo/api/modules/projects/lib/parlume-attendee", () => ({
-	getParlumeBridgeSettings: () => mocks.settings(),
 	sendParlumeMeetingChat: (...args: unknown[]) => mocks.send(...args),
+}));
+
+vi.mock("@repo/api/modules/projects/lib/parlume-provider-settings", () => ({
+	resolveParlumeAttendeeSettings: (...args: unknown[]) =>
+		mocks.settings(...args),
 }));
 
 vi.mock("@repo/api/modules/projects/lib/parlume-log", () => ({
@@ -39,14 +43,22 @@ const message = {
 	message: "The project is Example Project.",
 };
 
+const attendee = {
+	apiKey: "org-key",
+	baseUrl: "https://attendee.example.com",
+	teamsLoginMode: null,
+	source: "organization",
+};
+
 beforeEach(() => {
 	vi.resetAllMocks();
 	process.env.AGENT_SERVICE_SECRET = "service-secret";
 	mocks.findFirst.mockResolvedValue({
 		id: "session-1",
 		providerBotId: "bot-1",
+		organizationId: "org-1",
 	});
-	mocks.settings.mockReturnValue({ apiKey: "operator-key" });
+	mocks.settings.mockResolvedValue(attendee);
 	mocks.send.mockResolvedValue(undefined);
 });
 
@@ -74,11 +86,21 @@ describe("Parlume meeting chat fallback", () => {
 				},
 			}),
 		);
+		expect(mocks.settings).toHaveBeenCalledWith("org-1");
 		expect(mocks.send).toHaveBeenCalledWith({
-			settings: { apiKey: "operator-key" },
+			attendee,
 			providerBotId: "bot-1",
 			message: "The project is Example Project.",
 		});
+	});
+
+	it("reports the meeting bot unavailable when no Attendee settings resolve", async () => {
+		mocks.settings.mockResolvedValue(null);
+
+		const response = await POST(request(message));
+
+		expect(response.status).toBe(503);
+		expect(mocks.send).not.toHaveBeenCalled();
 	});
 
 	it("refuses a session that is no longer in the meeting", async () => {

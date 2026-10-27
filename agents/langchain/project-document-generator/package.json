@@ -35,7 +35,7 @@
 		"hono": "^4.13.11",
 		"undici": "^8.5.0",
 		"uuid": "^14.0.2",
-		"zod": "^3.25.76"
+		"zod": "^4.6.7"
 	},
 	"devDependencies": {
 		"@langchain/langgraph-cli": "1.4.5",

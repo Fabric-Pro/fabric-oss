@@ -62,21 +62,28 @@ export function applyDatabricksChatBodyCompat(
  * rewritten) body string; input is returned unchanged when it isn't JSON or
  * nothing needed rewriting.
  */
-export function stripUnsupportedRequestFields(bodyText: string): string {
+export function stripUnsupportedRequestFields(
+	bodyText: string,
+	promptCache?: boolean,
+): string {
 	return stripSharedUnsupportedRequestFields(
 		bodyText,
 		applyDatabricksChatBodyCompat,
+		promptCache,
 	);
 }
 
 /**
  * The shared Databricks `fetch` wrapper with the Vercel-path request-body rule
- * ({@link applyDatabricksChatBodyCompat}). Same signature as before the shim
- * moved to `@repo/agent-types`; `stripReasoning` is passed through.
+ * ({@link applyDatabricksChatBodyCompat}). Passes canonical prompt-cache and
+ * reasoning options through to the shared adapter.
  */
 export function createDatabricksFetch(
 	baseFetch: typeof fetch = fetch,
-	options: Pick<DatabricksFetchOptions, "stripReasoning"> = {},
+	options: Pick<
+		DatabricksFetchOptions,
+		"stripReasoning" | "promptCache"
+	> = {},
 ): typeof fetch {
 	return createSharedDatabricksFetch(baseFetch, {
 		...options,

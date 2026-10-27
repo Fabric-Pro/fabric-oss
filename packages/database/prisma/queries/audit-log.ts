@@ -262,6 +262,7 @@ export const AUDIT_ACTIONS = [
 	"project.parlume.session_started",
 	"project.parlume.action_confirmed",
 	"project.parlume.session_stopped",
+	"project.parlume.auto_join_changed",
 	// Channel/chat context-source lifecycle (#2355). The same two intentions the
 	// meeting rows record, for the Teams and Slack monitors: scanning was paused
 	// or resumed, and the account a monitor collects under was changed. The second

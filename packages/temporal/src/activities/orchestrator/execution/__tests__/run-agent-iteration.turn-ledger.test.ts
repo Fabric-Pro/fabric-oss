@@ -59,6 +59,7 @@ vi.mock("../../utils", () => ({
 	getAiModelWithSelection: vi.fn(async () => ({
 		model: { __mockModel: true },
 		canonicalName: "example-model",
+		planSpentApiBilling: () => undefined,
 	})),
 }));
 vi.mock("@repo/database", () => ({

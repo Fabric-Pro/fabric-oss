@@ -48,6 +48,7 @@ vi.mock("@temporalio/workflow", () => ({
 			new Proxy({}, { get: (_target, name) => mocks.stub(String(name)) }),
 	),
 	workflowInfo: vi.fn(() => ({
+		startTime: new Date(Date.now()),
 		runId: "test-run-id",
 		unsafe: { isReplaying: false },
 	})),
@@ -370,6 +371,10 @@ describe("where the markers are taken", () => {
 });
 
 describe("(f) budget exhaustion still answers as before", () => {
+	beforeEach(() => {
+		mocks.off.add("orch-main-round-budget-v1");
+		mocks.off.add("orch-synthesis-write-outcomes-v1");
+	});
 	// maxIterations 3 leaves two tool rounds before the synthesis reserve.
 	const LIMITED = { maxIterations: 3 };
 	const TWO_ROUNDS: Step[] = [
@@ -403,6 +408,7 @@ describe("(f) budget exhaustion still answers as before", () => {
 		expect(Object.keys(req).sort()).toEqual(
 			[
 				"availableTools",
+				"callPurpose",
 				"conversationHistory",
 				"enableSkillTools",
 				"executionId",
@@ -416,6 +422,7 @@ describe("(f) budget exhaustion still answers as before", () => {
 			].sort(),
 		);
 		expect(req).toMatchObject({
+			callPurpose: "synthesis",
 			availableTools: {},
 			maxStepsPerIteration: 1,
 			enableSkillTools: false,

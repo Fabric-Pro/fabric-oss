@@ -277,6 +277,7 @@ export function describeConsequence(request: ChatConfirmationRequest): string {
 		case "fabric_execute_workflow":
 			return "Approving starts one run now.";
 		case "fabric_create_frame":
+		case "fabric_edit_frame_block":
 		case "fabric_update_frame": {
 			const tools = pageToolsOf(request);
 			return tools.length > 0

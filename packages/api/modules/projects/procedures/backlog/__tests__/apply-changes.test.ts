@@ -31,7 +31,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		runDecisionPrecheck: vi.fn(),
 		getPendingBacklogProposal: vi.fn(),
 		getAppliedChangeIndexes: vi.fn(),
-		claimPendingProposalForApply: vi.fn(),
+		claimPendingProposalWithReview: vi.fn(),
 		finalizeClaimedProposal: vi.fn(),
 		getBoundPromptForAgent: vi.fn(),
 		markProposalApplyDispatched: vi.fn(),
@@ -59,7 +59,7 @@ vi.mock("@repo/database", () => ({
 	markProposalApplyDispatched: mocks.markProposalApplyDispatched,
 	getPendingBacklogProposal: mocks.getPendingBacklogProposal,
 	getAppliedChangeIndexes: mocks.getAppliedChangeIndexes,
-	claimPendingProposalForApply: mocks.claimPendingProposalForApply,
+	claimPendingProposalWithReview: mocks.claimPendingProposalWithReview,
 	finalizeClaimedProposal: mocks.finalizeClaimedProposal,
 	getBoundPromptForAgent: mocks.getBoundPromptForAgent,
 	createPendingBacklogProposal: (...args: unknown[]) => {
@@ -142,6 +142,7 @@ beforeEach(() => {
 		}
 	}
 	mocks.callOrder.length = 0;
+	mocks.claimPendingProposalWithReview.mockResolvedValue(true);
 	mocks.projectFindUnique.mockResolvedValue({
 		id: "project-1",
 		organizationId: "org-1",
@@ -733,7 +734,7 @@ describe("applyChangesProcedure — ROADMAP_RECOMMENDATION accept (Fizzy #2208)"
 		});
 		mocks.getAppliedChangeIndexes.mockResolvedValue(new Set<number>());
 		// Stop right after the claim; these cases pin the pre-flight + claim.
-		mocks.claimPendingProposalForApply.mockResolvedValue(false);
+		mocks.claimPendingProposalWithReview.mockResolvedValue(false);
 	}
 
 	const acceptInput = { ...baseInput, proposalId: "batch-1" };
@@ -765,7 +766,7 @@ describe("applyChangesProcedure — ROADMAP_RECOMMENDATION accept (Fizzy #2208)"
 				projectId: "project-1",
 			}),
 		);
-		expect(mocks.claimPendingProposalForApply).not.toHaveBeenCalled();
+		expect(mocks.claimPendingProposalWithReview).not.toHaveBeenCalled();
 		expect(mocks.workflowStart).not.toHaveBeenCalled();
 	});
 
@@ -779,12 +780,14 @@ describe("applyChangesProcedure — ROADMAP_RECOMMENDATION accept (Fizzy #2208)"
 			handlers.applyChanges({ input: acceptInput, context: ctx }),
 		).rejects.toBeInstanceOf(ORPCError);
 
-		expect(mocks.claimPendingProposalForApply).toHaveBeenCalledWith({
-			proposalId: "batch-1",
-			reviewedBy: "user-1",
-			applyWorkflowId: expect.any(String),
-			admitBacklog: true,
-		});
+		expect(mocks.claimPendingProposalWithReview).toHaveBeenCalledWith(
+			expect.objectContaining({
+				proposalId: "batch-1",
+				reviewedBy: "user-1",
+				applyWorkflowId: expect.any(String),
+				admitBacklog: true,
+			}),
+		);
 	});
 
 	it("stamps the dispatch of a claimed batch as the claimant, not as a fresh row", async () => {
@@ -792,11 +795,12 @@ describe("applyChangesProcedure — ROADMAP_RECOMMENDATION accept (Fizzy #2208)"
 		mocks.getBoundPromptForAgent.mockResolvedValue({
 			version: { content: "clean spec" },
 		});
-		mocks.claimPendingProposalForApply.mockResolvedValue(true);
+		mocks.claimPendingProposalWithReview.mockResolvedValue(true);
 
 		await handlers.applyChanges({ input: acceptInput, context: ctx });
 
-		const claim = mocks.claimPendingProposalForApply.mock.calls[0]?.[0] as {
+		const claim = mocks.claimPendingProposalWithReview.mock
+			.calls[0]?.[0] as {
 			applyWorkflowId: string;
 		};
 		expect(mocks.markProposalApplyDispatched).toHaveBeenCalledWith({
@@ -814,11 +818,13 @@ describe("applyChangesProcedure — ROADMAP_RECOMMENDATION accept (Fizzy #2208)"
 		).rejects.toBeInstanceOf(ORPCError);
 
 		expect(mocks.getBoundPromptForAgent).not.toHaveBeenCalled();
-		expect(mocks.claimPendingProposalForApply).toHaveBeenCalledWith({
-			proposalId: "batch-1",
-			reviewedBy: "user-1",
-			applyWorkflowId: expect.any(String),
-		});
+		expect(mocks.claimPendingProposalWithReview).toHaveBeenCalledWith(
+			expect.objectContaining({
+				proposalId: "batch-1",
+				reviewedBy: "user-1",
+				applyWorkflowId: expect.any(String),
+			}),
+		);
 	});
 });
 
@@ -832,7 +838,7 @@ describe("workflow start failure messages", () => {
 			proposal: { changes: [baseChange] },
 		});
 		mocks.getAppliedChangeIndexes.mockResolvedValue(new Set<number>());
-		mocks.claimPendingProposalForApply.mockResolvedValue(true);
+		mocks.claimPendingProposalWithReview.mockResolvedValue(true);
 		mocks.finalizeClaimedProposal.mockResolvedValue(true);
 		mocks.workflowStart.mockRejectedValueOnce(
 			Object.assign(
@@ -889,5 +895,175 @@ describe("workflow start failure messages", () => {
 					}),
 				);
 		},
+	);
+});
+
+describe("review submission snapshots", () => {
+	it("keeps eight offered entries and five approved-only row changes", async () => {
+		const offered = Array.from({ length: 8 }, (_, i) => ({
+			action: "create",
+			type: "feature",
+			title: `Offered ${i}`,
+		}));
+		const selected = [0, 2, 3, 5, 7].map((i) => ({
+			...baseChange,
+			title: { to: `Edited ${i}` },
+		}));
+		await handlers.applyChanges({
+			input: {
+				...baseInput,
+				approvedChanges: selected,
+				approvedChangeIndexes: [0, 2, 3, 5, 7],
+				offeredChanges: offered,
+			},
+			context: ctx,
+		});
+		expect(
+			mocks.createPendingBacklogProposal.mock.calls[0]?.[0],
+		).toMatchObject({ proposal: { changes: selected }, changeCount: 5 });
+		const claim = mocks.claimPendingProposalWithReview.mock.calls[0]?.[0];
+		expect(claim.offeredListComplete).toBe(true);
+		expect(claim.entries).toHaveLength(8);
+		expect(
+			claim.entries
+				.filter((e: { selected: boolean }) => e.selected)
+				.map((e: { changeIndex: number }) => e.changeIndex),
+		).toEqual([0, 1, 2, 3, 4]);
+		expect(
+			claim.entries
+				.filter((e: { selected: boolean }) => !e.selected)
+				.map((e: { changeIndex: number | null }) => e.changeIndex),
+		).toEqual([null, null, null]);
+	});
+	it("applies an edited routing override by original index and records resubmitted applied entries", async () => {
+		mocks.getPendingBacklogProposal.mockResolvedValue({
+			id: "example-proposal",
+			projectId: baseInput.projectId,
+			source: "SCOPE_DOCUMENT",
+			proposal: { changes: [baseChange, baseChange, baseChange] },
+			appliedChangeIndexes: [0],
+		});
+		mocks.getAppliedChangeIndexes.mockResolvedValue(new Set());
+		const edited = {
+			...baseChange,
+			action: "update",
+			existingId: "example-story",
+			title: { to: "Edited title" },
+		};
+		await handlers.applyChanges({
+			input: {
+				...baseInput,
+				proposalId: "example-proposal",
+				approvedChanges: [baseChange, edited],
+				approvedChangeIndexes: [0, 2],
+				pmSyncOverrides: { 1: { skip: true } },
+			},
+			context: ctx,
+		});
+		const claim = mocks.claimPendingProposalWithReview.mock.calls[0]?.[0];
+		expect(
+			claim.entries.map((e: { selected: boolean }) => e.selected),
+		).toEqual([true, false, true]);
+		expect(claim.entries[2].change).toEqual(edited);
+		expect(mocks.workflowStart.mock.calls[0]?.[1].args[0]).toMatchObject({
+			approvedChanges: [edited],
+			approvedChangeIndexes: [2],
+			pmSyncOverrides: { 0: { skip: true } },
+		});
+	});
+	it.each([[3], [0, 0], []].map((indexes) => ({ indexes })))(
+		"rejects invalid explicit identity %j before claiming",
+		async ({ indexes }) => {
+			mocks.getPendingBacklogProposal.mockResolvedValue({
+				id: "example-proposal",
+				projectId: baseInput.projectId,
+				proposal: { changes: [baseChange, baseChange] },
+			});
+			await expect(
+				handlers.applyChanges({
+					input: {
+						...baseInput,
+						proposalId: "example-proposal",
+						approvedChanges:
+							indexes.length === 2
+								? [baseChange, baseChange]
+								: [baseChange],
+						approvedChangeIndexes: indexes,
+					},
+					context: ctx,
+				}),
+			).rejects.toMatchObject({ code: "BAD_REQUEST" });
+			expect(mocks.claimPendingProposalWithReview).not.toHaveBeenCalled();
+			expect(mocks.workflowStart).not.toHaveBeenCalled();
+		},
+	);
+});
+
+it("counts the offered list in the payload limit before creating a proposal", async () => {
+	await expect(
+		handlers.applyChanges({
+			input: {
+				...baseInput,
+				approvedChangeIndexes: [0],
+				offeredChanges: [
+					{
+						action: "create",
+						type: "feature",
+						title: "x".repeat(1_000_001),
+					},
+				],
+			},
+			context: ctx,
+		}),
+	).rejects.toMatchObject({ code: "RESOURCE_EXHAUSTED" });
+	expect(mocks.createPendingBacklogProposal).not.toHaveBeenCalled();
+	expect(mocks.workflowStart).not.toHaveBeenCalled();
+});
+it("truncates an unselected title in its durable snapshot without rejecting the review", async () => {
+	await handlers.applyChanges({
+		input: {
+			...baseInput,
+			approvedChangeIndexes: [0],
+			offeredChanges: [
+				{ action: "create", type: "feature", title: "Selected" },
+				{ action: "create", type: "feature", title: "x".repeat(5000) },
+			],
+		},
+		context: ctx,
+	});
+	const review = mocks.claimPendingProposalWithReview.mock.calls[0]?.[0];
+	expect(review.offeredListComplete).toBe(true);
+	expect(review.entries[1]).toMatchObject({
+		selected: false,
+		change: { title: "x".repeat(500) },
+	});
+});
+it("marks its newly created non-keyed row failed when the review transaction throws", async () => {
+	mocks.claimPendingProposalWithReview.mockRejectedValue(
+		new Error("example review insert failure"),
+	);
+	await expect(
+		handlers.applyChanges({ input: baseInput, context: ctx }),
+	).rejects.toMatchObject({ code: "INTERNAL_SERVER_ERROR" });
+	expect(mocks.pendingBacklogProposalUpdate).toHaveBeenCalledWith(
+		expect.objectContaining({
+			where: expect.objectContaining({
+				id: "proposal-new-1",
+				status: "PENDING",
+				applyWorkflowId: null,
+			}),
+			data: expect.objectContaining({
+				status: "FAILED",
+				errorClass: "ProposalReviewFailed",
+			}),
+		}),
+	);
+	expect(mocks.workflowStart).not.toHaveBeenCalled();
+});
+
+it("marks old-client sidebar offered lists as incomplete", async () => {
+	await handlers.applyChanges({ input: baseInput, context: ctx });
+	expect(mocks.claimPendingProposalWithReview).toHaveBeenCalledWith(
+		expect.objectContaining({ offeredListComplete: false }),
 	);
 });

@@ -17,6 +17,7 @@ import {
 	SystemMessage,
 	ToolMessage,
 } from "@langchain/core/messages";
+import { logAgentUsageFromRunnableConfig } from "@repo/agent-core/services/usage-logging";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	chatNode,
@@ -4340,5 +4341,80 @@ describe("Project Document Generator Chat Node - Finalize mode (issue #2999)", (
 				(m) => (m as ToolMessage).tool_call_id === "call_same",
 			),
 		).toBe(true);
+	});
+});
+
+describe("reply provenance calls", () => {
+	it("returns without waiting on a pending usage POST and attributes both reply calls", async () => {
+		mockInvoke.mockReset();
+		const usageLogger = vi.mocked(logAgentUsageFromRunnableConfig);
+		usageLogger.mockClear();
+		const realLogger = await vi.importActual<
+			typeof import("@repo/agent-core/services/usage-logging")
+		>("@repo/agent-core/services/usage-logging");
+		const id = "msg_1793000000000_0123456789abcdef0123456789abcdef";
+		let releasePost!: () => void;
+		const pendingPost = new Promise<void>((resolve) => {
+			releasePost = resolve;
+		});
+		const sends: Promise<void>[] = [];
+		const post = vi.fn(async () => {
+			await pendingPost;
+			return new Response(null, { status: 204 });
+		});
+		vi.stubGlobal("fetch", post);
+		usageLogger.mockImplementation((...args) => {
+			const send = realLogger.logAgentUsageFromRunnableConfig(...args);
+			sends.push(send);
+			return send;
+		});
+		mockInvoke.mockResolvedValueOnce(
+			new AIMessage({
+				content: "",
+				response_metadata: { finish_reason: "length" },
+			}),
+		);
+		mockInvoke.mockResolvedValueOnce(
+			new AIMessage({ content: "Example final reply" }),
+		);
+		let returned = false;
+		const done = chatNode(
+			createMockState({
+				document: "Example document",
+				messages: [new HumanMessage("Example question")],
+			}),
+			{
+				configurable: {
+					output_message_id: id,
+					ai_token: "example-token",
+					ai_provider: "VERCEL_GATEWAY",
+					ai_model: "example-model",
+				},
+			},
+		).then((command) => {
+			returned = true;
+			return command;
+		});
+		try {
+			await vi.waitFor(() => expect(post).toHaveBeenCalledOnce());
+			await vi.waitFor(() => expect(returned).toBe(true));
+			expect(mockInvoke).toHaveBeenCalledTimes(2);
+			expect(usageLogger.mock.calls.map((call) => call[2])).toEqual([
+				expect.objectContaining({
+					agentId: "project_document_generator",
+					outputMessageId: id,
+				}),
+				expect.objectContaining({
+					agentId: "project_document_generator:truncation_retry",
+					outputMessageId: id,
+				}),
+			]);
+		} finally {
+			releasePost();
+			await done;
+			await Promise.all(sends);
+			usageLogger.mockResolvedValue(undefined);
+			vi.unstubAllGlobals();
+		}
 	});
 });

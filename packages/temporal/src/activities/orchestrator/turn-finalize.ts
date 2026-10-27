@@ -15,6 +15,8 @@
  * here from a separate ledger read reaches the workflow's output.
  */
 
+// Round and local token stops carry the counters used by their workflow guard.
+
 import {
 	type ConversationTurnTerminalStatus,
 	finalizeConversationTurn,
@@ -76,13 +78,17 @@ export async function finalizeConversationTurnActivity(
 			: {}),
 		...(input.budgetStop
 			? {
-					budgetStop: {
-						stopReason: input.budgetStop.stopReason,
-						allowance: input.budgetStop.allowance,
-						measured: input.budgetStop.measured,
-						outstanding: input.budgetStop.outstanding,
-						enforcement: input.budgetStop.enforcement,
-					},
+					budgetStop:
+						input.budgetStop.kind === "token_allowance" &&
+						input.budgetStop.version === undefined
+							? {
+									stopReason: input.budgetStop.stopReason,
+									allowance: input.budgetStop.allowance,
+									measured: input.budgetStop.measured,
+									outstanding: input.budgetStop.outstanding,
+									enforcement: input.budgetStop.enforcement,
+								}
+							: input.budgetStop,
 				}
 			: {}),
 	});

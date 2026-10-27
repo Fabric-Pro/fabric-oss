@@ -25,6 +25,7 @@ export {
 } from "./src/process-pool";
 export { createServer, startServer } from "./src/server";
 export {
+	StdioRpcError,
 	StdioTransport,
 	type StdioTransportConfig,
 } from "./src/stdio-transport";

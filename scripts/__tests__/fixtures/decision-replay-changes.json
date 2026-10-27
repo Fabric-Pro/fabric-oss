@@ -1,0 +1,4221 @@
+{
+	"now": "2026-02-01T00:00:00.000Z",
+	"organizationId": "00000000-0000-4000-8000-000000040000",
+	"cases": [
+		{
+			"name": "inbox-five-of-eight",
+			"projectId": "00000000-0000-4000-8000-000000050000",
+			"proposalId": "00000000-0000-4000-8000-000000060000",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000000100001",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060000",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 8
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100002",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000110001",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060000",
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"offeredCount": 8,
+						"selectedCount": 5,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100003",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120002",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060000",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110001",
+						"offeredIndex": 0,
+						"changeIndex": 0,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100004",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120003",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060000",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110001",
+						"offeredIndex": 1,
+						"changeIndex": 1,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100005",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120004",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060000",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110001",
+						"offeredIndex": 2,
+						"changeIndex": 2,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100006",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120005",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060000",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110001",
+						"offeredIndex": 3,
+						"changeIndex": 3,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100007",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120006",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060000",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110001",
+						"offeredIndex": 4,
+						"changeIndex": 4,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100008",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120007",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060000",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110001",
+						"offeredIndex": 5,
+						"changeIndex": 5,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100009",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120008",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060000",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110001",
+						"offeredIndex": 6,
+						"changeIndex": 6,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100010",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120009",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060000",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110001",
+						"offeredIndex": 7,
+						"changeIndex": 7,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100011",
+					"occurred_at": "2026-01-07T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000120010",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060000",
+					"payload": {
+						"changeIndex": 0,
+						"action": "create",
+						"createdEntityType": "story",
+						"createdEntityId": "00000000-0000-4000-8000-000000140010"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100012",
+					"occurred_at": "2026-01-07T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000120011",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060000",
+					"payload": {
+						"changeIndex": 1,
+						"action": "create",
+						"createdEntityType": "story",
+						"createdEntityId": "00000000-0000-4000-8000-000000140011"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100013",
+					"occurred_at": "2026-01-07T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000120012",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060000",
+					"payload": {
+						"changeIndex": 2,
+						"action": "create",
+						"createdEntityType": "story",
+						"createdEntityId": "00000000-0000-4000-8000-000000140012"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100014",
+					"occurred_at": "2026-01-07T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000120013",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060000",
+					"payload": {
+						"changeIndex": 3,
+						"action": "create",
+						"createdEntityType": "story",
+						"createdEntityId": "00000000-0000-4000-8000-000000140013"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100015",
+					"occurred_at": "2026-01-07T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000120014",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060000",
+					"payload": {
+						"changeIndex": 4,
+						"action": "create",
+						"createdEntityType": "story",
+						"createdEntityId": "00000000-0000-4000-8000-000000140014"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100016",
+					"occurred_at": "2026-01-10T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060000",
+					"event_type": "status_changed",
+					"to_state": "APPLIED",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 8
+					},
+					"actor_kind": "system"
+				}
+			],
+			"expectedOutcomes": [
+				"applied",
+				"applied",
+				"applied",
+				"applied",
+				"applied",
+				"notSelected",
+				"notSelected",
+				"notSelected"
+			],
+			"expectedStoredIndexes": [0, 1, 2, 3, 4, 5, 6, 7],
+			"partlyApplied": 1,
+			"changeOutcomes": {
+				"applied": 5,
+				"alreadyOnRoadmap": 0,
+				"notSelected": 3,
+				"failed": 0,
+				"inProgress": 0,
+				"rejected": 0,
+				"superseded": 0,
+				"pending": 0
+			},
+			"changeAcceptance": {
+				"accepted": 5,
+				"decided": 8,
+				"rate": 0.625
+			},
+			"expectedDecisionDays": [
+				"2026-01-05",
+				"2026-01-05",
+				"2026-01-05",
+				"2026-01-05",
+				"2026-01-05",
+				"2026-01-05",
+				"2026-01-05",
+				"2026-01-05"
+			],
+			"expectedJourney": {
+				"offered": 8,
+				"selected": 5,
+				"not_selected": 3,
+				"partly_applied": true
+			},
+			"coveredChangeCount": 8
+		},
+		{
+			"name": "sidebar-complete-remapped",
+			"projectId": "00000000-0000-4000-8000-000000050001",
+			"proposalId": "00000000-0000-4000-8000-000000060001",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000000100017",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060001",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "AI_UPDATE_SIDEBAR",
+						"changeCount": 2
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100018",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000110017",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060001",
+					"payload": {
+						"source": "AI_UPDATE_SIDEBAR",
+						"offeredCount": 4,
+						"selectedCount": 2,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100019",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120018",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060001",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110017",
+						"offeredIndex": 0,
+						"changeIndex": null,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100020",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120019",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060001",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110017",
+						"offeredIndex": 1,
+						"changeIndex": 0,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100021",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120020",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060001",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110017",
+						"offeredIndex": 2,
+						"changeIndex": null,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100022",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120021",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060001",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110017",
+						"offeredIndex": 3,
+						"changeIndex": 1,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100023",
+					"occurred_at": "2026-01-07T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000120022",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060001",
+					"payload": {
+						"changeIndex": 0,
+						"action": "create",
+						"createdEntityType": "story",
+						"createdEntityId": "00000000-0000-4000-8000-000000140022"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100024",
+					"occurred_at": "2026-01-07T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000120023",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060001",
+					"payload": {
+						"changeIndex": 1,
+						"action": "create",
+						"createdEntityType": "story",
+						"createdEntityId": "00000000-0000-4000-8000-000000140023"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100025",
+					"occurred_at": "2026-01-10T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060001",
+					"event_type": "status_changed",
+					"to_state": "APPLIED",
+					"related_subject_id": null,
+					"payload": {
+						"source": "AI_UPDATE_SIDEBAR",
+						"changeCount": 2
+					},
+					"actor_kind": "system"
+				}
+			],
+			"expectedOutcomes": [
+				"notSelected",
+				"applied",
+				"notSelected",
+				"applied"
+			],
+			"expectedStoredIndexes": [null, 0, null, 1],
+			"partlyApplied": 1,
+			"changeOutcomes": {
+				"applied": 2,
+				"alreadyOnRoadmap": 0,
+				"notSelected": 2,
+				"failed": 0,
+				"inProgress": 0,
+				"rejected": 0,
+				"superseded": 0,
+				"pending": 0
+			},
+			"changeAcceptance": {
+				"accepted": 2,
+				"decided": 4,
+				"rate": 0.5
+			},
+			"expectedDecisionDays": [
+				"2026-01-05",
+				"2026-01-05",
+				"2026-01-05",
+				"2026-01-05"
+			],
+			"expectedJourney": {
+				"offered": 4,
+				"selected": 2,
+				"not_selected": 2,
+				"partly_applied": true
+			},
+			"coveredChangeCount": 4
+		},
+		{
+			"name": "sidebar-incomplete",
+			"projectId": "00000000-0000-4000-8000-000000050002",
+			"proposalId": "00000000-0000-4000-8000-000000060002",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000000100026",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060002",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "AI_UPDATE_SIDEBAR",
+						"changeCount": 2
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100027",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000110026",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060002",
+					"payload": {
+						"source": "AI_UPDATE_SIDEBAR",
+						"offeredCount": 2,
+						"selectedCount": 2,
+						"offeredListComplete": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100028",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120027",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060002",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110026",
+						"offeredIndex": 0,
+						"changeIndex": 0,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100029",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120028",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060002",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110026",
+						"offeredIndex": 1,
+						"changeIndex": 1,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100030",
+					"occurred_at": "2026-01-07T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000120029",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060002",
+					"payload": {
+						"changeIndex": 0,
+						"action": "create",
+						"createdEntityType": "story",
+						"createdEntityId": "00000000-0000-4000-8000-000000140029"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100031",
+					"occurred_at": "2026-01-07T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000120030",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060002",
+					"payload": {
+						"changeIndex": 1,
+						"action": "create",
+						"createdEntityType": "story",
+						"createdEntityId": "00000000-0000-4000-8000-000000140030"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100032",
+					"occurred_at": "2026-01-10T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060002",
+					"event_type": "status_changed",
+					"to_state": "APPLIED",
+					"related_subject_id": null,
+					"payload": {
+						"source": "AI_UPDATE_SIDEBAR",
+						"changeCount": 2
+					},
+					"actor_kind": "system"
+				}
+			],
+			"expectedOutcomes": [],
+			"expectedStoredIndexes": [],
+			"partlyApplied": 0,
+			"changeOutcomes": {
+				"applied": 0,
+				"alreadyOnRoadmap": 0,
+				"notSelected": 0,
+				"failed": 0,
+				"inProgress": 0,
+				"rejected": 0,
+				"superseded": 0,
+				"pending": 0
+			},
+			"changeAcceptance": {
+				"accepted": 0,
+				"decided": 0,
+				"rate": null
+			},
+			"expectedDecisionDays": [],
+			"expectedJourney": {
+				"offered": 0,
+				"selected": 0,
+				"not_selected": 0,
+				"partly_applied": false
+			},
+			"coveredChangeCount": 0
+		},
+		{
+			"name": "failed-partial",
+			"projectId": "00000000-0000-4000-8000-000000050003",
+			"proposalId": "00000000-0000-4000-8000-000000060003",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000000100033",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060003",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 4
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100034",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000110033",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060003",
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"offeredCount": 4,
+						"selectedCount": 3,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100035",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120034",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060003",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110033",
+						"offeredIndex": 0,
+						"changeIndex": 0,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100036",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120035",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060003",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110033",
+						"offeredIndex": 1,
+						"changeIndex": 1,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100037",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120036",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060003",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110033",
+						"offeredIndex": 2,
+						"changeIndex": 2,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100038",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120037",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060003",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110033",
+						"offeredIndex": 3,
+						"changeIndex": 3,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100039",
+					"occurred_at": "2026-01-07T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000120038",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060003",
+					"payload": {
+						"changeIndex": 0,
+						"action": "create",
+						"createdEntityType": "story",
+						"createdEntityId": "00000000-0000-4000-8000-000000140038"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100040",
+					"occurred_at": "2026-01-10T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060003",
+					"event_type": "status_changed",
+					"to_state": "FAILED",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 4
+					},
+					"actor_kind": "system"
+				}
+			],
+			"expectedOutcomes": ["applied", "failed", "failed", "notSelected"],
+			"expectedStoredIndexes": [0, 1, 2, 3],
+			"partlyApplied": 0,
+			"changeOutcomes": {
+				"applied": 1,
+				"alreadyOnRoadmap": 0,
+				"notSelected": 1,
+				"failed": 2,
+				"inProgress": 0,
+				"rejected": 0,
+				"superseded": 0,
+				"pending": 0
+			},
+			"changeAcceptance": {
+				"accepted": 3,
+				"decided": 4,
+				"rate": 0.75
+			},
+			"expectedDecisionDays": [
+				"2026-01-05",
+				"2026-01-05",
+				"2026-01-05",
+				"2026-01-05"
+			],
+			"expectedJourney": {
+				"offered": 4,
+				"selected": 3,
+				"not_selected": 1,
+				"partly_applied": false
+			},
+			"coveredChangeCount": 4
+		},
+		{
+			"name": "retry-applies-rest",
+			"projectId": "00000000-0000-4000-8000-000000050004",
+			"proposalId": "00000000-0000-4000-8000-000000060004",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000000100041",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060004",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 4
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100042",
+					"occurred_at": "2026-01-04T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000110041",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060004",
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"offeredCount": 4,
+						"selectedCount": 3,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100043",
+					"occurred_at": "2026-01-04T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120042",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060004",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110041",
+						"offeredIndex": 0,
+						"changeIndex": 0,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100044",
+					"occurred_at": "2026-01-04T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120043",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060004",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110041",
+						"offeredIndex": 1,
+						"changeIndex": 1,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100045",
+					"occurred_at": "2026-01-04T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120044",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060004",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110041",
+						"offeredIndex": 2,
+						"changeIndex": 2,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100046",
+					"occurred_at": "2026-01-04T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120045",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060004",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110041",
+						"offeredIndex": 3,
+						"changeIndex": 3,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100047",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000110046",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060004",
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"offeredCount": 4,
+						"selectedCount": 2,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100048",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120047",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060004",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110046",
+						"offeredIndex": 0,
+						"changeIndex": 0,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100049",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120048",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060004",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110046",
+						"offeredIndex": 1,
+						"changeIndex": 1,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100050",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120049",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060004",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110046",
+						"offeredIndex": 2,
+						"changeIndex": 2,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100051",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120050",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060004",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110046",
+						"offeredIndex": 3,
+						"changeIndex": 3,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100052",
+					"occurred_at": "2026-01-04T13:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000120051",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060004",
+					"payload": {
+						"changeIndex": 0,
+						"action": "create",
+						"createdEntityType": "story",
+						"createdEntityId": "00000000-0000-4000-8000-000000140051"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100053",
+					"occurred_at": "2026-01-07T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000120052",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060004",
+					"payload": {
+						"changeIndex": 1,
+						"action": "create",
+						"createdEntityType": "story",
+						"createdEntityId": "00000000-0000-4000-8000-000000140052"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100054",
+					"occurred_at": "2026-01-07T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000120053",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060004",
+					"payload": {
+						"changeIndex": 2,
+						"action": "create",
+						"createdEntityType": "story",
+						"createdEntityId": "00000000-0000-4000-8000-000000140053"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100055",
+					"occurred_at": "2026-01-10T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060004",
+					"event_type": "status_changed",
+					"to_state": "APPLIED",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 4
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000300001",
+					"occurred_at": "2026-01-04T14:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060004",
+					"event_type": "status_changed",
+					"to_state": "FAILED",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 4
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000300002",
+					"occurred_at": "2026-01-05T13:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060004",
+					"event_type": "status_changed",
+					"to_state": "APPLYING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 4
+					},
+					"actor_kind": "system"
+				}
+			],
+			"expectedOutcomes": [
+				"applied",
+				"applied",
+				"applied",
+				"notSelected"
+			],
+			"expectedStoredIndexes": [0, 1, 2, 3],
+			"partlyApplied": 1,
+			"changeOutcomes": {
+				"applied": 3,
+				"alreadyOnRoadmap": 0,
+				"notSelected": 1,
+				"failed": 0,
+				"inProgress": 0,
+				"rejected": 0,
+				"superseded": 0,
+				"pending": 0
+			},
+			"changeAcceptance": {
+				"accepted": 3,
+				"decided": 4,
+				"rate": 0.75
+			},
+			"expectedDecisionDays": [
+				"2026-01-04",
+				"2026-01-05",
+				"2026-01-05",
+				"2026-01-05"
+			],
+			"expectedJourney": {
+				"offered": 4,
+				"selected": 3,
+				"not_selected": 1,
+				"partly_applied": true
+			},
+			"coveredChangeCount": 4
+		},
+		{
+			"name": "duplicates-and-apply-precedence",
+			"projectId": "00000000-0000-4000-8000-000000050005",
+			"proposalId": "00000000-0000-4000-8000-000000060005",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000000100056",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060005",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 4
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100057",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000110056",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060005",
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"offeredCount": 4,
+						"selectedCount": 3,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100058",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120057",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060005",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110056",
+						"offeredIndex": 0,
+						"changeIndex": 0,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100059",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120058",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060005",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110056",
+						"offeredIndex": 1,
+						"changeIndex": 1,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100060",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120059",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060005",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110056",
+						"offeredIndex": 2,
+						"changeIndex": 2,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100061",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120060",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060005",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110056",
+						"offeredIndex": 3,
+						"changeIndex": 3,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100062",
+					"occurred_at": "2026-01-06T12:00:00.000Z",
+					"subject_type": "backlog_proposal_duplicate_resolution",
+					"subject_id": "00000000-0000-4000-8000-000000120061",
+					"event_type": "change_deduplicated",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060005",
+					"payload": {
+						"changeIndex": 0,
+						"existingEntityType": "story"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100063",
+					"occurred_at": "2026-01-06T12:00:00.000Z",
+					"subject_type": "backlog_proposal_duplicate_resolution",
+					"subject_id": "00000000-0000-4000-8000-000000120062",
+					"event_type": "change_deduplicated",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060005",
+					"payload": {
+						"changeIndex": 1,
+						"existingEntityType": "story"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100064",
+					"occurred_at": "2026-01-07T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000120063",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060005",
+					"payload": {
+						"changeIndex": 0,
+						"action": "create",
+						"createdEntityType": "story",
+						"createdEntityId": "00000000-0000-4000-8000-000000140063"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100065",
+					"occurred_at": "2026-01-10T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060005",
+					"event_type": "status_changed",
+					"to_state": "FAILED",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 4
+					},
+					"actor_kind": "system"
+				}
+			],
+			"expectedOutcomes": [
+				"applied",
+				"alreadyOnRoadmap",
+				"failed",
+				"notSelected"
+			],
+			"expectedStoredIndexes": [0, 1, 2, 3],
+			"partlyApplied": 0,
+			"changeOutcomes": {
+				"applied": 1,
+				"alreadyOnRoadmap": 1,
+				"notSelected": 1,
+				"failed": 1,
+				"inProgress": 0,
+				"rejected": 0,
+				"superseded": 0,
+				"pending": 0
+			},
+			"changeAcceptance": {
+				"accepted": 2,
+				"decided": 3,
+				"rate": 0.6666666666666666
+			},
+			"expectedDecisionDays": [
+				"2026-01-05",
+				"2026-01-05",
+				"2026-01-05",
+				"2026-01-05"
+			],
+			"expectedJourney": {
+				"offered": 4,
+				"selected": 3,
+				"not_selected": 1,
+				"partly_applied": false
+			},
+			"coveredChangeCount": 4
+		},
+		{
+			"name": "recommendation-open",
+			"projectId": "00000000-0000-4000-8000-000000050006",
+			"proposalId": "00000000-0000-4000-8000-000000060006",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000000100066",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060006",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"changeCount": 4
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100067",
+					"occurred_at": "2026-01-04T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000110066",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060006",
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"offeredCount": 4,
+						"selectedCount": 1,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100068",
+					"occurred_at": "2026-01-04T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120067",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060006",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110066",
+						"offeredIndex": 0,
+						"changeIndex": 0,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100069",
+					"occurred_at": "2026-01-04T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120068",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060006",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110066",
+						"offeredIndex": 1,
+						"changeIndex": 1,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100070",
+					"occurred_at": "2026-01-04T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120069",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060006",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110066",
+						"offeredIndex": 2,
+						"changeIndex": 2,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100071",
+					"occurred_at": "2026-01-04T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120070",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060006",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110066",
+						"offeredIndex": 3,
+						"changeIndex": 3,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100072",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000110071",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060006",
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"offeredCount": 4,
+						"selectedCount": 1,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100073",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120072",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060006",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110071",
+						"offeredIndex": 0,
+						"changeIndex": 0,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100074",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120073",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060006",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110071",
+						"offeredIndex": 1,
+						"changeIndex": 1,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100075",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120074",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060006",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110071",
+						"offeredIndex": 2,
+						"changeIndex": 2,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100076",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120075",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060006",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110071",
+						"offeredIndex": 3,
+						"changeIndex": 3,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100077",
+					"occurred_at": "2026-01-07T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000120076",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060006",
+					"payload": {
+						"changeIndex": 0,
+						"action": "create",
+						"createdEntityType": "story",
+						"createdEntityId": "00000000-0000-4000-8000-000000140076"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100078",
+					"occurred_at": "2026-01-07T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000120077",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060006",
+					"payload": {
+						"changeIndex": 1,
+						"action": "create",
+						"createdEntityType": "story",
+						"createdEntityId": "00000000-0000-4000-8000-000000140077"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100079",
+					"occurred_at": "2026-01-10T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060006",
+					"event_type": "status_changed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"changeCount": 4
+					},
+					"actor_kind": "system"
+				}
+			],
+			"expectedOutcomes": ["applied", "applied", "pending", "pending"],
+			"expectedStoredIndexes": [0, 1, 2, 3],
+			"partlyApplied": 0,
+			"changeOutcomes": {
+				"applied": 2,
+				"alreadyOnRoadmap": 0,
+				"notSelected": 0,
+				"failed": 0,
+				"inProgress": 0,
+				"rejected": 0,
+				"superseded": 0,
+				"pending": 2
+			},
+			"changeAcceptance": {
+				"accepted": 2,
+				"decided": 2,
+				"rate": 1.0
+			},
+			"expectedDecisionDays": [
+				"2026-01-04",
+				"2026-01-05",
+				"2026-01-05",
+				"2026-01-05"
+			],
+			"expectedJourney": {
+				"offered": 4,
+				"selected": 2,
+				"not_selected": 0,
+				"partly_applied": false
+			},
+			"coveredChangeCount": 4
+		},
+		{
+			"name": "recommendation-closed-two-rounds",
+			"projectId": "00000000-0000-4000-8000-000000050007",
+			"proposalId": "00000000-0000-4000-8000-000000060007",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000000100080",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060007",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"changeCount": 4
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100081",
+					"occurred_at": "2026-01-04T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000110080",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060007",
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"offeredCount": 4,
+						"selectedCount": 1,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100082",
+					"occurred_at": "2026-01-04T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120081",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060007",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110080",
+						"offeredIndex": 0,
+						"changeIndex": 0,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100083",
+					"occurred_at": "2026-01-04T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120082",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060007",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110080",
+						"offeredIndex": 1,
+						"changeIndex": 1,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100084",
+					"occurred_at": "2026-01-04T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120083",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060007",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110080",
+						"offeredIndex": 2,
+						"changeIndex": 2,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100085",
+					"occurred_at": "2026-01-04T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120084",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060007",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110080",
+						"offeredIndex": 3,
+						"changeIndex": 3,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100086",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000110085",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060007",
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"offeredCount": 4,
+						"selectedCount": 1,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100087",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120086",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060007",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110085",
+						"offeredIndex": 0,
+						"changeIndex": 0,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100088",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120087",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060007",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110085",
+						"offeredIndex": 1,
+						"changeIndex": 1,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100089",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120088",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060007",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110085",
+						"offeredIndex": 2,
+						"changeIndex": 2,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100090",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120089",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060007",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110085",
+						"offeredIndex": 3,
+						"changeIndex": 3,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100091",
+					"occurred_at": "2026-01-07T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000120090",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060007",
+					"payload": {
+						"changeIndex": 0,
+						"action": "create",
+						"createdEntityType": "story",
+						"createdEntityId": "00000000-0000-4000-8000-000000140090"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100092",
+					"occurred_at": "2026-01-07T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000120091",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060007",
+					"payload": {
+						"changeIndex": 1,
+						"action": "create",
+						"createdEntityType": "story",
+						"createdEntityId": "00000000-0000-4000-8000-000000140091"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100093",
+					"occurred_at": "2026-01-10T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060007",
+					"event_type": "status_changed",
+					"to_state": "REJECTED",
+					"related_subject_id": null,
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"changeCount": 4
+					},
+					"actor_kind": "system"
+				}
+			],
+			"expectedOutcomes": [
+				"applied",
+				"applied",
+				"notSelected",
+				"notSelected"
+			],
+			"expectedStoredIndexes": [0, 1, 2, 3],
+			"partlyApplied": 0,
+			"changeOutcomes": {
+				"applied": 2,
+				"alreadyOnRoadmap": 0,
+				"notSelected": 2,
+				"failed": 0,
+				"inProgress": 0,
+				"rejected": 0,
+				"superseded": 0,
+				"pending": 0
+			},
+			"changeAcceptance": {
+				"accepted": 2,
+				"decided": 4,
+				"rate": 0.5
+			},
+			"expectedDecisionDays": [
+				"2026-01-04",
+				"2026-01-05",
+				"2026-01-10",
+				"2026-01-10"
+			],
+			"expectedJourney": {
+				"offered": 4,
+				"selected": 2,
+				"not_selected": 2,
+				"partly_applied": false
+			},
+			"coveredChangeCount": 4
+		},
+		{
+			"name": "fully-rejected-no-review",
+			"projectId": "00000000-0000-4000-8000-000000050008",
+			"proposalId": "00000000-0000-4000-8000-000000060008",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000000100094",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060008",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100095",
+					"occurred_at": "2026-01-03T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000130094",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100096",
+					"occurred_at": "2026-01-04T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000110095",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000130094",
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"offeredCount": 0,
+						"selectedCount": 0,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100097",
+					"occurred_at": "2026-01-10T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060008",
+					"event_type": "status_changed",
+					"to_state": "REJECTED",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				}
+			],
+			"expectedOutcomes": ["rejected", "rejected", "rejected"],
+			"expectedStoredIndexes": [0, 1, 2],
+			"partlyApplied": 0,
+			"changeOutcomes": {
+				"applied": 0,
+				"alreadyOnRoadmap": 0,
+				"notSelected": 0,
+				"failed": 0,
+				"inProgress": 0,
+				"rejected": 3,
+				"superseded": 0,
+				"pending": 0
+			},
+			"changeAcceptance": {
+				"accepted": 0,
+				"decided": 3,
+				"rate": 0.0
+			},
+			"expectedDecisionDays": ["2026-01-10", "2026-01-10", "2026-01-10"],
+			"expectedJourney": {
+				"offered": 3,
+				"selected": 0,
+				"not_selected": 0,
+				"partly_applied": false
+			},
+			"coveredChangeCount": 3
+		},
+		{
+			"name": "backlog-no-review",
+			"projectId": "00000000-0000-4000-8000-000000050009",
+			"proposalId": "00000000-0000-4000-8000-000000060009",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000000100098",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060009",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 2
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100099",
+					"occurred_at": "2026-01-03T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000130098",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 2
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100100",
+					"occurred_at": "2026-01-04T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000110099",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000130098",
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"offeredCount": 0,
+						"selectedCount": 0,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100101",
+					"occurred_at": "2026-01-10T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060009",
+					"event_type": "status_changed",
+					"to_state": "BACKLOG",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 2
+					},
+					"actor_kind": "system"
+				}
+			],
+			"expectedOutcomes": ["rejected", "rejected"],
+			"expectedStoredIndexes": [0, 1],
+			"partlyApplied": 0,
+			"changeOutcomes": {
+				"applied": 0,
+				"alreadyOnRoadmap": 0,
+				"notSelected": 0,
+				"failed": 0,
+				"inProgress": 0,
+				"rejected": 2,
+				"superseded": 0,
+				"pending": 0
+			},
+			"changeAcceptance": {
+				"accepted": 0,
+				"decided": 2,
+				"rate": 0.0
+			},
+			"expectedDecisionDays": ["2026-01-10", "2026-01-10"],
+			"expectedJourney": {
+				"offered": 2,
+				"selected": 0,
+				"not_selected": 0,
+				"partly_applied": false
+			},
+			"coveredChangeCount": 2
+		},
+		{
+			"name": "superseded-scope",
+			"projectId": "00000000-0000-4000-8000-000000050010",
+			"proposalId": "00000000-0000-4000-8000-000000060010",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000000100102",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060010",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "SCOPE_DOCUMENT",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100103",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000110102",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060010",
+					"payload": {
+						"source": "SCOPE_DOCUMENT",
+						"offeredCount": 3,
+						"selectedCount": 2,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100104",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120103",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060010",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110102",
+						"offeredIndex": 0,
+						"changeIndex": 0,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100105",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120104",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060010",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110102",
+						"offeredIndex": 1,
+						"changeIndex": 1,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100106",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120105",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060010",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110102",
+						"offeredIndex": 2,
+						"changeIndex": 2,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100107",
+					"occurred_at": "2026-01-10T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060010",
+					"event_type": "status_changed",
+					"to_state": "SUPERSEDED",
+					"related_subject_id": null,
+					"payload": {
+						"source": "SCOPE_DOCUMENT",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				}
+			],
+			"expectedOutcomes": ["superseded", "superseded", "notSelected"],
+			"expectedStoredIndexes": [0, 1, 2],
+			"partlyApplied": 0,
+			"changeOutcomes": {
+				"applied": 0,
+				"alreadyOnRoadmap": 0,
+				"notSelected": 1,
+				"failed": 0,
+				"inProgress": 0,
+				"rejected": 0,
+				"superseded": 2,
+				"pending": 0
+			},
+			"changeAcceptance": {
+				"accepted": 0,
+				"decided": 1,
+				"rate": 0.0
+			},
+			"expectedDecisionDays": ["2026-01-10", "2026-01-10", "2026-01-05"],
+			"expectedJourney": {
+				"offered": 3,
+				"selected": 0,
+				"not_selected": 1,
+				"partly_applied": false
+			},
+			"coveredChangeCount": 3
+		},
+		{
+			"name": "in-progress",
+			"projectId": "00000000-0000-4000-8000-000000050011",
+			"proposalId": "00000000-0000-4000-8000-000000060011",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000000100108",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060011",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100109",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000110108",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060011",
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"offeredCount": 3,
+						"selectedCount": 2,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100110",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120109",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060011",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110108",
+						"offeredIndex": 0,
+						"changeIndex": 0,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100111",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120110",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060011",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110108",
+						"offeredIndex": 1,
+						"changeIndex": 1,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100112",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120111",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060011",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110108",
+						"offeredIndex": 2,
+						"changeIndex": 2,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100113",
+					"occurred_at": "2026-01-10T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060011",
+					"event_type": "status_changed",
+					"to_state": "APPLYING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				}
+			],
+			"expectedOutcomes": ["inProgress", "inProgress", "notSelected"],
+			"expectedStoredIndexes": [0, 1, 2],
+			"partlyApplied": 0,
+			"changeOutcomes": {
+				"applied": 0,
+				"alreadyOnRoadmap": 0,
+				"notSelected": 1,
+				"failed": 0,
+				"inProgress": 2,
+				"rejected": 0,
+				"superseded": 0,
+				"pending": 0
+			},
+			"changeAcceptance": {
+				"accepted": 2,
+				"decided": 3,
+				"rate": 0.6666666666666666
+			},
+			"expectedDecisionDays": ["2026-01-05", "2026-01-05", "2026-01-05"],
+			"expectedJourney": {
+				"offered": 3,
+				"selected": 2,
+				"not_selected": 1,
+				"partly_applied": false
+			},
+			"coveredChangeCount": 3
+		},
+		{
+			"name": "approved",
+			"projectId": "00000000-0000-4000-8000-000000050012",
+			"proposalId": "00000000-0000-4000-8000-000000060012",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000000100114",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060012",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 2
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100115",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000110114",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060012",
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"offeredCount": 2,
+						"selectedCount": 1,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100116",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120115",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060012",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110114",
+						"offeredIndex": 0,
+						"changeIndex": 0,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100117",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120116",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060012",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110114",
+						"offeredIndex": 1,
+						"changeIndex": 1,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100118",
+					"occurred_at": "2026-01-10T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060012",
+					"event_type": "status_changed",
+					"to_state": "APPROVED",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 2
+					},
+					"actor_kind": "system"
+				}
+			],
+			"expectedOutcomes": ["inProgress", "notSelected"],
+			"expectedStoredIndexes": [0, 1],
+			"partlyApplied": 0,
+			"changeOutcomes": {
+				"applied": 0,
+				"alreadyOnRoadmap": 0,
+				"notSelected": 1,
+				"failed": 0,
+				"inProgress": 1,
+				"rejected": 0,
+				"superseded": 0,
+				"pending": 0
+			},
+			"changeAcceptance": {
+				"accepted": 1,
+				"decided": 2,
+				"rate": 0.5
+			},
+			"expectedDecisionDays": ["2026-01-05", "2026-01-05"],
+			"expectedJourney": {
+				"offered": 2,
+				"selected": 1,
+				"not_selected": 1,
+				"partly_applied": false
+			},
+			"coveredChangeCount": 2
+		},
+		{
+			"name": "selected-pending",
+			"projectId": "00000000-0000-4000-8000-000000050013",
+			"proposalId": "00000000-0000-4000-8000-000000060013",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000000100119",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060013",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 2
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100120",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000110119",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060013",
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"offeredCount": 2,
+						"selectedCount": 1,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100121",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120120",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060013",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110119",
+						"offeredIndex": 0,
+						"changeIndex": 0,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100122",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120121",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060013",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110119",
+						"offeredIndex": 1,
+						"changeIndex": 1,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100123",
+					"occurred_at": "2026-01-10T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060013",
+					"event_type": "status_changed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 2
+					},
+					"actor_kind": "system"
+				}
+			],
+			"expectedOutcomes": ["pending", "notSelected"],
+			"expectedStoredIndexes": [0, 1],
+			"partlyApplied": 0,
+			"changeOutcomes": {
+				"applied": 0,
+				"alreadyOnRoadmap": 0,
+				"notSelected": 1,
+				"failed": 0,
+				"inProgress": 0,
+				"rejected": 0,
+				"superseded": 0,
+				"pending": 1
+			},
+			"changeAcceptance": {
+				"accepted": 0,
+				"decided": 1,
+				"rate": 0.0
+			},
+			"expectedDecisionDays": ["2026-01-05", "2026-01-05"],
+			"expectedJourney": {
+				"offered": 2,
+				"selected": 0,
+				"not_selected": 1,
+				"partly_applied": false
+			},
+			"coveredChangeCount": 2
+		},
+		{
+			"name": "selected-then-rejected",
+			"projectId": "00000000-0000-4000-8000-000000050014",
+			"proposalId": "00000000-0000-4000-8000-000000060014",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000000100124",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060014",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 2
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100125",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000110124",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060014",
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"offeredCount": 2,
+						"selectedCount": 1,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100126",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120125",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060014",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110124",
+						"offeredIndex": 0,
+						"changeIndex": 0,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100127",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120126",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060014",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110124",
+						"offeredIndex": 1,
+						"changeIndex": 1,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100128",
+					"occurred_at": "2026-01-10T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060014",
+					"event_type": "status_changed",
+					"to_state": "REJECTED",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 2
+					},
+					"actor_kind": "system"
+				}
+			],
+			"expectedOutcomes": ["rejected", "notSelected"],
+			"expectedStoredIndexes": [0, 1],
+			"partlyApplied": 0,
+			"changeOutcomes": {
+				"applied": 0,
+				"alreadyOnRoadmap": 0,
+				"notSelected": 1,
+				"failed": 0,
+				"inProgress": 0,
+				"rejected": 1,
+				"superseded": 0,
+				"pending": 0
+			},
+			"changeAcceptance": {
+				"accepted": 0,
+				"decided": 2,
+				"rate": 0.0
+			},
+			"expectedDecisionDays": ["2026-01-10", "2026-01-05"],
+			"expectedJourney": {
+				"offered": 2,
+				"selected": 0,
+				"not_selected": 1,
+				"partly_applied": false
+			},
+			"coveredChangeCount": 2
+		},
+		{
+			"name": "pre-coverage-rejection",
+			"projectId": "00000000-0000-4000-8000-000000050015",
+			"proposalId": "00000000-0000-4000-8000-000000060015",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000000100129",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060015",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100130",
+					"occurred_at": "2026-01-02T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060015",
+					"event_type": "status_changed",
+					"to_state": "REJECTED",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100131",
+					"occurred_at": "2026-01-08T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000130130",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100132",
+					"occurred_at": "2026-01-09T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000110131",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000130130",
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"offeredCount": 0,
+						"selectedCount": 0,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				}
+			],
+			"expectedOutcomes": [],
+			"expectedStoredIndexes": [],
+			"partlyApplied": 0,
+			"changeOutcomes": {
+				"applied": 0,
+				"alreadyOnRoadmap": 0,
+				"notSelected": 0,
+				"failed": 0,
+				"inProgress": 0,
+				"rejected": 0,
+				"superseded": 0,
+				"pending": 0
+			},
+			"changeAcceptance": {
+				"accepted": 0,
+				"decided": 0,
+				"rate": null
+			},
+			"expectedDecisionDays": [],
+			"expectedJourney": {
+				"offered": 0,
+				"selected": 0,
+				"not_selected": 0,
+				"partly_applied": false
+			},
+			"coveredChangeCount": 0
+		},
+		{
+			"name": "recommendation-earlier-selected-unresolved",
+			"projectId": "00000000-0000-4000-8000-000000050016",
+			"proposalId": "00000000-0000-4000-8000-000000060016",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000000100133",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060016",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100134",
+					"occurred_at": "2026-01-04T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000110133",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060016",
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"offeredCount": 3,
+						"selectedCount": 1,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100135",
+					"occurred_at": "2026-01-04T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120134",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060016",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110133",
+						"offeredIndex": 0,
+						"changeIndex": 0,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100136",
+					"occurred_at": "2026-01-04T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120135",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060016",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110133",
+						"offeredIndex": 1,
+						"changeIndex": 1,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100137",
+					"occurred_at": "2026-01-04T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120136",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060016",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110133",
+						"offeredIndex": 2,
+						"changeIndex": 2,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100138",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000110137",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060016",
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"offeredCount": 3,
+						"selectedCount": 1,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100139",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120138",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060016",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110137",
+						"offeredIndex": 0,
+						"changeIndex": 0,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100140",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120139",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060016",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110137",
+						"offeredIndex": 1,
+						"changeIndex": 1,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100141",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120140",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060016",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110137",
+						"offeredIndex": 2,
+						"changeIndex": 2,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100142",
+					"occurred_at": "2026-01-10T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060016",
+					"event_type": "status_changed",
+					"to_state": "BACKLOG",
+					"related_subject_id": null,
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				}
+			],
+			"expectedOutcomes": ["rejected", "rejected", "notSelected"],
+			"expectedStoredIndexes": [0, 1, 2],
+			"partlyApplied": 0,
+			"changeOutcomes": {
+				"applied": 0,
+				"alreadyOnRoadmap": 0,
+				"notSelected": 1,
+				"failed": 0,
+				"inProgress": 0,
+				"rejected": 2,
+				"superseded": 0,
+				"pending": 0
+			},
+			"changeAcceptance": {
+				"accepted": 0,
+				"decided": 3,
+				"rate": 0.0
+			},
+			"expectedDecisionDays": ["2026-01-10", "2026-01-10", "2026-01-10"],
+			"expectedJourney": {
+				"offered": 3,
+				"selected": 0,
+				"not_selected": 1,
+				"partly_applied": false
+			},
+			"coveredChangeCount": 3
+		},
+		{
+			"name": "tied-reviews-use-event-id",
+			"projectId": "00000000-0000-4000-8000-000000050017",
+			"proposalId": "00000000-0000-4000-8000-000000060017",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000000100143",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060017",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100144",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000110143",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060017",
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"offeredCount": 3,
+						"selectedCount": 1,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100145",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120144",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060017",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110143",
+						"offeredIndex": 0,
+						"changeIndex": 0,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100146",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120145",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060017",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110143",
+						"offeredIndex": 1,
+						"changeIndex": 1,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100147",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120146",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060017",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110143",
+						"offeredIndex": 2,
+						"changeIndex": 2,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100148",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000110147",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060017",
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"offeredCount": 3,
+						"selectedCount": 1,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100149",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120148",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060017",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110147",
+						"offeredIndex": 0,
+						"changeIndex": 0,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100150",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120149",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060017",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110147",
+						"offeredIndex": 1,
+						"changeIndex": 1,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100151",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120150",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060017",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110147",
+						"offeredIndex": 2,
+						"changeIndex": 2,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100152",
+					"occurred_at": "2026-01-10T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060017",
+					"event_type": "status_changed",
+					"to_state": "FAILED",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				}
+			],
+			"expectedOutcomes": ["notSelected", "failed", "notSelected"],
+			"expectedStoredIndexes": [0, 1, 2],
+			"partlyApplied": 0,
+			"changeOutcomes": {
+				"applied": 0,
+				"alreadyOnRoadmap": 0,
+				"notSelected": 2,
+				"failed": 1,
+				"inProgress": 0,
+				"rejected": 0,
+				"superseded": 0,
+				"pending": 0
+			},
+			"changeAcceptance": {
+				"accepted": 1,
+				"decided": 3,
+				"rate": 0.3333333333333333
+			},
+			"expectedDecisionDays": ["2026-01-05", "2026-01-05", "2026-01-05"],
+			"expectedJourney": {
+				"offered": 3,
+				"selected": 1,
+				"not_selected": 2,
+				"partly_applied": false
+			},
+			"coveredChangeCount": 3
+		},
+		{
+			"name": "superseded-recommendation",
+			"projectId": "00000000-0000-4000-8000-000000050018",
+			"proposalId": "00000000-0000-4000-8000-000000060018",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000000100153",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060018",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100154",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000110153",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060018",
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"offeredCount": 3,
+						"selectedCount": 1,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100155",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120154",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060018",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110153",
+						"offeredIndex": 0,
+						"changeIndex": 0,
+						"selected": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100156",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120155",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060018",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110153",
+						"offeredIndex": 1,
+						"changeIndex": 1,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100157",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000120156",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000060018",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000110153",
+						"offeredIndex": 2,
+						"changeIndex": 2,
+						"selected": false
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000100158",
+					"occurred_at": "2026-01-10T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000060018",
+					"event_type": "status_changed",
+					"to_state": "SUPERSEDED",
+					"related_subject_id": null,
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				}
+			],
+			"expectedOutcomes": ["superseded", "superseded", "superseded"],
+			"expectedStoredIndexes": [0, 1, 2],
+			"partlyApplied": 0,
+			"changeOutcomes": {
+				"applied": 0,
+				"alreadyOnRoadmap": 0,
+				"notSelected": 0,
+				"failed": 0,
+				"inProgress": 0,
+				"rejected": 0,
+				"superseded": 3,
+				"pending": 0
+			},
+			"changeAcceptance": {
+				"accepted": 0,
+				"decided": 0,
+				"rate": null
+			},
+			"expectedDecisionDays": ["2026-01-10", "2026-01-10", "2026-01-10"],
+			"expectedJourney": {
+				"offered": 3,
+				"selected": 0,
+				"not_selected": 0,
+				"partly_applied": false
+			},
+			"coveredChangeCount": 3
+		},
+		{
+			"name": "no-review-rejected-after-resolutions",
+			"projectId": "00000000-0000-4000-8000-000001050008",
+			"proposalId": "00000000-0000-4000-8000-000001060008",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000001100094",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000001060008",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000001100095",
+					"occurred_at": "2026-01-03T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000001130094",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000001100096",
+					"occurred_at": "2026-01-04T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000001110095",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000001130094",
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"offeredCount": 0,
+						"selectedCount": 0,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000001100097",
+					"occurred_at": "2026-01-10T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000001060008",
+					"event_type": "status_changed",
+					"to_state": "REJECTED",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000400001",
+					"occurred_at": "2026-01-07T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000410001",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000001060008",
+					"payload": {
+						"changeIndex": 0,
+						"action": "create",
+						"createdEntityType": "story"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000400002",
+					"occurred_at": "2026-01-06T12:00:00.000Z",
+					"subject_type": "backlog_proposal_duplicate_resolution",
+					"subject_id": "00000000-0000-4000-8000-000000410002",
+					"event_type": "change_deduplicated",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000001060008",
+					"payload": {
+						"changeIndex": 1,
+						"existingEntityType": "story"
+					},
+					"actor_kind": "system"
+				}
+			],
+			"expectedOutcomes": ["applied", "alreadyOnRoadmap", "rejected"],
+			"expectedStoredIndexes": [0, 1, 2],
+			"partlyApplied": 0,
+			"changeOutcomes": {
+				"applied": 1,
+				"alreadyOnRoadmap": 1,
+				"notSelected": 0,
+				"failed": 0,
+				"inProgress": 0,
+				"rejected": 1,
+				"superseded": 0,
+				"pending": 0
+			},
+			"changeAcceptance": {
+				"accepted": 1,
+				"decided": 2,
+				"rate": 0.5
+			},
+			"expectedDecisionDays": ["2026-01-07", "2026-01-06", "2026-01-10"],
+			"expectedJourney": {
+				"offered": 3,
+				"selected": 2,
+				"not_selected": 0,
+				"partly_applied": false
+			},
+			"coveredChangeCount": 3
+		},
+		{
+			"name": "recommendation-no-review-backlog",
+			"projectId": "00000000-0000-4000-8000-000000700001",
+			"proposalId": "00000000-0000-4000-8000-000000700000",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000000700003",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000700000",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700004",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000780003",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"changeCount": 0
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700005",
+					"occurred_at": "2026-01-04T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000790004",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000780003",
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"offeredCount": 0,
+						"selectedCount": 0,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700006",
+					"occurred_at": "2026-01-22T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000700000",
+					"event_type": "status_changed",
+					"to_state": "BACKLOG",
+					"related_subject_id": null,
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				}
+			],
+			"expectedOutcomes": ["rejected", "rejected", "rejected"],
+			"expectedStoredIndexes": [0, 1, 2],
+			"expectedDecisionDays": ["2026-01-22", "2026-01-22", "2026-01-22"],
+			"changeOutcomes": {
+				"applied": 0,
+				"alreadyOnRoadmap": 0,
+				"notSelected": 0,
+				"failed": 0,
+				"inProgress": 0,
+				"rejected": 3,
+				"superseded": 0,
+				"pending": 0
+			},
+			"changeAcceptance": {
+				"accepted": 0,
+				"decided": 3,
+				"rate": 0.0
+			},
+			"partlyApplied": 0,
+			"expectedJourney": {
+				"offered": 3,
+				"selected": 0,
+				"not_selected": 0,
+				"partly_applied": false
+			},
+			"coveredChangeCount": 3
+		},
+		{
+			"name": "recommendation-no-review-rejected",
+			"projectId": "00000000-0000-4000-8000-000000700007",
+			"proposalId": "00000000-0000-4000-8000-000000700006",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000000700009",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000700006",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700010",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000780009",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"changeCount": 0
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700011",
+					"occurred_at": "2026-01-04T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000790010",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000780009",
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"offeredCount": 0,
+						"selectedCount": 0,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700012",
+					"occurred_at": "2026-01-22T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000700006",
+					"event_type": "status_changed",
+					"to_state": "REJECTED",
+					"related_subject_id": null,
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				}
+			],
+			"expectedOutcomes": ["rejected", "rejected", "rejected"],
+			"expectedStoredIndexes": [0, 1, 2],
+			"expectedDecisionDays": ["2026-01-22", "2026-01-22", "2026-01-22"],
+			"changeOutcomes": {
+				"applied": 0,
+				"alreadyOnRoadmap": 0,
+				"notSelected": 0,
+				"failed": 0,
+				"inProgress": 0,
+				"rejected": 3,
+				"superseded": 0,
+				"pending": 0
+			},
+			"changeAcceptance": {
+				"accepted": 0,
+				"decided": 3,
+				"rate": 0.0
+			},
+			"partlyApplied": 0,
+			"expectedJourney": {
+				"offered": 3,
+				"selected": 0,
+				"not_selected": 0,
+				"partly_applied": false
+			},
+			"coveredChangeCount": 3
+		},
+		{
+			"name": "recommendation-closure-in-current-window",
+			"projectId": "00000000-0000-4000-8000-000000700013",
+			"proposalId": "00000000-0000-4000-8000-000000700012",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000000700015",
+					"occurred_at": "2025-12-26T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000700012",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700016",
+					"occurred_at": "2025-12-28T00:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000760015",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700012",
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"offeredCount": 3,
+						"selectedCount": 1,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700017",
+					"occurred_at": "2025-12-28T00:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000750017",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700012",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000760015",
+						"offeredIndex": 0,
+						"changeIndex": 0,
+						"selected": true
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700018",
+					"occurred_at": "2025-12-28T00:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000750018",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700012",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000760015",
+						"offeredIndex": 1,
+						"changeIndex": 1,
+						"selected": false
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700019",
+					"occurred_at": "2025-12-28T00:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000750019",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700012",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000760015",
+						"offeredIndex": 2,
+						"changeIndex": 2,
+						"selected": false
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700020",
+					"occurred_at": "2026-01-21T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000750020",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700012",
+					"payload": {
+						"changeIndex": 0,
+						"action": "create",
+						"createdEntityType": "story"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700021",
+					"occurred_at": "2026-01-22T00:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000700012",
+					"event_type": "status_changed",
+					"to_state": "REJECTED",
+					"related_subject_id": null,
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				}
+			],
+			"expectedOutcomes": ["applied", "notSelected", "notSelected"],
+			"expectedStoredIndexes": [0, 1, 2],
+			"expectedDecisionDays": ["2025-12-28", "2026-01-22", "2026-01-22"],
+			"periods": {
+				"current": {
+					"changeOutcomes": {
+						"applied": 0,
+						"alreadyOnRoadmap": 0,
+						"notSelected": 2,
+						"failed": 0,
+						"inProgress": 0,
+						"rejected": 0,
+						"superseded": 0,
+						"pending": 0
+					},
+					"changeAcceptance": {
+						"accepted": 0,
+						"decided": 2,
+						"rate": 0.0
+					},
+					"partlyApplied": 0
+				},
+				"previous": {
+					"changeOutcomes": {
+						"applied": 0,
+						"alreadyOnRoadmap": 0,
+						"notSelected": 0,
+						"failed": 0,
+						"inProgress": 0,
+						"rejected": 0,
+						"superseded": 0,
+						"pending": 3
+					},
+					"changeAcceptance": {
+						"accepted": 0,
+						"decided": 0,
+						"rate": null
+					},
+					"partlyApplied": 0
+				}
+			},
+			"changeOutcomes": {
+				"applied": 1,
+				"alreadyOnRoadmap": 0,
+				"notSelected": 2,
+				"failed": 0,
+				"inProgress": 0,
+				"rejected": 0,
+				"superseded": 0,
+				"pending": 0
+			},
+			"changeAcceptance": {
+				"accepted": 1,
+				"decided": 3,
+				"rate": 0.3333333333333333
+			},
+			"partlyApplied": 0,
+			"expectedJourney": {
+				"offered": 3,
+				"selected": 1,
+				"not_selected": 2,
+				"partly_applied": false
+			},
+			"coveredChangeCount": 3
+		},
+		{
+			"name": "recommendation-all-applied-over-two-rounds",
+			"projectId": "00000000-0000-4000-8000-000000700022",
+			"proposalId": "00000000-0000-4000-8000-000000700021",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000000700024",
+					"occurred_at": "2026-01-01T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000700021",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700025",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000760024",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700021",
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"offeredCount": 3,
+						"selectedCount": 1,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700026",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000750026",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700021",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000760024",
+						"offeredIndex": 0,
+						"changeIndex": 0,
+						"selected": true
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700027",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000750027",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700021",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000760024",
+						"offeredIndex": 1,
+						"changeIndex": 1,
+						"selected": false
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700028",
+					"occurred_at": "2026-01-05T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000750028",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700021",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000760024",
+						"offeredIndex": 2,
+						"changeIndex": 2,
+						"selected": false
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700029",
+					"occurred_at": "2026-01-15T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000760028",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700021",
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"offeredCount": 3,
+						"selectedCount": 2,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700030",
+					"occurred_at": "2026-01-15T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000750030",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700021",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000760028",
+						"offeredIndex": 0,
+						"changeIndex": 0,
+						"selected": false
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700031",
+					"occurred_at": "2026-01-15T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000750031",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700021",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000760028",
+						"offeredIndex": 1,
+						"changeIndex": 1,
+						"selected": true
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700032",
+					"occurred_at": "2026-01-15T12:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000750032",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700021",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000760028",
+						"offeredIndex": 2,
+						"changeIndex": 2,
+						"selected": true
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700033",
+					"occurred_at": "2026-01-06T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000750033",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700021",
+					"payload": {
+						"changeIndex": 0,
+						"action": "create",
+						"createdEntityType": "story"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700034",
+					"occurred_at": "2026-01-16T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000750034",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700021",
+					"payload": {
+						"changeIndex": 1,
+						"action": "create",
+						"createdEntityType": "story"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700035",
+					"occurred_at": "2026-01-16T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000750035",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700021",
+					"payload": {
+						"changeIndex": 2,
+						"action": "create",
+						"createdEntityType": "story"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700036",
+					"occurred_at": "2026-01-22T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000700021",
+					"event_type": "status_changed",
+					"to_state": "APPLIED",
+					"related_subject_id": null,
+					"payload": {
+						"source": "ROADMAP_RECOMMENDATION",
+						"changeCount": 3
+					},
+					"actor_kind": "system"
+				}
+			],
+			"expectedOutcomes": ["applied", "applied", "applied"],
+			"expectedStoredIndexes": [0, 1, 2],
+			"expectedDecisionDays": ["2026-01-05", "2026-01-15", "2026-01-15"],
+			"changeOutcomes": {
+				"applied": 3,
+				"alreadyOnRoadmap": 0,
+				"notSelected": 0,
+				"failed": 0,
+				"inProgress": 0,
+				"rejected": 0,
+				"superseded": 0,
+				"pending": 0
+			},
+			"changeAcceptance": {
+				"accepted": 3,
+				"decided": 3,
+				"rate": 1.0
+			},
+			"partlyApplied": 0,
+			"expectedJourney": {
+				"offered": 3,
+				"selected": 3,
+				"not_selected": 0,
+				"partly_applied": false
+			},
+			"coveredChangeCount": 3
+		},
+		{
+			"name": "partly-applied-snapshot-before-completion",
+			"projectId": "00000000-0000-4000-8000-000000700037",
+			"proposalId": "00000000-0000-4000-8000-000000700036",
+			"events": [
+				{
+					"id": "00000000-0000-4000-8000-000000700039",
+					"occurred_at": "2025-12-26T12:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000700036",
+					"event_type": "proposed",
+					"to_state": "PENDING",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 8
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700040",
+					"occurred_at": "2025-12-28T00:00:00.000Z",
+					"subject_type": "backlog_proposal_review",
+					"subject_id": "00000000-0000-4000-8000-000000760039",
+					"event_type": "proposal_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700036",
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"offeredCount": 8,
+						"selectedCount": 5,
+						"offeredListComplete": true
+					},
+					"actor_kind": "human"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700041",
+					"occurred_at": "2025-12-28T00:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000750041",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700036",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000760039",
+						"offeredIndex": 0,
+						"changeIndex": 0,
+						"selected": true
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700042",
+					"occurred_at": "2025-12-28T00:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000750042",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700036",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000760039",
+						"offeredIndex": 1,
+						"changeIndex": 1,
+						"selected": true
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700043",
+					"occurred_at": "2025-12-28T00:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000750043",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700036",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000760039",
+						"offeredIndex": 2,
+						"changeIndex": 2,
+						"selected": true
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700044",
+					"occurred_at": "2025-12-28T00:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000750044",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700036",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000760039",
+						"offeredIndex": 3,
+						"changeIndex": 3,
+						"selected": true
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700045",
+					"occurred_at": "2025-12-28T00:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000750045",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700036",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000760039",
+						"offeredIndex": 4,
+						"changeIndex": 4,
+						"selected": true
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700046",
+					"occurred_at": "2025-12-28T00:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000750046",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700036",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000760039",
+						"offeredIndex": 5,
+						"changeIndex": 5,
+						"selected": false
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700047",
+					"occurred_at": "2025-12-28T00:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000750047",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700036",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000760039",
+						"offeredIndex": 6,
+						"changeIndex": 6,
+						"selected": false
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700048",
+					"occurred_at": "2025-12-28T00:00:00.000Z",
+					"subject_type": "backlog_proposal_review_entry",
+					"subject_id": "00000000-0000-4000-8000-000000750048",
+					"event_type": "change_reviewed",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700036",
+					"payload": {
+						"reviewId": "00000000-0000-4000-8000-000000760039",
+						"offeredIndex": 7,
+						"changeIndex": 7,
+						"selected": false
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700049",
+					"occurred_at": "2026-01-21T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000750049",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700036",
+					"payload": {
+						"changeIndex": 0,
+						"action": "create",
+						"createdEntityType": "story"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700050",
+					"occurred_at": "2026-01-21T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000750050",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700036",
+					"payload": {
+						"changeIndex": 1,
+						"action": "create",
+						"createdEntityType": "story"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700051",
+					"occurred_at": "2026-01-21T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000750051",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700036",
+					"payload": {
+						"changeIndex": 2,
+						"action": "create",
+						"createdEntityType": "story"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700052",
+					"occurred_at": "2026-01-21T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000750052",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700036",
+					"payload": {
+						"changeIndex": 3,
+						"action": "create",
+						"createdEntityType": "story"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700053",
+					"occurred_at": "2026-01-21T12:00:00.000Z",
+					"subject_type": "backlog_proposal_application",
+					"subject_id": "00000000-0000-4000-8000-000000750053",
+					"event_type": "change_applied",
+					"to_state": null,
+					"related_subject_id": "00000000-0000-4000-8000-000000700036",
+					"payload": {
+						"changeIndex": 4,
+						"action": "create",
+						"createdEntityType": "story"
+					},
+					"actor_kind": "system"
+				},
+				{
+					"id": "00000000-0000-4000-8000-000000700054",
+					"occurred_at": "2026-01-22T00:00:00.000Z",
+					"subject_type": "backlog_proposal",
+					"subject_id": "00000000-0000-4000-8000-000000700036",
+					"event_type": "status_changed",
+					"to_state": "APPLIED",
+					"related_subject_id": null,
+					"payload": {
+						"source": "TEAMS_CHANNEL",
+						"changeCount": 8
+					},
+					"actor_kind": "system"
+				}
+			],
+			"expectedOutcomes": [
+				"applied",
+				"applied",
+				"applied",
+				"applied",
+				"applied",
+				"notSelected",
+				"notSelected",
+				"notSelected"
+			],
+			"expectedStoredIndexes": [0, 1, 2, 3, 4, 5, 6, 7],
+			"expectedDecisionDays": [
+				"2025-12-28",
+				"2025-12-28",
+				"2025-12-28",
+				"2025-12-28",
+				"2025-12-28",
+				"2025-12-28",
+				"2025-12-28",
+				"2025-12-28"
+			],
+			"periods": {
+				"current": {
+					"changeOutcomes": {
+						"applied": 0,
+						"alreadyOnRoadmap": 0,
+						"notSelected": 0,
+						"failed": 0,
+						"inProgress": 0,
+						"rejected": 0,
+						"superseded": 0,
+						"pending": 0
+					},
+					"changeAcceptance": {
+						"accepted": 0,
+						"decided": 0,
+						"rate": null
+					},
+					"partlyApplied": 0
+				},
+				"previous": {
+					"changeOutcomes": {
+						"applied": 0,
+						"alreadyOnRoadmap": 0,
+						"notSelected": 3,
+						"failed": 0,
+						"inProgress": 0,
+						"rejected": 0,
+						"superseded": 0,
+						"pending": 5
+					},
+					"changeAcceptance": {
+						"accepted": 0,
+						"decided": 3,
+						"rate": 0.0
+					},
+					"partlyApplied": 0
+				}
+			},
+			"changeOutcomes": {
+				"applied": 5,
+				"alreadyOnRoadmap": 0,
+				"notSelected": 3,
+				"failed": 0,
+				"inProgress": 0,
+				"rejected": 0,
+				"superseded": 0,
+				"pending": 0
+			},
+			"changeAcceptance": {
+				"accepted": 5,
+				"decided": 8,
+				"rate": 0.625
+			},
+			"partlyApplied": 1,
+			"expectedJourney": {
+				"offered": 8,
+				"selected": 5,
+				"not_selected": 3,
+				"partly_applied": true
+			},
+			"coveredChangeCount": 8
+		}
+	]
+}

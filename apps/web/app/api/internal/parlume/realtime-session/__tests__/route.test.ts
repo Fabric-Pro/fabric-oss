@@ -32,12 +32,14 @@ beforeEach(() => {
 });
 
 describe("Parlume realtime session", () => {
-	it("returns the client secret, its expiry and the model, and nothing else", async () => {
+	it("returns the client secret, its expiry, the model and its host, and nothing else", async () => {
 		mocks.create.mockResolvedValue({
 			engine: "realtime",
 			clientSecret: "ek_minted",
 			expiresAt: 1_900_000_000,
 			model: "gpt-realtime-2.1",
+			realtimeUrl:
+				"https://example-resource.openai.azure.com/openai/v1/realtime",
 		});
 		const response = await POST(ask());
 		expect(response.status).toBe(200);
@@ -45,6 +47,8 @@ describe("Parlume realtime session", () => {
 			clientSecret: "ek_minted",
 			expiresAt: 1_900_000_000,
 			model: "gpt-realtime-2.1",
+			realtimeUrl:
+				"https://example-resource.openai.azure.com/openai/v1/realtime",
 		});
 		expect(mocks.create).toHaveBeenCalledWith({
 			sessionId: "session-1",

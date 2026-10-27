@@ -1,3 +1,5 @@
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { getProjectCodeIndexes } from "@repo/database";
 import { ensureCollection, getCollectionLayout } from "../collection-manager";
 import { generateEmbedding } from "../embedding";
@@ -44,13 +46,15 @@ export async function searchProjectCodeIndex(input: {
 
 	const limit = Math.min(input.limit ?? 8, 20);
 	const [embeddingResult, collectionName, layout] = await Promise.all([
-		generateEmbedding(input.query, {
-			userId: input.userId,
-			organizationId: input.organizationId,
-			projectId: input.projectId,
-			featureKey: "code-index",
-			tags: ["qa-script-generation", "code-search"],
-		}),
+		runWithAiCallPurpose(AI_CALL_PURPOSES.codeSearchEmbedding, () =>
+			generateEmbedding(input.query, {
+				userId: input.userId,
+				organizationId: input.organizationId,
+				projectId: input.projectId,
+				featureKey: "code-index",
+				tags: ["qa-script-generation", "code-search"],
+			}),
+		),
 		ensureCollection("project-contexts", input.organizationId),
 		getCollectionLayout("project-contexts", input.organizationId),
 	]);

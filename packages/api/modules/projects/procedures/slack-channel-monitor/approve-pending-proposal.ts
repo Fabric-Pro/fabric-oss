@@ -3,13 +3,16 @@ import {
 	type AttachmentWarningRecord,
 	appendAppliedChangeIndexes,
 	buildBacklogDedupGuard,
+	claimPendingProposalWithReview,
 	db,
+	getAppliedChangeIndexes,
 	getPendingBacklogProposal,
 	inferDedupFamily,
 	markPendingProposalApplied,
-	markPendingProposalApproved,
 	markPendingProposalFailed,
 	markProposalApplyDispatched,
+	recordProposalApplication,
+	recordProposalDuplicateResolution,
 	type SkippedDuplicate,
 	setPendingProposalAttachmentResult,
 	updateStory,
@@ -53,6 +56,11 @@ import {
 	type ChangeItem,
 	changeItemSchema,
 } from "../backlog/change-item-schema";
+import {
+	buildProposalReviewEntries,
+	PROPOSAL_REVIEW_MAX_CHANGES,
+	resolveApprovedChangeIndexes,
+} from "../backlog/proposal-review";
 import { backlogApplyWorkflowId } from "../backlog/workflow-id";
 
 /**
@@ -362,6 +370,10 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 			organizationId: z.string().nullable().optional(),
 			proposalId: z.string(),
 			approvedChanges: z.array(changeItemSchema),
+			approvedChangeIndexes: z
+				.array(z.number().int().min(0).max(PROPOSAL_REVIEW_MAX_CHANGES))
+				.max(PROPOSAL_REVIEW_MAX_CHANGES)
+				.optional(),
 			// Optional opt-out for PM sync. Undefined ⇒ sync if PM is wired
 			// up. Explicit `false` skips. See Teams mirror for full rationale.
 			syncToPM: z.boolean().optional(),
@@ -469,6 +481,7 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 		// `type: "feature"`, drop the parent-epic references, and warn for
 		// auditability. `"epic"` stays in `changeItemSchema` for backward-
 		// compat with stored proposals.
+		const submittedChanges = structuredClone(input.approvedChanges);
 		if (forbidEpics) {
 			for (const change of input.approvedChanges) {
 				if ((change as { type: string }).type === "epic") {
@@ -502,7 +515,10 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 		// stored index and corrupt `appliedChangeIndexes`.
 		const typeForMatch = (t: string): string =>
 			forbidEpics && t === "epic" ? "feature" : t;
-		const alreadyApplied = new Set(proposal.appliedChangeIndexes ?? []);
+		const alreadyApplied = await getAppliedChangeIndexes(input.proposalId);
+		for (const index of proposal.appliedChangeIndexes ?? []) {
+			alreadyApplied.add(index);
+		}
 
 		// Does stored change `c` match approved `change`? (action + type
 		// [forbidEpics-gated collapse] + title + parentFeature + the
@@ -538,29 +554,20 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 		// approved change maps to a DISTINCT stored index. (Same
 		// action+title+parentFeature rows are interchangeable for
 		// index-bookkeeping, so which-of-the-two is harmless.)
-		const usedIndexes = new Set<number>();
-		const indexedChanges = input.approvedChanges.map((change, position) => {
-			let index = -1;
-			for (let i = 0; i < proposalChanges.length; i++) {
-				const c = proposalChanges[i];
-				if (!c || usedIndexes.has(i)) {
-					continue;
-				}
-				if (matchesStored(c, change)) {
-					index = i;
-					usedIndexes.add(i);
-					break;
-				}
-			}
-			return { change, index, position };
-		});
-		for (const entry of indexedChanges) {
-			if (entry.index < 0) {
-				throw new ORPCError("BAD_REQUEST", {
-					message: `Approved change "${entry.change.title.to}" not found in proposal — it may be stale. Re-open the proposal.`,
-				});
-			}
-		}
+		const indexes = resolveApprovedChangeIndexes(
+			proposalChanges,
+			input.approvedChanges,
+			input.approvedChangeIndexes,
+			matchesStored,
+		);
+		const indexedChanges = input.approvedChanges.map(
+			(change, position) => ({
+				change,
+				index: indexes[position]!,
+				position,
+			}),
+		);
+
 		const creates = indexedChanges.filter(
 			({ change, index }) =>
 				change.action === "create" && !alreadyApplied.has(index),
@@ -570,18 +577,42 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 				change.action === "update" && !alreadyApplied.has(index),
 		);
 
-		// Claim the approval up-front so the apply workflow can safely transition
-		// APPROVED → APPLIED/FAILED via finalizeClaimedProposalActivity's legacy
-		// APPROVED path without racing this handler. The update workflow's id is
-		// recorded now, as Teams does with its claim, so the row keeps it even
-		// when a fast finalize lands before the dispatch stamp below.
-		const updateApplyWorkflowId =
-			updates.length > 0 ? backlogApplyWorkflowId(input.projectId) : null;
-		await markPendingProposalApproved({
+		// Preserve Slack's APPROVED finalization protocol while fencing concurrent approvals.
+		const updateApplyWorkflowId = backlogApplyWorkflowId(input.projectId);
+		const claimed = await claimPendingProposalWithReview({
 			proposalId: input.proposalId,
 			reviewedBy: user.id,
 			applyWorkflowId: updateApplyWorkflowId,
+			admitBacklog: true,
+			claimStatus: "APPROVED",
+			syncToPM:
+				input.syncToPM ??
+				!!(
+					project.projectManagementMcpConfigId &&
+					project.projectManagementContainerId
+				),
+			pmConfig:
+				input.pmConfig ??
+				(project.projectManagementMcpConfigId &&
+				project.projectManagementContainerId
+					? {
+							mcpConfigId: project.projectManagementMcpConfigId,
+							containerId: project.projectManagementContainerId,
+						}
+					: undefined),
+			offeredListComplete: true,
+			entries: buildProposalReviewEntries(
+				proposalChanges,
+				submittedChanges,
+				indexes,
+			),
 		});
+		if (!claimed) {
+			throw new ORPCError("CONFLICT", {
+				message:
+					"This proposal has already been approved or rejected perhaps by another user.",
+			});
+		}
 
 		const createdStoryIds: string[] = [];
 		const createErrors: string[] = [];
@@ -621,6 +652,24 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 					change.title.to,
 				);
 				if (collision) {
+					try {
+						await recordProposalDuplicateResolution({
+							proposalId: input.proposalId,
+							changeIndex: index,
+							existingEntityId: collision.existingId,
+							existingEntityType:
+								dedupFamily === "BUG" ? "bug" : "story",
+						});
+					} catch {
+						logger.warn(
+							"Failed to record proposal duplicate resolution",
+							{
+								proposalId: input.proposalId,
+								changeIndex: index,
+							},
+						);
+					}
+
 					logger.warn(
 						"[approvePendingProposal:slack] Skipping duplicate CREATE — title matches existing item",
 						{
@@ -726,6 +775,7 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 					// can link back to it. Written inside the creating INSERT,
 					// so an approved change can never lose its provenance.
 					createdFromProposalId: input.proposalId,
+					proposalApplicationKey: `proposal:${input.proposalId}:${index}`,
 					// Persist the per-row PM-sync gate so later Fabric edits
 					// also push to the PM tool (see `[[project_pm_sync_gate]]`).
 					// Match the enqueue gate: stamp on whenever the row will
@@ -737,6 +787,26 @@ export const approvePendingProposalProcedure = tenantProtectedProcedure
 							? true
 							: undefined,
 				});
+				try {
+					await recordProposalApplication(
+						db,
+						{
+							proposalId: input.proposalId,
+							changeIndex: index,
+							action: "create",
+							createdEntityType:
+								story.kind === "BUG" ? "bug" : "story",
+							createdEntityId: story.id,
+						},
+						{ skipDuplicates: true },
+					);
+				} catch {
+					logger.warn("Failed to record proposal application", {
+						proposalId: input.proposalId,
+						changeIndex: index,
+					});
+				}
+
 				createdStoryIds.push(story.id);
 				freshlyApplied.push(index);
 				await appendAppliedChangeIndexes(input.proposalId, [index]);

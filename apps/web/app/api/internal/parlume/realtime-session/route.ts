@@ -32,6 +32,7 @@ export async function POST(request: NextRequest) {
 				clientSecret: session.clientSecret,
 				expiresAt: session.expiresAt,
 				model: session.model,
+				realtimeUrl: session.realtimeUrl,
 			});
 		case "classic":
 			return NextResponse.json(

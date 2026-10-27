@@ -1,21 +1,74 @@
-const ATTENDEE_API_URL = "https://app.attendee.dev/api/v1";
-const ATTENDEE_BOTS_URL = `${ATTENDEE_API_URL}/bots`;
+import { createOutboundHostAllowlist } from "@repo/utils/url-security";
+
+/** Attendee's hosted service; an organization can point at its own instance. */
+export const DEFAULT_ATTENDEE_BASE_URL = "https://app.attendee.dev";
 // The rate of the meeting audio the bot streams to the bridge, which goes on
 // to Flux; Deepgram recommends 16 kHz. Replies carry their own rate (24 kHz).
 const MEETING_AUDIO_SAMPLE_RATE = 16_000;
 // The bot outlives the session's hard stop only if Fabric's own leave never
 // lands, and never by more than this.
 const MAX_UPTIME_BACKSTOP_SECONDS = 120;
+/**
+ * How long the bot waits in a Teams lobby to be admitted before it gives up.
+ * The provider bills that wait as bot time.
+ */
+export const PARLUME_LOBBY_WAIT_SECONDS = 600;
+const PROVIDER_DETAIL_CHARS = 200;
+
+/**
+ * A self-hosted Attendee is a URL an organization admin saves and Fabric
+ * fetches with the key on every invite, leave and chat post. Internal
+ * destinations are refused unless the operator lists the host here.
+ */
+export const PARLUME_ATTENDEE_ALLOWED_HOSTS_ENV =
+	"PARLUME_ATTENDEE_ALLOWED_HOSTS";
+const attendeeOutbound = createOutboundHostAllowlist({
+	envVar: PARLUME_ATTENDEE_ALLOWED_HOSTS_ENV,
+});
 
 export type ParlumeMeetingBotLeaveResult =
 	| { kind: "LEAVE_REQUESTED" }
 	| { kind: "TERMINAL"; status: "completed" | "failed" };
 
+/** Fabric's own media bridge and webhook: operator settings, never a tenant's. */
 export interface ParlumeBridgeSettings {
-	apiKey: string;
 	bridgeUrl: string;
 	callbackUrl: string;
 	serviceSecret: string;
+}
+
+export type ParlumeSettingSource = "organization" | "environment";
+
+/** The Attendee project a bot is created on, and how it signs in to Teams. */
+export interface ParlumeAttendeeSettings {
+	apiKey: string;
+	/** Origin, plus a path prefix for a proxied instance; no trailing slash. */
+	baseUrl: string;
+	teamsLoginMode: ParlumeTeamsLoginMode | null;
+	source: ParlumeSettingSource;
+}
+
+/** Attendee refused a request; `detail` is its own bounded explanation. */
+export class ParlumeProviderError extends Error {
+	readonly status: number;
+	readonly detail: string | null;
+
+	constructor(status: number, detail: string | null) {
+		super(
+			`Attendee request failed with HTTP ${status}.${detail ? ` ${detail}` : ""}`,
+		);
+		this.name = "ParlumeProviderError";
+		this.status = status;
+		this.detail = detail;
+	}
+}
+
+/** Fabric's own media bridge refused or did not answer. */
+export class ParlumeBridgeUnavailableError extends Error {
+	constructor() {
+		super("Parlume media bridge is unavailable.");
+		this.name = "ParlumeBridgeUnavailableError";
+	}
 }
 
 interface ParlumeSpeakerUpdate {
@@ -35,11 +88,14 @@ export interface ParlumeChatMessageRelay {
 	timestampMs: number;
 }
 
-const TEAMS_LOGIN_MODES = ["always", "only_if_required"] as const;
-type ParlumeTeamsLoginMode = (typeof TEAMS_LOGIN_MODES)[number];
+export const PARLUME_TEAMS_LOGIN_MODES = [
+	"always",
+	"only_if_required",
+] as const;
+export type ParlumeTeamsLoginMode = (typeof PARLUME_TEAMS_LOGIN_MODES)[number];
 
 function isTeamsLoginMode(value: string): value is ParlumeTeamsLoginMode {
-	return TEAMS_LOGIN_MODES.some((mode) => mode === value);
+	return PARLUME_TEAMS_LOGIN_MODES.some((mode) => mode === value);
 }
 
 /**
@@ -48,10 +104,8 @@ function isTeamsLoginMode(value: string): value is ParlumeTeamsLoginMode {
  * that anonymous guests cannot. Unset keeps the anonymous guest. Any other
  * value refuses the invite rather than join in a mode nobody configured.
  */
-function parlumeTeamsSettings(
-	value: string | undefined,
-): { use_login: true; login_mode: ParlumeTeamsLoginMode } | null {
-	const mode = configured(value);
+function environmentTeamsLoginMode(): ParlumeTeamsLoginMode | null {
+	const mode = configured(process.env.PARLUME_ATTENDEE_TEAMS_LOGIN);
 	if (!mode) {
 		return null;
 	}
@@ -60,12 +114,73 @@ function parlumeTeamsSettings(
 			"PARLUME_ATTENDEE_TEAMS_LOGIN must be always or only_if_required.",
 		);
 	}
-	return { use_login: true, login_mode: mode };
+	return mode;
 }
 
 function configured(value: string | undefined): string | null {
 	const trimmed = value?.trim();
 	return trimmed ? trimmed : null;
+}
+
+/**
+ * The base URL in the form every Attendee call is built from, or null when it
+ * is not an https URL without credentials, query or fragment. A pasted
+ * `/api/v1` suffix is dropped, since Fabric adds it.
+ */
+export function normalizeAttendeeBaseUrl(value: string): string | null {
+	try {
+		const url = new URL(value.trim());
+		if (
+			url.protocol !== "https:" ||
+			url.username ||
+			url.password ||
+			url.search ||
+			url.hash
+		) {
+			return null;
+		}
+		const path = url.pathname.replace(/\/+$/, "").replace(/\/api\/v1$/, "");
+		return `${url.origin}${path}`;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Why an Attendee base URL must not be saved or called, or null. The scheme
+ * and shape first, then the same internal-destination refusal the search
+ * provider endpoints get.
+ */
+export function getAttendeeBaseUrlBlockReason(value: string): string | null {
+	const normalized = normalizeAttendeeBaseUrl(value);
+	if (!normalized) {
+		return "The Attendee URL must be an https address without a query.";
+	}
+	return attendeeOutbound.getUnsafeReason(normalized);
+}
+
+/**
+ * The operator's Attendee project from the environment, or null without a
+ * key. `PARLUME_ATTENDEE_BASE_URL` points at a self-hosted instance.
+ */
+export function getEnvironmentAttendeeSettings(): ParlumeAttendeeSettings | null {
+	const apiKey = configured(process.env.PARLUME_ATTENDEE_API_KEY);
+	if (!apiKey) {
+		return null;
+	}
+	const baseUrl = configured(process.env.PARLUME_ATTENDEE_BASE_URL);
+	const normalized = baseUrl
+		? normalizeAttendeeBaseUrl(baseUrl)
+		: DEFAULT_ATTENDEE_BASE_URL;
+	if (!normalized) {
+		throw new Error("PARLUME_ATTENDEE_BASE_URL must be an https URL.");
+	}
+	return {
+		apiKey,
+		baseUrl: normalized,
+		teamsLoginMode: environmentTeamsLoginMode(),
+		source: "environment",
+	};
 }
 
 function derivedBridgeUrl(): string | null {
@@ -109,13 +224,12 @@ function derivedCallbackUrl(): string | null {
  * context.
  */
 export function getParlumeBridgeSettings(): ParlumeBridgeSettings | null {
-	const apiKey = configured(process.env.PARLUME_ATTENDEE_API_KEY);
 	const bridgeBaseUrl =
 		configured(process.env.PARLUME_BRIDGE_WS_URL) ?? derivedBridgeUrl();
 	const callbackBaseUrl =
 		configured(process.env.PARLUME_CALLBACK_URL) ?? derivedCallbackUrl();
 	const serviceSecret = configured(process.env.AGENT_SERVICE_SECRET);
-	if (!apiKey || !bridgeBaseUrl || !callbackBaseUrl || !serviceSecret) {
+	if (!bridgeBaseUrl || !callbackBaseUrl || !serviceSecret) {
 		return null;
 	}
 
@@ -129,7 +243,6 @@ export function getParlumeBridgeSettings(): ParlumeBridgeSettings | null {
 			return null;
 		}
 		return {
-			apiKey,
 			bridgeUrl: bridge.toString(),
 			callbackUrl: callback.toString(),
 			serviceSecret,
@@ -180,17 +293,37 @@ function attendeeHeaders(apiKey: string, json = false): Record<string, string> {
 	};
 }
 
-function botUrl(providerBotId: string, action?: string): string {
-	const bot = `${ATTENDEE_BOTS_URL}/${encodeURIComponent(providerBotId)}`;
+function botsUrl(attendee: Pick<ParlumeAttendeeSettings, "baseUrl">): string {
+	return `${attendee.baseUrl}/api/v1/bots`;
+}
+
+function botUrl(
+	attendee: ParlumeAttendeeSettings,
+	providerBotId: string,
+	action?: string,
+): string {
+	const bot = `${botsUrl(attendee)}/${encodeURIComponent(providerBotId)}`;
 	return action ? `${bot}/${action}` : bot;
+}
+
+/**
+ * Every Attendee call goes through the outbound guard: a self-hosted base URL
+ * is tenant input, and redirects are refused so the key cannot follow one.
+ */
+function attendeeFetch(url: string, init: RequestInit): Promise<Response> {
+	return attendeeOutbound.fetch(url, init);
 }
 
 // Attendee answers `{ error }` for a refused request and a per-field object for
 // a rejected body; the detail names the field (a bot name Teams refuses, a
 // meeting link it cannot parse), and without it a 400 is undiagnosable from
-// Fabric's side. Bounded, and never the request that caused it.
-async function providerFailure(response: Response): Promise<Error> {
-	let detail = "";
+// Fabric's side. Bounded, never the request that caused it, and the key is
+// masked should the provider ever quote it.
+async function providerFailure(
+	response: Response,
+	apiKey: string,
+): Promise<ParlumeProviderError> {
+	let detail: string | null = null;
 	try {
 		const body: unknown = await response.json();
 		if (typeof body === "object" && body !== null) {
@@ -198,18 +331,24 @@ async function providerFailure(response: Response): Promise<Error> {
 				"error" in body && typeof body.error === "string"
 					? body.error
 					: JSON.stringify(body);
-			detail = ` ${message.slice(0, 200)}`;
+			detail = message
+				.split(apiKey)
+				.join("…")
+				.slice(0, PROVIDER_DETAIL_CHARS);
 		}
 	} catch {
 		// A non-JSON body carries nothing worth relaying.
 	}
-	return new Error(
-		`Attendee request failed with HTTP ${response.status}.${detail}`,
-	);
+	return new ParlumeProviderError(response.status, detail);
+}
+
+function teamsSettings(mode: ParlumeTeamsLoginMode | null) {
+	return mode ? { use_login: true, login_mode: mode } : null;
 }
 
 export async function startParlumeMeetingBot(input: {
 	settings: ParlumeBridgeSettings;
+	attendee: ParlumeAttendeeSettings;
 	sessionId: string;
 	meetingUrl: string;
 	streamToken: string;
@@ -221,12 +360,10 @@ export async function startParlumeMeetingBot(input: {
 			1,
 			Math.ceil((input.hardStopAt.getTime() - Date.now()) / 1_000),
 		) + MAX_UPTIME_BACKSTOP_SECONDS;
-	const teamsSettings = parlumeTeamsSettings(
-		process.env.PARLUME_ATTENDEE_TEAMS_LOGIN,
-	);
-	const response = await fetch(ATTENDEE_BOTS_URL, {
+	const teams = teamsSettings(input.attendee.teamsLoginMode);
+	const response = await attendeeFetch(botsUrl(input.attendee), {
 		method: "POST",
-		headers: attendeeHeaders(input.settings.apiKey, true),
+		headers: attendeeHeaders(input.attendee.apiKey, true),
 		body: JSON.stringify({
 			bot_name: "Fabric Parlume",
 			meeting_url: input.meetingUrl,
@@ -269,12 +406,13 @@ export async function startParlumeMeetingBot(input: {
 					],
 				},
 			],
-			...(teamsSettings ? { teams_settings: teamsSettings } : {}),
-			// Three minutes unadmitted or alone is the floor for a meeting that
-			// never happened. Attendee's default silence timeout stays; the
-			// bridge's own idle rule leaves a silent meeting at three minutes.
+			...(teams ? { teams_settings: teams } : {}),
+			// Ten minutes leaves an organizer time to admit the bot; three minutes
+			// alone is the floor for a meeting that never happened. Attendee's
+			// default silence timeout stays; the bridge's own idle rule leaves a
+			// silent meeting at three minutes.
 			automatic_leave_settings: {
-				waiting_room_timeout_seconds: 180,
+				waiting_room_timeout_seconds: PARLUME_LOBBY_WAIT_SECONDS,
 				only_participant_in_meeting_timeout_seconds: 180,
 				max_uptime_seconds: maxUptimeSeconds,
 			},
@@ -282,7 +420,7 @@ export async function startParlumeMeetingBot(input: {
 	});
 
 	if (!response.ok) {
-		throw await providerFailure(response);
+		throw await providerFailure(response, input.attendee.apiKey);
 	}
 
 	const body = (await response.json()) as { id?: unknown };
@@ -315,7 +453,7 @@ export async function armParlumeMeetingBridge(input: {
 		},
 	);
 	if (!response.ok) {
-		throw new Error("Parlume media bridge is unavailable.");
+		throw new ParlumeBridgeUnavailableError();
 	}
 }
 
@@ -339,7 +477,7 @@ export async function closeParlumeMeetingBridge(input: {
 		signal: AbortSignal.timeout(10_000),
 	});
 	if (!response.ok) {
-		throw new Error("Parlume media bridge is unavailable.");
+		throw new ParlumeBridgeUnavailableError();
 	}
 }
 
@@ -367,7 +505,7 @@ export async function sendParlumeSpeakerUpdates(input: {
 		signal: AbortSignal.timeout(10_000),
 	});
 	if (!response.ok) {
-		throw new Error("Parlume media bridge is unavailable.");
+		throw new ParlumeBridgeUnavailableError();
 	}
 }
 
@@ -395,8 +533,26 @@ export async function sendParlumeChatMessage(input: {
 		signal: AbortSignal.timeout(10_000),
 	});
 	if (!response.ok) {
-		throw new Error("Parlume media bridge is unavailable.");
+		throw new ParlumeBridgeUnavailableError();
 	}
+}
+
+/**
+ * Attendee's Teams bot types a plain-text message one key at a time, about
+ * 6 to 7 ms a character, and passes on no meeting audio meanwhile: a long post
+ * left Parlume deaf for up to ten seconds. A message with HTML tags is pasted
+ * whole, so the text goes as one escaped paragraph.
+ */
+function parlumeChatHtml(message: string): string {
+	// Attendee rejects characters above U+FFFF (emoji); drop them before
+	// cutting, so the cut cannot split a surrogate pair.
+	const text = message
+		.replace(/[\u{10000}-\u{10FFFF}]/gu, "")
+		.slice(0, 4_096)
+		.replace(/&/g, "&amp;")
+		.replace(/</g, "&lt;")
+		.replace(/>/g, "&gt;");
+	return `<p>${text}</p>`;
 }
 
 /**
@@ -408,66 +564,69 @@ export async function sendParlumeChatMessage(input: {
  * bot is not in the call.
  */
 export async function sendParlumeMeetingChat(input: {
-	settings: ParlumeBridgeSettings;
+	attendee: ParlumeAttendeeSettings;
 	providerBotId: string;
 	message: string;
 }): Promise<void> {
-	const response = await fetch(
-		botUrl(input.providerBotId, "send_chat_message"),
+	const response = await attendeeFetch(
+		botUrl(input.attendee, input.providerBotId, "send_chat_message"),
 		{
 			method: "POST",
-			headers: attendeeHeaders(input.settings.apiKey, true),
+			headers: attendeeHeaders(input.attendee.apiKey, true),
 			body: JSON.stringify({
 				to: "everyone",
-				// Attendee rejects characters above U+FFFF (emoji); drop them before
-				// cutting, so the cut cannot split a surrogate pair.
-				message: input.message
-					.replace(/[\u{10000}-\u{10FFFF}]/gu, "")
-					.slice(0, 4_096),
+				message: parlumeChatHtml(input.message),
 			}),
 			signal: AbortSignal.timeout(10_000),
 		},
 	);
 	if (!response.ok) {
-		throw await providerFailure(response);
+		throw await providerFailure(response, input.attendee.apiKey);
 	}
 }
 
 export async function deleteParlumeMeetingBotData(input: {
-	settings: ParlumeBridgeSettings;
+	attendee: ParlumeAttendeeSettings;
 	providerBotId: string;
 }): Promise<void> {
-	const response = await fetch(botUrl(input.providerBotId, "delete_data"), {
-		method: "POST",
-		headers: attendeeHeaders(input.settings.apiKey),
-	});
+	const response = await attendeeFetch(
+		botUrl(input.attendee, input.providerBotId, "delete_data"),
+		{
+			method: "POST",
+			headers: attendeeHeaders(input.attendee.apiKey),
+		},
+	);
 	if (!response.ok) {
-		throw await providerFailure(response);
+		throw await providerFailure(response, input.attendee.apiKey);
 	}
 }
 
 export async function leaveParlumeMeetingBot(input: {
-	settings: ParlumeBridgeSettings;
+	attendee: ParlumeAttendeeSettings;
 	providerBotId: string;
 }): Promise<ParlumeMeetingBotLeaveResult> {
-	const response = await fetch(botUrl(input.providerBotId, "leave"), {
-		method: "POST",
-		headers: attendeeHeaders(input.settings.apiKey),
-	});
+	const response = await attendeeFetch(
+		botUrl(input.attendee, input.providerBotId, "leave"),
+		{
+			method: "POST",
+			headers: attendeeHeaders(input.attendee.apiKey),
+		},
+	);
 	if (response.ok) {
 		return { kind: "LEAVE_REQUESTED" };
 	}
 	if (response.status !== 400) {
-		throw await providerFailure(response);
+		throw await providerFailure(response, input.attendee.apiKey);
 	}
 	// Attendee refuses a leave from any state that cannot leave. A bot that is
 	// already leaving or gone is not an error, but only the bot's own state, read
 	// back by id, says so.
-	const statusResponse = await fetch(botUrl(input.providerBotId), {
-		headers: attendeeHeaders(input.settings.apiKey),
-	});
+	const statusResponse = await attendeeFetch(
+		botUrl(input.attendee, input.providerBotId),
+		{ headers: attendeeHeaders(input.attendee.apiKey) },
+	);
 	if (!statusResponse.ok) {
-		throw await providerFailure(response);
+		throw await providerFailure(response, input.attendee.apiKey);
 	}
 	const body = (await statusResponse.json()) as {
 		id?: unknown;
@@ -487,24 +646,51 @@ export async function leaveParlumeMeetingBot(input: {
 				break;
 		}
 	}
-	throw await providerFailure(response);
+	throw await providerFailure(response, input.attendee.apiKey);
 }
 
-export function isTeamsMeetingUrl(value: string): boolean {
+export type ParlumeAttendeeCheck =
+	| { status: "ok" }
+	| { status: "invalid_key"; httpStatus: number }
+	| { status: "error"; httpStatus: number | null; detail: string | null };
+
+/**
+ * Checks a key against an Attendee instance with its read-only bot list. Opens
+ * no bot and costs nothing. The caller has already refused an internal base
+ * URL; the guard refuses it again here and on any redirect.
+ */
+export async function checkAttendeeConnection(input: {
+	apiKey: string;
+	baseUrl: string;
+}): Promise<ParlumeAttendeeCheck> {
+	let response: Response;
 	try {
-		const url = new URL(value);
-		if (url.protocol !== "https:") {
-			return false;
-		}
-		const host = url.hostname.toLowerCase();
-		return [
-			"teams.microsoft.com",
-			"teams.live.com",
-			"teams.microsoft.us",
-			"teams.microsoft.de",
-			"teams.cloud.microsoft",
-		].includes(host);
-	} catch {
-		return false;
+		response = await attendeeFetch(botsUrl(input), {
+			headers: attendeeHeaders(input.apiKey),
+			signal: AbortSignal.timeout(8_000),
+		});
+	} catch (error) {
+		return {
+			status: "error",
+			httpStatus: null,
+			detail:
+				error instanceof Error && error.name === "TimeoutError"
+					? "Attendee did not answer within 8 seconds."
+					: "Attendee could not be reached.",
+		};
 	}
+	if (response.ok) {
+		return { status: "ok" };
+	}
+	if (response.status === 401 || response.status === 403) {
+		return { status: "invalid_key", httpStatus: response.status };
+	}
+	const failure = await providerFailure(response, input.apiKey);
+	return {
+		status: "error",
+		httpStatus: response.status,
+		detail: failure.detail,
+	};
 }
+
+export { isTeamsMeetingUrl } from "./parlume-meeting-url";

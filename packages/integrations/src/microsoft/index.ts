@@ -2265,11 +2265,12 @@ export async function executeMicrosoftTeamsTool(
 				isOnlineMeeting?: boolean;
 				onlineMeeting?: { joinUrl?: string };
 				webLink?: string;
+				isCancelled?: boolean;
 			};
 			const allOnlineMeetings: CalendarEvent[] = [];
 			const pageSize = 50;
 			let nextUrl: string | null =
-				`${graphBaseUrl}/me/calendarView?startDateTime=${encodeURIComponent(startDate)}&endDateTime=${encodeURIComponent(endDate)}&$select=id,subject,start,end,organizer,isOnlineMeeting,onlineMeeting,webLink&$top=${pageSize}&$orderby=start/dateTime desc`;
+				`${graphBaseUrl}/me/calendarView?startDateTime=${encodeURIComponent(startDate)}&endDateTime=${encodeURIComponent(endDate)}&$select=id,subject,start,end,organizer,isOnlineMeeting,onlineMeeting,webLink,isCancelled&$top=${pageSize}&$orderby=start/dateTime desc`;
 
 			// Paginate through all Graph API pages (safety cap at 20 pages = 1000 raw events)
 			for (let page = 0; page < 20 && nextUrl; page++) {
@@ -2305,6 +2306,7 @@ export async function executeMicrosoftTeamsTool(
 						"Unknown",
 					joinUrl: event.onlineMeeting?.joinUrl || null,
 					webLink: event.webLink || "",
+					isCancelled: event.isCancelled === true,
 				})),
 				count: allOnlineMeetings.length,
 				dateRange: { startDate, endDate },

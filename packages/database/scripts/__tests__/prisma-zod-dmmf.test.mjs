@@ -19,11 +19,14 @@ const expression = source.match(
 assert.ok(expression, "review the Zod DMMF patch after upgrading");
 
 function resolveDmmf(options, getDMMF) {
-	return runInNewContext(`(async () => (${expression}))()`, {
-		options,
-		internals_1: { getDMMF },
-		prismaClientGeneratorConfig: { previewFeatures: [] },
-	});
+	return runInNewContext(
+		`(async () => { let _a; return (${expression}); })()`,
+		{
+			options,
+			internals_1: { getDMMF },
+			prismaClientGeneratorConfig: { previewFeatures: [] },
+		},
+	);
 }
 
 test("Zod reuses Prisma's supplied DMMF without starting another engine", async () => {

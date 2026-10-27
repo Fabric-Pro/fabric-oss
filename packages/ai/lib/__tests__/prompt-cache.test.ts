@@ -97,3 +97,208 @@ describe("withRollingCacheBreakpoint", () => {
 		expect(out).toEqual(["a", "b"]);
 	});
 });
+
+it("Advisor removes inherited option markers while retaining tool inputs named cacheControl", async () => {
+	const { withAdvisorCacheBreakpoints } = await import("../prompt-cache");
+	const { createRequestFingerprint } = await import("../request-observation");
+	const history: import("ai").ModelMessage[] = [
+		{
+			role: "user",
+			content: "example",
+			providerOptions: ANTHROPIC_EPHEMERAL_CACHE,
+		},
+		{
+			role: "assistant",
+			content: [
+				{
+					type: "tool-call",
+					toolCallId: "example",
+					toolName: "example",
+					input: {
+						cacheControl: "retain this argument",
+						cache_control: "also data",
+					},
+					providerOptions: ANTHROPIC_EPHEMERAL_CACHE,
+				},
+			],
+		},
+		{
+			role: "tool",
+			content: [
+				{
+					type: "tool-result",
+					toolCallId: "example",
+					toolName: "example",
+					output: { type: "text", value: "example" },
+					providerOptions: ANTHROPIC_EPHEMERAL_CACHE,
+				},
+			],
+		},
+	];
+	const before = structuredClone(history);
+	const messages = withAdvisorCacheBreakpoints(history, 0);
+	expect(messages[1]).toMatchObject({
+		content: [
+			{
+				input: {
+					cacheControl: "retain this argument",
+					cache_control: "also data",
+				},
+			},
+		],
+	});
+	expect(history).toEqual(before);
+	expect(
+		createRequestFingerprint({
+			modelId: "example",
+			route: "example",
+			prompt: [cacheableSystem("example"), ...messages],
+		}).cacheMarkers,
+	).toEqual([
+		[1, 0],
+		[1, 1],
+		[1, 3],
+	]);
+});
+
+it.each(["direct", "gateway"] as const)(
+	"serializes Advisor system and history markers through the installed %s adapter",
+	async (route) => {
+		const { createAnthropic } = await import("@ai-sdk/anthropic");
+		const { createGateway, generateText } = await import("ai");
+		const { withAdvisorCacheBreakpoints } = await import("../prompt-cache");
+		const { createRequestFingerprint } = await import(
+			"../request-observation"
+		);
+		let body: Record<string, unknown> = {};
+		const fetch: typeof globalThis.fetch = async (_url, init) => {
+			body = JSON.parse(String(init?.body));
+			return Response.json(
+				route === "direct"
+					? {
+							id: "example-message",
+							type: "message",
+							role: "assistant",
+							model: "claude-sonnet-4-5",
+							content: [{ type: "text", text: "Example answer" }],
+							stop_reason: "end_turn",
+							stop_sequence: null,
+							usage: {
+								input_tokens: 10,
+								output_tokens: 2,
+								cache_read_input_tokens: 100,
+								cache_creation_input_tokens: 0,
+							},
+						}
+					: {
+							content: [{ type: "text", text: "Example answer" }],
+							finishReason: { unified: "stop", raw: "stop" },
+							usage: {
+								inputTokens: {
+									total: 110,
+									noCache: 10,
+									cacheRead: 100,
+									cacheWrite: 0,
+								},
+								outputTokens: {
+									total: 2,
+									text: 2,
+									reasoning: 0,
+								},
+							},
+							warnings: [],
+						},
+			);
+		};
+		const model =
+			route === "direct"
+				? createAnthropic({
+						apiKey: "example-key",
+						baseURL: "https://example.com",
+						fetch,
+					})("claude-sonnet-4-5")
+				: createGateway({
+						apiKey: "example-key",
+						baseURL: "https://example.com",
+						fetch,
+					})("anthropic/claude-sonnet-4-5");
+		const messages: import("ai").ModelMessage[] =
+			withAdvisorCacheBreakpoints(
+				[
+					{ role: "user", content: "Example request" },
+					{
+						role: "assistant",
+						content: [
+							{
+								type: "tool-call",
+								toolCallId: "example",
+								toolName: "example",
+								input: {},
+							},
+						],
+					},
+					{
+						role: "tool",
+						content: [
+							{
+								type: "tool-result",
+								toolCallId: "example",
+								toolName: "example",
+								output: {
+									type: "text",
+									value: "Example finding",
+								},
+							},
+						],
+					},
+				],
+				0,
+			);
+		messages.push({ role: "user", content: "Example host note" });
+		await generateText({
+			model,
+			instructions: cacheableSystem("Example stable instructions"),
+			messages,
+			maxRetries: 0,
+		});
+		if (route === "gateway") {
+			expect(
+				createRequestFingerprint({
+					modelId: "example",
+					route,
+					prompt: body.prompt,
+				}).cacheMarkers,
+			).toEqual([
+				[1, 0],
+				[1, 1],
+				[1, 3],
+			]);
+		} else {
+			const system = body.system as Array<Record<string, unknown>>;
+			expect(system[0]).toMatchObject({
+				type: "text",
+				text: "Example stable instructions",
+				cache_control: { type: "ephemeral" },
+			});
+			const sent = body.messages as Array<{
+				content: Array<Record<string, unknown>>;
+			}>;
+			const positions = sent.flatMap((message, index) =>
+				message.content.flatMap((part, partIndex) =>
+					part.cache_control ? [[index, partIndex]] : [],
+				),
+			);
+			expect(positions).toEqual([
+				[0, 0],
+				[2, 0],
+			]);
+			expect(sent.at(-1)?.content.at(-1)).toMatchObject({
+				type: "text",
+				text: "Example host note",
+			});
+			expect(sent.at(-1)?.content.at(-1)).not.toHaveProperty(
+				"cache_control",
+			);
+		}
+	},
+);

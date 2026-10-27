@@ -1,10 +1,8 @@
 import { db } from "@repo/database";
 import type { ParlumeMeetingSessionStatus } from "@repo/database/prisma/generated/enums";
-import {
-	deleteParlumeMeetingBotData,
-	getParlumeBridgeSettings,
-} from "./parlume-attendee";
+import { deleteParlumeMeetingBotData } from "./parlume-attendee";
 import { parlumeLog } from "./parlume-log";
+import { resolveParlumeAttendeeSettings } from "./parlume-provider-settings";
 import {
 	recordParlumeMeetingProviderUsage,
 	resolveParlumeMeetingEnd,
@@ -25,17 +23,23 @@ export async function cleanupParlumeProviderData(
 ): Promise<void> {
 	const session = await db.parlumeMeetingSession.findUnique({
 		where: { id: sessionId },
-		select: { providerBotId: true, providerDataDeletedAt: true },
+		select: {
+			providerBotId: true,
+			providerDataDeletedAt: true,
+			organizationId: true,
+		},
 	});
 	if (!session?.providerBotId || session.providerDataDeletedAt) {
 		return;
 	}
-	const settings = getParlumeBridgeSettings();
-	if (!settings) {
+	const attendee = await resolveParlumeAttendeeSettings(
+		session.organizationId,
+	);
+	if (!attendee) {
 		throw new Error("Parlume provider configuration is unavailable.");
 	}
 	await deleteParlumeMeetingBotData({
-		settings,
+		attendee,
 		providerBotId: session.providerBotId,
 	});
 	await db.parlumeMeetingSession.update({
@@ -67,6 +71,7 @@ export async function finalizeParlumeSession(
 			captureStoppedAt: true,
 			finalizedAt: true,
 			transcriptContextId: true,
+			createdAt: true,
 		},
 	});
 	if (!session?.providerBotId) {
@@ -82,6 +87,7 @@ export async function finalizeParlumeSession(
 		session.status !== "ENDED" &&
 		!session.finalizedAt
 	) {
+		const claimedAt = new Date();
 		const claimed = await db.parlumeMeetingSession.updateMany({
 			where: {
 				id: session.id,
@@ -103,12 +109,26 @@ export async function finalizeParlumeSession(
 					},
 				],
 			},
-			data: { status: "FINALIZING", finalizationStartedAt: new Date() },
+			data: { status: "FINALIZING", finalizationStartedAt: claimedAt },
 		});
 		if (claimed.count === 0) {
 			throw new Error("Parlume finalization is already in progress.");
 		}
-		finalizedNow = true;
+		// A claim older than five minutes can be taken over, so only the attempt
+		// still holding its claim may finish: a stalled one that resumes then
+		// saves no second transcript and records no second bot time.
+		const stillClaimed = {
+			id: session.id,
+			status: "FINALIZING",
+			finalizationStartedAt: claimedAt,
+		} as const;
+		const requireClaim = ({ count }: { count: number }) => {
+			if (count === 0) {
+				throw new Error(
+					"Parlume finalization was taken over by a later attempt.",
+				);
+			}
+		};
 
 		const where = {
 			sessionId: session.id,
@@ -214,20 +234,24 @@ export async function finalizeParlumeSession(
 			}
 		}
 		if (!content) {
-			await db.parlumeMeetingSession.update({
-				where: { id: session.id },
-				data: {
-					status: options.preserveFailure ? "FAILED" : "ENDED",
-					finalizedAt: new Date(),
-					endedAt: new Date(),
-					...(options.preserveFailure
-						? {}
-						: {
-								lastError:
-									"No final speech segments were received.",
-							}),
-				},
-			});
+			requireClaim(
+				await db.parlumeMeetingSession.updateMany({
+					where: stillClaimed,
+					data: {
+						status: options.preserveFailure ? "FAILED" : "ENDED",
+						finalizedAt: new Date(),
+						endedAt: new Date(),
+						// A bot that never got past the lobby had nothing to
+						// hear; its end reason already says what happened.
+						...(options.preserveFailure || !session.joinedAt
+							? {}
+							: {
+									lastError:
+										"No final speech segments were received.",
+								}),
+					},
+				}),
+			);
 		} else {
 			transcriptContextId = await db.$transaction(async (tx) => {
 				const context = await tx.projectContext.create({
@@ -248,19 +272,26 @@ export async function finalizeParlumeSession(
 					},
 					select: { id: true },
 				});
-				await tx.parlumeMeetingSession.update({
-					where: { id: session.id },
-					data: {
-						transcriptContextId: context.id,
-						status: options.preserveFailure ? "FAILED" : "ENDED",
-						finalizedAt: new Date(),
-						endedAt: new Date(),
-						...(options.preserveFailure ? {} : { lastError: null }),
-					},
-				});
+				requireClaim(
+					await tx.parlumeMeetingSession.updateMany({
+						where: stillClaimed,
+						data: {
+							transcriptContextId: context.id,
+							status: options.preserveFailure
+								? "FAILED"
+								: "ENDED",
+							finalizedAt: new Date(),
+							endedAt: new Date(),
+							...(options.preserveFailure
+								? {}
+								: { lastError: null }),
+						},
+					}),
+				);
 				return context.id;
 			});
 		}
+		finalizedNow = true;
 	}
 	if (finalizedNow) {
 		const endedAt = resolveParlumeMeetingEnd(session, new Date());
@@ -269,6 +300,7 @@ export async function finalizeParlumeSession(
 			userId: session.userId,
 			organizationId: session.organizationId,
 			projectId: session.projectId,
+			requestedAt: session.createdAt,
 			joinedAt: session.joinedAt,
 			endedAt,
 			success: !options.preserveFailure,
@@ -282,6 +314,7 @@ export async function finalizeParlumeSession(
 			meetingMs: session.joinedAt
 				? endedAt.getTime() - session.joinedAt.getTime()
 				: null,
+			botMs: endedAt.getTime() - session.createdAt.getTime(),
 		});
 	}
 	if (transcriptContextId) {

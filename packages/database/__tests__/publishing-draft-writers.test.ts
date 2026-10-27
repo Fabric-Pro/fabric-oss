@@ -91,23 +91,11 @@ const START = {
 };
 
 /**
- * A `P2002` shaped the way this repo's driver adapter ACTUALLY produces one.
- *
- * Copied field-for-field from a real Postgres run, not composed from what the
- * shape ought to be. That distinction cost a bug: the first version of this
- * fixture put the constraint name in `cause.constraint` as a string, which is
- * where it seemed like it should live, and every case below passed against a
- * discriminator that in reality matched nothing and returned null for every
- * conflict — so a routine double-click would have 500'd. The real server puts
- * the name only inside `originalMessage`, and `constraint` is an object holding
- * the column list.
- *
- * A mock is a claim about the world. This one is now a measured claim, and the
- * real-Postgres cases 2B-2 G/H/I in `publishing-suite-constraints.test.ts` are
- * what keep it honest — they are the only thing that can notice if the adapter's
- * shape changes under it.
+ * Named unique-violation shape emitted by adapter-pg 7.10.1. The real-error
+ * assertions in publishing-suite-constraints.test.ts verify the index field;
+ * that suite also checks the reader with originalMessage removed.
  */
-function uniqueViolation(constraint: string, fields: string[]) {
+function uniqueViolation(constraint: string) {
 	return Object.assign(new Error("Unique constraint failed"), {
 		code: "P2002",
 		meta: {
@@ -118,7 +106,7 @@ function uniqueViolation(constraint: string, fields: string[]) {
 					originalCode: "23505",
 					originalMessage: `duplicate key value violates unique constraint "${constraint}"`,
 					kind: "UniqueConstraintViolation",
-					constraint: { fields: fields.map((f) => `"${f}"`) },
+					constraint: { index: constraint },
 				},
 			},
 		},
@@ -310,10 +298,7 @@ describe("startTopicDraftAttempt — the in-flight index", () => {
 describe("startTopicDraftAttempt — P2002 discrimination", () => {
 	it("reports the IN-FLIGHT index as in_flight", async () => {
 		h.draftCreate.mockRejectedValue(
-			uniqueViolation("publishing_topic_draft_active", [
-				"topicId",
-				"postType",
-			]),
+			uniqueViolation("publishing_topic_draft_active"),
 		);
 
 		const result = await startTopicDraftAttempt(START);
@@ -330,7 +315,6 @@ describe("startTopicDraftAttempt — P2002 discrimination", () => {
 		h.draftCreate.mockRejectedValue(
 			uniqueViolation(
 				"publishing_topic_draft_topicId_postType_version_key",
-				["topicId", "postType", "version"],
 			),
 		);
 
@@ -921,7 +905,6 @@ describe("seedWorkingDraftIfAbsent — the create-only writer (DV5/FR35)", () =>
 		h.workingCreate.mockRejectedValue(
 			uniqueViolation(
 				"publishing_topic_working_draft_topicId_postType_key",
-				["topicId", "postType"],
 			),
 		);
 
@@ -935,7 +918,7 @@ describe("seedWorkingDraftIfAbsent — the create-only writer (DV5/FR35)", () =>
 		// direction — the alternative is a plausible-looking lie about state.
 		h.draftFindFirst.mockResolvedValue({ id: "draft-1" });
 		h.workingCreate.mockRejectedValue(
-			uniqueViolation("some_other_constraint", ["id"]),
+			uniqueViolation("some_other_constraint"),
 		);
 
 		await expect(seedWorkingDraftIfAbsent(SEED)).rejects.toThrow();

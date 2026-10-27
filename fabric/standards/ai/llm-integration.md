@@ -20,9 +20,16 @@ This document defines standards for integrating Large Language Models (LLMs) int
 
 ## ✅ DO
 
-### Use the AI Gateway
+### Use the provider abstraction
 
-**✅ DO**: Route all LLM calls through the AI Gateway
+**✅ DO**: Resolve the configured connection through the shared model factory.
+Vercel AI Gateway connections use `createGateway`. OpenRouter and Cloudflare AI
+Gateway connections use OpenAI-compatible Chat Completions at the connection's
+base URL, preserving the full provider model ID. OpenRouter can use its public
+default URL; Cloudflare requires an explicitly configured gateway URL. Vercel
+transport options apply to Vercel routes; adaptive Claude sampling restrictions
+also apply to OpenRouter and Cloudflare. A `vck_` gateway key selects Vercel
+routing even when stored under another provider.
 
 ```typescript
 // packages/ai/client.ts

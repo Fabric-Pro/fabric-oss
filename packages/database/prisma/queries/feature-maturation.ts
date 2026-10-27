@@ -1,32 +1,17 @@
 /**
  * Query helpers for Feature Maturation V2 — Three-Tab Feature Editor
- * (spec 2026-06-09 §5). Covers the two new tenant tables added in TG1:
+ * (spec 2026-06-09 §5). Covers the threaded Decision Log:
  *
  *   - `DecisionLogEntry` — threaded, append-only maturation changelog (§5.2).
- *   - `MaturationApprovalPreference` — per-user default approval mode per tab,
- *     plus the "Auto-accept all" preset (§5.3).
- *
- * Both apply the multi-tenant XOR pattern (CLAUDE.md), but with DIFFERENT where
- * shapes that must match each table's RLS policy (apply-rls-direct.ts):
- *
- *   - DecisionLogEntry → `user_owned`: org context filters by `organizationId`
- *     alone (org members share the log); personal context is
- *     `{ organizationId: null, userId }`.
- *   - MaturationApprovalPreference → `per_user_within_org`: `userId` is required
- *     in BOTH branches because it is a per-USER default.
- *
- * The XOR is always exclusive — never an `OR` across tenants. Personal context
- * is `organizationId: null` (required), never `undefined`.
+ * Organization context shares the log; the null-organization fallback is
+ * pinned to the caller's userId. The XOR is always exclusive — never an `OR`
+ * across tenants. The fallback uses `organizationId: null` (required), never
+ * `undefined`.
  */
 
 import { logger } from "@repo/logs";
 import { db, Prisma } from "../client";
-import type {
-	DecisionLogEntry,
-	MaturationApprovalMode,
-	MaturationApprovalPreference,
-	StoryKind,
-} from "../generated/client";
+import type { DecisionLogEntry, StoryKind } from "../generated/client";
 import { isFeatureEnabled } from "./feature-flags";
 
 /**
@@ -37,22 +22,6 @@ import { isFeatureEnabled } from "./feature-flags";
 export type MaturationTenantFilter =
 	| { organizationId: string; userId: string }
 	| { organizationId: null; userId: string };
-
-/** The three maturation tabs, used by the effective-mode resolver. */
-export type MaturationTab = "cleanSpec" | "decisionLog" | "summaryQuestions";
-
-/**
- * Hard defaults when neither a per-feature override nor a per-user default is
- * set (§5.3): Clean Spec / Decision Log auto-accept, Summary & Questions manual.
- */
-export const HARD_DEFAULT_APPROVAL_MODE: Record<
-	MaturationTab,
-	MaturationApprovalMode
-> = {
-	cleanSpec: "AUTO_ACCEPT",
-	decisionLog: "AUTO_ACCEPT",
-	summaryQuestions: "MANUAL",
-};
 
 // ---------------------------------------------------------------------------
 // DecisionLogEntry (user_owned RLS)
@@ -418,8 +387,7 @@ export interface GetDecisionLogEntryByIdInput {
 }
 
 /**
- * Load a single Decision Log entry by id, tenant- and feature-scoped. Used by the
- * MANUAL accept flow (TG6) to read the PENDING patch set stashed in `metadata`.
+ * Load a single Decision Log entry by id, tenant- and feature-scoped.
  * Returns `null` on a miss / wrong tenant / soft-deleted.
  */
 export async function getDecisionLogEntryById({
@@ -721,10 +689,8 @@ export interface SetDecisionMetadataInput {
 }
 
 /**
- * Stamp the `metadata` JSONB of a single Decision Log entry — used by TG4 to
- * record the Clean-Spec propagation outcome on the decision it was minted from
- * (applied summaries, or the PENDING patch set awaiting manual accept, or a
- * located-block failure). Tenant-scoped via `updateMany` so a cross-tenant id
+ * Stamp the `metadata` JSONB of a single Decision Log entry, for example with
+ * AI answer recommendations. Tenant-scoped via `updateMany` so a cross-tenant id
  * can never write a row it doesn't own; returns the affected count (0 = miss).
  * This writes ONLY `metadata`, never the Clean Spec, so it does not itself
  * trigger PM sync (§7.7).
@@ -742,107 +708,7 @@ export async function setDecisionMetadata({
 }
 
 // ---------------------------------------------------------------------------
-// MaturationApprovalPreference (per_user_within_org RLS)
-// ---------------------------------------------------------------------------
-
-/**
- * Build the `where` fragment for the `per_user_within_org` tenant shape:
- * `userId` is required in BOTH branches (it is a per-user default). Used by the
- * read helper; the upsert keys on the `(userId, organizationId)` unique index.
- */
-function buildApprovalPreferenceTenantWhere(
-	tenant: MaturationTenantFilter,
-): Prisma.MaturationApprovalPreferenceWhereInput {
-	return {
-		userId: tenant.userId,
-		organizationId: tenant.organizationId,
-	};
-}
-
-export interface GetApprovalPreferenceInput {
-	tenantFilter: MaturationTenantFilter;
-}
-
-/**
- * Read the caller's per-tab default preference for the current tenant. Returns
- * `null` when the user has never set one — callers fall through to
- * `HARD_DEFAULT_APPROVAL_MODE` (see `effectiveApprovalMode`).
- */
-export async function getApprovalPreference({
-	tenantFilter,
-}: GetApprovalPreferenceInput): Promise<MaturationApprovalPreference | null> {
-	return db.maturationApprovalPreference.findFirst({
-		where: buildApprovalPreferenceTenantWhere(tenantFilter),
-	});
-}
-
-export interface UpsertApprovalPreferenceInput {
-	tenantFilter: MaturationTenantFilter;
-	cleanSpecMode?: MaturationApprovalMode;
-	decisionLogMode?: MaturationApprovalMode;
-	summaryQuestionsMode?: MaturationApprovalMode;
-	autoAcceptAll?: boolean;
-}
-
-/**
- * Create or update the caller's per-user default preference for the current
- * tenant. Only the provided fields are changed on update; omitted fields keep
- * their stored value (and DB defaults apply on first create).
- *
- * Prisma cannot drive `upsert` through a composite unique selector whose column
- * is `null` (personal context has `organizationId: null`), so this resolves the
- * existing row with the tenant `findFirst` and branches to create/update inside
- * a transaction.
- *
- * Single-row guarantee is at the DB level, not the application level: the
- * find-then-create is NOT atomic under READ COMMITTED (a concurrent insert can
- * race between the lookup and the create). What backstops it is the uniqueness
- * on `(userId, organizationId)` — for org rows the schema's `@@unique`, and for
- * personal rows (`organizationId IS NULL`, which Postgres treats as DISTINCT in
- * a plain unique index) the hand-written PARTIAL unique index
- * `maturation_approval_preference_user_personal_unique` added in the migration.
- * The concurrent loser throws a unique-violation rather than inserting a
- * duplicate; callers may retry the read.
- */
-export async function upsertApprovalPreference({
-	tenantFilter,
-	cleanSpecMode,
-	decisionLogMode,
-	summaryQuestionsMode,
-	autoAcceptAll,
-}: UpsertApprovalPreferenceInput): Promise<MaturationApprovalPreference> {
-	const mutableFields = {
-		...(cleanSpecMode === undefined ? {} : { cleanSpecMode }),
-		...(decisionLogMode === undefined ? {} : { decisionLogMode }),
-		...(summaryQuestionsMode === undefined ? {} : { summaryQuestionsMode }),
-		...(autoAcceptAll === undefined ? {} : { autoAcceptAll }),
-	};
-
-	return db.$transaction(async (tx) => {
-		const existing = await tx.maturationApprovalPreference.findFirst({
-			where: buildApprovalPreferenceTenantWhere(tenantFilter),
-			select: { id: true },
-		});
-
-		if (existing) {
-			return tx.maturationApprovalPreference.update({
-				where: { id: existing.id },
-				data: mutableFields,
-			});
-		}
-
-		return tx.maturationApprovalPreference.create({
-			data: {
-				userId: tenantFilter.userId,
-				organizationId: tenantFilter.organizationId,
-				...mutableFields,
-			},
-		});
-	});
-}
-
-// ---------------------------------------------------------------------------
-// Per-feature approval override + maturation state (UserStory columns, §5.1)
+// Maturation state (UserStory columns, §5.1)
 // ---------------------------------------------------------------------------
 
 /**
@@ -869,9 +735,6 @@ export interface FeatureMaturationState {
 	autoProposeAnswers: boolean;
 	/** Raw QA-tab analysis payload. Parse with `parseQaAnalysis`. */
 	qaAnalysis: Prisma.JsonValue | null;
-	cleanSpecApprovalMode: MaturationApprovalMode | null;
-	decisionLogApprovalMode: MaturationApprovalMode | null;
-	summaryQuestionsApprovalMode: MaturationApprovalMode | null;
 }
 
 export interface GetFeatureMaturationStateInput {
@@ -907,9 +770,6 @@ export async function getFeatureMaturationState({
 			maturationV2OptedIn: true,
 			autoProposeAnswers: true,
 			qaAnalysis: true,
-			cleanSpecApprovalMode: true,
-			decisionLogApprovalMode: true,
-			summaryQuestionsApprovalMode: true,
 		},
 	});
 }
@@ -1068,8 +928,7 @@ export interface OptInFeatureMaturationV2Input {
  * Lazily opt a feature into Feature Maturation V2 (§5.1) — set when the PO takes
  * their first v2 action (answering a question). The org-level
  * `featureMaturationV2Enabled` flag gates whether v2 is reachable at all; this
- * per-feature flag marks an individual feature as actively matured in v2 (and is
- * what arms Decision→Spec propagation). Scoped via `updateMany` on
+ * per-feature flag marks an individual feature as actively matured in v2. Scoped via `updateMany` on
  * `(id, projectId)`; callers skip the write when already opted in. Touches ONLY
  * the opt-in flag, never `description`/`acceptanceCriteria`, so it does not
  * trigger PM sync (§7.7). Returns the affected count (0 = miss / wrong project).
@@ -1482,123 +1341,6 @@ export async function setWorkingNotes({
 		data: { workingNotesContent },
 	});
 	return result.count;
-}
-
-export interface SetFeatureApprovalOverrideInput {
-	userStoryId: string;
-	projectId: string;
-	/**
-	 * Each field is tri-state: omit to leave unchanged, `null` to CLEAR the
-	 * per-feature override (fall through to the per-user default), or a mode to
-	 * pin the override. Mirrors the `*ApprovalMode?` nullable columns (§5.1).
-	 */
-	cleanSpecApprovalMode?: MaturationApprovalMode | null;
-	decisionLogApprovalMode?: MaturationApprovalMode | null;
-	summaryQuestionsApprovalMode?: MaturationApprovalMode | null;
-}
-
-/**
- * Set (or clear) the per-feature approval-mode overrides on a UserStory (§5.1).
- * Scoped via `updateMany` on `(id, projectId)` so a cross-project id can never
- * flip a row it doesn't own; returns the affected count (0 = miss). Only the
- * provided fields are written — `null` clears an override, an omitted field is
- * left untouched. Touches ONLY the maturation override columns, never
- * `description`/`acceptanceCriteria`, so this write does not change the
- * dev-facing Clean Spec and must not trigger PM sync (§7.7).
- */
-export async function setFeatureApprovalOverride({
-	userStoryId,
-	projectId,
-	cleanSpecApprovalMode,
-	decisionLogApprovalMode,
-	summaryQuestionsApprovalMode,
-}: SetFeatureApprovalOverrideInput): Promise<number> {
-	const data = {
-		...(cleanSpecApprovalMode === undefined
-			? {}
-			: { cleanSpecApprovalMode }),
-		...(decisionLogApprovalMode === undefined
-			? {}
-			: { decisionLogApprovalMode }),
-		...(summaryQuestionsApprovalMode === undefined
-			? {}
-			: { summaryQuestionsApprovalMode }),
-	};
-
-	const result = await db.userStory.updateMany({
-		where: { id: userStoryId, projectId },
-		data,
-	});
-	return result.count;
-}
-
-// ---------------------------------------------------------------------------
-// Effective approval-mode resolution (§5.3, single source of truth)
-// ---------------------------------------------------------------------------
-
-/**
- * Per-feature override columns on `UserStory`, by tab. Only these three fields
- * are read here — callers can pass the whole story or a narrow projection.
- */
-export interface FeatureApprovalOverrides {
-	cleanSpecApprovalMode: MaturationApprovalMode | null;
-	decisionLogApprovalMode: MaturationApprovalMode | null;
-	summaryQuestionsApprovalMode: MaturationApprovalMode | null;
-}
-
-/**
- * Per-user default columns, by tab. A `null` preference (user never set one)
- * resolves to the hard default.
- */
-export interface UserApprovalPreferenceModes {
-	cleanSpecMode: MaturationApprovalMode;
-	decisionLogMode: MaturationApprovalMode;
-	summaryQuestionsMode: MaturationApprovalMode;
-}
-
-const FEATURE_OVERRIDE_FIELD: Record<
-	MaturationTab,
-	keyof FeatureApprovalOverrides
-> = {
-	cleanSpec: "cleanSpecApprovalMode",
-	decisionLog: "decisionLogApprovalMode",
-	summaryQuestions: "summaryQuestionsApprovalMode",
-};
-
-const USER_PREFERENCE_FIELD: Record<
-	MaturationTab,
-	keyof UserApprovalPreferenceModes
-> = {
-	cleanSpec: "cleanSpecMode",
-	decisionLog: "decisionLogMode",
-	summaryQuestions: "summaryQuestionsMode",
-};
-
-/**
- * Resolve the effective approval mode for a tab (§5.3):
- *
- *   feature.<tab>ApprovalMode ?? userPref.<tab>Mode ?? hardDefault(tab)
- *
- * `feature`/`userPref` may be `null` (no override / no stored preference). The
- * "Auto-accept all" preset is applied upstream by writing AUTO_ACCEPT into the
- * three per-user modes, so it needs no special casing here.
- */
-export function effectiveApprovalMode(
-	feature: FeatureApprovalOverrides | null,
-	userPref: UserApprovalPreferenceModes | null,
-	tab: MaturationTab,
-): MaturationApprovalMode {
-	const featureMode = feature ? feature[FEATURE_OVERRIDE_FIELD[tab]] : null;
-	if (featureMode != null) {
-		return featureMode;
-	}
-
-	const userMode = userPref ? userPref[USER_PREFERENCE_FIELD[tab]] : null;
-	if (userMode != null) {
-		return userMode;
-	}
-
-	return HARD_DEFAULT_APPROVAL_MODE[tab];
 }
 
 // ---------------------------------------------------------------------------

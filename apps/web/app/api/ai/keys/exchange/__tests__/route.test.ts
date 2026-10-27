@@ -496,3 +496,14 @@ describe("pinned model metadata", () => {
 		}
 	});
 });
+
+it("returns the resolved canonical model for an unpinned Databricks alias", async () => {
+	mocks.verifyAIToken.mockResolvedValue(claims());
+	const result = resolved("DATABRICKS", "custom-chat");
+	Object.assign(result.metadata, { canonicalName: "claude-sonnet-5" });
+	mocks.getAIModelWithMetadata.mockResolvedValue(result);
+	expect(await (await exchange()).json()).toMatchObject({
+		model: "custom-chat",
+		canonicalModelName: "claude-sonnet-5",
+	});
+});

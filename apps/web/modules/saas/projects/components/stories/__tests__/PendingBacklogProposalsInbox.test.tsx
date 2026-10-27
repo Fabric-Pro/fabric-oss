@@ -22,6 +22,15 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const replay = vi.hoisted(() => ({ enabled: false, timeline: vi.fn() }));
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: () => replay.enabled,
+}));
+beforeEach(() => {
+	replay.enabled = false;
+	replay.timeline.mockResolvedValue({ events: [], truncated: false });
+});
+
 const pendingProposalsList = vi.fn();
 const pendingProposalsGet = vi.fn();
 const teamsChannelApprove = vi.fn();
@@ -73,6 +82,10 @@ const backlogApplyChanges = vi.fn();
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		projects: {
+			decisionReplay: {
+				getProposalTimeline: (...args: unknown[]) =>
+					replay.timeline(...args),
+			},
 			teamsChannelMonitor: {
 				pendingProposals: {
 					list: (...args: unknown[]) => pendingProposalsList(...args),
@@ -126,6 +139,10 @@ vi.mock("@shared/lib/orpc-client", () => ({
 vi.mock("../../../../../shared/lib/orpc-client", () => ({
 	orpcClient: {
 		projects: {
+			decisionReplay: {
+				getProposalTimeline: (...args: unknown[]) =>
+					replay.timeline(...args),
+			},
 			teamsChannelMonitor: {
 				pendingProposals: {
 					list: (...args: unknown[]) => pendingProposalsList(...args),
@@ -179,9 +196,14 @@ vi.mock("../../../../../shared/lib/orpc-client", () => ({
 
 // Stub orpc query-key builders so the inbox's invalidate-all path works
 // without dragging the whole oRPC client into the test bundle.
-vi.mock("@shared/lib/orpc-query-utils", () => ({
+vi.mock("@shared/lib/orpc-query-utils", async (importOriginal) => ({
 	orpc: {
 		projects: {
+			decisionReplay: (
+				await importOriginal<
+					typeof import("@shared/lib/orpc-query-utils")
+				>()
+			).orpc.projects.decisionReplay,
 			get: {
 				queryOptions: () => ({
 					queryKey: ["projects-get"],
@@ -1666,7 +1688,11 @@ describe("PendingBacklogProposalsInbox — Roadmap recommendation batches", () =
 			expect(backlogApplyChanges).toHaveBeenCalledTimes(1),
 		);
 		expect(backlogApplyChanges).toHaveBeenCalledWith(
-			expect.objectContaining({ syncToPM: true, pmConfig: PM_CONFIG }),
+			expect.objectContaining({
+				syncToPM: true,
+				pmConfig: PM_CONFIG,
+				approvedChangeIndexes: [0, 1],
+			}),
 		);
 	});
 
@@ -1935,4 +1961,38 @@ describe("PendingBacklogProposalsInbox — review status defaults", () => {
 			});
 		},
 	);
+});
+
+describe("PendingBacklogProposalsInbox — Decision Replay timeline", () => {
+	it("opens the timeline for the selected inbox proposal without changing its actions", async () => {
+		replay.enabled = true;
+		window.localStorage.removeItem(
+			`fabric.backlog-change-proposal.review-state.proposal:${PROPOSAL_ID}`,
+		);
+		pendingProposalsList.mockReset();
+		pendingProposalsGet.mockReset();
+		draftsList.mockReset();
+		draftsList.mockResolvedValue({ drafts: [] });
+		storiesCheckPmSyncConflicts.mockReset();
+		storiesCheckPmSyncConflicts.mockResolvedValue({ results: [] });
+		pendingProposalsList.mockResolvedValue([makeListRow()]);
+		pendingProposalsGet.mockResolvedValue(makeDetail());
+		renderInbox();
+		fireEvent.click(
+			await screen.findByText("Captured from a Slack thread"),
+		);
+		const trigger = await screen.findByRole("button", { name: "Timeline" });
+		expect(replay.timeline).not.toHaveBeenCalled();
+		fireEvent.click(trigger);
+		expect(
+			await screen.findByText(/No history captured yet/),
+		).toBeInTheDocument();
+		expect(replay.timeline).toHaveBeenCalledWith(
+			{ projectId: PROJECT_ID, proposalId: PROPOSAL_ID },
+			expect.anything(),
+		);
+		expect(
+			screen.getByRole("button", { name: "Apply Selected (1/1)" }),
+		).toBeInTheDocument();
+	});
 });

@@ -515,6 +515,14 @@
 		"actions": {
 			"continue": "Weiter",
 			"verify": "Überprüfen Sie"
+		},
+		"dateRangePicker": {
+			"any": "Beliebig",
+			"clear": "Zurücksetzen",
+			"from": "ab {date}",
+			"until": "bis {date}",
+			"lastDays": "Letzte {days} Tage",
+			"thisMonth": "Dieser Monat"
 		}
 	},
 	"faq": {
@@ -1417,6 +1425,7 @@
 					},
 					"parlume": {
 						"action_confirmed": "Parlume-Aktion ausgeführt",
+						"auto_join_changed": "Automatische Parlume-Teilnahme geändert",
 						"session_started": "Parlume-Meeting-Sitzung gestartet",
 						"session_stopped": "Beenden der Parlume-Meeting-Sitzung angefordert"
 					},
@@ -2564,6 +2573,7 @@
 				"workflow-builder": "Workflow-Builder",
 				"meeting-transcript-sync": "Meeting-Transkript-Sync",
 				"chat-agent": "Chat",
+				"report-generation": "Berichtserstellung",
 				"maturation": "Feature-Reifung",
 				"answer-recommendation": "Antwortvorschläge",
 				"clean-spec": "Clean Spec",
@@ -3341,6 +3351,40 @@
 			}
 		},
 		"stories": {
+			"listRow": {
+				"hiddenMetadata": "Ausgeblendet: {items}",
+				"tagCount": "{count, plural, one {# Tag} other {# Tags}}",
+				"syncFailed": "Fehler",
+				"syncConflict": "Konflikt",
+
+				"syncing": "Sync…",
+				"pmTicketStatus": "Status in {tool}: {status}",
+				"tasks": "Aufgaben",
+				"items": "Arbeitselemente",
+				"selection": "Auswählen oder neu anordnen",
+				"item": "Element",
+				"title": "Titel",
+				"priority": "Priorität",
+				"stage": "Phase",
+				"pm": "PM-Sync",
+				"actions": "Aktionen",
+				"bug": "Bug",
+				"feature": "Feature",
+				"track": "Track",
+				"estimate": "Schätzung",
+				"size": "Größe",
+				"points": "{count, plural, one {# Pkt.} other {# Pkt.}}",
+				"moreTags": "{count, plural, one {+# weiterer} other {+# weitere}}",
+				"edited": "bearbeitet {age}",
+				"created": "erstellt {age}",
+				"SPIKE": "Spike",
+				"DISCOVERY": "Discovery",
+				"SPECIFY": "Specify",
+				"DEFER": "Defer",
+				"LOW": "Geringe Sicherheit",
+				"MEDIUM": "Mittlere Sicherheit",
+				"HIGH": "Hohe Sicherheit"
+			},
 			"duplicates": {
 				"scanButton": "Auf Duplikate prüfen",
 				"scanTooltip": "Mögliche doppelte Features und Bugs mit KI finden.",
@@ -3521,7 +3565,6 @@
 				},
 				"saved": "Delivery-Track auf {track} gesetzt",
 				"saveFailed": "Der Delivery-Track konnte nicht gespeichert werden",
-				"classify": "Klassifizieren",
 				"classifying": "Klassifiziert…",
 				"classifyTooltip": "Weist nicht klassifizierten Features einen Delivery-Track zu (Spike, Discovery, Specify, Defer). Von Personen gesetzte Tracks bleiben unverändert.",
 				"classifyStarted": "Klassifizierung gestartet",
@@ -3675,7 +3718,8 @@
 						"unsupportedType": "Nicht unterstützter Dateityp — DOCX, MD, TXT oder EXCALIDRAW verwenden.",
 						"tooLarge": "Datei zu groß — maximale Größe ist 25 MB."
 					}
-				}
+				},
+				"checkFailedToastLine": "Der Abgleich mit vorhandenen Elementen war nicht möglich."
 			},
 			"workspace": {
 				"engagementProfileToggle": "Delivery-Track & Schätzsicherheit",
@@ -3967,6 +4011,126 @@
 					"buttonLabel": "{count, plural, one {# Statusfreigabe} other {# Statusfreigaben}}",
 					"buttonTooltip": "Statuswechsel prüfen, die in diesem regulierten Projekt eine Freigabe benötigen."
 				}
+			},
+			"roadmapUi": {
+				"title": "Roadmap",
+				"aboutLabel": "Über diese Roadmap",
+				"aboutTitle": "Arbeitselemente, Lieferphasen und Prioritäten",
+				"aboutBody": "Geplante Arbeit, Prioritäten und Verbindungen zu Ihrem PM-System verfolgen.",
+				"quickFocus": "Fokus",
+				"quickFocusBody": "Ordnen Sie die Arbeitselemente und synchronisieren Sie sie mit Ihrem PM-System, sobald die Prioritäten stimmen.",
+				"add": "Arbeitselement hinzufügen",
+				"aiUpdate": "KI-Update",
+				"syncIssues": "Synchronisierungsprobleme {count}",
+				"linked": "{count} mit PM verknüpft",
+				"unlinked": "{count} nicht verknüpft",
+				"lanes": "{count, plural, one {# Bereich} other {# Bereiche}}",
+				"moreFilters": "Mehr Filter",
+				"fewerFilters": "Weniger Filter",
+				"type": "Typ",
+				"priority": "Priorität",
+				"stage": "Phase",
+				"any": "Beliebig",
+				"selected": "{count} ausgewählt",
+				"facetLabel": "{label}: {value}",
+				"created": "Erstellt",
+				"lastActivity": "Letzte Aktivität",
+				"lastSynced": "Zuletzt synchronisiert",
+				"recentlyApproved": "Freigabe",
+				"recentlyAdded": "Neu",
+				"recentlyEdited": "Bearbeitet",
+				"anyTime": "Jederzeit",
+				"lastDays": "Letzte {days} Tage",
+				"view": "Ansicht: {layout}",
+				"viewUnsaved": "Ansicht: {layout} (ungespeicherte Änderungen)",
+				"showHidden": "Ausgeblendete anzeigen",
+				"layouts": {
+					"plain": "Liste",
+					"table": "Tabelle",
+					"board": "Board",
+					"priority": "Priorität"
+				},
+				"sortLabel": "{field}: {direction}",
+				"newestFirst": "neueste zuerst",
+				"oldestFirst": "älteste zuerst",
+				"ascending": "aufsteigend",
+				"descending": "absteigend",
+				"exporting": "Schätzung wird exportiert…",
+				"scanning": "Duplikate werden gesucht…",
+				"loadingAi": "KI-Konfiguration wird geprüft…",
+				"unavailable": "Nicht verfügbar",
+				"sortFields": {
+					"roadmapOrder": "Roadmap-Reihenfolge",
+					"priority": "Priorität",
+					"stage": "Reifegrad",
+					"updated": "Zuletzt aktualisiert",
+					"created": "Erstellt",
+					"sync": "Synchronisierungsstatus",
+					"source": "Quelle",
+					"recentlyApproved": "Kürzlich genehmigt"
+				},
+				"sortAccessibleLabel": "Arbeitselemente sortieren: {sort}",
+				"sortAll": "Sortieren (alle Elemente)",
+				"sortLanes": "Sortieren (innerhalb der Bereiche)",
+				"roadmapOrderHelp": "Roadmap-Reihenfolge — die gespeicherte Reihenfolge des Projekts (zuerst Priorität, dann die gespeicherte Position der Elemente).",
+				"groupSortHelp": "Ordnet die Bereiche nach {group} — aufsteigend entspricht der Standardreihenfolge, absteigend kehrt sie um.",
+				"sync": "Synchronisierung",
+				"source": "Quelle",
+				"size": "Größe",
+				"flags": "Markierungen",
+				"tags": "Tags",
+				"matchAll": "Alle erfüllen (UND)",
+				"showHiddenCount": "{count} ausgeblendete anzeigen",
+				"showHiddenHelp": "{count, plural, one {Das # ausgeblendete Element anzeigen, das ebenfalls Ihren Filtern entspricht} other {Die # ausgeblendeten Elemente anzeigen, die ebenfalls Ihren Filtern entsprechen}}",
+				"settings": "Einstellungen",
+				"settingsHelp": "Einstellungen — Layout, Gruppierung, Felder",
+				"settingsUnsavedHelp": "Einstellungen — ungespeicherte Änderungen (zum Behalten speichern)",
+				"hiddenCount": "{count} ausgeblendet",
+				"searchLabel": "Arbeitselemente suchen",
+				"searchPlaceholder": "Nach Titel, ID oder Stichwort suchen…",
+				"personalViewHelp": "Nur für Sie — diese Einstellungen ändern die Roadmap Ihrer Teammitglieder nicht.",
+				"resetConfirm": "Layout, Gruppierung und Felder auf ihre Standardwerte zurücksetzen?",
+				"resetDefaults": "Auf Standardwerte zurücksetzen",
+				"reset": "Zurücksetzen",
+				"cancel": "Abbrechen",
+				"save": "Speichern",
+				"unsavedChanges": "Ungespeicherte Änderungen — speichern Sie, um sie nach dem Neuladen beizubehalten.",
+				"layout": "Layout",
+				"groupBy": "Gruppieren nach",
+				"cardFields": "Kartenfelder",
+				"reorderHint": "zum Sortieren ziehen",
+				"priorityLayoutHelp": "Sie sehen den Bereich Priorität — die Auswahl eines Layouts führt zurück zu den Arbeitselementen.",
+				"groupStage": "Entwurfsphase",
+				"groupTrack": "Delivery-Track",
+				"groupPhase": "Phase",
+				"reorderField": "{label} neu anordnen",
+				"alwaysShown": "{label} (immer sichtbar)",
+				"fieldLabels": {
+					"title": "Titel",
+					"stage": "Entwurfsphase",
+					"sync": "PM-Synchronisierungsstatus",
+					"size": "Größe",
+					"source": "Quelle",
+					"flags": "Statusmarkierungen",
+					"tags": "Tags"
+				}
+			},
+			"actionsMenu": {
+				"trigger": "Aktionen",
+				"classify": "Delivery-Tracks klassifizieren",
+				"refresh": "Aktualisieren",
+				"history": "Verlauf",
+				"rejected": "Abgelehnte Vorschläge",
+				"exportInProgress": "Export läuft",
+				"historyDescription": "Jede Änderung an diesen Tickets und das PM-Synchronisierungsprotokoll.",
+				"rejectedDescription": "Verworfene Vorschläge wiederherstellen oder endgültig löschen."
+			},
+			"roadmapSections": {
+				"groupAriaLabel": "Roadmap-Ansicht",
+				"itemsLabel": "Arbeitselemente",
+				"itemsTooltip": "Ihre vollständige Roadmap-Liste — Arbeitselemente durchsuchen, gruppieren und bearbeiten.",
+				"priorityLabel": "Priorität",
+				"priorityTooltip": "Eine gemeinsame, bewertete Arbeitsliste derselben Elemente: Was als Nächstes zu tun ist, warum es dort eingeordnet ist und der vollständige Verlauf jeder Prioritätsänderung. Ihre Filter gelten weiterhin."
 			}
 		},
 		"testCases": {
@@ -6200,6 +6364,11 @@
 			"cancelFailed": "Der Lauf konnte nicht abgebrochen werden: {message}",
 			"status": "Pausiert",
 			"setupSubject": "Projekteinrichtung"
+		},
+		"recommendations": {
+			"generationFailed": "Fabric konnte keine Feature-Empfehlungen erstellen. Bitte versuchen Sie es erneut. Prüfen Sie bei anhaltenden Problemen den Projektkontext, verbundene Quellen oder den Status der Hintergrundaufträge, bevor Sie es erneut versuchen.",
+			"running": "Fabric empfiehlt bereits Features für dieses Projekt.",
+			"startFailed": "Empfehlungen konnten nicht gestartet werden"
 		}
 	},
 	"tooltips": {
@@ -6325,9 +6494,19 @@
 			"discoveryPanel": "Discovery-Runs zu diesem Feature. Der neueste Vertrag wartet auf deine Freigabe; offene Fragen stehen als Kommentare am Feature.",
 			"discoveryMarkComplete": "Markiert den Integrationsvertrag als abgeschlossen und schließt den Run in einem Schritt; das erfüllt das Discovery-Gate. Deshalb lässt sich der Status des Dokuments nicht aus der Dokumentenliste ändern.",
 			"estimateExport": "Lädt die Umfangsschätzung nach Phase und Track als Markdown oder CSV herunter. Phasen mit Elementen niedriger Sicherheit zeigen eine Punktespanne statt einer Zahl.",
-			"classifyConcept": "Ein Delivery-Track sagt, was ein Feature vor der Veröffentlichung vorweisen muss: Spike (akzeptierter Spike-Run), Discovery (abgeschlossener Integrationsvertrag), Specify (Beschreibung und Akzeptanzkriterien) oder Defer (geparkt).",
 			"stageRequestsConcept": "Unter einem regulierten Profil wird eine Änderung der Entwurfsstufe als Anfrage erfasst statt angewendet; ein konfigurierter Genehmiger prüft sie hier.",
-			"kanbanColumnPreset": "Benennt die Spalten des Boards nach einer Vorlage um, die zur Art dieses Engagements passt, und legt fehlende Spalten an. Titel lassen sich danach bearbeiten; Karten behalten ihren Status."
+			"kanbanColumnPreset": "Benennt die Spalten des Boards nach einer Vorlage um, die zur Art dieses Engagements passt, und legt fehlende Spalten an. Titel lassen sich danach bearbeiten; Karten behalten ihren Status.",
+			"refreshRoadmap": "Die Roadmap vom Server aktualisieren und die aktuelle Auswahl der Arbeitselemente aufheben.",
+			"classifyConcept": "Ein Delivery-Track sagt, was ein Feature vor der Veröffentlichung vorweisen muss: Spike (akzeptierter Spike-Run), Discovery (abgeschlossener Integrationsvertrag), Specify (Beschreibung und Akzeptanzkriterien) oder Defer (geparkt).",
+			"addFeature": "Ein neues Feature in der Standardstatusspalte erstellen. Ein Dialog für Titel und Details des Features wird geöffnet.",
+			"aiUpdateRoadmap": "Ein KI-Chatfenster öffnen, um Roadmap-Änderungen zu entwerfen. Sie können jeden Vorschlag annehmen oder ablehnen, bevor Arbeitselemente geändert werden.",
+			"collapseLane": "Den Bereich {label} wieder zu einer schmalen Spalte einklappen.",
+			"expandLane": "Den Bereich {label} ausklappen, um seine Arbeitselemente anzuzeigen.",
+			"hideClosedFeatures": "Diese Features auf der Roadmap ausblenden. Aktive Features bleiben sichtbar.",
+			"pullFromPmTool": "Elemente aus Ihrem PM-Tool (Jira, Azure DevOps usw.) auswählen und als Arbeitselemente auf dieses Board importieren.",
+			"reviewProposals": "Vorschläge für das Backlog prüfen, die der Teams-Kanalmonitor eingereiht hat. Jeder Vorschlag kann als neues Arbeitselement angenommen oder abgelehnt werden.",
+			"showClosedFeatures": "Ausgeblendete Features auf der Roadmap anzeigen. Sie bleiben auch an anderen Stellen zugänglich.",
+			"syncSelectedToPm": "Die ausgewählten Arbeitselemente an das verbundene PM-Tool senden. Jedes wird zu einem Arbeitselement auf Ihrem Board."
 		},
 		"projectSetup": {
 			"profileHelp": "Über das Profil {profile}",

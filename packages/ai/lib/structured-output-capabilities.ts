@@ -29,11 +29,18 @@ const GATEWAY: StructuredOutputCapability = {
 		"getModel routes through Vercel Gateway; sent openai/ names select strict conversion; status 400/422 schema/format/strict rejections are detected across gateway error causes and retried with the original schema, with endpoint-scoped one-hour rejection memory; other upstream enforcement unverified — live probe needed",
 };
 
+const COMPATIBLE_GATEWAY: StructuredOutputCapability = {
+	mode: "non-strict",
+	namespaces: [OPENAI],
+	evidence:
+		"Connection endpoint uses OpenAI Chat Completions; upstream strict JSON Schema enforcement is unverified",
+};
+
 /** Explicit enum coverage is enforced by satisfies Record<AIProvider, ...>. */
 export const STRUCTURED_OUTPUT_CAPABILITIES = {
 	VERCEL_GATEWAY: GATEWAY,
-	CLOUDFLARE_AI: GATEWAY,
-	OPENROUTER: GATEWAY,
+	CLOUDFLARE_AI: COMPATIBLE_GATEWAY,
+	OPENROUTER: COMPATIBLE_GATEWAY,
 	AZURE_AI_FOUNDRY: {
 		mode: "strict",
 		namespaces: [OPENAI],

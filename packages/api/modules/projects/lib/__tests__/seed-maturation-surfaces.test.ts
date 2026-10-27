@@ -53,9 +53,6 @@ const baseFeature = {
 	lastSummaryHash: null,
 	lastContextUpdateAt: null,
 	maturationV2OptedIn: true,
-	cleanSpecApprovalMode: null,
-	decisionLogApprovalMode: null,
-	summaryQuestionsApprovalMode: null,
 } as never;
 
 const tenantFilter = { organizationId: "org-1", userId: "user-1" } as const;

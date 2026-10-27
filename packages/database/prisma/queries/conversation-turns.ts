@@ -561,7 +561,9 @@ export async function requestConversationTurnCancel(
  * a fallback only — for a ledgered turn the write replaces it with the
  * ledger's totals as they stand under the turn row's lock.
  */
-export interface ConversationTurnBudgetStopRequest {
+interface TokenAllowanceStopRequest {
+	version?: 1;
+	kind?: "token_allowance";
 	stopReason: "allowance_exhausted" | "finalization_unavailable";
 	allowance: number;
 	measured: number;
@@ -570,10 +572,33 @@ export interface ConversationTurnBudgetStopRequest {
 }
 
 /** The structured token-allowance stop a turn row stores (`budgetStop`). */
-export interface ConversationTurnBudgetStop
-	extends ConversationTurnBudgetStopRequest {
-	kind: "token_allowance";
-}
+export type ConversationTurnBudgetStop =
+	| (TokenAllowanceStopRequest & { kind: "token_allowance" })
+	| LocalBudgetStop;
+type LocalBudgetStop =
+	| {
+			version: 1;
+			kind: "round_limit";
+			used: number;
+			limit: number;
+	  }
+	| {
+			version: 1;
+			kind: "time_limit";
+			used: number;
+			limit: number;
+	  }
+	| {
+			version: 1;
+			kind: "token_budget";
+			used: number;
+			limit: number;
+			maxTokens: number;
+			reservedTokens: number;
+	  };
+export type ConversationTurnBudgetStopRequest =
+	| TokenAllowanceStopRequest
+	| LocalBudgetStop;
 
 export interface FinalizeConversationTurnInput {
 	turnId: string;
@@ -624,9 +649,17 @@ function budgetStopUnderLock(
 	},
 	request: ConversationTurnBudgetStopRequest,
 ): ConversationTurnBudgetStop {
+	if (
+		request.kind === "round_limit" ||
+		request.kind === "token_budget" ||
+		request.kind === "time_limit"
+	) {
+		return { ...request };
+	}
 	const ledgered = row.tokenAllowance !== null;
 	return {
 		kind: "token_allowance",
+		...(request.version === 1 ? { version: 1 as const } : {}),
 		allowance: ledgered
 			? (row.tokenAllowance as number)
 			: request.allowance,
@@ -920,4 +953,46 @@ export async function getConversationTurnOwnerForExecution(
 		where: { executionId },
 		select: { userId: true, organizationId: true },
 	});
+}
+
+/** Server-owned rows used to authorize a budget continuation before a workflow start. */
+export async function getConversationTurnContinuationSnapshot(args: {
+	turnId: string;
+	conversationId: string;
+	userId: string;
+	organizationId: string;
+}) {
+	const where = {
+		userId: args.userId,
+		organizationId: args.organizationId,
+		conversationId: args.conversationId,
+	};
+	const select = {
+		id: true,
+		clientRequestKey: true,
+		userId: true,
+		organizationId: true,
+		conversationId: true,
+		generation: true,
+		status: true,
+		budgetStop: true,
+		questionText: true,
+		responseText: true,
+	} as const;
+	const [source, latest] = await Promise.all([
+		db.conversationTurn.findFirst({
+			where: { ...where, id: args.turnId },
+			select,
+		}),
+		db.conversationTurn.findFirst({
+			where: {
+				...where,
+				generation: { not: null },
+				executionId: { not: null },
+			},
+			orderBy: [{ generation: "desc" }, { createdAt: "desc" }],
+			select,
+		}),
+	]);
+	return { source, latest };
 }

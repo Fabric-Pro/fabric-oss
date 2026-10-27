@@ -1,18 +1,15 @@
 "use client";
 
 /**
- * RoadmapFilterToolbarView — pure presentational layout for the roadmap filter
- * toolbar. All state (search debounce, the "More filters" disclosure) lives in
- * the RoadmapFilterToolbar container; this component just renders. Keeping it
- * presentational lets it be previewed in isolation (no orpc / tenant context).
+ * Presentational layout for the roadmap filter toolbar. Search debounce and the
+ * More filters disclosure live in RoadmapFilterToolbar; this view receives their
+ * values and handlers. It can therefore render without oRPC or tenant context.
  *
- * Layout:
- *   • Bar:     search (left) · inbox + trailing controls (right)
- *   • Filters: a light, hairline-bounded region (not a heavy filled card) with
- *              the primary facets (tight horizontal flow) + a "More filters"
- *              disclosure for the secondary facets.
- *   • Chips:   active filters + "Clear all".
- *   • Count:   on its own line so changing it never shifts the bar.
+ * Search, AI search, fixed-width primary facets and More/Fewer filters share one
+ * wrapping row. Secondary facets and Dates expand below it, followed by active
+ * chips and Clear all, which stay available when the extra controls collapse.
+ *
+ * Results, lane counts, hidden matches, sort and View share a wrapping row.
  */
 
 import { Badge } from "@ui/components/badge";
@@ -32,12 +29,14 @@ import {
 	SearchIcon,
 	SparklesIcon,
 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useId } from "react";
 import type { RoadmapFilters } from "../../lib/roadmap-filters";
 import { RoadmapFilterChips } from "./RoadmapFilterChips";
 import { RoadmapFiltersPanel } from "./RoadmapFiltersPanel";
 
 function ResultCount({
+	lanesCount,
 	totalCount,
 	filteredCount,
 	hasActiveFilters,
@@ -47,6 +46,7 @@ function ResultCount({
 	bodyMatchesShown,
 	onToggleBodyMatches,
 }: {
+	lanesCount?: number;
 	totalCount: number;
 	filteredCount: number;
 	hasActiveFilters: boolean;
@@ -60,8 +60,9 @@ function ResultCount({
 	 * hidden items (activates the Show-hidden eye toggle). */
 	onShowHidden?: () => void;
 }) {
+	const t = useTranslations("projects.stories.roadmapUi");
 	return (
-		<span className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-muted-foreground text-xs uppercase tracking-[0.14em] tabular-nums">
+		<span className="text-muted-foreground text-sm tabular-nums">
 			{/* innerText stays "N of M shown" / "M work items" for unit + E2E parsers. */}
 			<span data-testid="roadmap-filter-count">
 				{hasActiveFilters ? (
@@ -80,35 +81,46 @@ function ResultCount({
 					</>
 				)}
 			</span>
+			{lanesCount !== undefined
+				? ` · ${t("lanes", { count: lanesCount })}`
+				: null}
 			{/* Companion HIDDEN-match count, right beside the main count. When a
 			    reveal handler is wired it becomes a button that activates the
 			    Show-hidden eye toggle. */}
-			{hiddenMatchCount > 0 &&
-				(onShowHidden ? (
-					<Tooltip>
-						<TooltipTrigger asChild>
-							<button
-								type="button"
-								onClick={onShowHidden}
-								className="inline-flex items-center gap-1 rounded font-normal normal-case tracking-normal text-muted-foreground/70 underline-offset-2 transition-colors hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-							>
-								· {hiddenMatchCount} hidden also{" "}
-								{hiddenMatchCount === 1 ? "matches" : "match"}
-								<EyeIcon aria-hidden className="size-3" />
-							</button>
-						</TooltipTrigger>
-						<TooltipContent>
-							Show the {hiddenMatchCount} hidden{" "}
-							{hiddenMatchCount === 1 ? "item" : "items"} that
-							also match your filters
-						</TooltipContent>
-					</Tooltip>
-				) : (
-					<span className="font-normal normal-case tracking-normal text-muted-foreground/70">
-						· {hiddenMatchCount} hidden also{" "}
-						{hiddenMatchCount === 1 ? "matches" : "match"}
-					</span>
-				))}
+			{hiddenMatchCount > 0 && (
+				<>
+					{" "}
+					·{" "}
+					{onShowHidden ? (
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<Button
+									type="button"
+									variant="link"
+									size="sm"
+									onClick={onShowHidden}
+									className="h-auto gap-1 p-0 font-normal text-muted-foreground"
+								>
+									{t("showHiddenCount", {
+										count: hiddenMatchCount,
+									})}
+									<EyeIcon aria-hidden className="size-3" />
+								</Button>
+							</TooltipTrigger>
+							<TooltipContent>
+								{t("showHiddenHelp", {
+									count: hiddenMatchCount,
+								})}
+							</TooltipContent>
+						</Tooltip>
+					) : (
+						<span>
+							{t("hiddenCount", { count: hiddenMatchCount })}
+						</span>
+					)}
+				</>
+			)}
+
 			{/* Companion DESCRIPTION-match count. Relevance ranking sorts name
 			    matches to the top but still listed every description hit, so a
 			    common word returned a long unrelated tail. Those rows are held
@@ -197,12 +209,10 @@ export type RoadmapFilterToolbarViewProps = {
 	moreExpanded: boolean;
 	onToggleMore: () => void;
 	moreCount: number;
-	/** Optional slot, e.g. the Review Center inbox. */
-	inbox?: React.ReactNode;
-	/** Optional slot rendered at the right of the top bar (sort, history, …). */
+	/** View and sort controls beside the results summary. */
 	trailing?: React.ReactNode;
-	/** Optional view switcher, sharing the result-count lane. */
-	viewSwitcher?: React.ReactNode;
+	/** Lane count, present only for grouped layouts. */
+	lanesCount?: number;
 	/** Distinct project tags for the tag facet (empty until loaded / flag off). */
 	tagOptions?: string[];
 };
@@ -233,22 +243,22 @@ export function RoadmapFilterToolbarView({
 	moreExpanded,
 	onToggleMore,
 	moreCount,
-	inbox,
 	trailing,
-	viewSwitcher,
+	lanesCount,
 	tagOptions,
 }: RoadmapFilterToolbarViewProps) {
+	const t = useTranslations("projects.stories.roadmapUi");
 	const searchInputId = useId();
 	const moreId = useId();
 
 	return (
-		<div className="space-y-3">
+		<div className="space-y-2">
 			{/* Bar */}
-			<div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-				<div className="flex w-full items-center gap-1.5 sm:max-w-xs">
-					<div className="relative w-full">
+			<div className="flex flex-wrap items-center gap-2">
+				<div className="flex min-w-0 flex-1 basis-80 items-center gap-1.5 sm:min-w-80">
+					<div className="relative min-w-0 flex-1">
 						<label htmlFor={searchInputId} className="sr-only">
-							Search work items
+							{t("searchLabel")}
 						</label>
 						<SearchIcon
 							aria-hidden
@@ -260,8 +270,7 @@ export function RoadmapFilterToolbarView({
 							onChange={(e) =>
 								onSearchValueChange(e.target.value)
 							}
-							placeholder="Search by title, ID, or keyword…"
-							aria-label="Search roadmap items"
+							placeholder={t("searchPlaceholder")}
 							className="h-8 pl-8"
 						/>
 					</div>
@@ -302,62 +311,52 @@ export function RoadmapFilterToolbarView({
 						</Tooltip>
 					)}
 				</div>
-				<div className="flex items-center gap-2">
-					{inbox}
-					{trailing}
-				</div>
+				<RoadmapFiltersPanel
+					tier="primary"
+					filters={filters}
+					onChange={onFiltersChange}
+				/>
+				<Button
+					type="button"
+					variant="ghost"
+					size="sm"
+					aria-expanded={moreExpanded}
+					aria-controls={moreId}
+					onClick={onToggleMore}
+					className="h-7 shrink-0 px-2 text-muted-foreground text-xs hover:text-foreground"
+				>
+					{t(moreExpanded ? "fewerFilters" : "moreFilters")}
+					{moreCount > 0 && (
+						<Badge
+							variant="secondary"
+							className="ml-1.5 rounded-sm px-1 font-normal tabular-nums"
+						>
+							{moreCount}
+						</Badge>
+					)}
+					<ChevronDownIcon
+						aria-hidden
+						className={cn(
+							"ml-1 size-3.5 transition-transform",
+							moreExpanded && "rotate-180",
+						)}
+					/>
+				</Button>
 			</div>
 
-			{/* Filter region — light hairline frame, not a heavy filled card */}
-			<div className="space-y-3 border-border/60 border-y py-3">
-				<div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-3">
+			{moreExpanded && (
+				<div
+					id={moreId}
+					className="border-border/50 border-t pt-2 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1"
+				>
 					<RoadmapFiltersPanel
-						tier="primary"
+						tier="more"
 						filters={filters}
 						onChange={onFiltersChange}
+						tagOptions={tagOptions}
 					/>
-					<Button
-						type="button"
-						variant="ghost"
-						size="sm"
-						aria-expanded={moreExpanded}
-						aria-controls={moreId}
-						onClick={onToggleMore}
-						className="h-7 shrink-0 px-2 text-muted-foreground text-xs hover:text-foreground"
-					>
-						More filters
-						{moreCount > 0 && (
-							<Badge
-								variant="secondary"
-								className="ml-1.5 rounded-sm px-1 font-normal tabular-nums"
-							>
-								{moreCount}
-							</Badge>
-						)}
-						<ChevronDownIcon
-							aria-hidden
-							className={cn(
-								"ml-1 size-3.5 transition-transform",
-								moreExpanded && "rotate-180",
-							)}
-						/>
-					</Button>
 				</div>
-
-				{moreExpanded && (
-					<div
-						id={moreId}
-						className="border-border/50 border-t pt-3 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1"
-					>
-						<RoadmapFiltersPanel
-							tier="more"
-							filters={filters}
-							onChange={onFiltersChange}
-							tagOptions={tagOptions}
-						/>
-					</div>
-				)}
-			</div>
+			)}
 
 			{/* Active chips */}
 			<RoadmapFilterChips
@@ -366,15 +365,10 @@ export function RoadmapFilterToolbarView({
 				onClearAll={onClearAll}
 			/>
 
-			{/* Result count, and — when the roadmap offers one — the view switcher
-			    sharing its lane. They belong together: the switcher chooses which
-			    view of the counted set you get, so putting it here keeps "what am
-			    I looking at" and "how much of it is there" on one line instead of
-			    spending a whole band of vertical space on each.
-			    `flex-wrap` + `justify-between`: on a narrow viewport the count
-			    drops below the switcher rather than squeezing it. */}
-			<div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-				{viewSwitcher ?? <span />}
+			<div
+				data-testid="roadmap-results-row"
+				className="flex flex-wrap items-center justify-between gap-2"
+			>
 				<div className="flex flex-wrap items-center gap-x-3">
 					{/* Announces search progress to screen readers. Persistent on
 					    purpose: a live region that mounts only when loading starts
@@ -384,6 +378,7 @@ export function RoadmapFilterToolbarView({
 						{aiSearching ? "Searching results…" : ""}
 					</span>
 					<ResultCount
+						lanesCount={lanesCount}
 						totalCount={totalCount}
 						filteredCount={filteredCount}
 						hasActiveFilters={hasActiveFilters}
@@ -397,12 +392,9 @@ export function RoadmapFilterToolbarView({
 					    token needs its -foreground pair for AA contrast in light
 					    theme (mirrors AiUsageLimitBanner). */}
 					{aiSearchError && (
-						<span
-							role="status"
-							className="text-highlight-ink text-xs normal-case tracking-normal"
-						>
+						<output className="text-highlight-ink text-xs normal-case tracking-normal">
 							AI search failed — showing keyword results.
-						</span>
+						</output>
 					)}
 					{aiCoverageNote && !aiSearchError && (
 						<span className="text-muted-foreground text-xs normal-case tracking-normal">
@@ -410,13 +402,13 @@ export function RoadmapFilterToolbarView({
 						</span>
 					)}
 					{aiFallbackNote && !aiSearchError && !aiCoverageNote && (
-						<span
-							role="status"
-							className="text-muted-foreground text-xs normal-case tracking-normal"
-						>
+						<output className="text-muted-foreground text-xs normal-case tracking-normal">
 							{aiFallbackNote}
-						</span>
+						</output>
 					)}
+				</div>
+				<div className="ml-auto flex flex-wrap items-center gap-2">
+					{trailing}
 				</div>
 			</div>
 		</div>

@@ -36,6 +36,8 @@ import {
 	readTokenCount,
 	streamText,
 } from "@repo/ai";
+import { AI_CALL_PURPOSES } from "@repo/ai/lib/call-purpose";
+import { runWithAiCallPurpose } from "@repo/ai/lib/call-purpose-context";
 import { chatGptPlanExhaustedError } from "@repo/ai/lib/chatgpt-plan/exhaustion-breaker";
 import { isAiImpersonatedRequest } from "@repo/ai/lib/chatgpt-plan/interactive-context";
 import {
@@ -503,10 +505,14 @@ async function retrieveProjectContextEntries(
 
 		// Generate embedding for the query using configured model
 		const embeddingStart = Date.now();
-		const { embedding: queryEmbedding, usage } = await embed({
-			model: embeddingModel,
-			value: finalSearchQuery,
-		});
+		const { embedding: queryEmbedding, usage } = await runWithAiCallPurpose(
+			AI_CALL_PURPOSES.projectRetrievalEmbedding,
+			() =>
+				embed({
+					model: embeddingModel,
+					value: finalSearchQuery,
+				}),
+		);
 		logEmbeddingUsageAsync({
 			context: { userId, organizationId },
 			metadata,

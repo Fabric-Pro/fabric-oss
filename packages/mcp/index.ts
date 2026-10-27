@@ -22,6 +22,8 @@
  * @see https://modelcontextprotocol.io/specification/2025-06-18/client/sampling
  */
 
+export { MCPClientError } from "@ai-sdk/mcp";
+
 // Standard MCP client (AI SDK wrapper - no sampling support)
 export {
 	type ApiKeyMethod,

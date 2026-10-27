@@ -1,10 +1,16 @@
 import { logAiUsageAsync } from "@repo/database";
 
-/** Parlume's realtime voice model, on the organization's own OpenAI key. */
+/**
+ * Parlume's realtime voice model, on the organization's own OpenAI key, or on
+ * its Azure AI Foundry resource from a deployment of the same name.
+ */
 export const PARLUME_REALTIME_MODEL = "gpt-realtime-2.1";
 
 // developers.openai.com, 2026-10-23, per 1M tokens: audio $32 input, $0.40
 // cached input, $64 output; text $4 input, $0.40 cached input, $24 output.
+// A session on Azure AI Foundry is recorded at the same rates: Azure publishes
+// the same text rates for gpt-realtime-2.1 ($4 input, $24 output) and no
+// separate audio rates.
 const USD_PER_TOKEN = {
 	inputText: 4 / 1_000_000,
 	cachedText: 0.4 / 1_000_000,
@@ -49,6 +55,7 @@ export function recordParlumeRealtimeUsage(
 		userId: string;
 		organizationId: string;
 		projectId: string;
+		provider: "OPENAI_DIRECT" | "AZURE_AI_FOUNDRY";
 	},
 	usage: ParlumeRealtimeUsage,
 ): void {
@@ -62,7 +69,7 @@ export function recordParlumeRealtimeUsage(
 		taskType: "AUDIO",
 		featureKey: "parlume",
 		conversationId: context.sessionId,
-		provider: "OPENAI_DIRECT",
+		provider: context.provider,
 		providerModelId: PARLUME_REALTIME_MODEL,
 		inputTokens: input,
 		outputTokens: output,

@@ -36,8 +36,7 @@ type AnswerPropagationStatus = "applied" | "error";
  * DETERMINISTICALLY — appended to a transient `## Resolved Decisions (pending
  * integration)` appendix (`recordAnswerInSpec`), with NO per-answer LLM patch.
  * The next maturation run dissolves the appendix into the body/Constraints and
- * prunes it (the AI sees only the spec). The old scoped-patch propagation
- * (`propagate-decision-to-spec.ts`) and its MANUAL accept flow are now dormant.
+ * prunes it (the AI sees only the spec).
  *
  * OPEN-QUESTION MODEL: an open question/gap surfaced by `getEditorState` is an
  * OPEN-status Decision Log thread root carrying this `questionId`. Answering it
@@ -54,10 +53,9 @@ type AnswerPropagationStatus = "applied" | "error";
  *     propagate.
  *
  * PM-SYNC ISOLATION (§7.7): minting/resolving a decision writes a maturation
- * surface, not the dev-facing Clean Spec — that step never syncs. The ONLY write
- * that touches `description`/`acceptanceCriteria` (and so may push to PM) is the
- * AUTO_ACCEPT branch of the propagation, and it is gated on the feature's
- * `pmAutoSyncEnabled` cloud toggle inside `propagateDecisionToCleanSpec`.
+ * surface and never syncs. The deterministic spec write also skips PM sync:
+ * its appendix is transient scaffolding. The next maturation run syncs the
+ * integrated Clean Spec through the feature's normal PM-sync gate.
  */
 export const answerQuestionProcedure = tenantProtectedProcedure
 	.use(requireProjectPermission(Permissions.STORY_UPDATE))
@@ -215,7 +213,7 @@ export const answerQuestionProcedure = tenantProtectedProcedure
 		}
 
 		// Lazy opt-in (§5.1): the PO's first answer commits this feature to v2
-		// maturation, which also arms Decision→Spec propagation below. Idempotent —
+		// maturation. Idempotent —
 		// only write when not already opted in. Touches no Clean-Spec content, so it
 		// does not sync. Best-effort: a failed opt-in must not lose the decision.
 		if (!feature.maturationV2OptedIn) {
