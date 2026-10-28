@@ -25,7 +25,6 @@ import {
 	abandonConversationTurnStart,
 	type ConversationTurn,
 	db,
-	hasOrganizationTie,
 } from "@repo/database";
 import { AiUsageLimitExceededError } from "@repo/payments";
 import type {
@@ -35,6 +34,10 @@ import type {
 	TaskPlan,
 } from "@repo/temporal";
 import { getTemporalClient } from "@repo/temporal";
+import {
+	ChatRunAccessError,
+	getAuthorizedChatRun,
+} from "@saas/agents/lib/server/chat-run-control";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
 import { v4 as uuidv4 } from "uuid";
@@ -42,10 +45,7 @@ import {
 	EXECUTION_MODE_NAMES,
 	parseExecutionMode,
 } from "../orchestrator-execution-mode";
-import {
-	isOrchestratorOrganizationMember,
-	refuseUnlessRunOwner,
-} from "./run-access";
+import { isOrchestratorOrganizationMember } from "./run-access";
 import {
 	admitChatTurn,
 	cancelledBeforeStartResponse,
@@ -490,7 +490,11 @@ export async function POST(request: NextRequest) {
 				temporalClient,
 				executionId,
 				workflowInput,
-				memo: { userId, organizationId },
+				memo: {
+					userId,
+					organizationId,
+					projectId: workflowInput.projectId ?? null,
+				},
 			});
 			console.log(
 				`[Orchestrator] Started workflow (no turn): ${executionId}`,
@@ -515,7 +519,11 @@ export async function POST(request: NextRequest) {
 				temporalClient,
 				turn,
 				workflowInput,
-				memo: { userId, organizationId },
+				memo: {
+					userId,
+					organizationId,
+					projectId: workflowInput.projectId ?? null,
+				},
 			});
 		} catch (startError) {
 			// startTurnWorkflow already settled the turn (or deliberately
@@ -649,62 +657,12 @@ export async function GET(request: NextRequest) {
 			);
 		}
 
-		// Get Temporal client
-		const temporalClient = await getTemporalClient();
-
-		// Get workflow handle
-		const handle = temporalClient.workflow.getHandle(executionId);
-
-		// ✅ Security: Verify the caller owns this workflow
-		try {
-			const description = await handle.describe();
-			const memo = description.memo as
-				| Record<string, unknown>
-				| undefined;
-			const workflowOrgId = memo?.organizationId;
-			const refusal = await refuseUnlessRunOwner({
-				executionId,
-				userId,
-				memo,
-				notOwnerMessage:
-					"You are not authorized to access this workflow",
-			});
-			if (refusal) {
-				return refusal;
-			}
-			// Tenant check: if the workflow belongs to an organization, the
-			// caller must still have a tie to it — the same rule POST applied
-			// when the run started (membership or an accepted project-guest
-			// invitation, ADR-018). A membership-only check here refused a
-			// project guest their own run.
-			if (workflowOrgId) {
-				const tied = await hasOrganizationTie(
-					userId,
-					workflowOrgId as string,
-				);
-				if (!tied) {
-					return new Response(
-						JSON.stringify({
-							error: "Forbidden",
-							message:
-								"You are not a member of this organization",
-						}),
-						{
-							status: 403,
-							headers: { "Content-Type": "application/json" },
-						},
-					);
-				}
-			}
-		} catch {
-			return new Response(
-				JSON.stringify({ error: "Workflow not found" }),
-				{
-					status: 404,
-					headers: { "Content-Type": "application/json" },
-				},
-			);
-		}
+		const { handle } = await getAuthorizedChatRun({
+			executionId,
+			userId,
+			engine: "orchestrator",
+			action: "observe",
+		});
 
 		// Query current status
 		let status:
@@ -779,18 +737,20 @@ export async function GET(request: NextRequest) {
 			},
 		);
 	} catch (error) {
-		console.error("[Orchestrator] Error querying workflow:", error);
-		return new Response(
-			JSON.stringify({
-				error:
-					error instanceof Error
-						? error.message
-						: "Failed to query orchestrator",
-			}),
+		if (error instanceof ChatRunAccessError) {
+			return Response.json(
+				{
+					error: "Forbidden",
+					message: "You are not a member of this organization",
+				},
+				{ status: 403 },
+			);
+		}
+		return Response.json(
 			{
-				status: 500,
-				headers: { "Content-Type": "application/json" },
+				error: "The run could not be observed",
 			},
+			{ status: 503 },
 		);
 	}
 }

@@ -1,5 +1,30 @@
 # fabric-app
 
+## 1.16.32
+
+### Patch Changes
+
+- 148e792: Chat answers now identify the model that served the response in Direct chat and Advisor, including saved conversations.
+- 148e792: Retrying a single failed AI Update whose changes are all already on the roadmap now marks its update history entry as Applied instead of leaving it shown as Failed.
+- 148e792: The web build's memory report now also shows the working set and the cgroup's OOM counters, so the real margin under the build machine's limit is visible.
+- 148e792: The web build now collects page data with two workers instead of three, for more memory headroom on the 16 GB build machine.
+- 148e792: The chat model picker now offers only models your organization's default AI provider can run, and a model picked earlier that it cannot run shows as not applied instead of appearing selected.
+- 148e792: ChatGPT plan settings now say when sharing waits on an owner accepting the terms, instead of hiding the share button and the warning.
+- 148e792: Upgrade CopilotKit to 1.80.0 for the document, story and other in-app assistants.
+- 148e792: Duplicate re-scans now clear stale pending flags and read acceptance criteria correctly on legacy feature stubs
+- 148e792: Duplicate detection compares features mainly on their Scope section, falling back to acceptance criteria, so topic-alike features stop being flagged
+- 148e792: Preserve stable prompt request IDs and native message receipts when coding sessions retry. Show actionable feedback when an existing Fabric session needs recovery or approval, and open canonical Fabric desktop links without guessing links for headless servers.
+- 148e792: Add an opt-in migration from legacy background coding execution to Fabric Agents isolated git worktrees, multi-backend selection, live session step progress, interactive agent replies, and direct desktop/Web UI deep-linking across implementation and spike coding runs.
+- 148e792: A chat model picked before a ChatGPT plan was turned on now shows as not applied while the plan answers, with a note and a link to the plan's settings, instead of appearing selected.
+- 148e792: Validate structured results from registered NHTSA and Databricks Vector Search operations before returning them to chat or workflow steps. Tool discovery now includes matching output schemas, read/write effects, and retry-safety metadata.
+- 148e792: Plan steps that call a built-in integration such as Slack, Resend or a custom webhook now refuse an operation the integration doesn't support, so a step whose operation is named like a read can no longer send a message, email or webhook without write authority.
+- 148e792: Your organization's MCP servers now appear at the top of the MCP tab on the Connections page, above the servers you can add.
+- 148e792: Planner plan approvals now show the plan's own risk level with a matching score, no longer list a text-only answer step as an irreversible action, show readable step descriptions instead of clipped fragments, and ask for approval when a read step uses a writing tool or integration operation, or an integration step names no operation.
+- 148e792: Workflow plans are no longer offered Slack search, thread or shared-file steps, or Fal.ai, database, MCP and AI Gateway integration steps, that the integration step cannot run and that made those plans fail.
+- 148e792: Export agent instructions, user-maintained portable skills, and model settings as JSON or YAML, and preview imported definitions before creating an organization-owned draft. Imports retain setup requirements without carrying source connections, credentials, triggers, or approvals, reject duplicate definition keys, and record one curated audit event with the draft creation.
+- 148e792: A chosen model that the AI provider in use cannot serve is now skipped in favor of the task's default model instead of failing the request.
+- 148e792: Validate versioned chat events across Direct, Orchestrator, and Research, preserve partial replies and failure details when streams disconnect, and provide workflow confirmation controls that prevent duplicate clicks and distinguish confirmed starts from uncertain outcomes. Keep approval Updates opt-in for new runs, preserve legacy signal submission by default during web and worker rollouts, and retain usage-limit details in chat streams.
+
 ## 1.16.31
 
 ### Patch Changes

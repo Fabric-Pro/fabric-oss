@@ -10,7 +10,7 @@ vi.mock("@repo/database", () => ({
 	db: mockDb,
 	getOrganizationDefaultProvider: mockDefault,
 	ALL_AUDIO_CAPABLE_PROVIDERS: [],
-	ALL_EMBEDDING_CAPABLE_PROVIDERS: [],
+	ALL_EMBEDDING_CAPABLE_PROVIDERS: ["OPENAI_DIRECT", "VERCEL_GATEWAY"],
 	ALL_IMAGE_CAPABLE_PROVIDERS: [],
 	GATEWAY_PROVIDERS: ["VERCEL_GATEWAY"],
 }));
@@ -172,3 +172,31 @@ it("lists Databricks decisions without a gateway configuration", async () => {
 	);
 	expect(result.effectiveProviders).toEqual(["DATABRICKS"]);
 });
+
+it.each(["CHAT", "EMBEDDING", undefined] as const)(
+	"limits explicit text tasks to the default provider (%s)",
+	async (taskType) => {
+		mockDefault.mockResolvedValue("ANTHROPIC_DIRECT");
+		mockDb.cloudProviderConfig.findMany.mockResolvedValue(
+			["ANTHROPIC_DIRECT", "VERCEL_GATEWAY"].map((provider) => ({
+				id: `example-${provider}`,
+				provider,
+				isDefault: provider === "ANTHROPIC_DIRECT",
+				purpose: "ALL",
+				config: {},
+			})),
+		);
+		const result = await getConfiguredProviders(
+			"example-user",
+			"example-org",
+			taskType,
+		);
+		expect(result.effectiveProviders).toEqual(
+			taskType === "CHAT"
+				? ["ANTHROPIC_DIRECT"]
+				: taskType === "EMBEDDING"
+					? ["VERCEL_GATEWAY"]
+					: ["ANTHROPIC_DIRECT", "VERCEL_GATEWAY"],
+		);
+	},
+);

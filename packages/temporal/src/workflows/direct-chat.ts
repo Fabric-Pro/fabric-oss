@@ -36,6 +36,7 @@ import type {
 	DirectChatWorkflowOutput,
 } from "../types";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "./ai-non-retryable-errors";
+import { installChatRunContext } from "./chat-run-context";
 import {
 	type DirectChatPostOperationInput,
 	directChatPostOperationWorkflow,
@@ -165,6 +166,7 @@ export function joinRagContextParts(
 export async function directChatWorkflow(
 	input: DirectChatWorkflowInput,
 ): Promise<DirectChatWorkflowOutput> {
+	installChatRunContext(input);
 	const startTime = Date.now();
 	const {
 		executionId,

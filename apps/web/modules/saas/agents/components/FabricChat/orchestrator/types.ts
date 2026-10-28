@@ -258,6 +258,7 @@ export interface CompletedExecution {
 	inProgress?: boolean;
 	/** Of an `inProgress` turn: the stored message its question came from. */
 	questionMessageId?: string;
+	error?: string;
 	completedAt: Date;
 	/**
 	 * Clarifying questions answered during this execution, oldest first. Kept
@@ -268,6 +269,8 @@ export interface CompletedExecution {
 	clarifications?: ClarificationTurn[];
 	/** The answer stopped at the output-token ceiling (review F25). */
 	truncated?: ChatTurnTruncation;
+	/** The model that served this answer. */
+	model?: import("@saas/agents/hooks/useDirectStream").StreamModelInfo;
 	/** The turn ran on the organization's API billing (Fizzy #3048). */
 	apiBilling?: ChatGptPlanApiBilling;
 	plan?: {

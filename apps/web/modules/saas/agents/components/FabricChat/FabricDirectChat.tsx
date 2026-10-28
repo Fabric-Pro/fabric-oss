@@ -128,8 +128,6 @@ import { Sources } from "../../../../../components/ai-elements/sources";
 import { useChatConfirmation } from "../../hooks/useChatConfirmation";
 import {
 	type DirectStreamMessage,
-	type StreamModelInfo,
-	type TokenUsage,
 	useDirectStream,
 } from "../../hooks/useDirectStream";
 import { useEscToStopOrClose } from "../../hooks/useEscToStopOrClose";
@@ -138,9 +136,8 @@ import { useSkillSlashCommand } from "../../hooks/useSkillSlashCommand";
 import { useSkillSuggestions } from "../../hooks/useSkillSuggestions";
 import { useStableHandlers } from "../../hooks/useStableHandlers";
 import { useToolSuggestions } from "../../hooks/useToolSuggestions";
+import { useWorkflowConfirmation } from "../../hooks/useWorkflowConfirmation";
 import { shapePastedImageForAi } from "../../lib/chat-image-upload";
-import { parseTurnTruncation } from "../../lib/chat-turn-truncation";
-import { parseChatGptPlanApiBilling } from "../../lib/chatgpt-plan-api-billing";
 import {
 	buildComprehensiveFileContext,
 	type CodeReference,
@@ -151,6 +148,12 @@ import {
 	identifyRelatedFiles,
 } from "../../lib/code-references";
 import { deriveTrajectorySteps } from "../../lib/derive-trajectory";
+import {
+	persistedMetadata,
+	readPersistedModel,
+	readPersistedTurnOutcome,
+	readPersistedUsage,
+} from "../../lib/direct-chat-history";
 import {
 	getSelectedConversationToolIds,
 	mergeDirectConversationMetadata,
@@ -180,6 +183,7 @@ import {
 	ToolCallList,
 	useTypewriterPlaceholder,
 } from "./shared";
+import { AnsweredByModel } from "./shared/AnsweredByModel";
 import { ApiBillingNotice } from "./shared/ApiBillingNotice";
 import {
 	getSelectedAgentInstanceId,
@@ -191,7 +195,9 @@ import { SkillAutocomplete } from "./shared/SkillAutocomplete";
 import { SkillSuggestionChips } from "./shared/SkillSuggestionChips";
 import { TruncationNotice } from "./shared/TruncationNotice";
 import { toToolCallItems } from "./shared/tool-call-items";
+import { useProviderPickStatus } from "./shared/use-provider-pick-status";
 import { TrajectorySteps } from "./TrajectorySteps";
+import { WorkflowConfirmationCard } from "./WorkflowConfirmationCard";
 
 interface ProposedTaskDraft {
 	id: string;
@@ -542,119 +548,6 @@ function formatLineRangeLabel(
  * Extract the original MCP tool name from a prefixed name
  * Returns the actual tool name as defined by the MCP server
  */
-/**
- * The conversation API's message type does not declare `metadata`, though
- * the row carries it (the add-message schema accepts it). Read it loosely.
- */
-function persistedMetadata(
-	message: unknown,
-): Record<string, unknown> | undefined {
-	const metadata = (message as { metadata?: unknown } | null)?.metadata;
-	return metadata && typeof metadata === "object"
-		? (metadata as Record<string, unknown>)
-		: undefined;
-}
-
-/**
- * The failure and tools-off-retry state saved with an assistant turn. Before
- * this was persisted, a reload rendered a failed turn as a normal bubble —
- * the partial preamble read as a finished answer (review F22).
- */
-function readPersistedTurnOutcome(message: {
-	content: string;
-	streamStatus?: string;
-}): Pick<
-	DirectStreamMessage,
-	| "content"
-	| "isError"
-	| "errorMessage"
-	| "limit"
-	| "toolsFailed"
-	| "truncated"
-	| "apiBilling"
-> {
-	const metadata = persistedMetadata(message);
-	const toolsFailed =
-		metadata?.toolsFailed && typeof metadata.toolsFailed === "object"
-			? (metadata.toolsFailed as DirectStreamMessage["toolsFailed"])
-			: undefined;
-	const truncated = parseTurnTruncation(metadata?.truncated);
-	const apiBilling = parseChatGptPlanApiBilling(metadata?.apiBilling);
-	if (message.streamStatus !== "error") {
-		return {
-			content: message.content,
-			...(toolsFailed ? { toolsFailed } : {}),
-			...(truncated ? { truncated } : {}),
-			...(apiBilling ? { apiBilling } : {}),
-		};
-	}
-	const errorMessage =
-		typeof metadata?.errorMessage === "string"
-			? metadata.errorMessage
-			: message.content.replace(/^error:\s*/i, "");
-	const limit =
-		metadata?.limit &&
-		typeof (metadata.limit as { kind?: unknown }).kind === "string"
-			? (metadata.limit as DirectStreamMessage["limit"])
-			: undefined;
-	return {
-		// The body stored for a failure with no partial answer is the error
-		// itself; showing it twice would repeat the card.
-		content:
-			message.content === `Error: ${errorMessage}` ||
-			message.content.replace(/^error:\s*/i, "") === errorMessage
-				? ""
-				: message.content,
-		isError: true,
-		errorMessage,
-		...(limit ? { limit } : {}),
-		...(toolsFailed ? { toolsFailed } : {}),
-		// A partial error can share its turn with these; the live chat shows
-		// them beside the error, so a reload must too (Fizzy #3273).
-		...(truncated ? { truncated } : {}),
-		...(apiBilling ? { apiBilling } : {}),
-	};
-}
-
-function readPersistedUsage(
-	metadata: Record<string, unknown> | undefined,
-): TokenUsage | undefined {
-	const usage = metadata?.usage;
-	if (!usage || typeof usage !== "object") {
-		return undefined;
-	}
-	const u = usage as Record<string, unknown>;
-	const num = (v: unknown) => (typeof v === "number" ? v : undefined);
-	return {
-		inputTokens: num(u.inputTokens),
-		outputTokens: num(u.outputTokens),
-		totalTokens: num(u.totalTokens),
-		reasoningTokens: num(u.reasoningTokens),
-		cachedInputTokens: num(u.cachedInputTokens),
-	};
-}
-
-function readPersistedModel(
-	metadata: Record<string, unknown> | undefined,
-): StreamModelInfo | undefined {
-	const model = metadata?.model;
-	if (!model || typeof model !== "object") {
-		return undefined;
-	}
-	const m = model as Record<string, unknown>;
-	if (typeof m.id !== "string") {
-		return undefined;
-	}
-	return {
-		id: m.id,
-		canonicalName:
-			typeof m.canonicalName === "string" ? m.canonicalName : undefined,
-		provider: typeof m.provider === "string" ? m.provider : undefined,
-		contextWindow:
-			typeof m.contextWindow === "number" ? m.contextWindow : undefined,
-	};
-}
-
 // Keep writes ordered across chat remounts without blocking other conversations.
 // Entries are released after the last pending write settles.
 const pendingConversationMetadataWrites = new Map<string, Promise<void>>();
@@ -814,6 +707,11 @@ export const FabricDirectChat = forwardRef<
 	const [selectedAgent, setSelectedAgent] = useState<SelectedAgent | null>(
 		null,
 	);
+	const { getInactiveNote } = useProviderPickStatus(
+		organizationId,
+		selectedAgent ? [selectedAgent] : [],
+	);
+	const inactiveProviderNote = getInactiveNote(selectedAgent);
 	const [removedAgentProjectId, setRemovedAgentProjectId] = useState<
 		string | null
 	>(null);
@@ -1239,6 +1137,17 @@ export const FabricDirectChat = forwardRef<
 		// `"fabric-agent-launcher"`.
 		...(surface ? { surface } : {}),
 		onStopFailed: handleStopFailed,
+	});
+
+	const {
+		confirmation: workflowConfirmation,
+		confirm: handleConfirmExecution,
+		decline: handleDeclineExecution,
+		disabled: workflowConfirmationDisabled,
+	} = useWorkflowConfirmation({
+		messages: streamMessages,
+		organizationId: organizationId ?? activeOrgId ?? undefined,
+		isLoading,
 	});
 
 	useEffect(() => {
@@ -1829,7 +1738,8 @@ export const FabricDirectChat = forwardRef<
 						assistantMsg.content ||
 						(assistantMsg.errorMessage
 							? `Error: ${assistantMsg.errorMessage}`
-							: ""),
+							: (assistantMsg.pendingConfirmation?.message ??
+								"")),
 					timestamp: assistantMsg.timestamp.toISOString(),
 					toolCalls: assistantMsg.toolCalls?.map((tc) => ({
 						id: tc.id,
@@ -1982,7 +1892,8 @@ export const FabricDirectChat = forwardRef<
 				(lastAssistant.content ||
 					lastAssistant.streamStatus === "cancelled" ||
 					lastAssistant.streamStatus === "error" ||
-					lastAssistant.truncated)
+					lastAssistant.truncated ||
+					lastAssistant.pendingConfirmation)
 			) {
 				persistConversation(lastUser, lastAssistant);
 			}
@@ -3095,6 +3006,8 @@ export const FabricDirectChat = forwardRef<
 	const rowActions = useStableHandlers({
 		confirmExecution: approveConfirmation,
 		declineExecution: declineConfirmation,
+		confirmWorkflowExecution: handleConfirmExecution,
+		declineWorkflowExecution: handleDeclineExecution,
 		createApprovedTasks: handleCreateApprovedTasks,
 		saveProjectUpdateDraft: handleSaveProjectUpdateDraft,
 		startImplementationSession: handleStartImplementationSession,
@@ -3112,6 +3025,7 @@ export const FabricDirectChat = forwardRef<
 	const messageRowDeps = [
 		isLoading,
 		pendingConfirmation,
+		workflowConfirmation,
 		pendingTaskDraft,
 		pendingProjectUpdateDraft,
 		pendingImplementationSession,
@@ -3122,6 +3036,7 @@ export const FabricDirectChat = forwardRef<
 		isStartingImplementationSession,
 		isSavingSkillDraft,
 		isSavingAutomationTag,
+		workflowConfirmationDisabled,
 		activeFrame?.frameId,
 		showTrajectorySteps,
 		userAvatarSrc,
@@ -3337,6 +3252,16 @@ export const FabricDirectChat = forwardRef<
 														organizationId
 													}
 												/>
+												{inactiveProviderNote && (
+													<span
+														title={
+															inactiveProviderNote
+														}
+														className="text-muted-foreground"
+													>
+														not applied
+													</span>
+												)}
 												{selectedAgent && (
 													<button
 														type="button"
@@ -4204,6 +4129,14 @@ export const FabricDirectChat = forwardRef<
 															))}
 
 														{message.role ===
+															"assistant" && (
+															<AnsweredByModel
+																model={
+																	message.model
+																}
+															/>
+														)}
+														{message.role ===
 															"assistant" &&
 															message.apiBilling && (
 																<ApiBillingNotice
@@ -4860,6 +4793,23 @@ export const FabricDirectChat = forwardRef<
 																	}
 																/>
 															)}
+														{workflowConfirmation?.messageId ===
+															message.id && (
+															<WorkflowConfirmationCard
+																confirmation={
+																	workflowConfirmation
+																}
+																disabled={
+																	workflowConfirmationDisabled
+																}
+																onConfirm={
+																	rowActions.confirmWorkflowExecution
+																}
+																onDecline={
+																	rowActions.declineWorkflowExecution
+																}
+															/>
+														)}
 													</MessageContent>
 												</Message>
 												{captionNames.length > 0 && (

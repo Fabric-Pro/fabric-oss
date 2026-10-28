@@ -20,6 +20,7 @@ describe("coding execution adapter registry", () => {
 	});
 
 	it("describes the Fabric-managed background adapter as not requiring a repo root", () => {
+		vi.stubEnv("FABRIC_AGENTS_EXECUTION_BRIDGE_ENABLED", "true");
 		expect(
 			getCodingExecutionAdapterDefinition("BACKGROUND_AGENTS"),
 		).toMatchObject({

@@ -6,10 +6,15 @@
  * to create and manage coding execution sessions.
  */
 
+import { db } from "@repo/database";
+import { ApplicationFailure } from "@temporalio/activity";
+import { isFabricAgentsBridgeEnabled } from "../../lib/coding-execution/bridge-rollout";
 import { repoForgeFromUrl } from "../../lib/repo-forge";
 import { getBackgroundAgentsProvider } from "./get-background-provider";
+import { authorizeWeaveRuntime } from "./runtime-authorization";
 
 export interface CreateSandboxInput {
+	fabricAgentsBridgeEnabled?: boolean;
 	userId: string;
 	organizationId: string | null;
 	repoUrl: string;
@@ -91,16 +96,33 @@ export async function createSandboxActivity(
 	}
 
 	const { repoOwner, repoName } = parseRepoUrl(input.repoUrl);
+	const { execution, workflow } = await authorizeWeaveRuntime(input);
+	if (
+		(input.fabricAgentsBridgeEnabled === true) !==
+		isFabricAgentsBridgeEnabled()
+	) {
+		throw ApplicationFailure.nonRetryable(
+			"API and worker Fabric bridge rollout settings differ; no sandbox was created",
+			"VALIDATION_ERROR",
+		);
+	}
 	const provider = getProvider();
 
 	const { sessionId } = await provider.createSession({
 		repoOwner,
 		repoName,
 		title: "Weave execution session",
+		codingRunId: `weave:${execution.id}:sandbox`,
+		workflowId: workflow.workflowId,
+		organizationId: input.organizationId ?? undefined,
 		branch: input.branch,
 		userId: input.userId,
 	});
 
+	await db.weaveExecution.update({
+		where: { id: execution.id },
+		data: { sandboxSessionId: sessionId },
+	});
 	return { sessionId, workDir: "" };
 }
 

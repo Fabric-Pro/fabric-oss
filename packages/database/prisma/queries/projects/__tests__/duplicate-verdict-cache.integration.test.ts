@@ -9,8 +9,10 @@
  * row (every link written before the hash columns existed carries NULL
  * hashes). If that PENDING row is not stamped, the pair is re-selected and
  * re-billed on every scan forever and permanently occupies candidate-cap
- * slots. The status must be preserved either way: a PENDING pair stays flagged
- * for the user, a DISMISSED/RESOLVED pair is never resurrected.
+ * slots. A distinct verdict CLEARS an unreviewed PENDING flag (a deliberate,
+ * owner-approved change: such a flag is a stale false positive under the
+ * current logic), while a DISMISSED/RESOLVED pair — a human decision — keeps
+ * its status and display fields and is never resurrected.
  *
  * No mocks — hits the live Postgres via the shared Prisma singleton.
  * Self-skips when DATABASE_URL is unset or the CI placeholder.
@@ -96,7 +98,7 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 			return { projectId: project.id, storyAId, storyBId };
 		}
 
-		it("stamps hashes onto a pre-existing PENDING row (NULL hashes) so it is not re-verified forever", async () => {
+		it("stamps hashes onto a pre-existing PENDING row (NULL hashes) and clears the stale flag", async () => {
 			const { projectId, storyAId, storyBId } =
 				await seedProjectWithPair();
 			// A pre-deploy PENDING link: no verified hashes.
@@ -127,7 +129,7 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 				projectId,
 				storyAId,
 				storyBId,
-				similarity: 0.82,
+				similarity: 0.64,
 				confidence: 0.55,
 				reasoning: "actually different on re-read",
 				contentHashA: HASH_A,
@@ -140,10 +142,16 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 			// Hashes stamped → excluded from the next scan (the fix).
 			expect(row?.verifiedContentHashA).toBe(HASH_A);
 			expect(row?.verifiedContentHashB).toBe(HASH_B);
-			// Status preserved — the user still sees the flag, we don't un-flag.
-			expect(row?.status).toBe("PENDING");
-			// The user-facing display fields are NOT overwritten on a PENDING row.
-			expect(row?.confidence).toBe(0.9);
+			// Deliberate, owner-approved behaviour change: an unreviewed PENDING
+			// flag that re-verification judges distinct is a stale false
+			// positive, so it is cleared rather than left for someone to review.
+			// It cannot flap: re-verification only happens when a side's text
+			// changes or the detection version moves.
+			expect(row?.status).toBe("NOT_DUPLICATE");
+			// The display fields now describe the verdict that cleared it.
+			expect(row?.similarity).toBe(0.64);
+			expect(row?.confidence).toBe(0.55);
+			expect(row?.reasoning).toBe("actually different on re-read");
 
 			expect(
 				await listVerdictValidPairKeys(projectId, currentHashes),
@@ -180,34 +188,42 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 			).toContain(`${storyAId}:${storyBId}`);
 		});
 
-		it("never resurrects a DISMISSED row (stamps its hash, keeps it DISMISSED)", async () => {
-			const { projectId, storyAId, storyBId } =
-				await seedProjectWithPair();
-			await db.storyDuplicateLink.create({
-				data: {
+		it.each(["DISMISSED", "RESOLVED"] as const)(
+			"never rewrites a %s row — a human decision (stamps its hash only)",
+			async (status) => {
+				const { projectId, storyAId, storyBId } =
+					await seedProjectWithPair();
+				await db.storyDuplicateLink.create({
+					data: {
+						projectId,
+						storyAId,
+						storyBId,
+						similarity: 0.8,
+						confidence: 0.9,
+						reasoning: "what the reviewer saw",
+						status,
+					},
+				});
+				await recordDistinctVerdict({
 					projectId,
 					storyAId,
 					storyBId,
-					similarity: 0.8,
-					confidence: 0.9,
-					status: "DISMISSED",
-				},
-			});
-			await recordDistinctVerdict({
-				projectId,
-				storyAId,
-				storyBId,
-				similarity: 0.8,
-				confidence: 0.9,
-				contentHashA: HASH_A,
-				contentHashB: HASH_B,
-			});
-			const row = await db.storyDuplicateLink.findUnique({
-				where: { storyAId_storyBId: { storyAId, storyBId } },
-			});
-			expect(row?.status).toBe("DISMISSED");
-			expect(row?.verifiedContentHashA).toBe(HASH_A);
-		});
+					similarity: 0.6,
+					confidence: 0.7,
+					reasoning: "re-verified distinct",
+					contentHashA: HASH_A,
+					contentHashB: HASH_B,
+				});
+				const row = await db.storyDuplicateLink.findUnique({
+					where: { storyAId_storyBId: { storyAId, storyBId } },
+				});
+				expect(row?.status).toBe(status);
+				expect(row?.similarity).toBe(0.8);
+				expect(row?.confidence).toBe(0.9);
+				expect(row?.reasoning).toBe("what the reviewer saw");
+				expect(row?.verifiedContentHashA).toBe(HASH_A);
+			},
+		);
 
 		it("a stale-hash PENDING pair (text edited) is NOT verdict-valid until re-stamped", async () => {
 			const { projectId, storyAId, storyBId } =

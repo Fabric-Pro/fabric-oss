@@ -34,13 +34,16 @@ function errorMessage(error: unknown, fallback: string): string {
 
 /**
  * Turns the member's own plan into one of the organization's shared accounts,
- * without a new sign-in (Fizzy #2770 I1). Shown only when the server says the
- * organization takes shared plans from its members.
+ * without a new sign-in (Fizzy #2770 I1). Shown when the server says the
+ * organization takes shared plans from its members, and disabled with the
+ * reason while only an owner's acceptance of the pooling terms is missing.
  */
 export function ChatgptPlanShareAction({
 	organizationName,
+	needsTerms = false,
 }: {
 	organizationName: string;
+	needsTerms?: boolean;
 }) {
 	const t = useTranslations("settings.chatgptPlan.share");
 	const tPlan = useTranslations("settings.chatgptPlan");
@@ -57,25 +60,38 @@ export function ChatgptPlanShareAction({
 			className="flex flex-col gap-3 border-border border-t pt-4 sm:flex-row sm:items-center sm:justify-between"
 			data-testid="chatgpt-plan-share"
 		>
-			<p className="text-muted-foreground text-sm">
-				{t("description", { organization: organizationName })}
-			</p>
-			<Tooltip>
-				<TooltipTrigger asChild>
-					<Button
-						autoLoading={false}
-						onClick={() => setOpen(true)}
-						size="sm"
-						type="button"
-						variant="outline"
-					>
-						{t("action")}
-					</Button>
-				</TooltipTrigger>
-				<TooltipContent className="max-w-xs">
-					{t("actionTooltip", { organization: organizationName })}
-				</TooltipContent>
-			</Tooltip>
+			<div className="space-y-1 text-sm">
+				<p className="text-muted-foreground">
+					{t("description", { organization: organizationName })}
+				</p>
+				{needsTerms ? (
+					<p data-testid="chatgpt-plan-share-needs-terms">
+						{t("needsTerms", { organization: organizationName })}
+					</p>
+				) : null}
+			</div>
+			{needsTerms ? (
+				<Button disabled size="sm" type="button" variant="outline">
+					{t("action")}
+				</Button>
+			) : (
+				<Tooltip>
+					<TooltipTrigger asChild>
+						<Button
+							autoLoading={false}
+							onClick={() => setOpen(true)}
+							size="sm"
+							type="button"
+							variant="outline"
+						>
+							{t("action")}
+						</Button>
+					</TooltipTrigger>
+					<TooltipContent className="max-w-xs">
+						{t("actionTooltip", { organization: organizationName })}
+					</TooltipContent>
+				</Tooltip>
+			)}
 			<AlertDialog onOpenChange={setOpen} open={open}>
 				<AlertDialogContent>
 					<AlertDialogHeader>

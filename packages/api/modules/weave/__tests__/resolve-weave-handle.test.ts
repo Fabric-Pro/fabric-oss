@@ -15,30 +15,50 @@ import {
 	resolveWeaveHandle,
 } from "../lib/temporal-handle";
 
-const { handlers, mockDb, mockGetTemporalClient, workflowGetHandle, signal } =
-	vi.hoisted(() => {
-		const handlers: Record<string, (...args: unknown[]) => unknown> = {};
-		const mockDb = {
-			weaveExecution: { findFirst: vi.fn(), update: vi.fn() },
-			weavePlan: { updateMany: vi.fn(async () => ({ count: 1 })) },
-			project: {
-				findUnique: vi.fn(async () => ({
-					repositoryUrl: "https://github.com/acme/repo",
-				})),
-			},
-		};
-		const signal = vi.fn();
-		const workflowGetHandle = vi.fn(() => ({ signal }));
-		const mockGetTemporalClient = vi.fn();
-		return {
-			handlers,
-			mockDb,
-			mockGetTemporalClient,
-			workflowGetHandle,
-			signal,
-		};
-	});
+const {
+	handlers,
+	mockDb,
+	mockGetTemporalClient,
+	workflowGetHandle,
+	signal,
+	query,
+	describeRun,
+	executeUpdate,
+} = vi.hoisted(() => {
+	const handlers: Record<string, (...args: unknown[]) => unknown> = {};
+	const mockDb = {
+		weaveExecution: { findFirst: vi.fn(), update: vi.fn() },
+		weavePlan: { updateMany: vi.fn(async () => ({ count: 1 })) },
+		project: {
+			findUnique: vi.fn(async () => ({
+				repositoryUrl: "https://github.com/acme/repo",
+			})),
+		},
+	};
+	const signal = vi.fn();
+	const query = vi.fn();
+	const describeRun = vi.fn();
+	const executeUpdate = vi.fn();
+	const workflowGetHandle = vi.fn(() => ({
+		signal,
+		query,
+		executeUpdate,
+		describe: describeRun,
+	}));
+	const mockGetTemporalClient = vi.fn();
+	return {
+		handlers,
+		mockDb,
+		mockGetTemporalClient,
+		workflowGetHandle,
+		signal,
+		query,
+		describeRun,
+		executeUpdate,
+	};
+});
 
+vi.mock("../../../lib/audit", () => ({ recordAuditFromRequest: vi.fn() }));
 vi.mock("@repo/database", () => ({ db: mockDb }));
 vi.mock("@repo/logs", () => ({
 	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -140,6 +160,10 @@ function getHandleCalls(): unknown[][] {
 }
 
 beforeEach(() => {
+	describeRun.mockResolvedValue({
+		memo: { approvalProtocol: 2 },
+		runId: "run-1",
+	});
 	vi.clearAllMocks();
 	mockDb.weaveExecution.update.mockResolvedValue({});
 	mockGetTemporalClient.mockResolvedValue({
@@ -296,17 +320,6 @@ describe("weave signal procedures — handle resolution", () => {
 		signalName: string;
 	}> = [
 		{
-			name: "signalApproval",
-			path: SIGNAL,
-			status: "CHECKPOINT",
-			input: {
-				executionId: "exec-1",
-				organizationId: null,
-				approved: true,
-			},
-			signalName: "orchestratorApproval",
-		},
-		{
 			name: "autoApproveAll",
 			path: AUTO_APPROVE,
 			status: "RUNNING",
@@ -359,7 +372,31 @@ describe("weave signal procedures — handle resolution", () => {
 			expect(getHandleCalls()).toEqual([[WORKFLOW_ID, "temporal-run-1"]]);
 		},
 	);
+});
 
+describe("weave approval acknowledgement", () => {
+	const input = {
+		executionId: "exec-1",
+		organizationId: "org-1",
+		approvalId: "approval-1",
+		approved: true,
+	};
+	beforeEach(() => {
+		mockDb.weaveExecution.findFirst.mockResolvedValue({
+			...executionRow({ runId: PENDING_RUN_ID }),
+			organizationId: "org-1",
+		});
+		query.mockResolvedValue({
+			approvalId: "approval-1",
+			requestId: "request-1",
+			runId: "run-1",
+		});
+		executeUpdate.mockResolvedValue({
+			accepted: true,
+			approvalId: "approval-1",
+			approved: true,
+		});
+	});
 	it("signalApproval ignores a caller-supplied runId and uses the stored row", async () => {
 		mockDb.weaveExecution.findFirst.mockResolvedValue(
 			executionRow({ runId: PENDING_RUN_ID, status: "CHECKPOINT" }),
@@ -368,7 +405,8 @@ describe("weave signal procedures — handle resolution", () => {
 		await handlers[SIGNAL]({
 			input: {
 				executionId: "exec-1",
-				organizationId: null,
+				organizationId: "org-1",
+				approvalId: "approval-1",
 				approved: true,
 				workflowId: "attacker-wf",
 				runId: "attacker-run",
@@ -376,26 +414,103 @@ describe("weave signal procedures — handle resolution", () => {
 			context,
 		});
 
-		expect(getHandleCalls()).toEqual([[WORKFLOW_ID]]);
+		expect(getHandleCalls()).toEqual([
+			[WORKFLOW_ID],
+			[WORKFLOW_ID, "run-1"],
+		]);
 	});
 
 	it("signalApproval surfaces a signal failure instead of reporting success", async () => {
 		mockDb.weaveExecution.findFirst.mockResolvedValue(
 			executionRow({ runId: PENDING_RUN_ID, status: "CHECKPOINT" }),
 		);
-		signal.mockRejectedValue(new Error("temporal unavailable"));
+		executeUpdate.mockRejectedValueOnce(new Error("temporal unavailable"));
 
 		const error = await expectORPCError(
 			handlers[SIGNAL]({
 				input: {
 					executionId: "exec-1",
-					organizationId: null,
+					organizationId: "org-1",
+					approvalId: "approval-1",
 					approved: true,
 				},
 				context,
 			}) as Promise<unknown>,
 			"INTERNAL_SERVER_ERROR",
 		);
-		expect(error.message).toContain("temporal unavailable");
+		expect(error.message).toContain("could not be confirmed");
+	});
+
+	it.each([undefined, "true"])(
+		"legacy Weave sends pending id regardless of switch %s",
+		async (flag) => {
+			vi.stubEnv("ORCHESTRATOR_APPROVAL_UPDATES_ENABLED", flag);
+			try {
+				describeRun.mockResolvedValue({ memo: {}, runId: "run-1" });
+				const result = await handlers[SIGNAL]({ input, context });
+				expect(result).toMatchObject({
+					message: "Signal sent: approved",
+				});
+				expect(signal).toHaveBeenCalledWith(
+					"approval",
+					expect.objectContaining({
+						approvalId: "approval-1",
+						approved: true,
+					}),
+				);
+				expect(executeUpdate).not.toHaveBeenCalled();
+			} finally {
+				vi.unstubAllEnvs();
+			}
+		},
+	);
+
+	it("accepts the staging Weave request without an approvalId for a legacy run", async () => {
+		describeRun.mockResolvedValue({ memo: {}, runId: "run-1" });
+		await handlers[SIGNAL]({
+			input: { ...input, approvalId: undefined },
+			context,
+		});
+		expect(signal).toHaveBeenCalledWith(
+			"approval",
+			expect.objectContaining({ approvalId: "approval-1" }),
+		);
+		expect(executeUpdate).not.toHaveBeenCalled();
+	});
+	it("pins the checkpoint run before sending a bound decision", async () => {
+		await handlers[SIGNAL]({ input, context });
+		expect(getHandleCalls()).toEqual([
+			[WORKFLOW_ID],
+			[WORKFLOW_ID, "run-1"],
+		]);
+		expect(executeUpdate).toHaveBeenCalledWith("decideApproval", {
+			args: [
+				expect.objectContaining({
+					approvalId: "approval-1",
+					requestId: "request-1",
+					runId: "run-1",
+					decidedBy: "user-1",
+					organizationId: "org-1",
+				}),
+			],
+		});
+		expect(signal).not.toHaveBeenCalled();
+	});
+	it("rejects a stale displayed checkpoint", async () => {
+		await expectORPCError(
+			handlers[SIGNAL]({
+				input: { ...input, approvalId: "old-approval" },
+				context,
+			}) as Promise<unknown>,
+			"CONFLICT",
+		);
+		expect(executeUpdate).not.toHaveBeenCalled();
+	});
+	it("surfaces a rejected workflow decision instead of reporting success", async () => {
+		executeUpdate.mockResolvedValue({ accepted: false, reason: "expired" });
+		await expectORPCError(
+			handlers[SIGNAL]({ input, context }) as Promise<unknown>,
+			"CONFLICT",
+		);
 	});
 });

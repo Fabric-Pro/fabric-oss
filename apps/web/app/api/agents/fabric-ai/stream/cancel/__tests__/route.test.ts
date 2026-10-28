@@ -1,396 +1,514 @@
-/**
- * Tests for Direct Chat Cancel Route
- *
- * Mirrors the orchestrator-temporal cancel route's surface (auth, rate-limit,
- * format validation, ownership-via-memo, already-terminated handling, happy
- * path). Spec section 9.3, Task 1.3.
- */
-
-import type { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// Hoist the mocks so the route module sees them at import time.
-const {
-	getSessionMock,
-	checkRateLimitMock,
-	getTemporalClientMock,
-	memberFindFirstMock,
-	workflowDescribeMock,
-	workflowCancelMock,
-	workflowGetHandleMock,
-} = vi.hoisted(() => ({
-	getSessionMock: vi.fn(),
-	checkRateLimitMock: vi.fn(),
-	getTemporalClientMock: vi.fn(),
-	memberFindFirstMock: vi.fn(),
-	workflowDescribeMock: vi.fn(),
-	workflowCancelMock: vi.fn(),
-	workflowGetHandleMock: vi.fn(),
+const mocks = vi.hoisted(() => ({
+	session: vi.fn(),
+	limit: vi.fn(),
+	describe: vi.fn(),
+	cancel: vi.fn(),
+	query: vi.fn(),
+	update: vi.fn(),
+	signal: vi.fn(),
+	handle: vi.fn(),
+	member: vi.fn(),
+	project: vi.fn(),
+	permission: vi.fn(),
+	audit: vi.fn(),
 }));
-
-vi.mock("@saas/auth/lib/server", () => ({
-	getSession: getSessionMock,
+vi.mock("@saas/auth/lib/server", () => ({ getSession: mocks.session }));
+vi.mock("@repo/api/lib/rate-limit", () => ({ checkRateLimit: mocks.limit }));
+vi.mock("@repo/api/lib/audit", () => ({ recordAuditFromRequest: mocks.audit }));
+vi.mock("@repo/api/lib/effective-project-permissions", () => ({
+	resolveEffectiveProjectPermissions: mocks.permission,
 }));
-
-vi.mock("@repo/api/lib/rate-limit", () => ({
-	checkRateLimit: checkRateLimitMock,
-}));
-
 vi.mock("@repo/database", () => ({
-	db: {
-		member: {
-			findFirst: memberFindFirstMock,
-		},
-	},
+	getConversationTurnOwnerForExecution: async () => null,
+	getConversationTurnForExecution: async () => null,
+	requestConversationTurnCancel: vi.fn(),
+	db: { member: { findFirst: mocks.member } },
+	hasProjectAccess: mocks.project,
+	hasOrganizationTie: async () => true,
 }));
-
 vi.mock("@repo/temporal", () => ({
-	getTemporalClient: getTemporalClientMock,
+	getTemporalClient: async () => ({ workflow: { getHandle: mocks.handle } }),
 }));
 
-// Import the route AFTER the mocks are registered.
-import { POST } from "../route";
+import { getAuthorizedChatRun } from "@saas/agents/lib/server/chat-run-control";
+import { POST as approve } from "../../../orchestrator-temporal/approve/route";
+import { POST as cancelOrchestrator } from "../../../orchestrator-temporal/cancel/route";
 
-const VALID_EXECUTION_ID = "direct-chat-550e8400-e29b-41d4-a716-446655440000";
-const USER_ID = "user_123";
-const OTHER_USER_ID = "user_456";
-const ORG_ID = "org_abc";
+import { POST as clarify } from "../../../orchestrator-temporal/clarify/route";
+import { POST as followUp } from "../../../orchestrator-temporal/follow-up/route";
+import { POST as cancelDirect } from "../route";
 
-function makeRequest(body: unknown): NextRequest {
-	// Only `request.json()` is called by the route, so a minimal stub is fine.
-	return {
-		json: async () => body,
-	} as unknown as NextRequest;
-}
-
-function allowRateLimit() {
-	checkRateLimitMock.mockResolvedValue({
-		allowed: true,
-		remaining: 9,
-		resetInSeconds: 60,
+const uuid = "550e8400-e29b-41d4-a716-446655440000";
+function request(body: unknown) {
+	return new Request("https://example.com/api/control", {
+		method: "POST",
+		body: JSON.stringify(body),
 	});
 }
+const memo = {
+	userId: "example-user",
+	organizationId: "example-org",
+	projectId: null,
+	approvalProtocol: 2,
+};
+const pending = {
+	approvalId: "approval-1",
+	requestId: "request-1",
+	runId: "run-1",
+	expiresAt: 9999999999999,
+};
 
-function defaultSession() {
-	return {
-		user: { id: USER_ID },
-		session: { activeOrganizationId: null },
-	};
-}
-
-function setupTemporalHandle(opts: {
-	describe?: () => unknown;
-	cancel?: () => unknown;
-}) {
-	workflowDescribeMock.mockImplementation(async () => {
-		if (!opts.describe) {
-			return { memo: { userId: USER_ID }, status: { name: "RUNNING" } };
-		}
-		return opts.describe();
+beforeEach(() => {
+	vi.resetAllMocks();
+	mocks.session.mockResolvedValue({
+		user: { id: memo.userId, email: "dev@example.com" },
+		session: { id: "session-1", activeOrganizationId: "example-org" },
 	});
-	workflowCancelMock.mockImplementation(async () => {
-		if (opts.cancel) {
-			return opts.cancel();
-		}
-		return undefined;
+	mocks.limit.mockResolvedValue({ allowed: true, resetInSeconds: 42 });
+	mocks.member.mockResolvedValue({ id: "member-1", role: "owner" });
+	mocks.project.mockResolvedValue(true);
+	mocks.permission.mockResolvedValue({
+		organizationId: memo.organizationId,
+		permissions: ["agent:execute"],
 	});
-	workflowGetHandleMock.mockReturnValue({
-		describe: workflowDescribeMock,
-		cancel: workflowCancelMock,
+	mocks.handle.mockReturnValue({
+		describe: mocks.describe,
+		cancel: mocks.cancel,
+		query: mocks.query,
+		executeUpdate: mocks.update,
+		signal: mocks.signal,
 	});
-	getTemporalClientMock.mockResolvedValue({
-		workflow: {
-			getHandle: workflowGetHandleMock,
-		},
-	});
-}
-
-describe("POST /api/agents/fabric-ai/stream/cancel", () => {
-	beforeEach(() => {
-		vi.clearAllMocks();
-	});
-
-	it("returns 401 when there is no session", async () => {
-		getSessionMock.mockResolvedValue(null);
-
-		const response = await POST(
-			makeRequest({ executionId: VALID_EXECUTION_ID }),
-		);
-
-		expect(response.status).toBe(401);
-		const body = await response.json();
-		expect(body).toEqual({ error: "Unauthorized" });
-		expect(checkRateLimitMock).not.toHaveBeenCalled();
-	});
-
-	it("returns 429 with Retry-After when the rate limit is exceeded", async () => {
-		getSessionMock.mockResolvedValue(defaultSession());
-		checkRateLimitMock.mockResolvedValue({
-			allowed: false,
-			remaining: 0,
-			resetInSeconds: 42,
-		});
-
-		const response = await POST(
-			makeRequest({ executionId: VALID_EXECUTION_ID }),
-		);
-
-		expect(response.status).toBe(429);
-		expect(response.headers.get("Retry-After")).toBe("42");
-		const body = await response.json();
-		expect(body).toMatchObject({
-			error: "Rate limit exceeded",
-			retryAfter: 42,
-		});
-		// 11th call within a minute is rejected without ever touching Temporal.
-		expect(getTemporalClientMock).not.toHaveBeenCalled();
-	});
-
-	it("uses the per-user rate-limit key", async () => {
-		getSessionMock.mockResolvedValue(defaultSession());
-		allowRateLimit();
-		setupTemporalHandle({});
-
-		await POST(makeRequest({ executionId: VALID_EXECUTION_ID }));
-
-		expect(checkRateLimitMock).toHaveBeenCalledWith(
-			`direct-chat:cancel:${USER_ID}`,
-			10,
-			60_000,
-		);
-	});
-
-	it("returns 400 when executionId is missing", async () => {
-		getSessionMock.mockResolvedValue(defaultSession());
-		allowRateLimit();
-
-		const response = await POST(makeRequest({}));
-
-		expect(response.status).toBe(400);
-		const body = await response.json();
-		expect(body).toEqual({ error: "executionId is required" });
-		expect(getTemporalClientMock).not.toHaveBeenCalled();
-	});
-
-	it("returns 400 when executionId is malformed", async () => {
-		getSessionMock.mockResolvedValue(defaultSession());
-		allowRateLimit();
-
-		const response = await POST(
-			makeRequest({ executionId: "orch-not-a-direct-chat-id" }),
-		);
-
-		expect(response.status).toBe(400);
-		const body = await response.json();
-		expect(body).toEqual({ error: "Invalid executionId format" });
-		expect(getTemporalClientMock).not.toHaveBeenCalled();
-	});
-
-	it("returns 403 when the workflow memo is missing entirely (fail-closed)", async () => {
-		getSessionMock.mockResolvedValue(defaultSession());
-		allowRateLimit();
-		setupTemporalHandle({
-			describe: () => ({
-				memo: undefined,
-				status: { name: "RUNNING" },
-			}),
-		});
-
-		const response = await POST(
-			makeRequest({ executionId: VALID_EXECUTION_ID }),
-		);
-
-		expect(response.status).toBe(403);
-		const body = await response.json();
-		expect(body).toMatchObject({
-			error: "Forbidden",
-		});
-		expect(body.message).toMatch(/missing tenant context/);
-		expect(workflowCancelMock).not.toHaveBeenCalled();
-	});
-
-	it("returns 403 when memo.userId is missing (fail-closed)", async () => {
-		getSessionMock.mockResolvedValue(defaultSession());
-		allowRateLimit();
-		setupTemporalHandle({
-			describe: () => ({
-				memo: { organizationId: ORG_ID },
-				status: { name: "RUNNING" },
-			}),
-		});
-
-		const response = await POST(
-			makeRequest({ executionId: VALID_EXECUTION_ID }),
-		);
-
-		expect(response.status).toBe(403);
-		expect(workflowCancelMock).not.toHaveBeenCalled();
-	});
-
-	it("returns 403 when memo.userId does not match the session user", async () => {
-		getSessionMock.mockResolvedValue(defaultSession());
-		allowRateLimit();
-		setupTemporalHandle({
-			describe: () => ({
-				memo: { userId: OTHER_USER_ID },
-				status: { name: "RUNNING" },
-			}),
-		});
-
-		const response = await POST(
-			makeRequest({ executionId: VALID_EXECUTION_ID }),
-		);
-
-		expect(response.status).toBe(403);
-		const body = await response.json();
-		expect(body).toMatchObject({
-			error: "Forbidden",
-			message: "You are not authorized to cancel this workflow",
-		});
-		expect(workflowCancelMock).not.toHaveBeenCalled();
-	});
-
-	it("returns 403 when memo.organizationId is set but the user is not a member", async () => {
-		getSessionMock.mockResolvedValue(defaultSession());
-		allowRateLimit();
-		setupTemporalHandle({
-			describe: () => ({
-				memo: { userId: USER_ID, organizationId: ORG_ID },
-				status: { name: "RUNNING" },
-			}),
-		});
-		memberFindFirstMock.mockResolvedValue(null);
-
-		const response = await POST(
-			makeRequest({ executionId: VALID_EXECUTION_ID }),
-		);
-
-		expect(response.status).toBe(403);
-		const body = await response.json();
-		expect(body).toMatchObject({
-			error: "Forbidden",
-			message: "You are not a member of this organization",
-		});
-		expect(memberFindFirstMock).toHaveBeenCalledWith({
-			where: { userId: USER_ID, organizationId: ORG_ID },
-		});
-		expect(workflowCancelMock).not.toHaveBeenCalled();
-	});
-
-	it("returns 200 with alreadyTerminated when the workflow is not RUNNING", async () => {
-		getSessionMock.mockResolvedValue(defaultSession());
-		allowRateLimit();
-		setupTemporalHandle({
-			describe: () => ({
-				memo: { userId: USER_ID },
-				status: { name: "COMPLETED" },
-			}),
-		});
-
-		const response = await POST(
-			makeRequest({ executionId: VALID_EXECUTION_ID }),
-		);
-
-		expect(response.status).toBe(200);
-		const body = await response.json();
-		expect(body).toMatchObject({
-			success: true,
-			executionId: VALID_EXECUTION_ID,
-			alreadyTerminated: true,
-		});
-		expect(body.message).toMatch(/completed/);
-		expect(workflowCancelMock).not.toHaveBeenCalled();
-	});
-
-	it("returns 200 with alreadyTerminated when describe throws (not found)", async () => {
-		getSessionMock.mockResolvedValue(defaultSession());
-		allowRateLimit();
-		setupTemporalHandle({
-			describe: () => {
-				throw new Error("workflow not found");
-			},
-		});
-
-		const response = await POST(
-			makeRequest({ executionId: VALID_EXECUTION_ID }),
-		);
-
-		expect(response.status).toBe(200);
-		const body = await response.json();
-		expect(body).toMatchObject({
-			success: true,
-			executionId: VALID_EXECUTION_ID,
-			alreadyTerminated: true,
-			message: "Workflow not found or already terminated",
-		});
-		expect(workflowCancelMock).not.toHaveBeenCalled();
-	});
-
-	it("cancels the workflow and emits the audit log on the happy path", async () => {
-		getSessionMock.mockResolvedValue(defaultSession());
-		allowRateLimit();
-		setupTemporalHandle({
-			describe: () => ({
-				memo: { userId: USER_ID },
-				status: { name: "RUNNING" },
-			}),
-		});
-
-		const consoleLogSpy = vi
-			.spyOn(console, "log")
-			.mockImplementation(() => {});
-
-		const response = await POST(
-			makeRequest({
-				executionId: VALID_EXECUTION_ID,
-				reason: "user_clicked_stop",
-			}),
-		);
-
-		expect(response.status).toBe(200);
-		const body = await response.json();
-		expect(body).toEqual({
-			success: true,
-			executionId: VALID_EXECUTION_ID,
-			message: "Workflow cancelled",
-		});
-		expect(workflowCancelMock).toHaveBeenCalledTimes(1);
-
-		const auditLogCall = consoleLogSpy.mock.calls.find((call) =>
-			String(call[0]).startsWith("[DirectChat:Audit]"),
-		);
-		expect(auditLogCall).toBeDefined();
-		// The request-derived fields travel as a structured argument, never
-		// interpolated into the message string (CodeQL js/log-injection).
-		expect(auditLogCall?.[0]).not.toContain(VALID_EXECUTION_ID);
-		expect(auditLogCall?.[1]).toMatchObject({
-			executionId: VALID_EXECUTION_ID,
-			cancelledBy: USER_ID,
-			reason: "user_clicked_stop",
-		});
-
-		consoleLogSpy.mockRestore();
-	});
-
-	it("allows org-scoped cancellation when the user is a member", async () => {
-		getSessionMock.mockResolvedValue(defaultSession());
-		allowRateLimit();
-		setupTemporalHandle({
-			describe: () => ({
-				memo: { userId: USER_ID, organizationId: ORG_ID },
-				status: { name: "RUNNING" },
-			}),
-		});
-		memberFindFirstMock.mockResolvedValue({ id: "member_1" });
-
-		const response = await POST(
-			makeRequest({ executionId: VALID_EXECUTION_ID }),
-		);
-
-		expect(response.status).toBe(200);
-		expect(memberFindFirstMock).toHaveBeenCalledWith({
-			where: { userId: USER_ID, organizationId: ORG_ID },
-		});
-		expect(workflowCancelMock).toHaveBeenCalledTimes(1);
+	mocks.query.mockResolvedValue(pending);
+	mocks.update.mockResolvedValue({
+		accepted: true,
+		approvalId: pending.approvalId,
+		approved: true,
 	});
 });
+
+for (const control of [
+	{
+		name: "direct cancel",
+		post: cancelDirect,
+		executionId: `direct-chat-${uuid}`,
+		type: "directChatWorkflow",
+		body: {},
+	},
+	{
+		name: "orchestrator cancel",
+		post: cancelOrchestrator,
+		executionId: `orch-${uuid}`,
+		type: "orchestratorExecutionWorkflow",
+		body: {},
+	},
+	{
+		name: "orchestrator approval",
+		post: approve,
+		executionId: `orch-${uuid}`,
+		type: "orchestratorExecutionWorkflow",
+		body: { approvalId: pending.approvalId, approved: true },
+	},
+]) {
+	describe(control.name, () => {
+		const description = {
+			memo,
+			runId: "run-1",
+			type: control.type,
+			status: { name: "RUNNING" },
+		};
+		const run = (extra = {}) =>
+			control.post(
+				request({
+					executionId: control.executionId,
+					...control.body,
+					...extra,
+				}),
+			);
+		beforeEach(() => {
+			mocks.describe.mockResolvedValue(description);
+		});
+		it("requires authentication", async () => {
+			mocks.session.mockResolvedValue(null);
+			expect((await run()).status).toBe(401);
+			expect(mocks.handle).not.toHaveBeenCalled();
+		});
+		it("rate limits mutations", async () => {
+			mocks.limit.mockResolvedValue({
+				allowed: false,
+				resetInSeconds: 42,
+			});
+			const response = await run();
+			expect(response.status).toBe(429);
+			expect(response.headers.get("Retry-After")).toBe("42");
+			expect(mocks.handle).not.toHaveBeenCalled();
+		});
+		it.each([
+			null,
+			{},
+			{ userId: memo.userId },
+			{ ...memo, userId: "another-user" },
+			{ ...memo, organizationId: "" },
+		])("fails closed for ownership metadata %j", async (value) => {
+			mocks.describe.mockResolvedValue({ ...description, memo: value });
+			expect((await run()).status).toBe(403);
+			expect(mocks.cancel).not.toHaveBeenCalled();
+			expect(mocks.update).not.toHaveBeenCalled();
+		});
+		it("rejects removed membership", async () => {
+			mocks.member.mockResolvedValue(null);
+			expect((await run()).status).toBe(403);
+		});
+		it("rejects removed project access", async () => {
+			mocks.describe.mockResolvedValue({
+				...description,
+				memo: { ...memo, projectId: "project-1" },
+			});
+			mocks.project.mockResolvedValue(false);
+			expect((await run()).status).toBe(403);
+			expect(mocks.project).toHaveBeenCalledWith(
+				"project-1",
+				memo.userId,
+				memo.organizationId,
+			);
+		});
+		it("rejects the wrong workflow type", async () => {
+			mocks.describe.mockResolvedValue({
+				...description,
+				type: "anotherWorkflow",
+			});
+			expect((await run()).status).toBe(403);
+		});
+		it.each([123, "orch-bad", `orch-${"-".repeat(36)}`])(
+			"rejects invalid execution id %s",
+			async (executionId) => {
+				expect((await run({ executionId })).status).toBe(400);
+				expect(mocks.handle).not.toHaveBeenCalled();
+			},
+		);
+		it("does not mistake service failures for a completed command", async () => {
+			mocks.describe.mockRejectedValue(
+				new Error("private-provider-detail"),
+			);
+			const response = await run();
+			expect(response.status).toBe(503);
+			expect(await response.text()).not.toContain(
+				"private-provider-detail",
+			);
+			expect(mocks.audit).not.toHaveBeenCalled();
+		});
+		it("pins the authorized run and emits a content-free audit event", async () => {
+			expect((await run()).status).toBe(200);
+			expect(mocks.handle).toHaveBeenLastCalledWith(
+				control.executionId,
+				"run-1",
+			);
+			expect(mocks.audit).toHaveBeenCalledWith(
+				expect.anything(),
+				expect.objectContaining({
+					organizationId: memo.organizationId,
+					resource: { type: "chat_run", id: control.executionId },
+				}),
+			);
+		});
+	});
+}
+
+describe("approval acknowledgements", () => {
+	beforeEach(() => {
+		mocks.describe.mockResolvedValue({
+			memo,
+			runId: "run-1",
+			type: "orchestratorExecutionWorkflow",
+			status: { name: "RUNNING" },
+		});
+	});
+	const run = (extra = {}) =>
+		approve(
+			request({
+				executionId: `orch-${uuid}`,
+				approvalId: pending.approvalId,
+				approved: true,
+				...extra,
+			}),
+		);
+	it("recovers legacy project provenance and rejects revoked access", async () => {
+		mocks.describe.mockResolvedValue({
+			memo: {
+				userId: memo.userId,
+				organizationId: memo.organizationId,
+				approvalProtocol: 2,
+			},
+			runId: "run-1",
+			type: "orchestratorExecutionWorkflow",
+			status: { name: "RUNNING" },
+		});
+		mocks.query.mockImplementation(async (name) =>
+			name === "chatRunContext"
+				? { ...memo, projectId: "project-1" }
+				: pending,
+		);
+		mocks.project.mockResolvedValue(false);
+		expect((await run()).status).toBe(403);
+		expect(mocks.project).toHaveBeenCalledWith(
+			"project-1",
+			memo.userId,
+			memo.organizationId,
+		);
+		expect(mocks.update).not.toHaveBeenCalled();
+	});
+	it("rejects legacy context that cannot prove project provenance", async () => {
+		mocks.describe.mockResolvedValue({
+			memo: {
+				userId: memo.userId,
+				organizationId: memo.organizationId,
+				approvalProtocol: 2,
+			},
+			runId: "run-1",
+			type: "orchestratorExecutionWorkflow",
+			status: { name: "RUNNING" },
+		});
+		mocks.query.mockResolvedValue({
+			userId: memo.userId,
+			organizationId: memo.organizationId,
+		});
+		expect((await run()).status).toBe(403);
+		expect(mocks.update).not.toHaveBeenCalled();
+	});
+	it("requires organization membership as staging did", async () => {
+		mocks.describe.mockResolvedValue({
+			memo: { ...memo, projectId: "project-1" },
+			runId: "run-1",
+			type: "orchestratorExecutionWorkflow",
+			status: { name: "RUNNING" },
+		});
+		mocks.member.mockResolvedValue(null);
+		expect((await run()).status).toBe(403);
+		expect(mocks.update).not.toHaveBeenCalled();
+	});
+	it("denies a project that belongs to a different tenant", async () => {
+		mocks.describe.mockResolvedValue({
+			memo: { ...memo, projectId: "project-1" },
+			runId: "run-1",
+			type: "orchestratorExecutionWorkflow",
+			status: { name: "RUNNING" },
+		});
+		mocks.permission.mockResolvedValue({
+			organizationId: "other-org",
+			permissions: ["agent:execute"],
+		});
+		expect((await run()).status).toBe(403);
+		expect(mocks.update).not.toHaveBeenCalled();
+	});
+	it("requires the displayed checkpoint id", async () => {
+		expect((await run({ approvalId: undefined })).status).toBe(400);
+	});
+	it("rejects stale cards before mutation", async () => {
+		expect((await run({ approvalId: "previous-approval" })).status).toBe(
+			409,
+		);
+		expect(mocks.update).not.toHaveBeenCalled();
+	});
+	it("rejects missing bound metadata for protocol-2 workflows", async () => {
+		mocks.query.mockResolvedValue({ approvalId: pending.approvalId });
+		expect((await run()).status).toBe(409);
+		expect(mocks.update).not.toHaveBeenCalled();
+	});
+	it.each([false, 0, null, "x".repeat(10001)])(
+		"validates feedback %j",
+		async (feedback) => {
+			expect((await run({ feedback })).status).toBe(400);
+		},
+	);
+	it.each(["expired", "stale", "decided"])(
+		"rejects %s decisions atomically",
+		async (reason) => {
+			mocks.update.mockResolvedValue({ accepted: false, reason });
+			expect((await run()).status).toBe(409);
+			expect(mocks.audit).not.toHaveBeenCalled();
+		},
+	);
+	it("does not report an ambiguous update as accepted", async () => {
+		mocks.update.mockRejectedValue(new Error("timeout"));
+		expect((await run()).status).toBe(503);
+	});
+	it("permits viewer approvals as staging did", async () => {
+		mocks.member.mockResolvedValue({ id: "member-1", role: "viewer" });
+		expect((await run()).status).toBe(200);
+		expect(mocks.update).toHaveBeenCalledOnce();
+	});
+	it("allows a project viewer with live access", async () => {
+		mocks.describe.mockResolvedValue({
+			memo: { ...memo, projectId: "project-1" },
+			runId: "run-1",
+			type: "orchestratorExecutionWorkflow",
+			status: { name: "RUNNING" },
+		});
+		mocks.permission.mockResolvedValue({
+			organizationId: memo.organizationId,
+			permissions: [],
+		});
+		expect((await run()).status).toBe(200);
+	});
+	it("sends server-resolved identity and exact pending request", async () => {
+		await run({
+			decidedBy: "attacker",
+			organizationId: "other-org",
+			requestId: "other-request",
+		});
+		expect(mocks.update).toHaveBeenCalledWith("decideApproval", {
+			args: [
+				{
+					...pending,
+					expiresAt: undefined,
+					organizationId: memo.organizationId,
+					decidedBy: memo.userId,
+					approved: true,
+					feedback: undefined,
+				},
+			],
+		});
+	});
+});
+
+it.each([undefined, "true"])(
+	"legacy approvals ignore switch %s and bound query metadata",
+	async (flag) => {
+		vi.stubEnv("ORCHESTRATOR_APPROVAL_UPDATES_ENABLED", flag);
+		mocks.describe.mockResolvedValue({
+			memo: { userId: memo.userId, organizationId: memo.organizationId },
+			type: "orchestratorExecutionWorkflow",
+			runId: "run-1",
+			status: { name: "RUNNING" },
+		});
+		mocks.query.mockImplementation(async (name) => {
+			if (name === "chatRunContext") {
+				throw new Error("must not query new handler");
+			}
+			return pending;
+		});
+		const response = await approve(
+			request({
+				executionId: `orch-${uuid}`,
+				approvalId: pending.approvalId,
+				approved: true,
+			}),
+		);
+		expect(response.status).toBe(200);
+		expect(mocks.signal).toHaveBeenCalledWith(
+			"approval",
+			expect.objectContaining({
+				approvalId: pending.approvalId,
+				approved: true,
+			}),
+		);
+		expect(mocks.update).not.toHaveBeenCalled();
+		expect(mocks.query).not.toHaveBeenCalledWith("chatRunContext");
+		vi.unstubAllEnvs();
+	},
+);
+it.each(["direct", "orchestrator"] as const)(
+	"cancels legacy %s without querying new handlers",
+	async (engine) => {
+		mocks.describe.mockResolvedValue({
+			memo: { userId: memo.userId, organizationId: memo.organizationId },
+			type:
+				engine === "direct"
+					? "directChatWorkflow"
+					: "orchestratorExecutionWorkflow",
+			runId: "run-1",
+			status: { name: "RUNNING" },
+		});
+		mocks.query.mockRejectedValue(new Error("must not query"));
+		const response = await (engine === "direct"
+			? cancelDirect
+			: cancelOrchestrator)(
+			request({
+				executionId: `${engine === "direct" ? "direct-chat" : "orch"}-${uuid}`,
+			}),
+		);
+		expect(response.status).toBe(200);
+		expect(mocks.query).not.toHaveBeenCalled();
+		expect(mocks.cancel).toHaveBeenCalledOnce();
+	},
+);
+it("does not fall back when a protocol-2 Update fails", async () => {
+	mocks.describe.mockResolvedValue({
+		memo,
+		type: "orchestratorExecutionWorkflow",
+		runId: "run-1",
+		status: { name: "RUNNING" },
+	});
+	mocks.update.mockRejectedValue(
+		new Error("No registered handler for update: decideApproval"),
+	);
+	expect(
+		(
+			await approve(
+				request({
+					executionId: `orch-${uuid}`,
+					approvalId: pending.approvalId,
+					approved: true,
+				}),
+			)
+		).status,
+	).toBe(503);
+	expect(mocks.signal).not.toHaveBeenCalled();
+});
+
+it.each([
+	["clarify", clarify, { answer: "Example" }],
+	["follow-up", followUp, { message: "Example" }],
+] as const)(
+	"legacy %s uses only staging handlers",
+	async (_name, post, body) => {
+		mocks.describe.mockResolvedValue({
+			memo: { userId: memo.userId, organizationId: memo.organizationId },
+			type: "orchestratorExecutionWorkflow",
+			runId: "run-1",
+			status: { name: "RUNNING" },
+		});
+		const response = await post(
+			request({ executionId: `orch-${uuid}`, ...body }),
+		);
+		expect(response.status).toBe(200);
+		expect(mocks.query).not.toHaveBeenCalled();
+		expect(mocks.update).not.toHaveBeenCalled();
+	},
+);
+it("legacy status reads use the organization tie without querying new handlers", async () => {
+	mocks.describe.mockResolvedValue({
+		memo: { userId: memo.userId, organizationId: memo.organizationId },
+		type: "orchestratorExecutionWorkflow",
+		runId: "run-1",
+		status: { name: "RUNNING" },
+	});
+	mocks.member.mockResolvedValue(null);
+	mocks.query.mockResolvedValue(null);
+	await getAuthorizedChatRun({
+		executionId: `orch-${uuid}`,
+		userId: memo.userId,
+		engine: "orchestrator",
+		action: "observe",
+	});
+	expect(mocks.query).not.toHaveBeenCalledWith("chatRunContext");
+});
+it.each(["observe", "reattach", "approve", "cancel"] as const)(
+	"legacy authorization for %s does not query workflow context",
+	async (action) => {
+		mocks.describe.mockResolvedValue({
+			memo: { userId: memo.userId, organizationId: memo.organizationId },
+			type: "orchestratorExecutionWorkflow",
+			runId: "run-1",
+			status: { name: "RUNNING" },
+		});
+		await getAuthorizedChatRun({
+			executionId: `orch-${uuid}`,
+			userId: memo.userId,
+			engine: "orchestrator",
+			action,
+		});
+		expect(mocks.query).not.toHaveBeenCalled();
+	},
+);

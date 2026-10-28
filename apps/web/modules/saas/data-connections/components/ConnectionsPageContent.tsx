@@ -23,7 +23,7 @@ import { Input } from "@ui/components/input";
 import { cn } from "@ui/lib";
 import { ChevronDown, Search } from "lucide-react";
 import Link from "next/link";
-import { type ReactNode, useMemo, useRef, useState } from "react";
+import { Fragment, type ReactNode, useMemo, useRef, useState } from "react";
 import { useConnections } from "../hooks/useConnections";
 import { useProviderHealth } from "../hooks/useProviderHealth";
 import {
@@ -183,6 +183,8 @@ interface ConnectionsPageContentProps {
 	 * screen share one line.
 	 */
 	toolbarStart?: ReactNode;
+	/** Rendered under the toolbar, above the catalogue: the MCP tab's own servers. */
+	beforeCatalog?: ReactNode;
 	requestConnectionEnabled?: boolean;
 }
 
@@ -191,6 +193,7 @@ export function ConnectionsPageContent({
 	basePath = settingsBasePath,
 	apiKeysHref,
 	toolbarStart,
+	beforeCatalog,
 	view = "all",
 	requestConnectionEnabled = false,
 }: ConnectionsPageContentProps) {
@@ -478,18 +481,30 @@ export function ConnectionsPageContent({
 		statusFilter,
 	]);
 
+	// Same key in every branch, so the slot isn't remounted when loading
+	// finishes (that would close its dialogs and drop `?server=`).
+	const catalogSlot = (
+		<Fragment key="before-catalog">{beforeCatalog}</Fragment>
+	);
+
 	if (isLoading) {
 		return (
-			<div className="py-12 text-sm text-muted-foreground">
-				Loading connections…
+			<div className="space-y-5">
+				{catalogSlot}
+				<div className="py-12 text-sm text-muted-foreground">
+					Loading connections…
+				</div>
 			</div>
 		);
 	}
 
 	if (error) {
 		return (
-			<div className="py-12 text-sm text-destructive">
-				Failed to load connections.
+			<div className="space-y-5">
+				{catalogSlot}
+				<div className="py-12 text-sm text-destructive">
+					Failed to load connections.
+				</div>
 			</div>
 		);
 	}
@@ -537,6 +552,8 @@ export function ConnectionsPageContent({
 					</DropdownMenu>
 				</div>
 			</div>
+
+			{catalogSlot}
 
 			{/* Filters: one row. Search grows; the capability and status
 			    switches sit beside it and wrap under it on narrow screens. */}

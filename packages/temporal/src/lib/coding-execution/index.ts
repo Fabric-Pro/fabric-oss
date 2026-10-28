@@ -49,15 +49,19 @@ export {
 	env,
 	getBackgroundAgentsSecret,
 	getBackgroundAgentsUrl,
+	getFabricAgentsDefaultConnection,
+	getFabricAgentsDefaultModel,
 } from "./env";
 // Error types
 export {
 	AuthError,
+	InputRequiredError,
 	NetworkError,
 	PortUnavailableError,
 	ProviderError,
 	type ProviderErrorCode,
 	RateLimitError,
+	RecoveryRequiredError,
 	RuntimeNotFoundError,
 	SessionValidationError,
 	TimeoutError,

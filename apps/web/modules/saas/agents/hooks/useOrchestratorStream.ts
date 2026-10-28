@@ -11,6 +11,7 @@
 import type {
 	ExecutionMode,
 	MissingIntegration,
+	OrchestratorWorkflowOutput,
 	RequiredConnection,
 	TaskPlan,
 	TaskStep,
@@ -29,6 +30,7 @@ import {
 	approvalSendResult,
 } from "../lib/approval-response";
 import { emitCancelEvent } from "../lib/cancel-telemetry";
+import { ChatStreamProtocolError } from "../lib/chat-stream-protocol";
 import {
 	type ChatTurnTruncation,
 	parseTurnTruncation,
@@ -39,8 +41,15 @@ import {
 	readChatGptPlanApiBilling,
 } from "../lib/chatgpt-plan-api-billing";
 import { formatClarificationTurn } from "../lib/clarification-turns";
+import { readPersistedModel } from "../lib/direct-chat-history";
 import { settleUnfinishedToolCalls } from "../lib/direct-chat-turns";
+import {
+	type OrchestratorStreamEvent,
+	parseOrchestratorStreamEvent,
+	toTaskPlan,
+} from "../lib/orchestrator-stream-protocol";
 import { executionModeUsesTurns } from "../lib/orchestrator-turn-modes";
+import { readChatEventStream } from "../lib/read-chat-event-stream";
 import {
 	parseTurnBudgetStop,
 	type TurnBudgetStop,
@@ -279,6 +288,7 @@ export interface OrchestratorStreamState {
 			stepId?: string;
 		};
 	} | null;
+	approvalHistory?: OrchestratorWorkflowOutput["approvalHistory"];
 	pendingApproval: {
 		approvalId?: string;
 		stepId: string;
@@ -336,6 +346,8 @@ export interface OrchestratorStreamState {
 	 * uses terminal status to decide its card (`budgetStopToShow`).
 	 */
 	budgetStop?: TurnBudgetStop;
+	/** The model that served this answer. */
+	model?: import("@saas/agents/hooks/useDirectStream").StreamModelInfo;
 	/**
 	 * The turn runs on the organization's API billing because every ChatGPT
 	 * plan is spent (Fizzy #3048); the chat says so under the answer.
@@ -611,6 +623,7 @@ export function useOrchestratorStream(
 		plan: null,
 		variables: {},
 		result: null,
+		approvalHistory: undefined,
 		pendingApproval: null,
 		pendingClarification: null,
 		answeredClarifications: [],
@@ -923,6 +936,7 @@ export function useOrchestratorStream(
 				executionId: attachExecutionId,
 				plan: null,
 				result: null,
+				approvalHistory: undefined,
 				pendingApproval: null,
 				// Scoped to one execution: the previous turn's answers were
 				// already persisted with that execution and now travel in
@@ -937,23 +951,30 @@ export function useOrchestratorStream(
 				turnId: undefined,
 				turnGeneration: undefined,
 				contextCompactions: [],
+				model: undefined,
 				apiBilling: undefined,
 			}));
 
-			// Non-destructive failure for a stream we could not get back
-			// (issue #2269). Deliberately NOT routed through the `error` event
-			// handler: that one overwrites the assistant body with
-			// `Error: <msg>`, discarding everything the run streamed before
-			// the window closed — potentially a long turn's worth of work.
-			// Mirrors `stop()`'s shape instead: freeze the message where it
-			// is, keep stepResults / artifacts, and record the reason in
-			// `state.result.error` for the failure notice.
-			const failWithoutDiscardingContent = (reason: string) => {
+			// Preserve partial output and settle active tool cards on transport failure.
+			const failWithoutDiscardingContent = (
+				reason: string,
+				includeErrorInEmptyContent = false,
+			) => {
+				setStreamingToolCalls(
+					(prev) => settleUnfinishedToolCalls(prev) ?? prev,
+				);
 				setMessages((prev) =>
 					prev.map((m) =>
 						m.id === assistantMessage.id
 							? {
 									...m,
+									content:
+										includeErrorInEmptyContent &&
+										!m.content &&
+										!hasTurnOutputRef.current
+											? `Error: ${reason}`
+											: m.content,
+									isError: true,
 									isStreaming: false,
 									streamStatus: "error" as const,
 								}
@@ -1339,97 +1360,60 @@ export function useOrchestratorStream(
 							setState((prev) => ({ ...prev, apiBilling }));
 						}
 
-						// Process SSE stream
-						const reader = response.body?.getReader();
-						if (!reader) {
+						if (!response.body) {
 							ambiguousOutcome = true;
 							throw new Error("No response body");
 						}
-						// From here on a failure is mid-stream, which is what a
-						// reconnect can recover. Anything before it (non-ok
-						// HTTP, a fetch that never produced a body) is not
-						// resumable and belongs to the outer catch.
 						streamStarted = true;
-
-						const decoder = new TextDecoder();
-						let buffer = "";
-
-						while (true) {
-							const { done, value } =
-								await readBeforeSilence(reader);
-							if (done) {
-								break;
-							}
-
-							buffer += decoder.decode(value, { stream: true });
-							const lines = buffer.split("\n");
-							buffer = lines.pop() || "";
-
-							for (const line of lines) {
-								if (line.startsWith("data: ")) {
-									try {
-										const data = JSON.parse(line.slice(6));
-										if (data.type === "stream_timeout") {
-											sawStreamTimeout = true;
-										} else if (
-											data.type === "start_pending"
-										) {
-											if (keyIdempotent) {
-												sawStartPending = true;
-											} else {
-												// Only a turn is retried by
-												// its key; anything else
-												// cannot be, so it fails.
-												sawTerminal = true;
-												handleStreamEvent(
-													{
-														type: "error",
-														message:
-															"The run's start could not be confirmed",
-													},
-													assistantMessage.id,
-												);
-											}
-										} else if (
-											data.type === "completed" ||
-											data.type === "error"
-										) {
-											sawTerminal = true;
-										}
-										// Delivered progress proves the
-										// connection works, so a flap earlier
-										// in the turn stops counting against
-										// the reconnect budget a genuinely
-										// broken stream needs. Control events
-										// are excluded: the server re-emits
-										// `started` on every resume before it
-										// polls, so a transport that opens
-										// long enough for the handshake and
-										// then drops would refill the budget
-										// every cycle and reconnect forever.
-										if (
-											!REPLAY_HANDSHAKE_EVENT_TYPES.has(
-												data.type,
-											)
-										) {
-											consecutiveUncleanResumes = 0;
-										}
+						await readChatEventStream(response.body, {
+							readChunk: readBeforeSilence,
+							dispatchOnLine: true,
+							parse: parseOrchestratorStreamEvent,
+							onEvent: (data) => {
+								if (data.type === "stream_timeout") {
+									sawStreamTimeout = true;
+								} else if (data.type === "start_pending") {
+									if (keyIdempotent) {
+										sawStartPending = true;
+									} else {
+										sawTerminal = true;
 										handleStreamEvent(
-											data,
+											{
+												type: "error",
+												message:
+													"The run's start could not be confirmed",
+											},
 											assistantMessage.id,
 										);
-									} catch (_parseError) {
-										// Skip malformed JSON
-										if (line.slice(6).trim()) {
-											console.warn(
-												"[OrchestratorStream] Failed to parse:",
-												line,
-											);
-										}
 									}
+								} else if (
+									data.type === "completed" ||
+									data.type === "error"
+								) {
+									sawTerminal = true;
 								}
-							}
-						}
+								if (
+									!REPLAY_HANDSHAKE_EVENT_TYPES.has(data.type)
+								) {
+									consecutiveUncleanResumes = 0;
+								}
+								handleStreamEvent(data, assistantMessage.id);
+							},
+							isOutcome: (event) =>
+								[
+									"stream_timeout",
+									"start_pending",
+									"completed",
+									"error",
+								].includes(event.type),
+							isTerminal: (event) =>
+								[
+									"stream_timeout",
+									"start_pending",
+									"completed",
+									"error",
+								].includes(event.type),
+						});
 					} catch (error) {
 						// A first-window failure is not resumable — there is no
 						// run to get back to, so the outer catch owns it. A
@@ -1454,7 +1438,10 @@ export function useOrchestratorStream(
 							keyIdempotent &&
 							!streamStarted &&
 							(ambiguousOutcome || fetchNeverAnswered);
-						if (!streamStarted && !isResume && !retryableInitial) {
+						if (
+							error instanceof ChatStreamProtocolError ||
+							(!streamStarted && !isResume && !retryableInitial)
+						) {
 							throw error;
 						}
 						// A mid-read throw is the usual shape of a platform
@@ -1605,33 +1592,10 @@ export function useOrchestratorStream(
 						? error.message
 						: "An error occurred";
 
-				setMessages((prev) =>
-					prev.map((m) =>
-						m.id === assistantMessage.id
-							? {
-									...m,
-									content: `Error: ${errorMessage}`,
-									isError: true,
-									isStreaming: false,
-								}
-							: m,
-					),
+				failWithoutDiscardingContent(
+					errorMessage,
+					!(error instanceof ChatStreamProtocolError),
 				);
-
-				// The chat renders a failed turn from `state.result.error`;
-				// without it a refusal before the stream opened showed
-				// nothing at all.
-				setState((prev) => ({
-					...prev,
-					status: "failed",
-					result: { ...prev.result, error: errorMessage },
-				}));
-				// The activity panel reads the phase: left on "routing", a
-				// refusal before the stream opened looked like a run still
-				// routing forever.
-				setCurrentPhase("error");
-
-				setIsLoading(false);
 				return null;
 			}
 		},
@@ -1698,7 +1662,7 @@ export function useOrchestratorStream(
 	 * Handle incoming SSE events
 	 */
 	const handleStreamEvent = useCallback(
-		(data: any, assistantMessageId: string) => {
+		(data: OrchestratorStreamEvent, assistantMessageId: string) => {
 			// Freeze gate (decision 12 /): once the user has clicked
 			// Stop on this turn, every subsequent SSE event for it is
 			// dropped client-side so the `Stopped` caption is honoured
@@ -1774,23 +1738,7 @@ export function useOrchestratorStream(
 
 				case "planning":
 					if (data.plan) {
-						const plan: TaskPlan = {
-							id: data.plan.id,
-							description: data.plan.description,
-							riskLevel: data.plan.riskLevel,
-							strategy: data.plan.strategy || "agent",
-							createdAt:
-								data.plan.createdAt || new Date().toISOString(),
-							steps: data.plan.steps.map((s: any) => ({
-								id: s.id,
-								description: s.description,
-								type: s.type || "agent",
-								order: s.order,
-								status: s.status || "pending",
-								riskLevel: s.riskLevel,
-								requiresApproval: s.requiresApproval,
-							})),
-						};
+						const plan = toTaskPlan(data.plan);
 						setState((prev) => ({
 							...prev,
 							plan,
@@ -1847,25 +1795,23 @@ export function useOrchestratorStream(
 						stepDescription: data.stepDescription,
 						status: stepStatus,
 						response: data.response,
-						toolCalls: (data.toolCalls || []).map(
-							(tc: any, idx: number) => ({
-								id: tc.id || `tc-${data.stepId}-${idx}`,
-								name: tc.name,
-								// Reject the truncation sentinel here so a
-								// fallback path in route.ts (when progress
-								// query fails / returns empty) can't clobber
-								// MCP App args with garbage. See
-								// `safeToolField` doc above.
-								args: safeToolField(tc.args),
-								result: safeToolField(tc.result) ?? null,
-								status: (tc.status || "success") as
-									| "success"
-									| "error",
-								durationMs: tc.durationMs ?? 0,
-								mcpAppResourceUri: tc.mcpAppResourceUri,
-								mcpAppConfigId: tc.mcpAppConfigId,
-							}),
-						),
+						toolCalls: (data.toolCalls || []).map((tc, idx) => ({
+							id: tc.id || `tc-${data.stepId}-${idx}`,
+							name: tc.name,
+							// Reject the truncation sentinel here so a
+							// fallback path in route.ts (when progress
+							// query fails / returns empty) can't clobber
+							// MCP App args with garbage. See
+							// `safeToolField` doc above.
+							args: safeToolField(tc.args),
+							result: safeToolField(tc.result) ?? null,
+							status: (tc.status || "success") as
+								| "success"
+								| "error",
+							durationMs: tc.durationMs ?? 0,
+							mcpAppResourceUri: tc.mcpAppResourceUri,
+							mcpAppConfigId: tc.mcpAppConfigId,
+						})),
 						durationMs: data.durationMs ?? 0,
 					};
 
@@ -2113,7 +2059,7 @@ export function useOrchestratorStream(
 				case "approval_required":
 					// Reset transition flag - we're waiting for approval again
 					isTransitioningFromApprovalRef.current = false;
-					latestApprovalIdRef.current = data.approvalId;
+					latestApprovalIdRef.current = data.approvalId ?? null;
 					setCurrentPhase("awaiting_approval");
 					setState((prev) => ({
 						...prev,
@@ -2190,6 +2136,7 @@ export function useOrchestratorStream(
 					setCurrentPhase("complete");
 					setState((prev) => ({
 						...prev,
+						approvalHistory: data.approvalHistory,
 						status: domainStatus,
 						result: {
 							...prev.result,
@@ -2197,7 +2144,7 @@ export function useOrchestratorStream(
 							status: data.status,
 							truncated: parseTurnTruncation(data.truncated),
 						},
-						plan: data.plan || prev.plan,
+						plan: data.plan ? toTaskPlan(data.plan) : prev.plan,
 						variables: data.variables || {},
 						pendingApproval: null,
 						planningAudit: data.planningAudit || null,
@@ -2229,6 +2176,7 @@ export function useOrchestratorStream(
 						// Every plan ran out mid-turn and API billing finished
 						// it; the turn's first response could not say so
 						// (Fizzy #3048).
+						model: readPersistedModel(data),
 						apiBilling:
 							parseChatGptPlanApiBilling(data.apiBilling) ??
 							prev.apiBilling,
@@ -2243,6 +2191,7 @@ export function useOrchestratorStream(
 										// Set message content from response
 										content:
 											data.response || m.content || "",
+										streamStatus: "completed",
 										isStreaming: false,
 										...(turnCancelled
 											? {
@@ -2273,7 +2222,7 @@ export function useOrchestratorStream(
 						// If server sent stepResults, use them
 						if (data.stepResults && data.stepResults.length > 0) {
 							return data.stepResults.map(
-								(sr: any): StreamingStepResult => ({
+								(sr): StreamingStepResult => ({
 									stepId: sr.stepId,
 									stepDescription: sr.stepDescription,
 									status: (sr.status || "complete") as
@@ -2282,7 +2231,7 @@ export function useOrchestratorStream(
 										| "skipped",
 									response: sr.response,
 									toolCalls: (sr.toolCalls || []).map(
-										(tc: any, idx: number) => ({
+										(tc, idx) => ({
 											id:
 												tc.id ||
 												`tc-${sr.stepId}-${idx}`,
@@ -2315,7 +2264,7 @@ export function useOrchestratorStream(
 									status: "complete" as const,
 									response: data.response,
 									toolCalls: data.toolCalls.map(
-										(tc: any, idx: number) => ({
+										(tc, idx) => ({
 											id: tc.id || `tc-final-${idx}`,
 											name: tc.name,
 											// Reject sentinel — this fallback
@@ -2351,6 +2300,12 @@ export function useOrchestratorStream(
 				}
 
 				case "error": {
+					if (data.approvalHistory) {
+						setState((prev) => ({
+							...prev,
+							approvalHistory: data.approvalHistory,
+						}));
+					}
 					// AI usage-limit short-circuit. When the chokepoint blocks mid-stream
 					// the route emits a structured SSE error event with
 					// `code: "AI_USAGE_LIMIT_EXCEEDED"`. Render the
@@ -2442,7 +2397,10 @@ export function useOrchestratorStream(
 							m.id === assistantMessageId
 								? {
 										...m,
-										content: `Error: ${errorMessage}`,
+										content:
+											m.content ||
+											`Error: ${errorMessage}`,
+										streamStatus: "error",
 										isError: true,
 										isStreaming: false,
 									}

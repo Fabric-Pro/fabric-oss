@@ -53,17 +53,17 @@ function renderStartWorkButton() {
 }
 
 describe("StartWorkButton", () => {
-	it("shows Background Agents and local development options with clear descriptions", async () => {
+	it("shows Fabric Agents and local development options with clear descriptions", async () => {
 		const user = userEvent.setup();
 		renderStartWorkButton();
 
 		await user.click(screen.getByRole("button", { name: /Start work/i }));
 
 		expect(screen.getByText(/Plan with Weave/i)).toBeInTheDocument();
-		expect(screen.getByText(/^Background Agents$/i)).toBeInTheDocument();
+		expect(screen.getByText(/^Fabric Agents$/i)).toBeInTheDocument();
 		expect(screen.getByText(/^Local development$/i)).toBeInTheDocument();
 		expect(
-			screen.getByText(/Fabric-managed Background Agents/i),
+			screen.getByText(/isolated git worktree on Fabric Agents/i),
 		).toBeInTheDocument();
 		expect(
 			screen.getByText(/Queue for local development/i),

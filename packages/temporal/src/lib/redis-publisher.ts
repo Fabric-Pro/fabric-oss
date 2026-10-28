@@ -166,9 +166,61 @@ async function getRedisPublisher(): Promise<import("ioredis").default | null> {
 /**
  * Execution event payload published via Redis.
  */
-export interface ExecutionEvent {
-	event: string;
-	data: Record<string, unknown>;
+export interface ChatExecutionToolCall {
+	id: string;
+	name: string;
+	serverName?: string;
+	args?: unknown;
+	result?: unknown;
+	status:
+		| "pending"
+		| "running"
+		| "complete"
+		| "error"
+		| import("../workflows/orchestrator/types/workflow-io.types").OrchestratorStepResult["toolCalls"][number]["status"];
+	durationMs?: number;
+	error?: string;
+	mcpAppResourceUri?: string;
+	mcpAppConfigId?: string;
+}
+
+/** Payloads forwarded by the chat SSE route. The publisher checks literal event names. */
+export interface ChatExecutionEventData {
+	"execution.text_delta": { text: string };
+	"execution.iteration_start": { iteration: number; retryAttempt?: number };
+	"execution.tool_start": {
+		stepId?: string;
+		toolCall: ChatExecutionToolCall;
+	};
+	"execution.tool_input": {
+		stepId?: string;
+		toolCall: ChatExecutionToolCall;
+	};
+	"execution.tool_complete": {
+		stepId?: string;
+		toolCall: ChatExecutionToolCall;
+	};
+	"execution.limit_signal": import("@repo/ai/limits").LimitSignal;
+	"execution.context_compacted": {
+		iteration: number;
+		compactedTurns: number;
+		summaryChars: number;
+		historyLengthBefore: number;
+	};
+	"execution.mcp_default_tool_invoked": Record<string, unknown>;
+	"execution.mcp_default_tool_failed": Record<string, unknown>;
+}
+export type ChatExecutionEvent = {
+	[K in keyof ChatExecutionEventData]: {
+		event: K;
+		data: ChatExecutionEventData[K];
+	};
+}[keyof ChatExecutionEventData];
+export interface ExecutionEvent<Name extends string = string> {
+	event: Name;
+	data: Name extends keyof ChatExecutionEventData
+		? ChatExecutionEventData[Name]
+		: Record<string, unknown>;
 }
 
 /**
@@ -178,9 +230,9 @@ export interface ExecutionEvent {
  * @param executionId - The execution ID (used as channel name)
  * @param event - The event to publish
  */
-export async function publishExecutionEvent(
+export async function publishExecutionEvent<const Name extends string>(
 	executionId: string,
-	event: ExecutionEvent,
+	event: ExecutionEvent<Name>,
 ): Promise<void> {
 	try {
 		const client = await getRedisPublisher();

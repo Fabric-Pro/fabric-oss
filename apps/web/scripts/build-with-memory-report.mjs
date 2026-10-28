@@ -36,30 +36,55 @@ if (command.length === 0) {
 	process.exit(2);
 }
 
+/** Overridable only so the test can point the reporter at a fixture cgroup. */
+const CGROUP_ROOT = process.env.BUILD_MEMORY_CGROUP_ROOT ?? "/sys/fs/cgroup";
+
+/** One `key value` line out of a cgroup stat/events file, or null if absent. */
+function readCgroupField(file, key) {
+	try {
+		const line = readFileSync(file, "utf8")
+			.split("\n")
+			.find((l) => l.startsWith(`${key} `));
+		return line ? Number.parseInt(line.slice(key.length + 1), 10) : null;
+	} catch {
+		return null;
+	}
+}
+
 /**
  * Read the CONTAINER's memory, not the host's.
  *
  * `os.freemem()` reads /proc/meminfo, which inside most container runtimes reports
  * the host machine — so on a build container it would measure whatever else the
- * host is doing and miss the limit that actually kills the build. The cgroup files
- * are the number the OOM killer works from. Tried in cgroup v2 then v1 order, with
- * the host gauge only as a last resort, and the report says which source it used
- * so nobody has to guess whether the figure means anything.
+ * host is doing and miss the limit that actually kills the build. Tried in cgroup
+ * v2 then v1 order, with the host gauge only as a last resort, and the report says
+ * which source it used so nobody has to guess whether the figure means anything.
+ *
+ * The cgroup's usage counts page cache — node_modules read during install, the
+ * .next output Turbopack writes — and the kernel reclaims the inactive part of
+ * that before it OOM-kills anything. So usage alone overstates how close the
+ * build is to being killed. `inactiveFile` is read alongside it so the report can
+ * also give the working set (usage minus inactive file cache), the figure kubelet
+ * and cAdvisor use for memory pressure.
  */
 function readGauge() {
 	const cgroups = [
 		{
-			used: "/sys/fs/cgroup/memory.current",
-			limit: "/sys/fs/cgroup/memory.max",
+			used: `${CGROUP_ROOT}/memory.current`,
+			limit: `${CGROUP_ROOT}/memory.max`,
+			stat: `${CGROUP_ROOT}/memory.stat`,
+			inactiveKey: "inactive_file",
 			source: "cgroup-v2",
 		},
 		{
-			used: "/sys/fs/cgroup/memory/memory.usage_in_bytes",
-			limit: "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+			used: `${CGROUP_ROOT}/memory/memory.usage_in_bytes`,
+			limit: `${CGROUP_ROOT}/memory/memory.limit_in_bytes`,
+			stat: `${CGROUP_ROOT}/memory/memory.stat`,
+			inactiveKey: "total_inactive_file",
 			source: "cgroup-v1",
 		},
 	];
-	for (const { used, limit, source } of cgroups) {
+	for (const { used, limit, stat, inactiveKey, source } of cgroups) {
 		try {
 			const usedBytes = Number.parseInt(
 				readFileSync(used, "utf8").trim(),
@@ -77,7 +102,12 @@ function readGauge() {
 				limitBytes < 2 ** 53
 					? limitBytes
 					: null;
-			return { used: usedBytes, total: bounded ?? os.totalmem(), source };
+			return {
+				used: usedBytes,
+				total: bounded ?? os.totalmem(),
+				inactiveFile: readCgroupField(stat, inactiveKey),
+				source,
+			};
 		} catch {
 			// Not this cgroup version, or not readable — try the next.
 		}
@@ -85,11 +115,13 @@ function readGauge() {
 	return {
 		used: os.totalmem() - os.freemem(),
 		total: os.totalmem(),
+		inactiveFile: null,
 		source: "host",
 	};
 }
 
 let peakUsed = 0;
+let peakWorkingSet = null;
 let total = os.totalmem();
 let source = "host";
 let samples = 0;
@@ -105,6 +137,10 @@ const sampler = setInterval(() => {
 	source = gauge.source;
 	if (gauge.used > peakUsed) {
 		peakUsed = gauge.used;
+	}
+	if (gauge.inactiveFile !== null) {
+		const workingSet = Math.max(0, gauge.used - gauge.inactiveFile);
+		peakWorkingSet = Math.max(peakWorkingSet ?? 0, workingSet);
 	}
 	series.push(gauge.used);
 	samples += 1;
@@ -171,6 +207,24 @@ function report() {
 	console.log(
 		`[build-memory] peak ${asGb(peakUsed)} GB of ${asGb(total)} GB (${pct}%) via ${source} across ${samples} samples${caveat}`,
 	);
+	if (peakWorkingSet !== null) {
+		const wsPct = ((peakWorkingSet / total) * 100).toFixed(0);
+		console.log(
+			`[build-memory] working-set peak ${asGb(peakWorkingSet)} GB of ${asGb(total)} GB (${wsPct}%) — usage minus inactive file cache the kernel reclaims before an OOM kill`,
+		);
+	}
+
+	// The kernel's own counters for this cgroup, which a 2-second sampler can miss:
+	// `max` is how often usage hit the limit and forced reclaim, `oom_kill` how
+	// often reclaim was not enough.
+	const events = `${CGROUP_ROOT}/memory.events`;
+	const limitHits = readCgroupField(events, "max");
+	const oomKills = readCgroupField(events, "oom_kill");
+	if (source === "cgroup-v2" && limitHits !== null && oomKills !== null) {
+		console.log(
+			`[build-memory] cgroup events: limit reached ${limitHits} times, oom_kill ${oomKills}`,
+		);
+	}
 }
 
 child.on("error", (err) => {

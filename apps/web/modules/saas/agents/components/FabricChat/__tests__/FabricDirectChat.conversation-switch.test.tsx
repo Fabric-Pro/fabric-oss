@@ -12,7 +12,7 @@
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import type { Editor } from "@tiptap/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { TRUNCATION_NOTICE_COPY } from "../../../lib/chat-turn-truncation";
@@ -89,7 +89,17 @@ vi.mock("@saas/agents/components/FabricAgentLauncher", () => ({
 	}) => children,
 }));
 
+vi.mock("@saas/organizations/hooks/use-active-organization", () => ({
+	useActiveOrganization: () => ({
+		activeOrganization: { id: "org_example", slug: "example-org" },
+		isOrganizationAdmin: true,
+		activeOrganizationUserRole: "admin",
+	}),
+}));
+
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
+	useOrganizationId: () => "example-org",
+	useEffectiveOrganizationId: (id: string | null | undefined) => id ?? null,
 	useOrganizationContext: () => ({
 		organizationId: "org_example",
 		organizationSlug: "example-org",
@@ -166,10 +176,17 @@ vi.mock("@analytics", () => ({
 	useAnalytics: () => ({ trackEvent: vi.fn() }),
 }));
 
+const listModelsMock = vi.fn();
 const createConversationMock = vi.fn();
 const addMessageMock = vi.fn();
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
+		agentTemplates: { instances: { get: vi.fn() } },
+		aiConfig: {
+			models: {
+				listAvailable: (...args: unknown[]) => listModelsMock(...args),
+			},
+		},
 		projects: {
 			diagrams: { createFromChat: vi.fn() },
 			conversations: { attach: vi.fn() },
@@ -285,8 +302,12 @@ vi.mock("@saas/agents/components/FabricChat/ConversationToolPicker", () => ({
 vi.mock("@saas/agents/components/FabricChat/shared", () => ({
 	ActiveContextIndicator: () => null,
 	AgentModelPicker: () => null,
-	ChatInput: () => null,
-	ChatWelcome: () => null,
+	ChatInput: ({ headerSlot }: { headerSlot?: React.ReactNode }) => (
+		<div>{headerSlot}</div>
+	),
+	ChatWelcome: ({ composer }: { composer?: React.ReactNode }) => (
+		<div>{composer}</div>
+	),
 	getLatestSuccessfulFrameFromGroups: () => null,
 	InteractiveContentPanel: () => null,
 	ToolCallList: () => null,
@@ -423,7 +444,7 @@ function harness() {
 			/>
 		</QueryClientProvider>
 	);
-	return { ui, onConversationCreated };
+	return { ui, onConversationCreated, queryClient };
 }
 
 /** A turn sent in this mount, on top of conversation A's history. */
@@ -449,6 +470,7 @@ function streamTurnInA(options: { streaming: boolean }) {
 }
 
 beforeEach(() => {
+	listModelsMock.mockReset();
 	hookState.messages = [];
 	hookState.isLoading = false;
 	resetMock.mockClear();
@@ -644,6 +666,12 @@ describe("FabricDirectChat — reopening a saved conversation", () => {
 				errorMessage: "AI usage limit reached",
 				truncated: "output_limit",
 				apiBilling: { resetAt: null },
+				model: {
+					id: "example-served",
+					canonicalName: "example-served",
+					provider: "OPENAI_DIRECT",
+					viaPlan: false,
+				},
 			},
 		});
 
@@ -660,5 +688,51 @@ describe("FabricDirectChat — reopening a saved conversation", () => {
 		expect(
 			view.getByTestId("chatgpt-plan-api-billing-notice"),
 		).toBeInTheDocument();
+		expect(
+			view.getByRole("button", { name: "Answered by example-served" }),
+		).toBeInTheDocument();
 	});
 });
+
+describe("Direct provider model badge under a plan", () => {
+	it.each([true, false])(
+		"marks the saved provider pick inactive only when a plan is present: %s",
+		async (hasPlan) => {
+			listModelsMock.mockResolvedValue({
+				models: [{ canonicalName: "claude-sonnet-5" }],
+				chatgptPlan: hasPlan ? { source: "shared", models: [] } : null,
+			});
+			const { ui, queryClient } = harness();
+			queryClient.setQueryData(
+				["chat-agent-selection", "user_1", "org_example"],
+				{
+					selectedAgents: [
+						{
+							agentId: "model:claude-sonnet-5",
+							name: "Claude Sonnet 5",
+							modelOverride: "claude-sonnet-5",
+						},
+					],
+				},
+			);
+			render(ui(null, null));
+			await waitFor(() => expect(listModelsMock).toHaveBeenCalled());
+			expect(
+				await screen.findByText("Claude Sonnet 5"),
+			).toBeInTheDocument();
+			if (hasPlan) {
+				expect(await screen.findByText("not applied")).toHaveAttribute(
+					"title",
+					"Your organization's shared ChatGPT plan is on — turn it off to use Claude Sonnet 5.",
+				);
+			} else {
+				expect(screen.queryByText("not applied")).toBeNull();
+			}
+		},
+	);
+});
+
+vi.mock("next-intl", () => ({
+	useTranslations: () => (key: string, values?: { model?: string }) =>
+		key === "answeredByModel" ? `Answered by ${values?.model}` : key,
+}));

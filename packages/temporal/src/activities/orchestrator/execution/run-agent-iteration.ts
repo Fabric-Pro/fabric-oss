@@ -1804,7 +1804,7 @@ async function runAgentIterationRound(
 			if (limitSignal && input.executionId) {
 				publishExecutionEvent(input.executionId, {
 					event: "execution.limit_signal",
-					data: limitSignal as unknown as Record<string, unknown>,
+					data: limitSignal,
 				});
 			}
 			// Limit signals stay as `response` so the workflow soft-degrades
@@ -1851,7 +1851,7 @@ async function runAgentIterationRound(
 			if (limitSignal && input.executionId) {
 				publishExecutionEvent(input.executionId, {
 					event: "execution.limit_signal",
-					data: limitSignal as unknown as Record<string, unknown>,
+					data: limitSignal,
 				});
 			}
 			if (limitSignal) {
@@ -1937,7 +1937,7 @@ async function runAgentIterationRound(
 		if (limitSignal && input.executionId) {
 			publishExecutionEvent(input.executionId, {
 				event: "execution.limit_signal",
-				data: limitSignal as unknown as Record<string, unknown>,
+				data: limitSignal,
 			});
 		}
 

@@ -25,6 +25,11 @@
 			"import": "./lib/ai-model-fit.ts",
 			"default": "./lib/ai-model-fit.ts"
 		},
+		"./safe-yaml": {
+			"types": "./lib/safe-yaml.ts",
+			"import": "./lib/safe-yaml.ts",
+			"default": "./lib/safe-yaml.ts"
+		},
 		"./base-url": {
 			"types": "./lib/base-url.ts",
 			"import": "./lib/base-url.ts",

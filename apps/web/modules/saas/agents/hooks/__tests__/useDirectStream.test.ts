@@ -64,7 +64,7 @@ function makeSseResponse() {
 		});
 
 	const enqueueLine = (line: string) => {
-		queue.push({ value: encoder.encode(`${line}\n`) });
+		queue.push({ value: encoder.encode(`${line}\n\n`) });
 		const r = resolveNext;
 		resolveNext = null;
 		r?.();
@@ -80,7 +80,11 @@ function makeSseResponse() {
 	const response = {
 		ok: true,
 		body: {
-			getReader: () => ({ read }),
+			getReader: () => ({
+				read,
+				releaseLock: vi.fn(),
+				cancel: vi.fn(async () => {}),
+			}),
 		},
 		json: async () => ({}),
 	};

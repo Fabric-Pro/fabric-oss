@@ -98,7 +98,7 @@ describe("WeaveExecutionMonitor", () => {
 		});
 
 		expect(
-			screen.getByText(/remote execution through Background Agents/i),
+			screen.getByText(/remote execution through Fabric Agents/i),
 		).toBeInTheDocument();
 		expect(
 			screen.getByText(/Runtime: awaiting_review/i),

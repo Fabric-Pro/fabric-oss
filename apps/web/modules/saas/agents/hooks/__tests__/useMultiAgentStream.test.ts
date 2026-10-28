@@ -61,7 +61,7 @@ function makeSseResponse(): Sse {
 		});
 
 	const enqueueLine = (line: string) => {
-		queue.push({ value: encoder.encode(`${line}\n`) });
+		queue.push({ value: encoder.encode(`${line}\n\n`) });
 		const r = resolveNext;
 		resolveNext = null;
 		r?.();
@@ -76,7 +76,13 @@ function makeSseResponse(): Sse {
 	return {
 		response: {
 			ok: true,
-			body: { getReader: () => ({ read }) },
+			body: {
+				getReader: () => ({
+					read,
+					releaseLock: vi.fn(),
+					cancel: vi.fn(async () => {}),
+				}),
+			},
 			json: async () => ({}),
 		},
 		enqueueLine,
@@ -449,4 +455,61 @@ describe("useMultiAgentStream.stopAll()", () => {
 		expect(emitCancelEventMock).not.toHaveBeenCalled();
 		expect(fetchSpy.mock.calls.length).toBe(callsBefore);
 	});
+});
+
+describe("Research interrupted replies", () => {
+	afterEach(() => vi.restoreAllMocks());
+	it.each(["disconnect", "error", "invalid event"])(
+		"preserves buffered text and explains %s without starting another run",
+		async (failure) => {
+			const stream = makeSseResponse();
+			const fetchMock = vi
+				.spyOn(global, "fetch")
+				.mockResolvedValue(stream.response as unknown as Response);
+			const { result } = renderHook(() =>
+				useMultiAgentStream({ organizationId: "example-org" }),
+			);
+			act(() => {
+				result.current.sendToAgents(
+					"Research",
+					[{ agentId: "agent-1", name: "Example" }],
+					[],
+				);
+			});
+			await act(async () => {
+				stream.enqueueLine(
+					'data: {"type":"started","executionId":"execution-1"}',
+				);
+				stream.enqueueLine(
+					'data: {"type":"text_delta","content":"Partial answer"}',
+				);
+				stream.enqueueLine(
+					'data: {"type":"tool_start","toolName":"search","toolCallId":"tool-1"}',
+				);
+				if (failure === "error") {
+					stream.enqueueLine(
+						'data: {"type":"error","message":"Provider unavailable"}',
+					);
+				}
+				if (failure === "invalid event") {
+					stream.enqueueLine(
+						'data: {"type":"text_delta","content":123}',
+					);
+				}
+				stream.enqueueDone();
+			});
+			await waitFor(() =>
+				expect(
+					result.current.turns[0]?.agentResponses.get("agent-1")
+						?.status,
+				).toBe("error"),
+			);
+			const response =
+				result.current.turns[0]?.agentResponses.get("agent-1");
+			expect(response?.content).toBe("Partial answer");
+			expect(response?.errorMessage).toBeTruthy();
+			expect(response?.toolCalls[0]?.status).toBe("error");
+			expect(fetchMock).toHaveBeenCalledOnce();
+		},
+	);
 });

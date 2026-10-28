@@ -56,7 +56,7 @@ import { extractQueryWords } from "./utils";
 const LEGACY_PROVIDER_METADATA: Record<string, IntegrationProviderMetadata> = {
 	SLACK: {
 		description:
-			"Send and read messages in Slack channels, search history, browse threads and shared files, and interact with Slack workspaces",
+			"Send Slack messages, notifications and direct messages, and read channel history",
 		capabilities: [
 			"messaging",
 			"notifications",
@@ -64,9 +64,6 @@ const LEGACY_PROVIDER_METADATA: Record<string, IntegrationProviderMetadata> = {
 			"channel_posts",
 			"channel_history",
 			"message_reading",
-			"message_search",
-			"thread_replies",
-			"file_sharing",
 		],
 		operations: [
 			{
@@ -79,31 +76,12 @@ const LEGACY_PROVIDER_METADATA: Record<string, IntegrationProviderMetadata> = {
 			},
 			{ name: "send_dm", description: "Send a direct message to a user" },
 			{
-				name: "list_channels",
-				description: "List Slack channels linked to a project",
-			},
-			{
 				name: "get_channel_history",
 				description: "Read messages and history from a Slack channel",
 			},
 			{
 				name: "read_messages",
 				description: "Read and retrieve messages from a Slack channel",
-			},
-			{
-				name: "search_messages",
-				description:
-					"Search for messages across linked Slack channels by keyword (supports from:, in:, before:, after:, has:link, has:file modifiers)",
-			},
-			{
-				name: "list_thread_replies",
-				description:
-					"List replies in a Slack message thread, given a channelId and parent message thread_ts",
-			},
-			{
-				name: "get_shared_files",
-				description:
-					"List files shared in a Slack channel (images, PDFs, attachments)",
 			},
 		],
 		keywords: [
@@ -113,24 +91,13 @@ const LEGACY_PROVIDER_METADATA: Record<string, IntegrationProviderMetadata> = {
 			"message channel",
 			"notify team",
 			"slack",
-			// Search/history-related patterns
-			"search slack",
+			// History-related patterns
 			"slack history",
 			"slack channel history",
 			"latest slack message",
 			"recent slack message",
 			"read slack message",
-			"find slack messages",
 			"slack discussions",
-			// Thread-related patterns
-			"slack thread",
-			"slack replies",
-			"thread replies",
-			// File-related patterns
-			"slack files",
-			"slack attachments",
-			"files in slack",
-			"shared in slack",
 			// Common user queries
 			"what's in slack",
 			"slack update",
@@ -207,18 +174,6 @@ const LEGACY_PROVIDER_METADATA: Record<string, IntegrationProviderMetadata> = {
 			{ name: "crawl_site", description: "Crawl a website" },
 		],
 	},
-	FAL: {
-		description:
-			"Generate images, run AI models, and process media using Fal.ai",
-		capabilities: ["image_generation", "ai_models", "media_processing"],
-		operations: [
-			{
-				name: "generate_image",
-				description: "Generate an image using AI",
-			},
-			{ name: "run_model", description: "Run an AI model" },
-		],
-	},
 	CUSTOM_WEBHOOK: {
 		description: "Call custom webhooks and external APIs",
 		capabilities: ["api_calls", "webhooks", "external_services"],
@@ -227,26 +182,6 @@ const LEGACY_PROVIDER_METADATA: Record<string, IntegrationProviderMetadata> = {
 				name: "call_webhook",
 				description: "Call a custom webhook endpoint",
 			},
-		],
-	},
-	DATABASE: {
-		description: "Query and interact with databases",
-		capabilities: ["data_storage", "queries", "data_retrieval"],
-		operations: [
-			{ name: "query", description: "Execute a database query" },
-		],
-	},
-	MCP: {
-		description: "Connect to MCP servers for extended tool capabilities",
-		capabilities: ["mcp_tools", "extended_capabilities"],
-		operations: [{ name: "call_tool", description: "Call an MCP tool" }],
-	},
-	AI_GATEWAY: {
-		description: "Access AI models through the Vercel AI Gateway",
-		capabilities: ["ai_models", "text_generation", "chat"],
-		operations: [
-			{ name: "generate", description: "Generate text using AI" },
-			{ name: "chat", description: "Chat with AI model" },
 		],
 	},
 	MICROSOFT_GRAPH: {

@@ -92,11 +92,19 @@ export function CodingRunStatusBadge({
 			{sessionUrl && !pullRequestUrl && (
 				<a
 					href={sessionUrl}
-					target="_blank"
-					rel="noopener noreferrer"
+					target={
+						sessionUrl.startsWith("fabric-agent://")
+							? undefined
+							: "_blank"
+					}
+					rel={
+						sessionUrl.startsWith("fabric-agent://")
+							? undefined
+							: "noopener noreferrer"
+					}
 					onClick={(e) => e.stopPropagation()}
 					className="ml-0.5"
-					aria-label="View implementation session"
+					aria-label="Open in Fabric Agents"
 				>
 					<MonitorIcon className="size-2.5" />
 				</a>

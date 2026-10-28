@@ -12,16 +12,16 @@
  * The UI branches on `kind` (+ billing permission) to pick copy and actions.
  */
 
-export type LimitKind =
-	| "internal_budget"
-	| "provider_quota"
-	| "provider_rate_limit"
-	| "context_length"
-	| "provider_overloaded"
-	/** The member's own ChatGPT plan has no usage left in its window. */
-	| "subscription_exhausted"
-	/** The member's own ChatGPT plan is on but its sign-in must be renewed. */
-	| "subscription_reconnect";
+export const LIMIT_KINDS = [
+	"internal_budget",
+	"provider_quota",
+	"provider_rate_limit",
+	"context_length",
+	"provider_overloaded",
+	"subscription_exhausted",
+	"subscription_reconnect",
+] as const;
+export type LimitKind = (typeof LIMIT_KINDS)[number];
 
 /** Which per-run limit stopped an `internal_budget` run. */
 export type BudgetLimit = "tokens" | "iterations" | "time";

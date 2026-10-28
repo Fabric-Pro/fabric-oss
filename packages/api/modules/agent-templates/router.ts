@@ -5,6 +5,11 @@
  */
 
 import { createInstanceProcedure } from "./procedures/instances/create";
+import {
+	exportAgentDefinitionProcedure,
+	importAgentDefinitionProcedure,
+	previewAgentDefinitionProcedure,
+} from "./procedures/instances/definition";
 import { deleteInstanceProcedure } from "./procedures/instances/delete";
 import {
 	getInstanceProcedure,
@@ -49,6 +54,11 @@ export const agentTemplatesRouter = {
 
 	// Template Instances (user's configured agents)
 	instances: {
+		definition: {
+			export: exportAgentDefinitionProcedure,
+			preview: previewAgentDefinitionProcedure,
+			import: importAgentDefinitionProcedure,
+		},
 		list: listInstancesProcedure,
 		get: getInstanceProcedure,
 		create: createInstanceProcedure,

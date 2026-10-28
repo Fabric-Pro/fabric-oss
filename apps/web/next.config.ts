@@ -461,8 +461,11 @@ const nextConfig: NextConfig = {
 		turbopackFileSystemCacheForBuild: false,
 
 		// A Vercel build with seven page-data workers peaked at 15.79 GB and
-		// was SIGKILLed. Three workers keep that phase within the builder limit.
-		cpus: 3,
+		// was SIGKILLed. With three, the working set (usage minus reclaimable
+		// file cache, printed by scripts/build-with-memory-report.mjs) still
+		// peaked at 14.04 GB of the 16 GB builder. Two workers buy more headroom
+		// in the phase where memory peaks, at a few seconds of page-data time.
+		cpus: 2,
 
 		optimizePackageImports: [
 			"lucide-react",

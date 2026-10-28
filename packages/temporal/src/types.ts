@@ -514,6 +514,7 @@ export interface DirectChatSource {
  * Output for DirectChatWorkflow
  */
 export interface DirectChatModelInfo {
+	viaPlan?: boolean;
 	/** Provider model string, e.g. "claude-sonnet-4-5" */
 	id: string;
 	/** Display name from the catalog */

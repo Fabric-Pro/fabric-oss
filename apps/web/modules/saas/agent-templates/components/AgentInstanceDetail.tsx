@@ -51,6 +51,10 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo } from "react";
 import { toast } from "sonner";
+import {
+	AgentDefinitionExportDialog,
+	AgentDefinitionRequirements,
+} from "./AgentDefinitionDialog";
 
 type IntegrationConfig = {
 	integrationType: string;
@@ -332,6 +336,15 @@ export function AgentInstanceDetail({
 											</p>
 										</div>
 										<div className="flex flex-wrap items-center gap-2">
+											{instance.organizationId && (
+												<AgentDefinitionExportDialog
+													key={`${instance.organizationId}:${instanceId}`}
+													organizationId={
+														instance.organizationId
+													}
+													instanceId={instanceId}
+												/>
+											)}
 											<Button variant="outline" asChild>
 												<Link
 													href={`${basePath}/agents/${instanceId}/memory`}
@@ -356,6 +369,13 @@ export function AgentInstanceDetail({
 											</Button>
 										</div>
 									</div>
+
+									<AgentDefinitionRequirements
+										requirements={
+											instance.customInstructions
+												?.portableRequirements
+										}
+									/>
 
 									<div className="mt-2 flex flex-wrap gap-2">
 										{template && (

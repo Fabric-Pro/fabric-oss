@@ -130,12 +130,12 @@ describe("RunSpikeDialog", () => {
 		);
 	});
 
-	it("hints that spikes run on Background Agents when the project defaults to local", async () => {
+	it("hints that spikes run on Fabric Agents when the project defaults to local", async () => {
 		getStatus.mockResolvedValue({ isConfigured: true });
 		renderDialog({ implementationDefaultProvider: "KANBAN_LOCAL" });
 
 		expect(
-			await screen.findByText("Runs on Background Agents"),
+			await screen.findByText("Runs on Fabric Agents"),
 		).toBeInTheDocument();
 		expect(
 			screen.getByText(/default provider is Local development/),
@@ -172,6 +172,36 @@ describe("RunSpikeDialog", () => {
 		});
 		await waitFor(() => expect(onStarted).toHaveBeenCalledWith("run_1"));
 		expect(onOpenChange).toHaveBeenCalledWith(false);
+	});
+
+	it("passes selected Fabric Agents backend connection when starting a spike", async () => {
+		getStatus.mockResolvedValue({ isConfigured: true });
+		start.mockResolvedValue({
+			codingRunId: "run_2",
+			workflowId: "wf_2",
+			status: "QUEUED",
+		});
+		const user = userEvent.setup();
+		renderDialog();
+
+		const backendSelect = await screen.findByLabelText(
+			"Fabric Agents backend",
+		);
+		await user.selectOptions(backendSelect, "codex");
+
+		const submit = screen.getByRole("button", { name: "Run spike" });
+		await waitFor(() => expect(submit).toBeEnabled());
+		await user.click(submit);
+
+		await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+		expect(start).toHaveBeenCalledWith({
+			projectId: "project_1",
+			storyId: "story_1",
+			organizationId: "org_1",
+			kind: "SPIKE",
+			spikeQuestion: story.title,
+			llmConnection: "codex",
+		});
 	});
 
 	it("rejects a question shorter than the API minimum", async () => {

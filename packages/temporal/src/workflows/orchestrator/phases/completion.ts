@@ -21,6 +21,7 @@ import type * as orchestratorActivities from "../../../activities/orchestrator";
 import type * as orchestratorMemoryActivities from "../../../activities/orchestrator-memory";
 import type * as postOperationResultModule from "../../../activities/post-operation-result";
 import type * as weaveActivities from "../../../activities/weave";
+import { answerModelInfo } from "../../../answer-model-info";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "../../ai-non-retryable-errors";
 import { advisorChargedUsage } from "../turn-budget";
 import { orchestratorErrorMessage } from "../usage-limit";
@@ -1157,6 +1158,9 @@ export function buildWorkflowOutput(
 		// renders it without any new-chat workaround.
 		...(state.budgetStop ? { budgetStop: state.budgetStop } : {}),
 		...(state.truncated ? { truncated: state.truncated } : {}),
+		...(state.advisorAnswerSnapshot?.model
+			? { model: answerModelInfo(state.advisorAnswerSnapshot.model) }
+			: {}),
 		...(state.apiBilling ? { apiBilling: state.apiBilling } : {}),
 	};
 }

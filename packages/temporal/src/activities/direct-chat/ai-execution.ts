@@ -59,6 +59,7 @@ import {
 import { heartbeat } from "@temporalio/activity";
 import { NoOutputGeneratedError } from "ai";
 import { z } from "zod";
+import { answerModelInfo } from "../../answer-model-info";
 import { resolveCompanyContextChatAccess } from "../../lib/company-context-chat-access";
 import { companyContextHintLine } from "../../lib/company-context-hint";
 import type {
@@ -2586,12 +2587,7 @@ ${DIAGRAM_RENDERING_GUIDANCE}`;
 						},
 					}
 				: {}),
-			model: {
-				id: metadata.modelString,
-				canonicalName: metadata.canonicalName,
-				provider: String(metadata.provider),
-				contextWindow: metadata.contextWindow,
-			},
+			model: answerModelInfo(metadata.answerSnapshot ?? metadata),
 			...(metadata.planSpentApiBilling && {
 				apiBilling: {
 					resetAt:

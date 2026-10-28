@@ -6,6 +6,7 @@
 import type { Prisma } from "@repo/database";
 import {
 	addCodingRunEvent,
+	canEditProject,
 	createCodingRun,
 	db,
 	isProjectReadOnly,
@@ -20,7 +21,8 @@ import {
 	READ_ONLY_MODE_ERROR_CODE,
 	READ_ONLY_MODE_MESSAGE,
 } from "@repo/utils/read-only-mode";
-import { ApplicationFailure } from "@temporalio/activity";
+import { ApplicationFailure, Context } from "@temporalio/activity";
+import { isFabricAgentsBridgeEnabled } from "../../lib/coding-execution/bridge-rollout";
 import {
 	AuthError,
 	RuntimeNotFoundError,
@@ -51,6 +53,7 @@ export interface CreateCodingRunRecordInput {
 }
 
 export interface CreateExecutionSessionInput {
+	fabricAgentsBridgeEnabled?: boolean;
 	provider: CodingRunProvider;
 	repoOwner: string;
 	repoName: string;
@@ -58,20 +61,27 @@ export interface CreateExecutionSessionInput {
 	organizationName?: string;
 	title?: string;
 	branch?: string;
+	headBranch?: string;
 	userId?: string;
 	workingDirectory?: string;
 	promptText?: string;
-	/** Fabric CodingRun ID — passed to fabric-bot for callback correlation */
+	/** Fabric CodingRun ID — passed to fabric-agent-server for idempotent worktree & session binding */
 	codingRunId?: string;
-	/** Temporal workflow ID — passed to fabric-bot to enable workflow signalling */
+	/** Temporal workflow ID — passed to fabric-agent-server for run correlation */
 	workflowId?: string;
-	/** Fabric organization ID — passed to fabric-bot for context enrichment */
+	/** Fabric organization ID — passed to fabric-agent-server for tenant binding */
 	organizationId?: string;
 	/**
 	 * Owning Fabric project — enables the Read-only mode gate:
 	 * a session ends in a branch + PR on the connected repository.
 	 */
 	projectId?: string;
+	/** Optional Fabric Agents backend connection slug (e.g. "claude-max", "codex", "cursor-cli", "antigravity-cli", "droid-cli", "grok-cli", "kimi-cli") */
+	llmConnection?: string;
+	/** Optional model identifier override */
+	model?: string;
+	/** Optional target machine / host identifier */
+	targetMachine?: string;
 }
 
 export interface BuildImplementationPromptInput {
@@ -95,6 +105,7 @@ export interface PollBackgroundAgentStatusOutput {
 	providerStatus: string;
 	fabricStatus: CodingRunStatus;
 	branchName: string | null;
+	error?: string | null;
 	pullRequestUrl: string | null;
 	pullRequestArtifact: {
 		url: string;
@@ -106,6 +117,12 @@ export interface SyncCodingRunArtifactsInput {
 	codingRunId: string;
 	provider: CodingRunProvider;
 	sessionId: string;
+}
+
+export interface SyncCodingRunArtifactsOutput {
+	pullRequestUrl: string | null;
+	pullRequestNumber?: number;
+	branchName: string | null;
 }
 
 export interface UpdateCodingRunStatusInput {
@@ -173,11 +190,14 @@ function mapProviderStatusToFabric(
 			return "STARTING";
 		case "active":
 			return hasPrArtifact ? "PR_OPENED" : "RUNNING";
+		case "paused":
+			return "AWAITING_REVIEW";
 		case "completed":
 			return "COMPLETED";
 		case "failed":
 			return "FAILED";
 		case "stopped":
+		case "archived":
 			return "CANCELLED";
 		default:
 			return "RUNNING";
@@ -221,6 +241,16 @@ export async function createExecutionSession(
 	// admin disables the mode.
 	await failIfProjectReadOnly(input.projectId);
 	try {
+		if (
+			input.provider === "BACKGROUND_AGENTS" &&
+			input.fabricAgentsBridgeEnabled !== undefined &&
+			input.fabricAgentsBridgeEnabled !== isFabricAgentsBridgeEnabled()
+		) {
+			throw ApplicationFailure.nonRetryable(
+				"API and worker Fabric bridge rollout settings differ; no session was created",
+				"VALIDATION_ERROR",
+			);
+		}
 		const provider = getCodingExecutionProvider(input.provider);
 		const result = await provider.createSession({
 			repoOwner: input.repoOwner,
@@ -229,12 +259,16 @@ export async function createExecutionSession(
 			organizationName: input.organizationName,
 			title: input.title,
 			branch: input.branch,
+			headBranch: input.headBranch,
 			userId: input.userId,
 			workingDirectory: input.workingDirectory,
 			promptText: input.promptText,
 			codingRunId: input.codingRunId,
 			workflowId: input.workflowId,
 			organizationId: input.organizationId,
+			llmConnection: input.llmConnection,
+			model: input.model,
+			targetMachine: input.targetMachine,
 		});
 
 		if (input.provider === "KANBAN_LOCAL") {
@@ -386,10 +420,13 @@ export async function buildImplementationPrompt(
 		"Write clean, well-tested code following the project's existing patterns.",
 	);
 	parts.push(
-		"Summarize what was implemented, any follow-up work, and validation performed.",
+		"Run relevant unit tests and type-checks to verify your implementation before committing.",
 	);
 	parts.push(
-		"If the execution environment supports pull requests, create one with a clear description of the shipped changes.",
+		`Stage and commit your changes on the current feature worktree branch, push the branch to origin, and open a GitHub Pull Request targeting \`${input.targetBranch ?? "main"}\` (for example using \`gh pr create --base ${input.targetBranch ?? "main"} --fill\` or \`gh pr create\`).`,
+	);
+	parts.push(
+		"Include the opened Pull Request URL (`https://github.com/<owner>/<repo>/pull/<number>`) and a concise summary of what was implemented and validated in your final response.",
 	);
 
 	return parts.join("\n");
@@ -402,7 +439,67 @@ export async function sendExecutionPrompt(
 	// the connected repository — same gate as createExecutionSession.
 	await failIfProjectReadOnly(input.projectId);
 	const provider = getCodingExecutionProvider(input.provider);
-	await provider.sendPrompt(input.sessionId, input.content, input.authorId);
+	if (input.provider !== "BACKGROUND_AGENTS") {
+		await provider.sendPrompt(
+			input.sessionId,
+			input.content,
+			input.authorId,
+		);
+		return;
+	}
+	// Activity identity is stable across retries, including worker restarts.
+	const info = Context.current().info;
+	if (!info.workflowExecution) {
+		throw new Error("Prompt delivery requires a workflow identity");
+	}
+	const promptId = `${info.workflowExecution.workflowId}:${info.workflowExecution.runId}:${info.activityId}`;
+	const run = await db.codingRun.findFirst({
+		where: {
+			OR: [
+				{ workflowId: info.workflowExecution.workflowId },
+				...(info.workflowExecution.workflowId.startsWith("coding-run-")
+					? [
+							{
+								id: info.workflowExecution.workflowId.slice(
+									"coding-run-".length,
+								),
+								workflowId: null,
+							},
+						]
+					: []),
+			],
+			providerSessionId: input.sessionId,
+			provider: input.provider,
+			userId: input.authorId,
+			...(input.projectId ? { projectId: input.projectId } : {}),
+		},
+		select: { id: true, projectId: true },
+	});
+	if (!run || !(await canEditProject(run.projectId, input.authorId))) {
+		throw ApplicationFailure.nonRetryable(
+			"Prompt has no authorized coding run",
+			"INVALID_SESSION",
+		);
+	}
+	const receipt = await provider.sendPrompt(
+		input.sessionId,
+		input.content,
+		input.authorId,
+		{ promptId },
+	);
+	if (receipt) {
+		await db.codingRunEvent.upsert({
+			where: { id: `prompt-receipt:${run.id}:${promptId}` },
+			create: {
+				id: `prompt-receipt:${run.id}:${promptId}`,
+				codingRunId: run.id,
+				eventType: "prompt_accepted",
+				providerEventId: receipt.messageId,
+				payloadJson: { promptId, messageId: receipt.messageId },
+			},
+			update: {},
+		});
+	}
 }
 
 export async function pollExecutionStatus(
@@ -440,6 +537,7 @@ export async function pollExecutionStatus(
 		providerStatus: status.status,
 		fabricStatus,
 		branchName: status.branchName,
+		...(status.error ? { error: status.error } : {}),
 		pullRequestUrl: prArtifact?.url ?? null,
 		pullRequestArtifact: prArtifact?.url
 			? { url: prArtifact.url, type: prArtifact.type }
@@ -449,7 +547,7 @@ export async function pollExecutionStatus(
 
 export async function syncCodingRunArtifacts(
 	input: SyncCodingRunArtifactsInput,
-): Promise<void> {
+): Promise<SyncCodingRunArtifactsOutput> {
 	const provider = getCodingExecutionProvider(input.provider);
 	const status = await provider.getSessionStatus(input.sessionId);
 
@@ -460,14 +558,34 @@ export async function syncCodingRunArtifacts(
 	if (prArtifact?.url) {
 		// Extract PR number from URL (e.g., https://github.com/owner/repo/pull/123)
 		const prMatch = prArtifact.url.match(/\/pull\/(\d+)/);
-		await updateCodingRunStatus(input.codingRunId, "PR_OPENED", {
+		const pullRequestNumber = prMatch
+			? Number.parseInt(prMatch[1], 10)
+			: undefined;
+		const existingRun = await db.codingRun.findUnique({
+			where: { id: input.codingRunId },
+			select: { status: true },
+		});
+		const nextStatus: CodingRunStatus =
+			status.status === "paused" ||
+			existingRun?.status === "AWAITING_REVIEW"
+				? "AWAITING_REVIEW"
+				: "PR_OPENED";
+		await updateCodingRunStatus(input.codingRunId, nextStatus, {
 			pullRequestUrl: prArtifact.url,
-			pullRequestNumber: prMatch
-				? Number.parseInt(prMatch[1], 10)
-				: undefined,
+			pullRequestNumber,
 			pullRequestBranch: status.branchName ?? undefined,
 		});
+		return {
+			pullRequestUrl: prArtifact.url,
+			pullRequestNumber,
+			branchName: status.branchName,
+		};
 	}
+
+	return {
+		pullRequestUrl: null,
+		branchName: status.branchName,
+	};
 }
 
 export async function updateCodingRunStatusActivity(

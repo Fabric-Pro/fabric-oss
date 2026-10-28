@@ -50,6 +50,12 @@ describe("workflow bundle options", () => {
 		expect(bundle.code).toContain("importInterceptors");
 		expect(bundle.code).toContain("CorrelationWorkflowOutboundInterceptor");
 		expect(bundle.code).toContain("x-correlation-id");
+		// Positive control: webpack module paths are present in this output.
+		expect(bundle.code).toContain(
+			"workflows/correlation-workflow-interceptor",
+		);
+		expect(bundle.code).not.toContain("approval/trust-manager");
+		expect(bundle.code).not.toContain("execution/authority-gate");
 	}, 120_000);
 });
 

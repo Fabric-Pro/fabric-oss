@@ -1595,6 +1595,16 @@
 					"settings": {
 						"updated": "Organization settings updated"
 					},
+					"chat_approval": {
+						"decided": "Chat approval decided"
+					},
+					"chat_run": {
+						"cancel_requested": "Chat run cancellation requested"
+					},
+					"agent_definition": {
+						"imported": "Agent definition imported",
+						"exported": "Agent definition exported"
+					},
 					"member": {
 						"invited": "Member invited",
 						"role_changed": "Member role changed",
@@ -2652,7 +2662,8 @@
 				"takeBackConfirmBody": "It switches to personal use only: it becomes your own plan again and stops serving {organization}'s shared work. You can share it again later.",
 				"takenBack": "The account is back to personal use only",
 				"takeBackFailed": "Couldn't stop sharing the account",
-				"actionTooltip": "Anyone in {organization} can then run their AI work on this plan's usage. You can switch it back to personal use only at any time."
+				"actionTooltip": "Anyone in {organization} can then run their AI work on this plan's usage. You can switch it back to personal use only at any time.",
+				"needsTerms": "Sharing opens once an organization owner accepts the terms for sharing ChatGPT plans under AI Models → Routing. Until then, no plan can be shared with {organization}."
 			},
 			"test": {
 				"button": "Test",
@@ -2668,6 +2679,7 @@
 		},
 		"chatgptPlanPool": {
 			"termsPendingTitle": "These accounts aren't serving any work yet",
+			"termsPendingEmptyTitle": "Shared accounts can't serve any work yet",
 			"termsPendingBody": "An organization owner has to accept the terms for sharing ChatGPT plans under AI Models → Routing. Until then, Fabric uses members' own ChatGPT plans or your API provider instead, and work with neither doesn't run.",
 			"termsPendingReview": "Review terms",
 			"termsPendingOwnerOnly": "Only an organization owner can accept them. Ask an owner to open AI Models.",
@@ -3963,7 +3975,6 @@
 				"tagCount": "{count, plural, one {# tag} other {# tags}}",
 				"syncFailed": "Failed",
 				"syncConflict": "Conflict",
-
 				"syncing": "Sync…",
 				"pmTicketStatus": "Status in {tool}: {status}",
 				"tasks": "tasks",
@@ -4206,7 +4217,7 @@
 				},
 				"runSpike": {
 					"title": "Run a spike",
-					"description": "A Background Agent explores the question on a throwaway branch and comes back with a self-contained demo and a findings note. Nothing is merged.",
+					"description": "A Fabric Agent explores the question on a throwaway branch in an isolated worktree and comes back with a self-contained demo and a findings note. Nothing is merged.",
 					"questionLabel": "What should the spike answer?",
 					"questionPlaceholder": "Can we render the mortgage schedule client-side in under 200 ms?",
 					"questionHint": "One concrete question. The agent will answer it, show evidence and recommend the next track.",
@@ -4218,7 +4229,7 @@
 					"branchHint": "Work lands on a new fabric-spike/ branch for this run; product code paths are not modified.",
 					"repositoryRequiredTitle": "Repository required",
 					"repositoryRequired": "Spikes need a repository the agent can push a throwaway branch to. Connect one on the project first.",
-					"providerHintTitle": "Runs on Background Agents",
+					"providerHintTitle": "Runs on Fabric Agents",
 					"providerHint": "This project's default provider is {local}. Spikes always run on {background}; no local setup is used.",
 					"aiNotConfiguredTitle": "AI provider not configured",
 					"aiNotConfigured": "Configure an AI provider before running a spike.",
@@ -9927,7 +9938,8 @@
 			"prioritizeIntegration": "Star this integration so the orchestrator prefers it when a step needs that system. Saved on this device.",
 			"removePriorityIntegration": "Unstar this integration. It ranks alongside the other connected integrations.",
 			"responseStopped": "This response ended early because you stopped it. Sending a new prompt starts a fresh turn.",
-			"templateCategory": "Categorised as {category}."
+			"templateCategory": "Categorised as {category}.",
+			"answeredByModel": "Answered by {model}"
 		},
 		"editor": {
 			"diagramMenu": {

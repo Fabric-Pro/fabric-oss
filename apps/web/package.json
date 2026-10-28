@@ -1,12 +1,12 @@
 {
 	"dependencies": {
-		"@ag-ui/langgraph": "0.0.43",
+		"@ag-ui/langgraph": "0.0.44",
 		"@ai-sdk/react": "^4.0.143",
 		"@bprogress/next": "^3.2.12",
-		"@copilotkit/react-core": "1.70.1",
-		"@copilotkit/react-ui": "1.70.1",
-		"@copilotkit/runtime": "1.70.1",
-		"@copilotkit/runtime-client-gql": "1.70.1",
+		"@copilotkit/react-core": "1.80.0",
+		"@copilotkit/react-ui": "1.80.0",
+		"@copilotkit/runtime": "1.80.0",
+		"@copilotkit/runtime-client-gql": "1.80.0",
 		"@databricks/aibi-client": "1.2.1",
 		"@dnd-kit/core": "^6.3.1",
 		"@dnd-kit/sortable": "^10.0.0",

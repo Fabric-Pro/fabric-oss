@@ -19,12 +19,16 @@ import { AiUsageLimitExceededError } from "@repo/payments";
 import {
 	type ActivityHeartbeatDetails,
 	type DirectChatProgressUpdate,
+	type DirectChatToolCall,
 	type DirectChatWorkflowInput,
 	type DirectChatWorkflowOutput,
 	decodeHeartbeatDetails,
 	getTemporalClient,
 	isTemporalAvailable,
 } from "@repo/temporal";
+import type { AssertAssignable } from "@saas/agents/lib/chat-stream-protocol";
+import type { DirectStreamInput } from "@saas/agents/lib/direct-stream-protocol";
+import { encodeDirectStreamEvent } from "@saas/agents/lib/direct-stream-protocol";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
 import { v4 as uuidv4 } from "uuid";
@@ -1105,13 +1109,13 @@ async function handleTemporalWorkflow(params: {
 					// Already closed or cancelled by the client.
 				}
 			};
-			const sendEvent = (data: unknown) => {
+			const sendEvent = (data: DirectStreamInput) => {
 				if (isClosed) {
 					return; // Don't send if already closed
 				}
 				try {
 					controller.enqueue(
-						encoder.encode(`data: ${JSON.stringify(data)}\n\n`),
+						encoder.encode(encodeDirectStreamEvent(data)),
 					);
 				} catch {
 					// Controller already closed, mark as closed
@@ -1133,7 +1137,7 @@ async function handleTemporalWorkflow(params: {
 				serverName?: string;
 				args?: Record<string, unknown>;
 				result?: unknown;
-				status: string;
+				status: DirectChatToolCall["status"];
 				/**
 				 * Why this is carried separately from `result`: a tool that
 				 * never ran has no result to explain itself with. The activity
@@ -1165,7 +1169,19 @@ async function handleTemporalWorkflow(params: {
 					return;
 				}
 
-				sendEvent({ type: "text", content: nextChunk });
+				{
+					const payload = {
+						type: "text" as const,
+						content: nextChunk,
+					};
+					type Emitted1175 = typeof payload;
+					sendEvent(
+						payload satisfies AssertAssignable<
+							Emitted1175,
+							DirectStreamInput
+						>,
+					);
+				}
 				streamedResponseLength = fullResponseText.length;
 			};
 
@@ -1184,7 +1200,19 @@ async function handleTemporalWorkflow(params: {
 				if (nextChunk.length === 0) {
 					return;
 				}
-				sendEvent({ type: "reasoning", content: nextChunk });
+				{
+					const payload = {
+						type: "reasoning" as const,
+						content: nextChunk,
+					};
+					type Emitted1194 = typeof payload;
+					sendEvent(
+						payload satisfies AssertAssignable<
+							Emitted1194,
+							DirectStreamInput
+						>,
+					);
+				}
 				streamedReasoningLength = fullReasoningText.length;
 			};
 
@@ -1193,7 +1221,7 @@ async function handleTemporalWorkflow(params: {
 				{
 					args: string;
 					result: string;
-					status: string;
+					status: DirectChatToolCall["status"];
 					started: boolean;
 				}
 			>();
@@ -1204,29 +1232,47 @@ async function handleTemporalWorkflow(params: {
 				const nextResult = stableSerialize(toolCall.result ?? null);
 
 				if (!previous?.started) {
-					sendEvent({
-						type: "tool_start",
-						toolCallId: toolCall.id,
-						toolName: toolCall.name,
-						serverName: toolCall.serverName,
-						args: toolCall.args,
-						status: toolCall.status,
-						mcpAppResourceUri: toolCall.mcpAppResourceUri,
-						mcpAppConfigId: toolCall.mcpAppConfigId,
-					});
+					{
+						const payload = {
+							type: "tool_start" as const,
+							toolCallId: toolCall.id,
+							toolName: toolCall.name,
+							serverName: toolCall.serverName,
+							args: toolCall.args,
+							status: toolCall.status,
+							mcpAppResourceUri: toolCall.mcpAppResourceUri,
+							mcpAppConfigId: toolCall.mcpAppConfigId,
+						};
+						type Emitted1214 = typeof payload;
+						sendEvent(
+							payload satisfies AssertAssignable<
+								Emitted1214,
+								DirectStreamInput
+							>,
+						);
+					}
 				}
 
 				if (previous === undefined || nextArgs !== previous.args) {
-					sendEvent({
-						type: "tool_input",
-						toolCallId: toolCall.id,
-						toolName: toolCall.name,
-						serverName: toolCall.serverName,
-						args: toolCall.args,
-						status: toolCall.status,
-						mcpAppResourceUri: toolCall.mcpAppResourceUri,
-						mcpAppConfigId: toolCall.mcpAppConfigId,
-					});
+					{
+						const payload = {
+							type: "tool_input" as const,
+							toolCallId: toolCall.id,
+							toolName: toolCall.name,
+							serverName: toolCall.serverName,
+							args: toolCall.args,
+							status: toolCall.status,
+							mcpAppResourceUri: toolCall.mcpAppResourceUri,
+							mcpAppConfigId: toolCall.mcpAppConfigId,
+						};
+						type Emitted1227 = typeof payload;
+						sendEvent(
+							payload satisfies AssertAssignable<
+								Emitted1227,
+								DirectStreamInput
+							>,
+						);
+					}
 				}
 
 				if (
@@ -1236,16 +1282,25 @@ async function handleTemporalWorkflow(params: {
 						previous.status !== toolCall.status ||
 						nextResult !== previous.result)
 				) {
-					sendEvent({
-						type: "tool_result",
-						toolCallId: toolCall.id,
-						toolName: toolCall.name,
-						result: toolCall.result,
-						status: toolCall.status,
-						error: toolCall.error,
-						mcpAppResourceUri: toolCall.mcpAppResourceUri,
-						mcpAppConfigId: toolCall.mcpAppConfigId,
-					});
+					{
+						const payload = {
+							type: "tool_result" as const,
+							toolCallId: toolCall.id,
+							toolName: toolCall.name,
+							result: toolCall.result,
+							status: toolCall.status,
+							error: toolCall.error,
+							mcpAppResourceUri: toolCall.mcpAppResourceUri,
+							mcpAppConfigId: toolCall.mcpAppConfigId,
+						};
+						type Emitted1246 = typeof payload;
+						sendEvent(
+							payload satisfies AssertAssignable<
+								Emitted1246,
+								DirectStreamInput
+							>,
+						);
+					}
 				}
 
 				lastToolSnapshots.set(toolCall.id, {
@@ -1374,6 +1429,7 @@ async function handleTemporalWorkflow(params: {
 						memo: {
 							userId,
 							organizationId: organizationId ?? null,
+							projectId: projectId ?? null,
 						},
 						// Fizzy #1412 PR2 (Codex review round-3 fix #3):
 						// Make the "no-workflow-retry" contract EXPLICIT.
@@ -1412,7 +1468,16 @@ async function handleTemporalWorkflow(params: {
 				}
 
 				// Send started event
-				sendEvent({ type: "started", executionId });
+				{
+					const payload = { type: "started" as const, executionId };
+					type Emitted1423 = typeof payload;
+					sendEvent(
+						payload satisfies AssertAssignable<
+							Emitted1423,
+							DirectStreamInput
+						>,
+					);
+				}
 
 				// Track state for change detection
 				let lastPhase = "";
@@ -1487,26 +1552,53 @@ async function handleTemporalWorkflow(params: {
 							emitResponseDelta(result.responseText);
 							emitReasoningDelta(result.reasoningText);
 							if (result.reasoningDurationMs !== undefined) {
-								sendEvent({
-									type: "reasoningDuration",
-									durationMs: result.reasoningDurationMs,
-								});
+								{
+									const payload = {
+										type: "reasoningDuration" as const,
+										durationMs: result.reasoningDurationMs,
+									};
+									type Emitted1498 = typeof payload;
+									sendEvent(
+										payload satisfies AssertAssignable<
+											Emitted1498,
+											DirectStreamInput
+										>,
+									);
+								}
 							}
 
 							// Send pending confirmation if any
 							if (result.pendingConfirmation) {
-								sendEvent({
-									type: "confirmation_required",
-									...result.pendingConfirmation,
-								});
+								{
+									const payload = {
+										type: "confirmation_required" as const,
+										...result.pendingConfirmation,
+									};
+									type Emitted1506 = typeof payload;
+									sendEvent(
+										payload satisfies AssertAssignable<
+											Emitted1506,
+											DirectStreamInput
+										>,
+									);
+								}
 							}
 
 							// Send sources if RAG was used
 							if (result.sources && result.sources.length > 0) {
-								sendEvent({
-									type: "sources",
-									sources: result.sources,
-								});
+								{
+									const payload = {
+										type: "sources" as const,
+										sources: result.sources,
+									};
+									type Emitted1514 = typeof payload;
+									sendEvent(
+										payload satisfies AssertAssignable<
+											Emitted1514,
+											DirectStreamInput
+										>,
+									);
+								}
 							}
 
 							const partialError = partialTurnEvent(result);
@@ -1543,10 +1635,19 @@ async function handleTemporalWorkflow(params: {
 							}
 							isComplete = true;
 						} else if (description.status.name === "CANCELLED") {
-							sendEvent({
-								type: "error",
-								message: "Workflow was cancelled",
-							});
+							{
+								const payload = {
+									type: "error" as const,
+									message: "Workflow was cancelled",
+								};
+								type Emitted1554 = typeof payload;
+								sendEvent(
+									payload satisfies AssertAssignable<
+										Emitted1554,
+										DirectStreamInput
+									>,
+								);
+							}
 							isComplete = true;
 						} else {
 							// First, check for activity heartbeat details (real-time tool calls)
@@ -1576,7 +1677,7 @@ async function handleTemporalWorkflow(params: {
 											id: string;
 											name: string;
 											serverName?: string;
-											status: string;
+											status: DirectChatToolCall["status"];
 											args?: Record<string, unknown>;
 											result?: unknown;
 											mcpAppResourceUri?: string;
@@ -1593,15 +1694,25 @@ async function handleTemporalWorkflow(params: {
 										heartbeatDetails.phase !== lastPhase
 									) {
 										lastPhase = heartbeatDetails.phase;
-										sendEvent({
-											type: "progress",
-											phase: heartbeatDetails.phase,
-											message:
-												heartbeatDetails.message ||
-												"Processing...",
-											progress:
-												heartbeatDetails.progress || 0,
-										});
+										{
+											const payload = {
+												type: "progress" as const,
+												phase: heartbeatDetails.phase,
+												message:
+													heartbeatDetails.message ||
+													"Processing...",
+												progress:
+													heartbeatDetails.progress ||
+													0,
+											};
+											type Emitted1604 = typeof payload;
+											sendEvent(
+												payload satisfies AssertAssignable<
+													Emitted1604,
+													DirectStreamInput
+												>,
+											);
+										}
 									}
 
 									emitResponseDelta(
@@ -1624,14 +1735,23 @@ async function handleTemporalWorkflow(params: {
 									progress.phase !== lastPhase
 								) {
 									lastPhase = progress.phase;
-									sendEvent({
-										type: "progress",
-										phase: progress.phase,
-										message: progress.message,
-										progress: progress.progress,
-										currentActivity:
-											progress.currentActivity,
-									});
+									{
+										const payload = {
+											type: "progress" as const,
+											phase: progress.phase,
+											message: progress.message,
+											progress: progress.progress,
+											currentActivity:
+												progress.currentActivity,
+										};
+										type Emitted1635 = typeof payload;
+										sendEvent(
+											payload satisfies AssertAssignable<
+												Emitted1635,
+												DirectStreamInput
+											>,
+										);
+									}
 								}
 
 								if (progress?.toolCalls) {
@@ -1694,10 +1814,19 @@ async function handleTemporalWorkflow(params: {
 					Date.now() - startTime >= MAX_POLL_DURATION
 				) {
 					await cancelWorkflow("poll time limit");
-					sendEvent({
-						type: "error",
-						message: ROUTE_TIMEOUT_MESSAGE,
-					});
+					{
+						const payload = {
+							type: "error" as const,
+							message: ROUTE_TIMEOUT_MESSAGE,
+						};
+						type Emitted1705 = typeof payload;
+						sendEvent(
+							payload satisfies AssertAssignable<
+								Emitted1705,
+								DirectStreamInput
+							>,
+						);
+					}
 				}
 
 				if (!isClosed) {

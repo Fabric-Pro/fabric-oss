@@ -347,3 +347,13 @@ describe("POST orchestrator-temporal/cancel — turn cancellation", () => {
 		expect(m.cancel).not.toHaveBeenCalled();
 	});
 });
+
+vi.mock("@repo/api/lib/audit", () => ({ recordAuditFromRequest: vi.fn() }));
+
+it("fails before Temporal when no organization is active, even with only an execution id", async () => {
+	m.getSession.mockResolvedValue({ user: { id: USER_ID }, session: {} });
+	const response = await POST(request({ executionId: EXEC }));
+	expect(response.status).toBe(403);
+	expect(m.getTemporalClient).not.toHaveBeenCalled();
+	expect(m.cancel).not.toHaveBeenCalled();
+});

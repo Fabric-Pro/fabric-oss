@@ -8,6 +8,7 @@
  * Part of Improvement 5: Factory AI-style Plan Presentation
  */
 
+import { resolvePlanRisk } from "../../../workflows/orchestrator/plan-risk";
 import type { Assumption, Decision, JourneyState } from "../journey/types";
 import type { RoutingDecision, TaskPlan, TaskStep } from "../types";
 
@@ -418,15 +419,12 @@ function formatRiskSummary(
 	}
 
 	// Overall risk
-	const riskLabel = (
-		plan.riskLevel ||
-		routingDecision.riskLevel ||
-		"low"
-	).toUpperCase();
-	const riskIcon = getRiskIcon(
-		plan.riskLevel || routingDecision.riskLevel,
-		opts.format,
-	);
+	const risk = resolvePlanRisk({
+		...plan,
+		riskLevel: plan.riskLevel || routingDecision.riskLevel,
+	});
+	const riskLabel = risk.toUpperCase();
+	const riskIcon = getRiskIcon(risk, opts.format);
 	lines.push(`**Overall Risk**: ${riskIcon} ${riskLabel}`);
 
 	// Risk factors

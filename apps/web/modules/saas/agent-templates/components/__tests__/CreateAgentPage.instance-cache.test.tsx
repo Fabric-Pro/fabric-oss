@@ -55,6 +55,25 @@ vi.mock("@saas/agents/sidekick/SidekickSuggestionsContext", () => ({
 	SidekickSuggestionsProvider: ({ children }: { children: ReactNode }) =>
 		children,
 }));
+vi.mock("../AgentDefinitionDialog", () => ({
+	AgentDefinitionImportDialog: ({
+		onImported,
+	}: {
+		onImported: (id: string) => void;
+	}) => (
+		<button
+			type="button"
+			onClick={() => {
+				h.list.mockResolvedValue({
+					instances: [oldInstance, createdInstance],
+				});
+				onImported(createdInstance.id);
+			}}
+		>
+			Import example draft
+		</button>
+	),
+}));
 vi.mock("../DataSourcesSheet", () => ({ DataSourcesSheet: () => null }));
 vi.mock("../ToolsSheet", () => ({ ToolsSheet: () => null }));
 vi.mock("../TriggersSheet", () => ({ TriggersSheet: () => null }));
@@ -122,7 +141,7 @@ beforeEach(() => {
 });
 
 describe("agent builder save refreshes cached chat targets", () => {
-	it.each(["edit", "create"] as const)(
+	it.each(["edit", "create", "import"] as const)(
 		"refreshes the instance list after %s and navigates to the returned ID",
 		async (mode) => {
 			const resultInstance =
@@ -155,7 +174,7 @@ describe("agent builder save refreshes cached chat targets", () => {
 							}}
 							organizationId="example-org"
 							basePath="/app/example-org"
-							mode={mode}
+							mode={mode === "import" ? "create" : mode}
 							instanceId={
 								mode === "edit" ? oldInstance.id : undefined
 							}
@@ -187,7 +206,12 @@ describe("agent builder save refreshes cached chat targets", () => {
 			await act(async () => {
 				fireEvent.click(
 					view.getByRole("button", {
-						name: mode === "edit" ? "Save Changes" : "Create Agent",
+						name:
+							mode === "edit"
+								? "Save Changes"
+								: mode === "import"
+									? "Import example draft"
+									: "Create Agent",
 					}),
 				);
 			});
@@ -198,22 +222,24 @@ describe("agent builder save refreshes cached chat targets", () => {
 			);
 			const mutation = mode === "edit" ? h.update : h.create;
 
-			expect(mutation).toHaveBeenCalledWith(
-				expect.objectContaining({
-					organizationId: "example-org",
-					...(mode === "edit"
-						? { id: oldInstance.id, createNewVersion: true }
-						: {}),
-					toolConnections: {
-						"project-context": {
-							enabled: true,
-							projectId: "example-project",
+			if (mode !== "import") {
+				expect(mutation).toHaveBeenCalledWith(
+					expect.objectContaining({
+						organizationId: "example-org",
+						...(mode === "edit"
+							? { id: oldInstance.id, createNewVersion: true }
+							: {}),
+						toolConnections: {
+							"project-context": {
+								enabled: true,
+								projectId: "example-project",
+							},
+							"create-story": { enabled: true },
 						},
-						"create-story": { enabled: true },
-					},
-				}),
-				expect.anything(),
-			);
+					}),
+					expect.anything(),
+				);
+			}
 			await waitFor(() =>
 				expect(
 					view.getByRole("link", {

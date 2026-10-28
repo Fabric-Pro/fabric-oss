@@ -107,20 +107,29 @@ const MEMBER_SHARE_ALL = 100;
 /**
  * Connected accounts serve nothing until an owner accepts the pooling terms
  * on AI Models, and nothing else on this card says so: every account still
- * reads Active.
+ * reads Active. Shown before the first account too, so nobody connects one
+ * without knowing it will sit idle.
  */
 function TermsPendingNotice({
 	organizationSlug,
 	viewerIsOwner,
+	hasAccounts,
 }: {
 	organizationSlug: string;
 	viewerIsOwner: boolean;
+	hasAccounts: boolean;
 }) {
 	const t = useTranslations("settings.chatgptPlanPool");
 	return (
 		<Alert data-testid="chatgpt-plan-pool-terms-pending" variant="warning">
 			<AlertTriangleIcon className="size-4" />
-			<AlertTitle>{t("termsPendingTitle")}</AlertTitle>
+			<AlertTitle>
+				{t(
+					hasAccounts
+						? "termsPendingTitle"
+						: "termsPendingEmptyTitle",
+				)}
+			</AlertTitle>
 			<AlertDescription className="space-y-2">
 				<p>{t("termsPendingBody")}</p>
 				{viewerIsOwner ? (
@@ -600,12 +609,13 @@ export function OrgChatgptPlanAccountsCard({
 				</div>
 			</div>
 
-			{accounts.length > 0 && !terms.accepted ? (
+			{terms.accepted ? null : (
 				<TermsPendingNotice
+					hasAccounts={accounts.length > 0}
 					organizationSlug={organizationSlug}
 					viewerIsOwner={terms.viewerIsOwner}
 				/>
-			) : null}
+			)}
 
 			{accounts.length === 0 ? (
 				<div className="space-y-3">

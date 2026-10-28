@@ -45,19 +45,9 @@ export async function resolveDefaultChatAgent(
 			return null;
 		}
 
-		// Match against the DEFAULT provider only, not the wider
-		// `effectiveProviders` set.
-		//
-		// For a general task like CHAT, `effectiveProviders` is the default
-		// provider PLUS any configured provider that happens to support image,
-		// audio or embedding work — a set assembled so one request can feed
-		// several pickers and the client can filter. General chat itself only
-		// ever runs on the default provider, so the wider set can pass for a
-		// model the picker does not list and the send path would not use.
-		//
-		// No environment checked is currently configured that way, so this
-		// changes no outcome today; it is the check that matches how the model
-		// is actually resolved at send time.
+		// Match against the DEFAULT provider, the one general chat runs on at
+		// send time. For an explicit general task like CHAT,
+		// `effectiveProviders` is that provider alone too (Fizzy #3400).
 		const model = await db.aiModel.findFirst({
 			where: {
 				canonicalName: DEFAULT_CHAT_AGENT_MODEL,

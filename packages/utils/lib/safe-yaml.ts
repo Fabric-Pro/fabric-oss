@@ -10,7 +10,7 @@
  *   fetch does this); `maxBytes` here is a second guard.
  */
 
-import { parse as parseYaml } from "yaml";
+import { parseDocument, parse as parseYaml, stringify } from "yaml";
 
 export interface SafeParseOptions {
 	/** Maximum nesting depth of the parsed document (default 50). */
@@ -19,6 +19,8 @@ export interface SafeParseOptions {
 	maxAliasCount?: number;
 	/** Maximum input size in bytes (default 5 MB). */
 	maxBytes?: number;
+	/** Reject duplicate mapping keys when interpreting a configuration file. */
+	uniqueKeys?: boolean;
 }
 
 export const SAFE_PARSE_DEFAULT_MAX_DEPTH = 50;
@@ -105,12 +107,24 @@ export function parseYamlSafe(
 	assertSize(text, options.maxBytes ?? SAFE_PARSE_DEFAULT_MAX_BYTES);
 	let parsed: unknown;
 	try {
-		parsed = parseYaml(text, {
-			schema: "core",
-			maxAliasCount,
-			uniqueKeys: false,
-			logLevel: "silent",
-		});
+		if (options.uniqueKeys) {
+			const document = parseDocument(text, {
+				schema: "core",
+				uniqueKeys: true,
+				logLevel: "silent",
+			});
+			if (document.errors.length > 0) {
+				throw document.errors[0];
+			}
+			parsed = document.toJS({ maxAliasCount });
+		} else {
+			parsed = parseYaml(text, {
+				schema: "core",
+				maxAliasCount,
+				uniqueKeys: false,
+				logLevel: "silent",
+			});
+		}
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		const code = /alias/i.test(message) ? "ALIAS_LIMIT" : "PARSE_ERROR";
@@ -118,6 +132,11 @@ export function parseYamlSafe(
 	}
 	assertMaxDepth(parsed, maxDepth);
 	return parsed;
+}
+
+/** Serialize plain, validated configuration values without YAML aliases. */
+export function stringifyYaml(value: unknown): string {
+	return stringify(value, { aliasDuplicateObjects: false, lineWidth: 0 });
 }
 
 /**
@@ -130,7 +149,10 @@ export function parseJsonOrYamlSafe(
 	options: SafeParseOptions = {},
 ): unknown {
 	const trimmed = text.trimStart();
-	if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+	if (
+		!options.uniqueKeys &&
+		(trimmed.startsWith("{") || trimmed.startsWith("["))
+	) {
 		try {
 			return parseJsonSafe(text, options);
 		} catch (error) {

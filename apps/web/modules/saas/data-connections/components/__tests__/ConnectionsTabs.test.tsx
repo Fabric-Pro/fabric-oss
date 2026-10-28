@@ -67,15 +67,24 @@ vi.mock("@saas/get-started/components/PageTourButton", () => ({
 }));
 
 vi.mock("../ConnectionsPageContent", () => ({
-	ConnectionsPageContent: ({ toolbarStart }: { toolbarStart?: ReactNode }) =>
+	ConnectionsPageContent: ({
+		toolbarStart,
+		beforeCatalog,
+	}: {
+		toolbarStart?: ReactNode;
+		beforeCatalog?: ReactNode;
+	}) =>
 		// Neutral marker, not the real failure copy: asserting a string this
 		// factory itself supplies would only prove the stub ran. The real
 		// error text is pinned against the real component in
 		// ConnectionsPageContent.test.tsx.
 		state.childFails ? (
-			<div data-testid="child-error" />
+			<div data-testid="child-error">{beforeCatalog}</div>
 		) : (
-			<div data-testid="child">{toolbarStart}</div>
+			<div data-testid="child">
+				{toolbarStart}
+				{beforeCatalog}
+			</div>
 		),
 }));
 
@@ -281,6 +290,15 @@ describe("ConnectionsTabs", () => {
 		renderTabs();
 
 		expect(pageTourId()).toBe("mcp-servers");
+	});
+
+	it("hands the MCP servers to the page above the catalogue on the MCP tab", () => {
+		state.search = "tab=mcp";
+		renderTabs();
+
+		expect(
+			within(screen.getByTestId("child")).getByTestId("mcp-servers-view"),
+		).toBeInTheDocument();
 	});
 
 	it("passes server query parameter down to McpServersView", () => {

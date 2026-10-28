@@ -826,6 +826,12 @@ export async function executeInitializationPhase(
 
 			try {
 				const sandbox = await createSandboxActivity({
+					...(patched("weave-native-bridge-cutover-v1")
+						? {
+								fabricAgentsBridgeEnabled:
+									input.fabricAgentsBridgeEnabled === true,
+							}
+						: {}),
 					userId: input.userId,
 					organizationId: input.organizationId ?? null,
 					repoUrl,

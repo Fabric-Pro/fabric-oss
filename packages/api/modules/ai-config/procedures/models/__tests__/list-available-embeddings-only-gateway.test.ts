@@ -244,3 +244,72 @@ it("preserves fit metadata in the flat and gateway model payloads", async () => 
 			.models[0],
 	).toMatchObject(metadata);
 });
+
+it.each(["CHAT", "EMBEDDING", undefined] as const)(
+	"filters a mixed provider catalog for %s",
+	async (taskType) => {
+		vi.mocked(getOrganizationDefaultProvider).mockResolvedValue(
+			"ANTHROPIC_DIRECT",
+		);
+		db.providers.mockResolvedValue(
+			["ANTHROPIC_DIRECT", "OPENAI_DIRECT", "VERCEL_GATEWAY"].map(
+				(provider) => ({
+					id: `example-${provider}`,
+					provider,
+					purpose: "ALL",
+					config: {},
+					isDefault: provider === "ANTHROPIC_DIRECT",
+				}),
+			),
+		);
+		const anthropic = {
+			...model("claude-example", ["CHAT"]),
+			providerMappings: [
+				{
+					provider: "ANTHROPIC_DIRECT",
+					providerModelId: "claude-example",
+					isAvailable: true,
+				},
+			],
+		};
+		const gateway = model("gateway-example", ["CHAT"]);
+		const embedding = model("embedding-example", ["EMBEDDING"]);
+		const openaiEmbedding = {
+			...model("openai-embedding-example", ["EMBEDDING"]),
+			providerMappings: [
+				{
+					provider: "OPENAI_DIRECT",
+					providerModelId: "openai-embedding-example",
+					isAvailable: true,
+				},
+			],
+		};
+		db.models.mockImplementation(async ({ where }) =>
+			[anthropic, gateway, embedding, openaiEmbedding].filter(
+				(entry) =>
+					(!where.suitableForTasks ||
+						entry.suitableForTasks.includes(
+							where.suitableForTasks.has,
+						)) &&
+					entry.providerMappings.some((mapping) =>
+						where.providerMappings.some.provider.in.includes(
+							mapping.provider,
+						),
+					),
+			),
+		);
+		const result = await call(taskType ? { taskType } : {});
+		expect(result.models.map((m) => m.canonicalName)).toEqual(
+			taskType === "CHAT"
+				? ["claude-example"]
+				: taskType === "EMBEDDING"
+					? ["embedding-example", "openai-embedding-example"]
+					: [
+							"claude-example",
+							"gateway-example",
+							"embedding-example",
+							"openai-embedding-example",
+						],
+		);
+	},
+);

@@ -43,7 +43,6 @@ const {
 	addCodingRunEventActivity,
 	buildImplementationPrompt,
 	buildSpikePrompt,
-	createExecutionSession,
 	sendExecutionPrompt,
 	pollExecutionStatus,
 	syncCodingRunArtifacts,
@@ -51,6 +50,18 @@ const {
 	cancelExecutionSession,
 } = proxyActivities<typeof codingRunActivities>({
 	startToCloseTimeout: "2 minutes",
+	retry: {
+		initialInterval: "2s",
+		backoffCoefficient: 2,
+		maximumInterval: "30s",
+		maximumAttempts: 3,
+	},
+});
+
+// Session creation may perform a first-time git clone + worktree setup on the
+// Fabric Agents server, so give it a longer startToCloseTimeout.
+const { createExecutionSession } = proxyActivities<typeof codingRunActivities>({
+	startToCloseTimeout: "5 minutes",
 	retry: {
 		initialInterval: "2s",
 		backoffCoefficient: 2,
@@ -114,6 +125,14 @@ export interface CodingRunWorkflowInput {
 	kind?: "IMPLEMENT" | "SPIKE";
 	/** Required for SPIKE runs. */
 	spikeQuestion?: string;
+	/** Optional Fabric Agents backend connection slug */
+	llmConnection?: string;
+	/** Operator-selected rollout setting captured when the workflow starts. */
+	fabricAgentsBridgeEnabled?: boolean;
+	/** Optional model identifier override */
+	model?: string;
+	/** Optional target machine / host identifier */
+	targetMachine?: string;
 }
 
 export interface CodingRunWorkflowOutput {
@@ -140,7 +159,8 @@ export interface ProviderCompletePayload {
 
 const POLL_INTERVAL_SECONDS = 15;
 const MAX_POLL_ITERATIONS = 360; // 90 minutes
-const SIGNAL_WAIT_SECONDS = 300; // 5 minutes
+const LEGACY_SIGNAL_WAIT_SECONDS = 300; // 5 minutes for legacy histories
+const BRIDGE_SIGNAL_WAIT_SECONDS = 15; // Poll fabric-agent-server every 15s while waking immediately on signals
 
 const TERMINAL_PROVIDER_STATUSES = new Set([
 	"completed",
@@ -170,13 +190,22 @@ export async function codingRunWorkflow(
 
 	const { workflowId } = workflowInfo();
 	const plan = selectCodingRunPlan(input);
+	const bridgePatch = patched("fabric-agents-execution-bridge-v1");
+	const gatedCutover =
+		bridgePatch && patched("fabric-agents-execution-cutover-v1");
+	// Retain pre-gate bridge histories, and legacy histories without either marker.
+	const useFabricAgentsBridge =
+		bridgePatch &&
+		(!gatedCutover || input.fabricAgentsBridgeEnabled === true);
 
 	const state = {
 		plan,
+		useFabricAgentsBridge,
 		cancelled: false,
 		currentStatus: "STARTING",
 		sessionId: null as string | null,
 		pullRequestUrl: null as string | null,
+		lastError: null as string | null,
 		pollCount: 0,
 		signalReceived: false,
 		signalPayload: null as ProviderCompletePayload | null,
@@ -202,6 +231,9 @@ export async function codingRunWorkflow(
 		state.signalPayload = payload;
 		if (payload.pullRequestUrl) {
 			state.pullRequestUrl = payload.pullRequestUrl;
+		}
+		if (payload.error) {
+			state.lastError = payload.error;
 		}
 	});
 
@@ -289,13 +321,21 @@ export async function codingRunWorkflow(
 		}
 
 		const sessionResult = await createExecutionSession({
+			...(gatedCutover
+				? { fabricAgentsBridgeEnabled: useFabricAgentsBridge }
+				: {}),
 			provider,
 			repoOwner: repositoryOwner,
 			repoName: repositoryName,
 			projectName,
 			organizationName,
 			title: `Fabric: ${storyTitle}`,
+			// The legacy protocol starts every session from the target branch;
+			// spike prompts tell the agent to push `fabric-spike/<runId>`.
 			branch: targetBranch,
+			...(useFabricAgentsBridge && plan.prompt === "spike"
+				? { headBranch: `fabric-spike/${codingRunId}` }
+				: {}),
 			userId,
 			workingDirectory,
 			promptText: prompt,
@@ -303,6 +343,13 @@ export async function codingRunWorkflow(
 			workflowId,
 			organizationId,
 			projectId,
+			...(useFabricAgentsBridge
+				? {
+						llmConnection: input.llmConnection,
+						model: input.model,
+						targetMachine: input.targetMachine,
+					}
+				: {}),
 		});
 		state.sessionId = sessionResult.sessionId;
 
@@ -390,22 +437,42 @@ export async function codingRunWorkflow(
 
 		if (state.sessionId) {
 			try {
-				await syncCodingRunArtifacts({
+				const synced = await syncCodingRunArtifacts({
 					codingRunId,
 					provider,
 					sessionId: state.sessionId,
 				});
+				if (useFabricAgentsBridge && synced?.pullRequestUrl) {
+					const hadPrBefore = Boolean(state.pullRequestUrl);
+					state.pullRequestUrl = synced.pullRequestUrl;
+					if (!hadPrBefore) {
+						await addCodingRunEventActivity({
+							codingRunId,
+							eventType: "pr_opened",
+							payload: {
+								pullRequestUrl: synced.pullRequestUrl,
+								branchName: synced.branchName,
+							},
+						});
+					}
+				}
 			} catch {
 				/* non-critical */
 			}
 		}
 
-		if (
-			finalProviderStatus === "completed" ||
-			(finalProviderStatus === "active" && state.pullRequestUrl)
-		) {
-			const finalFabricStatus =
-				state.currentStatus === "PR_OPENED"
+		const isBridgeRun =
+			useFabricAgentsBridge && provider === "BACKGROUND_AGENTS";
+		const hasSucceeded = isBridgeRun
+			? finalProviderStatus === "completed"
+			: finalProviderStatus === "completed" ||
+				(finalProviderStatus === "active" &&
+					Boolean(state.pullRequestUrl));
+
+		if (hasSucceeded) {
+			const finalFabricStatus = isBridgeRun
+				? "COMPLETED"
+				: state.currentStatus === "PR_OPENED"
 					? "PR_OPENED"
 					: state.currentStatus === "AWAITING_REVIEW"
 						? "AWAITING_REVIEW"
@@ -414,6 +481,13 @@ export async function codingRunWorkflow(
 			await updateCodingRunStatusActivity({
 				codingRunId,
 				status: finalFabricStatus,
+				...(isBridgeRun && state.pullRequestUrl
+					? {
+							data: {
+								pullRequestUrl: state.pullRequestUrl,
+							},
+						}
+					: {}),
 			});
 			await addCodingRunEventActivity({
 				codingRunId,
@@ -431,7 +505,10 @@ export async function codingRunWorkflow(
 			};
 		}
 
-		if (finalProviderStatus === "stopped") {
+		if (
+			finalProviderStatus === "stopped" ||
+			(useFabricAgentsBridge && finalProviderStatus === "archived")
+		) {
 			state.currentStatus = "CANCELLED";
 			await updateCodingRunStatusActivity({
 				codingRunId,
@@ -448,7 +525,7 @@ export async function codingRunWorkflow(
 		const isTimeout = !TERMINAL_PROVIDER_STATUSES.has(finalProviderStatus);
 		const errorMessage = isTimeout
 			? `Coding run timed out after ${(MAX_POLL_ITERATIONS * POLL_INTERVAL_SECONDS) / 60} minutes`
-			: "Coding agent session failed";
+			: state.lastError || "Coding agent session failed";
 
 		state.currentStatus = "FAILED";
 		await updateCodingRunStatusActivity({ codingRunId, status: "FAILED" });
@@ -528,23 +605,76 @@ export async function codingRunWorkflow(
 	}
 }
 
+async function processReceivedSignal(
+	codingRunId: string,
+	sessionId: string,
+	provider: "BACKGROUND_AGENTS" | "KANBAN_LOCAL",
+	state: {
+		plan: CodingRunPlan;
+		currentStatus: string;
+		pullRequestUrl: string | null;
+		lastError: string | null;
+		signalPayload: ProviderCompletePayload | null;
+	},
+): Promise<string> {
+	if (!state.signalPayload) {
+		return "completed";
+	}
+	if (state.signalPayload.error) {
+		state.lastError = state.signalPayload.error;
+	}
+	await addCodingRunEventActivity({
+		codingRunId,
+		eventType: "provider_complete_signal",
+		payload: {
+			providerStatus: state.signalPayload.providerStatus,
+			pullRequestUrl: state.signalPayload.pullRequestUrl,
+			branchName: state.signalPayload.branchName,
+			...(state.signalPayload.error
+				? { error: state.signalPayload.error }
+				: {}),
+		},
+	});
+
+	if (
+		state.plan.trackPullRequests &&
+		state.signalPayload.pullRequestUrl &&
+		state.currentStatus !== "PR_OPENED"
+	) {
+		state.pullRequestUrl = state.signalPayload.pullRequestUrl;
+		state.currentStatus = "PR_OPENED";
+		await updateCodingRunStatusActivity({
+			codingRunId,
+			status: "PR_OPENED",
+		});
+		await syncCodingRunArtifacts({ codingRunId, provider, sessionId });
+	}
+
+	return state.signalPayload.providerStatus;
+}
+
 async function runHybridLoop(
 	codingRunId: string,
 	sessionId: string,
 	provider: "BACKGROUND_AGENTS" | "KANBAN_LOCAL",
 	state: {
 		plan: CodingRunPlan;
+		useFabricAgentsBridge: boolean;
 		cancelled: boolean;
 		currentStatus: string;
 		pullRequestUrl: string | null;
+		lastError: string | null;
 		pollCount: number;
 		signalReceived: boolean;
 		signalPayload: ProviderCompletePayload | null;
 	},
 ): Promise<string> {
+	const waitSeconds = state.useFabricAgentsBridge
+		? BRIDGE_SIGNAL_WAIT_SECONDS
+		: LEGACY_SIGNAL_WAIT_SECONDS;
 	const signalArrived = await condition(
 		() => state.signalReceived || state.cancelled,
-		`${SIGNAL_WAIT_SECONDS} seconds`,
+		`${waitSeconds} seconds`,
 	);
 
 	if (state.cancelled) {
@@ -552,41 +682,22 @@ async function runHybridLoop(
 	}
 
 	if (signalArrived && state.signalPayload) {
-		await addCodingRunEventActivity({
+		return await processReceivedSignal(
 			codingRunId,
-			eventType: "provider_complete_signal",
-			payload: {
-				providerStatus: state.signalPayload.providerStatus,
-				pullRequestUrl: state.signalPayload.pullRequestUrl,
-				branchName: state.signalPayload.branchName,
-			},
-		});
-
-		if (
-			state.plan.trackPullRequests &&
-			state.signalPayload.pullRequestUrl &&
-			state.currentStatus !== "PR_OPENED"
-		) {
-			state.pullRequestUrl = state.signalPayload.pullRequestUrl;
-			state.currentStatus = "PR_OPENED";
-			await updateCodingRunStatusActivity({
-				codingRunId,
-				status: "PR_OPENED",
-			});
-			await syncCodingRunArtifacts({ codingRunId, provider, sessionId });
-		}
-
-		return state.signalPayload.providerStatus;
+			sessionId,
+			provider,
+			state,
+		);
 	}
 
 	log.info(
 		"No providerComplete signal within window, falling back to polling",
-		{ codingRunId, waitSeconds: SIGNAL_WAIT_SECONDS },
+		{ codingRunId, waitSeconds },
 	);
 	await addCodingRunEventActivity({
 		codingRunId,
 		eventType: "fallback_poll_status",
-		payload: { reason: "signal_timeout", waitSeconds: SIGNAL_WAIT_SECONDS },
+		payload: { reason: "signal_timeout", waitSeconds },
 	});
 
 	return await runPollLoop(codingRunId, sessionId, provider, state);
@@ -598,11 +709,14 @@ async function runPollLoop(
 	provider: "BACKGROUND_AGENTS" | "KANBAN_LOCAL",
 	state: {
 		plan: CodingRunPlan;
+		useFabricAgentsBridge: boolean;
 		cancelled: boolean;
 		currentStatus: string;
 		pullRequestUrl: string | null;
+		lastError: string | null;
 		pollCount: number;
 		signalReceived: boolean;
+		signalPayload: ProviderCompletePayload | null;
 	},
 ): Promise<string> {
 	let finalProviderStatus = "active";
@@ -615,13 +729,31 @@ async function runPollLoop(
 			log.info("Signal received during fallback polling, exiting", {
 				codingRunId,
 			});
-			return "completed";
+			return state.useFabricAgentsBridge
+				? await processReceivedSignal(
+						codingRunId,
+						sessionId,
+						provider,
+						state,
+					)
+				: "completed";
 		}
 
 		await sleep(`${POLL_INTERVAL_SECONDS} seconds`);
 		state.pollCount = i + 1;
 		if (state.cancelled) {
 			return finalProviderStatus;
+		}
+		if (state.useFabricAgentsBridge && state.signalReceived) {
+			log.info("Signal received after poll sleep, exiting", {
+				codingRunId,
+			});
+			return await processReceivedSignal(
+				codingRunId,
+				sessionId,
+				provider,
+				state,
+			);
 		}
 
 		let statusResult: Awaited<ReturnType<typeof pollExecutionStatus>>;
@@ -643,6 +775,9 @@ async function runPollLoop(
 		}
 
 		finalProviderStatus = statusResult.providerStatus;
+		if (statusResult.error) {
+			state.lastError = statusResult.error;
+		}
 
 		await addCodingRunEventActivity({
 			codingRunId,
@@ -653,15 +788,25 @@ async function runPollLoop(
 				branchName: statusResult.branchName,
 				hasPr: !!statusResult.pullRequestUrl,
 				pollCount: state.pollCount,
+				...(statusResult.error ? { error: statusResult.error } : {}),
 			},
 		});
 
 		// Spikes never mirror provider "completed" or PR statuses onto the
 		// run: the only way to a terminal status is the artifact sync.
-		const mirrorsProviderStatus =
-			state.plan.trackPullRequests ||
-			(statusResult.fabricStatus !== "COMPLETED" &&
-				statusResult.fabricStatus !== "PR_OPENED");
+		// Under the Fabric Agents bridge patch, terminal provider statuses are
+		// finalized after post-loop artifact synchronization so COMPLETED is
+		// published exactly once after artifacts are synced.
+		const isTerminalPollStatus = TERMINAL_PROVIDER_STATUSES.has(
+			statusResult.providerStatus,
+		);
+		const mirrorsProviderStatus = state.useFabricAgentsBridge
+			? !isTerminalPollStatus &&
+				(state.plan.trackPullRequests ||
+					statusResult.fabricStatus !== "PR_OPENED")
+			: state.plan.trackPullRequests ||
+				(statusResult.fabricStatus !== "COMPLETED" &&
+					statusResult.fabricStatus !== "PR_OPENED");
 
 		if (
 			mirrorsProviderStatus &&
@@ -681,10 +826,19 @@ async function runPollLoop(
 		if (
 			state.plan.trackPullRequests &&
 			statusResult.pullRequestUrl &&
-			state.currentStatus !== "PR_OPENED"
+			(state.useFabricAgentsBridge
+				? !state.pullRequestUrl
+				: state.currentStatus !== "PR_OPENED")
 		) {
 			state.pullRequestUrl = statusResult.pullRequestUrl;
-			state.currentStatus = "PR_OPENED";
+			if (
+				!state.useFabricAgentsBridge ||
+				(statusResult.providerStatus !== "paused" &&
+					statusResult.fabricStatus !== "AWAITING_REVIEW" &&
+					state.currentStatus !== "AWAITING_REVIEW")
+			) {
+				state.currentStatus = "PR_OPENED";
+			}
 			await syncCodingRunArtifacts({ codingRunId, provider, sessionId });
 			await addCodingRunEventActivity({
 				codingRunId,

@@ -1,3 +1,4 @@
+import { orchestratorApprovalProtocol } from "@repo/temporal/approval-rollout";
 /**
  * Start Weave Execution Procedure
  *
@@ -10,6 +11,7 @@ import { createId } from "@paralleldrive/cuid2";
 import { db } from "@repo/database";
 import { logger } from "@repo/logs";
 import { getTemporalClient } from "@repo/temporal";
+import { isFabricAgentsBridgeEnabled } from "@repo/temporal/coding-execution-rollout";
 import { z } from "zod";
 import { isUniqueConstraintViolation } from "../../../lib/prisma-unique-violation";
 import { withCorrelationMemo } from "../../../lib/temporal-correlation";
@@ -309,14 +311,22 @@ export const startExecutionProcedure = protectedProcedure
 
 		let runId: string | undefined;
 		try {
+			const protocol = orchestratorApprovalProtocol();
 			const handle = await temporal.workflow.start(
 				"orchestratorExecutionWorkflow",
 				withCorrelationMemo({
 					workflowId,
+					memo: {
+						...protocol,
+						userId,
+						organizationId: projectOrganizationId,
+						projectId: plan.projectId,
+					},
 					taskQueue: "fabric-orchestrator",
 					workflowExecutionTimeout: `${maxRunMinutes}m`,
 					args: [
 						{
+							...protocol,
 							executionId: workflowId,
 							message: `Execute weave plan: ${plan.name}`,
 							history: [],
@@ -328,6 +338,8 @@ export const startExecutionProcedure = protectedProcedure
 							organizationId: projectOrganizationId,
 							executionMode: "weave",
 							projectId: plan.projectId,
+							fabricAgentsBridgeEnabled:
+								isFabricAgentsBridgeEnabled(),
 							weavePlanId: input.planId,
 							weaveExecutionId: execution.id,
 							weaveImplementationProvider:

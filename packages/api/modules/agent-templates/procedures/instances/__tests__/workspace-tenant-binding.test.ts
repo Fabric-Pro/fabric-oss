@@ -288,3 +288,23 @@ describe("updateInstanceProcedure — workspace tenant binding", () => {
 		);
 	});
 });
+
+it("preserves unresolved import requirements when editing agent instructions", async () => {
+	const portableRequirements = [{ kind: "mcp", name: "Example connector" }];
+	mockGetAgentTemplateInstance.mockResolvedValue({
+		id: "instance-1",
+		organizationId: ORG_A,
+		userId: USER_ID,
+		customInstructions: { role: "Old role", portableRequirements },
+	});
+	mockUpdateAgentTemplateInstance.mockResolvedValue({ id: "instance-1" });
+	await updateHandler({
+		input: { id: "instance-1", customInstructions: { role: "New role" } },
+		context,
+	});
+	expect(mockUpdateAgentTemplateInstance).toHaveBeenCalledWith(
+		expect.objectContaining({
+			customInstructions: { role: "New role", portableRequirements },
+		}),
+	);
+});

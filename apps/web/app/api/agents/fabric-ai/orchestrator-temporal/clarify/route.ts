@@ -9,13 +9,12 @@
  */
 
 import { checkRateLimit } from "@repo/api/lib/rate-limit";
-import { getTemporalClient } from "@repo/temporal";
+import {
+	ChatRunAccessError,
+	getAuthorizedChatRun,
+} from "@saas/agents/lib/server/chat-run-control";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
-import {
-	isOrchestratorOrganizationMember,
-	refuseUnlessRunOwner,
-} from "../run-access";
 
 // Rate limit: 20 clarification answers per minute per user.
 const CLARIFY_RATE_LIMIT = { limit: 20, windowMs: 60_000 };
@@ -108,58 +107,12 @@ export async function POST(request: NextRequest) {
 			);
 		}
 
-		const temporalClient = await getTemporalClient();
-		const handle = temporalClient.workflow.getHandle(executionId);
-
-		// Verify the caller owns this workflow and has tenant access.
-		try {
-			const description = await handle.describe();
-			const memo = description.memo as
-				| Record<string, unknown>
-				| undefined;
-			const workflowOrgId = memo?.organizationId;
-			const refusal = await refuseUnlessRunOwner({
-				executionId,
-				userId,
-				memo,
-				notOwnerMessage:
-					"You are not authorized to answer this workflow",
-			});
-			if (refusal) {
-				return refusal;
-			}
-			if (workflowOrgId) {
-				// Membership: one helper for every paired route (../run-access.ts).
-				if (
-					!(await isOrchestratorOrganizationMember(
-						userId,
-						workflowOrgId as string,
-					))
-				) {
-					return new Response(
-						JSON.stringify({
-							error: "Forbidden",
-							message:
-								"You are not a member of this organization",
-						}),
-						{
-							status: 403,
-							headers: { "Content-Type": "application/json" },
-						},
-					);
-				}
-			}
-		} catch {
-			return new Response(
-				JSON.stringify({
-					error: "Workflow not found or already completed",
-				}),
-				{
-					status: 404,
-					headers: { "Content-Type": "application/json" },
-				},
-			);
-		}
+		const { handle } = await getAuthorizedChatRun({
+			executionId,
+			userId,
+			engine: "orchestrator",
+			action: "approve",
+		});
 
 		await handle.signal("clarification", {
 			answer: isDismissed ? "" : (answer as string),
@@ -175,18 +128,14 @@ export async function POST(request: NextRequest) {
 			headers: { "Content-Type": "application/json" },
 		});
 	} catch (error) {
-		console.error(
-			"[Orchestrator] Error sending clarification signal:",
-			error,
-		);
-		return new Response(
-			JSON.stringify({
+		return Response.json(
+			{
 				error:
-					error instanceof Error
-						? error.message
-						: "Failed to send clarification",
-			}),
-			{ status: 500, headers: { "Content-Type": "application/json" } },
+					error instanceof ChatRunAccessError
+						? "Forbidden"
+						: "The request could not be confirmed",
+			},
+			{ status: error instanceof ChatRunAccessError ? 403 : 503 },
 		);
 	}
 }

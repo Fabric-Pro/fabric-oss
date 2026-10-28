@@ -36,6 +36,7 @@ interface ApprovalDialogProps {
 	onReject: () => void;
 	onFeedback: (feedback: string) => void;
 	isSubmitting?: boolean;
+	disabled?: boolean;
 	/** Full task plan to display */
 	plan?: TaskPlan | null;
 	/** Current step being executed */
@@ -50,6 +51,7 @@ export function ApprovalDialog({
 	onReject,
 	onFeedback,
 	isSubmitting = false,
+	disabled = false,
 	plan,
 	currentStepId,
 }: ApprovalDialogProps) {
@@ -78,7 +80,7 @@ export function ApprovalDialog({
 	};
 
 	return (
-		<Confirmation className="max-w-2xl">
+		<Confirmation approvalState="requested" className="max-w-2xl">
 			<ConfirmationTitle className="flex items-center gap-2">
 				<AlertTriangle className="h-4 w-4 text-highlight" />
 				Approval Required
@@ -104,6 +106,7 @@ export function ApprovalDialog({
 				{feedbackMode ? (
 					<div className="space-y-2 mt-3">
 						<Textarea
+							aria-label="Approval feedback"
 							placeholder="Provide feedback or alternative instructions..."
 							value={feedback}
 							onChange={(e) => setFeedback(e.target.value)}
@@ -113,7 +116,9 @@ export function ApprovalDialog({
 						<ConfirmationActions>
 							<ConfirmationAction
 								onClick={handleFeedbackSubmit}
-								disabled={!feedback.trim() || isSubmitting}
+								disabled={
+									disabled || !feedback.trim() || isSubmitting
+								}
 								className="gap-1"
 							>
 								{isSubmitting && (
@@ -137,7 +142,7 @@ export function ApprovalDialog({
 						<ConfirmationAction
 							onClick={onApprove}
 							variant="default"
-							disabled={isSubmitting}
+							disabled={disabled || isSubmitting}
 							className="bg-green-600 hover:bg-green-700 text-white border-green-600 hover:border-green-700 disabled:opacity-50 disabled:cursor-not-allowed gap-1"
 						>
 							{isSubmitting ? (
@@ -150,7 +155,7 @@ export function ApprovalDialog({
 						<ConfirmationAction
 							variant="outline"
 							onClick={onReject}
-							disabled={isSubmitting}
+							disabled={disabled || isSubmitting}
 							className="disabled:opacity-50 disabled:cursor-not-allowed gap-1"
 						>
 							{isSubmitting ? (
@@ -163,7 +168,7 @@ export function ApprovalDialog({
 						<ConfirmationAction
 							variant="ghost"
 							onClick={() => setFeedbackMode(true)}
-							disabled={isSubmitting}
+							disabled={disabled || isSubmitting}
 							className="disabled:opacity-50 disabled:cursor-not-allowed"
 						>
 							<RefreshCw className="h-4 w-4 mr-1" />

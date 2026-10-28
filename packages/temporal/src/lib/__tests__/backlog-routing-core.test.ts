@@ -143,6 +143,7 @@ const TICKET_A = {
 	title: "Export throttling",
 	description: "Exports need a queue.",
 	acceptanceCriteria: null,
+	kind: "FEATURE" as const,
 	createdAt: new Date("2026-01-01"),
 	tasks: [],
 };
@@ -152,6 +153,7 @@ const TICKET_B = {
 	title: "Rate limit sign-in",
 	description: "Sign-in needs a limiter.",
 	acceptanceCriteria: null,
+	kind: "FEATURE" as const,
 	createdAt: new Date("2026-01-01"),
 	tasks: [],
 };

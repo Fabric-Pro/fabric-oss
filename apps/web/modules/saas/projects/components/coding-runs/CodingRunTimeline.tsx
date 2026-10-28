@@ -29,11 +29,16 @@ import { toast } from "sonner";
 import {
 	getExecutionChannelLabel,
 	getExecutionProviderLabel,
+	getFabricAgentConnectionLabel,
 } from "../../lib/implementation-session-labels";
 import {
 	asProviderMetadata,
 	formatPrimaryTaskLabel,
 } from "../../lib/implementation-session-runtime";
+import {
+	clearPendingCodingPrompt,
+	getPendingCodingPrompt,
+} from "../../lib/pending-coding-prompt";
 import { asSpikeRunView } from "../../lib/spike-runs";
 import { SpikeRunCard } from "./SpikeRunCard";
 
@@ -79,7 +84,6 @@ export function CodingRunTimeline({
 		},
 	});
 
-	const isLocalProvider = run?.provider === "KANBAN_LOCAL";
 	const isRunActive =
 		run?.status &&
 		[
@@ -92,24 +96,41 @@ export function CodingRunTimeline({
 
 	const { data: liveStatus } = useQuery({
 		queryKey: ["codingRunLiveStatus", codingRunId],
-		queryFn: () =>
-			orpcClient.codingRuns.pollLiveStatus({
-				id: codingRunId,
-				organizationId: organizationId ?? null,
-			}),
-		enabled: !!run && isLocalProvider && !!isRunActive,
-		refetchInterval: 5000,
+		queryFn: async () =>
+			orpcClient.codingRuns.pollLiveStatus
+				? await orpcClient.codingRuns.pollLiveStatus({
+						id: codingRunId,
+						organizationId: organizationId ?? null,
+					})
+				: null,
+		enabled: !!run && !!isRunActive,
+		refetchInterval: (query) => {
+			const providerStatus = query.state.data?.liveStatus?.providerStatus;
+			if (
+				providerStatus &&
+				["completed", "failed", "stopped", "archived"].includes(
+					providerStatus,
+				)
+			) {
+				return false;
+			}
+			return 5000;
+		},
 	});
 
 	const sendFollowUp = useMutation({
 		mutationFn: async (message: string) => {
-			return orpcClient.codingRuns.sendFollowUp({
+			const pending = await getPendingCodingPrompt(codingRunId, message);
+			const result = await orpcClient.codingRuns.sendFollowUp({
 				id: codingRunId,
 				message,
+				promptId: pending.promptId,
 				organizationId: organizationId ?? null,
 			});
+			return { ...result, pending };
 		},
-		onSuccess: () => {
+		onSuccess: (result) => {
+			clearPendingCodingPrompt(result.pending);
 			setFollowUpMessage("");
 			queryClient.invalidateQueries({
 				queryKey: ["codingRun", codingRunId],
@@ -155,19 +176,63 @@ export function CodingRunTimeline({
 		null;
 	const spikeProjectId =
 		projectId ?? (run as { projectId?: string | null }).projectId ?? null;
-	const pullRequestUrl = run.pullRequestUrl ?? null;
+	const pullRequestUrl =
+		run.pullRequestUrl ?? liveStatus?.liveStatus?.pullRequestUrl ?? null;
+	const pullRequestNumber =
+		run.pullRequestNumber ??
+		(pullRequestUrl
+			? Number.parseInt(
+					pullRequestUrl.match(/\/pull\/(\d+)/)?.[1] ?? "",
+					10,
+				) || null
+			: null);
 	const hasPR =
-		pullRequestUrl &&
-		["PR_OPENED", "AWAITING_REVIEW", "COMPLETED"].includes(run.status);
+		Boolean(pullRequestUrl) &&
+		(["PR_OPENED", "AWAITING_REVIEW", "COMPLETED"].includes(run.status) ||
+			Boolean(liveStatus?.liveStatus?.hasPullRequest));
 	const backgroundAgentsUrl = process.env.NEXT_PUBLIC_BACKGROUND_AGENTS_URL;
 	const sessionUrl =
 		run.externalUrl ||
-		(run.providerSessionId && backgroundAgentsUrl
+		(run.provider !== "BACKGROUND_AGENTS" &&
+		run.providerSessionId &&
+		backgroundAgentsUrl
 			? `${backgroundAgentsUrl}/session/${run.providerSessionId}`
 			: null);
 	const eventCount = run.events?.length ?? 0;
 	const _metadata = asProviderMetadata(run.providerMetadata);
+	const connectionLabel = getFabricAgentConnectionLabel(
+		typeof _metadata?.llmConnection === "string"
+			? _metadata.llmConnection
+			: null,
+	);
+	const worktreePath =
+		typeof _metadata?.worktreePath === "string"
+			? _metadata.worktreePath
+			: run.workingDirectory || null;
+	const activeBranch =
+		liveStatus?.liveStatus?.branchName ||
+		(typeof _metadata?.branch === "string" ? _metadata.branch : null) ||
+		run.pullRequestBranch ||
+		run.targetBranch ||
+		null;
+	const isFabricAgentsSession =
+		run.provider === "BACKGROUND_AGENTS" ||
+		Boolean(sessionUrl?.startsWith("fabric-agent://"));
+	const isDeepLink = Boolean(
+		sessionUrl && /^fabric(?:agents[0-9]*|-agent):\/\//.test(sessionUrl),
+	);
 	const primaryTaskLabel = formatPrimaryTaskLabel(run.storyTask);
+	const failureReason = extractRunFailureReason(
+		run.events,
+		liveStatus?.liveStatus?.error,
+		_metadata,
+	);
+	const progressSteps = computeExecutionProgressSteps({
+		status: run.status,
+		hasSession: Boolean(run.providerSessionId || sessionUrl),
+		hasPR: Boolean(hasPR),
+		isSpike,
+	});
 
 	return (
 		<div className="space-y-4">
@@ -205,6 +270,14 @@ export function CodingRunTimeline({
 							>
 								{getExecutionProviderLabel(run.provider)}
 							</Badge>
+							{connectionLabel && (
+								<Badge
+									variant="outline"
+									className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-1 text-[11px] text-primary"
+								>
+									{connectionLabel}
+								</Badge>
+							)}
 							{run.storyTask && (
 								<Badge
 									variant="outline"
@@ -252,6 +325,76 @@ export function CodingRunTimeline({
 				/>
 			)}
 
+			{(run.status === "FAILED" ||
+				run.status === "TERMINATED_STALE" ||
+				liveStatus?.liveStatus?.providerStatus === "failed") && (
+				<div
+					role="alert"
+					className="rounded-2xl border border-destructive/30 bg-destructive/5 p-4"
+				>
+					<div className="flex items-start gap-3">
+						<div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-destructive/10 text-destructive">
+							<AlertTriangleIcon className="size-4" />
+						</div>
+						<div className="min-w-0 flex-1">
+							<p className="text-[11px] font-medium uppercase tracking-[0.16em] text-destructive">
+								Execution failure details
+							</p>
+							<p className="mt-1 break-words text-sm text-foreground/90">
+								{failureReason ||
+									(run.status === "TERMINATED_STALE"
+										? "The coding run exceeded the maximum allowed duration and was stopped."
+										: "The coding agent session reported a failure. Check the session in Fabric Agents or retry.")}
+							</p>
+						</div>
+					</div>
+				</div>
+			)}
+
+			<section
+				className="rounded-2xl border border-border/60 bg-background p-4"
+				aria-label="Execution progress"
+			>
+				<div className="flex items-center justify-between gap-2">
+					<p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+						Task &amp; execution progress
+					</p>
+					{activeBranch && (
+						<span className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-0.5 font-mono text-[11px] text-foreground">
+							<GitBranchIcon className="size-3 text-primary" />
+							{activeBranch}
+						</span>
+					)}
+				</div>
+				<ol className="mt-3 grid gap-2 sm:grid-cols-4">
+					{progressSteps.map((step) => (
+						<li
+							key={step.key}
+							className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-xs ${
+								step.state === "completed"
+									? "border-primary/25 bg-primary/[0.04] text-foreground"
+									: step.state === "active"
+										? "border-primary/40 bg-primary/[0.08] font-medium text-foreground"
+										: step.state === "failed"
+											? "border-destructive/30 bg-destructive/5 text-destructive"
+											: "border-border/50 bg-muted/20 text-muted-foreground"
+							}`}
+						>
+							{step.state === "completed" ? (
+								<CheckCircleIcon className="size-3.5 shrink-0 text-success" />
+							) : step.state === "active" ? (
+								<Loader2Icon className="size-3.5 shrink-0 animate-spin text-primary" />
+							) : step.state === "failed" ? (
+								<CircleXIcon className="size-3.5 shrink-0 text-destructive" />
+							) : (
+								<ClockIcon className="size-3.5 shrink-0 text-muted-foreground/60" />
+							)}
+							<span className="truncate">{step.label}</span>
+						</li>
+					))}
+				</ol>
+			</section>
+
 			{primaryTaskLabel && (
 				<div className="rounded-2xl border border-highlight/20 bg-highlight/5 p-4">
 					<div className="flex items-start gap-3">
@@ -275,7 +418,8 @@ export function CodingRunTimeline({
 				</div>
 			)}
 
-			{run.status === "AWAITING_REVIEW" &&
+			{(run.status === "AWAITING_REVIEW" ||
+				liveStatus?.liveStatus?.providerStatus === "paused") &&
 				run.provider === "BACKGROUND_AGENTS" && (
 					<div className="rounded-2xl border border-highlight/30 bg-highlight/5 p-4">
 						<div className="flex items-start gap-3">
@@ -350,26 +494,30 @@ export function CodingRunTimeline({
 				{sessionUrl && (
 					<a
 						href={sessionUrl}
-						target="_blank"
-						rel="noopener noreferrer"
-						className="flex min-h-14 items-center gap-3 rounded-xl border border-border/60 bg-background px-4 py-3 text-sm transition-colors hover:bg-muted/40"
+						target={isDeepLink ? undefined : "_blank"}
+						rel={isDeepLink ? undefined : "noopener noreferrer"}
+						className="flex min-h-14 items-center gap-3 rounded-xl border border-primary/30 bg-primary/[0.04] px-4 py-3 text-sm transition-colors hover:bg-primary/[0.08]"
 					>
 						<div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10">
 							<MonitorIcon className="size-4 text-primary" />
 						</div>
 						<div className="min-w-0 flex-1">
 							<p className="font-medium text-foreground">
-								View Implementation Session
+								{isFabricAgentsSession
+									? "Open in Fabric Agents"
+									: "Open session"}
 							</p>
 							<p className="truncate text-xs text-muted-foreground">
-								Open the live execution session
+								{isFabricAgentsSession
+									? "Jump into the live Fabric Agents session"
+									: "Open the live execution session"}
 							</p>
 						</div>
 						<ExternalLinkIcon className="size-3.5 text-muted-foreground" />
 					</a>
 				)}
 
-				{hasPR && (
+				{hasPR && pullRequestUrl && (
 					<a
 						href={pullRequestUrl}
 						target="_blank"
@@ -381,7 +529,9 @@ export function CodingRunTimeline({
 						</div>
 						<div className="min-w-0 flex-1">
 							<p className="font-medium text-foreground">
-								Pull Request #{run.pullRequestNumber}
+								{pullRequestNumber
+									? `Pull Request #${pullRequestNumber}`
+									: "Pull Request"}
 							</p>
 							<p className="truncate text-xs text-muted-foreground">
 								Open the generated pull request
@@ -395,21 +545,25 @@ export function CodingRunTimeline({
 			<div className="grid gap-3 sm:grid-cols-2">
 				<MetadataTile
 					icon={GitBranchIcon}
-					label="Target branch"
-					value={
-						run.targetBranch || run.pullRequestBranch || "Unknown"
-					}
+					label="Worktree & branch"
+					value={activeBranch || "Unknown"}
 					hint={
-						run.repositoryOwner && run.repositoryName
-							? `${run.repositoryOwner}/${run.repositoryName}`
-							: "Repository context"
+						worktreePath
+							? worktreePath
+							: run.repositoryOwner && run.repositoryName
+								? `${run.repositoryOwner}/${run.repositoryName}`
+								: "Repository context"
 					}
 				/>
 				<MetadataTile
 					icon={CodeIcon}
 					label="Provider session"
 					value={run.providerSessionId || "Pending"}
-					hint="Runtime session identifier"
+					hint={
+						connectionLabel
+							? `${getExecutionProviderLabel(run.provider)} · ${connectionLabel}`
+							: "Runtime session identifier"
+					}
 				/>
 			</div>
 
@@ -420,40 +574,54 @@ export function CodingRunTimeline({
 					</p>
 					<div className="max-h-[260px] divide-y divide-border/40 overflow-y-auto rounded-2xl border border-border/60 bg-background">
 						{collapseEvents(run.events).map(
-							(event, index, events) => (
-								<div
-									key={event.id}
-									className="flex items-start gap-3 px-4 py-3 text-xs"
-								>
-									<div className="mt-0.5 flex size-4 shrink-0 items-center justify-center">
-										{index === events.length - 1 &&
-										isActive ? (
-											<Loader2Icon className="size-3 animate-spin text-primary" />
-										) : (
-											<EventIcon
-												eventType={event.eventType}
-												className="size-3 text-muted-foreground"
-											/>
-										)}
-									</div>
-									<span className="flex-1 text-foreground/80">
-										{formatEventType(event.eventType)}
-										{event.count > 1 && (
-											<span className="ml-1 text-muted-foreground/50">
-												({event.count}x)
+							(event, index, events) => {
+								const detail = formatEventPayloadDetail(
+									event.payload,
+								);
+								return (
+									<div
+										key={event.id}
+										className="flex items-start gap-3 px-4 py-3 text-xs"
+									>
+										<div className="mt-0.5 flex size-4 shrink-0 items-center justify-center">
+											{index === events.length - 1 &&
+											isActive ? (
+												<Loader2Icon className="size-3 animate-spin text-primary" />
+											) : (
+												<EventIcon
+													eventType={event.eventType}
+													className="size-3 text-muted-foreground"
+												/>
+											)}
+										</div>
+										<div className="min-w-0 flex-1">
+											<span className="text-foreground/80">
+												{formatEventType(
+													event.eventType,
+												)}
+												{event.count > 1 && (
+													<span className="ml-1 text-muted-foreground/50">
+														({event.count}x)
+													</span>
+												)}
 											</span>
-										)}
-									</span>
-									<span className="shrink-0 tabular-nums text-muted-foreground/60">
-										{new Date(
-											event.createdAt,
-										).toLocaleTimeString([], {
-											hour: "2-digit",
-											minute: "2-digit",
-										})}
-									</span>
-								</div>
-							),
+											{detail && (
+												<p className="mt-0.5 break-words text-[11px] text-muted-foreground">
+													{detail}
+												</p>
+											)}
+										</div>
+										<span className="shrink-0 tabular-nums text-muted-foreground/60">
+											{new Date(
+												event.createdAt,
+											).toLocaleTimeString([], {
+												hour: "2-digit",
+												minute: "2-digit",
+											})}
+										</span>
+									</div>
+								);
+							},
 						)}
 					</div>
 				</div>
@@ -529,6 +697,67 @@ function MetadataTile({
 	);
 }
 
+type ProgressStepState = "pending" | "active" | "completed" | "failed";
+
+function computeExecutionProgressSteps(input: {
+	status: string;
+	hasSession: boolean;
+	hasPR: boolean;
+	isSpike: boolean;
+}): Array<{ key: string; label: string; state: ProgressStepState }> {
+	const isFailed =
+		input.status === "FAILED" ||
+		input.status === "CANCELLED" ||
+		input.status === "TERMINATED_STALE";
+	const isDone =
+		input.status === "COMPLETED" || input.status === "DEMO_READY";
+
+	const step1: ProgressStepState =
+		input.hasSession || isDone
+			? "completed"
+			: isFailed
+				? "failed"
+				: "active";
+
+	const step2: ProgressStepState =
+		input.hasPR || isDone
+			? "completed"
+			: isFailed && input.hasSession
+				? "failed"
+				: input.hasSession &&
+						(input.status === "RUNNING" ||
+							input.status === "AWAITING_REVIEW")
+					? "active"
+					: "pending";
+
+	const step3: ProgressStepState = input.isSpike
+		? isDone
+			? "completed"
+			: "pending"
+		: input.hasPR
+			? "completed"
+			: "pending";
+
+	const step4: ProgressStepState = isDone
+		? "completed"
+		: isFailed
+			? "failed"
+			: input.status === "PR_OPENED"
+				? "active"
+				: "pending";
+
+	return [
+		{ key: "worktree", label: "1. Worktree & session", state: step1 },
+		{ key: "implement", label: "2. Implementing task", state: step2 },
+		{
+			key: "deliverable",
+			label: input.isSpike ? "3. Spike branch" : "3. Pull request",
+			state: step3,
+		},
+		{ key: "complete", label: "4. Completed", state: step4 },
+	];
+}
+
 function StatusIcon({ status }: { status: string }) {
 	switch (status) {
 		case "QUEUED":
@@ -594,10 +823,70 @@ const EVENT_LABELS: Record<string, string> = {
 	workflow_failed: "Run failed",
 	workflow_error: "Run encountered an error",
 	workflow_cancelled: "Run cancelled",
+	spike_sync_failed: "Spike artifact sync failed",
+	fallback_poll_error: "Status check failed",
+	follow_up_sent: "Follow-up message sent",
 };
 
 function formatEventType(eventType: string): string {
 	return EVENT_LABELS[eventType] ?? eventType.replace(/_/g, " ");
+}
+
+function asPayloadRecord(
+	payload: unknown,
+): Record<string, unknown> | undefined {
+	if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+		return undefined;
+	}
+	return payload as Record<string, unknown>;
+}
+
+function extractRunFailureReason(
+	events: EventEntry[] | undefined,
+	liveError?: string | null,
+	metadata?: Record<string, unknown> | null,
+): string | null {
+	if (typeof liveError === "string" && liveError.trim()) {
+		return liveError.trim();
+	}
+	if (typeof metadata?.lastError === "string" && metadata.lastError.trim()) {
+		return metadata.lastError.trim();
+	}
+	if (typeof metadata?.error === "string" && metadata.error.trim()) {
+		return metadata.error.trim();
+	}
+	if (!Array.isArray(events)) {
+		return null;
+	}
+	for (let i = events.length - 1; i >= 0; i--) {
+		const evt = events[i];
+		if (!evt || evt.eventType === "fallback_poll_error") {
+			continue;
+		}
+		const payload = asPayloadRecord(evt.payload);
+		const err = payload?.error;
+		if (typeof err === "string" && err.trim()) {
+			return err.trim();
+		}
+	}
+	return null;
+}
+
+function formatEventPayloadDetail(payload: unknown): string | null {
+	const rec = asPayloadRecord(payload);
+	if (!rec) {
+		return null;
+	}
+	if (typeof rec.error === "string" && rec.error.trim()) {
+		return rec.error.trim();
+	}
+	if (typeof rec.pullRequestUrl === "string" && rec.pullRequestUrl.trim()) {
+		return rec.pullRequestUrl.trim();
+	}
+	if (typeof rec.branchName === "string" && rec.branchName.trim()) {
+		return `Branch: ${rec.branchName.trim()}`;
+	}
+	return null;
 }
 
 function EventIcon({
@@ -637,6 +926,7 @@ function EventIcon({
 type EventEntry = {
 	id: string;
 	eventType: string;
+	payload?: unknown;
 	createdAt: string | Date;
 };
 

@@ -26,6 +26,8 @@ vi.mock("@repo/database", async () => ({
 	db: { workflowIntegration: { findMany: findManyMock } },
 }));
 
+vi.mock("@repo/payments", () => ({}));
+vi.mock("@repo/ai", () => ({}));
 vi.mock("@repo/rag/lib/embedding/generator", () => ({
 	generateEmbedding: generateEmbeddingMock,
 	generateEmbeddings: generateEmbeddingsMock,
@@ -35,8 +37,11 @@ vi.mock("../capability-embeddings", () => ({ cosineSimilarity: vi.fn() }));
 
 const { searchAvailableIntegrations, INTEGRATION_PROVIDER_METADATA } =
 	await import("../search-integrations");
-const { integrationExecutorRegistry } = await import(
-	"@repo/integrations/executor-registry"
+const { integrationExecutorRegistry, isRegisteredIntegrationProvider } =
+	await import("@repo/integrations/executor-registry");
+
+const { getSupportedIntegrationOperations } = await import(
+	"../../execution/handlers/integration-handler"
 );
 
 function integration(
@@ -206,6 +211,9 @@ describe("executionSurface: LOOM_CHAT", () => {
 				name,
 				description: op.description,
 				inputSchema: op.inputSchema,
+				outputSchema: op.outputSchema,
+				access: op.access,
+				retrySafety: op.retrySafety,
 			})),
 		);
 	});
@@ -397,6 +405,25 @@ describe("provider metadata", () => {
 			metadata.operations.find((op) => op.name === "decode_vin")
 				?.description,
 		).toBe(registryEntry.operations.decode_vin.description);
+	});
+
+	// The plan step refuses an operation its handler does not list as
+	// supported, so the planner should not be offered one (Fizzy #3408). This
+	// checks the handler's supported list, not its dispatch switch.
+	it("advertises only operations the plan-step handler lists as supported for legacy providers", () => {
+		for (const [provider, metadata] of Object.entries(
+			INTEGRATION_PROVIDER_METADATA,
+		)) {
+			if (isRegisteredIntegrationProvider(provider)) {
+				continue;
+			}
+			for (const operation of metadata.operations) {
+				expect(
+					getSupportedIntegrationOperations(provider),
+					`${provider}: ${operation.name}`,
+				).toContain(operation.name);
+			}
+		}
 	});
 
 	it("keeps legacy providers that have no shared executor", () => {

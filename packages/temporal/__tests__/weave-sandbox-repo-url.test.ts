@@ -15,6 +15,16 @@ vi.mock("../src/activities/weave/get-background-provider", () => ({
 	getBackgroundAgentsProvider: () => ({ createSession, cancelSession }),
 }));
 
+vi.mock("@repo/database", () => ({
+	db: { weaveExecution: { update: vi.fn() } },
+}));
+vi.mock("../src/activities/weave/runtime-authorization", () => ({
+	authorizeWeaveRuntime: async () => ({
+		execution: { id: "example-execution" },
+		workflow: { workflowId: "example-workflow" },
+	}),
+}));
+
 import { createSandboxActivity } from "../src/activities/weave/sandbox";
 
 beforeEach(() => {

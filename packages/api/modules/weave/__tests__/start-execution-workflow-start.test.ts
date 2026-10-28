@@ -9,7 +9,7 @@
  */
 
 import { ORPCError } from "@orpc/server";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	handlers,
@@ -526,3 +526,31 @@ describe("startExecution — active-execution uniqueness (plan §F2)", () => {
 		expect(workflowStart).not.toHaveBeenCalled();
 	});
 });
+
+afterEach(() => vi.unstubAllEnvs());
+it.each([true, false])(
+	"captures the API rollout setting (%s) in the Weave workflow input",
+	async (enabled) => {
+		vi.stubEnv("FABRIC_AGENTS_EXECUTION_BRIDGE_ENABLED", String(enabled));
+		await callStart();
+		expect(workflowStart.mock.calls[0][1].args[0]).toMatchObject({
+			fabricAgentsBridgeEnabled: enabled,
+		});
+	},
+);
+
+it.each([true, false])(
+	"captures approval protocol in input and memo: %s",
+	async (enabled) => {
+		vi.stubEnv("ORCHESTRATOR_APPROVAL_UPDATES_ENABLED", String(enabled));
+		await callStart();
+		const options = workflowStart.mock.calls[0][1];
+		for (const value of [options.args[0], options.memo ?? {}]) {
+			if (enabled) {
+				expect(value.approvalProtocol).toBe(2);
+			} else {
+				expect(value).not.toHaveProperty("approvalProtocol");
+			}
+		}
+	},
+);

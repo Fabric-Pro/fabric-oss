@@ -28,7 +28,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
@@ -117,7 +117,10 @@ function renderWithClient(
  * toolbar above its provider grid — is pinned against real markup.
  */
 function renderPageWithToolbar(
-	props: { requestConnectionEnabled?: boolean } = {},
+	props: {
+		requestConnectionEnabled?: boolean;
+		beforeCatalog?: ReactNode;
+	} = {},
 ) {
 	mockUseOrganizationContext.mockReturnValue({ organizationId: null });
 	mockUseMonitoringFeatureFlag.mockReturnValue(false);
@@ -750,6 +753,40 @@ describe("ConnectionsPageContent — toolbar placement", () => {
 			slot.compareDocumentPosition(search) &
 				Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
+	});
+
+	it("renders beforeCatalog above the catalogue search", async () => {
+		renderPageWithToolbar({
+			beforeCatalog: <div data-testid="before-catalog-slot" />,
+		});
+
+		const slot = await screen.findByTestId("before-catalog-slot");
+		const search = await screen.findByPlaceholderText("Search connections");
+
+		expect(
+			slot.compareDocumentPosition(search) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+	});
+
+	it("keeps beforeCatalog mounted when connections finish loading", async () => {
+		const onMount = vi.fn();
+		function Slot() {
+			useEffect(() => {
+				onMount();
+			}, []);
+			return <div data-testid="before-catalog-slot" />;
+		}
+		mockUseConnections.mockReturnValueOnce({
+			data: undefined,
+			isLoading: true,
+			error: null,
+		});
+		renderPageWithToolbar({ beforeCatalog: <Slot /> });
+		expect(screen.getByText("Loading connections…")).toBeInTheDocument();
+
+		await screen.findByPlaceholderText("Search connections");
+		expect(onMount).toHaveBeenCalledTimes(1);
 	});
 });
 

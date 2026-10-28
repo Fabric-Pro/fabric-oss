@@ -206,3 +206,23 @@ describe("fireColumnAutomations — one run per transition", () => {
 		expect(dbMocks.skillUpdate).toHaveBeenCalledTimes(1);
 	});
 });
+
+it.each([true, false])(
+	"captures approval protocol at start: %s",
+	async (enabled) => {
+		vi.stubEnv("ORCHESTRATOR_APPROVAL_UPDATES_ENABLED", String(enabled));
+		try {
+			await fireColumnAutomations(transition);
+			const options = temporalMocks.start.mock.calls[0][1];
+			for (const value of [options.args[0], options.memo]) {
+				if (enabled) {
+					expect(value.approvalProtocol).toBe(2);
+				} else {
+					expect(value).not.toHaveProperty("approvalProtocol");
+				}
+			}
+		} finally {
+			vi.unstubAllEnvs();
+		}
+	},
+);

@@ -33,6 +33,7 @@ const { handlers, mocks } = vi.hoisted(() => {
 		returnFailedProposalToReview: vi.fn(),
 		getPendingProposalReview: vi.fn(),
 		getAppliedChangeIndexes: vi.fn(),
+		finalizeBacklogUpdateSession: vi.fn(),
 	};
 	return { handlers, mocks };
 });
@@ -41,6 +42,7 @@ vi.mock("@repo/database", () => ({
 	getPendingProposalReview: mocks.getPendingProposalReview,
 	recordProposalDuplicateResolution: mocks.recordProposalDuplicateResolution,
 	getAppliedChangeIndexes: mocks.getAppliedChangeIndexes,
+	finalizeBacklogUpdateSession: mocks.finalizeBacklogUpdateSession,
 	db: {
 		project: { findFirst: mocks.projectFindFirst },
 		pendingBacklogProposal: {
@@ -156,6 +158,7 @@ beforeEach(() => {
 		workflow: { start: mocks.workflowStart },
 	});
 	mocks.markPendingProposalApplied.mockResolvedValue(undefined);
+	mocks.finalizeBacklogUpdateSession.mockResolvedValue(1);
 });
 
 describe("retryFailedProposalProcedure — happy path", () => {
@@ -331,6 +334,39 @@ describe("retryFailedProposalProcedure — dedup-guard", () => {
 				}),
 			}),
 		);
+		// No workflow runs to finalize the update-history row the failed
+		// apply left behind, so the short-circuit finalizes it directly.
+		expect(mocks.finalizeBacklogUpdateSession).toHaveBeenCalledWith({
+			pendingProposalId: "proposal-1",
+			status: "APPLIED",
+		});
+	});
+
+	it("full-dedup short-circuit: a failed history finalize does not fail the retry", async () => {
+		mocks.getPendingBacklogProposal.mockResolvedValue(baseProposal);
+		mocks.buildBacklogDedupGuard.mockResolvedValue({
+			findCollision: () => ({
+				existingIdentifier: "F-1",
+				existingId: "story-existing",
+			}),
+			recordCreated: () => undefined,
+		});
+		mocks.finalizeBacklogUpdateSession.mockRejectedValue(
+			new Error("db unavailable"),
+		);
+
+		const result = (await handlers.retry({
+			input: {
+				projectId: "project-1",
+				proposalId: "proposal-1",
+				organizationId: "org-1",
+			},
+			context: ctx,
+		})) as { workflowId: string | null; message: string };
+
+		expect(result.workflowId).toBeNull();
+		expect(result.message).toBe("Already on roadmap.");
+		expect(mocks.finalizeBacklogUpdateSession).toHaveBeenCalledTimes(1);
 	});
 
 	it("partial dedup: only the non-colliding change is sent to the workflow", async () => {

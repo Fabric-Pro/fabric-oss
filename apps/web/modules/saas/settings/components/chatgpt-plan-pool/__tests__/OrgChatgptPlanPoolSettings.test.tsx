@@ -265,13 +265,15 @@ describe("Shared ChatGPT plans settings", () => {
 		).toBeNull();
 	});
 
-	it("shows no terms warning while no account is connected", async () => {
-		poolWith({ isOwner: true, accounts: [] });
+	// Before the first account too: an account connected now would sit idle.
+	it("warns before any account is connected that none can serve until the terms are accepted", async () => {
+		poolWith({ isOwner: false, accounts: [] });
 		renderSettings();
 		await screen.findByText(copy.emptyAccounts);
-		expect(
-			screen.queryByTestId("chatgpt-plan-pool-terms-pending"),
-		).toBeNull();
+		const notice = screen.getByTestId("chatgpt-plan-pool-terms-pending");
+		expect(notice).toHaveTextContent(copy.termsPendingEmptyTitle);
+		expect(notice).toHaveTextContent(copy.termsPendingBody);
+		expect(notice).toHaveTextContent(copy.termsPendingOwnerOnly);
 	});
 
 	it("shows the window ChatGPT reported, and its weekly limit, in place of the estimate", async () => {

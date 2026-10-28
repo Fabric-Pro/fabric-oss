@@ -24,9 +24,16 @@ export const CreateSessionParamsSchema = z.object({
 	vibeRemoteProjectName: z.string().min(1).optional(),
 	title: z.string().min(1).optional(),
 	branch: z.string().min(1).optional(),
+	headBranch: z.string().min(1).optional(),
 	userId: z.string().min(1).optional(),
 	workingDirectory: z.string().min(1).optional(),
 	promptText: z.string().min(1).optional(),
+	codingRunId: z.string().min(1).optional(),
+	workflowId: z.string().min(1).optional(),
+	organizationId: z.string().min(1).optional(),
+	llmConnection: z.string().min(1).optional(),
+	model: z.string().min(1).optional(),
+	targetMachine: z.string().min(1).optional(),
 });
 
 export type ValidatedCreateSessionParams = z.infer<
@@ -38,12 +45,14 @@ export const SessionStatusSchema = z.object({
 	status: z.enum([
 		"created",
 		"active",
+		"paused",
 		"completed",
 		"failed",
 		"stopped",
 		"archived",
 	]),
 	branchName: z.string().nullable(),
+	error: z.string().nullable().optional(),
 	artifacts: z.array(ArtifactSchema),
 });
 

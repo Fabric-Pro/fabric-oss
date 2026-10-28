@@ -40,6 +40,7 @@ vi.mock("@temporalio/workflow", () => ({
 	workflowInfo: vi.fn(() => ({ unsafe: { isReplaying: false } })),
 }));
 
+import { patched } from "@temporalio/workflow";
 import { executeInitializationPhase } from "../src/workflows/orchestrator/phases/initialization";
 import { createInitialState } from "../src/workflows/orchestrator/types";
 
@@ -205,4 +206,53 @@ describe("orchestrator initialization date context", () => {
 
 		expect(night).toBe(morning);
 	});
+	it.each([true, false])(
+		"passes the captured rollout setting to new Weave sandbox commands (marker=%s)",
+		async (recorded) => {
+			vi.mocked(patched).mockImplementation((id) =>
+				id === "weave-native-bridge-cutover-v1" ? recorded : true,
+			);
+			activityStubs.getProjectMetadataActivity.mockResolvedValue({
+				repositoryUrl: "https://github.com/example-org/example-repo",
+			});
+			activityStubs.createSandboxActivity.mockResolvedValue({
+				sessionId: "example-session",
+				workDir: "",
+			});
+			try {
+				for (const enabled of [true, false]) {
+					const input = {
+						executionId: "example-execution",
+						message: "Execute example plan",
+						userId: "example-user",
+						organizationId: "example-org",
+						projectId: "example-project",
+						executionMode: "weave",
+						weavePlanId: "example-plan",
+						fabricAgentsBridgeEnabled: enabled,
+						history: [],
+					} as any;
+					const result = await executeInitializationPhase(
+						createInitialState(input),
+						input,
+						vi.fn(),
+					);
+					expect(result.success).toBe(true);
+					const request =
+						activityStubs.createSandboxActivity.mock.calls.at(
+							-1,
+						)?.[0];
+					if (recorded) {
+						expect(request.fabricAgentsBridgeEnabled).toBe(enabled);
+					} else {
+						expect(request).not.toHaveProperty(
+							"fabricAgentsBridgeEnabled",
+						);
+					}
+				}
+			} finally {
+				vi.mocked(patched).mockReturnValue(true);
+			}
+		},
+	);
 });

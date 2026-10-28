@@ -6,6 +6,7 @@
  */
 
 import type { LimitSignal, TokenBudgetStatus } from "@repo/ai/limits";
+import type { AnswerModelInfo } from "../../../answer-model-info";
 import type { DirectChatUsageLimitRefusal } from "../../../types";
 import type { ALTKConfig } from "./altk.types";
 import type { ExecutionMode } from "./execution-mode.types";
@@ -120,6 +121,8 @@ export interface TurnLedgerSnapshot {
 export const ORCHESTRATOR_TURN_CONTRACT_VERSION = 1;
 
 export interface OrchestratorWorkflowInput {
+	/** Set by starters that submit acknowledged approval Updates. */
+	approvalProtocol?: 2;
 	/** Unique execution ID */
 	executionId: string;
 	/**
@@ -300,6 +303,8 @@ export interface OrchestratorWorkflowInput {
 	 * local development tooling without relying on a single project-wide mode.
 	 */
 	weaveImplementationProvider?: "BACKGROUND_AGENTS" | "KANBAN_LOCAL";
+	/** Native-server rollout captured by the initiating API. */
+	fabricAgentsBridgeEnabled?: boolean;
 	/**
 	 * State carried forward from a continueAsNew continuation.
 	 * When present, the workflow resumes from this state instead of starting fresh.
@@ -539,6 +544,8 @@ export interface OrchestratorWorkflowOutput {
 	 * mid-way. The chat says so and offers to continue (review F25).
 	 */
 	truncated?: "output_limit";
+	/** Public model identity, projected from the final answer snapshot. */
+	model?: AnswerModelInfo;
 	/**
 	 * Every ChatGPT plan ran out mid-turn and the turn finished on the
 	 * organization's API billing (Fizzy #3048). The chat says so.

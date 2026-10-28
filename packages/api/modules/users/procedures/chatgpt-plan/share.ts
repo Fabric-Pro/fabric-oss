@@ -29,13 +29,26 @@ import { requireOrgMembership } from "../../../organizations/lib/membership";
 
 const MEMBER_ROLES = ["owner", "admin", "member"];
 
-/** Whether the organization takes shared ChatGPT plans from its members now. */
-async function sharingOpen(organizationId: string): Promise<boolean> {
+/**
+ * Whether the organization takes shared ChatGPT plans from its members:
+ * `terms_pending` while only an owner's acceptance of the pooling terms is
+ * missing, so the card can say why instead of hiding the action.
+ */
+async function sharingState(
+	organizationId: string,
+): Promise<"open" | "terms_pending" | "closed"> {
 	const [plan, policy] = await Promise.all([
 		isFeatureEnabled("CHATGPT_PLAN", organizationId),
 		getChatGptPlanOrgPolicy(organizationId),
 	]);
-	return plan && policy.termsAcknowledgedAt !== null;
+	if (!plan) {
+		return "closed";
+	}
+	return policy.termsAcknowledgedAt === null ? "terms_pending" : "open";
+}
+
+async function sharingOpen(organizationId: string): Promise<boolean> {
+	return (await sharingState(organizationId)) === "open";
 }
 
 export const chatGptPlanSharedHereSchema = z.object({
@@ -60,19 +73,22 @@ export async function chatGptPlanShareState(params: {
 	impersonated: boolean;
 }): Promise<{
 	canShare: boolean;
+	shareNeedsTerms: boolean;
 	sharedHere: Array<z.infer<typeof chatGptPlanSharedHereSchema>>;
 }> {
 	const { userId, organizationId } = params;
 	if (!organizationId) {
-		return { canShare: false, sharedHere: [] };
+		return { canShare: false, shareNeedsTerms: false, sharedHere: [] };
 	}
 	try {
-		const [open, accounts] = await Promise.all([
-			sharingOpen(organizationId),
+		const [state, accounts] = await Promise.all([
+			sharingState(organizationId),
 			listChatGptPlanOrgAccounts(organizationId),
 		]);
+		const eligible = params.hasOwnPlan && !params.impersonated;
 		return {
-			canShare: params.hasOwnPlan && !params.impersonated && open,
+			canShare: eligible && state === "open",
+			shareNeedsTerms: eligible && state === "terms_pending",
 			sharedHere: accounts
 				.filter((account) => account.connectedByUserId === userId)
 				.map((account) => ({
@@ -85,7 +101,7 @@ export async function chatGptPlanShareState(params: {
 				})),
 		};
 	} catch {
-		return { canShare: false, sharedHere: [] };
+		return { canShare: false, shareNeedsTerms: false, sharedHere: [] };
 	}
 }
 

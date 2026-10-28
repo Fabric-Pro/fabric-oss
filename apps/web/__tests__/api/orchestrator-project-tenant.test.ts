@@ -202,12 +202,12 @@ describe("POST orchestrator-temporal/stream — project within the request's org
 		expect(startWorkflowMock).toHaveBeenCalledTimes(1);
 		expect(startedInput()?.organizationId).toBe(ORGANIZATION_ID);
 		expect(startedInput()?.projectId).toBeUndefined();
-		// The memo carries no project field at all; pin its exact shape so a
-		// project added to it later has to come through the same check.
+		// The authorization memo explicitly records that this run has no project.
 		expect(startedMemo()).toEqual({
 			userId: SESSION_USER_ID,
 			organizationId: ORGANIZATION_ID,
 			turnId: "turn-example-1",
+			projectId: null,
 		});
 		// Dropped before the access check, which never sees it.
 		expect(hasProjectAccessMock).not.toHaveBeenCalled();

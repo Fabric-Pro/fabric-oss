@@ -22,7 +22,11 @@ import {
 	shouldPersistAgentSelection,
 } from "../agent-selection";
 
-const api = vi.hoisted(() => ({ models: vi.fn() }));
+const api = vi.hoisted(() => ({
+	models: vi.fn(),
+	role: "admin" as string,
+	isAdmin: true,
+}));
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		agents: { registry: { list: vi.fn() } },
@@ -36,6 +40,14 @@ vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 vi.mock("../AgentIdentity", () => ({
 	AgentAvatar: () => null,
 	VendorLogo: () => null,
+}));
+
+vi.mock("@saas/organizations/hooks/use-active-organization", () => ({
+	useActiveOrganization: () => ({
+		activeOrganization: { id: "example-org", slug: "example-org" },
+		isOrganizationAdmin: api.isAdmin,
+		activeOrganizationUserRole: api.role,
+	}),
 }));
 
 const PLAN_MODELS = [
@@ -81,9 +93,113 @@ function openModelPicker(
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	api.role = "admin";
+	api.isAdmin = true;
 });
 
 describe("AgentModelPicker — work on a ChatGPT plan", () => {
+	it.each([false, true])(
+		"asks a shared-plan member to contact an admin and omits the link (platform admin: %s)",
+		async (isPlatformAdmin) => {
+			api.role = "member";
+			api.isAdmin = isPlatformAdmin;
+			api.models.mockResolvedValue({
+				models: [],
+				chatgptPlan: { source: "shared", models: PLAN_MODELS },
+			});
+			const toggle = openModelPicker([
+				{ agentId: "model:claude-sonnet-5", name: "Claude Sonnet 5" },
+			]);
+			const row = await screen.findByTestId("inactive-provider-pick");
+			expect(row).toHaveTextContent(
+				"Your organization's shared ChatGPT plan is on — ask an organization admin to turn it off to use Claude Sonnet 5.",
+			);
+			expect(within(row).queryByRole("link")).toBeNull();
+			expect(toggle).not.toHaveBeenCalled();
+		},
+	);
+
+	it("keeps an own-plan remedy available to an ordinary member", async () => {
+		api.role = "member";
+		api.isAdmin = false;
+		api.models.mockResolvedValue({
+			models: [],
+			chatgptPlan: { source: "own", models: PLAN_MODELS },
+		});
+		openModelPicker([
+			{ agentId: "model:claude-sonnet-5", name: "Claude Sonnet 5" },
+		]);
+		const row = await screen.findByTestId("inactive-provider-pick");
+		expect(row).toHaveTextContent(
+			"Your ChatGPT plan is on — turn it off to use Claude Sonnet 5.",
+		);
+		expect(
+			within(row).getByRole("link", { name: "Plan settings" }),
+		).toHaveAttribute(
+			"href",
+			"/app/example-org/settings/ai-providers?tab=personal",
+		);
+	});
+
+	it.each([
+		["own", "admin"],
+		["shared", "admin"],
+		["shared", "owner"],
+	])(
+		"keeps a provider pick inactive under a %s plan for an %s",
+		async (source, role) => {
+			api.role = role;
+			api.models.mockResolvedValue({
+				models: [],
+				chatgptPlan: { source, models: PLAN_MODELS },
+			});
+			const toggle = openModelPicker([
+				{ agentId: "model:claude-sonnet-5", name: "Claude Sonnet 5" },
+			]);
+			const row = await screen.findByTestId("inactive-provider-pick");
+			expect(row).toHaveTextContent("Claude Sonnet 5");
+			expect(row).toHaveTextContent("not applied");
+			expect(row).toHaveTextContent(
+				/ChatGPT plan is on — turn it off to use Claude Sonnet 5/,
+			);
+			expect(row).not.toHaveAttribute("aria-pressed");
+			expect(row.querySelector("svg.lucide-circle-check")).toBeNull();
+			const link = within(row).getByRole("link", {
+				name: "Plan settings",
+			});
+			expect(link).toHaveAttribute(
+				"href",
+				source === "own"
+					? "/app/example-org/settings/ai-providers?tab=personal"
+					: "/app/example-org/settings/ai-providers#shared-chatgpt-plans",
+			);
+			expect(link).toHaveAttribute("target", "_blank");
+			expect(link).toHaveAttribute("rel", "noopener noreferrer");
+			expect(toggle).not.toHaveBeenCalled();
+		},
+	);
+
+	it("keeps a provider selected when the server returns no serving plan", async () => {
+		api.models.mockResolvedValue({
+			models: [
+				{
+					canonicalName: "claude-sonnet-5",
+					displayName: "Claude Sonnet 5",
+					vendor: "Anthropic",
+				},
+			],
+			chatgptPlan: null,
+		});
+		const toggle = openModelPicker([
+			{ agentId: "model:claude-sonnet-5", name: "Claude Sonnet 5" },
+		]);
+		expect(
+			await screen.findByRole("button", { name: "Claude Sonnet 5" }),
+		).toHaveAttribute("aria-pressed", "true");
+		expect(screen.queryByText("not applied")).toBeNull();
+		expect(toggle).not.toHaveBeenCalled();
+	});
+
 	it("lists the serving plan's models, the default and the newest marked, and no provider models", async () => {
 		api.models.mockResolvedValue({
 			models: [
@@ -316,4 +432,17 @@ describe("a plan pick in a multi-agent selection (Nexus)", () => {
 		expect(selectionToPersist(planPick, [saved])).toBeNull();
 		expect(selectionToPersist(saved, [saved, planPick])).toEqual([saved]);
 	});
+});
+
+it("shows an unavailable saved pick without changing it or linking plan settings", async () => {
+	api.models.mockResolvedValue({ models: [], chatgptPlan: null });
+	const toggle = openModelPicker([
+		{ agentId: "model:gpt-6.1-sol", name: "GPT 6.1 Sol" },
+	]);
+	const row = await screen.findByTestId("inactive-provider-pick");
+	expect(row.textContent).toContain(
+		"isn't available from your organization's AI provider",
+	);
+	expect(within(row).queryByRole("link")).toBeNull();
+	expect(toggle).not.toHaveBeenCalled();
 });
