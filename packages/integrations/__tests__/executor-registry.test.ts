@@ -54,6 +54,25 @@ const VALID_ARGS: Record<string, Record<string, unknown>> = {
 	"DATABRICKS_VECTOR_SEARCH.list_indexes": {},
 };
 
+// These envelopes mirror the provider adapters in src/nhtsa/index.ts.
+const NHTSA_RESULTS: Record<string, unknown> = {
+	decode_vin: { vin: "1FT", count: 1, results: [{ Make: "Example" }] },
+	decode_vin_batch: { vins: ["1FT"], count: 0, results: [] },
+	decode_wmi: { wmi: "1FT", count: 0, results: [] },
+	get_all_manufacturers: { manufacturers: [], count: 0 },
+	get_manufacturer_details: { manufacturer: "Ford", details: [], count: 0 },
+	get_all_makes: { makes: [], count: 0 },
+	get_models_for_make: { make: "Ford", models: [], count: 0 },
+	get_models_for_make_year: {
+		make: "Ford",
+		year: "2020",
+		vehicleType: null,
+		models: [],
+		count: 0,
+	},
+	get_vehicle_types_for_make: { make: "Ford", vehicleTypes: [], count: 0 },
+};
+
 function eachOperation(): Array<{
 	label: string;
 	definition: (typeof integrationExecutorRegistry)["NHTSA_VPIC"]["operations"][string];
@@ -77,6 +96,9 @@ const DATABRICKS_CREDS = {
 
 beforeEach(() => {
 	h.executeNhtsaTool.mockReset();
+	h.executeNhtsaTool.mockImplementation(
+		async (operation: string) => NHTSA_RESULTS[operation],
+	);
 	h.listDatabricksVectorIndexes.mockReset();
 	h.queryDatabricksVectorIndexes.mockReset();
 });
@@ -343,7 +365,7 @@ describe("executeRegisteredIntegrationOperation validation", () => {
 			expect(h.executeNhtsaTool).not.toHaveBeenCalled();
 
 			// Supplying the key clears the guard.
-			h.executeNhtsaTool.mockResolvedValue({});
+
 			await executeRegisteredIntegrationOperation({
 				provider: "NHTSA_VPIC",
 				operation: "__synthetic_write__",
@@ -379,7 +401,7 @@ describe("executeRegisteredIntegrationOperation validation", () => {
 
 describe("NHTSA execution", () => {
 	it("dispatches the operation name and returns data plus text", async () => {
-		h.executeNhtsaTool.mockResolvedValue({ vin: "1FT", count: 1 });
+		h.executeNhtsaTool.mockResolvedValue(NHTSA_RESULTS.decode_vin);
 
 		const result = await executeRegisteredIntegrationOperation({
 			provider: "NHTSA_VPIC",
@@ -393,12 +415,11 @@ describe("NHTSA execution", () => {
 			{ vin: "1FT" },
 			{ signal: undefined },
 		);
-		expect(result.data).toEqual({ vin: "1FT", count: 1 });
-		expect(JSON.parse(result.text)).toEqual({ vin: "1FT", count: 1 });
+		expect(result.data).toEqual(NHTSA_RESULTS.decode_vin);
+		expect(JSON.parse(result.text)).toEqual(NHTSA_RESULTS.decode_vin);
 	});
 
 	it("routes each registered operation to its own VPIC method", async () => {
-		h.executeNhtsaTool.mockResolvedValue({});
 		for (const operation of listIntegrationOperationNames("NHTSA_VPIC")) {
 			h.executeNhtsaTool.mockClear();
 			await executeRegisteredIntegrationOperation({
@@ -416,7 +437,6 @@ describe("NHTSA execution", () => {
 
 	// Defect 5: a timed-out chat tool call must cancel the provider request.
 	it("forwards the caller's abort signal to the VPIC executor", async () => {
-		h.executeNhtsaTool.mockResolvedValue({});
 		const controller = new AbortController();
 
 		await executeRegisteredIntegrationOperation({
@@ -625,8 +645,6 @@ describe("operation argument validation", () => {
 	});
 
 	it("accepts a semicolon-delimited VIN batch as well as an array", async () => {
-		h.executeNhtsaTool.mockResolvedValue({});
-
 		await executeRegisteredIntegrationOperation({
 			provider: "NHTSA_VPIC",
 			operation: "decode_vin_batch",
@@ -689,8 +707,18 @@ describe("Databricks execution", () => {
 
 	it("discovers indexes when none are named, honouring the schema filter", async () => {
 		h.listDatabricksVectorIndexes.mockResolvedValue([
-			{ name: "main.rag.docs", schema: "main.rag" },
-			{ name: "main.other.docs", schema: "main.other" },
+			{
+				name: "main.rag.docs",
+				schema: "main.rag",
+				endpointName: "example-endpoint",
+				indexType: "DELTA_SYNC",
+			},
+			{
+				name: "main.other.docs",
+				schema: "main.other",
+				endpointName: "example-endpoint",
+				indexType: "DELTA_SYNC",
+			},
 		]);
 		h.queryDatabricksVectorIndexes.mockResolvedValue({
 			chunks: [],
@@ -727,8 +755,18 @@ describe("Databricks execution", () => {
 
 	it("implements the documented schema filter for list_indexes", async () => {
 		h.listDatabricksVectorIndexes.mockResolvedValue([
-			{ name: "main.rag.docs", schema: "main.rag" },
-			{ name: "main.other.docs", schema: "main.other" },
+			{
+				name: "main.rag.docs",
+				schema: "main.rag",
+				endpointName: "example-endpoint",
+				indexType: "DELTA_SYNC",
+			},
+			{
+				name: "main.other.docs",
+				schema: "main.other",
+				endpointName: "example-endpoint",
+				indexType: "DELTA_SYNC",
+			},
 		]);
 
 		const filtered = await executeRegisteredIntegrationOperation({
@@ -764,5 +802,63 @@ describe("Databricks execution", () => {
 
 		expect(result.text).toContain("failed indexes: main.rag.b: boom");
 		expect(result.text).toContain("beyond the 5-index limit");
+	});
+});
+
+describe("governed output contracts", () => {
+	it("derives discovery schemas and effect metadata from executable definitions", () => {
+		for (const provider of listRegisteredIntegrationProviders()) {
+			for (const advertised of listChatEnabledOperations(provider)) {
+				const definition =
+					integrationExecutorRegistry[provider].operations[
+						advertised.name
+					];
+				expect(advertised.outputSchema).toEqual(
+					toAdvertisedJsonSchema(definition.resultSchema, "output"),
+				);
+				expect(advertised.access).toBe(definition.access);
+				expect(advertised.retrySafety).toBe(definition.retrySafety);
+			}
+		}
+	});
+	it.each([
+		null,
+		"example-secret",
+		{ vin: "1FT", results: "example-secret", count: 1 },
+	])(
+		"rejects malformed results without exposing their contents: %j",
+		async (data) => {
+			h.executeNhtsaTool.mockResolvedValue(data);
+			await expect(
+				executeRegisteredIntegrationOperation({
+					provider: "NHTSA_VPIC",
+					operation: "decode_vin",
+					args: { vin: "1FT" },
+				}),
+			).rejects.toMatchObject({
+				name: "IntegrationResultError",
+				message:
+					"Integration NHTSA_VPIC.decode_vin returned an invalid result.",
+			});
+			expect(h.executeNhtsaTool).toHaveBeenCalledTimes(1);
+		},
+	);
+	it("rejects malformed Databricks index metadata", async () => {
+		h.listDatabricksVectorIndexes.mockResolvedValue([
+			{
+				name: "main.rag.docs",
+				schema: "main.rag",
+				endpointName: 42,
+				indexType: "DELTA_SYNC",
+			},
+		]);
+		await expect(
+			executeRegisteredIntegrationOperation({
+				provider: "DATABRICKS_VECTOR_SEARCH",
+				operation: "list_indexes",
+				args: {},
+				credentials: DATABRICKS_CREDS,
+			}),
+		).rejects.toMatchObject({ name: "IntegrationResultError" });
 	});
 });

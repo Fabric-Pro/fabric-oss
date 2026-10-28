@@ -69,6 +69,13 @@ export const AUDIT_ACTIONS = [
 	// back.
 	"org.purged",
 	"org.settings.updated",
+	"org.chat_approval.decided",
+	"org.chat_run.cancel_requested",
+	// Portable definitions create a new draft on import (apiVersion, skillCount,
+	// requirementCount); export records format and version. Both identify the
+	// instance as the resource and exclude prompt text from metadata.
+	"org.agent_definition.imported",
+	"org.agent_definition.exported",
 	"org.member.invited",
 	"org.member.role_changed",
 	"org.member.removed",

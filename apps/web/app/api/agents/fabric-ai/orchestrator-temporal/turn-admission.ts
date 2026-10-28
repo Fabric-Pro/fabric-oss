@@ -1,3 +1,4 @@
+import { orchestratorApprovalProtocol } from "@repo/temporal/approval-rollout";
 /**
  * Advisor chat turn admission — the one path every chat starter of the
  * orchestrator workflow takes to create a turn and start its run.
@@ -605,8 +606,10 @@ export async function startTurnWorkflow(args: {
 		throw new TurnStoppedBeforeStartError();
 	}
 
+	const protocol = orchestratorApprovalProtocol();
 	const workflowInput: OrchestratorWorkflowInput = {
 		...args.workflowInput,
+		...protocol,
 		executionId,
 		toolLoadingMode:
 			process.env.ADVISOR_TOOL_LOADING === "call_tool"
@@ -669,7 +672,7 @@ export async function startTurnWorkflow(args: {
 				// racing the first) must find the first execution — even one
 				// that already closed — rather than start another.
 				workflowIdReusePolicy: "REJECT_DUPLICATE",
-				memo: { ...args.memo, turnId: turn.id },
+				memo: { ...args.memo, ...protocol, turnId: turn.id },
 			},
 		);
 	} catch (error) {
@@ -725,13 +728,20 @@ export async function startLegacyChatWorkflow(args: {
 	workflowInput: OrchestratorWorkflowInput;
 	memo: Record<string, unknown>;
 }): Promise<unknown> {
+	const protocol = orchestratorApprovalProtocol();
 	return args.temporalClient.workflow.start("orchestratorExecutionWorkflow", {
 		taskQueue: "fabric-orchestrator",
 		workflowId: args.executionId,
-		args: [{ ...args.workflowInput, executionId: args.executionId }],
+		args: [
+			{
+				...args.workflowInput,
+				...protocol,
+				executionId: args.executionId,
+			},
+		],
 		// Same ceiling as a turn's run (see startTurnWorkflow).
 		workflowExecutionTimeout: "2 hours",
-		memo: args.memo,
+		memo: { ...args.memo, ...protocol },
 	});
 }
 

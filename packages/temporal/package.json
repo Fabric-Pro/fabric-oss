@@ -72,7 +72,9 @@
 		"./memory-write-types": "./src/lib/memory-write-types.ts",
 		"./instruction-proposal-pull-request-types": "./src/lib/instruction-proposal-pull-request-types.ts",
 		"./repository-sync-subjects": "./src/activities/lib/repository-sync-subjects.ts",
-		"./report-diagnostics": "./src/activities/template-instance/mcp-diagnostics.ts"
+		"./report-diagnostics": "./src/activities/template-instance/mcp-diagnostics.ts",
+		"./approval-rollout": "./src/lib/approval-rollout.ts",
+		"./coding-execution-rollout": "./src/lib/coding-execution/bridge-rollout.ts"
 	},
 	"scripts": {
 		"dev": "tsx src/worker.ts",

@@ -668,3 +668,13 @@ describe("isPrivateIp — complete special-use denylist (review sprint3 #2)", ()
 		});
 	}
 });
+
+it.each(["a: first\na: second", '{"a":"first","a":"second"}'])(
+	"strict wrapper rejects duplicate keys: %s",
+	(document) => {
+		expect(() =>
+			parseJsonOrYamlSafe(document, { uniqueKeys: true }),
+		).toThrow(UnsafeDocumentError);
+		expect(parseJsonOrYamlSafe(document)).toEqual({ a: "second" });
+	},
+);

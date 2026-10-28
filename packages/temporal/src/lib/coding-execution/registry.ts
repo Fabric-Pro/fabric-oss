@@ -7,8 +7,13 @@ import {
 	FABRIC_BACKGROUND_CAPABILITIES,
 	FabricBackgroundAdapter,
 } from "./background-agents-provider";
+import { isFabricAgentsBridgeEnabled } from "./bridge-rollout";
 import { env } from "./env";
 import { RateLimitError } from "./errors";
+import {
+	LEGACY_BACKGROUND_CAPABILITIES,
+	LegacyBackgroundAdapter,
+} from "./legacy-background-provider";
 import {
 	KANBAN_LOCAL_CAPABILITIES,
 	KanbanLocalAdapter,
@@ -22,7 +27,10 @@ import type {
 export interface CodingExecutionAdapterDefinition {
 	provider: CodingRunProvider;
 	executionChannel: CodingRunExecutionChannel;
-	adapterName: "FabricBackgroundAdapter" | "KanbanLocalAdapter";
+	adapterName:
+		| "FabricBackgroundAdapter"
+		| "LegacyBackgroundAdapter"
+		| "KanbanLocalAdapter";
 	requiresWorkingDirectory: boolean;
 	/**
 	 * Capability flags (plan §F4), readable without constructing the
@@ -112,6 +120,16 @@ const CODING_EXECUTION_ADAPTERS: Record<
 export function getCodingExecutionAdapterDefinition(
 	provider: CodingRunProvider,
 ): CodingExecutionAdapterDefinition {
+	if (provider === "BACKGROUND_AGENTS" && !isFabricAgentsBridgeEnabled()) {
+		return {
+			provider,
+			executionChannel: "BACKGROUND_AGENTS",
+			adapterName: "LegacyBackgroundAdapter",
+			requiresWorkingDirectory: false,
+			capabilities: LEGACY_BACKGROUND_CAPABILITIES,
+			create: () => new LegacyBackgroundAdapter(),
+		};
+	}
 	const definition = CODING_EXECUTION_ADAPTERS[provider];
 	if (!definition) {
 		throw new Error(`Unknown provider: ${provider}`);
@@ -120,7 +138,9 @@ export function getCodingExecutionAdapterDefinition(
 }
 
 export function listCodingExecutionAdapterDefinitions(): CodingExecutionAdapterDefinition[] {
-	return Object.values(CODING_EXECUTION_ADAPTERS);
+	return (Object.keys(CODING_EXECUTION_ADAPTERS) as CodingRunProvider[]).map(
+		getCodingExecutionAdapterDefinition,
+	);
 }
 
 /**
@@ -146,8 +166,8 @@ export function getCodingExecutionProvider(
 	return getCodingExecutionAdapterDefinition(provider).create();
 }
 
-export function getBackgroundAgentsProvider(): FabricBackgroundAdapter {
-	return new BackgroundAgentsProvider();
+export function getBackgroundAgentsProvider(): CodingExecutionProvider {
+	return getCodingExecutionProvider("BACKGROUND_AGENTS");
 }
 
 export { FabricBackgroundAdapter, KanbanLocalAdapter };

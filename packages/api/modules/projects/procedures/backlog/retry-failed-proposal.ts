@@ -4,6 +4,7 @@ import { ORPCError } from "@orpc/client";
 import {
 	buildBacklogDedupGuard,
 	db,
+	finalizeBacklogUpdateSession,
 	getAppliedChangeIndexes,
 	getPendingBacklogProposal,
 	getPendingProposalReview,
@@ -294,6 +295,17 @@ export const retryFailedProposalProcedure = tenantProtectedProcedure
 				});
 			}
 			await recordDuplicates();
+			// This terminal flip bypasses the apply workflow's finalize
+			// activity, so finalize any session-history row directly (best-
+			// effort, no-op when none exists) so it doesn't stay FAILED.
+			try {
+				await finalizeBacklogUpdateSession({
+					pendingProposalId: input.proposalId,
+					status: "APPLIED",
+				});
+			} catch {
+				// Non-fatal: a stale session row only affects the history tab.
+			}
 			return {
 				workflowId: null,
 				dedupCollisionCount,

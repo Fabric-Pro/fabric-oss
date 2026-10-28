@@ -88,8 +88,13 @@ vi.mock("@repo/database", async () => {
 	const pure = await vi.importActual<
 		typeof import("@repo/database/prisma/queries/projects/duplicate-detection")
 	>("@repo/database/prisma/queries/projects/duplicate-detection");
+	// The feature-pair focus selection the core runs on every candidate.
+	const focus = await vi.importActual<
+		typeof import("@repo/database/prisma/queries/projects/duplicate-focus")
+	>("@repo/database/prisma/queries/projects/duplicate-focus");
 	return {
 		...pure,
+		...focus,
 		// The real predicate — the scan's provider guard is under test here, so
 		// a stub would decide it instead of the rule. Pinned at the source by
 		// `@repo/database`'s own ai-gateway tests.

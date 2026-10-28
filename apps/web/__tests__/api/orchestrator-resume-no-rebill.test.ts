@@ -157,6 +157,32 @@ describe("POST orchestrator-temporal/stream — resume does not re-bill", () => 
 		}
 	});
 
+	it("refuses a reattach when project access in the run memo was revoked", async () => {
+		const { hasProjectAccess } = await import("@repo/database");
+		vi.mocked(hasProjectAccess).mockResolvedValueOnce(false);
+		const handle = getHandleMock();
+		handle.describe = async () => ({
+			status: { name: "COMPLETED" },
+			memo: {
+				userId: SESSION_USER_ID,
+				organizationId: "org-example-1",
+				projectId: "example-project",
+			},
+		});
+		const { POST } = await import(
+			"../../app/api/agents/fabric-ai/orchestrator-temporal/stream/route"
+		);
+		const events = await readEvents(
+			await POST(postBody({ executionId: EXECUTION_ID })),
+		);
+		expect(events.map((e) => e.type)).not.toContain("started");
+		expect(events.map((e) => e.type)).toContain("error");
+		expect(hasProjectAccess).toHaveBeenCalledWith(
+			"example-project",
+			SESSION_USER_ID,
+			"org-example-1",
+		);
+	});
 	it("skips the usage chokepoint and usage tracking for an executionId-only body", async () => {
 		const { POST } = await import(
 			"../../app/api/agents/fabric-ai/orchestrator-temporal/stream/route"

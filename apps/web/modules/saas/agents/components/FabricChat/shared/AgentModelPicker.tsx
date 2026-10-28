@@ -13,11 +13,13 @@
  * `ChatInput` renders it through `headerSlot`, which takes arbitrary content, so
  * no change to that component's API is required.
  *
- * Owns its own open state because the three catalog queries are gated on it:
- * nothing is fetched until the user actually opens the picker.
+ * Catalogs load when opened; a saved provider pick also checks plan availability
+ * while closed so the chat can show whether that pick applies.
  */
 
 import { CHATGPT_PLAN_MODEL_OVERRIDE_PREFIX } from "@repo/agent-types/chatgpt-plan-fetch";
+import { useActiveOrganization } from "@saas/organizations/hooks/use-active-organization";
+import { PERSONAL_AI_PROVIDERS_PATH } from "@saas/settings/lib/personal-ai-providers-path";
 import { RobotIcon } from "@saas/shared/components/icons/RobotIcon";
 import { formatPlanResetTime } from "@saas/shared/lib/ai-error-message";
 import { orpcClient } from "@shared/lib/orpc-client";
@@ -36,6 +38,10 @@ import {
 	PLAN_MODEL_AGENT_PREFIX,
 	type SelectedAgent,
 } from "./agent-selection";
+import {
+	chatModelQueryOptions,
+	useProviderPickStatus,
+} from "./use-provider-pick-status";
 
 type AvailableAgent = {
 	agentId: string;
@@ -113,18 +119,18 @@ export function AgentModelPicker({
 	});
 
 	const { data: modelsData } = useQuery({
-		queryKey: ["ai-models-available", organizationId, "compose-picker"],
-		queryFn: () =>
-			orpcClient.aiConfig.models.listAvailable({
-				organizationId: organizationId ?? null,
-				taskType: "CHAT",
-				// Advisor and ⌘J run tool calling: the plan's "Default" is that
-				// task's model, the one that actually runs.
-				planTaskType: "TOOL_CALLING",
-			}),
+		...chatModelQueryOptions(organizationId),
 		enabled: agentPickerOpen,
-		refetchOnWindowFocus: false,
 	});
+	const { inactiveProviderPicks, source, getInactiveNote, canManagePlan } =
+		useProviderPickStatus(organizationId, selectedAgents);
+	const { activeOrganization } = useActiveOrganization();
+	const planSettingsHref =
+		canManagePlan &&
+		activeOrganization?.slug &&
+		activeOrganization.id === organizationId
+			? `/app/${activeOrganization.slug}/${source === "shared" ? "settings/ai-providers#shared-chatgpt-plans" : PERSONAL_AI_PROVIDERS_PATH}`
+			: undefined;
 
 	// Guarded rather than relying on the disabled queries above: both use a
 	// query key shared with every other picker instance, so a catalog="all"
@@ -310,6 +316,26 @@ export function AgentModelPicker({
 
 				{/* Scrollable list */}
 				<div className="max-h-72 overflow-y-auto py-1">
+					{inactiveProviderPicks.map((agent) => (
+						<div
+							key={agent.agentId}
+							data-testid="inactive-provider-pick"
+							className="px-3 py-2 text-xs text-muted-foreground"
+						>
+							<span>{agent.name} · not applied</span>
+							<p>{getInactiveNote(agent)}</p>
+							{planSettingsHref && (
+								<a
+									href={planSettingsHref}
+									target="_blank"
+									rel="noopener noreferrer"
+									className="underline underline-offset-4 focus-visible:ring-ring focus-visible:ring-2 rounded-sm"
+								>
+									Plan settings
+								</a>
+							)}
+						</div>
+					))}
 					{chatgptPlan && (
 						<div data-testid="agent-picker-chatgpt-plan">
 							<p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground/60">
@@ -318,6 +344,7 @@ export function AgentModelPicker({
 									? "organization's shared ChatGPT plan"
 									: "ChatGPT plan"}
 							</p>
+
 							{chatgptPlan.spent && (
 								<p
 									className="px-3 py-1.5 text-xs text-muted-foreground"
@@ -392,6 +419,7 @@ export function AgentModelPicker({
 								return (
 									<button
 										key={modelAgentId}
+										aria-pressed={isSelected}
 										type="button"
 										onClick={() =>
 											handleToggleModelAgent(model)
@@ -479,10 +507,7 @@ export function AgentModelPicker({
 				 * the specialists it delegates to run on. Without saying so,
 				 * picking a model reads as a global setting.
 				 *
-				 * Deliberately names the destination rather than linking to it:
-				 * the href differs between personal and organization context,
-				 * the picker only receives an `organizationId`, and following a
-				 * link mid-conversation would navigate the chat away.
+				 * Plan settings above open in a new tab to preserve the chat.
 				 */}
 				<div className="border-t border-border/60 px-3 py-2">
 					<p className="text-[11px] leading-relaxed text-muted-foreground">

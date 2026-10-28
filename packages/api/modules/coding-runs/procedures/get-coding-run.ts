@@ -6,6 +6,7 @@
 
 import { ORPCError } from "@orpc/client";
 import { getCodingRun } from "@repo/database";
+import { isFabricAgentsBridgeEnabled } from "@repo/temporal/coding-execution-rollout";
 import { z } from "zod";
 import {
 	Permissions,
@@ -42,5 +43,34 @@ export const getCodingRunProcedure = tenantProtectedProcedure
 			});
 		}
 
+		// Only the disabled legacy profile may supply the old explicitly configured
+		// HTTP route. Native headless sessions never gain guessed executor links.
+		const metadata = run.providerMetadata;
+		const legacy =
+			metadata === null ||
+			(typeof metadata === "object" &&
+				!Array.isArray(metadata) &&
+				metadata?.executionRuntime === "legacy-background-agents");
+		const legacyBase = process.env.NEXT_PUBLIC_BACKGROUND_AGENTS_URL;
+		if (
+			!run.externalUrl &&
+			run.provider === "BACKGROUND_AGENTS" &&
+			run.providerSessionId &&
+			!isFabricAgentsBridgeEnabled() &&
+			legacy &&
+			legacyBase
+		) {
+			try {
+				const base = new URL(legacyBase);
+				if (base.protocol === "https:" || base.protocol === "http:") {
+					return {
+						...run,
+						externalUrl: `${legacyBase.replace(/\/$/, "")}/session/${encodeURIComponent(run.providerSessionId)}`,
+					};
+				}
+			} catch {
+				/* Invalid configuration does not create a link. */
+			}
+		}
 		return run;
 	});

@@ -53,6 +53,8 @@ export interface OrchestratorExecution {
 	 * Persisted so a reload still says so.
 	 */
 	truncated?: ChatTurnTruncation;
+	/** The model that served this answer. */
+	model?: import("@saas/agents/hooks/useDirectStream").StreamModelInfo;
 	/** The turn ran on the organization's API billing (Fizzy #3048). */
 	apiBilling?: ChatGptPlanApiBilling;
 	routingDecision?: {

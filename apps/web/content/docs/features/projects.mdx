@@ -291,6 +291,21 @@ Connect external tools:
 - **GitHub** — Link to repository
 - **Slack** — Send notifications
 
+### Delegating Coding Runs to Fabric Agents
+
+When your project is linked to a GitHub repository and connected to a **Fabric Agents (`fabric-agent-server`)** runtime, you can delegate implementation work directly from the project:
+
+The native bridge is opt-in. An operator must drain active/paused runs, configure a matching dedicated server and set `FABRIC_AGENTS_EXECUTION_BRIDGE_ENABLED=true` on both the API and Temporal worker before using native backend/model/machine controls. With the flag off, the existing execution protocol remains active. See the deployment guide for the cutover and rollback procedure.
+
+
+1. **Configure Implementation Defaults**: In **Project Settings → Implementation Defaults**, choose **Remote execution — Fabric Agents** (powered by `fabric-agent-server` configured via `BACKGROUND_AGENTS_URL` and `BACKGROUND_AGENTS_INTERNAL_SECRET`).
+2. **Start a Feature or Task Session**: Open a published feature and click **Start work → Fabric Agents** (or click **Implement** on a specific task row).
+   - Select the **Task assignment** scope (entire feature or a single task).
+   - Choose the **Fabric Agents backend** (**Server default**, **Claude Max**, **Codex**, **Cursor**, **Antigravity**, **Factory Droid**, **Grok**, or **Kimi**).
+   - Click **Delegate to Fabric Agents**.
+3. **Delegate Approved Weave Plans**: In **Plan with Weave**, approve a feature-linked plan and click **Fabric Agents** to hand off multi-step execution.
+4. **Monitor, Reply, and Open Pull Requests**: Click the session status badge to track the 4-stage execution stepper (`Worktree & session` → `Implementing task` → `Pull Request` → `Completed`), reply inline when the agent pauses for input, open the live session in the Fabric Agents desktop app, and jump to the opened GitHub pull request.
+
 ## Best Practices
 
 ### Project Organization

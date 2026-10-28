@@ -52,6 +52,9 @@ export interface SpikeRunView {
 	playNotes: string | null;
 	demoFrameId: string | null;
 	demoUrl: string | null;
+	externalUrl: string | null;
+	llmConnection: string | null;
+	worktreePath: string | null;
 	error: string | null;
 	createdAt: string | null;
 	updatedAt: string | null;
@@ -91,17 +94,24 @@ export function asSpikeRunView(run: unknown): SpikeRunView | null {
 	if (typeof r.id !== "string" || typeof r.status !== "string") {
 		return null;
 	}
+	const metadata =
+		typeof r.providerMetadata === "object" && r.providerMetadata !== null
+			? (r.providerMetadata as Record<string, unknown>)
+			: null;
 	return {
 		id: r.id,
 		kind: r.kind === "SPIKE" ? "SPIKE" : "IMPLEMENT",
 		status: r.status as SpikeRunStatus,
 		storyId: str(r.storyId),
 		spikeQuestion: str(r.spikeQuestion),
-		spikeBranch: str(r.spikeBranch),
+		spikeBranch: str(r.spikeBranch) ?? str(metadata?.branch),
 		findings: str(r.findings),
 		playNotes: str(r.playNotes),
 		demoFrameId: str(r.demoFrameId),
 		demoUrl: str(r.demoUrl),
+		externalUrl: str(r.externalUrl),
+		llmConnection: str(metadata?.llmConnection),
+		worktreePath: str(metadata?.worktreePath) ?? str(r.workingDirectory),
 		error: str(r.error) ?? str(r.errorMessage),
 		createdAt: dateStr(r.createdAt),
 		updatedAt: dateStr(r.updatedAt),
@@ -154,6 +164,9 @@ export interface StartSpikeInput {
 	organizationId: string | null;
 	kind: "SPIKE";
 	spikeQuestion: string;
+	llmConnection?: string;
+	model?: string;
+	targetMachine?: string;
 }
 
 export interface StartSpikeResult {

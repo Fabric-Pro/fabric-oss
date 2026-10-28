@@ -4,8 +4,7 @@
  * useDirectStream
  * React hook for streaming Direct mode chat responses via SSE.
  * Provides real-time text streaming and tool call visualization.
- * This is a simpler alternative to useOrchestratorStream for direct
- * MCP tool execution without Temporal workflow orchestration.
+ * Uses the direct-chat Temporal workflow through the versioned SSE transport.
  */
 
 import type { LimitSignal } from "@repo/ai/limits";
@@ -37,7 +36,13 @@ import {
 	settleUnfinishedToolCalls,
 	trimHistoryForRequest,
 } from "../lib/direct-chat-turns";
+import {
+	type DirectStreamEvent,
+	parseWorkflowConfirmation,
+	type WorkflowConfirmation,
+} from "../lib/direct-stream-protocol";
 import { loadInstanceAgentConfig } from "../lib/load-instance-agent-config";
+import { readDirectStream } from "../lib/read-direct-stream";
 
 /**
  * Stream-level status surfaced on assistant messages so the renderer can
@@ -176,7 +181,7 @@ export interface DirectStreamMessage {
 	 */
 	apiBilling?: ChatGptPlanApiBilling;
 	/** The approval a tool in this message asked for, if any */
-	pendingConfirmation?: ChatConfirmationRequest;
+	pendingConfirmation?: ChatConfirmationRequest | WorkflowConfirmation;
 	/** RAG sources used to generate the response */
 	sources?: DirectStreamSource[];
 	/**
@@ -310,6 +315,7 @@ export interface TokenUsage {
 
 /** The model that answered the last turn, as reported by the stream. */
 export interface StreamModelInfo {
+	viaPlan?: boolean;
 	id: string;
 	canonicalName?: string;
 	provider?: string;
@@ -410,11 +416,20 @@ export function applyToolResult(
 				: tc,
 		);
 
+		const pendingConf =
+			event.status === "error" || event.error
+				? m.pendingConfirmation
+				: (readConfirmationRequest(event.result) ??
+					parseWorkflowConfirmation(
+						resultToolName ?? m.toolCalls?.[targetIndex]?.name,
+						event.result,
+					) ??
+					m.pendingConfirmation);
+
 		return {
 			...m,
 			toolCalls: updatedToolCalls,
-			pendingConfirmation:
-				readConfirmationRequest(event.result) ?? m.pendingConfirmation,
+			pendingConfirmation: pendingConf,
 		};
 	});
 }
@@ -623,7 +638,7 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 
 			// Create user message
 			const userMessage: DirectStreamMessage = {
-				id: `msg-${Date.now()}`,
+				id: `msg-${crypto.randomUUID()}`,
 				role: "user",
 				content: content.trim(),
 				timestamp: new Date(),
@@ -634,7 +649,7 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 
 			// Create placeholder assistant message
 			const assistantMessage: DirectStreamMessage = {
-				id: `msg-${Date.now() + 1}`,
+				id: `msg-${crypto.randomUUID()}`,
 				role: "assistant",
 				content: "",
 				timestamp: new Date(),
@@ -778,42 +793,28 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 					);
 				}
 
-				// Process SSE stream
-				const reader = response.body?.getReader();
-				if (!reader) {
+				if (!response.body) {
 					throw new Error("No response body");
 				}
-
-				const decoder = new TextDecoder();
-				let buffer = "";
-
-				while (true) {
-					const { done, value } = await reader.read();
-					if (done) {
-						break;
+				let usageLimitReached = false;
+				await readDirectStream(response.body, (event) => {
+					if (
+						event.type === "error" &&
+						event.code === "AI_USAGE_LIMIT_EXCEEDED"
+					) {
+						usageLimitReached = true;
 					}
-
-					buffer += decoder.decode(value, { stream: true });
-					const lines = buffer.split("\n");
-					buffer = lines.pop() || "";
-
-					for (const line of lines) {
-						if (line.startsWith("data: ")) {
-							try {
-								const data = JSON.parse(line.slice(6));
-								handleStreamEvent(data, assistantMessage.id);
-							} catch {
-								// Skip malformed JSON
-							}
-						}
-					}
-				}
+					handleStreamEvent(event, assistantMessage.id);
+				});
 
 				// Mark streaming complete — but never overwrite a message
 				// the user has already cancelled (decision 12 /), and never
 				// turn a failed turn back into a completed one: the route
 				// closes the stream right after its `error` event.
-				if (!cancelledMessageIdsRef.current.has(assistantMessage.id)) {
+				if (
+					!usageLimitReached &&
+					!cancelledMessageIdsRef.current.has(assistantMessage.id)
+				) {
 					const failure = erroredMessagesRef.current.get(
 						assistantMessage.id,
 					);
@@ -916,7 +917,7 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 	 * Handle incoming SSE events
 	 */
 	const handleStreamEvent = useCallback(
-		(data: any, assistantMessageId: string) => {
+		(data: DirectStreamEvent, assistantMessageId: string) => {
 			// Freeze gate (/ decision 12): once the user has clicked
 			// Stop on this message, every subsequent SSE delta — text,
 			// tool_input, tool_result, completed — is dropped on the floor
@@ -1221,6 +1222,35 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 					break;
 				}
 
+				case "confirmation_required": {
+					const pendingConfirmation:
+						| ChatConfirmationRequest
+						| WorkflowConfirmation
+						| undefined =
+						data.workflowId && data.workflowName
+							? {
+									workflowId: data.workflowId,
+									workflowName: data.workflowName,
+									description: data.description,
+									message: data.message,
+								}
+							: (readConfirmationRequest(data) ?? undefined);
+					if (!pendingConfirmation) {
+						break;
+					}
+					setMessages((prev) =>
+						prev.map((m) =>
+							m.id === assistantMessageId
+								? {
+										...m,
+										pendingConfirmation,
+									}
+								: m,
+						),
+					);
+					break;
+				}
+
 				case "sources":
 					// RAG sources received - attach to assistant message
 					if (data.sources && Array.isArray(data.sources)) {
@@ -1289,6 +1319,12 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 						data.model && typeof data.model.id === "string"
 							? {
 									id: data.model.id,
+									// Absent from a worker older than this field;
+									// keep it absent so the label stays hidden.
+									viaPlan:
+										typeof data.model.viaPlan === "boolean"
+											? data.model.viaPlan
+											: undefined,
 									canonicalName: data.model.canonicalName,
 									provider: data.model.provider,
 									contextWindow:
@@ -1349,9 +1385,6 @@ export function useDirectStream(options: UseDirectStreamOptions = {}) {
 					}
 					break;
 				}
-
-				default:
-					console.log("[DirectStream] Unknown event:", data.type);
 			}
 		},
 		[],

@@ -97,6 +97,10 @@ export async function listActiveStoriesForDetection(projectId: string) {
 			// (there is no separate clean-spec field; the spec is description +
 			// acceptanceCriteria). Budgeted in buildDetectionText.
 			acceptanceCriteria: true,
+			// A FEATURE↔FEATURE pair is compared mainly on its Scope (or
+			// acceptance-criteria) section; any pair involving a BUG keeps the
+			// whole-document comparison. See selectPairFocus.
+			kind: true,
 			// Creation time feeds the proximity relaxation: items created close
 			// together (possibly via different paths) get a slightly lower
 			// candidate threshold.
@@ -204,12 +208,19 @@ export async function upsertPendingDuplicateLink(params: {
  * EVERY scan forever, permanently occupying candidate-cap slots and breaking
  * the "each pair paid at most once per content change" guarantee.
  *
- * Status is preserved, never changed: a PENDING pair stays flagged for the
- * user to resolve (we don't silently un-flag something they were asked to
- * review), and a DISMISSED / RESOLVED row is never resurrected. Only the
- * cache-facing fields (similarity/confidence/reasoning) are refreshed, and
- * only on a NOT_DUPLICATE row, so a PENDING pair keeps the score/reasoning the
- * user is looking at.
+ * A PENDING pair the verifier now judges distinct is CLEARED — moved to
+ * NOT_DUPLICATE with the new similarity/confidence/reasoning. A pending flag
+ * nobody has reviewed that the current detection logic judges distinct is a
+ * stale false positive, and leaving it up keeps asking people to review work
+ * the matcher no longer stands behind. This cannot flap from run to run: a
+ * pair is only re-verified when one side's text changes or DETECTION_VERSION
+ * moves, and a later positive verdict reopens it through
+ * {@link upsertPendingDuplicateLink}. (Earlier versions kept such a pair
+ * flagged; that was reversed deliberately, because the flags a logic fix
+ * re-verifies are exactly the false positives it was made to remove.)
+ *
+ * DISMISSED and RESOLVED rows are human decisions: their status and display
+ * fields are never touched, only their hashes are stamped.
  */
 export async function recordDistinctVerdict(params: {
 	projectId: string;
@@ -237,19 +248,25 @@ export async function recordDistinctVerdict(params: {
 			verifiedContentHashB: params.contentHashB,
 		},
 		// On conflict, stamp the current hashes onto whatever row exists so the
-		// verdict cache excludes it next scan — WITHOUT touching status (never
-		// un-flag a PENDING pair or resurrect a DISMISSED/RESOLVED one).
+		// verdict cache excludes it next scan. Status is settled below, where
+		// a DISMISSED/RESOLVED row can be excluded.
 		update: {
 			verifiedContentHashA: params.contentHashA,
 			verifiedContentHashB: params.contentHashB,
 			detectedAt: new Date(),
 		},
 	});
-	// Refresh the display fields only on a pure cache row; a PENDING/DISMISSED
-	// row keeps the similarity/confidence/reasoning the user last saw.
+	// A cache row is refreshed and an unreviewed PENDING flag is cleared; a
+	// DISMISSED/RESOLVED row keeps the decision and fields a person left.
 	await db.storyDuplicateLink.updateMany({
-		where: { projectId, storyAId, storyBId, status: "NOT_DUPLICATE" },
+		where: {
+			projectId,
+			storyAId,
+			storyBId,
+			status: { in: ["NOT_DUPLICATE", "PENDING"] },
+		},
 		data: {
+			status: "NOT_DUPLICATE",
 			similarity,
 			confidence,
 			reasoning: reasoning ?? null,

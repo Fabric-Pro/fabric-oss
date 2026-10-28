@@ -53,6 +53,7 @@ vi.mock("@temporalio/workflow", () => ({
 	},
 	defineQuery: (name: string) => name,
 	defineSignal: (name: string) => name,
+	defineUpdate: (name: string) => name,
 	setHandler: vi.fn(),
 	startChild: vi.fn(),
 	ParentClosePolicy: { ABANDON: "ABANDON" },
@@ -78,10 +79,10 @@ vi.mock("../completion", async (original) => ({
 
 import { ApplicationFailure } from "@temporalio/common";
 import { patched } from "@temporalio/workflow";
+import { orchestratorExecutionWorkflow } from "../../index";
 import { createInitialState } from "../../types";
 import * as phases from "../index";
 import { executeTimeLimitExit } from "../iterative-execution";
-import { orchestratorExecutionWorkflow } from "../../index";
 import { installDefaultStubs } from "./advisor-scenario-harness";
 
 const minute = 60_000;

@@ -38,14 +38,13 @@ import {
 	getActiveModels,
 	getAiProviderApiKey,
 	getAiProviderApiKeyByProvider,
-	getCanonicalNameForProviderModelId,
+	getAvailableCanonicalNameForProviderModelId,
 	getEmbeddingProviderConfig,
 	getModelByCanonicalName,
 	getModelForTask,
 	getOrganizationSystemAiProviderApiKey,
 	getOrgDecisionProvider,
 	getPlanSpentPersonalProviderConfig,
-	getProviderModelIdForCanonical,
 	getProviderModelMappingForCanonical,
 	getSystemAiProviderApiKey,
 	getTaskDefaultModel,
@@ -2066,64 +2065,48 @@ async function resolveAIModelWithMetadata(
 		configSource: config.configSource,
 	});
 
-	// Step 4: Determine final model string (override takes precedence).
-	// A modelOverride may be a catalog canonical name (from the model picker),
-	// which must be mapped to the resolved provider's model string via the catalog —
-	// otherwise a provider whose id differs from the canonical (Databricks Unity
-	// AI Gateway "system.ai.claude-sonnet-5", Azure, Bedrock) receives the raw
-	// canonical and rejects it. Falls back to the override as-is when it isn't a
-	// catalog canonical for this provider (e.g. an already provider-specific id).
+	// Step 4: Apply overrides only with an available mapping on this provider,
+	// either by catalog canonical name or by the provider's own model ID.
 	let finalModelString = config.modelString;
 	let apiModelOverride = pinned ? undefined : modelOverride;
-	let overrideExistsInCatalog = false;
+	let canonicalName = config.canonicalName;
 	if (apiModelOverride) {
-		const overrideMapping = config.provider
+		const mapping = config.provider
 			? await getProviderModelMappingForCanonical(
 					apiModelOverride,
 					config.provider,
 				)
-			: { exists: false, providerModelId: null };
-		const overrideProviderModelId = overrideMapping.providerModelId;
-		overrideExistsInCatalog = overrideMapping.exists;
-		// A model only a ChatGPT plan serves (a saved pick from before the
-		// plan, or one a plan's list added) is no model of this provider:
-		// the task's own model runs, rather than a call the provider rejects.
-		if (
-			!overrideProviderModelId &&
-			overrideExistsInCatalog &&
-			(await getProviderModelIdForCanonical(
-				apiModelOverride,
-				"OPENAI_CHATGPT_PLAN",
-			))
-		) {
-			apiModelOverride = undefined;
+			: null;
+		const providerCanonical =
+			config.provider && !mapping?.exists
+				? await getAvailableCanonicalNameForProviderModelId(
+						apiModelOverride,
+						config.provider,
+					)
+				: null;
+		if (mapping?.providerModelId && config.provider) {
+			canonicalName = apiModelOverride;
+			finalModelString = buildProviderModelString(
+				mapping.providerModelId,
+				config.provider as DbAIProvider,
+			);
+		} else if (providerCanonical) {
+			canonicalName = providerCanonical;
+			finalModelString = apiModelOverride;
 		} else {
-			finalModelString =
-				overrideProviderModelId && config.provider
-					? buildProviderModelString(
-							overrideProviderModelId,
-							config.provider as DbAIProvider,
-						)
-					: apiModelOverride;
+			logger.warn(
+				"Skipping model override without an available provider mapping",
+				{
+					modelOverride: apiModelOverride,
+					provider: config.provider,
+				},
+			);
+			apiModelOverride = undefined;
 		}
-	}
-	// Keep request IDs separate from the catalog identity used by limits and logs.
-	let canonicalName = apiModelOverride || config.canonicalName;
-	if (apiModelOverride && !overrideExistsInCatalog) {
-		canonicalName =
-			(await getCanonicalNameForProviderModelId(
-				apiModelOverride,
-				config.provider,
-			)) ?? apiModelOverride;
 	}
 	let resolvedMaxOutputTokens = config.maxOutputTokens;
 	if (apiModelOverride && canonicalName !== config.canonicalName) {
-		// The configured model's cap belongs to a different model. Reuse the
-		// identity resolved above; only known overrides need a catalog read.
-		const overrideModel =
-			overrideExistsInCatalog || canonicalName !== apiModelOverride
-				? await getModelByCanonicalName(canonicalName)
-				: null;
+		const overrideModel = await getModelByCanonicalName(canonicalName);
 		resolvedMaxOutputTokens = overrideModel?.maxOutputTokens ?? undefined;
 	}
 	const selectionSource = apiModelOverride

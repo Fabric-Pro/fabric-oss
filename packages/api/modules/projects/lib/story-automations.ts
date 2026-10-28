@@ -1,3 +1,4 @@
+import { orchestratorApprovalProtocol } from "@repo/temporal/approval-rollout";
 /**
  * Story Automations
  *
@@ -172,6 +173,7 @@ export async function fireColumnAutomations(
 			].join("\n");
 
 			try {
+				const protocol = orchestratorApprovalProtocol();
 				await client.workflow.start(
 					"orchestratorExecutionWorkflow",
 					withCorrelationMemo({
@@ -191,6 +193,7 @@ export async function fireColumnAutomations(
 						workflowExecutionTimeout: "1 hour",
 						args: [
 							{
+								...protocol,
 								executionId,
 								executionMode: "balanced",
 								userId: transition.userId,
@@ -211,6 +214,8 @@ export async function fireColumnAutomations(
 						// The extra keys keep the trigger traceable in Temporal UI
 						// now that the workflowId no longer names the skill.
 						memo: {
+							...protocol,
+							projectId: transition.projectId,
 							userId: transition.userId,
 							organizationId,
 							trigger: "story-column-automation",

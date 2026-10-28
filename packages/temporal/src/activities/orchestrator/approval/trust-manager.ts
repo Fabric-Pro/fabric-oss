@@ -9,6 +9,12 @@
 
 import { db } from "@repo/database";
 import { logger } from "@repo/logs";
+import { resolvePlanRisk } from "../../../workflows/orchestrator/plan-risk";
+import {
+	classifyIntegrationAccessLevel,
+	hasMutatingToolToken,
+} from "../execution/authority-gate";
+import { detectOperationRisk } from "../planning/operation-risk-detector";
 import type { TaskPlan, TaskStep } from "../types";
 
 // =============================================================================
@@ -370,7 +376,7 @@ export function checkAutoApproval(
 	}
 
 	// Check operation-type trust
-	const operationType = inferOperationType(step);
+	const operationType = inferApprovalOperation(step);
 	const operationTrust = config.operationTrust.get(operationType);
 	if (operationTrust) {
 		const decision = checkOperationTrust(step, operationTrust);
@@ -425,7 +431,7 @@ function checkAgentTrust(
 	}
 
 	// Check scope
-	const operationType = inferOperationType(step);
+	const operationType = inferApprovalOperation(step);
 	if (trust.scope.length > 0 && !trust.scope.includes(operationType)) {
 		return {
 			autoApprove: false,
@@ -501,7 +507,7 @@ function checkLearnedTrust(
 	config: TrustConfiguration,
 ): AutoApprovalDecision {
 	// Find similar past operations
-	const operationType = inferOperationType(step);
+	const operationType = inferApprovalOperation(step);
 	const relevantHistory = config.trustHistory.filter(
 		(h) =>
 			h.operation === operationType &&
@@ -591,7 +597,7 @@ export function analyzePlanForApproval(
 	}
 
 	// Determine overall risk
-	const overallRisk = determineOverallRisk(plan.steps);
+	const overallRisk = resolvePlanRisk(plan);
 
 	return {
 		plan,
@@ -605,25 +611,21 @@ export function analyzePlanForApproval(
 
 function assessStepImpact(step: TaskStep): string {
 	const impacts: string[] = [];
-	const descLower = step.description.toLowerCase();
+	const description = step.description;
 
-	if (descLower.includes("delete") || descLower.includes("remove")) {
+	if (verbPattern(["delete", "remove"]).test(description)) {
 		impacts.push("Data will be permanently deleted");
 	}
 
-	if (descLower.includes("create") || descLower.includes("add")) {
+	if (verbPattern(["create", "add"]).test(description)) {
 		impacts.push("New resources will be created");
 	}
 
-	if (descLower.includes("update") || descLower.includes("modify")) {
+	if (verbPattern(["update", "modify", "edit"]).test(description)) {
 		impacts.push("Existing data will be modified");
 	}
 
-	if (
-		descLower.includes("send") ||
-		descLower.includes("email") ||
-		descLower.includes("notify")
-	) {
+	if (verbPattern(["send", "email", "notify"]).test(description)) {
 		impacts.push("External communications will be sent");
 	}
 
@@ -633,7 +635,12 @@ function assessStepImpact(step: TaskStep): string {
 function extractPlannedAction(
 	step: TaskStep,
 ): PlanApprovalSummary["plannedActions"][0] | null {
-	const operationType = inferOperationType(step);
+	const base = baseInferOperationType(step);
+	const mutation = structuredWriteMutation(step);
+	// An LLM-only answer keeps the base delete/update label: its error fallback can run tools.
+	const llmOnly =
+		isLlmOnlyAnswer(step) && !["delete", "update"].includes(base);
+	const operationType = mutation ?? (llmOnly ? "generate" : base);
 	const target = extractTarget(step.description);
 
 	if (!target) {
@@ -643,44 +650,23 @@ function extractPlannedAction(
 	return {
 		action: operationType,
 		target,
-		reversible: operationType === "read" || operationType === "create",
+		reversible:
+			(["read", "create"].includes(base) || llmOnly) &&
+			mutation === undefined,
 	};
 }
 
 function extractTarget(description: string): string {
-	// Try to extract the target from the description
-	const patterns = [
-		/(?:create|add|update|delete|get|list|search)\s+(?:the\s+)?(.+?)(?:\s+(?:in|from|on|to)|$)/i,
-		/(?:for|on|in)\s+(.+?)$/i,
-	];
-
-	for (const pattern of patterns) {
-		const match = description.match(pattern);
-		if (match?.[1]) {
-			return match[1].trim().slice(0, 50);
-		}
+	const target = description.trim();
+	if (target.length <= 80) {
+		return target;
 	}
 
-	return description.slice(0, 30);
-}
-
-function determineOverallRisk(
-	steps: TaskStep[],
-): "low" | "medium" | "high" | "critical" {
-	const hasCritical = steps.some((s) => s.riskLevel === "critical");
-	const hasHigh = steps.some((s) => s.riskLevel === "high");
-	const mediumCount = steps.filter((s) => s.riskLevel === "medium").length;
-
-	if (hasCritical) {
-		return "critical";
-	}
-	if (hasHigh) {
-		return "high";
-	}
-	if (mediumCount >= 2) {
-		return "medium";
-	}
-	return "low";
+	const prefix = target.slice(0, 81);
+	const boundary = prefix.search(/\s+\S*$/);
+	// Keep a single long word intact when there is no word boundary to use.
+	const end = boundary > 0 ? boundary : target.search(/\s/);
+	return end > 0 ? `${target.slice(0, end)}…` : target;
 }
 
 // =============================================================================
@@ -698,7 +684,7 @@ export function recordTrustOutcome(
 ): TrustConfiguration {
 	const entry: TrustHistoryEntry = {
 		agentId: step.executor || "unknown",
-		operation: inferOperationType(step),
+		operation: inferApprovalOperation(step),
 		riskLevel: step.riskLevel || "low",
 		approved,
 		outcome,
@@ -788,7 +774,83 @@ function maybeDecreaseTrust(config: TrustConfiguration, agentId: string): void {
 // Utility Functions
 // =============================================================================
 
-function inferOperationType(step: TaskStep): string {
+function getStepTools(step: TaskStep): string[] {
+	return [...(step.toolsToUse || []), ...(step.app ? [step.app] : [])].filter(
+		(tool) => tool.trim().length > 0,
+	);
+}
+
+function toolWords(tool: string): string {
+	return tool
+		.replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+		.replace(/[^a-zA-Z0-9]+/g, " ");
+}
+
+const READ_OPERATIONS = ["read", "list", "search"];
+const MUTATION_SEVERITY = ["delete", "create", "update", "send", "write"];
+
+function mostSevere(operations: (string | undefined)[]): string | undefined {
+	return MUTATION_SEVERITY.find((operation) =>
+		operations.includes(operation),
+	);
+}
+
+/** Match whole verb forms, including e-drop and consonant-y inflections. */
+function verbPattern(verbs: readonly string[]): RegExp {
+	const patterns = verbs.flatMap((verb) => [
+		`${verb}(?:s|es|ed|d|ing)?`,
+		...(verb.endsWith("e") ? [`${verb.slice(0, -1)}ing`] : []),
+		...(verb.endsWith("y") ? [`${verb.slice(0, -1)}(?:ies|ied)`] : []),
+	]);
+	return new RegExp(`\\b(?:${patterns.join("|")})\\b`, "i");
+}
+
+// Noun-like verbs (page, run, merge, post) stay out, as in the authority gate's MUTATING_TOKENS.
+function identifierMutation(name: string): string | undefined {
+	return (
+		detectMutationWords(toolWords(name).toLowerCase()) ??
+		(hasMutatingToolToken(name) ? "write" : undefined)
+	);
+}
+
+/** Structured metadata can add caution; prose is left to the frozen base. */
+function structuredWriteMutation(step: TaskStep): string | undefined {
+	const mutations = getStepTools(step).map(identifierMutation);
+	if (step.capability === "integration") {
+		const operation = step.inputs?.operation;
+		if (typeof operation !== "string") {
+			mutations.push("write");
+		} else if (
+			classifyIntegrationAccessLevel(
+				operation,
+				String(step.inputs?.integrationProvider ?? step.app ?? ""),
+			) === "WRITE"
+		) {
+			mutations.push(identifierMutation(operation) ?? "write");
+		}
+	}
+	return mostSevere(mutations);
+}
+
+/** Declared metadata can deny base read trust; it cannot grant it. */
+export function inferApprovalOperation(step: TaskStep): string {
+	const base = baseInferOperationType(step);
+	return READ_OPERATIONS.includes(base)
+		? (structuredWriteMutation(step) ?? base)
+		: base;
+}
+
+/** The normal LLM handler path answers without tools. */
+function isLlmOnlyAnswer(step: TaskStep): boolean {
+	return (
+		step.capability === "llm" &&
+		!step.executor &&
+		!step.toolsToUse?.length &&
+		!step.app
+	);
+}
+
+function baseInferOperationType(step: TaskStep): string {
 	const descLower = step.description.toLowerCase();
 
 	if (descLower.includes("delete") || descLower.includes("remove")) {
@@ -823,6 +885,31 @@ function inferOperationType(step: TaskStep): string {
 	}
 
 	return step.type || "unknown";
+}
+
+function detectMutationWords(text: string): string | undefined {
+	const operations = text
+		.split(/\W+/)
+		.map(
+			(word) => detectOperationRisk({ description: word }).operationType,
+		);
+	for (const operation of ["delete", "create", "update"] as const) {
+		if (operations.includes(operation)) {
+			return operation;
+		}
+	}
+	// The shared detector does not include communication or generic write verbs.
+	if (/\b(send|email|notify|publish|upload)\b/i.test(text)) {
+		return "send";
+	}
+	if (
+		/\b(write|mark|archive|push|close|move|replace|duplicate|submit|transfer|assign|cancel)\b/i.test(
+			text,
+		)
+	) {
+		return "write";
+	}
+	return undefined;
 }
 
 function trustLevelAllowsRisk(

@@ -2,6 +2,83 @@ export type ExecutionChannel = "BACKGROUND_AGENTS" | "LOCAL_AGENTS";
 
 export type ExecutionProvider = "BACKGROUND_AGENTS" | "KANBAN_LOCAL";
 
+export interface FabricAgentConnectionOption {
+	value: string;
+	label: string;
+	description: string;
+}
+
+export const FABRIC_AGENT_CONNECTIONS: readonly FabricAgentConnectionOption[] =
+	[
+		{
+			value: "default",
+			label: "Server default",
+			description: "Use the default backend configured on Fabric Agents",
+		},
+		{
+			value: "claude-max",
+			label: "Claude Max",
+			description: "Anthropic Claude Code / Claude Max subscription",
+		},
+		{
+			value: "codex",
+			label: "Codex",
+			description: "OpenAI Codex CLI coding agent",
+		},
+		{
+			value: "cursor-cli",
+			label: "Cursor",
+			description: "Cursor CLI coding agent",
+		},
+		{
+			value: "antigravity-cli",
+			label: "Antigravity",
+			description: "Google Antigravity coding agent",
+		},
+		{
+			value: "droid-cli",
+			label: "Factory Droid",
+			description: "Factory Droid autonomous coding agent",
+		},
+		{
+			value: "grok-cli",
+			label: "Grok",
+			description: "xAI Grok coding agent",
+		},
+		{
+			value: "kimi-cli",
+			label: "Kimi",
+			description: "Moonshot Kimi coding agent",
+		},
+	] as const;
+
+const CONNECTION_ALIAS_LABELS: Record<string, string> = {
+	"anthropic-api": "Claude (API)",
+	"chatgpt-plus": "Codex",
+	cursor: "Cursor",
+	antigravity: "Antigravity",
+	droid: "Factory Droid",
+	grok: "Grok",
+	"grokbot-cli": "GrokBot",
+	kimi: "Kimi",
+};
+
+export function getFabricAgentConnectionLabel(
+	connectionSlug?: string | null,
+): string | null {
+	if (!connectionSlug || connectionSlug === "default") {
+		return null;
+	}
+	const normalized = connectionSlug.trim().toLowerCase();
+	const match = FABRIC_AGENT_CONNECTIONS.find(
+		(option) => option.value.toLowerCase() === normalized,
+	);
+	if (match) {
+		return match.label;
+	}
+	return CONNECTION_ALIAS_LABELS[normalized] ?? connectionSlug;
+}
+
 export function getExecutionChannelLabel(channel?: string | null): string {
 	switch (channel) {
 		case "LOCAL_AGENTS":
@@ -16,7 +93,7 @@ export function getExecutionProviderLabel(provider?: string | null): string {
 		case "KANBAN_LOCAL":
 			return "Local development";
 		default:
-			return "Background Agents";
+			return "Fabric Agents";
 	}
 }
 
@@ -27,7 +104,7 @@ export function getExecutionProviderPlatformLabel(
 		case "KANBAN_LOCAL":
 			return "Fabric Kanban";
 		default:
-			return "Background Agents";
+			return "Fabric Agents";
 	}
 }
 
@@ -38,7 +115,7 @@ export function getExecutionProviderDescription(
 		case "KANBAN_LOCAL":
 			return "Runs in your checked-out repository through Fabric Kanban. Run fabric-kanban locally to pull queued work.";
 		default:
-			return "Runs implementation remotely through Fabric-managed Background Agents. No local setup needed.";
+			return "Runs in an isolated git worktree on Fabric Agents with live desktop & Web UI session tracking.";
 	}
 }
 
@@ -70,6 +147,6 @@ export function getImplementationRecommendation(
 	return {
 		channel: "BACKGROUND_AGENTS",
 		provider: "BACKGROUND_AGENTS",
-		reason: "Background Agents are the recommended remote path for direct implementation. Choose local development only when Fabric Agent should launch work inside your checked-out repository.",
+		reason: "Fabric Agents is the recommended path for direct implementation in an isolated git worktree. Choose local development only when Fabric Kanban should pull queued work into a manual checkout.",
 	};
 }

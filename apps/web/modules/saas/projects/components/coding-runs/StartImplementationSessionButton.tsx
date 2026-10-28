@@ -16,7 +16,10 @@ import {
 	getImplementationRecommendation,
 } from "../../lib/implementation-session-labels";
 import type { UserStory } from "../../lib/stories/types";
-import { StartCodingRunDialog } from "./StartCodingRunDialog";
+import {
+	type StartCodingRunConfirmOptions,
+	StartCodingRunDialog,
+} from "./StartCodingRunDialog";
 
 interface StartImplementationSessionButtonProps {
 	projectId: string;
@@ -124,20 +127,34 @@ export function StartImplementationSessionButton({
 	});
 
 	const startMutation = useMutation({
-		mutationFn: async () => {
-			if (!hasRepositoryContext) {
+		mutationFn: async (options?: StartCodingRunConfirmOptions) => {
+			const effectiveTaskId =
+				options && "taskId" in options
+					? (options.taskId ?? undefined)
+					: (focusedTaskId ?? undefined);
+			const selectedTask = story.tasks.find(
+				(task) => task.id === effectiveTaskId,
+			);
+			const effectiveOwner =
+				selectedTask?.repositoryOwner || repositoryOwner;
+			const effectiveName =
+				selectedTask?.repositoryName || repositoryName;
+			if (!effectiveOwner || !effectiveName) {
 				throw new Error(
-					"Connect a project repository before starting a direct implementation session.",
+					"Connect a project or task repository before starting a direct implementation session.",
 				);
 			}
 			await onBeforeStart?.();
 			return await orpcClient.codingRuns.start({
 				projectId,
 				storyId: story.id,
-				taskId: focusedTaskId ?? undefined,
+				taskId: effectiveTaskId,
 				organizationId: organizationId ?? null,
 				executionChannel: "BACKGROUND_AGENTS",
 				provider: "BACKGROUND_AGENTS",
+				...(options?.llmConnection
+					? { llmConnection: options.llmConnection }
+					: {}),
 			});
 		},
 		onSuccess: async (result) => {
@@ -184,7 +201,7 @@ export function StartImplementationSessionButton({
 				repositoryName={repositoryName ?? undefined}
 				defaultBranch={defaultBranch ?? "main"}
 				isLoading={startMutation.isPending}
-				onConfirm={() => startMutation.mutate()}
+				onConfirm={(options) => startMutation.mutate(options)}
 				focusedTaskId={focusedTaskId}
 			/>
 		</>

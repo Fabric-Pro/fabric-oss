@@ -1286,6 +1286,16 @@
 					"settings": {
 						"updated": "Organisationseinstellungen aktualisiert"
 					},
+					"chat_approval": {
+						"decided": "Chat-Freigabe entschieden"
+					},
+					"chat_run": {
+						"cancel_requested": "Abbruch eines Chat-Laufs angefordert"
+					},
+					"agent_definition": {
+						"imported": "Agent-Definition importiert",
+						"exported": "Agent-Definition exportiert"
+					},
 					"member": {
 						"invited": "Mitglied eingeladen",
 						"role_changed": "Rolle geändert",
@@ -2444,7 +2454,8 @@
 				"takeBackConfirmBody": "Es wird wieder rein persönlich genutzt: wieder dein eigener Plan, der nicht mehr der geteilten Arbeit von {organization} dient. Du kannst es später erneut teilen.",
 				"takenBack": "Das Konto wird wieder rein persönlich genutzt",
 				"takeBackFailed": "Das Teilen des Kontos konnte nicht beendet werden",
-				"actionTooltip": "Dann kann jede Person in {organization} ihre KI-Arbeit über das Kontingent dieses Plans laufen lassen. Du kannst jederzeit wieder auf rein persönliche Nutzung umstellen."
+				"actionTooltip": "Dann kann jede Person in {organization} ihre KI-Arbeit über das Kontingent dieses Plans laufen lassen. Du kannst jederzeit wieder auf rein persönliche Nutzung umstellen.",
+				"needsTerms": "Teilen ist möglich, sobald ein Organisationsinhaber unter AI Models → Routing den Bedingungen für gemeinsame ChatGPT-Pläne zustimmt. Bis dahin kann kein Plan mit {organization} geteilt werden."
 			},
 			"test": {
 				"button": "Testen",
@@ -2460,6 +2471,7 @@
 		},
 		"chatgptPlanPool": {
 			"termsPendingTitle": "Diese Konten bedienen noch keine Arbeit",
+			"termsPendingEmptyTitle": "Gemeinsame Konten können noch keine Arbeit bedienen",
 			"termsPendingBody": "Ein Organisationsinhaber muss unter AI Models → Routing den Bedingungen für gemeinsame ChatGPT-Pläne zustimmen. Bis dahin nutzt Fabric stattdessen die eigenen ChatGPT-Pläne der Mitglieder oder deinen API-Anbieter, und Arbeit ohne beides läuft nicht.",
 			"termsPendingReview": "Bedingungen ansehen",
 			"termsPendingOwnerOnly": "Nur ein Organisationsinhaber kann zustimmen. Bitte einen Inhaber, AI Models zu öffnen.",
@@ -3356,7 +3368,6 @@
 				"tagCount": "{count, plural, one {# Tag} other {# Tags}}",
 				"syncFailed": "Fehler",
 				"syncConflict": "Konflikt",
-
 				"syncing": "Sync…",
 				"pmTicketStatus": "Status in {tool}: {status}",
 				"tasks": "Aufgaben",
@@ -3599,7 +3610,7 @@
 				},
 				"runSpike": {
 					"title": "Run a spike",
-					"description": "A Background Agent explores the question on a throwaway branch and comes back with a self-contained demo and a findings note. Nothing is merged.",
+					"description": "A Fabric Agent explores the question on a throwaway branch in an isolated worktree and comes back with a self-contained demo and a findings note. Nothing is merged.",
 					"questionLabel": "What should the spike answer?",
 					"questionPlaceholder": "Can we render the mortgage schedule client-side in under 200 ms?",
 					"questionHint": "One concrete question. The agent will answer it, show evidence and recommend the next track.",
@@ -3611,7 +3622,7 @@
 					"branchHint": "Work lands on a new fabric-spike/ branch for this run; product code paths are not modified.",
 					"repositoryRequiredTitle": "Repository required",
 					"repositoryRequired": "Spikes need a repository the agent can push a throwaway branch to. Connect one on the project first.",
-					"providerHintTitle": "Runs on Background Agents",
+					"providerHintTitle": "Runs on Fabric Agents",
 					"providerHint": "This project's default provider is {local}. Spikes always run on {background}; no local setup is used.",
 					"aiNotConfiguredTitle": "AI provider not configured",
 					"aiNotConfigured": "Configure an AI provider before running a spike.",
@@ -6548,6 +6559,9 @@
 			"metricTarget": "Optionales Ziel für die Kennzahl. Ergebnisseite und Daily Brief vergleichen den letzten Wert damit.",
 			"metricSourceHelp": "Über die Quelle",
 			"metricSource": "Manuell: Beobachtungen hier erfassen. Webhook: dein System sendet Werte an einen signierten Endpunkt; das Geheimnis wird genau einmal beim Anlegen oder Rotieren gezeigt, gespeichert wird nur sein Hash."
+		},
+		"agents": {
+			"answeredByModel": "Beantwortet von {model}"
 		}
 	},
 	"todos": {

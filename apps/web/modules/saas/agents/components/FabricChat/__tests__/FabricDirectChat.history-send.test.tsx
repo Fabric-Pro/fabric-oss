@@ -371,16 +371,6 @@ vi.mock("@/components/ai-elements/checkpoint", () => ({
 	createCheckpoint: vi.fn(),
 }));
 
-vi.mock("@/components/ai-elements/confirmation", () => ({
-	Confirmation: () => null,
-	ConfirmationAction: () => null,
-	ConfirmationActions: () => null,
-	ConfirmationDescription: () => null,
-	ConfirmationIcon: () => null,
-	ConfirmationRequest: () => null,
-	ConfirmationTitle: () => null,
-}));
-
 vi.mock("@/components/ai-elements/conversation", () => ({
 	Conversation: ({ children }: { children: React.ReactNode }) => (
 		<div>{children}</div>
@@ -480,12 +470,14 @@ const convOld = conversation("conv_old", [
 function sseStream(events: Array<Record<string, unknown>>) {
 	const encoder = new TextEncoder();
 	const chunks = events.map((event) =>
-		encoder.encode(`data: ${JSON.stringify(event)}\n`),
+		encoder.encode(`data: ${JSON.stringify(event)}\n\n`),
 	);
 	return {
 		ok: true,
 		body: {
 			getReader: () => ({
+				releaseLock: vi.fn(),
+				cancel: vi.fn(async () => {}),
 				read: async () => {
 					const value = chunks.shift();
 					return value ? { value, done: false } : { done: true };
@@ -1385,4 +1377,53 @@ it("resets the selection when production instance keys remount a generic or dedi
 	expect(
 		createConversationMock.mock.calls.at(-1)?.[0].metadata.instanceId,
 	).toBe(nextAgent.id);
+});
+
+describe("FabricDirectChat workflow confirmation", () => {
+	it("renders a confirmation-only reply and consumes it without an AI follow-up", async () => {
+		const requests: Record<string, unknown>[] = [];
+		vi.mocked(global.fetch).mockImplementation((async (input, init) => {
+			if (String(input).endsWith("/execute-workflow")) {
+				requests.push(JSON.parse(String(init?.body)));
+				return Response.json({
+					success: true,
+					executionId: "execution-1",
+				});
+			}
+			if (String(input).endsWith("/stream")) {
+				return sseStream([
+					{
+						type: "confirmation_required",
+						workflowId: "workflow-1",
+						workflowName: "Example workflow",
+						message: "Start this workflow?",
+					},
+					{ type: "done" },
+				]);
+			}
+			return Response.json({});
+		}) as typeof fetch);
+		const { ui } = harness();
+		const view = render(ui("conv_old", convOld));
+		await act(async () => {
+			fireEvent.click(view.getByRole("button", { name: "send" }));
+		});
+		await waitFor(() =>
+			expect(view.getByRole("button", { name: "Execute" })).toBeEnabled(),
+		);
+		await act(async () => {
+			fireEvent.click(view.getByRole("button", { name: "Execute" }));
+		});
+		await waitFor(() =>
+			expect(view.getByRole("status")).toHaveTextContent(
+				"Workflow started.",
+			),
+		);
+		expect(requests).toEqual([
+			{ workflowId: "workflow-1", organizationId: "org_example" },
+		]);
+		expect(
+			view.queryByRole("button", { name: "Execute" }),
+		).not.toBeInTheDocument();
+	});
 });

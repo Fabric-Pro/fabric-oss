@@ -17,15 +17,22 @@ export interface CreateSessionParams {
 	vibeRemoteProjectName?: string;
 	title?: string;
 	branch?: string;
+	headBranch?: string;
 	userId?: string;
 	workingDirectory?: string;
 	promptText?: string;
-	/** Fabric CodingRun ID — used by fabric-bot to correlate callbacks */
+	/** Fabric CodingRun ID — used by fabric-agent-server for idempotent worktree & session binding */
 	codingRunId?: string;
-	/** Temporal workflow ID — stored so callbacks can signal the workflow */
+	/** Temporal workflow ID — stored for run correlation */
 	workflowId?: string;
-	/** Fabric organization ID — used to fetch enriched execution context */
+	/** Fabric organization ID — used for tenant binding & policy validation */
 	organizationId?: string;
+	/** Optional Fabric Agents LLM connection slug (e.g. "claude-max", "codex", "cursor-cli", "antigravity-cli", "droid-cli", "grok-cli", "kimi-cli") */
+	llmConnection?: string;
+	/** Optional model identifier override */
+	model?: string;
+	/** Optional target machine / host identifier */
+	targetMachine?: string;
 }
 
 /**
@@ -37,11 +44,13 @@ export interface SessionStatus {
 	status:
 		| "created"
 		| "active"
+		| "paused"
 		| "completed"
 		| "failed"
 		| "stopped"
 		| "archived";
 	branchName: string | null;
+	error?: string | null;
 	artifacts: Array<{
 		id: string;
 		type: string;
@@ -95,6 +104,9 @@ export function getProviderCapabilities(
 /**
  * Base interface for all coding execution providers
  */
+// biome-ignore lint/suspicious/noConfusingVoidType: Existing local providers return Promise<void>.
+export type PromptDeliveryResult = void | { messageId: string };
+
 export interface CodingExecutionProvider {
 	/**
 	 * Capability flags (plan §F4). Read via `getProviderCapabilities()`.
@@ -122,7 +134,8 @@ export interface CodingExecutionProvider {
 		sessionId: string,
 		content: string,
 		authorId: string,
-	): Promise<void>;
+		options?: { promptId: string },
+	): Promise<PromptDeliveryResult>;
 
 	/**
 	 * Gets the current status of a session

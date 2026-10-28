@@ -97,7 +97,6 @@ const LEGACY_INTEGRATION_OPERATIONS: Record<string, string[]> = {
 	RESEND: ["send_email"],
 	PERPLEXITY: ["search", "ask"],
 	FIRECRAWL: ["scrape_url", "crawl_site"],
-	FAL: ["generate_image", "run_model"],
 	CUSTOM_WEBHOOK: ["call_webhook"],
 	MICROSOFT_GRAPH: [
 		// Teams Messaging (most common - should be first for default fallback)
@@ -128,10 +127,9 @@ const LEGACY_INTEGRATION_OPERATIONS: Record<string, string[]> = {
 
 /**
  * Providers this handler ADVERTISES, legacy switch plus shared registry. Used
- * for step-to-provider matching, not as proof of executability: `FAL` is
- * declared in the legacy map but has no dispatch case, so a FAL step matches
- * here and then fails with "Unsupported integration provider" (pre-existing
- * drift, tracked separately — do not read this list as a routing guarantee).
+ * for step-to-provider matching. A legacy provider listed here also needs a
+ * case in `executeIntegrationOperation`'s switch, or its steps fail with
+ * "Unsupported integration provider".
  */
 const SUPPORTED_INTEGRATION_PROVIDERS: string[] = [
 	...Object.keys(LEGACY_INTEGRATION_OPERATIONS),
@@ -142,7 +140,7 @@ const SUPPORTED_INTEGRATION_PROVIDERS_LOWER: string[] =
 	SUPPORTED_INTEGRATION_PROVIDERS.map((provider) => provider.toLowerCase());
 
 /** Operations a provider supports, from whichever source owns it. */
-function getSupportedIntegrationOperations(provider: string): string[] {
+export function getSupportedIntegrationOperations(provider: string): string[] {
 	return isRegisteredIntegrationProvider(provider)
 		? listIntegrationOperationNames(provider)
 		: (LEGACY_INTEGRATION_OPERATIONS[provider] ?? []);
@@ -275,7 +273,7 @@ export class IntegrationHandler implements StepHandler {
 			const operation = this.resolveOperation(step, integration.provider);
 			console.log(`[IntegrationHandler] Operation: ${operation}`);
 
-			// ── Registry resolution BEFORE the gates ───────────────────────
+			// ── Operation resolution BEFORE the gates ───────────────────────
 			// An operation the shared executor cannot run must be reported as
 			// unsupported, not as an authority or Read-only refusal, and its
 			// declared access is what the Read-only gate below is entitled to
@@ -295,6 +293,19 @@ export class IntegrationHandler implements StepHandler {
 								? error.message
 								: String(error),
 						shouldFallback: false,
+					};
+				}
+			} else {
+				const supported = getSupportedIntegrationOperations(
+					integration.provider,
+				);
+				if (!supported.includes(operation)) {
+					// Same fallback rule as a failed execution below: stale plans may
+					// request operations that other tools handle with their own gates.
+					return {
+						handled: false,
+						error: `Unsupported ${integration.provider} operation: ${operation}. Supported: ${supported.join(", ") || "none"}`,
+						shouldFallback: !isExplicitlyMatched,
 					};
 				}
 			}
@@ -928,6 +939,13 @@ export class IntegrationHandler implements StepHandler {
 		data?: unknown;
 		error?: string;
 	}> {
+		if (!LEGACY_INTEGRATION_OPERATIONS.SLACK.includes(operation)) {
+			return {
+				success: false,
+				error: `Unsupported Slack operation: ${operation}`,
+			};
+		}
+
 		const token = credentials.SLACK_TOKEN;
 		if (!token) {
 			return { success: false, error: "Slack token not configured" };
@@ -1726,7 +1744,7 @@ export class IntegrationHandler implements StepHandler {
 	 * Execute Resend (email) operations.
 	 */
 	private async executeResend(
-		_operation: string,
+		operation: string,
 		credentials: Record<string, string>,
 		inputs: Record<string, unknown>,
 		_context: HandlerContext,
@@ -1736,6 +1754,13 @@ export class IntegrationHandler implements StepHandler {
 		data?: unknown;
 		error?: string;
 	}> {
+		if (!LEGACY_INTEGRATION_OPERATIONS.RESEND.includes(operation)) {
+			return {
+				success: false,
+				error: `Unsupported Resend operation: ${operation}`,
+			};
+		}
+
 		const apiKey = credentials.RESEND_API_KEY;
 		if (!apiKey) {
 			return { success: false, error: "Resend API key not configured" };
@@ -1779,7 +1804,7 @@ export class IntegrationHandler implements StepHandler {
 	 * Execute Perplexity search operations.
 	 */
 	private async executePerplexity(
-		_operation: string,
+		operation: string,
 		credentials: Record<string, string>,
 		inputs: Record<string, unknown>,
 		_context: HandlerContext,
@@ -1789,6 +1814,13 @@ export class IntegrationHandler implements StepHandler {
 		data?: unknown;
 		error?: string;
 	}> {
+		if (!LEGACY_INTEGRATION_OPERATIONS.PERPLEXITY.includes(operation)) {
+			return {
+				success: false,
+				error: `Unsupported Perplexity operation: ${operation}`,
+			};
+		}
+
 		const apiKey = credentials.PERPLEXITY_API_KEY;
 		if (!apiKey) {
 			return {
@@ -1877,6 +1909,13 @@ export class IntegrationHandler implements StepHandler {
 		data?: unknown;
 		error?: string;
 	}> {
+		if (!LEGACY_INTEGRATION_OPERATIONS.FIRECRAWL.includes(operation)) {
+			return {
+				success: false,
+				error: `Unsupported Firecrawl operation: ${operation}`,
+			};
+		}
+
 		const apiKey = credentials.FIRECRAWL_API_KEY;
 		if (!apiKey) {
 			return {
@@ -1924,7 +1963,7 @@ export class IntegrationHandler implements StepHandler {
 	 * Execute custom webhook operations.
 	 */
 	private async executeWebhook(
-		_operation: string,
+		operation: string,
 		credentials: Record<string, string>,
 		inputs: Record<string, unknown>,
 		_context: HandlerContext,
@@ -1934,6 +1973,13 @@ export class IntegrationHandler implements StepHandler {
 		data?: unknown;
 		error?: string;
 	}> {
+		if (!LEGACY_INTEGRATION_OPERATIONS.CUSTOM_WEBHOOK.includes(operation)) {
+			return {
+				success: false,
+				error: `Unsupported Webhook operation: ${operation}`,
+			};
+		}
+
 		const webhookUrl = (inputs.url || credentials.WEBHOOK_URL) as string;
 		if (!webhookUrl) {
 			return { success: false, error: "Webhook URL not configured" };

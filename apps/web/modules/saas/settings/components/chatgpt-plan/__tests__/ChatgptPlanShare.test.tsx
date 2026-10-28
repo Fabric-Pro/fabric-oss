@@ -6,7 +6,7 @@
  */
 import en from "@repo/i18n/translations/en.json";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -114,6 +114,7 @@ const CONNECTED = {
 	email: "dev@example.com",
 	status: "ACTIVE",
 	canShare: true,
+	shareNeedsTerms: false,
 	sharedHere: [],
 };
 
@@ -186,6 +187,27 @@ describe("sharing an own ChatGPT plan", () => {
 
 		await screen.findByTestId("chatgpt-plan-email");
 		expect(screen.queryByTestId("chatgpt-plan-share")).toBeNull();
+	});
+
+	it("shows sharing disabled, with the reason, while an owner has not accepted the terms", async () => {
+		status.mockResolvedValue({
+			...CONNECTED,
+			canShare: false,
+			shareNeedsTerms: true,
+		});
+		renderWithClient(<ChatgptPlanSettings />);
+
+		const section = await screen.findByTestId("chatgpt-plan-share");
+		expect(
+			within(section).getByRole("button", {
+				name: "Share organization-wide",
+			}),
+		).toBeDisabled();
+		expect(
+			within(section).getByTestId("chatgpt-plan-share-needs-terms"),
+		).toHaveTextContent(
+			"Sharing opens once an organization owner accepts the terms for sharing ChatGPT plans under AI Models → Routing. Until then, no plan can be shared with Example Org.",
+		);
 	});
 
 	it("shows the server's reason when sharing is refused", async () => {

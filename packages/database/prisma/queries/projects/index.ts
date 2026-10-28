@@ -37,6 +37,7 @@ export * from "./document-refresh-notifications";
 export * from "./documents";
 export * from "./duplicate-detection";
 export * from "./duplicate-embeddings";
+export * from "./duplicate-focus";
 export * from "./duplicate-links";
 export * from "./environment-credentials";
 export * from "./fabric-url";

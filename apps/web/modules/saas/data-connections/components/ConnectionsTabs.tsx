@@ -204,18 +204,22 @@ export function ConnectionsTabs({
 				apiKeysHref={apiKeysHref}
 				basePath={pathname}
 				toolbarStart={typeTabs}
+				beforeCatalog={
+					tab === "mcp" ? (
+						<div className="border-b border-border pb-8">
+							<McpServersView
+								organizationId={organizationId}
+								initialRegistrySearch={serverParam}
+								onServerParamConsumed={
+									handleServerParamConsumed
+								}
+							/>
+						</div>
+					) : null
+				}
 				view={tab}
 				requestConnectionEnabled={requestConnectionEnabled}
 			/>
-			{tab === "mcp" ? (
-				<div className="border-t border-border pt-8">
-					<McpServersView
-						organizationId={organizationId}
-						initialRegistrySearch={serverParam}
-						onServerParamConsumed={handleServerParamConsumed}
-					/>
-				</div>
-			) : null}
 		</div>
 	);
 }

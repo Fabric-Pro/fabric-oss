@@ -123,6 +123,8 @@ export const getChatGptPlanStatusProcedure = tenantProtectedProcedure
 				.nullable(),
 			/** The own plan may become one of this organization's shared accounts (Fizzy #2770 I1). */
 			canShare: z.boolean(),
+			/** Sharing waits only on an owner accepting the pooling terms. */
+			shareNeedsTerms: z.boolean(),
 			/** Shared accounts here this member connected; only they may take one back. */
 			sharedHere: z.array(chatGptPlanSharedHereSchema),
 		}),

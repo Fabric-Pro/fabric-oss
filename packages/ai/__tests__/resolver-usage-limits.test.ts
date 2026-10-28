@@ -11,6 +11,7 @@
  * in chatgpt-plan-rotation.test.ts.
  */
 
+import { logger } from "@repo/logs";
 import { AiUsageLimitExceededError } from "@repo/payments/lib/ai-usage-limit-error";
 import {
 	type DispatchBudgetRequest,
@@ -31,7 +32,7 @@ const {
 	getModelByCanonicalNameMock,
 	getProviderModelMappingForCanonicalMock,
 	getProviderModelIdForCanonicalMock,
-	getCanonicalNameForProviderModelIdMock,
+	getAvailableCanonicalNameForProviderModelIdMock,
 	getModelMock,
 	logAiUsageAsyncMock,
 } = vi.hoisted(() => ({
@@ -47,7 +48,7 @@ const {
 		providerModelId: null,
 	})),
 	getProviderModelIdForCanonicalMock: vi.fn(),
-	getCanonicalNameForProviderModelIdMock: vi.fn(),
+	getAvailableCanonicalNameForProviderModelIdMock: vi.fn(),
 	getModelMock: vi.fn(),
 	logAiUsageAsyncMock: vi.fn(),
 }));
@@ -64,7 +65,9 @@ vi.mock("@repo/database", () => ({
 	getModelByCanonicalName: getModelByCanonicalNameMock,
 	getProviderModelMappingForCanonical:
 		getProviderModelMappingForCanonicalMock,
-	getCanonicalNameForProviderModelId: getCanonicalNameForProviderModelIdMock,
+	getAvailableCanonicalNameForProviderModelId:
+		getAvailableCanonicalNameForProviderModelIdMock,
+	getCanonicalNameForProviderModelId: vi.fn(async () => null),
 	getSystemAiProviderApiKey: vi.fn(),
 	getTaskDefaultModel: getTaskDefaultModelMock,
 	updateProviderLastUsed: vi.fn(() => Promise.resolve()),
@@ -272,6 +275,10 @@ describe("getAIModelWithMetadata — per-request usage-limit check", () => {
 	});
 
 	it("binds a chat's model override into the per-request scope", async () => {
+		getProviderModelMappingForCanonicalMock.mockResolvedValueOnce({
+			exists: true,
+			providerModelId: "example-override-model",
+		});
 		const resolved = await getAIModelWithMetadata(
 			{ taskType: "CHAT", modelOverride: "example-override-model" },
 			CONTEXT,
@@ -427,7 +434,7 @@ describe("model override catalog identity", () => {
 			providerModelId: null,
 		});
 		getModelByCanonicalNameMock.mockResolvedValue(null);
-		getCanonicalNameForProviderModelIdMock.mockResolvedValue(null);
+		getAvailableCanonicalNameForProviderModelIdMock.mockResolvedValue(null);
 	});
 
 	it.each(["example-small-model", "system.ai.example-small-model"])(
@@ -440,7 +447,7 @@ describe("model override catalog identity", () => {
 						? "system.ai.example-small-model"
 						: null,
 			});
-			getCanonicalNameForProviderModelIdMock.mockResolvedValue(
+			getAvailableCanonicalNameForProviderModelIdMock.mockResolvedValue(
 				"example-small-model",
 			);
 			getModelByCanonicalNameMock.mockResolvedValue({
@@ -462,7 +469,6 @@ describe("model override catalog identity", () => {
 	it.each([
 		["system.ai.claude-sonnet-5", "claude-sonnet-5", false],
 		["claude-sonnet-5", "claude-sonnet-5", true],
-		["example-unknown-model", "example-unknown-model", false],
 	])(
 		"resolves %s identity to %s without changing dispatch",
 		async (override, canonicalName, mapped) => {
@@ -472,7 +478,7 @@ describe("model override catalog identity", () => {
 					providerModelId: "system.ai.claude-sonnet-5",
 				});
 			} else if (override === "system.ai.claude-sonnet-5") {
-				getCanonicalNameForProviderModelIdMock.mockResolvedValue(
+				getAvailableCanonicalNameForProviderModelIdMock.mockResolvedValue(
 					canonicalName,
 				);
 			}
@@ -514,43 +520,48 @@ describe("model override catalog identity", () => {
 			expect(getProviderModelIdForCanonicalMock).not.toHaveBeenCalled();
 			if (mapped) {
 				expect(
-					getCanonicalNameForProviderModelIdMock,
+					getAvailableCanonicalNameForProviderModelIdMock,
 				).not.toHaveBeenCalled();
 			} else {
 				expect(
-					getCanonicalNameForProviderModelIdMock,
+					getAvailableCanonicalNameForProviderModelIdMock,
 				).toHaveBeenCalledWith(override, "DATABRICKS");
 			}
 		},
 	);
 
-	it("keeps a canonical without a mapping before considering reverse matches", async () => {
+	it.each([
+		["claude-sonnet-5", true],
+		["example-plan-only", true],
+		["other-provider/id", false],
+		["gpt-6-1-sol", false],
+	])("drops unserved override %s", async (override, exists) => {
 		getProviderModelMappingForCanonicalMock.mockResolvedValue({
-			exists: true,
+			exists,
 			providerModelId: null,
 		});
+		getProviderModelIdForCanonicalMock.mockResolvedValue(
+			override === "example-plan-only" ? "example-plan-id" : null,
+		);
 		const resolved = await getAIModelWithMetadata(
-			{ taskType: "CHAT", modelOverride: "claude-sonnet-5" },
+			{ taskType: "CHAT", modelOverride: override },
 			CONTEXT,
 		);
-		expect(resolved.metadata.canonicalName).toBe("claude-sonnet-5");
-		expect(resolved.metadata.modelString).toBe("claude-sonnet-5");
-		expect(getModelByCanonicalNameMock).toHaveBeenCalledExactlyOnceWith(
-			"claude-sonnet-5",
+		expect(resolved.metadata.modelString).toBe("system.ai.example-default");
+		expect(resolved.metadata.canonicalName).toBe(
+			SELECTION.model.canonicalName,
 		);
-		expect(getProviderModelMappingForCanonicalMock).toHaveBeenCalledTimes(
-			1,
-		);
-		expect(
-			getProviderModelIdForCanonicalMock,
-		).toHaveBeenCalledExactlyOnceWith(
-			"claude-sonnet-5",
-			"OPENAI_CHATGPT_PLAN",
-		);
-		expect(getCanonicalNameForProviderModelIdMock).not.toHaveBeenCalled();
+		expect(resolved.metadata.selectionSource).toBe(SELECTION.source);
+		expect(resolved.metadata.maxOutputTokens).toBe(16384);
+		expect(logger.warn).toHaveBeenCalledWith(expect.any(String), {
+			modelOverride: override,
+			provider: "DATABRICKS",
+		});
 	});
 	it("uses the canonical identity for reasoning detection on an opaque provider id", async () => {
-		getCanonicalNameForProviderModelIdMock.mockResolvedValue("deepseek-r1");
+		getAvailableCanonicalNameForProviderModelIdMock.mockResolvedValue(
+			"deepseek-r1",
+		);
 		const resolved = await getAIModelWithMetadata(
 			{ taskType: "CHAT", modelOverride: "system.ai.example-endpoint" },
 			CONTEXT,

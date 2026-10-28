@@ -80,7 +80,7 @@ function makeSseResponse() {
 		});
 
 	const enqueueLine = (line: string) => {
-		queue.push({ value: encoder.encode(`${line}\n`) });
+		queue.push({ value: encoder.encode(`${line}\n\n`) });
 		const r = resolveNext;
 		resolveNext = null;
 		r?.();
@@ -94,7 +94,13 @@ function makeSseResponse() {
 
 	const response = {
 		ok: true,
-		body: { getReader: () => ({ read }) },
+		body: {
+			getReader: () => ({
+				read,
+				releaseLock: vi.fn(),
+				cancel: vi.fn(async () => {}),
+			}),
+		},
 		json: async () => ({}),
 	};
 
@@ -549,7 +555,7 @@ describe("useOrchestratorStream.stop()", () => {
 			);
 
 		const enqueueLine = (line: string) => {
-			queue.push({ value: encoder.encode(`${line}\n`) });
+			queue.push({ value: encoder.encode(`${line}\n\n`) });
 			const r = resolveNext;
 			resolveNext = null;
 			r?.();
@@ -570,7 +576,13 @@ describe("useOrchestratorStream.stop()", () => {
 
 		const response = {
 			ok: true,
-			body: { getReader: () => ({ read }) },
+			body: {
+				getReader: () => ({
+					read,
+					releaseLock: vi.fn(),
+					cancel: vi.fn(async () => {}),
+				}),
+			},
 			json: async () => ({}),
 		};
 
@@ -2364,4 +2376,90 @@ describe("useOrchestratorStream — API billing after the plans ran out mid-turn
 
 		expect(result.current.state.apiBilling).toBeUndefined();
 	});
+});
+
+describe("orchestration protocol failures", () => {
+	afterEach(() => vi.restoreAllMocks());
+	it.each([
+		{ type: "text_delta", version: 2, content: "incompatible" },
+		{ type: "tool_start", toolName: { invalid: true } },
+		{ type: "error", message: "Provider unavailable" },
+	])(
+		"keeps partial output, settles tools, and does not reconnect for $type",
+		async (failure) => {
+			const stream = makeSseResponse();
+			const fetchMock = vi
+				.spyOn(global, "fetch")
+				.mockResolvedValue(stream.response as unknown as Response);
+			const { result } = renderHook(() => useOrchestratorStream());
+			let pending: Promise<string | null> | undefined;
+			act(() => {
+				pending = result.current.sendMessage("hello");
+			});
+			await act(async () => {
+				stream.enqueueLine(
+					'data: {"type":"started","executionId":"execution-1"}',
+				);
+				stream.enqueueLine(
+					'data: {"type":"text_delta","content":"Partial answer"}',
+				);
+				stream.enqueueLine(
+					'data: {"type":"tool_start","toolCallId":"tool-1","toolName":"search"}',
+				);
+				stream.enqueueLine(`data: ${JSON.stringify(failure)}`);
+				await pending;
+			});
+			expect(result.current.messages.at(-1)?.content).toBe(
+				"Partial answer",
+			);
+			expect(result.current.messages.at(-1)?.streamStatus).toBe("error");
+			expect(result.current.streamingToolCalls[0]?.status).toBe("error");
+			expect(result.current.state.result?.error).toBeTruthy();
+			expect(fetchMock).toHaveBeenCalledOnce();
+		},
+	);
+});
+
+it("retains server approval history when the stream resolves before a card's HTTP receipt", async () => {
+	const sse = makeSseResponse();
+	vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sse.response));
+	const { result } = renderHook(() =>
+		useOrchestratorStream({ organizationId: "org-1" }),
+	);
+	let finished!: Promise<void>;
+	act(() => {
+		finished = result.current.sendMessage("Example");
+	});
+	const history = [
+		{
+			approvalId: "approval-1",
+			stepId: "step-1",
+			stepDescription: "Review action",
+			riskLevel: "high",
+			requestedAt: "2026-01-01T00:00:00.000Z",
+			decidedAt: "2026-01-01T00:00:01.000Z",
+			approved: true,
+		},
+	];
+	await act(async () => {
+		sse.enqueueLine(
+			'data: {"type":"started","executionId":"orch-example"}',
+		);
+		sse.enqueueLine(
+			'data: {"type":"approval_required","approvalId":"approval-1","stepId":"step-1","reason":"Review action"}',
+		);
+		sse.enqueueLine(
+			'data: {"type":"approval_resolved","approvalId":"approval-1","stepId":"step-1"}',
+		);
+		sse.enqueueLine(
+			`data: ${JSON.stringify({ type: "completed", response: "Done", approvalHistory: history })}`,
+		);
+		sse.enqueueDone();
+		await finished;
+	});
+	expect(result.current.state.pendingApproval).toBeNull();
+	expect(result.current.state.approvalHistory).toEqual(history);
+	act(() => result.current.reset());
+	expect(result.current.state.approvalHistory).toBeUndefined();
+	vi.unstubAllGlobals();
 });

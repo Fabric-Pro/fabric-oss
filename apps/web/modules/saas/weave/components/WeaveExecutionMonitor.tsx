@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 /**
  * WeaveExecutionMonitor - Real-time execution monitoring via SSE
@@ -700,7 +700,7 @@ export function WeaveExecutionMonitor({
 		mergedExecution.status === "TERMINATED_STALE";
 	const runtimeLinkTitle =
 		mergedExecution.implementationSession?.provider === "BACKGROUND_AGENTS"
-			? "Open Background Agents session"
+			? "Open Fabric Agents session"
 			: mergedExecution.implementationSession?.provider === "KANBAN_LOCAL"
 				? "Open Fabric Kanban"
 				: "Open implementation runtime";
@@ -709,7 +709,7 @@ export function WeaveExecutionMonitor({
 			? "Fabric Kanban"
 			: mergedExecution.implementationSession?.provider ===
 					"BACKGROUND_AGENTS"
-				? "Background Agents"
+				? "Fabric Agents"
 				: "Implementation runtime";
 
 	return (

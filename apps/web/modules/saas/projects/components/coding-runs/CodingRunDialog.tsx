@@ -50,7 +50,7 @@ export function CodingRunDialog({
 
 	return (
 		<Dialog open={open} onOpenChange={onOpenChange}>
-			<DialogContent className="sm:max-w-xl">
+			<DialogContent className="sm:max-w-2xl">
 				<DialogHeader className="space-y-4 text-left">
 					<div className="flex items-start gap-3">
 						<div className="flex size-11 shrink-0 items-center justify-center rounded-2xl border border-primary/20 bg-primary/10 shadow-sm">
@@ -63,17 +63,17 @@ export function CodingRunDialog({
 									className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-0.5 text-[11px] uppercase tracking-[0.16em] text-primary"
 								>
 									<SparklesIcon className="mr-1 size-3" />
-									Implementation Session
+									Fabric Agents Session
 								</Badge>
 							</div>
 							<DialogTitle className="text-xl leading-tight sm:text-2xl">
 								Implementation session
 							</DialogTitle>
-							<DialogDescription className="max-w-[48ch] text-sm leading-6">
-								Track implementation progress, inspect linked
-								runtime metadata, jump into the live session,
-								and open the pull request as soon as it is
-								ready.
+							<DialogDescription className="max-w-[56ch] text-sm leading-6">
+								Track isolated worktree progress on Fabric
+								Agents, reply to agent prompts, jump directly
+								into the desktop or Web UI session, and inspect
+								the opened pull request.
 							</DialogDescription>
 							{featureTitle && (
 								<div className="rounded-xl border border-border/60 bg-muted/30 px-3 py-2">

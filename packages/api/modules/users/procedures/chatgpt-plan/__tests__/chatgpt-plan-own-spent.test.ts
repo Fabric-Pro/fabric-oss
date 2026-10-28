@@ -61,6 +61,7 @@ vi.mock("../share", async () => {
 		chatGptPlanSharedHereSchema: z.object({}).passthrough(),
 		chatGptPlanShareState: async () => ({
 			canShare: false,
+			shareNeedsTerms: false,
 			sharedHere: [],
 		}),
 	};

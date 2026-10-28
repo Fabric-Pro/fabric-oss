@@ -571,6 +571,12 @@ export async function executeWeaveCodingRun(
 
 	const workflowId = `coding-run-${codingRun.id}`;
 	const temporal = await getTemporalClient();
+	const { isFabricAgentsBridgeEnabled } = await import(
+		"@repo/temporal/coding-execution-rollout"
+	);
+	const fabricAgentsBridgeEnabled =
+		executionPolicy.provider === "BACKGROUND_AGENTS" &&
+		isFabricAgentsBridgeEnabled();
 	await temporal.workflow.start("codingRunWorkflow", {
 		taskQueue: "agents",
 		workflowId,
@@ -583,6 +589,7 @@ export async function executeWeaveCodingRun(
 				userId: input.userId,
 				organizationId,
 				provider: executionPolicy.provider,
+				fabricAgentsBridgeEnabled,
 				projectName: plan.project.name,
 				organizationName: organization?.name ?? undefined,
 				repositoryOwner: plan.project.repositoryOwner,

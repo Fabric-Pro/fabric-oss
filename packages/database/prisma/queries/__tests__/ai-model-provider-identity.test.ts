@@ -12,6 +12,7 @@ vi.mock("../../client", () => ({
 
 import { MODELS } from "../../ai-model-catalog";
 import {
+	getAvailableCanonicalNameForProviderModelId,
 	getCanonicalNameForProviderModelId,
 	getProviderModelIdForCanonical,
 	getProviderModelMappingForCanonical,
@@ -170,3 +171,33 @@ it("mapping-first usage resolution has no cross-model canonical collisions in th
 	);
 	expect(collisions).toEqual([]);
 });
+
+it.each([
+	[[]],
+	[[{ canonicalName: "example-model" }]],
+	[[{ canonicalName: "example-a" }, { canonicalName: "example-b" }]],
+])(
+	"scopes override ID lookup to available provider mappings: %j",
+	async (models) => {
+		findMany.mockResolvedValue(models);
+		expect(
+			await getAvailableCanonicalNameForProviderModelId(
+				"system.ai.example",
+				"DATABRICKS",
+			),
+		).toBe(models.length === 1 ? models[0].canonicalName : null);
+		expect(findMany).toHaveBeenCalledExactlyOnceWith({
+			where: {
+				providerMappings: {
+					some: {
+						provider: "DATABRICKS",
+						providerModelId: "system.ai.example",
+						isAvailable: true,
+					},
+				},
+			},
+			select: { canonicalName: true },
+			take: 2,
+		});
+	},
+);

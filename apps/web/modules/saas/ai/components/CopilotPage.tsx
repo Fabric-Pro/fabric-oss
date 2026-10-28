@@ -36,6 +36,11 @@ import {
 	type SelectedAgent,
 	selectionToPersist,
 } from "@saas/agents/components/FabricChat/shared/agent-selection";
+import { ChatFailureNotice } from "@saas/agents/components/FabricChat/shared/ChatFailureNotice";
+import {
+	chatModelQueryOptions,
+	useProviderPickStatus,
+} from "@saas/agents/components/FabricChat/shared/use-provider-pick-status";
 import { StoppedIndicator } from "@saas/agents/components/StoppedIndicator";
 import { useEscToStopOrClose } from "@saas/agents/hooks/useEscToStopOrClose";
 import {
@@ -731,11 +736,17 @@ function extractResumableExecutions(turns: ConversationTurn[]): Array<{
 	return resumptions;
 }
 
-function SelectedAgentsInline({
+export function SelectedAgentsInline({
 	selectedAgents,
+	organizationId,
 }: {
 	selectedAgents: SelectedAgent[];
+	organizationId?: string | null;
 }) {
+	const { getInactiveNote } = useProviderPickStatus(
+		organizationId,
+		selectedAgents,
+	);
 	return (
 		<div className="flex min-w-0 items-center gap-2">
 			<div className="flex items-center gap-1.5">
@@ -759,12 +770,26 @@ function SelectedAgentsInline({
 			</div>
 			<span className="truncate text-sm font-medium text-foreground">
 				{selectedAgents.map((agent, index) => (
-					<span key={agent.agentId}>
+					<span
+						key={agent.agentId}
+						title={getInactiveNote(agent)}
+						className={
+							getInactiveNote(agent)
+								? "text-muted-foreground"
+								: undefined
+						}
+					>
 						{index > 0 ? ", " : ""}
 						<AgentVersionIdentity
 							name={agent.name}
 							instanceId={getSelectedAgentInstanceId(agent)}
 						/>
+						{getInactiveNote(agent) && (
+							<span className="text-muted-foreground">
+								{" "}
+								· not applied
+							</span>
+						)}
 					</span>
 				))}
 			</span>
@@ -958,7 +983,7 @@ function AgentDetailSheet({
 
 type AgentTab = "all" | "system" | "custom" | "models";
 
-function AgentBrowserSection({
+export function AgentBrowserSection({
 	organizationId,
 	selectedAgentIds,
 	onToggleAgent,
@@ -1022,14 +1047,8 @@ function AgentBrowserSection({
 	});
 
 	const { data: modelsData } = useQuery({
-		queryKey: ["ai-models-available", organizationId],
-		queryFn: () =>
-			orpcClient.aiConfig.models.listAvailable({
-				organizationId: organizationId ?? null,
-				taskType: "CHAT",
-			}),
+		...chatModelQueryOptions(organizationId),
 		enabled: activeTab === "models" || activeTab === "all",
-		refetchOnWindowFocus: false,
 	});
 
 	const registryAgents: BrowserAgent[] = (data?.agents ?? []).map(
@@ -1077,7 +1096,9 @@ function AgentBrowserSection({
 		},
 	);
 	const agents = [...registryAgents, ...instanceAgents];
-	const availableModels = modelsData?.models ?? [];
+	const availableModels = modelsData?.chatgptPlan
+		? []
+		: (modelsData?.models ?? []);
 	const agentManagementView = computeAgentManagementView(
 		agents.map((agent) => ({
 			id: agent.id ?? agent.agentId,
@@ -1520,7 +1541,9 @@ function AgentBrowserSection({
 						(!showModels || activeTab !== "all"))) && (
 					<div className="col-span-3 py-8 text-center text-sm text-muted-foreground">
 						{showModels
-							? "No models configured. Add an AI provider in Settings."
+							? modelsData?.chatgptPlan
+								? "ChatGPT plan is on. Choose a plan model in the chat picker."
+								: "No models configured. Add an AI provider in Settings."
 							: "No agents match your search."}
 					</div>
 				)}
@@ -1592,6 +1615,13 @@ export function ComposeInput({
 	onToggleCapability?: (cap: CapabilityItem) => void;
 	onRemoveCapability?: (capId: string) => void;
 }) {
+	const { getInactiveNote } = useProviderPickStatus(
+		organizationId,
+		selectedAgents,
+	);
+	const appliedAgents = selectedAgents.filter(
+		(agent) => !getInactiveNote(agent),
+	);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const basePath = useBasePath();
@@ -2055,7 +2085,13 @@ export function ComposeInput({
 					{selectedAgents.map((agent) => (
 						<span
 							key={agent.agentId}
-							className="inline-flex items-center gap-1.5 rounded-full bg-primary/10 text-primary px-2.5 py-0.5 text-xs font-medium"
+							title={getInactiveNote(agent)}
+							className={cn(
+								"inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium",
+								getInactiveNote(agent)
+									? "bg-muted text-muted-foreground"
+									: "bg-primary/10 text-primary",
+							)}
 						>
 							{isModelSelectionId(agent.agentId) &&
 							agent.vendor ? (
@@ -2072,6 +2108,11 @@ export function ComposeInput({
 									)}
 								/>
 							</span>
+							{getInactiveNote(agent) && (
+								<span className="text-muted-foreground">
+									not applied
+								</span>
+							)}
 							<button
 								type="button"
 								onClick={() => onRemoveAgent(agent.agentId)}
@@ -2097,8 +2138,8 @@ export function ComposeInput({
 						isRecording
 							? "Listening…"
 							: (placeholder ??
-								(selectedAgents.length > 0
-									? `Ask ${selectedAgents.map((a) => a.name).join(", ")}...`
+								(appliedAgents.length > 0
+									? `Ask ${appliedAgents.map((a) => a.name).join(", ")}...`
 									: "Ask an @agent a question, or just ask anything"))
 					}
 					rows={2}
@@ -3215,9 +3256,16 @@ function AgentResponseBlock({
 				!response.pendingApproval ? (
 					<ThinkingIndicator />
 				) : response.isError ? (
-					<p className="text-sm text-destructive">
-						{response.content || "An error occurred."}
-					</p>
+					<ChatFailureNotice
+						content={
+							response.errorMessage ? response.content : undefined
+						}
+						error={
+							response.errorMessage ||
+							response.content ||
+							"An error occurred."
+						}
+					/>
 				) : (
 					<div className="relative">
 						{/* HTML preview buttons */}
@@ -3404,7 +3452,10 @@ function ConversationView({
 			<div className="flex items-center justify-between pl-5 pr-32 py-3 border-b border-border shrink-0">
 				<div className="flex items-center gap-2">
 					{selectedAgents.length > 0 ? (
-						<SelectedAgentsInline selectedAgents={selectedAgents} />
+						<SelectedAgentsInline
+							selectedAgents={selectedAgents}
+							organizationId={organizationId}
+						/>
 					) : (
 						<>
 							<SparklesIcon className="size-4 text-muted-foreground" />
@@ -4422,6 +4473,7 @@ export function CopilotPage({
 							vendor: resp.vendor,
 							executionId: resp.executionId,
 							streamStatus: resp.status,
+							errorMessage: resp.errorMessage,
 							content:
 								selectedAgents.length > 1
 									? `[${resp.agentName}]: ${resp.content}`
@@ -4448,6 +4500,7 @@ export function CopilotPage({
 				vendor: m.vendor,
 				executionId: m.executionId,
 				streamStatus: m.streamStatus,
+				errorMessage: m.errorMessage,
 				toolCalls: m.toolCalls,
 			}));
 			return prior.length > 0 ? [...prior, ...allMessages] : allMessages;

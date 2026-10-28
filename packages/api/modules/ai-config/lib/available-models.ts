@@ -39,8 +39,8 @@ export async function listAvailableModels(input: {
 			: null;
 
 	// Get the user's configured providers
-	// For general tasks: only the DEFAULT provider's models are returned
-	// For specialized tasks (IMAGE, AUDIO, EMBEDDING): all capable providers' models are returned
+	// For explicit general tasks: only the DEFAULT provider's models are returned
+	// For specialized tasks (IMAGE, AUDIO, EMBEDDING, DECISION): all capable providers' models are returned
 	const {
 		allProviders,
 		defaultProvider,
@@ -88,9 +88,10 @@ export async function listAvailableModels(input: {
 		};
 	}
 
+	// Without a task, include default and specialized providers for settings.
 	// Get models from effective providers:
-	// - For general tasks: only the DEFAULT provider (prevents routing confusion)
-	// - For specialized tasks (IMAGE, AUDIO, EMBEDDING): all capable providers
+	// - For explicit general tasks: only the DEFAULT provider (prevents routing confusion)
+	// - For specialized tasks (IMAGE, AUDIO, EMBEDDING, DECISION): all capable providers
 	// biome-ignore lint/suspicious/noImplicitAnyLet: type inferred from Prisma query with include — cannot be statically declared
 	let models;
 	try {

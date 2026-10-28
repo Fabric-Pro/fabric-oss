@@ -99,7 +99,6 @@ trustPolicyExclude:
   - "exa-js@2.0.12"
   - "langium@3.3.1"
   - "pdf-parse@1.1.4"
-  - "pino@9.14.0"
   - "react-redux@9.2.0"
   - "reselect@5.1.1"
   - "semver@6.3.1"

@@ -538,4 +538,17 @@ describe("startCodingRun — ambiguous start errors (describe the deterministic 
 		expect(workflowDescribe).not.toHaveBeenCalled();
 		expect(failedStatusUpdates()).toHaveLength(1);
 	});
+
+	it("rejects an unknown or completed taskId with BAD_REQUEST instead of persisting an unrelated task", async () => {
+		const error = await expectORPCError(
+			callStart({
+				...baseInput,
+				taskId: "unrelated-task-id",
+			} as typeof baseInput),
+			"BAD_REQUEST",
+		);
+		expect(error.message).toMatch(/Selected task was not found/i);
+		expect(mockDb.codingRun.create).not.toHaveBeenCalled();
+		expect(workflowStart).not.toHaveBeenCalled();
+	});
 });

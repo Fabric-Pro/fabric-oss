@@ -291,31 +291,147 @@ export function sanitizeErrorMessage(
 	return "An error occurred while processing your request";
 }
 
+function normalizeHostname(hostname: string): string {
+	const lower = hostname.trim().toLowerCase();
+	if (lower.startsWith("[") && lower.endsWith("]")) {
+		return lower.slice(1, -1);
+	}
+	return lower;
+}
+
+function isBlockedMetadataOrSpecialHost(hostname: string): boolean {
+	const bare = normalizeHostname(hostname);
+
+	// Unspecified addresses
+	if (
+		bare === "0.0.0.0" ||
+		bare === "::" ||
+		bare === "0:0:0:0:0:0:0:0" ||
+		bare === "metadata" ||
+		bare === "metadata.google.internal" ||
+		bare.endsWith(".metadata.google.internal")
+	) {
+		return true;
+	}
+
+	// IPv4 link-local / cloud metadata (169.254.0.0/16)
+	if (/^169\.254\./.test(bare)) {
+		return true;
+	}
+
+	// IPv4-mapped IPv6 link-local metadata (::ffff:169.254.x.x or ::ffff:a9fe:xxxx)
+	if (
+		/^::ffff:169\.254\./i.test(bare) ||
+		/^::ffff:a9fe:/i.test(bare) ||
+		/^0:0:0:0:0:ffff:a9fe:/i.test(bare) ||
+		/^0:0:0:0:0:ffff:169\.254\./i.test(bare)
+	) {
+		return true;
+	}
+
+	// IPv6 link-local (fe80::/10) and AWS EC2 IPv6 IMDS (fd00:ec2::254)
+	if (/^fe[89ab][0-9a-f]:/i.test(bare) || bare === "fd00:ec2::254") {
+		return true;
+	}
+
+	return false;
+}
+
 /**
- * Validates a URL for the background agents service
- * Prevents SSRF by restricting allowed URL patterns
+ * Returns true when `hostname` is a loopback, LAN/RFC1918, Tailscale CGNAT/MagicDNS,
+ * or single-label/local fleet host where local/self-hosted `fabric-agent-server`
+ * instances run (over either HTTP or HTTPS).
+ */
+function isLocalOrFleetHost(hostname: string): boolean {
+	const bare = normalizeHostname(hostname);
+	if (isBlockedMetadataOrSpecialHost(bare)) {
+		return false;
+	}
+
+	if (
+		bare === "localhost" ||
+		bare === "127.0.0.1" ||
+		/^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(bare) ||
+		bare === "::1" ||
+		bare === "0:0:0:0:0:0:0:1"
+	) {
+		return true;
+	}
+
+	// If it is an IPv6 literal (contains colons), only ULA (fc00::/7, excluding blocked metadata) is private fleet
+	if (bare.includes(":")) {
+		return /^f[cd][0-9a-f]{2}:/i.test(bare);
+	}
+
+	// RFC1918 private LAN & Tailscale CGNAT (100.64.0.0/10)
+	const allowedPrivateRanges = [
+		/^10\./, // 10.0.0.0/8
+		/^172\.(1[6-9]|2[0-9]|3[0-1])\./, // 172.16.0.0/12
+		/^192\.168\./, // 192.168.0.0/16
+		/^100\.(6[4-9]|[7-9]\d|1[0-1]\d|12[0-7])\./, // 100.64.0.0/10 (Tailscale)
+	];
+	if (allowedPrivateRanges.some((range) => range.test(bare))) {
+		return true;
+	}
+
+	// Single-label DNS fleet hostnames (e.g. `agent-node`, `fabric-agent-server`) or local/Tailscale suffixes
+	const isSingleLabelDns =
+		!bare.includes(".") &&
+		/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(bare) &&
+		/[a-z]/.test(bare);
+	if (
+		isSingleLabelDns ||
+		bare.endsWith(".ts.net") ||
+		bare.endsWith(".local") ||
+		bare.endsWith(".internal") ||
+		bare.endsWith(".lan")
+	) {
+		return true;
+	}
+
+	return false;
+}
+
+/**
+ * Validates a URL for the background agents service (`fabric-agent-server`).
+ * Allows local/loopback, Tailscale, and LAN fleet hosts while preventing
+ * credential leakage, malformed URLs, and cloud metadata SSRF.
  *
  * @param url - URL to validate
  * @throws {SessionValidationError} If URL is invalid
  */
 export function validateBackgroundAgentsUrl(url: string): void {
-	// Must use HTTPS in production
 	const isProduction = process.env.NODE_ENV === "production";
 
 	try {
 		const parsed = new URL(url);
+		const hostname = parsed.hostname;
 
-		// Protocol check
-		if (isProduction && parsed.protocol !== "https:") {
-			throw new SessionValidationError(
-				"BACKGROUND_AGENTS",
-				"BACKGROUND_AGENTS_URL must use HTTPS in production",
-			);
-		}
-		if (!isProduction && !["http:", "https:"].includes(parsed.protocol)) {
+		// Protocol check: must be HTTP or HTTPS
+		if (!["http:", "https:"].includes(parsed.protocol)) {
 			throw new SessionValidationError(
 				"BACKGROUND_AGENTS",
 				"BACKGROUND_AGENTS_URL must use HTTP or HTTPS",
+			);
+		}
+
+		// Always block cloud metadata and link-local/unspecified addresses (IPv4, IPv6, and metadata hostnames)
+		if (isBlockedMetadataOrSpecialHost(hostname)) {
+			throw new SessionValidationError(
+				"BACKGROUND_AGENTS",
+				"BACKGROUND_AGENTS_URL cannot point to link-local metadata IP addresses",
+			);
+		}
+
+		// In production, external public hosts must use HTTPS; local/Tailscale/LAN fleet hosts allow HTTP or HTTPS
+		if (
+			isProduction &&
+			parsed.protocol !== "https:" &&
+			!isLocalOrFleetHost(hostname)
+		) {
+			throw new SessionValidationError(
+				"BACKGROUND_AGENTS",
+				"BACKGROUND_AGENTS_URL must use HTTPS in production",
 			);
 		}
 
@@ -325,40 +441,6 @@ export function validateBackgroundAgentsUrl(url: string): void {
 				"BACKGROUND_AGENTS",
 				"BACKGROUND_AGENTS_URL must not contain credentials",
 			);
-		}
-
-		// No private IP ranges in production
-		if (isProduction) {
-			const hostname = parsed.hostname;
-
-			// Check for localhost
-			if (
-				hostname === "localhost" ||
-				hostname === "127.0.0.1" ||
-				hostname === "::1"
-			) {
-				throw new SessionValidationError(
-					"BACKGROUND_AGENTS",
-					"BACKGROUND_AGENTS_URL cannot point to localhost in production",
-				);
-			}
-
-			// Check for private IP ranges
-			const privateIpRanges = [
-				/^10\./, // 10.0.0.0/8
-				/^172\.(1[6-9]|2[0-9]|3[0-1])\./, // 172.16.0.0/12
-				/^192\.168\./, // 192.168.0.0/16
-				/^169\.254\./, // Link-local
-			];
-
-			for (const range of privateIpRanges) {
-				if (range.test(hostname)) {
-					throw new SessionValidationError(
-						"BACKGROUND_AGENTS",
-						"BACKGROUND_AGENTS_URL cannot point to private IP addresses in production",
-					);
-				}
-			}
 		}
 
 		// Check for suspicious patterns

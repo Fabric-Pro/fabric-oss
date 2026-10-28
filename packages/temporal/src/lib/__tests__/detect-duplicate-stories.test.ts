@@ -18,7 +18,9 @@ import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimension
  *     verdict) and verdict-valid pair exclusion,
  *   - embedding-cache reuse with PER-ITEM persistence (only a failed pair's
  *     items stay stale),
- *   - dismissed pairs stay dismissed.
+ *   - dismissed pairs stay dismissed,
+ *   - FEATURE↔FEATURE pairs are scored and verified mainly on their Scope
+ *     (or acceptance-criteria) sections; any pair with a BUG is unchanged.
  *
  * Run with:
  *   pnpm --filter @repo/temporal test src/lib/__tests__/detect-duplicate-stories.test.ts
@@ -42,6 +44,7 @@ const {
 	mockUpsertStoryDuplicateEmbeddings,
 	mockUpsertPendingDuplicateLink,
 	mockRecordDistinctVerdict,
+	mockLoggerInfo,
 } = vi.hoisted(() => ({
 	mockGenerateEmbeddings: vi.fn(),
 	mockGenerateObject: vi.fn(),
@@ -56,6 +59,7 @@ const {
 	mockUpsertStoryDuplicateEmbeddings: vi.fn(),
 	mockUpsertPendingDuplicateLink: vi.fn(),
 	mockRecordDistinctVerdict: vi.fn(),
+	mockLoggerInfo: vi.fn(),
 }));
 
 vi.mock("@repo/rag", () => ({
@@ -79,7 +83,7 @@ vi.mock("@repo/ai", () => ({
 }));
 
 vi.mock("@repo/logs", () => ({
-	logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+	logger: { info: mockLoggerInfo, warn: vi.fn(), error: vi.fn() },
 }));
 
 vi.mock("@repo/database", async () => {
@@ -87,8 +91,13 @@ vi.mock("@repo/database", async () => {
 	const pure = await vi.importActual<
 		typeof import("@repo/database/prisma/queries/projects/duplicate-detection")
 	>("@repo/database/prisma/queries/projects/duplicate-detection");
+	// The feature-pair focus selection is pure too, and is under test here.
+	const focus = await vi.importActual<
+		typeof import("@repo/database/prisma/queries/projects/duplicate-focus")
+	>("@repo/database/prisma/queries/projects/duplicate-focus");
 	return {
 		...pure,
+		...focus,
 		// The real predicate — the scan's provider guard is one of the things
 		// these tests exercise, and a stub would decide it instead of the rule.
 		// Kept in step with `@repo/database` by its own tests
@@ -736,6 +745,430 @@ describe("detectAndFlagDuplicateStories", () => {
 				targetStoryIds: ["new"],
 			}),
 		).rejects.toMatchObject({ name: "AIProviderNotConfiguredError" });
+	});
+});
+
+describe("feature pairs are judged mainly on their Scope sections", () => {
+	type KindStory = Story & {
+		kind: "FEATURE" | "BUG";
+		acceptanceCriteria?: string | null;
+	};
+
+	const spec = (inScope: string, outOfScope: string) =>
+		[
+			"## Overview",
+			"Help people get started with the product.",
+			"## Scope",
+			"### In Scope",
+			`- ${inScope}`,
+			"### Out of Scope",
+			`- ${outOfScope}`,
+		].join("\n");
+
+	/** Embed every text — whole-document or focus section — through
+	 * `vectorFor`, so each cosine in the run is deterministic. */
+	function arrangeByText(
+		stories: KindStory[],
+		vectorFor: (text: string) => number[],
+	) {
+		mockListActiveStoriesForDetection.mockResolvedValue(stories);
+		mockGenerateEmbeddings.mockImplementation(async (texts: string[]) => ({
+			embeddings: texts.map(vectorFor),
+			model: "text-embedding-3-small",
+		}));
+	}
+
+	async function pure() {
+		const detection = await vi.importActual<
+			typeof import("@repo/database/prisma/queries/projects/duplicate-detection")
+		>("@repo/database/prisma/queries/projects/duplicate-detection");
+		const focus = await vi.importActual<
+			typeof import("@repo/database/prisma/queries/projects/duplicate-focus")
+		>("@repo/database/prisma/queries/projects/duplicate-focus");
+		return { ...detection, ...focus };
+	}
+
+	it("settles topic-alike features with non-overlapping Scope as distinct, without a verifier call", async () => {
+		const { cosineSimilarity, weightedFocusSimilarity } = await pure();
+		const stories: KindStory[] = [
+			{
+				id: "existing",
+				identifier: "F-1",
+				title: "Clearer onboarding for new users",
+				description: spec(
+					"Guided first-run checklist for new users",
+					"Developer integration setup",
+				),
+				kind: "FEATURE",
+			},
+			{
+				id: "new",
+				identifier: "F-2",
+				title: "Configure MCP for developers",
+				description: spec(
+					"MCP server configuration for developers",
+					"End-user onboarding checklist",
+				),
+				kind: "FEATURE",
+			},
+		];
+		arrangeByText(stories, (text) => {
+			// Whole documents nearly identical; Scope sections orthogonal.
+			if (text.startsWith("Clearer onboarding")) {
+				return [1, 1, 0];
+			}
+			if (text.startsWith("Configure MCP")) {
+				return [1, 1, 0.02];
+			}
+			return text.includes("Guided first-run checklist")
+				? [1, 0, 0]
+				: [0, 1, 0];
+		});
+
+		const result = await detectAndFlagDuplicateStories({
+			...baseParams,
+			targetStoryIds: ["new"],
+		});
+
+		expect(result.candidates).toBe(1);
+		expect(result.confirmed).toBe(0);
+		expect(mockGenerateObject).not.toHaveBeenCalled();
+		expect(mockUpsertPendingDuplicateLink).not.toHaveBeenCalled();
+		// Second embedding call: the two Scope sections, polarity kept.
+		expect(mockGenerateEmbeddings).toHaveBeenCalledTimes(2);
+		expect(mockGenerateEmbeddings.mock.calls[1][0]).toEqual([
+			"In scope:\n- Guided first-run checklist for new users\nOut of scope:\n- Developer integration setup",
+			"In scope:\n- MCP server configuration for developers\nOut of scope:\n- End-user onboarding checklist",
+		]);
+		expect(mockGenerateEmbeddings.mock.calls[1][1]).toMatchObject({
+			featureKey: "duplicate-scan",
+		});
+		const expected = weightedFocusSimilarity(
+			0,
+			cosineSimilarity([1, 1, 0], [1, 1, 0.02]),
+		);
+		expect(mockRecordDistinctVerdict).toHaveBeenCalledTimes(1);
+		const arg = mockRecordDistinctVerdict.mock.calls[0][0] as {
+			storyAId: string;
+			storyBId: string;
+			similarity: number;
+			confidence: number;
+			reasoning: string;
+			contentHashA: string;
+		};
+		expect(arg).toMatchObject({
+			storyAId: "existing",
+			storyBId: "new",
+			confidence: 1,
+			contentHashA: expect.stringMatching(/^[0-9a-f]{64}$/),
+		});
+		expect(arg.similarity).toBeCloseTo(expected, 10);
+		expect(arg.similarity).toBeLessThan(0.7);
+		expect(arg.reasoning).toMatch(/^Scope sections do not overlap/);
+	});
+
+	it("verifies features with overlapping Scope on their Scope blocks, and flags them at the weighted score", async () => {
+		const { cosineSimilarity, weightedFocusSimilarity } = await pure();
+		const stories: KindStory[] = [
+			{
+				id: "existing",
+				identifier: "F-1",
+				title: "Clearer onboarding for new users",
+				description: spec(
+					"Guided first-run checklist for new users",
+					"Developer integration setup",
+				),
+				kind: "FEATURE",
+			},
+			{
+				id: "new",
+				identifier: "F-2",
+				title: "Onboarding checklist revamp",
+				description: spec(
+					"Guided first-run checklist with progress",
+					"Admin reporting",
+				),
+				kind: "FEATURE",
+			},
+		];
+		arrangeByText(stories, (text) => {
+			if (text.startsWith("Clearer onboarding")) {
+				return [1, 0, 0];
+			}
+			if (text.startsWith("Onboarding checklist revamp")) {
+				return [0.8, 0.6, 0];
+			}
+			return [1, 0, 0];
+		});
+		mockGenerateObject.mockResolvedValue({
+			object: {
+				relationship: "overlapping_scope",
+				confidence: 0.85,
+				reasoning: "both deliver the first-run checklist",
+			},
+		});
+
+		const result = await detectAndFlagDuplicateStories({
+			...baseParams,
+			targetStoryIds: ["new"],
+		});
+
+		expect(result.confirmed).toBe(1);
+		const { prompt } = mockGenerateObject.mock.calls[0][0] as {
+			prompt: string;
+		};
+		expect(prompt).toContain(
+			"<scope_a>\nIn scope:\n- Guided first-run checklist for new users",
+		);
+		expect(prompt).toContain(
+			"<scope_b>\nIn scope:\n- Guided first-run checklist with progress",
+		);
+		expect(prompt).toMatch(/PRIMARY signal/);
+		const link = mockUpsertPendingDuplicateLink.mock.calls[0][0] as {
+			similarity: number;
+			linkType: string;
+		};
+		expect(link.linkType).toBe("OVERLAP");
+		expect(link.similarity).toBeCloseTo(
+			weightedFocusSimilarity(
+				1,
+				cosineSimilarity([1, 0, 0], [0.8, 0.6, 0]),
+			),
+			10,
+		);
+	});
+
+	it("compares on acceptance criteria when a feature has no Scope section", async () => {
+		const stories: KindStory[] = [
+			{
+				id: "existing",
+				identifier: "F-1",
+				title: "Clearer onboarding for new users",
+				description: spec(
+					"Guided first-run checklist",
+					"Admin reporting",
+				),
+				acceptanceCriteria:
+					"AC1: Given a new user, when they sign in, then the checklist shows",
+				kind: "FEATURE",
+			},
+			{
+				id: "new",
+				identifier: "F-2",
+				title: "Onboarding checklist revamp",
+				description: "## Overview\nA better first run.",
+				acceptanceCriteria:
+					"  AC1: Given a new user, when they first sign in, then the checklist shows  ",
+				kind: "FEATURE",
+			},
+		];
+		arrangeByText(stories, (text) => {
+			if (text.startsWith("Clearer onboarding")) {
+				return [1, 0, 0];
+			}
+			if (text.startsWith("Onboarding checklist revamp")) {
+				return [0.8, 0.6, 0];
+			}
+			return [1, 0, 0];
+		});
+		mockGenerateObject.mockResolvedValue({
+			object: {
+				relationship: "overlapping_scope",
+				confidence: 0.85,
+				reasoning: "same first-run checklist",
+			},
+		});
+
+		await detectAndFlagDuplicateStories({
+			...baseParams,
+			targetStoryIds: ["new"],
+		});
+
+		expect(mockGenerateEmbeddings.mock.calls[1][0]).toEqual([
+			"AC1: Given a new user, when they sign in, then the checklist shows",
+			"AC1: Given a new user, when they first sign in, then the checklist shows",
+		]);
+		const { prompt } = mockGenerateObject.mock.calls[0][0] as {
+			prompt: string;
+		};
+		expect(prompt).toContain(
+			"<acceptance_criteria_a>\nAC1: Given a new user, when they sign in, then the checklist shows\n</acceptance_criteria_a>",
+		);
+		expect(prompt).not.toContain("<scope_a>");
+	});
+
+	const wholeDocumentPairs: Array<
+		[label: string, kindA: KindStory["kind"], kindB: KindStory["kind"]]
+	> = [
+		["two bugs", "BUG", "BUG"],
+		["a feature and a bug", "FEATURE", "BUG"],
+	];
+	it.each(wholeDocumentPairs)(
+		"keeps the whole-document behaviour for %s",
+		async (_label, kindA, kindB) => {
+			const { cosineSimilarity } = await pure();
+			const stories: KindStory[] = [
+				{
+					id: "existing",
+					identifier: "F-1",
+					title: "Login times out",
+					description: spec("Session refresh", "Password reset"),
+					kind: kindA,
+				},
+				{
+					id: "new",
+					identifier: "F-2",
+					title: "Login timeout on refresh",
+					description: spec("Token renewal", "Account lockout"),
+					kind: kindB,
+				},
+			];
+			arrangeByText(stories, (text) =>
+				text.startsWith("Login times out") ? [1, 1, 0] : [1, 1, 0.02],
+			);
+			mockGenerateObject.mockResolvedValue({
+				object: {
+					relationship: "same_work_item",
+					confidence: 0.95,
+					reasoning: "same timeout",
+				},
+			});
+
+			const result = await detectAndFlagDuplicateStories({
+				...baseParams,
+				targetStoryIds: ["new"],
+			});
+
+			expect(result.confirmed).toBe(1);
+			// One embedding call: no focus sections are embedded.
+			expect(mockGenerateEmbeddings).toHaveBeenCalledTimes(1);
+			const { prompt } = mockGenerateObject.mock.calls[0][0] as {
+				prompt: string;
+			};
+			expect(prompt).not.toContain("<scope_a>");
+			expect(prompt).not.toMatch(/PRIMARY/);
+			const link = mockUpsertPendingDuplicateLink.mock.calls[0][0] as {
+				similarity: number;
+			};
+			expect(link.similarity).toBeCloseTo(
+				cosineSimilarity([1, 1, 0], [1, 1, 0.02]),
+				10,
+			);
+			expect(focusedPairLogCalls()).toHaveLength(0);
+		},
+	);
+
+	/** The per-run tuning log calls ("feature pairs scored on …"). */
+	function focusedPairLogCalls() {
+		return mockLoggerInfo.mock.calls.filter(([message]) =>
+			String(message).includes("feature pairs scored"),
+		);
+	}
+
+	it("logs every focused pair once per run — identifiers, kind, scores and outcome, never story text", async () => {
+		const stories: KindStory[] = [
+			{
+				id: "e1",
+				identifier: "F-1",
+				title: "Clearer onboarding for new users",
+				description: spec(
+					"Guided first-run checklist for new users",
+					"Developer integration setup",
+				),
+				kind: "FEATURE",
+			},
+			{
+				id: "e2",
+				identifier: "F-2",
+				title: "Configure MCP for developers",
+				description: spec(
+					"MCP server configuration for developers",
+					"End-user onboarding checklist",
+				),
+				kind: "FEATURE",
+			},
+			{
+				id: "new",
+				identifier: "F-3",
+				title: "Onboarding checklist revamp",
+				description: spec(
+					"Guided first-run checklist with progress",
+					"Admin reporting",
+				),
+				kind: "FEATURE",
+			},
+		];
+		arrangeByText(stories, (text) => {
+			if (text.startsWith("Clearer onboarding")) {
+				return [1, 0, 0];
+			}
+			if (
+				text.startsWith("Configure MCP") ||
+				text.startsWith("Onboarding checklist revamp")
+			) {
+				return [0.8, 0.6, 0];
+			}
+			// Focus sections: the checklist scopes overlap, the MCP one does not.
+			return text.includes("Guided first-run checklist")
+				? [1, 0, 0]
+				: [0, 1, 0];
+		});
+		mockGenerateObject.mockResolvedValue({
+			object: {
+				relationship: "overlapping_scope",
+				confidence: 0.85,
+				reasoning: "both deliver the first-run checklist",
+			},
+		});
+
+		await detectAndFlagDuplicateStories({
+			...baseParams,
+			targetStoryIds: ["new"],
+		});
+
+		const calls = focusedPairLogCalls();
+		expect(calls).toHaveLength(1);
+		const payload = calls[0][1] as {
+			projectId: string;
+			pairs: Array<Record<string, unknown>>;
+		};
+		expect(payload.projectId).toBe("proj-1");
+		expect(payload.pairs).toHaveLength(2);
+		expect(payload.pairs).toEqual(
+			expect.arrayContaining([
+				// Verified: overlapping Scope (focus 1.0, document 0.8).
+				expect.objectContaining({
+					a: "F-1",
+					b: "F-3",
+					focus: "scope",
+					focusSimilarity: 1,
+					documentSimilarity: 0.8,
+					weighted: 0.95,
+					threshold: 0.7,
+					outcome: "linked:OVERLAP",
+				}),
+				// Settled: identical documents, orthogonal Scope sections.
+				expect.objectContaining({
+					a: "F-2",
+					b: "F-3",
+					focus: "scope",
+					focusSimilarity: 0,
+					documentSimilarity: 1,
+					weighted: 0.25,
+					outcome: "settled",
+				}),
+			]),
+		);
+		// Worker-log redaction: identifiers and numbers only.
+		const logged = JSON.stringify(payload).toLowerCase();
+		for (const fragment of [
+			"onboarding",
+			"checklist",
+			"mcp",
+			"first-run",
+		]) {
+			expect(logged).not.toContain(fragment);
+		}
 	});
 });
 

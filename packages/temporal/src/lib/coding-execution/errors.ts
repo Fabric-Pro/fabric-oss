@@ -13,6 +13,8 @@ export type ProviderErrorCode =
 	| "PORT_UNAVAILABLE"
 	| "RUNTIME_NOT_FOUND"
 	| "WORKSPACE_ERROR"
+	| "RECOVERY_REQUIRED"
+	| "INPUT_REQUIRED"
 	| "UNKNOWN";
 
 /**
@@ -199,4 +201,26 @@ export function toProviderError(
 	}
 
 	return new ProviderError(String(error), provider, defaultCode);
+}
+
+/** The server cannot safely establish whether the operation was accepted. */
+export class RecoveryRequiredError extends ProviderError {
+	constructor() {
+		super(
+			"Execution needs recovery. Inspect the existing session before retrying with a new request ID.",
+			"BACKGROUND_AGENTS",
+			"RECOVERY_REQUIRED",
+		);
+	}
+}
+
+/** A native permission, authentication, or user-input checkpoint must be resolved. */
+export class InputRequiredError extends ProviderError {
+	constructor() {
+		super(
+			"Open the existing Fabric session and resolve its pending input before sending more instructions.",
+			"BACKGROUND_AGENTS",
+			"INPUT_REQUIRED",
+		);
+	}
 }

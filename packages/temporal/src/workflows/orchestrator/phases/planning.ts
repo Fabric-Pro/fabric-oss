@@ -14,7 +14,7 @@ import { log, proxyActivities } from "@temporalio/workflow";
 import type * as orchestratorActivities from "../../../activities/orchestrator";
 import type * as weaveActivities from "../../../activities/weave";
 import { AI_NON_RETRYABLE_ERROR_TYPES } from "../../ai-non-retryable-errors";
-import { TRAJECTORY } from "../orchestrator-config";
+import { PLAN_RISK_SCORE, TRAJECTORY } from "../orchestrator-config";
 import {
 	type IterativeTurnOptions,
 	rethrowTurnStop,
@@ -615,12 +615,7 @@ async function handlePlanApproval(
 		stepType: routingDecision.suggestedStrategy,
 		userId: input.userId,
 		organizationId: input.organizationId,
-		riskScore:
-			summary.overallRisk === "critical"
-				? 95
-				: summary.overallRisk === "high"
-					? 80
-					: 60,
+		riskScore: PLAN_RISK_SCORE[summary.overallRisk],
 		riskLevel: summary.overallRisk,
 		riskFactors: [
 			...(routingDecision.riskFactors || []),

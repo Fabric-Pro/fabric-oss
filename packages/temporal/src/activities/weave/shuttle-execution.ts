@@ -12,6 +12,7 @@
 import type { SessionStatus } from "../../lib/coding-execution/provider";
 import { getFabricInternalBaseUrl } from "../shared/fabric-internal-url";
 import { getBackgroundAgentsProvider } from "./get-background-provider";
+import { authorizeWeaveRuntime } from "./runtime-authorization";
 
 // ---------- Types ----------
 
@@ -68,8 +69,11 @@ export interface DelegateWeaveImplementationOutput {
 export async function sendShuttlePromptActivity(
 	input: SendShuttlePromptInput,
 ): Promise<void> {
+	const { info, workflow } = await authorizeWeaveRuntime(input);
 	const provider = getBackgroundAgentsProvider();
-	await provider.sendPrompt(input.sessionId, input.prompt, input.userId);
+	await provider.sendPrompt(input.sessionId, input.prompt, input.userId, {
+		promptId: `${workflow.workflowId}:${workflow.runId}:${info.activityId}`,
+	});
 }
 
 /**

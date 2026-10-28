@@ -208,3 +208,11 @@ export const OUTPUT = {
  * type-import activities; this file is pure constants and safe on both sides.
  */
 export const AUTHORITY_CHECK_FAILED = "authority_check_failed" as const;
+
+/** Display scores for plan approval risk levels. */
+export const PLAN_RISK_SCORE = {
+	low: 20,
+	medium: 50,
+	high: 80,
+	critical: 95,
+} as const;

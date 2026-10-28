@@ -331,8 +331,10 @@ function ChatgptPlanSection() {
 						<UsageMeter estimate={query.data.usageEstimate} />
 					) : null}
 
-					{query.data.canShare && currentOrganization ? (
+					{(query.data.canShare || query.data.shareNeedsTerms) &&
+					currentOrganization ? (
 						<ChatgptPlanShareAction
+							needsTerms={!query.data.canShare}
 							organizationName={currentOrganization.name}
 						/>
 					) : null}

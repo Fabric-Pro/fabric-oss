@@ -409,6 +409,7 @@ describe("POST orchestrator-temporal/stream — the Advisor's company-context op
 			userId: SESSION_USER_ID,
 			organizationId: ORGANIZATION_ID,
 			turnId: "turn-example-1",
+			projectId: null,
 		});
 	});
 });

@@ -993,8 +993,7 @@ export async function getModelForTask(
  * Used to map a user-selected model override (which is a canonical name, e.g.
  * "claude-sonnet-5") to the model string the provider actually expects (e.g. the
  * Databricks Unity AI Gateway service "system.ai.claude-sonnet-5"). Returns null
- * when the canonical has no available mapping for the provider, so the caller can
- * fall back to using the override string as-is.
+ * when the canonical has no available mapping for the provider.
  */
 export async function getProviderModelIdForCanonical(
 	canonicalName: string,
@@ -1022,6 +1021,23 @@ export async function getProviderModelMappingForCanonical(
 		exists: model !== null,
 		providerModelId: model?.providerMappings?.[0]?.providerModelId ?? null,
 	};
+}
+
+/** Resolve only an available, unambiguous ID on the requested provider. */
+export async function getAvailableCanonicalNameForProviderModelId(
+	providerModelId: string,
+	provider: AIProvider,
+): Promise<string | null> {
+	const models = await db.aiModel.findMany({
+		where: {
+			providerMappings: {
+				some: { provider, providerModelId, isAvailable: true },
+			},
+		},
+		select: { canonicalName: true },
+		take: 2,
+	});
+	return models.length === 1 ? models[0].canonicalName : null;
 }
 
 /**

@@ -5,7 +5,7 @@
  */
 
 import { ORPCError } from "@orpc/client";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	handlers,
@@ -173,6 +173,7 @@ async function expectORPCError(
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	vi.stubEnv("FABRIC_AGENTS_EXECUTION_BRIDGE_ENABLED", undefined);
 	mockCapabilities.pushBranchWithoutPr = true;
 	mockDb.userStory.findFirst.mockResolvedValue(spikeStory);
 	mockDb.organization.findUnique.mockResolvedValue(null);
@@ -226,6 +227,54 @@ describe("codingRuns.start — kind: SPIKE", () => {
 						kind: "SPIKE",
 						spikeQuestion:
 							"Can we stream the export without buffering?",
+					}),
+				],
+			}),
+		);
+	});
+
+	it("captures the default-off cutover setting without changing legacy starts", async () => {
+		await start(spikeInput);
+		expect(workflowStart.mock.calls[0][1].args[0]).toMatchObject({
+			fabricAgentsBridgeEnabled: false,
+		});
+	});
+
+	it.each([
+		{ llmConnection: "antigravity-cli" },
+		{ model: "example-model" },
+		{ targetMachine: "example-machine" },
+	])(
+		"rejects native-only controls before creating a run while cutover is off: %j",
+		async (controls) => {
+			const error = await expectORPCError(
+				start({ ...spikeInput, ...controls }),
+				"PRECONDITION_FAILED",
+			);
+			expect(error.data).toMatchObject({
+				code: "FABRIC_BRIDGE_DISABLED",
+			});
+			expect(mockDb.codingRun.create).not.toHaveBeenCalled();
+			expect(workflowStart).not.toHaveBeenCalled();
+		},
+	);
+
+	it("forwards llmConnection and model to codingRunWorkflow when provided", async () => {
+		vi.stubEnv("FABRIC_AGENTS_EXECUTION_BRIDGE_ENABLED", "true");
+		await start({
+			...spikeInput,
+			llmConnection: "antigravity",
+			model: "gemini-2.5-pro",
+		});
+		expect(workflowStart).toHaveBeenCalledWith(
+			"codingRunWorkflow",
+			expect.objectContaining({
+				args: [
+					expect.objectContaining({
+						kind: "SPIKE",
+						fabricAgentsBridgeEnabled: true,
+						llmConnection: "antigravity",
+						model: "gemini-2.5-pro",
 					}),
 				],
 			}),
@@ -408,4 +457,8 @@ describe("codingRuns.discardSpike", () => {
 			"CONFLICT",
 		);
 	});
+});
+
+afterEach(() => {
+	vi.unstubAllEnvs();
 });

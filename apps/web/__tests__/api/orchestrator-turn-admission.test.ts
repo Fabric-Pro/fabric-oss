@@ -288,6 +288,38 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 		},
 	);
 
+	it.each([true, false])(
+		"captures approval rollout for both chat starters: %s",
+		async (enabled) => {
+			vi.stubEnv(
+				"ORCHESTRATOR_APPROVAL_UPDATES_ENABLED",
+				String(enabled),
+			);
+			try {
+				for (const executionMode of ["balanced", "weave"]) {
+					m.start.mockClear();
+					await readEvents(
+						await post(newTurnBody({ executionMode })),
+					);
+					const options = m.start.mock.calls.find(
+						(call) => call[0] === "orchestratorExecutionWorkflow",
+					)?.[1];
+					expect(options).toBeDefined();
+					for (const value of [options.args[0], options.memo]) {
+						if (enabled) {
+							expect(value.approvalProtocol).toBe(2);
+						} else {
+							expect(value).not.toHaveProperty(
+								"approvalProtocol",
+							);
+						}
+					}
+				}
+			} finally {
+				vi.unstubAllEnvs();
+			}
+		},
+	);
 	it.each([undefined, "bounded", "other"])(
 		"records server history retention setting %s for chat turns",
 		async (setting) => {
@@ -1339,6 +1371,7 @@ describe("POST orchestrator-temporal/stream — turn admission", () => {
 		// useOrchestratorStream.turn.test.ts, "R2-F2").
 		expect(pending).toEqual({
 			type: "start_pending",
+			version: 1,
 			retryable: true,
 			executionId: expect.stringMatching(/^orch-/),
 		});

@@ -24,7 +24,7 @@ type TurnResult = Pick<
 	| "model"
 >;
 
-interface TurnErrorEvent {
+export interface TurnErrorEvent {
 	type: "error";
 	message: string;
 	/** Provider limit behind the failure — the client shows the limit banner. */
@@ -134,3 +134,6 @@ export function buildWorkflowErrorEvent(
 				: extractWorkflowFailureMessage(error),
 	};
 }
+
+export type DoneTurnEvent = ReturnType<typeof doneTurnEvent>;
+export type WorkflowErrorEvent = ReturnType<typeof buildWorkflowErrorEvent>;

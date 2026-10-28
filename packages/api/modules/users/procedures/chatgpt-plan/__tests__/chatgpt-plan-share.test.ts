@@ -289,6 +289,7 @@ describe("chatGptPlanShareState", () => {
 			impersonated: false,
 		});
 		expect(state.canShare).toBe(true);
+		expect(state.shareNeedsTerms).toBe(false);
 		expect(state.sharedHere).toEqual([
 			{
 				accountId: "acc-1",
@@ -313,5 +314,46 @@ describe("chatGptPlanShareState", () => {
 			...overrides,
 		});
 		expect(state.canShare).toBe(false);
+	});
+
+	it("says sharing waits on the owner's terms instead of hiding it", async () => {
+		mocks.terms = null;
+		const state = await chatGptPlanShareState({
+			userId: "user-1",
+			organizationId: "org-a",
+			hasOwnPlan: true,
+			impersonated: false,
+		});
+		expect(state).toMatchObject({ canShare: false, shareNeedsTerms: true });
+	});
+
+	it.each([
+		["without an own plan", { hasOwnPlan: false }],
+		["while impersonating", { impersonated: true }],
+	])("does not point at the terms %s", async (_case, overrides) => {
+		mocks.terms = null;
+		const state = await chatGptPlanShareState({
+			userId: "user-1",
+			organizationId: "org-a",
+			hasOwnPlan: true,
+			impersonated: false,
+			...overrides,
+		});
+		expect(state.shareNeedsTerms).toBe(false);
+	});
+
+	it("does not point at the terms where ChatGPT plans are off", async () => {
+		mocks.terms = null;
+		mocks.flags = {};
+		const state = await chatGptPlanShareState({
+			userId: "user-1",
+			organizationId: "org-a",
+			hasOwnPlan: true,
+			impersonated: false,
+		});
+		expect(state).toMatchObject({
+			canShare: false,
+			shareNeedsTerms: false,
+		});
 	});
 });

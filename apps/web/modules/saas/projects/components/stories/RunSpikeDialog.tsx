@@ -28,7 +28,10 @@ import { useTranslations } from "next-intl";
 import { useEffect, useId, useState } from "react";
 import { toast } from "sonner";
 import type { ExecutionProvider } from "../../lib/implementation-session-labels";
-import { getExecutionProviderLabel } from "../../lib/implementation-session-labels";
+import {
+	FABRIC_AGENT_CONNECTIONS,
+	getExecutionProviderLabel,
+} from "../../lib/implementation-session-labels";
 import { startSpikeRun } from "../../lib/spike-runs";
 import { getReadinessErrorGaps } from "../../lib/stories/readiness";
 import type { UserStory } from "../../lib/stories/types";
@@ -73,12 +76,15 @@ export function RunSpikeDialog({
 	const { organizationId, basePath } = useOrganizationContext();
 	const queryClient = useQueryClient();
 	const questionId = useId();
+	const connectionId = useId();
 	const [question, setQuestion] = useState(story.title);
+	const [llmConnection, setLlmConnection] = useState<string>("default");
 
 	// Prefill from the title each time the dialog opens for a story.
 	useEffect(() => {
 		if (open) {
 			setQuestion(story.title);
+			setLlmConnection("default");
 		}
 	}, [open, story.title]);
 
@@ -114,6 +120,7 @@ export function RunSpikeDialog({
 				storyId: story.id,
 				organizationId: organizationId ?? null,
 				spikeQuestion: trimmedQuestion,
+				...(llmConnection !== "default" ? { llmConnection } : {}),
 			}),
 		onSuccess: async (result) => {
 			await Promise.all([
@@ -290,6 +297,27 @@ export function RunSpikeDialog({
 										})
 									: t("runSpike.questionHint")}
 						</p>
+					</div>
+
+					<div className="space-y-2">
+						<Label htmlFor={connectionId}>
+							Fabric Agents backend
+						</Label>
+						<select
+							id={connectionId}
+							aria-label="Fabric Agents backend"
+							value={llmConnection}
+							onChange={(event) =>
+								setLlmConnection(event.target.value)
+							}
+							className="flex h-10 w-full rounded-xl border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						>
+							{FABRIC_AGENT_CONNECTIONS.map((conn) => (
+								<option key={conn.value} value={conn.value}>
+									{conn.label} — {conn.description}
+								</option>
+							))}
+						</select>
 					</div>
 
 					<div className="grid gap-3 sm:grid-cols-2">

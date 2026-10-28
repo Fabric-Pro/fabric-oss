@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { FabricBackgroundAdapter } from "../src/lib/coding-execution/background-agents-provider";
 import {
 	CreateSessionParamsSchema,
 	SessionResultSchema,
@@ -67,6 +68,27 @@ describe("coding execution schemas", () => {
 
 			const result = CreateSessionParamsSchema.safeParse(params);
 			expect(result.success).toBe(true);
+		});
+
+		it("accepts llmConnection, model, and targetMachine fields", () => {
+			const params = {
+				repoOwner: "acme",
+				repoName: "my-project",
+				codingRunId: "run_1",
+				workflowId: "coding-run-run_1",
+				organizationId: "org_1",
+				llmConnection: "claude-max",
+				model: "claude-sonnet-4-6",
+				targetMachine: "agent-node-1",
+			};
+
+			const result = CreateSessionParamsSchema.safeParse(params);
+			expect(result.success).toBe(true);
+			if (result.success) {
+				expect(result.data.llmConnection).toBe("claude-max");
+				expect(result.data.model).toBe("claude-sonnet-4-6");
+				expect(result.data.targetMachine).toBe("agent-node-1");
+			}
 		});
 	});
 
@@ -215,6 +237,114 @@ describe("coding execution schemas", () => {
 			expect(() => validateSessionStatus(status)).toThrow(
 				"Invalid session status",
 			);
+		});
+	});
+
+	describe("FabricBackgroundAdapter", () => {
+		const originalFetch = global.fetch;
+		const originalUrl = process.env.BACKGROUND_AGENTS_URL;
+		const originalSecret = process.env.BACKGROUND_AGENTS_INTERNAL_SECRET;
+
+		afterEach(() => {
+			global.fetch = originalFetch;
+			if (originalUrl === undefined) {
+				delete process.env.BACKGROUND_AGENTS_URL;
+			} else {
+				process.env.BACKGROUND_AGENTS_URL = originalUrl;
+			}
+			if (originalSecret === undefined) {
+				delete process.env.BACKGROUND_AGENTS_INTERNAL_SECRET;
+			} else {
+				process.env.BACKGROUND_AGENTS_INTERNAL_SECRET = originalSecret;
+			}
+		});
+
+		it("preserves externalUrl and providerMetadata and forwards llmConnection to POST /sessions", async () => {
+			process.env.BACKGROUND_AGENTS_URL = "http://127.0.0.1:9100";
+			process.env.BACKGROUND_AGENTS_INTERNAL_SECRET =
+				"test-internal-secret-at-least-32-chars!!";
+
+			const fetchMock = vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				json: async () => ({
+					sessionId: "sess_42",
+					externalUrl:
+						"fabric-agent://ws/my-workspace/allSessions/session/sess_42",
+					providerMetadata: {
+						workspaceId: "ws_1",
+						worktreePath: "/tmp/worktree/sess_42",
+						branch: "feat/story-1",
+						llmConnection: "codex",
+						model: "gpt-5.3-codex",
+					},
+				}),
+			});
+			global.fetch = fetchMock as unknown as typeof fetch;
+
+			const adapter = new FabricBackgroundAdapter();
+			const result = await adapter.createSession({
+				repoOwner: "acme",
+				repoName: "widget",
+				title: "Fabric: US-1",
+				branch: "main",
+				codingRunId: "run_1",
+				workflowId: "coding-run-run_1",
+				organizationId: "org_1",
+				workingDirectory: "/tmp/repo",
+				llmConnection: "codex",
+				model: "gpt-5.3-codex",
+			});
+
+			expect(fetchMock).toHaveBeenCalledTimes(1);
+			const [calledUrl, init] = fetchMock.mock.calls[0] as [
+				string,
+				RequestInit,
+			];
+			expect(calledUrl).toBe("http://127.0.0.1:9100/sessions");
+			expect(JSON.parse(init.body as string)).toEqual({
+				repoOwner: "acme",
+				repoName: "widget",
+				title: "Fabric: US-1",
+				branch: "main",
+				codingRunId: "run_1",
+				workflowId: "coding-run-run_1",
+				organizationId: "org_1",
+				workingDirectory: "/tmp/repo",
+				llmConnection: "codex",
+				model: "gpt-5.3-codex",
+			});
+
+			expect(result).toEqual({
+				sessionId: "sess_42",
+				externalUrl:
+					"fabric-agent://ws/my-workspace/allSessions/session/sess_42",
+				providerMetadata: {
+					executionRuntime: "fabric-agent-server",
+					workspaceId: "ws_1",
+					worktreePath: "/tmp/worktree/sess_42",
+					branch: "feat/story-1",
+					llmConnection: "codex",
+					model: "gpt-5.3-codex",
+				},
+			});
+		});
+
+		it("accepts { status: 'ok' } from fabric-agent-server GET /health", async () => {
+			process.env.BACKGROUND_AGENTS_URL = "http://127.0.0.1:9100";
+			process.env.BACKGROUND_AGENTS_INTERNAL_SECRET =
+				"test-internal-secret-at-least-32-chars!!";
+
+			global.fetch = vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				json: async () => ({ status: "ok" }),
+			}) as unknown as typeof fetch;
+
+			const adapter = new FabricBackgroundAdapter();
+			const health = await adapter.healthCheck();
+			expect(health.healthy).toBe(true);
+			expect(health.details).toEqual({ status: "ok" });
 		});
 	});
 });

@@ -208,7 +208,7 @@ describe("approve — names the approval the person answered", () => {
 		expect(response.status).toBe(200);
 		expect(m.signal).toHaveBeenCalledWith(
 			"approval",
-			expect.not.objectContaining({ approvalId: expect.anything() }),
+			expect.objectContaining({ approvalId: PENDING_APPROVAL_ID }),
 		);
 	});
 
@@ -276,3 +276,5 @@ describe("approve — reports an answer the run would drop", () => {
 		);
 	});
 });
+
+vi.mock("@repo/api/lib/audit", () => ({ recordAuditFromRequest: vi.fn() }));

@@ -72,8 +72,9 @@ export interface ConfiguredGateway {
 /**
  * Get the configured providers and identify the default one.
  *
- * For general tasks: Only the default provider's models are returned.
- * For specialized tasks (IMAGE, AUDIO, EMBEDDING): Models from ALL configured
+ * For explicit general tasks: Only the default provider's models are returned.
+ * Without a task, include default and specialized providers for catalog browsing.
+ * For specialized tasks (IMAGE, AUDIO, EMBEDDING, DECISION): Models from configured
  * providers that support the capability are returned, enabling users to use
  * OpenAI for images even when their default is Azure/Anthropic.
  *
@@ -212,9 +213,14 @@ export async function getConfiguredProviders(
 		if (effectiveProviders.length === 0 && defaultProvider) {
 			effectiveProviders.push(defaultProvider.provider);
 		}
+	} else if (taskType) {
+		// Explicit text tasks run on the default provider.
+		if (defaultProvider) {
+			effectiveProviders.push(defaultProvider.provider);
+		}
 	} else {
-		// NO taskType specified OR general task type: Include default provider + all specialized providers
-		// This allows the UI to fetch all models in one call and filter client-side
+		// Without a task, settings fetch default and specialized providers together
+		// so they can filter the catalog client-side.
 
 		// 1. Add the default provider for general tasks
 		if (defaultProvider) {

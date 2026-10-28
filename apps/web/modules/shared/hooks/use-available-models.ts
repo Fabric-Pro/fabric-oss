@@ -164,8 +164,7 @@ export function useAvailableModels(options?: {
 
 	// Get display name for a model identifier
 	const getModelDisplayName = (identifier: string): string => {
-		const model = findModel(identifier);
-		return model?.displayName ?? identifier;
+		return getModelDisplayNameFromCatalog(models, identifier);
 	};
 
 	// Get the full model string (provider/providerModelId) for a canonical name
@@ -210,4 +209,20 @@ export function useAvailableModels(options?: {
  */
 export function getProviderDisplayName(provider: string): string {
 	return PROVIDER_DISPLAY_NAMES[provider] ?? provider;
+}
+
+export function getModelDisplayNameFromCatalog(
+	models: readonly {
+		id?: string;
+		canonicalName: string;
+		displayName: string;
+	}[],
+	identifier: string,
+): string {
+	return (
+		models.find(
+			(model) =>
+				model.id === identifier || model.canonicalName === identifier,
+		)?.displayName ?? identifier
+	);
 }

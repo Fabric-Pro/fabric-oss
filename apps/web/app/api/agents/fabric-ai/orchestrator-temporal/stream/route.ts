@@ -1,3 +1,6 @@
+import type { AssertAssignable } from "@saas/agents/lib/chat-stream-protocol";
+import { limitSchema } from "@saas/agents/lib/direct-stream-protocol";
+import type { OrchestratorStreamInput } from "@saas/agents/lib/orchestrator-stream-protocol";
 /**
  * Fabric AI Orchestrator - Streaming API
  * SSE streaming endpoint for Temporal orchestrator workflow.
@@ -17,11 +20,6 @@
  *   running; the client reconnects by POSTing back the executionId
  * - error: An error occurred
  */
-
-import {
-	budgetContinuationSeed,
-	InvalidBudgetContinuationError,
-} from "../budget-continuation";
 
 import { getDefaultEnabledMcpConfigIds } from "@repo/agent-core/backend";
 import { getAIModelWithMetadata } from "@repo/ai";
@@ -46,15 +44,25 @@ import {
 import { metricsTracker } from "@repo/observability";
 import { AiUsageLimitExceededError } from "@repo/payments";
 import type {
+	ChatExecutionEvent,
+	ChatExecutionToolCall,
 	OrchestratorProgressUpdate,
 	OrchestratorStepResult,
 	OrchestratorWorkflowInput,
+	OrchestratorWorkflowOutput,
+	PendingApprovalInfo,
+	PendingClarificationInfo,
 	RagContextRetrievalInput,
 	TaskPlan,
 } from "@repo/temporal";
 import { getTemporalClient } from "@repo/temporal";
 import { PROJECT_REPOSITORY_TOOLS } from "@repo/temporal/project-repository-tool-schemas";
 import { REDIS_KEEPALIVE_MS } from "@repo/utils/redis-connection";
+import {
+	encodeOrchestratorStreamEvent,
+	parseOrchestratorStreamEvent,
+} from "@saas/agents/lib/orchestrator-stream-protocol";
+import { getAuthorizedChatRun } from "@saas/agents/lib/server/chat-run-control";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
 import { v4 as uuidv4 } from "uuid";
@@ -68,6 +76,10 @@ import { resolveUsageFrame } from "../../resolve-usage-frame";
 import { windowUntypedHistory } from "../../stream/history-window";
 import { buildWorkflowErrorEvent } from "../../stream/turn-events";
 import { unionDefaultMcpConfigIds } from "../../union-default-mcp-config-ids";
+import {
+	budgetContinuationSeed,
+	InvalidBudgetContinuationError,
+} from "../budget-continuation";
 import {
 	isOrchestratorOrganizationMember,
 	refuseUnlessRunOwner,
@@ -157,11 +169,6 @@ function getRedisUrl(): string | null {
 // direct-chat stream (`../../stream/route.ts`).
 const MAX_WORKSPACE_IDS = 20;
 const MAX_WORKSPACE_ID_LENGTH = 200;
-
-interface StreamEvent {
-	type: string;
-	[key: string]: unknown;
-}
 
 export async function POST(request: NextRequest) {
 	// The turn this request admitted and must start. Until it is handed to
@@ -1135,9 +1142,9 @@ export async function POST(request: NextRequest) {
 							summary: turn.responseText ?? "",
 						}
 					: undefined;
-			const events: StreamEvent[] = [
+			const events = [
 				{
-					type: "started",
+					type: "started" as const,
 					turnId: turn.id,
 					executionId,
 					workflowId: executionId,
@@ -1154,12 +1161,16 @@ export async function POST(request: NextRequest) {
 							budgetStop: storedBudgetStop,
 						}
 					: {
-							type: "completed",
+							type: "completed" as const,
 							status,
 							response: turn.responseText ?? undefined,
 							toolCalls: [],
 							stepResults: [],
-							limitSignals: turn.limitSignalSummary ?? undefined,
+							limitSignals: Array.isArray(turn.limitSignalSummary)
+								? limitSchema
+										.array()
+										.parse(turn.limitSignalSummary)
+								: undefined,
 							// Structured stop plus the older bundle's handoff signal.
 							budgetStop: storedBudgetStop,
 							handoffRecommended: storedHandoff,
@@ -1169,10 +1180,29 @@ export async function POST(request: NextRequest) {
 			return new Response(
 				encoder.encode(
 					events
-						.map(
-							(event) =>
-								`data: ${JSON.stringify({ ...event, ...(event.type === "started" || event.type === "completed" ? { turnId: activeTurnId, turnGeneration: activeTurnGeneration } : {}) })}\n\n`,
-						)
+						.map((event) => {
+							if (event.type === "error") {
+								type StoredTurnErrorEvent = typeof event;
+								return encodeOrchestratorStreamEvent(
+									event satisfies AssertAssignable<
+										StoredTurnErrorEvent,
+										OrchestratorStreamInput
+									>,
+								);
+							}
+							const payload = {
+								...event,
+								turnId: activeTurnId,
+								turnGeneration: activeTurnGeneration,
+							};
+							type StoredTurnEvent = typeof payload;
+							return encodeOrchestratorStreamEvent(
+								payload satisfies AssertAssignable<
+									StoredTurnEvent,
+									OrchestratorStreamInput
+								>,
+							);
+						})
 						.join(""),
 				),
 				{
@@ -1215,19 +1245,36 @@ export async function POST(request: NextRequest) {
 
 		const stream = new ReadableStream({
 			async start(controller) {
-				const sendEvent = (event: StreamEvent) => {
+				const sendEvent = (event: OrchestratorStreamInput) => {
 					if (controllerClosed) {
 						return; // Don't send if controller is closed
 					}
 					try {
 						controller.enqueue(
 							encoder.encode(
-								`data: ${JSON.stringify({ ...event, ...(event.type === "started" || event.type === "completed" ? { turnId: activeTurnId, turnGeneration: activeTurnGeneration } : {}) })}\n\n`,
+								encodeOrchestratorStreamEvent({
+									...event,
+									...(event.type === "started" ||
+									event.type === "completed"
+										? {
+												turnId: activeTurnId,
+												turnGeneration:
+													activeTurnGeneration,
+											}
+										: {}),
+								}),
 							),
 						);
 					} catch {
 						// Controller might be closed, mark it
 						controllerClosed = true;
+					}
+				};
+
+				const forwardEvent = (value: OrchestratorStreamInput) => {
+					const event = parseOrchestratorStreamEvent(value);
+					if (event) {
+						sendEvent(event);
 					}
 				};
 
@@ -1239,18 +1286,7 @@ export async function POST(request: NextRequest) {
 					}
 				};
 
-				type StreamedToolCall = {
-					id: string;
-					name: string;
-					serverName?: string;
-					args?: Record<string, unknown>;
-					result?: unknown;
-					status: "pending" | "running" | "complete" | "error";
-					durationMs?: number;
-					error?: string;
-					mcpAppResourceUri?: string;
-					mcpAppConfigId?: string;
-				};
+				type StreamedToolCall = ChatExecutionToolCall;
 
 				const lastToolSnapshots = new Map<
 					string,
@@ -1268,50 +1304,78 @@ export async function POST(request: NextRequest) {
 					const nextResult = stableSerialize(toolCall.result ?? null);
 
 					if (!previous?.started) {
-						sendEvent({
-							type: "tool_start",
-							toolCallId: toolCall.id,
-							toolName: toolCall.name,
-							serverName: toolCall.serverName,
-							args: toolCall.args,
-							status: toolCall.status,
-							mcpAppResourceUri: toolCall.mcpAppResourceUri,
-							mcpAppConfigId: toolCall.mcpAppConfigId,
-						});
+						{
+							const payload = {
+								type: "tool_start" as const,
+								toolCallId: toolCall.id,
+								toolName: toolCall.name,
+								serverName: toolCall.serverName,
+								args: toolCall.args,
+								status: toolCall.status,
+								mcpAppResourceUri: toolCall.mcpAppResourceUri,
+								mcpAppConfigId: toolCall.mcpAppConfigId,
+							};
+							type Emitted1295 = typeof payload;
+							sendEvent(
+								payload satisfies AssertAssignable<
+									Emitted1295,
+									OrchestratorStreamInput
+								>,
+							);
+						}
 					}
 
 					if (previous === undefined || nextArgs !== previous.args) {
-						sendEvent({
-							type: "tool_input",
-							toolCallId: toolCall.id,
-							toolName: toolCall.name,
-							serverName: toolCall.serverName,
-							args: toolCall.args,
-							status: toolCall.status,
-							mcpAppResourceUri: toolCall.mcpAppResourceUri,
-							mcpAppConfigId: toolCall.mcpAppConfigId,
-						});
+						{
+							const payload = {
+								type: "tool_input" as const,
+								toolCallId: toolCall.id,
+								toolName: toolCall.name,
+								serverName: toolCall.serverName,
+								args: toolCall.args,
+								status: toolCall.status,
+								mcpAppResourceUri: toolCall.mcpAppResourceUri,
+								mcpAppConfigId: toolCall.mcpAppConfigId,
+							};
+							type Emitted1308 = typeof payload;
+							sendEvent(
+								payload satisfies AssertAssignable<
+									Emitted1308,
+									OrchestratorStreamInput
+								>,
+							);
+						}
 					}
 
 					if (
-						(toolCall.status === "complete" ||
+						(toolCall.status === "success" ||
+							toolCall.status === "complete" ||
 							toolCall.status === "error") &&
 						(previous === undefined ||
 							previous.status !== toolCall.status ||
 							nextResult !== previous.result)
 					) {
-						sendEvent({
-							type: "tool_result",
-							toolCallId: toolCall.id,
-							toolName: toolCall.name,
-							serverName: toolCall.serverName,
-							result: toolCall.result,
-							status: toolCall.status,
-							durationMs: toolCall.durationMs,
-							error: toolCall.error,
-							mcpAppResourceUri: toolCall.mcpAppResourceUri,
-							mcpAppConfigId: toolCall.mcpAppConfigId,
-						});
+						{
+							const payload = {
+								type: "tool_result" as const,
+								toolCallId: toolCall.id,
+								toolName: toolCall.name,
+								serverName: toolCall.serverName,
+								result: toolCall.result,
+								status: toolCall.status,
+								durationMs: toolCall.durationMs,
+								error: toolCall.error,
+								mcpAppResourceUri: toolCall.mcpAppResourceUri,
+								mcpAppConfigId: toolCall.mcpAppConfigId,
+							};
+							type Emitted1327 = typeof payload;
+							sendEvent(
+								payload satisfies AssertAssignable<
+									Emitted1327,
+									OrchestratorStreamInput
+								>,
+							);
+						}
 					}
 
 					lastToolSnapshots.set(toolCall.id, {
@@ -1360,10 +1424,19 @@ export async function POST(request: NextRequest) {
 								"You are not authorized to access this workflow",
 						});
 						if (refusal) {
-							sendEvent({
-								type: "error",
-								error: "You are not authorized to access this workflow",
-							});
+							{
+								const payload = {
+									type: "error" as const,
+									error: "You are not authorized to access this workflow",
+								};
+								type Emitted1387 = typeof payload;
+								sendEvent(
+									payload satisfies AssertAssignable<
+										Emitted1387,
+										OrchestratorStreamInput
+									>,
+								);
+							}
 							controller.close();
 							controllerClosed = true;
 							return;
@@ -1377,14 +1450,38 @@ export async function POST(request: NextRequest) {
 									workflowOrgId as string,
 								);
 							if (!isMember) {
-								sendEvent({
-									type: "error",
-									error: "You are not a member of this organization",
-								});
+								{
+									const payload = {
+										type: "error" as const,
+										error: "You are not a member of this organization",
+									};
+									type Emitted1404 = typeof payload;
+									sendEvent(
+										payload satisfies AssertAssignable<
+											Emitted1404,
+											OrchestratorStreamInput
+										>,
+									);
+								}
 								controller.close();
 								controllerClosed = true;
 								return;
 							}
+						}
+						if (
+							memo?.projectId !== undefined ||
+							memo?.approvalProtocol === 2
+						) {
+							handle = (
+								await getAuthorizedChatRun({
+									executionId,
+									userId,
+									engine: "orchestrator",
+									action: "reattach",
+									expectedOrganizationId:
+										organizationId ?? undefined,
+								})
+							).handle;
 						}
 					}
 
@@ -1440,24 +1537,47 @@ export async function POST(request: NextRequest) {
 										return;
 									}
 									try {
-										const event = JSON.parse(message);
+										const event = JSON.parse(
+											message,
+										) as ChatExecutionEvent;
 										if (
 											event.event ===
 											"execution.text_delta"
 										) {
-											sendEvent({
-												type: "text_delta",
-												content: event.data?.text || "",
-											});
+											{
+												const payload = {
+													type: "text_delta" as const,
+													content:
+														event.data?.text || "",
+												};
+												type Forwarded1544 =
+													typeof payload;
+												forwardEvent(
+													payload satisfies AssertAssignable<
+														Forwarded1544,
+														OrchestratorStreamInput
+													>,
+												);
+											}
 										} else if (
 											event.event ===
 											"execution.iteration_start"
 										) {
-											sendEvent({
-												type: "text_start",
-												iteration:
-													event.data?.iteration,
-											});
+											{
+												const payload = {
+													type: "text_start" as const,
+													iteration:
+														event.data?.iteration,
+												};
+												type Forwarded1552 =
+													typeof payload;
+												forwardEvent(
+													payload satisfies AssertAssignable<
+														Forwarded1552,
+														OrchestratorStreamInput
+													>,
+												);
+											}
 										} else if (
 											event.event ===
 											"execution.tool_start"
@@ -1498,10 +1618,20 @@ export async function POST(request: NextRequest) {
 											// Forward token-budget /
 											// provider-limit signals so the UI can show
 											// a banner + toast while the run continues.
-											sendEvent({
-												type: "limit_signal",
-												signal: event.data,
-											});
+											{
+												const payload = {
+													type: "limit_signal" as const,
+													signal: event.data,
+												};
+												type Forwarded1597 =
+													typeof payload;
+												forwardEvent(
+													payload satisfies AssertAssignable<
+														Forwarded1597,
+														OrchestratorStreamInput
+													>,
+												);
+											}
 											const signalData = event.data as
 												| {
 														kind?: string;
@@ -1518,13 +1648,20 @@ export async function POST(request: NextRequest) {
 											event.event ===
 											"execution.context_compacted"
 										) {
-											sendEvent({
-												type: "context_compacted",
-												...(event.data as Record<
-													string,
-													unknown
-												>),
-											});
+											{
+												const payload = {
+													type: "context_compacted" as const,
+													...event.data,
+												};
+												type Forwarded1617 =
+													typeof payload;
+												forwardEvent(
+													payload satisfies AssertAssignable<
+														Forwarded1617,
+														OrchestratorStreamInput
+													>,
+												);
+											}
 										} else if (
 											event.event ===
 											"execution.mcp_default_tool_invoked"
@@ -1534,10 +1671,20 @@ export async function POST(request: NextRequest) {
 											// The consumer hook passes the
 											// payload as the second arg to
 											// `useAnalytics.trackEvent`.
-											sendEvent({
-												type: "mcp_default_tool_invoked",
-												payload: event.data,
-											});
+											{
+												const payload = {
+													type: "mcp_default_tool_invoked" as const,
+													payload: event.data,
+												};
+												type Forwarded1630 =
+													typeof payload;
+												forwardEvent(
+													payload satisfies AssertAssignable<
+														Forwarded1630,
+														OrchestratorStreamInput
+													>,
+												);
+											}
 										} else if (
 											event.event ===
 											"execution.mcp_default_tool_failed"
@@ -1548,10 +1695,20 @@ export async function POST(request: NextRequest) {
 											// `sanitizeMcpErrorMessage` at
 											// the emission site, so no further
 											// redaction is needed.
-											sendEvent({
-												type: "mcp_default_tool_failed",
-												payload: event.data,
-											});
+											{
+												const payload = {
+													type: "mcp_default_tool_failed" as const,
+													payload: event.data,
+												};
+												type Forwarded1644 =
+													typeof payload;
+												forwardEvent(
+													payload satisfies AssertAssignable<
+														Forwarded1644,
+														OrchestratorStreamInput
+													>,
+												);
+											}
 										}
 									} catch {
 										// Invalid message, skip
@@ -1596,7 +1753,11 @@ export async function POST(request: NextRequest) {
 							temporalClient,
 							executionId,
 							workflowInput,
-							memo: { userId, organizationId },
+							memo: {
+								userId,
+								organizationId,
+								projectId: projectId ?? null,
+							},
 						});
 						console.log(
 							"[Orchestrator Stream] Started workflow (no turn)",
@@ -1620,7 +1781,11 @@ export async function POST(request: NextRequest) {
 								...(continueFromTurnId
 									? { continueFromTurnId }
 									: {}),
-								memo: { userId, organizationId },
+								memo: {
+									userId,
+									organizationId,
+									projectId: projectId ?? null,
+								},
 							});
 						} catch (startError) {
 							if (
@@ -1629,13 +1794,22 @@ export async function POST(request: NextRequest) {
 							) {
 								// Stop landed between admission and start: the
 								// turn ended cancelled and nothing runs.
-								sendEvent({
-									type: "completed",
-									status: "cancelled",
-									response: "",
-									toolCalls: [],
-									stepResults: [],
-								});
+								{
+									const payload = {
+										type: "completed" as const,
+										status: "cancelled",
+										response: "",
+										toolCalls: [],
+										stepResults: [],
+									};
+									type Emitted1679 = typeof payload;
+									sendEvent(
+										payload satisfies AssertAssignable<
+											Emitted1679,
+											OrchestratorStreamInput
+										>,
+									);
+								}
 								cleanupRedis();
 								closeController();
 								return;
@@ -1646,11 +1820,20 @@ export async function POST(request: NextRequest) {
 								// retries the same message key, and that
 								// request's reattach finds the workflow or
 								// reconciles the turn.
-								sendEvent({
-									type: "start_pending",
-									retryable: true,
-									executionId,
-								});
+								{
+									const payload = {
+										type: "start_pending" as const,
+										retryable: true,
+										executionId,
+									};
+									type Emitted1696 = typeof payload;
+									sendEvent(
+										payload satisfies AssertAssignable<
+											Emitted1696,
+											OrchestratorStreamInput
+										>,
+									);
+								}
 								cleanupRedis();
 								closeController();
 								return;
@@ -1669,13 +1852,26 @@ export async function POST(request: NextRequest) {
 					}
 
 					// Send started event
+					const handleWorkflowId: unknown = handle.workflowId;
 					resolveStartup();
-					sendEvent({
-						type: "started",
-						executionId,
-						workflowId: handle.workflowId ?? executionId,
-						resumed,
-					});
+					{
+						const payload = {
+							type: "started" as const,
+							executionId,
+							workflowId:
+								typeof handleWorkflowId === "string"
+									? handleWorkflowId
+									: executionId,
+							resumed,
+						};
+						type Emitted1720 = typeof payload;
+						sendEvent(
+							payload satisfies AssertAssignable<
+								Emitted1720,
+								OrchestratorStreamInput
+							>,
+						);
+					}
 
 					// Track state for change detection
 					let lastProgress: OrchestratorProgressUpdate | null = null;
@@ -1719,9 +1915,25 @@ export async function POST(request: NextRequest) {
 						try {
 							const description = await handle.describe();
 
-							if (description.status.name === "COMPLETED") {
+							if (
+								description.status.name === "CONTINUED_AS_NEW"
+							) {
+								handle = (
+									await getAuthorizedChatRun({
+										executionId,
+										userId,
+										engine: "orchestrator",
+										action: "reattach",
+										expectedOrganizationId:
+											organizationId ?? undefined,
+									})
+								).handle;
+							} else if (
+								description.status.name === "COMPLETED"
+							) {
 								// Get final result
-								const result = await handle.result();
+								const result: OrchestratorWorkflowOutput =
+									await handle.result();
 
 								// Query progress one more time to get proper per-step results
 								let workflowStepResults: OrchestratorStepResult[] =
@@ -1755,22 +1967,30 @@ export async function POST(request: NextRequest) {
 										for (const toolCall of stepResult.toolCalls ||
 											[]) {
 											if (toolCall?.id && toolCall.name) {
-												emitToolCallDelta(
-													toolCall as StreamedToolCall,
-												);
+												emitToolCallDelta(toolCall);
 											}
 										}
-										sendEvent({
-											type: "step_complete",
-											stepId: stepResult.stepId,
-											stepDescription:
-												stepResult.stepDescription,
-											status: stepResult.status,
-											response: stepResult.response,
-											toolCalls:
-												stepResult.toolCalls || [],
-											durationMs: stepResult.durationMs,
-										});
+										{
+											const payload = {
+												type: "step_complete" as const,
+												stepId: stepResult.stepId,
+												stepDescription:
+													stepResult.stepDescription,
+												status: stepResult.status,
+												response: stepResult.response,
+												toolCalls:
+													stepResult.toolCalls || [],
+												durationMs:
+													stepResult.durationMs,
+											};
+											type Emitted1825 = typeof payload;
+											sendEvent(
+												payload satisfies AssertAssignable<
+													Emitted1825,
+													OrchestratorStreamInput
+												>,
+											);
+										}
 									}
 								}
 
@@ -1800,9 +2020,7 @@ export async function POST(request: NextRequest) {
 									for (const toolCall of result.toolCalls ||
 										[]) {
 										if (toolCall?.id && toolCall.name) {
-											emitToolCallDelta(
-												toolCall as StreamedToolCall,
-											);
+											emitToolCallDelta(toolCall);
 										}
 									}
 								}
@@ -1820,16 +2038,27 @@ export async function POST(request: NextRequest) {
 								// non-"failed" status) still flows through the
 								// normal `completed` emit below, unchanged.
 								if (result.status === "failed") {
-									sendEvent({
-										...buildWorkflowErrorEvent(
-											result.error ??
-												"Workflow execution failed",
-											result.usageLimit,
-										),
-										// The turn row's stored stop, as the
-										// workflow returned it.
-										budgetStop: result.budgetStop,
-									});
+									{
+										const payload = {
+											...buildWorkflowErrorEvent(
+												result.error ??
+													"Workflow execution failed",
+												result.usageLimit,
+											),
+											approvalHistory:
+												result.approvalHistory,
+											// The turn row's stored stop, as the
+											// workflow returned it.
+											budgetStop: result.budgetStop,
+										};
+										type Emitted1885 = typeof payload;
+										sendEvent(
+											payload satisfies AssertAssignable<
+												Emitted1885,
+												OrchestratorStreamInput
+											>,
+										);
+									}
 								} else {
 									// Send completed event with final response.
 									// `status` is the run's DOMAIN status — a
@@ -1839,38 +2068,59 @@ export async function POST(request: NextRequest) {
 									// answer.
 									const cancelled =
 										result.status === "cancelled";
-									sendEvent({
-										type: "completed",
-										status: result.status,
-										response: result.response,
-										plan: result.taskPlan,
-										variables: result.variables,
-										stepResults,
-										toolCalls: result.toolCalls || [],
-										planningAudit: result.planningAudit,
-										artifacts: result.artifacts,
-										// A stopped turn offers no "continue in
-										// new chat".
-										handoffRecommended: cancelled
-											? undefined
-											: result.handoffRecommended,
-										limitSignals: result.limitSignals,
-										tokenBudget: result.tokenBudget,
-										// A token-allowance stop exactly as the
-										// turn row stores it (the workflow
-										// returns the stored value), whatever
-										// the status. The chat decides from
-										// the status whether to show it: a
-										// stopped turn shows no budget card.
-										budgetStop: result.budgetStop,
-										// The answer stopped at the output
-										// ceiling (review F25).
-										truncated: result.truncated,
-										// Every ChatGPT plan ran out mid-turn
-										// and API billing finished it (Fizzy
-										// #3048).
-										apiBilling: result.apiBilling,
-									});
+									{
+										const payload = {
+											type: "completed" as const,
+											approvalHistory:
+												result.approvalHistory,
+											status: result.status,
+											response: result.response,
+											plan: result.taskPlan
+												? {
+														...result.taskPlan,
+														steps: result.taskPlan.steps.map(
+															(step) => ({
+																...step,
+															}),
+														),
+													}
+												: undefined,
+											variables: result.variables,
+											stepResults,
+											toolCalls: result.toolCalls || [],
+											planningAudit: result.planningAudit,
+											artifacts: result.artifacts,
+											// A stopped turn offers no "continue in
+											// new chat".
+											handoffRecommended: cancelled
+												? undefined
+												: result.handoffRecommended,
+											limitSignals: result.limitSignals,
+											tokenBudget: result.tokenBudget,
+											// A token-allowance stop exactly as the
+											// turn row stores it (the workflow
+											// returns the stored value), whatever
+											// the status. The chat decides from
+											// the status whether to show it: a
+											// stopped turn shows no budget card.
+											budgetStop: result.budgetStop,
+											// The answer stopped at the output
+											// ceiling (review F25).
+											truncated: result.truncated,
+											model: result.model,
+											// Every ChatGPT plan ran out mid-turn
+											// and API billing finished it (Fizzy
+											// #3048).
+											apiBilling: result.apiBilling,
+										};
+										type Emitted1905 = typeof payload;
+										sendEvent(
+											payload satisfies AssertAssignable<
+												Emitted1905,
+												OrchestratorStreamInput
+											>,
+										);
+									}
 								}
 
 								isComplete = true;
@@ -1882,7 +2132,8 @@ export async function POST(request: NextRequest) {
 									typeof buildWorkflowErrorEvent
 								>[1];
 								try {
-									const result = await handle.result();
+									const result: OrchestratorWorkflowOutput =
+										await handle.result();
 									errorMessage =
 										result?.error || errorMessage;
 									failure = errorMessage;
@@ -1908,12 +2159,21 @@ export async function POST(request: NextRequest) {
 								// A run cancelled in Temporal itself (a legacy
 								// run, or one cancelled outside this app) is a
 								// cancelled turn, not a failed one.
-								sendEvent({
-									type: "completed",
-									status: "cancelled",
-									toolCalls: [],
-									stepResults: [],
-								});
+								{
+									const payload = {
+										type: "completed" as const,
+										status: "cancelled",
+										toolCalls: [],
+										stepResults: [],
+									};
+									type Emitted1975 = typeof payload;
+									sendEvent(
+										payload satisfies AssertAssignable<
+											Emitted1975,
+											OrchestratorStreamInput
+										>,
+									);
+								}
 								isComplete = true;
 							} else if (
 								description.status.name === "TERMINATED"
@@ -1924,20 +2184,39 @@ export async function POST(request: NextRequest) {
 								// and the client would spend resume windows
 								// re-attaching to a workflow that can never
 								// progress (issue #2269).
-								sendEvent({
-									type: "error",
-									message: "Workflow was terminated",
-								});
+								{
+									const payload = {
+										type: "error" as const,
+										message: "Workflow was terminated",
+									};
+									type Emitted1991 = typeof payload;
+									sendEvent(
+										payload satisfies AssertAssignable<
+											Emitted1991,
+											OrchestratorStreamInput
+										>,
+									);
+								}
 								isComplete = true;
 							} else if (
 								description.status.name === "TIMED_OUT"
 							) {
 								// Temporal's own execution/run timeout — same
 								// reasoning as TERMINATED above.
-								sendEvent({
-									type: "error",
-									message: "Workflow timed out on the server",
-								});
+								{
+									const payload = {
+										type: "error" as const,
+										message:
+											"Workflow timed out on the server",
+									};
+									type Emitted2001 = typeof payload;
+									sendEvent(
+										payload satisfies AssertAssignable<
+											Emitted2001,
+											OrchestratorStreamInput
+										>,
+									);
+								}
 								isComplete = true;
 							} else {
 								// Query current state
@@ -1946,21 +2225,13 @@ export async function POST(request: NextRequest) {
 										await handle.query("progress");
 									const plan: TaskPlan | null =
 										await handle.query("plan");
-									const pendingApproval: {
-										approvalId: string;
-										stepId: string;
-										reason: string;
-									} | null =
+									const pendingApproval: PendingApprovalInfo | null =
 										await handle.query("pendingApproval");
 
-									const pendingClarification: {
-										clarificationId: string;
-										stepId?: string;
-										question: string;
-										options?: string[];
-									} | null = await handle.query(
-										"pendingClarification",
-									);
+									const pendingClarification: PendingClarificationInfo | null =
+										await handle.query(
+											"pendingClarification",
+										);
 
 									const routingDecision =
 										progress?.routingDecision;
@@ -1971,57 +2242,90 @@ export async function POST(request: NextRequest) {
 										progress.phase !== lastPhase
 									) {
 										lastPhase = progress.phase;
-										sendEvent({
-											type: "phase",
-											phase: progress.phase,
-											message: progress.message,
-										});
+										{
+											const payload = {
+												type: "phase" as const,
+												phase: progress.phase,
+												message: progress.message,
+											};
+											type Emitted2038 = typeof payload;
+											sendEvent(
+												payload satisfies AssertAssignable<
+													Emitted2038,
+													OrchestratorStreamInput
+												>,
+											);
+										}
 
 										// Send routing decision when available
 										if (
 											progress.phase === "planning" &&
 											routingDecision
 										) {
-											sendEvent({
-												type: "routing",
-												primaryAgent:
-													routingDecision.primaryAgent,
-												agentName:
-													routingDecision.primaryAgent, // Use primaryAgent as name
-												confidence:
-													routingDecision.confidence,
-												riskLevel:
-													routingDecision.riskLevel,
-												requiredConnections:
-													routingDecision.requiredConnections,
-												missingIntegrations:
-													routingDecision.missingIntegrations,
-												blockedOnConnections:
-													routingDecision.blockedOnConnections,
-											});
+											{
+												const payload = {
+													type: "routing" as const,
+													primaryAgent:
+														routingDecision.primaryAgent,
+													agentName:
+														routingDecision.primaryAgent, // Use primaryAgent as name
+													confidence:
+														routingDecision.confidence,
+													riskLevel:
+														routingDecision.riskLevel,
+													requiredConnections:
+														routingDecision.requiredConnections,
+													missingIntegrations:
+														routingDecision.missingIntegrations,
+													blockedOnConnections:
+														routingDecision.blockedOnConnections,
+												};
+												type Emitted2049 =
+													typeof payload;
+												sendEvent(
+													payload satisfies AssertAssignable<
+														Emitted2049,
+														OrchestratorStreamInput
+													>,
+												);
+											}
 										}
 									}
 
 									// Check for new plan
 									if (plan && !lastPlan) {
 										lastPlan = plan;
-										sendEvent({
-											type: "planning",
-											plan: {
-												id: plan.id,
-												description: plan.description,
-												riskLevel: plan.riskLevel,
-												steps: plan.steps.map((s) => ({
-													id: s.id,
-													description: s.description,
-													order: s.order,
-													status: s.status,
-													riskLevel: s.riskLevel,
-													requiresApproval:
-														s.requiresApproval,
-												})),
-											},
-										});
+										{
+											const payload = {
+												type: "planning" as const,
+												plan: {
+													id: plan.id,
+													description:
+														plan.description,
+													riskLevel: plan.riskLevel,
+													steps: plan.steps.map(
+														(s) => ({
+															id: s.id,
+															description:
+																s.description,
+															order: s.order,
+															status: s.status,
+															riskLevel:
+																s.riskLevel,
+															requiresApproval:
+																s.requiresApproval,
+														}),
+													),
+												},
+											};
+											type Emitted2072 = typeof payload;
+											sendEvent(
+												payload satisfies AssertAssignable<
+													Emitted2072,
+													OrchestratorStreamInput
+												>,
+											);
+										}
 									}
 
 									// Check for step progress
@@ -2047,23 +2351,35 @@ export async function POST(request: NextRequest) {
 														toolCall.name
 													) {
 														emitToolCallDelta(
-															toolCall as StreamedToolCall,
+															toolCall,
 														);
 													}
 												}
 												// Send step_complete with full data including tool calls
-												sendEvent({
-													type: "step_complete",
-													stepId: result.stepId,
-													stepDescription:
-														result.stepDescription,
-													status: result.status,
-													response: result.response,
-													toolCalls:
-														result.toolCalls || [],
-													durationMs:
-														result.durationMs,
-												});
+												{
+													const payload = {
+														type: "step_complete" as const,
+														stepId: result.stepId,
+														stepDescription:
+															result.stepDescription,
+														status: result.status,
+														response:
+															result.response,
+														toolCalls:
+															result.toolCalls ||
+															[],
+														durationMs:
+															result.durationMs,
+													};
+													type Emitted2119 =
+														typeof payload;
+													sendEvent(
+														payload satisfies AssertAssignable<
+															Emitted2119,
+															OrchestratorStreamInput
+														>,
+													);
+												}
 											}
 											lastStepResultsCount =
 												stepResults.length;
@@ -2081,14 +2397,24 @@ export async function POST(request: NextRequest) {
 											planStep &&
 											planStep.status === "in_progress"
 										) {
-											sendEvent({
-												type: "step_start",
-												stepId: currentStepId,
-												description:
-													progress.currentStep
-														.description,
-												order: planStep.order,
-											});
+											{
+												const payload = {
+													type: "step_start" as const,
+													stepId: currentStepId,
+													description:
+														progress.currentStep
+															.description,
+													order: planStep.order,
+												};
+												type Emitted2148 =
+													typeof payload;
+												sendEvent(
+													payload satisfies AssertAssignable<
+														Emitted2148,
+														OrchestratorStreamInput
+													>,
+												);
+											}
 										}
 									}
 
@@ -2115,39 +2441,67 @@ export async function POST(request: NextRequest) {
 												isDifferentApproval &&
 												lastPendingApproval
 											) {
-												sendEvent({
-													type: "approval_resolved",
-													approvalId:
-														lastPendingApproval.approvalId,
-													stepId: lastPendingApproval.stepId,
-													message:
-														"Approval granted - proceeding to next step",
-												});
+												{
+													const payload = {
+														type: "approval_resolved" as const,
+														approvalId:
+															lastPendingApproval.approvalId,
+														stepId: lastPendingApproval.stepId,
+														message:
+															"Approval resolved",
+													};
+													type Emitted2182 =
+														typeof payload;
+													sendEvent(
+														payload satisfies AssertAssignable<
+															Emitted2182,
+															OrchestratorStreamInput
+														>,
+													);
+												}
 											}
 											// Now send the new approval requirement
 											lastPendingApproval =
 												pendingApproval;
-											sendEvent({
-												type: "approval_required",
-												approvalId:
-													pendingApproval.approvalId,
-												stepId: pendingApproval.stepId,
-												reason: pendingApproval.reason,
-											});
+											{
+												const payload = {
+													type: "approval_required" as const,
+													approvalId:
+														pendingApproval.approvalId,
+													stepId: pendingApproval.stepId,
+													reason: pendingApproval.reason,
+												};
+												type Emitted2194 =
+													typeof payload;
+												sendEvent(
+													payload satisfies AssertAssignable<
+														Emitted2194,
+														OrchestratorStreamInput
+													>,
+												);
+											}
 										}
 									} else if (lastPendingApproval) {
 										// Approval was resolved with no new approval pending
 										const resolvedApproval =
 											lastPendingApproval;
 										lastPendingApproval = null;
-										sendEvent({
-											type: "approval_resolved",
-											approvalId:
-												resolvedApproval.approvalId,
-											stepId: resolvedApproval.stepId,
-											message:
-												"Approval granted - execution resuming",
-										});
+										{
+											const payload = {
+												type: "approval_resolved" as const,
+												approvalId:
+													resolvedApproval.approvalId,
+												stepId: resolvedApproval.stepId,
+												message: "Approval resolved",
+											};
+											type Emitted2207 = typeof payload;
+											sendEvent(
+												payload satisfies AssertAssignable<
+													Emitted2207,
+													OrchestratorStreamInput
+												>,
+											);
+										}
 									}
 
 									// Clarifying-question HITL — sibling of approval above.
@@ -2166,34 +2520,63 @@ export async function POST(request: NextRequest) {
 												isDifferentClarification &&
 												lastPendingClarification
 											) {
-												sendEvent({
-													type: "clarifying_resolved",
-													clarificationId:
-														lastPendingClarification.clarificationId,
-												});
+												{
+													const payload = {
+														type: "clarifying_resolved" as const,
+														clarificationId:
+															lastPendingClarification.clarificationId,
+													};
+													type Emitted2232 =
+														typeof payload;
+													sendEvent(
+														payload satisfies AssertAssignable<
+															Emitted2232,
+															OrchestratorStreamInput
+														>,
+													);
+												}
 											}
 											lastPendingClarification =
 												pendingClarification;
-											sendEvent({
-												type: "clarifying_question",
-												clarificationId:
-													pendingClarification.clarificationId,
-												stepId: pendingClarification.stepId,
-												question:
-													pendingClarification.question,
-												options:
-													pendingClarification.options,
-											});
+											{
+												const payload = {
+													type: "clarifying_question" as const,
+													clarificationId:
+														pendingClarification.clarificationId,
+													stepId: pendingClarification.stepId,
+													question:
+														pendingClarification.question,
+													options:
+														pendingClarification.options,
+												};
+												type Emitted2240 =
+													typeof payload;
+												sendEvent(
+													payload satisfies AssertAssignable<
+														Emitted2240,
+														OrchestratorStreamInput
+													>,
+												);
+											}
 										}
 									} else if (lastPendingClarification) {
 										const resolvedClarification =
 											lastPendingClarification;
 										lastPendingClarification = null;
-										sendEvent({
-											type: "clarifying_resolved",
-											clarificationId:
-												resolvedClarification.clarificationId,
-										});
+										{
+											const payload = {
+												type: "clarifying_resolved" as const,
+												clarificationId:
+													resolvedClarification.clarificationId,
+											};
+											type Emitted2255 = typeof payload;
+											sendEvent(
+												payload satisfies AssertAssignable<
+													Emitted2255,
+													OrchestratorStreamInput
+												>,
+											);
+										}
 									}
 
 									// Send progress update
@@ -2207,14 +2590,23 @@ export async function POST(request: NextRequest) {
 												lastProgress?.message)
 									) {
 										lastProgress = progress;
-										sendEvent({
-											type: "progress",
-											completedSteps:
-												progress.completedSteps,
-											totalSteps: progress.totalSteps,
-											message: progress.message,
-											phase: progress.phase,
-										});
+										{
+											const payload = {
+												type: "progress" as const,
+												completedSteps:
+													progress.completedSteps,
+												totalSteps: progress.totalSteps,
+												message: progress.message,
+												phase: progress.phase,
+											};
+											type Emitted2273 = typeof payload;
+											sendEvent(
+												payload satisfies AssertAssignable<
+													Emitted2273,
+													OrchestratorStreamInput
+												>,
+											);
+										}
 									}
 								} catch {
 									// Queries might fail if workflow just started - this is normal, don't log
@@ -2242,12 +2634,21 @@ export async function POST(request: NextRequest) {
 					// and the poll loop replays every completed step into the
 					// next window.
 					if (!isComplete) {
-						sendEvent({
-							type: "stream_timeout",
-							executionId,
-							message:
-								"Streaming window closed; reconnect with this executionId to continue",
-						});
+						{
+							const payload = {
+								type: "stream_timeout" as const,
+								executionId,
+								message:
+									"Streaming window closed; reconnect with this executionId to continue",
+							};
+							type Emitted2308 = typeof payload;
+							sendEvent(
+								payload satisfies AssertAssignable<
+									Emitted2308,
+									OrchestratorStreamInput
+								>,
+							);
+						}
 					}
 
 					cleanupRedis();
@@ -2257,13 +2658,22 @@ export async function POST(request: NextRequest) {
 						startupFailureResponse = error.response();
 					}
 					console.error("[Orchestrator Stream] Error:", error);
-					sendEvent({
-						type: "error",
-						message:
-							error instanceof Error
-								? error.message
-								: "Stream failed",
-					});
+					{
+						const payload = {
+							type: "error" as const,
+							message:
+								error instanceof Error
+									? error.message
+									: "Stream failed",
+						};
+						type Emitted2323 = typeof payload;
+						sendEvent(
+							payload satisfies AssertAssignable<
+								Emitted2323,
+								OrchestratorStreamInput
+							>,
+						);
+					}
 					cleanupRedis();
 					closeController();
 				}

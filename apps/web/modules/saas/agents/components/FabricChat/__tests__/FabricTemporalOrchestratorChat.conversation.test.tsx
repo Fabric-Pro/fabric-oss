@@ -49,6 +49,12 @@ const orpc = vi.hoisted(() => ({
 	removeMessage: vi.fn(),
 }));
 
+const modelBadge = vi.hoisted(() => ({ enabled: false, hasPlan: false }));
+
+vi.mock("../shared/AgentVersionIdentity", () => ({
+	AgentVersionIdentity: ({ name }: { name?: string }) => <span>{name}</span>,
+}));
+
 const streamState = vi.hoisted(() => ({
 	current: {} as Record<string, unknown>,
 }));
@@ -172,25 +178,55 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
 		await importOriginal<typeof import("@tanstack/react-query")>();
 	return {
 		...actual,
-		useQuery: () => ({ data: undefined, isLoading: false }),
+		useQuery: (options: { queryKey?: unknown[] }) => ({
+			data: !modelBadge.enabled
+				? undefined
+				: options.queryKey?.[0] === "chat-agent-selection"
+					? {
+							selectedAgents: [
+								{
+									agentId: "model:claude-sonnet-5",
+									name: "Claude Sonnet 5",
+									modelOverride: "claude-sonnet-5",
+								},
+							],
+						}
+					: options.queryKey?.[0] === "ai-models-available"
+						? {
+								models: [{ canonicalName: "claude-sonnet-5" }],
+								chatgptPlan: modelBadge.hasPlan
+									? { source: "shared", models: [] }
+									: null,
+							}
+						: undefined,
+			isLoading: false,
+			isSuccess: modelBadge.enabled,
+			isFetching: false,
+		}),
 		useMutation: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
 		useQueryClient: () => ({ invalidateQueries: vi.fn() }),
 	};
 });
 
 vi.mock("@saas/auth/hooks/use-session", () => ({
-	useSession: () => ({ user: { name: "Test User", image: null } }),
+	useSession: () => ({
+		user: { id: "example-user", name: "Test User", image: null },
+	}),
 }));
 
 vi.mock("@saas/organizations/hooks/use-active-organization", () => ({
 	useActiveOrganization: () => ({
-		activeOrganization: null,
+		activeOrganization: modelBadge.enabled
+			? { id: "example-org", slug: "example-org" }
+			: null,
 		isOrganizationAdmin: false,
+		activeOrganizationUserRole: "member",
 	}),
 }));
 
 vi.mock("next-intl", () => ({
-	useTranslations: () => (key: string) => key,
+	useTranslations: () => (key: string, values?: { model?: string }) =>
+		key === "answeredByModel" ? `Answered by ${values?.model}` : key,
 }));
 
 vi.mock(
@@ -270,6 +306,7 @@ const { FabricTemporalOrchestratorChat } = await import(
 );
 
 beforeEach(() => {
+	modelBadge.enabled = false;
 	calls.order = [];
 	streamState.current = idleStream();
 	conversationHook.createConversation.mockImplementation(async () => {
@@ -2462,4 +2499,163 @@ it("ignores a malformed saved clarification and retains the valid exchange in hi
 		{ role: "user", content: "Clarification — Which branch?: staging" },
 		{ role: "assistant", content: "Done" },
 	]);
+});
+
+describe("Advisor provider model badge", () => {
+	it.each([true, false])(
+		"marks a provider pick not applied only with a serving plan: %s",
+		async (hasPlan) => {
+			modelBadge.enabled = true;
+			modelBadge.hasPlan = hasPlan;
+			render(
+				<FabricTemporalOrchestratorChat
+					showAgentPicker
+					organizationId="example-org"
+					reasoningMode="balanced"
+				/>,
+			);
+			const name = await screen.findByText("Claude Sonnet 5");
+			const badge = name.closest('[data-slot="badge"]');
+			expect(badge).toBeInTheDocument();
+			if (hasPlan) {
+				await waitFor(() =>
+					expect(badge).toHaveTextContent("not applied"),
+				);
+				expect(badge).toHaveAttribute(
+					"title",
+					"Your organization's shared ChatGPT plan is on — ask an organization admin to turn it off to use Claude Sonnet 5.",
+				);
+			} else {
+				expect(badge).not.toHaveTextContent("not applied");
+				expect(badge).not.toHaveAttribute("title");
+			}
+		},
+	);
+});
+
+vi.mock(
+	"@saas/organizations/hooks/use-organization-context",
+	async (importOriginal) => ({
+		...(await importOriginal<
+			typeof import("@saas/organizations/hooks/use-organization-context")
+		>()),
+		useOrganizationId: () => "example-org",
+	}),
+);
+
+const servedModel = {
+	id: "example-served",
+	canonicalName: "example-served",
+	provider: "OPENAI_DIRECT",
+	viaPlan: false,
+};
+describe("Advisor served-model screen wiring", () => {
+	it("renders the live answer label and saves its model", async () => {
+		const view = render(
+			<FabricTemporalOrchestratorChat reasoningMode="balanced" />,
+		);
+		await send("Example question");
+		streamState.current = idleStream({
+			messages: [
+				{
+					id: "example-question",
+					role: "user",
+					content: "Example question",
+				},
+			],
+			isComplete: true,
+			state: {
+				...(idleStream().state as Record<string, unknown>),
+				status: "completed",
+				executionId: "example-execution",
+				model: servedModel,
+				result: { response: "Example response" },
+			},
+		});
+		view.rerender(
+			<FabricTemporalOrchestratorChat reasoningMode="balanced" />,
+		);
+		expect(
+			await screen.findByRole("button", {
+				name: "Answered by example-served",
+			}),
+		).toBeInTheDocument();
+		await waitFor(() =>
+			expect(conversationHook.saveExecution).toHaveBeenCalled(),
+		);
+		expect(
+			conversationHook.saveExecution.mock.calls[0][0].execution.model,
+		).toEqual(servedModel);
+	});
+	it("restores and renders the completed answer model", async () => {
+		render(
+			<FabricTemporalOrchestratorChat
+				reasoningMode="balanced"
+				activeConversationId="example-conversation"
+				activeConversation={
+					{
+						id: "example-conversation",
+						messages: [],
+						metadata: {
+							mode: "orchestrator",
+							executions: [
+								{
+									id: "example-execution",
+									userMessage: "Example question",
+									finalResponse: "Example response",
+									status: "complete",
+									completedAt: "2026-10-01T00:00:00.000Z",
+									model: servedModel,
+								},
+							],
+						},
+					} as never
+				}
+			/>,
+		);
+		expect(
+			await screen.findByRole("button", {
+				name: "Answered by example-served",
+			}),
+		).toBeInTheDocument();
+	});
+	it("retains the completed model when the next turn moves it into history", async () => {
+		const view = render(
+			<FabricTemporalOrchestratorChat reasoningMode="balanced" />,
+		);
+		await send("Example question");
+		streamState.current = idleStream({
+			messages: [
+				{
+					id: "example-question",
+					role: "user",
+					content: "Example question",
+				},
+			],
+			isComplete: true,
+			state: {
+				...(idleStream().state as Record<string, unknown>),
+				status: "completed",
+				executionId: "example-execution",
+				model: servedModel,
+				result: { response: "Example response" },
+			},
+		});
+		view.rerender(
+			<FabricTemporalOrchestratorChat reasoningMode="balanced" />,
+		);
+		await waitFor(() =>
+			expect(conversationHook.saveExecution).toHaveBeenCalled(),
+		);
+		await send("Example followup");
+		streamState.current = idleStream();
+		view.rerender(
+			<FabricTemporalOrchestratorChat reasoningMode="balanced" />,
+		);
+		expect(
+			await screen.findByRole("button", {
+				name: "Answered by example-served",
+			}),
+		).toBeInTheDocument();
+	});
 });

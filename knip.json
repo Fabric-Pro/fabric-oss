@@ -145,6 +145,9 @@
 		"packages/mail": {
 			"ignoreDependencies": ["@react-email/preview-server"]
 		},
+		"packages/temporal": {
+			"entry": ["__tests__/fixtures/coding-bridge-server.fixture.mts"]
+		},
 		"party": {
 			"entry": [
 				"document.ts",

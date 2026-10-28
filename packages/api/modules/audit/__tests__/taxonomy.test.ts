@@ -297,7 +297,19 @@ describe("audit.taxonomy handler", () => {
 		// never page content, Fizzy #2946) = 216.
 		// + 1 project.parlume.auto_join_changed (a linked series' Parlume
 		// auto-join switched on or off, with its mode and suggestions) = 217.
-		expect(result.actions).toHaveLength(217);
+		// + 2 org.agent_definition.{imported, exported} (a portable
+		// fabric.ai/v1 agent definition was imported into or exported from
+		// the organization; format, mode and instance id only, never prompt
+		// text) = 219.
+		// + 2 org.{chat_approval.decided, chat_run.cancel_requested} (a
+		// member approved or rejected a chat/Weave checkpoint, or requested
+		// cancellation of a chat run; run id and checkpoint id only, never
+		// prompt or feedback text) = 221.
+		expect(result.actions).toHaveLength(221);
+		expect(result.actions).toContain("org.chat_approval.decided");
+		expect(result.actions).toContain("org.chat_run.cancel_requested");
+		expect(result.actions).toContain("org.agent_definition.imported");
+		expect(result.actions).toContain("org.agent_definition.exported");
 		expect(result.actions).toContain(
 			"backlog.recurring_errors.scan_failed",
 		);

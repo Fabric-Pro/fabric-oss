@@ -465,6 +465,28 @@ const taskQueue = organizationId
 3. Consider parallel execution for independent nodes
 4. Review retry delays
 
+## Opt-in approval Updates
+
+`ORCHESTRATOR_APPROVAL_UPDATES_ENABLED` defaults to off. Only the exact string
+`true` enables it, and only web/API starters read it. Deploy this code to all
+workers first, then enable the switch on web/API. Workflow input and memo capture
+`approvalProtocol: 2` together at start. Existing runs keep their original
+protocol even when the switch changes. Workflow child starts remain legacy.
+
+Without that memo value, approval routes submit the legacy pending-ID `approval`
+signal; success confirms submission, not workflow acceptance. Protocol-2 runs
+served by the new web/API use `decideApproval` Updates and require an accepted
+receipt; stale, expired and rejected decisions do not report success. Legacy
+web/API versions can still send approval signals to protocol-2 workers through
+the legacy-signal adapter.
+
+Before enabling, web/API and workers may roll forward or back independently for
+legacy approvals. After enabling, histories that accepted an Update cannot replay
+on workers older than this change. To roll workers back past this change, turn
+the switch off and let protocol-2 runs finish first. Turning it off does not
+convert existing protocol-2 runs to the legacy protocol. Web/API rollback retains
+legacy signal-submission semantics and does not remove recorded Update events.
+
 ---
 
 ## Related Documentation
@@ -472,4 +494,3 @@ const taskQueue = organizationId
 - [Publishing & Triggers](./publishing-and-triggers.md)
 - [Node Types Reference](./node-types.md)
 - [Temporal Official Docs](https://docs.temporal.io)
-

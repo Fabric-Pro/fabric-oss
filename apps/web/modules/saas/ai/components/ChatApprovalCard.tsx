@@ -115,8 +115,8 @@ export function ChatApprovalCard({
 				)}
 				<span>
 					{decision === "approved"
-						? "Approved — continuing execution..."
-						: "Rejected — workflow stopped."}
+						? "Approval accepted."
+						: "Rejection accepted."}
 				</span>
 			</div>
 		);
@@ -157,6 +157,7 @@ export function ChatApprovalCard({
 					<Textarea
 						value={feedback}
 						onChange={(e) => setFeedback(e.target.value)}
+						aria-label="Approval feedback"
 						placeholder="Any instructions or context for the agent..."
 						rows={2}
 						className="mt-2 bg-white text-sm dark:bg-zinc-900"

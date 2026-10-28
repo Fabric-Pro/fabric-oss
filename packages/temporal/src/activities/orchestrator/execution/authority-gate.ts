@@ -142,7 +142,7 @@ export function classifyToolAccessLevel(toolName: string): "READ" | "WRITE" {
 		return "READ";
 	}
 	const snake = toSnakeLower(toolName).replace(/-/g, "_");
-	if (snake.split(/[^a-z0-9]+/).some((token) => MUTATING_TOKENS.has(token))) {
+	if (hasMutatingToolToken(snake)) {
 		return "WRITE";
 	}
 	if (startsWithReadVerb(lower)) {
@@ -191,7 +191,7 @@ function startsWithReadVerb(name: string): boolean {
  * would turn real reads into writes. They still classify WRITE as a leading
  * verb through `WRITE_PREFIXES`.
  */
-const MUTATING_TOKENS = new Set([
+export const MUTATING_TOKENS: ReadonlySet<string> = new Set([
 	"create",
 	"update",
 	"delete",
@@ -213,6 +213,13 @@ const MUTATING_TOKENS = new Set([
 	"close",
 	"cancel",
 ]);
+
+/** Explicit mutation evidence, without the unknown-name WRITE fallback. */
+export function hasMutatingToolToken(toolName: string): boolean {
+	return toSnakeLower(toolName)
+		.split(/[^a-z0-9]+/)
+		.some((token) => MUTATING_TOKENS.has(token));
+}
 
 /**
  * Read verbs the prefix tests cannot see because nothing follows them: a bare
