@@ -3,12 +3,16 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
 	write: vi.fn(),
+	provenance: vi.fn(),
 	warn: vi.fn(),
 	projectGuard: vi.fn(),
 	chatGuard: vi.fn(),
 	resolve: vi.fn(),
 }));
-vi.mock("@repo/database", () => ({ recordAiOutcome: mocks.write }));
+vi.mock("@repo/database", () => ({
+	recordAiOutcome: mocks.write,
+	getAiOutputProvenance: mocks.provenance,
+}));
 vi.mock("@repo/logs", () => ({ logger: { warn: mocks.warn } }));
 vi.mock("../../../../../orpc/procedures", () => ({
 	tenantProtectedProcedure: os.$context<{
@@ -212,4 +216,112 @@ describe("confirm draft", () => {
 		).resolves.toBeDefined();
 		expect(mocks.warn).toHaveBeenCalledOnce();
 	});
+});
+
+const replyId = `msg_1793200000000_${"a".repeat(32)}`;
+it.each(["match", "missing", "project", "agent", "throws"])(
+	"resolves draft provenance: %s",
+	async (mode) => {
+		mocks.provenance.mockReset();
+		if (mode === "throws") {
+			mocks.provenance.mockRejectedValue(new Error("private"));
+		} else {
+			mocks.provenance.mockResolvedValue(
+				mode === "missing"
+					? null
+					: {
+							projectId:
+								mode === "project" ? "other-project" : null,
+							agentId:
+								mode === "agent"
+									? "other_agent"
+									: "document_generator:truncation_retry",
+							modelCanonicalName: "example-model",
+						},
+			);
+		}
+		await invoke({
+			surface: "document-generator",
+			draftId: `${replyId}:00000000-0000-4000-8000-000000000001`,
+			verdict: "accepted",
+		});
+		expect(mocks.write).toHaveBeenCalledWith(
+			expect.objectContaining({
+				modelCanonicalName: mode === "match" ? "example-model" : null,
+				promptVersionId: null,
+			}),
+		);
+		expect(mocks.provenance).toHaveBeenCalledWith({
+			organizationId: "example-org",
+			userId: "example-user",
+			subjectType: "copilot-message",
+			subjectId: replyId,
+		});
+	},
+);
+
+it.each([
+	"feature-spec",
+	"document",
+	"topic-analysis",
+	"document-generator",
+	"prompt-enhancer",
+] as const)("uses the expected agent for %s", async (surface) => {
+	const project = ["feature-spec", "document", "topic-analysis"].includes(
+		surface,
+	);
+	mocks.provenance.mockResolvedValue({
+		projectId: project ? "example-project" : null,
+		agentId: project
+			? "project_document_generator:finalize_guard"
+			: surface === "prompt-enhancer"
+				? "prompt_enhancer"
+				: "document_generator",
+		modelCanonicalName: "example-model",
+	});
+	await invoke({
+		surface,
+		draftId: replyId,
+		verdict: "rejected",
+		...(project ? { projectId: "example-project" } : {}),
+	});
+	expect(mocks.write).toHaveBeenCalledWith(
+		expect.objectContaining({
+			modelCanonicalName: "example-model",
+			promptVersionId: null,
+		}),
+	);
+});
+it("accepts the project agent behind the generic document-generator page", async () => {
+	mocks.provenance.mockResolvedValue({
+		projectId: null,
+		agentId: "project_document_generator",
+		modelCanonicalName: "example-model",
+	});
+	await invoke({
+		surface: "document-generator",
+		draftId: replyId,
+		verdict: "accepted",
+	});
+	expect(mocks.write).toHaveBeenCalledWith(
+		expect.objectContaining({ modelCanonicalName: "example-model" }),
+	);
+});
+it("rejects caller-supplied model attribution", async () => {
+	await expect(
+		invoke({
+			surface: "document-generator",
+			...base,
+			modelCanonicalName: "forged-model",
+		}),
+	).rejects.toThrow();
+	expect(mocks.write).not.toHaveBeenCalled();
+});
+it("skips provenance for malformed ids", async () => {
+	mocks.provenance.mockClear();
+	await invoke({ surface: "document-generator", ...base });
+	expect(mocks.provenance).not.toHaveBeenCalled();
+	expect(mocks.write).toHaveBeenCalledWith(
+		expect.objectContaining({ modelCanonicalName: null }),
+	);
 });

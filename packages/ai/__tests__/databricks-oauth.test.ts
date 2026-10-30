@@ -676,3 +676,16 @@ describe("error sanitization", () => {
 		expect(error.message).not.toContain("internal.example");
 	});
 });
+
+it("normalizes long OAuth URL slash runs", async () => {
+	__resetDatabricksOAuthCache();
+	const fetchImpl = tokenFetch();
+	await resolveProviderApiKey(
+		{
+			...servicePrincipalConfig,
+			baseUrl: `${WORKSPACE}/${"/".repeat(200_000)}x`,
+		},
+		{ fetchImpl: fetchImpl as unknown as typeof fetch },
+	);
+	expect(fetchImpl.mock.calls[0][0]).toBe(`${WORKSPACE}/oidc/v1/token`);
+});

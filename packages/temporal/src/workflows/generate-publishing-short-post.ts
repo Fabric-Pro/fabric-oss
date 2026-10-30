@@ -72,6 +72,7 @@ export interface GeneratePublishingShortPostWorkflowInput {
 	 * cannot see the difference.
 	 */
 	currentDraft?: string | null;
+	seedWorkingDraft?: boolean;
 }
 
 export interface GeneratePublishingShortPostWorkflowOutput {
@@ -90,6 +91,7 @@ export async function generatePublishingShortPostWorkflow(
 			actorUserId: input.actorUserId,
 			guidance: input.guidance,
 			currentDraft: input.currentDraft ?? null,
+			...(input.seedWorkingDraft ? { seedWorkingDraft: true } : {}),
 		});
 
 		// A non-READY status is a normal outcome, not a failure. The write was

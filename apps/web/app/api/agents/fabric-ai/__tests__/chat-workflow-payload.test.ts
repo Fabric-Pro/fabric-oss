@@ -33,9 +33,15 @@ describe("assertChatWorkflowPayload", () => {
 describe("chat route wiring", () => {
 	const read = (path: string) =>
 		readFileSync(join(process.cwd(), path), "utf-8");
-	const direct = read("app/api/agents/fabric-ai/stream/route.ts");
+	// The Direct route builds and starts its workflow in `direct-turn.ts`.
+	const direct = read("app/api/agents/fabric-ai/stream/direct-turn.ts");
 	const orchestrator = read(
 		"app/api/agents/fabric-ai/orchestrator-temporal/stream/route.ts",
+	);
+	// The Orchestrator route and runtime engine measure their input and
+	// bound its history through this module.
+	const orchestratorTurn = read(
+		"app/api/agents/fabric-ai/orchestrator-temporal/orchestrator-turn.ts",
 	);
 
 	it("measures the Direct input before starting its workflow", () => {
@@ -46,20 +52,29 @@ describe("chat route wiring", () => {
 	});
 
 	it("measures the orchestrator input and bounds its history", () => {
-		const guard = orchestrator.indexOf("assertChatWorkflowPayload(");
+		const guard = orchestrator.indexOf(
+			"refuseOversizedOrchestratorInput(workflowInput)",
+		);
 		// The start itself lives in the shared turn starter
 		// (orchestrator-temporal/turn-admission.ts); the guard must run
 		// before the route hands the input to it.
 		const start = orchestrator.indexOf("await startTurnWorkflow({");
 		expect(guard).toBeGreaterThan(-1);
 		expect(start).toBeGreaterThan(guard);
-		expect(orchestrator).toMatch(/status: 413/);
-		expect(orchestrator).toContain(
+		expect(orchestratorTurn).toContain("assertChatWorkflowPayload(");
+		expect(orchestratorTurn).toMatch(/status: 413/);
+		expect(orchestratorTurn).toContain(
 			"const history = windowUntypedHistory(rawHistory);",
 		);
 	});
 
 	it("forwards the orchestrator's truncation on completion", () => {
-		expect(orchestrator).toMatch(/truncated: result\.truncated,/);
+		// The route and the runtime engine follow a run through the shared
+		// observer.
+		expect(
+			read(
+				"app/api/agents/fabric-ai/orchestrator-temporal/execution-observer.ts",
+			),
+		).toMatch(/truncated: result\.truncated,/);
 	});
 });

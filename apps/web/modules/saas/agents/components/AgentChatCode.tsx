@@ -1,4 +1,5 @@
 "use client";
+import { useMemo } from "react";
 
 /**
  * AgentChatCode - Code editor interface for Code Executor agent
@@ -49,6 +50,7 @@ export function AgentChatCode({ agent, runtimeUrl }: AgentChatCodeProps) {
 				useSingleEndpoint
 				agent={agent?.agentId}
 				showDevConsole={false}
+				enableInspector={false}
 				onError={onError}
 			>
 				<CopilotChatSessionProvider>
@@ -96,6 +98,31 @@ function CodeEditorContent({ agent }: { agent: any }) {
 		}
 	}, [agentState?.output]);
 
+	const chatLabels = useMemo(
+		() => ({
+			title: agent?.displayName || "Code Executor",
+			initial:
+				"Hi! I can help you write and execute code. What would you like to build?",
+		}),
+		[agent?.displayName],
+	);
+	const chatSuggestions = useMemo(
+		() => [
+			{
+				title: "Calculate",
+				message: "Write code to calculate fibonacci numbers",
+			},
+			{
+				title: "Transform data",
+				message: "Help me transform this JSON data",
+			},
+			{
+				title: "API call",
+				message: "Make an API call to fetch user data",
+			},
+		],
+		[],
+	);
 	return (
 		<>
 			<div className="flex h-full">
@@ -168,26 +195,8 @@ function CodeEditorContent({ agent }: { agent: any }) {
 						AssistantMessage={CopilotAssistantMessage}
 						defaultOpen={true}
 						clickOutsideToClose={false}
-						labels={{
-							title: agent?.displayName || "Code Executor",
-							initial:
-								"Hi! I can help you write and execute code. What would you like to build?",
-						}}
-						suggestions={[
-							{
-								title: "Calculate",
-								message:
-									"Write code to calculate fibonacci numbers",
-							},
-							{
-								title: "Transform data",
-								message: "Help me transform this JSON data",
-							},
-							{
-								title: "API call",
-								message: "Make an API call to fetch user data",
-							},
-						]}
+						labels={chatLabels}
+						suggestions={chatSuggestions}
 					>
 						<div />
 					</CopilotSidebar>

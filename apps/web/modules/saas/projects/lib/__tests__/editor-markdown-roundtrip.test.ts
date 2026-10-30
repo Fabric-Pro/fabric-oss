@@ -7,9 +7,16 @@
 
 import { Editor } from "@tiptap/core";
 import { describe, expect, it } from "vitest";
-import { diffPartialText, fromMarkdown } from "../diff-utils";
+import {
+	diffPartialText,
+	fromMarkdown,
+	repairMarkdownDocument,
+} from "../diff-utils";
 import { getEditorMarkdownForSave } from "../editor-markdown-save";
-import { advancedExtensions } from "../tiptap-extensions-advanced";
+import {
+	advancedExtensions,
+	createAdvancedExtensions,
+} from "../tiptap-extensions-advanced";
 
 const ADD_START = "\u200B\u200BADD_START\u200B\u00A0";
 const ADD_END = "\u00A0\u200BADD_END\u200B\u200B";
@@ -349,6 +356,31 @@ describe("accepting an AI edit saves the AI's document", () => {
 			baseline: "1. Open the inbox\n2. Choose a mode\n3. Accept",
 			next: "2. Choose a mode\n3. Accept",
 		},
+		// A link is the outer mark of deleted linked text (Fizzy #2946).
+		{
+			name: "a bullet that is only a link deleted",
+			baseline:
+				"- First\n- [Report link](https://example.com/report)\n- Third",
+			next: "- First\n- Third",
+		},
+		{
+			name: "a bullet of text and a link deleted",
+			baseline:
+				"- First\n- See [the report](https://example.com/report)\n- Third",
+			next: "- First\n- Third",
+		},
+		{
+			name: "the first item of a numbered list deleted, a link",
+			baseline:
+				"1. [Open the inbox](https://example.com/inbox)\n2. Choose a mode\n3. Accept",
+			next: "2. Choose a mode\n3. Accept",
+		},
+		{
+			name: "a link deleted from a bullet that keeps its other text",
+			baseline:
+				"- First\n- See [the report](https://example.com/report) now\n- Third",
+			next: "- First\n- See now\n- Third",
+		},
 		{
 			name: "a YAML line split onto an indented line inside a code block",
 			baseline:
@@ -495,4 +527,98 @@ describe("editor typography", () => {
 			emDash: "—",
 		});
 	});
+});
+
+/**
+ * The editor's load path, as a stored document takes it: repaired, rendered,
+ * read by the editor, then saved.
+ */
+function loadAndSave(markdown: string): { html: string; saved: string } {
+	return saveEditorContent(fromMarkdown(repairMarkdownDocument(markdown)));
+}
+
+describe("editor markdown round trip: fences (Fizzy #2946)", () => {
+	it("keeps a fence's language as spelled across load → save cycles", () => {
+		// The load repair lowercased it, so a body saved as ```Cards loaded
+		// as ```cards and the next save changed it with no edit.
+		const markdown =
+			"## Options\n\n```Cards\n- First option\n- Second option\n```\n\n```TypeScript\nconst a = 1;\n```\n\nAfter.";
+
+		const first = loadAndSave(markdown);
+		const second = loadAndSave(first.saved);
+
+		expect(first.saved).toBe(markdown);
+		expect(second.saved).toBe(first.saved);
+	});
+
+	it.each([
+		{ editor: "without the stat tiles node", statTiles: false },
+		{ editor: "with the stat tiles node", statTiles: true },
+	])(
+		"keeps a block fence spelled with capitals as code, unchanged ($editor)",
+		({ statTiles }) => {
+			// Only the lowercase spelling is a block (the stat tiles node matches
+			// `language-stat-tiles`); another spelling stays the code it was.
+			const markdown =
+				"## Results\n\n```Stat-Tiles\n42% | Faster onboarding\n```\n\n```Columns\nLeft | Right\n```\n\nAfter.";
+			const extensions = createAdvancedExtensions({
+				projectId: null,
+				documentId: null,
+				statTiles,
+			});
+			const cycle = (body: string) => {
+				const editor = new Editor({
+					extensions,
+					content: fromMarkdown(repairMarkdownDocument(body)),
+				});
+				const saved = getEditorMarkdownForSave(editor);
+				editor.destroy();
+				return saved;
+			};
+
+			const first = cycle(markdown);
+
+			expect(first).toBe(markdown);
+			expect(cycle(first ?? "")).toBe(first);
+		},
+	);
+
+	it("keeps a mermaid fence's language as spelled through the load repair", () => {
+		// The diagram node itself saves every diagram as ```mermaid; the
+		// repair before it no longer changes the spelling on its own.
+		const markdown = "## Flow\n\n```Mermaid\nflowchart LR\n  A --> B\n```";
+
+		expect(repairMarkdownDocument(markdown)).toContain("```Mermaid\n");
+	});
+
+	it.each([
+		{
+			name: "a diagram",
+			markdown:
+				"## Flow\n\n> A note before it.\n>\n> ```mermaid\n> flowchart LR\n>   A --> B\n> ```\n\nAfter.",
+			fence: "> ```mermaid",
+		},
+		{
+			name: "a code block",
+			markdown: "## Example\n\n> ```js\n> const a = 1;\n> ```\n\nAfter.",
+			fence: "> ```js",
+		},
+	])(
+		"keeps $name inside its blockquote across load → save cycles",
+		({ markdown, fence }) => {
+			// The load repair moved each ``` onto a line of its own, out of the
+			// quote: the block loaded as code whose lines began with `>`.
+			const first = loadAndSave(markdown);
+			const second = loadAndSave(first.saved);
+
+			expect(first.html).toMatch(
+				/<blockquote>(?:(?!<\/blockquote>).)*<pre/s,
+			);
+			expect(first.saved).toContain(`${fence}\n`);
+			expect(first.saved).toMatch(/^> ```$/m);
+			expect(first.saved).not.toMatch(/^```/m);
+			expect(first.saved).not.toContain("\n> >");
+			expect(second.saved).toBe(first.saved);
+		},
+	);
 });

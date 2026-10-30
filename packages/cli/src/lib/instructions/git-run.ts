@@ -447,7 +447,13 @@ export function exitReason(result: { code: number; stderr: string }): string {
 	if (/must be run in a work tree/i.test(text)) {
 		return "not a working tree (a bare repository, or inside .git)";
 	}
-	if (/not a git repository/i.test(text)) {
+	// git before 2.56 says "not a git repository: <gitdir>" for a .git file
+	// that points nowhere; 2.56 says "gitfile does not point to a valid
+	// repository".
+	if (
+		/not a git repository/i.test(text) ||
+		/does not point to a valid repository/i.test(text)
+	) {
 		return "its .git points to a repository that does not exist";
 	}
 	if (/permission denied/i.test(text)) {

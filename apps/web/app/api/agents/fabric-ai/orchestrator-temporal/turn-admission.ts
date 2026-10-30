@@ -16,39 +16,49 @@ import { orchestratorApprovalProtocol } from "@repo/temporal/approval-rollout";
  *   3. `startTurnWorkflow` — starts the workflow with the turn's executionId
  *      and turnId; a lost start response (the workflow already exists)
  *      attaches; a definite start failure marks the turn FAILED.
+ *
+ * The engine-neutral rules behind 2 and 3, and the reconcile, live in
+ * `@saas/agents/lib/server/conversation-turn-admission` (the agent runtime's
+ * Direct engine admits its turns through them too); this module adds the
+ * Orchestrator's execution ids, token ledger, workflow start and HTTP
+ * responses.
  */
 
 import {
 	abandonConversationTurnStart,
-	admitConversationTurn,
 	type ConversationTurn,
-	finalizeConversationTurn,
-	finalizeOrphanedConversationTurn,
 	getConversationTurnForExecution,
-	markConversationTurnActive,
 } from "@repo/database";
 import type {
 	ExecutionMode,
 	OrchestratorWorkflowInput,
 	OrchestratorWorkflowOutput,
 } from "@repo/temporal";
-import { classifyTemporalClientError } from "@repo/temporal/temporal-client-errors";
 import { turnBudgetForExecutionMode } from "@repo/temporal/turn-budget-policy";
+import {
+	admitTurn,
+	type CompletedTurnSettlement,
+	isTerminalTurnStatus,
+	isWorkflowNotFound,
+	reconcileTurnWithWorkflow as reconcileWithSettlement,
+	startAdmittedTurn,
+	type TemporalClientLike,
+} from "@saas/agents/lib/server/conversation-turn-admission";
 import { parseTurnBudgetStop } from "@saas/agents/lib/turn-budget-stop";
 import { v4 as uuidv4 } from "uuid";
 import { assertChatWorkflowPayload } from "../chat-workflow-payload";
 import { budgetContinuationSeed } from "./budget-continuation";
 import { isOrchestratorOrganizationMember } from "./run-access";
 
+export {
+	isTerminalTurnStatus,
+	isWorkflowNotFound,
+	TurnStartAmbiguousError,
+	TurnStoppedBeforeStartError,
+} from "@saas/agents/lib/server/conversation-turn-admission";
+
 /** The turn contract this starter speaks (see the workflow's turn input). */
 const TURN_CONTRACT_VERSION = 1;
-
-/**
- * A START_PENDING turn whose workflow Temporal does not know is only an
- * orphan once its starter has had time to start it: before that, NotFound
- * just means the start has not happened yet.
- */
-const ORPHAN_START_GRACE_MS = 60_000;
 
 const CLIENT_REQUEST_KEY_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
 
@@ -125,15 +135,6 @@ export async function resolveTurnOrganization(args: {
 		};
 	}
 	return { ok: true, organizationId: candidate };
-}
-
-/**
- * Temporal NotFound: the execution does not exist. Classified across the
- * client's error cause chain (`ServiceError` wraps the gRPC status), so a
- * transport or auth failure is never mistaken for "the run is gone".
- */
-export function isWorkflowNotFound(error: unknown): boolean {
-	return classifyTemporalClientError(error) === "not_found";
 }
 
 /**
@@ -255,13 +256,6 @@ export function turnPendingResponse(executionId: string): Response {
 	);
 }
 
-type TemporalClientLike = {
-	workflow: {
-		getHandle: (id: string) => any;
-		start: (...args: any[]) => Promise<any>;
-	};
-};
-
 function terminalForOutput(
 	output: Partial<OrchestratorWorkflowOutput> | undefined,
 ): "COMPLETED" | "FAILED" | "LIMITED" | "CANCELLED" {
@@ -280,101 +274,34 @@ function terminalForOutput(
 }
 
 /**
- * Settle a non-terminal turn against its workflow: when the workflow has
- * closed (or never existed past the start grace period), write the turn's
- * terminal state from what Temporal reports. A Temporal error that is not
- * NotFound settles nothing and reports "unavailable" — the caller fails
- * closed rather than guessing the run is gone.
+ * What a COMPLETED orchestrator run writes to its turn: its outcome, answer
+ * and structured budget stop, so a reconnect renders the stop without a
+ * new-chat workaround.
  */
-export async function reconcileTurnWithWorkflow(args: {
+function settleCompletedOrchestratorTurn(
+	output: Partial<OrchestratorWorkflowOutput> | undefined,
+): CompletedTurnSettlement {
+	return {
+		outcome: terminalForOutput(output),
+		terminalReason: `reconciled: ${output?.status ?? "completed"}`,
+		responseText: output?.response ?? null,
+		...(output?.budgetStop ? { budgetStop: { ...output.budgetStop } } : {}),
+	};
+}
+
+/**
+ * Settle a non-terminal orchestrator turn against its workflow (see
+ * `reconcileTurnWithWorkflow` in the shared admission module).
+ */
+export function reconcileTurnWithWorkflow(args: {
 	turn: ConversationTurn;
 	temporalClient: TemporalClientLike;
 	now?: number;
 }): Promise<"running" | "terminalized" | "unavailable"> {
-	const { turn } = args;
-	if (!turn.executionId) {
-		return "terminalized";
-	}
-	const scope = {
-		turnId: turn.id,
-		executionId: turn.executionId,
-		userId: turn.userId,
-		organizationId: turn.organizationId,
-	};
-	const handle = args.temporalClient.workflow.getHandle(turn.executionId);
-	let statusName: string;
-	try {
-		const description = await handle.describe();
-		statusName = description.status.name;
-	} catch (error) {
-		if (!isWorkflowNotFound(error)) {
-			return "unavailable";
-		}
-		const age = (args.now ?? Date.now()) - turn.createdAt.getTime();
-		if (turn.status === "START_PENDING" && age < ORPHAN_START_GRACE_MS) {
-			// Its starter may still be about to start it.
-			return "running";
-		}
-		// A compare-and-set on the state this NotFound was read against:
-		// if the starter started the workflow and promoted the turn since
-		// (or anything else changed it), the observation is stale and the
-		// turn is left alone.
-		const orphan = await finalizeOrphanedConversationTurn({
-			...scope,
-			observedStatus: turn.status,
-			observedUpdatedAt: turn.updatedAt,
-			terminalReason: "reconciled: workflow not found",
-		});
-		return orphan.outcome === "finalized" ? "terminalized" : "running";
-	}
-
-	switch (statusName) {
-		case "RUNNING":
-		case "CONTINUED_AS_NEW":
-			return "running";
-		case "COMPLETED": {
-			let output: Partial<OrchestratorWorkflowOutput> | undefined;
-			try {
-				output = await handle.result();
-			} catch (error) {
-				// Only a proven execution failure settles the turn. A
-				// transport or auth failure fetching the result settles
-				// nothing: terminal states are final, and writing FAILED now
-				// would destroy the answer Temporal still holds.
-				if (classifyTemporalClientError(error) !== "execution_failed") {
-					return "unavailable";
-				}
-				output = undefined;
-			}
-			await finalizeConversationTurn({
-				...scope,
-				outcome: terminalForOutput(output),
-				terminalReason: `reconciled: ${output?.status ?? "completed"}`,
-				responseText: output?.response ?? null,
-				// The same structured stop the workflow would have written, so
-				// a reconnect renders it without a new-chat workaround.
-				...(output?.budgetStop
-					? { budgetStop: { ...output.budgetStop } }
-					: {}),
-			});
-			return "terminalized";
-		}
-		case "CANCELLED":
-			await finalizeConversationTurn({
-				...scope,
-				outcome: "CANCELLED",
-				terminalReason: "reconciled: workflow cancelled",
-			});
-			return "terminalized";
-		default:
-			// FAILED, TERMINATED, TIMED_OUT.
-			await finalizeConversationTurn({
-				...scope,
-				outcome: "FAILED",
-				terminalReason: `reconciled: workflow ${statusName.toLowerCase()}`,
-			});
-			return "terminalized";
-	}
+	return reconcileWithSettlement({
+		...args,
+		settleCompleted: settleCompletedOrchestratorTurn,
+	});
 }
 
 export type ChatTurnAdmission =
@@ -406,88 +333,71 @@ export async function admitChatTurn(args: {
 	question: string;
 	temporalClient: TemporalClientLike;
 }): Promise<ChatTurnAdmission> {
-	for (let attempt = 0; attempt < 2; attempt++) {
-		const admitted = await admitConversationTurn({
-			userId: args.userId,
-			organizationId: args.organizationId,
-			conversationId: args.conversationId,
-			clientRequestKey: args.clientRequestKey,
-			executionId: `orch-${uuidv4()}`,
-			executionMode: args.executionMode,
-			question: args.question,
-			budget: turnBudgetForExecutionMode(
-				args.executionMode as ExecutionMode,
-			),
-		});
-		switch (admitted.outcome) {
-			case "created":
-				return { kind: "created", turn: admitted.turn };
-			case "existing":
-				return { kind: "existing", turn: admitted.turn };
-			case "conversation_forbidden":
-				return {
-					kind: "refused",
-					response: json(403, {
-						error: "Forbidden",
-						message: "This conversation is not accessible",
-					}),
-				};
-			case "key_reused":
-				return {
-					kind: "refused",
-					response: json(422, {
-						error: "clientRequestKey reused",
+	const admission = await admitTurn({
+		...args,
+		newExecutionId: () => `orch-${uuidv4()}`,
+		budget: turnBudgetForExecutionMode(args.executionMode as ExecutionMode),
+		settleCompleted: settleCompletedOrchestratorTurn,
+	});
+	if (admission.kind !== "refused") {
+		return admission;
+	}
+	const { refusal } = admission;
+	switch (refusal.reason) {
+		case "conversation_forbidden":
+			return {
+				kind: "refused",
+				response: json(403, {
+					error: "Forbidden",
+					message: "This conversation is not accessible",
+				}),
+			};
+		case "key_reused":
+			return {
+				kind: "refused",
+				response: json(422, {
+					error: "clientRequestKey reused",
+					message:
+						"This request key already belongs to a message in a different conversation",
+				}),
+			};
+		case "state_unavailable":
+			return {
+				kind: "refused",
+				response: new Response(
+					JSON.stringify({
+						error: "Temporarily unavailable",
+						code: "TURN_STATE_UNAVAILABLE",
 						message:
-							"This request key already belongs to a message in a different conversation",
+							"Could not confirm the conversation's running turn. Please retry.",
 					}),
-				};
-			case "conflict": {
-				const settled = await reconcileTurnWithWorkflow({
-					turn: admitted.turn,
-					temporalClient: args.temporalClient,
-				});
-				if (settled === "terminalized") {
-					continue;
-				}
-				if (settled === "unavailable") {
-					return {
-						kind: "refused",
-						response: new Response(
-							JSON.stringify({
-								error: "Temporarily unavailable",
-								code: "TURN_STATE_UNAVAILABLE",
-								message:
-									"Could not confirm the conversation's running turn. Please retry.",
-							}),
-							{
-								status: 503,
-								headers: {
-									"Content-Type": "application/json",
-									"Retry-After": "2",
-								},
-							},
-						),
-					};
-				}
-				return {
-					kind: "refused",
-					response: json(409, {
-						error: "A turn is already running in this conversation",
-						code: "TURN_IN_PROGRESS",
-						executionId: admitted.turn.executionId,
-					}),
-				};
-			}
+					{
+						status: 503,
+						headers: {
+							"Content-Type": "application/json",
+							"Retry-After": "2",
+						},
+					},
+				),
+			};
+		case "in_progress":
+			return {
+				kind: "refused",
+				response: json(409, {
+					error: "A turn is already running in this conversation",
+					code: "TURN_IN_PROGRESS",
+					// Absent (and so left out of the body) when the conflicting
+					// turn was settled but another took its place.
+					executionId: refusal.executionId,
+				}),
+			};
+		default: {
+			const unhandled: never = refusal;
+			throw new Error(
+				`Unhandled turn refusal: ${JSON.stringify(unhandled)}`,
+			);
 		}
 	}
-	// The conflicting turn was terminalized but another took its place.
-	return {
-		kind: "refused",
-		response: json(409, {
-			error: "A turn is already running in this conversation",
-			code: "TURN_IN_PROGRESS",
-		}),
-	};
 }
 
 /** 409 for a key whose turn was cancelled before it started. */
@@ -529,45 +439,12 @@ export async function cancelTurnBeforeStart(args: {
 	});
 }
 
-/** Thrown by `startTurnWorkflow` for a turn that was stopped before it started. */
-export class TurnStoppedBeforeStartError extends Error {
-	constructor() {
-		super("The turn was stopped before its workflow started");
-		this.name = "TurnStoppedBeforeStartError";
-	}
-}
-
-/**
- * Thrown by `startTurnWorkflow` when the start's outcome is unknown (a
- * transport-level failure: Temporal may have started the workflow and only
- * the response was lost). The turn stays START_PENDING. Not a failure: the
- * caller tells the client to retry the same message key, and that retry's
- * reattach either finds the workflow or reconciles the turn.
- */
-export class TurnStartAmbiguousError extends Error {
-	readonly executionId: string;
-	constructor(executionId: string, cause: unknown) {
-		super("The run's start could not be confirmed; retry to reconnect", {
-			cause,
-		});
-		this.name = "TurnStartAmbiguousError";
-		this.executionId = executionId;
-	}
-}
-
 /**
  * Start the turn's workflow under the turn's executionId with its turnId in
- * the input, then mark the turn ACTIVE.
- *
- *   - A cancel recorded since admission: nothing is started and the turn ends
- *     CANCELLED (`TurnStoppedBeforeStartError`).
- *   - The workflow already exists (a retry whose first start's response was
- *     lost): attach to it.
- *   - An ambiguous transport error (classified across the client's cause
- *     chain): rethrown with the turn left START_PENDING.
- *   - Any other failure: the turn is marked FAILED and the error rethrown.
+ * the input, then mark the turn ACTIVE (see `startAdmittedTurn` in the
+ * shared admission module for the cancel, attach and failure rules).
  */
-export async function startTurnWorkflow(args: {
+export function startTurnWorkflow(args: {
 	temporalClient: TemporalClientLike;
 	turn: ConversationTurn;
 	workflowInput: OrchestratorWorkflowInput;
@@ -576,146 +453,82 @@ export async function startTurnWorkflow(args: {
 	memo: Record<string, unknown>;
 }): Promise<{ handle: unknown; attached: boolean }> {
 	const { turn } = args;
-	const executionId = turn.executionId;
-	if (!executionId) {
-		throw new TurnStoppedBeforeStartError();
-	}
-	const startToken = turn.startToken;
-	if (!startToken) {
-		// Only the request that created the turn starts it; a retry of the
-		// key reattaches instead (see the stream route).
-		throw new Error("Only the turn's start owner may start its workflow");
-	}
-	const current = await getConversationTurnForExecution({
-		executionId,
-		userId: turn.userId,
-		organizationId: turn.organizationId,
-	});
-	if (
-		current &&
-		current.status !== "START_PENDING" &&
-		current.status !== "ACTIVE"
-	) {
-		await abandonConversationTurnStart({
-			turnId: turn.id,
-			executionId,
-			startToken,
-			cancelled: false,
-			reason: "stopped before start",
-		});
-		throw new TurnStoppedBeforeStartError();
-	}
-
-	const protocol = orchestratorApprovalProtocol();
-	const workflowInput: OrchestratorWorkflowInput = {
-		...args.workflowInput,
-		...protocol,
-		executionId,
-		toolLoadingMode:
-			process.env.ADVISOR_TOOL_LOADING === "call_tool"
-				? "call_tool"
-				: undefined,
-		historyRetention:
-			process.env.ADVISOR_HISTORY_RETENTION === "bounded"
-				? "bounded"
-				: undefined,
-		turnId: turn.id,
-		turnContractVersion: TURN_CONTRACT_VERSION,
-		...(turn.tokenAllowance != null
-			? { turnTokenAllowance: turn.tokenAllowance }
-			: {}),
-		// The ledger fences reservations on it (under the workflow's
-		// `orch-turn-budget-v1` marker); null for a turn with no conversation.
-		turnGeneration: turn.generation,
-	};
-	let handle: unknown;
-	let attached = false;
-	try {
-		if (args.continueFromTurnId) {
-			if (!turn.conversationId) {
-				throw new Error("Continuation requires a conversation");
-			}
-			const seed = await budgetContinuationSeed({
-				turnId: args.continueFromTurnId,
-				conversationId: turn.conversationId,
-				userId: turn.userId,
-				organizationId: turn.organizationId,
-				successorTurnId: turn.id,
-			});
-			workflowInput.history = [...(workflowInput.history ?? []), seed];
-			assertChatWorkflowPayload(
-				workflowInput,
-				"orchestrator budget continuation",
-			);
-		}
-		handle = await args.temporalClient.workflow.start(
-			"orchestratorExecutionWorkflow",
-			{
-				// The value of `ORCHESTRATOR_TASK_QUEUE` in @repo/temporal, as
-				// a literal (as the stream route always had it) so this module
-				// imports only types from that package.
-				taskQueue: "fabric-orchestrator",
-				workflowId: executionId,
-				args: [workflowInput],
-				// Under orch-main-round-budget-v1, a cancellation scope bounds
-				// Advisor chat work to 45 minutes from the start event. After
-				// cancellation settles (at most the current activity's remaining
-				// start-to-close, up to 5 minutes in the loop), synthesis runs
-				// outside that scope: two calls × 5 minutes × 3 attempts = 30
-				// minutes, plus 6 seconds of retry delays. Finalization is
-				// 1 minute × 5 attempts + 15 seconds of retry delays. About 40
-				// minutes total leaves ~35 of the remaining 75 for queueing and
-				// completion. Service outages can still prevent a durable write.
-
-				workflowExecutionTimeout: "2 hours",
-				// One turn, one execution: a delayed second start (a retry
-				// racing the first) must find the first execution — even one
-				// that already closed — rather than start another.
-				workflowIdReusePolicy: "REJECT_DUPLICATE",
-				memo: { ...args.memo, ...protocol, turnId: turn.id },
-			},
-		);
-	} catch (error) {
-		const kind = classifyTemporalClientError(error);
-		if (kind === "already_started") {
-			handle = args.temporalClient.workflow.getHandle(executionId);
-			attached = true;
-		} else {
-			// Only a transient failure is ambiguous (the start may have applied
-			// and only its response was lost): it keeps the turn START_PENDING
-			// for the retry (same key) or a reconcile to settle. Every other
-			// classification — including a plain NOT_FOUND refusal — is a
-			// definite answer from Temporal and ends the turn.
-			if (kind !== "transient") {
-				await abandonConversationTurnStart({
-					turnId: turn.id,
-					executionId,
-					startToken,
-					cancelled: false,
-					reason: `start failed: ${error instanceof Error ? error.message : String(error)}`.slice(
-						0,
-						2_000,
-					),
+	return startAdmittedTurn<unknown>({
+		turn,
+		attach: (executionId) =>
+			args.temporalClient.workflow.getHandle(executionId),
+		start: async (executionId) => {
+			const protocol = orchestratorApprovalProtocol();
+			const workflowInput: OrchestratorWorkflowInput = {
+				...args.workflowInput,
+				...protocol,
+				executionId,
+				toolLoadingMode:
+					process.env.ADVISOR_TOOL_LOADING === "call_tool"
+						? "call_tool"
+						: undefined,
+				historyRetention:
+					process.env.ADVISOR_HISTORY_RETENTION === "bounded"
+						? "bounded"
+						: undefined,
+				turnId: turn.id,
+				turnContractVersion: TURN_CONTRACT_VERSION,
+				...(turn.tokenAllowance != null
+					? { turnTokenAllowance: turn.tokenAllowance }
+					: {}),
+				// The ledger fences reservations on it (under the workflow's
+				// `orch-turn-budget-v1` marker); null for a turn with no conversation.
+				turnGeneration: turn.generation,
+			};
+			if (args.continueFromTurnId) {
+				if (!turn.conversationId) {
+					throw new Error("Continuation requires a conversation");
+				}
+				const seed = await budgetContinuationSeed({
+					turnId: args.continueFromTurnId,
+					conversationId: turn.conversationId,
+					userId: turn.userId,
+					organizationId: turn.organizationId,
+					successorTurnId: turn.id,
 				});
-				throw error;
+				workflowInput.history = [
+					...(workflowInput.history ?? []),
+					seed,
+				];
+				assertChatWorkflowPayload(
+					workflowInput,
+					"orchestrator budget continuation",
+				);
 			}
-			throw new TurnStartAmbiguousError(executionId, error);
-		}
-	}
-	await markConversationTurnActive({ turnId: turn.id, executionId });
-	return { handle, attached };
-}
+			return args.temporalClient.workflow.start(
+				"orchestratorExecutionWorkflow",
+				{
+					// The value of `ORCHESTRATOR_TASK_QUEUE` in @repo/temporal, as
+					// a literal (as the stream route always had it) so this module
+					// imports only types from that package.
+					taskQueue: "fabric-orchestrator",
+					workflowId: executionId,
+					args: [workflowInput],
+					// Under orch-main-round-budget-v1, a cancellation scope bounds
+					// Advisor chat work to 45 minutes from the start event. After
+					// cancellation settles (at most the current activity's remaining
+					// start-to-close, up to 5 minutes in the loop), synthesis runs
+					// outside that scope: two calls × 5 minutes × 3 attempts = 30
+					// minutes, plus 6 seconds of retry delays. Finalization is
+					// 1 minute × 5 attempts + 15 seconds of retry delays. About 40
+					// minutes total leaves ~35 of the remaining 75 for queueing and
+					// completion. Service outages can still prevent a durable write.
 
-/** A status the turn never leaves (mirrors the database's terminal set). */
-export function isTerminalTurnStatus(
-	status: ConversationTurn["status"],
-): boolean {
-	return (
-		status === "COMPLETED" ||
-		status === "FAILED" ||
-		status === "LIMITED" ||
-		status === "CANCELLED"
-	);
+					workflowExecutionTimeout: "2 hours",
+					// One turn, one execution: a delayed second start (a retry
+					// racing the first) must find the first execution — even one
+					// that already closed — rather than start another.
+					workflowIdReusePolicy: "REJECT_DUPLICATE",
+					memo: { ...args.memo, ...protocol, turnId: turn.id },
+				},
+			);
+		},
+	});
 }
 
 /**

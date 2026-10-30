@@ -1,3 +1,5 @@
+import type { ScopedRevisionRefusalCode } from "@repo/utils/proposal-artifact/scoped-revision-codes";
+
 /**
  * What the chat records of an accepted assistant proposal, once the save it
  * sent has been answered (Fizzy #2946). The document editor and the feature
@@ -42,4 +44,46 @@ export const ACCEPT_OUTCOME_SUMMARIES = {
 	 */
 	heldElsewhere:
 		"Not applied: another tab was reviewing an assistant proposal.",
+	/**
+	 * Not saved, and taken back out of the editor: an AI accept on a
+	 * client-document Proposal refused by the check its save runs, with no
+	 * saved base to be checked against, or whose save failed (Fizzy #2946).
+	 */
+	notApplied: (reason: string) => `Not applied: ${reason}`,
 } as const;
+
+/**
+ * Why an AI accept on a client-document Proposal was not applied, for
+ * `ACCEPT_OUTCOME_SUMMARIES.notApplied` (Fizzy #2946), by the refusal code
+ * of its save or the editor's own code; `unknown` for any other.
+ */
+const ACCEPT_NOT_APPLIED_REASONS: Record<
+	ScopedRevisionRefusalCode | "NO_BASE" | "HELD_ELSEWHERE",
+	string
+> = {
+	REVISION_OUTSIDE_TARGET:
+		"it changed a section outside the one it targeted.",
+	REVISION_CHANGED_DIAGRAM: "it changed an existing diagram.",
+	RESPONSE_ECHOED: "it repeated wording from the Internal Analysis.",
+	FINDING_RESPONSE_CHANGED: "the finding's answer changed in the meantime.",
+	FINDING_SECTION_CHANGED:
+		"the finding's section changed since the analysis raised it.",
+	// The same code covers a revision past its expiry and accepted text that
+	// is not the reviewed one; which of them is not known here.
+	REVISION_TOKEN_INVALID:
+		"the revision had expired, or the accepted text differed from what was reviewed. Request it again.",
+	NO_BASE: "the editor was still syncing with the saved document.",
+	HELD_ELSEWHERE: "another tab was reviewing an assistant proposal.",
+};
+const ACCEPT_NOT_APPLIED_UNKNOWN_REASON = "its save did not go through.";
+
+/** The reason `ACCEPT_OUTCOME_SUMMARIES.notApplied` records for `code`. */
+export function acceptNotAppliedReason(code: string | undefined): string {
+	return (
+		(code !== undefined &&
+			(ACCEPT_NOT_APPLIED_REASONS as Partial<Record<string, string>>)[
+				code
+			]) ||
+		ACCEPT_NOT_APPLIED_UNKNOWN_REASON
+	);
+}

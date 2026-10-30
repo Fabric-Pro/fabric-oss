@@ -1,7 +1,14 @@
 "use client";
 
+import { Pagination } from "@saas/shared/components/Pagination";
+
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+	keepPreviousData,
+	useMutation,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import {
 	Dialog,
@@ -43,7 +50,7 @@ export function PmImportDialog({
 	const [search, setSearch] = useState("");
 	const [committedSearch, setCommittedSearch] = useState("");
 
-	const { data, isLoading, isError, error, isFetching } = useQuery({
+	const { data, isLoading, isError, error } = useQuery({
 		...orpc.projects.testCases.sync.listPmTestCases.queryOptions({
 			input: {
 				projectId,
@@ -54,6 +61,7 @@ export function PmImportDialog({
 			},
 		}),
 		enabled: open,
+		placeholderData: keepPreviousData,
 		retry: false,
 	});
 
@@ -192,41 +200,36 @@ export function PmImportDialog({
 						)}
 					</ul>
 
-					<div className="flex items-center justify-between gap-2 text-muted-foreground text-xs">
-						<span className="tabular-nums">
-							{data
-								? t("import.pageInfo", {
-										page: data.page,
-										// `total` is the paginated count (matches
-										// `hasNextPage`) — filtered by the active
-										// search; `totalOnBoard` would mislead there.
-										total: data.total,
-									})
-								: ""}
-						</span>
-						<div className="flex items-center gap-2">
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								disabled={page <= 1 || isFetching}
-								onClick={() =>
-									setPage((p) => Math.max(1, p - 1))
-								}
-							>
-								{t("import.prev")}
-							</Button>
-							<Button
-								type="button"
-								variant="outline"
-								size="sm"
-								disabled={!data?.hasNextPage || isFetching}
-								onClick={() => setPage((p) => p + 1)}
-							>
-								{t("import.next")}
-							</Button>
-						</div>
-					</div>
+					{data && data.total <= PAGE_SIZE && (
+						<p className="text-muted-foreground text-xs tabular-nums">
+							{t("import.pageInfo", {
+								page: data.page ?? page,
+								total: data.total,
+							})}
+						</p>
+					)}
+					{data && data.total > PAGE_SIZE && (
+						<Pagination
+							totalItems={data.total}
+							itemsPerPage={PAGE_SIZE}
+							currentPage={page}
+							onChangeCurrentPage={setPage}
+							navigationLabel={t("import.paginationAria")}
+							goToPageLabel={t("import.jumpLabel")}
+							goLabel={t("import.go")}
+							pageRangeError={(lastPage) =>
+								t("import.rangeError", { lastPage })
+							}
+							pageLabel={(page) =>
+								t("import.pageLabel", { page })
+							}
+							previousLabel={t("import.prev")}
+							nextLabel={t("import.next")}
+							formatRange={(_from, _to, total) =>
+								t("import.pageInfo", { page, total })
+							}
+						/>
+					)}
 				</div>
 			</DialogContent>
 		</Dialog>

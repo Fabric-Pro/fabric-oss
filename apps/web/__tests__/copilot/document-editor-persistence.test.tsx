@@ -36,6 +36,7 @@
  * lifecycle edge we need to assert FR-2 against.
  */
 
+import { AssistantThreadProvider } from "@saas/shared/components/copilot/assistant-thread";
 import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { act, render as rtlRender } from "@testing-library/react";
 
@@ -56,6 +57,36 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // each test mutate the values the next render sees without re-defining
 // the mocks.
 // ---------------------------------------------------------------------------
+
+const traceState = vi.hoisted(() => ({
+	current: {} as Record<string, unknown>,
+}));
+
+const runAgent = vi.hoisted(() => ({
+	handlers: new Set<Record<string, (...args: any[]) => void>>(),
+	get state() {
+		return traceState.current;
+	},
+	subscribe: vi.fn((handler: Record<string, (...args: any[]) => void>) => {
+		runAgent.handlers.add(handler);
+		return { unsubscribe: () => runAgent.handlers.delete(handler) };
+	}),
+}));
+vi.mock("@copilotkit/react-core/v2/context", () => ({
+	useCopilotKit: () => ({
+		copilotkit: {
+			agents: { project_document_generator: runAgent },
+			subscribe: () => ({ unsubscribe: () => {} }),
+		},
+	}),
+}));
+function runEvent(name: string, params: object = {}) {
+	act(() => {
+		for (const handler of runAgent.handlers) {
+			handler[name]?.(params);
+		}
+	});
+}
 
 const { mockMessagesRef, mockIsLoadingRef, mockMutateAsync, mockToastError } =
 	vi.hoisted(() => ({
@@ -118,6 +149,8 @@ interface MakeMessageOptions {
 }
 
 /**
+ * Legacy GraphQL compatibility fixture. Production AG-UI trace tests below
+ * use plain messages and agent lifecycle events instead.
  * Build a structural CopilotKit `TextMessage`-shaped object. The
  * runtime ships a class with discriminator methods; we replicate the
  * shape with plain objects so the test doesn't import the runtime
@@ -523,6 +556,121 @@ describe("CopilotPersistenceHook — stream-completion persistence (FR-2)", () =
 });
 
 // ---------------------------------------------------------------------------
+// The CopilotKit thread offered as the conversation's id (`assistant-thread`)
+// ---------------------------------------------------------------------------
+
+describe("CopilotPersistenceHook — thread id as the conversation id", () => {
+	const THREAD = "thread-example-0001";
+
+	function renderInThread(
+		conversationId: string | null,
+		thread: { threadId: string } | null = { threadId: THREAD },
+	) {
+		return rtlRender(
+			<CopilotPersistenceHook
+				documentRefKind="PROJECT_DOCUMENT"
+				documentRefId="doc-1"
+				projectId="proj-1"
+				organizationId="org-1"
+				conversationId={conversationId}
+				onConversationIdResolved={vi.fn()}
+				onSpilled={vi.fn()}
+				requestedVisibility="SHARED"
+				agentId="project_document_generator"
+			/>,
+			{
+				wrapper: ({ children }) => (
+					<AssistantThreadProvider
+						value={thread && { ...thread, startNewThread: vi.fn() }}
+					>
+						<CopilotChatSessionProvider>
+							{children}
+						</CopilotChatSessionProvider>
+					</AssistantThreadProvider>
+				),
+			},
+		);
+	}
+
+	beforeEach(() => {
+		mockIsLoadingRef.current = false;
+		mockMutateAsync.mockReset().mockResolvedValue({
+			conversationId: THREAD,
+			persistedAt: "2026-05-19T12:00:01.000Z",
+		});
+		mockMessagesRef.current = [
+			makeTextMessage({
+				id: "user-msg",
+				role: "user",
+				content: "Tighten the intro.",
+				code: "Success",
+			}),
+			makeTextMessage({
+				id: "assistant-msg",
+				role: "assistant",
+				content: "Done.",
+				code: "Success",
+			}),
+		];
+		vi.spyOn(console, "info").mockImplementation(() => {});
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it("offers the thread id for the conversation the first turn creates, and only then", async () => {
+		renderInThread(null);
+		await act(async () => {
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+
+		expect(mockMutateAsync).toHaveBeenCalledTimes(2);
+		expect(mockMutateAsync.mock.calls[0][0]).toMatchObject({
+			conversationId: null,
+			proposedConversationId: THREAD,
+			message: expect.objectContaining({ id: "user-msg" }),
+		});
+		expect(mockMutateAsync.mock.calls[1][0]).toMatchObject({
+			conversationId: THREAD,
+			message: expect.objectContaining({ id: "assistant-msg" }),
+		});
+		expect(mockMutateAsync.mock.calls[1][0]).not.toHaveProperty(
+			"proposedConversationId",
+		);
+	});
+
+	it("offers nothing for a turn of an existing conversation", async () => {
+		renderInThread("conv-existing");
+		await act(async () => {
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+
+		expect(mockMutateAsync).toHaveBeenCalledTimes(2);
+		for (const [input] of mockMutateAsync.mock.calls) {
+			expect(input).toMatchObject({ conversationId: "conv-existing" });
+			expect(input).not.toHaveProperty("proposedConversationId");
+		}
+	});
+
+	it("offers nothing outside an assistant mount", async () => {
+		renderInThread(null, null);
+		await act(async () => {
+			await Promise.resolve();
+		});
+
+		expect(mockMutateAsync.mock.calls[0][0]).toMatchObject({
+			conversationId: null,
+		});
+		expect(mockMutateAsync.mock.calls[0][0]).not.toHaveProperty(
+			"proposedConversationId",
+		);
+	});
+});
+
+// ---------------------------------------------------------------------------
 // `computeFingerprint` — pure helper covering the effect-dep contract
 // ---------------------------------------------------------------------------
 
@@ -589,4 +737,857 @@ describe("computeFingerprint — effect dependency stability", () => {
 		]);
 		expect(a).toBe(b);
 	});
+});
+
+it("saves the final bounded trace on the reply after the stream settles", async () => {
+	mockMutateAsync.mockReset();
+	mockMutateAsync.mockResolvedValue({ conversationId: "conv-new" });
+	const user = { id: "trace-user", role: "user", content: "help" };
+	const reply = { id: "trace-reply", role: "assistant", content: "done" };
+	mockMessagesRef.current = [
+		user,
+		reply,
+		{ id: "result", role: "tool", toolCallId: "tool-0", content: "ok" },
+		{
+			id: "failed-result",
+			role: "tool",
+			toolCallId: "tool-2",
+			content: "Error: failed",
+		},
+	];
+	mockIsLoadingRef.current = true;
+	traceState.current = {};
+	const view = renderHook();
+	runEvent("onRunInitialized");
+	await flushMicrotasks();
+	expect(
+		mockMutateAsync.mock.calls.some(([v]) => v.message.id === reply.id),
+	).toBe(false);
+	traceState.current = {
+		messages: [user, reply],
+		reasoningByTurn: { 1: { text: "final reasoning", durationMs: 42 } },
+		toolCallsByTurn: {
+			1: Array.from({ length: 150 }, (_, i) => ({
+				id: `tool-${i}`,
+				name: i === 1 ? "write_document_local" : "search",
+				status: "pending",
+				startedAt: 1,
+				args: { secret: true },
+				result: "private",
+			})),
+		},
+	};
+	runEvent("onRunFinishedEvent", { outcome: "success" });
+	runEvent("onRunFinalized");
+	mockIsLoadingRef.current = false;
+	view.rerender(
+		<CopilotPersistenceHook
+			documentRefKind="PROJECT_DOCUMENT"
+			documentRefId="doc-1"
+			projectId="proj-1"
+			organizationId="org-1"
+			conversationId="conv-new"
+			onConversationIdResolved={() => {}}
+			onSpilled={() => {}}
+			requestedVisibility="SHARED"
+			agentId="project_document_generator"
+		/>,
+	);
+	await flushMicrotasks();
+	const saved = mockMutateAsync.mock.calls.find(
+		([v]) => v.message.id === reply.id,
+	)?.[0].message;
+	expect(saved).toMatchObject({
+		reasoningText: "final reasoning",
+		reasoningDurationMs: 42,
+	});
+	expect(saved.metadata.fabricAssistantToolTrace).toHaveLength(100);
+	expect(saved.metadata.fabricAssistantToolTrace[0]).toEqual({
+		id: "tool-0",
+		name: "search",
+		status: "success",
+		startedAt: 1,
+	});
+	expect(saved.metadata.fabricAssistantToolTrace[1].status).toBe("waiting");
+	expect(saved.metadata.fabricAssistantToolTrace[2].status).toBe("error");
+	expect(JSON.stringify(saved.metadata)).not.toMatch(
+		/secret|private|final reasoning/,
+	);
+});
+
+it("saves stopped tools including unresolved confirmations", async () => {
+	mockMutateAsync.mockReset();
+	mockMutateAsync.mockResolvedValue({ conversationId: "conv-new" });
+	const user = { id: "stop-user", role: "user", content: "help" };
+	const reply = { id: "stop-reply", role: "assistant", content: "partial" };
+	mockMessagesRef.current = [user, reply];
+	traceState.current = {
+		messages: [user, reply],
+		toolCallsByTurn: {
+			1: [
+				{
+					id: "stopped",
+					name: "search",
+					status: "pending",
+					startedAt: 1,
+				},
+				{
+					id: "waiting",
+					name: "apply_document_patches",
+					status: "pending",
+					startedAt: 2,
+				},
+			],
+		},
+	};
+	mockIsLoadingRef.current = true;
+	const view = renderHook();
+	await flushMicrotasks();
+	runEvent("onRunInitialized");
+	runEvent("onRunErrorEvent", { event: { code: "abort" } });
+	runEvent("onRunFinalized");
+	mockIsLoadingRef.current = false;
+	view.rerender(
+		<CopilotPersistenceHook
+			documentRefKind="PROJECT_DOCUMENT"
+			documentRefId="doc-1"
+			projectId="proj-1"
+			organizationId="org-1"
+			conversationId="conv-new"
+			onConversationIdResolved={() => {}}
+			onSpilled={() => {}}
+			requestedVisibility="SHARED"
+			agentId="project_document_generator"
+		/>,
+	);
+	await flushMicrotasks();
+	const saved = mockMutateAsync.mock.calls.find(
+		([v]) => v.message.id === reply.id,
+	)?.[0].message;
+	expect(saved.streamStatus).toBe("cancelled");
+	expect(saved.metadata.fabricAssistantToolTrace).toEqual([
+		{
+			id: "stopped",
+			name: "search",
+			status: "stopped",
+			startedAt: 1,
+		},
+		{
+			id: "waiting",
+			name: "apply_document_patches",
+			status: "stopped",
+			startedAt: 2,
+		},
+	]);
+});
+
+it("persists a frontend answer on an already saved parent reply", async () => {
+	mockMutateAsync.mockReset();
+	mockMutateAsync.mockResolvedValue({ conversationId: "conv-new" });
+	const user = { id: "question-user", role: "user", content: "help" };
+	const reply = {
+		id: "question-reply",
+		role: "assistant",
+		content: "A question",
+	};
+	const sibling = {
+		id: "question-call",
+		role: "assistant",
+		toolCalls: [
+			{ id: "question-id", name: "ask_clarifying_question", args: {} },
+		],
+	};
+	mockMessagesRef.current = [user, reply, sibling];
+	traceState.current = {
+		messages: [user, reply],
+		toolCallsByTurn: {
+			1: [
+				{
+					id: "question-id",
+					name: "ask_clarifying_question",
+					status: "pending",
+				},
+			],
+		},
+	};
+	mockIsLoadingRef.current = true;
+	const view = renderHook();
+	await flushMicrotasks();
+	const rerender = () =>
+		view.rerender(
+			<CopilotPersistenceHook
+				documentRefKind="PROJECT_DOCUMENT"
+				documentRefId="doc-1"
+				projectId="proj-1"
+				organizationId="org-1"
+				conversationId="conv-new"
+				onConversationIdResolved={() => {}}
+				onSpilled={() => {}}
+				requestedVisibility="SHARED"
+				agentId="project_document_generator"
+			/>,
+		);
+	mockIsLoadingRef.current = false;
+	rerender();
+	await flushMicrotasks();
+	expect(
+		mockMutateAsync.mock.calls.find(([v]) => v.message.id === reply.id)?.[0]
+			.message.metadata.fabricAssistantToolTrace[0].status,
+	).toBe("waiting");
+	mockMutateAsync.mockClear();
+	mockMessagesRef.current = [
+		...mockMessagesRef.current,
+		{
+			id: "answer",
+			role: "tool",
+			toolCallId: "question-id",
+			content: '{"answered":true,"answer":"Yes"}',
+		},
+		{ id: "next-user", role: "user", content: "continue" },
+	];
+	traceState.current = {};
+	rerender();
+	await flushMicrotasks();
+	expect(
+		mockMutateAsync.mock.calls.find(([v]) => v.message.id === reply.id)?.[0]
+			.message.toolCalls,
+	).toEqual([
+		expect.objectContaining({
+			id: "question-id",
+			status: "success",
+			result: '{"answered":true,"answer":"Yes"}',
+		}),
+	]);
+});
+
+for (const failure of ["onRunErrorEvent", "onRunFailed"]) {
+	it(`saves plain AG-UI errors after finalization: ${failure}`, async () => {
+		mockMutateAsync.mockReset();
+		mockMutateAsync.mockResolvedValue({ conversationId: "conv-new" });
+		const user = { id: "error-user", role: "user", content: "help" };
+		const reply = {
+			id: "error-reply",
+			role: "assistant",
+			content: "partial",
+		};
+		mockMessagesRef.current = [user, reply];
+		traceState.current = {};
+		mockIsLoadingRef.current = true;
+		const view = renderHook();
+		runEvent("onRunInitialized");
+		runEvent(failure, {
+			event: { code: "server_error" },
+			error: new Error("failed"),
+		});
+		mockIsLoadingRef.current = false;
+		view.rerender(
+			<CopilotPersistenceHook
+				documentRefKind="PROJECT_DOCUMENT"
+				documentRefId="doc-1"
+				projectId="proj-1"
+				organizationId="org-1"
+				conversationId="conv-new"
+				onConversationIdResolved={() => {}}
+				onSpilled={() => {}}
+				requestedVisibility="SHARED"
+				agentId="project_document_generator"
+			/>,
+		);
+		await flushMicrotasks();
+		expect(
+			mockMutateAsync.mock.calls.some(([v]) => v.message.id === reply.id),
+		).toBe(false);
+		traceState.current = {
+			messages: [user, reply],
+			toolCallsByTurn: {
+				1: [
+					{
+						id: "cut-off",
+						name: "search_project_knowledge",
+						status: "pending",
+					},
+				],
+			},
+		};
+		runEvent("onRunFinalized");
+		await flushMicrotasks();
+		const saved = mockMutateAsync.mock.calls.find(
+			([v]) => v.message.id === reply.id,
+		)?.[0].message;
+		expect(saved.streamStatus).toBe("error");
+		expect(saved.metadata.fabricAssistantToolTrace[0].status).toBe(
+			"stopped",
+		);
+	});
+}
+
+it("pins late outcomes and late calls to the reply's conversation across a spill", async () => {
+	mockMutateAsync.mockReset();
+	mockMutateAsync.mockImplementation(async (input) =>
+		input.message.id === "spill-user"
+			? {
+					conversationId: "conv-continuation",
+					spilledTo: "conv-continuation",
+				}
+			: { conversationId: "conv-original" },
+	);
+	const user = { id: "original-user", role: "user", content: "help" };
+	const reply = {
+		id: "original-reply",
+		role: "assistant",
+		content: "question",
+		toolCalls: [
+			{
+				id: "question",
+				function: { name: "ask_clarifying_question", arguments: "{}" },
+			},
+		],
+	};
+	mockMessagesRef.current = [user, reply];
+	traceState.current = {};
+	mockIsLoadingRef.current = true;
+	const view = renderHook({ conversationId: "conv-original" });
+	const rerender = () =>
+		view.rerender(
+			<CopilotPersistenceHook
+				documentRefKind="PROJECT_DOCUMENT"
+				documentRefId="doc-1"
+				projectId="proj-1"
+				organizationId="org-1"
+				conversationId="conv-original"
+				onConversationIdResolved={() => {}}
+				onSpilled={() => {}}
+				requestedVisibility="SHARED"
+				agentId="project_document_generator"
+			/>,
+		);
+	mockIsLoadingRef.current = false;
+	rerender();
+	await flushMicrotasks();
+	mockMessagesRef.current = [
+		...mockMessagesRef.current,
+		{ id: "spill-user", role: "user", content: "continue" },
+	];
+	rerender();
+	await flushMicrotasks();
+	mockMutateAsync.mockClear();
+	// The outcome mutates an existing call, without changing message ids or count.
+	(reply.toolCalls[0] as any).result = '{"answered":true}';
+	rerender();
+	await flushMicrotasks();
+	expect(mockMutateAsync).toHaveBeenCalledWith(
+		expect.objectContaining({
+			conversationId: "conv-original",
+			patchOnly: true,
+			message: expect.objectContaining({ id: reply.id, content: "" }),
+		}),
+	);
+	mockMutateAsync.mockClear();
+	mockMessagesRef.current = [
+		user,
+		reply,
+		{
+			id: "late-call",
+			role: "assistant",
+			toolCalls: [
+				{
+					id: "late",
+					function: { name: "write_document_local", arguments: "{}" },
+				},
+			],
+		},
+		...mockMessagesRef.current.slice(2),
+	];
+	rerender();
+	await flushMicrotasks();
+	expect(mockMutateAsync).toHaveBeenCalledWith(
+		expect.objectContaining({
+			conversationId: "conv-original",
+			patchOnly: true,
+			message: expect.objectContaining({ id: reply.id }),
+		}),
+	);
+});
+
+it("does no trace parsing or serialization while plain messages stream", async () => {
+	mockMutateAsync.mockReset();
+	mockMutateAsync.mockResolvedValue({ conversationId: "conv-new" });
+	mockMessagesRef.current = [
+		{ id: "chunk-user", role: "user", content: "help" },
+		{
+			id: "chunk-reply",
+			role: "assistant",
+			content: "partial",
+			toolCalls: [
+				{
+					id: "chunk-tool",
+					function: {
+						name: "search",
+						arguments: '{"query":"example"}',
+					},
+				},
+			],
+		},
+	];
+	mockIsLoadingRef.current = true;
+	traceState.current = {};
+	const view = renderHook();
+	runEvent("onRunInitialized");
+	await flushMicrotasks();
+	const stringify = vi.spyOn(JSON, "stringify");
+	const parse = vi.spyOn(JSON, "parse");
+	try {
+		for (let i = 0; i < 100; i++) {
+			traceState.current = {
+				streamingContent: `chunk ${i}`,
+				document: `document ${i}`,
+				...(i % 3 === 0
+					? {
+							toolCallsByTurn: {
+								1: [
+									{
+										id: "chunk-tool",
+										name: "search",
+										status: "pending",
+									},
+								],
+							},
+							reasoningByTurn: { 1: { text: "reasoning" } },
+						}
+					: {}),
+			};
+			runEvent("onStateChanged", { state: traceState.current });
+			mockMessagesRef.current = mockMessagesRef.current.map((m) =>
+				m.role === "assistant" ? { ...m, content: `chunk ${i}` } : m,
+			);
+			view.rerender(
+				<CopilotPersistenceHook
+					documentRefKind="PROJECT_DOCUMENT"
+					documentRefId="doc-1"
+					projectId="proj-1"
+					organizationId="org-1"
+					conversationId="conv-new"
+					onConversationIdResolved={() => {}}
+					onSpilled={() => {}}
+					requestedVisibility="SHARED"
+					agentId="project_document_generator"
+				/>,
+			);
+		}
+		expect(stringify).not.toHaveBeenCalled();
+		expect(parse).not.toHaveBeenCalled();
+		expect(
+			mockMutateAsync.mock.calls.some(
+				([v]) => v.message.role === "assistant",
+			),
+		).toBe(false);
+	} finally {
+		stringify.mockRestore();
+		parse.mockRestore();
+	}
+});
+
+it("does not send a late patch after the reply's initial append failed", async () => {
+	mockMutateAsync.mockReset();
+	mockMutateAsync.mockImplementation(async (input) => {
+		if (input.message.id === "failed-reply") {
+			throw new Error("write failed");
+		}
+		return { conversationId: "conv-new" };
+	});
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	try {
+		const user = { id: "failed-user", role: "user", content: "help" };
+		const reply = {
+			id: "failed-reply",
+			role: "assistant",
+			content: "question",
+			toolCalls: [
+				{
+					id: "failed-question",
+					function: {
+						name: "ask_clarifying_question",
+						arguments: "{}",
+					},
+				},
+			],
+		};
+		mockMessagesRef.current = [user, reply];
+		traceState.current = {};
+		mockIsLoadingRef.current = true;
+		const view = renderHook({ conversationId: "conv-new" });
+		mockIsLoadingRef.current = false;
+		const rerender = () =>
+			view.rerender(
+				<CopilotPersistenceHook
+					documentRefKind="PROJECT_DOCUMENT"
+					documentRefId="doc-1"
+					projectId="proj-1"
+					organizationId="org-1"
+					conversationId="conv-new"
+					onConversationIdResolved={() => {}}
+					onSpilled={() => {}}
+					requestedVisibility="SHARED"
+					agentId="project_document_generator"
+				/>,
+			);
+		rerender();
+		await flushMicrotasks();
+		mockMutateAsync.mockClear();
+		mockMessagesRef.current = [
+			...mockMessagesRef.current,
+			{
+				id: "failed-answer",
+				role: "tool",
+				toolCallId: "failed-question",
+				content: "answer",
+			},
+		];
+		rerender();
+		await flushMicrotasks();
+		expect(mockMutateAsync).not.toHaveBeenCalled();
+	} finally {
+		warn.mockRestore();
+	}
+});
+
+it("saves a plain user message during an active run and waits to save the assistant's final trace", async () => {
+	mockMutateAsync.mockReset();
+	mockMutateAsync.mockResolvedValue({ conversationId: "conv-new" });
+	mockMessagesRef.current = [];
+	mockIsLoadingRef.current = true;
+	traceState.current = {};
+	const view = renderHook();
+	runEvent("onRunInitialized");
+	const user = {
+		id: "mid-run-user",
+		role: "user",
+		content: "Save this prompt.",
+	};
+	const reply = {
+		id: "mid-run-reply",
+		role: "assistant",
+		content: "partial",
+		toolCalls: [
+			{
+				id: "mid-run-tool",
+				function: { name: "search", arguments: '{"query":' },
+			},
+		],
+	};
+	const rerender = () =>
+		view.rerender(
+			<CopilotPersistenceHook
+				documentRefKind="PROJECT_DOCUMENT"
+				documentRefId="doc-1"
+				projectId="proj-1"
+				organizationId="org-1"
+				conversationId={null}
+				onConversationIdResolved={view.onConversationIdResolved}
+				onSpilled={view.onSpilled}
+				requestedVisibility="SHARED"
+				agentId="project_document_generator"
+			/>,
+		);
+	const stateRead = vi.spyOn(runAgent, "state", "get");
+	try {
+		mockMessagesRef.current = [user, reply];
+		rerender();
+		await flushMicrotasks();
+		expect(mockMutateAsync).toHaveBeenCalledTimes(1);
+		expect(mockMutateAsync).toHaveBeenCalledWith(
+			expect.objectContaining({
+				conversationId: null,
+				requestedVisibility: "SHARED",
+				message: expect.objectContaining({
+					id: user.id,
+					role: "user",
+					content: user.content,
+					streamStatus: "completed",
+				}),
+			}),
+		);
+		expect(view.onConversationIdResolved).toHaveBeenCalledWith("conv-new");
+		expect(stateRead).not.toHaveBeenCalled();
+		// The session can clear loading before the agent's final state is applied.
+		mockIsLoadingRef.current = false;
+		rerender();
+		await flushMicrotasks();
+		expect(mockMutateAsync).toHaveBeenCalledTimes(1);
+		expect(stateRead).not.toHaveBeenCalled();
+		traceState.current = {
+			messages: [user, reply],
+			reasoningByTurn: { 1: { text: "final reasoning" } },
+			toolCallsByTurn: {
+				1: [{ id: "mid-run-tool", name: "search", status: "success" }],
+			},
+		};
+		runEvent("onRunFinishedEvent", { outcome: "success" });
+		runEvent("onRunFinalized");
+		await flushMicrotasks();
+		expect(mockMutateAsync).toHaveBeenCalledTimes(2);
+		expect(mockMutateAsync.mock.calls[1][0]).toMatchObject({
+			conversationId: "conv-new",
+			message: {
+				id: reply.id,
+				reasoningText: "final reasoning",
+				metadata: {
+					fabricAssistantToolTrace: [
+						{
+							id: "mid-run-tool",
+							name: "search",
+							status: "success",
+						},
+					],
+				},
+			},
+		});
+	} finally {
+		stateRead.mockRestore();
+	}
+});
+
+function applyTraceState(state: Record<string, unknown>) {
+	traceState.current = state;
+	runEvent("onStateChanged", { state });
+}
+
+function serializedTraceMessage(
+	id: string,
+	kind: "HumanMessage" | "AIMessage" | "ToolMessage",
+) {
+	return {
+		lc: 1,
+		type: "constructor",
+		id: ["langchain_core", "messages", kind],
+		kwargs: { id, content: "example" },
+	};
+}
+
+for (const window of [
+	"in-session",
+	"reload without replay",
+	"replay",
+] as const) {
+	for (const end of ["cancelled", "error", "completed"] as const) {
+		it(`retains applied trace maps through partial snapshots: ${window}, ${end}`, async () => {
+			mockMutateAsync.mockReset();
+			mockMutateAsync.mockResolvedValue({ conversationId: "conv-new" });
+			const history =
+				window === "reload without replay"
+					? []
+					: [
+							{
+								id: "prior-user",
+								role: "user",
+								content: "before",
+							},
+							{
+								id: "prior-reply",
+								role: "assistant",
+								content: "saved",
+							},
+						];
+			const user = { id: "partial-user", role: "user", content: "help" };
+			const reply = {
+				id: "partial-reply",
+				role: "assistant",
+				content: "partial",
+			};
+			const turn = history.length ? 2 : 1;
+			mockMessagesRef.current = [...history, user, reply];
+			mockIsLoadingRef.current = true;
+			traceState.current = {};
+			const ui = () => (
+				<CopilotPersistenceHook
+					documentRefKind="PROJECT_DOCUMENT"
+					documentRefId="doc-1"
+					projectId="proj-1"
+					organizationId="org-1"
+					conversationId="conv-new"
+					initialPersistedMessageIds={history.map((m) => m.id)}
+					onConversationIdResolved={() => {}}
+					onSpilled={() => {}}
+					requestedVisibility="SHARED"
+					agentId="project_document_generator"
+				/>
+			);
+			const view = render(ui());
+			runEvent("onRunInitialized");
+			applyTraceState({});
+			const firstTool = {
+				id: "partial-search",
+				name: "search_project_knowledge",
+				status: "pending",
+				startedAt: 1,
+			};
+			applyTraceState({
+				toolCallsByTurn: { [turn]: [firstTool] },
+				reasoningByTurn: {
+					[turn]: { text: "early reasoning", durationMs: 1 },
+				},
+			});
+			// A map for another turn must not replace the current turn's entry.
+			applyTraceState({
+				toolCallsByTurn: {
+					99: [{ id: "other", name: "other", status: "success" }],
+				},
+			});
+			applyTraceState({
+				toolCallsByTurn: {
+					[turn]: [
+						firstTool,
+						{
+							id: "resolved-tool",
+							name: "search",
+							status: "success",
+							startedAt: 2,
+						},
+					],
+				},
+				reasoningByTurn: {
+					[turn]: { text: "latest reasoning", durationMs: 42 },
+				},
+			});
+			const stateMessages = [
+				serializedTraceMessage("result-one", "ToolMessage"),
+				serializedTraceMessage("result-two", "ToolMessage"),
+			];
+			applyTraceState({ messages: stateMessages });
+			if (end === "completed") {
+				// A completed terminal snapshot overrides an accumulated turn entry.
+				traceState.current = {
+					messages: [...history, user, reply].map((m) =>
+						serializedTraceMessage(
+							m.id,
+							m.role === "user" ? "HumanMessage" : "AIMessage",
+						),
+					),
+					toolCallsByTurn: {
+						[turn]: [
+							{
+								...firstTool,
+								status: "error",
+								errorMessage: "terminal failure",
+							},
+						],
+					},
+					reasoningByTurn: {
+						[turn]: { text: "terminal reasoning", durationMs: 84 },
+					},
+				};
+				runEvent("onRunFinishedEvent", { outcome: "success" });
+			} else {
+				runEvent("onRunErrorEvent", {
+					event: {
+						code: end === "cancelled" ? "abort" : "server_error",
+					},
+				});
+			}
+			runEvent("onRunFinalized");
+			mockIsLoadingRef.current = false;
+			view.rerender(ui());
+			await flushMicrotasks();
+			const saved = mockMutateAsync.mock.calls.find(
+				([v]) => v.message.id === reply.id,
+			)?.[0].message;
+			expect(saved.streamStatus).toBe(end);
+			expect(saved.metadata?.fabricAssistantToolTrace).toEqual(
+				end === "completed"
+					? [
+							{
+								...firstTool,
+								status: "error",
+								errorMessage: "terminal failure",
+							},
+						]
+					: [
+							{ ...firstTool, status: "stopped" },
+							{
+								id: "resolved-tool",
+								name: "search",
+								status: "success",
+								startedAt: 2,
+							},
+						],
+			);
+			expect(saved.reasoningText).toBe(
+				end === "completed" ? "terminal reasoning" : "latest reasoning",
+			);
+			expect(saved.reasoningDurationMs).toBe(
+				end === "completed" ? 84 : 42,
+			);
+			expect(saved.metadata).not.toHaveProperty("reasoningText");
+		});
+	}
+}
+
+it("resets accumulated trace maps when the next run starts", async () => {
+	mockMutateAsync.mockReset();
+	mockMutateAsync.mockResolvedValue({ conversationId: "conv-new" });
+	mockMessagesRef.current = [
+		{ id: "reset-user-one", role: "user", content: "one" },
+		{ id: "reset-reply-one", role: "assistant", content: "first" },
+	];
+	mockIsLoadingRef.current = true;
+	traceState.current = {};
+	const ui = () => (
+		<CopilotPersistenceHook
+			documentRefKind="PROJECT_DOCUMENT"
+			documentRefId="doc-1"
+			projectId="proj-1"
+			organizationId="org-1"
+			conversationId="conv-new"
+			onConversationIdResolved={() => {}}
+			onSpilled={() => {}}
+			requestedVisibility="SHARED"
+			agentId="project_document_generator"
+		/>
+	);
+	const view = render(ui());
+	runEvent("onRunInitialized");
+	applyTraceState({
+		toolCallsByTurn: {
+			1: [{ id: "previous", name: "search", status: "pending" }],
+		},
+		reasoningByTurn: { 1: { text: "previous reasoning" } },
+	});
+	applyTraceState({});
+	runEvent("onRunErrorEvent", { event: { code: "abort" } });
+	runEvent("onRunFinalized");
+	mockIsLoadingRef.current = false;
+	view.rerender(ui());
+	await flushMicrotasks();
+	expect(
+		mockMutateAsync.mock.calls.find(
+			([v]) => v.message.id === "reset-reply-one",
+		)?.[0].message,
+	).toMatchObject({
+		reasoningText: "previous reasoning",
+		metadata: {
+			fabricAssistantToolTrace: [
+				{ id: "previous", name: "search", status: "stopped" },
+			],
+		},
+	});
+	// A fresh input window can reuse turn 1 after reloading without replay.
+	mockMessagesRef.current = [
+		{ id: "reset-user-two", role: "user", content: "two" },
+		{ id: "reset-reply-two", role: "assistant", content: "second" },
+	];
+	mockIsLoadingRef.current = true;
+	view.rerender(ui());
+	runEvent("onRunInitialized");
+	applyTraceState({});
+	runEvent("onRunFinishedEvent", { outcome: "success" });
+	runEvent("onRunFinalized");
+	mockIsLoadingRef.current = false;
+	view.rerender(ui());
+	await flushMicrotasks();
+	const saved = mockMutateAsync.mock.calls.find(
+		([v]) => v.message.id === "reset-reply-two",
+	)?.[0].message;
+	expect(saved).toBeDefined();
+	expect(saved.reasoningText).toBeUndefined();
+	expect(saved.metadata?.fabricAssistantToolTrace).toBeUndefined();
 });

@@ -1,5 +1,7 @@
 "use client";
 
+import { Pagination } from "@saas/shared/components/Pagination";
+
 /**
  * Read-only dialog that lists prior `Send by email` actions for a single
  * report artifact. Opens from the History icon in the artifact actions cell
@@ -17,7 +19,6 @@ import { Spinner } from "@shared/components/Spinner";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
-import { Button } from "@ui/components/button";
 import {
 	Dialog,
 	DialogContent,
@@ -45,8 +46,6 @@ import { formatDistanceToNow } from "date-fns";
 import {
 	AlertCircleIcon,
 	CheckCircle2Icon,
-	ChevronLeftIcon,
-	ChevronRightIcon,
 	HistoryIcon,
 	MailIcon,
 	SearchIcon,
@@ -115,7 +114,6 @@ export function ArtifactDeliveryHistoryDialog({
 
 	const sends = data?.sends ?? [];
 	const total = data?.total ?? 0;
-	const totalPages = Math.max(1, Math.ceil(total / pageSize));
 	const currentRangeStart = total === 0 ? 0 : page * pageSize + 1;
 	const currentRangeEnd = Math.min(total, page * pageSize + sends.length);
 
@@ -303,14 +301,19 @@ export function ArtifactDeliveryHistoryDialog({
 										Loading…
 									</span>
 								)}
-								Showing{" "}
-								<span className="font-medium text-foreground">
-									{currentRangeStart}–{currentRangeEnd}
-								</span>{" "}
-								of{" "}
-								<span className="font-medium text-foreground">
-									{total}
-								</span>
+								{total <= pageSize && (
+									<>
+										Showing{" "}
+										<span className="font-medium text-foreground">
+											{currentRangeStart}–
+											{currentRangeEnd}
+										</span>{" "}
+										of{" "}
+										<span className="font-medium text-foreground">
+											{total}
+										</span>{" "}
+									</>
+								)}
 							</div>
 							<div className="flex items-center gap-2">
 								<span>Rows per page</span>
@@ -337,31 +340,16 @@ export function ArtifactDeliveryHistoryDialog({
 								</Select>
 							</div>
 						</div>
-						<div className="flex items-center gap-2">
-							<Button
-								variant="outline"
-								size="sm"
-								onClick={() =>
-									setPage((p) => Math.max(0, p - 1))
+						{total > pageSize && (
+							<Pagination
+								totalItems={total}
+								itemsPerPage={pageSize}
+								currentPage={page + 1}
+								onChangeCurrentPage={(next) =>
+									setPage(next - 1)
 								}
-								disabled={page === 0 || isFetching}
-							>
-								<ChevronLeftIcon className="h-3 w-3" />
-								Prev
-							</Button>
-							<span>
-								Page {page + 1} / {totalPages}
-							</span>
-							<Button
-								variant="outline"
-								size="sm"
-								onClick={() => setPage((p) => p + 1)}
-								disabled={!data?.hasMore || isFetching}
-							>
-								Next
-								<ChevronRightIcon className="h-3 w-3" />
-							</Button>
-						</div>
+							/>
+						)}
 					</div>
 				)}
 			</DialogContent>

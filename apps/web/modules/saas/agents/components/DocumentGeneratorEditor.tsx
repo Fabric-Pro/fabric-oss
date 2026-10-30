@@ -206,23 +206,7 @@ export function DocumentGeneratorEditor({
 	agentId = "document_generator",
 	title = "AI Assistant",
 	initialMessage = "Hi! I can help you edit documents in place. Try asking me to:\n\n• Expand a specific section\n• Add more technical details, examples, or edge cases\n• Fill in missing sections without rewriting the whole document",
-	suggestions = [
-		{
-			title: "Expand a section",
-			message:
-				"Expand the current section with more detailed requirements, examples, and implementation notes.",
-		},
-		{
-			title: "Add edge cases",
-			message:
-				"Add edge cases, failure modes, and exception handling details to the relevant parts of this document.",
-		},
-		{
-			title: "Fill missing details",
-			message:
-				"Find thin or incomplete sections and add concrete technical details without regenerating the full document.",
-		},
-	],
+	suggestions = DEFAULT_SUGGESTIONS,
 	AssistantMessage = CopilotAssistantMessageForDocumentGenerator,
 }: DocumentGeneratorEditorProps) {
 	const [documentType, setDocumentType] = useState<DocumentType>("general");
@@ -233,8 +217,8 @@ export function DocumentGeneratorEditor({
 	// CopilotKit's live message store. `useCopilotChatInternal` (NOT
 	// `useCopilotChat`) is the correct read hook for the raw message array the
 	// sidebar renders from — the same store `CopilotPersistenceHook` subscribes
-	// to. `useCopilotChat().visibleMessages` does not surface live turns in the
-	// AGUI shape the persistence walker needs. `setMessages` is the supported
+	// to. CopilotKit 1.80 supplies the raw AG-UI transcript as `messages`.
+	// `setMessages` is the supported
 	// primitive for clearing/hydrating the transcript (same as DocumentEditor).
 	const { setMessages: setCopilotMessages, messages: internalMessages } =
 		useCopilotChatInternal();
@@ -829,6 +813,13 @@ export function DocumentGeneratorEditor({
 	const isPatchMode =
 		isLoading && (agentState?.document ?? "") === baselineRef.current;
 
+	const chatLabels = useMemo(
+		() => ({
+			title,
+			initial: initialMessage,
+		}),
+		[title, initialMessage],
+	);
 	return (
 		<CopilotSidebar
 			AssistantMessage={AssistantMessage}
@@ -837,10 +828,7 @@ export function DocumentGeneratorEditor({
 			defaultOpen={true}
 			clickOutsideToClose={false}
 			Input={CustomSidebarInput}
-			labels={{
-				title,
-				initial: initialMessage,
-			}}
+			labels={chatLabels}
 			suggestions={suggestions}
 		>
 			{/* h-full (not h-screen): the page wraps this in an
@@ -999,13 +987,14 @@ interface ConfirmChangesProps {
 }
 
 function ConfirmChanges({
+	args,
 	recordVerdict,
 	respond,
 	status,
 	onReject,
 	onConfirm,
 }: ConfirmChangesProps) {
-	useConfirmChangesVerdictCard(recordVerdict);
+	useConfirmChangesVerdictCard(recordVerdict, args?.draftId);
 	const [accepted, setAccepted] = useState<boolean | null>(null);
 	const [hidden, setHidden] = useState(false);
 
@@ -1083,3 +1072,21 @@ function ConfirmChanges({
 		</div>
 	);
 }
+
+const DEFAULT_SUGGESTIONS = [
+	{
+		title: "Expand a section",
+		message:
+			"Expand the current section with more detailed requirements, examples, and implementation notes.",
+	},
+	{
+		title: "Add edge cases",
+		message:
+			"Add edge cases, failure modes, and exception handling details to the relevant parts of this document.",
+	},
+	{
+		title: "Fill missing details",
+		message:
+			"Find thin or incomplete sections and add concrete technical details without regenerating the full document.",
+	},
+];

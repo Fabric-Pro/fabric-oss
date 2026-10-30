@@ -995,3 +995,12 @@ describe("StoryWorkspace — the body region shows and protects the rewrite", ()
 		await waitFor(() => expect(setEditableSpy).toHaveBeenCalledWith(true));
 	});
 });
+
+// Keep the stateful agent fixture used by this page scenario.
+vi.mock("@saas/shared/components/copilot/use-page-agent", async () => {
+	const core = await import("@copilotkit/react-core");
+	return {
+		usePageAgent: (name: string, initialState: object) =>
+			core.useCoAgent({ name, initialState }),
+	};
+});

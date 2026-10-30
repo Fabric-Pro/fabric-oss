@@ -461,6 +461,7 @@ describe("DocumentDownloadDropdown — server export of a client-document Propos
 			...READY,
 			warnings: [
 				{ code: "DIAGRAM_PLACEHOLDER", count: 2 },
+				{ code: "DIAGRAM_NOT_PRINTABLE", count: 1 },
 				{ code: "IMAGE_DROPPED", count: 1 },
 			],
 		});
@@ -471,7 +472,7 @@ describe("DocumentDownloadDropdown — server export of a client-document Propos
 			"exportLeftOut",
 			{
 				description:
-					"exportWarningDiagramPlaceholder exportWarningImageDropped",
+					"exportWarningDiagramPlaceholder exportWarningDiagramNotPrintable exportWarningImageDropped",
 			},
 		]);
 		expect(rec.urlDownloads).toHaveLength(1);

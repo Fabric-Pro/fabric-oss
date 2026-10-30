@@ -52,6 +52,9 @@ vi.mock("@copilotkit/react-core", () => ({
 	}),
 }));
 vi.mock("@copilotkit/react-core/v2", () => ({
+	useCopilotKit: () => ({
+		copilotkit: { subscribe: () => ({ unsubscribe: vi.fn() }) },
+	}),
 	useAgent: () => ({ agent: { state: {}, setState: vi.fn() } }),
 }));
 

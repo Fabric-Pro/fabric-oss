@@ -39,6 +39,7 @@ import { selectTaskQueues } from "./lib/worker-task-queue-selection";
 import { buildWorkflowBundleOptions } from "./lib/workflow-bundle-options";
 import { PUBLISHING_RECONCILE_TASK_QUEUE } from "./schedules";
 import {
+	AGUI_RUN_TASK_QUEUE,
 	COMPANY_CONTEXT_TASK_QUEUE,
 	GLOSSY_EDITION_TASK_QUEUE,
 	ORCHESTRATOR_TASK_QUEUE,
@@ -193,7 +194,28 @@ export const ACTIVITY_SLOTS = {
 	// file.
 	publishingReconcile: 2,
 	monitoringAlias: 5,
+	// Durable CopilotKit assistant runs. One slot is one person's assistant
+	// turn: it streams one HTTP response from the LangGraph agent and writes
+	// each event to Redis, for up to the 840 s run bound, almost all of it
+	// waiting on the agent. Ten is a starting point sized to concurrent
+	// assistant turns, not to CPU. The activity never opens a database
+	// connection (the AI token comes with the run's input from Redis, the agent
+	// URL comes from the environment, the run's input and events live in
+	// Redis), so these slots are left out of the pool budget below
+	// (`DATABASE_FREE_TASK_QUEUES`) instead of adding five connections nothing
+	// would use.
+	aguiRuns: 10,
 } as const;
+
+/**
+ * Queues whose activities never open a database connection, so their slots
+ * do not count toward this process's pool. A queue belongs here only when
+ * every activity registered for it has been checked to reach no Prisma call,
+ * interceptors included.
+ */
+const DATABASE_FREE_TASK_QUEUES: ReadonlySet<string> = new Set([
+	AGUI_RUN_TASK_QUEUE,
+]);
 
 /**
  * One worker per task queue, because each worker polls exactly one queue.
@@ -405,6 +427,21 @@ const TASK_QUEUE_WORKERS: readonly TaskQueueWorkerOptions[] = [
 		maxConcurrentActivityTaskExecutions: ACTIVITY_SLOTS.monitoringAlias,
 		maxConcurrentWorkflowTaskExecutions: 5,
 	},
+	// Durable CopilotKit assistant runs get their OWN queue: a run that waits
+	// past the web runtime's pickup timeout is taken back into the request,
+	// so on a shared foreground queue a burst of document generation would
+	// silently turn durable runs off, and assistant turns would take the
+	// slots document generation is waiting on.
+	{
+		taskQueue: AGUI_RUN_TASK_QUEUE,
+		maxConcurrentActivityTaskExecutions: ACTIVITY_SLOTS.aguiRuns,
+		maxConcurrentWorkflowTaskExecutions: 10,
+		// A Stop reaches the activity only in a heartbeat response, and the
+		// SDK otherwise throttles heartbeats to ~80% of the 30 s heartbeat
+		// timeout. With 1 s, a stopped turn ends within about a second of its
+		// next event (10 s while the agent is quiet), as on the orchestrator.
+		maxHeartbeatThrottleInterval: "1s",
+	},
 ];
 
 /**
@@ -438,6 +475,23 @@ export function activitySlotTotal(
 }
 
 /**
+ * Activity slots that may hold a database connection: the queues' slots less
+ * those of `DATABASE_FREE_TASK_QUEUES`. Exported for the worker bootstrap test.
+ */
+export function databaseSlotTotal(
+	queues: readonly Pick<
+		TaskQueueWorkerOptions,
+		"taskQueue" | "maxConcurrentActivityTaskExecutions"
+	>[],
+): number {
+	return activitySlotTotal(
+		queues.filter(
+			(queue) => !DATABASE_FREE_TASK_QUEUES.has(queue.taskQueue),
+		),
+	);
+}
+
+/**
  * Resolved once at load, so an invalid selection stops the process before it
  * connects to anything instead of leaving a queue silently unpolled.
  */
@@ -453,7 +507,8 @@ const SELECTED_TASK_QUEUE_WORKERS = selectTaskQueueWorkers();
  * because `connectionTimeoutMillis` also bounds queued callers, surfaced as
  * timeout-shaped Prisma errors rather than as anything recognisably
  * pool-related. A process limited to some queues (`WORKER_TASK_QUEUES`) is
- * sized from those queues' slots alone.
+ * sized from those queues' slots alone, and slots on a queue that never
+ * touches the database (`DATABASE_FREE_TASK_QUEUES`) are not counted.
  *
  * Half the slot count is the compromise: activities hold a connection for a
  * fraction of their lifetime (most of it is spent in LLM and HTTP calls), so
@@ -466,7 +521,7 @@ function applyDatabasePoolBudget(): void {
 		return;
 	}
 	process.env.DATABASE_POOL_MAX = String(
-		Math.ceil(activitySlotTotal(SELECTED_TASK_QUEUE_WORKERS) / 2),
+		Math.ceil(databaseSlotTotal(SELECTED_TASK_QUEUE_WORKERS) / 2),
 	);
 }
 

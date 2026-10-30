@@ -21,6 +21,10 @@
  * AC-11: a `NOT_FOUND` distinguishable from `FORBIDDEN` would let a curious
  * caller probe whether a private thread exists. Both go through the same null
  * branch.
+ *
+ * Before any of that, a caller who cannot see the document's project is
+ * refused NOT_FOUND in a missing project's words (`assertDocumentProjectAccess`),
+ * which says nothing about the thread either.
  */
 
 import { ORPCError } from "@orpc/server";
@@ -36,7 +40,11 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../../../organizations/lib/membership";
-import { DocumentRefKindSchema, resignMessageAttachments } from "./_shared";
+import {
+	assertDocumentProjectAccess,
+	DocumentRefKindSchema,
+	resignMessageAttachments,
+} from "./_shared";
 
 export const getByIdForDocument = tenantProtectedProcedure
 	.use(requirePermission(Permissions.PROJECT_READ))
@@ -75,6 +83,15 @@ export const getByIdForDocument = tenantProtectedProcedure
 				});
 			}
 		}
+
+		// Membership alone would let a member who is not on the project read
+		// its documents' SHARED threads. A guest is refused above.
+		await assertDocumentProjectAccess({
+			documentRefKind: input.documentRefKind,
+			documentRefId: input.documentRefId,
+			projectId: input.projectId,
+			userId: user.id,
+		});
 
 		// Feature flag: spec §3.11 FR-27. Personal context (no org) is always
 		// treated as enabled — there is no per-user equivalent.

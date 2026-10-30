@@ -33,7 +33,7 @@ import type { PostType } from "./topic-shared";
  * why the analysis's `needsConfirmation` and `deferred` buckets collapse into
  * `NEEDS_CONFIRMATION` here rather than becoming a fifth value.
  */
-export type GenerationTabState =
+type GenerationTabState =
 	| "GENERATED"
 	| "NEEDS_CONFIRMATION"
 	| "RECOMMENDED"

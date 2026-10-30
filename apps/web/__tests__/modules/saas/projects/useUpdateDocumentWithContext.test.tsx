@@ -474,6 +474,15 @@ describe("useUpdateDocumentWithContext — refusals in the reader's words (Fizzy
 			),
 			COPY.modelCallFailed,
 		],
+		[
+			"a client-document Proposal, changed from the chat instead (Fizzy #2946)",
+			refusal(
+				"PRECONDITION_FAILED",
+				"PROPOSAL_USE_CHAT_OR_REGENERATE",
+				"This Proposal is changed from the chat or regenerated.",
+			),
+			COPY.useChatOrRegenerate,
+		],
 	])(
 		"tells a preview refused by %s with what resolves it, in the reader's words",
 		async (_label, error, expected) => {

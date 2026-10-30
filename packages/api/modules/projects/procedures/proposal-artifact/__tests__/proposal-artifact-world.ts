@@ -58,6 +58,8 @@ interface WorldDocument {
 	projectId: string;
 	type: string;
 	content: string;
+	/** The generation status; COMPLETE unless a test says. */
+	status?: string;
 }
 
 export interface WorldFinding {

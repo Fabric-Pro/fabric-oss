@@ -68,6 +68,8 @@
  *     itself is not blocked — persistence is best-effort.
  */
 
+import { useCopilotKit } from "@copilotkit/react-core/v2/context";
+import { isToolResultError } from "@repo/agent-core/tool-result";
 import type { DocumentRefKind } from "@saas/projects/hooks/useDocumentAssistantHistory";
 // CopilotKit 1.52 — `useCopilotChatInternal()` is the only correct read
 // hook for the live message store. Short version:
@@ -92,8 +94,19 @@ import {
 	useAppendDocumentAssistantTurn,
 } from "@saas/projects/hooks/useDocumentAssistantHistory";
 import { useAttachmentRegistry } from "@saas/shared/components/copilot/AttachmentRegistry";
+import { useAssistantThread } from "@saas/shared/components/copilot/assistant-thread";
+import {
+	captureAssistantTrace,
+	inlineConfirmationTraceId,
+} from "@saas/shared/components/copilot/assistant-transcript";
 import { useCopilotChatSession } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
-import { useEffect, useRef } from "react";
+import {
+	useCallback,
+	useEffect,
+	useReducer,
+	useRef,
+	useSyncExternalStore,
+} from "react";
 import { toast } from "sonner";
 
 const HISTORY_DISABLED_ERROR_FRAGMENT = "history is disabled";
@@ -268,6 +281,7 @@ function extractAguiToolCallOnly(
 			arguments?: unknown;
 			function?: { name?: unknown; arguments?: unknown } | undefined;
 			result?: unknown;
+			status?: unknown;
 		};
 		// AGUI tool-call entries vary slightly in shape across providers
 		// (some use `function.name + function.arguments`, others put them
@@ -280,15 +294,18 @@ function extractAguiToolCallOnly(
 				: typeof t.function?.name === "string"
 					? t.function.name
 					: null;
+		let rawArgs = t.args ?? t.arguments ?? t.function?.arguments;
+		if (typeof rawArgs === "string") {
+			try {
+				rawArgs = JSON.parse(rawArgs);
+			} catch {
+				rawArgs = undefined;
+			}
+		}
 		const args =
-			t.args && typeof t.args === "object"
-				? (t.args as Record<string, unknown>)
-				: t.arguments && typeof t.arguments === "object"
-					? (t.arguments as Record<string, unknown>)
-					: t.function?.arguments &&
-							typeof t.function.arguments === "object"
-						? (t.function.arguments as Record<string, unknown>)
-						: {};
+			rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)
+				? (rawArgs as Record<string, unknown>)
+				: {};
 		if (!id || !name) {
 			continue;
 		}
@@ -297,8 +314,23 @@ function extractAguiToolCallOnly(
 			name,
 			args,
 		};
+		if (
+			t.status === "success" ||
+			t.status === "error" ||
+			t.status === "pending" ||
+			t.status === "running"
+		) {
+			entry.status = t.status;
+		}
 		if (typeof t.result === "string") {
 			entry.result = t.result;
+			entry.status = isToolResultError({
+				role: "tool",
+				content: t.result,
+				status: t.status,
+			})
+				? "error"
+				: "success";
 		}
 		out.push(entry);
 	}
@@ -441,6 +473,95 @@ export function CopilotPersistenceHook({
 }: CopilotPersistenceHookProps) {
 	const { messages, isLoading } = useCopilotChatSession();
 	const appendTurn = useAppendDocumentAssistantTurn();
+	const { copilotkit } = useCopilotKit();
+	const subscribeRegistry = useCallback(
+		(notify: () => void) => {
+			const subscription = copilotkit.subscribe({
+				onAgentsChanged: notify,
+			});
+			return () => subscription.unsubscribe();
+		},
+		[copilotkit],
+	);
+	const getAgent = useCallback(
+		() => copilotkit.agents[agentId],
+		[copilotkit, agentId],
+	);
+	const agent = useSyncExternalStore(subscribeRegistry, getAgent, getAgent);
+	const runRef = useRef<{
+		active: boolean;
+		reason?: "completed" | "cancelled" | "error";
+	}>({ active: false });
+	type TraceState = Parameters<typeof captureAssistantTrace>[2];
+	type TraceMaps = Pick<TraceState, "toolCallsByTurn" | "reasoningByTurn">;
+	const runTraceRef = useRef<TraceMaps>({});
+	const observedTraceMapsRef = useRef<TraceMaps>({});
+	const [finalizedRun, finalizeRun] = useReducer((n: number) => n + 1, 0);
+	const observedFinalizedRun = useRef(0);
+	useEffect(() => {
+		runRef.current = { active: Boolean(agent?.isRunning) };
+		runTraceRef.current = {};
+		observedTraceMapsRef.current = {};
+		const subscription = agent?.subscribe({
+			onStateChanged: ({ state }) => {
+				if (!runRef.current.active) {
+					return;
+				}
+				const incoming = (state ?? {}) as TraceState;
+				// Node snapshots replace state; retain trace turns omitted by later nodes.
+				if (
+					incoming.toolCallsByTurn &&
+					incoming.toolCallsByTurn !==
+						observedTraceMapsRef.current.toolCallsByTurn
+				) {
+					observedTraceMapsRef.current.toolCallsByTurn =
+						incoming.toolCallsByTurn;
+					runTraceRef.current.toolCallsByTurn = {
+						...runTraceRef.current.toolCallsByTurn,
+						...incoming.toolCallsByTurn,
+					};
+				}
+				if (
+					incoming.reasoningByTurn &&
+					incoming.reasoningByTurn !==
+						observedTraceMapsRef.current.reasoningByTurn
+				) {
+					observedTraceMapsRef.current.reasoningByTurn =
+						incoming.reasoningByTurn;
+					runTraceRef.current.reasoningByTurn = {
+						...runTraceRef.current.reasoningByTurn,
+						...incoming.reasoningByTurn,
+					};
+				}
+			},
+			onRunInitialized: () => {
+				runRef.current = { active: true };
+				runTraceRef.current = {};
+				observedTraceMapsRef.current = {};
+			},
+			onRunFinishedEvent: ({ outcome }) => {
+				runRef.current.reason =
+					outcome === "cancelled" ? "cancelled" : "completed";
+			},
+			onRunErrorEvent: ({ event }) => {
+				runRef.current.reason =
+					event.code === "abort" ? "cancelled" : "error";
+			},
+			onRunFailed: ({ error }) => {
+				runRef.current.reason =
+					error.name === "AbortError"
+						? "cancelled"
+						: runRef.current.reason === "cancelled"
+							? "cancelled"
+							: "error";
+			},
+			onRunFinalized: () => {
+				runRef.current.active = false;
+				finalizeRun();
+			},
+		});
+		return () => subscription?.unsubscribe();
+	}, [agent]);
 	// Read attachments through the registry — `<AttachmentRegistryProvider>`
 	// drains the `pendingAttachmentsRef` FIFO when each new user message
 	// lands, so by the time the persistence hook builds the
@@ -450,15 +571,14 @@ export function CopilotPersistenceHook({
 	// twice and break the positional alignment.
 	const attachmentRegistry = useAttachmentRegistry();
 
-	// Local idempotency: once a message id has been enqueued for
-	// persistence we never re-enqueue it. The server is also idempotent
-	// on `message.id`, but the local set saves the round-trip on the
-	// hot path (every fingerprint tick).
+	// The local id set skips repeated initial appends. Late outcomes use
+	// savedOutcomePatches to deduplicate updates to an existing reply.
 	const persistedIdsRef = useRef<Set<string>>(new Set());
+	const savedConversations = useRef(new Map<string, string>());
 
 	// Pre-seed `persistedIdsRef` with the SSR-hydrated message ids so the
-	// walker never re-fires `appendTurnForDocument` for messages that are
-	// already in the DB. We do this synchronously (not in a useEffect) so
+	// walker skips initial appends for messages already in the DB. Seeding
+	// synchronously (not in a useEffect) means
 	// it lands BEFORE the first walker tick — the messages array reaches
 	// the hook populated, and without this guard the walker would attempt
 	// to persist every hydrated message on its first observation. The
@@ -475,6 +595,9 @@ export function CopilotPersistenceHook({
 		for (const id of initialPersistedMessageIds) {
 			if (typeof id === "string" && id.length > 0) {
 				persistedIdsRef.current.add(id);
+				if (conversationId) {
+					savedConversations.current.set(id, conversationId);
+				}
 			}
 		}
 		initialIdsSeededRef.current = true;
@@ -484,6 +607,7 @@ export function CopilotPersistenceHook({
 	// true → false edge (the moment the user-initiated generation
 	// "ended" — either successfully, with an error, or via cancellation).
 	const wasLoadingRef = useRef(false);
+	const savedOutcomePatches = useRef(new Map<string, string>());
 
 	// Live mirrors of conversation id + visibility so the queue worker
 	// always reads the freshest values without forcing re-subscribes.
@@ -491,6 +615,11 @@ export function CopilotPersistenceHook({
 	useEffect(() => {
 		conversationIdRef.current = conversationId;
 	}, [conversationId]);
+	// The CopilotKit thread the surface runs on (`assistant-thread`), offered
+	// as the id of the conversation a first turn creates so the two match.
+	const threadId = useAssistantThread()?.threadId;
+	const threadIdRef = useRef(threadId);
+	threadIdRef.current = threadId;
 	const requestedVisibilityRef = useRef(requestedVisibility);
 	useEffect(() => {
 		requestedVisibilityRef.current = requestedVisibility;
@@ -502,7 +631,9 @@ export function CopilotPersistenceHook({
 	// lazy-create race (each parallel call would create its own
 	// conversation) is impossible: subsequent items always see the
 	// `conversationIdRef` resolved by the previous append.
-	const persistQueueRef = useRef<AppendTurnMessage[]>([]);
+	const persistQueueRef = useRef<
+		Array<{ message: AppendTurnMessage; patchOnly?: boolean }>
+	>([]);
 	const workerRunningRef = useRef(false);
 
 	// Refs for the latest mutation + callback closures so the worker
@@ -536,18 +667,143 @@ export function CopilotPersistenceHook({
 			(messages as unknown as CopilotKitRuntimeMessage[]) ?? [];
 		const wasLoading = wasLoadingRef.current;
 		wasLoadingRef.current = isLoading;
-		const generationJustEnded = wasLoading && !isLoading;
-
-		if (runtimeMessages.length === 0) {
+		const generationJustEnded =
+			(wasLoading && !isLoading) ||
+			finalizedRun !== observedFinalizedRun.current;
+		observedFinalizedRun.current = finalizedRun;
+		const assistantWorkReady = !isLoading && !runRef.current.active;
+		if (
+			runtimeMessages.length === 0 ||
+			(!assistantWorkReady &&
+				!runtimeMessages.some(
+					(m) =>
+						m.role === "user" &&
+						m.id &&
+						!persistedIdsRef.current.has(m.id),
+				))
+		) {
 			return;
 		}
+		// User appends can create and lock the conversation while the run is active.
+		// Lifecycle finalization wakes assistant work after its final state is applied.
+		const endState = (
+			assistantWorkReady ? (agent?.state ?? {}) : {}
+		) as TraceState;
+		const traceState: TraceState = assistantWorkReady
+			? {
+					...endState,
+					toolCallsByTurn: {
+						...runTraceRef.current.toolCallsByTurn,
+						...endState.toolCallsByTurn,
+					},
+					reasoningByTurn: {
+						...runTraceRef.current.reasoningByTurn,
+						...endState.reasoningByTurn,
+					},
+				}
+			: {};
+
+		const results = new Map<
+			string,
+			{ result: string; status: "success" | "error" }
+		>();
+		const preparationIds = new Set<string>();
+		if (assistantWorkReady) {
+			for (const raw of runtimeMessages) {
+				const result = raw as unknown as {
+					role?: string;
+					toolCallId?: string;
+					actionExecutionId?: string;
+					content?: string;
+					result?: string;
+					error?: unknown;
+					status?: unknown;
+				};
+				const id = result.toolCallId ?? result.actionExecutionId;
+				const content = result.result ?? result.content;
+				if (id && typeof content === "string") {
+					results.set(id, {
+						result: content,
+						status: isToolResultError({
+							...result,
+							role: "tool",
+							content,
+							status: result.error ? "error" : result.status,
+						})
+							? "error"
+							: "success",
+					});
+				}
+			}
+			for (const raw of runtimeMessages) {
+				for (const call of (raw as unknown as { toolCalls?: unknown[] })
+					.toolCalls ?? []) {
+					const inlineId = inlineConfirmationTraceId(call);
+					if (inlineId) {
+						preparationIds.add(inlineId);
+					}
+				}
+			}
+		}
+		const callsFor = (index: number) => {
+			const m = runtimeMessages[index];
+			const own =
+				extractAguiToolCallOnly({ ...m, content: undefined }) ??
+				extractPayload(m)?.toolCalls ??
+				[];
+			const calls = [...own];
+			for (let j = index + 1; j < runtimeMessages.length; j++) {
+				const sibling = extractAguiToolCallOnly(runtimeMessages[j]);
+				if (!sibling) {
+					break;
+				}
+				calls.push(...sibling);
+			}
+			return calls.map((call) =>
+				preparationIds.has(call.id)
+					? { ...call, status: "pending" as const, result: undefined }
+					: { ...call, ...results.get(call.id) },
+			);
+		};
 
 		for (let i = 0; i < runtimeMessages.length; i++) {
 			const m = runtimeMessages[i];
 			if (!m?.id) {
 				continue;
 			}
+			// Wait for run finalization: text completion can precede the terminal state.
+			if (!assistantWorkReady && m.role !== "user") {
+				continue;
+			}
 			if (persistedIdsRef.current.has(m.id)) {
+				if (!isLoading && m.role === "assistant" && m.content) {
+					const calls = callsFor(i);
+					if (
+						calls.some(
+							(call) =>
+								call.status === "success" ||
+								call.status === "error" ||
+								call.result !== undefined,
+						)
+					) {
+						const key = JSON.stringify(calls);
+						if (savedOutcomePatches.current.get(m.id) !== key) {
+							savedOutcomePatches.current.set(m.id, key);
+							persistQueueRef.current.push({
+								patchOnly: true,
+								message: {
+									id: m.id,
+									role: "assistant",
+									content: "",
+									timestamp: new Date().toISOString(),
+									streamStatus: "completed",
+									toolCalls: calls,
+									agentId,
+								},
+							});
+						}
+					}
+				}
 				continue;
 			}
 
@@ -614,18 +870,17 @@ export function CopilotPersistenceHook({
 						const patch: AppendTurnMessage = {
 							id: parentTextId,
 							role: "assistant",
-							// Content is replayed but the server's
-							// idempotent merge path only touches toolCalls.
-							// We send the empty placeholder to keep the
-							// schema satisfied — the existing row's content
-							// is what's already there.
+							// patchOnly prevents this placeholder from becoming a row.
 							content: "",
 							timestamp: new Date().toISOString(),
 							streamStatus: "completed",
 							toolCalls: siblingToolCalls,
 							agentId,
 						};
-						persistQueueRef.current.push(patch);
+						persistQueueRef.current.push({
+							message: patch,
+							patchOnly: true,
+						});
 					}
 				}
 				continue;
@@ -703,12 +958,18 @@ export function CopilotPersistenceHook({
 				}
 			}
 
+			if (payload.role === "assistant") {
+				payload.toolCalls = callsFor(i);
+			}
+
 			const streamStatus: "completed" | "error" | "cancelled" =
-				isTrailingPending
-					? "cancelled"
-					: m.status?.code === "Failed"
-						? "error"
-						: "completed";
+				payload.role === "assistant" && runRef.current.reason
+					? runRef.current.reason
+					: isTrailingPending
+						? "cancelled"
+						: m.status?.code === "Failed"
+							? "error"
+							: "completed";
 			// Pull the registered attachment batch for this user turn from
 			// the shared `<AttachmentRegistryProvider>`. The provider has
 			// already correlated the batch to this message's id (via its
@@ -755,6 +1016,14 @@ export function CopilotPersistenceHook({
 				}
 			}
 			const message: AppendTurnMessage = {
+				...(payload.role === "assistant"
+					? captureAssistantTrace(
+							m.id,
+							runtimeMessages,
+							traceState,
+							streamStatus,
+						)
+					: {}),
 				id: m.id,
 				role: payload.role,
 				content: payload.content,
@@ -780,8 +1049,21 @@ export function CopilotPersistenceHook({
 			// item — a parent re-render mid-flight must not re-enqueue
 			// the same id. The server's per-id idempotency means a manual
 			// retry path (page reload + hydration) is still safe.
+			if (
+				payload.toolCalls.some(
+					(call) =>
+						call.result !== undefined ||
+						call.status === "success" ||
+						call.status === "error",
+				)
+			) {
+				savedOutcomePatches.current.set(
+					m.id,
+					JSON.stringify(payload.toolCalls),
+				);
+			}
 			persistedIdsRef.current.add(m.id);
-			persistQueueRef.current.push(message);
+			persistQueueRef.current.push({ message });
 		}
 
 		if (persistQueueRef.current.length > 0 && !workerRunningRef.current) {
@@ -789,7 +1071,7 @@ export function CopilotPersistenceHook({
 			void drainQueue();
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [fingerprint, isLoading]);
+	}, [fingerprint, isLoading, finalizedRun, agent]);
 
 	async function drainQueue(): Promise<void> {
 		try {
@@ -798,17 +1080,33 @@ export function CopilotPersistenceHook({
 				if (!next) {
 					break;
 				}
-				await persist(next);
+				await persist(next.message, next.patchOnly);
 			}
 		} finally {
 			workerRunningRef.current = false;
 		}
 	}
 
-	async function persist(message: AppendTurnMessage): Promise<void> {
+	async function persist(
+		message: AppendTurnMessage,
+		patchOnly = false,
+	): Promise<void> {
+		const targetConversationId = patchOnly
+			? savedConversations.current.get(message.id)
+			: conversationIdRef.current;
+		// Patches require a known saved destination.
+		if (patchOnly && !targetConversationId) {
+			return;
+		}
 		try {
+			const proposedConversationId =
+				!patchOnly && targetConversationId === null
+					? threadIdRef.current
+					: undefined;
 			const response = await appendTurnRef.current.mutateAsync({
-				conversationId: conversationIdRef.current,
+				conversationId: targetConversationId ?? null,
+				...(patchOnly ? { patchOnly: true } : {}),
+				...(proposedConversationId ? { proposedConversationId } : {}),
 				scope: {
 					documentRefKind,
 					documentRefId,
@@ -819,6 +1117,15 @@ export function CopilotPersistenceHook({
 				agentId,
 				requestedVisibility: requestedVisibilityRef.current,
 			});
+			if (patchOnly) {
+				return;
+			}
+			if (response?.conversationId) {
+				savedConversations.current.set(
+					message.id,
+					response.conversationId,
+				);
+			}
 			// New conversation lazy-create: hand the returned id back so
 			// the next dequeued message (and subsequent renders) target
 			// the same row.
@@ -899,5 +1206,21 @@ export function computeFingerprint(
 		messages.length >= 2 ? messages[messages.length - 2] : undefined;
 	const prevId = prev?.id ?? "";
 	const prevCode = prev?.status?.code ?? "";
-	return `${messages.length}:${lastId}:${lastCode}:${prevId}:${prevCode}`;
+	let outcomes = 0;
+	for (const message of messages) {
+		for (const call of (
+			message as {
+				toolCalls?: Array<{ status?: string; result?: unknown }>;
+			}
+		).toolCalls ?? []) {
+			if (
+				call.result !== undefined ||
+				call.status === "success" ||
+				call.status === "error"
+			) {
+				outcomes++;
+			}
+		}
+	}
+	return `${messages.length}:${lastId}:${lastCode}:${prevId}:${prevCode}:${outcomes}`;
 }

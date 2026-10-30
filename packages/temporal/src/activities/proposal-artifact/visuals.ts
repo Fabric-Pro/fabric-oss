@@ -14,9 +14,11 @@ import { violationCode } from "@repo/utils/glossy/fact-guard";
 import { parseOutline, scanFences } from "@repo/utils/glossy/outline";
 import type { VisualSpec } from "@repo/utils/glossy/visual-spec";
 import {
-	PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
+	proposalFigureKind,
+	proposalVisualTemplateOptions,
 	visualSpecToMermaid,
 } from "@repo/utils/glossy/visual-templates";
+import { withFigureKind } from "@repo/utils/proposal-artifact/proposal-figures";
 import { mintVisualId } from "@repo/utils/proposal-artifact/visual-id-server";
 import {
 	VISUAL_ORIGIN,
@@ -478,7 +480,8 @@ interface RenderedVisual {
 /**
  * One extracted spec as the markdown block it becomes in Main, or null for
  * a kind this release does not produce. A diagram's fence opens with a
- * freshly minted marker id and assigns roles, never colours.
+ * freshly minted marker id, asks for its figure template when it has one,
+ * and assigns roles, never colours.
  */
 function renderProposalVisual(spec: VisualSpec): RenderedVisual | null {
 	switch (spec.kind) {
@@ -486,9 +489,9 @@ function renderProposalVisual(spec: VisualSpec): RenderedVisual | null {
 		case "flow":
 		case "org_chart": {
 			const visualId = mintVisualId();
-			const source = visualSpecToMermaid(
-				spec,
-				PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
+			const source = withFigureKind(
+				visualSpecToMermaid(spec, proposalVisualTemplateOptions(spec)),
+				proposalFigureKind(spec),
 			);
 			const markdown = toMermaidFence(source, visualId);
 			const body = toMermaidFenceBody(source, visualId);

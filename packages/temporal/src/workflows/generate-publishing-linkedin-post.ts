@@ -73,6 +73,7 @@ export interface GeneratePublishingLinkedInPostWorkflowInput {
 	 * cannot see the difference.
 	 */
 	currentDraft?: string | null;
+	seedWorkingDraft?: boolean;
 }
 
 export interface GeneratePublishingLinkedInPostWorkflowOutput {
@@ -91,6 +92,7 @@ export async function generatePublishingLinkedInPostWorkflow(
 			actorUserId: input.actorUserId,
 			guidance: input.guidance,
 			currentDraft: input.currentDraft ?? null,
+			...(input.seedWorkingDraft ? { seedWorkingDraft: true } : {}),
 		});
 
 		// A non-READY status is a normal outcome, not a failure. The write was

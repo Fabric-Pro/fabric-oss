@@ -19,14 +19,15 @@
  *
  * ## Source hash
  *
- * `v1:` plus `fnv1aHex64` over the body without its marker line and its
- * caption line (`diagram-caption.ts`), after line endings become `\n`,
- * trailing whitespace is trimmed from every line and leading and trailing
- * blank lines are dropped. The editor's save rewrites a fence with three
- * backticks and trims trailing whitespace, so the hash is the same before
- * and after a round trip; a caption change leaves it as it was too. It is a
- * label, not a security boundary: anyone with edit rights can write any
- * fence.
+ * `v1:` plus `fnv1aHex64` over the body without its marker line, its
+ * caption line (`diagram-caption.ts`) and its figure line
+ * (`proposal-figures/`), after line endings become `\n`, trailing
+ * whitespace is trimmed from every line and leading and trailing blank lines
+ * are dropped. The editor's save rewrites a fence with three backticks and
+ * trims trailing whitespace, so the hash is the same before and after a
+ * round trip; a caption or figure line change leaves it as it was too, and a
+ * fence that never had either hashes as it always did. It is a label, not a
+ * security boundary: anyone with edit rights can write any fence.
  *
  * Pure and synchronous, no Node built-ins: the worker, the API and the
  * editor bundle all compute it. Minting an id needs randomness, so the
@@ -39,12 +40,18 @@ import { fnv1aHex64 } from "../fnv1a";
 import { parseOutline } from "../glossy/outline";
 import {
 	cleanDiagramCaption,
+	DIAGRAM_CAPTION_LINE,
 	DIAGRAM_CAPTION_MAX_CHARS,
 	readDiagramCaption,
 	withDiagramCaption,
 } from "./diagram-caption";
 import { diagramHeaderLine } from "./diagram-header";
 import { parseMarkdownAst } from "./markdown-ast";
+import {
+	type FigureKind,
+	readFigureKind,
+	withFigureKind,
+} from "./proposal-figures";
 import { isDiagramFence } from "./section-hash";
 import { VISUAL_MARKER_PATTERN } from "./stat-tiles";
 
@@ -181,11 +188,14 @@ export function normaliseVisualSource(source: string): string {
 }
 
 /**
- * The source hash of a fence body; a valid marker line and the caption line
- * are left out.
+ * The source hash of a fence body; a valid marker line, the caption line and
+ * the figure line are left out.
  */
 export function visualSourceHash(body: string): string {
-	const source = withDiagramCaption(readVisualMarker(body).source, null);
+	const source = withFigureKind(
+		withDiagramCaption(readVisualMarker(body).source, null),
+		null,
+	);
 	return `${VISUAL_HASH_VERSION}:${fnv1aHex64(normaliseVisualSource(source))}`;
 }
 
@@ -278,6 +288,12 @@ export function classifyVisualFences(
  * changed stays unmarked, and a marker `next` carries is never touched; a
  * duplicate id is left for `classifyVisualFences` to detach.
  *
+ * A marked fence's figure line (`proposal-figures/`) comes back with it:
+ * when the marker is restored, and when a writer kept the marker but dropped
+ * the line of an otherwise unchanged diagram (the hash leaves the line out,
+ * so a body is unchanged with or without it). It goes after the marker and
+ * the caption, and never into a fence that carries a figure line of its own.
+ *
  * Only the restored lines are added: every other byte of `next`, line
  * endings included, is unchanged. When `previous` holds no marker, returns
  * `next` itself.
@@ -303,43 +319,71 @@ export function preserveVisualMarkers(
 		}
 	}
 
-	const available: Array<{ visualId: string; sourceHash: string }> = [];
+	// Each id's first fence in `previous`; the ones `next` lost are
+	// available to restore.
+	const previousById = new Map<string, PreviousVisual>();
+	const available: PreviousVisual[] = [];
 	for (const fence of diagramFences(previous)) {
 		const { visualId } = readVisualMarker(fence.value);
-		if (visualId && !keptIds.has(visualId)) {
-			keptIds.add(visualId);
-			available.push({
-				visualId,
-				sourceHash: visualSourceHash(fence.value),
-			});
+		if (!visualId || previousById.has(visualId)) {
+			continue;
+		}
+		const visual = {
+			visualId,
+			sourceHash: visualSourceHash(fence.value),
+			figure: readFigureKind(fence.value),
+		};
+		previousById.set(visualId, visual);
+		if (!keptIds.has(visualId)) {
+			available.push(visual);
 		}
 	}
-	if (available.length === 0) {
+	if (previousById.size === 0) {
 		return next;
 	}
 
 	const inserts: Array<{ at: number; text: string }> = [];
+	const seenIds = new Set<string>();
 	for (const fence of nextFences) {
-		if (readVisualMarker(fence.value).visualId) {
+		const sourceHash = visualSourceHash(fence.value);
+		const { visualId } = readVisualMarker(fence.value);
+		if (visualId) {
+			const kept = seenIds.has(visualId)
+				? undefined
+				: previousById.get(visualId);
+			seenIds.add(visualId);
+			if (kept?.figure && kept.sourceHash === sourceHash) {
+				const figure = figureInsertion(next, fence, kept.figure);
+				if (figure) {
+					inserts.push(figure);
+				}
+			}
 			continue;
 		}
-		const sourceHash = visualSourceHash(fence.value);
 		const index = available.findIndex(
 			(entry) => entry.sourceHash === sourceHash,
 		);
 		if (index === -1) {
 			continue;
 		}
-		const marker = visualMarkerLine(available[index].visualId);
+		const restored = available[index];
+		const marker = visualMarkerLine(restored.visualId);
 		// A fence told apart by its first line alone would stop being a
 		// diagram under a marker line.
 		if (!isDiagramFence(fence.lang, `${marker}\n${fence.value}`)) {
 			continue;
 		}
 		const insert = markerInsertion(next, fence, marker);
-		if (insert) {
-			available.splice(index, 1);
-			inserts.push(insert);
+		if (!insert) {
+			continue;
+		}
+		available.splice(index, 1);
+		inserts.push(insert);
+		// Pushed after the marker: at the same offset, it lands below it.
+		const figure =
+			restored.figure && figureInsertion(next, fence, restored.figure);
+		if (figure) {
+			inserts.push(figure);
 		}
 	}
 	if (inserts.length === 0) {
@@ -357,6 +401,13 @@ export function preserveVisualMarkers(
 
 const MARKER_HINT = "fabric-visual:";
 const FENCE_HINT = /```|~~~/;
+
+/** A marked diagram of `previous`, as `preserveVisualMarkers` restores it. */
+interface PreviousVisual {
+	visualId: string;
+	sourceHash: string;
+	figure: FigureKind | null;
+}
 
 /**
  * Where the marker line of `fence` goes in `markdown`: right after the
@@ -392,6 +443,57 @@ function markerInsertion(
 		at: lineEnd.index + lineEnd[0].length,
 		text: `${prefix}${marker}${lineEnd[0]}`,
 	};
+}
+
+/**
+ * Where the figure line for `kind` goes in `fence`: before the body line
+ * after its marker and caption lines (the first body line when it has
+ * neither), so the order is marker, caption, figure; null when the fence
+ * already carries a figure line. Body lines map one to one onto the
+ * Markdown's lines after the opening fence line, so the line is inserted at
+ * the start of the matching Markdown line, with the same ending and
+ * container prefix as `markerInsertion` writes.
+ */
+function figureInsertion(
+	markdown: string,
+	fence: Code,
+	kind: FigureKind,
+): { at: number; text: string } | null {
+	if (withFigureKind(fence.value, null) !== fence.value) {
+		return null;
+	}
+	const bodyLines = fence.value.split(/\r\n?|\n/);
+	let after = 0;
+	const first = bodyLines.findIndex((line) => line.trim() !== "");
+	if (first !== -1 && VISUAL_MARKER_PATTERN.test(bodyLines[first].trim())) {
+		after = first + 1;
+	}
+	for (let index = after; index < bodyLines.length; index += 1) {
+		const trimmed = bodyLines[index].trim();
+		if (trimmed !== "" && !trimmed.startsWith("%%")) {
+			break;
+		}
+		if (DIAGRAM_CAPTION_LINE.test(trimmed)) {
+			after = index + 1;
+		}
+	}
+	const opening = markerInsertion(markdown, fence, `%% figure: ${kind}`);
+	if (!opening) {
+		return null;
+	}
+	// The opening fence line ends where `opening` inserts; skip `after` more
+	// lines to reach the body line the figure line goes above.
+	const ending = /\r\n|\r|\n/g;
+	ending.lastIndex = opening.at;
+	let at = opening.at;
+	for (let line = 0; line < after; line += 1) {
+		const lineEnd = ending.exec(markdown);
+		if (!lineEnd) {
+			return null;
+		}
+		at = lineEnd.index + lineEnd[0].length;
+	}
+	return { at, text: opening.text };
 }
 
 /**

@@ -76,6 +76,27 @@
 			}
 		},
 		"organizations": {
+			"overview": {
+				"totals": "Plattformübersicht",
+				"organizations": "Organisationen",
+				"projects": "Projekte",
+				"users": "Benutzerkonten",
+				"organizationsHint": "Deaktivierte ausgeschlossen",
+				"projectsHint": "Entwürfe und archivierte enthalten",
+				"usersHint": "Registriert, keine aktive Nutzung",
+				"error": "Daten konnten nicht geladen werden.",
+				"loading": "{label} wird geladen…",
+				"status": "Status",
+				"active": "Aktiv",
+				"deactivated": "Deaktiviert",
+				"all": "Alle",
+				"name": "Organisation",
+				"members": "Mitglieder",
+				"createdAt": "Erstellt",
+				"actions": "Aktionen",
+				"purges": "Endgültige Löschung am {date}",
+				"empty": "Keine Ergebnisse."
+			},
 			"backToList": "Zurück zu Organisationen",
 			"confirmDelete": {
 				"confirm": "Löschen",
@@ -101,7 +122,6 @@
 				"updateTitle": "Organisation bearbeiten"
 			},
 			"loading": "Organisationen laden...",
-			"membersCount": "{count} {count, plural, one {Mitglied} other {Mitglieder}}",
 			"search": "Suche nach einer Organisation...",
 			"title": "Verwalten von Organisationen"
 		},
@@ -1299,7 +1319,8 @@
 					"member": {
 						"invited": "Mitglied eingeladen",
 						"role_changed": "Rolle geändert",
-						"removed": "Mitglied entfernt"
+						"removed": "Mitglied entfernt",
+						"left": "Mitglied ausgetreten"
 					},
 					"api_key": {
 						"created": "API-Schlüssel erstellt",
@@ -1356,6 +1377,7 @@
 					}
 				},
 				"account": {
+					"role_changed": "Kontorolle geändert",
 					"api_key": {
 						"created": "Persönlicher API-Schlüssel erstellt",
 						"revoked": "Persönlicher API-Schlüssel widerrufen",
@@ -1468,7 +1490,8 @@
 					"document_analysis": {
 						"responded": "Analysebefund beantwortet",
 						"cleared": "Antwort auf Analysebefund entfernt",
-						"rerun_started": "Erneute interne Analyse gestartet"
+						"rerun_started": "Erneute interne Analyse gestartet",
+						"resolved": "Analysebefund erledigt"
 					},
 					"proposal_artifact": {
 						"export_started": "Angebotsexport gestartet"
@@ -3411,6 +3434,7 @@
 				"scanIncompleteDescription": "Der KI-Prüfer konnte {count, plural, one {das # Kandidatenpaar} other {keines der # Kandidatenpaare}} diesmal prüfen – meist eine vorübergehende KI-Störung.",
 				"scanIncompleteUnchanged": "Es wurde nichts geändert und Ihre bestehenden Duplikat-Markierungen bleiben unberührt. Versuchen Sie es gleich noch einmal.",
 				"scanPartialWarning": "Hinweis: {count, plural, one {# Paar} other {# Paare}} konnte diesmal nicht geprüft werden und wird bei der nächsten Prüfung erneut versucht.",
+				"scanRemainingNote": "{count, plural, one {# weiteres Kandidatenpaar wartet} other {# weitere Kandidatenpaare warten}} noch auf die Prüfung. Starten Sie die Prüfung erneut, um sie zu prüfen.",
 				"scanAgain": "Erneut prüfen",
 				"scanAgainAria": "Erneut prüfen – Duplikatsuche wiederholen",
 				"viewDuplicates": "Duplikate anzeigen",
@@ -3436,9 +3460,9 @@
 				"similarConfidence": "{similarity}% ähnlich · {confidence}% Übereinstimmung",
 				"similarConfidenceAria": "Wie diese Werte berechnet werden",
 				"similarHelpLabel": "Ähnlichkeit",
-				"similarHelpBody": "Wie ähnlich sich die beiden Elemente lesen, nachdem sie in KI-Embeddings umgewandelt wurden — ein Kosinusvergleich von Titel und Beschreibung. Nur sehr ähnliche Paare werden überhaupt berücksichtigt.",
+				"similarHelpBody": "Wie gut die beiden Elemente übereinstimmen, nachdem sie in KI-Embeddings umgewandelt wurden. Bei zwei Features zählen vor allem ihre Scope-Abschnitte (oder die Akzeptanzkriterien, wenn einem der Scope fehlt, bzw. die vollständigen Elemente, wenn sie keinen der beiden Abschnitte gemeinsam haben), der übrige Inhalt weniger; andere Elemente werden vollständig verglichen. Beide werden auf derselben Skala angezeigt, und berücksichtigt werden nur Paare, die dieselbe Schwelle erreichen; zwei Features mit ähnlichem Text, aber unterschiedlichem Scope bleiben daher außen vor.",
 				"confidenceHelpLabel": "Übereinstimmungssicherheit",
-				"confidenceHelpBody": "Anschließend liest eine KI beide Elemente vollständig und bewertet, wie sicher sie ist, dass sie dieselbe Arbeit beschreiben. Beide Prüfungen müssen übereinstimmen, bevor ein Duplikat markiert wird.",
+				"confidenceHelpBody": "Anschließend liest eine KI beide Elemente vollständig und bewertet, wie sicher sie ist, dass sie dieselbe oder sich überschneidende Arbeit beschreiben. Die KI entscheidet, daher kann ein Paar auch bei mäßiger Ähnlichkeit markiert werden, wenn unterschiedliche Formulierungen dieselbe Arbeit beschreiben.",
 				"keepLabel": "Welcher behalten wird",
 				"keepInstruction": "Jede Karte kann ihren Originaltext oder eine KI-zusammengeführte Version anzeigen. Das Zusammenführen behält diese Karte; die andere wird stillgelegt.",
 				"keepThis": "Diese behalten",
@@ -4247,7 +4271,10 @@
 				"rowsAria": "Fälle pro Seite",
 				"previous": "Vorherige Seite",
 				"next": "Nächste Seite",
-				"goToPage": "Zu Seite {page}"
+				"goToPage": "Zu Seite {page}",
+				"jumpLabel": "Gehe zu Seite",
+				"go": "Los",
+				"rangeError": "Gib eine Seite von 1 bis {lastPage} ein"
 			},
 			"about": {
 				"trigger": "Über {segment}",
@@ -4820,6 +4847,11 @@
 				"empty": "Keine Arbeitselemente gefunden.",
 				"loadFailed": "Arbeitselemente konnten nicht aus deinem PM-Tool geladen werden.",
 				"pageInfo": "Seite {page} · {total} gesamt",
+				"paginationAria": "Seiten der PM-Testfälle",
+				"jumpLabel": "Gehe zu Seite",
+				"go": "Los",
+				"rangeError": "Gib eine Seite von 1 bis {lastPage} ein",
+				"pageLabel": "Seite {page}",
 				"prev": "Zurück",
 				"next": "Weiter"
 			},
@@ -5589,7 +5621,8 @@
 			"exportRateLimited": "Zu viele Exporte. Versuchen Sie es in {seconds} Sekunden erneut.",
 			"exportRateLimitedSoon": "Zu viele Exporte. Versuchen Sie es in einigen Minuten erneut.",
 			"exportLeftOut": "Einige Inhalte fehlen ({format})",
-			"exportWarningDiagramPlaceholder": "{count, plural, one {# Diagramm wird} other {# Diagramme werden}} als Platzhalter angezeigt.",
+			"exportWarningDiagramPlaceholder": "{count, plural, one {# Diagramm konnte nicht gezeichnet werden und wurde weggelassen. Korrigieren oder löschen Sie es im Editor, falls es dort einen Fehler zeigt, oder exportieren Sie erneut.} other {# Diagramme konnten nicht gezeichnet werden und wurden weggelassen. Korrigieren oder löschen Sie sie im Editor, falls sie dort einen Fehler zeigen, oder exportieren Sie erneut.}}",
+			"exportWarningDiagramNotPrintable": "{count, plural, one {# Diagramm kann nur auf der Online-Seite gezeichnet werden und wird daher als Platzhalter gedruckt.} other {# Diagramme können nur auf der Online-Seite gezeichnet werden und werden daher als Platzhalter gedruckt.}}",
 			"exportWarningDiagramLimit": "{count, plural, one {# Diagramm über dem Limit wird} other {# Diagramme über dem Limit werden}} als Platzhalter angezeigt.",
 			"exportWarningDiagramBelowPrintFloor": "{count, plural, one {# Diagramm ist} other {# Diagramme sind}} zu breit für die Seite, daher {count, plural, one {wird seine} other {wird ihre}} Beschriftung klein gedruckt.",
 			"exportWarningImageDropped": "{count, plural, one {# Bild konnte} other {# Bilder konnten}} nicht übernommen werden.",
@@ -5639,6 +5672,12 @@
 					"instruction": "Mit Anweisungen aktualisiert"
 				},
 				"fixedColours": "Die Farben dieses Diagramms sind fest vorgegeben. Verwenden Sie „Mit Anweisungen bearbeiten“, um es neu zu gestalten.",
+				"notPrintable": "Nicht im PDF enthalten",
+				"failure": {
+					"title": "Dieses Diagramm kann nicht dargestellt werden",
+					"exports": "Es wird bei PDF- und Word-Exporten weggelassen.",
+					"placeholder": "PDF- und Word-Exporte zeigen an seiner Stelle einen nummerierten Platzhalter."
+				},
 				"panel": {
 					"title": "Mit Anweisungen bearbeiten",
 					"instructionLabel": "Was soll sich an diesem Diagramm ändern?",
@@ -5733,6 +5772,7 @@
 					"UNADDRESSED": "Offen",
 					"CONFIRMED": "Bestätigt",
 					"RESPONDED": "Beantwortet",
+					"RESOLVED": "Umgesetzt",
 					"NEEDS_REVIEW": "Prüfung nötig"
 				},
 				"reason": {
@@ -5745,8 +5785,10 @@
 					"unnamedMember": "einem Mitglied",
 					"saving": "Wird gespeichert…",
 					"confirmedBy": "Bestätigt von {name}",
+					"resolvedBy": "Empfehlung angewendet von {name}",
 					"answeredBy": "Beantwortet von {name}",
 					"earlierConfirmedBy": "Zuvor bestätigt von {name}",
+					"earlierResolvedBy": "Empfehlung zuvor angewendet von {name}",
 					"earlierAnswerBy": "Frühere Antwort von {name}"
 				},
 				"actions": {
@@ -5760,7 +5802,8 @@
 					"apply": "Auf den aktuellen Befund anwenden",
 					"cancel": "Abbrechen",
 					"replaceWithMine": "Durch meine ersetzen",
-					"keepTheirs": "Ihre behalten"
+					"keepTheirs": "Ihre behalten",
+					"applyRecommendation": "Empfehlung anwenden"
 				},
 				"editor": {
 					"label": "Ihre Antwort",
@@ -5839,7 +5882,10 @@
 					"citationLabel": "S{source}",
 					"citationName": "{label}: {title}",
 					"sourceRemoved": "{label} · Quelle entfernt"
-				}
+				},
+				"revisionInProgress": "Überarbeitung läuft",
+				"revisionRejected": "Die Überarbeitung wurde abgelehnt; nichts wurde geändert.",
+				"revisionRefused": "Die Überarbeitung wurde nicht übernommen: {reason}"
 			},
 			"style": {
 				"title": "Stil",
@@ -5979,6 +6025,39 @@
 			},
 			"promptBinding": {
 				"diagramsNote": "Diagramme fügt Fabric nach der Generierung hinzu; ein Abschnitt, der bereits ein eigenes Diagramm hat, bleibt unverändert."
+			},
+			"revision": {
+				"inProgress": "Der Abschnitt wird überarbeitet…",
+				"reviewTitle": "KI-Überarbeitung von „{section}“",
+				"reviewHint": "Annehmen speichert nur diesen Abschnitt. Ablehnen stellt den vorherigen Text wieder her.",
+				"applying": "Die Überarbeitung wird gespeichert…",
+				"accepted": "Die Überarbeitung wurde gespeichert und der Befund als erledigt markiert.",
+				"rejected": "Die Überarbeitung wurde abgelehnt; nichts wurde geändert.",
+				"notApplied": "Die Überarbeitung wurde nicht übernommen: {reason}",
+				"chatNotApplied": "Die angenommenen Änderungen wurden nicht übernommen: {reason}",
+				"offerBack": "Der abgelehnte Text wurde aus dem Editor entfernt. Kopieren Sie ihn, wenn Sie ihn behalten möchten.",
+				"reasons": {
+					"REVISION_OUTSIDE_TARGET": "sie hat einen Abschnitt außerhalb ihres Ziels geändert.",
+					"REVISION_CHANGED_DIAGRAM": "sie hat ein bestehendes Diagramm geändert.",
+					"RESPONSE_ECHOED": "sie wiederholte Formulierungen aus der internen Analyse.",
+					"FINDING_RESPONSE_CHANGED": "die Antwort auf den Befund hat sich inzwischen geändert.",
+					"FINDING_SECTION_CHANGED": "der Abschnitt des Befunds hat sich seit der Analyse geändert.",
+					"REVISION_TOKEN_INVALID": "die Überarbeitung ist abgelaufen oder der angenommene Text weicht von der geprüften Fassung ab. Fordern Sie sie erneut an.",
+					"STALE": "das Dokument hat sich geändert, während die Überarbeitung entworfen wurde.",
+					"SECTION_NOT_FOUND": "der Abschnitt des Befunds ist nicht mehr im Dokument.",
+					"INVALID_CANDIDATE": "die Antwort der KI hat die Struktur des Abschnitts nicht eingehalten.",
+					"AI_PROVIDER_NOT_CONFIGURED": "für diese Organisation ist kein KI-Anbieter konfiguriert.",
+					"PROPOSAL_PROMPT_NOT_BOUND": "in der Prompt-Bibliothek ist kein Prompt an „Kundenangebot (Überarbeitung)“ gebunden.",
+					"RATE_LIMITED": "es wurden zu viele KI-Anfragen gestellt. Versuchen Sie es in einer Minute erneut.",
+					"SECTION_CHANGED_MEANWHILE": "der Abschnitt wurde bearbeitet, während die Überarbeitung entworfen wurde.",
+					"NO_BASE": "der Editor gleicht sich noch mit dem gespeicherten Dokument ab.",
+					"SAVE_FAILED": "die Änderungen im Editor konnten nicht zuerst gespeichert werden.",
+					"HELD_ELSEWHERE": "ein anderer Tab prüft gerade einen KI-Vorschlag für dieses Dokument.",
+					"EDITOR_BUSY": "der Editor ist mit einer anderen Änderung beschäftigt.",
+					"NO_CHANGE": "die Überarbeitung hat den Abschnitt nicht verändert.",
+					"INTERRUPTED": "der Editor wurde geschlossen oder neu verbunden, bevor die Überarbeitung fertig war.",
+					"unknown": "etwas ist schiefgelaufen."
+				}
 			}
 		},
 		"proposalArtifactPage": {
@@ -6372,7 +6451,8 @@
 			"loadingStage": {
 				"scanning": "Projektkontext wird durchsucht",
 				"drafting": "KI prüft und entwirft Aktualisierungen"
-			}
+			},
+			"useChatOrRegenerate": "„Mit Kontext aktualisieren“ ist für dieses Angebot nicht verfügbar. Ändern Sie es über den Chat oder generieren Sie es neu."
 		},
 		"planPause": {
 			"title": "Pausiert – wartet auf das Zurücksetzen des ChatGPT-Plans",
@@ -6398,6 +6478,12 @@
 		}
 	},
 	"tooltips": {
+		"publishing": {
+			"interfaceMode": {
+				"simple": "Wähle einen Inhaltstyp und erhalte einen fertigen Entwurf zum Kopieren.",
+				"advanced": "Der vollständige Ablauf: Analyse, Entscheidungen und alle Inhaltsbereiche."
+			}
+		},
 		"documentEditor": {
 			"markComplete": "Diesen Entwurf als abgeschlossen markieren, damit er als fertiges Dokument zählt.",
 			"saveCompletesDraft": "Dokument speichern und diesen Entwurf als abgeschlossen markieren.",
@@ -6532,7 +6618,15 @@
 			"pullFromPmTool": "Elemente aus Ihrem PM-Tool (Jira, Azure DevOps usw.) auswählen und als Arbeitselemente auf dieses Board importieren.",
 			"reviewProposals": "Vorschläge für das Backlog prüfen, die der Teams-Kanalmonitor eingereiht hat. Jeder Vorschlag kann als neues Arbeitselement angenommen oder abgelehnt werden.",
 			"showClosedFeatures": "Ausgeblendete Features auf der Roadmap anzeigen. Sie bleiben auch an anderen Stellen zugänglich.",
-			"syncSelectedToPm": "Die ausgewählten Arbeitselemente an das verbundene PM-Tool senden. Jedes wird zu einem Arbeitselement auf Ihrem Board."
+			"syncSelectedToPm": "Die ausgewählten Arbeitselemente an das verbundene PM-Tool senden. Jedes wird zu einem Arbeitselement auf Ihrem Board.",
+			"pullFromPmPaginationAria": "Seiten der PM-Tickets",
+			"pullFromPmJumpLabel": "Gehe zu Seite",
+			"pullFromPmGo": "Los",
+			"pullFromPmRangeError": "Gib eine Seite von 1 bis {lastPage} ein",
+			"pullFromPmPageLabel": "Seite {page}",
+			"pullFromPmRange": "{from}–{to} von {total} Tickets",
+			"pullFromPmPreviousPage": "Vorherige Seite",
+			"pullFromPmNextPage": "Nächste Seite"
 		},
 		"projectSetup": {
 			"profileHelp": "Über das Profil {profile}",

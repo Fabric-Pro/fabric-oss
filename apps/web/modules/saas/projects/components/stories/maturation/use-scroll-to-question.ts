@@ -50,9 +50,11 @@ export function useScrollToQuestion(ready: boolean): void {
 			if (cancelled) {
 				return;
 			}
-			const el = window.document.querySelector<HTMLElement>(
-				`[data-question-anchor="${anchor}"]`,
-			);
+			const el = Array.from(
+				window.document.querySelectorAll<HTMLElement>(
+					`[data-question-anchor="${anchor}"]`,
+				),
+			).find((candidate) => !candidate.closest("[hidden], [inert]"));
 			if (!el) {
 				if (retries >= MAX_RETRIES) {
 					return;

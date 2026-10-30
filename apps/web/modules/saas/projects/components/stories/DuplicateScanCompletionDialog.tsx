@@ -28,6 +28,10 @@ export type DuplicateScanCompletionResult = {
 	 * `candidates > 0`) means NOTHING could be checked — a wholesale AI outage,
 	 * not a clean scan. */
 	verifierFailures: number;
+	/** Candidate pairs still unverified when the scan stopped continuing
+	 * (response `truncated` of its last request). They are checked by the
+	 * next scan. */
+	remaining: number;
 };
 
 export interface DuplicateScanCompletionDialogProps {
@@ -156,6 +160,13 @@ export function DuplicateScanCompletionDialog({
 										<p className="text-highlight-ink">
 											{t("scanPartialWarning", {
 												count: result.verifierFailures,
+											})}
+										</p>
+									) : null}
+									{result.remaining > 0 ? (
+										<p className="text-highlight-ink">
+											{t("scanRemainingNote", {
+												count: result.remaining,
 											})}
 										</p>
 									) : null}

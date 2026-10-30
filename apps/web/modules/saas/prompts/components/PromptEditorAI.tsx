@@ -10,6 +10,7 @@ import { CopilotSidebar } from "@copilotkit/react-ui";
 import { CopilotAssistantMessageForPromptEnhancer } from "@saas/shared/components/copilot/CopilotAssistantMessage";
 import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { useCopilotErrorHandler } from "@saas/shared/components/copilot/use-copilot-error-handler";
+import { useMemo } from "react";
 import "@copilotkit/react-ui/styles.css";
 import { EditorToolbar } from "@saas/projects/components/EditorToolbar";
 import { applyStrikethroughSerialization } from "@saas/projects/lib/editor-save-utils";
@@ -307,6 +308,7 @@ export function PromptEditorAI(props: Props) {
 			useSingleEndpoint
 			agent="prompt_enhancer"
 			showDevConsole={false}
+			enableInspector={false}
 			onError={onError}
 		>
 			<CopilotChatSessionProvider>
@@ -583,6 +585,36 @@ function PromptEditorAIInner({
 		});
 	};
 
+	const chatLabels = useMemo(
+		() => ({
+			title: "AI Assistant",
+			initial:
+				"Hi! I can help you enhance and improve your prompt. I understand the context, format, and best practices for your prompt type.\n\nTry asking me to:\n• Rewrite for clarity and professionalism\n• Add template variables in the correct format\n• Expand sections with more detail\n• Restructure content for better flow\n• Apply best practices for this prompt category",
+		}),
+		[],
+	);
+	const chatSuggestions = useMemo(
+		() => [
+			{
+				title: "Rewrite for clarity",
+				message:
+					"Rewrite this prompt to be more clear and professional",
+			},
+			{
+				title: "Add template variables",
+				message: `Add appropriate template variables in ${format} format`,
+			},
+			{
+				title: "Expand with examples",
+				message: "Expand this prompt with concrete examples",
+			},
+			{
+				title: "Apply best practices",
+				message: `Apply best practices for ${category || "this type of"} prompts`,
+			},
+		],
+		[format, category],
+	);
 	return (
 		<div className="flex gap-6">
 			<div className="flex-1">
@@ -998,30 +1030,8 @@ function PromptEditorAIInner({
 				AssistantMessage={CopilotAssistantMessageForPromptEnhancer}
 				defaultOpen={false}
 				clickOutsideToClose={false}
-				labels={{
-					title: "AI Assistant",
-					initial:
-						"Hi! I can help you enhance and improve your prompt. I understand the context, format, and best practices for your prompt type.\n\nTry asking me to:\n• Rewrite for clarity and professionalism\n• Add template variables in the correct format\n• Expand sections with more detail\n• Restructure content for better flow\n• Apply best practices for this prompt category",
-				}}
-				suggestions={[
-					{
-						title: "Rewrite for clarity",
-						message:
-							"Rewrite this prompt to be more clear and professional",
-					},
-					{
-						title: "Add template variables",
-						message: `Add appropriate template variables in ${format} format`,
-					},
-					{
-						title: "Expand with examples",
-						message: "Expand this prompt with concrete examples",
-					},
-					{
-						title: "Apply best practices",
-						message: `Apply best practices for ${category || "this type of"} prompts`,
-					},
-				]}
+				labels={chatLabels}
+				suggestions={chatSuggestions}
 			/>
 		</div>
 	);

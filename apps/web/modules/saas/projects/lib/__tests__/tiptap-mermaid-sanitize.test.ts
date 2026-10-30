@@ -69,4 +69,89 @@ describe("sanitizeDiagramSvg", () => {
 		expect(out).toContain("M0 0 L10 10");
 		expect(out).toContain("stroke-width");
 	});
+
+	/**
+	 * What loads, not only what runs. A fence's `style A fill:url(…)` line
+	 * reaches the renderer's `fill` attribute as written, and the renderer's
+	 * own stylesheet opens with a font `@import`; either would make every
+	 * reader's browser fetch a URL the diagram's author chose.
+	 */
+	it("drops a fill or stroke that points at an external url", () => {
+		const out = sanitizeDiagramSvg(
+			'<svg><rect fill="url(https://example.com/x.svg#p)" ' +
+				"stroke=\"URL( 'https://example.com/y' )\" " +
+				'style="fill: url(https://example.com/z)" width="10" /></svg>',
+		);
+
+		expect(out).not.toContain("example.com");
+		expect(out).toContain('width="10"');
+	});
+
+	it.each([
+		["a data: url", 'fill="url(data:image/svg+xml;base64,PHN2Zy8+)"'],
+		["an escaped url", 'fill="\\75 rl(https://example.com/x)"'],
+		[
+			"an image-set",
+			"style=\"fill: image-set('https://example.com/x' 1x)\"",
+		],
+	])("drops %s, which is not a same-document reference", (_, attribute) => {
+		const out = sanitizeDiagramSvg(`<svg><rect ${attribute} /></svg>`);
+
+		expect(out).not.toMatch(/fill=|style=/);
+	});
+
+	it("keeps a same-document marker or gradient reference", () => {
+		const out = sanitizeDiagramSvg(
+			'<svg><defs><marker id="arrow"><path d="M0 0 L5 5" /></marker></defs>' +
+				'<path d="M0 0 L10 10" marker-end="url(#arrow)" ' +
+				"fill=\"url( '#grad' )\" /></svg>",
+		);
+
+		expect(out).toContain('marker-end="url(#arrow)"');
+		expect(out).toContain("url( '#grad' )");
+	});
+
+	it("drops an image whose href points outside the diagram", () => {
+		const out = sanitizeDiagramSvg(
+			'<svg><image href="https://example.com/pixel.png" width="1" /></svg>',
+		);
+
+		expect(out).not.toContain("example.com");
+	});
+
+	it("cleans a stylesheet's imports and external urls but keeps its other rules", () => {
+		const out = sanitizeDiagramSvg(
+			[
+				"<svg><style>",
+				"  @import url('https://example.com/css2?family=Inter:wght@400;500&amp;display=swap');",
+				"  @font-face { font-family: X; src: url(https://example.com/x.woff2); }",
+				"  text { font-family: 'Inter', system-ui, sans-serif; }",
+				"  .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }",
+				"  svg { --_text: var(--fg); --_line: var(--line, color-mix(in srgb, var(--fg) 30%, var(--bg))); }",
+				"  .edge { marker-end: url(#arrow); stroke: var(--_line); }",
+				"  .node { fill: url(https://example.com/a); stroke: red; }",
+				"  .label { fill: \\75 rl(https://example.com/b); color: blue; }",
+				"  .tile { fill: url(data:image/png;base64,AAAA); opacity: 0.5; }",
+				"</style><g /></svg>",
+			].join("\n"),
+		);
+
+		expect(out).not.toContain("@import");
+		expect(out).not.toContain("@font-face");
+		expect(out).not.toContain("example.com");
+		expect(out).not.toContain("data:");
+		expect(out).toContain(
+			"text { font-family: 'Inter', system-ui, sans-serif; }",
+		);
+		expect(out).toContain(
+			".mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }",
+		);
+		expect(out).toContain(
+			"--_line: var(--line, color-mix(in srgb, var(--fg) 30%, var(--bg)))",
+		);
+		expect(out).toContain("marker-end: url(#arrow)");
+		expect(out).toContain("stroke: red");
+		expect(out).toContain("color: blue");
+		expect(out).toContain("opacity: 0.5");
+	});
 });

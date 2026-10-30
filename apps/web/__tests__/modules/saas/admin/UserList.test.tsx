@@ -11,8 +11,10 @@ import userEvent from "@testing-library/user-event";
 import { useEffect, useRef, useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { mockListUsers } = vi.hoisted(() => ({
+const { mockListUsers, url, setPage } = vi.hoisted(() => ({
 	mockListUsers: vi.fn(),
+	url: { initialPage: 1 },
+	setPage: vi.fn(),
 }));
 
 vi.mock("@shared/lib/orpc-query-utils", () => ({
@@ -104,8 +106,20 @@ vi.mock("usehooks-ts", async (importActual) => {
 vi.mock("nuqs", () => ({
 	parseAsInteger: { withDefault: (d: number) => d },
 	parseAsString: { withDefault: (d: string) => d },
-	useQueryState: (_key: string, defaultValue: unknown) =>
-		useState(defaultValue),
+	useQueryState: (key: string, defaultValue: unknown) => {
+		const [value, setValue] = useState(
+			key === "currentPage" ? url.initialPage : defaultValue,
+		);
+		return [
+			value,
+			(next: unknown, options?: unknown) => {
+				if (key === "currentPage") {
+					setPage(next, options);
+				}
+				setValue(next);
+			},
+		];
+	},
 }));
 
 import { UserList } from "@saas/admin/component/users/UserList";
@@ -123,6 +137,7 @@ function renderList() {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	url.initialPage = 1;
 	mockListUsers.mockResolvedValue({ users: [], total: 0 });
 });
 
@@ -163,4 +178,54 @@ describe("UserList", () => {
 		// rendered a literal "0" text node when `total` was 0.
 		expect(screen.queryByText("0")).toBeNull();
 	});
+});
+
+it("requests and displays the last page for a stale URL once the total is known", async () => {
+	url.initialPage = 50;
+	mockListUsers.mockImplementation(({ offset }: { offset: number }) =>
+		Promise.resolve({
+			users:
+				offset === 20
+					? [
+							{
+								id: "example-user",
+								name: "Example user",
+								email: "dev@example.com",
+								role: "user",
+								emailVerified: true,
+								image: null,
+							},
+						]
+					: [],
+			total: 21,
+		}),
+	);
+	renderList();
+	expect(await screen.findByText("Example user")).toBeInTheDocument();
+	await waitFor(() =>
+		expect(mockListUsers).toHaveBeenLastCalledWith(
+			expect.objectContaining({ offset: 20 }),
+		),
+	);
+	expect(setPage).toHaveBeenCalledWith(3, { history: "replace" });
+	expect(screen.getByRole("button", { name: "Page 3" })).toHaveAttribute(
+		"aria-current",
+		"page",
+	);
+});
+it("does not loop correcting a page when there are no users", async () => {
+	url.initialPage = 50;
+	renderList();
+	expect(await screen.findByText("No results.")).toBeInTheDocument();
+	expect(setPage).not.toHaveBeenCalled();
+	expect(mockListUsers).toHaveBeenCalledTimes(1);
+});
+it("does not send a negative offset for page zero", async () => {
+	url.initialPage = 0;
+	renderList();
+	await screen.findByText("No results.");
+	expect(mockListUsers).not.toHaveBeenCalledWith(
+		expect.objectContaining({ offset: -10 }),
+	);
+	expect(setPage).toHaveBeenCalledWith(1, { history: "replace" });
 });

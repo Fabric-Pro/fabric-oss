@@ -2,6 +2,7 @@
  * `agents.conversations.appendTurnForDocument`.
  *
  * Stream-completion-only persistence (FR-2). Order is strict:
+ *   0. Project access: the caller can see the document's project
  *   1. Feature-flag gate
  *   2. 50/day soft cap when conversationId is omitted → lazy-create
  *   3. Ownership check when conversationId is provided
@@ -31,6 +32,7 @@ import {
 } from "../../../../../orpc/procedures";
 import { checkRegisteredAgentAccess } from "../../../lib/registered-agent-access";
 import {
+	assertDocumentProjectAccess,
 	DocumentAssistantVisibilitySchema,
 	DocumentRefSchema,
 	HISTORY_DISABLED_MESSAGE,
@@ -140,6 +142,18 @@ export const appendTurnForDocument = tenantProtectedProcedure
 	.input(
 		DocumentRefSchema.extend({
 			conversationId: z.string().optional(),
+			// A late outcome may update a reply, but cannot append a missing id.
+			patchOnly: z.boolean().optional(),
+			/**
+			 * The assistant's CopilotKit thread id, offered as the id of the
+			 * conversation this call lazily creates, so the thread the agent
+			 * keys its prompt cache on and the stored conversation are one id.
+			 * Ignored when a conversation is reused or the id is already taken.
+			 */
+			proposedConversationId: z
+				.string()
+				.regex(/^[A-Za-z0-9_-]{8,128}$/)
+				.optional(),
 			message: MessageSchema,
 			agentId: z.string().trim().min(1).max(128),
 			requestedVisibility: DocumentAssistantVisibilitySchema.optional(),
@@ -151,6 +165,18 @@ export const appendTurnForDocument = tenantProtectedProcedure
 			input.organizationId,
 			session,
 		);
+
+		// ------------------------------------------------------------------
+		// 0. The document's project. The permission gate's org-role
+		//    fallback admits an organization member who is not on the
+		//    project; a thread they started here would be shared with it.
+		// ------------------------------------------------------------------
+		await assertDocumentProjectAccess({
+			documentRefKind: input.documentRefKind,
+			documentRefId: input.documentRefId,
+			projectId: input.projectId,
+			userId: user.id,
+		});
 
 		// ------------------------------------------------------------------
 		// 1. Feature-flag gate (org context only)
@@ -184,6 +210,11 @@ export const appendTurnForDocument = tenantProtectedProcedure
 		// ------------------------------------------------------------------
 		// 2. Lazy-create when conversationId omitted
 		// ------------------------------------------------------------------
+		if (input.patchOnly && !input.conversationId) {
+			throw new ORPCError("BAD_REQUEST", {
+				message: "A patch requires a conversationId",
+			});
+		}
 		if (!input.conversationId) {
 			// Concurrency: if a sibling tab (or a faster racing request)
 			// already lazy-created an active conversation for this
@@ -256,6 +287,7 @@ export const appendTurnForDocument = tenantProtectedProcedure
 					projectId: input.projectId,
 					agentId: input.agentId,
 					visibility: input.requestedVisibility ?? "SHARED",
+					proposedId: input.proposedConversationId,
 				});
 				targetJoinId = created.join.id;
 				targetConversationId = created.conversation.id;
@@ -329,16 +361,9 @@ export const appendTurnForDocument = tenantProtectedProcedure
 			// broke the Accepted / Rejected / View-version chip flow on
 			// production.
 			//
-			// New behavior on duplicate id:
-			//   - If the new payload has toolCalls AND the existing message
-			//     has none, MERGE them onto the existing row.
-			//   - If the existing message ALREADY has toolCalls, leave it
-			//     alone. This keeps a later "no toolCalls" call from
-			//     blanking a prior populated state, and prevents append
-			//     re-runs (page reload → SSR hydration → persistence walker
-			//     re-fires for old turns) from churning the row.
-			//   - For any other field, the duplicate path stays a no-op —
-			//     content/role/status are frozen at first write.
+			// Duplicate appends fill missing calls or add terminal outcomes by id.
+			// The merge below preserves existing arguments and review stamps.
+
 			if (
 				conversationHasMessageId(
 					conversation.messages,
@@ -371,11 +396,65 @@ export const appendTurnForDocument = tenantProtectedProcedure
 						const existing = Array.isArray(m.toolCalls)
 							? m.toolCalls
 							: [];
-						// Only merge if the existing row has no toolCalls.
-						// This is the "fill in missing" semantics — we do
-						// NOT overwrite if the row already has stamps.
 						if (existing.length > 0) {
-							return raw;
+							const outcomes = new Map(
+								(
+									incomingToolCalls as Array<{
+										id: string;
+										status?: string;
+										result?: string;
+									}>
+								).map((call) => [call.id, call]),
+							);
+							const calls = existing.map((raw) => {
+								if (!raw || typeof raw !== "object") {
+									return raw;
+								}
+								const call = raw as {
+									id?: string;
+									status?: string;
+									result?: string;
+								};
+								const incoming = call.id
+									? outcomes.get(call.id)
+									: undefined;
+								if (
+									!incoming ||
+									(incoming.status !== "success" &&
+										incoming.status !== "error")
+								) {
+									return raw;
+								}
+								if (
+									call.status === "success" ||
+									call.status === "error"
+								) {
+									return raw;
+								}
+								didMerge = true;
+								return {
+									...call,
+									status: incoming.status,
+									...(incoming.result !== undefined
+										? { result: incoming.result }
+										: {}),
+								};
+							});
+							const existingIds = new Set(
+								existing.map(
+									(call) => (call as { id?: unknown })?.id,
+								),
+							);
+							for (const call of incomingToolCalls as Array<{
+								id: string;
+							}>) {
+								if (!existingIds.has(call.id)) {
+									calls.push(call);
+									existingIds.add(call.id);
+									didMerge = true;
+								}
+							}
+							return didMerge ? { ...m, toolCalls: calls } : raw;
 						}
 						didMerge = true;
 						return { ...m, toolCalls: incomingToolCalls };
@@ -419,6 +498,16 @@ export const appendTurnForDocument = tenantProtectedProcedure
 					conversationId: targetConversationId,
 					persistedAt: updatedAtIso,
 					spilledTo: undefined as string | undefined,
+					...(input.patchOnly ? { patchApplied: true } : {}),
+				};
+			}
+
+			if (input.patchOnly) {
+				return {
+					conversationId: targetConversationId,
+					persistedAt: undefined,
+					spilledTo: undefined,
+					patchApplied: false,
 				};
 			}
 
@@ -570,6 +659,9 @@ export const appendTurnForDocument = tenantProtectedProcedure
 		return {
 			conversationId: result.conversationId,
 			persistedAt: result.persistedAt,
+			...("patchApplied" in result
+				? { patchApplied: result.patchApplied }
+				: {}),
 			...(result.spilledTo ? { spilledTo: result.spilledTo } : {}),
 		};
 	});

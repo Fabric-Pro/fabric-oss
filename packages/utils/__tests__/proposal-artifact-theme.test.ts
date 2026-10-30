@@ -287,7 +287,6 @@ const PRINT_ROOT = PROPOSAL_THEME_ROOT_SELECTORS.print;
 const NARROW = "@media (width < 48rem)";
 
 const PRINT_OPTIONS: ProposalPrintThemeOptions = {
-	runningHeader: "Example Proposal",
 	runningFooter:
 		"Example Org · Example Proposal · 14 October 2026 · Confidential",
 };
@@ -390,7 +389,9 @@ describe("proposalThemeCss: both targets", () => {
 					continue;
 				}
 				expect(reference).toEqual({
-					name: expect.stringMatching(/^--font-(inter|mono)$/),
+					name: expect.stringMatching(
+						/^--font-(inter|mono|poppins|jetbrains-mono)$/,
+					),
 					property: "font-family",
 					value: reference.value,
 				});
@@ -435,20 +436,22 @@ describe("proposalThemeCss: both targets", () => {
 		["live", live, LIVE_ROOT],
 		["print", print, PRINT_ROOT],
 	])(
-		"%s sets the body in the brand font with Inter behind it",
+		"%s sets each role in the brand font with its neutral face behind it",
 		(_target, css, root) => {
 			expect(declarationsFor(css, root).get("font-family")).toBe(
 				'var(--pa-font-body, "Inter"), var(--font-inter, "Inter"), ui-sans-serif, system-ui, sans-serif',
 			);
-			expect(
-				declarationsFor(css, `${root} h2`).get("font-family"),
-			).toMatch(/^var\(--pa-font-display, "Inter"\)/);
+			// next/font's hashed families come in through their properties,
+			// ahead of the literal names print embeds.
+			expect(declarationsFor(css, `${root} h2`).get("font-family")).toBe(
+				'var(--pa-font-display, "Poppins"), var(--font-poppins, "Poppins"), var(--font-inter, "Inter"), ui-sans-serif, system-ui, sans-serif',
+			);
 			expect(
 				declarationsFor(css, `${root} pre`).get("font-family"),
 			).toMatch(/^ui-monospace, var\(--font-mono, [^)]+\).*monospace$/);
-			expect(
-				declarationsFor(css, `${root} th`).get("font-family"),
-			).toMatch(/^var\(--pa-font-mono, "Inter"\)/);
+			expect(declarationsFor(css, `${root} th`).get("font-family")).toBe(
+				'var(--pa-font-mono, "JetBrains Mono"), var(--font-jetbrains-mono, "JetBrains Mono"), ui-monospace, monospace',
+			);
 		},
 	);
 
@@ -467,10 +470,11 @@ describe("proposalThemeCss: both targets", () => {
 			expect(declarationsFor(css, `${root} .pa-callout`)).toEqual(
 				callout,
 			);
-			expect(callout.get("background-color")).toBe("var(--pa-tint)");
-			expect(callout.get("border-left")).toBe(
-				"4px solid var(--pa-primary)",
+			// An ink rule on light grey.
+			expect(callout.get("background-color")).toBe(
+				"color-mix(in srgb, var(--pa-ink) 6%, var(--pa-surface))",
 			);
+			expect(callout.get("border-left")).toBe("3pt solid var(--pa-ink)");
 			expect(callout.get("font-style")).toBe("normal");
 			// The typography plugin wraps a blockquote in curly quotes.
 			expect(callout.get("quotes")).toBe("none");
@@ -484,16 +488,27 @@ describe("proposalThemeCss: both targets", () => {
 			expect(declarationsFor(css, `${root} .pa-data-table`)).toEqual(
 				table,
 			);
+			// An ink header row of uppercase mono labels.
 			const header = declarationsFor(css, `${root} th`);
-			expect(header.get("background-color")).toBe("var(--pa-primary)");
-			expect(header.get("color")).toBe("var(--pa-on-primary)");
+			expect(header.get("background-color")).toBe("var(--pa-ink)");
+			expect(header.get("color")).toBe("var(--pa-on-ink)");
 			expect(header.get("text-transform")).toBe("uppercase");
-			expect(
-				declarationsFor(
-					css,
-					`${root} tbody > tr:nth-child(even) > td`,
-				).get("background-color"),
-			).toBe("var(--pa-tint)");
+			expect(header.get("font-family")).toMatch(/^var\(--pa-font-mono,/);
+			// Zebra rows from the second data row on, whether the header row
+			// sits in `thead` (print) or in `tbody` (the editor).
+			const tinted = (selector: string) =>
+				declarationsFor(css, `${root} ${selector}`).get(
+					"background-color",
+				);
+			const zebra =
+				"color-mix(in srgb, var(--pa-ink) 4%, var(--pa-surface))";
+			expect(tinted("tbody > tr:nth-child(odd) > td")).toBe(zebra);
+			expect(tinted("thead + tbody > tr:nth-child(odd) > td")).toBe(
+				"transparent",
+			);
+			expect(tinted("thead + tbody > tr:nth-child(even) > td")).toBe(
+				zebra,
+			);
 
 			expect(declarationsFor(css, `${root} figcaption`)).toEqual(
 				declarationsFor(css, `${root} .pa-caption`),
@@ -508,15 +523,56 @@ describe("proposalThemeCss: both targets", () => {
 		["live", live, LIVE_ROOT],
 		["print", print, PRINT_ROOT],
 	])(
-		"%s keeps a link in a header cell in the cell's own text colour",
+		"%s keeps a link on an ink fill in the fill's own text colour",
 		(_target, css, root) => {
-			expect(declarationsFor(css, `${root} th a`).get("color")).toBe(
-				"inherit",
-			);
+			for (const selector of ["th a", "h2 a"]) {
+				expect(
+					declarationsFor(css, `${root} ${selector}`).get("color"),
+				).toBe("inherit");
+			}
 		},
 	);
 
-	it("keeps a link on the print section opener in the band's text colour", () => {
+	it.each([
+		["live", live, LIVE_ROOT],
+		["print", print, PRINT_ROOT],
+	])("%s sets a section heading as an ink card", (_target, css, root) => {
+		const heading = declarationsFor(css, `${root} h2`);
+		expect(heading.get("background-color")).toBe("var(--pa-ink)");
+		expect(heading.get("color")).toBe("var(--pa-on-ink)");
+		expect(heading.get("border-radius")).toBe("6pt");
+		expect(heading.has("background-image")).toBe(false);
+	});
+
+	it.each([
+		["live", live, LIVE_ROOT],
+		["print", print, PRINT_ROOT],
+	])(
+		"%s sets a first column of ids in mono, and numbered steps in primary squares",
+		(_target, css, root) => {
+			const ids = declarationsFor(
+				css,
+				`${root} .${PROPOSAL_THEME_CLASSES.idColumn} td:first-child`,
+			);
+			expect(ids.get("font-family")).toMatch(/^var\(--pa-font-mono,/);
+			expect(ids.get("color")).toBe("var(--pa-heading)");
+
+			const steps = `${root} ol.${PROPOSAL_THEME_CLASSES.steps}`;
+			expect(declarationsFor(css, steps).get("list-style")).toBe("none");
+			const square = declarationsFor(css, `${steps} > li::before`);
+			// The list-item counter honours an ordered list's start.
+			expect(square.get("content")).toBe("counter(list-item)");
+			expect(square.get("background-color")).toBe("var(--pa-primary)");
+			expect(square.get("color")).toBe("var(--pa-on-primary)");
+			expect(square.get("font-family")).toMatch(/^var\(--pa-font-mono,/);
+			// Every other ordered list keeps its decimals.
+			expect(
+				declarationsFor(css, `${root} ol`).get("list-style-type"),
+			).toBe("decimal");
+		},
+	);
+
+	it("keeps a link on the print section opener in the card's text colour", () => {
 		expect(
 			declarationsFor(print, `${PRINT_ROOT} .pa-section-opener a`).get(
 				"color",
@@ -539,12 +595,47 @@ describe("proposalThemeCss: both targets", () => {
 			// The DOM is <dt>label</dt><dd>value</dd>; the value reads first.
 			expect(tile.get("display")).toBe("flex");
 			expect(tile.get("flex-direction")).toBe("column-reverse");
-			expect(tile.get("border-top")).toBe("3px solid var(--pa-primary)");
 			for (const part of [".pa-stat-value", ".pa-stat-label"]) {
 				const declarations = declarationsFor(css, `${root} ${part}`);
 				expect(declarations.get("margin")).toBe("0");
 				expect(declarations.get("padding")).toBe("0");
 			}
+		},
+	);
+
+	it.each([
+		["live", live, LIVE_ROOT],
+		["print", print, PRINT_ROOT],
+	])(
+		"%s fills the tiles in turn: ink, the primary, a dark grey with the on-ink accent, ink",
+		(_target, css, root) => {
+			const tile = (selector: string) =>
+				declarationsFor(css, `${root} .pa-stat-tile${selector}`);
+			expect(tile("").get("background-color")).toBe("var(--pa-ink)");
+			expect(tile("").get("color")).toBe("var(--pa-on-ink)");
+			expect(tile(":nth-child(4n + 2)").get("background-color")).toBe(
+				"var(--pa-primary)",
+			);
+			expect(tile(":nth-child(4n + 2)").get("color")).toBe(
+				"var(--pa-on-primary)",
+			);
+			expect(tile(":nth-child(4n + 3)").get("background-color")).toBe(
+				"color-mix(in srgb, var(--pa-on-ink) 12%, var(--pa-ink))",
+			);
+			expect(tile(":nth-child(4n + 3) .pa-stat-value").get("color")).toBe(
+				"var(--pa-on-ink-accent)",
+			);
+			// The fourth tile is ink again: no rule of its own.
+			expect(tile(":nth-child(4n + 4)").size).toBe(0);
+			expect(
+				declarationsFor(css, `${root} .pa-stat-value`).get("color"),
+			).toBe("inherit");
+			expect(
+				declarationsFor(css, `${root} .pa-stat-label`).get("color"),
+			).toBe("var(--pa-on-ink-muted)");
+			expect(tile(":nth-child(4n + 2) .pa-stat-label").get("color")).toBe(
+				"var(--pa-on-primary)",
+			);
 		},
 	);
 
@@ -648,7 +739,7 @@ describe("proposalThemeCss: live", () => {
 			live,
 			`${LIVE_ROOT} table:not([data-diff])`,
 		);
-		expect(unmarked.get("border")).toBe("1px solid var(--pa-border)");
+		expect(unmarked.get("border")).toBe("0");
 		expect(unmarked.get("background-color")).toBe("var(--pa-surface)");
 	});
 
@@ -676,6 +767,52 @@ describe("proposalThemeCss: live", () => {
 		expect(
 			compareSpecificity(specificity(selector), [0, 3, 1]),
 		).toBeGreaterThan(0);
+	});
+
+	it("keeps text a pending AI change marks legible inside the ink heading card", () => {
+		// The mark's own ink-on-wash rule outranks the card's colour, which
+		// the mark would otherwise inherit.
+		const mark = `${LIVE_ROOT} :is(ins, del):not([hidden])`;
+		expect(
+			compareSpecificity(
+				specificity(mark),
+				specificity(`${LIVE_ROOT} h2`),
+			),
+		).toBeGreaterThan(0);
+		expect(declarationsFor(live, mark).get("color")).toBe("var(--pa-ink)");
+		// Opaque washes from the paint, so the ink reads on them over the card.
+		expect(
+			declarationsFor(live, `${LIVE_ROOT} ins:not([hidden])`).get(
+				"background-color",
+			),
+		).toBe("var(--pa-review-insert)");
+		expect(
+			declarationsFor(live, `${LIVE_ROOT} del:not([hidden])`).get(
+				"background-color",
+			),
+		).toBe("var(--pa-review-delete)");
+		const paint = resolveThemePaint(
+			buildProposalThemeTokens({
+				organization: null,
+				style: null,
+				brandKit: null,
+				recipient: null,
+			}),
+		);
+		for (const wash of [paint.reviewInsert, paint.reviewDelete]) {
+			expect(wash).toMatch(/^#[0-9a-f]{6}$/);
+			expect(contrastRatio(paint.ink, wash)).toBeGreaterThanOrEqual(
+				TEXT_CONTRAST,
+			);
+		}
+	});
+
+	it("holds only the heading in the live card: no eyebrow, no graphic", () => {
+		expect(live).not.toMatch(/h2::?(before|after)/);
+		expect(live).not.toContain("counter(pa-section)");
+		expect(live).not.toContain(".pa-section-graphic");
+		expect(live).not.toContain("--pa-hero-image");
+		expect(live).not.toContain("--pa-hero-opener-image");
 	});
 
 	it("targets the Main wrapper by class and attribute", () => {
@@ -866,7 +1003,56 @@ describe("proposalThemeCss: print", () => {
 		expect(print.match(/(?<![\w-])size:/g)).toHaveLength(2);
 	});
 
-	it("puts the running header, footer and page counter in margin boxes", () => {
+	it("sets the exemplar's type scale: body, subheadings, eyebrows and captions", () => {
+		const body = declarationsFor(print, PRINT_ROOT);
+		expect(body.get("font-size")).toBe("10.5pt");
+		expect(body.get("line-height")).toBe("1.6");
+
+		const subheading = declarationsFor(print, `${PRINT_ROOT} h3`);
+		expect(subheading.get("font-size")).toBe("13.5pt");
+		expect(subheading.get("font-family")).toMatch(
+			/^var\(--pa-font-display, "Poppins"\)/,
+		);
+
+		const eyebrow = declarationsFor(print, `${PRINT_ROOT} .pa-eyebrow`);
+		expect(eyebrow.get("font-size")).toBe("7.5pt");
+		expect(eyebrow.get("letter-spacing")).toBe("0.16em");
+		// JetBrains Mono is loaded at 400 and 500 only.
+		expect(eyebrow.get("font-weight")).toBe("500");
+		for (const selector of [
+			`${PRINT_ROOT} th`,
+			`${PRINT_ROOT} .pa-section-opener::before`,
+			`${PRINT_ROOT} .pa-contents li::before`,
+		]) {
+			expect({
+				selector,
+				weight: declarationsFor(print, selector).get("font-weight"),
+			}).toEqual({ selector, weight: "500" });
+		}
+		expect(eyebrow.get("font-family")).toMatch(
+			/^var\(--pa-font-mono, "JetBrains Mono"\)/,
+		);
+
+		for (const caption of ["figcaption", ".pa-caption"]) {
+			const declarations = declarationsFor(
+				print,
+				`${PRINT_ROOT} ${caption}`,
+			);
+			expect(declarations.get("font-size")).toBe("7.75pt");
+			expect(declarations.get("font-family")).toMatch(
+				/^var\(--pa-font-mono, "JetBrains Mono"\)/,
+			);
+		}
+		// The live page keeps its own caption and subheading sizes.
+		const liveCaption = declarationsFor(live, `${LIVE_ROOT} figcaption`);
+		expect(liveCaption.get("font-size")).toBe("0.82em");
+		expect(liveCaption.has("font-family")).toBe(false);
+		expect(declarationsFor(live, `${LIVE_ROOT} h3`).get("font-size")).toBe(
+			"1.22em",
+		);
+	});
+
+	it("puts the running footer and page counter in margin boxes, and nothing at the top", () => {
 		const boxes = parseCss(print).filter(
 			(block) => block.path.join("|") === "@page",
 		);
@@ -875,8 +1061,8 @@ describe("proposalThemeCss: print", () => {
 				boxes.find((block) => block.prelude === box)?.declarations,
 			).get("content");
 
-		expect(decodeCssString(content("@top-left") as string)).toBe(
-			PRINT_OPTIONS.runningHeader,
+		expect(boxes.some((block) => block.prelude.startsWith("@top"))).toBe(
+			false,
 		);
 		expect(decodeCssString(content("@bottom-left") as string)).toBe(
 			PRINT_OPTIONS.runningFooter,
@@ -891,7 +1077,6 @@ describe("proposalThemeCss: print", () => {
 			(block) => block.path.join("|") === "@page",
 		);
 		expect(boxes.map((block) => block.prelude)).toEqual([
-			"@top-left",
 			"@bottom-left",
 			"@bottom-right",
 		]);
@@ -923,12 +1108,12 @@ describe("proposalThemeCss: print", () => {
 		});
 
 		expect(
-			new Map(atBlock(branded, "@top-left").declarations).get(
+			new Map(atBlock(branded, "@bottom-left").declarations).get(
 				"font-family",
 			),
 		).toBe('"Example Sans", "Inter", ui-sans-serif, sans-serif');
 		expect(
-			new Map(atBlock(hostile, "@top-left").declarations).get(
+			new Map(atBlock(hostile, "@bottom-left").declarations).get(
 				"font-family",
 			),
 		).toBe('"Inter", ui-sans-serif, sans-serif');
@@ -948,7 +1133,7 @@ describe("proposalThemeCss: print", () => {
 		for (const box of cover) {
 			expect(box.declarations).toEqual([["content", "none"]]);
 		}
-		for (const box of ["@top-left", "@bottom-left", "@bottom-right"]) {
+		for (const box of ["@bottom-left", "@bottom-right"]) {
 			expect(cover.map((block) => block.prelude)).toContain(box);
 		}
 		// The first page repeats it, so page 1 is painted without margins or
@@ -975,22 +1160,129 @@ describe("proposalThemeCss: print", () => {
 		// written nowhere else: it follows the page size constant.
 		expect(coverRule.get("height")).toBe("11in");
 		expect(print.match(/\b11in\b/g)).toHaveLength(1);
-		expect(coverRule.get("color")).toBe("var(--pa-surface)");
+		expect(coverRule.get("color")).toBe("var(--pa-on-ink)");
+		// Block-level, so the named page applies; its parts are laid out
+		// inside it, never around it.
+		expect(coverRule.get("display")).toBe("block");
+		expect(coverRule.get("position")).toBe("relative");
+		expect(coverRule.get("overflow")).toBe("hidden");
 	});
 
-	it("lets the cover's logo slots collapse cleanly", () => {
+	it("flows the cover's brands and body from the top and pins only the parties to the foot", () => {
+		const rule = (selector: string) =>
+			declarationsFor(print, `${PRINT_ROOT} ${selector}`);
+		const cover = rule(`.${PROPOSAL_THEME_CLASSES.cover}`);
+		expect(cover.get("padding")).toBe("0.7in 0.8in 0");
+
+		// The body starts on one line whether or not the brands row is there.
+		const body = rule(`.${PROPOSAL_PRINT_CLASSES.coverBody}`);
+		const afterBrands = rule(
+			`.${PROPOSAL_PRINT_CLASSES.coverBrands} + .${PROPOSAL_PRINT_CLASSES.coverBody}`,
+		);
+		expect(body.get("margin-top")).toBe("calc(3.05in - 0.7in)");
+		expect(afterBrands.get("margin-top")).toBe(
+			"calc(3.05in - 0.7in - 0.56in)",
+		);
 		expect(
-			declarationsFor(
-				print,
-				`${PRINT_ROOT} .${PROPOSAL_PRINT_CLASSES.coverBrands}:empty`,
-			).get("display"),
-		).toBe("none");
+			rule(`.${PROPOSAL_PRINT_CLASSES.coverBrands}`).get("height"),
+		).toBe("0.56in");
+		// Neither flows by position: only the parties leave the flow.
+		for (const selector of [
+			PROPOSAL_PRINT_CLASSES.coverBrands,
+			PROPOSAL_PRINT_CLASSES.coverBody,
+		]) {
+			expect(rule(`.${selector}`).get("position")).toBe("relative");
+			expect(rule(`.${selector}`).has("top")).toBe(false);
+		}
+		// The body ends a reserved gap above the parties, however long.
+		expect(body.get("max-height")).toBe(
+			"calc(100% + 0.7in - 3.05in - 2in)",
+		);
+		expect(body.get("overflow")).toBe("hidden");
+
+		const parties = rule(`.${PROPOSAL_PRINT_CLASSES.coverParties}`);
+		expect(parties.get("position")).toBe("absolute");
+		expect(parties.get("bottom")).toBe("0.75in");
+		expect(parties.get("left")).toBe("0.8in");
+		expect(parties.get("right")).toBe("0.8in");
+		// Each party keeps its own column, whether or not the other is there.
+		expect(
+			rule(`.${PROPOSAL_PRINT_CLASSES.coverPartyFor}`).get("grid-column"),
+		).toBe("1");
+		expect(
+			rule(`.${PROPOSAL_PRINT_CLASSES.coverPartyBy}`).get("grid-column"),
+		).toBe("2");
+	});
+
+	it("sets the cover's type: a mono eyebrow in the on-ink accent, a title clamped to three lines, a grey lead", () => {
+		const rule = (selector: string) =>
+			declarationsFor(print, `${PRINT_ROOT} ${selector}`);
+
+		const eyebrow = rule(
+			`.${PROPOSAL_THEME_CLASSES.cover} .${PROPOSAL_PRINT_CLASSES.eyebrow}`,
+		);
+		expect(eyebrow.get("color")).toBe("var(--pa-on-ink-accent)");
+		expect(eyebrow.get("font-size")).toBe("8pt");
+
+		const title = rule(`.${PROPOSAL_PRINT_CLASSES.coverTitle}`);
+		expect(title.get("font-size")).toBe("34pt");
+		expect(title.get("font-weight")).toBe("700");
+		expect(title.get("font-family")).toContain("var(--pa-font-display");
+		expect(title.get("-webkit-line-clamp")).toBe("3");
+		expect(title.get("line-clamp")).toBe("3");
+		expect(title.get("overflow")).toBe("hidden");
+		expect(title.get("color")).toBe("var(--pa-on-ink)");
+
+		const lead = rule(`.${PROPOSAL_PRINT_CLASSES.coverLead}`);
+		expect(lead.get("font-size")).toBe("13pt");
+		expect(lead.get("color")).toBe("var(--pa-on-ink-muted)");
+		expect(
+			rule(`.${PROPOSAL_PRINT_CLASSES.coverLead} a`).get("color"),
+		).toBe("inherit");
+
+		expect(
+			rule(`.${PROPOSAL_PRINT_CLASSES.coverParties} dt`).get("color"),
+		).toBe("var(--pa-on-ink-accent)");
+		expect(
+			rule(`.${PROPOSAL_PRINT_CLASSES.coverParties}`).get("color"),
+		).toBe("var(--pa-on-ink-muted)");
+	});
+
+	it("sets up to three key figures in thirds from the left, each value over its label and a rule", () => {
+		const rule = (selector: string) =>
+			declarationsFor(print, `${PRINT_ROOT} ${selector}`);
+		const figures = rule(`.${PROPOSAL_PRINT_CLASSES.coverFigures}`);
+		expect(figures.get("display")).toBe("grid");
+		expect(figures.get("grid-template-columns")).toBe(
+			"repeat(3, minmax(0, 1fr))",
+		);
+		const figure = rule(`.${PROPOSAL_PRINT_CLASSES.coverFigures} > div`);
+		expect(figure.get("border-top")).toBe(
+			"2pt solid var(--pa-on-ink-rule)",
+		);
+		const value = rule(`.${PROPOSAL_PRINT_CLASSES.coverFigures} dd`);
+		expect(value.get("order")).toBe("-1");
+		expect(value.get("font-size")).toBe("19pt");
+		expect(value.get("color")).toBe("var(--pa-on-ink)");
+		const label = rule(`.${PROPOSAL_PRINT_CLASSES.coverFigures} dt`);
+		expect(label.get("font-size")).toBe("8.5pt");
+		expect(label.get("color")).toBe("var(--pa-on-ink-muted)");
+	});
+
+	it("keeps the recipient logo right on its own and sets a plated logo on the paper", () => {
 		expect(
 			declarationsFor(
 				print,
 				`${PRINT_ROOT} .${PROPOSAL_PRINT_CLASSES.recipientLogo}`,
 			).get("margin-inline-start"),
 		).toBe("auto");
+		const plate = declarationsFor(
+			print,
+			`${PRINT_ROOT} .${PROPOSAL_PRINT_CLASSES.coverLogoPlate}`,
+		);
+		expect(plate.get("background-color")).toBe("var(--pa-surface)");
+		expect(plate.get("border-radius")).toBe("5pt");
+		expect(plate.has("padding")).toBe(true);
 	});
 
 	it("prints landscape appendix pages on a named page", () => {
@@ -1064,9 +1356,102 @@ describe("proposalThemeCss: print", () => {
 			print,
 			`${PRINT_ROOT} .${PROPOSAL_PRINT_CLASSES.coverHero}`,
 		);
-		expect(hero.get("height")).toBe("3in");
-		expect(hero.get("object-fit")).toBe("cover");
-		expect(hero.get("flex")).toBe("0 0 auto");
+		expect(hero.get("position")).toBe("absolute");
+		expect(hero.get("top")).toBe("0");
+		expect(hero.get("height")).toBe("7.4in");
+		expect(hero.get("background-size")).toBe("cover");
+		// The print page writes the hero once, on the body.
+		expect(hero.get("background-image")).toBe("var(--pa-hero-image)");
+		// Chromium's print output masks a large layer only in part, so the
+		// hero fades by an ink layer drawn over it, never by a mask.
+		expect(print).not.toMatch(/mask/);
+
+		// The veil: plain ink at the paint's opacity, opaque without one.
+		const veil = declarationsFor(
+			print,
+			`${PRINT_ROOT} .${PROPOSAL_PRINT_CLASSES.coverHero}::before`,
+		);
+		expect(veil.get("background-color")).toBe("var(--pa-ink)");
+		expect(veil.get("opacity")).toBe("var(--pa-hero-veil, 1)");
+		const fade = declarationsFor(
+			print,
+			`${PRINT_ROOT} .${PROPOSAL_PRINT_CLASSES.coverHero}::after`,
+		);
+		expect(fade.get("background-image")).toContain(
+			"transparent 25%, var(--pa-ink) 85%",
+		);
+		// Past the hero's edge, so the picture's edge sits under solid ink.
+		expect(fade.get("bottom")).toBe("-0.25in");
+	});
+
+	it("sets each section opener as an ink card at the top of its own page", () => {
+		const rule = (selector: string) =>
+			declarationsFor(print, `${PRINT_ROOT} ${selector}`);
+		const opener = rule(".pa-section-opener");
+		expect(opener.get("background-color")).toBe("var(--pa-ink)");
+		expect(opener.get("color")).toBe("var(--pa-on-ink)");
+		expect(opener.get("border-radius")).toBe("6pt");
+		expect(opener.get("break-before")).toBe("page");
+		expect(opener.get("break-after")).toBe("avoid");
+		// Nothing clips the card, so no corner can cut the page marker.
+		expect(opener.has("overflow")).toBe(false);
+		// The contents page and the landscape page force the same break, so
+		// no page between them and an opener is left blank.
+		expect(rule(".pa-contents").get("break-after")).toBe("page");
+		expect(rule(".pa-landscape").get("page")).toBe("landscape");
+
+		// Not a card inside the card.
+		const heading = rule(".pa-section-opener h2");
+		expect(heading.get("background-color")).toBe("transparent");
+		expect(heading.get("padding")).toBe("0");
+		expect(heading.get("font-size")).toBe("21pt");
+		expect(heading.get("color")).toBe("inherit");
+		expect(rule(".pa-section-opener p").get("color")).toBe(
+			"var(--pa-on-ink-muted)",
+		);
+		expect(rule(".pa-section-opener::before").get("color")).toBe(
+			"var(--pa-on-ink-accent)",
+		);
+	});
+
+	it("draws the opener graphic from the hero under the cover's veil, faded at its left edge", () => {
+		const rule = (selector: string) =>
+			declarationsFor(
+				print,
+				`${PRINT_ROOT} .${PROPOSAL_PRINT_CLASSES.sectionGraphic}${selector}`,
+			);
+		const graphic = rule("");
+		expect(graphic.get("position")).toBe("absolute");
+		expect(graphic.get("left")).toBe("42%");
+		expect(graphic.get("right")).toBe("0");
+		// The hero's small copy, or the hero itself when there is none.
+		expect(graphic.get("background-image")).toBe(
+			"var(--pa-hero-opener-image, var(--pa-hero-image))",
+		);
+		expect(graphic.get("background-size")).toBe("cover");
+		expect(graphic.get("border-radius")).toBe("0 6pt 6pt 0");
+		const coverVeil = declarationsFor(
+			print,
+			`${PRINT_ROOT} .${PROPOSAL_PRINT_CLASSES.coverHero}::before`,
+		);
+		for (const property of ["background-color", "opacity"]) {
+			expect(rule("::before").get(property)).toBe(
+				coverVeil.get(property),
+			);
+		}
+		expect(rule("::after").get("background-image")).toContain(
+			"var(--pa-ink)",
+		);
+		// The opener's text is drawn over the graphic.
+		for (const part of ["h2", "p", ":before"]) {
+			const selector =
+				part === ":before"
+					? `${PRINT_ROOT} .pa-section-opener::before`
+					: `${PRINT_ROOT} .pa-section-opener ${part}`;
+			expect(declarationsFor(print, selector).get("position")).toBe(
+				"relative",
+			);
+		}
 	});
 
 	it("numbers section openers with a counter", () => {
@@ -1084,6 +1469,71 @@ describe("proposalThemeCss: print", () => {
 		);
 		expect(eyebrow.get("content")).toBe('"Section " counter(pa-section)');
 		expect(eyebrow.get("text-transform")).toBe("uppercase");
+	});
+
+	it("sets a figure template's text in the role faces the live page loads, and leaves print to the names it embeds", () => {
+		const text = `${LIVE_ROOT} .pa-figure-counted svg[role="img"] text[font-family]`;
+		expect(declarationsFor(live, text).get("font-family")).toMatch(
+			/^var\(--pa-font-body, "Inter"\), var\(--font-inter, /,
+		);
+		for (const name of [
+			"eyebrow",
+			"step-number",
+			"layer-title",
+			"side-title",
+			"team-title",
+		]) {
+			const selector = `${text}.${name}`;
+			expect(declarationsFor(live, selector).get("font-family")).toMatch(
+				/^var\(--pa-font-mono, "JetBrains Mono"\), var\(--font-jetbrains-mono, /,
+			);
+			// The mono role wins over the body face whatever the order.
+			expect(
+				compareSpecificity(specificity(selector), specificity(text)),
+			).toBeGreaterThan(0);
+		}
+
+		expect(print).not.toContain('svg[role="img"]');
+	});
+
+	it("numbers the live page's drawn figures with a counter, and print's not at all", () => {
+		expect(declarationsFor(live, LIVE_ROOT).get("counter-reset")).toBe(
+			"pa-section pa-figure",
+		);
+		expect(
+			declarationsFor(live, `${LIVE_ROOT} .pa-figure-counted`).get(
+				"counter-increment",
+			),
+		).toBe("pa-figure");
+		const number = declarationsFor(
+			live,
+			`${LIVE_ROOT} .pa-figure-counted .pa-figure-caption::before`,
+		);
+		expect(number.get("content")).toBe('"Figure " counter(pa-figure) "."');
+		expect(number.get("font-family")).toMatch(
+			/^var\(--pa-font-mono, "JetBrains Mono"\)/,
+		);
+		expect(number.get("color")).toBe("var(--pa-ink)");
+
+		// Print writes "Figure n." out as text, so it never counts one.
+		expect(print).not.toContain("pa-figure-counted");
+		expect(print).not.toMatch(/counter\(pa-figure\)|pa-section pa-figure/);
+		for (const caption of [
+			".pa-diagram figcaption",
+			".pa-diagram-placeholder .pa-caption",
+		]) {
+			expect(
+				declarationsFor(print, `${PRINT_ROOT} ${caption}`).get(
+					"text-align",
+				),
+			).toBe("left");
+		}
+		const printNumber = declarationsFor(
+			print,
+			`${PRINT_ROOT} .pa-figure-number`,
+		);
+		expect(printNumber.get("color")).toBe("var(--pa-ink)");
+		expect(printNumber.get("font-weight")).toBe("500");
 	});
 
 	it("uses no CSS Chromium cannot print", () => {
@@ -1111,16 +1561,15 @@ describe("proposalThemeCss: print", () => {
 		expect(body.get("background-color")).toBe("var(--pa-surface)");
 	});
 
-	it("cannot be broken out of by the header or footer text", () => {
-		const header =
+	it("cannot be broken out of by the footer text", () => {
+		const footer =
 			'Q3 "Plan" \\ for\nExample Org; } body { display: none } </style><script>x</script>';
-		const css = proposalThemeCss("print", {
-			runningHeader: header,
-			runningFooter: "Example Org\r\n\u0000 · Confidential",
-		});
+		const css = proposalThemeCss("print", { runningFooter: footer });
 
-		const topLeft = atBlock(css, "@top-left");
-		const content = new Map(topLeft.declarations).get("content") as string;
+		const bottomLeft = atBlock(css, "@bottom-left");
+		const content = new Map(bottomLeft.declarations).get(
+			"content",
+		) as string;
 		expect(content).toBe(
 			'"Q3 \\"Plan\\" \\\\ for Example Org; } body { display: none } \\3c /style\\3e \\3c script\\3e x\\3c /script\\3e "',
 		);
@@ -1129,9 +1578,15 @@ describe("proposalThemeCss: print", () => {
 		);
 		expect(
 			decodeCssString(
-				new Map(atBlock(css, "@bottom-left").declarations).get(
-					"content",
-				) as string,
+				new Map(
+					atBlock(
+						proposalThemeCss("print", {
+							runningFooter:
+								"Example Org\r\n\u0000 · Confidential",
+						}),
+						"@bottom-left",
+					).declarations,
+				).get("content") as string,
 			),
 		).toBe("Example Org · Confidential");
 		// The stylesheet keeps the shape it has with harmless text, and never
@@ -1146,7 +1601,6 @@ describe("proposalThemeCss: print", () => {
 
 	it("drops invisible formatting characters from the running text", () => {
 		const css = proposalThemeCss("print", {
-			runningHeader: "Example Proposal",
 			// A right-to-left override would make the furniture read backwards.
 			runningFooter: "Example Org \u202e Confidential\u200b",
 		});
@@ -1162,14 +1616,13 @@ describe("proposalThemeCss: print", () => {
 
 	it("keeps the joiners a title's script needs and drops soft hyphens", () => {
 		const css = proposalThemeCss("print", {
-			runningHeader:
+			runningFooter:
 				"Example Pro\u00adposal \u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645",
-			runningFooter: "Example Org",
 		});
 
 		expect(
 			decodeCssString(
-				new Map(atBlock(css, "@top-left").declarations).get(
+				new Map(atBlock(css, "@bottom-left").declarations).get(
 					"content",
 				) as string,
 			),
@@ -1179,20 +1632,25 @@ describe("proposalThemeCss: print", () => {
 	});
 
 	it("caps the running text and leaves an empty box out", () => {
-		const css = proposalThemeCss("print", {
-			runningHeader: "a".repeat(500),
-			runningFooter: "  \n ",
-		});
-
-		const header = decodeCssString(
-			new Map(atBlock(css, "@top-left").declarations).get(
-				"content",
-			) as string,
+		const footer = decodeCssString(
+			new Map(
+				atBlock(
+					proposalThemeCss("print", {
+						runningFooter: "a".repeat(500),
+					}),
+					"@bottom-left",
+				).declarations,
+			).get("content") as string,
 		);
-		expect(Array.from(header)).toHaveLength(200);
-		expect(header.endsWith("…")).toBe(true);
+		expect(Array.from(footer)).toHaveLength(200);
+		expect(footer.endsWith("…")).toBe(true);
 		expect(
-			new Map(atBlock(css, "@bottom-left").declarations).get("content"),
+			new Map(
+				atBlock(
+					proposalThemeCss("print", { runningFooter: "  \n " }),
+					"@bottom-left",
+				).declarations,
+			).get("content"),
 		).toBe("none");
 	});
 });

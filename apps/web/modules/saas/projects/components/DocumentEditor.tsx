@@ -1,15 +1,27 @@
 "use client";
 
 import {
-	useCoAgent,
 	useCopilotAction,
-	useCopilotChat,
-	useCopilotChatInternal,
 	useCopilotReadable,
+	useFrontendTool,
 } from "@copilotkit/react-core";
 import { normalizeDocumentType, type ProjectContext } from "@repo/agent-types";
 import { featureKeyForAgentId } from "@repo/ai/lib/feature-keys";
 import { countDocumentWords } from "@repo/utils/document-word-count";
+import {
+	CONFIRM_CHANGES_ACTION,
+	FETCH_MEETING_NOTES_ACTION,
+	githubGetFileContentsAction,
+	githubGetRepositoryAction,
+	githubListIssuesAction,
+	githubListPullRequestsAction,
+	gitlabGetFileContentsAction,
+	gitlabGetProjectAction,
+	gitlabListIssuesAction,
+	gitlabListMergeRequestsAction,
+	REGENERATE_DOCUMENT_ACTION,
+	SELECT_MEETINGS_ACTION,
+} from "@repo/utils/editor-frontend-actions";
 import {
 	DOCUMENT_GENERATION_IN_PROGRESS,
 	isGenerationRunStillWriting,
@@ -21,6 +33,10 @@ import {
 	preserveVisualSlots,
 } from "@repo/utils/glossy/visual-slots";
 import { normalizeForComparison } from "@repo/utils/normalize-for-comparison";
+import {
+	type DocumentAiReviewDescriptor,
+	isScopedRevisionRefusalCode,
+} from "@repo/utils/proposal-artifact/scoped-revision-codes";
 import { preserveVisualMarkers } from "@repo/utils/proposal-artifact/visual-identity";
 import {
 	type DraftVerdictRecorder,
@@ -28,7 +44,12 @@ import {
 	useConfirmChangesVerdictCard,
 } from "@saas/agents/copilot/useConfirmChangesVerdict";
 import { AttachmentRegistryProvider } from "@saas/shared/components/copilot/AttachmentRegistry";
+import { useAssistantThread } from "@saas/shared/components/copilot/assistant-thread";
 import { CopilotAssistantMessage } from "@saas/shared/components/copilot/CopilotAssistantMessage";
+import {
+	useCopilotChatSessionActions,
+	useCopilotChatSessionSelector,
+} from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { CopilotReplyRatingSidebar } from "@saas/shared/components/copilot/CopilotReplyRatingSidebar";
 import { createCopilotSidebarInput } from "@saas/shared/components/copilot/CopilotSidebarInput";
 import { CopilotUserMessage } from "@saas/shared/components/copilot/CopilotUserMessage";
@@ -37,6 +58,7 @@ import {
 	makeAssistantMessageWithRunMark,
 	makeSuggestionsListWithRunMark,
 } from "@saas/shared/components/copilot/run-mark-wrappers";
+import { usePageAgent } from "@saas/shared/components/copilot/use-page-agent";
 import { useUserRunSignal } from "@saas/shared/components/copilot/use-user-run-signal";
 import {
 	type ClarifyingQuestionFrequency,
@@ -44,11 +66,18 @@ import {
 } from "@saas/shared/components/copilot/useClarifyingQuestions";
 import { CustomMessages } from "./copilot/CustomMessages";
 import { DocumentAssistantOutcomesProvider } from "./copilot/DocumentAssistantOutcomesProvider";
+import {
+	equalDocumentAssistantMessages,
+	selectDocumentAssistantMessages,
+} from "./copilot/document-assistant-message-projection";
 import { HydratedMessagesProvider } from "./copilot/HydratedMessagesContext";
 import "@copilotkit/react-ui/styles.css";
 import "./DocumentEditor.css";
 import { useRegisterFabricAgentContext } from "@saas/agents/components/FabricAgentLauncher";
-import { ACCEPT_OUTCOME_SUMMARIES } from "@saas/agents/copilot/accept-outcome-summaries";
+import {
+	ACCEPT_OUTCOME_SUMMARIES,
+	acceptNotAppliedReason,
+} from "@saas/agents/copilot/accept-outcome-summaries";
 import {
 	type RecordOnResolveOptions,
 	useConfirmChangesOperationResult,
@@ -242,6 +271,15 @@ import {
 	useRoomConvergence,
 } from "./proposal-artifact/use-room-convergence";
 import {
+	aiAcceptOfferToastId,
+	SECTION_REVISION_EDITOR_CODES,
+	type SectionRevisionAcceptAnswer,
+	type SectionRevisionOutcome,
+	type SectionRevisionRequest,
+	sectionRevisionReasonKey,
+	useSectionRevision,
+} from "./proposal-artifact/useSectionRevision";
+import {
 	SlashCommandsExtension,
 	setSlashCommandImageUploadHandler,
 } from "./SlashCommands";
@@ -350,6 +388,36 @@ const ACCEPT_VERSION_CONFLICT_MESSAGE =
  * closed, and nothing holds it any more.
  */
 type DirectSaveFailure = "keptInEditor" | "offeredToCopy" | "editorClosed";
+
+/**
+ * What the server answered a refused save sent past `handleSave` with (Fizzy
+ * #2946): its oRPC code and its `data.code`, so an AI accept on a
+ * client-document Proposal can tell an accept-time refusal from a version
+ * conflict. Absent for a save answered after the page was left.
+ */
+interface DirectSaveRefusal {
+	status?: string;
+	code?: string;
+}
+
+/**
+ * What became of an AI accept on a client-document Proposal, held from its
+ * Accept until its save answers (Fizzy #2946):
+ *
+ * - `saved`;
+ * - `notApplied`: nothing of it was saved and the editor holds the body
+ *   from before it again, the refused text offered to copy once — the
+ *   accept-time check refused it (`code`), there was no base to save it
+ *   from, another editor's review held it, or its save failed;
+ * - `kept`: a version conflict, or the editor that held it is gone, as for
+ *   any accept;
+ * - `undone`: taken back in the editor before its save went.
+ */
+type AiAcceptAnswer =
+	| { kind: "saved" }
+	| { kind: "notApplied"; code?: string }
+	| { kind: "kept"; failure: DirectSaveFailure; code?: string }
+	| { kind: "undone" };
 
 /**
  * How long the run that answers a proposal must keep the editor locked
@@ -504,9 +572,14 @@ interface AcceptAwaitingSave {
 	/** The saved body when it was accepted. */
 	savedBody: string;
 	onSaved?: (saved: RoomStamp | null) => boolean | undefined;
-	onFailed?: (failure: DirectSaveFailure) => void;
+	onFailed?: (
+		failure: DirectSaveFailure,
+		refusal?: DirectSaveRefusal,
+	) => void;
 	onSettled?: () => void;
 	onUndone: () => void;
+	/** The accept-time descriptor of an AI accept, sent with its save. */
+	aiReview?: DocumentAiReviewDescriptor;
 }
 
 const DOCUMENT_TYPE_LABELS: Record<string, string> = {
@@ -652,7 +725,39 @@ type Props = {
 	 * offered to members only). Read only where `statTiles` is on.
 	 */
 	proposalVisuals?: ProposalVisualsOptions;
+	/**
+	 * A finding-driven revision of one section of a client-document
+	 * Proposal's Main to run in this editor (Fizzy #2946): a request with a
+	 * new `id` flushes the editor's save, asks the server for the revised
+	 * section, and shows it as a proposal review. Each id runs once.
+	 */
+	sectionRevisionRequest?: SectionRevisionRequest | null;
+	/** What became of each `sectionRevisionRequest`, once. */
+	onSectionRevisionSettled?: (outcome: SectionRevisionOutcome) => void;
+	/**
+	 * Called with a `sectionRevisionRequest`'s id once its candidate is
+	 * shown for review in this editor.
+	 */
+	onSectionRevisionShown?: (id: string) => void;
 };
+
+/**
+ * The section revision a `DocumentEditor` was handed, with the ids it has
+ * already run, carried to the editor across its remounts (Fizzy #2946).
+ */
+interface SectionRevisionBinding {
+	request: SectionRevisionRequest | null;
+	onSettled?: (outcome: SectionRevisionOutcome) => void;
+	onShown?: (id: string) => void;
+	seen: Set<string>;
+}
+
+const PAGE_AGENT_KEYS = [
+	"document",
+	"focusAnchor",
+	"error",
+	"proposalPatchedSectionKeys",
+] as const;
 
 interface AgentState {
 	document: string;
@@ -674,6 +779,9 @@ interface AgentState {
 	projectId?: string;
 	userId?: string;
 	organizationId?: string;
+	// The previous body's section keys inside every subtree a chat patched,
+	// on a client-document Proposal (Fizzy #2946); sent with its accept.
+	proposalPatchedSectionKeys?: string[];
 	// Per-turn reasoning trace surfaced via ReasoningCollapsible (PR #1023).
 	reasoningByTurn?: Record<
 		number,
@@ -729,11 +837,23 @@ export function DocumentEditor({
 	contentThemeProps,
 	statTiles = false,
 	proposalVisuals,
+	sectionRevisionRequest = null,
+	onSectionRevisionSettled,
+	onSectionRevisionShown,
 }: Props) {
 	const [isRegenerating, setIsRegenerating] = useState(false);
 	// Beside `isRegenerating`, above the collaboration branch that remounts
 	// the editor on every sync loss (Fizzy #2946).
 	const runState = useGenerationRunState();
+	// The same for the section revisions already run: a remount does not run
+	// one again (Fizzy #2946).
+	const sectionRevisionSeenRef = useRef(new Set<string>());
+	const sectionRevision: SectionRevisionBinding = {
+		request: sectionRevisionRequest,
+		onSettled: onSectionRevisionSettled,
+		onShown: onSectionRevisionShown,
+		seen: sectionRevisionSeenRef.current,
+	};
 	// The room stamp, the convergence of a room behind the saved document
 	// and guarded saves (Fizzy #2946). Off, the editor saves and seeds its
 	// room as it did before them.
@@ -963,6 +1083,7 @@ export function DocumentEditor({
 				contentThemeProps={contentThemeProps}
 				statTiles={statTiles}
 				proposalVisuals={proposalVisuals}
+				sectionRevision={sectionRevision}
 			/>
 		);
 	}
@@ -1015,6 +1136,7 @@ export function DocumentEditor({
 			contentThemeProps={contentThemeProps}
 			statTiles={statTiles}
 			proposalVisuals={proposalVisuals}
+			sectionRevision={sectionRevision}
 		/>
 	);
 }
@@ -1167,6 +1289,7 @@ function CollaborativeDocumentEditor({
 	contentThemeProps,
 	statTiles,
 	proposalVisuals,
+	sectionRevision,
 }: {
 	projectId: string;
 	documentId: string;
@@ -1230,6 +1353,7 @@ function CollaborativeDocumentEditor({
 	contentThemeProps?: ProposalThemeRootProps;
 	statTiles: boolean;
 	proposalVisuals?: ProposalVisualsOptions;
+	sectionRevision: SectionRevisionBinding;
 	roomConvergence: boolean;
 	canEdit: boolean | null;
 }) {
@@ -1531,6 +1655,7 @@ function CollaborativeDocumentEditor({
 				contentThemeProps={contentThemeProps}
 				statTiles={statTiles}
 				proposalVisuals={proposalVisuals}
+				sectionRevision={sectionRevision}
 			/>
 		);
 	}
@@ -1660,6 +1785,7 @@ function CollaborativeDocumentEditor({
 			contentThemeProps={contentThemeProps}
 			statTiles={statTiles}
 			proposalVisuals={proposalVisuals}
+			sectionRevision={sectionRevision}
 		/>
 	);
 }
@@ -1784,6 +1910,8 @@ interface DocumentEditorInnerProps {
 	statTiles: boolean;
 	/** See the public DocumentEditor `proposalVisuals` prop. */
 	proposalVisuals?: ProposalVisualsOptions;
+	/** See the public DocumentEditor `sectionRevisionRequest` prop. */
+	sectionRevision: SectionRevisionBinding;
 	/** `DOCUMENT_ROOM_CONVERGENCE`, read by the outer `DocumentEditor`. */
 	roomConvergence: boolean;
 	/**
@@ -1935,6 +2063,7 @@ function DocumentEditorInner({
 	contentThemeProps,
 	statTiles,
 	proposalVisuals,
+	sectionRevision,
 	roomConvergence,
 	canEdit,
 	tabVisible,
@@ -2009,7 +2138,7 @@ function DocumentEditorInner({
 	// `agent.setMessages(...)` which is the array `<CopilotSidebar>`'s
 	// custom <CustomMessages> mounts read for the LIVE half of its
 	// output (the historical half comes from <HydratedMessagesProvider>).
-	const { setMessages: setCopilotMessages } = useCopilotChatInternal();
+	const { setMessages: setCopilotMessages } = useCopilotChatSessionActions();
 	// Cross-tab BroadcastChannel listener: when this user has the same
 	// document open in another tab and renames / deletes / appends there,
 	// the local drawer's list + viewer pane refetches without waiting for
@@ -2382,7 +2511,8 @@ function DocumentEditorInner({
 	 * is then the one said.
 	 */
 	const directSaveOnFailedRef = useRef<
-		((failure: DirectSaveFailure) => void) | null
+		| ((failure: DirectSaveFailure, refusal?: DirectSaveRefusal) => void)
+		| null
 	>(null);
 	const sendDirectSaveRef = useRef<
 		(request: {
@@ -2417,7 +2547,10 @@ function DocumentEditorInner({
 			 * where its text is now; never for the refusal of a save that is
 			 * sent once more.
 			 */
-			onFailed?: (failure: DirectSaveFailure) => void;
+			onFailed?: (
+				failure: DirectSaveFailure,
+				refusal?: DirectSaveRefusal,
+			) => void;
 			/**
 			 * The text it saves, when read from the editor as it is asked
 			 * for — an accepted proposal, the save on leaving the page: an
@@ -2429,7 +2562,15 @@ function DocumentEditorInner({
 			 * applied, and what it says when it is undone before its save
 			 * goes.
 			 */
-			accept?: { from: string; onUndone: () => void };
+			accept?: {
+				from: string;
+				onUndone: () => void;
+				/**
+				 * An AI accept's descriptor: a save that carries this accept
+				 * as a rider sends it too (Fizzy #2946).
+				 */
+				aiReview?: DocumentAiReviewDescriptor;
+			};
 		}) => void
 	>(() => {});
 	// The single-user editor learned from a CONFLICT that the document moved
@@ -2456,21 +2597,16 @@ function DocumentEditorInner({
 		}
 	}, [typedSinceSaveRef]);
 	const editorRef = useRef<ReturnType<typeof useEditor>>(null);
-	const { isLoading, visibleMessages } = useCopilotChat();
-	// `useCopilotChat().visibleMessages` is empty on staging — proven via
-	// [DIFF-AUDIT-TRACE] from the diag PR (#1148 + #1150): `len: 0` at
-	// the moment a diff is sitting in the editor waiting for accept. The
-	// stream that DOES carry the live messages (including the AGUI
-	// tool-call entries) is `useCopilotChatInternal().messages` — the
-	// same source the persistence walker reads. Wiring the diff-outcome
-	// matcher to it lets the chip-stamping flow finally see the data.
-	//
-	// `internalMessagesForToolCallMatcher` is named verbosely so the
-	// useCallback dep / linter rule doesn't pull in the OTHER
-	// `useCopilotChatInternal().setMessages` already bound above for the
-	// "+ New conversation" flow.
-	const { messages: internalMessagesForToolCallMatcher } =
-		useCopilotChatInternal();
+	const isLoading = useCopilotChatSessionSelector(
+		(session) => session.isLoading,
+	);
+	// Project message identities and classifiers, including the legacy visible-message
+	// fallback. Text and tool arguments can stream without changing these values.
+	const internalMessagesForToolCallMatcher = useCopilotChatSessionSelector(
+		selectDocumentAssistantMessages,
+		equalDocumentAssistantMessages,
+	);
+
 	// `isLoading` flips true during CopilotKit AG-UI handshakes (info /
 	// agent/connect) on mount and re-mount, even when no user-initiated
 	// generation is happening. We keep `isLoading` for editor read-only
@@ -2517,15 +2653,7 @@ function DocumentEditorInner({
 		"confirm_changes",
 	];
 	const lastWriteDocumentLocalToolCall = useMemo(() => {
-		// Walk the INTERNAL message store (visibleMessages is empty on
-		// staging — see comment at the hook call site for evidence link).
-		// Fall back to visibleMessages only as a last resort for any
-		// legacy GQL surfaces that route through the public hook.
-		const messagesToWalk =
-			internalMessagesForToolCallMatcher &&
-			internalMessagesForToolCallMatcher.length > 0
-				? internalMessagesForToolCallMatcher
-				: visibleMessages;
+		const messagesToWalk = internalMessagesForToolCallMatcher;
 		if (!messagesToWalk || messagesToWalk.length === 0) {
 			return null;
 		}
@@ -2621,7 +2749,7 @@ function DocumentEditorInner({
 			}
 		}
 		return null;
-	}, [internalMessagesForToolCallMatcher, visibleMessages]);
+	}, [internalMessagesForToolCallMatcher]);
 	// Where the outcome of the proposal under review is stamped: by the
 	// review bar's buttons, and by the chat card's, which read it when
 	// clicked (Fizzy #2946).
@@ -2778,8 +2906,11 @@ function DocumentEditorInner({
 	// worst case is "the old thread reappears on next reload", which is
 	// safer than silently leaving the user staring at the previous
 	// transcript. The toast tells them what happened.
+	const startNewThread = useAssistantThread()?.startNewThread;
 	const handleNewConversation = useCallback(async () => {
 		const archivingId = activeAssistantConversationId;
+		// The next turn runs on a fresh CopilotKit thread (`assistant-thread`).
+		startNewThread?.();
 		try {
 			if (archivingId) {
 				await orpcClient.agents.conversations.archiveForDocument({
@@ -2805,7 +2936,12 @@ function DocumentEditorInner({
 					: "Could not archive the previous conversation.";
 			toast.error(message);
 		}
-	}, [activeAssistantConversationId, organizationId, setCopilotMessages]);
+	}, [
+		activeAssistantConversationId,
+		startNewThread,
+		organizationId,
+		setCopilotMessages,
+	]);
 
 	const handleOpenHistory = useCallback(() => {
 		setHistoryDrawerOpen(true);
@@ -2891,6 +3027,37 @@ function DocumentEditorInner({
 	});
 	// hasPendingConfirm: generation is done, Confirm Changes dialog is showing
 	const [hasPendingConfirm, setHasPendingConfirm] = useState(false);
+	// A client-document Proposal, decided as the page decides it (Fizzy
+	// #2946): its AI accepts are held and checked as they are saved (see
+	// `sendHeldAiAccept`), it offers no Update using context, and it runs
+	// finding-driven section revisions.
+	const proposalArtifactEnabled = useFeatureFlag("PROPOSAL_ARTIFACT");
+	const isArtifactProposal =
+		proposalArtifactEnabled &&
+		documentRefKind === "PROJECT_DOCUMENT" &&
+		document?.type === "PROPOSAL";
+	// Read by the chat's confirm card, whose closure is cached.
+	const isArtifactProposalRef = useRef(isArtifactProposal);
+	isArtifactProposalRef.current = isArtifactProposal;
+	// An AI accept on it whose save has not answered yet (Fizzy #2946): its
+	// review stays published, so the other editors hold, and this editor
+	// takes no input and saves nothing else until the answer, so nobody types
+	// into the gap between Accept and the accept-time check.
+	const [aiAcceptHeld, setAiAcceptHeldState] = useState(false);
+	const aiAcceptHeldRef = useRef(false);
+	const setAiAcceptHeld = useCallback((held: boolean) => {
+		aiAcceptHeldRef.current = held;
+		setAiAcceptHeldState(held);
+	}, []);
+	// A section revision shown here for review (Fizzy #2946), mirrored from
+	// `useSectionRevision`, which needs the editor, for the rules before it.
+	const [sectionRevisionShown, setSectionRevisionShown] = useState(false);
+	const sectionRevisionShownRef = useRef(false);
+	// One asked for and not yet answered, drafting included: its accept
+	// is bound to the body the revision read, so the editor takes no input
+	// and the autosave waits from the request on.
+	const [sectionRevisionActive, setSectionRevisionActive] = useState(false);
+	const sectionRevisionActiveRef = useRef(false);
 	// An assistant proposal under review in an editor in the room, as the
 	// editors publish it (see `peerReviewsProposal`, Fizzy #2946): whether
 	// another editor reviews one, and whether any does, this one included.
@@ -2972,6 +3139,8 @@ function DocumentEditorInner({
 	// review: what still holds a save once that review is taken back.
 	const ownReviewBlocksSaves =
 		hasPendingConfirm ||
+		aiAcceptHeld ||
+		sectionRevisionShown ||
 		(roomStampsOn && assistantWritesHere && !isLoading);
 	const runSaveBlockBesidesOwnReview: SaveBlockReason | null = isRegenerating
 		? "regenerating"
@@ -3300,7 +3469,9 @@ function DocumentEditorInner({
 					isDiffReviewEditRef.current ||
 					isProgrammaticUpdateRef.current ||
 					hasPendingConfirm ||
-					isContextUpdateActiveRef.current
+					isContextUpdateActiveRef.current ||
+					aiAcceptHeldRef.current ||
+					sectionRevisionShownRef.current
 				) {
 					return;
 				}
@@ -3357,6 +3528,7 @@ function DocumentEditorInner({
 		projectId,
 		kind: "document",
 		documentId,
+		documentLabel: document?.title ?? undefined,
 		editor,
 	});
 
@@ -4025,12 +4197,8 @@ function DocumentEditorInner({
 			projectId,
 			userId: user?.id ?? "",
 			organizationId: organizationId ?? undefined,
-			// Declare reasoningByTurn / toolCallsByTurn in initialState so
-			// CopilotKit's useCoAgent doesn't filter them out of the React
-			// state updates. Without these keys, STATE_SNAPSHOT events that
-			// carry per-turn reasoning/tool-call traces (PR #976/#1023/#1024)
-			// arrive on the SSE wire but are dropped before reaching
-			// CopilotAssistantMessage's useCoAgent subscription.
+			// Default per-turn trace containers for a fresh run. CopilotKit 1.80
+			// exposes incoming state keys without filtering by this seed.
 			reasoningByTurn: {},
 			toolCallsByTurn: {},
 		}),
@@ -4048,10 +4216,11 @@ function DocumentEditorInner({
 		state: agentState,
 		setState: setCoAgentState,
 		nodeName,
-	} = useCoAgent<AgentState>({
-		name: "project_document_generator",
-		initialState: initialAgentState,
-	});
+	} = usePageAgent<AgentState>(
+		"project_document_generator",
+		initialAgentState,
+		PAGE_AGENT_KEYS,
+	);
 
 	// Every document handed to the agent goes through `toAgentDocument`, so the
 	// model never sees (and echoes back) Turndown's escapes. What the agent
@@ -4069,10 +4238,8 @@ function DocumentEditorInner({
 				: withAgentDocument(update),
 		);
 
-	// `useCoAgent` returns a new `setState` function every render, so listing it in
-	// a useEffect dep array causes an infinite render loop. Stash the latest
-	// reference in a ref and read through it from effects that only need to fire
-	// when their *data* dependencies change.
+	// The document-normalizing wrapper is created during render. Keep its latest
+	// reference in a ref so effects below can depend on their input data.
 	const setAgentStateRef = useRef(setAgentState);
 	setAgentStateRef.current = setAgentState;
 
@@ -4081,6 +4248,14 @@ function DocumentEditorInner({
 	// proposed content deterministically when the confirm arms (RC2 fix).
 	const agentDocumentRef = useRef<string>("");
 	agentDocumentRef.current = agentState?.document ?? "";
+	// The same for the section keys the chat's patches covered, sent with an
+	// accept on a client-document Proposal (Fizzy #2946). Absent from an
+	// agent that does not report them, and then not sent.
+	const agentPatchedKeysRef = useRef<string[] | undefined>(undefined);
+	const patchedKeys = agentState?.proposalPatchedSectionKeys;
+	agentPatchedKeysRef.current = Array.isArray(patchedKeys)
+		? patchedKeys.filter((key): key is string => typeof key === "string")
+		: undefined;
 
 	// Keep the before-send sync closure (handed to the input factory above as
 	// `handleBeforeSend`) pointing at the latest `editor` + `setAgentStateRef`.
@@ -5283,9 +5458,21 @@ function DocumentEditorInner({
 			!isLoading &&
 				!isRegenerating &&
 				!roomFreezesEditor &&
-				!rejectPending,
+				!rejectPending &&
+				!aiAcceptHeld &&
+				!sectionRevisionShown &&
+				!sectionRevisionActive,
 		);
-	}, [isLoading, isRegenerating, editor, roomFreezesEditor, rejectPending]);
+	}, [
+		isLoading,
+		isRegenerating,
+		editor,
+		roomFreezesEditor,
+		rejectPending,
+		aiAcceptHeld,
+		sectionRevisionShown,
+		sectionRevisionActive,
+	]);
 
 	// Effect 2: Final diff when nodeName becomes "end"
 	// Uses baselineRef instead of currentDocument state to avoid stale closure
@@ -5414,7 +5601,8 @@ function DocumentEditorInner({
 			editor &&
 			!hasPendingConfirm &&
 			!confirmArmedRef.current &&
-			!assistantWritesHere
+			!assistantWritesHere &&
+			!sectionRevisionShownRef.current
 		) {
 			const editorMarkdown = getEditorMarkdownForSave(editor);
 			// Null means serialization failed on this edit — skip
@@ -5954,6 +6142,9 @@ function DocumentEditorInner({
 				const onFailed = directSaveOnFailedRef.current;
 				directSaveOnFailedRef.current = null;
 				let sentAgain = false;
+				const rawDataCode = getOrpcErrorData(error).code;
+				const errorDataCode =
+					typeof rawDataCode === "string" ? rawDataCode : undefined;
 				let failure: DirectSaveFailure = "keptInEditor";
 				if (pageLeft()) {
 					// The page was left: no editor holds the text any more, so
@@ -6011,10 +6202,14 @@ function DocumentEditorInner({
 					};
 					const roomStamp =
 						roomStampsOn && ydoc ? readRoomStamp(ydoc) : null;
+					// Never an AI accept on a client-document Proposal
+					// (Fizzy #2946): the save sent again carries no
+					// descriptor, so it would write the accept unchecked.
 					if (
 						roomStamp &&
 						!sameRoomStamp(roomStamp, sentBase) &&
 						variables.skipVersionBump !== true &&
+						variables.aiReview === undefined &&
 						conflictRetriesRef.current < 1
 					) {
 						// The room's stamp moved meanwhile: another editor saved
@@ -6147,6 +6342,15 @@ function DocumentEditorInner({
 								},
 							}),
 					});
+				} else if (
+					getOrpcCode(error) === "PRECONDITION_FAILED" &&
+					isScopedRevisionRefusalCode(errorDataCode)
+				) {
+					// The accept-time check of an AI accept on a
+					// client-document Proposal refused it, and nothing was
+					// written (Fizzy #2946): the accept puts the body from
+					// before it back and says why (see `sendHeldAiAccept`).
+					conflictRetriesRef.current = 0;
 				} else {
 					// Any other refusal, in the reader's words, never the
 					// server's (Fizzy #2946). Nothing was written, so typing
@@ -6166,7 +6370,15 @@ function DocumentEditorInner({
 					failure = "editorClosed";
 				}
 				if (!sentAgain) {
-					onFailed?.(failure);
+					onFailed?.(
+						failure,
+						pageLeft()
+							? undefined
+							: {
+									status: getOrpcCode(error),
+									code: errorDataCode,
+								},
+					);
 				}
 				setIsSaving(false);
 			},
@@ -6227,9 +6439,10 @@ function DocumentEditorInner({
 				// Its identity, which the next save names as its base; and the
 				// room's stamp moves to it — unless the room moved past this
 				// save's base meanwhile (Fizzy #2946).
+				// Tracked with the room flag off too: an AI accept on a
+				// client-document Proposal names it then.
 				const savedHash = data?.document?.contentHash;
 				if (
-					roomConvergence &&
 					data?.document?.version != null &&
 					typeof savedHash === "string" &&
 					savedHash
@@ -6505,6 +6718,84 @@ function DocumentEditorInner({
 	// Keep the ref in sync so the onUpdate + triggerAutoSave guards can read it.
 	isContextUpdateActiveRef.current = contextUpdate.isActive;
 
+	// A finding-driven revision of one section of a client-document
+	// Proposal, asked for by the Internal Analysis (Fizzy #2946). Reviewed
+	// as the other proposals are: published to the room, the editor
+	// read-only, rejected on leaving and past the idle limit; its accept is
+	// saved through the held AI accept with the `FINDING` descriptor.
+	const tRevision = useTranslations("projects.proposalArtifact.revision");
+	const sectionRevisionBlocked = (): string | null => {
+		if (!isArtifactProposal || canEdit !== true) {
+			return SECTION_REVISION_EDITOR_CODES.EDITOR_BUSY;
+		}
+		if (peerReviewHoldsNowRef.current()) {
+			return SECTION_REVISION_EDITOR_CODES.HELD_ELSEWHERE;
+		}
+		if (
+			isLoading ||
+			isRegenerating ||
+			hasPendingConfirm ||
+			assistantWritesHere ||
+			contextUpdate.isActive ||
+			aiAcceptHeldRef.current ||
+			viewMode === "raw" ||
+			saveBlockReason !== null
+		) {
+			return SECTION_REVISION_EDITOR_CODES.EDITOR_BUSY;
+		}
+		return null;
+	};
+	const sectionRevisionBlockedRef = useRef(sectionRevisionBlocked);
+	sectionRevisionBlockedRef.current = sectionRevisionBlocked;
+	const saveSectionRevisionAcceptRef = useRef<
+		(accept: {
+			content: string;
+			from: string;
+			aiReview: DocumentAiReviewDescriptor;
+			onAnswer: (answer: SectionRevisionAcceptAnswer) => void;
+		}) => void
+	>(() => {});
+	const sectionReview = useSectionRevision({
+		projectId,
+		documentId,
+		editor,
+		request: sectionRevision.request,
+		seen: sectionRevision.seen,
+		getEditorMarkdownForSave,
+		fromMarkdown,
+		// Rendered into this editor, so a slot must not be split either.
+		diffPartialText: diffKeepingVisualSlotsWhole,
+		focusOnAnchor,
+		flushSave: () => flushBeforeVisualEditRef.current(),
+		resolveBase: () => {
+			const base = resolveAiAcceptBaseRef.current();
+			return base && base !== "unavailable" ? base : null;
+		},
+		blockedReason: () => sectionRevisionBlockedRef.current(),
+		heldElsewhere: () => peerReviewHoldsNowRef.current(),
+		// Its review is said in the room, and its diff kept out of this
+		// editor's typing, from before the diff goes in.
+		beforePreview: () => {
+			sectionRevisionShownRef.current = true;
+			publishOwnReviewNowRef.current();
+		},
+		onReviewShown: (id) => sectionRevision.onShown?.(id),
+		saveAccept: (accept) => saveSectionRevisionAcceptRef.current(accept),
+		onSettled: (outcome) => sectionRevision.onSettled?.(outcome),
+	});
+	sectionRevisionShownRef.current = sectionReview.isReviewing;
+	sectionRevisionActiveRef.current = sectionReview.isActive;
+	useEffect(() => {
+		setSectionRevisionShown(sectionReview.isReviewing);
+	}, [sectionReview.isReviewing]);
+	useEffect(() => {
+		setSectionRevisionActive(sectionReview.isActive);
+	}, [sectionReview.isActive]);
+	const rejectSectionRevisionRef = useRef(sectionReview.reject);
+	rejectSectionRevisionRef.current = sectionReview.reject;
+	const isSectionRevisionApplyingNowRef = useRef(sectionReview.isApplyingNow);
+	isSectionRevisionApplyingNowRef.current = sectionReview.isApplyingNow;
+
 	// The confirm card takes over a proposal the assistant streamed in. A run
 	// that ends without one leaves nothing to answer, once the card has had
 	// a moment to render after the run's last frame. In a room, what it
@@ -6562,8 +6853,15 @@ function DocumentEditorInner({
 	// again does not publish it again: the review's state is this editor's,
 	// and the call the chat renders again is armed anew against a body that
 	// already holds the proposal, which reads as no change.
+	// An AI accept on a client-document Proposal keeps it published until
+	// its save answers, and so does a section revision from its diff on
+	// (Fizzy #2946).
 	const proposalUnderReviewHere =
-		hasPendingConfirm || assistantWritesHere || contextUpdate.isActive;
+		hasPendingConfirm ||
+		assistantWritesHere ||
+		contextUpdate.isActive ||
+		aiAcceptHeld ||
+		sectionReview.isReviewing;
 	useEffect(() => {
 		if (!roomStampsOn || !proposalUnderReviewHere) {
 			return;
@@ -6592,6 +6890,9 @@ function DocumentEditorInner({
 		setAssistantWritesHere(false);
 		if (contextUpdate.isActive) {
 			contextUpdate.withdraw();
+		}
+		if (sectionReview.isActive) {
+			sectionReview.withdraw();
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [proposalUnderReviewElsewhere, proposalUnderReviewHere]);
@@ -6628,6 +6929,8 @@ function DocumentEditorInner({
 			isDiffReviewEditRef.current = false;
 		} else if (contextUpdate.isActive) {
 			contextUpdate.reassert();
+		} else if (sectionReview.isReviewing) {
+			sectionReview.reassert();
 		}
 	};
 	const reassertOwnReviewRef = useRef(reassertOwnReview);
@@ -6697,7 +7000,16 @@ function DocumentEditorInner({
 			hasPendingConfirm && confirmCallbacksRef.current !== null;
 		const contextWaits =
 			contextUpdate.isActive && !contextUpdate.isApplyingNow();
-		if (!cardWaits && !assistantWritesHere && !contextWaits) {
+		// A section revision under review goes back to the body it was
+		// spliced into, as its Reject puts it back (Fizzy #2946).
+		const revisionWaits =
+			sectionReview.isReviewingNow() && !sectionReview.isApplyingNow();
+		if (
+			!cardWaits &&
+			!assistantWritesHere &&
+			!contextWaits &&
+			!revisionWaits
+		) {
 			return null;
 		}
 		const ed = liveEditorOrNull(editorRef.current);
@@ -6705,7 +7017,10 @@ function DocumentEditorInner({
 			return null;
 		}
 		let body: string | null = null;
-		if (cardWaits || assistantWritesHere) {
+		if (revisionWaits && !cardWaits && !assistantWritesHere) {
+			body = sectionReview.baseline();
+			sectionReview.reject();
+		} else if (cardWaits || assistantWritesHere) {
 			// The card's proposal goes back to the body its review started
 			// from, as its Reject does; frames with no card yet, to the body
 			// the run started from (the editor's own follows them once the
@@ -6778,7 +7093,8 @@ function DocumentEditorInner({
 		otherEditorInRoom &&
 		(hasPendingConfirm ||
 			(assistantWritesHere && !isLoading) ||
-			(contextUpdate.showingDiff && !contextUpdate.isApplying));
+			(contextUpdate.showingDiff && !contextUpdate.isApplying) ||
+			(sectionReview.isReviewing && !sectionReview.isApplying));
 	const rejectContextUpdateRef = useRef(contextUpdate.reject);
 	rejectContextUpdateRef.current = contextUpdate.reject;
 	const isContextApplyingNowRef = useRef(contextUpdate.isApplyingNow);
@@ -6814,6 +7130,11 @@ function DocumentEditorInner({
 					return;
 				}
 				rejectContextUpdateRef.current();
+			} else if (sectionRevisionShownRef.current) {
+				if (isSectionRevisionApplyingNowRef.current()) {
+					return;
+				}
+				rejectSectionRevisionRef.current();
 			} else {
 				takeBackRunFramesRef.current(false);
 			}
@@ -6857,7 +7178,10 @@ function DocumentEditorInner({
 	// Diff review-mode toggle (inline / side-by-side / full preview). Pure view
 	// state — switching never mutates the editor doc or the pending diff. One
 	// shared preference across both review flows (and the Feature editor).
-	const isDiffReviewActive = hasPendingConfirm || contextUpdate.showingDiff;
+	const isDiffReviewActive =
+		hasPendingConfirm ||
+		contextUpdate.showingDiff ||
+		sectionReview.isReviewing;
 	const {
 		diffViewMode,
 		setDiffViewMode,
@@ -6880,6 +7204,8 @@ function DocumentEditorInner({
 		isConfirming ||
 		hasPendingConfirm ||
 		contextUpdate.isActive ||
+		sectionReview.isActive ||
+		aiAcceptHeld ||
 		rejectPending ||
 		roomFreezesEditor;
 	// The view switch waits too, but never for a client that may not edit:
@@ -6957,6 +7283,17 @@ function DocumentEditorInner({
 		if (isContextUpdateActiveRef.current) {
 			return;
 		}
+		// Nor while an AI accept on a client-document Proposal waits for its
+		// checked save, or a section revision is under review (Fizzy #2946):
+		// the editor holds a body nobody has had checked yet. Nor while one
+		// is drafted: its accept is bound to the base it was asked from.
+		if (
+			aiAcceptHeldRef.current ||
+			sectionRevisionShownRef.current ||
+			sectionRevisionActiveRef.current
+		) {
+			return;
+		}
 		// Never auto-save while a regeneration is in flight or its
 		// accept/reject dialog is open. The editor is showing programmatically
 		// streamed content (or the result of one), and an autosave here would
@@ -7028,6 +7365,24 @@ function DocumentEditorInner({
 	};
 	const resolveSaveBaseRef = useRef(resolveSaveBase);
 	resolveSaveBaseRef.current = resolveSaveBase;
+	// The base an AI accept on a client-document Proposal names (Fizzy
+	// #2946): the server checks such an accept against its base whatever
+	// the room flag says. With the flag on it is the save's base; off, the
+	// body the single-user editor loaded or last saved, which it tracks
+	// either way, so turning the flag off never leaves the accept without
+	// one.
+	const resolveAiAcceptBase = (): DocumentSaveBase | null | "unavailable" => {
+		if (roomConvergence) {
+			return resolveSaveBase() ?? null;
+		}
+		const version = editorBodyVersionRef.current;
+		const contentHash = editorBodyHashRef.current;
+		return version !== undefined && contentHash
+			? { version, contentHash }
+			: null;
+	};
+	const resolveAiAcceptBaseRef = useRef(resolveAiAcceptBase);
+	resolveAiAcceptBaseRef.current = resolveAiAcceptBase;
 
 	// Whether the base a rejected regeneration's fallback save would name is
 	// still the reviewed body (Fizzy #2946). In a room the reviewed body's
@@ -7124,6 +7479,7 @@ function DocumentEditorInner({
 						onFailed: request.onFailed,
 						onSettled: request.onSettled,
 						onUndone: request.accept.onUndone,
+						aiReview: request.accept.aiReview,
 					},
 				]
 			: carried;
@@ -7136,11 +7492,11 @@ function DocumentEditorInner({
 				}
 			: request.onSaved;
 		const onFailed = carried.length
-			? (failure: DirectSaveFailure) => {
+			? (failure: DirectSaveFailure, refusal?: DirectSaveRefusal) => {
 					for (const accept of carried) {
-						accept.onFailed?.(failure);
+						accept.onFailed?.(failure, refusal);
 					}
-					request.onFailed?.(failure);
+					request.onFailed?.(failure, refusal);
 				}
 			: request.onFailed;
 		const onSettled = carried.length
@@ -7168,7 +7524,11 @@ function DocumentEditorInner({
 				onSettled?.();
 				return;
 			}
-			const base = resolveSaveBaseRef.current();
+			// A save that carries an AI accept names the base that accept
+			// is checked against.
+			const base = riders.some((accept) => accept.aiReview !== undefined)
+				? resolveAiAcceptBaseRef.current()
+				: resolveSaveBaseRef.current();
 			if (base === "unavailable") {
 				// Nothing goes, so the save asked for meanwhile does not
 				// either: the text stays unsaved for a later save.
@@ -7209,7 +7569,19 @@ function DocumentEditorInner({
 			directSaveOnSettledRef.current = onSettled ?? null;
 			inFlightAcceptsRef.current = riders;
 			setIsSaving(true);
-			saveMutation.mutate(build(base));
+			// A save that carries an AI accept as a rider — the save on
+			// leaving the page that displaced it — names it as that accept
+			// would (Fizzy #2946). While an AI accept is held at most one
+			// waits; of several, the newest speaks.
+			const input = build(base);
+			const riderReview = [...riders]
+				.reverse()
+				.find((accept) => accept.aiReview !== undefined)?.aiReview;
+			saveMutation.mutate(
+				input.aiReview || !riderReview
+					? input
+					: { ...input, aiReview: riderReview },
+			);
 		};
 		if (saveInFlightRef.current) {
 			pendingDirectSaveRef.current = send;
@@ -7477,6 +7849,199 @@ function DocumentEditorInner({
 	};
 	const flushBeforeVisualEditRef = useRef(flushBeforeVisualEdit);
 	flushBeforeVisualEditRef.current = flushBeforeVisualEdit;
+
+	// An AI accept on a client-document Proposal that was not applied
+	// (Fizzy #2946): the body from before it goes back into the editor —
+	// the room, so every tab — while its review still holds the others, and
+	// the text that was refused is offered to copy, once. The accept's own
+	// edit no longer counts as unsaved typing; typing from before it that
+	// no save covered still does.
+	const restoreBeforeAiAccept = (from: string, refused: string) => {
+		const ed = liveEditorOrNull(editorRef.current);
+		if (ed && !peerReviewHoldsNowRef.current()) {
+			applyProgrammaticContent(ed, fromMarkdown(from), "server");
+		}
+		baselineRef.current = from;
+		setCurrentDocument(from);
+		setAgentStateRef.current((prev) => ({ ...prev, document: from }));
+		const dirty = from.trim() !== lastSavedContentRef.current.trim();
+		if (!dirty) {
+			savedEditCountRef.current = localEditCountRef.current;
+			noteTypedSinceSave();
+		}
+		setHasUnsavedChanges(dirty);
+		if (refused.trim() && refused.trim() !== from.trim()) {
+			// Under the document's one offer toast, which the next revision
+			// dismisses once its review is shown or it is saved, as a saved
+			// accept does.
+			offerBackReplacedText(refused, {
+				message: tRevision("offerBack"),
+				id: aiAcceptOfferToastId(documentId),
+			});
+		}
+	};
+
+	// An AI accept on a client-document Proposal is one guarded step (Fizzy
+	// #2946): from Accept until its save answers, the review stays published
+	// and the editor read-only (`aiAcceptHeld`), and the save names its
+	// descriptor, which the server checks before it writes. Saved, it is
+	// released as any accept. Refused by that check, with no base to check
+	// it against, held by another editor's review, or not sent, the body
+	// from before it goes back (see `restoreBeforeAiAccept`), so neither the
+	// autosave nor a later save ever writes it unchecked. A version conflict
+	// keeps today's answer: the room is brought back to the saved document,
+	// or the single-user editor stops saving until a reload.
+	const sendHeldAiAccept = (accept: {
+		/** The text the accept saves; the editor holds it. */
+		content: string;
+		/** The body the proposal's review started from. */
+		from: string;
+		aiReview: DocumentAiReviewDescriptor;
+		onAnswer: (answer: AiAcceptAnswer) => void;
+	}) => {
+		let answered = false;
+		const answer = (result: AiAcceptAnswer) => {
+			if (answered) {
+				return;
+			}
+			answered = true;
+			if (result.kind === "notApplied") {
+				restoreBeforeAiAccept(accept.from, accept.content);
+			}
+			setAiAcceptHeld(false);
+			accept.onAnswer(result);
+		};
+		// Without the editor gone, what was not sent is still in it.
+		const notSent = (code: string) => {
+			if (pageLeft()) {
+				answer({
+					kind: "kept",
+					failure:
+						leaveContentRef.current !== null
+							? "offeredToCopy"
+							: "editorClosed",
+				});
+			} else if (editorClosed()) {
+				answer({ kind: "kept", failure: "editorClosed" });
+			} else {
+				answer({ kind: "notApplied", code });
+			}
+		};
+		const base = resolveAiAcceptBaseRef.current();
+		if (!base || base === "unavailable") {
+			answer({
+				kind: "notApplied",
+				code: SECTION_REVISION_EDITOR_CODES.NO_BASE,
+			});
+			return;
+		}
+		if (peerReviewHoldsNowRef.current()) {
+			answer({
+				kind: "notApplied",
+				code: SECTION_REVISION_EDITOR_CODES.HELD_ELSEWHERE,
+			});
+			return;
+		}
+		setAiAcceptHeld(true);
+		sendDirectSaveRef.current({
+			confirm: true,
+			savesEditor: accept.content,
+			accept: {
+				from: accept.from,
+				aiReview: accept.aiReview,
+				onUndone: () => answer({ kind: "undone" }),
+			},
+			build: (sendBase) =>
+				buildDocumentSaveInput({
+					projectId,
+					documentId,
+					content: accept.content,
+					isManualSave: false,
+					base: sendBase,
+					aiReview: accept.aiReview,
+				}),
+			onUnavailable: () => notSent(SECTION_REVISION_EDITOR_CODES.NO_BASE),
+			onHeld: () => notSent(SECTION_REVISION_EDITOR_CODES.HELD_ELSEWHERE),
+			onSaved: () => {
+				// An offer left from an earlier refused accept is about the
+				// body before this one: it goes once this accept is saved.
+				toast.dismiss(aiAcceptOfferToastId(documentId));
+				answer({ kind: "saved" });
+				return undefined;
+			},
+			onFailed: (failure, refusal) => {
+				const versionConflict =
+					refusal?.status === "CONFLICT" &&
+					refusal.code !== DOCUMENT_GENERATION_IN_PROGRESS;
+				if (failure !== "keptInEditor" || versionConflict) {
+					answer({
+						kind: "kept",
+						failure,
+						code: refusal?.code ?? refusal?.status,
+					});
+					return;
+				}
+				answer({ kind: "notApplied", code: refusal?.code });
+			},
+			// Dropped without an answer of its own: the save it waited for
+			// failed, or it was not sent again after a conflict.
+			onSettled: () => notSent("unknown"),
+		});
+	};
+	const sendHeldAiAcceptRef = useRef(sendHeldAiAccept);
+	sendHeldAiAcceptRef.current = sendHeldAiAccept;
+	// The chat's confirm card says an accept was not applied, and why.
+	const sayAiAcceptNotApplied = (code: string | undefined) => {
+		toast.error(
+			tRevision("chatNotApplied", {
+				reason: tRevision(`reasons.${sectionRevisionReasonKey(code)}`),
+			}),
+		);
+	};
+	const sayAiAcceptNotAppliedRef = useRef(sayAiAcceptNotApplied);
+	sayAiAcceptNotAppliedRef.current = sayAiAcceptNotApplied;
+
+	// An accepted section revision: its diff gives way to the text it saves,
+	// which counts as this editor's own edit until its save lands, and is
+	// saved as the held AI accept (Fizzy #2946).
+	saveSectionRevisionAcceptRef.current = (accept) => {
+		const ed = liveEditorOrNull(editorRef.current);
+		setAiAcceptHeld(true);
+		if (ed) {
+			applyProgrammaticContent(
+				ed,
+				fromMarkdown(accept.content),
+				"server",
+			);
+		}
+		baselineRef.current = accept.content;
+		setCurrentDocument(accept.content);
+		localEditCountRef.current += 1;
+		noteTypedSinceSave();
+		setHasUnsavedChanges(true);
+		sendHeldAiAccept({
+			content: accept.content,
+			from: accept.from,
+			aiReview: accept.aiReview,
+			onAnswer: (result) => {
+				if (result.kind === "saved") {
+					accept.onAnswer({ kind: "saved" });
+				} else if (
+					result.kind === "notApplied" &&
+					isScopedRevisionRefusalCode(result.code)
+				) {
+					accept.onAnswer({ kind: "refused", code: result.code });
+				} else if (result.kind === "undone") {
+					accept.onAnswer({
+						kind: "notSaved",
+						code: SECTION_REVISION_EDITOR_CODES.INTERRUPTED,
+					});
+				} else {
+					accept.onAnswer({ kind: "notSaved", code: result.code });
+				}
+			},
+		});
+	};
 	const flushForVisualEdit = useCallback(
 		() => flushBeforeVisualEditRef.current(),
 		[],
@@ -7749,10 +8314,13 @@ function DocumentEditorInner({
 	useCopilotReadable({
 		description:
 			"RAG context — content extracted from files the user has attached in this chat session. Each entry is prefixed with the filename and contains either the raw text (documents) or a markdown image link with a base64 data URL (images, for vision-capable models).",
-		value: {
-			ragContexts: chatAttachmentContexts,
-			ragContextsCount: chatAttachmentContexts.length,
-		},
+		value: useMemo(
+			() => ({
+				ragContexts: chatAttachmentContexts,
+				ragContextsCount: chatAttachmentContexts.length,
+			}),
+			[chatAttachmentContexts],
+		),
 	});
 
 	// Mirror chat-attachment contexts onto `useCoAgent` state as a
@@ -8472,10 +9040,9 @@ function DocumentEditorInner({
 	};
 
 	useCopilotAction({
-		name: "select_meetings",
-		description:
-			"Show a meeting selector. On confirmation the application fetches transcripts and returns them for document editing; do not call fetchMeetingNotes afterwards.",
-		parameters: [],
+		name: SELECT_MEETINGS_ACTION.name,
+		description: SELECT_MEETINGS_ACTION.description,
+		parameters: SELECT_MEETINGS_ACTION.parameters,
 		renderAndWaitForResponse: (render) => (
 			<MeetingNotesFlowCard
 				status={render.status}
@@ -8498,22 +9065,9 @@ function DocumentEditorInner({
 
 	// Fetch meeting notes action - calls API to get meeting transcripts
 	useCopilotAction({
-		name: "fetchMeetingNotes",
-		description:
-			"Compatibility read of transcripts fetched by the current meeting selection. Does not start another fetch. Use the transcript text returned by select_meetings to edit the document.",
-		parameters: [
-			{
-				name: "selectedMeetings",
-				type: "object[]",
-				attributes: [
-					{ name: "joinUrl", type: "string", required: true },
-					{ name: "startTime", type: "string", required: false },
-				],
-				description:
-					"The selectedMeetings array returned by select_meetings. Pass it directly.",
-				required: true,
-			},
-		],
+		name: FETCH_MEETING_NOTES_ACTION.name,
+		description: FETCH_MEETING_NOTES_ACTION.description,
+		parameters: FETCH_MEETING_NOTES_ACTION.parameters,
 		handler: async () =>
 			meetingNotesFlow.result(
 				genuineUserMessage(internalMessagesForToolCallMatcher)?.id,
@@ -8573,29 +9127,31 @@ function DocumentEditorInner({
 	// These actions let the AI assistant read code, PRs, and issues from the
 	// project's connected GitHub repository. Follows the fetchMeetingNotes pattern.
 	// Auto-fills owner/repo from project settings so the user only needs to specify paths.
+	// The definitions are shared with the agent (`editor-frontend-actions`).
+	//
+	// Offered only while the project has that provider's repository:
+	// CopilotKit sends a tool registered `available: "disabled"` to no agent,
+	// and registers it again when `available` changes (the project loads, or
+	// a repository is connected while the page is open). `useFrontendTool`,
+	// not `useCopilotAction`: the latter turns a disabled action into a
+	// render-only one, and throws when that kind changes between renders.
+	// The handlers still refuse without a repository.
+	const repository = `${repoOwner}/${repoName}`;
+	const githubFileContents = githubGetFileContentsAction(repository);
+	const githubRepository = githubGetRepositoryAction(repository);
+	const githubPullRequests = githubListPullRequestsAction(repository);
+	const githubIssues = githubListIssuesAction(repository);
+	const gitlabFileContents = gitlabGetFileContentsAction(repository);
+	const gitlabProject = gitlabGetProjectAction(repository);
+	const gitlabMergeRequests = gitlabListMergeRequestsAction(repository);
+	const gitlabIssues = gitlabListIssuesAction(repository);
 
-	useCopilotAction(
+	useFrontendTool(
 		{
-			name: "github_get_file_contents",
-			description: hasGitHub
-				? `Read a file or list a directory from the project's GitHub repository (${repoOwner}/${repoName}). Use this to look at source code, configs, READMEs, etc. when editing documents. The owner and repo are auto-filled. Just provide the file path.`
-				: "GitHub not connected.",
-			parameters: [
-				{
-					name: "path",
-					type: "string",
-					description:
-						"File or directory path in the repo (e.g. 'src/auth/middleware.ts' or 'src/')",
-					required: true,
-				},
-				{
-					name: "ref",
-					type: "string",
-					description:
-						"Branch or commit SHA. Defaults to the project's default branch.",
-					required: false,
-				},
-			],
+			name: githubFileContents.name,
+			description: githubFileContents.description,
+			available: hasGitHub ? "enabled" : "disabled",
+			parameters: githubFileContents.parameters,
 			handler: async (args) => {
 				if (!hasGitHub) {
 					return "GitHub not connected to this project.";
@@ -8649,13 +9205,12 @@ function DocumentEditorInner({
 		[hasGitHub, repoOwner, repoName, repoBranch],
 	);
 
-	useCopilotAction(
+	useFrontendTool(
 		{
-			name: "github_get_repository",
-			description: hasGitHub
-				? `Get repository metadata for ${repoOwner}/${repoName}. Returns description, language, topics, default branch, and last updated date.`
-				: "GitHub not connected.",
-			parameters: [],
+			name: githubRepository.name,
+			description: githubRepository.description,
+			available: hasGitHub ? "enabled" : "disabled",
+			parameters: githubRepository.parameters,
 			handler: async () => {
 				if (!hasGitHub) {
 					return "GitHub not connected to this project.";
@@ -8700,21 +9255,12 @@ function DocumentEditorInner({
 		[hasGitHub, repoOwner, repoName],
 	);
 
-	useCopilotAction(
+	useFrontendTool(
 		{
-			name: "github_list_pull_requests",
-			description: hasGitHub
-				? `List recent pull requests from ${repoOwner}/${repoName}. Useful for understanding recent changes and what's in progress.`
-				: "GitHub not connected.",
-			parameters: [
-				{
-					name: "state",
-					type: "string",
-					description:
-						"Filter by state: 'open', 'closed', or 'all'. Defaults to 'open'.",
-					required: false,
-				},
-			],
+			name: githubPullRequests.name,
+			description: githubPullRequests.description,
+			available: hasGitHub ? "enabled" : "disabled",
+			parameters: githubPullRequests.parameters,
 			handler: async (args) => {
 				if (!hasGitHub) {
 					return "GitHub not connected to this project.";
@@ -8766,21 +9312,12 @@ function DocumentEditorInner({
 		[hasGitHub, repoOwner, repoName],
 	);
 
-	useCopilotAction(
+	useFrontendTool(
 		{
-			name: "github_list_issues",
-			description: hasGitHub
-				? `List recent issues from ${repoOwner}/${repoName}. Useful for understanding bugs, feature requests, and open work items.`
-				: "GitHub not connected.",
-			parameters: [
-				{
-					name: "state",
-					type: "string",
-					description:
-						"Filter by state: 'open', 'closed', or 'all'. Defaults to 'open'.",
-					required: false,
-				},
-			],
+			name: githubIssues.name,
+			description: githubIssues.description,
+			available: hasGitHub ? "enabled" : "disabled",
+			parameters: githubIssues.parameters,
 			handler: async (args) => {
 				if (!hasGitHub) {
 					return "GitHub not connected to this project.";
@@ -8837,28 +9374,12 @@ function DocumentEditorInner({
 	// ── GitLab CopilotKit actions ───────────────────────────────────
 	// Mirror the GitHub actions above but target GitLab API via executeGitLabTool
 
-	useCopilotAction(
+	useFrontendTool(
 		{
-			name: "gitlab_get_file_contents",
-			description: hasGitLab
-				? `Read a file or list a directory from the project's GitLab repository (${repoOwner}/${repoName}). Use this to look at source code, configs, READMEs, etc. when editing documents. Just provide the file path.`
-				: "GitLab not connected.",
-			parameters: [
-				{
-					name: "path",
-					type: "string",
-					description:
-						"File or directory path in the repo (e.g. 'src/auth/middleware.ts' or 'src/')",
-					required: true,
-				},
-				{
-					name: "ref",
-					type: "string",
-					description:
-						"Branch or commit SHA. Defaults to the project's default branch.",
-					required: false,
-				},
-			],
+			name: gitlabFileContents.name,
+			description: gitlabFileContents.description,
+			available: hasGitLab ? "enabled" : "disabled",
+			parameters: gitlabFileContents.parameters,
 			handler: async (args) => {
 				if (!hasGitLab) {
 					return "GitLab not connected to this project.";
@@ -8914,13 +9435,12 @@ function DocumentEditorInner({
 		[hasGitLab, repoOwner, repoName, repoBranch, gitlabProjectId],
 	);
 
-	useCopilotAction(
+	useFrontendTool(
 		{
-			name: "gitlab_get_project",
-			description: hasGitLab
-				? `Get project metadata for ${repoOwner}/${repoName} on GitLab. Returns description, default branch, topics, and last activity date.`
-				: "GitLab not connected.",
-			parameters: [],
+			name: gitlabProject.name,
+			description: gitlabProject.description,
+			available: hasGitLab ? "enabled" : "disabled",
+			parameters: gitlabProject.parameters,
 			handler: async () => {
 				if (!hasGitLab) {
 					return "GitLab not connected to this project.";
@@ -8964,21 +9484,12 @@ function DocumentEditorInner({
 		[hasGitLab, repoOwner, repoName, gitlabProjectId],
 	);
 
-	useCopilotAction(
+	useFrontendTool(
 		{
-			name: "gitlab_list_merge_requests",
-			description: hasGitLab
-				? `List recent merge requests from ${repoOwner}/${repoName} on GitLab. Useful for understanding recent changes and what's in progress.`
-				: "GitLab not connected.",
-			parameters: [
-				{
-					name: "state",
-					type: "string",
-					description:
-						"Filter by state: 'opened', 'closed', 'merged', or 'all'. Defaults to 'opened'.",
-					required: false,
-				},
-			],
+			name: gitlabMergeRequests.name,
+			description: gitlabMergeRequests.description,
+			available: hasGitLab ? "enabled" : "disabled",
+			parameters: gitlabMergeRequests.parameters,
 			handler: async (args) => {
 				if (!hasGitLab) {
 					return "GitLab not connected to this project.";
@@ -9029,21 +9540,12 @@ function DocumentEditorInner({
 		[hasGitLab, repoOwner, repoName, gitlabProjectId],
 	);
 
-	useCopilotAction(
+	useFrontendTool(
 		{
-			name: "gitlab_list_issues",
-			description: hasGitLab
-				? `List recent issues from ${repoOwner}/${repoName} on GitLab. Useful for understanding bugs, feature requests, and open work items.`
-				: "GitLab not connected.",
-			parameters: [
-				{
-					name: "state",
-					type: "string",
-					description:
-						"Filter by state: 'opened', 'closed', or 'all'. Defaults to 'opened'.",
-					required: false,
-				},
-			],
+			name: gitlabIssues.name,
+			description: gitlabIssues.description,
+			available: hasGitLab ? "enabled" : "disabled",
+			parameters: gitlabIssues.parameters,
 			handler: async (args) => {
 				if (!hasGitLab) {
 					return "GitLab not connected to this project.";
@@ -9100,18 +9602,9 @@ function DocumentEditorInner({
 	// until user accepts/rejects in RegenerationConfirmDialog
 	useCopilotAction(
 		{
-			name: "regenerate_document",
-			description:
-				"Fully regenerate document content from scratch using AI with project context and RAG. Use this for major rewrites, not iterative edits.",
-			parameters: [
-				{
-					name: "prompt",
-					type: "string",
-					description:
-						"Instructions for what to generate (e.g., 'Regenerate the entire PRD with more technical details')",
-					required: true,
-				},
-			],
+			name: REGENERATE_DOCUMENT_ACTION.name,
+			description: REGENERATE_DOCUMENT_ACTION.description,
+			parameters: REGENERATE_DOCUMENT_ACTION.parameters,
 			renderAndWaitForResponse: ({ args, respond, status, result }) => {
 				// Not while another editor reviews a proposal (Fizzy #2946), as
 				// for the Regenerate button: the call is answered once as not
@@ -9287,7 +9780,7 @@ function DocumentEditorInner({
 	// the final content (original - deletions + additions).
 	useCopilotAction(
 		{
-			name: "confirm_changes",
+			name: CONFIRM_CHANGES_ACTION.name,
 			renderAndWaitForResponse: ({ args, respond, status }) => {
 				const recordVerdict = verdictFactoryRef.current();
 				// Every answer resumes the agent for one more short run, which the
@@ -9364,7 +9857,13 @@ function DocumentEditorInner({
 					// Not while another editor reviews a proposal (Fizzy #2946):
 					// the accepted body would be put in and saved over it. The
 					// proposal stays unanswered here, to accept once that one is.
+					// On a client-document Proposal an AI accept is one guarded
+					// step, so it is answered as not applied instead, the
+					// editor left as it is.
 					if (peerReviewHoldsNowRef.current()) {
+						if (isArtifactProposalRef.current) {
+							return answerNotApplied(baselineRef.current);
+						}
 						toast.info(tRun("proposalElsewhereHeld"));
 						return null;
 					}
@@ -9409,6 +9908,44 @@ function DocumentEditorInner({
 						confirmCallbacksRef.current = null;
 						void recordOutcomeRef.current({ accepted: false });
 						return answer({ accepted: false });
+					}
+
+					// A client-document Proposal's accept is saved from a base
+					// the server can check it against (Fizzy #2946). Without
+					// one it is not applied: the proposal goes back out of the
+					// editor, as a Reject takes it out, so it is never saved
+					// unchecked. With one, it is held from here until its save
+					// answers — set before its review's other flags drop, so
+					// the review stays published without a gap.
+					const artifactAccept = isArtifactProposalRef.current;
+					if (artifactAccept) {
+						const acceptBase = resolveAiAcceptBaseRef.current();
+						if (!acceptBase || acceptBase === "unavailable") {
+							setHasPendingConfirm(false);
+							confirmCallbacksRef.current = null;
+							const before =
+								baselineRef.current ||
+								currentDocumentRef.current;
+							applyProgrammaticContent(
+								currentEditor,
+								fromMarkdown(before),
+								"server",
+							);
+							setAgentState((prev) => ({
+								...prev,
+								document: before,
+							}));
+							const code = SECTION_REVISION_EDITOR_CODES.NO_BASE;
+							sayAiAcceptNotAppliedRef.current(code);
+							void recordOutcomeRef.current({
+								accepted: false,
+								summary: ACCEPT_OUTCOME_SUMMARIES.notApplied(
+									acceptNotAppliedReason(code),
+								),
+							});
+							return answer({ accepted: false });
+						}
+						setAiAcceptHeld(true);
 					}
 
 					void recordVerdict(true);
@@ -9527,6 +10064,52 @@ function DocumentEditorInner({
 							recordUnsaved();
 						}
 					};
+					// A client-document Proposal's accept is held and checked
+					// (see `sendHeldAiAccept`); its record says what became of
+					// it once its save answers.
+					if (artifactAccept) {
+						const patchedSectionKeys = agentPatchedKeysRef.current;
+						startTransition(() => {
+							sendHeldAiAcceptRef.current({
+								content: acceptedContent,
+								from: acceptedFrom,
+								aiReview: {
+									kind: "CHAT",
+									...(patchedSectionKeys
+										? { patchedSectionKeys }
+										: {}),
+								},
+								onAnswer: (result) => {
+									if (result.kind === "saved") {
+										recordOutcome({
+											accepted: true,
+											summary:
+												ACCEPT_OUTCOME_SUMMARIES.saved,
+										});
+									} else if (result.kind === "notApplied") {
+										sayAiAcceptNotAppliedRef.current(
+											result.code,
+										);
+										recordOutcome({
+											accepted: false,
+											summary:
+												ACCEPT_OUTCOME_SUMMARIES.notApplied(
+													acceptNotAppliedReason(
+														result.code,
+													),
+												),
+										});
+									} else if (result.kind === "kept") {
+										recordFailed(result.failure);
+									} else {
+										recordUndone();
+									}
+								},
+							});
+						});
+						return answer({ accepted: true });
+					}
+
 					// With the room flag every accept names its whole base
 					// (Fizzy #2946), which covers the slots as well.
 					const base = resolveSaveBaseRef.current();
@@ -9835,6 +10418,46 @@ function DocumentEditorInner({
 	// Safety check: if collaboration prerequisites aren't ready, show loading
 	// This handles edge cases with React concurrent rendering where guards may pass
 	// but props become stale during render
+	const chatLabels = useMemo(
+		() => ({
+			title: "AI Assistant",
+			initial:
+				"Hi! I can help you edit this document in place. Try asking me to:\n\n• Expand a specific section\n• Add technical details, examples, or edge cases\n• Fill in missing sections or clarify requirements\n• Draw an Excalidraw diagram (architecture, flow, etc.)\n\nUse the 'Regenerate' button above the editor only for full document regeneration.",
+		}),
+		[],
+	);
+	// Suggestion chips shown in the chat sidebar
+	const suggestions = useMemo(
+		() => [
+			{
+				title: "Update from meeting notes",
+				message:
+					"Update this document with insights from my recent meetings. Show me the meeting selector so I can choose which meetings to include.",
+			},
+			{
+				title: "Expand technical details",
+				message:
+					"Add more technical details to the architecture section",
+			},
+			{
+				title: "Add implementation details",
+				message:
+					"Add implementation details, constraints, and assumptions to the relevant sections without regenerating the whole document.",
+			},
+			{
+				title: "Fill missing sections",
+				message:
+					"Identify thin or missing sections and expand them in place with concrete details, examples, and edge cases.",
+			},
+			{
+				title: "Suggest a diagram",
+				message:
+					"Analyze this document and suggest a Mermaid diagram that could help illustrate the architecture, workflow, or relationships described in the content.",
+			},
+		],
+		[],
+	);
+
 	if (!isCollabPrerequisitesReady) {
 		console.warn(
 			"[DocumentEditorInner] Collaboration prerequisites not ready",
@@ -9848,34 +10471,6 @@ function DocumentEditorInner({
 			</div>
 		);
 	}
-
-	// Suggestion chips shown in the chat sidebar
-	const suggestions = [
-		{
-			title: "Update from meeting notes",
-			message:
-				"Update this document with insights from my recent meetings. Show me the meeting selector so I can choose which meetings to include.",
-		},
-		{
-			title: "Expand technical details",
-			message: "Add more technical details to the architecture section",
-		},
-		{
-			title: "Add implementation details",
-			message:
-				"Add implementation details, constraints, and assumptions to the relevant sections without regenerating the whole document.",
-		},
-		{
-			title: "Fill missing sections",
-			message:
-				"Identify thin or missing sections and expand them in place with concrete details, examples, and edge cases.",
-		},
-		{
-			title: "Suggest a diagram",
-			message:
-				"Analyze this document and suggest a Mermaid diagram that could help illustrate the architecture, workflow, or relationships described in the content.",
-		},
-	];
 
 	return (
 		<MentionStatusContext.Provider value={activeIdsSet}>
@@ -9922,11 +10517,7 @@ function DocumentEditorInner({
 							// round launcher renders. When ON, the header owns closing and
 							// this branded pill owns reopening.
 							Button={CustomSidebarLauncher}
-							labels={{
-								title: "AI Assistant",
-								initial:
-									"Hi! I can help you edit this document in place. Try asking me to:\n\n• Expand a specific section\n• Add technical details, examples, or edge cases\n• Fill in missing sections or clarify requirements\n• Draw an Excalidraw diagram (architecture, flow, etc.)\n\nUse the 'Regenerate' button above the editor only for full document regeneration.",
-							}}
+							labels={chatLabels}
 							suggestions={suggestions}
 						>
 							{/* Group H — persists each terminal-state CopilotKit
@@ -10133,63 +10724,68 @@ function DocumentEditorInner({
 															</TooltipContent>
 														</Tooltip>
 													</TooltipProvider>
-													<TooltipProvider>
-														<Tooltip>
-															<TooltipTrigger
-																asChild
-															>
-																<Button
-																	type="button"
-																	variant="outline"
-																	size="sm"
-																	onClick={() =>
-																		void contextUpdate.start()
-																	}
-																	disabled={
-																		isSaving ||
-																		isRegenerating ||
-																		isGenerationRunning ||
-																		contextUpdate.isActive ||
-																		proposalUnderReviewElsewhere ||
-																		viewMode ===
-																			"raw"
-																	}
-																	aria-describedby={
-																		proposalUnderReviewElsewhere
-																			? proposalElsewhereHeldId
-																			: undefined
-																	}
-																	className="h-8 gap-1.5 text-xs"
+													{/* Not on a client-document Proposal, which is changed from
+												    the chat or regenerated (Fizzy #2946). */}
+													{!isArtifactProposal && (
+														<TooltipProvider>
+															<Tooltip>
+																<TooltipTrigger
+																	asChild
 																>
-																	{contextUpdate.isLoading ? (
-																		<Loader2 className="size-3 animate-spin" />
-																	) : (
-																		<RefreshCcwDotIcon className="size-3" />
-																	)}
-																	<span className="hidden xl:inline">
+																	<Button
+																		type="button"
+																		variant="outline"
+																		size="sm"
+																		onClick={() =>
+																			void contextUpdate.start()
+																		}
+																		disabled={
+																			isSaving ||
+																			isRegenerating ||
+																			isGenerationRunning ||
+																			contextUpdate.isActive ||
+																			proposalUnderReviewElsewhere ||
+																			viewMode ===
+																				"raw"
+																		}
+																		aria-describedby={
+																			proposalUnderReviewElsewhere
+																				? proposalElsewhereHeldId
+																				: undefined
+																		}
+																		className="h-8 gap-1.5 text-xs"
+																	>
+																		{contextUpdate.isLoading ? (
+																			<Loader2 className="size-3 animate-spin" />
+																		) : (
+																			<RefreshCcwDotIcon className="size-3" />
+																		)}
+																		<span className="hidden xl:inline">
+																			Update
+																			using
+																			context
+																		</span>
+																	</Button>
+																</TooltipTrigger>
+																<TooltipContent>
+																	<p>
 																		Update
-																		using
+																		this
+																		document
+																		with the
+																		latest
 																		context
-																	</span>
-																</Button>
-															</TooltipTrigger>
-															<TooltipContent>
-																<p>
-																	Update this
-																	document
-																	with the
-																	latest
-																	context
-																</p>
-																<p className="text-xs text-muted-foreground">
-																	{viewMode ===
-																	"raw"
-																		? "Switch to Rich mode to review proposed changes"
-																		: "Reviews recent meeting transcripts and team messages"}
-																</p>
-															</TooltipContent>
-														</Tooltip>
-													</TooltipProvider>
+																	</p>
+																	<p className="text-xs text-muted-foreground">
+																		{viewMode ===
+																		"raw"
+																			? "Switch to Rich mode to review proposed changes"
+																			: "Reviews recent meeting transcripts and team messages"}
+																	</p>
+																</TooltipContent>
+															</Tooltip>
+														</TooltipProvider>
+													)}
 													{enableCollaboration &&
 														!actionSlot && (
 															<CollaborationStatus
@@ -10291,33 +10887,35 @@ function DocumentEditorInner({
 																/>
 																Regenerate
 															</DropdownMenuItem>
-															<DropdownMenuItem
-																onSelect={() =>
-																	void contextUpdate.start()
-																}
-																disabled={
-																	isSaving ||
-																	isRegenerating ||
-																	isGenerationRunning ||
-																	contextUpdate.isActive ||
-																	proposalUnderReviewElsewhere ||
-																	viewMode ===
-																		"raw"
-																}
-																aria-describedby={
-																	proposalUnderReviewElsewhere
-																		? proposalElsewhereHeldId
-																		: undefined
-																}
-															>
-																{contextUpdate.isLoading ? (
-																	<Loader2 className="mr-2 h-4 w-4 animate-spin" />
-																) : (
-																	<RefreshCcwDotIcon className="mr-2 h-4 w-4" />
-																)}
-																Update using
-																context
-															</DropdownMenuItem>
+															{!isArtifactProposal && (
+																<DropdownMenuItem
+																	onSelect={() =>
+																		void contextUpdate.start()
+																	}
+																	disabled={
+																		isSaving ||
+																		isRegenerating ||
+																		isGenerationRunning ||
+																		contextUpdate.isActive ||
+																		proposalUnderReviewElsewhere ||
+																		viewMode ===
+																			"raw"
+																	}
+																	aria-describedby={
+																		proposalUnderReviewElsewhere
+																			? proposalElsewhereHeldId
+																			: undefined
+																	}
+																>
+																	{contextUpdate.isLoading ? (
+																		<Loader2 className="mr-2 h-4 w-4 animate-spin" />
+																	) : (
+																		<RefreshCcwDotIcon className="mr-2 h-4 w-4" />
+																	)}
+																	Update using
+																	context
+																</DropdownMenuItem>
+															)}
 														</DropdownMenuContent>
 													</DropdownMenu>
 												</div>
@@ -11104,7 +11702,7 @@ function DocumentEditorInner({
 										// biome-ignore lint/a11y/useKeyWithClickEvents: click delegates to image lightbox, keyboard handled via Escape in lightbox
 										// biome-ignore lint/a11y/noStaticElementInteractions: editor container delegates image clicks, not interactive itself
 										<div
-											className={`flex-1 overflow-auto bg-background ${isLoading || hasPendingConfirm || contextUpdate.showingDiff ? "streaming-diff-active" : ""} ${!editor?.isEditable ? "tiptap-readonly" : ""}`}
+											className={`flex-1 overflow-auto bg-background ${isLoading || hasPendingConfirm || contextUpdate.showingDiff || sectionReview.isReviewing ? "streaming-diff-active" : ""} ${!editor?.isEditable ? "tiptap-readonly" : ""}`}
 											onClick={(e) => {
 												// Open lightbox when clicking images in read-only mode
 												if (!editor?.isEditable) {
@@ -11216,6 +11814,62 @@ function DocumentEditorInner({
 															isDiffReviewEditRef.current = false;
 														}}
 													/>
+												)}
+												{sectionReview.isRequesting && (
+													<output className="sticky top-0 z-10 flex items-center gap-3 px-4 py-2 bg-muted/50 border-b border-border text-sm backdrop-blur-sm">
+														<Loader2
+															className="h-4 w-4 animate-spin text-primary shrink-0"
+															aria-hidden
+														/>
+														<span className="font-medium text-foreground">
+															{tRevision(
+																"inProgress",
+															)}
+														</span>
+													</output>
+												)}
+												{sectionReview.isReviewing && (
+													<>
+														<div className="flex flex-col gap-0.5 border-b border-border bg-muted/30 px-4 py-2 text-sm">
+															<span className="font-medium text-foreground">
+																{tRevision(
+																	"reviewTitle",
+																	{
+																		section:
+																			sectionReview.sectionHeading ??
+																			"",
+																	},
+																)}
+															</span>
+															<output className="text-xs text-muted-foreground">
+																{sectionReview.isApplying
+																	? tRevision(
+																			"applying",
+																		)
+																	: tRevision(
+																			"reviewHint",
+																		)}
+															</output>
+														</div>
+														<DiffReviewBar
+															editor={editor}
+															mode={
+																effectiveDiffViewMode
+															}
+															onAcceptAll={() => {
+																sectionReview.accept();
+															}}
+															onRejectAll={() =>
+																sectionReview.reject()
+															}
+															onBeforeChange={() => {
+																isDiffReviewEditRef.current = true;
+															}}
+															onAfterChange={() => {
+																isDiffReviewEditRef.current = false;
+															}}
+														/>
+													</>
 												)}
 											</div>
 											{document && (
@@ -11554,6 +12208,7 @@ function DocumentEditorInner({
 									// we add?" answered "There are 2 — D7 marker 1
 									// and D7 marker 2" — backend pulled context.
 									setCopilotMessages([]);
+									startNewThread?.(forkedConversationId);
 									setEffectiveAssistantMessages(
 										copiedMessages as unknown as ReadonlyArray<
 											Record<string, unknown>
@@ -12129,6 +12784,7 @@ interface ConfirmChangesProps {
 }
 
 function ConfirmChanges({
+	args,
 	recordVerdict,
 	respond,
 	status,
@@ -12140,7 +12796,7 @@ function ConfirmChanges({
 	onDone,
 	outcomeAuditRef,
 }: ConfirmChangesProps) {
-	useConfirmChangesVerdictCard(recordVerdict);
+	useConfirmChangesVerdictCard(recordVerdict, args?.draftId);
 	// Track user's choice locally, but also derive from status
 	// This handles the case where component is recreated after action re-registration
 	const [userChoice, setUserChoice] = useState<

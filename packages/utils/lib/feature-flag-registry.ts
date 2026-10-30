@@ -311,7 +311,7 @@ export const FEATURE_FLAG_REGISTRY = {
 		envVar: "FABRIC_FEATURE_DOCUMENT_ROOM_CONVERGENCE",
 		default: true,
 		orgScopable: true,
-		note: "Fizzy #2946. Default-ON rollback lever, read for the project's OWNING organization. Off, the editor behaves as before it: no room stamp, no convergence, saves send no base, and the server requires no base from a client-document Proposal; on, a Proposal save without a base (an editor bundle from before this change) is refused with a reload code, and other document types accept and log it. No data is migrated either way: the stamp lives in the room, so turning it back on resumes from the next save or server write.",
+		note: "Fizzy #2946. Default-ON rollback lever, read for the project's OWNING organization. Off, the editor behaves as before it: no room stamp, no convergence, saves send no base (except an accepted AI change on a client-document Proposal, which still sends the editor's own loaded base), and the server requires no base from a client-document Proposal; on, a Proposal save without a base (an editor bundle from before this change) is refused with a reload code, and other document types accept and log it. No data is migrated either way: the stamp lives in the room, so turning it back on resumes from the next save or server write.",
 	},
 	DECISION_REPLAY: {
 		label: "Decision Replay capture",
@@ -321,6 +321,42 @@ export const FEATURE_FLAG_REGISTRY = {
 		default: false,
 		orgScopable: true,
 		note: "Override-only: database capture triggers cannot read application environment variables. Resolution uses the organization override, then the global override, then false, matching lakehouse_export.capture_enabled. Application readers may cache overrides for up to 10 seconds; triggers read them at write time.",
+	},
+	COPILOTKIT_DURABLE_ASSISTANTS: {
+		label: "Durable document, feature and topic assistants",
+		description:
+			"Runs the document, feature and topic assistants' turns as Temporal workflows on the worker, so closing the tab no longer stops a turn and reopening the page reattaches to it.",
+		envVar: "FABRIC_FEATURE_COPILOTKIT_DURABLE_ASSISTANTS",
+		default: false,
+		orgScopable: true,
+		note: "A rollout gate for the CopilotKit migration, removed when the migration's cleanup phase lands. Read on /api/copilotkit for the request's organization. Off, the assistants run inside the request on CopilotKit's in-memory runner exactly as before, with no Redis and no Temporal involved. On, a turn is a workflow on its own agui-runs queue whose events go through a Redis stream; when Redis, the workflow start or the worker's pickup fails, the turn still runs inside the request, so turning it on never leaves an organization without an assistant. Turning it off leaves turns already started running on the worker to their end, but a page opened afterwards no longer reattaches to them. Needs the web deployment to reach the same Redis as the worker. The assistants' stable conversation thread id is not behind this switch. The env var is a new name that no deployment sets, so the registry default governs. Resolve it only in API code, never in workflow code.",
+	},
+	COPILOTKIT_DIRECT_CHAT: {
+		label: "Fabric AI Direct chat on the agent runtime",
+		description:
+			"Runs the Fabric AI Direct chat through the agent runtime, so a turn is saved by the server, Stop goes through the runtime, and reopening a conversation whose turn is still running reattaches to it.",
+		envVar: "FABRIC_FEATURE_COPILOTKIT_DIRECT_CHAT",
+		default: false,
+		orgScopable: true,
+		note: "A rollout gate for the CopilotKit migration, removed when the migration's cleanup phase lands. Read in the browser for the organization on screen and fixed when the chat mounts, so a flip takes effect on the next chat or page load. Off, the Direct chat streams from its own route and saves the conversation from the browser exactly as before. On, members whose role may create and update conversations use /api/agents/runtime; project guests and viewers stay on the Direct route either way, because the runtime saves the conversation server-side and refuses callers who may not. The env var is a new name that no deployment sets, so the registry default governs.",
+	},
+	COPILOTKIT_ORCHESTRATOR_CHAT: {
+		label: "Fabric AI Orchestrator chat on the agent runtime",
+		description:
+			"Runs the Fabric AI Orchestrator chat (the Advisor) through the agent runtime, so a turn is saved by the server, approvals and clarifying questions are answered through the runtime, and reopening a conversation whose turn is still running reattaches to it.",
+		envVar: "FABRIC_FEATURE_COPILOTKIT_ORCHESTRATOR_CHAT",
+		default: false,
+		orgScopable: true,
+		note: "A rollout gate for the CopilotKit migration, removed when the migration's cleanup phase lands. Read in the browser for the organization on screen and fixed when the chat mounts, so a flip takes effect on the next chat or page load; the runtime's Orchestrator engine also refuses a run, connect or stop for an organization it is off for. Off, the Orchestrator chat streams from its own route and saves the conversation from the browser exactly as before. On, members whose role may create and update conversations use /api/agents/runtime; project guests and viewers stay on the Orchestrator route either way, because the runtime saves the conversation server-side and refuses callers who may not. The env var is a new name that no deployment sets, so the registry default governs.",
+	},
+	COPILOTKIT_MULTI_AGENT_CHAT: {
+		label: "Multi-agent turns in the Fabric AI Orchestrator chat",
+		description:
+			"Lets the Fabric AI page's Orchestrator chat send one message to two to four picked agents or models at once and show their answers side by side, as Nexus did.",
+		envVar: "FABRIC_FEATURE_COPILOTKIT_MULTI_AGENT_CHAT",
+		default: false,
+		orgScopable: true,
+		note: "A rollout gate for the CopilotKit migration, removed when the migration's cleanup phase lands. Works only together with COPILOTKIT_ORCHESTRATOR_CHAT: the multi-agent turn runs on the agent runtime's Orchestrator engine, which refuses it for an organization either switch is off for. Read in the browser for the organization on screen and fixed when the chat mounts. Off, the Orchestrator chat's picker keeps one agent or model, exactly as before. On, the full Fabric AI page's picker takes up to four, and a message with two or more picked starts one Orchestrator workflow per pick; the launcher drawer keeps one pick either way. The env var is a new name that no deployment sets, so the registry default governs.",
 	},
 } as const satisfies Record<string, FeatureFlagDefinition>;
 

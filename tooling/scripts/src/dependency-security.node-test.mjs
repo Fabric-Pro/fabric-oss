@@ -635,6 +635,122 @@ test("no first-party code reaches the msal-node authorization-code flow", () => 
 	);
 });
 
+// GHSA-x8rm-f576-gq67: limit the ID-wide exception to reviewed resolutions.
+function isReviewedGraphqlScalarsVersion(version, semver) {
+	return (
+		semver.valid(version) !== null &&
+		!semver.prerelease(version) &&
+		(version === "1.25.0" || semver.gte(version, "2.0.1"))
+	);
+}
+
+function verifyGraphqlScalarsLockfile(text, yaml, semver) {
+	assert.equal(typeof text, "string", "Missing readable lockfile text");
+	const lockfile = yaml.parse(text);
+	for (const section of ["packages", "snapshots"]) {
+		assert.ok(
+			lockfile?.[section] &&
+				typeof lockfile[section] === "object" &&
+				!Array.isArray(lockfile[section]),
+			`Missing lockfile ${section}`,
+		);
+		const entries = Object.keys(lockfile[section]).filter((key) =>
+			key.startsWith("graphql-scalars@"),
+		);
+		assert.ok(
+			entries.length,
+			`No graphql-scalars entries in lockfile ${section}`,
+		);
+		for (const key of entries) {
+			const version = key.slice("graphql-scalars@".length).split("(")[0];
+			assert.ok(
+				isReviewedGraphqlScalarsVersion(version, semver),
+				`Unreviewed or vulnerable graphql-scalars resolution: ${key} (${section})`,
+			);
+		}
+	}
+}
+
+// PhoneNumber is reachable only through an import of the package itself, so
+// the package name is the whole search; a bare PhoneNumber name elsewhere is
+// unrelated first-party code.
+function firstPartyGraphqlScalarsHits(pattern = "graphql-scalars") {
+	return firstPartyMsalAuthCodeHits(pattern);
+}
+
+test("graphql-scalars exception permits reviewed or fixed stable versions", () => {
+	const semver = installedConsumers("@changesets/cli", "3.0.1")[0].require(
+		"semver",
+	);
+	for (const version of ["1.25.0", "2.0.1", "3.0.0"]) {
+		assert.equal(isReviewedGraphqlScalarsVersion(version, semver), true);
+	}
+	for (const version of [
+		"1.24.0",
+		"2.0.0",
+		"2.0.1-beta.1",
+		"3.0.0-beta.1",
+		"invalid",
+	]) {
+		assert.equal(isReviewedGraphqlScalarsVersion(version, semver), false);
+	}
+});
+
+test("graphql-scalars lockfile guard rejects missing and unreviewed entries", () => {
+	const yaml = installedConsumers("@changesets/parse", "1.0.0")[0].require(
+		"yaml",
+	);
+	const semver = installedConsumers("@changesets/cli", "3.0.1")[0].require(
+		"semver",
+	);
+	const snippet = (version) =>
+		`packages:\n  'graphql-scalars@${version}': {}\nsnapshots:\n  'graphql-scalars@${version}': {}\n`;
+	assert.doesNotThrow(() =>
+		verifyGraphqlScalarsLockfile(snippet("2.0.1"), yaml, semver),
+	);
+	assert.throws(
+		() => verifyGraphqlScalarsLockfile(snippet("2.0.0"), yaml, semver),
+		/Unreviewed or vulnerable graphql-scalars resolution/,
+	);
+	for (const text of [
+		"packages: [",
+		"",
+		"packages: {}\nsnapshots: {}",
+		"packages: {}",
+		"packages: null\nsnapshots: null",
+	]) {
+		assert.throws(() => verifyGraphqlScalarsLockfile(text, yaml, semver));
+	}
+	const lockfile = readFileSync(join(root, "pnpm-lock.yaml"), "utf8");
+	verifyGraphqlScalarsLockfile(lockfile, yaml, semver);
+	for (const section of ["packages", "snapshots"]) {
+		const mutated = yaml.parse(lockfile);
+		const current = Object.keys(mutated[section]).find((key) =>
+			key.startsWith("graphql-scalars@"),
+		);
+		assert.ok(current);
+		mutated[section]["graphql-scalars@2.0.0"] = mutated[section][current];
+		delete mutated[section][current];
+		assert.throws(
+			() =>
+				verifyGraphqlScalarsLockfile(
+					yaml.stringify(mutated),
+					yaml,
+					semver,
+				),
+			/Unreviewed or vulnerable graphql-scalars resolution: graphql-scalars@2\.0\.0/,
+		);
+	}
+});
+
+test("tracked first-party source does not import graphql-scalars", () => {
+	assert.deepEqual(firstPartyGraphqlScalarsHits(), []);
+	assert.ok(
+		firstPartyGraphqlScalarsHits("@copilotkit/runtime").length > 0,
+		"Search did not find a first-party CopilotKit import",
+	);
+});
+
 test("each immediate parent's original range accepts the locked security version", () => {
 	const semver = installedConsumers("@changesets/cli", "3.0.1")[0].require(
 		"semver",

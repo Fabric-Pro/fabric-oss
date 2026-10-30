@@ -10,6 +10,7 @@
 
 import { logger } from "@repo/logs";
 import { REDIS_KEEPALIVE_MS } from "@repo/utils/redis-connection";
+import { getRedisUrl, isPlaintextRedisRefused } from "./redis-url";
 
 let redisClient: import("ioredis").default | null = null;
 let connectionPromise: Promise<import("ioredis").default | null> | null = null;
@@ -17,46 +18,6 @@ let connectionPromise: Promise<import("ioredis").default | null> | null = null;
 let lastFailureTime = 0;
 /** Backoff before retrying after a connection failure */
 const RETRY_BACKOFF_MS = 30_000; // 30 seconds
-
-/**
- * Build a Redis URL from environment variables.
- * Prefers Aspire-injected CACHE_HOST/CACHE_PORT (dynamic port) over static
- * REDIS_URL which may reference a stale port after container restarts.
- */
-function getRedisUrl(): string | null {
-	// Prefer Aspire-injected vars (dynamic port assigned at container start)
-	const cacheHost = process.env.CACHE_HOST;
-	if (cacheHost) {
-		const cachePort = process.env.CACHE_PORT || "6379";
-		const password =
-			process.env.CACHE_PASSWORD || process.env.REDIS_PASSWORD;
-		if (password) {
-			return `redis://:${encodeURIComponent(password)}@${cacheHost}:${cachePort}`;
-		}
-		return `redis://${cacheHost}:${cachePort}`;
-	}
-
-	const rawUrl = process.env.REDIS_URL;
-	if (rawUrl) {
-		try {
-			const parsed = new URL(rawUrl);
-			if (parsed.password) {
-				return rawUrl;
-			}
-			const password =
-				process.env.REDIS_PASSWORD || process.env.CACHE_PASSWORD;
-			if (password) {
-				parsed.password = password;
-				return parsed.toString();
-			}
-			return rawUrl;
-		} catch {
-			return rawUrl;
-		}
-	}
-
-	return null;
-}
 
 /**
  * Get or create the singleton Redis publisher client.
@@ -72,17 +33,10 @@ async function connectRedis(): Promise<import("ioredis").default | null> {
 		return null;
 	}
 
-	// Transport fail-closed (SOC 2 CC6.7): refuse plaintext `redis://` in
-	// production — mirrors the Postgres/Temporal TLS guards. Fails closed by
-	// declining to connect (events/cache degrade, loudly logged) rather than
-	// silently shipping data over an unencrypted channel. Real prod uses
-	// `rediss://` (TLS), so this only trips on misconfiguration; escape hatch
-	// `FABRIC_ALLOW_INSECURE_REDIS=true`. Local dev (non-production) is exempt.
-	if (
-		process.env.NODE_ENV === "production" &&
-		redisUrl.startsWith("redis://") &&
-		process.env.FABRIC_ALLOW_INSECURE_REDIS !== "true"
-	) {
+	// Transport fail-closed (SOC 2 CC6.7, `isPlaintextRedisRefused`): fails
+	// closed by declining to connect (events/cache degrade, loudly logged)
+	// rather than silently shipping data over an unencrypted channel.
+	if (isPlaintextRedisRefused(redisUrl)) {
 		logger.error(
 			"[RedisPublisher] Refusing plaintext redis:// connection in production (SOC 2 CC6.7). Use rediss:// (TLS), or set FABRIC_ALLOW_INSECURE_REDIS=true to override.",
 		);

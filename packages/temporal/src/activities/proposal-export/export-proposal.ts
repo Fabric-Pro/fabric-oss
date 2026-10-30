@@ -40,7 +40,10 @@ import {
 } from "../../lib/proposal-export/extract-document-images";
 import { exportFailure } from "../../lib/proposal-export/failures";
 import { printTokensOf } from "../../lib/proposal-export/fonts";
-import { prepareExportMarkdown } from "../../lib/proposal-export/markdown";
+import {
+	exportDiagramCaptions,
+	prepareExportMarkdown,
+} from "../../lib/proposal-export/markdown";
 import {
 	PROPOSAL_EXPORT_LIMITS,
 	type ProposalExportFormat,
@@ -85,9 +88,10 @@ export function mergeExportWarnings(
 
 /**
  * The hash of the brand as `format` printed it. Neither format embeds an
- * uploaded font file, so the files never count, and print sets every family
- * in Inter, so a PDF's families do not count either: a font-only change to
- * the Brand kit leaves a PDF's record as it was.
+ * uploaded font file, so the files never count, and print sets each role in
+ * its committed family (Poppins, Inter, JetBrains Mono), so a PDF's families
+ * do not count either: a font-only change to the Brand kit leaves a PDF's
+ * record as it was.
  */
 function printedBrandHash(
 	printed: ProposalThemeTokens,
@@ -174,6 +178,7 @@ export async function exportProposalDocumentActivity(
 			const render = async (browser: ExportBrowser | null) => {
 				const diagrams = await renderExportDiagrams({
 					sources: prepared.diagramSources,
+					captions: exportDiagramCaptions(prepared),
 					paint,
 					browser,
 					withPng: input.format === "docx",

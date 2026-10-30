@@ -121,6 +121,16 @@ vi.mock("@repo/database", async () => {
 			mockListStoryDuplicateEmbeddings(...a),
 		upsertStoryDuplicateEmbeddings: (...a: unknown[]) =>
 			mockUpsertStoryDuplicateEmbeddings(...a),
+		// These stories carry no kind, so no feature sections are read; the
+		// section cache stays empty.
+		listStoryDuplicateFocusEmbeddings: async () => [],
+		upsertStoryDuplicateFocusEmbeddings: async () => undefined,
+		listPendingDuplicatePairs: async () => [],
+		withdrawPendingDuplicateLinks: async () => 0,
+		refreshPendingDuplicateSimilarities: async () => 0,
+		// No stored row: every verdict here is a first verdict.
+		getDuplicateLinkState: async () => null,
+		stampVerifiedHashes: async () => undefined,
 		setProjectLastDuplicateScanAt: (...a: unknown[]) =>
 			mockSetProjectLastDuplicateScanAt(...a),
 		countItemsWithPendingDuplicateLinks: (...a: unknown[]) =>

@@ -61,6 +61,7 @@ import {
 	completeAnalysisRun,
 	createAnalysisRun,
 	DocumentStyleValidationError,
+	FindingResponseChangedError,
 	FindingResponseValidationError,
 	failAnalysisRun,
 	getAnalysisForCurrentContent,
@@ -111,8 +112,10 @@ import {
 	type UpsertFindingResponseResult,
 	upsertDocumentStyle,
 	upsertFindingResponse,
+	type WriteResolvedFindingResponseInput,
 	withLiveRunDispatchLock,
 	writeLiveSections,
+	writeResolvedFindingResponse,
 } from "../prisma/queries/projects/proposal-artifact";
 import {
 	createOrganizationContext,
@@ -3350,6 +3353,162 @@ describe("finding responses", () => {
 			}),
 		).toEqual({ outcome: "not_found" });
 		expect(store.responses).toHaveLength(1);
+	});
+});
+
+describe("the Resolved write of an applied recommendation", () => {
+	const KEY = "commercial|scope|pricing";
+	let answeredRun: Row;
+
+	function resolve(
+		overrides: Partial<WriteResolvedFindingResponseInput> = {},
+	): WriteResolvedFindingResponseInput {
+		return {
+			organizationId: ORG,
+			projectId: PROJECT,
+			documentId: DOC,
+			stableKey: KEY,
+			findingTitle: "Pricing is not stated",
+			answeredRunId: answeredRun.id as string,
+			sectionKey: "scope#0",
+			sectionHash: "p1:scope-as-saved",
+			authorId: "user-saver",
+			expected: null,
+			...overrides,
+		};
+	}
+
+	/** A member's earlier answer, as the answer path writes it. */
+	async function answered(): Promise<{ id: string; version: number }> {
+		const result = await upsertFindingResponse({
+			organizationId: ORG,
+			projectId: PROJECT,
+			documentId: DOC,
+			stableKey: KEY,
+			kind: "RESPONDED",
+			text: "The fixed fee is in the commercial annex.",
+			findingTitle: "Pricing is not stated",
+			answeredRunId: answeredRun.id as string,
+			sectionKey: "scope#0",
+			sectionHash: "p1:scope",
+			authorId: "user-member",
+		});
+		if (result.outcome !== "written") {
+			throw new Error("expected the answer to be written");
+		}
+		return { id: result.response.id, version: result.response.version };
+	}
+
+	beforeEach(() => {
+		seedDocument({ status: "COMPLETE" });
+		answeredRun = seedRun();
+	});
+
+	it("with no earlier answer, creates RESOLVED at version 1 with the saved section's hash, the run and the saver", async () => {
+		const response = await writeResolvedFindingResponse(
+			fake as never,
+			resolve(),
+		);
+
+		expect(response).toMatchObject({
+			stableKey: KEY,
+			kind: "RESOLVED",
+			text: null,
+			answeredRunId: answeredRun.id,
+			sectionKey: "scope#0",
+			sectionHash: "p1:scope-as-saved",
+			authorId: "user-saver",
+			version: 1,
+		});
+		expect(store.responses).toEqual([
+			expect.objectContaining({
+				organizationId: ORG,
+				projectId: PROJECT,
+			}),
+		]);
+	});
+
+	it("over the answer the revision started from, keeps its text and bumps its version", async () => {
+		const seen = await answered();
+
+		const response = await writeResolvedFindingResponse(
+			fake as never,
+			resolve({ expected: seen }),
+		);
+
+		expect(response).toMatchObject({
+			id: seen.id,
+			kind: "RESOLVED",
+			text: "The fixed fee is in the commercial annex.",
+			sectionHash: "p1:scope-as-saved",
+			authorId: "user-saver",
+			version: 2,
+		});
+		expect(store.responses).toHaveLength(1);
+	});
+
+	it("throws the changed-answer error when an answer was given since a revision that saw none", async () => {
+		await answered();
+
+		await expect(
+			writeResolvedFindingResponse(fake as never, resolve()),
+		).rejects.toBeInstanceOf(FindingResponseChangedError);
+		expect(store.responses[0]).toMatchObject({
+			kind: "RESPONDED",
+			version: 1,
+		});
+	});
+
+	it("throws the changed-answer error when the answer seen was edited, or cleared, since", async () => {
+		const seen = await answered();
+		await expect(
+			writeResolvedFindingResponse(
+				fake as never,
+				resolve({ expected: { id: seen.id, version: 2 } }),
+			),
+		).rejects.toBeInstanceOf(FindingResponseChangedError);
+
+		store.responses = [];
+		await expect(
+			writeResolvedFindingResponse(
+				fake as never,
+				resolve({ expected: seen }),
+			),
+		).rejects.toBeInstanceOf(FindingResponseChangedError);
+		expect(store.responses).toHaveLength(0);
+	});
+
+	it("fails closed for another organization or a run of another document", async () => {
+		await expect(
+			writeResolvedFindingResponse(
+				fake as never,
+				resolve({ organizationId: OTHER_ORG }),
+			),
+		).rejects.toBeInstanceOf(ProposalArtifactTenantError);
+		await expect(
+			writeResolvedFindingResponse(
+				fake as never,
+				resolve({ answeredRunId: "run-elsewhere" }),
+			),
+		).rejects.toBeInstanceOf(ProposalArtifactTenantError);
+		expect(store.responses).toHaveLength(0);
+	});
+
+	it("the member answer path still refuses RESOLVED", async () => {
+		await expect(
+			upsertFindingResponse({
+				organizationId: ORG,
+				projectId: PROJECT,
+				documentId: DOC,
+				stableKey: KEY,
+				kind: "RESOLVED" as never,
+				findingTitle: "Pricing is not stated",
+				answeredRunId: answeredRun.id as string,
+				sectionKey: "scope#0",
+				sectionHash: "p1:scope",
+				authorId: "user-member",
+			}),
+		).rejects.toBeInstanceOf(FindingResponseValidationError);
 	});
 });
 

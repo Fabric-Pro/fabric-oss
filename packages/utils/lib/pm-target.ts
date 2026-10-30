@@ -61,7 +61,7 @@ function normalizeAdoOrg(value: string | null | undefined): string | null {
 	try {
 		const text = value.trim();
 		let org: string;
-		const bare = text.replace(/\/+$/, "");
+		const bare = trimTrailingSlashes(text);
 		if (!/[/:?.#]/.test(bare)) {
 			org = decodeURIComponent(bare);
 		} else {
@@ -177,10 +177,9 @@ export function buildExternalPmTarget(input: {
 		) {
 			return null;
 		}
-		instance = context.account_slug
-			.trim()
-			.replace(/\/+$/, "")
-			.toLowerCase();
+		instance = trimTrailingSlashes(
+			context.account_slug.trim(),
+		).toLowerCase();
 		if (!instance) {
 			return null;
 		}
@@ -236,4 +235,12 @@ export function pmTargetsConflict(
 		row[2] !== active[2] ||
 		(!!row[1] && !!active[1] && row[1] !== active[1])
 	);
+}
+
+function trimTrailingSlashes(value: string): string {
+	let end = value.length;
+	while (end > 0 && value.charCodeAt(end - 1) === 0x2f) {
+		end--;
+	}
+	return value.slice(0, end);
 }

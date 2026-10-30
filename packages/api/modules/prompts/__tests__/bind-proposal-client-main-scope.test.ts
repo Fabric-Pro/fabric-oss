@@ -72,6 +72,7 @@ vi.mock("../../../orpc/procedures", () => ({
 import { bindProcedures } from "../procedures/bind";
 
 const MAIN = "proposal_client_main";
+const REVISION = "proposal_client_revision";
 const ANALYSIS = "proposal_internal_analysis";
 
 type Scope = "SYSTEM" | "ORG" | "USER";
@@ -174,7 +175,44 @@ describe("binding the client-only Main proposal prompt", () => {
 			);
 			expect((refusal as Error).message).toMatch(/personal default/i);
 			expect((refusal as Error).message).toMatch(/organization admin/i);
+			expect((refusal as Error).message).toContain(
+				'"Client proposal (Main)"',
+			);
 			expect(bindPromptVersion).not.toHaveBeenCalled();
+		});
+
+		it("refuses a personal default on the client revision action, naming it (Fizzy #2946)", async () => {
+			const refusal = await callSet({
+				targetKey: REVISION,
+				scope: "USER",
+			}).catch((error: unknown) => error);
+
+			expect(refusal).toBeInstanceOf(ORPCError);
+			expect((refusal as ORPCError<string, unknown>).code).toBe(
+				"BAD_REQUEST",
+			);
+			expect((refusal as Error).message).toContain(
+				'"Client proposal (revision)"',
+			);
+			expect((refusal as Error).message).toMatch(/personal default/i);
+			expect((refusal as Error).message).toMatch(/organization admin/i);
+			expect(bindPromptVersion).not.toHaveBeenCalled();
+		});
+
+		it("accepts an organization default on the client revision action from an org admin", async () => {
+			await callSet({
+				targetKey: REVISION,
+				scope: "ORG",
+				organizationId: "org-1",
+			});
+
+			expect(bindPromptVersion).toHaveBeenCalledWith(
+				expect.objectContaining({
+					targetKey: REVISION,
+					scope: "ORG",
+					organizationId: "org-1",
+				}),
+			);
 		});
 
 		it("accepts a personal default on the analysis action", async () => {
@@ -253,6 +291,16 @@ describe("binding the client-only Main proposal prompt", () => {
 					scope: "USER",
 				}),
 			).rejects.toThrow(/personal default/i);
+			expect(bindPromptVersionToTargets).not.toHaveBeenCalled();
+		});
+
+		it("refuses the whole request when the client revision action is among personal targets, naming it", async () => {
+			await expect(
+				callSetMany({
+					targets: [target(ANALYSIS), target(REVISION)],
+					scope: "USER",
+				}),
+			).rejects.toThrow('"Client proposal (revision)"');
 			expect(bindPromptVersionToTargets).not.toHaveBeenCalled();
 		});
 

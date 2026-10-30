@@ -59,6 +59,7 @@ import {
 	resolveValidRefreshActors,
 	SHORTEST_CADENCE_DAYS,
 	storeRefreshProposal,
+	turnOffRefreshAutoApply,
 	upsertAutoRefreshSettings,
 } from "./document-refresh";
 
@@ -667,5 +668,20 @@ describe("proposals", () => {
 		const data = updateMock.mock.calls[0]?.[0].data;
 		expect(data).not.toHaveProperty("lastRefreshedAt");
 		expect(data).not.toHaveProperty("lastRefreshStatus");
+	});
+});
+
+describe("turnOffRefreshAutoApply", () => {
+	it("turns unattended writes off and touches nothing else (Fizzy #2946)", async () => {
+		updateManyMock.mockResolvedValue({ count: 1 });
+
+		await turnOffRefreshAutoApply("doc_1");
+
+		// `updateMany`, so a row deleted in between is a no-op, not a P2025.
+		expect(updateManyMock).toHaveBeenCalledWith({
+			where: { documentId: "doc_1", autoApply: true },
+			data: { autoApply: false },
+		});
+		expect(updateMock).not.toHaveBeenCalled();
 	});
 });

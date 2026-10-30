@@ -15,7 +15,7 @@
  *      would create a new component on every render.
  *   3. displayName carries the agent name for debugging
  *   4. The 4 module-scope exports have the expected displayNames
- *   5. Rendering with mocked hooks: `useCoAgent` receives the correct
+ *   5. Rendering with mocked hooks: `useAgentStateReadOnly` receives the correct
  *      agent name closed over from the factory
  */
 
@@ -32,12 +32,11 @@ function render(ui: Parameters<typeof rtlRender>[0]) {
 
 import { describe, expect, it, vi } from "vitest";
 
-const useCoAgentMock = vi.fn();
+const useAgentStateReadOnlyMock = vi.fn();
 const useCopilotChatInternalMock = vi.fn();
 const useChatContextMock = vi.fn();
 
 vi.mock("@copilotkit/react-core", () => ({
-	useCoAgent: (args: { name: string }) => useCoAgentMock(args),
 	useCopilotChatInternal: () => useCopilotChatInternalMock(),
 }));
 
@@ -52,7 +51,8 @@ vi.mock("../../../../../components/ai-elements/McpAppFrame", () => ({
 	McpAppFrame: () => <div data-testid="mcp-frame" />,
 }));
 
-vi.mock("../ReasoningCollapsible", () => ({
+vi.mock("../ReasoningCollapsible", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../ReasoningCollapsible")>()),
 	ReasoningCollapsible: ({ text }: { text?: string }) => (
 		<div data-testid="reasoning-collapsible">{text}</div>
 	),
@@ -70,7 +70,7 @@ import {
 } from "../CopilotAssistantMessage";
 
 function setupHookDefaults() {
-	useCoAgentMock.mockReturnValue({ state: {} });
+	useAgentStateReadOnlyMock.mockReturnValue({ state: {} });
 	useCopilotChatInternalMock.mockReturnValue({ visibleMessages: [] });
 	useChatContextMock.mockReturnValue({
 		icons: {
@@ -175,10 +175,10 @@ describe("Module-scope exports — displayNames", () => {
 	});
 });
 
-describe("Module-scope exports — runtime useCoAgent wiring", () => {
-	it("the default export calls useCoAgent({name: 'project_document_generator'}) on render", () => {
+describe("Module-scope exports — runtime useAgentStateReadOnly wiring", () => {
+	it("the default export calls useAgentStateReadOnly('project_document_generator') on render", () => {
 		setupHookDefaults();
-		useCoAgentMock.mockClear();
+		useAgentStateReadOnlyMock.mockClear();
 		render(
 			<CopilotAssistantMessage
 				message={
@@ -194,15 +194,15 @@ describe("Module-scope exports — runtime useCoAgent wiring", () => {
 				onCopy={() => undefined}
 			/>,
 		);
-		expect(useCoAgentMock).toHaveBeenCalledWith({
-			name: "project_document_generator",
-		});
+		expect(useAgentStateReadOnlyMock).toHaveBeenCalledWith(
+			"project_document_generator",
+		);
 		expect(screen.getByTestId("markdown").textContent).toBe("hello");
 	});
 
-	it("ForBacklogUpdater calls useCoAgent({name: 'backlog_updater'}) on render", () => {
+	it("ForBacklogUpdater calls useAgentStateReadOnly('backlog_updater') on render", () => {
 		setupHookDefaults();
-		useCoAgentMock.mockClear();
+		useAgentStateReadOnlyMock.mockClear();
 		render(
 			<CopilotAssistantMessageForBacklogUpdater
 				message={{ id: "m2", content: "hi" } as never}
@@ -213,14 +213,14 @@ describe("Module-scope exports — runtime useCoAgent wiring", () => {
 				onCopy={() => undefined}
 			/>,
 		);
-		expect(useCoAgentMock).toHaveBeenCalledWith({
-			name: "backlog_updater",
-		});
+		expect(useAgentStateReadOnlyMock).toHaveBeenCalledWith(
+			"backlog_updater",
+		);
 	});
 
-	it("ForPromptEnhancer calls useCoAgent({name: 'prompt_enhancer'}) on render", () => {
+	it("ForPromptEnhancer calls useAgentStateReadOnly('prompt_enhancer') on render", () => {
 		setupHookDefaults();
-		useCoAgentMock.mockClear();
+		useAgentStateReadOnlyMock.mockClear();
 		render(
 			<CopilotAssistantMessageForPromptEnhancer
 				message={{ id: "m3", content: "hi" } as never}
@@ -231,14 +231,14 @@ describe("Module-scope exports — runtime useCoAgent wiring", () => {
 				onCopy={() => undefined}
 			/>,
 		);
-		expect(useCoAgentMock).toHaveBeenCalledWith({
-			name: "prompt_enhancer",
-		});
+		expect(useAgentStateReadOnlyMock).toHaveBeenCalledWith(
+			"prompt_enhancer",
+		);
 	});
 
-	it("ForTaskPlanner calls useCoAgent({name: 'task_planner'}) on render", () => {
+	it("ForTaskPlanner calls useAgentStateReadOnly('task_planner') on render", () => {
 		setupHookDefaults();
-		useCoAgentMock.mockClear();
+		useAgentStateReadOnlyMock.mockClear();
 		render(
 			<CopilotAssistantMessageForTaskPlanner
 				message={{ id: "m4", content: "hi" } as never}
@@ -249,12 +249,12 @@ describe("Module-scope exports — runtime useCoAgent wiring", () => {
 				onCopy={() => undefined}
 			/>,
 		);
-		expect(useCoAgentMock).toHaveBeenCalledWith({ name: "task_planner" });
+		expect(useAgentStateReadOnlyMock).toHaveBeenCalledWith("task_planner");
 	});
 
-	it("ForDocumentGenerator calls useCoAgent({name: 'document_generator'}) on render", () => {
+	it("ForDocumentGenerator calls useAgentStateReadOnly('document_generator') on render", () => {
 		setupHookDefaults();
-		useCoAgentMock.mockClear();
+		useAgentStateReadOnlyMock.mockClear();
 		render(
 			<CopilotAssistantMessageForDocumentGenerator
 				message={{ id: "m6", content: "hi" } as never}
@@ -265,14 +265,14 @@ describe("Module-scope exports — runtime useCoAgent wiring", () => {
 				onCopy={() => undefined}
 			/>,
 		);
-		expect(useCoAgentMock).toHaveBeenCalledWith({
-			name: "document_generator",
-		});
+		expect(useAgentStateReadOnlyMock).toHaveBeenCalledWith(
+			"document_generator",
+		);
 	});
 
-	it("ForStoryBreakdown calls useCoAgent({name: 'story_breakdown'}) on render", () => {
+	it("ForStoryBreakdown calls useAgentStateReadOnly('story_breakdown') on render", () => {
 		setupHookDefaults();
-		useCoAgentMock.mockClear();
+		useAgentStateReadOnlyMock.mockClear();
 		render(
 			<CopilotAssistantMessageForStoryBreakdown
 				message={{ id: "m7", content: "hi" } as never}
@@ -283,22 +283,25 @@ describe("Module-scope exports — runtime useCoAgent wiring", () => {
 				onCopy={() => undefined}
 			/>,
 		);
-		expect(useCoAgentMock).toHaveBeenCalledWith({
-			name: "story_breakdown",
-		});
+		expect(useAgentStateReadOnlyMock).toHaveBeenCalledWith(
+			"story_breakdown",
+		);
 	});
 
 	it("renders ReasoningCollapsible with the reasoning text from agentState.reasoningByTurn[1]", () => {
 		setupHookDefaults();
-		useCoAgentMock.mockReturnValueOnce({
+		useAgentStateReadOnlyMock.mockReturnValue({
 			state: {
+				messages: [
+					{ id: "u1", type: "human" },
+					{ id: "m5", type: "ai" },
+				],
 				reasoningByTurn: {
 					1: { text: "Thinking step 1…", durationMs: 1000 },
 				},
 			},
 		});
-		// Supply visibleMessages so turnIndex resolves to 1 (one user message
-		// preceding the assistant message m5).
+		// The current row uses the explicit agent human-message count above.
 		useCopilotChatInternalMock.mockReturnValueOnce({
 			visibleMessages: [
 				{ role: "user", id: "u1" },
@@ -320,3 +323,27 @@ describe("Module-scope exports — runtime useCoAgent wiring", () => {
 		);
 	});
 });
+
+vi.mock("../useAgentStateReadOnly", () => ({
+	useAgentTranscriptSelector: (
+		name: string,
+		selector: (state: unknown, messages: unknown[]) => unknown,
+	) =>
+		selector(
+			useAgentStateReadOnlyMock(name).state,
+			(
+				useAgentStateReadOnlyMock(name).state as {
+					messages?: Array<{ type?: string; role?: string }>;
+				}
+			).messages?.map((message) => ({
+				...message,
+				role:
+					message.role ??
+					(message.type === "human" ? "user" : "assistant"),
+			})) ?? [],
+		),
+	useAgentStateSelector: (
+		name: string,
+		selector: (state: unknown) => unknown,
+	) => selector(useAgentStateReadOnlyMock(name).state),
+}));

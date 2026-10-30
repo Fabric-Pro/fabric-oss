@@ -180,6 +180,7 @@ function arrange(
 			diagrams: sources.map(() => ({
 				kind: "placeholder",
 				caption: "Example placeholder",
+				numbered: true,
 			})),
 			warnings: options.diagramWarnings ?? [],
 		}),
@@ -281,6 +282,7 @@ describe("exportProposalDocumentActivity: PDF", () => {
 		expect(h.renderExportDiagrams).toHaveBeenCalledTimes(1);
 		expect(h.renderExportDiagrams).toHaveBeenCalledWith({
 			sources: [DIAGRAM_SOURCE],
+			captions: [null],
 			paint: expect.any(Object),
 			browser: h.fakeBrowser,
 			withPng: false,
@@ -316,7 +318,13 @@ describe("exportProposalDocumentActivity: PDF", () => {
 			documentId: "document-example-1",
 			title: "Example Proposal: Q3 Pilot!",
 			dateLabel: expect.any(String),
-			diagrams: [{ kind: "placeholder", caption: "Example placeholder" }],
+			diagrams: [
+				{
+					kind: "placeholder",
+					caption: "Example placeholder",
+					numbered: true,
+				},
+			],
 		};
 		expect(h.buildThemeHtml).toHaveBeenNthCalledWith(1, {
 			...shared,
@@ -384,6 +392,7 @@ describe("exportProposalDocumentActivity: Word", () => {
 		expect(h.withExportBrowser).not.toHaveBeenCalled();
 		expect(h.renderExportDiagrams).toHaveBeenCalledWith({
 			sources: [],
+			captions: [],
 			paint: expect.any(Object),
 			browser: null,
 			withPng: true,
@@ -424,6 +433,7 @@ describe("exportProposalDocumentActivity: Word", () => {
 		expect(h.withExportBrowser).toHaveBeenCalledTimes(1);
 		expect(h.renderExportDiagrams).toHaveBeenCalledWith({
 			sources: [DIAGRAM_SOURCE],
+			captions: [null],
 			paint: expect.any(Object),
 			browser: h.fakeBrowser,
 			withPng: true,
@@ -651,7 +661,7 @@ describe("exportProposalDocumentActivity: the brand record", () => {
 		});
 	}
 
-	it("leaves a PDF's record hash alone when only the Brand kit fonts change, since print sets Inter", async () => {
+	it("leaves a PDF's record hash alone when only the Brand kit fonts change, since print sets its committed faces", async () => {
 		const none = await recordedHash(
 			"pdf",
 			brandedTokens({ display: null, body: null }),
@@ -736,7 +746,7 @@ describe("exportProposalDocumentActivity: the brand record", () => {
 		expect(recorded().themeTokenHash).not.toBe(themeTokenHash(stored));
 	});
 
-	it("records the neutral brand for a document with no brand values, printed with no logo, no hero and Inter", async () => {
+	it("records the neutral brand for a document with no brand values, printed with no logo, no hero and the three neutral faces", async () => {
 		const neutral = buildProposalThemeTokens({
 			organization: null,
 			style: null,
@@ -758,8 +768,9 @@ describe("exportProposalDocumentActivity: the brand record", () => {
 		expect(page.tokens.proposer.logo.value).toBeNull();
 		expect(page.tokens.proposer.hero.value).toBeNull();
 		expect(page.tokens.recipient.logo.value).toBeNull();
-		expect(page.tokens.proposer.fonts.display.value).toBe("Inter");
+		expect(page.tokens.proposer.fonts.display.value).toBe("Poppins");
 		expect(page.tokens.proposer.fonts.body.value).toBe("Inter");
+		expect(page.tokens.proposer.fonts.mono.value).toBe("JetBrains Mono");
 		expect(recorded().themeTokenHash).toBe(themeTokenHash(neutral));
 	});
 

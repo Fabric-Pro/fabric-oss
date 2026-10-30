@@ -188,6 +188,8 @@ it.each([
 		).toBe(models.length === 1 ? models[0].canonicalName : null);
 		expect(findMany).toHaveBeenCalledExactlyOnceWith({
 			where: {
+				isActive: true,
+				deprecatedAt: null,
 				providerMappings: {
 					some: {
 						provider: "DATABRICKS",
@@ -201,3 +203,42 @@ it.each([
 		});
 	},
 );
+
+// Emulate Prisma's relation filter while retaining the canonical row itself.
+it.each([
+	{ isActive: false, deprecatedAt: null },
+	{ isActive: true, deprecatedAt: new Date("2026-01-01") },
+])("does not map an unselectable canonical: %j", async (lifecycle) => {
+	findUnique.mockImplementation(async (query) => ({
+		...lifecycle,
+		providerMappings:
+			query.include.providerMappings.where.model?.isActive === true &&
+			query.include.providerMappings.where.model?.deprecatedAt === null
+				? []
+				: [{ providerModelId: "example-provider-id" }],
+	}));
+	expect(
+		await getProviderModelMappingForCanonical(
+			"example-model",
+			"DATABRICKS",
+		),
+	).toEqual({ exists: true, providerModelId: null });
+});
+
+it.each([
+	{ isActive: false, deprecatedAt: null },
+	{ isActive: true, deprecatedAt: new Date("2026-01-01") },
+])("does not resolve an unselectable provider ID: %j", async (lifecycle) => {
+	findMany.mockImplementation(async (query) =>
+		(query.where.isActive === true && !lifecycle.isActive) ||
+		(query.where.deprecatedAt === null && lifecycle.deprecatedAt !== null)
+			? []
+			: [{ canonicalName: "example-model" }],
+	);
+	expect(
+		await getAvailableCanonicalNameForProviderModelId(
+			"example-provider-id",
+			"DATABRICKS",
+		),
+	).toBeNull();
+});

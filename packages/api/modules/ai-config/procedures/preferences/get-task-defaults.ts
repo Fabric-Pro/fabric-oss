@@ -13,6 +13,7 @@ import {
 	LLM_PROVIDER_PURPOSE_FILTER,
 	type Prisma,
 	readTaskDefaultsSnapshot,
+	SELECTABLE_CATALOG_MODEL_FILTER,
 	TEXT_TASK_TYPES,
 } from "@repo/database";
 import { AiTaskTypeSchema } from "@repo/database/prisma/zod";
@@ -547,8 +548,7 @@ export const getTaskDefaultsProcedure = tenantProtectedProcedure
 				// Get available models for this provider
 				const availableModels = await db.aiModel.findMany({
 					where: {
-						isActive: true,
-						deprecatedAt: null,
+						...SELECTABLE_CATALOG_MODEL_FILTER,
 						providerMappings: {
 							some: {
 								provider: defaultProvider,

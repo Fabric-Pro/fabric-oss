@@ -1,8 +1,8 @@
 "use client";
 
 import { pmDetectedTypeDisplayName } from "@repo/utils";
+import { Pagination } from "@saas/shared/components/Pagination";
 import { Badge } from "@ui/components/badge";
-import { Button } from "@ui/components/button";
 import { Skeleton } from "@ui/components/skeleton";
 import {
 	Table,
@@ -17,11 +17,7 @@ import {
 	TooltipContent,
 	TooltipTrigger,
 } from "@ui/components/tooltip";
-import {
-	ArrowUpRightIcon,
-	ChevronLeftIcon,
-	ChevronRightIcon,
-} from "lucide-react";
+import { ArrowUpRightIcon } from "lucide-react";
 import { HistoryEmptyState } from "../../BacklogHistoryShared";
 import { PmToolBrandIcon } from "../pm-tool-brand-icon";
 import {
@@ -235,10 +231,10 @@ export function SyncHistoryTable({
  * Change History tab, which pins its own pager the same way.
  */
 export function SyncHistoryPager({
-	rowCount,
+	rowCount: _rowCount,
 	total,
 	page,
-	isFetching,
+	isFetching: _isFetching,
 	onPageChange,
 }: {
 	rowCount: number;
@@ -247,48 +243,18 @@ export function SyncHistoryPager({
 	isFetching: boolean;
 	onPageChange: (page: number) => void;
 }) {
-	const pageCount = Math.max(1, Math.ceil(total / PM_SYNC_LOG_PAGE_SIZE));
-	const firstRow = page * PM_SYNC_LOG_PAGE_SIZE + 1;
-	const lastRow = Math.min(total, firstRow + rowCount - 1);
-
-	return (
-		<nav
-			className="flex items-center justify-between gap-4"
-			aria-label="Sync history pagination"
-		>
-			<p className="text-xs text-muted-foreground tabular-nums">
-				{firstRow}–{lastRow} of {total}
-			</p>
-			<div className="flex items-center gap-2">
-				<Button
-					type="button"
-					variant="outline"
-					size="sm"
-					className="h-8"
-					onClick={() => onPageChange(page - 1)}
-					disabled={page === 0 || isFetching}
-					aria-label="Previous page"
-				>
-					<ChevronLeftIcon className="size-4" aria-hidden />
-					Previous
-				</Button>
-				<span className="text-xs text-muted-foreground tabular-nums">
-					Page {page + 1} of {pageCount}
-				</span>
-				<Button
-					type="button"
-					variant="outline"
-					size="sm"
-					className="h-8"
-					onClick={() => onPageChange(page + 1)}
-					disabled={page + 1 >= pageCount || isFetching}
-					aria-label="Next page"
-				>
-					Next
-					<ChevronRightIcon className="size-4" aria-hidden />
-				</Button>
-			</div>
-		</nav>
+	return total > PM_SYNC_LOG_PAGE_SIZE ? (
+		<Pagination
+			totalItems={total}
+			itemsPerPage={PM_SYNC_LOG_PAGE_SIZE}
+			currentPage={page + 1}
+			onChangeCurrentPage={(next) => onPageChange(next - 1)}
+			navigationLabel="Sync history pagination"
+		/>
+	) : (
+		<p className="text-xs text-muted-foreground tabular-nums">
+			{total > 0 ? `1–${total} of ${total}` : ""}
+		</p>
 	);
 }
 

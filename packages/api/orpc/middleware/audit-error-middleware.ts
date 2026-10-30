@@ -4,7 +4,8 @@
  * Wraps every oRPC procedure invocation. On any thrown value:
  *  - Classify the error (action + severity).
  *  - Build the `metadata` payload (OTEL `exception` shape + Sentry-style
- *    fingerprint + sanitized input snapshot + cause chain up to depth 5).
+ *    fingerprint + sanitized input snapshot, with user-written bodies
+ *    reduced to a size and hash + cause chain up to depth 5).
  *  - Emit one audit row via `recordAuditFromRequest`.
  *  - Re-throw the ORIGINAL error instance unchanged so the client UX,
  *    error codes, status mappings, and downstream middleware all observe
@@ -30,6 +31,7 @@
 import { os } from "@orpc/server";
 import { auth } from "@repo/auth";
 import { ERROR_CATEGORY, hasOrganizationTie } from "@repo/database";
+import { contentIdentity } from "@repo/utils/content-identity";
 import {
 	type AuditRequestContext,
 	recordAuditFromRequest,
@@ -83,7 +85,7 @@ const ALWAYS_SKIP_PATHS = [
 	// record an org admin is entitled to.
 	//
 	// Only the FAILURE path is suppressed, and only because of what it would
-	// capture. This middleware snapshots the validated input, `joinUrl` is not
+	// capture. This middleware snapshots the request's input, `joinUrl` is not
 	// on the sensitive-key denylist, and a Teams join URL is a meeting
 	// CAPABILITY url — #1899 went out of its way (DEF-6) to keep it off the
 	// error path for precisely this reason. A throw here means the import did
@@ -111,6 +113,516 @@ const ALWAYS_SKIP_PATHS = [
 	// (`project.document_analysis.responded`), with keys and kinds only.
 	"projects.proposalArtifact.respondToFinding",
 ] as const;
+
+/**
+ * The body fields of one chat message, as the agent conversation procedures
+ * take it: the text, the model's reasoning, each tool call's arguments and
+ * result (a tool that edits a document takes and returns its text), the
+ * clarification a turn asked and answered, and an attachment's signed link.
+ */
+const CHAT_MESSAGE_BODY_FIELDS = [
+	"content",
+	"reasoningText",
+	"toolCalls[].args",
+	"toolCalls[].result",
+	"metadata.clarification",
+	"attachments[].previewUrl",
+] as const;
+
+/**
+ * The body fields of one Advisor execution record, as `saveTurn` takes it and
+ * a conversation keeps it in `metadata.executions`. The record repeats the
+ * transcript the messages carry: the question and the final answer, each
+ * clarification asked and answered, the plan and step descriptions the model
+ * wrote, each step's reply and tool calls, approval feedback, generated
+ * artifacts, the images the question carried, the run's error (a provider's
+ * message may repeat the request) and its variables (an open record). Its
+ * ids, statuses, timestamps, routing and model stay.
+ */
+const EXECUTION_RECORD_BODY_FIELDS = [
+	"userMessage",
+	"finalResponse",
+	"imageUrls",
+	"error",
+	"clarifications[].question",
+	"clarifications[].answer",
+	"plan.description",
+	"plan.steps[].description",
+	"stepResults[].stepDescription",
+	"stepResults[].response",
+	"stepResults[].toolCalls[].args",
+	"stepResults[].toolCalls[].result",
+	"approvalHistory[].stepDescription",
+	"approvalHistory[].feedback",
+	"artifacts[].content",
+	"variables",
+] as const;
+
+/**
+ * The body fields of one AI SDK message part: a text or reasoning part's
+ * text, a tool part's input (and its raw text while it streams) and output, a
+ * file part's URL (a `data:` URL holds the whole file; a hosted one may be a
+ * signed link), and a data part's payload.
+ */
+const MESSAGE_PART_BODY_FIELDS = [
+	"text",
+	"input",
+	"rawInput",
+	"output",
+	"url",
+	"data",
+] as const;
+
+/** `fields` under the object or array element at `prefix`. */
+function fieldsUnder(prefix: string, fields: readonly string[]): string[] {
+	return fields.map((field) => `${prefix}.${field}`);
+}
+
+/**
+ * The bodies of a backlog change as the review sends it back to be applied:
+ * each body's old and new text and the model's reasoning. `sourceContext` is
+ * the kind of source (an enum), not its text, so it stays.
+ */
+const BACKLOG_CHANGE_BODY_FIELDS = fieldsUnder("approvedChanges[]", [
+	"description.from",
+	"description.to",
+	"acceptanceCriteria.from",
+	"acceptanceCriteria.to",
+	"reasoning",
+]);
+
+/** An architecture decision's prose fields, as create and update take them. */
+const ARCHITECTURE_DECISION_BODY_FIELDS = [
+	"decision",
+	"contextProblem",
+	"rationale",
+	"decisionDrivers",
+	"alternativesConsidered",
+	"consequences",
+];
+
+/**
+ * Input fields an error capture records only as a summary, by procedure path
+ * (Fizzy #2946). Each holds a whole user-written body (a document, a context
+ * source or its summary, a file, a prompt or skill, a publishing draft, a
+ * private notebook, a chat transcript or agent run record, a story, task,
+ * test case or other work item, a comment, an answer to a question, an
+ * architecture decision, a message or feedback to a running agent), which is
+ * not on the redaction denylist, so the input snapshot would copy it (past
+ * 8 KiB, as a truncated string) into an org-admin-readable AuditLog row.
+ *
+ * Unlike ALWAYS_SKIP_PATHS the row is still written: these failures are worth
+ * recording, and their other fields (ids, versions, kinds, file paths) say
+ * what was attempted. Only the bodies give way to `summarizeBodyField`'s
+ * size and hash. Hardcoded for the same reason as ALWAYS_SKIP_PATHS, and
+ * matched against the same dotted ROUTER path, so a direct
+ * `call(procedure, ...)` is not covered either.
+ *
+ * A field is a path into the input: `a.b` is key `b` of the object at `a`,
+ * and `a[].b` is key `b` of every element of the array at `a` (`a[]` alone is
+ * every element). See `redactPath`.
+ *
+ * The middleware runs before input validation, so it sees the request as
+ * sent: a request refused by validation is captured with its body too. For
+ * the same reason a listed path whose input is not an object is not trusted
+ * to be harmless: each element of an array input has the fields redacted as
+ * an object input would, and any other value is summarized whole (see
+ * `redactBodyFields`).
+ */
+const REDACTED_BODY_FIELDS: ReadonlyMap<string, readonly string[]> = new Map([
+	// The editor's save, autosave and AI accept. A throw here is ROUTINE:
+	// CONFLICT answers every save from a stale base, and a refused AI accept
+	// (a SCOPED_REVISION_REFUSAL such as RESPONSE_ECHOED) is refused precisely
+	// because its body repeats an internal answer or finding.
+	["projects.documents.update", ["content"]],
+	// The preview sends the editor's body, the confirm the accepted one; the
+	// confirm answers CONFLICT when the document moved on since the preview.
+	[
+		"projects.documents.updateWithContext",
+		["currentContent", "confirmedContent"],
+	],
+	// A new document's body and the source material pasted to generate it.
+	["projects.documents.create", ["content", "sourceText"]],
+	// The spec being written, sent whole as the retrieval query.
+	["projects.specContext", ["specMarkdown"]],
+	// Onboarding artifacts sent in the PM additional context, which
+	// `create-project.ts` turns into the PRD, Architecture and Technical Specs
+	// documents. The keys mirror its `docSpecs`; the record's other keys (the
+	// PM team, the label map) are settings and stay.
+	[
+		"projects.create",
+		[
+			"projectManagementAdditionalContext.prdContent",
+			"projectManagementAdditionalContext.archContent",
+			"projectManagementAdditionalContext.specsContent",
+		],
+	],
+	// The same record, saved from the PM settings. Only create reads these
+	// keys, but a client that sends them here would have them captured too.
+	[
+		"projects.update",
+		[
+			"projectManagementAdditionalContext.prdContent",
+			"projectManagementAdditionalContext.archContent",
+			"projectManagementAdditionalContext.specsContent",
+		],
+	],
+	// Project and company context: pasted text, an edited summary, and the
+	// files a Living Memory write puts into the repository.
+	["projects.contexts.create", ["content"]],
+	["projects.contexts.updateSummary", ["content"]],
+	["projects.contexts.memoryWrites.validate", ["entries[].content"]],
+	["projects.contexts.memoryWrites.submit", ["entries[].content"]],
+	["organizations.companyContext.createText", ["content"]],
+	// Publishing drafts. The save endpoints answer CONFLICT on a stale
+	// `expectedUpdatedAt`, so a lost race would copy the losing draft. The
+	// topic notes are the person's private notebook.
+	["projects.publishingSuite.saveShortPostBody", ["body"]],
+	["projects.publishingSuite.saveLinkedInPostBody", ["body"]],
+	["projects.publishingSuite.saveBlogPostBody", ["body"]],
+	["projects.publishingSuite.saveCaseStudyBody", ["body"]],
+	["projects.publishingSuite.saveStakeholderEmailBody", ["body"]],
+	["projects.publishingSuite.saveWebinarScriptBody", ["body"]],
+	["projects.publishingSuite.saveNewsletterBlurbBody", ["body"]],
+	["projects.publishingSuite.saveAnalysisRevision", ["body"]],
+	["projects.publishingSuite.acceptRefinement", ["body"]],
+	["projects.publishingSuite.summarizeAnalysisChanges", ["before", "after"]],
+	["projects.publishingSuite.setTopicNotes", ["notes"]],
+	// A story's private notebook, the same model as the topic notes.
+	["projects.stories.maturation.setWorkingNotes", ["content"]],
+	// Coding-instruction files committed to the project's repository.
+	["projects.instructions.commitChange", ["changes[].content"]],
+	["projects.instructions.submitGitChange", ["changes[].content"]],
+	// Files, frames, artifacts and agent memory.
+	["workspace.createFile", ["content"]],
+	["workspace.updateFile", ["content"]],
+	["frames.create", ["blocks[].content"]],
+	["frames.update", ["blocks[].content"]],
+	["artifacts.create", ["content"]],
+	["agentMemory.files.write", ["content"]],
+	// `files` maps each path to its content, so the whole map gives way.
+	["agentMemory.import", ["files"]],
+	// Uploads, as base64 of the whole file.
+	["documentWorkspaces.documents.serverUpload", ["fileData"]],
+	["ai.documents.upload", ["fileData"]],
+	// Prompt and skill bodies. A render also takes the document and the
+	// retrieved context it injects, and template variables, which carry the
+	// same text under names the template chooses.
+	["prompts.create", ["initialContent"]],
+	["prompts.update", ["content"]],
+	["prompts.version.create", ["content"]],
+	["prompts.render", ["variables", "ragContexts[]", "currentDocument"]],
+	["skills.create", ["content"]],
+	["skills.update", ["content"]],
+	// Chat transcripts. A conversation save sends the whole thread, so a
+	// failed one would copy every message, including what the model read.
+	// The metadata is an open record; the Advisor keeps its execution records
+	// in `executions`, each repeating the turn's transcript.
+	[
+		"agents.conversations.create",
+		[
+			...fieldsUnder("messages[]", CHAT_MESSAGE_BODY_FIELDS),
+			...fieldsUnder(
+				"metadata.executions[]",
+				EXECUTION_RECORD_BODY_FIELDS,
+			),
+		],
+	],
+	[
+		"agents.conversations.update",
+		[
+			...fieldsUnder("messages[]", CHAT_MESSAGE_BODY_FIELDS),
+			// Each step of an agent run, with what it read and wrote.
+			"trajectory.nodes[].input",
+			"trajectory.nodes[].output",
+			...fieldsUnder(
+				"metadata.executions[]",
+				EXECUTION_RECORD_BODY_FIELDS,
+			),
+		],
+	],
+	[
+		"agents.conversations.updateTrajectory",
+		["trajectory.nodes[].input", "trajectory.nodes[].output"],
+	],
+	// The browser sends the turn's execution record with every save, beside
+	// its messages.
+	[
+		"agents.conversations.saveTurn",
+		[
+			...fieldsUnder("messages[]", CHAT_MESSAGE_BODY_FIELDS),
+			...fieldsUnder("execution", EXECUTION_RECORD_BODY_FIELDS),
+		],
+	],
+	[
+		"agents.conversations.addMessage",
+		fieldsUnder("message", CHAT_MESSAGE_BODY_FIELDS),
+	],
+	[
+		"agents.conversations.appendTurnForDocument",
+		fieldsUnder("message", CHAT_MESSAGE_BODY_FIELDS),
+	],
+	// The summary a long thread is carried into a new chat with.
+	["agents.conversations.continueInNewChat", ["summary"]],
+	["agents.suggestSkills", ["message"]],
+	// An agent draft tried out before it is saved.
+	["agents.previewDraft", ["systemPrompt", "userMessage"]],
+	[
+		"ai.chats.messages.add",
+		fieldsUnder("messages[].parts[]", MESSAGE_PART_BODY_FIELDS),
+	],
+	// The chat's stored messages, whose shape the input leaves open.
+	["ai.chats.update", ["messages[]"]],
+	["ai.chats.workflows.generateTitle", ["firstMessage"]],
+	["atlas.chat", ["messages[].content"]],
+	["atlas.systemChat", ["messages[].content"]],
+	["weave.chat", ["message"]],
+	["weave.plans.create", ["description", "message"]],
+	[
+		"weave.plans.refine",
+		["currentMessage", "refinementInput", "history[].content"],
+	],
+	["weave.plans.approve", ["feedback"]],
+	["weave.plans.revise", ["feedback"]],
+	// What a person tells a running agent: an approval's feedback, a coding
+	// run's follow-up instruction.
+	["weave.executions.signalApproval", ["feedback"]],
+	["codingRuns.sendFollowUp", ["message"]],
+	[
+		"projects.stories.tasks.agent.resolveCheckpoint",
+		["feedback", "userData"],
+	],
+	["projects.backlog.startAnalysis", ["userPrompt"]],
+	[
+		"projects.backlog.applyChanges",
+		["messages[].content", ...BACKLOG_CHANGE_BODY_FIELDS],
+	],
+	["projects.backlog.approvePendingProposal", BACKLOG_CHANGE_BODY_FIELDS],
+	// Stories and other work items: a description or acceptance criteria is
+	// a whole body, and the merge, conflict and enrichment paths send two.
+	["projects.stories.create", ["description", "acceptanceCriteria"]],
+	["projects.stories.update", ["description", "acceptanceCriteria"]],
+	[
+		"projects.stories.updateWithContext",
+		[
+			"currentDescription",
+			"currentAcceptanceCriteria",
+			"confirmedDescription",
+			"confirmedAcceptanceCriteria",
+		],
+	],
+	[
+		"projects.stories.updateStageWithVersion",
+		["description", "acceptanceCriteria"],
+	],
+	[
+		"projects.stories.mergeDuplicate",
+		["mergedDescription", "mergedAcceptanceCriteria"],
+	],
+	["projects.stories.proposeAiMerge", ["fabricDescription", "pmDescription"]],
+	["projects.stories.checkDuplicate", ["description"]],
+	[
+		"projects.stories.previewEnrichment",
+		["proposedDescription", "proposedAcceptanceCriteria", "reasoning"],
+	],
+	[
+		"projects.stories.reformatProposalBody",
+		["description", "acceptanceCriteria"],
+	],
+	["projects.stories.resolveConflict", ["overrideDescription"]],
+	["projects.stories.maturation.summarizeChanges", ["before", "after"]],
+	["projects.pmStateChanges.resolveContentDrift", ["overrideDescription"]],
+	["projects.epics.create", ["description"]],
+	["projects.epics.update", ["description"]],
+	["projects.features.create", ["description"]],
+	["projects.features.update", ["description"]],
+	["projects.stories.tasks.create", ["description"]],
+	["projects.stories.tasks.update", ["description"]],
+	// Test cases: the description, each step's action and expected result,
+	// and the generated Playwright script.
+	["projects.testCases.create", ["description", "steps[]"]],
+	[
+		"projects.testCases.update",
+		["description", "steps[]", "playwrightScript"],
+	],
+	// Comments on work items and decisions, and operators' notes on an
+	// incident.
+	["projects.stories.comments.create", ["content"]],
+	["projects.stories.tasks.comments.create", ["content"]],
+	["projects.architectureDecisions.comments.create", ["content"]],
+	["incidents.errorRate.addComment", ["message"]],
+	["integrationHealth.addComment", ["message"]],
+	// Answers to a story's or a publishing topic's open questions, and the
+	// story's decision log. An answer's summary restates it.
+	["projects.stories.maturation.answerQuestion", ["answer", "summary"]],
+	["projects.stories.maturation.amendAnswer", ["answer"]],
+	["projects.stories.maturation.appendDecisionEntry", ["content", "summary"]],
+	// An accepted AI update's change summary, which restates the edit.
+	["projects.stories.maturation.recordChangeNote", ["bullets[]"]],
+	["projects.publishingSuite.answerTopicQuestion", ["answer"]],
+	["projects.publishingSuite.amendTopicQuestion", ["answer"]],
+	// Architecture decisions. The metadata suggestion is sent the draft.
+	[
+		"projects.architectureDecisions.create",
+		ARCHITECTURE_DECISION_BODY_FIELDS,
+	],
+	[
+		"projects.architectureDecisions.update",
+		ARCHITECTURE_DECISION_BODY_FIELDS,
+	],
+	[
+		"projects.architectureDecisions.suggestMetadata",
+		["decision", "contextProblem"],
+	],
+]);
+
+/**
+ * Input fields an error capture records as `{ redacted: true }` alone, by
+ * procedure path: secrets, where even a size and hash say more than the row
+ * needs. The same path form and matching as REDACTED_BODY_FIELDS.
+ *
+ * An OAuth callback's `code` is exchanged for the connection's tokens. It is
+ * short-lived and single-use, but a callback that fails before the exchange
+ * leaves it unused, and `code` is not on the sensitive-key denylist (a
+ * substring match on it would take every `errorCode` too).
+ */
+const REDACTED_SECRET_FIELDS: ReadonlyMap<string, readonly string[]> = new Map([
+	["integrations.github.callback", ["code"]],
+	["integrations.gitlab.callback", ["code"]],
+	["integrations.oauth.callback", ["code"]],
+	["mcp.oauth.callback", ["code"]],
+	["mcp.atlassianCloud.callback", ["code"]],
+]);
+
+/** What an error capture records in place of a body field. */
+type BodyFieldSummary =
+	| { redacted: true; bytes: number; contentHash: string }
+	| { redacted: true };
+
+/**
+ * The size of a body and its `contentIdentity` hash, never its text: enough to
+ * tell whether two failed saves carried the same body. The hash is of the
+ * body as sent, before the save normalizes it, so it need not equal the
+ * `contentHash` a stored version reports. A value that is not a string (a
+ * malformed request, refused by validation) may still hold text, so it is
+ * recorded as redacted with nothing else.
+ */
+function summarizeBodyField(value: unknown): BodyFieldSummary {
+	if (typeof value === "string") {
+		return {
+			redacted: true,
+			bytes: Buffer.byteLength(value, "utf8"),
+			contentHash: contentIdentity(value),
+		};
+	}
+	return { redacted: true };
+}
+
+/** What an error capture records in place of a secret field: nothing of it. */
+function summarizeSecretField(): BodyFieldSummary {
+	return { redacted: true };
+}
+
+type FieldSummarizer = (value: unknown) => BodyFieldSummary;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Replace the value `segments` names inside `value` with its summary (see
+ * REDACTED_BODY_FIELDS for the path form). Copies only the objects and arrays
+ * on the way to a replaced value, and returns `value` itself when nothing was
+ * replaced. A missing or null step, the field itself included, ends the path
+ * with nothing to replace: a null body (a field being cleared) holds no text
+ * and stays null. A step that is not the object or array the path expects (a
+ * malformed request, refused by validation) may still hold text, so it is
+ * summarized whole.
+ */
+function redactPath(
+	value: unknown,
+	segments: readonly string[],
+	summarize: FieldSummarizer,
+): unknown {
+	if (value === undefined || value === null) {
+		return value;
+	}
+	const [segment, ...rest] = segments;
+	if (segment === undefined) {
+		return summarize(value);
+	}
+	if (!isPlainObject(value)) {
+		return summarize(value);
+	}
+	const eachElement = segment.endsWith("[]");
+	const key = eachElement ? segment.slice(0, -2) : segment;
+	const current = value[key];
+	if (current === undefined) {
+		return value;
+	}
+	let next: unknown;
+	if (!eachElement) {
+		next = redactPath(current, rest, summarize);
+	} else if (Array.isArray(current)) {
+		const elements = current.map((element) =>
+			redactPath(element, rest, summarize),
+		);
+		next = elements.some((element, index) => element !== current[index])
+			? elements
+			: current;
+	} else {
+		next = current === null ? current : summarize(current);
+	}
+	return next === current ? value : { ...value, [key]: next };
+}
+
+/**
+ * Replace the fields `REDACTED_BODY_FIELDS` and `REDACTED_SECRET_FIELDS` list
+ * for `path` with their summaries, before the input snapshot is sanitized.
+ * Returns a copy; the request's own input is never modified. Any other path is
+ * returned as it is.
+ *
+ * Fails closed on a listed path whose input is not the object its fields
+ * describe (a malformed request, refused by validation after this runs): each
+ * element of an array input has the fields replaced as an object input would,
+ * and any other value, an element that is not an object included, is
+ * summarized whole, as a secret when the path lists one. A missing or null
+ * input stays as it is.
+ */
+function redactBodyFields(path: string, input: unknown): unknown {
+	const bodyFields = REDACTED_BODY_FIELDS.get(path) ?? [];
+	const secretFields = REDACTED_SECRET_FIELDS.get(path) ?? [];
+	if (bodyFields.length === 0 && secretFields.length === 0) {
+		return input;
+	}
+	const summarizeWhole: FieldSummarizer =
+		secretFields.length > 0 ? summarizeSecretField : summarizeBodyField;
+	const redactRecord = (value: unknown): unknown => {
+		if (value === undefined || value === null) {
+			return value;
+		}
+		if (!isPlainObject(value)) {
+			return summarizeWhole(value);
+		}
+		let redacted: unknown = value;
+		for (const field of bodyFields) {
+			redacted = redactPath(
+				redacted,
+				field.split("."),
+				summarizeBodyField,
+			);
+		}
+		for (const field of secretFields) {
+			redacted = redactPath(
+				redacted,
+				field.split("."),
+				summarizeSecretField,
+			);
+		}
+		return redacted;
+	};
+	return Array.isArray(input) ? input.map(redactRecord) : redactRecord(input);
+}
 
 /**
  * Parse `FABRIC_AUDIT_ERROR_CAPTURE_SKIP_PATHS` into a list of patterns.
@@ -389,7 +901,9 @@ async function captureError(
 		if (cause) {
 			metadata.cause = cause;
 		}
-		const inputSnapshot = sanitizeInput(input);
+		const inputSnapshot = sanitizeInput(
+			redactBodyFields(renderedPath, input),
+		);
 		if (inputSnapshot !== undefined) {
 			metadata.input = inputSnapshot;
 		}
@@ -484,9 +998,11 @@ async function captureError(
  * procedure in `procedures.ts` so every procedure (auth, rate-limit,
  * permission, tenant, handler) participates.
  *
- * The second-argument `input` is the resolved input object from any
- * `.input(zSchema)` declaration upstream. For procedures without an input
- * declaration it is `undefined`, which `sanitizeInput` handles cleanly.
+ * The second-argument `input` is the request's input as sent. oRPC validates
+ * it where a procedure declares `.input(zSchema)`, after the base middleware
+ * this one belongs to, so it is not yet parsed: unknown keys and wrong types
+ * reach here. For a request without input it is `undefined`, which
+ * `sanitizeInput` handles cleanly.
  */
 export const auditErrorMiddleware = os
 	.$context<
@@ -500,9 +1016,10 @@ export const auditErrorMiddleware = os
 			// touch the audit path.
 			return await next();
 		} catch (err) {
-			// Best-effort capture. We have access to the validated input
-			// snapshot via the second arg; the sanitizer redacts secrets
-			// and truncates to 8KiB before storage. captureError is async
+			// Best-effort capture. We have access to the request's input
+			// via the second arg; user-written bodies are summarized
+			// (REDACTED_BODY_FIELDS), then the sanitizer redacts sensitive
+			// keys and only then truncates to 8KiB. captureError is async
 			// (it re-resolves session via auth.api.getSession) but we MUST
 			// re-throw synchronously to preserve error timing for the
 			// client — so we fire it without await. The function is
@@ -521,7 +1038,10 @@ export const auditErrorMiddleware = os
  */
 export {
 	ALWAYS_SKIP_PATHS,
+	REDACTED_BODY_FIELDS,
+	REDACTED_SECRET_FIELDS,
 	captureError as __captureErrorForTest,
+	redactBodyFields as __redactBodyFieldsForTest,
 	readSkipPatterns as __readSkipPatternsForTest,
 	shouldSkip as __shouldSkipForTest,
 	isCaptureDisabled as __isCaptureDisabledForTest,

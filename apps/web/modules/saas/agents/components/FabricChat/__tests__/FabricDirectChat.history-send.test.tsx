@@ -85,6 +85,10 @@ vi.mock("@saas/agents/components/FabricAgentLauncher", () => ({
 	}) => children,
 }));
 
+// COPILOTKIT_DIRECT_CHAT off: the chat runs on the Direct stream route.
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: () => false,
+}));
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useEffectiveOrganizationId: (provided?: string | null) =>
 		provided ?? "org_example",

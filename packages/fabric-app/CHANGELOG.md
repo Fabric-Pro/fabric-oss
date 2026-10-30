@@ -1,5 +1,58 @@
 # fabric-app
 
+## 1.16.33
+
+### Patch Changes
+
+- 97f7cd6: Admins can now search the feature-flag console and an organization's feature-flag overrides by name, description, key or environment variable.
+- 97f7cd6: The admin Organizations page now shows platform totals and sortable member and project counts, supports active and deactivated filters, and fixes search and pagination; the separate Hosted Adoption page is removed; list pages across the app now let you jump to a specific page number.
+- 97f7cd6: The Advisor now shows "not applied" next to a selected agent or model, and the ChatGPT plan's "Spent until" notice, in amber instead of grey so they read as warnings.
+- 97f7cd6: Features created by AI Update are now checked for duplicates automatically, not only the bugs it creates.
+- 97f7cd6: Point the local Temporal worker at the web app's origin so local chats load Fabric platform tools.
+- 97f7cd6: Make long AI Assistant conversations more responsive by re-rendering only the messages that change.
+- 97f7cd6: Keep each AI Assistant reply's Thinking & Tools trace after later replies and after reloading the page.
+- 97f7cd6: Show AI Assistant diagrams, tool traces and the insert-diagram button with the reply that produced them instead of at the end of the conversation.
+- 97f7cd6: The AI Update backlog chat recognizes connected Teams, Slack and Notion integrations again on the first message after opening.
+- 97f7cd6: Sending a message to the AI Assistant on a feature page or in the document editor no longer re-renders the whole page on every assistant update, so the request starts sooner and the feature's profile and stage controls stay in place while the reply is generated.
+- 97f7cd6: A model override naming a retired or switched-off model, such as a saved chat model pick, now falls back to the task's default model instead of running the retired model, matching the chat picker's availability notice.
+- 97f7cd6: Add consistent page numbers and Go to page controls across paged lists, and make report instances beyond the first 50 accessible.
+- 97f7cd6: The topic assistant and the prompt enhancer chats see the current document and prompt again on the first message after opening.
+- 97f7cd6: Document, feature and topic assistants keep one conversation thread across turns and reloads, and can run turns durably per organization.
+- 97f7cd6: Fabric AI's Direct chat can run over the CopilotKit agent runtime per organization, behind the new `COPILOTKIT_DIRECT_CHAT` switch (off by default).
+- 97f7cd6: The Fabric AI Orchestrator chat can send one message to two to four picked agents at once and show their answers side by side.
+- 97f7cd6: Fabric AI's Orchestrator chat can run over the CopilotKit agent runtime per organization, behind the new `COPILOTKIT_ORCHESTRATOR_CHAT` switch (off by default).
+- 97f7cd6: Add a durable agent runtime endpoint that serves Direct chat turns over AG-UI from Temporal, so a closed tab no longer ends a running answer.
+- 97f7cd6: The CopilotKit runtime route now serves every assistant through CopilotKit's v2 runtime handler instead of the deprecated v1 endpoint, with no change to what the assistants do.
+- 97f7cd6: AI ratings now show which model produced each accepted or rejected AI draft.
+- 97f7cd6: Automatic duplicate checks now finish large batches of new items instead of stopping after the first 60 pairs.
+- 97f7cd6: Feature duplicate candidates are now chosen on their Scope-weighted score, so features that only read alike are no longer flagged.
+- 97f7cd6: Duplicate scans show feature pairs on the same scale as other pairs, confirm changed verdicts, and finish large scans in one click.
+- 97f7cd6: Duplicate detection runs now stop after seven minutes and leave the remaining pairs for the next run, instead of timing out.
+- 97f7cd6: Duplicate detection now checks two features whose Scope sections match even when the rest of their specs read differently.
+- 97f7cd6: Duplicate detection lets the verifier judge every feature candidate on its Scope, instead of dropping low-scoring pairs unseen
+- 97f7cd6: Durable document assistant runs now use the request's AI token and fall back to an in-request run when the worker cannot set the run up.
+- 97f7cd6: The editor's AI assistant no longer changes its instructions with every document edit, so the question after an edit can reuse more of the model provider's prompt cache instead of caching the whole request again.
+- 97f7cd6: The document and feature editor AI Assistant now gets matching passages from project knowledge and can open a source in full.
+- 97f7cd6: The document and feature editor AI Assistant now reuses the ChatGPT plan's prompt cache across rounds of one chat.
+- 97f7cd6: Fix sending messages in long AI Assistant conversations freezing the editor for several seconds.
+- 97f7cd6: GPT-6.1 Terra is now available through OpenAI, Vercel AI Gateway, OpenRouter and ChatGPT plans, and is the default model for simple tasks on OpenAI and ChatGPT plans in place of GPT-6 Luna.
+- 97f7cd6: Harden Microsoft Graph request URLs, move CLI hook locks into the user configuration directory, and bound text processing for integration settings and error messages.
+- 97f7cd6: Global admins can see platform-wide organization, project and user-account counts on a new Hosted Adoption page in the admin console.
+- 97f7cd6: MCP tool requests show a short explanation for connection failures and bounded tool error messages instead of exposing internal connection details.
+- 97f7cd6: Correct member removal audit attribution and record voluntary organization departures.
+- 97f7cd6: Restrict global admin grants and access to members of an optionally configured operator organization and demote admins when they leave it.
+- 97f7cd6: Keep long Fabric AI Orchestrator conversations responsive by avoiding unnecessary redraws of earlier turns during streaming.
+- 97f7cd6: When the open project tab has moved into the tab bar's overflow menu, the menu button now keeps its dropdown arrow visible instead of looking like a plain tab, so the other hidden tabs are reachable from any tab.
+- 97f7cd6: The prompt enhancer assistant now improves the prompt as it currently appears in the editor, instead of the text from an earlier assistant run, when you edit or reject a suggestion and ask again.
+- 97f7cd6: Opening a menu or dialog while a Proposal is open in the editor no longer rewrites its diagrams' source onto one line and saves that damage as an edit.
+- 97f7cd6: Proposal PDFs now follow a designed layout: a full-page dark cover with the key figures, a dark card opening each section on a new page, Poppins headings with JetBrains Mono labels, restyled tables, callouts and stat tiles, a footer-only page frame, and process, timeline, architecture and team figures drawn from purpose-built templates and numbered "Figure n." in the PDF, the Word file and on the page. A diagram that cannot be drawn is left out of exports and marked in the editor, frame PDFs no longer print gaps inside words, and a large brand hero image now prints.
+- 97f7cd6: Accepting an AI change that deletes a linked phrase or a bullet made of a link no longer fails with a revision error or leaves an empty bullet, a linked image keeps its link when the document is saved, the refusal message now says that the revision expired or the accepted text differs from what was reviewed, and the offer to copy refused text closes once a new revision is shown or an AI change is saved. Chat history shows "No decision recorded" instead of "Pending" for proposals that were never answered, and a reopened document keeps a code block's language as written and a code block inside a quote inside that quote. The document assistant can now use the editor's clarifying-question card and, when the project has a GitHub or GitLab repository, its repository lookups; on a client proposal it follows the organization's clarifying-question prompt for members, says when it left a diagram unchanged, and gives project guests a general message for every error. Version history names assistant edits and applied recommendations. Audit log entries for a failed save of a chat transcript, an assistant run, a story, task, test case, comment, answer or architecture decision record the body's size and fingerprint instead of its text, OAuth codes are no longer recorded, and secrets are removed before a large entry is shortened. Shared document assistant conversations now need access to the document's project, and Slack replies, reactions and actions for an organization need the connecting person to still be a member of it.
+- 97f7cd6: The document assistant on a client proposal now follows the organization's Client proposal (revision) prompt instead of a built-in template, edits only the sections it is asked to change, and leaves diagrams as they are. A finding in the Internal Analysis can be applied to its section with Apply recommendation: the change is shown for review in the document, and accepting it marks the finding Resolved. Update using context and automatic refresh no longer rewrite a client proposal, and an AI change that would alter other sections, a diagram or the team's settled answers is refused when it is saved; updates through the MCP tools and the API may still change prose but may not change or remove an existing diagram. Audit log entries for a failed save of a document, context, prompt, file or other written content now record the body's size and fingerprint instead of its text. The document assistant's code search now needs the same repository permission as the app, so viewers and commenters no longer read the connected repository through it.
+- 97f7cd6: Publishing Suite gets a Simple mode that generates a ready-to-copy draft after choosing a content type, and drafts now avoid common AI-sounding phrasing.
+- 97f7cd6: Update serialize-javascript to 7.1.4 so the content build uses the release that escapes a closing script tag at the end of a serialized function body.
+- 97f7cd6: The Publishing Suite topic assistant keeps its chat history again after the first visit, instead of failing to save every turn with "Conversation not found".
+- 97f7cd6: The Publishing Suite topic assistant now knows which topic it is open beside, so it answers questions about the topic's title, angle, pitch and open questions.
+
 ## 1.16.32
 
 ### Patch Changes

@@ -97,7 +97,8 @@ const TEXT_ONLY_ELEMENTS: ReadonlySet<string> = new Set(["title", "desc"]);
  * Attributes kept when their value passes {@link safeValue}: geometry,
  * presentation and marker attributes. `id`, `class`, `href` and
  * `font-family` have their own rules; `style` is kept on the root only,
- * where beautiful-mermaid writes its colour variables. Everything else,
+ * where beautiful-mermaid writes its colour variables, and so is `role`
+ * when it is `img`, as a figure template writes it. Everything else,
  * `on*` handlers and beautiful-mermaid's `data-*` bookkeeping included, is
  * dropped.
  */
@@ -299,6 +300,11 @@ export function cleanDiagramSvg(
 			["width", formatNumber(size.width)],
 			["height", formatNumber(size.height)],
 		];
+		// A figure template is an image to assistive technology; `img` is the
+		// only role kept, so markup cannot claim to be a control.
+		if (root.attributes.role?.trim() === "img") {
+			rootAttributes.push(["role", "img"]);
+		}
 		const rootStyle = cleanRootStyle(root.attributes.style ?? "", scopeId);
 		if (rootStyle) {
 			rootAttributes.push(["style", rootStyle]);

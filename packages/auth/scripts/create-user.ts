@@ -1,6 +1,6 @@
 import { stdin as input, stdout as output } from "node:process";
 import * as readline from "node:readline/promises";
-import { db } from "@repo/database";
+import { addOperatorMembershipForAdmin, db } from "@repo/database";
 import { logger } from "@repo/logs";
 import { auth } from "../auth";
 
@@ -50,6 +50,7 @@ async function main() {
 				},
 			});
 
+			await addOperatorMembershipForAdmin(tx, created);
 			await tx.account.create({
 				data: {
 					userId: created.id,

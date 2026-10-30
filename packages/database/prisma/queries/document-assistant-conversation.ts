@@ -42,6 +42,45 @@ export class DocumentAssistantVisibilityLockedError extends Error {
 }
 
 /**
+ * The project the referenced document belongs to, read off the document's
+ * own row, or null when there is no such document.
+ *
+ * The join rows' `projectId` is the one the client named when the thread was
+ * created, and the list / read helpers here match on the document ref alone,
+ * so a procedure that authorizes the project must authorize this one: the
+ * document's, not the input's.
+ */
+export async function getDocumentRefProjectId({
+	documentRefKind,
+	documentRefId,
+}: {
+	documentRefKind: DocumentRefKind;
+	documentRefId: string;
+}): Promise<string | null> {
+	const where = { id: documentRefId };
+	const select = { projectId: true } as const;
+	switch (documentRefKind) {
+		case "PROJECT_DOCUMENT":
+			return (
+				(await db.projectDocument.findUnique({ where, select }))
+					?.projectId ?? null
+			);
+		case "USER_STORY":
+			return (
+				(await db.userStory.findUnique({ where, select }))?.projectId ??
+				null
+			);
+		case "PUBLISHING_TOPIC":
+			return (
+				(await db.publishingTopic.findUnique({ where, select }))
+					?.projectId ?? null
+			);
+		default:
+			return null;
+	}
+}
+
+/**
  * Build the Prisma `where` fragment for tenant scoping. Used by every list /
  * read helper. Keeps the XOR pattern in one place so a future refactor only
  * has to update this function.
@@ -362,6 +401,14 @@ export interface CreateDocumentAssistantConversationInput {
 	agentId: string;
 	visibility?: DocumentAssistantVisibility;
 	title?: string;
+	/**
+	 * The id the client would like the conversation created under: the
+	 * CopilotKit thread id the assistant has been running on, so the thread
+	 * and its conversation share one id. Used only when no `AgentConversation`
+	 * has it yet; otherwise the database generates one, so a proposal can
+	 * never attach to an existing conversation, the caller's or anyone else's.
+	 */
+	proposedId?: string;
 }
 
 /**
@@ -376,10 +423,18 @@ export async function createDocumentAssistantConversation({
 	agentId,
 	visibility = "SHARED",
 	title,
+	proposedId,
 }: CreateDocumentAssistantConversationInput) {
 	return db.$transaction(async (tx) => {
+		const proposedIdTaken = proposedId
+			? (await tx.agentConversation.findUnique({
+					where: { id: proposedId },
+					select: { id: true },
+				})) !== null
+			: true;
 		const conversation = await tx.agentConversation.create({
 			data: {
+				...(proposedIdTaken ? {} : { id: proposedId }),
 				userId: tenantFilter.userId,
 				organizationId: tenantFilter.organizationId,
 				agentId,

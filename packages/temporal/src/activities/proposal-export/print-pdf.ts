@@ -4,8 +4,8 @@
  * PDF bytes never pass through workflow history.
  *
  * Page furniture is CSS: the theme's `@page` margin boxes draw the running
- * header and the "Page N of M" footer, and named pages lay out the cover
- * and landscape pages, so the print options only defer to the CSS page size
+ * footer and its "Page N of M", and named pages lay out the cover and
+ * landscape pages, so the print options only defer to the CSS page size
  * and keep backgrounds, the outline and the tagged structure.
  *
  * The contents page needs each section's page number, and Chromium has no

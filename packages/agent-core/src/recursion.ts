@@ -32,44 +32,65 @@ export function isSyntheticToolImageMessage(message: unknown): boolean {
 }
 
 /**
+ * A message's LangChain type (`human`, `ai`, `tool`…), read from a class
+ * instance or from its serialized form.
+ */
+function readMessageType(message: any): string {
+	return (
+		message?._getType?.() ||
+		message?.type ||
+		(message?.role === "user"
+			? "human"
+			: message?.role === "assistant"
+				? "ai"
+				: message?.role || "")
+	);
+}
+
+/**
+ * Count the messages after the last human message that match `predicate`,
+ * which receives each message with its LangChain type.
+ *
+ * Agent-synthesized human turns (see {@link SYNTHETIC_TOOL_IMAGE_MESSAGE_FLAG})
+ * are skipped — they are tool output wearing a user role, so treating one as a
+ * turn boundary would reset a per-turn budget mid-turn.
+ */
+export function countMessagesSinceLastHuman(
+	messages: readonly object[],
+	predicate: (message: any, type: string) => boolean,
+): number {
+	let count = 0;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const m = messages[i] as any;
+		const mType = readMessageType(m);
+		if (mType === "human" && !isSyntheticToolImageMessage(m)) {
+			break;
+		}
+		if (predicate(m, mType)) {
+			count++;
+		}
+	}
+	return count;
+}
+
+/**
  * Count tool-calling rounds after the last human message.
  *
  * A "round" is one AI message with tool_calls. Agents use this to enforce a
  * per-human-turn tool budget without allowing older turns to consume the
- * current turn's allowance.
- *
- * Agent-synthesized human turns (see {@link SYNTHETIC_TOOL_IMAGE_MESSAGE_FLAG})
- * are skipped — they are tool output wearing a user role, so treating one as a
- * turn boundary would reset the budget mid-turn.
+ * current turn's allowance. Agent-synthesized human turns are not turn
+ * boundaries (see {@link countMessagesSinceLastHuman}).
  *
  * @param messages - The full message history
  * @returns Number of AI tool-calling rounds since the last human message
  */
 export function countToolRoundsSinceLastHuman(messages: object[]): number {
-	let toolRounds = 0;
-	for (let i = messages.length - 1; i >= 0; i--) {
-		const m = messages[i] as any;
-		const mType =
-			m._getType?.() ||
-			m.type ||
-			(m.role === "user"
-				? "human"
-				: m.role === "assistant"
-					? "ai"
-					: m.role || "");
-		if (mType === "human" && !isSyntheticToolImageMessage(m)) {
-			break;
-		}
+	return countMessagesSinceLastHuman(messages, (m, mType) => {
 		const mToolCalls = m.tool_calls || m.toolCalls || [];
-		if (
-			mType === "ai" &&
-			Array.isArray(mToolCalls) &&
-			mToolCalls.length > 0
-		) {
-			toolRounds++;
-		}
-	}
-	return toolRounds;
+		return (
+			mType === "ai" && Array.isArray(mToolCalls) && mToolCalls.length > 0
+		);
+	});
 }
 
 export interface RecursionLimitOptions {

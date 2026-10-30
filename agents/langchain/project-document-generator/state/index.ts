@@ -10,6 +10,7 @@
 import { CopilotKitStateAnnotation } from "@copilotkit/sdk-js/langgraph";
 import { Annotation } from "@langchain/langgraph";
 import type { DocumentType, ProjectContext } from "@repo/agent-types";
+import type { PublishingTopic } from "../publishing-topic";
 
 /**
  * Project Document Generator State Annotation
@@ -85,6 +86,12 @@ export const AgentStateAnnotation = Annotation.Root({
 	suppressFabricMethodology: Annotation<boolean>({
 		reducer: (x, y) => y ?? x,
 		default: () => false,
+	}),
+
+	/** The Publishing Suite topic the topic assistant is open beside. */
+	publishingTopic: Annotation<PublishingTopic | undefined>({
+		reducer: (x, y) => y ?? x,
+		default: () => undefined,
 	}),
 
 	/**
@@ -191,6 +198,19 @@ export const AgentStateAnnotation = Annotation.Root({
 	 * injects them here so the prompt builder can eager-inline instead of
 	 * forcing the model through list_skills / load_skill tool calls.
 	 */
+	/**
+	 * Section keys (`buildSectionMap` in
+	 * `@repo/utils/proposal-artifact/section-hash`, on the pre-patch document)
+	 * of every section inside every subtree the last proposed chat edit of an
+	 * artifact Proposal patched. The editor sends them with the accept so the
+	 * save path can check that nothing outside them changed (Fizzy #2946).
+	 * Keys only, never text: this field reaches the browser.
+	 */
+	proposalPatchedSectionKeys: Annotation<string[] | undefined>({
+		reducer: (x, y) => y ?? x,
+		default: () => undefined,
+	}),
+
 	activeSkill: Annotation<
 		| {
 				slug: string;

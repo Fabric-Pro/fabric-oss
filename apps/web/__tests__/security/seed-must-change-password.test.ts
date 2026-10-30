@@ -46,9 +46,19 @@ describe("Seed script mustChangePassword flag", () => {
 	});
 
 	it("should include mustChangePassword: true in the newly-created-user create block", () => {
-		// The create branch starts at `db.$transaction` (after the
-		// `continue;` of the existing-user branch).
-		const createBranch = seedSource.split("db.$transaction")[1];
+		// The create branch starts at the first `db.$transaction` after the
+		// `continue;` of the existing-user branch (which has its own
+		// transaction for the role update and operator membership).
+		const existingUserBranchMatch = seedSource.match(
+			/if \(existingUser\)[\s\S]*?continue;/,
+		);
+		expect(existingUserBranchMatch).not.toBeNull();
+		const afterExistingUserBranch = seedSource.slice(
+			(existingUserBranchMatch?.index ?? 0) +
+				(existingUserBranchMatch?.[0].length ?? 0),
+		);
+		const createBranch =
+			afterExistingUserBranch.split("db.$transaction")[1];
 		expect(createBranch).toBeDefined();
 		expect(createBranch).toContain("mustChangePassword: true");
 	});

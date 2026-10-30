@@ -10,9 +10,11 @@ import {
 	getDocumentById,
 	isFeatureEnabled,
 	isKillSwitchArmed,
+	isProposalClientDocument,
 	markRefreshAttempt,
 	recordRefreshOutcome,
 	storeRefreshProposal,
+	turnOffRefreshAutoApply,
 	updateDocument,
 } from "@repo/database";
 import { logger } from "@repo/logs";
@@ -82,6 +84,9 @@ export type RefreshOutcome =
 const SUSPICIOUS_SHRINK_RATIO = 0.5;
 const SHRINK_GUARD_MIN_CHARS = 500;
 
+const CLIENT_PROPOSAL_SUMMARY =
+	"Auto-refresh does not update this Proposal: it would rewrite sections people edited. Ask for changes in chat, or regenerate it.";
+
 const PLAN_SPENT_SUMMARY =
 	"Every ChatGPT plan this refresh may use has no usage left in this window. It will retry on the next sweep.";
 
@@ -113,6 +118,21 @@ async function refreshDocument(due: DueDocument): Promise<RefreshOutcome> {
 				{ documentId: due.documentId },
 			);
 			return { status: "SKIPPED_DELETED" };
+		}
+
+		// A client-document Proposal is never rewritten whole (Fizzy #2946):
+		// the model would hand back every section, the ones a person edited
+		// and the diagrams included. Enrolling one is refused, but a document
+		// enrolled before its organization's gate turned on still arrives
+		// here. Judged by the project's OWNING organization.
+		const owningOrganizationId = document.project?.organizationId ?? null;
+		const isClientProposal = () =>
+			isProposalClientDocument({
+				organizationId: owningOrganizationId,
+				documentType: document.type,
+			});
+		if (await isClientProposal()) {
+			return await skipClientProposal(due.documentId);
 		}
 
 		const baselineVersion = document.version;
@@ -282,21 +302,27 @@ async function refreshDocument(due: DueDocument): Promise<RefreshOutcome> {
 		// alone must never be enough to authorise an unattended write. With the
 		// rollout off the owner cannot see the control or reach the procedures,
 		// so a write here would be one nobody could have stopped.
-		const [rolloutOn, sweepArmed, settings] = await Promise.all([
-			isFeatureEnabled("LIVING_DOCS_REFRESH"),
-			// Fail-closed: an unreadable override table must not resolve an
-			// administrator's OFF back to the env var's true and let this write
-			// through. A sweep that stands down for a tick is recoverable; an
-			// unattended rewrite someone believed they had stopped is not.
-			isKillSwitchArmed("LIVING_DOCS_REFRESH_SWEEP"),
-			getAutoRefreshSettings(due.documentId),
-		]);
+		const [rolloutOn, sweepArmed, settings, clientProposal] =
+			await Promise.all([
+				isFeatureEnabled("LIVING_DOCS_REFRESH"),
+				// Fail-closed: an unreadable override table must not resolve an
+				// administrator's OFF back to the env var's true and let this write
+				// through. A sweep that stands down for a tick is recoverable; an
+				// unattended rewrite someone believed they had stopped is not.
+				isKillSwitchArmed("LIVING_DOCS_REFRESH_SWEEP"),
+				getAutoRefreshSettings(due.documentId),
+				// The Proposal gate can turn on while the model runs.
+				isClientProposal(),
+			]);
 		if (!rolloutOn || !sweepArmed || !settings?.enabled) {
 			logger.info(
 				"[DocumentRefresh] Abandoning: auto-refresh was turned off while this ran",
 				{ documentId: due.documentId },
 			);
 			return { status: "SKIPPED_DISABLED" };
+		}
+		if (clientProposal) {
+			return await skipClientProposal(due.documentId);
 		}
 
 		// Normalized once: the two branches below are mutually exclusive and both
@@ -444,6 +470,27 @@ async function refreshDocument(due: DueDocument): Promise<RefreshOutcome> {
 		// waits on (Fizzy #2770).
 		throw findWorkflowHandledPlanRefusal(error) ?? error;
 	}
+}
+
+/**
+ * Skips a client-document Proposal, writing nothing to the document and
+ * storing no proposal. The enrolment is switched to proposing, so a later
+ * change of the gate cannot let a stored `autoApply` commit a whole body.
+ * Recorded as REFUSED, a completed status: the cycle advances, so the sweep
+ * does not come back for it every few hours.
+ */
+async function skipClientProposal(documentId: string): Promise<RefreshOutcome> {
+	await turnOffRefreshAutoApply(documentId);
+	await completeRefreshCycle(documentId, {
+		when: new Date(),
+		status: "REFUSED",
+		summary: CLIENT_PROPOSAL_SUMMARY,
+	});
+	logger.info(
+		"[DocumentRefresh] Skipped: a client-document Proposal is not refreshed",
+		{ documentId },
+	);
+	return { status: "REFUSED", summary: CLIENT_PROPOSAL_SUMMARY };
 }
 
 /**

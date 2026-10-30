@@ -1,9 +1,9 @@
 "use client";
 
+import { Pagination } from "@saas/shared/components/Pagination";
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
-import { Button } from "@ui/components/button";
 import {
 	Select,
 	SelectContent,
@@ -20,7 +20,8 @@ import {
 	TableRow,
 } from "@ui/components/table";
 import { cn } from "@ui/lib";
-import { Fragment, useState } from "react";
+import { parseAsInteger, parseAsStringLiteral, useQueryState } from "nuqs";
+import { Fragment, useEffect, useState } from "react";
 import { formatChatDeliveryStatus } from "../newsletter-send-status";
 
 /** The four buckets the reader filters by — mirrors the procedure's input. */
@@ -277,13 +278,28 @@ export function PublishingCycleHistory({
 	projectId: string;
 	organizationId: string | null;
 }) {
-	const [status, setStatus] = useState<StatusFilter>("all");
-	const [pageSize, setPageSize] = useState<PageSize>(15);
-	const [page, setPage] = useState(0);
+	const [status, setStatus] = useQueryState(
+		"publishingHistoryStatus",
+		parseAsStringLiteral(
+			STATUS_FILTERS.map((filter) => filter.value),
+		).withDefault("all"),
+	);
+	const [urlPageSize, setPageSize] = useQueryState(
+		"publishingHistorySize",
+		parseAsInteger.withDefault(15),
+	);
+	const pageSize = PAGE_SIZES.find((size) => size === urlPageSize) ?? 15;
+	const [urlpage, setUrlpage] = useQueryState(
+		"publishingHistoryPage",
+		parseAsInteger.withDefault(1),
+	);
+	const page = Math.max(0, urlpage - 1);
+	const setPage = (next: number) =>
+		setUrlpage(next + 1, { history: "replace" });
 	const [expandedCycleId, setExpandedCycleId] = useState<string | null>(null);
 
-	const query = useQuery(
-		orpc.projects.publishingSuite.listCycles.queryOptions({
+	const query = useQuery({
+		...orpc.projects.publishingSuite.listCycles.queryOptions({
 			input: {
 				projectId,
 				organizationId,
@@ -292,7 +308,8 @@ export function PublishingCycleHistory({
 				status,
 			},
 		}),
-	);
+		placeholderData: keepPreviousData,
+	});
 
 	// Fetched only while a row is open. Without the `enabled` gate this issues a
 	// request on every render of the table, for every user, with an empty cycle
@@ -310,7 +327,7 @@ export function PublishingCycleHistory({
 
 	const cycles = query.data?.cycles ?? [];
 	const total = query.data?.total ?? 0;
-	const lastPage = Math.max(0, Math.ceil(total / pageSize) - 1);
+
 	// Read from the LIST response, not from the chat query: it says whether the
 	// project targets any channel at all, which is what separates "this refresh
 	// recorded no outcomes" from "chat was never configured here".
@@ -338,6 +355,17 @@ export function PublishingCycleHistory({
 		setPageSize(next);
 		changePage(0);
 	};
+
+	useEffect(() => {
+		const lastPage = Math.max(0, Math.ceil(total / pageSize) - 1);
+		if (!query.isPlaceholderData && query.data && page > lastPage) {
+			changePage(lastPage);
+		}
+	}, [total, pageSize, page, query.isPlaceholderData, query.data]);
+
+	useEffect(() => {
+		setExpandedCycleId(null);
+	}, [page]);
 
 	let body: React.ReactNode;
 	if (query.isPending) {
@@ -724,28 +752,19 @@ export function PublishingCycleHistory({
 							</SelectContent>
 						</Select>
 					</div>
-					<div className="flex items-center gap-3">
+					{total > 0 && total <= pageSize && (
 						<span>
-							{page * pageSize + 1}–
-							{Math.min((page + 1) * pageSize, total)} of {total}
+							1–{total} of {total}
 						</span>
-						<Button
-							variant="outline"
-							size="sm"
-							disabled={page === 0}
-							onClick={() => changePage(Math.max(0, page - 1))}
-						>
-							Previous
-						</Button>
-						<Button
-							variant="outline"
-							size="sm"
-							disabled={page >= lastPage}
-							onClick={() => changePage(page + 1)}
-						>
-							Next
-						</Button>
-					</div>
+					)}
+					{total > pageSize && (
+						<Pagination
+							totalItems={total}
+							itemsPerPage={pageSize}
+							currentPage={page + 1}
+							onChangeCurrentPage={(next) => changePage(next - 1)}
+						/>
+					)}
 				</div>
 			</>
 		);

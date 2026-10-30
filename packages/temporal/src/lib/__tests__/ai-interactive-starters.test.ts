@@ -25,11 +25,12 @@ const REVIEWED: Record<string, string> = {
 	// Chat routes a person types into.
 	"apps/web/app/api/agents/a2a/send/route.ts":
 		"A2A message a person sends to an agent",
-	"apps/web/app/api/agents/fabric-ai/stream/route.ts": "Direct chat turn",
+	"apps/web/app/api/agents/fabric-ai/stream/direct-turn.ts":
+		"Direct chat turn (the stream route and the agent runtime's Direct engine)",
 	"apps/web/app/api/agents/fabric-ai/orchestrator-temporal/route.ts":
 		"Orchestrator chat turn",
-	"apps/web/app/api/agents/fabric-ai/orchestrator-temporal/stream/route.ts":
-		"Orchestrator chat turn (the Fabric Agent drawer in Simple mode)",
+	"apps/web/app/api/agents/fabric-ai/orchestrator-temporal/orchestrator-turn.ts":
+		"Orchestrator chat turn (the stream route, the Fabric Agent drawer in Simple mode, and the agent runtime's Orchestrator engine)",
 	"apps/web/app/api/agents/sidekick/stream/route.ts": "Sidekick chat turn",
 	"apps/web/app/api/copilotkit/route.ts": "CopilotKit chat and agents",
 	"apps/web/app/api/workspaces/chat/route.ts": "Workspace chat turn",

@@ -9,6 +9,10 @@ import {
 	AI_SIDEBAR_CONTENT_SHIFT_CLASS,
 	useAiSidebarExpanded,
 } from "@saas/shared/components/copilot/ai-sidebar-layout";
+import {
+	AssistantThreadProvider,
+	useAssistantThreadId,
+} from "@saas/shared/components/copilot/assistant-thread";
 import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import type { MessageAttachmentListItem } from "@saas/shared/components/copilot/MessageAttachmentList";
 import { useCopilotErrorHandler } from "@saas/shared/components/copilot/use-copilot-error-handler";
@@ -114,6 +118,9 @@ export function StoryWorkspacePage({
 	const router = useRouter();
 	const { organizationId, basePath } = useOrganizationContext();
 	const onCopilotError = useCopilotErrorHandler();
+	const assistantThread = useAssistantThreadId(
+		initialAssistantConversationId,
+	);
 
 	// Register Focus Mode availability while Spec Review is mounted
 	useEffect(() => {
@@ -776,7 +783,9 @@ export function StoryWorkspacePage({
 						// <CopilotKit> mount in sync with this one.
 						useSingleEndpoint
 						agent="project_document_generator"
+						threadId={assistantThread.threadId}
 						showDevConsole={false}
+						enableInspector={false}
 						onError={onCopilotError}
 					>
 						{/* One `useCopilotChatInternal()` for the whole
@@ -784,56 +793,58 @@ export function StoryWorkspacePage({
 						  of `useCopilotChat`) opens its own agent/connect,
 						  so the read-only consumers below share this one
 						  instead of each connecting — Fizzy #2389. */}
-						<CopilotChatSessionProvider>
-							{/* StoryWorkspace is ALWAYS rendered — both v1 and v2 —
+						<AssistantThreadProvider value={assistantThread}>
+							<CopilotChatSessionProvider>
+								{/* StoryWorkspace is ALWAYS rendered — both v1 and v2 —
 						  so the maturation stage dropdown, Enhance, Start work,
 						  and all surrounding chrome stay intact. When
 						  `maturationV2` is true the editor region is fronted by
 						  the three-tab control (Clean Spec tab IS this same
 						  TipTap editor); when false it renders the classic
 						  single editor unchanged. */}
-							<StoryWorkspace
-								story={story}
-								canEdit={canEdit}
-								canAddTags={canAddTags}
-								canManageAllTags={canManageAllTags}
-								maturationV2={showMaturationV2}
-								projectId={projectId}
-								projectName={project.name}
-								projectRepository={{
-									url: project.repositoryUrl,
-									owner: project.repositoryOwner,
-									name: project.repositoryName,
-									branch: project.defaultBranch,
-								}}
-								onClose={handleClose}
-								onStoryUpdated={() => refetchStory()}
-								titleSlot={titleSlotEl}
-								actionSlot={actionSlotEl}
-								saveSlot={saveSlotEl}
-								documentRefKind={documentRefKind}
-								initialAssistantConversationId={
-									initialAssistantConversationId
-								}
-								initialAssistantVisibility={
-									initialAssistantVisibility
-								}
-								initialAssistantVisibilityLockedAt={
-									initialAssistantVisibilityLockedAt
-								}
-								initialAssistantMessages={
-									initialAssistantMessages as ReadonlyArray<
-										Record<string, unknown>
-									>
-								}
-								initialPersistedMessageIds={
-									initialPersistedMessageIds
-								}
-								initialAttachmentsByMessageId={
-									initialAttachmentsByMessageId
-								}
-							/>
-						</CopilotChatSessionProvider>
+								<StoryWorkspace
+									story={story}
+									canEdit={canEdit}
+									canAddTags={canAddTags}
+									canManageAllTags={canManageAllTags}
+									maturationV2={showMaturationV2}
+									projectId={projectId}
+									projectName={project.name}
+									projectRepository={{
+										url: project.repositoryUrl,
+										owner: project.repositoryOwner,
+										name: project.repositoryName,
+										branch: project.defaultBranch,
+									}}
+									onClose={handleClose}
+									onStoryUpdated={() => refetchStory()}
+									titleSlot={titleSlotEl}
+									actionSlot={actionSlotEl}
+									saveSlot={saveSlotEl}
+									documentRefKind={documentRefKind}
+									initialAssistantConversationId={
+										initialAssistantConversationId
+									}
+									initialAssistantVisibility={
+										initialAssistantVisibility
+									}
+									initialAssistantVisibilityLockedAt={
+										initialAssistantVisibilityLockedAt
+									}
+									initialAssistantMessages={
+										initialAssistantMessages as ReadonlyArray<
+											Record<string, unknown>
+										>
+									}
+									initialPersistedMessageIds={
+										initialPersistedMessageIds
+									}
+									initialAttachmentsByMessageId={
+										initialAttachmentsByMessageId
+									}
+								/>
+							</CopilotChatSessionProvider>
+						</AssistantThreadProvider>
 					</CopilotKit>
 				</AgentErrorBoundary>
 			</div>

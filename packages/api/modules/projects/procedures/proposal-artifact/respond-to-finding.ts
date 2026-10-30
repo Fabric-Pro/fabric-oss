@@ -277,6 +277,7 @@ export const respondToFindingProcedure = tenantProtectedProcedure
 			target = {
 				id: carried.id,
 				title: carried.title,
+				recommendation: carried.recommendation,
 				stableKey,
 				sectionKey: carried.sectionKey,
 				sectionHash: carried.sectionHash,

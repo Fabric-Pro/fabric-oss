@@ -17,7 +17,17 @@
  * "Approve & send" button (per task brief Step 4).
  */
 
-import { render, screen } from "@testing-library/react";
+import { render as baseRender, screen } from "@testing-library/react";
+import { NuqsTestingAdapter } from "nuqs/adapters/testing";
+import type { ReactElement } from "react";
+
+const render = (ui: ReactElement) =>
+	baseRender(ui, {
+		wrapper: ({ children }) => (
+			<NuqsTestingAdapter>{children}</NuqsTestingAdapter>
+		),
+	});
+
 import { describe, expect, it, vi } from "vitest";
 
 const { PENDING_SENDS } = vi.hoisted(() => ({
@@ -44,6 +54,7 @@ const { PENDING_SENDS } = vi.hoisted(() => ({
 }));
 
 vi.mock("@tanstack/react-query", () => ({
+	keepPreviousData: <T,>(data: T) => data,
 	useQuery: (opts: { queryKey?: unknown[] }) => {
 		const procedure = Array.isArray(opts?.queryKey)
 			? opts.queryKey[0]

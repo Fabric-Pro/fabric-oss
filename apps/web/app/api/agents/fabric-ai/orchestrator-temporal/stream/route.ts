@@ -1,3 +1,15 @@
+import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
+import {
+	type ChatGptPlanChatPreflight,
+	withChatGptPlanApiBilling,
+} from "@repo/ai/lib/chatgpt-plan/plan-spent-response";
+import {
+	abandonConversationTurnStart,
+	type ConversationTurn,
+	getConversationTurnForExecution,
+	getConversationTurnOwnerForExecution,
+} from "@repo/database";
+import { getTemporalClient } from "@repo/temporal";
 import type { AssertAssignable } from "@saas/agents/lib/chat-stream-protocol";
 import { limitSchema } from "@saas/agents/lib/direct-stream-protocol";
 import type { OrchestratorStreamInput } from "@saas/agents/lib/orchestrator-stream-protocol";
@@ -21,65 +33,22 @@ import type { OrchestratorStreamInput } from "@saas/agents/lib/orchestrator-stre
  * - error: An error occurred
  */
 
-import { getDefaultEnabledMcpConfigIds } from "@repo/agent-core/backend";
-import { getAIModelWithMetadata } from "@repo/ai";
-import {
-	chatGptPlanExhaustedChatResponse,
-	chatGptPlanReconnectRefusal,
-} from "@repo/ai/lib/chatgpt-plan/agent-config";
-import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
-import {
-	type ChatGptPlanChatPreflight,
-	chatGptPlanChatPreflight,
-	withChatGptPlanApiBilling,
-} from "@repo/ai/lib/chatgpt-plan/plan-spent-response";
-import { mintActingGrantForTurn } from "@repo/api/lib/agent-service-auth";
-import {
-	abandonConversationTurnStart,
-	type ConversationTurn,
-	db,
-	getConversationTurnForExecution,
-	getConversationTurnOwnerForExecution,
-} from "@repo/database";
-import { metricsTracker } from "@repo/observability";
-import { AiUsageLimitExceededError } from "@repo/payments";
-import type {
-	ChatExecutionEvent,
-	ChatExecutionToolCall,
-	OrchestratorProgressUpdate,
-	OrchestratorStepResult,
-	OrchestratorWorkflowInput,
-	OrchestratorWorkflowOutput,
-	PendingApprovalInfo,
-	PendingClarificationInfo,
-	RagContextRetrievalInput,
-	TaskPlan,
-} from "@repo/temporal";
-import { getTemporalClient } from "@repo/temporal";
-import { PROJECT_REPOSITORY_TOOLS } from "@repo/temporal/project-repository-tool-schemas";
-import { REDIS_KEEPALIVE_MS } from "@repo/utils/redis-connection";
-import {
-	encodeOrchestratorStreamEvent,
-	parseOrchestratorStreamEvent,
-} from "@saas/agents/lib/orchestrator-stream-protocol";
+import { encodeOrchestratorStreamEvent } from "@saas/agents/lib/orchestrator-stream-protocol";
 import { getAuthorizedChatRun } from "@saas/agents/lib/server/chat-run-control";
+import { subscribeExecutionEvents } from "@saas/agents/lib/server/execution-event-subscriber";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
 import { v4 as uuidv4 } from "uuid";
-import { seedCarriedOverHistory } from "../../carried-over-context";
-import { assertChatWorkflowPayload } from "../../chat-workflow-payload";
-import {
-	EXECUTION_MODE_NAMES,
-	parseExecutionMode,
-} from "../../orchestrator-execution-mode";
-import { resolveUsageFrame } from "../../resolve-usage-frame";
-import { windowUntypedHistory } from "../../stream/history-window";
 import { buildWorkflowErrorEvent } from "../../stream/turn-events";
-import { unionDefaultMcpConfigIds } from "../../union-default-mcp-config-ids";
+import { InvalidBudgetContinuationError } from "../budget-continuation";
+import { createOrchestratorExecutionObserver } from "../execution-observer";
 import {
-	budgetContinuationSeed,
-	InvalidBudgetContinuationError,
-} from "../budget-continuation";
+	billOrchestratorTurn,
+	buildOrchestratorWorkflowInput,
+	filterOrchestratorTurnWorkspaces,
+	refuseOversizedOrchestratorInput,
+	resolveOrchestratorTurnRequest,
+} from "../orchestrator-turn";
 import {
 	isOrchestratorOrganizationMember,
 	refuseUnlessRunOwner,
@@ -91,8 +60,6 @@ import {
 	executionModeUsesTurns,
 	isCancelledBeforeStart,
 	isTerminalTurnStatus,
-	resolveClientRequestKey,
-	resolveTurnOrganization,
 	resultStatusForTurn,
 	settleAbandonedTurn,
 	startLegacyChatWorkflow,
@@ -104,7 +71,6 @@ import {
 	turnStateUnavailableResponse,
 	waitForTurnWorkflow,
 } from "../turn-admission";
-import { resolveRequestTenant } from "./resolve-request-tenant";
 
 const POLL_INTERVAL = 200; // Poll every 200ms for faster updates
 // Bounds the WHOLE request from entry (see `requestStartedAt` in POST),
@@ -116,59 +82,6 @@ const MAX_STREAM_DURATION = 600000; // 10 minutes max
 // SSE comment heartbeat so intermediaries don't idle-drop the stream during
 // silent stretches between progress events; clients ignore `:` comment lines.
 const HEARTBEAT_INTERVAL = 15000;
-
-/**
- * Bounds on inline attachment text, mirroring the zod limits the direct-chat
- * stream route declares. Kept as named constants so the two routes can be
- * compared without reading two different enforcement styles.
- */
-const MAX_INLINE_ATTACHMENTS = 20;
-const MAX_INLINE_ATTACHMENT_CHARS = 200_000;
-
-/**
- * Build a Redis URL from environment variables.
- * Tries REDIS_URL first, then falls back to CACHE_HOST/CACHE_PORT/CACHE_PASSWORD.
- */
-function getRedisUrl(): string | null {
-	// Prefer Aspire-injected CACHE_HOST/CACHE_PORT (dynamic port) over
-	// static REDIS_URL which may point at a stale port.
-	const cacheHost = process.env.CACHE_HOST;
-	if (cacheHost) {
-		const cachePort = process.env.CACHE_PORT || "6379";
-		const password =
-			process.env.CACHE_PASSWORD || process.env.REDIS_PASSWORD;
-		if (password) {
-			return `redis://:${encodeURIComponent(password)}@${cacheHost}:${cachePort}`;
-		}
-		return `redis://${cacheHost}:${cachePort}`;
-	}
-
-	const rawUrl = process.env.REDIS_URL;
-	if (rawUrl) {
-		try {
-			const parsed = new URL(rawUrl);
-			if (parsed.password) {
-				return rawUrl;
-			}
-			const password =
-				process.env.REDIS_PASSWORD || process.env.CACHE_PASSWORD;
-			if (password) {
-				parsed.password = password;
-				return parsed.toString();
-			}
-			return rawUrl;
-		} catch {
-			return rawUrl;
-		}
-	}
-
-	return null;
-}
-
-// Bounds on the body's `workspaceIds`, matching `streamRequestSchema` in the
-// direct-chat stream (`../../stream/route.ts`).
-const MAX_WORKSPACE_IDS = 20;
-const MAX_WORKSPACE_ID_LENGTH = 200;
 
 export async function POST(request: NextRequest) {
 	// The turn this request admitted and must start. Until it is handed to
@@ -200,362 +113,25 @@ export async function POST(request: NextRequest) {
 		const userId = session.user.id;
 		const body = await request.json();
 
+		// The hand parser, organization tie, conversation, key, budget
+		// continuation, workspaces, project, usage frame and history: see
+		// ../orchestrator-turn.ts, shared with the agent runtime.
+		const turnRequest = await resolveOrchestratorTurnRequest({
+			session,
+			body,
+		});
+		if (turnRequest instanceof Response) {
+			return turnRequest;
+		}
 		const {
+			organizationId,
+			conversationId,
+			continueFromTurnId,
+			executionMode,
 			message,
-			history: rawHistory,
-			executionId: requestedExecutionId,
-			organizationId: requestedOrganizationId,
-			clientRequestKey: rawClientRequestKey,
-			continueFromTurnId: rawContinueFromTurnId,
-			executionMode: requestedExecutionMode = "balanced", // All modes now use iterative execution with mode-specific limits
-			enabledMcpConfigIds = null,
-			enabledAgentIds = null,
-			enabledFabricToolIds = null,
-			enabledIntegrationIds = null,
-			prioritizedToolIds,
-			prioritizedAgentIds,
-			prioritizedMcpConfigIds,
-			prioritizedIntegrationIds,
-			policyContext,
-			replayTrajectoryId,
-			workspaceIds: rawWorkspaceIds,
-			projectId: rawProjectId,
-			conversationId: requestedConversationId,
-			systemPrompt,
-			instanceId,
-			chatId,
-			attachedDocumentIds = [],
-			inlineAttachmentContexts = [],
-			attachedImageUrls = [],
-			modelOverride,
-			surface,
-			organizationSlug,
-			advisorOrigin,
-			launchWorkspaceId: rawLaunchWorkspaceId,
-			launchFrameId,
-			launchSurface: rawLaunchSurface,
-		} = body;
-
-		// Where the chat was opened, for the tools that place what they create:
-		// a default, never a grant (the gateway checks access to whatever a
-		// tool touches). The body is parsed by hand, so only a string id and
-		// one of the two surface names count.
-		const launchWorkspaceId: string | undefined =
-			typeof rawLaunchWorkspaceId === "string" &&
-			rawLaunchWorkspaceId.length > 0 &&
-			rawLaunchWorkspaceId.length <= 200
-				? rawLaunchWorkspaceId
-				: undefined;
-		const launchSurface: "artifact" | "workspace" | undefined =
-			rawLaunchSurface === "artifact" || rawLaunchSurface === "workspace"
-				? rawLaunchSurface
-				: undefined;
-
-		// The body is parsed by hand, so these ids are whatever JSON the
-		// client sent. Both reach the membership check and the tenant filters
-		// below, where an object would read as a Prisma filter
-		// (`{ not: "" }` matches any membership the caller has). Absent
-		// (null or undefined) stays absent; any other value that is not a
-		// string is refused before anything is read, as the direct-chat
-		// stream's `z.string().nullish()` does.
-		for (const [field, value] of [
-			["organizationId", requestedOrganizationId],
-			["projectId", rawProjectId],
-		] as const) {
-			if (
-				value !== null &&
-				value !== undefined &&
-				typeof value !== "string"
-			) {
-				return new Response(
-					JSON.stringify({
-						error: "Invalid request body",
-						message: `${field} must be a string`,
-					}),
-					{
-						status: 400,
-						headers: { "Content-Type": "application/json" },
-					},
-				);
-			}
-		}
-		const providedProjectId: string | undefined = rawProjectId ?? undefined;
-
-		// Bounded before it reaches the workflow input: the history went in
-		// whole, with no size limit (review F38).
-		const history = windowUntypedHistory(rawHistory);
-
-		// The body is parsed by hand, so its workspace ids are whatever the
-		// client sent. Keep only string entries; the access filter below
-		// decides which of those the turn may read.
-		const providedWorkspaceIds: string[] = Array.isArray(rawWorkspaceIds)
-			? rawWorkspaceIds.filter(
-					(workspaceId: unknown): workspaceId is string =>
-						typeof workspaceId === "string",
-				)
-			: [];
-		// Same bounds the direct-chat stream's request schema puts on this
-		// field. The access filter runs one lookup per id, so an unbounded
-		// list would be a database fan-out any member could trigger.
-		if (
-			providedWorkspaceIds.length > MAX_WORKSPACE_IDS ||
-			providedWorkspaceIds.some(
-				(workspaceId) => workspaceId.length > MAX_WORKSPACE_ID_LENGTH,
-			)
-		) {
-			return new Response(
-				JSON.stringify({
-					error: "Invalid request body",
-					message: `workspaceIds accepts at most ${MAX_WORKSPACE_IDS} ids of at most ${MAX_WORKSPACE_ID_LENGTH} characters`,
-				}),
-				{
-					status: 400,
-					headers: { "Content-Type": "application/json" },
-				},
-			);
-		}
-
-		const executionMode = parseExecutionMode(requestedExecutionMode);
-		if (!executionMode) {
-			return new Response(
-				JSON.stringify({
-					error: "Invalid request body",
-					message: `executionMode must be one of: ${EXECUTION_MODE_NAMES.join(", ")}`,
-				}),
-				{
-					status: 400,
-					headers: { "Content-Type": "application/json" },
-				},
-			);
-		}
-
-		// ✅ Security: the organization is the only tenant context
-		// (ADR-018). It is required and resolved server-side — the body's,
-		// else the session's active organization — and the caller must have
-		// a tie to it. It used to be checked only when the body named one,
-		// leaving the organization-less arm live for any caller that omitted
-		// it.
-		const resolvedOrganization = await resolveTurnOrganization({
-			userId,
-			requestedOrganizationId,
-			session: session.session,
-		});
-		if (!resolvedOrganization.ok) {
-			return resolvedOrganization.response;
-		}
-		const organizationId: string = resolvedOrganization.organizationId;
-
-		// A conversation id is only a lookup key for the caller's own
-		// conversations in this organization. Its attached workspaces and
-		// project, its carried-over summary, and the runtime-authority grants
-		// bound to it must not be reachable by sending another user's id. An
-		// id the caller explicitly named but cannot access is refused (403)
-		// rather than silently dropped: dropping it ran the turn detached
-		// from the conversation the user was looking at.
-		const conversationId: string | undefined =
-			typeof requestedConversationId === "string" &&
-			requestedConversationId
-				? requestedConversationId
-				: undefined;
-		if (conversationId) {
-			const owned = await db.agentConversation.findFirst({
-				where: { id: conversationId, userId, organizationId },
-				select: { id: true },
-			});
-			if (!owned) {
-				console.warn(
-					"[Orchestrator Stream] Conversation is not accessible to the caller; refusing",
-					{ userId, conversationId },
-				);
-				return new Response(
-					JSON.stringify({
-						error: "Forbidden",
-						message: "This conversation is not accessible",
-					}),
-					{
-						status: 403,
-						headers: { "Content-Type": "application/json" },
-					},
-				);
-			}
-		}
-
-		const clientRequestKey = resolveClientRequestKey(rawClientRequestKey);
-		if (!clientRequestKey.ok) {
-			return clientRequestKey.response;
-		}
-
-		const continueFromTurnId =
-			rawContinueFromTurnId === undefined
-				? undefined
-				: typeof rawContinueFromTurnId === "string" &&
-						rawContinueFromTurnId.length > 0 &&
-						rawContinueFromTurnId.length <= 200
-					? rawContinueFromTurnId
-					: null;
-		if (
-			continueFromTurnId === null ||
-			(continueFromTurnId &&
-				(!conversationId ||
-					requestedExecutionId ||
-					!executionModeUsesTurns(executionMode)))
-		) {
-			return new InvalidBudgetContinuationError().response();
-		}
-		if (continueFromTurnId && conversationId) {
-			try {
-				await budgetContinuationSeed({
-					turnId: continueFromTurnId,
-					conversationId,
-					userId,
-					organizationId,
-					clientRequestKey: clientRequestKey.key,
-				});
-			} catch (error) {
-				if (error instanceof InvalidBudgetContinuationError) {
-					return error.response();
-				}
-				throw error;
-			}
-		}
-
-		// Debug: Log workspace IDs received
-		console.log("[Orchestrator API] Received request context:", {
-			providedWorkspaceIds,
-			conversationId,
-			providedProjectId,
-		});
-		console.log("[Orchestrator API] Received prioritization:", {
-			prioritizedToolIds,
-			prioritizedAgentIds,
-			prioritizedMcpConfigIds,
-		});
-		// Fetch workspace IDs from database if not provided but conversation exists
-		// This handles the race condition where frontend sends request before query returns
-		let workspaceIds = providedWorkspaceIds;
-		if (providedWorkspaceIds.length === 0 && conversationId) {
-			console.log(
-				"[Orchestrator API] Fetching attached workspaces for conversation:",
-				{ conversationId },
-			);
-			const { getConversationWorkspaces } = await import(
-				"@repo/database"
-			);
-			const attachedWorkspaces =
-				await getConversationWorkspaces(conversationId);
-			workspaceIds = attachedWorkspaces.map(
-				(wc: { workspace: { id: string } }) => wc.workspace.id,
-			);
-			console.log(
-				"[Orchestrator API] Fetched workspaceIds from DB:",
-				workspaceIds,
-			);
-		}
-
-		// Resolve project ID from conversation if not provided
-		let projectId = providedProjectId;
-		if (!projectId && conversationId) {
-			try {
-				const { getConversationProject } = await import(
-					"@repo/database"
-				);
-				const conversationProject =
-					await getConversationProject(conversationId);
-				if (conversationProject?.project) {
-					projectId = conversationProject.project.id;
-					console.log(
-						"[Orchestrator API] Resolved projectId from conversation:",
-						projectId,
-					);
-				}
-			} catch (err) {
-				console.warn(
-					"[Orchestrator API] Failed to resolve project from conversation:",
-					err instanceof Error ? err.message : String(err),
-				);
-			}
-		}
-
-		// The project access check below admits an invited guest and ignores
-		// the organization, so it cannot tell that a project belongs to a
-		// different organization than the one this chat runs in. A project
-		// outside the turn's organization is dropped here, whether it came
-		// from the body or the conversation; every later read of `projectId`
-		// sees the resolved value.
-		({ projectId } = await resolveRequestTenant({
-			userId,
-			organizationId,
+			requestedExecutionId,
 			projectId,
-		}));
-
-		// ✅ Security: Verify project access before forwarding to workflow
-		if (projectId) {
-			try {
-				const { hasProjectAccess } = await import("@repo/database");
-				const canAccess = await hasProjectAccess(
-					projectId,
-					userId,
-					organizationId,
-				);
-				if (!canAccess) {
-					console.warn(
-						"[Orchestrator API] User does not have access to project:",
-						{ projectId },
-					);
-					projectId = undefined; // Strip unauthorized projectId
-				}
-			} catch (err) {
-				console.warn(
-					"[Orchestrator API] Failed to verify project access:",
-					err instanceof Error ? err.message : String(err),
-				);
-				projectId = undefined;
-			}
-		}
-
-		const usageFrame = await resolveUsageFrame({
-			launchFrameId,
-			legacyLaunchFrameId: rawLaunchWorkspaceId,
-			userId,
-			userEmail: session.user.email,
-			organizationId,
-			projectId,
-		});
-		if (usageFrame.error) {
-			return usageFrame.error;
-		}
-
-		// A continued chat starts from the text carried over from its parent,
-		// quoted as data in a user-role message (see `carried-over-context`).
-		const effectiveHistory = await seedCarriedOverHistory({
-			history,
-			conversationId,
-			userId,
-			organizationId,
-		});
-
-		if (!requestedExecutionId && !message) {
-			return new Response(
-				JSON.stringify({ error: "message is required" }),
-				{
-					status: 400,
-					headers: { "Content-Type": "application/json" },
-				},
-			);
-		}
-		if (
-			requestedExecutionId &&
-			(typeof requestedExecutionId !== "string" ||
-				!/^orch-[a-f0-9-]{36}$/.test(requestedExecutionId))
-		) {
-			return new Response(
-				JSON.stringify({ error: "Invalid executionId format" }),
-				{
-					status: 400,
-					headers: { "Content-Type": "application/json" },
-				},
-			);
-		}
+		} = turnRequest;
 
 		// Get Temporal client
 		const temporalClient = await getTemporalClient();
@@ -584,7 +160,7 @@ export async function POST(request: NextRequest) {
 				userId,
 				organizationId,
 				conversationId: conversationId ?? null,
-				clientRequestKey: clientRequestKey.key,
+				clientRequestKey: turnRequest.clientRequestKey,
 				executionMode,
 				question: typeof message === "string" ? message : "",
 				temporalClient,
@@ -635,125 +211,26 @@ export async function POST(request: NextRequest) {
 				statusText: "Client Closed Request",
 			});
 
-		// Workspace ids come from the client or from a conversation's
-		// attachments, and every workspace retrieval path in the workflow
-		// reads whatever lands in its input. Keep only the workspaces the
-		// caller can open inside the organization this turn runs in, now that
-		// membership of it is established. Inaccessible ones are dropped (and
-		// logged) rather than failing the turn, as the direct-chat stream does.
-		if (workspaceIds.length > 0) {
-			const { filterAccessibleWorkspaceIds } = await import(
-				"@repo/database"
-			);
-			const { allowed, dropped: denied } =
-				await filterAccessibleWorkspaceIds({
-					workspaceIds,
-					userId,
-					organizationId,
-				});
-			if (denied.length > 0) {
-				console.warn(
-					"[Orchestrator Stream] Dropping workspaces the caller cannot access",
-					{ userId, denied },
-				);
-			}
-			workspaceIds = allowed;
-		}
+		// Only the workspaces the caller can open in this organization, now
+		// that membership of it is established (../orchestrator-turn.ts).
+		const workspaceIds = await filterOrchestratorTurnWorkspaces({
+			userId,
+			organizationId,
+			requestedWorkspaceIds: turnRequest.workspaceIds,
+		});
 
-		// Get AI model and provider config using centralized entry point.
-		// Entered only for a NEW turn. Skipped for a reconnect (an
-		// `executionId` body, or a retried key whose turn already exists):
-		// that run already passed this chokepoint and was counted when it
-		// started (issue #2269). Re-entering it would double-bill the same
-		// run, and worse, could 429 the reconnect on a limit the run itself
-		// pushed over — leaving a live Temporal workflow no client can
-		// attach to. The workflow resolves its own model on the Temporal
-		// worker regardless.
+		// The plan preflight and usage-limit chokepoint, entered only for a
+		// NEW turn (see `billOrchestratorTurn`).
 		let planPreflight: ChatGptPlanChatPreflight = null;
 		if (newTurn || legacyExecutionId) {
-			// Every ChatGPT plan serving the member's work is spent: refuse
-			// with when it resets, rather than start a run that can only fail
-			// or quietly bill the organization (Fizzy #2770). Under "Use API
-			// billing" the run goes there and says so (Fizzy #3048).
-			planPreflight = await chatGptPlanChatPreflight({
+			const billed = await billOrchestratorTurn({
 				userId,
 				organizationId,
 			});
-			if (planPreflight && "refusal" in planPreflight) {
-				return planPreflight.refusal;
+			if (billed instanceof Response) {
+				return billed;
 			}
-			let aiModelResult: Awaited<
-				ReturnType<typeof getAIModelWithMetadata>
-			>;
-			try {
-				// See the note in fabric-ai/stream: the returned model is
-				// discarded (only trackUsage is used), so a featureKey here
-				// would tag a call that never happens.
-				aiModelResult = await getAIModelWithMetadata(
-					{ taskType: "TOOL_CALLING" },
-					{ userId, organizationId, planEligible: true },
-				);
-			} catch (error) {
-				// AI usage-limit chokepoint hit a HARD limit.
-				// Surface the structured payload so the
-				// orchestrator client renders the shared destructive toast
-				// instead of the generic "AI gateway missing" error card.
-				// The member's plan is on here but needs reconnecting: refuse rather
-				// than bill the organization (Fizzy #2939).
-				const reconnect = chatGptPlanReconnectRefusal(error);
-				if (reconnect) {
-					return new Response(JSON.stringify(reconnect.body), {
-						status: reconnect.status,
-						headers: { "Content-Type": "application/json" },
-					});
-				}
-				const exhausted = chatGptPlanExhaustedChatResponse(error);
-				if (exhausted) {
-					return exhausted;
-				}
-				if (error instanceof AiUsageLimitExceededError) {
-					return new Response(
-						JSON.stringify({
-							error: error.message,
-							code: "AI_USAGE_LIMIT_EXCEEDED",
-							data: {
-								limitId: error.limitId,
-								dimension: error.dimension,
-								window: error.window,
-								used: error.used.toString(),
-								max: error.max.toString(),
-								manageLimitsUrl: error.manageLimitsUrl,
-							},
-						}),
-						{
-							status: 429,
-							headers: { "Content-Type": "application/json" },
-						},
-					);
-				}
-				console.error(
-					"[Orchestrator Stream] Failed to get AI model:",
-					error,
-				);
-				return new Response(
-					JSON.stringify({
-						error:
-							error instanceof Error
-								? error.message
-								: "No AI provider configured. Please configure an AI provider in Settings → AI Providers.",
-						code: "AI_GATEWAY_MISSING",
-					}),
-					{
-						status: 400,
-						headers: { "Content-Type": "application/json" },
-					},
-				);
-			}
-
-			const { trackUsage } = aiModelResult;
-
-			// Track usage (fire-and-forget)
-			trackUsage();
+			planPreflight = billed.planPreflight;
 		}
 		if (await disconnectedBeforeStart()) {
 			return disconnectedResponse();
@@ -862,256 +339,23 @@ export async function POST(request: NextRequest) {
 			}
 		}
 
-		let messageWithDocumentContext = message ?? "";
-
-		// Files the user attached this turn, delivered whole.
-		//
-		// Additive to the retrieval below, not a replacement for it. Retrieval
-		// returns the top five chunks above a similarity floor, so content
-		// reaches the model only if embedding finished, the query matched
-		// semantically, and the chunk ranked. Tab-joined spreadsheet rows embed
-		// poorly, which makes that least reliable for exactly the format this
-		// was built for. Inline gives completeness on a small file; retrieval
-		// still covers the part a character budget had to cut.
-		// This route parses its body by hand rather than through a zod schema,
-		// so the bounds the sibling direct-chat route gets declaratively have
-		// to be applied here. Count and per-entry length both: the client
-		// already applies the character budget, and this is the server
-		// declining to take its word for it.
-		if (
-			Array.isArray(inlineAttachmentContexts) &&
-			inlineAttachmentContexts.length > 0
-		) {
-			const entries = inlineAttachmentContexts
-				.filter(
-					(entry: unknown): entry is string =>
-						typeof entry === "string" &&
-						entry.length > 0 &&
-						entry.length <= MAX_INLINE_ATTACHMENT_CHARS,
-				)
-				.slice(0, MAX_INLINE_ATTACHMENTS);
-			if (entries.length > 0) {
-				messageWithDocumentContext = `${messageWithDocumentContext}\n\n${entries.join("\n\n")}`;
-			}
-		}
-
-		if (
-			chatId &&
-			typeof message === "string" &&
-			message.trim().length > 0 &&
-			Array.isArray(attachedDocumentIds) &&
-			attachedDocumentIds.length > 0
-		) {
-			try {
-				const chatTenantFilter = organizationId
-					? { id: chatId, userId, organizationId }
-					: { id: chatId, userId, organizationId: null };
-				const chat = await db.aiChat.findFirst({
-					where: chatTenantFilter,
-					select: { id: true, organizationId: true },
-				});
-
-				if (chat) {
-					const workflowInput: RagContextRetrievalInput = {
-						usageConversationId: conversationId,
-						chatId: chat.id,
-						userId,
-						organizationId: chat.organizationId || undefined,
-						query: message,
-						topK: 5,
-						minSimilarity: 0.5,
-						documentIds: attachedDocumentIds,
-					};
-					const ragHandle = await temporalClient.workflow.start(
-						"ragContextRetrievalWorkflow",
-						{
-							taskQueue: "document-processing",
-							workflowId: `orchestrator-rag-${chat.id}-${Date.now()}-${uuidv4().slice(0, 8)}`,
-							args: [workflowInput],
-							workflowExecutionTimeout: "2m",
-						},
-					);
-					const ragResult = await ragHandle.result();
-
-					if (ragResult.success && ragResult.context) {
-						// Append to what is already here rather than rebuilding from
-						// `message`, which would drop the inline entries added
-						// above — the same overwrite-instead-of-join shape that
-						// discarded them inside the direct-chat workflow.
-						messageWithDocumentContext = `${messageWithDocumentContext}\n\n${ragResult.context}`;
-					}
-				}
-			} catch (error) {
-				console.error(
-					"[Orchestrator Stream] Failed to retrieve attached document context:",
-					error,
-				);
-			}
-		}
-		if (await disconnectedBeforeStart()) {
-			return disconnectedResponse();
-		}
-
-		// Union default-enabled MCP config ids into the caller-restricted set
-		// so managed-default servers (e.g. Excalidraw, when `defaultEnabled`)
-		// are eligible for eager-routing inside the orchestrator workflow.
-		// On helper failure, log and proceed with the original array — the
-		// workflow's defense-in-depth at `applyDefaultMcpEagerRouting`
-		// still resolves via `findDefaultMcpConfigActivity`.
-		//
-		// `unionDefaultMcpConfigIds` guards the same three-state contract the
-		// prioritized-ids union below already respects: `null` ("all configs
-		// enabled") and `[]` ("explicitly none") pass through untouched, since
-		// unioning into either would narrow it to the defaults alone.
-		let effectiveEnabledMcpConfigIds: string[] | null = enabledMcpConfigIds;
-		try {
-			const defaultIds = await getDefaultEnabledMcpConfigIds(
-				userId,
-				organizationId,
-			);
-			effectiveEnabledMcpConfigIds = unionDefaultMcpConfigIds(
-				enabledMcpConfigIds,
-				defaultIds,
-			);
-		} catch (defaultIdsError) {
-			console.warn(
-				"[Orchestrator Stream] Failed to union default-enabled MCP config ids — proceeding with caller-supplied array",
-				defaultIdsError,
-			);
-		}
-
-		// Prioritizing implies enabling (issue #2182): the UI can star a
-		// server without adding it to the conversation tool selection, which
-		// leaves the planner biased toward tools the ToolIndex then excludes
-		// as "config not enabled". Union the prioritized ids into the
-		// effective set — but only when the caller restricted it: `null`
-		// means "all configs enabled" and must stay null.
-		if (
-			Array.isArray(effectiveEnabledMcpConfigIds) &&
-			Array.isArray(prioritizedMcpConfigIds) &&
-			prioritizedMcpConfigIds.length > 0
-		) {
-			effectiveEnabledMcpConfigIds = Array.from(
-				new Set([
-					...effectiveEnabledMcpConfigIds,
-					...prioritizedMcpConfigIds,
-				]),
-			);
-		}
-
-		// Fizzy #3216: the Advisor's toggle-built list omits repository reads.
-		// Bind them as Direct does (Fizzy #2869) for Advisor turns, including
-		// agents chosen there, with an accessible project. Callers without
-		// advisorOrigin keep their configured list.
-		const effectiveEnabledFabricToolIds =
-			advisorOrigin === true &&
-			projectId &&
-			Array.isArray(enabledFabricToolIds) &&
-			enabledFabricToolIds.length > 0
-				? Array.from(
-						new Set([
-							...enabledFabricToolIds,
-							...PROJECT_REPOSITORY_TOOLS.map(
-								(tool) => tool.name,
-							),
-						]),
-					)
-				: enabledFabricToolIds;
-
-		// Build workflow input
-		// SECURITY: Credentials are NOT passed in workflow inputs
-		// Activities fetch credentials internally to avoid storing them in Temporal history
-		const workflowInput: OrchestratorWorkflowInput = {
-			executionId,
-			message: messageWithDocumentContext,
-			history: effectiveHistory,
-			userId,
-			// A person typed this turn, so its AI steps may run on their own
-			// ChatGPT plan where they turned it on (Fizzy #2939).
-			planEligible: true,
-			organizationId,
-			executionMode,
-			enabledMcpConfigIds: effectiveEnabledMcpConfigIds,
-			enabledAgentIds,
-			enabledFabricToolIds: effectiveEnabledFabricToolIds,
-			enabledIntegrationIds,
-			prioritizedToolIds,
-			prioritizedAgentIds,
-			prioritizedMcpConfigIds,
-			prioritizedIntegrationIds,
-			policyContext,
-			replayTrajectoryId,
+		// Inline attachments, document retrieval (up to two minutes of RAG
+		// pre-work), the effective tool sets and the input literal: see
+		// ../orchestrator-turn.ts. A client that went away during that
+		// pre-work is caught by the check below, before the start.
+		const workflowInput = await buildOrchestratorWorkflowInput({
+			request: turnRequest,
 			workspaceIds,
-			projectId,
-			// Propagate the AgentConversation ID so the
-			// completion phase's Step 6 (`postOperationResultActivity`) can
-			// append a persistent operation-result system message. The
-			// orchestrator already accepted this field for episodic memory
-			// (Letta) on this surface (`workflow-io.types.ts:71`); PR2
-			// merely starts forwarding it from the route layer too. When
-			// `conversationId` is absent — e.g. a Nexus-CopilotPage caller
-			// that hasn't been mapped to an `AgentConversation` yet — Step
-			// 6 quietly no-ops (existing behaviour preserved).
-			conversationId,
-			systemPrompt,
-			instanceId,
-			attachedImageUrls:
-				attachedImageUrls.length > 0 ? attachedImageUrls : undefined,
-			// Forward the paperclip attachments so the agent loop can show
-			// image-typed ones to vision-capable models as real pixels. The RAG
-			// description (resolved above) still covers non-vision models.
-			attachedDocumentIds:
-				attachedDocumentIds.length > 0
-					? attachedDocumentIds
-					: undefined,
-			modelOverride,
-			surface,
-			organizationSlug,
-			// The workflow and frame tools come from Fabric MCP, which only lets
-			// the agent runtime act for a person whose turn this route vouched
-			// for: the grant is minted here, from the request this route
-			// authenticated, and the workflow only carries it.
-			actingGrant: mintActingGrantForTurn({
-				userId,
-				organizationId,
-				conversationId,
-			}),
-			launchWorkspaceId,
-			...usageFrame,
-			launchSurface,
-			// Only the Advisor (the Fabric AI page and the Fabric Agent drawer,
-			// with or without a custom agent chosen there) sends
-			// `advisorOrigin`; the MCP chat dialog, a registered agent's try
-			// workspace and Nexus share this route and do not. It lets the turn
-			// tell the model which organization it works for and search that
-			// organization's company context; the workflow checks membership
-			// and the feature gate itself (Fizzy #2719). The body is parsed by
-			// hand, so only a literal `true` counts.
-			...(advisorOrigin === true ? { companyContextAdvisor: true } : {}),
-		};
+			executionId,
+			temporalClient,
+		});
 
-		// A new run's input must fit Temporal's start frame. Refused here with
-		// a message the user can act on, not by a gRPC error mid-stream
-		// (review F38). A reattach starts nothing, so it is not measured.
+		// A new run's input must fit Temporal's start frame (review F38). A
+		// reattach starts nothing, so it is not measured.
 		if (turnToStart || legacyExecutionId) {
-			try {
-				assertChatWorkflowPayload(
-					workflowInput,
-					"orchestratorExecutionWorkflow start",
-				);
-			} catch (payloadError) {
-				return new Response(
-					JSON.stringify({
-						error:
-							payloadError instanceof Error
-								? payloadError.message
-								: "Request too large",
-					}),
-					{
-						status: 413,
-						headers: { "Content-Type": "application/json" },
-					},
-				);
+			const oversized = refuseOversizedOrchestratorInput(workflowInput);
+			if (oversized) {
+				return oversized;
 			}
 		}
 
@@ -1221,18 +465,10 @@ export async function POST(request: NextRequest) {
 		// the client disconnects (issue #2269).
 		let controllerClosed = false;
 		let heartbeat: ReturnType<typeof setInterval> | undefined;
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- ioredis is dynamically imported
-		let redisSubscriber: any = null;
+		let unsubscribeEvents: () => void = () => {};
 		const cleanupRedis = () => {
-			if (redisSubscriber) {
-				try {
-					redisSubscriber.unsubscribe();
-					redisSubscriber.quit();
-				} catch {
-					// Ignore cleanup errors
-				}
-				redisSubscriber = null;
-			}
+			unsubscribeEvents();
+			unsubscribeEvents = () => {};
 		};
 
 		// Delay the continuation's HTTP response until startup is checked. Redis
@@ -1271,120 +507,24 @@ export async function POST(request: NextRequest) {
 					}
 				};
 
-				const forwardEvent = (value: OrchestratorStreamInput) => {
-					const event = parseOrchestratorStreamEvent(value);
-					if (event) {
-						sendEvent(event);
-					}
-				};
-
-				const stableSerialize = (value: unknown): string => {
-					try {
-						return JSON.stringify(value) ?? "";
-					} catch {
-						return String(value);
-					}
-				};
-
-				type StreamedToolCall = ChatExecutionToolCall;
-
-				const lastToolSnapshots = new Map<
-					string,
-					{
-						args: string;
-						result: string;
-						status: string;
-						started: boolean;
-					}
-				>();
-
-				const emitToolCallDelta = (toolCall: StreamedToolCall) => {
-					const previous = lastToolSnapshots.get(toolCall.id);
-					const nextArgs = stableSerialize(toolCall.args ?? null);
-					const nextResult = stableSerialize(toolCall.result ?? null);
-
-					if (!previous?.started) {
-						{
-							const payload = {
-								type: "tool_start" as const,
-								toolCallId: toolCall.id,
-								toolName: toolCall.name,
-								serverName: toolCall.serverName,
-								args: toolCall.args,
-								status: toolCall.status,
-								mcpAppResourceUri: toolCall.mcpAppResourceUri,
-								mcpAppConfigId: toolCall.mcpAppConfigId,
-							};
-							type Emitted1295 = typeof payload;
-							sendEvent(
-								payload satisfies AssertAssignable<
-									Emitted1295,
-									OrchestratorStreamInput
-								>,
-							);
-						}
-					}
-
-					if (previous === undefined || nextArgs !== previous.args) {
-						{
-							const payload = {
-								type: "tool_input" as const,
-								toolCallId: toolCall.id,
-								toolName: toolCall.name,
-								serverName: toolCall.serverName,
-								args: toolCall.args,
-								status: toolCall.status,
-								mcpAppResourceUri: toolCall.mcpAppResourceUri,
-								mcpAppConfigId: toolCall.mcpAppConfigId,
-							};
-							type Emitted1308 = typeof payload;
-							sendEvent(
-								payload satisfies AssertAssignable<
-									Emitted1308,
-									OrchestratorStreamInput
-								>,
-							);
-						}
-					}
-
-					if (
-						(toolCall.status === "success" ||
-							toolCall.status === "complete" ||
-							toolCall.status === "error") &&
-						(previous === undefined ||
-							previous.status !== toolCall.status ||
-							nextResult !== previous.result)
-					) {
-						{
-							const payload = {
-								type: "tool_result" as const,
-								toolCallId: toolCall.id,
-								toolName: toolCall.name,
-								serverName: toolCall.serverName,
-								result: toolCall.result,
-								status: toolCall.status,
-								durationMs: toolCall.durationMs,
-								error: toolCall.error,
-								mcpAppResourceUri: toolCall.mcpAppResourceUri,
-								mcpAppConfigId: toolCall.mcpAppConfigId,
-							};
-							type Emitted1327 = typeof payload;
-							sendEvent(
-								payload satisfies AssertAssignable<
-									Emitted1327,
-									OrchestratorStreamInput
-								>,
-							);
-						}
-					}
-
-					lastToolSnapshots.set(toolCall.id, {
-						args: nextArgs,
-						result: nextResult,
-						status: toolCall.status,
-						started: true,
-					});
-				};
+				// The Redis events and the Temporal poll, diffed into stream
+				// events (../execution-observer.ts, shared with the agent
+				// runtime). A continue-as-new pins the newest run with the same
+				// authorization as the first attach.
+				const observer = createOrchestratorExecutionObserver({
+					emit: sendEvent,
+					reattach: async () =>
+						(
+							await getAuthorizedChatRun({
+								executionId,
+								userId,
+								engine: "orchestrator",
+								action: "reattach",
+								expectedOrganizationId:
+									organizationId ?? undefined,
+							})
+						).handle,
+				});
 
 				const closeController = () => {
 					resolveStartup();
@@ -1491,260 +631,15 @@ export async function POST(request: NextRequest) {
 					// early events (Redis pub/sub does not buffer messages).
 					// For resume, ownership was already verified above.
 					// =====================================================================
-					const redisUrl = getRedisUrl();
-					if (redisUrl) {
-						try {
-							const Redis = (await import("ioredis")).default;
-							redisSubscriber = new Redis(redisUrl, {
-								maxRetriesPerRequest: 1,
-								// Without this, ioredis disables TCP keepalive and an idle
-								// connection is reaped upstream, surfacing as ECONNRESET on the
-								// next write instead of a clean reconnect.
-								keepAlive: REDIS_KEEPALIVE_MS,
-								connectTimeout: 3000,
-								lazyConnect: true,
-								enableOfflineQueue: false,
-							});
-
-							// Attach the error listener BEFORE connect(). ioredis
-							// emits `error` during the connection attempt itself, and
-							// an `error` event with no listener is re-raised by Node
-							// as "[ioredis] Unhandled error event" at process level —
-							// 642 of them in production between 2026-06-17 and
-							// 2026-08-07, all charged to this route. The publisher in
-							// `@repo/temporal` already orders it this way; this route
-							// registered the listener after connect() and so had no
-							// listener during the only window that reliably throws.
-							redisSubscriber.on("error", (err: Error) => {
-								console.warn(
-									"[Orchestrator Stream] Redis subscriber error:",
-									err.message,
-								);
-								if (redisSubscriber) {
-									redisSubscriber.disconnect();
-									redisSubscriber = null;
-								}
-							});
-
-							await redisSubscriber.connect();
-
-							// Attach handlers BEFORE subscribing to avoid missing
-							// messages between subscribe acknowledgement and handler registration
-							redisSubscriber.on(
-								"message",
-								(_ch: string, message: string) => {
-									if (controllerClosed) {
-										return;
-									}
-									try {
-										const event = JSON.parse(
-											message,
-										) as ChatExecutionEvent;
-										if (
-											event.event ===
-											"execution.text_delta"
-										) {
-											{
-												const payload = {
-													type: "text_delta" as const,
-													content:
-														event.data?.text || "",
-												};
-												type Forwarded1544 =
-													typeof payload;
-												forwardEvent(
-													payload satisfies AssertAssignable<
-														Forwarded1544,
-														OrchestratorStreamInput
-													>,
-												);
-											}
-										} else if (
-											event.event ===
-											"execution.iteration_start"
-										) {
-											{
-												const payload = {
-													type: "text_start" as const,
-													iteration:
-														event.data?.iteration,
-												};
-												type Forwarded1552 =
-													typeof payload;
-												forwardEvent(
-													payload satisfies AssertAssignable<
-														Forwarded1552,
-														OrchestratorStreamInput
-													>,
-												);
-											}
-										} else if (
-											event.event ===
-											"execution.tool_start"
-										) {
-											const toolCall = event.data
-												?.toolCall as
-												| StreamedToolCall
-												| undefined;
-											if (toolCall?.id && toolCall.name) {
-												emitToolCallDelta(toolCall);
-											}
-										} else if (
-											event.event ===
-											"execution.tool_input"
-										) {
-											const toolCall = event.data
-												?.toolCall as
-												| StreamedToolCall
-												| undefined;
-											if (toolCall?.id && toolCall.name) {
-												emitToolCallDelta(toolCall);
-											}
-										} else if (
-											event.event ===
-											"execution.tool_complete"
-										) {
-											const toolCall = event.data
-												?.toolCall as
-												| StreamedToolCall
-												| undefined;
-											if (toolCall?.id && toolCall.name) {
-												emitToolCallDelta(toolCall);
-											}
-										} else if (
-											event.event ===
-											"execution.limit_signal"
-										) {
-											// Forward token-budget /
-											// provider-limit signals so the UI can show
-											// a banner + toast while the run continues.
-											{
-												const payload = {
-													type: "limit_signal" as const,
-													signal: event.data,
-												};
-												type Forwarded1597 =
-													typeof payload;
-												forwardEvent(
-													payload satisfies AssertAssignable<
-														Forwarded1597,
-														OrchestratorStreamInput
-													>,
-												);
-											}
-											const signalData = event.data as
-												| {
-														kind?: string;
-														provider?: string;
-												  }
-												| undefined;
-											if (signalData?.kind) {
-												metricsTracker.trackAiLimitSignal(
-													signalData.kind,
-													signalData.provider,
-												);
-											}
-										} else if (
-											event.event ===
-											"execution.context_compacted"
-										) {
-											{
-												const payload = {
-													type: "context_compacted" as const,
-													...event.data,
-												};
-												type Forwarded1617 =
-													typeof payload;
-												forwardEvent(
-													payload satisfies AssertAssignable<
-														Forwarded1617,
-														OrchestratorStreamInput
-													>,
-												);
-											}
-										} else if (
-											event.event ===
-											"execution.mcp_default_tool_invoked"
-										) {
-											// Forward the managed-default MCP
-											// success signal to the client.
-											// The consumer hook passes the
-											// payload as the second arg to
-											// `useAnalytics.trackEvent`.
-											{
-												const payload = {
-													type: "mcp_default_tool_invoked" as const,
-													payload: event.data,
-												};
-												type Forwarded1630 =
-													typeof payload;
-												forwardEvent(
-													payload satisfies AssertAssignable<
-														Forwarded1630,
-														OrchestratorStreamInput
-													>,
-												);
-											}
-										} else if (
-											event.event ===
-											"execution.mcp_default_tool_failed"
-										) {
-											// Failure counterpart of the
-											// above. The `errorMessage` field
-											// has already been run through
-											// `sanitizeMcpErrorMessage` at
-											// the emission site, so no further
-											// redaction is needed.
-											{
-												const payload = {
-													type: "mcp_default_tool_failed" as const,
-													payload: event.data,
-												};
-												type Forwarded1644 =
-													typeof payload;
-												forwardEvent(
-													payload satisfies AssertAssignable<
-														Forwarded1644,
-														OrchestratorStreamInput
-													>,
-												);
-											}
-										}
-									} catch {
-										// Invalid message, skip
-									}
-								},
-							);
-
-							const channel = `execution:${executionId}`;
-							await redisSubscriber.subscribe(channel);
-
-							console.log(
-								"[Orchestrator Stream] Redis subscriber connected",
-								{ channel },
-							);
-						} catch (err) {
-							console.warn(
-								"[Orchestrator Stream] Redis unavailable, text will appear on completion:",
-								err instanceof Error
-									? err.message
-									: String(err),
-							);
-							// Disconnect before dropping the reference. Nulling alone
-							// leaks the instance and its background reconnect timers
-							// for the life of the (reused) function instance, which is
-							// what turned one bad URL into a repeating error stream.
-							// The error listener above may already have done both.
-							if (redisSubscriber) {
-								try {
-									redisSubscriber.disconnect();
-								} catch {
-									// already torn down
-								}
-								redisSubscriber = null;
+					unsubscribeEvents = await subscribeExecutionEvents({
+						executionId,
+						onEvent: (event) => {
+							if (!controllerClosed) {
+								observer.onExecutionEvent(event);
 							}
-						}
-					}
+						},
+						logPrefix: "[Orchestrator Stream]",
+					});
 
 					let resumed = Boolean(resumeExecutionId);
 					if (legacyExecutionId) {
@@ -1873,21 +768,6 @@ export async function POST(request: NextRequest) {
 						);
 					}
 
-					// Track state for change detection
-					let lastProgress: OrchestratorProgressUpdate | null = null;
-					let lastPlan: TaskPlan | null = null;
-					let lastStepResultsCount = 0;
-					let lastPhase = "";
-					let lastPendingApproval: {
-						approvalId: string;
-						stepId: string;
-						reason: string;
-					} | null = null;
-					let lastPendingClarification: {
-						clarificationId: string;
-						question: string;
-						options?: string[];
-					} | null = null;
 					let isComplete = false;
 
 					// The ping keeps its own clock, so a poll waiting on a slow
@@ -1912,712 +792,9 @@ export async function POST(request: NextRequest) {
 						!controllerClosed &&
 						Date.now() - requestStartedAt < MAX_STREAM_DURATION
 					) {
-						try {
-							const description = await handle.describe();
-
-							if (
-								description.status.name === "CONTINUED_AS_NEW"
-							) {
-								handle = (
-									await getAuthorizedChatRun({
-										executionId,
-										userId,
-										engine: "orchestrator",
-										action: "reattach",
-										expectedOrganizationId:
-											organizationId ?? undefined,
-									})
-								).handle;
-							} else if (
-								description.status.name === "COMPLETED"
-							) {
-								// Get final result
-								const result: OrchestratorWorkflowOutput =
-									await handle.result();
-
-								// Query progress one more time to get proper per-step results
-								let workflowStepResults: OrchestratorStepResult[] =
-									[];
-								try {
-									const finalProgress: OrchestratorProgressUpdate =
-										await handle.query("progress");
-									if (
-										finalProgress?.stepResults &&
-										finalProgress.stepResults.length > 0
-									) {
-										workflowStepResults =
-											finalProgress.stepResults as OrchestratorStepResult[];
-									}
-								} catch {
-									// Query might fail if workflow ended too quickly
-								}
-
-								// Send step_complete events for any steps not yet sent
-								if (
-									workflowStepResults.length >
-									lastStepResultsCount
-								) {
-									for (
-										let i = lastStepResultsCount;
-										i < workflowStepResults.length;
-										i++
-									) {
-										const stepResult =
-											workflowStepResults[i];
-										for (const toolCall of stepResult.toolCalls ||
-											[]) {
-											if (toolCall?.id && toolCall.name) {
-												emitToolCallDelta(toolCall);
-											}
-										}
-										{
-											const payload = {
-												type: "step_complete" as const,
-												stepId: stepResult.stepId,
-												stepDescription:
-													stepResult.stepDescription,
-												status: stepResult.status,
-												response: stepResult.response,
-												toolCalls:
-													stepResult.toolCalls || [],
-												durationMs:
-													stepResult.durationMs,
-											};
-											type Emitted1825 = typeof payload;
-											sendEvent(
-												payload satisfies AssertAssignable<
-													Emitted1825,
-													OrchestratorStreamInput
-												>,
-											);
-										}
-									}
-								}
-
-								// Use workflow's per-step results if available, otherwise fallback to flat tool calls
-								const stepResults: OrchestratorStepResult[] =
-									workflowStepResults.length > 0
-										? workflowStepResults
-										: result.toolCalls?.length > 0
-											? [
-													{
-														stepId: "execution",
-														stepDescription:
-															"Task execution",
-														status: "complete" as const,
-														response:
-															result.response,
-														toolCalls:
-															result.toolCalls,
-														durationMs:
-															result.totalDurationMs ||
-															0,
-													},
-												]
-											: [];
-
-								if (workflowStepResults.length === 0) {
-									for (const toolCall of result.toolCalls ||
-										[]) {
-										if (toolCall?.id && toolCall.name) {
-											emitToolCallDelta(toolCall);
-										}
-									}
-								}
-
-								// The workflow can soft-fail while Temporal still
-								// reports COMPLETED (result.status === "failed",
-								// e.g. the orchestrator's dropped tool-call guard
-								// exhausting its retry and returning a persistent
-								// stream_error). Forwarding that as a "completed"
-								// SSE event renders the run as successful
-								// client-side and can leave a partial stub as the
-								// final response — this is exactly how staging
-								// orch-9294c339 stayed silent. Surface it as
-								// `error` instead; `cancelled` (and any other
-								// non-"failed" status) still flows through the
-								// normal `completed` emit below, unchanged.
-								if (result.status === "failed") {
-									{
-										const payload = {
-											...buildWorkflowErrorEvent(
-												result.error ??
-													"Workflow execution failed",
-												result.usageLimit,
-											),
-											approvalHistory:
-												result.approvalHistory,
-											// The turn row's stored stop, as the
-											// workflow returned it.
-											budgetStop: result.budgetStop,
-										};
-										type Emitted1885 = typeof payload;
-										sendEvent(
-											payload satisfies AssertAssignable<
-												Emitted1885,
-												OrchestratorStreamInput
-											>,
-										);
-									}
-								} else {
-									// Send completed event with final response.
-									// `status` is the run's DOMAIN status — a
-									// stopped turn completes in Temporal with
-									// status "cancelled" — and the client must
-									// render it as such, not as a completed
-									// answer.
-									const cancelled =
-										result.status === "cancelled";
-									{
-										const payload = {
-											type: "completed" as const,
-											approvalHistory:
-												result.approvalHistory,
-											status: result.status,
-											response: result.response,
-											plan: result.taskPlan
-												? {
-														...result.taskPlan,
-														steps: result.taskPlan.steps.map(
-															(step) => ({
-																...step,
-															}),
-														),
-													}
-												: undefined,
-											variables: result.variables,
-											stepResults,
-											toolCalls: result.toolCalls || [],
-											planningAudit: result.planningAudit,
-											artifacts: result.artifacts,
-											// A stopped turn offers no "continue in
-											// new chat".
-											handoffRecommended: cancelled
-												? undefined
-												: result.handoffRecommended,
-											limitSignals: result.limitSignals,
-											tokenBudget: result.tokenBudget,
-											// A token-allowance stop exactly as the
-											// turn row stores it (the workflow
-											// returns the stored value), whatever
-											// the status. The chat decides from
-											// the status whether to show it: a
-											// stopped turn shows no budget card.
-											budgetStop: result.budgetStop,
-											// The answer stopped at the output
-											// ceiling (review F25).
-											truncated: result.truncated,
-											model: result.model,
-											// Every ChatGPT plan ran out mid-turn
-											// and API billing finished it (Fizzy
-											// #3048).
-											apiBilling: result.apiBilling,
-										};
-										type Emitted1905 = typeof payload;
-										sendEvent(
-											payload satisfies AssertAssignable<
-												Emitted1905,
-												OrchestratorStreamInput
-											>,
-										);
-									}
-								}
-
-								isComplete = true;
-							} else if (description.status.name === "FAILED") {
-								// Try to get the actual error from the workflow result
-								let errorMessage = "Workflow execution failed";
-								let failure: unknown = errorMessage;
-								let usageLimit: Parameters<
-									typeof buildWorkflowErrorEvent
-								>[1];
-								try {
-									const result: OrchestratorWorkflowOutput =
-										await handle.result();
-									errorMessage =
-										result?.error || errorMessage;
-									failure = errorMessage;
-									usageLimit = result?.usageLimit;
-								} catch (resultError: unknown) {
-									failure = resultError;
-									if (resultError instanceof Error) {
-										errorMessage = resultError.message;
-									}
-								}
-								const event = buildWorkflowErrorEvent(
-									failure,
-									usageLimit,
-								);
-								if (!("code" in event)) {
-									event.message = errorMessage;
-								}
-								sendEvent(event);
-								isComplete = true;
-							} else if (
-								description.status.name === "CANCELLED"
-							) {
-								// A run cancelled in Temporal itself (a legacy
-								// run, or one cancelled outside this app) is a
-								// cancelled turn, not a failed one.
-								{
-									const payload = {
-										type: "completed" as const,
-										status: "cancelled",
-										toolCalls: [],
-										stepResults: [],
-									};
-									type Emitted1975 = typeof payload;
-									sendEvent(
-										payload satisfies AssertAssignable<
-											Emitted1975,
-											OrchestratorStreamInput
-										>,
-									);
-								}
-								isComplete = true;
-							} else if (
-								description.status.name === "TERMINATED"
-							) {
-								// An operator/API terminate is as final as
-								// FAILED, but reports its own status name. Left
-								// unhandled the loop would spin to the deadline
-								// and the client would spend resume windows
-								// re-attaching to a workflow that can never
-								// progress (issue #2269).
-								{
-									const payload = {
-										type: "error" as const,
-										message: "Workflow was terminated",
-									};
-									type Emitted1991 = typeof payload;
-									sendEvent(
-										payload satisfies AssertAssignable<
-											Emitted1991,
-											OrchestratorStreamInput
-										>,
-									);
-								}
-								isComplete = true;
-							} else if (
-								description.status.name === "TIMED_OUT"
-							) {
-								// Temporal's own execution/run timeout — same
-								// reasoning as TERMINATED above.
-								{
-									const payload = {
-										type: "error" as const,
-										message:
-											"Workflow timed out on the server",
-									};
-									type Emitted2001 = typeof payload;
-									sendEvent(
-										payload satisfies AssertAssignable<
-											Emitted2001,
-											OrchestratorStreamInput
-										>,
-									);
-								}
-								isComplete = true;
-							} else {
-								// Query current state
-								try {
-									const progress: OrchestratorProgressUpdate =
-										await handle.query("progress");
-									const plan: TaskPlan | null =
-										await handle.query("plan");
-									const pendingApproval: PendingApprovalInfo | null =
-										await handle.query("pendingApproval");
-
-									const pendingClarification: PendingClarificationInfo | null =
-										await handle.query(
-											"pendingClarification",
-										);
-
-									const routingDecision =
-										progress?.routingDecision;
-
-									// Check for phase change
-									if (
-										progress?.phase &&
-										progress.phase !== lastPhase
-									) {
-										lastPhase = progress.phase;
-										{
-											const payload = {
-												type: "phase" as const,
-												phase: progress.phase,
-												message: progress.message,
-											};
-											type Emitted2038 = typeof payload;
-											sendEvent(
-												payload satisfies AssertAssignable<
-													Emitted2038,
-													OrchestratorStreamInput
-												>,
-											);
-										}
-
-										// Send routing decision when available
-										if (
-											progress.phase === "planning" &&
-											routingDecision
-										) {
-											{
-												const payload = {
-													type: "routing" as const,
-													primaryAgent:
-														routingDecision.primaryAgent,
-													agentName:
-														routingDecision.primaryAgent, // Use primaryAgent as name
-													confidence:
-														routingDecision.confidence,
-													riskLevel:
-														routingDecision.riskLevel,
-													requiredConnections:
-														routingDecision.requiredConnections,
-													missingIntegrations:
-														routingDecision.missingIntegrations,
-													blockedOnConnections:
-														routingDecision.blockedOnConnections,
-												};
-												type Emitted2049 =
-													typeof payload;
-												sendEvent(
-													payload satisfies AssertAssignable<
-														Emitted2049,
-														OrchestratorStreamInput
-													>,
-												);
-											}
-										}
-									}
-
-									// Check for new plan
-									if (plan && !lastPlan) {
-										lastPlan = plan;
-										{
-											const payload = {
-												type: "planning" as const,
-												plan: {
-													id: plan.id,
-													description:
-														plan.description,
-													riskLevel: plan.riskLevel,
-													steps: plan.steps.map(
-														(s) => ({
-															id: s.id,
-															description:
-																s.description,
-															order: s.order,
-															status: s.status,
-															riskLevel:
-																s.riskLevel,
-															requiresApproval:
-																s.requiresApproval,
-														}),
-													),
-												},
-											};
-											type Emitted2072 = typeof payload;
-											sendEvent(
-												payload satisfies AssertAssignable<
-													Emitted2072,
-													OrchestratorStreamInput
-												>,
-											);
-										}
-									}
-
-									// Check for step progress
-									if (progress?.stepResults) {
-										const stepResults =
-											progress.stepResults as OrchestratorStepResult[];
-
-										// Send new step results with their tool calls
-										if (
-											stepResults.length >
-											lastStepResultsCount
-										) {
-											for (
-												let i = lastStepResultsCount;
-												i < stepResults.length;
-												i++
-											) {
-												const result = stepResults[i];
-												for (const toolCall of result.toolCalls ||
-													[]) {
-													if (
-														toolCall?.id &&
-														toolCall.name
-													) {
-														emitToolCallDelta(
-															toolCall,
-														);
-													}
-												}
-												// Send step_complete with full data including tool calls
-												{
-													const payload = {
-														type: "step_complete" as const,
-														stepId: result.stepId,
-														stepDescription:
-															result.stepDescription,
-														status: result.status,
-														response:
-															result.response,
-														toolCalls:
-															result.toolCalls ||
-															[],
-														durationMs:
-															result.durationMs,
-													};
-													type Emitted2119 =
-														typeof payload;
-													sendEvent(
-														payload satisfies AssertAssignable<
-															Emitted2119,
-															OrchestratorStreamInput
-														>,
-													);
-												}
-											}
-											lastStepResultsCount =
-												stepResults.length;
-										}
-									}
-
-									// Check for current step
-									if (progress?.currentStep && lastPlan) {
-										const currentStepId =
-											progress.currentStep.id;
-										const planStep = lastPlan.steps.find(
-											(s) => s.id === currentStepId,
-										);
-										if (
-											planStep &&
-											planStep.status === "in_progress"
-										) {
-											{
-												const payload = {
-													type: "step_start" as const,
-													stepId: currentStepId,
-													description:
-														progress.currentStep
-															.description,
-													order: planStep.order,
-												};
-												type Emitted2148 =
-													typeof payload;
-												sendEvent(
-													payload satisfies AssertAssignable<
-														Emitted2148,
-														OrchestratorStreamInput
-													>,
-												);
-											}
-										}
-									}
-
-									// Check for pending approval changes
-									// Handle three cases:
-									// 1. New approval (no previous pending)
-									// 2. Different approval (previous resolved, new one created)
-									// 3. Approval resolved (previous pending, now none)
-									if (pendingApproval) {
-										// Check if this is a new or different approval
-										const isNewApproval =
-											!lastPendingApproval;
-										const isDifferentApproval =
-											lastPendingApproval &&
-											lastPendingApproval.approvalId !==
-												pendingApproval.approvalId;
-
-										if (
-											isNewApproval ||
-											isDifferentApproval
-										) {
-											// If there was a previous approval that's now different, it was resolved
-											if (
-												isDifferentApproval &&
-												lastPendingApproval
-											) {
-												{
-													const payload = {
-														type: "approval_resolved" as const,
-														approvalId:
-															lastPendingApproval.approvalId,
-														stepId: lastPendingApproval.stepId,
-														message:
-															"Approval resolved",
-													};
-													type Emitted2182 =
-														typeof payload;
-													sendEvent(
-														payload satisfies AssertAssignable<
-															Emitted2182,
-															OrchestratorStreamInput
-														>,
-													);
-												}
-											}
-											// Now send the new approval requirement
-											lastPendingApproval =
-												pendingApproval;
-											{
-												const payload = {
-													type: "approval_required" as const,
-													approvalId:
-														pendingApproval.approvalId,
-													stepId: pendingApproval.stepId,
-													reason: pendingApproval.reason,
-												};
-												type Emitted2194 =
-													typeof payload;
-												sendEvent(
-													payload satisfies AssertAssignable<
-														Emitted2194,
-														OrchestratorStreamInput
-													>,
-												);
-											}
-										}
-									} else if (lastPendingApproval) {
-										// Approval was resolved with no new approval pending
-										const resolvedApproval =
-											lastPendingApproval;
-										lastPendingApproval = null;
-										{
-											const payload = {
-												type: "approval_resolved" as const,
-												approvalId:
-													resolvedApproval.approvalId,
-												stepId: resolvedApproval.stepId,
-												message: "Approval resolved",
-											};
-											type Emitted2207 = typeof payload;
-											sendEvent(
-												payload satisfies AssertAssignable<
-													Emitted2207,
-													OrchestratorStreamInput
-												>,
-											);
-										}
-									}
-
-									// Clarifying-question HITL — sibling of approval above.
-									if (pendingClarification) {
-										const isNewClarification =
-											!lastPendingClarification;
-										const isDifferentClarification =
-											lastPendingClarification &&
-											lastPendingClarification.clarificationId !==
-												pendingClarification.clarificationId;
-										if (
-											isNewClarification ||
-											isDifferentClarification
-										) {
-											if (
-												isDifferentClarification &&
-												lastPendingClarification
-											) {
-												{
-													const payload = {
-														type: "clarifying_resolved" as const,
-														clarificationId:
-															lastPendingClarification.clarificationId,
-													};
-													type Emitted2232 =
-														typeof payload;
-													sendEvent(
-														payload satisfies AssertAssignable<
-															Emitted2232,
-															OrchestratorStreamInput
-														>,
-													);
-												}
-											}
-											lastPendingClarification =
-												pendingClarification;
-											{
-												const payload = {
-													type: "clarifying_question" as const,
-													clarificationId:
-														pendingClarification.clarificationId,
-													stepId: pendingClarification.stepId,
-													question:
-														pendingClarification.question,
-													options:
-														pendingClarification.options,
-												};
-												type Emitted2240 =
-													typeof payload;
-												sendEvent(
-													payload satisfies AssertAssignable<
-														Emitted2240,
-														OrchestratorStreamInput
-													>,
-												);
-											}
-										}
-									} else if (lastPendingClarification) {
-										const resolvedClarification =
-											lastPendingClarification;
-										lastPendingClarification = null;
-										{
-											const payload = {
-												type: "clarifying_resolved" as const,
-												clarificationId:
-													resolvedClarification.clarificationId,
-											};
-											type Emitted2255 = typeof payload;
-											sendEvent(
-												payload satisfies AssertAssignable<
-													Emitted2255,
-													OrchestratorStreamInput
-												>,
-											);
-										}
-									}
-
-									// Send progress update
-									if (
-										progress &&
-										(progress.completedSteps !==
-											lastProgress?.completedSteps ||
-											progress.totalSteps !==
-												lastProgress?.totalSteps ||
-											progress.message !==
-												lastProgress?.message)
-									) {
-										lastProgress = progress;
-										{
-											const payload = {
-												type: "progress" as const,
-												completedSteps:
-													progress.completedSteps,
-												totalSteps: progress.totalSteps,
-												message: progress.message,
-												phase: progress.phase,
-											};
-											type Emitted2273 = typeof payload;
-											sendEvent(
-												payload satisfies AssertAssignable<
-													Emitted2273,
-													OrchestratorStreamInput
-												>,
-											);
-										}
-									}
-								} catch {
-									// Queries might fail if workflow just started - this is normal, don't log
-								}
-							}
-						} catch (pollError) {
-							console.error(
-								"[Orchestrator Stream] Poll error:",
-								pollError,
-							);
-						}
+						const polled = await observer.poll(handle);
+						handle = polled.handle;
+						isComplete = polled.complete;
 
 						// Wait before next poll
 						await new Promise((resolve) =>

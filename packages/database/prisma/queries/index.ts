@@ -70,6 +70,7 @@ export * from "./feature-flags";
 export * from "./feature-maturation";
 export * from "./firecrawl";
 export * from "./frames";
+export * from "./hosted-adoption";
 export * from "./incident-notifications";
 export * from "./incident-weekly-digest";
 export * from "./incidents";

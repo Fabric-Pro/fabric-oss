@@ -28,6 +28,7 @@ import { SYNTHETIC_TOOL_IMAGE_MESSAGE_FLAG } from "@repo/agent-core/recursion";
 import { logger } from "@repo/logs";
 import { z } from "zod";
 import type { AgentState } from "../state";
+import { isProposalRun } from "./proposal-client-mode";
 
 // Mirrors packages/integrations/src/microsoft/config/limits.ts. Duplicated here
 // because the agent bundle can't pull @repo/integrations (would inline the whole
@@ -123,6 +124,21 @@ function getAiToken(runtime: ToolRuntime<AgentState>): string | undefined {
 }
 
 /**
+ * Text the model wrote into a tool's arguments (a query, a path), for a log
+ * line. A classified Proposal run logs its length only: the model may have
+ * repeated its server-only prompt there (Fizzy #2946).
+ */
+function loggedArgument(
+	runtime: ToolRuntime<AgentState>,
+	value: string | null | undefined,
+): string | null {
+	if (!isProposalRun(runtime.configurable as Record<string, unknown>)) {
+		return value ?? null;
+	}
+	return value ? `[${value.length} chars]` : null;
+}
+
+/**
  * A 401 from an internal API almost always means the run's AI token expired
  * mid-generation (a long model call outliving the token TTL), not a
  * transient failure — so it's logged at error and the model is told to stop
@@ -189,6 +205,43 @@ function repositorySearchFailure(error: RepositoryReadError): string {
 			: (error.message ??
 				`Repository search failed (${error.kind}${error.status ? `, HTTP ${error.status}` : ""}).`);
 	return `${reason} The repository could not be searched, so this says nothing about whether the code exists.`;
+}
+
+/**
+ * The code /api/internal/code-search answers a 403 with when the person's
+ * project role does not grant repository read.
+ */
+const REPOSITORY_READ_REQUIRED = "REPOSITORY_READ_REQUIRED";
+
+/**
+ * What a repository tool tells the model when /api/internal/code-search
+ * refused it because the person's project role cannot read the connected
+ * repository. Every repository tool would be refused the same way for the
+ * rest of the conversation, so the model is told not to call them again.
+ * Null for any other response, a 403 without that code included, which keeps
+ * its tool's own wording.
+ */
+async function repositoryReadRefusal(
+	tool: string,
+	response: Response,
+): Promise<string | null> {
+	if (response.status !== 403) {
+		return null;
+	}
+	let code: unknown;
+	try {
+		code = ((await response.json()) as { code?: unknown } | null)?.code;
+	} catch {
+		return null;
+	}
+	if (code !== REPOSITORY_READ_REQUIRED) {
+		return null;
+	}
+	logger.warn(`[ToolNode] ${tool} refused: no repository read`, {
+		status: response.status,
+		code,
+	});
+	return "The person's project role does not allow reading the connected repository. Do not call search_repository_code, get_repository_file or list_repository_structure again in this conversation: each would be refused the same way. Answer from the context you already have, and if the person asks about the code, tell them their project role does not include repository access.";
 }
 
 /**
@@ -270,8 +323,8 @@ const searchTeamsMessagesTool = tool(
 
 		logger.info("[ToolNode] Executing search_teams_messages", {
 			projectId,
-			query,
-			alternateQuery: alternateQuery || null,
+			query: loggedArgument(runtime, query),
+			alternateQuery: loggedArgument(runtime, alternateQuery || null),
 			hasStagePrompt: !!systemPrompt,
 			limit: clampedLimit,
 		});
@@ -332,7 +385,7 @@ const searchTeamsMessagesTool = tool(
 				logger.info("[ToolNode] Teams search returned excerpts", {
 					excerptCount: result.excerpts.length,
 					twoPass: !!result.twoPass,
-					query,
+					query: loggedArgument(runtime, query),
 				});
 				return formatExcerpts(result.excerpts);
 			}
@@ -343,7 +396,7 @@ const searchTeamsMessagesTool = tool(
 
 			logger.info("[ToolNode] Teams search returned legacy messages", {
 				messageCount: result.messages.length,
-				query,
+				query: loggedArgument(runtime, query),
 			});
 
 			return result.messages
@@ -417,7 +470,7 @@ const getChatMessagesTool = tool(
 		const aiToken = getAiToken(runtime);
 		logger.info("[ToolNode] Executing get_chat_messages", {
 			chatId,
-			query: query || null,
+			query: loggedArgument(runtime, query || null),
 			hasStagePrompt: !!runtime.state.systemPrompt,
 			limit,
 		});
@@ -601,7 +654,7 @@ const getTeamsChannelMessagesTool = tool(
 		logger.info("[ToolNode] Executing get_teams_channel_messages", {
 			teamId,
 			channelId,
-			query: query || null,
+			query: loggedArgument(runtime, query || null),
 			hasStagePrompt: !!runtime.state.systemPrompt,
 			limit,
 		});
@@ -824,7 +877,7 @@ const listMessageRepliesTool = tool(
 			teamId,
 			channelId,
 			messageId,
-			query: query || null,
+			query: loggedArgument(runtime, query || null),
 			hasStagePrompt: !!runtime.state.systemPrompt,
 			limit,
 		});
@@ -1181,7 +1234,7 @@ const searchSlackMessagesTool = tool(
 
 		logger.info("[ToolNode] Executing search_slack_messages", {
 			projectId,
-			query,
+			query: loggedArgument(runtime, query),
 			limit: clampedLimit,
 		});
 
@@ -1240,7 +1293,7 @@ const searchSlackMessagesTool = tool(
 
 			logger.info("[ToolNode] Slack search returned results", {
 				messageCount: result.messages.length,
-				query,
+				query: loggedArgument(runtime, query),
 			});
 
 			return result.messages
@@ -1624,6 +1677,9 @@ spaces, gdocs, zips, etc.). Omit 'types' to return all file types.`,
  * Searches all embedded project context (meeting transcripts, documents, codebase, etc.)
  * via Qdrant vector search. Same core logic as the orchestrator's project_rag_query.
  */
+// Covers the median knowledge search in matched text.
+const PROJECT_KNOWLEDGE_MAX_CHARS = 24_000;
+
 const searchProjectKnowledgeTool = tool(
 	async ({ query, topK = 10 }, runtime: ToolRuntime<AgentState>) => {
 		const apiUrl = getApiUrl();
@@ -1640,7 +1696,7 @@ const searchProjectKnowledgeTool = tool(
 
 		logger.info("[ToolNode] Executing search_project_knowledge", {
 			projectId,
-			query,
+			query: loggedArgument(runtime, query),
 			topK,
 		});
 
@@ -1661,6 +1717,7 @@ const searchProjectKnowledgeTool = tool(
 						projectId,
 						query,
 						topK: Math.min(Math.max(1, topK), 20),
+						maxChars: PROJECT_KNOWLEDGE_MAX_CHARS,
 					}),
 				},
 			);
@@ -1707,7 +1764,7 @@ const searchProjectKnowledgeTool = tool(
 	{
 		name: "search_project_knowledge",
 		description:
-			"Search the project's knowledge base for relevant information including meeting transcripts, uploaded documents, codebase analysis, and integration content.",
+			"Search matched passages from project knowledge. Use read_project_source for full text to quote, follow its structure, or continue cut passages.",
 		schema: z.object({
 			query: z
 				.string()
@@ -1720,6 +1777,65 @@ const searchProjectKnowledgeTool = tool(
 				.describe(
 					"Maximum number of results to return (default: 10, max: 20)",
 				),
+		}),
+	},
+);
+
+const readProjectSourceTool = tool(
+	async ({ sourceId, offset }, runtime: ToolRuntime<AgentState>) => {
+		const { projectId, userId } = runtime.state;
+		if (!projectId || !userId) {
+			return "Project source read skipped: missing project or user context.";
+		}
+		try {
+			const aiToken = getAiToken(runtime);
+			const response = await fetch(
+				`${getApiUrl()}/api/internal/project-source`,
+				{
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						...(aiToken ? { "X-AI-Token": aiToken } : {}),
+					},
+					body: JSON.stringify({ projectId, sourceId, offset }),
+				},
+			);
+			if (!response.ok) {
+				logger.warn("[ToolNode] project-source API error", {
+					status: response.status,
+				});
+				if (response.status === 401) {
+					return internalApiFailure(
+						"read_project_source",
+						response.status,
+					);
+				}
+				return `Project source read failed (${response.status}). Try searching project knowledge again.`;
+			}
+			const result = (await response.json()) as {
+				title: string;
+				content: string;
+				contentAvailable: boolean;
+				unavailableReason?: string;
+				truncated: boolean;
+				nextOffset?: number;
+			};
+			return `${result.title}\n\n${result.contentAvailable ? result.content : result.unavailableReason || "Source text is unavailable."}${result.truncated ? `\nNext offset: ${result.nextOffset}` : ""}`;
+		} catch (error) {
+			logger.warn(
+				"[ToolNode] project-source request failed:",
+				error instanceof Error ? error.message : error,
+			);
+			return "Project source read failed. Try searching project knowledge again.";
+		}
+	},
+	{
+		name: "read_project_source",
+		description:
+			"Read a project knowledge source in full, paging with offset when needed.",
+		schema: z.object({
+			sourceId: z.string(),
+			offset: z.number().optional(),
 		}),
 	},
 );
@@ -1742,8 +1858,8 @@ const searchRepositoryCodeTool = tool(
 
 		logger.info("[ToolNode] Executing search_repository_code", {
 			projectId,
-			query,
-			path,
+			query: loggedArgument(runtime, query),
+			path: loggedArgument(runtime, path),
 			language,
 		});
 
@@ -1774,6 +1890,13 @@ const searchRepositoryCodeTool = tool(
 						"search_repository_code",
 						response.status,
 					);
+				}
+				const refusal = await repositoryReadRefusal(
+					"search_repository_code",
+					response,
+				);
+				if (refusal) {
+					return refusal;
 				}
 				logger.warn("[ToolNode] code-search API error", {
 					status: response.status,
@@ -1866,7 +1989,7 @@ const getRepositoryFileTool = tool(
 
 		logger.info("[ToolNode] Executing get_repository_file", {
 			projectId,
-			path,
+			path: loggedArgument(runtime, path),
 		});
 
 		try {
@@ -1894,6 +2017,13 @@ const getRepositoryFileTool = tool(
 						"get_repository_file",
 						response.status,
 					);
+				}
+				const refusal = await repositoryReadRefusal(
+					"get_repository_file",
+					response,
+				);
+				if (refusal) {
+					return refusal;
 				}
 				return `File retrieval failed (${response.status}).`;
 			}
@@ -1995,6 +2125,13 @@ const listRepositoryStructureTool = tool(
 						"list_repository_structure",
 						response.status,
 					);
+				}
+				const refusal = await repositoryReadRefusal(
+					"list_repository_structure",
+					response,
+				);
+				if (refusal) {
+					return refusal;
 				}
 				return `Structure listing failed (${response.status}).`;
 			}
@@ -2201,7 +2338,10 @@ function toolGateKey(state: AgentState): string {
 
 /** Build the tool list for one gate combination — mirrors master's old conditional push order. */
 function toolsForGates(state: AgentState): StructuredToolInterface[] {
-	const tools: StructuredToolInterface[] = [searchProjectKnowledgeTool];
+	const tools: StructuredToolInterface[] = [
+		searchProjectKnowledgeTool,
+		readProjectSourceTool,
+	];
 
 	// Always available when an active skill is present — lets the skill
 	// persist generated HTML/SVG/binary artifacts alongside the document.

@@ -25,6 +25,11 @@
  */
 
 import { useCopilotAction, useCopilotReadable } from "@copilotkit/react-core";
+import {
+	askClarifyingQuestionAction,
+	type ClarifyingQuestionFrequency,
+	clarifyingQuestionPolicy,
+} from "@repo/utils/editor-frontend-actions";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -32,37 +37,9 @@ import {
 	normalizeClarifyingOptions,
 } from "./ClarifyingQuestionCard";
 
-export type ClarifyingQuestionFrequency = "MINIMAL" | "BALANCED" | "THOROUGH";
-
-/**
- * The natural-language policy the agent receives (as readable context) telling
- * it how eagerly to ask clarifying questions. Pure + exported for unit tests.
- */
-export function clarifyingQuestionPolicy(
-	frequency: ClarifyingQuestionFrequency,
-): string {
-	switch (frequency) {
-		case "MINIMAL":
-			return [
-				"Clarifying-question policy: MINIMAL.",
-				"Avoid interrupting the user with questions. Make a reasonable assumption and proceed.",
-				"Only call `ask_clarifying_question` when you genuinely cannot proceed without the user's input —",
-				"at most one question, and only when it truly blocks progress.",
-			].join(" ");
-		case "THOROUGH":
-			return [
-				"Clarifying-question policy: THOROUGH.",
-				"Proactively call `ask_clarifying_question` whenever additional detail would meaningfully improve the result.",
-				"You may ask up to 3 focused questions per turn, one card at a time, each with up to 3 short suggested answers.",
-			].join(" ");
-		default:
-			return [
-				"Clarifying-question policy: BALANCED.",
-				"Call `ask_clarifying_question` when there is material ambiguity that would change the output;",
-				"otherwise proceed with a reasonable approach. At most one question per turn.",
-			].join(" ");
-	}
-}
+// The built-in policy text and the action's definition are shared with the
+// agent, which binds the same definition on a client Proposal's chat.
+export { type ClarifyingQuestionFrequency, clarifyingQuestionPolicy };
 
 export interface UseClarifyingQuestionsOptions {
 	/** Project's configured frequency tier. Defaults to BALANCED. */
@@ -98,44 +75,14 @@ export function useClarifyingQuestions({
 	});
 
 	// The interactive card the agent renders when it asks a clarifying question.
+	// The per-project, admin-editable frequency policy is embedded directly in
+	// the tool description so it reliably reaches the model (the bound tool's
+	// schema + description is always sent to the LLM).
+	const action = askClarifyingQuestionAction(policy);
 	useCopilotAction({
-		name: "ask_clarifying_question",
-		description:
-			"Use this tool to ask the user a single clarifying or follow-up question and wait " +
-			"for their answer. ALWAYS call this tool to ask a clarifying question — never write " +
-			"the question as plain text. Provide a concise question and up to 3 short, distinct " +
-			"suggested answers in `options` (the user can also type their own answer). The tool " +
-			"returns the user's answer; continue using it. If the result indicates the user " +
-			"dismissed it (answered: false), record the question under an Open Questions section " +
-			"and pause instead of guessing. " +
-			// The per-project, admin-editable frequency policy is embedded directly
-			// in the tool description so it reliably reaches the model (the bound
-			// tool's schema + description is always sent to the LLM).
-			`${policy} ` +
-			"Use calm, neutral language — never imply an answer is required or 'best'.",
-		parameters: [
-			{
-				name: "question",
-				type: "string",
-				description:
-					"The clarifying question to ask the user (one sentence).",
-				required: true,
-			},
-			{
-				name: "options",
-				type: "string[]",
-				description:
-					"Up to 3 short, distinct suggested answers the user can click. Keep each concise and parallel in form.",
-				required: false,
-			},
-			{
-				name: "allowCustom",
-				type: "boolean",
-				description:
-					"Whether to offer a free-text 'type your own answer' field. Defaults to true; leave unset.",
-				required: false,
-			},
-		],
+		name: action.name,
+		description: action.description,
+		parameters: action.parameters,
 		renderAndWaitForResponse: ({ args, respond, status, result }) => {
 			const question =
 				typeof args.question === "string" && args.question.trim()

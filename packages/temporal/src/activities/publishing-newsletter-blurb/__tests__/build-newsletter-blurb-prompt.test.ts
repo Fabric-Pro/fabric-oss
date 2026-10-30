@@ -9,6 +9,7 @@ import {
 	BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS,
 	SETTLED_DECISIONS_HEADING,
 } from "../../publishing-shared/settled-approvals";
+import { WRITING_STYLE_CLAUSE } from "../../publishing-shared/writing-style-clause";
 import {
 	buildNewsletterBlurbLockedClauses,
 	buildNewsletterBlurbPrompt,
@@ -780,4 +781,8 @@ describe("buildNewsletterBlurbLockedClauses — the settled-decisions block", ()
 			'- "example-org" - asked: "May we name example-org in public material?" - answered: "Yes, the customer agreed to be named in public material."',
 		);
 	});
+});
+
+it("includes the shared writing style clause", () => {
+	expect(buildNewsletterBlurbLockedClauses()).toContain(WRITING_STYLE_CLAUSE);
 });

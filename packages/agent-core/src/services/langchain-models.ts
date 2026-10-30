@@ -1620,7 +1620,7 @@ function createUninstrumentedProviderModel(
 					"Example: https://xyz.cloud.databricks.com",
 			);
 		}
-		const trimmedHost = baseUrl.trim().replace(/\/+$/, "");
+		const trimmedHost = trimTrailingSlashes(baseUrl.trim());
 		let servingBaseUrl: string;
 		try {
 			const { origin, pathname } = new URL(trimmedHost);
@@ -2215,4 +2215,12 @@ export async function getAgentModelAsync(
 			"Please configure an AI provider in Settings > AI Providers. " +
 			`Tenant context: userId=${tenantUserId || "none"}, orgId=${tenantOrgId || "none"}`,
 	);
+}
+
+function trimTrailingSlashes(value: string): string {
+	let end = value.length;
+	while (end > 0 && value.charCodeAt(end - 1) === 0x2f) {
+		end--;
+	}
+	return value.slice(0, end);
 }

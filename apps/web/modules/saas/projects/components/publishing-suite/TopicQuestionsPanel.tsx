@@ -7,7 +7,7 @@ import { Button } from "@ui/components/button";
 import { Textarea } from "@ui/components/textarea";
 import { cn } from "@ui/lib";
 import { ChevronDownIcon, PencilIcon, SparklesIcon } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
 	type AssignableMember,
@@ -81,6 +81,8 @@ const SUGGESTED_ANSWER_LABELS = {
 } as const;
 
 type Props = {
+	isActive?: boolean;
+	onAnswerSaved?: (question: string, answer: string) => void;
 	projectId: string;
 	topicId: string;
 	organizationId: string | null;
@@ -307,6 +309,8 @@ function worthGrouping(
  * raise it again. `SummaryQuestionsPanel` has had that lever since #5.
  */
 export function TopicQuestionsPanel({
+	isActive = true,
+	onAnswerSaved,
 	projectId,
 	topicId,
 	organizationId,
@@ -318,6 +322,9 @@ export function TopicQuestionsPanel({
 	threads,
 	members = [],
 }: Props) {
+	const regionId = useId();
+	const answeredId = `${regionId}-answered`;
+	const possiblyResolvedId = `${regionId}-possibly-resolved`;
 	const queryClient = useQueryClient();
 	const [showAnswered, setShowAnswered] = useState(false);
 	const [showPossiblyResolved, setShowPossiblyResolved] = useState(false);
@@ -331,7 +338,7 @@ export function TopicQuestionsPanel({
 	// Shares the maturation reader, and so the `#q-<rootId>` fragment
 	// `publishingQuestionAssigned` writes, rather than inventing a second
 	// anchor convention for the same act.
-	useScrollToQuestion(!isLoading);
+	useScrollToQuestion(isActive && !isLoading);
 
 	/**
 	 * Open the collapsed group that holds the linked question — once, on
@@ -349,8 +356,7 @@ export function TopicQuestionsPanel({
 	 * arrival open, so the next list a successful refetch delivers still gets a
 	 * chance to open the group. Nothing after a real arrival opens anything —
 	 * answering the linked question, a later refetch or a window-focus refetch
-	 * leaves the groups as the person set them. The tab remounts this panel, so
-	 * coming back to it with the fragment still in the URL is a new arrival.
+	 * leaves the groups as the person set them. The arrival is retained while this panel stays mounted.
 	 *
 	 * Declared before the loading return so the hook order never changes. Keyed
 	 * on `threads` as well as the two flags, because TanStack Query reports
@@ -359,7 +365,7 @@ export function TopicQuestionsPanel({
 	 */
 	const arrival = useRef({ hash: "", done: false });
 	useEffect(() => {
-		if (isLoading || typeof window === "undefined") {
+		if (!isActive || isLoading || typeof window === "undefined") {
 			return;
 		}
 		const hash = window.location.hash;
@@ -389,7 +395,7 @@ export function TopicQuestionsPanel({
 		if (linked && !isFetching) {
 			arrival.current.done = true;
 		}
-	}, [isLoading, isFetching, threads]);
+	}, [isActive, isLoading, isFetching, threads]);
 
 	const assignableMembers = useMemo<AssignableMember[]>(() => {
 		const rows = members.map((m) => ({
@@ -410,7 +416,16 @@ export function TopicQuestionsPanel({
 
 	const answer = useMutation(
 		orpc.projects.publishingSuite.answerTopicQuestion.mutationOptions({
-			onSuccess: (result) => {
+			onSuccess: (result, variables) => {
+				if (result.status !== "question_changed") {
+					const root = threads.find(
+						(t) => t.root.questionId === variables.questionId,
+					)?.root;
+					onAnswerSaved?.(
+						root?.content ?? root?.summary ?? "Question",
+						variables.answer,
+					);
+				}
 				if (result.status === "question_changed") {
 					// Nothing was recorded: a newer analysis rewrote this question
 					// after the member started writing. The refetch below puts the
@@ -708,7 +723,7 @@ export function TopicQuestionsPanel({
 						type="button"
 						onClick={() => setShowAnswered((open) => !open)}
 						aria-expanded={showAnswered}
-						aria-controls="questions-answered"
+						aria-controls={answeredId}
 						className="flex w-full items-center gap-2 py-1 text-left"
 					>
 						<ChevronDownIcon
@@ -724,7 +739,7 @@ export function TopicQuestionsPanel({
 						</span>
 					</button>
 					{showAnswered ? (
-						<ul id="questions-answered" className="mt-2 space-y-3">
+						<ul id={answeredId} className="mt-2 space-y-3">
 							{resolved.map((thread) => (
 								<AnsweredCard
 									key={thread.root.id}
@@ -751,7 +766,7 @@ export function TopicQuestionsPanel({
 						type="button"
 						onClick={() => setShowPossiblyResolved((open) => !open)}
 						aria-expanded={showPossiblyResolved}
-						aria-controls="questions-possibly-resolved"
+						aria-controls={possiblyResolvedId}
 						className="flex w-full items-center gap-2 py-1 text-left"
 					>
 						<ChevronDownIcon
@@ -767,10 +782,7 @@ export function TopicQuestionsPanel({
 						</span>
 					</button>
 					{showPossiblyResolved ? (
-						<div
-							id="questions-possibly-resolved"
-							className="mt-2 space-y-3"
-						>
+						<div id={possiblyResolvedId} className="mt-2 space-y-3">
 							<p className="text-muted-foreground text-xs">
 								The latest analysis stopped raising these — they
 								can still be answered.

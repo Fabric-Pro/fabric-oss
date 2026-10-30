@@ -167,9 +167,12 @@ describe("seedCarriedOverHistory", () => {
 
 describe("both stream routes", () => {
 	const routes = {
-		"the Direct engine": "app/api/agents/fabric-ai/stream/route.ts",
+		// The Direct route admits its turns in `direct-turn.ts`.
+		"the Direct engine": "app/api/agents/fabric-ai/stream/direct-turn.ts",
+		// The Orchestrator route and runtime engine resolve their turns in
+		// `orchestrator-turn.ts`.
 		"the Orchestrator engine":
-			"app/api/agents/fabric-ai/orchestrator-temporal/stream/route.ts",
+			"app/api/agents/fabric-ai/orchestrator-temporal/orchestrator-turn.ts",
 	};
 
 	it.each(Object.entries(routes))(

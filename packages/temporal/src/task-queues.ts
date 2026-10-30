@@ -73,6 +73,16 @@ export const PROJECT_DOCUMENT_GENERATION_ACTIVITY_TASK_QUEUE =
 	"project-document-generation" as const;
 
 /**
+ * Durable CopilotKit assistant runs (`agUiAgentRunWorkflow` and its one
+ * activity). Their own queue, not the document-generation one: a person is
+ * waiting on both, and an assistant run that cannot get a slot within the
+ * web runtime's pickup timeout falls back to running in the request, so a
+ * shared, busy queue would quietly turn durable runs off while also taking
+ * slots from foreground document generation.
+ */
+export const AGUI_RUN_TASK_QUEUE = "agui-runs" as const;
+
+/**
  * Project discovery, scope intake, meeting operations and ingestion control.
  * Five independent activity slots keep visible progress off both bulk indexing
  * and legacy scheduled commands. Workflow starts keep their existing queues.

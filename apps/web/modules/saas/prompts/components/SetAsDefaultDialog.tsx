@@ -9,6 +9,7 @@ import {
 	listPromptActions,
 	PROMPT_AGENT_TARGETS,
 	PROPOSAL_CLIENT_MAIN_AGENT_KEY,
+	PROPOSAL_CLIENT_REVISION_AGENT_KEY,
 	promptActionId,
 	promptDocumentTypeLabel,
 } from "@repo/utils/prompt-action-catalog";
@@ -51,12 +52,13 @@ type BindingScope = "SYSTEM" | "ORG" | "USER";
 
 /**
  * Agents the bind procedure refuses a personal default for (Fizzy #2801). The
- * client proposal prompt is the whole of what the client reads, so it is
- * chosen for the organization or not at all; offering "just for me" would
- * offer a write the server refuses.
+ * client proposal prompts (Main, and its revision since Fizzy #2946) steer the
+ * whole of what the client reads, so they are chosen for the organization or
+ * not at all; offering "just for me" would offer a write the server refuses.
  */
 const PERSONAL_DEFAULT_REFUSED_AGENTS: ReadonlySet<string> = new Set([
 	PROPOSAL_CLIENT_MAIN_AGENT_KEY,
+	PROPOSAL_CLIENT_REVISION_AGENT_KEY,
 ]);
 
 /** One row of `bind.listForPrompt` — an action this prompt already serves. */

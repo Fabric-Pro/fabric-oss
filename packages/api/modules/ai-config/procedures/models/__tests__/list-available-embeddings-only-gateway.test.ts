@@ -16,6 +16,7 @@ const db = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	SELECTABLE_CATALOG_MODEL_FILTER: { isActive: true, deprecatedAt: null },
 	db: {
 		cloudProviderConfig: { findMany: db.providers },
 		aiModel: { findMany: db.models },

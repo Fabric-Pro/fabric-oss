@@ -5,7 +5,7 @@
  * Used by Temporal activities and API routes.
  */
 
-import { db } from "@repo/database";
+import { canUseWorkflowIntegrations, db } from "@repo/database";
 import { decryptApiKey } from "@repo/utils";
 
 export interface SlackCredentials {
@@ -17,12 +17,22 @@ export interface SlackCredentials {
 	teamName?: string;
 }
 
+const SLACK_NOT_CONNECTED =
+	"Slack not connected. Please connect your Slack workspace in Settings > Integrations.";
+
 /**
  * Get Slack credentials from WorkflowIntegration.
  *
  * Uses XOR tenant isolation:
  * - If organizationId provided: look for org-level integration
  * - Otherwise: look for personal user integration
+ *
+ * An organization's connection is used only while the user is a member of
+ * that organization (`canUseWorkflowIntegrations`, as the Teams helpers
+ * check): the callers act for a user from a token or a workflow input, and a
+ * user who has left, or who never belonged, gets no credentials even if a row
+ * with their id remains. A refusal reads as not connected, as it does for
+ * Teams.
  *
  * @param userId - The user ID
  * @param organizationId - Optional organization ID for org-level integrations
@@ -32,6 +42,10 @@ export default async function getSlackCredentials(
 	userId: string,
 	organizationId?: string,
 ): Promise<SlackCredentials> {
+	if (!(await canUseWorkflowIntegrations(userId, organizationId))) {
+		throw new Error(SLACK_NOT_CONNECTED);
+	}
+
 	const integration = organizationId
 		? await db.workflowIntegration.findFirst({
 				where: {
@@ -53,9 +67,7 @@ export default async function getSlackCredentials(
 			});
 
 	if (!integration) {
-		throw new Error(
-			"Slack not connected. Please connect your Slack workspace in Settings > Integrations.",
-		);
+		throw new Error(SLACK_NOT_CONNECTED);
 	}
 
 	if (!integration.credentials) {

@@ -279,3 +279,14 @@ export function exportDiagramCaption(source: string): string | null {
 	const scrubbed = scrubCitationText(caption).text.trim();
 	return scrubbed === "" ? null : scrubbed;
 }
+
+/** Each diagram fence's printed caption, by its `diagramSources` order. */
+export function exportDiagramCaptions(
+	prepared: PreparedExportMarkdown,
+): (string | null)[] {
+	const captions: (string | null)[] = prepared.diagramSources.map(() => null);
+	for (const [node, index] of prepared.diagramIndex) {
+		captions[index] = exportDiagramCaption(node.value);
+	}
+	return captions;
+}

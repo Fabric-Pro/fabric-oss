@@ -1,3 +1,5 @@
+import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
+import { useSyncExternalStore } from "react";
 /**
  * Regression test for the CopilotKit AG-UI mount-time handshake toasting a
  * scary "Couldn't read the document content..." error before any AI review
@@ -46,7 +48,7 @@
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, waitFor } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---- orpc: generic proxy so every namespace/procedure this 5000-line
@@ -161,18 +163,85 @@ vi.mock("@saas/auth/hooks/use-session", () => ({
 // <CopilotSidebar> in the source JSX, which is stubbed to `() => null` below
 // so none of that subtree's own hooks/imports need to be touched.
 //
-// `useCopilotChat` is the one deliberately-live mock here: `isLoading`
+// The shared session hook is deliberately live here: `isLoading`
 // reads from a module-level mutable flag so each test can simulate the
 // AG-UI handshake's mount-time `isLoading: true` (default) and the eventual
 // steady state independently of the editor's own readiness.
+const fakeDoc = vi.hoisted(() => {
+	const events = new Set<() => void>();
+	const agentListeners = new Set<Record<string, (args: any) => void>>();
+	const page = {
+		revision: 0,
+		renders: vi.fn(),
+		markdown: vi.fn(),
+		subscribe: (fn: () => void) => {
+			events.add(fn);
+			return () => {
+				events.delete(fn);
+			};
+		},
+		subscribeNone: () => () => {},
+		agent: {
+			agentId: "project_document_generator",
+			isRunning: false,
+			state: {} as Record<string, unknown>,
+			messages: [] as unknown[],
+			subscribe: (listener: Record<string, (args: any) => void>) => {
+				agentListeners.add(listener);
+				return { unsubscribe: () => agentListeners.delete(listener) };
+			},
+			setState: (state: Record<string, unknown>) => {
+				page.agent.state = structuredClone(state);
+				page.emit();
+			},
+		},
+		runtime: {
+			agents: {} as Record<string, unknown>,
+			subscribe: () => ({ unsubscribe() {} }),
+		},
+		emit: () => {
+			page.revision++;
+			for (const listener of agentListeners) {
+				listener.onStateChanged?.({ state: page.agent.state });
+			}
+			for (const fn of events) {
+				fn();
+			}
+		},
+	};
+	page.runtime.agents.project_document_generator = page.agent;
+	return page;
+});
 let mockIsLoading = true;
 vi.mock("@copilotkit/react-core", () => ({
-	useCoAgent: () => ({ state: {}, setState: vi.fn(), nodeName: undefined }),
 	useCopilotAction: vi.fn(),
-	useCopilotChat: () => ({ isLoading: mockIsLoading, visibleMessages: [] }),
-	useCopilotChatInternal: () => ({ messages: [], setMessages: vi.fn() }),
+	useFrontendTool: vi.fn(),
+	useCopilotChatInternal: () => {
+		useSyncExternalStore(fakeDoc.subscribe, () => fakeDoc.revision);
+		return {
+			messages: [],
+			visibleMessages: [],
+			isLoading: mockIsLoading,
+			agent: fakeDoc.agent,
+			setMessages: vi.fn(),
+			appendMessage: vi.fn(),
+		};
+	},
 	useCopilotReadable: vi.fn(),
 	useCopilotMessagesContext: () => ({ setMessages: vi.fn() }),
+}));
+vi.mock("@copilotkit/react-core/v2", () => ({
+	useAgent: ({ updates }: { updates?: unknown[] }) => {
+		useSyncExternalStore(
+			updates?.length === 0 ? fakeDoc.subscribeNone : fakeDoc.subscribe,
+			() => (updates?.length === 0 ? 0 : fakeDoc.revision),
+		);
+		return { agent: fakeDoc.agent };
+	},
+	useCopilotKit: () => ({ copilotkit: fakeDoc.runtime }),
+}));
+vi.mock("@copilotkit/react-core/v2/context", () => ({
+	useCopilotKit: () => ({ copilotkit: fakeDoc.runtime }),
 }));
 vi.mock("@copilotkit/react-ui", () => ({
 	CopilotSidebar: () => null,
@@ -185,7 +254,10 @@ vi.mock("@copilotkit/react-ui", () => ({
 let mockEditor: any = null;
 vi.mock("@tiptap/react", () => ({
 	EditorContent: () => null,
-	useEditor: () => mockEditor,
+	useEditor: () => {
+		fakeDoc.renders();
+		return mockEditor;
+	},
 }));
 
 vi.mock("sonner", () => ({
@@ -379,7 +451,9 @@ function createFakeEditor(overrides: Record<string, unknown> = {}): any {
 function renderDocumentEditor(queryClient: QueryClient) {
 	return render(
 		<QueryClientProvider client={queryClient}>
-			<DocumentEditor projectId="proj-1" documentId="doc-1" />
+			<CopilotChatSessionProvider>
+				<DocumentEditor projectId="proj-1" documentId="doc-1" />
+			</CopilotChatSessionProvider>
 		</QueryClientProvider>,
 	);
 }
@@ -400,6 +474,80 @@ describe("DocumentEditor — AG-UI handshake baseline capture", () => {
 		capturedUpdateMutationConfig = undefined;
 		mockIsLoading = true;
 		mockEditor = null;
+		fakeDoc.agent.state = {};
+		fakeDoc.agent.messages = [];
+	});
+
+	it("real DocumentEditorInner ignores unread events and applies document changes through real hooks", async () => {
+		const setContent = vi.fn();
+		mockEditor = createFakeEditor({
+			commands: { setContent },
+			getHTML: () => "",
+		});
+		const queryClient = new QueryClient({
+			defaultOptions: { queries: { retry: false } },
+		});
+		renderDocumentEditor(queryClient);
+		await waitForInnerMount();
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 30));
+		});
+		const message = {
+			id: "assistant",
+			role: "assistant",
+			content: "first chunk",
+			toolCalls: [] as {
+				id: string;
+				function: { name: string; arguments: string };
+			}[],
+		};
+		act(() => {
+			fakeDoc.agent.messages = [message];
+			fakeDoc.emit();
+		});
+		const afterMessage = fakeDoc.renders.mock.calls.length;
+		act(() => {
+			message.content += " next chunk";
+			fakeDoc.emit();
+		});
+		expect(fakeDoc.renders).toHaveBeenCalledTimes(afterMessage);
+		act(() => {
+			message.toolCalls.push({
+				id: "new-call",
+				function: { name: "confirm_changes", arguments: "" },
+			});
+			fakeDoc.emit();
+		});
+		expect(fakeDoc.renders.mock.calls.length).toBeGreaterThan(afterMessage);
+		const afterCall = fakeDoc.renders.mock.calls.length;
+		act(() => {
+			message.toolCalls[0].function.arguments += " streamed arguments";
+			fakeDoc.emit();
+		});
+		expect(fakeDoc.renders).toHaveBeenCalledTimes(afterCall);
+
+		const before = fakeDoc.renders.mock.calls.length;
+		for (let i = 0; i < 8; i++) {
+			act(() =>
+				fakeDoc.agent.setState({
+					...fakeDoc.agent.state,
+					reasoningByTurn: { i },
+				}),
+			);
+		}
+		expect(fakeDoc.renders).toHaveBeenCalledTimes(before);
+		act(() =>
+			fakeDoc.agent.setState({
+				...fakeDoc.agent.state,
+				document: "Streamed document reached the editor",
+			}),
+		);
+		expect(fakeDoc.renders.mock.calls.length).toBeGreaterThan(before);
+		expect(
+			setContent.mock.calls.some(([html]) =>
+				String(html).includes("Streamed document reached the editor"),
+			),
+		).toBe(true);
 	});
 
 	it("never toasts the failed-read error while the editor has not mounted yet", async () => {
@@ -452,7 +600,9 @@ describe("DocumentEditor — AG-UI handshake baseline capture", () => {
 
 		rerender(
 			<QueryClientProvider client={queryClient}>
-				<DocumentEditor projectId="proj-1" documentId="doc-1" />
+				<CopilotChatSessionProvider>
+					<DocumentEditor projectId="proj-1" documentId="doc-1" />
+				</CopilotChatSessionProvider>
 			</QueryClientProvider>,
 		);
 

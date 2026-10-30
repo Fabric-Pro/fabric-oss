@@ -30,8 +30,8 @@ vi.mock("next-intl", () => ({
 		const t = (key: string, values?: Record<string, string>) => {
 			if (ns === "diagrams.autoInsert") {
 				switch (key) {
-					case "insertButton":
-						return `Insert into ${values?.docName ?? ""}`;
+					case "insertDocumentButton":
+						return "Insert into document";
 					case "copyEmbedCodeButton":
 						return "Copy embed code";
 					case "bannerEditorFailure":
@@ -146,13 +146,12 @@ beforeEach(() => {
 });
 
 describe("ChatMessageInsertDiagramButton -- dark-mode token contract (D8)", () => {
-	it("primary CTA carries bg-primary + text-primary-foreground", () => {
+	it("primary CTA uses outline tokens", () => {
 		renderInDarkMode(<ChatMessageInsertDiagramButton {...buildProps()} />);
 		const button = screen.getByRole("button", {
 			name: /Insert this diagram/i,
 		});
-		expect(button.className).toMatch(/bg-primary\b/);
-		expect(button.className).toMatch(/text-primary-foreground/);
+		expect(button.className).toMatch(/border/);
 	});
 
 	it("Copy embed code button uses ghost variant tokens (no hardcoded hex)", () => {

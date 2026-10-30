@@ -167,6 +167,7 @@ export function TaskPlannerWorkspace() {
 						runtimeUrl={runtimeUrl}
 						useSingleEndpoint
 						showDevConsole={false}
+						enableInspector={false}
 						agent="task_planner"
 						onError={onError}
 					>
@@ -203,6 +204,27 @@ function TaskPlannerEditor() {
 	const executionPlan = agentState?.executionPlan;
 	const dependencyGraph = agentState?.dependencyGraph;
 
+	const chatLabels = useMemo(
+		() => ({
+			title: "Task Planner AI",
+			initial:
+				"Describe a feature and I will break it down with risk analysis.",
+		}),
+		[],
+	);
+	const chatSuggestions = useMemo(
+		() => [
+			{
+				title: "Plan auth",
+				message: "Break down user authentication with OAuth",
+			},
+			{
+				title: "Plan API",
+				message: "Plan tasks for a REST API endpoint",
+			},
+		],
+		[],
+	);
 	return (
 		<>
 			<HITLDialog
@@ -215,21 +237,8 @@ function TaskPlannerEditor() {
 				AssistantMessage={CopilotAssistantMessageForTaskPlanner}
 				defaultOpen={true}
 				clickOutsideToClose={false}
-				labels={{
-					title: "Task Planner AI",
-					initial:
-						"Describe a feature and I will break it down with risk analysis.",
-				}}
-				suggestions={[
-					{
-						title: "Plan auth",
-						message: "Break down user authentication with OAuth",
-					},
-					{
-						title: "Plan API",
-						message: "Plan tasks for a REST API endpoint",
-					},
-				]}
+				labels={chatLabels}
+				suggestions={chatSuggestions}
 			>
 				<TaskPlannerContent
 					tasks={tasks}

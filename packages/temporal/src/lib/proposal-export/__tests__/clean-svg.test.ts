@@ -385,11 +385,89 @@ describe("cleanDiagramSvg on hostile markup", () => {
 		expect(svg).not.toContain("<rect");
 	});
 
+	it("keeps the root's role only when it is img", () => {
+		expect(
+			clean(
+				svgDocument(
+					"<title>Plan</title><desc>Steps</desc>",
+					' role="img"',
+				),
+			),
+		).toBe(
+			'<svg xmlns="http://www.w3.org/2000/svg" id="pa-diagram-1" viewBox="0 0 200 100" width="200" height="100" role="img"><title>Plan</title><desc>Steps</desc></svg>',
+		);
+		for (const role of ["button", "img button", "presentation"]) {
+			expect(clean(svgDocument("", ` role="${role}"`))).not.toContain(
+				"role=",
+			);
+		}
+		// Only the root carries one.
+		expect(
+			clean(
+				svgDocument('<g role="img"><rect width="1" height="1" /></g>'),
+			),
+		).toContain('<g><rect width="1" height="1" /></g>');
+	});
+
 	it("drops text outside text elements", () => {
 		const svg = clean(svgDocument("stray<g>more<text>kept</text></g>"));
 		expect(svg).toContain("<g><text>kept</text></g>");
 		expect(svg).not.toContain("stray");
 		expect(svg).not.toContain("more");
+	});
+});
+
+describe("cleanDiagramSvg on a figure template", () => {
+	const palette = {
+		ink: "#14171f",
+		onInk: "#ffffff",
+		primary: "#1f3a6b",
+		onPrimary: "#ffffff",
+		tint: "#e8edf5",
+		border: "#d4d6da",
+		surface: "#ffffff",
+		muted: "#5a5f6b",
+	};
+	const source = [
+		"%% figure: process",
+		"flowchart TD",
+		'  s0["Scope<br/>Agree what done looks like"]',
+		'  s1["Build"]',
+		'  s2["Launch"]',
+		"  s0 --> s1 --> s2",
+		"  s2 -.->|Feedback| s0",
+	].join("\n");
+
+	it("keeps its role, title, desc, faces and arrow references", async () => {
+		const { renderFigureSvg } = await import(
+			"@repo/utils/proposal-artifact/proposal-figures"
+		);
+		const template = renderFigureSvg("process", source, palette, {
+			caption: "How a scope line moves",
+		});
+		if (template === null) {
+			throw new Error("expected the template to draw");
+		}
+		const result = cleanDiagramSvg(template, { scopeId: "pa-diagram-2" });
+		expect(result).toMatchObject({ width: 662 });
+		const svg = String(result?.svg);
+		expect(svg).toMatch(/^<svg [^>]*\brole="img"/);
+		expect(svg).toContain("<title>How a scope line moves</title>");
+		expect(svg).toMatch(
+			/<desc>[^<]*Scope[^<]*Build[^<]*Launch[^<]*<\/desc>/,
+		);
+		// The faces the print page and the screenshot page embed.
+		expect(svg).toContain('font-family="&quot;Inter&quot;');
+		expect(svg).toContain('font-family="&quot;JetBrains Mono&quot;');
+		const kept = new Set(ids(svg));
+		const targets = references(svg);
+		expect(targets.length).toBeGreaterThan(0);
+		for (const target of targets) {
+			expect(kept.has(target)).toBe(true);
+		}
+		expect(withoutNamespace(svg)).not.toMatch(
+			/http|<script|foreignObject|\son\w+=/i,
+		);
 	});
 });
 

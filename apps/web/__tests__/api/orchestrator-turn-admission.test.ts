@@ -87,6 +87,8 @@ vi.mock("@repo/database", () => ({
 	hasOrganizationTie: (...args: unknown[]) => m.hasOrganizationTie(...args),
 	admitConversationTurn: (...args: unknown[]) =>
 		m.admitConversationTurn(...args),
+	// No multi-agent turn in these conversations (see multi-agent-admission.test.ts).
+	getLatestConversationTurn: async () => null,
 	markConversationTurnActive: (...args: unknown[]) =>
 		m.markConversationTurnActive(...args),
 	markConversationTurnStartFailed: (...args: unknown[]) =>

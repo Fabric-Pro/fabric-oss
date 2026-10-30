@@ -84,64 +84,6 @@ export const CASES_ROW_HEIGHT_COMPACT = "@[670px]:h-[34px]";
 export const CASES_COL_COVERS = "flex @[670px]:hidden @[820px]:flex";
 export const CASES_COL_LASTRUN = "flex @[670px]:hidden @[940px]:flex";
 
-/**
- * Up to this many pages, every page gets a button. Above it, the list windows
- * around the current page. Seven is where a row of buttons stops fitting beside
- * the rows-per-page control on a narrow viewport.
- */
-const MAX_UNCOLLAPSED_PAGES = 7;
-
-/** A gap in the page list, rendered as an ellipsis rather than a button. */
-export const PAGE_GAP = "gap" as const;
-export type PageToken = number | typeof PAGE_GAP;
-
-/**
- * The page numbers to offer, windowed around the current one.
- *
- * A project with 40 pages cannot show 40 buttons, and "Previous / Next" alone
- * strands a reader who knows they want the end of the list. First and last are
- * always reachable, with a window either side of where they are; gaps collapse
- * to an ellipsis. Never emits a gap that hides exactly one page — "1 … 3 4 5"
- * spends the same width as "1 2 3 4 5" and tells the reader less.
- */
-export function paginationPages(
-	current: number,
-	totalPages: number,
-	window = 1,
-): PageToken[] {
-	if (totalPages <= 1) {
-		return totalPages === 1 ? [1] : [];
-	}
-	// Small lists show every page. Windowing them produced "1 2 … 5" for a
-	// five-page list — three buttons and an ellipsis where five buttons fit,
-	// hiding pages for no gain.
-	if (totalPages <= MAX_UNCOLLAPSED_PAGES) {
-		return Array.from({ length: totalPages }, (_, i) => i + 1);
-	}
-	const wanted = new Set<number>([1, totalPages]);
-	for (let p = current - window; p <= current + window; p++) {
-		if (p >= 1 && p <= totalPages) {
-			wanted.add(p);
-		}
-	}
-	const sorted = [...wanted].sort((a, b) => a - b);
-
-	const out: PageToken[] = [];
-	for (const [i, page] of sorted.entries()) {
-		const prev = sorted[i - 1];
-		if (prev !== undefined && page - prev > 1) {
-			// A single skipped page costs no less to hide than to show.
-			if (page - prev === 2) {
-				out.push(prev + 1);
-			} else {
-				out.push(PAGE_GAP);
-			}
-		}
-		out.push(page);
-	}
-	return out;
-}
-
 /** Total pages for a result count, never below 1 so the footer always reads. */
 export function pageCount(total: number, pageSize: number): number {
 	return Math.max(1, Math.ceil(total / Math.max(1, pageSize)));

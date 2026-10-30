@@ -411,6 +411,7 @@ export async function enhanceNode(
 		await logAgentUsageFromRunnableConfig(runnableConfig, response, {
 			model,
 			taskType: "TOOL_CALLING",
+			outputMessageId: runnableConfig.configurable?.output_message_id,
 			agentId: "prompt_enhancer",
 			latencyMs: Date.now() - generationStart,
 		});
@@ -491,7 +492,17 @@ export async function enhanceNode(
 							type: "function" as const,
 							function: {
 								name: "confirm_changes",
-								arguments: {},
+								arguments:
+									typeof runnableConfig.configurable
+										?.output_message_id === "string" &&
+									/^msg_[1-9][0-9]{12}_[0-9a-f]{32}$/.test(
+										runnableConfig.configurable
+											.output_message_id,
+									)
+										? {
+												draftId: `${runnableConfig.configurable.output_message_id}:${uuidv4()}`,
+											}
+										: {},
 							},
 						},
 					],

@@ -1,10 +1,8 @@
 import {
 	clearAiOutcome,
 	getAiOutcomesForSubjects,
-	getAiOutputProvenance,
 	recordAiOutcome,
 } from "@repo/database";
-import { logger } from "@repo/logs";
 import { z } from "zod";
 import {
 	Permissions,
@@ -13,6 +11,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
+import { resolveOutputProvenance } from "./output-provenance";
 
 /**
  * Human verdicts on AI-generated output (Fizzy #2230, Phase 2).
@@ -72,41 +71,11 @@ export const rateAiOutput = tenantProtectedProcedure
 			context.session,
 		);
 
-		let provenance: Awaited<ReturnType<typeof getAiOutputProvenance>> =
-			null;
-		if (input.subjectType === "copilot-message" && organizationId) {
-			try {
-				provenance = await getAiOutputProvenance({
-					organizationId,
-					userId: context.user.id,
-					subjectType: input.subjectType,
-					subjectId: input.subjectId,
-				});
-			} catch (error) {
-				const diagnostics =
-					error !== null && typeof error === "object"
-						? (error as { name?: unknown; code?: unknown })
-						: {};
-				// Allow only scalar diagnostic fields; message, stack and subject stay out.
-				logger.warn(
-					"[ai.feedback.rate] Failed to look up output provenance",
-					{
-						...(typeof diagnostics.name === "string" && {
-							name: diagnostics.name,
-						}),
-						...((typeof diagnostics.code === "string" ||
-							typeof diagnostics.code === "number") && {
-							code: diagnostics.code,
-						}),
-					},
-				);
-			}
-		}
-
-		const matchingProvenance =
-			provenance?.projectId === (input.projectId ?? null)
-				? provenance
-				: null;
+		const matchingProvenance = await resolveOutputProvenance(
+			input,
+			organizationId,
+			context.user.id,
+		);
 
 		const event = await recordAiOutcome({
 			featureKey: input.featureKey,

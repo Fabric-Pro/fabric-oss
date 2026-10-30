@@ -384,6 +384,20 @@ export async function storeRefreshProposal(
 	});
 }
 
+/**
+ * Turns an enrolment's unattended writes off, leaving it enrolled and
+ * proposing. The refresh calls it when it skips a client-document Proposal
+ * (Fizzy #2946), so turning that gate off later cannot let a stored
+ * `autoApply` commit a whole body nobody reviewed. A no-op when the row is
+ * gone or already proposing.
+ */
+export async function turnOffRefreshAutoApply(documentId: string) {
+	await db.documentAutoRefreshSettings.updateMany({
+		where: { documentId, autoApply: true },
+		data: { autoApply: false },
+	});
+}
+
 /** Accept or reject clears the proposal either way. */
 export async function clearRefreshProposal(documentId: string) {
 	return db.documentAutoRefreshSettings.update({

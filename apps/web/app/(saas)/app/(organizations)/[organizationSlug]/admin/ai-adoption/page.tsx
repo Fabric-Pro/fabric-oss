@@ -1,3 +1,4 @@
+import { isPlatformAdmin } from "@repo/database";
 import { AiAdoptionDashboard } from "@saas/admin/component/ai-adoption/AiAdoptionDashboard";
 import { getSession } from "@saas/auth/lib/server";
 import { redirect } from "next/navigation";
@@ -26,7 +27,7 @@ export default async function OrganizationAiAdoptionPage() {
 		redirect("/auth/login");
 	}
 
-	if (session.user?.role !== "admin") {
+	if (!(await isPlatformAdmin(session.user))) {
 		redirect("/app");
 	}
 

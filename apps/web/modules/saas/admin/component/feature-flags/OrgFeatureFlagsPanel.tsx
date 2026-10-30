@@ -14,6 +14,7 @@ import type { ApiRouterClient } from "@repo/api/orpc/router";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
+import { Input } from "@ui/components/input";
 import {
 	Select,
 	SelectContent,
@@ -21,7 +22,9 @@ import {
 	SelectTrigger,
 	SelectValue,
 } from "@ui/components/select";
+import { useState } from "react";
 import { toast } from "sonner";
+import { filterFlags } from "./flag-search";
 
 const SOURCE_LABEL: Record<string, string> = {
 	"org-override": "Set for this organization",
@@ -69,6 +72,7 @@ export function OrgFeatureFlagsPanel({
 	organizationId: string;
 }) {
 	const queryClient = useQueryClient();
+	const [searchTerm, setSearchTerm] = useState("");
 
 	// Declared once so the read and both cache patches derive their key from
 	// the same value and cannot drift apart.
@@ -190,6 +194,8 @@ export function OrgFeatureFlagsPanel({
 		);
 	}
 
+	const visibleFlags = filterFlags(data.flags, searchTerm);
+
 	return (
 		<div className="space-y-3">
 			<p className="text-muted-foreground text-sm">
@@ -197,7 +203,19 @@ export function OrgFeatureFlagsPanel({
 				Takes effect server-side within ~10 seconds; open tabs pick up
 				the change on their next page load.
 			</p>
-			{data.flags.map((flag) => (
+			<Input
+				type="search"
+				placeholder="Search by name, description, key or environment variable"
+				aria-label="Search this organization's feature flags"
+				value={searchTerm}
+				onChange={(e) => setSearchTerm(e.target.value)}
+			/>
+			{visibleFlags.length === 0 && (
+				<div className="rounded-lg border border-border/60 bg-card p-6 text-sm text-muted-foreground">
+					No feature flags match “{searchTerm.trim()}”.
+				</div>
+			)}
+			{visibleFlags.map((flag) => (
 				<div
 					key={flag.key}
 					className="flex flex-row items-center justify-between gap-4 rounded-lg border p-4"

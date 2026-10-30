@@ -14,6 +14,7 @@ import {
 	useCallback,
 	useContext,
 	useMemo,
+	useState,
 } from "react";
 import { getOrpcCode } from "../components/field-mapping/orpc-error";
 
@@ -49,6 +50,8 @@ export interface MermaidVisualContextValue {
 	flushSave: () => Promise<boolean>;
 	/** After a diagram was replaced: read the spec summaries again. */
 	onVisualReplaced: () => void;
+	/** Says a message in the diagrams' one polite live region. */
+	announce: (message: string) => void;
 }
 
 /** What the page hands the document editor for its diagrams. */
@@ -93,6 +96,12 @@ const DENIED_CODES = new Set(["NOT_FOUND", "FORBIDDEN", "UNAUTHORIZED"]);
  * Provides {@link MermaidVisualContextValue} to the diagrams below it, and
  * reads the document's spec summaries once for all of them. `enabled`
  * false provides nothing, so the diagrams keep their header bar.
+ *
+ * The diagrams speak through one live region rendered here, beside the
+ * editor rather than in it. A modal overlay hides the page from screen
+ * readers but keeps live regions readable, so a region inside the editor
+ * made it mark the editor's blocks `aria-hidden`; ProseMirror took those
+ * attribute changes for an edit and parsed the diagrams again (Fizzy #2946).
  */
 export function MermaidVisualProvider({
 	enabled,
@@ -131,6 +140,7 @@ export function MermaidVisualProvider({
 	const onVisualReplaced = useCallback(() => {
 		void invalidateVisualSpecs(queryClient, projectId, documentId);
 	}, [queryClient, projectId, documentId]);
+	const [announcement, setAnnouncement] = useState("");
 	const value = useMemo<MermaidVisualContextValue | null>(
 		() =>
 			enabled
@@ -142,6 +152,7 @@ export function MermaidVisualProvider({
 						specs,
 						flushSave,
 						onVisualReplaced,
+						announce: setAnnouncement,
 					}
 				: null,
 		[
@@ -158,6 +169,11 @@ export function MermaidVisualProvider({
 	return (
 		<MermaidVisualContext.Provider value={value}>
 			{children}
+			{enabled && (
+				<output className="sr-only" aria-live="polite">
+					{announcement}
+				</output>
+			)}
 		</MermaidVisualContext.Provider>
 	);
 }

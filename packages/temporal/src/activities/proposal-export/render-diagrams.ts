@@ -1,18 +1,27 @@
 /**
  * The diagrams of a Proposal export (Fizzy #2946): every diagram fence of
  * Main drawn as cleaned SVG for the print page and, for DOCX, screenshotted
- * as a PNG; or, when it cannot be drawn here, a captioned placeholder.
+ * as a PNG; or, when it is not drawn, left out or kept as a captioned
+ * placeholder, by cause.
  *
  * Not an activity of its own: the export activity calls it with the fence
  * bodies `prepareExportMarkdown` collected, in document order, and both
  * writers look a fence's result up by that order.
  *
+ * Figure templates. A fence with a `%% figure:` line draws its SVG template
+ * (`proposal-figures/`), as the live page does, coloured from the same
+ * paint as the diagram roles. A template needs no layout, is drawn at the
+ * print column's width and is never turned or re-wrapped; when the template
+ * refuses the source, the fence draws as below.
+ *
  * Parity with the live page. The page passes the trimmed fence to
  * beautiful-mermaid and, when that throws, falls back to mermaid.js in the
  * browser. mermaid.js would need page JavaScript, which the export's
- * Chromium never runs, so a fence the page would hand to mermaid.js prints
- * as a placeholder. Which engine the page uses is decided on the fence as
- * written, before anything is stripped from it; only then are `%%` lines
+ * Chromium never runs, so a fence of a kind only mermaid.js draws prints as
+ * a placeholder, and one of a kind neither engine knows is left out. That
+ * is decided on the fence as written (`diagram-printability.ts`, which
+ * the editor's figure numbers and its "not in PDF" note read too), before
+ * anything is stripped from it; only then are `%%` lines
  * and `click` lines removed (beautiful-mermaid draws a `click` line as a
  * stray box named "click"), and, for a flowchart, the role `classDef`
  * lines appended through the helper the page uses too, so a
@@ -23,9 +32,31 @@
  * diagram under a wall-clock limit and all of them inside the export's
  * deadline, so a fence that takes long to lay out never stalls the worker.
  *
- * Nothing about a diagram fails the export: an engine refusal, a syntax
- * error, a budget, a time limit, a refused SVG or a failed screenshot each
- * print the placeholder and count toward one `DIAGRAM_PLACEHOLDER` warning.
+ * Nothing about a diagram fails the export. What does not draw is, by cause:
+ *
+ * - a kind only the live page draws (mermaid.js knows it, beautiful-mermaid
+ *   does not take it): the captioned placeholder, counted toward one
+ *   `DIAGRAM_NOT_PRINTABLE` warning, whether or not the page can draw it;
+ * - a fence of a kind beautiful-mermaid takes that the export could not
+ *   draw for a reason other than the source (a layout that ran past its
+ *   time limit or the export's, a layout thread that failed or could not
+ *   start, a source or an SVG past its size limit, an SVG
+ *   the cleaner refused): the live page draws and numbers it, so the
+ *   numbered placeholder, counted toward that same `DIAGRAM_NOT_PRINTABLE`
+ *   warning. A layout whose thread failed or could not start is tried once
+ *   more first, so a thread that dies does not cost a figure at random;
+ *   one that ran past its time limit is not, so a slow fence never costs
+ *   twice the time the diagrams after it need;
+ * - a fence past the export's diagram limit: the placeholder, counted
+ *   toward one `DIAGRAM_LIMIT` warning;
+ * - a drawn diagram whose DOCX screenshot fails: still printed in the PDF,
+ *   and in the DOCX a placeholder under its own "Figure n." caption, so the
+ *   two number every figure alike; counted toward one `DIAGRAM_PLACEHOLDER`
+ *   warning;
+ * - anything else (a header neither engine knows, a syntax error, a
+ *   flowchart header with no direction it knows, a source the engine
+ *   refused): the live page does not number it either, so it is left out,
+ *   and counted toward one `DIAGRAM_PLACEHOLDER` warning.
  *
  * Print legibility. A diagram wider than the print column is shrunk to it,
  * and its labels with it. When a left-to-right flowchart's labels would
@@ -41,6 +72,16 @@
  * their own. The live page keeps drawing the fence as written.
  */
 
+import {
+	diagramPrintability,
+	figurePaletteOf,
+	type PrintableDiagramKind,
+	printableDiagramKind,
+} from "@repo/utils/proposal-artifact/diagram-printability";
+import {
+	type FigurePalette,
+	tryRenderFigure,
+} from "@repo/utils/proposal-artifact/proposal-figures";
 import {
 	diagramColors,
 	type ProposalThemePaint,
@@ -61,10 +102,7 @@ import {
 	type DiagramLayout,
 	openDiagramLayout,
 } from "../../lib/proposal-export/diagram-layout";
-import {
-	interFontFaceCss,
-	PRINT_FONT_FAMILY,
-} from "../../lib/proposal-export/fonts";
+import { PRINT_FONTS, printFontFaceCss } from "../../lib/proposal-export/fonts";
 import {
 	type ExportDiagram,
 	type ExportRaster,
@@ -76,6 +114,11 @@ import { activityLogger } from "../lib/activity-logger";
 export interface RenderDiagramsInput {
 	/** Diagram fence bodies in document order, from `prepareExportMarkdown`. */
 	sources: readonly string[];
+	/**
+	 * Each fence's caption, by the same order, or null: a figure template's
+	 * accessible title. Without it a template is titled by its kind.
+	 */
+	captions?: readonly (string | null)[];
 	/** The theme as it paints: `resolveThemePaint(tokens)`. */
 	paint: ProposalThemePaint;
 	/** The export's browser; needed only when `withPng`. */
@@ -84,7 +127,7 @@ export interface RenderDiagramsInput {
 	withPng: boolean;
 	/**
 	 * When layout stops (epoch milliseconds): a diagram not laid out by then
-	 * prints its placeholder. The export passes its own deadline less the
+	 * prints as a placeholder. The export passes its own deadline less the
 	 * time it keeps for the stages after layout.
 	 */
 	deadline: number;
@@ -99,7 +142,7 @@ export interface RenderDiagramsResult {
 }
 
 /**
- * What a diagram that is not drawn prints instead. Client-facing, so it
+ * What a diagram kept as a placeholder prints instead. Client-facing, so it
  * says nothing about why.
  */
 export const DIAGRAM_PLACEHOLDER_CAPTION =
@@ -123,15 +166,6 @@ const PNG_SIGNATURE = Buffer.from([
  * milliseconds; only a hostile or runaway fence comes near this.
  */
 const DIAGRAM_LAYOUT_TIMEOUT_MS = 10_000;
-
-/**
- * The diagram kinds beautiful-mermaid takes, by its own header rules:
- * xychart, sequence, class and ER diagrams are recognised on the fence's
- * very first line; anything else goes to its flowchart parser, which skips
- * `%%` lines and accepts only a `stateDiagram` or a `graph`/`flowchart` with
- * a direction. "graph" covers flowcharts and state diagrams.
- */
-type EngineKind = "graph" | "other";
 
 /**
  * The print column in CSS pixels: the portrait page less its side margins,
@@ -159,45 +193,33 @@ const SIDEWAYS_HEADER = /^(\s*(?:graph|flowchart)\s+)(?:LR|RL)(\s*)$/i;
 const COMMENT_LINE = /^\s*%%/;
 const CLICK_LINE = /^\s*click\s+\S/;
 
-/** Which kind beautiful-mermaid would draw the trimmed fence as, or null. */
-function engineKind(trimmed: string): EngineKind | null {
-	const firstLine = trimmed.split(/[\n;]/)[0]?.trim().toLowerCase() ?? "";
-	if (
-		/^xychart(-beta)?\b/.test(firstLine) ||
-		/^sequencediagram\s*$/.test(firstLine) ||
-		/^classdiagram\s*$/.test(firstLine) ||
-		/^erdiagram\s*$/.test(firstLine)
-	) {
-		return "other";
-	}
-	const header = trimmed
-		.split("\n")
-		.map((line) => line.trim())
-		.find((line) => line.length > 0 && !line.startsWith("%%"));
-	if (
-		header !== undefined &&
-		(/^stateDiagram(-v2)?\s*$/i.test(header) ||
-			/^(?:graph|flowchart)\s+(?:TD|TB|LR|BT|RL)\s*$/i.test(header))
-	) {
-		return "graph";
-	}
-	// A frontmatter block, a kind only mermaid.js draws (timeline, gantt,
-	// pie, mindmap …), or a header beautiful-mermaid rejects.
-	return null;
+interface PreparedDiagram {
+	text: string;
+	kind: PrintableDiagramKind;
 }
 
 /**
- * The fence as beautiful-mermaid should see it, with its kind, or null when
- * the live page would draw it with mermaid.js instead.
+ * Why a fence is not drawn: its source is broken (left out, as the live page
+ * does not number it), or the export could not print what the live page
+ * draws (a numbered placeholder).
+ */
+type NotDrawn = "broken" | "notPrintable";
+
+/**
+ * The fence as beautiful-mermaid should see it, with its kind; or, when the
+ * engine does not take it, whether it is a kind only the live page draws (a
+ * placeholder) or one no engine knows, broken or empty (left out).
  */
 function prepareDiagramSource(
 	source: string,
 	paint: ProposalThemePaint,
-): { text: string; kind: EngineKind } | null {
+): PreparedDiagram | NotDrawn {
 	const trimmed = source.trim();
-	const kind = engineKind(trimmed);
+	const kind = printableDiagramKind(trimmed);
 	if (kind === null) {
-		return null;
+		return diagramPrintability(trimmed) === "liveOnly"
+			? "notPrintable"
+			: "broken";
 	}
 	const stripped = trimmed
 		.split("\n")
@@ -223,7 +245,7 @@ export async function renderExportDiagrams(
 	}
 	const options: RenderOptions = {
 		...diagramColors(paint),
-		font: PRINT_FONT_FAMILY,
+		font: PRINT_FONTS.body,
 		transparent: true,
 	};
 
@@ -242,25 +264,52 @@ export async function renderExportDiagrams(
 		}
 	}
 
+	const palette = figurePaletteOf(paint);
 	const diagrams: ExportDiagram[] = [];
 	let belowFloor = 0;
+	let notPrintable = 0;
 	try {
 		for (const [index, source] of sources.entries()) {
+			const scopeId = diagramScopeId(index);
+			if (index >= PROPOSAL_EXPORT_LIMITS.maxDiagrams) {
+				diagrams.push(placeholder());
+				continue;
+			}
+			const template = drawTemplate(
+				source,
+				palette,
+				input.captions?.[index] ?? null,
+				scopeId,
+			);
+			if (template) {
+				diagrams.push(drawnDiagram(template));
+				continue;
+			}
+			const prepared = prepareDiagramSource(source, paint);
+			// Without an engine, nothing about the source is known to be
+			// wrong, and the live page draws it.
 			const drawn =
-				layout && index < PROPOSAL_EXPORT_LIMITS.maxDiagrams
-					? await renderOne(layout, source, paint, options, {
-							scopeId: diagramScopeId(index),
-							deadline: input.deadline,
-						})
-					: null;
-			if (drawn?.belowFloor) {
+				typeof prepared === "string"
+					? prepared
+					: layout
+						? await renderOne(layout, source, prepared, options, {
+								scopeId,
+								deadline: input.deadline,
+							})
+						: "notPrintable";
+			if (drawn === "broken") {
+				diagrams.push(OMITTED);
+				continue;
+			}
+			if (drawn === "notPrintable") {
+				notPrintable += 1;
+				diagrams.push(placeholder());
+				continue;
+			}
+			if (drawn.belowFloor) {
 				belowFloor += 1;
 			}
-			diagrams.push(
-				drawn
-					? { kind: "svg", ...drawn.svg, png: null }
-					: placeholder(),
-			);
+			diagrams.push(drawnDiagram(drawn.svg));
 		}
 	} finally {
 		if (ownsLayout) {
@@ -272,17 +321,21 @@ export async function renderExportDiagrams(
 		await screenshotDiagrams(browser, diagrams);
 	}
 
-	const placeholders = diagrams.filter(
+	const omitted = diagrams.filter(
 		(diagram) =>
-			diagram.kind === "placeholder" || (withPng && diagram.png === null),
+			diagram.kind === "omitted" ||
+			(withPng && diagram.kind === "svg" && diagram.png === null),
 	).length;
 	const overLimit = Math.max(
 		0,
 		sources.length - PROPOSAL_EXPORT_LIMITS.maxDiagrams,
 	);
 	const warnings: ProposalExportWarning[] = [];
-	if (placeholders > 0) {
-		warnings.push({ code: "DIAGRAM_PLACEHOLDER", count: placeholders });
+	if (omitted > 0) {
+		warnings.push({ code: "DIAGRAM_PLACEHOLDER", count: omitted });
+	}
+	if (notPrintable > 0) {
+		warnings.push({ code: "DIAGRAM_NOT_PRINTABLE", count: notPrintable });
 	}
 	if (overLimit > 0) {
 		warnings.push({ code: "DIAGRAM_LIMIT", count: overLimit });
@@ -303,7 +356,32 @@ function diagramScopeId(index: number): string {
 }
 
 function placeholder(): ExportDiagram {
-	return { kind: "placeholder", caption: DIAGRAM_PLACEHOLDER_CAPTION };
+	return {
+		kind: "placeholder",
+		caption: DIAGRAM_PLACEHOLDER_CAPTION,
+		numbered: true,
+	};
+}
+
+const OMITTED: ExportDiagram = { kind: "omitted", numbered: false };
+
+function drawnDiagram(svg: CleanedDiagramSvg): ExportDiagram {
+	return { kind: "svg", ...svg, png: null, numbered: true };
+}
+
+/**
+ * The fence's figure template, cleaned, or null when it asks for none, or
+ * the template or the cleaner refuses it: the fence then draws as Mermaid,
+ * as on the live page.
+ */
+function drawTemplate(
+	source: string,
+	palette: FigurePalette,
+	caption: string | null,
+	scopeId: string,
+): CleanedDiagramSvg | null {
+	const svg = tryRenderFigure(source, palette, { caption });
+	return svg === null ? null : cleanDiagramSvg(svg, { scopeId });
 }
 
 interface DrawnDiagram {
@@ -313,30 +391,31 @@ interface DrawnDiagram {
 }
 
 /**
- * One fence drawn and cleaned, or null for its placeholder; a sideways
- * flowchart whose labels would print below the floor is tried top-down too,
- * then a flowchart still below it with its long labels broken into lines,
- * and a graph still below it is marked.
+ * One fence drawn and cleaned, or why it is not; a sideways flowchart whose
+ * labels would print below the floor is tried top-down too, then a
+ * flowchart still below it with its long labels broken into lines, and a
+ * graph still below it is marked.
  * Each layout gets at most the per-diagram limit, and never more than the
  * export has left.
  */
 async function renderOne(
 	layout: DiagramLayout,
 	source: string,
-	paint: ProposalThemePaint,
+	prepared: PreparedDiagram,
 	options: RenderOptions,
 	at: { scopeId: string; deadline: number },
-): Promise<DrawnDiagram | null> {
+): Promise<DrawnDiagram | NotDrawn> {
 	if (source.length > PROPOSAL_EXPORT_LIMITS.maxDiagramSourceLength) {
-		return null;
+		return "notPrintable";
 	}
-	const prepared = prepareDiagramSource(source, paint);
-	if (prepared === null) {
-		return null;
-	}
-	const drawn = await drawPrepared(layout, prepared.text, options, at);
-	if (drawn === null) {
-		return null;
+	// Only the layout that decides whether the fence prints at all is tried
+	// again; the turned and re-wrapped copies only compete with it.
+	const drawn = await drawPrepared(layout, prepared.text, options, {
+		...at,
+		attempts: 2,
+	});
+	if (typeof drawn === "string") {
+		return drawn;
 	}
 	// Only a graph's labels are drawn at the node label size; a chart's or
 	// a sequence's text is sized and placed by rules of its own.
@@ -344,57 +423,71 @@ async function renderOne(
 		return { svg: drawn, belowFloor: false };
 	}
 	let best = drawn;
-	if (printedNodeLabelPt(best.width) < PRINT_LABEL_FLOOR_PT) {
-		const turned = turnTopDown(prepared.text);
-		const redrawn = turned
-			? await drawPrepared(layout, turned, options, at)
-			: null;
+	const belowFloor = () =>
+		printedNodeLabelPt(best.width) < PRINT_LABEL_FLOOR_PT;
+	// A variant replaces the best layout only when its labels print larger.
+	const tryVariant = async (variant: string): Promise<void> => {
+		const redrawn = await drawPrepared(layout, variant, options, at);
 		if (
-			redrawn &&
+			typeof redrawn !== "string" &&
 			printedNodeLabelPt(redrawn.width) > printedNodeLabelPt(best.width)
 		) {
 			best = redrawn;
 		}
-		if (printedNodeLabelPt(best.width) < PRINT_LABEL_FLOOR_PT) {
+	};
+	if (belowFloor()) {
+		const turned = turnTopDown(prepared.text);
+		if (turned) {
+			await tryVariant(turned);
+		}
+		if (belowFloor()) {
 			const wrapped = wrapNodeLabels(turned ?? prepared.text);
-			const rewrapped = wrapped
-				? await drawPrepared(layout, wrapped, options, at)
-				: null;
-			if (
-				rewrapped &&
-				printedNodeLabelPt(rewrapped.width) >
-					printedNodeLabelPt(best.width)
-			) {
-				best = rewrapped;
+			if (wrapped) {
+				await tryVariant(wrapped);
 			}
 		}
 	}
-	return {
-		svg: best,
-		belowFloor: printedNodeLabelPt(best.width) < PRINT_LABEL_FLOOR_PT,
-	};
+	return { svg: best, belowFloor: belowFloor() };
 }
 
-/** A prepared source laid out and cleaned, or null. */
+/**
+ * A prepared source laid out and cleaned; `broken` when the engine refused
+ * it, or `notPrintable` when the layout was abandoned, no time was left or
+ * the SVG is past its size limit or refused by the cleaner. A layout whose
+ * thread failed is tried again, up to `attempts` in all, while time is
+ * left; one that ran past its time limit, and a source the engine refused,
+ * never is.
+ */
 async function drawPrepared(
 	layout: DiagramLayout,
 	prepared: string,
 	options: RenderOptions,
-	at: { scopeId: string; deadline: number },
-): Promise<CleanedDiagramSvg | null> {
-	const left = at.deadline - Date.now();
-	if (left <= 0) {
-		return null;
+	at: { scopeId: string; deadline: number; attempts?: number },
+): Promise<CleanedDiagramSvg | NotDrawn> {
+	for (let attempt = 1; ; attempt++) {
+		const left = at.deadline - Date.now();
+		if (left <= 0) {
+			return "notPrintable";
+		}
+		const laidOut = await layout.render(
+			prepared,
+			options,
+			Math.min(DIAGRAM_LAYOUT_TIMEOUT_MS, left),
+		);
+		if (laidOut.svg !== null) {
+			const cleaned =
+				laidOut.svg.length > PROPOSAL_EXPORT_LIMITS.maxSvgLength
+					? null
+					: cleanDiagramSvg(laidOut.svg, { scopeId: at.scopeId });
+			return cleaned ?? "notPrintable";
+		}
+		if (laidOut.abandoned === false) {
+			return "broken";
+		}
+		if (laidOut.abandoned !== "thread" || attempt >= (at.attempts ?? 1)) {
+			return "notPrintable";
+		}
 	}
-	const svg = await layout.render(
-		prepared,
-		options,
-		Math.min(DIAGRAM_LAYOUT_TIMEOUT_MS, left),
-	);
-	if (svg === null || svg.length > PROPOSAL_EXPORT_LIMITS.maxSvgLength) {
-		return null;
-	}
-	return cleanDiagramSvg(svg, { scopeId: at.scopeId });
 }
 
 /**
@@ -680,10 +773,11 @@ function wrapNodeLabels(prepared: string): string | null {
 /**
  * A PNG of every drawn diagram, on one hardened page (JavaScript off,
  * offline, every request aborted): each cleaned SVG is set as the page's
- * whole content and its element screenshotted. A failed screenshot leaves
- * that diagram's `png` null, and the DOCX prints its placeholder. Opening
- * the page is not caught: it fails only when the export's browser or its
- * time budget is gone, which the export itself reports.
+ * whole content and its element screenshotted. A diagram whose screenshot
+ * fails keeps its `png` null and its number, so the DOCX prints its
+ * placeholder under the same "Figure n." the PDF gives it. Opening the page is not caught: it fails
+ * only when the export's browser or its time budget is gone, which the
+ * export itself reports.
  */
 async function screenshotDiagrams(
 	browser: ExportBrowser,
@@ -702,8 +796,9 @@ async function screenshotDiagrams(
 			if (diagram.kind !== "svg") {
 				continue;
 			}
+			let png: ExportRaster | null = null;
 			try {
-				diagram.png = await screenshotDiagram(page, diagram, index);
+				png = await screenshotDiagram(page, diagram, index);
 			} catch (error) {
 				activityLogger.warn(
 					"Proposal export diagram screenshot failed",
@@ -712,6 +807,9 @@ async function screenshotDiagrams(
 						error: error instanceof Error ? error.name : "unknown",
 					},
 				);
+			}
+			if (png) {
+				diagrams[index] = { ...diagram, png };
 			}
 		}
 	} finally {
@@ -744,7 +842,8 @@ async function screenshotDiagram(
 }
 
 /**
- * The page a diagram is screenshotted on: the embedded Inter, a white
+ * The page a diagram is screenshotted on: the embedded print faces (a
+ * figure template's Inter 600 and JetBrains Mono 500 among them), a white
  * background behind the transparent diagram, and the cleaned SVG at an
  * explicit size. No script, and nothing that loads.
  */
@@ -756,7 +855,7 @@ function screenshotDocument(
 	return [
 		"<!DOCTYPE html>",
 		'<html><head><meta charset="utf-8"><style>',
-		interFontFaceCss(),
+		printFontFaceCss(),
 		"\nhtml,body{margin:0;padding:0;background:#fff}",
 		`\nsvg{display:block;width:${width}px;height:${height}px}`,
 		"</style></head><body>",

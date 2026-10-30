@@ -37,6 +37,7 @@ import {
 	type PlanningAnalysisContext,
 	type PlanningAnalysisTopic,
 } from "../publishing-planning/build-planning-analysis-prompt";
+import { WRITING_STYLE_CLAUSE } from "../publishing-shared";
 import { THIN_SUMMARY_IS_RAW_MATERIAL } from "../publishing-shared/authors-note-clause";
 import { recoverBoundBody } from "../publishing-shared/recover-bound-body";
 import {
@@ -336,7 +337,9 @@ ${BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS}
   safe to forward.
 - Where you generalized, omitted or hedged something, say so in your safety
   note. An email that quietly wrote around a sensitive detail reads as a
-  complete one.${restrictedBlock}${openQuestionBlock}${renderSettledDecisionsBlock(settledApprovals)}`;
+  complete one.${restrictedBlock}${openQuestionBlock}${renderSettledDecisionsBlock(settledApprovals)}
+
+${WRITING_STYLE_CLAUSE}`;
 }
 
 // =============================================================================

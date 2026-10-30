@@ -25,11 +25,11 @@ import {
 } from "@repo/utils/ai-chat-attachment";
 import { useOptionalFabricAgentLauncher } from "@saas/agents/components/FabricAgentLauncher";
 import { AgentVersionIdentity } from "@saas/agents/components/FabricChat/shared/AgentVersionIdentity";
-import {
-	getSelectedAgentInstanceId,
-	shouldPersistAgentSelection,
-} from "@saas/agents/components/FabricChat/shared/agent-selection";
+import { getSelectedAgentInstanceId } from "@saas/agents/components/FabricChat/shared/agent-selection";
 import { StoppedIndicator } from "@saas/agents/components/StoppedIndicator";
+import { useMultiAgentChat } from "@saas/agents/hooks/useMultiAgentChat";
+import { useStableHandlers } from "@saas/agents/hooks/useStableHandlers";
+import { multiAgentExecutionFields } from "@saas/agents/lib/multi-agent-turn";
 import { LimitBanner } from "@saas/ai/components/shared/LimitBanner";
 import { useSession } from "@saas/auth/hooks/use-session";
 import type { FrameToolResult } from "@saas/frames/lib/frame-result";
@@ -123,12 +123,12 @@ import {
 import { Response } from "../../../../../components/ai-elements/response";
 import { generateMessageId } from "../../hooks/useConversationHistory";
 import { useEscToStopOrClose } from "../../hooks/useEscToStopOrClose";
+import { useOrchestratorChatStream } from "../../hooks/useOrchestratorChatStream";
 import {
 	createExecutionRecord,
 	type OrchestratorExecution,
 	useOrchestratorConversation,
 } from "../../hooks/useOrchestratorConversation";
-import { useOrchestratorStream } from "../../hooks/useOrchestratorStream";
 import { useRemoveConversationProject } from "../../hooks/useRemoveConversationProject";
 import {
 	describeImageUploadFailure,
@@ -156,6 +156,10 @@ import { ContextCompactionNotice } from "./ContextCompactionNotice";
 import { ConversationHandoffCard } from "./ConversationHandoffCard";
 import { ConversationToolPicker } from "./ConversationToolPicker";
 import { ChartCard, isChartArtifact } from "./cards/ChartCard";
+import {
+	MultiAgentPickBadges,
+	MultiAgentTurnRow,
+} from "./multi-agent/MultiAgentTurnRow";
 // Extracted orchestrator components
 import {
 	ActiveContextIndicator,
@@ -206,6 +210,7 @@ import { AnsweredByModel } from "./shared/AnsweredByModel";
 import { AnsweredClarification } from "./shared/AnsweredClarification";
 import { ApiBillingNotice } from "./shared/ApiBillingNotice";
 import { ChatFailureNotice } from "./shared/ChatFailureNotice";
+import { MemoizedRow } from "./shared/MemoizedRow";
 import { TruncationNotice } from "./shared/TruncationNotice";
 import { toToolCallItems } from "./shared/tool-call-items";
 import { useProviderPickStatus } from "./shared/use-provider-pick-status";
@@ -319,6 +324,7 @@ export function FabricTemporalOrchestratorChat({
 	instanceId,
 	showAgentPicker = false,
 	agentPickerCatalog = "models",
+	multiAgentOffered = false,
 	starterMessages: agentStarterMessages,
 	initialInput,
 	initialAttachedDocuments,
@@ -551,6 +557,33 @@ export function FabricTemporalOrchestratorChat({
 		);
 	}, []);
 
+	// Agent runtime only: the runtime created this new chat's conversation
+	// with its first turn. Adopted as `ensureConversation` adopts one, the
+	// project attached before `setConversationId` (see there).
+	const handleConversationStarted = useCallback(
+		async (startedConversationId: string) => {
+			if (attachedProjectId) {
+				try {
+					await orpcClient.projects.conversations.attach({
+						conversationId: startedConversationId,
+						projectId: attachedProjectId,
+						organizationId: organizationId ?? null,
+					});
+				} catch (err) {
+					console.warn(
+						"[OrchestratorChat] Failed to persist project attachment:",
+						err,
+					);
+				}
+			}
+			selfCreatedConversationIdRef.current = startedConversationId;
+			createdConversationInSessionRef.current = true;
+			setConversationId(startedConversationId);
+			onConversationCreated?.(startedConversationId);
+		},
+		[attachedProjectId, organizationId, onConversationCreated],
+	);
+
 	// The send in flight: whether it carried images or documents from the
 	// composer, and the conversation it created with its question already
 	// saved in it, if it created one. Set just before `sendMessage` and
@@ -689,6 +722,19 @@ export function FabricTemporalOrchestratorChat({
 		},
 	});
 
+	const multiAgent = useMultiAgentChat({
+		offered: multiAgentOffered,
+		organizationId,
+		conversationId: conversationId ?? null,
+		latest: completedExecutions.at(-1),
+		first: selectedAgent,
+		setFirst: setSelectedAgent,
+		persist: persistAgentSelection.mutate,
+		onConversationStarted: (startedConversationId) =>
+			void handleConversationStarted(startedConversationId),
+	});
+	const restoreExtraAgents = multiAgent.restoreExtras;
+
 	// Hydrate once. The FR13 "agent no longer available" notice belongs to the
 	// surface (page or drawer), not to either engine — see
 	// `useSavedAgentUnavailableNotice`.
@@ -702,25 +748,18 @@ export function FabricTemporalOrchestratorChat({
 			return;
 		}
 		agentSelectionHydratedRef.current = true;
-		const [first] = data.selectedAgents;
+		const [first, ...rest] = data.selectedAgents;
 		const initial = first ?? data.defaultAgent;
 		if (initial) {
 			setSelectedAgent(initial as SelectedAgent);
 		}
-	}, [agentSelectionQuery.data, showAgentPicker]);
+		restoreExtraAgents(rest as SelectedAgent[]);
+	}, [agentSelectionQuery.data, showAgentPicker, restoreExtraAgents]);
 
-	const handleToggleAgent = useCallback(
-		(agent: SelectedAgent) => {
-			setSelectedAgent((current) => {
-				const next = current?.agentId === agent.agentId ? null : agent;
-				if (shouldPersistAgentSelection(current, next)) {
-					persistAgentSelection.mutate(next ? [next] : []);
-				}
-				return next;
-			});
-		},
-		[persistAgentSelection],
-	);
+	// The picks: the first is the orchestrator's model; with multi-agent
+	// turns (`COPILOTKIT_MULTI_AGENT_CHAT`) agents picked after it send the
+	// next message to each of them.
+	const handleToggleAgent = multiAgent.toggle;
 
 	// Undefined for a registered agent, which carries no model of its own. The
 	// run then resolves the workspace default exactly as it did before the
@@ -735,7 +774,7 @@ export function FabricTemporalOrchestratorChat({
 	// Use the streaming orchestrator hook
 	const {
 		messages,
-		isLoading,
+		isLoading: isStreamLoading,
 		state,
 		sendMessage,
 		attach,
@@ -758,7 +797,8 @@ export function FabricTemporalOrchestratorChat({
 		artifacts,
 		partykitStepProgress,
 		stop: stopStream,
-	} = useOrchestratorStream({
+		transport,
+	} = useOrchestratorChatStream({
 		organizationId,
 		executionMode:
 			executionModeOverride ??
@@ -795,7 +835,21 @@ export function FabricTemporalOrchestratorChat({
 		telemetrySurface,
 		onStopFailed: handleStopFailed,
 		onTurnRefused: handleTurnRefused,
+		// Two picks or more: the prepared message goes to every picked agent.
+		multiAgentSend: multiAgent.sendRun,
+		// Agent runtime only: the runtime creates and saves the conversation.
+		onConversationStarted: (startedConversationId) =>
+			void handleConversationStarted(startedConversationId),
+		conversationSettings: {
+			executionMode: reasoningMode,
+			instanceId,
+			selectedMcpConfigIds: selectedConversationMcpIds ?? undefined,
+			documentChatId: currentDocumentChatId ?? undefined,
+		},
 	});
+	// A multi-agent turn keeps the chat busy until every agent has ended.
+	const isLoading = isStreamLoading || multiAgent.isRunning;
+	const liveMultiAgentView = multiAgent.liveView(completedExecutions);
 	// The live and saved cards below are scoped to the latest terminal turn.
 
 	// F2 — chat scope for the Excalidraw auto-insert
@@ -805,26 +859,43 @@ export function FabricTemporalOrchestratorChat({
 	// surface tag is `"loom-orchestrator"` but the
 	// telemetry / UI surface is `"loom"` — we pass the latter when
 	// rendering the button.
+	// The adapter reads message positions and user text, not streamed answers.
+	const diagramHistoryKey = JSON.stringify(
+		messages.map((message) => ({
+			id: message.id,
+			role: message.role,
+			content: message.role === "user" ? message.content : "",
+		})),
+	);
+	const diagramHistory = useMemo(
+		() => JSON.parse(diagramHistoryKey) as typeof messages,
+		[diagramHistoryKey],
+	);
 	const excalidrawAutoInsertChatScope =
 		useChatScopedProjectFromOrchestratorStream({
 			projectId: attachedProjectId,
 			organizationId: organizationId ?? null,
-			messages,
+			messages: diagramHistory,
 		});
 
 	// Stable `onStop` for ChatInput — wraps `stop()` with the `"button"`
 	// trigger tag so cancel telemetry distinguishes the morph click from
 	// the Esc keybinding.
+	const stopMultiAgent = multiAgent.stop;
 	const handleStopFromButton = useCallback(() => {
-		stopStream("button");
-	}, [stopStream]);
+		if (!stopMultiAgent("button")) {
+			stopStream("button");
+		}
+	}, [stopStream, stopMultiAgent]);
 
 	// Stable `onStop` for the shared Esc binding — tags telemetry as
 	// `"esc"` so we can distinguish keypresses from morph clicks
 	// (spec § 10.1, decision 9 / AC-7).
 	const handleStopFromEsc = useCallback(() => {
-		stopStream("esc");
-	}, [stopStream]);
+		if (!stopMultiAgent("esc")) {
+			stopStream("esc");
+		}
+	}, [stopStream, stopMultiAgent]);
 
 	// Esc-context binding. While a turn is in-flight or
 	// paused on `pendingApproval`, Esc stops generation (AC-9 /
@@ -1406,6 +1477,7 @@ export function FabricTemporalOrchestratorChat({
 							: undefined,
 						artifacts: exec.artifacts || [],
 						sourcesUsed: exec.sourcesUsed || [],
+						...multiAgentExecutionFields(exec),
 					}));
 
 				// Fallback: if metadata.executions is missing or empty (e.g. due
@@ -1460,10 +1532,17 @@ export function FabricTemporalOrchestratorChat({
 					const liveIds = new Map(
 						prev.map((e) => [e.id, e.userMessageId]),
 					);
-					return restoredExecutions.map((e) => ({
-						...e,
-						userMessageId: liveIds.get(e.id),
-					}));
+					const previous = new Map(prev.map((e) => [e.id, e]));
+					return restoredExecutions.map((e) => {
+						const next = { ...e, userMessageId: liveIds.get(e.id) };
+						const old = previous.get(e.id);
+						// Rehydration runs while idle; retain unchanged JSON records
+						// so a newly recovered turn does not redraw its siblings.
+						return old &&
+							JSON.stringify(old) === JSON.stringify(next)
+							? old
+							: next;
+					});
 				});
 
 				// Report the last execution's plan to the parent for sidebar display
@@ -1676,6 +1755,20 @@ export function FabricTemporalOrchestratorChat({
 			}>,
 		) => {
 			try {
+				if (transport === "runtime") {
+					// The agent runtime saved this turn into its conversation
+					// before it reported the turn's end.
+					currentExecutionRef.current = null;
+					approvalHistoryRef.current = [];
+					if (
+						attachedTurnRef.current?.executionId ===
+						state.executionId
+					) {
+						attachedTurnRef.current = null;
+					}
+					onConversationSaved?.();
+					return;
+				}
 				// Determine execution status and any errors
 				const hasError = state.status === "failed";
 				const wasCancelled = state.status === "cancelled";
@@ -1963,6 +2056,7 @@ export function FabricTemporalOrchestratorChat({
 			onConversationSaved,
 			selectedConversationMcpIds,
 			planningAudit,
+			transport,
 		],
 	);
 
@@ -2945,9 +3039,10 @@ export function FabricTemporalOrchestratorChat({
 		try {
 			const existingConversationId = isNewChat ? null : conversationId;
 			// Only a send that created the conversation saved its question
-			// before the turn was admitted; see `handleTurnRefused`.
+			// before the turn was admitted; see `handleTurnRefused`. On the
+			// agent runtime the run creates it (`handleConversationStarted`).
 			const createdConversation =
-				existingConversationId === null
+				existingConversationId === null && transport === "legacy"
 					? await ensureConversation(content, documentChatId)
 					: null;
 			const turnConversationId =
@@ -2991,7 +3086,9 @@ export function FabricTemporalOrchestratorChat({
 								? { continueFromTurnId }
 								: {}),
 						}
-					: undefined,
+					: transport === "runtime" && documentChatId
+						? { documentChatId }
+						: undefined,
 			);
 		} finally {
 			setIsPreparingSend(false);
@@ -3090,6 +3187,25 @@ export function FabricTemporalOrchestratorChat({
 					},
 				];
 
+	// Completed turns sit still during streamed updates unless their data or
+	// shared render inputs change (Fizzy #3443). Row events use the latest
+	// handlers through useStableHandlers, including after a skipped render.
+	const rowActions = useStableHandlers({
+		openFrame,
+		continue: (prompt: string) => void handleSendMessage(prompt),
+		setLightboxImageUrl,
+	});
+	const completedTurnDeps = [
+		organizationId,
+		organizationSlug,
+		userAvatarSrc,
+		userDisplayName,
+		activeFrame?.frameId,
+		excalidrawAutoInsertChatScope,
+		messages.length === 0,
+		isLoading,
+	];
+
 	return (
 		<div className="flex h-full overflow-hidden">
 			<div className="flex min-w-0 flex-1 flex-col">
@@ -3099,6 +3215,7 @@ export function FabricTemporalOrchestratorChat({
 				    notice renders, rather than the landing. */}
 				{messages.length === 0 &&
 				completedExecutions.length === 0 &&
+				!liveMultiAgentView &&
 				!(state.status === "failed" && state.result?.error) ? (
 					compactMode ? (
 						/* The drawer's empty state: one heading and the
@@ -3187,649 +3304,746 @@ export function FabricTemporalOrchestratorChat({
 							{/* Completed executions - each with its user message followed by step-by-step results */}
 							{completedExecutions
 								.filter(
-									(e) => e != null && e.userMessage != null,
+									(e) =>
+										e != null &&
+										e.userMessage != null &&
+										!multiAgent.showsLive(e),
 								)
 								.map((execution, index, shown) => (
-									<div
+									<MemoizedRow
 										key={execution.id}
-										className="space-y-4"
-									>
-										{/* User's question */}
-										{execution.userMessageClarification ? (
-											<AnsweredClarification
-												turn={
-													execution.userMessageClarification
-												}
-											/>
-										) : (
-											execution.userMessage && (
-												<Message
-													from="user"
-													className="py-2"
-												>
-													<MessageContent
-														variant="flat"
-														className="max-w-[70%]"
-													>
-														{execution.imageUrls &&
-															execution.imageUrls
-																.length > 0 && (
-																<div className="flex gap-2 mb-2 flex-wrap">
-																	{execution.imageUrls.map(
-																		(
-																			url,
-																		) => (
-																			<button
-																				key={
-																					url
-																				}
-																				type="button"
-																				onClick={() =>
-																					setLightboxImageUrl(
-																						storagePathToProxyUrl(
-																							url,
-																							organizationId,
-																						),
-																					)
-																				}
-																				className="cursor-pointer"
-																			>
-																				<Image
-																					src={storagePathToProxyUrl(
-																						url,
-																						organizationId,
-																					)}
-																					alt="Attached"
-																					width={
-																						80
-																					}
-																					height={
-																						80
-																					}
-																					unoptimized
-																					className="h-20 w-20 rounded-md border object-cover transition-shadow hover:ring-2 hover:ring-primary"
-																				/>
-																			</button>
-																		),
-																	)}
-																</div>
-															)}
-														<Response>
-															{
-																execution.userMessage
-															}
-														</Response>
-													</MessageContent>
-													<MessageAvatar
-														src={userAvatarSrc}
-														name={userDisplayName}
-													/>
-												</Message>
-											)
-										)}
-
-										{execution.clarifications?.map(
-											(turn, index) => (
-												<AnsweredClarification
-													key={`${execution.id}-clarification-${index}`}
-													turn={turn}
+										deps={[
+											execution,
+											index === shown.length - 1,
+											...completedTurnDeps,
+										]}
+										render={() =>
+											execution.multiAgent ? (
+												<MultiAgentTurnRow
+													question={
+														execution.userMessage
+													}
+													record={
+														execution.multiAgent
+													}
+													organizationId={
+														organizationId
+													}
+													organizationSlug={
+														organizationSlug
+													}
+													chatScope={
+														excalidrawAutoInsertChatScope
+													}
 												/>
-											),
-										)}
-
-										{/* Execution Plan (if available) */}
-										{execution.plan &&
-											execution.plan.steps.length > 0 && (
-												<div className="flex gap-3">
-													<div className="shrink-0">
-														<FabricLogo
-															className="h-8 w-8"
-															size={32}
-														/>
-													</div>
-													<div className="flex-1 min-w-0">
-														<Plan
-															title="Execution Plan"
-															description={
-																execution.plan
-																	.description ||
-																undefined
+											) : (
+												<div className="space-y-4">
+													{/* User's question */}
+													{execution.userMessageClarification ? (
+														<AnsweredClarification
+															turn={
+																execution.userMessageClarification
 															}
-															defaultCollapsed={
-																true
-															}
-															steps={execution.plan.steps.map(
-																(
-																	step,
-																): PlanStep => ({
-																	id: step.id,
-																	title: step.description,
-																	description:
-																		step.executor
-																			? `Assigned to: ${
-																					AGENT_DISPLAY_INFO[
-																						step.executor as keyof typeof AGENT_DISPLAY_INFO
-																					]
-																						?.name ||
-																					step.executor
-																				}`
-																			: undefined,
-																	status: "completed" as PlanStepStatus,
-																}),
-															)}
 														/>
-													</div>
-												</div>
-											)}
-
-										{/* Step-by-step execution results */}
-										<div className="flex gap-3">
-											<div className="shrink-0">
-												<FabricLogo
-													className="h-8 w-8"
-													size={32}
-												/>
-											</div>
-											<div className="flex-1 min-w-0 space-y-4 overflow-hidden">
-												{execution.stepResults.map(
-													(result, resultIdx) => {
-														const isLastStep =
-															resultIdx ===
-															execution
-																.stepResults
-																.length -
-																1;
-
-														return (
-															<div
-																key={
-																	result.stepId
-																}
-																className="space-y-3"
+													) : (
+														execution.userMessage && (
+															<Message
+																from="user"
+																className="py-2"
 															>
-																{/* Step description header */}
-																{execution
-																	.stepResults
-																	.length >
-																	1 && (
-																	<div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
-																		{result.status ===
-																		"error" ? (
-																			<AlertCircle className="h-3.5 w-3.5 text-destructive" />
-																		) : (
-																			<CheckCircle2 className="h-3.5 w-3.5 text-success" />
+																<MessageContent
+																	variant="flat"
+																	className="max-w-[70%]"
+																>
+																	{execution.imageUrls &&
+																		execution
+																			.imageUrls
+																			.length >
+																			0 && (
+																			<div className="flex gap-2 mb-2 flex-wrap">
+																				{execution.imageUrls.map(
+																					(
+																						url,
+																					) => (
+																						<button
+																							key={
+																								url
+																							}
+																							type="button"
+																							onClick={() =>
+																								rowActions.setLightboxImageUrl(
+																									storagePathToProxyUrl(
+																										url,
+																										organizationId,
+																									),
+																								)
+																							}
+																							className="cursor-pointer"
+																						>
+																							<Image
+																								src={storagePathToProxyUrl(
+																									url,
+																									organizationId,
+																								)}
+																								alt="Attached"
+																								width={
+																									80
+																								}
+																								height={
+																									80
+																								}
+																								unoptimized
+																								className="h-20 w-20 rounded-md border object-cover transition-shadow hover:ring-2 hover:ring-primary"
+																							/>
+																						</button>
+																					),
+																				)}
+																			</div>
 																		)}
-																		<span className="font-medium">
-																			Step{" "}
-																			{resultIdx +
-																				1}
-																			:
-																		</span>
-																		<span>
-																			{
-																				result.stepDescription
-																			}
-																		</span>
-																	</div>
-																)}
-
-																{/* Tool calls - collapsible section */}
-																{result
-																	.toolCalls
-																	.length >
-																	0 && (
-																	<Collapsible
-																		defaultOpen={
-																			false
+																	<Response>
+																		{
+																			execution.userMessage
 																		}
-																	>
-																		<CollapsibleTrigger className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer py-1 group">
-																			<ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />
-																			<Wrench className="h-3 w-3" />
-																			<span>
-																				{
-																					result
-																						.toolCalls
-																						.length
-																				}{" "}
-																				tool
-																				call
-																				{result
-																					.toolCalls
-																					.length !==
-																				1
-																					? "s"
-																					: ""}
-																			</span>
-																		</CollapsibleTrigger>
-																		<CollapsibleContent>
-																			<ToolCallList
-																				toolCalls={toToolCallItems(
-																					result.toolCalls,
-																					`${execution.id}-${result.stepId}`,
+																	</Response>
+																</MessageContent>
+																<MessageAvatar
+																	src={
+																		userAvatarSrc
+																	}
+																	name={
+																		userDisplayName
+																	}
+																/>
+															</Message>
+														)
+													)}
+
+													{execution.clarifications?.map(
+														(turn, index) => (
+															<AnsweredClarification
+																key={`${execution.id}-clarification-${index}`}
+																turn={turn}
+															/>
+														),
+													)}
+
+													{/* Execution Plan (if available) */}
+													{execution.plan &&
+														execution.plan.steps
+															.length > 0 && (
+															<div className="flex gap-3">
+																<div className="shrink-0">
+																	<FabricLogo
+																		className="h-8 w-8"
+																		size={
+																			32
+																		}
+																	/>
+																</div>
+																<div className="flex-1 min-w-0">
+																	<Plan
+																		title="Execution Plan"
+																		description={
+																			execution
+																				.plan
+																				.description ||
+																			undefined
+																		}
+																		defaultCollapsed={
+																			true
+																		}
+																		steps={execution.plan.steps.map(
+																			(
+																				step,
+																			): PlanStep => ({
+																				id: step.id,
+																				title: step.description,
+																				description:
+																					step.executor
+																						? `Assigned to: ${
+																								AGENT_DISPLAY_INFO[
+																									step.executor as keyof typeof AGENT_DISPLAY_INFO
+																								]
+																									?.name ||
+																								step.executor
+																							}`
+																						: undefined,
+																				status: "completed" as PlanStepStatus,
+																			}),
+																		)}
+																	/>
+																</div>
+															</div>
+														)}
+
+													{/* Step-by-step execution results */}
+													<div className="flex gap-3">
+														<div className="shrink-0">
+															<FabricLogo
+																className="h-8 w-8"
+																size={32}
+															/>
+														</div>
+														<div className="flex-1 min-w-0 space-y-4 overflow-hidden">
+															{execution.stepResults.map(
+																(
+																	result,
+																	resultIdx,
+																) => {
+																	const isLastStep =
+																		resultIdx ===
+																		execution
+																			.stepResults
+																			.length -
+																			1;
+
+																	return (
+																		<div
+																			key={
+																				result.stepId
+																			}
+																			className="space-y-3"
+																		>
+																			{/* Step description header */}
+																			{execution
+																				.stepResults
+																				.length >
+																				1 && (
+																				<div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
+																					{result.status ===
+																					"error" ? (
+																						<AlertCircle className="h-3.5 w-3.5 text-destructive" />
+																					) : (
+																						<CheckCircle2 className="h-3.5 w-3.5 text-success" />
+																					)}
+																					<span className="font-medium">
+																						Step{" "}
+																						{resultIdx +
+																							1}
+																						:
+																					</span>
+																					<span>
+																						{
+																							result.stepDescription
+																						}
+																					</span>
+																				</div>
+																			)}
+
+																			{/* Tool calls - collapsible section */}
+																			{result
+																				.toolCalls
+																				.length >
+																				0 && (
+																				<Collapsible
+																					defaultOpen={
+																						false
+																					}
+																				>
+																					<CollapsibleTrigger className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer py-1 group">
+																						<ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />
+																						<Wrench className="h-3 w-3" />
+																						<span>
+																							{
+																								result
+																									.toolCalls
+																									.length
+																							}{" "}
+																							tool
+																							call
+																							{result
+																								.toolCalls
+																								.length !==
+																							1
+																								? "s"
+																								: ""}
+																						</span>
+																					</CollapsibleTrigger>
+																					<CollapsibleContent>
+																						<ToolCallList
+																							toolCalls={toToolCallItems(
+																								result.toolCalls,
+																								`${execution.id}-${result.stepId}`,
+																								(
+																									tc,
+																									idx,
+																								): ToolCallItem => ({
+																									id: `${execution.id}-${result.stepId}-${idx}`,
+																									name: tc.name,
+																									args: tc.args,
+																									result: tc.result,
+																									status: tc.status,
+																									error:
+																										tc.status ===
+																										"error"
+																											? String(
+																													tc.result,
+																												)
+																											: undefined,
+																								}),
+																							)}
+																							defaultOpen={
+																								false
+																							}
+																							getInputSummary={
+																								orchestratorToolInputSummary
+																							}
+																							activeFrameId={
+																								activeFrame?.frameId
+																							}
+																							onOpenFrame={
+																								rowActions.openFrame
+																							}
+																						/>
+																					</CollapsibleContent>
+																				</Collapsible>
+																			)}
+
+																			{/* MCP App interactive UIs — persisted tool calls rendered after page refresh */}
+																			{result.toolCalls
+																				.filter(
 																					(
 																						tc,
-																						idx,
-																					): ToolCallItem => ({
-																						id: `${execution.id}-${result.stepId}-${idx}`,
-																						name: tc.name,
-																						args: tc.args,
-																						result: tc.result,
-																						status: tc.status,
-																						error:
-																							tc.status ===
-																							"error"
-																								? String(
-																										tc.result,
+																					) =>
+																						(
+																							tc as any
+																						)
+																							.mcpAppResourceUri &&
+																						(
+																							tc as any
+																						)
+																							.mcpAppConfigId &&
+																						tc.status ===
+																							"success",
+																				)
+																				.map(
+																					(
+																						tc,
+																					) => (
+																						<div
+																							key={`completed-${execution.id}-${result.stepId}-${tc.id}`}
+																						>
+																							<McpAppFrame
+																								resourceUri={
+																									(
+																										tc as any
 																									)
-																								: undefined,
-																					}),
+																										.mcpAppResourceUri
+																								}
+																								configId={
+																									(
+																										tc as any
+																									)
+																										.mcpAppConfigId
+																								}
+																								organizationId={
+																									organizationId
+																								}
+																								toolArgs={
+																									tc.args as Record<
+																										string,
+																										unknown
+																									>
+																								}
+																								toolResult={
+																									tc.result
+																								}
+																								className="mt-3"
+																							/>
+																							<ExcalidrawAutoInsertSlot
+																								toolCall={{
+																									id: tc.id,
+																									mcpAppResourceUri:
+																										(
+																											tc as any
+																										)
+																											.mcpAppResourceUri,
+																									mcpAppConfigId:
+																										(
+																											tc as any
+																										)
+																											.mcpAppConfigId,
+																									args: tc.args,
+																									result: tc.result,
+																								}}
+																								chatMessageId={`${execution.id}-${result.stepId}-${tc.id}`}
+																								chatScope={
+																									excalidrawAutoInsertChatScope
+																								}
+																								organizationSlug={
+																									organizationSlug
+																								}
+																							/>
+																						</div>
+																					),
 																				)}
-																				defaultOpen={
-																					false
-																				}
-																				getInputSummary={
-																					orchestratorToolInputSummary
-																				}
-																				activeFrameId={
-																					activeFrame?.frameId
-																				}
-																				onOpenFrame={
-																					openFrame
-																				}
-																			/>
-																		</CollapsibleContent>
-																	</Collapsible>
+
+																			{/* Step response: last step shows prominently, others in collapsed Reasoning */}
+																			{result.response && (
+																				<div>
+																					{isLastStep ? (
+																						// Final answer - show prominently
+																						<Response
+																							className={
+																								ASSISTANT_RESPONSE_SHELL_CLASSNAME
+																							}
+																						>
+																							{stripPersistedAssistantLabelPrefix(
+																								result.response,
+																							)}
+																						</Response>
+																					) : (
+																						// Intermediate step - show in collapsed Reasoning
+																						<Reasoning
+																							isStreaming={
+																								false
+																							}
+																							duration={
+																								result.durationMs
+																									? Math.ceil(
+																											result.durationMs /
+																												1000,
+																										)
+																									: undefined
+																							}
+																						>
+																							<ReasoningTrigger />
+																							<ReasoningContent>
+																								{stripPersistedAssistantLabelPrefix(
+																									result.response,
+																								)}
+																							</ReasoningContent>
+																						</Reasoning>
+																					)}
+																				</div>
+																			)}
+																		</div>
+																	);
+																},
+															)}
+
+															{/* Chart artifacts from execution.artifacts (fallback for persisted charts) */}
+															{execution.artifacts
+																?.filter(
+																	(a) =>
+																		a.type ===
+																			"chart" &&
+																		a.content,
+																)
+																.map(
+																	(
+																		artifact,
+																	) => {
+																		try {
+																			const chartData =
+																				JSON.parse(
+																					artifact.content ||
+																						"{}",
+																				);
+																			if (
+																				isChartArtifact(
+																					chartData,
+																				)
+																			) {
+																				return (
+																					<ChartCard
+																						key={
+																							artifact.id
+																						}
+																						artifact={
+																							chartData
+																						}
+																					/>
+																				);
+																			}
+																		} catch (e) {
+																			console.error(
+																				"[FabricChat] Failed to parse chart artifact:",
+																				e,
+																			);
+																		}
+																		return null;
+																	},
 																)}
 
-																{/* MCP App interactive UIs — persisted tool calls rendered after page refresh */}
-																{result.toolCalls
-																	.filter(
-																		(tc) =>
-																			(
-																				tc as any
-																			)
-																				.mcpAppResourceUri &&
-																			(
-																				tc as any
-																			)
-																				.mcpAppConfigId &&
-																			tc.status ===
-																				"success",
-																	)
-																	.map(
-																		(
-																			tc,
-																		) => (
-																			<div
-																				key={`completed-${execution.id}-${result.stepId}-${tc.id}`}
-																			>
-																				<McpAppFrame
-																					resourceUri={
-																						(
-																							tc as any
-																						)
-																							.mcpAppResourceUri
-																					}
-																					configId={
-																						(
-																							tc as any
-																						)
-																							.mcpAppConfigId
-																					}
-																					organizationId={
-																						organizationId
-																					}
-																					toolArgs={
-																						tc.args as Record<
-																							string,
-																							unknown
-																						>
-																					}
-																					toolResult={
-																						tc.result
-																					}
-																					className="mt-3"
-																				/>
-																				<ExcalidrawAutoInsertSlot
-																					toolCall={{
-																						id: tc.id,
-																						mcpAppResourceUri:
-																							(
-																								tc as any
-																							)
-																								.mcpAppResourceUri,
-																						mcpAppConfigId:
-																							(
-																								tc as any
-																							)
-																								.mcpAppConfigId,
-																						args: tc.args,
-																						result: tc.result,
-																					}}
-																					chatMessageId={`${execution.id}-${result.stepId}-${tc.id}`}
-																					chatScope={
-																						excalidrawAutoInsertChatScope
-																					}
-																					organizationSlug={
-																						organizationSlug
-																					}
-																				/>
-																			</div>
-																		),
-																	)}
+															{/* A recovered final answer stays visible beside partial browser steps.
+												    A step already showing that exact answer is not repeated. */}
+															{execution.error &&
+																!execution.terminalStatus && (
+																	<ChatFailureNotice
+																		content={
+																			execution.response
+																		}
+																		error={
+																			execution.error
+																		}
+																	/>
+																)}
+															{(!execution.error ||
+																execution.terminalStatus) &&
+																execution.response &&
+																!execution.stepResults.some(
+																	(step) =>
+																		step.response ===
+																		execution.response,
+																) &&
+																(execution.terminalStatus ||
+																	execution.recoveredFromTurn ||
+																	(execution
+																		.additionalResponses
+																		?.length ??
+																		0) >
+																		0 ||
+																	(!execution.stepResults.some(
+																		(s) =>
+																			s.response,
+																	) &&
+																		!hasDocumentArtifacts(
+																			execution.stepResults,
+																		))) && (
+																	<Response
+																		className={
+																			ASSISTANT_RESPONSE_SHELL_CLASSNAME
+																		}
+																	>
+																		{stripPersistedAssistantLabelPrefix(
+																			execution.response,
+																		)}
+																	</Response>
+																)}
 
-																{/* Step response: last step shows prominently, others in collapsed Reasoning */}
-																{result.response && (
-																	<div>
-																		{isLastStep ? (
-																			// Final answer - show prominently
+															{execution.additionalResponses
+																?.filter(
+																	(
+																		response,
+																	) =>
+																		!execution.stepResults.some(
+																			(
+																				step,
+																			) =>
+																				step.response ===
+																				response,
+																		),
+																)
+																.map(
+																	(
+																		response,
+																	) => (
+																		<div
+																			key={
+																				response
+																			}
+																		>
+																			<p className="text-sm text-muted-foreground">
+																				Saved
+																				response
+																			</p>
 																			<Response
 																				className={
 																					ASSISTANT_RESPONSE_SHELL_CLASSNAME
 																				}
 																			>
 																				{stripPersistedAssistantLabelPrefix(
-																					result.response,
+																					response,
 																				)}
 																			</Response>
-																		) : (
-																			// Intermediate step - show in collapsed Reasoning
-																			<Reasoning
-																				isStreaming={
-																					false
-																				}
-																				duration={
-																					result.durationMs
-																						? Math.ceil(
-																								result.durationMs /
-																									1000,
-																							)
-																						: undefined
-																				}
-																			>
-																				<ReasoningTrigger />
-																				<ReasoningContent>
-																					{stripPersistedAssistantLabelPrefix(
-																						result.response,
-																					)}
-																				</ReasoningContent>
-																			</Reasoning>
-																		)}
-																	</div>
+																		</div>
+																	),
 																)}
-															</div>
-														);
-													},
-												)}
 
-												{/* Chart artifacts from execution.artifacts (fallback for persisted charts) */}
-												{execution.artifacts
-													?.filter(
-														(a) =>
-															a.type ===
-																"chart" &&
-															a.content,
-													)
-													.map((artifact) => {
-														try {
-															const chartData =
-																JSON.parse(
-																	artifact.content ||
-																		"{}",
-																);
-															if (
-																isChartArtifact(
-																	chartData,
-																)
-															) {
-																return (
-																	<ChartCard
-																		key={
-																			artifact.id
-																		}
-																		artifact={
-																			chartData
-																		}
-																	/>
-																);
-															}
-														} catch (e) {
-															console.error(
-																"[FabricChat] Failed to parse chart artifact:",
-																e,
-															);
-														}
-														return null;
-													})}
-
-												{/* A recovered final answer stays visible beside partial browser steps.
-												    A step already showing that exact answer is not repeated. */}
-												{execution.error &&
-													!execution.terminalStatus && (
-														<ChatFailureNotice
-															content={
-																execution.response
-															}
-															error={
-																execution.error
-															}
-														/>
-													)}
-												{(!execution.error ||
-													execution.terminalStatus) &&
-													execution.response &&
-													!execution.stepResults.some(
-														(step) =>
-															step.response ===
-															execution.response,
-													) &&
-													(execution.terminalStatus ||
-														execution.recoveredFromTurn ||
-														(execution
-															.additionalResponses
-															?.length ?? 0) >
-															0 ||
-														(!execution.stepResults.some(
-															(s) => s.response,
-														) &&
-															!hasDocumentArtifacts(
-																execution.stepResults,
-															))) && (
-														<Response
-															className={
-																ASSISTANT_RESPONSE_SHELL_CLASSNAME
-															}
-														>
-															{stripPersistedAssistantLabelPrefix(
-																execution.response,
+															{execution.terminalStatus ===
+																"CANCELLED" && (
+																<StoppedIndicator />
 															)}
-														</Response>
-													)}
-
-												{execution.additionalResponses
-													?.filter(
-														(response) =>
-															!execution.stepResults.some(
-																(step) =>
-																	step.response ===
-																	response,
-															),
-													)
-													.map((response) => (
-														<div key={response}>
-															<p className="text-sm text-muted-foreground">
-																Saved response
-															</p>
-															<Response
-																className={
-																	ASSISTANT_RESPONSE_SHELL_CLASSNAME
-																}
-															>
-																{stripPersistedAssistantLabelPrefix(
-																	response,
+															{execution.inProgress && (
+																<output
+																	className="block text-sm text-muted-foreground"
+																	aria-live="polite"
+																>
+																	Still
+																	running when
+																	this
+																	conversation
+																	was opened
+																</output>
+															)}
+															{(execution.terminalStatus ===
+																"FAILED" ||
+																execution.terminalStatus ===
+																	"LIMITED") && (
+																<output
+																	className="block text-sm text-muted-foreground"
+																	aria-live="polite"
+																>
+																	{execution.terminalStatus ===
+																	"FAILED"
+																		? "Execution failed"
+																		: "Answer may be incomplete"}
+																</output>
+															)}
+															{execution.terminalReason &&
+																execution.terminalStatus !==
+																	"COMPLETED" && (
+																	<p className="text-sm text-muted-foreground">
+																		{
+																			execution.terminalReason
+																		}
+																	</p>
 																)}
-															</Response>
-														</div>
-													))}
+															{execution.limitSignals?.map(
+																(
+																	signal,
+																	signalIndex,
+																) => (
+																	<p
+																		key={`${signal.kind}-${signalIndex}`}
+																		className="text-sm text-muted-foreground"
+																	>
+																		{
+																			signal.message
+																		}
+																	</p>
+																),
+															)}
 
-												{execution.terminalStatus ===
-													"CANCELLED" && (
-													<StoppedIndicator />
-												)}
-												{execution.inProgress && (
-													<output
-														className="block text-sm text-muted-foreground"
-														aria-live="polite"
-													>
-														Still running when this
-														conversation was opened
-													</output>
-												)}
-												{(execution.terminalStatus ===
-													"FAILED" ||
-													execution.terminalStatus ===
-														"LIMITED") && (
-													<output
-														className="block text-sm text-muted-foreground"
-														aria-live="polite"
-													>
-														{execution.terminalStatus ===
-														"FAILED"
-															? "Execution failed"
-															: "Answer may be incomplete"}
-													</output>
-												)}
-												{execution.terminalReason &&
-													execution.terminalStatus !==
-														"COMPLETED" && (
-														<p className="text-sm text-muted-foreground">
-															{
-																execution.terminalReason
-															}
-														</p>
-													)}
-												{execution.limitSignals?.map(
-													(signal, signalIndex) => (
-														<p
-															key={`${signal.kind}-${signalIndex}`}
-															className="text-sm text-muted-foreground"
-														>
-															{signal.message}
-														</p>
-													),
-												)}
+															<AnsweredByModel
+																model={
+																	execution.model
+																}
+															/>
+															{execution.apiBilling && (
+																<ApiBillingNotice
+																	apiBilling={
+																		execution.apiBilling
+																	}
+																/>
+															)}
 
-												<AnsweredByModel
-													model={execution.model}
-												/>
-												{execution.apiBilling && (
-													<ApiBillingNotice
-														apiBilling={
-															execution.apiBilling
-														}
-													/>
-												)}
-
-												{/* The answer stopped at the output ceiling
+															{/* The answer stopped at the output ceiling
 												    (review F25). Continue is offered only on
 												    the latest turn of a reloaded thread. */}
-												{execution.truncated && (
-													<TruncationNotice
-														truncated={
-															execution.truncated
-														}
-														onContinue={
-															index ===
-																shown.length -
-																	1 &&
-															messages.length ===
-																0
-																? (prompt) =>
-																		void handleSendMessage(
-																			prompt,
-																		)
-																: undefined
-														}
-														disabled={isLoading}
-													/>
-												)}
-											</div>
-										</div>
-									</div>
+															{execution.truncated && (
+																<TruncationNotice
+																	truncated={
+																		execution.truncated
+																	}
+																	onContinue={
+																		index ===
+																			shown.length -
+																				1 &&
+																		messages.length ===
+																			0
+																			? rowActions.continue
+																			: undefined
+																	}
+																	disabled={
+																		isLoading
+																	}
+																/>
+															)}
+														</div>
+													</div>
+												</div>
+											)
+										}
+									/>
 								))}
+							{liveMultiAgentView && (
+								<MultiAgentTurnRow
+									question={liveMultiAgentView.question}
+									view={liveMultiAgentView}
+									organizationId={organizationId}
+									organizationSlug={organizationSlug}
+									chatScope={excalidrawAutoInsertChatScope}
+									onAnswer={multiAgent.answer}
+								/>
+							)}
 
 							{/* Current user message (only if not in completedExecutions) */}
-							{liveUserMessages.map((message) => {
-								const clarification = clarificationOf(message);
-								if (clarification) {
-									return (
-										<AnsweredClarification
-											key={message.id}
-											turn={clarification}
-										/>
-									);
-								}
-								return (
-									<Message
-										key={message.id}
-										from="user"
-										className="py-2"
-									>
-										<MessageContent
-											variant="flat"
-											className="max-w-[70%]"
-										>
-											{message.imageUrls &&
-												message.imageUrls.length >
-													0 && (
-													<div className="flex gap-2 mb-2 flex-wrap">
-														{message.imageUrls.map(
-															(url) => (
-																<button
-																	key={url}
-																	type="button"
-																	onClick={() =>
-																		setLightboxImageUrl(
-																			storagePathToProxyUrl(
-																				url,
-																				organizationId,
-																			),
-																		)
-																	}
-																	className="cursor-pointer"
-																>
-																	<Image
-																		src={storagePathToProxyUrl(
-																			url,
-																			organizationId,
-																		)}
-																		alt="Attached"
-																		width={
-																			80
-																		}
-																		height={
-																			80
-																		}
-																		unoptimized
-																		className="h-20 w-20 rounded-md border object-cover transition-shadow hover:ring-2 hover:ring-primary"
-																	/>
-																</button>
-															),
+							{liveUserMessages.map((message) => (
+								<MemoizedRow
+									key={message.id}
+									deps={[
+										message,
+										organizationId,
+										userAvatarSrc,
+										userDisplayName,
+									]}
+									render={() => {
+										const clarification =
+											clarificationOf(message);
+										if (clarification) {
+											return (
+												<AnsweredClarification
+													key={message.id}
+													turn={clarification}
+												/>
+											);
+										}
+										return (
+											<Message
+												key={message.id}
+												from="user"
+												className="py-2"
+											>
+												<MessageContent
+													variant="flat"
+													className="max-w-[70%]"
+												>
+													{message.imageUrls &&
+														message.imageUrls
+															.length > 0 && (
+															<div className="flex gap-2 mb-2 flex-wrap">
+																{message.imageUrls.map(
+																	(url) => (
+																		<button
+																			key={
+																				url
+																			}
+																			type="button"
+																			onClick={() =>
+																				rowActions.setLightboxImageUrl(
+																					storagePathToProxyUrl(
+																						url,
+																						organizationId,
+																					),
+																				)
+																			}
+																			className="cursor-pointer"
+																		>
+																			<Image
+																				src={storagePathToProxyUrl(
+																					url,
+																					organizationId,
+																				)}
+																				alt="Attached"
+																				width={
+																					80
+																				}
+																				height={
+																					80
+																				}
+																				unoptimized
+																				className="h-20 w-20 rounded-md border object-cover transition-shadow hover:ring-2 hover:ring-primary"
+																			/>
+																		</button>
+																	),
+																)}
+															</div>
 														)}
-													</div>
-												)}
-											<Response>
-												{message.content}
-											</Response>
-										</MessageContent>
-										<MessageAvatar
-											src={userAvatarSrc}
-											name={userDisplayName}
-										/>
-									</Message>
-								);
-							})}
+													<Response>
+														{message.content}
+													</Response>
+												</MessageContent>
+												<MessageAvatar
+													src={userAvatarSrc}
+													name={userDisplayName}
+												/>
+											</Message>
+										);
+									}}
+								/>
+							))}
 
 							{/* Execution Plan - Show when plan is available and not yet completed */}
 							{state.plan &&
@@ -4980,11 +5194,12 @@ export function FabricTemporalOrchestratorChat({
 										{showAgentPicker && (
 											<div className="flex flex-wrap items-center gap-2">
 												<AgentModelPicker
-													selectedAgents={
-														selectedAgent
+													selectedAgents={[
+														...(selectedAgent
 															? [selectedAgent]
-															: []
-													}
+															: []),
+														...multiAgent.extraAgents,
+													]}
 													onToggleAgent={
 														handleToggleAgent
 													}
@@ -5026,7 +5241,7 @@ export function FabricTemporalOrchestratorChat({
 														    been lost. */}
 														{(!activeModelOverride ||
 															inactiveProviderNote) && (
-															<span className="text-muted-foreground">
+															<span className="text-highlight-ink">
 																not applied
 															</span>
 														)}
@@ -5044,6 +5259,15 @@ export function FabricTemporalOrchestratorChat({
 														</button>
 													</Badge>
 												) : null}
+												<MultiAgentPickBadges
+													agents={
+														multiAgent.extraAgents
+													}
+													organizationId={
+														organizationId
+													}
+													onRemove={multiAgent.toggle}
+												/>
 											</div>
 										)}
 										<ActiveContextIndicator

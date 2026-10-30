@@ -13,7 +13,19 @@ const h = vi.hoisted(() => ({
 	messages: [] as unknown[],
 	actions: new Map<string, any>(),
 	setState: vi.fn(),
-	agent: { state: {} as Record<string, unknown>, setState: vi.fn() },
+	subscriber: undefined as any,
+	unsubscribe: vi.fn(),
+	copilotkit: {
+		subscribe: vi.fn((subscriber: any) => {
+			h.subscriber = subscriber;
+			return { unsubscribe: h.unsubscribe };
+		}),
+	},
+	agent: {
+		agentId: "backlog_updater",
+		state: {} as Record<string, unknown>,
+		setState: vi.fn(),
+	},
 	start: vi.fn(),
 	poll: vi.fn(),
 	apply: vi.fn(),
@@ -36,6 +48,7 @@ vi.mock("@copilotkit/react-core", () => ({
 }));
 vi.mock("@copilotkit/react-core/v2", () => ({
 	useAgent: () => ({ agent: h.agent }),
+	useCopilotKit: () => ({ copilotkit: h.copilotkit }),
 }));
 vi.mock("@copilotkit/react-ui", () => ({
 	CopilotSidebar: ({ children }: { children?: ReactNode }) => (
@@ -1525,9 +1538,38 @@ it("seeds the project and integration context into the agent before the first ru
 	);
 });
 
+it("re-seeds context after CopilotKit clears state at run start", () => {
+	mountChat({ slack: true, notion: true });
+	h.agent.state = {};
+	h.agent.setState.mockClear();
+	act(() => h.subscriber?.onAgentRunStarted({ agent: h.agent }));
+	expect(h.agent.setState).toHaveBeenCalledWith(
+		expect.objectContaining({
+			projectId: "example-project",
+			organizationId: "example-org",
+			hasTeamsIntegration: true,
+			hasSlackIntegration: true,
+			hasNotionIntegration: true,
+			retryCount: 0,
+			reasoningByTurn: {},
+		}),
+	);
+});
+
+it("ignores other agents and unsubscribes on unmount", () => {
+	const chat = mountChat();
+	const other = { agentId: "other_agent", state: {}, setState: vi.fn() };
+	act(() => h.subscriber?.onAgentRunStarted({ agent: other }));
+	expect(other.setState).not.toHaveBeenCalled();
+	h.unsubscribe.mockClear();
+	chat.unmount();
+	expect(h.unsubscribe).toHaveBeenCalledTimes(1);
+});
+
 it("re-seeds a registered agent that replaces the provisional one, keeping its live state (Fizzy #3102)", () => {
 	const provisional = h.agent;
 	const registered = {
+		agentId: "backlog_updater",
 		state: {
 			retryCount: 2,
 			reasoningByTurn: { "turn-1": "example reasoning" },

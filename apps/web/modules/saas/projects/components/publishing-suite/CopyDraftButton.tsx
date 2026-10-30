@@ -33,12 +33,14 @@ export function CopyDraftButton({
 	markdown,
 	label = "Copy draft",
 	disabled = false,
+	variant = "outline",
 }: {
 	/** The exact text the reader is looking at. */
 	markdown: string;
 	/** Visible text. The accessible name extends it, never replaces it. */
 	label?: string;
 	disabled?: boolean;
+	variant?: "outline" | "primary";
 }) {
 	const handleCopy = async () => {
 		const clipboard =
@@ -62,7 +64,7 @@ export function CopyDraftButton({
 	return (
 		<Button
 			type="button"
-			variant="outline"
+			variant={variant}
 			size="sm"
 			// The visible label is contained in the accessible name (WCAG 2.5.3),
 			// so a speech-input user can say what they can see.

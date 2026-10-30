@@ -19,6 +19,7 @@ import {
 	uploadedImageKeys,
 } from "../extract-document-images";
 import { prepareExportMarkdown } from "../markdown";
+import { PROPOSAL_EXPORT_LIMITS } from "../types";
 
 const PROJECT = "project-example-1";
 const DOCUMENT = "document-example-1";
@@ -251,6 +252,75 @@ describe("extractDocumentImages", () => {
 		);
 		// Warnings are counts only.
 		expect(JSON.stringify(result.warnings)).not.toContain("document-media");
+	});
+
+	it("steps an image down until print can inline it as a data URL", async () => {
+		// Grain is what JPEG keeps worst: at 2400 px this is over the cap.
+		const grainy = await sharp({
+			create: {
+				width: 2400,
+				height: 1200,
+				channels: 3,
+				background: { r: 0, g: 0, b: 0 },
+				noise: { type: "gaussian", mean: 128, sigma: 80 },
+			},
+		})
+			.jpeg({ quality: 95 })
+			.toBuffer();
+		const reader = fakeReader({ [mediaKey("grainy.jpg")]: grainy });
+
+		const result = await extractDocumentImages({
+			root: prepared(imageTag(mediaKey("grainy.jpg"))),
+			projectId: PROJECT,
+			documentId: DOCUMENT,
+			read: reader.read,
+		});
+
+		const image = result.images.get(mediaKey("grainy.jpg"));
+		expect(image).toMatchObject({
+			mimeType: "image/jpeg",
+			width: 1800,
+			height: 900,
+		});
+		expect(image?.bytes.byteLength).toBeLessThanOrEqual(
+			PROPOSAL_EXPORT_LIMITS.maxEncodedImageBytes,
+		);
+		expect(result.warnings).toEqual([]);
+	});
+
+	it("drops an image still over the encoded cap at the smallest edge", async () => {
+		// Transparent noise stays PNG, which barely compresses it: over the
+		// cap even at 900 px.
+		const noisy = await sharp({
+			create: {
+				width: 1000,
+				height: 1000,
+				channels: 4,
+				background: { r: 0, g: 0, b: 0, alpha: 0.5 },
+				noise: { type: "gaussian", mean: 128, sigma: 80 },
+			},
+		})
+			.png()
+			.toBuffer();
+		const reader = fakeReader({
+			[mediaKey("noisy.png")]: noisy,
+			[mediaKey("ok.png")]: png,
+		});
+
+		const result = await extractDocumentImages({
+			root: prepared(
+				[
+					imageTag(mediaKey("noisy.png")),
+					imageTag(mediaKey("ok.png")),
+				].join("\n\n"),
+			),
+			projectId: PROJECT,
+			documentId: DOCUMENT,
+			read: reader.read,
+		});
+
+		expect([...result.images.keys()]).toEqual([mediaKey("ok.png")]);
+		expect(result.warnings).toEqual([{ code: "IMAGE_DROPPED", count: 1 }]);
 	});
 
 	it("carries at most maxImages distinct images and counts the rest", async () => {

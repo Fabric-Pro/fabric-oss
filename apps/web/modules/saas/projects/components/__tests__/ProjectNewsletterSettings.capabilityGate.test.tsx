@@ -5,7 +5,17 @@
  *
  * The harness is the one the other `ProjectNewsletterSettings.*` suites use.
  */
-import { render, screen } from "@testing-library/react";
+import { render as baseRender, screen } from "@testing-library/react";
+import { NuqsTestingAdapter } from "nuqs/adapters/testing";
+import type { ReactElement } from "react";
+
+const render = (ui: ReactElement) =>
+	baseRender(ui, {
+		wrapper: ({ children }) => (
+			<NuqsTestingAdapter>{children}</NuqsTestingAdapter>
+		),
+	});
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next-intl", () => ({
@@ -121,6 +131,7 @@ vi.mock("@shared/lib/orpc-client", () => ({ orpcClient: {} }));
 
 const queryData: Record<string, unknown> = {};
 vi.mock("@tanstack/react-query", () => ({
+	keepPreviousData: <T,>(data: T) => data,
 	useQuery: (opts: { __q?: string }) => ({
 		data: queryData[opts.__q ?? ""],
 		isLoading: false,

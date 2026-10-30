@@ -32,6 +32,7 @@ vi.mock("@repo/ai/model-selector", () => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	SELECTABLE_CATALOG_MODEL_FILTER: { isActive: true, deprecatedAt: null },
 	db: {
 		aiTaskModelDefault: { findMany: mocks.taskDefaultFindMany },
 		cloudProviderConfig: {

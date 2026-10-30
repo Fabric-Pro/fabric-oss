@@ -795,6 +795,17 @@ const SEED = {
 };
 
 describe("seedWorkingDraftIfAbsent — the create-only writer (DV5/FR35)", () => {
+	it("preserves a seeded candidate option label", async () => {
+		h.draftFindFirst.mockResolvedValue({ id: "draft-1" });
+		await seedWorkingDraftIfAbsent({
+			...SEED,
+			postType: "TWEET",
+			sourceOptionLabel: "Direct",
+		});
+		expect(h.workingCreate.mock.calls[0][0].data.sourceOptionLabel).toBe(
+			"Direct",
+		);
+	});
 	it("creates the working draft when the topic has none", async () => {
 		h.draftFindFirst.mockResolvedValue({ id: "draft-1" });
 		h.workingFindUnique.mockResolvedValue(null);

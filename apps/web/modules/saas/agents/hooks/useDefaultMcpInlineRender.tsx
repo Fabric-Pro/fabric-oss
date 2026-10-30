@@ -49,6 +49,7 @@
  */
 
 import { useCopilotAction } from "@copilotkit/react-core";
+import { CREATE_VIEW_ACTION } from "@repo/utils/editor-frontend-actions";
 import { useEffect, useRef, useState } from "react";
 import { McpAppFrame } from "../../../../components/ai-elements/McpAppFrame";
 import { parseExcalidrawElements } from "../../../../components/ai-elements/mcp-scene-utils";
@@ -128,44 +129,9 @@ const DEFAULT_MCP_TOOLS_BY_SERVER: Record<
 		}>;
 	}>
 > = {
-	excalidraw: [
-		{
-			name: "create_view",
-			description:
-				"Create an interactive Excalidraw diagram that renders inline in the chat. " +
-				"Call this tool ONLY when the user explicitly asks for an Excalidraw diagram, " +
-				"a drawing, a flowchart, or an architecture diagram. NEVER call it for " +
-				"conversational replies, questions, status updates, feedback, or option " +
-				"discussions — when in doubt, do NOT call it and answer in text. For an " +
-				"explanatory diagram inside document content, emit a mermaid code block via " +
-				"the document tools instead. The diagram renders as a canvas in the " +
-				"chat — it does NOT modify the document. Pair with `write_document_local` " +
-				"only if the user also asks for the diagram to be referenced in the document body.",
-			parameters: [
-				{
-					// IMPORTANT: the upstream Excalidraw MCP tool validates
-					// `elements` as a **JSON-encoded string**, not a raw
-					// array (confirmed by direct MCP call:
-					// `"expected": "string", "code": "invalid_type"`). The
-					// LLM must therefore emit `elements` as a stringified
-					// JSON array — declaring this as `string` keeps the
-					// tool schema and the MCP server in lockstep.
-					name: "elements",
-					type: "string",
-					description:
-						"JSON-encoded string of a NON-EMPTY array of Excalidraw element " +
-						"objects (rectangle, ellipse, diamond, arrow, text, line, " +
-						'freedraw, etc.) — never send "[]". Each element needs id, type, x, y, width, ' +
-						"height, angle, strokeColor, backgroundColor, fillStyle, " +
-						"strokeWidth, strokeStyle, roughness, opacity, groupIds, " +
-						"frameId, roundness, seed, versionNonce, isDeleted, " +
-						"boundElements, updated, link, locked. Pass `JSON.stringify(elements)`. " +
-						"Refer to the Excalidraw scene format spec.",
-					required: true,
-				},
-			],
-		},
-	],
+	// Shared with the agent, which binds the same definition on a client
+	// Proposal's chat (`editor-frontend-actions`).
+	excalidraw: [CREATE_VIEW_ACTION],
 };
 
 interface UseDefaultMcpInlineRenderOptions {

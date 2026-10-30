@@ -1,4 +1,4 @@
-import type { RetrievedContext } from "@repo/rag";
+import type { RetrievedContext } from "./retrieval";
 
 // Measured on the serialized activity result, leaving room below the 12k
 // summarizer threshold for the engine's tool-result envelope.
@@ -12,7 +12,16 @@ export function compactProjectContextPassages(
 	results: RetrievedContext[],
 	header: string,
 	contextMetaHeader: (context: RetrievedContext) => string,
+	options: {
+		maxChars?: number;
+		fullSourceNote?: (sourceId: string) => string;
+	} = {},
 ): { context: string; chunkCount: number } {
+	const budgetChars = options.maxChars ?? RESULT_CHARS;
+	const fullSourceNote =
+		options.fullSourceNote ??
+		((id: string) =>
+			`Read the full source with fabric_get_project_source({"source":${JSON.stringify(id)}}).`);
 	const blocks = results.map((r, i) => {
 		const source =
 			r.sourcePath ||
@@ -39,7 +48,7 @@ export function compactProjectContextPassages(
 				? "Showing the start of the summary."
 				: "Showing the start of the document.";
 		const note = readableId
-			? `${extent} Read the full source with fabric_get_project_source({"source":${JSON.stringify(readableId)}}).`
+			? `${extent} ${fullSourceNote(readableId)}`
 			: `${extent} This result id cannot be read by the project source tool.`;
 		const referencesAt = summary
 			? r.content.indexOf("SOURCE REFERENCES")
@@ -89,11 +98,11 @@ export function compactProjectContextPassages(
 	});
 	const size = () => JSON.stringify(render()).length;
 	// Exceptional metadata can itself exceed the budget. Name dropped blocks.
-	while (blocks.length && size() > RESULT_CHARS) {
+	while (blocks.length && size() > budgetChars) {
 		blocks.pop();
 		omittedBlocks++;
 	}
-	if (size() > RESULT_CHARS) {
+	if (size() > budgetChars) {
 		return {
 			context:
 				"[Search metadata exceeds the result budget; narrow the search.]",
@@ -104,7 +113,7 @@ export function compactProjectContextPassages(
 		index: number,
 		passage: number,
 		cap: number,
-		budget = RESULT_CHARS,
+		budget = budgetChars,
 	) => {
 		const block = blocks[index];
 		let low = block.shown[passage];
@@ -131,7 +140,7 @@ export function compactProjectContextPassages(
 	// budget equally, before either ranked or fallback bodies can extend.
 	const openingBudget = Math.max(
 		0,
-		Math.floor((RESULT_CHARS - size()) / Math.max(1, blocks.length) / 2),
+		Math.floor((budgetChars - size()) / Math.max(1, blocks.length) / 2),
 	);
 	for (let i = 0; i < blocks.length; i++) {
 		extend(i, 0, 800, size() + openingBudget);
@@ -143,7 +152,7 @@ export function compactProjectContextPassages(
 			continue;
 		}
 		block.tail = `\n\n${block.references}`;
-		if (size() > RESULT_CHARS) {
+		if (size() > budgetChars) {
 			block.tail = `\n\n${REFERENCE_CUT_NOTE}`;
 		}
 	}
@@ -177,7 +186,7 @@ export function compactProjectContextPassages(
 				continue;
 			}
 			block.tail = `\n\n${block.references}`;
-			if (size() <= RESULT_CHARS) {
+			if (size() <= budgetChars) {
 				continue;
 			}
 			const chars = Array.from(block.references);
@@ -186,7 +195,7 @@ export function compactProjectContextPassages(
 			while (low < high) {
 				const mid = Math.ceil((low + high) / 2);
 				block.tail = `\n\n${chars.slice(0, mid).join("")}${REFERENCE_CUT_NOTE}`;
-				if (size() <= RESULT_CHARS) {
+				if (size() <= budgetChars) {
 					low = mid;
 				} else {
 					high = mid - 1;

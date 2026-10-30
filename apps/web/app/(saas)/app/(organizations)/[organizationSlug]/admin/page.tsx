@@ -1,3 +1,4 @@
+import { isPlatformAdmin } from "@repo/database";
 import { getSession } from "@saas/auth/lib/server";
 import { redirect } from "next/navigation";
 
@@ -23,7 +24,7 @@ export default async function OrganizationAdminIndexPage({
 	if (!session) {
 		redirect("/auth/login");
 	}
-	if (session.user?.role !== "admin") {
+	if (!(await isPlatformAdmin(session.user))) {
 		redirect("/app");
 	}
 	redirect(`/app/${organizationSlug}/admin/users`);

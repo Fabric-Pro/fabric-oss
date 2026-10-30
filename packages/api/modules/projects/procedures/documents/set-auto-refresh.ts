@@ -1,9 +1,12 @@
+import { ORPCError } from "@orpc/client";
 import {
 	DEFAULT_DOCUMENT_REFRESH_CADENCE,
 	type DocumentRefreshCadence,
 	getAutoRefreshSettings,
+	isProposalClientDocument,
 	upsertAutoRefreshSettings,
 } from "@repo/database";
+import { PROPOSAL_AUTO_REFRESH_UNSUPPORTED } from "@repo/utils/proposal-artifact/whole-body-writers";
 import { z } from "zod";
 import {
 	Permissions,
@@ -31,7 +34,11 @@ const cadenceSchema = z.enum([
  * Enroll a document in scheduled auto-refresh, change its cadence, or unenroll.
  *
  * Enrollment is NOT gated on document type — any document a member may edit can
- * be enrolled.
+ * be enrolled — with one exception: a client-document Proposal (Fizzy #2946).
+ * A refresh rewrites the whole body, the sections a person edited and the
+ * diagrams included, so enrolling one is refused with PRECONDITION_FAILED and
+ * `data.code` PROPOSAL_AUTO_REFRESH_UNSUPPORTED, judged by the project's OWNING
+ * organization. Turning auto-refresh off is never refused.
  *
  * `createdByUserId` is re-homed to the CALLER on every write, deliberately: the
  * scheduled sweep runs with no session and borrows this identity for AI model
@@ -90,6 +97,20 @@ export const setDocumentAutoRefreshProcedure = tenantProtectedProcedure
 			userId: user.id,
 			organizationId,
 		});
+
+		if (
+			input.enabled &&
+			(await isProposalClientDocument({
+				organizationId: document.project?.organizationId ?? null,
+				documentType: document.type,
+			}))
+		) {
+			throw new ORPCError("PRECONDITION_FAILED", {
+				message:
+					"Auto-refresh is not available for this Proposal. Ask for changes in chat, or regenerate it.",
+				data: { code: PROPOSAL_AUTO_REFRESH_UNSUPPORTED },
+			});
+		}
 
 		const existing = await getAutoRefreshSettings(input.id);
 		const cadence: DocumentRefreshCadence =

@@ -1,3 +1,4 @@
+import { isPlatformAdmin } from "@repo/database";
 import { ChatgptPlanHealthList } from "@saas/admin/component/chatgpt-plan-health/ChatgptPlanHealthList";
 import { getSession } from "@saas/auth/lib/server";
 import { redirect } from "next/navigation";
@@ -21,7 +22,7 @@ export default async function OrganizationChatgptPlanHealthPage() {
 		redirect("/auth/login");
 	}
 
-	if (session.user?.role !== "admin") {
+	if (!(await isPlatformAdmin(session.user))) {
 		redirect("/app");
 	}
 

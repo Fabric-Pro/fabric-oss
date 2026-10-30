@@ -181,12 +181,14 @@ describe("SyncHistoryView (8.2)", () => {
 		renderView();
 
 		await screen.findByText("Item 0");
-		expect(screen.getByText(/1–50 of 120/)).toBeInTheDocument();
+		expect(screen.getByText(/1 - 50 of 120/)).toBeInTheDocument();
 
 		const next = screen.getByRole("button", { name: "Next page" });
 		const prev = screen.getByRole("button", { name: "Previous page" });
 		expect(prev).toBeDisabled();
-		expect(screen.getByText(/Page 1 of 3/)).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Page 1" }),
+		).toBeInTheDocument();
 
 		listPmSyncLog.mockClear();
 		fireEvent.click(next);
@@ -195,7 +197,9 @@ describe("SyncHistoryView (8.2)", () => {
 			const lastCall = listPmSyncLog.mock.calls.at(-1)?.[0];
 			expect(lastCall).toMatchObject({ limit: 50, offset: 50 });
 		});
-		expect(screen.getByText(/Page 2 of 3/)).toBeInTheDocument();
+		expect(
+			screen.getByRole("button", { name: "Page 2" }),
+		).toBeInTheDocument();
 		await waitFor(() =>
 			expect(
 				screen.getByRole("button", { name: "Previous page" }),
@@ -206,7 +210,9 @@ describe("SyncHistoryView (8.2)", () => {
 		// indicator updates without necessarily re-issuing the request.
 		fireEvent.click(screen.getByRole("button", { name: "Previous page" }));
 		await waitFor(() => {
-			expect(screen.getByText(/Page 1 of 3/)).toBeInTheDocument();
+			expect(
+				screen.getByRole("button", { name: "Page 1" }),
+			).toBeInTheDocument();
 		});
 		expect(
 			screen.getByRole("button", { name: "Previous page" }),
@@ -222,7 +228,33 @@ describe("SyncHistoryView (8.2)", () => {
 
 		await screen.findByText("Checkout flow refactor");
 		expect(
-			screen.getByRole("button", { name: "Next page" }),
-		).toBeDisabled();
+			screen.queryByRole("navigation", {
+				name: "Sync history pagination",
+			}),
+		).not.toBeInTheDocument();
 	});
+});
+
+it("jumps directly to a sync history page", async () => {
+	listPmSyncLog.mockResolvedValue({
+		rows: [makeRow({ id: "example-log", title: "Example sync" })],
+		total: 120,
+	});
+	renderView();
+	await screen.findByText("Example sync");
+	const input = screen.getByRole("spinbutton", {
+		name: "Go to page, Sync history pagination",
+	});
+	fireEvent.change(input, { target: { value: "3" } });
+	const form = input.closest("form");
+	if (!form) {
+		throw new Error("Expected pagination form");
+	}
+	fireEvent.submit(form);
+	await waitFor(() =>
+		expect(listPmSyncLog.mock.calls.at(-1)?.[0]).toMatchObject({
+			offset: 100,
+			limit: 50,
+		}),
+	);
 });

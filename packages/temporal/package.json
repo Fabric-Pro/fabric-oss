@@ -31,6 +31,7 @@
 		"./turn-budget-policy": "./src/workflows/orchestrator/turn-budget-policy.ts",
 		"./prompt-kind-guard": "./src/lib/prompt-kind-guard.ts",
 		"./proposal-artifact-prompts": "./src/lib/proposal-artifact/prompts.ts",
+		"./proposal-artifact-revise-section": "./src/lib/proposal-artifact/revise-section.ts",
 		"./proposal-artifact-settled-decisions": "./src/lib/proposal-artifact/settled-decisions.ts",
 		"./proposal-artifact-types": "./src/lib/proposal-artifact/types.ts",
 		"./proposal-export-types": "./src/lib/proposal-export/types.ts",
@@ -42,6 +43,7 @@
 		"./project-pm-snapshot-result": "./src/activities/shared/project-pm-snapshot-result.ts",
 		"./native-platform-read-config": "./src/lib/native-platform-read-config.ts",
 		"./agent-task-capabilities": "./src/lib/agent-task-capabilities.ts",
+		"./agui-run-stream": "./src/lib/agui-run-stream.ts",
 		"./agent-instructions": "./src/lib/agent-instructions.ts",
 		"./agentic-workflow-preset": "./src/lib/agentic-workflow-preset.ts",
 		"./ado-story-review-config": "./src/lib/ado-story-review-config.ts",
@@ -88,6 +90,8 @@
 		"worker:dev": "tsx src/worker.ts"
 	},
 	"dependencies": {
+		"@ag-ui/client": "1.0.2",
+		"@ag-ui/langgraph": "0.0.44",
 		"@anthropic-ai/sdk": "^0.71.2",
 		"@aws-sdk/client-s3": "^3.927.0",
 		"@azure/identity": "^4.13.2",

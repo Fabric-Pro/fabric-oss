@@ -17,9 +17,12 @@ import type { ApiRouterClient } from "@repo/api/orpc/router";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
+import { Input } from "@ui/components/input";
 import { Switch } from "@ui/components/switch";
+import { useState } from "react";
 import { toast } from "sonner";
 import { FlagEnrolmentDisclosure } from "./FlagEnrolmentDisclosure";
+import { filterFlags } from "./flag-search";
 
 const SOURCE_LABEL: Record<string, string> = {
 	override: "Set here",
@@ -46,6 +49,7 @@ const LIST_INPUT = {};
 
 export function FeatureFlagsPanel() {
 	const queryClient = useQueryClient();
+	const [searchTerm, setSearchTerm] = useState("");
 	const { data, isLoading, isError } = useQuery(
 		orpc.admin.featureFlags.list.queryOptions({ input: LIST_INPUT }),
 	);
@@ -158,13 +162,27 @@ export function FeatureFlagsPanel() {
 		);
 	}
 
+	const visibleFlags = filterFlags(data.flags, searchTerm);
+
 	return (
 		<div className="space-y-3">
 			<p className="text-muted-foreground text-sm">
 				Takes effect server-side within ~10 seconds. Open tabs pick up
 				the change on their next page load.
 			</p>
-			{data.flags.map((flag) => (
+			<Input
+				type="search"
+				placeholder="Search by name, description, key or environment variable"
+				aria-label="Search feature flags"
+				value={searchTerm}
+				onChange={(e) => setSearchTerm(e.target.value)}
+			/>
+			{visibleFlags.length === 0 && (
+				<div className="rounded-lg border border-border/60 bg-card p-6 text-sm text-muted-foreground">
+					No feature flags match “{searchTerm.trim()}”.
+				</div>
+			)}
+			{visibleFlags.map((flag) => (
 				<div
 					key={flag.key}
 					className="flex flex-row items-center justify-between rounded-lg border p-4"

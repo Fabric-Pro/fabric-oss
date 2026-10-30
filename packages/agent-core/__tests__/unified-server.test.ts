@@ -68,6 +68,41 @@ describe("createUnifiedServer AG-UI streaming", () => {
 		vi.unstubAllEnvs();
 	});
 
+	it.each([undefined, "caller-thread"])(
+		"forwards the AG-UI thread and preserves explicit thread %s",
+		async (explicitThread) => {
+			const configs: Record<string, unknown>[] = [];
+			const { app } = createUnifiedServer(
+				{
+					name: "example-agent",
+					description: "Example",
+					baseUrl: "http://localhost:3000",
+					port: 3000,
+					skills: [],
+					supportsStreaming: true,
+				},
+				async () => ({ response: "ok" }),
+				() => ({ response: "ok" }),
+				undefined,
+				async function* (_messages, config) {
+					configs.push(config?.configurable ?? {});
+					yield { nodeName: "chat", state: { messages: [] } };
+				},
+			);
+			const response = await app.request("/", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					threadId: "t-1",
+					messages: [{ role: "user", content: "Hello" }],
+					config: { configurable: { thread_id: explicitThread } },
+				}),
+			});
+			await response.text();
+			expect(configs[0]?.thread_id).toBe(explicitThread ?? "t-1");
+		},
+	);
+
 	it("mints distinct reply ids at the same millisecond and overwrites request provenance keys", async () => {
 		vi.spyOn(Date, "now").mockReturnValue(1793000000000);
 		try {
@@ -591,6 +626,44 @@ describe("createUnifiedServer terminal errors", () => {
 		).toBeLessThanOrEqual(1);
 	});
 
+	it.each(["chat_node", "enhance_node"])(
+		"round-trips confirm arguments for %s",
+		async (nodeName) => {
+			const draftId =
+				"msg_1793200000000_" +
+				"a".repeat(32) +
+				":00000000-0000-4000-8000-000000000001";
+			const events = await runWith([
+				{
+					nodeName,
+					state: {
+						messages: [
+							{
+								type: "ai",
+								content: "",
+								tool_calls: [
+									{
+										id: "example-confirm",
+										type: "function",
+										function: {
+											name: "confirm_changes",
+											arguments: { draftId },
+										},
+									},
+								],
+							},
+						],
+					},
+				},
+			]);
+			expect(events).toContainEqual(
+				expect.objectContaining({
+					type: "TOOL_CALL_ARGS",
+					delta: JSON.stringify({ draftId }),
+				}),
+			);
+		},
+	);
 	it("surfaces a terminal error after emitting a frontend tool call", async () => {
 		// The condition the generic fallback is gated against: once a frontend
 		// tool call has been emitted it stops looking for AI text, so a graph
@@ -966,6 +1039,63 @@ describe("usage conversation runtime config", () => {
 					usage_frame_id: "origin-frame",
 					usage_feature_key: "chat-agent",
 				});
+			} finally {
+				vi.unstubAllEnvs();
+			}
+		},
+	);
+
+	it.each([undefined, "caller-thread"])(
+		"forwards the path thread and preserves explicit thread %s",
+		async (explicitThread) => {
+			vi.stubEnv("AGENT_API_KEY", "");
+			vi.stubEnv("AGENT_API_KEYS", "");
+			vi.stubEnv("AGENT_HMAC_SECRET", "");
+			let received: Record<string, unknown> | undefined;
+			try {
+				const { app } = createUnifiedServer(
+					{
+						name: "example-agent",
+						description: "Example",
+						baseUrl: "http://localhost:3000",
+						port: 3000,
+						skills: [],
+					},
+					async () => ({}),
+					() => ({ response: "done" }),
+					undefined,
+					async function* (_input, config) {
+						received = config?.configurable;
+						yield {
+							nodeName: "end",
+							state: {
+								messages: [
+									{ role: "assistant", content: "done" },
+								],
+							},
+						};
+					},
+				);
+				const response = await app.request(
+					"/threads/thread-example/runs/stream",
+					{
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({
+							input: {
+								messages: [{ role: "user", content: "hello" }],
+							},
+							config: {
+								configurable: { thread_id: explicitThread },
+							},
+						}),
+					},
+				);
+				await response.text();
+				expect(response.status).toBe(200);
+				expect(received?.thread_id).toBe(
+					explicitThread ?? "thread-example",
+				);
 			} finally {
 				vi.unstubAllEnvs();
 			}
@@ -1831,7 +1961,9 @@ describe("model hint source selection", () => {
 				expect(record.ai_model).toBe(finalModel);
 				expect(record.ai_canonical_model_name).toBe(canonical);
 				expect(record.ai_is_reasoning).toBe(reasoning);
-				if (!finalModel) continue;
+				if (!finalModel) {
+					continue;
+				}
 				modelWireFetch.mockResolvedValueOnce(
 					Response.json({
 						choices: [

@@ -26,6 +26,7 @@ export function buildAgentConfigurable(
 		"ai_model",
 		"ai_provider",
 		"usage_conversation_id",
+		"thread_id",
 	]) {
 		const value = pick(key);
 		if (value !== undefined) {

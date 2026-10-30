@@ -2,6 +2,7 @@
 
 import { PageTourButton } from "@saas/get-started/components/PageTourButton";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { Pagination } from "@saas/shared/components/Pagination";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -34,7 +35,6 @@ import {
 	ArrowRightLeftIcon,
 	BadgeCheckIcon,
 	ChevronDownIcon,
-	ChevronLeftIcon,
 	ChevronRightIcon,
 	DownloadIcon,
 	InfoIcon,
@@ -53,6 +53,7 @@ import {
 	XIcon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
+import { parseAsInteger, useQueryState } from "nuqs";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -1103,38 +1104,6 @@ type Candidate = {
 
 const CANDIDATE_PAGE_SIZE = 10;
 
-// Page numbers to render for the candidate pager: first, last, and a ±1 window
-// around the current page, with "ellipsis" markers filling any gaps. Values are
-// 0-indexed page numbers; the UI renders each as `n + 1`.
-function getCandidatePageList(
-	current: number,
-	total: number,
-): Array<number | "ellipsis"> {
-	if (total <= 7) {
-		return Array.from({ length: total }, (_, i) => i);
-	}
-	const wanted = new Set<number>([
-		0,
-		total - 1,
-		current,
-		current - 1,
-		current + 1,
-	]);
-	const shown = [...wanted]
-		.filter((p) => p >= 0 && p < total)
-		.sort((a, b) => a - b);
-	const out: Array<number | "ellipsis"> = [];
-	let prev = -1;
-	for (const p of shown) {
-		if (prev >= 0 && p - prev > 1) {
-			out.push("ellipsis");
-		}
-		out.push(p);
-		prev = p;
-	}
-	return out;
-}
-
 // Review a single AI-detected candidate before anything is written. Closing the
 // dialog is a no-op; the user explicitly accepts (create), rejects (dismiss), or
 // — for a candidate that matches an existing decision — opens it to apply the
@@ -1315,7 +1284,7 @@ function MeetingCandidatePreviewDialog({
 	);
 }
 
-function MeetingCandidatesStrip({
+export function MeetingCandidatesStrip({
 	candidates,
 	canEdit,
 	projectId,
@@ -1337,7 +1306,13 @@ function MeetingCandidatesStrip({
 	onOpenDecision: (id: string) => void;
 }) {
 	const [open, setOpen] = useState(false);
-	const [page, setPage] = useState(0);
+	const [urlpage, setUrlpage] = useQueryState(
+		"candidatesPage",
+		parseAsInteger.withDefault(1),
+	);
+	const page = Math.max(0, urlpage - 1);
+	const setPage = (next: number) =>
+		setUrlpage(next + 1, { history: "replace" });
 	const [preview, setPreview] = useState<Candidate | null>(null);
 	if (candidates.length === 0) {
 		return null;
@@ -1465,65 +1440,15 @@ function MeetingCandidatesStrip({
 				</ul>
 			)}
 			{open && pageCount > 1 && (
-				<nav
-					aria-label="Meeting decision pages"
-					className="flex flex-wrap items-center justify-center gap-1 border-primary/10 border-t px-3 py-2"
-				>
-					<Button
-						type="button"
-						size="sm"
-						variant="ghost"
-						className="gap-1 px-2 text-muted-foreground"
-						disabled={safePage === 0}
-						onClick={() => setPage(safePage - 1)}
-						aria-label="Previous page"
-					>
-						<ChevronLeftIcon className="size-4" />
-						Prev
-					</Button>
-					{getCandidatePageList(safePage, pageCount).map((p, i) =>
-						p === "ellipsis" ? (
-							<span
-								key={`gap-${i}`}
-								className="px-1 text-muted-foreground text-xs"
-								aria-hidden
-							>
-								…
-							</span>
-						) : (
-							<Button
-								key={p}
-								type="button"
-								size="sm"
-								variant="ghost"
-								className={cn(
-									"size-8 px-0 text-xs",
-									p === safePage &&
-										"bg-primary/10 font-semibold text-primary",
-								)}
-								aria-label={`Page ${p + 1}`}
-								aria-current={
-									p === safePage ? "page" : undefined
-								}
-								onClick={() => setPage(p)}
-							>
-								{p + 1}
-							</Button>
-						),
-					)}
-					<Button
-						type="button"
-						size="sm"
-						variant="ghost"
-						className="gap-1 px-2 text-muted-foreground"
-						disabled={safePage === pageCount - 1}
-						onClick={() => setPage(safePage + 1)}
-						aria-label="Next page"
-					>
-						Next
-						<ChevronRightIcon className="size-4" />
-					</Button>
-				</nav>
+				<Pagination
+					totalItems={candidates.length}
+					itemsPerPage={CANDIDATE_PAGE_SIZE}
+					currentPage={safePage + 1}
+					onChangeCurrentPage={(next) => setPage(next - 1)}
+					navigationLabel="Meeting decision candidates pagination"
+					previousLabel="Previous page, meeting candidates"
+					nextLabel="Next page, meeting candidates"
+				/>
 			)}
 		</div>
 	);

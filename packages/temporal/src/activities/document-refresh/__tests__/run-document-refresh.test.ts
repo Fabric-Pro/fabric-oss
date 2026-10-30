@@ -48,6 +48,7 @@ const {
 	generateObjectMock,
 	getModelMock,
 	proposalClientMock,
+	turnOffAutoApplyMock,
 } = vi.hoisted(() => ({
 	getDocumentMock: vi.fn(),
 	updateDocumentMock: vi.fn(),
@@ -64,6 +65,7 @@ const {
 	generateObjectMock: vi.fn(),
 	getModelMock: vi.fn(),
 	proposalClientMock: vi.fn(),
+	turnOffAutoApplyMock: vi.fn(),
 }));
 
 vi.mock("@repo/database", async () => {
@@ -87,6 +89,7 @@ vi.mock("@repo/database", async () => {
 		// the degraded-read case is covered separately.
 		isKillSwitchArmed: flagMock,
 		isProposalClientDocument: proposalClientMock,
+		turnOffRefreshAutoApply: turnOffAutoApplyMock,
 	};
 });
 
@@ -246,6 +249,7 @@ beforeEach(() => {
 		autoApply: false,
 	});
 	runContextUpdateMock.mockResolvedValue(UPDATE);
+	turnOffAutoApplyMock.mockResolvedValue(undefined);
 	proposalClientMock.mockImplementation(
 		async (args: { organizationId: string | null; documentType: string }) =>
 			args.documentType === "PROPOSAL" && args.organizationId === "org_1",
@@ -951,21 +955,18 @@ describe("Proposal under a generation run (Fizzy #2946)", () => {
 		project: { id: "proj_1", organizationId: "org_1" },
 	};
 
+	// With the Proposal gate on, the refresh skips the document before the
+	// model is called (see the client-document describe below). The run
+	// guard still holds a Proposal whose gate was turned off: a run already
+	// in progress keeps writing after that.
 	beforeEach(() => {
 		autoApplyOn();
+		proposalClientMock.mockResolvedValue(false);
 	});
 
-	// The gate's state must not matter: a run already in progress keeps
-	// writing after the Proposal gate is turned off.
-	it.each([
-		["QUEUED", true],
-		["GENERATING", true],
-		["QUEUED", false],
-		["GENERATING", false],
-	])(
-		"keeps the output as a proposal while the run is %s (Proposal gate on: %s)",
-		async (status, gateOn) => {
-			proposalClientMock.mockResolvedValue(gateOn);
+	it.each([["QUEUED"], ["GENERATING"]])(
+		"keeps the output as a proposal while the run is %s (Proposal gate off)",
+		async (status) => {
 			getDocumentMock.mockResolvedValue({ ...PROPOSAL_DOCUMENT, status });
 
 			const outcome = await runDocumentRefreshActivity(DUE_IN_ORG);
@@ -986,14 +987,6 @@ describe("Proposal under a generation run (Fizzy #2946)", () => {
 			expect(sideEffectsMock).not.toHaveBeenCalled();
 		},
 	);
-
-	it("decides the run guard by type, without consulting the Proposal gate", async () => {
-		getDocumentMock.mockResolvedValue(PROPOSAL_DOCUMENT);
-
-		await runDocumentRefreshActivity(DUE_IN_ORG);
-
-		expect(proposalClientMock).not.toHaveBeenCalled();
-	});
 
 	// The write refuses a run queued after this read on its own: the
 	// query's default for a Proposal's content write, which the refresh
@@ -1089,7 +1082,6 @@ describe("Proposal under a generation run (Fizzy #2946)", () => {
 	});
 
 	it("writes a finished Proposal on its base after the Proposal gate is turned off", async () => {
-		proposalClientMock.mockResolvedValue(false);
 		getDocumentMock.mockResolvedValue(PROPOSAL_DOCUMENT);
 
 		const outcome = await runDocumentRefreshActivity(DUE_IN_ORG);
@@ -1123,6 +1115,103 @@ describe("Proposal under a generation run (Fizzy #2946)", () => {
 			expectedVersion: 3,
 			expectedContentHash: contentIdentity(DOCUMENT.content),
 		});
+	});
+});
+
+describe("a client-document Proposal is not refreshed (Fizzy #2946)", () => {
+	const CLIENT_PROPOSAL = {
+		...DOCUMENT,
+		type: "PROPOSAL",
+		project: { id: "proj_1", organizationId: "org_1" },
+	};
+
+	beforeEach(() => {
+		autoApplyOn();
+		getDocumentMock.mockResolvedValue(CLIENT_PROPOSAL);
+	});
+
+	it("skips it before any model call, writing nothing to the document", async () => {
+		const outcome = await runDocumentRefreshActivity(DUE_IN_ORG);
+
+		expect(outcome).toEqual({
+			status: "REFUSED",
+			summary: expect.any(String),
+		});
+		expect(fetchSourcesMock).not.toHaveBeenCalled();
+		expect(runContextUpdateMock).not.toHaveBeenCalled();
+		expect(updateDocumentMock).not.toHaveBeenCalled();
+		expect(storeProposalMock).not.toHaveBeenCalled();
+		expect(sideEffectsMock).not.toHaveBeenCalled();
+		expect(notifyMock).not.toHaveBeenCalled();
+	});
+
+	it("switches the enrolment to proposing, so a later gate change cannot auto-commit", async () => {
+		await runDocumentRefreshActivity(DUE_IN_ORG);
+
+		expect(turnOffAutoApplyMock).toHaveBeenCalledWith("doc_1");
+	});
+
+	it("records an existing completed status, so the sweep does not come back every few hours", async () => {
+		await runDocumentRefreshActivity(DUE_IN_ORG);
+
+		expect(completeCycleMock).toHaveBeenCalledWith("doc_1", {
+			when: expect.any(Date),
+			status: "REFUSED",
+			summary: expect.any(String),
+		});
+		expect(recordOutcomeMock).not.toHaveBeenCalled();
+	});
+
+	it("judges it by the project's owning organization, not the settings row's", async () => {
+		// The settings row says another organization; the project decides.
+		const outcome = await runDocumentRefreshActivity({
+			...DUE_IN_ORG,
+			organizationId: "org_other",
+		});
+
+		expect(outcome.status).toBe("REFUSED");
+		expect(proposalClientMock).toHaveBeenCalledWith({
+			organizationId: "org_1",
+			documentType: "PROPOSAL",
+		});
+		expect(proposalClientMock).not.toHaveBeenCalledWith(
+			expect.objectContaining({ organizationId: "org_other" }),
+		);
+	});
+
+	it("skips it when the gate turns on while the model runs, writing nothing", async () => {
+		proposalClientMock
+			.mockResolvedValueOnce(false)
+			.mockResolvedValueOnce(true);
+
+		const outcome = await runDocumentRefreshActivity(DUE_IN_ORG);
+
+		expect(outcome.status).toBe("REFUSED");
+		expect(runContextUpdateMock).toHaveBeenCalledTimes(1);
+		expect(updateDocumentMock).not.toHaveBeenCalled();
+		expect(storeProposalMock).not.toHaveBeenCalled();
+		expect(turnOffAutoApplyMock).toHaveBeenCalledWith("doc_1");
+	});
+
+	it("still refreshes a Proposal with the gate off", async () => {
+		proposalClientMock.mockResolvedValue(false);
+
+		const outcome = await runDocumentRefreshActivity(DUE_IN_ORG);
+
+		expect(outcome.status).toBe("COMMITTED");
+		expect(turnOffAutoApplyMock).not.toHaveBeenCalled();
+	});
+
+	it("still refreshes a Technical Spec in an organization with the gate on", async () => {
+		getDocumentMock.mockResolvedValue({
+			...CLIENT_PROPOSAL,
+			type: "TECHNICAL_SPEC",
+		});
+
+		const outcome = await runDocumentRefreshActivity(DUE_IN_ORG);
+
+		expect(outcome.status).toBe("COMMITTED");
+		expect(turnOffAutoApplyMock).not.toHaveBeenCalled();
 	});
 });
 

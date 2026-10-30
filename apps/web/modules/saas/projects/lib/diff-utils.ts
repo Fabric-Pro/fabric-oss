@@ -831,6 +831,21 @@ function unescapeBlockStartBullets(text: string): string {
  *
  * Also handles diff markers that can break block-level structures like tables.
  */
+/** `>` markers and spaces only: the start of a line inside a blockquote. */
+const BLOCKQUOTE_LINE_PREFIX = /^[ \t]*>[ \t>]*$/;
+
+/**
+ * Whether the ``` fence at `fenceIndex` of `text` sits inside a blockquote —
+ * only `>` markers and spaces before it on its line. The fence opens or
+ * closes a code block in the quote; moving it to a line of its own took it
+ * out of the quote, and the quoted block loaded as a code block whose lines
+ * began with `>` (Fizzy #2946).
+ */
+function fenceIsInBlockquote(text: string, fenceIndex: number): boolean {
+	const lineStart = text.lastIndexOf("\n", fenceIndex - 1) + 1;
+	return BLOCKQUOTE_LINE_PREFIX.test(text.slice(lineStart, fenceIndex));
+}
+
 function fixAIMarkdownIssues(text: string): string {
 	let fixed = text;
 
@@ -961,7 +976,10 @@ function fixAIMarkdownIssues(text: string): string {
 			if (!inFence && fenceMatch) {
 				inFence = true;
 				fenceDelimiter = fenceMatch[1];
-				fenceLanguage = fenceMatch[2].trim().toLowerCase();
+				// Written back as spelled: a lowercased ```Cards loaded as
+				// ```cards, and the next save changed the body unedited
+				// (Fizzy #2946). Compared lowercased below.
+				fenceLanguage = fenceMatch[2].trim();
 				fenceBody = [];
 				continue;
 			}
@@ -977,15 +995,16 @@ function fixAIMarkdownIssues(text: string): string {
 					fenceBody.length === 0 &&
 					/^[a-z0-9_+-]+$/i.test(trimmed)
 				) {
-					fenceLanguage = trimmed.toLowerCase();
+					fenceLanguage = trimmed;
 					continue;
 				}
 
+				const languageKey = fenceLanguage.toLowerCase();
 				const jsonLikeFence =
-					fenceLanguage === "json" ||
-					fenceLanguage === "plaintext" ||
-					fenceLanguage === "text" ||
-					fenceLanguage === "txt";
+					languageKey === "json" ||
+					languageKey === "plaintext" ||
+					languageKey === "text" ||
+					languageKey === "txt";
 				const lastNonEmptyFenceLine = [...fenceBody]
 					.reverse()
 					.find((candidate) => candidate.trim().length > 0);
@@ -1158,11 +1177,18 @@ function fixAIMarkdownIssues(text: string): string {
 	// Some AI models output "```mermaid" without proper spacing
 	fixed = fixed.replace(
 		/```(mermaid|c4context|c4container|c4component|c4deployment|flowchart|sequenceDiagram|classDiagram|erDiagram|gantt|pie|mindmap|graph\s+[TL][BDRB])/gi,
-		"\n```$1",
+		(match: string, _language: string, offset: number, whole: string) =>
+			fenceIsInBlockquote(whole, offset) ? match : `\n${match}`,
 	);
 
 	// Ensure code blocks have newlines before them
-	fixed = fixed.replace(/([^\n`])```(?!`)/g, "$1\n```");
+	fixed = fixed.replace(
+		/([^\n`])```(?!`)/g,
+		(match: string, before: string, offset: number, whole: string) =>
+			fenceIsInBlockquote(whole, offset + 1)
+				? match
+				: `${before}\n\`\`\``,
+	);
 
 	// Ensure code blocks have newlines after closing fence
 	fixed = fixed.replace(

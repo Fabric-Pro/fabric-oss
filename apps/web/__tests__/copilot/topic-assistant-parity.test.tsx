@@ -59,6 +59,8 @@ const {
 	attachmentProps,
 	drawerProps,
 	activeConversation,
+	activeConversationLoading,
+	copilotKitThreads,
 	routeParams,
 	chatIsLoading,
 	historyFlag,
@@ -109,6 +111,10 @@ const {
 	activeConversation: {
 		current: null as { conversation?: unknown } | null,
 	},
+	/** Whether the active-conversation query is still loading. */
+	activeConversationLoading: { current: false },
+	/** The `threadId` each `<CopilotKit>` render received. */
+	copilotKitThreads: [] as Array<string | undefined>,
 	/** What `useParams()` returns — the topic id lives in the route. */
 	routeParams: { current: {} as Record<string, string | undefined> },
 	/** Stands in for a run being in flight; read at render by the session mock. */
@@ -135,7 +141,16 @@ const {
 // ---------------------------------------------------------------------------
 
 vi.mock("@copilotkit/react-core", () => ({
-	CopilotKit: ({ children }: { children?: ReactNode }) => <>{children}</>,
+	CopilotKit: ({
+		children,
+		threadId,
+	}: {
+		children?: ReactNode;
+		threadId?: string;
+	}) => {
+		copilotKitThreads.push(threadId);
+		return <>{children}</>;
+	},
 	useCoAgent: () => ({
 		state: { document: "Example proposed analysis." },
 		setState: vi.fn(),
@@ -208,6 +223,7 @@ vi.mock("@saas/shared/components/copilot/useClarifyingQuestions", () => ({
 vi.mock("@saas/projects/hooks/useDocumentAssistantHistory", () => ({
 	useActiveDocumentAssistantConversation: () => ({
 		data: activeConversation.current,
+		isLoading: activeConversationLoading.current,
 	}),
 }));
 
@@ -416,6 +432,8 @@ describe("TopicAssistant — Feature Maturation parity", () => {
 		attachmentProps.length = 0;
 		drawerProps.length = 0;
 		activeConversation.current = null;
+		activeConversationLoading.current = false;
+		copilotKitThreads.length = 0;
 		routeParams.current = { topicId: TOPIC_ID };
 		chatIsLoading.current = false;
 		historyFlag.current = true;
@@ -610,9 +628,16 @@ describe("TopicAssistant — Feature Maturation parity", () => {
 	it("seeds the conversation id from the active thread on the server", () => {
 		// Client-side hydration: there is no SSR payload on this surface, so
 		// the stored thread is found by query and handed to both the
-		// persistence walker and the hydration provider.
+		// persistence walker and the hydration provider. `getActiveForDocument`
+		// returns the topic's link row as `id` and the conversation as
+		// `conversationId`; handing on the link row's id made every later
+		// append answer "Conversation not found".
 		activeConversation.current = {
-			conversation: { id: "conv-9", messages: [{ id: "m-1" }] },
+			conversation: {
+				id: "join-9",
+				conversationId: "conv-9",
+				messages: [{ id: "m-1" }],
+			},
 		};
 		render(assistant());
 
@@ -625,6 +650,66 @@ describe("TopicAssistant — Feature Maturation parity", () => {
 		// Ids already in the database, so the walker does not re-append the
 		// turns it sees on its first tick.
 		expect(persistenceProps[0].initialPersistedMessageIds).toEqual(["m-1"]);
+	});
+
+	describe("CopilotKit thread", () => {
+		it("runs on the topic's active conversation id", () => {
+			activeConversation.current = {
+				conversation: {
+					id: "join-9",
+					conversationId: "conv-9",
+					messages: [],
+				},
+			};
+			const { rerender } = render(assistant());
+			rerender(assistant());
+
+			expect(copilotKitThreads.length).toBeGreaterThan(0);
+			expect(new Set(copilotKitThreads)).toEqual(new Set(["conv-9"]));
+		});
+
+		it("mounts no provider until the active conversation is known", () => {
+			activeConversationLoading.current = true;
+			const client = new QueryClient();
+
+			rtlRender(
+				<QueryClientProvider client={client}>
+					{assistant()}
+				</QueryClientProvider>,
+			);
+
+			expect(copilotKitThreads).toEqual([]);
+			expect(sidebarProps).toEqual([]);
+		});
+
+		it("mints one thread for a topic without a conversation", () => {
+			const { rerender } = render(assistant());
+			rerender(assistant());
+
+			const [minted] = copilotKitThreads;
+			expect(minted).toMatch(/^[0-9a-f-]{36}$/);
+			expect(new Set(copilotKitThreads)).toEqual(new Set([minted]));
+		});
+
+		it("moves to a fresh thread on a new conversation", async () => {
+			activeConversation.current = {
+				conversation: {
+					id: "join-9",
+					conversationId: "conv-9",
+					messages: [],
+				},
+			};
+			render(assistant());
+			const { getByLabelText } = renderHeader();
+
+			await act(async () => {
+				fireEvent.click(getByLabelText("Start a new conversation"));
+			});
+
+			const fresh = copilotKitThreads.at(-1);
+			expect(fresh).toMatch(/^[0-9a-f-]{36}$/);
+			expect(fresh).not.toBe("conv-9");
+		});
 	});
 
 	it("replays history through the hydration-aware message list", () => {
@@ -704,7 +789,11 @@ describe("TopicAssistant — Feature Maturation parity", () => {
 
 		it("scopes the drawer to this topic and this reader", () => {
 			activeConversation.current = {
-				conversation: { id: "conv-9", messages: [] },
+				conversation: {
+					id: "join-9",
+					conversationId: "conv-9",
+					messages: [],
+				},
 			};
 			render(assistant());
 
@@ -772,7 +861,11 @@ describe("TopicAssistant — Feature Maturation parity", () => {
 		describe("starting a new conversation", () => {
 			it("archives the live thread and clears the transcript", async () => {
 				activeConversation.current = {
-					conversation: { id: "conv-9", messages: [] },
+					conversation: {
+						id: "join-9",
+						conversationId: "conv-9",
+						messages: [],
+					},
 				};
 				render(assistant());
 				const { getByLabelText } = renderHeader();
@@ -812,7 +905,11 @@ describe("TopicAssistant — Feature Maturation parity", () => {
 				// back to it would replay the transcript the reader just left
 				// and append their next message to it.
 				activeConversation.current = {
-					conversation: { id: "conv-9", messages: [{ id: "m-1" }] },
+					conversation: {
+						id: "join-9",
+						conversationId: "conv-9",
+						messages: [{ id: "m-1" }],
+					},
 				};
 				const { rerender } = render(assistant());
 				const { getByLabelText } = renderHeader();
@@ -838,7 +935,11 @@ describe("TopicAssistant — Feature Maturation parity", () => {
 				// — which would let the stale query hand the original thread
 				// straight back.
 				activeConversation.current = {
-					conversation: { id: "conv-9", messages: [{ id: "m-1" }] },
+					conversation: {
+						id: "join-9",
+						conversationId: "conv-9",
+						messages: [{ id: "m-1" }],
+					},
 				};
 				const { rerender } = render(assistant());
 				const { getByLabelText } = renderHeader();
@@ -864,7 +965,11 @@ describe("TopicAssistant — Feature Maturation parity", () => {
 				// new component TYPE — React remounts the header, and the
 				// control the reader just clicked disappears and comes back.
 				activeConversation.current = {
-					conversation: { id: "conv-9", messages: [] },
+					conversation: {
+						id: "join-9",
+						conversationId: "conv-9",
+						messages: [],
+					},
 				};
 				const { rerender } = render(assistant());
 				const { getByLabelText } = renderHeader();
@@ -882,7 +987,11 @@ describe("TopicAssistant — Feature Maturation parity", () => {
 				// reappearing on the next load. The worst case of NOT resetting
 				// is a reader stuck in the conversation they asked to leave.
 				activeConversation.current = {
-					conversation: { id: "conv-9", messages: [] },
+					conversation: {
+						id: "join-9",
+						conversationId: "conv-9",
+						messages: [],
+					},
 				};
 				archiveForDocument.mockRejectedValue(new Error("nope"));
 				render(assistant());
@@ -958,7 +1067,8 @@ describe("TopicAssistant — Feature Maturation parity", () => {
 
 				activeConversation.current = {
 					conversation: {
-						id: "conv-old",
+						id: "join-old",
+						conversationId: "conv-old",
 						messages: [{ id: "m-old" }],
 					},
 				};
@@ -1022,4 +1132,70 @@ describe("TopicAssistant — Feature Maturation parity", () => {
 			expect(() => render(assistant())).not.toThrow();
 		});
 	});
+});
+
+const reseedHarness = vi.hoisted(() => ({
+	subscriber: undefined as any,
+	unsubscribe: vi.fn(),
+	subscribe: vi.fn(),
+}));
+vi.mock("@copilotkit/react-core/v2", () => ({
+	useCopilotKit: () => ({ copilotkit: reseedHarness }),
+}));
+reseedHarness.subscribe.mockImplementation((subscriber: any) => {
+	reseedHarness.subscriber = subscriber;
+	return { unsubscribe: reseedHarness.unsubscribe };
+});
+
+it("restores topic context after a wipe and preserves a review proposal", () => {
+	render(assistant());
+	const agent = {
+		agentId: "project_document_generator",
+		state: {} as Record<string, unknown>,
+		setState: vi.fn(),
+	};
+	reseedHarness.subscriber.onAgentRunStarted({ agent });
+	expect(agent.setState).toHaveBeenCalledWith(
+		expect.objectContaining({
+			projectId: "proj-1",
+			userId: "user-1",
+			document: "The exporter writes a CSV file once a day.",
+		}),
+	);
+	agent.state = { document: "Proposal under review" };
+	reseedHarness.subscriber.onAgentRunStarted({ agent });
+	expect(agent.setState).toHaveBeenLastCalledWith(
+		expect.objectContaining({ document: "Proposal under review" }),
+	);
+});
+
+vi.mock("@saas/shared/components/copilot/useAgentStateReadOnly", () => ({
+	useAgentTranscriptSelector: (
+		_name: string,
+		selector: (state: unknown, messages: unknown[]) => unknown,
+	) => selector({}, []),
+	useAgentStateSelector: (
+		_name: string,
+		selector: (state: object) => unknown,
+	) => selector({ document: "Example proposed analysis." }),
+}));
+
+it("disables hidden assistant keyboard behavior without dropping an active run", () => {
+	const onRunStateChange = vi.fn();
+	chatIsLoading.current = true;
+	const page = render(assistant({ isActive: true, onRunStateChange }));
+	onRunStateChange.mockClear();
+	page.rerender(assistant({ isActive: false, onRunStateChange }));
+	expect(sidebarProps.at(-1)).toMatchObject({
+		hitEscapeToClose: false,
+		shortcut: "",
+		clickOutsideToClose: false,
+	});
+	expect(onRunStateChange).not.toHaveBeenCalledWith(false);
+	page.rerender(assistant({ isActive: true, onRunStateChange }));
+	expect(sidebarProps.at(-1)).toMatchObject({
+		hitEscapeToClose: true,
+		shortcut: "/",
+	});
+	expect(onRunStateChange).not.toHaveBeenCalledWith(false);
 });

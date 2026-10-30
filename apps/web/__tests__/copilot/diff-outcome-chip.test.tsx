@@ -6,7 +6,11 @@
  * reject outcome of a `write_document_local` tool-call as one of three
  * states keyed off `acceptedAt` / `rejectedAt`:
  *
- *   - Pending  — neither stamp present
+ *   - Pending  — neither stamp present, while the chat waits on the call
+ *                (its id is among CopilotKit's executing tool calls: the
+ *                confirm card is live)
+ *   - No decision recorded — neither stamp present, and the chat waits on
+ *                nothing for it: an old proposal never answered (Fizzy #2946)
  *   - Accepted — `acceptedAt` set (winner — beats `rejectedAt` if both)
  *   - Rejected — `rejectedAt` set
  *
@@ -40,14 +44,30 @@
  * surface to snapshot.
  */
 
+import { CopilotKitContext } from "@copilotkit/react-core/v2/context";
 import { render, screen } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { describe, expect, it } from "vitest";
 
-import { DiffOutcomeChip } from "../../modules/saas/projects/components/copilot/DiffOutcomeChip";
+import {
+	DiffOutcomeChip,
+	hasDiffOutcome,
+} from "../../modules/saas/projects/components/copilot/DiffOutcomeChip";
+
+/** The chat waiting on `ids`, as CopilotKit says while a card is live. */
+function awaiting(ids: string[]) {
+	return ({ children }: { children: ReactNode }) => (
+		<CopilotKitContext.Provider
+			value={{ executingToolCallIds: new Set(ids) } as never}
+		>
+			{children}
+		</CopilotKitContext.Provider>
+	);
+}
 
 function assertChipShape(
 	chip: HTMLElement,
-	label: "Pending" | "Accepted" | "Rejected",
+	label: "Pending" | "No decision recorded" | "Accepted" | "Rejected",
 	expectedClasses: string[],
 ) {
 	// The visible label IS the announce-able content for the surrounding
@@ -67,12 +87,51 @@ function assertChipShape(
 }
 
 describe("<DiffOutcomeChip>", () => {
-	it("renders the Pending chip when neither acceptedAt nor rejectedAt is set", () => {
-		render(<DiffOutcomeChip toolCall={{}} />);
+	it("renders the Pending chip when neither stamp is set and the chat waits on the call", () => {
+		render(<DiffOutcomeChip toolCall={{ id: "call-1" }} />, {
+			wrapper: awaiting(["call-1"]),
+		});
 		const chip = screen.getByText("Pending");
 		// shadcn Badge `variant="secondary"` → bg-secondary classlist
 		// (see badge.tsx).
 		assertChipShape(chip, "Pending", ["bg-secondary"]);
+	});
+
+	it("renders No decision recorded for an unanswered call the chat no longer waits on (Fizzy #2946)", () => {
+		// An old confirm_changes card from an earlier day: no stamp, and no
+		// review in the editor to answer it with.
+		render(<DiffOutcomeChip toolCall={{ id: "call-old" }} />, {
+			wrapper: awaiting(["call-live"]),
+		});
+		expect(screen.queryByText("Pending")).not.toBeInTheDocument();
+		const chip = screen.getByText("No decision recorded");
+		assertChipShape(chip, "No decision recorded", [
+			"text-muted-foreground",
+		]);
+	});
+
+	it("renders No decision recorded without a CopilotKit provider or a call id", () => {
+		const { unmount } = render(
+			<DiffOutcomeChip toolCall={{ id: "call-1" }} />,
+		);
+		expect(screen.getByText("No decision recorded")).toBeInTheDocument();
+		unmount();
+
+		render(<DiffOutcomeChip toolCall={{}} />, {
+			wrapper: awaiting(["call-1"]),
+		});
+		expect(screen.getByText("No decision recorded")).toBeInTheDocument();
+	});
+
+	it("keeps a stamp over a live call", () => {
+		render(
+			<DiffOutcomeChip
+				toolCall={{ id: "call-1", rejectedAt: "2026-05-20T10:05:00Z" }}
+			/>,
+			{ wrapper: awaiting(["call-1"]) },
+		);
+		expect(screen.getByText(/^Rejected/)).toBeInTheDocument();
+		expect(screen.queryByText("Pending")).not.toBeInTheDocument();
 	});
 
 	it("renders the Accepted chip when acceptedAt is set", () => {
@@ -126,9 +185,22 @@ describe("<DiffOutcomeChip>", () => {
 		// positive outcome.
 		render(
 			<DiffOutcomeChip
-				toolCall={{ acceptedAt: null, rejectedAt: null }}
+				toolCall={{ id: "call-1", acceptedAt: null, rejectedAt: null }}
 			/>,
+			{ wrapper: awaiting(["call-1"]) },
 		);
 		expect(screen.getByText("Pending")).toBeInTheDocument();
+	});
+});
+
+describe("hasDiffOutcome", () => {
+	it("gives a chip to the proposals the editors stamp, and to a call with no name", () => {
+		expect(hasDiffOutcome("confirm_changes")).toBe(true);
+		expect(hasDiffOutcome("write_document_local")).toBe(true);
+		expect(hasDiffOutcome(undefined)).toBe(true);
+	});
+
+	it("gives none to another tool the assistant called", () => {
+		expect(hasDiffOutcome("search_project_knowledge")).toBe(false);
 	});
 });

@@ -34,7 +34,7 @@ import {
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { parseAsInteger, parseAsString, useQueryState } from "nuqs";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { toast } from "sonner";
 import { useDebounceValue } from "usehooks-ts";
 import { EmailVerified } from "../EmailVerified";
@@ -60,14 +60,29 @@ export function UserList() {
 			input: {
 				query: debouncedSearchTerm.trim() || undefined,
 				limit: ITEMS_PER_PAGE,
-				offset: (currentPage - 1) * ITEMS_PER_PAGE,
+				offset: (Math.max(1, currentPage) - 1) * ITEMS_PER_PAGE,
 			},
 		}),
 	);
 
+	const previousSearchTerm = useRef(debouncedSearchTerm);
 	useEffect(() => {
-		setCurrentPage(1);
-	}, [debouncedSearchTerm]);
+		if (previousSearchTerm.current !== debouncedSearchTerm) {
+			previousSearchTerm.current = debouncedSearchTerm;
+			void setCurrentPage(1);
+		}
+	}, [debouncedSearchTerm, setCurrentPage]);
+
+	useEffect(() => {
+		if (currentPage < 1) {
+			void setCurrentPage(1, { history: "replace" });
+		} else if (data && data.total > 0) {
+			const lastPage = Math.ceil(data.total / ITEMS_PER_PAGE);
+			if (currentPage > lastPage) {
+				void setCurrentPage(lastPage, { history: "replace" });
+			}
+		}
+	}, [currentPage, data?.total, setCurrentPage]);
 
 	const impersonateUser = async (
 		userId: string,
@@ -133,10 +148,15 @@ export function UserList() {
 	};
 
 	const assignAdminRole = async (id: string) => {
-		await authClient.admin.setRole({
+		const { error } = await authClient.admin.setRole({
 			userId: id,
 			role: "admin",
 		});
+
+		if (error) {
+			toast.error(error.message);
+			return;
+		}
 
 		await queryClient.invalidateQueries({
 			queryKey: orpc.admin.users.list.key(),
@@ -144,10 +164,15 @@ export function UserList() {
 	};
 
 	const removeAdminRole = async (id: string) => {
-		await authClient.admin.setRole({
+		const { error } = await authClient.admin.setRole({
 			userId: id,
 			role: "user",
 		});
+
+		if (error) {
+			toast.error(error.message);
+			return;
+		}
 
 		await queryClient.invalidateQueries({
 			queryKey: orpc.admin.users.list.key(),

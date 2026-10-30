@@ -160,7 +160,7 @@ describe("buildThemeHtml: the document", () => {
 		);
 	});
 
-	it("prints every font in Inter, whatever the brand names", () => {
+	it("prints each role in its committed face, whatever the brand names", () => {
 		const { html } = build("Text.", {
 			tokens: exportTokens({ bodyFont: "Example Sans" }),
 		});
@@ -172,9 +172,56 @@ describe("buildThemeHtml: the document", () => {
 					?.attributes ?? "",
 				"style",
 			) ?? "";
-		for (const role of ["display", "body", "mono"]) {
-			expect(style).toContain(`--pa-font-${role}: &quot;Inter&quot;`);
-		}
+		// A brand-font organization prints Poppins for display.
+		expect(style).toContain("--pa-font-display: &quot;Poppins&quot;");
+		expect(style).toContain("--pa-font-body: &quot;Inter&quot;");
+		expect(style).toContain("--pa-font-mono: &quot;JetBrains Mono&quot;");
+	});
+
+	it("embeds Poppins, Inter and JetBrains Mono from committed files, each with its own MIME type and format", () => {
+		const { html } = build("Text.");
+		const faces = [
+			...html.matchAll(
+				/@font-face \{\n\tfont-family: "([^"]+)";\n\tfont-style: normal;\n\tfont-weight: (\d+);\n\tfont-display: block;\n\tsrc: url\(data:([^;]+);base64,([A-Za-z0-9+/=]+)\) format\("([^"]+)"\);\n\}/g,
+			),
+		].map(([, family, weight, mime, data, format]) => ({
+			face: `${family} ${weight}`,
+			mime,
+			format,
+			// The file's own signature: woff2 or a TrueType outline font.
+			signature: Buffer.from(data ?? "", "base64")
+				.subarray(0, 4)
+				.toString("hex"),
+		}));
+
+		const woff2 = {
+			mime: "font/woff2",
+			format: "woff2",
+			signature: "774f4632",
+		};
+		const ttf = {
+			mime: "font/ttf",
+			format: "truetype",
+			signature: "00010000",
+		};
+		expect(faces).toEqual([
+			{ face: "Poppins 700", ...ttf },
+			{ face: "Inter 400", ...woff2 },
+			{ face: "Inter 600", ...woff2 },
+			{ face: "Inter 700", ...woff2 },
+			{ face: "Inter 800", ...woff2 },
+			{ face: "JetBrains Mono 400", ...woff2 },
+			{ face: "JetBrains Mono 500", ...woff2 },
+		]);
+		expect(html.match(/@font-face/g)).toHaveLength(faces.length);
+		expect(html).not.toMatch(/url\(\s*["']?(https?:)?\/\//i);
+	});
+
+	it("keeps the margin boxes on the literal Inter stack", () => {
+		const { html } = build("Text.");
+		const footer = /@bottom-left \{[^}]*font-family: ([^;]+);/.exec(html);
+
+		expect(footer?.[1]).toBe('"Inter", ui-sans-serif, sans-serif');
 	});
 
 	it("writes the running footer from the parts the data holds", () => {
@@ -192,9 +239,23 @@ describe("buildThemeHtml: the document", () => {
 				}).html,
 			),
 		).toBe("Example Proposal · Confidential");
-		expect(
-			/@top-left \{[^}]*content: "([^"]*)"/.exec(build("x").html)?.[1],
-		).toBe(TITLE);
+		// A footer only: no running header repeats the title.
+		expect(build("x").html).not.toMatch(/@top-left \{[^}]*content: "/);
+	});
+
+	it("cuts a long title at a word so the footer stays on one line", () => {
+		const footer = (html: string) =>
+			/@bottom-left \{[^}]*content: "([^"]*)"/.exec(html)?.[1];
+		const title =
+			"A field service modernisation pilot for Example Harbor Co regional crews";
+
+		expect(footer(build("Text.", { title }).html)).toBe(
+			"Example Org · A field service modernisation pilot for Example Harbor Co… · October 15, 2026 · Confidential",
+		);
+		const exact = "x".repeat(60);
+		expect(footer(build("Text.", { title: exact }).html)).toBe(
+			`Example Org · ${exact} · October 15, 2026 · Confidential`,
+		);
 	});
 
 	it("scrubs citations and the Source Index, and keeps everything else as the page shows it", () => {
@@ -221,7 +282,10 @@ describe("buildThemeHtml: the document", () => {
 		expect(body).not.toContain("[S3]");
 		expect(body).not.toContain("Source Index");
 		expect(body).not.toContain("Example source");
-		expect(body).toContain("<p>Our approach cuts onboarding time.</p>");
+		// The preamble's paragraph is the cover's lead, scrubbed as well.
+		expect(body).toContain(
+			'<p class="pa-cover-lead">Our approach cuts onboarding time.</p>',
+		);
 		expect(body).toContain("<p>TBD</p>");
 		expect(body).toContain("<p>Supporting detail stays.</p>");
 		expect(sections.map((section) => section.title)).toEqual([
@@ -285,6 +349,7 @@ describe("buildThemeHtml: untrusted content", () => {
 		);
 		const body = bodyOf(html);
 
+		// Main has no section, so its first paragraph stays in the body.
 		expect(body).toContain("<p>First line<br>second line<br>third</p>");
 		expect(body).not.toContain("internal note");
 		expect(body).toContain(
@@ -331,6 +396,7 @@ describe("buildThemeHtml: untrusted content", () => {
 			width: 10,
 			height: 10,
 			png: null,
+			numbered: true,
 		};
 		const { html } = build(
 			[
@@ -373,8 +439,12 @@ describe("buildThemeHtml: untrusted content", () => {
 				expect(attribute(tag.attributes, "href")).toBeNull();
 			}
 		}
-		// Two logos, the hero and the uploaded image.
-		expect(sources).toBe(4);
+		// Two logos and the uploaded image; the hero is a background.
+		expect(sources).toBe(3);
+		const body = startTags(html).find((tag) => tag.name === "body");
+		expect(attribute(body?.attributes ?? "", "style")).toMatch(
+			/^--pa-hero-image: url\(data:image\/jpeg;base64,[A-Za-z0-9+/=]+\)$/,
+		);
 		expect(html).not.toContain("remote.png");
 	});
 
@@ -444,36 +514,115 @@ describe("buildThemeHtml: cover", () => {
 		const start = body.indexOf('<section class="pa-cover">');
 		return body.slice(start, body.indexOf("</section>", start) + 10);
 	};
+	/** What follows the cover: the contents page and the body. */
+	const afterCover = (html: string) => {
+		const body = bodyOf(html);
+		return body.slice(body.indexOf("</section>") + 10);
+	};
+	const PARTIES =
+		'<div class="pa-cover-parties"><dl class="pa-cover-party-for"><dt>Prepared for</dt><dd>Example Client</dd></dl><div class="pa-cover-party-by"><dl><dt>Prepared by</dt><dd>Example Org</dd></dl><p class="pa-cover-date">October 15, 2026 · Confidential</p></div></div>';
+	const measured = (
+		raster: ExportRaster,
+		tone: Pick<ExportRaster, "luminance" | "opaque">,
+	): ExportRaster => ({ ...raster, ...tone });
 
-	it("opens the body, block-level, with data-held fields only and no lead", () => {
-		const { html } = build("Text.");
+	it("opens the body, block-level, with the data-held fields only when Main has no preamble", () => {
+		const { html } = build("## Overview\n\nText.");
 		const cover = coverOf(html);
 
 		expect(bodyOf(html)).toMatch(
 			/^<body data-proposal-theme="print">\n<section class="pa-cover">/,
 		);
 		expect(cover).toBe(
-			'<section class="pa-cover"><div class="pa-cover-brands"></div><div class="pa-cover-body"><p class="pa-eyebrow">Proposal</p><h1 class="pa-cover-title">Example Proposal</h1></div><dl class="pa-cover-parties"><div><dt>Prepared for</dt><dd>Example Client</dd></div><div><dt>Prepared by</dt><dd>Example Org</dd></div></dl><p class="pa-cover-date">October 15, 2026</p></section>',
+			`<section class="pa-cover"><div class="pa-cover-body"><p class="pa-eyebrow">Proposal</p><h1 class="pa-cover-title">Example Proposal</h1></div>${PARTIES}</section>`,
 		);
 		expect(cover).not.toContain("pa-cover-lead");
+		expect(cover).not.toContain("pa-cover-figures");
+		expect(cover).not.toContain("pa-cover-brands");
 	});
 
-	it("draws both logos when both tokens hold one", () => {
-		const cover = coverOf(
-			build("Text.", {
+	it("holds every field in order: hero, brands, eyebrow, title, lead, figures, parties", () => {
+		const dark = measured(png, { luminance: 0.04, opaque: false });
+		const light = measured(png, { luminance: 0.93, opaque: false });
+		const { html } = build(
+			[
+				"A short lead for the cover.",
+				"",
+				"```stat-tiles",
+				"Weeks to launch: 12",
+				"Engineers: 3",
+				"Fixed fee: $180,000",
+				"```",
+				"",
+				"## Overview",
+				"",
+				"Text.",
+			].join("\n"),
+			{
 				tokens: exportTokens({
-					proposerLogo: png,
-					recipientLogo: jpeg,
+					proposerLogo: light,
+					recipientLogo: dark,
+					hero: jpeg,
 				}),
-			}).html,
+			},
 		);
+		const data = (raster: ExportRaster) =>
+			`data:${raster.mimeType};base64,${raster.bytes.toString("base64")}`;
 
-		expect(cover).toContain(
-			`<div class="pa-cover-brands"><img class="pa-cover-logo pa-cover-logo-proposer" src="data:image/png;base64,${png.bytes.toString("base64")}" alt="Example Org logo"><img class="pa-cover-logo pa-cover-logo-recipient" src="data:image/jpeg;base64,${jpeg.bytes.toString("base64")}" alt="Example Client logo"></div>`,
+		expect(coverOf(html)).toBe(
+			[
+				'<section class="pa-cover">',
+				'<div class="pa-cover-hero"></div>',
+				'<div class="pa-cover-brands">',
+				`<img class="pa-cover-logo pa-cover-logo-proposer" src="${data(light)}" alt="Example Org logo">`,
+				`<img class="pa-cover-logo pa-cover-logo-recipient pa-cover-logo-plate" src="${data(dark)}" alt="Example Client logo">`,
+				"</div>",
+				'<div class="pa-cover-body">',
+				'<p class="pa-eyebrow">Proposal</p>',
+				'<h1 class="pa-cover-title">Example Proposal</h1>',
+				'<p class="pa-cover-lead">A short lead for the cover.</p>',
+				'<dl class="pa-cover-figures">',
+				"<div><dt>Weeks to launch</dt><dd>12</dd></div>",
+				"<div><dt>Engineers</dt><dd>3</dd></div>",
+				"<div><dt>Fixed fee</dt><dd>$180,000</dd></div>",
+				"</dl>",
+				"</div>",
+				PARTIES,
+				"</section>",
+			].join(""),
 		);
 	});
 
-	it("draws one logo alone, and an empty brands row with nothing inside", () => {
+	it("sets a dark or opaque logo on the plate and a light or unmeasured one straight on the ink", () => {
+		const plated = (raster: ExportRaster) =>
+			coverOf(
+				build("Text.", {
+					tokens: exportTokens({ proposerLogo: raster }),
+				}).html,
+			).includes("pa-cover-logo-plate");
+
+		expect(plated(measured(png, { luminance: 0.02, opaque: false }))).toBe(
+			true,
+		);
+		expect(plated(measured(png, { luminance: 0.44, opaque: false }))).toBe(
+			true,
+		);
+		expect(plated(measured(png, { luminance: 0.45, opaque: false }))).toBe(
+			false,
+		);
+		expect(plated(measured(png, { luminance: 0.97, opaque: false }))).toBe(
+			false,
+		);
+		// An opaque image's own edge would meet the ink, however light it is.
+		expect(plated(measured(jpeg, { luminance: 0.97, opaque: true }))).toBe(
+			true,
+		);
+		// Nothing opaque to measure, or not measured at all.
+		expect(plated(measured(png, { opaque: false }))).toBe(false);
+		expect(plated(png)).toBe(false);
+	});
+
+	it("draws one logo alone on its own side, and no brands row without a logo", () => {
 		const recipientOnly = coverOf(
 			build("Text.", { tokens: exportTokens({ recipientLogo: png }) })
 				.html,
@@ -483,58 +632,357 @@ describe("buildThemeHtml: cover", () => {
 		);
 		expect(recipientOnly).not.toContain("pa-cover-logo-proposer");
 
-		const none = coverOf(build("Text.").html);
-		expect(none).toContain('<div class="pa-cover-brands"></div>');
+		const proposerOnly = coverOf(
+			build("Text.", { tokens: exportTokens({ proposerLogo: png }) })
+				.html,
+		);
+		expect(proposerOnly).toMatch(
+			/<div class="pa-cover-brands"><img class="pa-cover-logo pa-cover-logo-proposer" [^>]*><\/div>/,
+		);
+
+		expect(coverOf(build("Text.").html)).not.toContain("pa-cover-brands");
 	});
 
-	it("leaves out a missing party, and the parties list when neither is known", () => {
+	it("leaves out a missing party, keeps Prepared by in its column, and always prints the date line", () => {
 		const noRecipient = coverOf(
 			build("Text.", { tokens: exportTokens({ recipientName: "  " }) })
 				.html,
 		);
 		expect(noRecipient).not.toContain("Prepared for");
 		expect(noRecipient).toContain(
-			'<dl class="pa-cover-parties"><div><dt>Prepared by</dt><dd>Example Org</dd></div></dl>',
+			'<div class="pa-cover-parties"><div class="pa-cover-party-by"><dl><dt>Prepared by</dt><dd>Example Org</dd></dl><p class="pa-cover-date">October 15, 2026 · Confidential</p></div></div>',
 		);
 
 		const nobody = coverOf(
 			build("Text.", {
+				dateLabel: " ",
 				tokens: exportTokens({
 					recipientName: null,
 					proposerName: null,
 				}),
 			}).html,
 		);
-		expect(nobody).not.toContain("pa-cover-parties");
 		expect(nobody).not.toContain("Prepared");
-	});
-
-	it("draws the hero only when there is one", () => {
-		expect(coverOf(build("Text.").html)).not.toContain("pa-cover-hero");
-		expect(
-			coverOf(
-				build("Text.", { tokens: exportTokens({ hero: jpeg }) }).html,
-			),
-		).toContain(
-			`</div><img class="pa-cover-hero" src="data:image/jpeg;base64,${jpeg.bytes.toString("base64")}" alt=""><div class="pa-cover-body">`,
+		expect(nobody).toContain(
+			'<div class="pa-cover-parties"><div class="pa-cover-party-by"><p class="pa-cover-date">Confidential</p></div></div>',
 		);
 	});
 
-	it("escapes the title and the names", () => {
-		const { html } = build("Text.", {
-			title: 'Q3 <Plan> & "More"',
-			tokens: exportTokens({ proposerName: "<b>Example</b> Org" }),
+	it("draws the hero as a background only when there is one, its bytes written once on the body", () => {
+		const bare = build("Text.").html;
+		expect(coverOf(bare)).not.toContain("pa-cover-hero");
+		expect(bodyOf(bare)).not.toContain("--pa-hero-image");
+
+		const { html } = build("Text.\n\n## One\n\n## Two", {
+			tokens: exportTokens({ hero: jpeg }),
 		});
+		expect(coverOf(html)).toMatch(
+			/^<section class="pa-cover"><div class="pa-cover-hero"><\/div><div class="pa-cover-body">/,
+		);
+		expect(bodyOf(html)).toMatch(
+			/^<body data-proposal-theme="print" style="--pa-hero-image: url\(data:image\/jpeg;base64,[A-Za-z0-9+/=]+\)">/,
+		);
+		expect(html.match(/data:image\/jpeg;base64,/g)).toHaveLength(1);
+	});
+
+	it("writes the hero's small copy for the openers beside the hero, once", () => {
+		const { html } = build("Text.\n\n## One\n\n## Two", {
+			tokens: exportTokens({ hero: { ...jpeg, openerCopy: png } }),
+		});
+		expect(bodyOf(html)).toMatch(
+			/^<body data-proposal-theme="print" style="--pa-hero-image: url\(data:image\/jpeg;base64,[A-Za-z0-9+/=]+\); --pa-hero-opener-image: url\(data:image\/png;base64,[A-Za-z0-9+/=]+\)">/,
+		);
+		expect(html.match(/--pa-hero-opener-image: url\(data:/g)).toHaveLength(
+			1,
+		);
+	});
+
+	it("veils the hero by its measured bright end, and a hero without one as though it were white", () => {
+		const veil = (hero: ExportRaster) =>
+			Number(
+				/--pa-hero-veil: ([0-9.]+)/.exec(
+					build("Text.", { tokens: exportTokens({ hero }) }).html,
+				)?.[1],
+			);
+		const unmeasured = veil(jpeg);
+
+		expect(veil({ ...jpeg, luminance: 0.02 })).toBeLessThan(0.35);
+		expect(veil({ ...jpeg, luminance: 1 })).toBe(unmeasured);
+		expect(unmeasured).toBeGreaterThan(0.5);
+	});
+
+	it("takes a block of three tiles before the first section as the key figures, and leaves it out of the body", () => {
+		const { html } = build(
+			[
+				"```stat-tiles",
+				"%% fabric-visual: a1b2c3d4e5f6",
+				"Weeks: 12",
+				"Engineers: 3",
+				"Fee: $180,000",
+				"```",
+				"",
+				"## Overview",
+				"",
+				"Text.",
+			].join("\n"),
+		);
+
+		expect(coverOf(html)).toContain(
+			'<dl class="pa-cover-figures"><div><dt>Weeks</dt><dd>12</dd></div><div><dt>Engineers</dt><dd>3</dd></div><div><dt>Fee</dt><dd>$180,000</dd></div></dl>',
+		);
+		expect(afterCover(html)).not.toContain("pa-stat-tiles");
+		expect(afterCover(html)).not.toContain("Engineers");
+		expect(html).not.toContain("fabric-visual");
+	});
+
+	it("takes one or two tiles as they are", () => {
+		const { html } = build(
+			"```stat-tiles\nWeeks: 12\nFee: $90,000\n```\n\n## Overview",
+		);
+
+		expect(coverOf(html)).toContain(
+			'<dl class="pa-cover-figures"><div><dt>Weeks</dt><dd>12</dd></div><div><dt>Fee</dt><dd>$90,000</dd></div></dl>',
+		);
+	});
+
+	it("leaves a block of four tiles whole in the body, and the cover without figures", () => {
+		const { html } = build(
+			[
+				"```stat-tiles",
+				"A: 1",
+				"B: 2",
+				"C: 3",
+				"D: 4",
+				"```",
+				"",
+				"## Overview",
+			].join("\n"),
+		);
+
+		expect(coverOf(html)).not.toContain("pa-cover-figures");
+		expect(afterCover(html).match(/class="pa-stat-tile"/g)).toHaveLength(4);
+	});
+
+	it("takes only the first tiles block, and none after the first section or that the parser refuses", () => {
+		const refusedFirst = build(
+			[
+				"```stat-tiles",
+				"not a tile",
+				"```",
+				"",
+				"```stat-tiles",
+				"A: 1",
+				"```",
+				"",
+				"## Overview",
+			].join("\n"),
+		).html;
+		expect(coverOf(refusedFirst)).not.toContain("pa-cover-figures");
+		expect(afterCover(refusedFirst)).toContain(
+			'<pre><code class="language-stat-tiles">not a tile</code></pre>',
+		);
+		expect(afterCover(refusedFirst)).toContain(
+			'<dl class="pa-stat-tiles">',
+		);
+
+		const inSection = build(
+			["## Results", "", "```stat-tiles", "A: 1", "```"].join("\n"),
+		).html;
+		expect(coverOf(inSection)).not.toContain("pa-cover-figures");
+		expect(afterCover(inSection)).toContain('<dl class="pa-stat-tiles">');
+	});
+
+	it("takes the first paragraph before the first section as the lead, and leaves it out of the body", () => {
+		const { html } = build(
+			[
+				"# Example Proposal",
+				"",
+				"The **short** lead, with [a link](https://example.com/lead).",
+				"",
+				"A second paragraph stays.",
+				"",
+				"## Overview",
+				"",
+				"Section text stays.",
+			].join("\n"),
+		);
+
+		expect(coverOf(html)).toContain(
+			'<p class="pa-cover-lead">The <strong>short</strong> lead, with <a href="https://example.com/lead">a link</a>.</p>',
+		);
+		expect(afterCover(html)).not.toContain("short");
+		expect(afterCover(html)).toContain("<p>A second paragraph stays.</p>");
+		expect(afterCover(html)).toContain("<p>Section text stays.</p>");
+	});
+
+	it("numbers a footnote the lead references before the body's own", () => {
+		const { html } = build(
+			[
+				"Lead claim[^a].",
+				"",
+				"## Overview",
+				"",
+				"Body claim[^b].",
+				"",
+				"[^a]: Note a.",
+				"[^b]: Note b.",
+			].join("\n"),
+		);
+
+		expect(coverOf(html)).toContain(
+			'<p class="pa-cover-lead">Lead claim<sup><a href="#pa-fn-1">1</a></sup>.</p>',
+		);
+		expect(afterCover(html)).toContain(
+			'<p>Body claim<sup><a href="#pa-fn-2">2</a></sup>.</p>',
+		);
+		expect(afterCover(html)).toContain(
+			'<li id="pa-fn-1"><p>Note a.</p></li><li id="pa-fn-2"><p>Note b.</p></li>',
+		);
+	});
+
+	it("leaves a first paragraph over 320 characters in the body, and the cover without a lead", () => {
+		const exact = "x".repeat(320);
+		expect(coverOf(build(`${exact}\n\n## Overview`).html)).toContain(
+			`<p class="pa-cover-lead">${exact}</p>`,
+		);
+
+		const long =
+			`${"Example sentence of the preamble. ".repeat(15)}`.trim();
+		expect(Array.from(long).length).toBeGreaterThan(320);
+		const { html } = build(
+			`${long}\n\nA short second paragraph.\n\n## Overview`,
+		);
+
+		expect(coverOf(html)).not.toContain("pa-cover-lead");
+		expect(afterCover(html)).toContain(`<p>${long}</p>`);
+		// Only the first paragraph is ever the lead.
+		expect(afterCover(html)).toContain("<p>A short second paragraph.</p>");
+	});
+
+	it("never takes a paragraph after the first section, or an image, as the lead", () => {
+		expect(coverOf(build("## Overview\n\nShort text.").html)).not.toContain(
+			"pa-cover-lead",
+		);
+
+		// A paragraph holding an uploaded image, alone or beside its text.
+		for (const markdown of [
+			`Chart: ${imageTag(mediaKey("chart.png"))}`,
+			"Remote ![chart](https://example.com/chart.png) image.",
+		]) {
+			const { html } = build(`${markdown}\n\n## Overview`, {
+				images: new Map([[mediaKey("chart.png"), png]]),
+			});
+			expect(coverOf(html)).not.toContain("pa-cover-lead");
+			expect(afterCover(html)).toMatch(
+				/<p>(Chart: <img|Remote {2}image)/,
+			);
+		}
+	});
+
+	it("lifts nothing from a Main without sections: its first paragraph and tiles stay in the body", () => {
+		const { html } = build(
+			[
+				"# Overview",
+				"",
+				"A short opening paragraph.",
+				"",
+				"```stat-tiles",
+				"Weeks: 12",
+				"```",
+				"",
+				"# Pricing",
+				"",
+				"Fees by phase.",
+			].join("\n"),
+		);
+
+		expect(coverOf(html)).not.toContain("pa-cover-lead");
+		expect(coverOf(html)).not.toContain("pa-cover-figures");
+		expect(afterCover(html)).toContain("<p>A short opening paragraph.</p>");
+		expect(afterCover(html)).toContain('<dl class="pa-stat-tiles">');
+	});
+
+	it("stops looking for the preamble at the first heading of any depth, past one opening H1", () => {
+		const { html } = build(
+			[
+				"# Example Proposal",
+				"",
+				"### Background",
+				"",
+				"A short paragraph under a subheading.",
+				"",
+				"```stat-tiles",
+				"Weeks: 12",
+				"```",
+				"",
+				"## Overview",
+				"",
+				"Text.",
+			].join("\n"),
+		);
+
+		expect(coverOf(html)).not.toContain("pa-cover-lead");
+		expect(coverOf(html)).not.toContain("pa-cover-figures");
+		expect(afterCover(html)).toContain(
+			"<p>A short paragraph under a subheading.</p>",
+		);
+		expect(afterCover(html)).toContain('<dl class="pa-stat-tiles">');
+	});
+
+	it("leaves a first paragraph that introduces the next block in the body, with that block", () => {
+		for (const [lead, next] of [
+			["The phases are as follows:", "Planned work."],
+			["The phases are", "- Discovery\n- Build"],
+			["The fees are", "| Phase | Fee |\n| --- | --- |\n| Build | $9 |"],
+			["The flow is", "```mermaid\nflowchart LR\n  A --> B\n```"],
+		]) {
+			const { html } = build(`${lead}\n\n${next}\n\n## Overview`);
+
+			expect(coverOf(html)).not.toContain("pa-cover-lead");
+			expect(afterCover(html)).toContain(`<p>${lead}</p>`);
+		}
+
+		// The tiles the cover takes along strand nothing.
+		const { html } = build(
+			"The short lead.\n\n```stat-tiles\nWeeks: 12\n```\n\n## Overview",
+		);
+		expect(coverOf(html)).toContain(
+			'<p class="pa-cover-lead">The short lead.</p>',
+		);
+	});
+
+	it("escapes the title, the lead, the figures and the names", () => {
+		const { html } = build(
+			[
+				'Lead <b>bold</b> & "quoted".',
+				"",
+				"```stat-tiles",
+				"Risk <i>: <script>1</script>",
+				"```",
+				"",
+				"## Overview",
+			].join("\n"),
+			{
+				title: 'Q3 <Plan> & "More"',
+				tokens: exportTokens({ proposerName: "<b>Example</b> Org" }),
+			},
+		);
+		const cover = coverOf(html);
 
 		expect(html).toContain(
 			"<title>Q3 &lt;Plan&gt; &amp; &quot;More&quot;</title>",
 		);
-		expect(coverOf(html)).toContain(
+		expect(cover).toContain(
 			'<h1 class="pa-cover-title">Q3 &lt;Plan&gt; &amp; &quot;More&quot;</h1>',
 		);
-		expect(coverOf(html)).toContain(
-			"<dd>&lt;b&gt;Example&lt;/b&gt; Org</dd>",
+		expect(cover).toContain(
+			'<p class="pa-cover-lead">Lead &lt;b&gt;bold&lt;/b&gt; &amp; &quot;quoted&quot;.</p>',
 		);
+		expect(cover).toContain(
+			"<div><dt>Risk &lt;i&gt;</dt><dd>&lt;script&gt;1&lt;/script&gt;</dd></div>",
+		);
+		expect(cover).toContain("<dd>&lt;b&gt;Example&lt;/b&gt; Org</dd>");
+		expect(cover).not.toMatch(/<(b|i|script)>/);
 	});
 });
 
@@ -587,9 +1035,12 @@ describe("buildThemeHtml: sections and contents", () => {
 			["pa-section-2", "Pricing &amp; Terms"],
 			["pa-section-3", "Appendix"],
 		]);
+		// The document's title as the eyebrow, over a "Contents" heading that
+		// is not a heading element (the heading rules would draw it as a card).
 		expect(contentsOf(html)).toContain(
-			'<p class="pa-eyebrow">Contents</p>',
+			`<p class="pa-eyebrow">${TITLE}</p><p class="pa-contents-title">Contents</p>`,
 		);
+		expect(contentsOf(html)).not.toMatch(/<h[1-6]/);
 		// Right after the cover.
 		expect(html).toMatch(/<\/section>\n<nav class="pa-contents"/);
 	});
@@ -676,6 +1127,110 @@ describe("buildThemeHtml: sections and contents", () => {
 		expect(warnings).toEqual([]);
 	});
 
+	it("lists a section without the number typed at the start of its heading", () => {
+		const titles = (headings: string[]) =>
+			Array.from(
+				contentsOf(
+					build(
+						headings.map((heading) => `## ${heading}`).join("\n\n"),
+					).html,
+				).matchAll(/<a href="#pa-section-\d+">([^<]*)<\/a>/g),
+				(match) => match[1],
+			);
+
+		expect(
+			titles([
+				"1. Executive Summary",
+				"2) Scope",
+				"12: Pricing",
+				"2024 roadmap",
+				"10x growth",
+				"123. Too many digits",
+				"3.",
+			]),
+		).toEqual([
+			"Executive Summary",
+			"Scope",
+			"Pricing",
+			"2024 roadmap",
+			"10x growth",
+			"123. Too many digits",
+			"3.",
+		]);
+		// The opener keeps the heading as typed, beside its "Section n".
+		expect(bodyOf(build("## 1. Executive Summary").html)).toContain(
+			"<h2>1. Executive Summary</h2>",
+		);
+	});
+
+	it("takes a short emphasised paragraph after a heading as the opener's subtitle, once", () => {
+		const subtitle = "A pilot in two regions, live in twelve weeks.";
+		const { html } = build(`## Overview\n\n*${subtitle}*\n\nBody text.`);
+		const body = bodyOf(html);
+
+		expect(body).toContain(
+			`<header class="pa-section-opener" id="pa-section-1"><h2>Overview</h2><p>${subtitle}</p></header><p>Body text.</p>`,
+		);
+		expect(body.split(subtitle)).toHaveLength(2);
+
+		const limit = "x".repeat(200);
+		expect(bodyOf(build(`## Overview\n\n_${limit}_`).html)).toContain(
+			`<h2>Overview</h2><p>${limit}</p></header>`,
+		);
+	});
+
+	it("leaves a mixed or long paragraph after a heading in the body", () => {
+		for (const paragraph of [
+			"*Emphasis* and more text.",
+			"**Bold only.**",
+			"*One* *two*",
+			`*${"x".repeat(201)}*`,
+		]) {
+			const body = bodyOf(build(`## Overview\n\n${paragraph}`).html);
+			expect({ paragraph, opener: body }).toEqual({
+				paragraph,
+				opener: expect.stringContaining(
+					'<header class="pa-section-opener" id="pa-section-1"><h2>Overview</h2></header><p>',
+				),
+			});
+		}
+	});
+
+	it("opens a landscape section after its subtitle", () => {
+		const body = bodyOf(
+			build(
+				[
+					"## Appendix",
+					"",
+					"*Every requirement and where it is met.*",
+					"",
+					"| 1 | 2 | 3 | 4 | 5 | 6 | 7 |",
+					"| - | - | - | - | - | - | - |",
+					"| a | b | c | d | e | f | g |",
+				].join("\n"),
+			).html,
+		);
+
+		expect(body).toMatch(
+			/<section class="pa-landscape"><header class="pa-section-opener" id="pa-section-1"><h2>Appendix<\/h2><p>Every requirement and where it is met\.<\/p><\/header><table /,
+		);
+	});
+
+	it("draws the brand graphic in every opener only when there is a hero, above which the marker sits", () => {
+		const graphic =
+			'<div class="pa-section-graphic" aria-hidden="true"></div>';
+		expect(build("## One\n\n## Two").html).not.toContain(graphic);
+
+		const { html } = build("## One\n\n## Two", {
+			tokens: exportTokens({ hero: jpeg }),
+			pass: LOCATE,
+		});
+		expect(bodyOf(html)).toContain(
+			`<header class="pa-section-opener" id="pa-section-1">${graphic}<span class="pa-page-marker" aria-hidden="true">${pageMarkerText(1)}</span><h2>One</h2></header>`,
+		);
+		expect(html.split(graphic)).toHaveLength(3);
+	});
+
 	it("has no contents page without a section", () => {
 		const { html, sections } = build("# Title\n\nJust text.\n\n### Small");
 
@@ -688,6 +1243,9 @@ describe("buildThemeHtml: fences", () => {
 	it("draws a valid stat tiles block as tiles, its text escaped", () => {
 		const { html } = build(
 			[
+				// Inside a section, so the cover does not take it.
+				"## Results",
+				"",
 				"```stat-tiles",
 				"%% fabric-visual: a1b2c3d4e5f6",
 				"Faster onboarding: 40%",
@@ -719,6 +1277,7 @@ describe("buildThemeHtml: fences", () => {
 			width: 10,
 			height: 10,
 			png: null,
+			numbered: true,
 		};
 		const fence = (caption: string) =>
 			[
@@ -746,15 +1305,19 @@ describe("buildThemeHtml: fences", () => {
 			build(markdown, {
 				diagrams: [
 					svg,
-					{ kind: "placeholder", caption: "Not available." },
+					{
+						kind: "placeholder",
+						caption: "Not available.",
+						numbered: true,
+					},
 				],
 			}).html,
 		);
 		expect(body).toContain(
-			'<figure class="pa-figure pa-diagram"><svg viewBox="0 0 10 10"><text>drawn</text></svg><figcaption class="pa-caption">Plan &lt;b&gt;for&lt;/b&gt; Acme &amp; partners</figcaption></figure>',
+			'<figure class="pa-figure pa-diagram"><svg viewBox="0 0 10 10"><text>drawn</text></svg><figcaption class="pa-caption"><span class="pa-figure-number">Figure 1.</span> Plan &lt;b&gt;for&lt;/b&gt; Acme &amp; partners</figcaption></figure>',
 		);
 		expect(body).toContain(
-			'<p class="pa-caption">Not available.</p><figcaption class="pa-caption">Not drawn</figcaption></figure>',
+			'<p class="pa-caption">Not available.</p><figcaption class="pa-caption"><span class="pa-figure-number">Figure 2.</span> Not drawn</figcaption></figure>',
 		);
 		expect(body).not.toContain("%% caption");
 	});
@@ -766,6 +1329,7 @@ describe("buildThemeHtml: fences", () => {
 			width: 10,
 			height: 10,
 			png: null,
+			numbered: true,
 		};
 		const fence = (caption: string) =>
 			`\`\`\`mermaid\n%% caption: ${caption}\nflowchart LR\n  A --> B\n\`\`\``;
@@ -775,35 +1339,41 @@ describe("buildThemeHtml: fences", () => {
 			}).html,
 		);
 		expect(body).toContain(
-			'<figcaption class="pa-caption">Rollout plan</figcaption>',
+			'<figcaption class="pa-caption"><span class="pa-figure-number">Figure 1.</span> Rollout plan</figcaption>',
+		);
+		expect(body).toContain(
+			'<figcaption class="pa-caption"><span class="pa-figure-number">Figure 2.</span></figcaption>',
 		);
 		expect(body).not.toContain("[S");
-		expect(body.match(/<figcaption/g)).toHaveLength(1);
 	});
 
-	it("prints no caption for a diagram without one", () => {
+	it("still numbers a diagram without a caption", () => {
 		const svg: ExportDiagram = {
 			kind: "svg",
 			svg: '<svg viewBox="0 0 10 10"></svg>',
 			width: 10,
 			height: 10,
 			png: null,
+			numbered: true,
 		};
 		const body = bodyOf(
 			build("```mermaid\nflowchart LR\n  A --> B\n```", {
 				diagrams: [svg],
 			}).html,
 		);
-		expect(body).not.toContain("<figcaption");
+		expect(body).toContain(
+			'<svg viewBox="0 0 10 10"></svg><figcaption class="pa-caption"><span class="pa-figure-number">Figure 1.</span></figcaption>',
+		);
 	});
 
-	it("takes each diagram by its fence, nested ones included", () => {
+	it("takes each diagram by its fence, nested ones included, and numbers only those that print", () => {
 		const svg = (label: string): ExportDiagram => ({
 			kind: "svg",
 			svg: `<svg viewBox="0 0 10 10"><text>${label}</text></svg>`,
 			width: 10,
 			height: 10,
 			png: null,
+			numbered: true,
 		});
 		const markdown = [
 			"```mermaid",
@@ -834,8 +1404,12 @@ describe("buildThemeHtml: fences", () => {
 		const { html, warnings } = build(markdown, {
 			diagrams: [
 				svg("first"),
-				{ kind: "placeholder", caption: "Diagram <unavailable>" },
-				svg("third"),
+				{ kind: "omitted", numbered: false },
+				{
+					kind: "placeholder",
+					caption: "Diagram <unavailable>",
+					numbered: true,
+				},
 			],
 		});
 		const body = bodyOf(html);
@@ -846,22 +1420,23 @@ describe("buildThemeHtml: fences", () => {
 			),
 			(match) => [match[1], match[2]],
 		);
+		// The left-out diagram takes no number, so the placeholder after it
+		// is the second figure; the last fence, which the diagram step
+		// returned nothing for, prints nothing either.
 		expect(figures).toEqual([
-			["pa-diagram", '<svg viewBox="0 0 10 10"><text>first</text></svg>'],
 			[
-				"pa-diagram-placeholder",
-				'<p class="pa-caption">Diagram &lt;unavailable&gt;</p>',
+				"pa-diagram",
+				'<svg viewBox="0 0 10 10"><text>first</text></svg><figcaption class="pa-caption"><span class="pa-figure-number">Figure 1.</span></figcaption>',
 			],
-			["pa-diagram", '<svg viewBox="0 0 10 10"><text>third</text></svg>'],
 			[
 				"pa-diagram-placeholder",
-				'<p class="pa-caption">This diagram could not be drawn for export.</p>',
+				'<p class="pa-caption">Diagram &lt;unavailable&gt;</p><figcaption class="pa-caption"><span class="pa-figure-number">Figure 2.</span></figcaption>',
 			],
 		]);
-		// The blank line before the fence makes the item loose.
 		expect(body).toMatch(
-			/<li><p>A step<\/p><figure class="pa-figure pa-diagram-placeholder">/,
+			/<blockquote[^>]*><figure class="pa-figure pa-diagram-placeholder">/,
 		);
+		expect(body).toMatch(/<li><p>A step<\/p><\/li>/);
 		expect(body).not.toContain("flowchart");
 		// Only the fence the diagram step returned nothing for is counted here.
 		expect(warnings).toEqual([{ code: "DIAGRAM_PLACEHOLDER", count: 1 }]);
@@ -1029,7 +1604,7 @@ describe("buildThemeHtml: Markdown forms", () => {
 		]);
 		expect(body.match(/<section class="pa-landscape">/g)).toHaveLength(1);
 		expect(body).toMatch(
-			/<section class="pa-landscape"><header class="pa-section-opener" id="pa-section-2"><h2>Appendix A: Assumptions<\/h2><\/header><table class="pa-data-table">.*?<\/table><\/section><p>Start date: TBD<\/p>/,
+			/<section class="pa-landscape"><header class="pa-section-opener" id="pa-section-2"><h2>Appendix A: Assumptions<\/h2><\/header><table class="pa-data-table[^"]*">.*?<\/table><\/section><p>Start date: TBD<\/p>/,
 		);
 		// The first section's opener stays in the portrait flow.
 		expect(body).toMatch(
@@ -1037,9 +1612,66 @@ describe("buildThemeHtml: Markdown forms", () => {
 		);
 	});
 
+	it("marks a first column of short ids, and only when every body cell is one", () => {
+		const table = (cells: string[]) =>
+			[
+				"| ID | Capability |",
+				"| --- | --- |",
+				...cells.map((cell) => `| ${cell} | Example |`),
+			].join("\n");
+		const marked = (markdown: string) =>
+			bodyOf(build(markdown).html).includes(
+				'<table class="pa-data-table pa-id-column">',
+			);
+
+		expect(marked(table(["FS-01", "FS-02", "REQ-1234-AB"]))).toBe(true);
+		expect(marked(table(["FS-01", "FS 02"]))).toBe(false);
+		expect(marked(table(["FS-01", "ABCDEFGHIJKLM"]))).toBe(false);
+		expect(marked(table(["FS-01", "**FS-02**x"]))).toBe(true);
+		expect(marked(table(["FS-01", "FS_02"]))).toBe(false);
+		expect(marked(table(["FS-01", " "]))).toBe(false);
+		// Plain words and single letters are not ids: an id has a digit.
+		expect(marked(table(["Discovery", "Build", "Launch"]))).toBe(false);
+		expect(marked(table(["A", "B"]))).toBe(false);
+		expect(marked(table(["FS-01", "Pro"]))).toBe(false);
+		expect(marked(table(["1", "2a"]))).toBe(true);
+		// A table with a header row alone has no ids to set.
+		expect(marked("| ID | Capability |\n| --- | --- |")).toBe(false);
+	});
+
+	it("numbers an ordered list in squares only when every item opens with bold text", () => {
+		const steps = [
+			"Intro.",
+			"",
+			"1. **Approve the pilot.** Signature starts week one.",
+			"2. **Name the sponsor.** One per region.",
+		].join("\n");
+		expect(bodyOf(build(steps).html)).toContain(
+			'<ol class="pa-steps"><li><strong>Approve the pilot.</strong> Signature starts week one.</li>',
+		);
+		// The start number survives: the squares count from it.
+		expect(
+			bodyOf(
+				build(steps.replace("1. **", "4. **").replace("2. **", "5. **"))
+					.html,
+			),
+		).toContain('<ol start="4" class="pa-steps">');
+
+		for (const markdown of [
+			"Intro.\n\n1. **Bold** first\n2. Plain second",
+			"Intro.\n\n1. Plain **then bold**\n2. **Bold** second",
+			"Intro.\n\n- **Bold** bullet\n- **Bold** bullet",
+		]) {
+			expect(bodyOf(build(markdown).html)).not.toContain("pa-steps");
+		}
+	});
+
 	it("prints lists, task items, callouts, code, rules and inline forms", () => {
 		const { html } = build(
 			[
+				// The cover takes the first paragraph as its lead.
+				"Intro.",
+				"",
 				"3. third",
 				"4. fourth",
 				"",
@@ -1093,6 +1725,9 @@ describe("buildThemeHtml: Markdown forms", () => {
 	it("numbers footnotes by first reference and lists them at the end", () => {
 		const { html } = build(
 			[
+				// The cover takes the first paragraph as its lead.
+				"Intro.",
+				"",
 				"Claim one[^b] and claim two[^a], again[^b].",
 				"",
 				"[^a]: Note <a>.",

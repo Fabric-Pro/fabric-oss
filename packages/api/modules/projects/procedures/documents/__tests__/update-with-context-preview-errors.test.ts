@@ -9,7 +9,9 @@
  * - a failed model call: `CONTEXT_UPDATE_FAILED`, apart from the provider
  *   one, since the settings are not at fault.
  *
- * Each keeps its oRPC code and its message.
+ * Each keeps its oRPC code and its message. The last block pins whose model
+ * the preview drafts with, and whose context it retrieves: the project's
+ * owning organization's.
  *
  * Mocks mirror `update-with-context-phase2.test.ts`, with the context-update
  * error classes added so the handler can tell them apart.
@@ -55,10 +57,6 @@ vi.mock("@repo/logs", () => ({
 
 vi.mock("../../../../../lib/document-side-effects", () => ({
 	applyDocumentUpdateSideEffects: vi.fn(),
-}));
-
-vi.mock("../../../lib/room-convergence-enabled", () => ({
-	isRoomConvergenceOn: vi.fn(async () => false),
 }));
 
 vi.mock("@repo/temporal", () => ({
@@ -190,6 +188,46 @@ describe("updateDocumentWithContextProcedure — preview failures a person can a
 		expect(error).toMatchObject({ message: "socket hang up" });
 		expect((error as { data?: { code?: unknown } }).data?.code).toBe(
 			undefined,
+		);
+	});
+});
+
+describe("updateDocumentWithContextProcedure — the preview's model", () => {
+	it("is resolved for the project's owning organization, not the caller's", async () => {
+		// A guest working from their own organization: the session and the
+		// request name it, while the project belongs to another.
+		mocks.getDocumentById.mockResolvedValue({
+			...(await mocks.getDocumentById()),
+			project: { organizationId: "org-owner" },
+		});
+		mocks.runContextUpdate.mockResolvedValue({
+			hasRelevantContext: false,
+			updatedDocument: "# Spec\n\nExisting body.",
+			needsHumanResolution: false,
+			summary: "No context sources found for this project.",
+		});
+		const call = previewInput();
+		call.input.organizationId = "org-guest";
+		call.context.session.activeOrganizationId = "org-guest";
+
+		await handlers.updateWithContext(call);
+
+		expect(mocks.runContextUpdate).toHaveBeenCalledTimes(1);
+		expect(mocks.runContextUpdate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				organizationId: "org-owner",
+				userId: "user-1",
+				projectId: "project-1",
+			}),
+		);
+		// The context it drafts from is retrieved there too, so the model
+		// and the sources never come from two organizations.
+		expect(mocks.fetchProjectContextSources).toHaveBeenCalledWith(
+			expect.objectContaining({
+				organizationId: "org-owner",
+				userId: "user-1",
+				projectId: "project-1",
+			}),
 		);
 	});
 });

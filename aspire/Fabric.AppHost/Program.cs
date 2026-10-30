@@ -1658,12 +1658,16 @@ else
         .WaitFor(fabricDb!)
         .WaitFor(redis!)
         .WaitFor(temporal!)
-        .WaitFor(qdrant!);
+        .WaitFor(qdrant!)
+        // The worker reaches the web app's MCP gateway at this origin, so it must
+        // be the origin the web app is served on, not whatever .env.local holds.
+        .WithEnvironment("NEXT_PUBLIC_SITE_URL", devTunnelUrl ?? "http://localhost:3001");
 
     foreach (var (key, value) in envVars)
     {
         if (!useExternalDb && (key == "DATABASE_URL" || key == "DIRECT_URL")) continue;
         if (key.StartsWith("OTEL_")) continue;
+        if (key == "NEXT_PUBLIC_SITE_URL") continue; // pinned to the web origin above
         temporalWorker = temporalWorker.WithEnvironment(key, value);
     }
 }

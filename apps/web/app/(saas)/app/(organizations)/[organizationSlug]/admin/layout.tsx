@@ -1,4 +1,5 @@
 import { config } from "@repo/config";
+import { isPlatformAdmin } from "@repo/database";
 import { getSession } from "@saas/auth/lib/server";
 import { SettingsMenu } from "@saas/settings/components/SettingsMenu";
 import { PageBreadcrumbs } from "@saas/shared/components/PageBreadcrumbs";
@@ -50,7 +51,7 @@ export default async function OrganizationAdminLayout({
 		redirect("/auth/login");
 	}
 
-	if (session.user?.role !== "admin") {
+	if (!(await isPlatformAdmin(session.user))) {
 		redirect("/app");
 	}
 

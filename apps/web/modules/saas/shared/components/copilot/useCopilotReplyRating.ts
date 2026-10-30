@@ -182,12 +182,33 @@ export function useCopilotReplyRating({
 			setPending(new Set(inFlight.current));
 		}
 	};
-	return {
-		onThumbsUp: (message: Reply) => toggle(message, "RATED_UP"),
-		onThumbsDown: (message: Reply) => toggle(message, "RATED_DOWN"),
-		getVote,
-		setMessageIds,
-		canRate,
-		isPending: (id: string) => pending.has(JSON.stringify([scope, id])),
-	};
+	const latest = useRef({ toggle, getVote, canRate });
+	latest.current = { toggle, getVote, canRate };
+	const callbacks = useMemo(
+		() => ({
+			onThumbsUp: (message: Reply) =>
+				latest.current.toggle(message, "RATED_UP"),
+			onThumbsDown: (message: Reply) =>
+				latest.current.toggle(message, "RATED_DOWN"),
+			getVote: (id: string) => latest.current.getVote(id),
+			canRate: (id: string) => latest.current.canRate(id),
+		}),
+		[latest],
+	);
+	const ratingInputs = JSON.stringify([
+		scope,
+		enabled,
+		messageIds,
+		savedVotes,
+		localVotes,
+		queries.map((query) => query.data !== undefined),
+	]);
+	return useMemo(
+		() => ({
+			...callbacks,
+			setMessageIds,
+			isPending: (id: string) => pending.has(JSON.stringify([scope, id])),
+		}),
+		[callbacks, setMessageIds, pending, scope, ratingInputs],
+	);
 }

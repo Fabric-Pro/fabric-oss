@@ -1,0 +1,1879 @@
+import { getDefaultEnabledMcpConfigIds } from "@repo/agent-core/backend";
+import { getAIModelWithMetadata, getCurrentDateContext } from "@repo/ai";
+import {
+	chatGptPlanExhaustedChatResponse,
+	chatGptPlanReconnectRefusal,
+} from "@repo/ai/lib/chatgpt-plan/agent-config";
+import { enterAiInteractiveContext } from "@repo/ai/lib/chatgpt-plan/interactive-context";
+import {
+	type ChatGptPlanChatPreflight,
+	chatGptPlanChatPreflight,
+} from "@repo/ai/lib/chatgpt-plan/plan-spent-response";
+import { mintActingGrantForTurn } from "@repo/api/lib/agent-service-auth";
+import { checkRateLimit, RATE_LIMIT_PRESETS } from "@repo/api/lib/rate-limit";
+import {
+	forbiddenOrganizationResponse,
+	resolveRequestedOrganization,
+} from "@repo/api/lib/requested-organization";
+import { AiUsageLimitExceededError } from "@repo/payments";
+import {
+	type ActivityHeartbeatDetails,
+	type DirectChatProgressUpdate,
+	type DirectChatToolCall,
+	type DirectChatWorkflowInput,
+	type DirectChatWorkflowOutput,
+	decodeHeartbeatDetails,
+	getTemporalClient,
+	isTemporalAvailable,
+} from "@repo/temporal";
+import type { AssertAssignable } from "@saas/agents/lib/chat-stream-protocol";
+import type { DirectStreamInput } from "@saas/agents/lib/direct-stream-protocol";
+import { encodeDirectStreamEvent } from "@saas/agents/lib/direct-stream-protocol";
+import { getSession } from "@saas/auth/lib/server";
+import { v4 as uuidv4 } from "uuid";
+import { z } from "zod";
+import { seedCarriedOverHistory } from "../carried-over-context";
+import { assertChatWorkflowPayload } from "../chat-workflow-payload";
+import { resolveUsageFrame } from "../resolve-usage-frame";
+import { unionDefaultMcpConfigIds } from "../union-default-mcp-config-ids";
+import { historyWindowSchema } from "./history-window";
+import {
+	bindsLiveFeatureTools,
+	projectContextGroundingLine,
+} from "./live-feature-tools";
+import {
+	type FrontendReasoningMode,
+	normalizeReasoningMode,
+} from "./normalize-reasoning-mode";
+import {
+	buildWorkflowErrorEvent,
+	doneTurnEvent,
+	failedTurnEvent,
+	partialTurnEvent,
+	ROUTE_TIMEOUT_MESSAGE,
+} from "./turn-events";
+
+const AGENT_CONTEXT_STORY_LIMIT = 30;
+const AGENT_CONTEXT_STORY_RENDER_LIMIT = 15;
+const AGENT_CONTEXT_DOCUMENT_LIMIT = 6;
+const AGENT_CONTEXT_CODING_RUN_LIMIT = 6;
+const AGENT_CONTEXT_STALE_DAYS = 14;
+
+const streamRequestSchema = z.object({
+	message: z.string().min(1).max(100_000),
+	// Keeps the most recent window rather than rejecting a long thread; see
+	// `history-window.ts`.
+	history: historyWindowSchema,
+	organizationId: z.string().nullish(),
+	reasoningMode: z
+		.enum(["lite", "balanced", "deep", "planner"])
+		.default("balanced"),
+	instanceId: z.string().max(200).nullish(),
+	chatId: z.string().max(200).nullish(),
+	attachedDocumentIds: z.array(z.string().max(200)).max(20).default([]),
+	/**
+	 * Full text of files attached in this turn, one finished envelope entry
+	 * per file. Additive to `attachedDocumentIds`, which drives retrieval.
+	 *
+	 * Bounded per entry as well as in count: the client already applies the
+	 * character budget before building the envelope, so this ceiling is the
+	 * server refusing to take the client's word for it rather than a second
+	 * budget. It sits above the client budget so a legitimate entry — budgeted
+	 * text plus the envelope's own wrapper and marker — is never clipped here.
+	 */
+	inlineAttachmentContexts: z
+		.array(z.string().max(200_000))
+		.max(20)
+		.default([]),
+	workspaceIds: z.array(z.string().max(200)).max(20).default([]),
+	workspaceDocumentIds: z.array(z.string().max(200)).max(200).default([]),
+	projectId: z.string().max(200).nullish(),
+	// Repository the chat was launched from (the drawer's code context). Only
+	// a default scope for `code_search`, matched against the attached project's
+	// own indexed repositories — never a way to reach another project's code.
+	repositoryUrl: z.string().max(2000).nullish(),
+	// Focused entity the user is currently VIEWING (the page the Fabric Agent
+	// was opened on). When present, the agent is grounded on this item's FULL
+	// content (untruncated description + acceptance criteria + document body) —
+	// distinct from `attachedDocumentIds` (chat file attachments).
+	storyId: z.string().max(200).nullish(),
+	documentId: z.string().max(200).nullish(),
+	taskId: z.string().max(200).nullish(),
+	// Where the chat was opened, for the tools that place what they create:
+	// a default, never a grant. The tools check access to whatever they touch.
+	workspaceId: z.string().max(200).nullish(),
+	launchFrameId: z.string().max(200).nullish(),
+	surface: z.enum(["artifact", "workspace"]).nullish(),
+	// A call the person approved in the chat card: the tool and the exact
+	// arguments the card showed. Only tools that ask for approval can be run
+	// this way, and the gateway checks the person's access to what it touches.
+	approvedToolCall: z
+		.object({
+			toolName: z.string().min(1).max(100),
+			args: z
+				.record(z.string(), z.unknown())
+				.refine((args) => JSON.stringify(args).length <= 50_000, {
+					message: "Approved call arguments are too large",
+				}),
+		})
+		.nullish(),
+	conversationId: z.string().max(200).nullish(),
+	enabledMcpConfigIds: z.array(z.string().max(200)).max(50).nullish(),
+	enabledFabricToolIds: z.array(z.string().max(200)).max(100).nullish(),
+	systemPrompt: z.string().max(50_000).nullish(),
+	modelOverride: z.string().max(200).nullish(),
+});
+
+function truncateContextText(
+	value: string | null | undefined,
+	maxLength = 420,
+) {
+	if (!value) {
+		return null;
+	}
+	const normalized = value.replace(/\s+/g, " ").trim();
+	return normalized.length > maxLength
+		? `${normalized.slice(0, maxLength - 1)}…`
+		: normalized;
+}
+
+// Like truncateContextText but PRESERVES structure (newlines, headings) so the
+// model can see the document's sections. Used only for the focused entity the
+// user is actively viewing, where full section fidelity matters. The large cap
+// comfortably fits multi-thousand-word docs while bounding pathological cases.
+function clampFocusedContent(
+	value: string | null | undefined,
+	maxLength = 60_000,
+) {
+	if (!value) {
+		return null;
+	}
+	const trimmed = value.trim();
+	return trimmed.length > maxLength
+		? `${trimmed.slice(0, maxLength - 1)}…`
+		: trimmed;
+}
+
+async function buildAgentContextSystemPrompt({
+	projectId,
+	baseSystemPrompt,
+	focusedStoryId,
+	focusedDocumentId,
+	focusedTaskId,
+	liveFeatureTools,
+}: {
+	projectId: string;
+	baseSystemPrompt?: string;
+	focusedStoryId?: string | null;
+	focusedDocumentId?: string | null;
+	focusedTaskId?: string | null;
+	liveFeatureTools: boolean;
+}): Promise<{ systemPrompt?: string; projectContext?: string }> {
+	try {
+		const { db } = await import("@repo/database");
+		const staleBefore = new Date(
+			Date.now() - AGENT_CONTEXT_STALE_DAYS * 24 * 60 * 60 * 1000,
+		);
+		const [project, stories, documents, codingRuns] = await Promise.all([
+			db.project.findUnique({
+				where: { id: projectId },
+				select: {
+					id: true,
+					name: true,
+					description: true,
+					goals: true,
+					status: true,
+					repositoryUrl: true,
+					repositoryOwner: true,
+					repositoryName: true,
+					defaultBranch: true,
+					updatedAt: true,
+				},
+			}),
+			db.userStory.findMany({
+				where: { projectId },
+				// Mirrors the roadmap Priority layout's ranking (see
+				// `comparePriorityRank` in
+				// modules/saas/projects/lib/priority-ranking.ts) so "what should I
+				// work on next?" is answered from the team's actual rank instead of
+				// whatever was touched most recently: completed work sinks,
+				// hand-pinned items lead in pin order (NULL = never pinned, and
+				// Postgres sorts NULLs last on ASC), then the priority band — the
+				// StoryPriority enum is declared P0_CRITICAL first and Postgres
+				// orders enums by declaration order, so ASC is most-critical-first
+				// — then the per-band roadmap order, with `id` as a stable
+				// tiebreak. One query: the view's within-band signal score needs
+				// per-story counts we deliberately don't fan out for here.
+				orderBy: [
+					{ status: { isFinal: "asc" } },
+					{ priorityOrder: { sort: "asc", nulls: "last" } },
+					{ priority: "asc" },
+					{ roadmapOrder: "asc" },
+					{ id: "asc" },
+				],
+				take: AGENT_CONTEXT_STORY_LIMIT,
+				select: {
+					id: true,
+					identifier: true,
+					title: true,
+					description: true,
+					priority: true,
+					draftingStage: true,
+					createdAt: true,
+					lastEditedAt: true,
+					status: { select: { name: true, isFinal: true } },
+					tasks: {
+						select: {
+							id: true,
+							identifier: true,
+							title: true,
+							isCompleted: true,
+							agentStatus: true,
+							agentError: true,
+						},
+						orderBy: { order: "asc" },
+					},
+				},
+			}),
+			db.projectDocument.findMany({
+				where: { projectId, isActive: true },
+				orderBy: { updatedAt: "desc" },
+				take: AGENT_CONTEXT_DOCUMENT_LIMIT,
+				select: {
+					id: true,
+					title: true,
+					type: true,
+					status: true,
+					updatedAt: true,
+				},
+			}),
+			db.codingRun.findMany({
+				where: { projectId },
+				orderBy: { updatedAt: "desc" },
+				take: AGENT_CONTEXT_CODING_RUN_LIMIT,
+				select: {
+					id: true,
+					status: true,
+					provider: true,
+					executionChannel: true,
+					externalUrl: true,
+					pullRequestUrl: true,
+					updatedAt: true,
+					story: { select: { identifier: true, title: true } },
+					storyTask: { select: { identifier: true, title: true } },
+				},
+			}),
+		]);
+
+		if (!project) {
+			return {
+				systemPrompt: baseSystemPrompt,
+				projectContext: undefined,
+			};
+		}
+
+		// Full-fidelity context for the entity the user is CURRENTLY VIEWING
+		// (the page the Fabric Agent was opened on). The bounded lists below are
+		// ambient project awareness; THIS block is the focused item at full
+		// detail — every section — so the agent can read and safely edit exactly
+		// what is on screen. Scoped to the already-authorized `projectId` so a
+		// caller cannot pull a sibling tenant's entity by id.
+		let focusedBlock: string | null = null;
+		try {
+			if (focusedStoryId) {
+				const story = await db.userStory.findFirst({
+					where: { id: focusedStoryId, projectId },
+					select: {
+						identifier: true,
+						title: true,
+						description: true,
+						acceptanceCriteria: true,
+						status: { select: { name: true } },
+						tasks: {
+							select: {
+								identifier: true,
+								title: true,
+								isCompleted: true,
+							},
+							orderBy: { order: "asc" },
+						},
+					},
+				});
+				if (story) {
+					focusedBlock = [
+						`## Currently viewing — Feature ${story.identifier}: ${story.title} (FULL content)`,
+						"This is the exact item the user is looking at; treat it as the primary subject. Quote and reason over its sections directly — never say you cannot see it.",
+						`Status: ${story.status.name}`,
+						story.description
+							? `### Description\n${clampFocusedContent(story.description)}`
+							: null,
+						story.acceptanceCriteria
+							? `### Acceptance Criteria\n${clampFocusedContent(story.acceptanceCriteria)}`
+							: null,
+						story.tasks.length > 0
+							? `### Tasks (${story.tasks.filter((task) => task.isCompleted).length}/${story.tasks.length} done)\n${story.tasks
+									.map(
+										(task) =>
+											`- [${task.isCompleted ? "x" : " "}] ${task.identifier} ${task.title}`,
+									)
+									.join("\n")}`
+							: null,
+					]
+						.filter(Boolean)
+						.join("\n\n");
+				}
+			} else if (focusedDocumentId) {
+				const focusedDocument = await db.projectDocument.findFirst({
+					where: { id: focusedDocumentId, projectId },
+					select: { title: true, type: true, content: true },
+				});
+				if (focusedDocument) {
+					focusedBlock = [
+						`## Currently viewing — Document "${focusedDocument.title}" (${focusedDocument.type}, FULL content)`,
+						"This is the exact document the user is looking at; treat it as the primary subject. Quote and reason over its sections directly — never say you cannot see it.",
+						clampFocusedContent(focusedDocument.content) ??
+							"(the document is currently empty)",
+					]
+						.filter(Boolean)
+						.join("\n\n");
+				}
+			} else if (focusedTaskId) {
+				const task = await db.storyTask.findFirst({
+					where: { id: focusedTaskId, story: { projectId } },
+					select: {
+						identifier: true,
+						title: true,
+						description: true,
+						isCompleted: true,
+						story: { select: { identifier: true, title: true } },
+					},
+				});
+				if (task) {
+					focusedBlock = [
+						`## Currently viewing — Task ${task.identifier}: ${task.title} (FULL content)`,
+						`Parent feature: ${task.story.identifier} ${task.story.title}`,
+						`Status: ${task.isCompleted ? "completed" : "open"}`,
+						task.description
+							? `### Description\n${clampFocusedContent(task.description)}`
+							: null,
+					]
+						.filter(Boolean)
+						.join("\n\n");
+				}
+			}
+		} catch (focusedError) {
+			console.warn(
+				"[Fabric AI Stream] Failed to load focused entity context:",
+				focusedError,
+			);
+		}
+
+		const statusCounts = stories.reduce<Record<string, number>>(
+			(acc, story) => {
+				acc[story.status.name] = (acc[story.status.name] ?? 0) + 1;
+				return acc;
+			},
+			{},
+		);
+		const riskSignals = [
+			...stories
+				.filter(
+					(story) =>
+						!story.status.isFinal &&
+						(story.lastEditedAt ?? story.createdAt) < staleBefore,
+				)
+				.slice(0, 5)
+				.map((story) => {
+					const activityAt = story.lastEditedAt ?? story.createdAt;
+					return `${story.identifier} may be stale (last activity ${activityAt.toISOString().slice(0, 10)})`;
+				}),
+			...stories
+				.flatMap((story) =>
+					story.tasks
+						.filter(
+							(task) =>
+								task.agentStatus === "failed" ||
+								task.agentError,
+						)
+						.map(
+							(task) =>
+								`${task.identifier} has a failed agent task${task.agentError ? `: ${truncateContextText(task.agentError, 120)}` : ""}`,
+						),
+				)
+				.slice(0, 5),
+			...codingRuns
+				.filter((run) => ["FAILED", "CANCELLED"].includes(run.status))
+				.map(
+					(run) =>
+						`Implementation session ${run.id} is ${run.status.toLowerCase()}`,
+				),
+		].slice(0, 10);
+
+		const contextBlock = [
+			focusedBlock,
+			"## Fabric Workspace Context",
+			projectContextGroundingLine(liveFeatureTools),
+			getCurrentDateContext(),
+			`Project: ${project.name} (${project.id})`,
+			project.description
+				? `Description: ${truncateContextText(project.description)}`
+				: null,
+			project.goals
+				? `Goals: ${truncateContextText(project.goals)}`
+				: null,
+			`Status: ${project.status}`,
+			project.repositoryUrl
+				? `Repository: ${project.repositoryOwner ? `${project.repositoryOwner}/` : ""}${project.repositoryName ?? ""} (${project.repositoryUrl})${project.defaultBranch ? ` on ${project.defaultBranch}` : ""}`
+				: null,
+			`Feature status counts: ${
+				Object.entries(statusCounts)
+					.map(([name, count]) => `${name}: ${count}`)
+					.join(", ") || "none"
+			}`,
+			stories.length > 0
+				? `Features in priority-rank order (top ${Math.min(stories.length, AGENT_CONTEXT_STORY_RENDER_LIMIT)} of ${stories.length}) — this is the roadmap Priority ranking, NOT recency: rank 1 is what the team should pick up next. Manually pinned items lead, then priority band (P0 highest), then roadmap order; completed features sort last.\n${stories
+						.slice(0, AGENT_CONTEXT_STORY_RENDER_LIMIT)
+						.map(
+							(story, index) =>
+								`${index + 1}. ${story.identifier} ${story.title} [${story.status.name}, ${story.priority}, ${story.draftingStage}] tasks ${story.tasks.filter((task) => task.isCompleted).length}/${story.tasks.length}${story.description ? ` — ${truncateContextText(story.description, 180)}` : ""}`,
+						)
+						.join("\n")}`
+				: null,
+			documents.length > 0
+				? `Recent documents:\n${documents
+						.map(
+							(document) =>
+								`- ${document.title} (${document.type}, ${document.status}, ${document.id})`,
+						)
+						.join("\n")}`
+				: null,
+			codingRuns.length > 0
+				? `Recent implementation sessions:\n${codingRuns
+						.map((run) => {
+							const target = run.storyTask
+								? `${run.storyTask.identifier} ${run.storyTask.title}`
+								: `${run.story.identifier} ${run.story.title}`;
+							return `- ${run.id}: ${run.status} via ${run.provider} for ${target}${run.pullRequestUrl ? ` PR ${run.pullRequestUrl}` : run.externalUrl ? ` ${run.externalUrl}` : ""}`;
+						})
+						.join("\n")}`
+				: null,
+			riskSignals.length > 0
+				? `Detected risk signals:\n${riskSignals.map((signal) => `- ${signal}`).join("\n")}`
+				: null,
+		]
+			.filter(Boolean)
+			.join("\n\n");
+
+		// The caller's own instructions stay the only trusted system text. The
+		// focused entity and the workspace summary are read from project records
+		// (story descriptions, document bodies, task notes) that anyone with
+		// write access authored, so they travel separately and the chat
+		// activity wraps them as retrieved, untrusted context before prompt
+		// assembly — never concatenated into `systemPrompt`.
+		return {
+			systemPrompt: baseSystemPrompt,
+			projectContext: contextBlock || undefined,
+		};
+	} catch (error) {
+		console.warn(
+			"[Fabric AI Stream] Failed to build project context:",
+			error,
+		);
+		return { systemPrompt: baseSystemPrompt, projectContext: undefined };
+	}
+}
+
+/** A Direct turn that passed admission, with the billing marker for its response. */
+export interface AdmittedDirectChatTurn {
+	turn: DirectChatTurn;
+	planPreflight: ChatGptPlanChatPreflight;
+}
+
+/**
+ * Everything a Direct turn passes before its workflow starts: session, rate
+ * limit, body validation, organization tie, conversation/workspace/project
+ * access, usage frame, project context, plan preflight, the usage-limit
+ * chokepoint and Temporal availability. A refusal comes back as the Response
+ * the stream route sends; shared by that route and the agent runtime's Direct
+ * engine (`modules/saas/agents/runtime`) so both admit and bill a turn the
+ * same way.
+ */
+export async function admitDirectChatTurn(
+	readBody: () => Promise<unknown>,
+): Promise<Response | AdmittedDirectChatTurn> {
+	try {
+		const session = await getSession();
+		if (!session) {
+			return new Response(JSON.stringify({ error: "Unauthorized" }), {
+				status: 401,
+				headers: { "Content-Type": "application/json" },
+			});
+		}
+		// This person's own request — or an admin acting as them, which no
+		// ChatGPT plan may serve (Fizzy #2939).
+		enterAiInteractiveContext({
+			userId: session.user.id,
+			impersonated: Boolean(session.session.impersonatedBy),
+		});
+
+		const userId = session.user.id;
+
+		// Rate limit: 20 requests per minute per user (AI preset)
+		const rateLimitResult = await checkRateLimit(
+			`fabric-ai-stream:${userId}`,
+			RATE_LIMIT_PRESETS.ai.limit,
+			RATE_LIMIT_PRESETS.ai.windowMs,
+		);
+		if (!rateLimitResult.allowed) {
+			return new Response(
+				JSON.stringify({
+					error: "Too many requests",
+					message: `Rate limit exceeded. Please try again in ${rateLimitResult.resetInSeconds} seconds.`,
+					retryAfter: rateLimitResult.resetInSeconds,
+				}),
+				{
+					status: 429,
+					headers: {
+						"Content-Type": "application/json",
+						"Retry-After":
+							rateLimitResult.resetInSeconds.toString(),
+						"X-RateLimit-Limit":
+							RATE_LIMIT_PRESETS.ai.limit.toString(),
+						"X-RateLimit-Remaining":
+							rateLimitResult.remaining.toString(),
+					},
+				},
+			);
+		}
+
+		// Validate request body with Zod schema
+		const rawBody = await readBody();
+		const parseResult = streamRequestSchema.safeParse(rawBody);
+		if (!parseResult.success) {
+			return new Response(
+				JSON.stringify({
+					error: "Invalid request body",
+					details: parseResult.error.issues.map((i) => ({
+						path: i.path.join("."),
+						message: i.message,
+					})),
+				}),
+				{
+					status: 400,
+					headers: { "Content-Type": "application/json" },
+				},
+			);
+		}
+
+		const {
+			message,
+			history: rawHistory,
+			organizationId: rawOrganizationId,
+			reasoningMode,
+			instanceId,
+			chatId,
+			attachedDocumentIds,
+			inlineAttachmentContexts,
+			workspaceIds: providedWorkspaceIds,
+			workspaceDocumentIds,
+			projectId: providedProjectId,
+			repositoryUrl,
+			storyId,
+			documentId,
+			taskId,
+			workspaceId,
+			launchFrameId,
+			surface,
+			approvedToolCall,
+			conversationId: requestedConversationId,
+			enabledMcpConfigIds,
+			enabledFabricToolIds,
+			systemPrompt,
+			modelOverride,
+		} = parseResult.data;
+
+		// The model API takes two roles. A persisted system row carries the
+		// outcome of an operation this assistant ran, so it is attributed to
+		// the assistant rather than dropped — the content self-labels.
+		const history = rawHistory.map((entry) => ({
+			role:
+				entry.role === "user"
+					? ("user" as const)
+					: ("assistant" as const),
+			content: entry.content,
+		}));
+
+		// Bind the client-supplied organization to the caller's memberships.
+		// Membership, not "equals the session's active organization", so a
+		// user with two organizations open in two tabs is served the one each
+		// tab asked for; a non-member gets a 403 rather than a silent swap to
+		// another tenant.
+		// An omitted id resolves to the session's active organization, tie
+		// checked the same way; a session with none is refused (ADR-018).
+		const organizationResolution = await resolveRequestedOrganization({
+			userId,
+			requestedOrganizationId: rawOrganizationId,
+			activeOrganizationId: session.session.activeOrganizationId,
+		});
+		if (!organizationResolution.ok) {
+			console.warn("[Fabric AI Stream] Requested organization refused", {
+				userId,
+				organizationId: rawOrganizationId,
+			});
+			return forbiddenOrganizationResponse(organizationResolution);
+		}
+		const organizationId = organizationResolution.organizationId;
+
+		// A conversation id is only a lookup key for the caller's own
+		// conversations. Anything derived from it (attached workspaces, the
+		// linked project) must not be reachable by guessing another user's id,
+		// so an id the caller does not own is ignored, the same way an
+		// inaccessible project is dropped below.
+		let conversationId = requestedConversationId ?? undefined;
+		if (conversationId) {
+			const { db } = await import("@repo/database");
+			const owned = await db.agentConversation.findFirst({
+				where: { id: conversationId, userId },
+				select: { id: true, organizationId: true },
+			});
+			// Exact tenant equality, null included: a conversation from one
+			// organization must not feed another organization's turn (or a
+			// personal one), even for the same user.
+			const crossTenant =
+				owned !== null &&
+				(owned.organizationId ?? null) !== (organizationId ?? null);
+			if (!owned || crossTenant) {
+				console.warn(
+					"[Fabric AI Stream] Conversation is not accessible to the caller; ignoring it",
+					{ userId, conversationId },
+				);
+				conversationId = undefined;
+			}
+		}
+
+		// Fetch workspace IDs from database if not provided but conversation exists
+		// This handles the race condition where frontend sends request before query returns
+		let workspaceIds = providedWorkspaceIds;
+		if (
+			(!providedWorkspaceIds || providedWorkspaceIds.length === 0) &&
+			conversationId
+		) {
+			const { getConversationWorkspaces } = await import(
+				"@repo/database"
+			);
+			const attachedWorkspaces =
+				await getConversationWorkspaces(conversationId);
+			workspaceIds = attachedWorkspaces.map(
+				(wc: { workspace: { id: string } }) => wc.workspace.id,
+			);
+		}
+
+		// Workspace ids come from the client or from a conversation's
+		// attachments; retrieval must only read workspaces the caller can
+		// open. Inaccessible ones are dropped (and logged) rather than failing
+		// the whole turn, mirroring the project-access handling below.
+		if (workspaceIds.length > 0) {
+			const { filterAccessibleWorkspaceIds } = await import(
+				"@repo/database"
+			);
+			// "Can this user open the workspace" is not enough on its own: the
+			// turn is bound to one tenant, so a workspace the user can open in
+			// organization B must not feed a turn running on organization A.
+			// The filter compares each workspace's own organization with the
+			// resolved one (exact, null-aware) before it checks access.
+			const { allowed, dropped: denied } =
+				await filterAccessibleWorkspaceIds({
+					workspaceIds,
+					userId,
+					organizationId,
+				});
+			if (denied.length > 0) {
+				console.warn(
+					"[Fabric AI Stream] Dropping workspaces the caller cannot access",
+					{ userId, denied },
+				);
+			}
+			workspaceIds = allowed;
+		}
+
+		// Resolve project ID from conversation if not provided
+		let projectId = providedProjectId ?? undefined;
+		if (!projectId && conversationId) {
+			try {
+				const { getConversationProject } = await import(
+					"@repo/database"
+				);
+				const conversationProject =
+					await getConversationProject(conversationId);
+				if (conversationProject?.project) {
+					projectId = conversationProject.project.id;
+				}
+			} catch (error) {
+				console.warn(
+					"[Fabric AI Stream] Failed to resolve conversation project:",
+					error,
+				);
+			}
+		}
+
+		// Verify project access before forwarding to workflow
+		if (projectId) {
+			try {
+				const { getProjectAccessContext } = await import(
+					"@repo/database"
+				);
+				const access = await getProjectAccessContext(projectId, userId);
+				if (!access) {
+					console.warn(
+						"[Fabric AI Stream] User does not have access to project:",
+						projectId,
+					);
+					projectId = undefined;
+				} else if (
+					(access.organizationId ?? null) !== (organizationId ?? null)
+				) {
+					// The caller can open the project, but under a different
+					// tenant than this turn is bound to. Do not mix one
+					// organization's project data with another's model, prompts
+					// and memory.
+					console.warn(
+						"[Fabric AI Stream] Project belongs to a different tenant than the request; ignoring it",
+						{ userId, projectId },
+					);
+					projectId = undefined;
+				}
+			} catch (error) {
+				console.warn(
+					"[Fabric AI Stream] Failed to verify project access:",
+					error,
+				);
+				projectId = undefined;
+			}
+		}
+
+		const usageFrame = await resolveUsageFrame({
+			launchFrameId,
+			legacyLaunchFrameId: workspaceId,
+			userId,
+			userEmail: session.user.email,
+			organizationId,
+			projectId,
+		});
+		if (usageFrame.error) {
+			return usageFrame.error;
+		}
+
+		// Trusted instructions and route-derived project/focused context are
+		// kept apart from here on: only `systemPrompt` carries authority.
+		const { systemPrompt: contextualSystemPrompt, projectContext } =
+			projectId
+				? await buildAgentContextSystemPrompt({
+						projectId,
+						baseSystemPrompt: systemPrompt ?? undefined,
+						focusedStoryId: storyId,
+						focusedDocumentId: documentId,
+						focusedTaskId: taskId,
+						liveFeatureTools:
+							bindsLiveFeatureTools(enabledFabricToolIds),
+					})
+				: {
+						systemPrompt: systemPrompt ?? undefined,
+						projectContext: undefined,
+					};
+
+		// Every ChatGPT plan serving the member's work is spent: refuse with
+		// when it resets instead of falling through to the organization's
+		// provider, which a plan-only organization does not have (Fizzy #2770).
+		// Under "Use API billing" the turn runs there and says so (Fizzy #3048).
+		const planPreflight = await chatGptPlanChatPreflight({
+			userId,
+			organizationId,
+		});
+		if (planPreflight && "refusal" in planPreflight) {
+			return planPreflight.refusal;
+		}
+
+		// Get AI model and provider config using centralized entry point
+		let aiModelResult: Awaited<ReturnType<typeof getAIModelWithMetadata>>;
+		try {
+			// No featureKey here on purpose: this resolution exists to hit the
+			// usage-limit chokepoint, and the model it returns is discarded —
+			// generation happens in the Temporal chat activity, which carries
+			// the tag. Tagging here would attribute a call that never runs.
+			aiModelResult = await getAIModelWithMetadata(
+				{ taskType: "CHAT" },
+				{ userId, organizationId, planEligible: true },
+			);
+		} catch (error) {
+			// AI usage-limit chokepoint hit a HARD limit.
+			// The pre-stream JSON envelope path is
+			// reached because `getAIModelWithMetadata` throws BEFORE the
+			// SSE stream is constructed; we surface the structured error
+			// here so the consumer hook detects it via `code` and renders
+			// the shared destructive toast (the consumer hook also
+			// matches `data.code` inside SSE error events for the
+			// post-stream path — see useDirectStream.ts).
+			// The member's plan is on here but needs reconnecting: refuse rather
+			// than bill the organization (Fizzy #2939).
+			const reconnect = chatGptPlanReconnectRefusal(error);
+			if (reconnect) {
+				return new Response(JSON.stringify(reconnect.body), {
+					status: reconnect.status,
+					headers: { "Content-Type": "application/json" },
+				});
+			}
+			const exhausted = chatGptPlanExhaustedChatResponse(error);
+			if (exhausted) {
+				return exhausted;
+			}
+			if (error instanceof AiUsageLimitExceededError) {
+				return new Response(
+					JSON.stringify({
+						error: error.message,
+						code: "AI_USAGE_LIMIT_EXCEEDED",
+						data: {
+							limitId: error.limitId,
+							dimension: error.dimension,
+							window: error.window,
+							used: error.used.toString(),
+							max: error.max.toString(),
+							manageLimitsUrl: error.manageLimitsUrl,
+						},
+					}),
+					{
+						status: 429,
+						headers: { "Content-Type": "application/json" },
+					},
+				);
+			}
+			console.error("[Fabric AI Stream] Failed to get AI model:", error);
+			return new Response(
+				JSON.stringify({
+					error:
+						error instanceof Error
+							? error.message
+							: "No AI provider configured. Please configure an AI provider in Settings → AI Providers.",
+					code: "AI_GATEWAY_MISSING",
+				}),
+				{
+					status: 400,
+					headers: { "Content-Type": "application/json" },
+				},
+			);
+		}
+
+		const { trackUsage } = aiModelResult;
+
+		// Track usage (fire-and-forget)
+		trackUsage();
+
+		// ==========================================================================
+		// Use Temporal workflow for durable execution
+		// Temporal is required for proper document processing and RAG support
+		// ==========================================================================
+		const temporalAvailable = await isTemporalAvailable();
+
+		if (!temporalAvailable) {
+			console.error(
+				"[Fabric AI Stream] Temporal is not available. Please ensure Temporal is running.",
+			);
+			return new Response(
+				JSON.stringify({
+					error: "Temporal workflow service is not available. Please ensure Temporal is running (use ./aspire.sh restart).",
+				}),
+				{
+					status: 503, // Service Unavailable
+					headers: { "Content-Type": "application/json" },
+				},
+			);
+		}
+
+		// A continued chat starts from the text carried over from its parent,
+		// quoted as data in a user-role message (see `carried-over-context`),
+		// the same as on the Orchestrator engine.
+		const effectiveHistory = await seedCarriedOverHistory({
+			history,
+			conversationId,
+			userId,
+			organizationId,
+		});
+
+		// SECURITY: Credentials are fetched internally by activities, NOT passed in workflow inputs
+		// Workflow inputs are stored in Temporal's database and visible in Web UI
+		const turn: DirectChatTurn = {
+			message,
+			history: effectiveHistory,
+			userId,
+			organizationId,
+			reasoningMode,
+			instanceId: instanceId ?? undefined,
+			chatId: chatId ?? undefined,
+			attachedDocumentIds,
+			inlineAttachmentContexts,
+			workspaceIds,
+			workspaceDocumentIds,
+			projectId,
+			preferredRepositoryUrl: projectId
+				? (repositoryUrl ?? undefined)
+				: undefined,
+			enabledMcpConfigIds: enabledMcpConfigIds ?? undefined,
+			enabledFabricToolIds: enabledFabricToolIds ?? undefined,
+			systemPrompt: contextualSystemPrompt,
+			projectContext,
+			modelOverride: modelOverride ?? undefined,
+			conversationId: conversationId ?? undefined,
+			workspaceId: workspaceId ?? undefined,
+			...usageFrame,
+			surface: surface ?? undefined,
+			approvedToolCall: approvedToolCall ?? undefined,
+		};
+		return { turn, planPreflight };
+	} catch (error) {
+		console.error("[Fabric AI Stream] Error:", error);
+		return new Response(
+			JSON.stringify({
+				error: error instanceof Error ? error.message : "Stream failed",
+			}),
+			{
+				status: 500,
+				headers: { "Content-Type": "application/json" },
+			},
+		);
+	}
+}
+
+// Constants for polling
+const POLL_INTERVAL = 150; // Poll every 150ms for real-time updates
+const MAX_POLL_DURATION = 300000; // 5 minutes max
+// SSE comment heartbeat so intermediaries don't idle-drop the stream during
+// silent stretches between progress events; clients ignore `:` comment lines.
+const HEARTBEAT_INTERVAL = 15000;
+// How long a cancel request may hold up the route before it gives up on it.
+const WORKFLOW_CANCEL_TIMEOUT_MS = 3000;
+// Statuses after which there is nothing left to cancel.
+const SETTLED_WORKFLOW_STATUSES = new Set([
+	"COMPLETED",
+	"FAILED",
+	"CANCELLED",
+	"TERMINATED",
+	"TIMED_OUT",
+	"CONTINUED_AS_NEW",
+]);
+
+/**
+ * Ask Temporal to cancel the turn's workflow, best-effort and bounded so a
+ * degraded cluster cannot hold the route open. Failures are logged, never
+ * thrown: the caller is already ending the stream.
+ */
+async function cancelWorkflowBounded(
+	handle: { cancel: () => Promise<unknown> },
+	why: string,
+): Promise<void> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		await Promise.race([
+			handle.cancel(),
+			new Promise((_, reject) => {
+				timer = setTimeout(
+					() => reject(new Error("Workflow cancel timed out")),
+					WORKFLOW_CANCEL_TIMEOUT_MS,
+				);
+			}),
+		]);
+	} catch (cancelError) {
+		console.warn(
+			`[Fabric AI Stream] Failed to cancel workflow (${why}):`,
+			cancelError,
+		);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+/** An admitted Direct turn: what the workflow input is built from. */
+export interface DirectChatTurn {
+	message: string;
+	history: Array<{ role: "user" | "assistant"; content: string }>;
+	userId: string;
+	organizationId?: string;
+	reasoningMode?: FrontendReasoningMode;
+	instanceId?: string;
+	chatId?: string;
+	attachedDocumentIds?: string[];
+	inlineAttachmentContexts?: string[];
+	workspaceIds?: string[];
+	workspaceDocumentIds?: string[];
+	projectId?: string;
+	/** See `DirectChatWorkflowInput.preferredRepositoryUrl`. */
+	preferredRepositoryUrl?: string;
+	enabledMcpConfigIds?: string[];
+	enabledFabricToolIds?: string[];
+	systemPrompt?: string;
+	/**
+	 * Route-derived project summary and focused-entity content. Untrusted:
+	 * the chat activity wraps it as retrieved context, so it is never folded
+	 * into `systemPrompt`.
+	 */
+	projectContext?: string;
+	modelOverride?: string;
+	/**
+	 * Optional AgentConversation ID. Threaded into the
+	 * `DirectChatWorkflowInput` so the workflow's Step 6 can append a
+	 * persistent operation-result system message at completion. Forwarding
+	 * via this internal helper is necessary because the request handler
+	 * destructures `conversationId` from `parseResult.data` but then calls
+	 * `handleTemporalWorkflow` with an explicit param list (so the inner
+	 * function doesn't share the outer's lexical scope).
+	 */
+	conversationId?: string;
+	workspaceId?: string;
+	usageFrameId?: string;
+	surface?: "artifact" | "workspace";
+	approvedToolCall?: { toolName: string; args: Record<string, unknown> };
+}
+
+/**
+ * The workflow input for an admitted turn.
+ * SECURITY: Credentials are NOT included - activities fetch them internally.
+ */
+export async function buildDirectChatWorkflowInput(
+	turn: DirectChatTurn,
+	executionId: string,
+): Promise<DirectChatWorkflowInput> {
+	const {
+		message,
+		history,
+		userId,
+		organizationId,
+		reasoningMode,
+		instanceId,
+		chatId,
+		attachedDocumentIds,
+		inlineAttachmentContexts,
+		workspaceIds,
+		workspaceDocumentIds,
+		projectId,
+		preferredRepositoryUrl,
+		enabledMcpConfigIds,
+		enabledFabricToolIds,
+		systemPrompt,
+		projectContext,
+		modelOverride,
+		conversationId,
+		workspaceId,
+		usageFrameId,
+		surface,
+		approvedToolCall,
+	} = turn;
+
+	// Union default-enabled MCP config ids into the caller-restricted
+	// set so managed-default servers (e.g. Excalidraw, when
+	// `defaultEnabled`) are eligible inside the direct-chat workflow.
+	// On helper failure, log and proceed with the original array.
+	//
+	// `unionDefaultMcpConfigIds` guards the three-state contract:
+	// `null`/`undefined` ("all configs enabled") and `[]`
+	// ("explicitly none") pass through untouched, since unioning
+	// into either would narrow it to the defaults alone.
+	let effectiveEnabledMcpConfigIds: string[] | undefined =
+		enabledMcpConfigIds;
+	try {
+		const defaultIds = await getDefaultEnabledMcpConfigIds(
+			userId,
+			organizationId ?? null,
+		);
+		effectiveEnabledMcpConfigIds = unionDefaultMcpConfigIds(
+			enabledMcpConfigIds,
+			defaultIds,
+		);
+	} catch (defaultIdsError) {
+		console.warn(
+			"[Direct Chat Stream] Failed to union default-enabled MCP config ids — proceeding with caller-supplied array",
+			defaultIdsError,
+		);
+	}
+
+	const workflowInput: DirectChatWorkflowInput = {
+		executionId,
+		instanceId,
+		message,
+		history,
+		userId,
+		organizationId,
+		// Every caller of this route is the Advisor: the Fabric AI
+		// page, the Fabric Agent drawer, or a custom agent chosen in
+		// one of them. The turn may tell the model which
+		// organization it works for and search that organization's
+		// company context; the activity checks membership and the
+		// feature gate itself (Fizzy #2719).
+		companyContextAdvisor: true,
+		reasoningMode: normalizeReasoningMode(reasoningMode),
+		chatId,
+		// Forward the optional AgentConversation
+		// ID so `directChatWorkflow` can append a persistent
+		// operation-result system message at its completion
+		// boundary (see workflow Step 6 / failure-path Step 6).
+		conversationId: conversationId ?? undefined,
+		attachedDocumentIds,
+		// Additive to the retrieval path above, never a replacement:
+		// the same files are still chunked and searched, and that is
+		// what covers a file the character budget had to cut.
+		inlineAttachmentContexts,
+		workspaceIds,
+		workspaceDocumentIds,
+		projectId,
+		preferredRepositoryUrl,
+		enabledMcpConfigIds: effectiveEnabledMcpConfigIds,
+		enabledFabricToolIds,
+		// A person is typing this turn, so it may run on their own
+		// ChatGPT plan where they turned it on (Fizzy #2939).
+		planEligible: true,
+		// The workflow and frame tools come from Fabric MCP for the
+		// person's chat, as they do for an external coding agent.
+		// Fabric MCP only lets the agent runtime act for a person
+		// whose turn this route vouched for: the grant is minted
+		// here, from the request this route authenticated, and the
+		// worker only carries it.
+		fabricPlatformTools: true,
+		actingGrant: mintActingGrantForTurn({
+			userId,
+			organizationId,
+			conversationId,
+		}),
+		workspaceId,
+		...(usageFrameId ? { usageFrameId } : {}),
+		surface,
+		approvedToolCall,
+		systemPrompt,
+		projectContext,
+		modelOverride,
+	};
+	// Refused here, by name, rather than by Temporal's gRPC frame
+	// limit with an error nobody can act on (review F38).
+	assertChatWorkflowPayload(workflowInput, "directChatWorkflow start");
+	return workflowInput;
+}
+
+/**
+ * Start the turn's `directChatWorkflow`.
+ * `memo` carries tenant context that the cancel route reads for
+ * ownership verification (`memo.userId`, `memo.organizationId`).
+ * Without it, any authenticated user knowing a `direct-chat-*`
+ * id could cancel another tenant's workflow.
+ */
+export async function startDirectChatWorkflow(
+	workflowInput: DirectChatWorkflowInput,
+) {
+	const temporalClient = await getTemporalClient();
+	return temporalClient.workflow.start("directChatWorkflow", {
+		taskQueue: "fabric-worker",
+		workflowId: workflowInput.executionId,
+		args: [workflowInput],
+		memo: {
+			userId: workflowInput.userId,
+			organizationId: workflowInput.organizationId ?? null,
+			projectId: workflowInput.projectId ?? null,
+		},
+		// Fizzy #1412 PR2 (Codex review round-3 fix #3):
+		// Make the "no-workflow-retry" contract EXPLICIT.
+		// The workflow's Step 6 failure path uses an
+		// `isTerminal` guard (see
+		// `packages/temporal/src/workflows/direct-chat.ts`
+		// catch block) that classifies `ApplicationFailure`
+		// with `nonRetryable === true` as terminal. That
+		// classification is only sound while the workflow
+		// itself does NOT retry — otherwise an exhausted-
+		// retry `ActivityFailure` whose underlying
+		// `ApplicationFailure.cause` is retryable would be
+		// misclassified, post a "failure" chat row, and
+		// then become impossible to overwrite on the
+		// retry's success (PR1's `operationKey` dedup).
+		// Locking `maximumAttempts: 1` here documents
+		// today's behaviour and prevents a future default
+		// change from silently reintroducing the stale-
+		// failure-message regression class.
+		retry: { maximumAttempts: 1 },
+	});
+}
+
+/**
+ * Handle chat using Temporal workflow for durability
+ * This function starts a Temporal workflow and streams the results back to the client.
+ * Uses polling to stream real-time progress updates.
+ * The results are streamed back as SSE events.
+ */
+export async function handleTemporalWorkflow(
+	params: DirectChatTurn & {
+		/**
+		 * The request's abort signal. Direct chat cannot be reattached to, so a
+		 * client that goes away (Stop aborts the fetch) ends the turn: the
+		 * workflow is cancelled rather than left running and spending.
+		 */
+		clientSignal?: AbortSignal;
+	},
+): Promise<Response> {
+	const { clientSignal } = params;
+	const executionId = `direct-chat-${uuidv4()}`;
+
+	console.log(
+		`[Fabric AI Stream] Starting Temporal workflow: ${executionId}`,
+	);
+
+	const encoder = new TextEncoder();
+	let isClosed = false;
+
+	// Cancel the workflow once, and only while it may still be running.
+	let workflowHandle: { cancel: () => Promise<unknown> } | undefined;
+	let workflowSettled = false;
+	let cancelRequested = false;
+	const cancelWorkflow = async (why: string) => {
+		if (!workflowHandle || workflowSettled || cancelRequested) {
+			return;
+		}
+		cancelRequested = true;
+		await cancelWorkflowBounded(workflowHandle, why);
+	};
+	const onClientGone = () => {
+		isClosed = true;
+		void cancelWorkflow("client disconnected");
+	};
+	clientSignal?.addEventListener("abort", onClientGone, { once: true });
+
+	const stream = new ReadableStream({
+		async start(controller) {
+			const closeStream = () => {
+				isClosed = true;
+				try {
+					controller.close();
+				} catch {
+					// Already closed or cancelled by the client.
+				}
+			};
+			const sendEvent = (data: DirectStreamInput) => {
+				if (isClosed) {
+					return; // Don't send if already closed
+				}
+				try {
+					controller.enqueue(
+						encoder.encode(encodeDirectStreamEvent(data)),
+					);
+				} catch {
+					// Controller already closed, mark as closed
+					isClosed = true;
+				}
+			};
+
+			const stableSerialize = (value: unknown): string => {
+				try {
+					return JSON.stringify(value) ?? "";
+				} catch {
+					return String(value);
+				}
+			};
+
+			type StreamedToolCall = {
+				id: string;
+				name: string;
+				serverName?: string;
+				args?: Record<string, unknown>;
+				result?: unknown;
+				status: DirectChatToolCall["status"];
+				/**
+				 * Why this is carried separately from `result`: a tool that
+				 * never ran has no result to explain itself with. The activity
+				 * settles such a call with an `error` string and no output, so
+				 * dropping this field here left the client rendering an empty
+				 * red box - the status badge said "Error" and the body was
+				 * blank. Same defect PR 1093 fixed in the render layer,
+				 * recurring in the transport.
+				 */
+				error?: string;
+				mcpAppResourceUri?: string;
+				mcpAppConfigId?: string;
+			};
+			let streamedResponseLength = 0;
+
+			const emitResponseDelta = (fullResponseText?: string) => {
+				if (!fullResponseText) {
+					return;
+				}
+
+				if (fullResponseText.length < streamedResponseLength) {
+					streamedResponseLength = 0;
+				}
+
+				const nextChunk = fullResponseText.slice(
+					streamedResponseLength,
+				);
+				if (nextChunk.length === 0) {
+					return;
+				}
+
+				{
+					const payload = {
+						type: "text" as const,
+						content: nextChunk,
+					};
+					type Emitted1175 = typeof payload;
+					sendEvent(
+						payload satisfies AssertAssignable<
+							Emitted1175,
+							DirectStreamInput
+						>,
+					);
+				}
+				streamedResponseLength = fullResponseText.length;
+			};
+
+			let streamedReasoningLength = 0;
+
+			const emitReasoningDelta = (fullReasoningText?: string) => {
+				if (!fullReasoningText) {
+					return;
+				}
+				if (fullReasoningText.length < streamedReasoningLength) {
+					streamedReasoningLength = 0;
+				}
+				const nextChunk = fullReasoningText.slice(
+					streamedReasoningLength,
+				);
+				if (nextChunk.length === 0) {
+					return;
+				}
+				{
+					const payload = {
+						type: "reasoning" as const,
+						content: nextChunk,
+					};
+					type Emitted1194 = typeof payload;
+					sendEvent(
+						payload satisfies AssertAssignable<
+							Emitted1194,
+							DirectStreamInput
+						>,
+					);
+				}
+				streamedReasoningLength = fullReasoningText.length;
+			};
+
+			const lastToolSnapshots = new Map<
+				string,
+				{
+					args: string;
+					result: string;
+					status: DirectChatToolCall["status"];
+					started: boolean;
+				}
+			>();
+
+			const emitToolCallDelta = (toolCall: StreamedToolCall) => {
+				const previous = lastToolSnapshots.get(toolCall.id);
+				const nextArgs = stableSerialize(toolCall.args ?? null);
+				const nextResult = stableSerialize(toolCall.result ?? null);
+
+				if (!previous?.started) {
+					{
+						const payload = {
+							type: "tool_start" as const,
+							toolCallId: toolCall.id,
+							toolName: toolCall.name,
+							serverName: toolCall.serverName,
+							args: toolCall.args,
+							status: toolCall.status,
+							mcpAppResourceUri: toolCall.mcpAppResourceUri,
+							mcpAppConfigId: toolCall.mcpAppConfigId,
+						};
+						type Emitted1214 = typeof payload;
+						sendEvent(
+							payload satisfies AssertAssignable<
+								Emitted1214,
+								DirectStreamInput
+							>,
+						);
+					}
+				}
+
+				if (previous === undefined || nextArgs !== previous.args) {
+					{
+						const payload = {
+							type: "tool_input" as const,
+							toolCallId: toolCall.id,
+							toolName: toolCall.name,
+							serverName: toolCall.serverName,
+							args: toolCall.args,
+							status: toolCall.status,
+							mcpAppResourceUri: toolCall.mcpAppResourceUri,
+							mcpAppConfigId: toolCall.mcpAppConfigId,
+						};
+						type Emitted1227 = typeof payload;
+						sendEvent(
+							payload satisfies AssertAssignable<
+								Emitted1227,
+								DirectStreamInput
+							>,
+						);
+					}
+				}
+
+				if (
+					(toolCall.status === "complete" ||
+						toolCall.status === "error") &&
+					(previous === undefined ||
+						previous.status !== toolCall.status ||
+						nextResult !== previous.result)
+				) {
+					{
+						const payload = {
+							type: "tool_result" as const,
+							toolCallId: toolCall.id,
+							toolName: toolCall.name,
+							result: toolCall.result,
+							status: toolCall.status,
+							error: toolCall.error,
+							mcpAppResourceUri: toolCall.mcpAppResourceUri,
+							mcpAppConfigId: toolCall.mcpAppConfigId,
+						};
+						type Emitted1246 = typeof payload;
+						sendEvent(
+							payload satisfies AssertAssignable<
+								Emitted1246,
+								DirectStreamInput
+							>,
+						);
+					}
+				}
+
+				lastToolSnapshots.set(toolCall.id, {
+					args: nextArgs,
+					result: nextResult,
+					status: toolCall.status,
+					started: true,
+				});
+			};
+
+			try {
+				const workflowInput = await buildDirectChatWorkflowInput(
+					params,
+					executionId,
+				);
+
+				// Nobody is left to read the turn: do not start one.
+				if (isClosed || clientSignal?.aborted) {
+					closeStream();
+					return;
+				}
+
+				const handle = await startDirectChatWorkflow(workflowInput);
+
+				console.log(
+					`[Fabric AI Stream] Started Temporal workflow: ${handle.workflowId}`,
+				);
+
+				workflowHandle = handle;
+				// The client went away while the start was in flight (Stop
+				// before `started` aborts the fetch too): the abort listener
+				// had no handle to cancel then, so cancel now.
+				if (isClosed || clientSignal?.aborted) {
+					closeStream();
+					await cancelWorkflow("client disconnected during start");
+					return;
+				}
+
+				// Send started event
+				{
+					const payload = { type: "started" as const, executionId };
+					type Emitted1423 = typeof payload;
+					sendEvent(
+						payload satisfies AssertAssignable<
+							Emitted1423,
+							DirectStreamInput
+						>,
+					);
+				}
+
+				// Track state for change detection
+				let lastPhase = "";
+				let isComplete = false;
+				const startTime = Date.now();
+				let lastHeartbeatAt = Date.now();
+
+				// Poll for progress updates
+				while (
+					!isComplete &&
+					!isClosed &&
+					Date.now() - startTime < MAX_POLL_DURATION
+				) {
+					try {
+						if (
+							Date.now() - lastHeartbeatAt >=
+							HEARTBEAT_INTERVAL
+						) {
+							lastHeartbeatAt = Date.now();
+							if (!isClosed) {
+								try {
+									controller.enqueue(
+										encoder.encode(": ping\n\n"),
+									);
+								} catch {
+									isClosed = true;
+								}
+							}
+						}
+
+						const description = await handle.describe();
+						if (
+							SETTLED_WORKFLOW_STATUSES.has(
+								description.status.name,
+							)
+						) {
+							workflowSettled = true;
+						}
+
+						if (description.status.name === "COMPLETED") {
+							// Get final result
+							const result: DirectChatWorkflowOutput =
+								await handle.result();
+
+							// Tool calls are forwarded on failure too: the
+							// activity settles any call the turn abandoned, and
+							// without this the cards already drawn from
+							// heartbeats kept spinning (review F11).
+							if (result.toolCalls) {
+								for (const toolCall of result.toolCalls) {
+									emitToolCallDelta({
+										id: toolCall.id,
+										name: toolCall.name,
+										serverName: toolCall.serverName,
+										args: toolCall.args,
+										result: toolCall.result,
+										status: toolCall.status,
+										error: toolCall.error,
+										mcpAppResourceUri:
+											toolCall.mcpAppResourceUri,
+										mcpAppConfigId: toolCall.mcpAppConfigId,
+									});
+								}
+							}
+
+							if (!result.success) {
+								sendEvent(failedTurnEvent(result));
+								isComplete = true;
+								break;
+							}
+
+							emitResponseDelta(result.responseText);
+							emitReasoningDelta(result.reasoningText);
+							if (result.reasoningDurationMs !== undefined) {
+								{
+									const payload = {
+										type: "reasoningDuration" as const,
+										durationMs: result.reasoningDurationMs,
+									};
+									type Emitted1498 = typeof payload;
+									sendEvent(
+										payload satisfies AssertAssignable<
+											Emitted1498,
+											DirectStreamInput
+										>,
+									);
+								}
+							}
+
+							// Send pending confirmation if any
+							if (result.pendingConfirmation) {
+								{
+									const payload = {
+										type: "confirmation_required" as const,
+										...result.pendingConfirmation,
+									};
+									type Emitted1506 = typeof payload;
+									sendEvent(
+										payload satisfies AssertAssignable<
+											Emitted1506,
+											DirectStreamInput
+										>,
+									);
+								}
+							}
+
+							// Send sources if RAG was used
+							if (result.sources && result.sources.length > 0) {
+								{
+									const payload = {
+										type: "sources" as const,
+										sources: result.sources,
+									};
+									type Emitted1514 = typeof payload;
+									sendEvent(
+										payload satisfies AssertAssignable<
+											Emitted1514,
+											DirectStreamInput
+										>,
+									);
+								}
+							}
+
+							const partialError = partialTurnEvent(result);
+							if (partialError) {
+								sendEvent(partialError);
+							}
+
+							// Send completion event with token usage
+							sendEvent(doneTurnEvent(result));
+
+							isComplete = true;
+						} else if (description.status.name === "FAILED") {
+							try {
+								// A FAILED workflow's result() always throws,
+								// carrying the underlying cause. Guard the extra
+								// round-trip with a timeout so a degraded
+								// Temporal cluster can't stall the SSE stream.
+								await Promise.race([
+									handle.result(),
+									new Promise((_, reject) =>
+										setTimeout(
+											() =>
+												reject(
+													new Error(
+														"Workflow execution failed",
+													),
+												),
+											3000,
+										),
+									),
+								]);
+							} catch (failure) {
+								sendEvent(buildWorkflowErrorEvent(failure));
+							}
+							isComplete = true;
+						} else if (description.status.name === "CANCELLED") {
+							{
+								const payload = {
+									type: "error" as const,
+									message: "Workflow was cancelled",
+								};
+								type Emitted1554 = typeof payload;
+								sendEvent(
+									payload satisfies AssertAssignable<
+										Emitted1554,
+										DirectStreamInput
+									>,
+								);
+							}
+							isComplete = true;
+						} else {
+							// First, check for activity heartbeat details (real-time tool calls)
+							// This provides real-time updates during activity execution
+							const pendingActivities =
+								(description as any).raw?.pendingActivities ||
+								[];
+							for (const activity of pendingActivities) {
+								// `describe()` hands heartbeat details back as an
+								// encoded Payloads proto, not the object the
+								// activity passed to `heartbeat()`. Decode it, or
+								// nothing below ever matches and the client sees
+								// only the final result.
+								const heartbeatDetails =
+									decodeHeartbeatDetails<ActivityHeartbeatDetails>(
+										activity.heartbeatDetails,
+									);
+								// Widened from `heartbeatDetails?.toolCalls`: phase
+								// updates and partial assistant text also arrive on
+								// heartbeats that carry no tool calls, so process any
+								// heartbeat with details (the tool-call loop below is
+								// null-safe).
+								if (heartbeatDetails) {
+									// Extract tool calls from heartbeat
+									const hbToolCalls =
+										heartbeatDetails.toolCalls as Array<{
+											id: string;
+											name: string;
+											serverName?: string;
+											status: DirectChatToolCall["status"];
+											args?: Record<string, unknown>;
+											result?: unknown;
+											mcpAppResourceUri?: string;
+											mcpAppConfigId?: string;
+										}>;
+
+									for (const toolCall of hbToolCalls ?? []) {
+										emitToolCallDelta(toolCall);
+									}
+
+									// Send progress update from heartbeat
+									if (
+										heartbeatDetails.phase &&
+										heartbeatDetails.phase !== lastPhase
+									) {
+										lastPhase = heartbeatDetails.phase;
+										{
+											const payload = {
+												type: "progress" as const,
+												phase: heartbeatDetails.phase,
+												message:
+													heartbeatDetails.message ||
+													"Processing...",
+												progress:
+													heartbeatDetails.progress ||
+													0,
+											};
+											type Emitted1604 = typeof payload;
+											sendEvent(
+												payload satisfies AssertAssignable<
+													Emitted1604,
+													DirectStreamInput
+												>,
+											);
+										}
+									}
+
+									emitResponseDelta(
+										heartbeatDetails.responseText,
+									);
+									emitReasoningDelta(
+										heartbeatDetails.reasoningText,
+									);
+								}
+							}
+
+							// Fallback: Query workflow progress (for phase updates from workflow)
+							try {
+								const progress: DirectChatProgressUpdate =
+									await handle.query("directChatProgress");
+
+								// Send phase change events (if not already sent from heartbeat)
+								if (
+									progress?.phase &&
+									progress.phase !== lastPhase
+								) {
+									lastPhase = progress.phase;
+									{
+										const payload = {
+											type: "progress" as const,
+											phase: progress.phase,
+											message: progress.message,
+											progress: progress.progress,
+											currentActivity:
+												progress.currentActivity,
+										};
+										type Emitted1635 = typeof payload;
+										sendEvent(
+											payload satisfies AssertAssignable<
+												Emitted1635,
+												DirectStreamInput
+											>,
+										);
+									}
+								}
+
+								if (progress?.toolCalls) {
+									for (const toolCall of progress.toolCalls) {
+										emitToolCallDelta({
+											id: toolCall.id,
+											name: toolCall.name,
+											serverName: toolCall.serverName,
+											args: toolCall.args,
+											result: toolCall.result,
+											status: toolCall.status,
+											error: toolCall.error,
+											mcpAppResourceUri:
+												toolCall.mcpAppResourceUri,
+											mcpAppConfigId:
+												toolCall.mcpAppConfigId,
+										});
+									}
+								}
+
+								emitResponseDelta(progress?.responseText);
+								emitReasoningDelta(progress?.reasoningText);
+							} catch (queryError) {
+								// Query might fail if workflow hasn't set up handlers yet
+								console.debug(
+									"[Fabric AI Stream] Progress query not ready:",
+									queryError,
+								);
+							}
+
+							// Wait before next poll
+							await new Promise((resolve) =>
+								setTimeout(resolve, POLL_INTERVAL),
+							);
+						}
+					} catch (pollError) {
+						console.error(
+							"[Fabric AI Stream] Poll error:",
+							pollError,
+						);
+						// Continue polling unless it's a fatal error
+						await new Promise((resolve) =>
+							setTimeout(resolve, POLL_INTERVAL),
+						);
+					}
+				}
+
+				// The stream stopped being writable without the abort or
+				// cancel callbacks firing (an enqueue failed): the client is
+				// gone all the same.
+				if (isClosed && !isComplete) {
+					await cancelWorkflow("client disconnected");
+				}
+
+				// Out of poll budget: stop the workflow too, or it keeps
+				// running (and spending) with nobody reading it. Bounded so
+				// the error event still lands inside `maxDuration`.
+				if (
+					!isComplete &&
+					Date.now() - startTime >= MAX_POLL_DURATION
+				) {
+					await cancelWorkflow("poll time limit");
+					{
+						const payload = {
+							type: "error" as const,
+							message: ROUTE_TIMEOUT_MESSAGE,
+						};
+						type Emitted1705 = typeof payload;
+						sendEvent(
+							payload satisfies AssertAssignable<
+								Emitted1705,
+								DirectStreamInput
+							>,
+						);
+					}
+				}
+
+				if (!isClosed) {
+					isClosed = true;
+					controller.close();
+				}
+			} catch (error) {
+				console.error(
+					"[Fabric AI Stream] Temporal workflow error:",
+					error,
+				);
+				if (!isClosed) {
+					sendEvent(buildWorkflowErrorEvent(error));
+					isClosed = true;
+					controller.close();
+				}
+			} finally {
+				clientSignal?.removeEventListener("abort", onClientGone);
+			}
+		},
+		async cancel() {
+			// Called when the client disconnects
+			isClosed = true;
+			console.log(
+				"[Fabric AI Stream] Client disconnected, stream cancelled",
+			);
+			await cancelWorkflow("client disconnected");
+		},
+	});
+
+	return new Response(stream, {
+		headers: {
+			"Content-Type": "text/event-stream",
+			"Cache-Control": "no-cache",
+			Connection: "keep-alive",
+		},
+	});
+}

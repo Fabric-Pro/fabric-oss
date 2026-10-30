@@ -11,16 +11,19 @@ import {
 	normalizeDiffViewMode,
 } from "../lib/diff-view-modes";
 
-function loadMode(): DiffViewMode {
+function loadMode(defaultMode: DiffViewMode): DiffViewMode {
 	if (typeof window === "undefined") {
-		return DEFAULT_DIFF_VIEW_MODE;
+		return defaultMode;
 	}
 	try {
-		return normalizeDiffViewMode(
-			window.localStorage.getItem(DIFF_VIEW_MODE_STORAGE_KEY),
-		);
+		const stored = window.localStorage.getItem(DIFF_VIEW_MODE_STORAGE_KEY);
+		return stored === "inline" ||
+			stored === "sideBySide" ||
+			stored === "fullPreview"
+			? stored
+			: defaultMode;
 	} catch {
-		return DEFAULT_DIFF_VIEW_MODE;
+		return defaultMode;
 	}
 }
 
@@ -43,23 +46,22 @@ function saveMode(mode: DiffViewMode): void {
  * editors and every review flow. SSR-safe: the initial render uses the default
  * on both server and client (no hydration mismatch), then the stored value is
  * reconciled in after mount. Fail-safe: any storage error falls back to the
- * inline default and never throws.
+ * caller default without throwing.
  */
-export function useDiffViewMode(): {
+export function useDiffViewMode(
+	defaultMode: DiffViewMode = DEFAULT_DIFF_VIEW_MODE,
+): {
 	mode: DiffViewMode;
 	setMode: (mode: DiffViewMode) => void;
 } {
-	const [mode, setModeState] = useState<DiffViewMode>(DEFAULT_DIFF_VIEW_MODE);
+	const [mode, setModeState] = useState<DiffViewMode>(defaultMode);
 
 	// Reconcile from storage after mount. Server render and first client render
 	// both produce the default, so this avoids a hydration mismatch while still
 	// honoring a previously-stored preference immediately afterward.
 	useEffect(() => {
-		const stored = loadMode();
-		if (stored !== DEFAULT_DIFF_VIEW_MODE) {
-			setModeState(stored);
-		}
-	}, []);
+		setModeState(loadMode(defaultMode));
+	}, [defaultMode]);
 
 	// Persist only on explicit user changes (not via a value effect) so the
 	// reconcile effect above can never be clobbered by a default write on mount.
@@ -86,6 +88,7 @@ export function useDiffViewMode(): {
 export function useDiffPreview(
 	editor: Editor | null,
 	isDiffReviewActive: boolean,
+	defaultMode: DiffViewMode = DEFAULT_DIFF_VIEW_MODE,
 ): {
 	diffViewMode: DiffViewMode;
 	setDiffViewMode: (mode: DiffViewMode) => void;
@@ -93,7 +96,7 @@ export function useDiffPreview(
 	effectiveDiffViewMode: DiffViewMode;
 	showDiffPreviewPanes: boolean;
 } {
-	const { mode, setMode } = useDiffViewMode();
+	const { mode, setMode } = useDiffViewMode(defaultMode);
 	const diffViews = useMemo(() => {
 		if (!editor || mode === "inline" || !isDiffReviewActive) {
 			return null;

@@ -1,5 +1,11 @@
 # @fabricorg/cli
 
+## 0.7.5
+
+### Patch Changes
+
+- 97f7cd6: Harden Microsoft Graph request URLs, move CLI hook locks into the user configuration directory, and bound text processing for integration settings and error messages.
+
 ## 0.7.4
 
 ### Patch Changes

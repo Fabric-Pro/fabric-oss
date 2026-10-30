@@ -4,7 +4,7 @@ import type {
 	AssistantMessageProps,
 	RenderSuggestionsListProps,
 } from "@copilotkit/react-ui";
-import type { ComponentType } from "react";
+import { type ComponentType, useCallback, useRef } from "react";
 import { useCopilotChatSession } from "./CopilotChatSessionProvider";
 
 /**
@@ -85,17 +85,16 @@ export function makeAssistantMessageWithRunMark(
 	markUserRunInitiated: () => void,
 ): ComponentType<AssistantMessageProps> {
 	return function AssistantMessageWithRunMark(props: AssistantMessageProps) {
+		const latest = useRef(props.onRegenerate);
+		latest.current = props.onRegenerate;
+		const regenerate = useCallback(() => {
+			markUserRunInitiated();
+			latest.current?.();
+		}, [markUserRunInitiated, latest]);
 		return (
 			<AssistantMessage
 				{...props}
-				onRegenerate={
-					props.onRegenerate
-						? () => {
-								markUserRunInitiated();
-								props.onRegenerate?.();
-							}
-						: undefined
-				}
+				onRegenerate={props.onRegenerate ? regenerate : undefined}
 			/>
 		);
 	};

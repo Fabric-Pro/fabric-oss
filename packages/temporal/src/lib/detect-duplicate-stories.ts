@@ -49,23 +49,32 @@ export type DetectDuplicateStoriesResult = {
 	confirmed: number;
 	/** Candidate pairs dropped by the per-run cap (never silently swallowed). */
 	truncated: number;
+	/** Pairs whose verification failed this run; their items stay stale. */
+	verifierFailures: number;
 };
 
 /**
  * Check `targetStoryIds` against the project's active backlog and flag
- * duplicate/overlap pairs as PENDING links. Returns a summary on success;
- * THROWS on a transient/unexpected failure so the wrapping Temporal activity
- * retries.
+ * duplicate/overlap pairs as PENDING links. One call is one scan run: it
+ * verifies at most MAX_LLM_VERIFICATIONS pairs and reports the rest as
+ * `truncated`, which the workflow runs again for (see detect-duplicates.ts).
+ * Returns a summary on success; THROWS on a transient/unexpected failure so
+ * the wrapping Temporal activity retries.
  */
 export async function detectAndFlagDuplicateStories(
 	params: DetectDuplicateStoriesParams,
 ): Promise<DetectDuplicateStoriesResult> {
 	const uniqueTargetIds = new Set(params.targetStoryIds);
 	if (uniqueTargetIds.size === 0) {
-		return { scanned: 0, candidates: 0, confirmed: 0, truncated: 0 };
+		return {
+			scanned: 0,
+			candidates: 0,
+			confirmed: 0,
+			truncated: 0,
+			verifierFailures: 0,
+		};
 	}
-
-	const result = await runDuplicateScanCore({
+	return runDuplicateScanCore({
 		projectId: params.projectId,
 		userId: params.userId,
 		organizationId: params.organizationId,
@@ -74,11 +83,4 @@ export async function detectAndFlagDuplicateStories(
 		logPrefix: "[Auto Dup Detect]",
 		throwOnWholesaleVerifierFailure: true,
 	});
-
-	return {
-		scanned: result.scanned,
-		candidates: result.candidates,
-		confirmed: result.confirmed,
-		truncated: result.truncated,
-	};
 }

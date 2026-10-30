@@ -11,7 +11,9 @@
  *
  * Every read is bounded: at most `maxImages` distinct images, each at most
  * `maxImageBytes` as stored, and all of them together within one byte budget
- * the caller also charges the brand logos against. Reads run one at a time,
+ * the caller also charges the brand logos against. Each is re-encoded at
+ * most `maxEncodedImageBytes`, stepping its edge down until it fits, so the
+ * print page can inline it. Reads run one at a time,
  * in document order, so which image a full budget leaves out never depends
  * on timing. Anything that goes wrong drops that one image and is counted in
  * a warning; the warnings carry counts only, never a key or any content.
@@ -26,8 +28,8 @@ import {
 	namesStoredObject,
 	readUploadedImageTag,
 } from "./document-content";
+import { fitExportImage } from "./fit-export-image";
 import { eachNode } from "./markdown";
-import { normalizeExportImage } from "./normalize-image";
 import { readStoredObjectWithin } from "./read-stored-object";
 import {
 	type ExportRaster,
@@ -92,7 +94,11 @@ export interface ExtractDocumentImagesInput {
 	/** Defaults to a fresh budget of the export's whole allowance. */
 	budget?: ExportImageBudget;
 	/** Defaults to the export's limits; tests pass smaller ones. */
-	limits?: { maxImages?: number; maxImageBytes?: number };
+	limits?: {
+		maxImages?: number;
+		maxImageBytes?: number;
+		maxEncodedImageBytes?: number;
+	};
 	/** Runs after each image settles, read or dropped: the heartbeat hook. */
 	onImage?: () => void;
 }
@@ -141,7 +147,8 @@ function scanUploadedImages(root: Root): { keys: string[]; refused: number } {
  * Read, check and re-encode the document's uploaded images. A key outside
  * this document's media prefix, a missing or unreadable object, bytes over
  * the per-image cap or the shared budget, and bytes the normalizer refuses
- * each drop that image with `IMAGE_DROPPED`; distinct images beyond
+ * each drop that image with `IMAGE_DROPPED`, as does one still over the
+ * encoded cap at the smallest edge; distinct images beyond
  * `maxImages` are left out with `IMAGE_LIMIT`.
  */
 export async function extractDocumentImages(
@@ -151,8 +158,13 @@ export async function extractDocumentImages(
 	const budget = input.budget ?? createExportImageBudget();
 	const maxImages =
 		input.limits?.maxImages ?? PROPOSAL_EXPORT_LIMITS.maxImages;
-	const maxImageBytes =
-		input.limits?.maxImageBytes ?? PROPOSAL_EXPORT_LIMITS.maxImageBytes;
+	const caps = {
+		maxBytes:
+			input.limits?.maxImageBytes ?? PROPOSAL_EXPORT_LIMITS.maxImageBytes,
+		maxEncodedBytes:
+			input.limits?.maxEncodedImageBytes ??
+			PROPOSAL_EXPORT_LIMITS.maxEncodedImageBytes,
+	};
 
 	const tally = new ExportWarningTally();
 
@@ -171,7 +183,7 @@ export async function extractDocumentImages(
 
 	const images = new Map<string, ExportRaster>();
 	for (const key of carried) {
-		const image = await readOne(key, read, budget, maxImageBytes);
+		const image = await readOne(key, read, budget, caps);
 		if (image) {
 			images.set(key, image);
 		} else {
@@ -190,7 +202,7 @@ async function readOne(
 	key: string,
 	read: ExportImageReader,
 	budget: ExportImageBudget,
-	maxImageBytes: number,
+	caps: { maxBytes: number; maxEncodedBytes: number },
 ): Promise<ExportRaster | null> {
 	let bytes: Buffer;
 	try {
@@ -200,11 +212,9 @@ async function readOne(
 	}
 	// An object over the per-image cap is never decoded, so it is not
 	// charged against what the rest of the export may read.
-	if (bytes.byteLength > maxImageBytes || !budget.charge(bytes.byteLength)) {
+	if (bytes.byteLength > caps.maxBytes || !budget.charge(bytes.byteLength)) {
 		return null;
 	}
-	const normalized = await normalizeExportImage(bytes, {
-		maxBytes: maxImageBytes,
-	});
+	const normalized = await fitExportImage(bytes, caps);
 	return normalized.ok ? normalized.image : null;
 }

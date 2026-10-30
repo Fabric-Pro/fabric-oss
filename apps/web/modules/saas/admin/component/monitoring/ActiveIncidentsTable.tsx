@@ -484,6 +484,9 @@ export function ActiveIncidentsTable() {
 								</span>
 							</p>
 							<Pagination
+								navigationLabel="Active incidents pagination"
+								previousLabel="Previous page, active incidents"
+								nextLabel="Next page, active incidents"
 								totalItems={totalIncidents}
 								itemsPerPage={INCIDENTS_PAGE_SIZE}
 								currentPage={currentPage}

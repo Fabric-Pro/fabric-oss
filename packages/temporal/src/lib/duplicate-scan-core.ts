@@ -2,10 +2,11 @@
  * Shared orchestration core for semantic duplicate detection.
  *
  * Both consumers run the same pipeline — load the active backlog, split it
- * against the shared `StoryDuplicateEmbedding` cache, embed only stale items,
- * cosine-select candidate pairs, re-score FEATURE↔FEATURE candidates on their
- * Scope (or acceptance-criteria) sections, LLM-verify each remaining pair with
- * the 3-way verdict (duplicate / overlapping scope / distinct), and persist
+ * against the shared `StoryDuplicateEmbedding` cache, embed only stale items
+ * and stale feature sections, select candidate pairs on their whole-document
+ * cosine or — for FEATURE↔FEATURE pairs — their Scope (or acceptance-criteria)
+ * weighted score, LLM-verify each candidate with the 3-way verdict
+ * (duplicate / overlapping scope / distinct), and persist
  * every completed verdict — and differ only in thin wrapper concerns:
  *
  *   - the manual roadmap scan (`scan-duplicates.ts` in @repo/api):
@@ -29,18 +30,40 @@
  *     content change.
  *   - EMBEDDING staleness is a separate, per-item optimization: fresh vectors
  *     are persisted per item, EXCEPT items appearing in a pair that was
- *     dropped by the per-run cap or whose verifier call failed — those stay
- *     stale so the next run re-selects and retries exactly the unfinished
- *     pairs.
+ *     dropped by the per-run cap, not reached within the run's time budget,
+ *     or whose verifier call failed — those stay stale so the next run
+ *     re-selects and retries exactly the unfinished pairs.
  *   - The two are independent on purpose: an auto-detect run warming the
  *     embedding cache for the whole backlog must NOT be able to skip the
  *     verification drain a DETECTION_VERSION bump exists to force (verdict
  *     rows are keyed on version-prefixed hashes, so a bump invalidates them
  *     all regardless of embedding-cache state).
- *   - FOCUS vectors (a feature pair's Scope / acceptance-criteria sections)
- *     are embedded on the fly in one call and never cached: only candidate
- *     pairs' sections are embedded, so the per-run cap bounds the cost, and
- *     the whole-document cache stays the single text every matcher shares.
+ *   - FOCUS vectors (each feature's Scope / acceptance-criteria sections)
+ *     have their own cache, keyed per story and section on the section
+ *     text's hash and the embedding model. Every feature's vectors are needed
+ *     before candidates are chosen — a feature pair is a candidate when its
+ *     Scope-weighted score clears the threshold — so only changed sections
+ *     are embedded, and they are persisted as soon as they are: a section
+ *     vector depends on nothing but its text, so no failed or capped pair
+ *     needs it re-embedded. The whole-document cache stays the single text
+ *     every matcher shares.
+ *   - A feature's VERDICT hash folds in its section texts, so a pair is
+ *     re-verified when either side's Scope or acceptance criteria change,
+ *     even past the length the whole-document text is cut at. A feature with
+ *     no sections folds in its kind instead, so turning a bug into a feature
+ *     (or back) re-verifies its pairs under the other prompt.
+ *   - A re-check that would CHANGE a pair's state (raise a flag over a cached
+ *     negative verdict, clear a flag, or move it between tiers) is confirmed
+ *     by a second verifier call, for every kind of pair. Borderline pairs get
+ *     different answers on different calls; without the second opinion a flag
+ *     would come and go with every edit. When the second does not back the
+ *     change (see confirmedEffect), the pair keeps its state and its hashes
+ *     are stamped, so it is not re-billed until one side changes.
+ *   - Two scans can overlap (a manual scan and a per-create check). A pair's
+ *     row is read again just before it is verified and again just before its
+ *     verdict is written; when another run has already verified the same
+ *     content, its verdict stands. That leaves only the instant between the
+ *     last read and the write for two runs to race in.
  */
 
 import {
@@ -53,30 +76,38 @@ import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimension
 import {
 	baseModelName,
 	buildVerifierPrompt,
+	type CachedFocusEmbedding,
 	type CandidateSelection,
+	candidateScore,
 	classifyVerdict,
-	cosineSimilarity,
 	type DetectionItem,
 	detectionTextForStory,
 	effectiveCandidateThreshold,
-	focusSectionName,
+	extractFocusTexts,
+	getDuplicateLinkState,
 	hashDetectionText,
 	hasProviderCredentials,
 	listActiveStoriesForDetection,
 	listDismissedDuplicatePairKeys,
+	listPendingDuplicatePairs,
 	listStoryDuplicateEmbeddingMetadata,
 	listStoryDuplicateEmbeddings,
+	listStoryDuplicateFocusEmbeddings,
 	listVerdictValidPairKeys,
 	MAX_LLM_VERIFICATIONS,
 	normalizeVerifierRelationship,
+	PAIR_FOCUS_KINDS,
 	type PairFocusKind,
 	recordDistinctVerdict,
+	refreshPendingDuplicateSimilarities,
+	rescoreFlaggedFeaturePairs,
 	selectCandidatePairs,
 	selectCandidatePairsForTargets,
-	selectPairFocus,
+	stampVerifiedHashes,
 	upsertPendingDuplicateLink,
 	upsertStoryDuplicateEmbeddings,
-	weightedFocusSimilarity,
+	upsertStoryDuplicateFocusEmbeddings,
+	withdrawPendingDuplicateLinks,
 } from "@repo/database";
 import { logger } from "@repo/logs";
 import { generateEmbeddings } from "@repo/rag";
@@ -104,6 +135,18 @@ export const VerdictSchema = z.object({
 	confidence: z.number().min(0).max(1),
 	reasoning: z.string().max(2000).optional(),
 });
+
+/**
+ * How long a run may go on before it stops starting verifications. Pairs are
+ * verified one at a time, and a verdict that changes a pair's state takes a
+ * second call, so a full page of pairs has taken close to ten minutes — the
+ * worker activity's start-to-close timeout. Pairs not reached are reported as
+ * `truncated`, like those over the per-run cap, so the workflow's next run and
+ * the scan dialog's next request verify them. The rest of the activity timeout
+ * (and of the web route's 800 s limit) covers the pair in flight and the cache
+ * writes.
+ */
+export const RUN_TIME_BUDGET_MS = 7 * 60_000;
 
 /**
  * Embedding infrastructure was unavailable (model resolution or the embedding
@@ -145,24 +188,98 @@ export interface DuplicateScanCoreParams {
 export interface DuplicateScanCoreResult {
 	/** Stories with usable (non-blank) text that participated in the scan. */
 	scanned: number;
-	/** Candidate pairs that cleared the cosine pre-filter this run. */
+	/** Candidate pairs that cleared the cosine pre-filter and that this run
+	 * reached. */
 	candidates: number;
 	/** Pairs the LLM confirmed and that were upserted as PENDING links. */
 	confirmed: number;
-	/** Candidate pairs dropped by the per-run cap (never silently swallowed). */
+	/** Candidate pairs left for a later run: dropped by the per-run cap or not
+	 * reached within RUN_TIME_BUDGET_MS (never silently swallowed). */
 	truncated: number;
 	/** Verifier calls that errored (their pairs are retried next run). */
 	verifierFailures: number;
 }
 
-/** How a focused (feature) pair ended: settled below the threshold without a
- * verifier call, linked, judged distinct by the verifier, or failed. */
+/** How a focused (feature) pair ended: linked, not flagged by the verifier,
+ * left as it was because a second opinion disagreed, already verified by an
+ * overlapping run, or failed. */
 type FocusedPairOutcome =
-	| "settled"
 	| "linked:DUPLICATE"
 	| "linked:OVERLAP"
 	| "distinct"
+	| "unconfirmed"
+	| "already-verified"
 	| "failed";
+
+/** What a verdict does to a pair's row: raise or keep a flag at a tier,
+ * clear an unreviewed flag, or only cache a negative verdict. */
+type VerdictEffect = "link:DUPLICATE" | "link:OVERLAP" | "clear" | "cache";
+
+type DuplicateLinkState = Awaited<ReturnType<typeof getDuplicateLinkState>>;
+
+/** Whether applying `effect` would change what people see for the pair:
+ * a flag raised over a cached negative verdict, an unreviewed flag cleared,
+ * or a flag moved to the other tier. A first verdict on a new pair and a
+ * DISMISSED/RESOLVED row (a person's decision, never overwritten) change
+ * nothing that needs a second opinion. */
+export function verdictChangesState(
+	prior: DuplicateLinkState,
+	effect: VerdictEffect,
+): boolean {
+	if (!prior) {
+		return false;
+	}
+	switch (prior.status) {
+		case "PENDING":
+			return (
+				effect === "clear" ||
+				(effect.startsWith("link:") &&
+					effect !== `link:${prior.linkType}`)
+			);
+		case "NOT_DUPLICATE":
+			return effect.startsWith("link:");
+		case "DISMISSED":
+		case "RESOLVED":
+			return false;
+		default: {
+			const unhandled: never = prior.status;
+			return unhandled;
+		}
+	}
+}
+
+/** The effect a state change takes once a second verdict is in, or null when
+ * the second verdict does not back it. Two verdicts that both flag a pair
+ * raise its flag even if they name different tiers — at the softer OVERLAP
+ * tier — while moving an existing flag to another tier, or clearing it, needs
+ * the second verdict to say exactly the same. */
+export function confirmedEffect(
+	prior: DuplicateLinkState,
+	first: VerdictEffect,
+	second: VerdictEffect,
+): VerdictEffect | null {
+	if (second === first) {
+		return first;
+	}
+	return prior?.status !== "PENDING" &&
+		first.startsWith("link:") &&
+		second.startsWith("link:")
+		? "link:OVERLAP"
+		: null;
+}
+
+/** Whether a stored row already carries a verdict on exactly this content. */
+function verdictIsCurrent(
+	state: DuplicateLinkState,
+	contentHashA: string,
+	contentHashB: string,
+): boolean {
+	return (
+		(state?.status === "PENDING" || state?.status === "NOT_DUPLICATE") &&
+		state.verifiedContentHashA === contentHashA &&
+		state.verifiedContentHashB === contentHashB
+	);
+}
 
 /** One focused pair in the per-run tuning log — identifiers and scores. */
 type FocusedPairLogEntry = {
@@ -173,6 +290,10 @@ type FocusedPairLogEntry = {
 	documentSimilarity: number;
 	weighted: number;
 	threshold: number;
+	/** The whole-document cosine alone clears the threshold. A focused pair is
+	 * selected on its weighted score either way; this records whether a
+	 * whole-document rule would have selected it too, for tuning. */
+	byDocument: boolean;
 	outcome: FocusedPairOutcome;
 };
 
@@ -188,6 +309,7 @@ export async function runDuplicateScanCore(
 	params: DuplicateScanCoreParams,
 ): Promise<DuplicateScanCoreResult> {
 	const { projectId, userId, organizationId, selection, logPrefix } = params;
+	const startedAt = Date.now();
 
 	// 1. Full active backlog. In targets mode the just-created items are
 	//    already part of it — they are active the moment they are created.
@@ -198,10 +320,10 @@ export async function runDuplicateScanCore(
 			identifier: s.identifier,
 			text: detectionTextForStory(s),
 			createdAt: s.createdAt,
-			// Read by selectPairFocus; never part of the shared detection text.
 			kind: s.kind,
-			description: s.description,
-			acceptanceCriteria: s.acceptanceCriteria,
+			// A feature's Scope / acceptance-criteria sections; null for a bug.
+			// Never part of the shared detection text.
+			focusTexts: extractFocusTexts(s),
 		}))
 		.filter((s) => s.text.length > 0);
 
@@ -227,6 +349,30 @@ export async function runDuplicateScanCore(
 	//    5-minute "Gateway request failed" on the full-backlog batch).
 	const currentHashById = new Map(
 		withText.map((s) => [s.id, hashDetectionText(s.text)]),
+	);
+	// The hash a pair verdict is cached against. A feature's also covers its
+	// section texts, which can sit past the length the detection text is cut
+	// at, or — with no sections — its kind, so a bug turned feature is
+	// verified again under the feature prompt; a bug's is its detection-text
+	// hash.
+	const verdictHashById = new Map(
+		withText.map((s) => {
+			const sections = PAIR_FOCUS_KINDS.flatMap(
+				(kind) => s.focusTexts?.[kind] ?? [],
+			);
+			const parts =
+				sections.length > 0
+					? sections
+					: s.kind === "FEATURE"
+						? ["kind:FEATURE"]
+						: [];
+			return [
+				s.id,
+				parts.length > 0
+					? hashDetectionText([s.text, ...parts].join("\n\n"))
+					: (currentHashById.get(s.id) ?? ""),
+			];
+		}),
 	);
 	const cacheMeta = await listStoryDuplicateEmbeddingMetadata(projectId);
 	const cacheMetaByStoryId = new Map(cacheMeta.map((r) => [r.storyId, r]));
@@ -344,6 +490,105 @@ export async function runDuplicateScanCore(
 		}));
 	}
 
+	// 2b. Every feature's section vectors, from their own cache; only sections
+	//     whose text or embedding model changed go to the embedder, in ONE
+	//     call shared by identical texts.
+	const focusSections = withText.flatMap((s) =>
+		PAIR_FOCUS_KINDS.flatMap((kind) => {
+			const text = s.focusTexts?.[kind];
+			return text
+				? [
+						{
+							storyId: s.id,
+							kind,
+							text,
+							contentHash: hashDetectionText(text),
+						},
+					]
+				: [];
+		}),
+	);
+	const focusVectorsById = new Map<
+		string,
+		Partial<Record<PairFocusKind, number[]>>
+	>();
+	const setFocusVector = (
+		storyId: string,
+		kind: PairFocusKind,
+		vector: number[],
+	) => {
+		focusVectorsById.set(storyId, {
+			...focusVectorsById.get(storyId),
+			[kind]: vector,
+		});
+	};
+	let focusEmbedded = 0;
+	if (focusSections.length > 0) {
+		const cachedFocus = new Map(
+			(await listStoryDuplicateFocusEmbeddings(projectId)).map((row) => [
+				`${row.storyId}:${row.kind}`,
+				row,
+			]),
+		);
+		const staleSections = focusSections.filter((section) => {
+			const cached = cachedFocus.get(
+				`${section.storyId}:${section.kind}`,
+			);
+			if (
+				cached &&
+				cached.contentHash === section.contentHash &&
+				cached.model === currentModel
+			) {
+				setFocusVector(section.storyId, section.kind, cached.embedding);
+				return false;
+			}
+			return true;
+		});
+		if (staleSections.length > 0) {
+			const texts = Array.from(new Set(staleSections.map((s) => s.text)));
+			const { embeddings, model } = await embedTexts(
+				texts,
+				"focus-section embedding failed",
+			);
+			const vectorByText = new Map(
+				texts.map((text, i) => [text, embeddings[i]]),
+			);
+			const rows: CachedFocusEmbedding[] = staleSections.flatMap(
+				(section) => {
+					const embedding = vectorByText.get(section.text);
+					if (!embedding) {
+						return [];
+					}
+					setFocusVector(section.storyId, section.kind, embedding);
+					return [
+						{
+							storyId: section.storyId,
+							kind: section.kind,
+							contentHash: section.contentHash,
+							model,
+							embedding,
+						},
+					];
+				},
+			);
+			focusEmbedded = rows.length;
+			// Best-effort, like the whole-document cache write: a failed write
+			// only means the next run embeds these sections again.
+			try {
+				await upsertStoryDuplicateFocusEmbeddings(projectId, rows);
+			} catch (err) {
+				logger.warn(
+					`${logPrefix} focus-section cache write failed — continuing; the next run re-embeds these sections`,
+					{
+						projectId,
+						rows: rows.length,
+						err: err instanceof Error ? err.message : String(err),
+					},
+				);
+			}
+		}
+	}
+
 	// 3. Detection set — fresh vectors for stale items, cached for the rest.
 	//    The filter is a defensive guard dropping any item left without a
 	//    vector (a non-stale item always has a cache row).
@@ -351,7 +596,12 @@ export async function runDuplicateScanCore(
 		.map((s): DetectionItem | null => {
 			const embedding = embeddingByStoryId.get(s.id);
 			return embedding
-				? { storyId: s.id, embedding, createdAt: s.createdAt }
+				? {
+						storyId: s.id,
+						embedding,
+						createdAt: s.createdAt,
+						focusVectors: focusVectorsById.get(s.id),
+					}
 				: null;
 		})
 		.filter((item): item is DetectionItem => item !== null);
@@ -360,10 +610,36 @@ export async function runDuplicateScanCore(
 	//    dismissed and pairs whose stored verdict (positive or negative) is
 	//    still valid at the current content hashes — the verdict cache is
 	//    what makes repeated scans cheap, NOT embedding staleness.
-	const [dismissedPairKeys, verdictValidPairKeys] = await Promise.all([
-		listDismissedDuplicatePairKeys(projectId),
-		listVerdictValidPairKeys(projectId, currentHashById),
-	]);
+	const [dismissedPairKeys, verdictValidPairKeys, pendingPairs] =
+		await Promise.all([
+			listDismissedDuplicatePairKeys(projectId),
+			listVerdictValidPairKeys(projectId, verdictHashById),
+			listPendingDuplicatePairs(projectId),
+		]);
+	// An unreviewed feature flag the current rule would not raise is
+	// withdrawn, and one it would is stored with the score it is raised on
+	// (see rescoreFlaggedFeaturePairs).
+	const flagged = rescoreFlaggedFeaturePairs(pendingPairs, items, {
+		targetIds: targetIds ?? undefined,
+	});
+	const withdrawn = await withdrawPendingDuplicateLinks(
+		projectId,
+		flagged.withdraw,
+	);
+	const rescored = await refreshPendingDuplicateSimilarities(
+		projectId,
+		flagged.rescore,
+	);
+	if (withdrawn > 0 || rescored > 0) {
+		logger.info(
+			`${logPrefix} brought unreviewed flags in line with the rule`,
+			{
+				projectId,
+				withdrawn,
+				rescored,
+			},
+		);
+	}
 	const excludeKeys = new Set([
 		...dismissedPairKeys,
 		...verdictValidPairKeys,
@@ -372,7 +648,9 @@ export async function runDuplicateScanCore(
 		targetIds !== null
 			? selectCandidatePairsForTargets(targetIds, items, { excludeKeys })
 			: selectCandidatePairs(items, { excludeKeys });
-	const { pairs, truncated, droppedPairs, nearMisses } = selected;
+	const { pairs, truncated, droppedPairs, nearMisses, scopeExcluded } =
+		selected;
+	const identifierById = new Map(withText.map((s) => [s.id, s.identifier]));
 	if (truncated > 0) {
 		logger.warn(
 			`${logPrefix} candidate cap reached — extra pairs not verified this run; their items stay stale so the next run retries them`,
@@ -383,16 +661,30 @@ export async function runDuplicateScanCore(
 		// Answers "why wasn't X flagged?" from logs without a redeploy.
 		// Identifiers + scores only — no story content (worker-log redaction
 		// policy).
-		const identifierById = new Map(
-			withText.map((s) => [s.id, s.identifier]),
-		);
 		logger.info(`${logPrefix} near-miss pairs below threshold`, {
 			projectId,
 			nearMisses: nearMisses.map((p) => ({
 				a: identifierById.get(p.storyAId) ?? p.storyAId,
 				b: identifierById.get(p.storyBId) ?? p.storyBId,
 				similarity: Number(p.similarity.toFixed(4)),
+				score: Number(candidateScore(p).toFixed(4)),
 				proximate: p.proximate,
+			})),
+		});
+	}
+	if (scopeExcluded.length > 0) {
+		// Feature pairs whose documents read alike but whose Scope (or
+		// criteria) do not — the recall the Scope weighting trades away, kept
+		// observable so a missed duplicate among them can be found and the
+		// weight revisited. Same redaction policy as above.
+		logger.info(`${logPrefix} feature pairs kept out by their sections`, {
+			projectId,
+			scopeExcluded: scopeExcluded.map((p) => ({
+				a: identifierById.get(p.storyAId) ?? p.storyAId,
+				b: identifierById.get(p.storyBId) ?? p.storyBId,
+				focus: p.focus?.kind,
+				similarity: Number(p.similarity.toFixed(4)),
+				score: Number(candidateScore(p).toFixed(4)),
 			})),
 		});
 	}
@@ -440,103 +732,141 @@ export async function runDuplicateScanCore(
 		};
 	}
 
-	// 5. Focus re-score: a FEATURE↔FEATURE candidate is scored mainly on its
-	//    Scope (or acceptance-criteria) sections — see selectPairFocus; any
-	//    other pair keeps its whole-document score. Every focused pair's
-	//    section texts go to the embedder in ONE call.
-	const byId = new Map(withText.map((s) => [s.id, s]));
-	const pairFocus = pairs.map((pair) => {
-		const a = byId.get(pair.storyAId);
-		const b = byId.get(pair.storyBId);
-		return a && b ? (selectPairFocus(a, b) ?? undefined) : undefined;
-	});
-	const focusTexts = Array.from(
-		new Set(pairFocus.flatMap((f) => (f ? [f.textA, f.textB] : []))),
-	);
-	const focusVectorByText = new Map<string, number[]>();
-	if (focusTexts.length > 0) {
-		const { embeddings } = await embedTexts(
-			focusTexts,
-			"focus-section embedding failed",
-		);
-		focusTexts.forEach((text, i) => {
-			focusVectorByText.set(text, embeddings[i]);
-		});
-	}
-
-	// 6. LLM-verify each candidate. EVERY completed verification persists —
+	// 5. LLM-verify each candidate. EVERY completed verification persists —
 	//    a PENDING link (DUPLICATE or OVERLAP) or a cached negative verdict —
 	//    so a pair is paid for at most once per content change and drain
-	//    progress over a large candidate set is monotonic. A negative verdict
-	//    also clears an unreviewed PENDING flag on the pair: under the current
-	//    logic it is a stale false positive (see recordDistinctVerdict).
+	//    progress over a large candidate set is monotonic. A distinct verdict
+	//    on a feature pair also clears its unreviewed PENDING flag: under the
+	//    current logic it is a stale false positive (see recordDistinctVerdict).
 	const { model, trackUsage } = await getAIModelWithMetadata(
 		{ taskType: params.aiTaskType },
-		// projectId is threaded so the verifier's token spend is attributed to
-		// the project in ai_usage_log — without it a scan's LLM cost is
-		// unattributable, which is exactly what made the wider band's cost hard
-		// to measure.
-		{ userId, organizationId: organizationId ?? undefined, projectId },
+		// projectId and featureKey are threaded so the verifier's token spend
+		// is attributed to the project and to duplicate detection in
+		// ai_usage_log, like the scan's embedding calls.
+		{
+			userId,
+			organizationId: organizationId ?? undefined,
+			projectId,
+			featureKey: "duplicate-scan",
+		},
 	);
 
+	const byId = new Map(withText.map((s) => [s.id, s]));
 	let confirmed = 0;
 	let verifierFailures = 0;
-	let focusFiltered = 0;
+	// Pairs this run tried to verify (not already verified by an overlapping
+	// run), and state changes a second opinion did not confirm.
+	let attempted = 0;
+	let unconfirmed = 0;
 	const failedPairItemIds = new Set<string>();
 	const focusedPairs: FocusedPairLogEntry[] = [];
 	const round = (value: number) => Number(value.toFixed(4));
+	// Pairs left when the time budget ran out. The first pair is always
+	// verified, so a run that spent its budget embedding still makes progress.
+	let unreached: typeof pairs = [];
 	for (const [index, pair] of pairs.entries()) {
+		if (index > 0 && Date.now() - startedAt >= RUN_TIME_BUDGET_MS) {
+			unreached = pairs.slice(index);
+			break;
+		}
 		const a = byId.get(pair.storyAId);
 		const b = byId.get(pair.storyBId);
 		if (!a || !b) {
 			continue;
 		}
-		const focus = pairFocus[index];
-		const focusCosine = focus
-			? cosineSimilarity(
-					focusVectorByText.get(focus.textA) ?? [],
-					focusVectorByText.get(focus.textB) ?? [],
-				)
-			: null;
-		// The weighted score is what a focused pair is judged and shown by.
-		const similarity =
-			focusCosine === null
-				? pair.similarity
-				: weightedFocusSimilarity(focusCosine, pair.similarity);
+		// A focused feature pair is verified on the section it was scored on,
+		// as the primary signal; any other pair keeps the whole-document
+		// prompt.
+		const focusKind = pair.focus?.kind;
+		const focusTextA = focusKind ? a.focusTexts?.[focusKind] : undefined;
+		const focusTextB = focusKind ? b.focusTexts?.[focusKind] : undefined;
+		const focus =
+			focusKind && focusTextA && focusTextB
+				? { kind: focusKind, textA: focusTextA, textB: focusTextB }
+				: undefined;
+		// The candidate score is the similarity a pair is stored and shown
+		// with. It never settles a pair on its own: section cosines near the
+		// threshold do not separate duplicates from distinct work, while a
+		// verifier call costs a fraction of a cent, so the verifier — reading
+		// the same sections as its primary signal — decides every candidate.
+		const similarity = candidateScore(pair);
 		const threshold = effectiveCandidateThreshold(pair.proximate);
-		const contentHashA = currentHashById.get(pair.storyAId) ?? "";
-		const contentHashB = currentHashById.get(pair.storyBId) ?? "";
-		let focusOutcome: FocusedPairOutcome = "failed";
-		try {
-			if (focus && similarity < threshold) {
-				// Non-overlapping sections settle the pair without a verifier
-				// call, cached like any negative verdict until a text changes.
-				await recordDistinctVerdict({
-					projectId,
-					storyAId: pair.storyAId,
-					storyBId: pair.storyBId,
-					similarity,
-					confidence: 1,
-					reasoning: `${focusSectionName(focus.kind)} sections do not overlap: weighted similarity ${similarity.toFixed(2)} is below the ${threshold.toFixed(2)} candidate threshold.`,
-					contentHashA,
-					contentHashB,
-				});
-				focusFiltered += 1;
-				focusOutcome = "settled";
-				continue;
-			}
+		const contentHashA = verdictHashById.get(pair.storyAId) ?? "";
+		const contentHashB = verdictHashById.get(pair.storyBId) ?? "";
+		const bothFeatures = a.kind === "FEATURE" && b.kind === "FEATURE";
+		const prompt = buildVerifierPrompt(a, b, {
+			proximate: pair.proximate,
+			focus,
+			bothFeatures,
+		});
+		const verify = async () => {
 			const { object: verdict } = await generateObject({
 				model,
 				schema: VerdictSchema,
-				prompt: buildVerifierPrompt(a, b, {
-					proximate: pair.proximate,
-					focus,
-				}),
+				prompt,
 			});
 			trackUsage();
 			const relationship = normalizeVerifierRelationship(verdict);
 			const outcome = classifyVerdict(relationship, verdict.confidence);
-			if (outcome.action === "link") {
+			// An unsure "same" or "overlapping" verdict is cached, but does not
+			// withdraw a flag a confident one raised. Only a feature pair's
+			// flag is withdrawn: bug and mixed pairs are scored and verified
+			// exactly as before, so a distinct re-check of theirs is a second
+			// opinion on the same logic, not a fix for a false positive.
+			const effect: VerdictEffect =
+				outcome.action === "link"
+					? `link:${outcome.linkType}`
+					: bothFeatures && relationship === "distinct"
+						? "clear"
+						: "cache";
+			return { verdict, effect };
+		};
+		const readState = () =>
+			getDuplicateLinkState(projectId, pair.storyAId, pair.storyBId);
+		let focusOutcome: FocusedPairOutcome = "failed";
+		// Counted before the state read, so a failed read still counts
+		// towards a wholesale failure; undone when an overlapping run already
+		// verified the pair.
+		attempted += 1;
+		try {
+			const prior = await readState();
+			if (verdictIsCurrent(prior, contentHashA, contentHashB)) {
+				// An overlapping run verified this exact content after this run
+				// chose its candidates: the first verdict stands.
+				attempted -= 1;
+				focusOutcome = "already-verified";
+				continue;
+			}
+			const { verdict, effect: first } = await verify();
+			let effect: VerdictEffect | null = first;
+			if (verdictChangesState(prior, first)) {
+				effect = confirmedEffect(prior, first, (await verify()).effect);
+			}
+			// The verifier calls take seconds; an overlapping run may have
+			// written a verdict on the same content meanwhile. Its verdict
+			// stands — this leaves only the instant between this read and the
+			// write below for two runs to race in.
+			if (
+				verdictIsCurrent(await readState(), contentHashA, contentHashB)
+			) {
+				focusOutcome = "already-verified";
+				continue;
+			}
+			if (effect === null) {
+				await stampVerifiedHashes({
+					projectId,
+					storyAId: pair.storyAId,
+					storyBId: pair.storyBId,
+					contentHashA,
+					contentHashB,
+				});
+				unconfirmed += 1;
+				focusOutcome = "unconfirmed";
+				continue;
+			}
+			if (effect === "link:DUPLICATE" || effect === "link:OVERLAP") {
+				const linkType =
+					effect === "link:DUPLICATE" ? "DUPLICATE" : "OVERLAP";
 				await upsertPendingDuplicateLink({
 					projectId,
 					storyAId: pair.storyAId,
@@ -544,15 +874,12 @@ export async function runDuplicateScanCore(
 					similarity,
 					confidence: verdict.confidence,
 					reasoning: verdict.reasoning,
-					linkType: outcome.linkType,
+					linkType,
 					contentHashA,
 					contentHashB,
 				});
 				confirmed += 1;
-				focusOutcome =
-					outcome.linkType === "DUPLICATE"
-						? "linked:DUPLICATE"
-						: "linked:OVERLAP";
+				focusOutcome = `linked:${linkType}`;
 			} else {
 				await recordDistinctVerdict({
 					projectId,
@@ -563,6 +890,7 @@ export async function runDuplicateScanCore(
 					reasoning: verdict.reasoning,
 					contentHashA,
 					contentHashB,
+					clearsPendingFlag: effect === "clear",
 				});
 				focusOutcome = "distinct";
 			}
@@ -582,20 +910,33 @@ export async function runDuplicateScanCore(
 				modelText: (err as { text?: string })?.text?.slice(0, 300),
 			});
 		} finally {
-			// Runs on every exit from the try, the `continue` above included.
-			if (focus && focusCosine !== null) {
+			// Runs on every exit from the try, a failed verification included.
+			if (pair.focus) {
 				focusedPairs.push({
 					a: a.identifier,
 					b: b.identifier,
-					focus: focus.kind,
-					focusSimilarity: round(focusCosine),
+					focus: pair.focus.kind,
+					focusSimilarity: round(pair.focus.similarity),
 					documentSimilarity: round(pair.similarity),
-					weighted: round(similarity),
+					weighted: round(pair.focus.weighted),
 					threshold: round(threshold),
+					byDocument: pair.similarity >= threshold,
 					outcome: focusOutcome,
 				});
 			}
 		}
+	}
+
+	if (unreached.length > 0) {
+		logger.warn(
+			`${logPrefix} time budget reached — remaining pairs not verified this run; their items stay stale so the next run retries them`,
+			{
+				projectId,
+				budgetMs: RUN_TIME_BUDGET_MS,
+				verified: pairs.length - unreached.length,
+				notReached: unreached.length,
+			},
+		);
 	}
 
 	// Every focused (feature) pair's scores and outcome, so
@@ -613,27 +954,28 @@ export async function runDuplicateScanCore(
 	// broken (e.g. the resolved model can't produce the structured verdict,
 	// or a provider outage). Optionally throw so a Temporal activity FAILS
 	// and is retried with backoff, rather than returning a misleading
-	// "0 duplicates" success. Pairs the focus re-score settled never reached
-	// it, so they neither mask nor count toward an outage.
-	const verifierBound = pairs.length - focusFiltered;
+	// "0 duplicates" success.
 	if (
 		params.throwOnWholesaleVerifierFailure &&
-		verifierBound > 0 &&
-		verifierFailures === verifierBound
+		attempted > 0 &&
+		verifierFailures >= attempted
 	) {
 		throw new Error(
-			`${logPrefix} verifier failed for all ${verifierBound} candidate pair(s) — failing activity for retry`,
+			`${logPrefix} verifier failed for all ${attempted} candidate pair(s) — failing activity for retry`,
 		);
 	}
 
-	// 7. Per-item cache persist: retain staleness for items in a failed or
-	//    dropped pair; everything else this run embedded is complete.
+	// 7. Per-item cache persist: retain staleness for items in a failed,
+	//    dropped or unreached pair; everything else this run embedded is
+	//    complete.
 	const retainStaleIds = new Set<string>(failedPairItemIds);
-	for (const p of droppedPairs) {
+	for (const p of [...droppedPairs, ...unreached]) {
 		retainStaleIds.add(p.storyAId);
 		retainStaleIds.add(p.storyBId);
 	}
 	await persistEmbeddingCache(retainStaleIds);
+	const reached = pairs.length - unreached.length;
+	const leftOver = truncated + unreached.length;
 
 	// Always-on run summary — the band widening's verifier volume is a cost
 	// the team wants observable per run, not only when something is flagged.
@@ -642,18 +984,20 @@ export async function runDuplicateScanCore(
 		scanned: withText.length,
 		embedded: staleItems.length,
 		reused: items.length - staleItems.length,
-		candidates: pairs.length,
-		focusFiltered,
+		focusEmbedded,
+		candidates: reached,
+		verified: attempted,
 		confirmed,
+		unconfirmed,
 		verifierFailures,
-		truncated,
+		truncated: leftOver,
 	});
 
 	return {
 		scanned: withText.length,
-		candidates: pairs.length,
+		candidates: reached,
 		confirmed,
-		truncated,
+		truncated: leftOver,
 		verifierFailures,
 	};
 }

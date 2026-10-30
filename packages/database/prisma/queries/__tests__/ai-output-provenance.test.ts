@@ -51,6 +51,7 @@ describe("output provenance queries", () => {
 		expect(mocks.findUnique).toHaveBeenCalledWith({
 			where: { organizationId_userId_subjectType_subjectId: key },
 			select: {
+				agentId: true,
 				projectId: true,
 				modelCanonicalName: true,
 				promptVersionId: true,

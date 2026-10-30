@@ -1,11 +1,68 @@
 import { FocusModeProvider } from "@saas/shared/contexts/FocusModeContext";
 import { SidebarCollapseProvider } from "@saas/shared/contexts/SidebarCollapseContext";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { PropsWithChildren, ReactNode } from "react";
+import {
+	type PropsWithChildren,
+	type ReactNode,
+	useSyncExternalStore,
+} from "react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+const fakePage = vi.hoisted(() => {
+	const events = new Set<() => void>();
+	const agentListeners = new Set<Record<string, (args: any) => void>>();
+	const page = {
+		revision: 0,
+		renders: vi.fn(),
+		markdown: vi.fn(),
+		subscribe: (fn: () => void) => {
+			events.add(fn);
+			return () => {
+				events.delete(fn);
+			};
+		},
+		subscribeNone: () => () => {},
+		agent: {
+			agentId: "project_document_generator",
+			isRunning: false,
+			state: {} as Record<string, unknown>,
+			messages: [],
+			subscribe: (listener: Record<string, (args: any) => void>) => {
+				agentListeners.add(listener);
+				return { unsubscribe: () => agentListeners.delete(listener) };
+			},
+			setState: (state: Record<string, unknown>) => {
+				page.agent.state = structuredClone(state);
+				page.emit();
+			},
+		},
+		runtime: {
+			agents: {} as Record<string, unknown>,
+			subscribe: () => ({ unsubscribe() {} }),
+		},
+		emit: () => {
+			page.revision++;
+			for (const listener of agentListeners) {
+				listener.onStateChanged?.({ state: page.agent.state });
+			}
+			for (const fn of events) {
+				fn();
+			}
+		},
+	};
+	page.runtime.agents.project_document_generator = page.agent;
+	return page;
+});
+const runSignal = vi.hoisted(() => ({ active: false }));
+vi.mock("@saas/shared/components/copilot/use-user-run-signal", () => ({
+	useUserRunSignal: () => ({
+		isUserGenerationActive: runSignal.active,
+		markUserRunInitiated: vi.fn(),
+		clearUserRunMark: vi.fn(),
+	}),
+}));
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: { projects: { stories: { listAttachments: vi.fn() } } },
 }));
@@ -47,7 +104,10 @@ vi.mock("@saas/projects/components/copilot/HydratedMessagesContext", () => ({
 	useHydratedMessages: () => ({ hydratedMessages: [] }),
 }));
 vi.mock("@tiptap/react", () => ({
-	useEditor: () => null,
+	useEditor: () => {
+		fakePage.renders();
+		return null;
+	},
 	EditorContent: () => null,
 }));
 vi.mock("@saas/subscriptions/components/SubscribeToggle", () => ({
@@ -91,27 +151,45 @@ vi.mock("../StoryEvidence", () => ({
 // to expose it. The session object is built inside the factory and returned by
 // reference — a fresh literal per call would hand every consumer a new value on
 // every render.
-vi.mock("@copilotkit/react-core", () => {
-	const session = {
-		messages: [],
-		visibleMessages: [],
-		isLoading: false,
-		appendMessage: async () => {},
-		setMessages: () => {},
-		interrupt: null,
-		agent: undefined,
-	};
+vi.mock("@copilotkit/react-core", () => ({
+	CopilotKit: ({ children }: { children: ReactNode }) => children,
+	useCopilotChatInternal: () => {
+		useSyncExternalStore(fakePage.subscribe, () => fakePage.revision);
+		return {
+			messages: [],
+			visibleMessages: [],
+			isLoading: fakePage.agent.isRunning,
+			appendMessage: async () => {},
+			setMessages: () => {},
+			interrupt: null,
+			agent: fakePage.agent,
+		};
+	},
+	useCopilotAction: vi.fn(),
+	useCopilotReadable: vi.fn(),
+}));
+vi.mock("@copilotkit/react-core/v2", () => ({
+	useAgent: ({ updates }: { updates?: unknown[] }) => {
+		useSyncExternalStore(
+			updates?.length === 0 ? fakePage.subscribeNone : fakePage.subscribe,
+			() => (updates?.length === 0 ? 0 : fakePage.revision),
+		);
+		return { agent: fakePage.agent };
+	},
+	useCopilotKit: () => ({ copilotkit: fakePage.runtime }),
+}));
+vi.mock("@copilotkit/react-core/v2/context", () => ({
+	useCopilotKit: () => ({ copilotkit: fakePage.runtime }),
+}));
+vi.mock("@saas/projects/lib/diff-utils", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("@saas/projects/lib/diff-utils")>();
 	return {
-		CopilotKit: ({ children }: { children: ReactNode }) => children,
-		useCopilotChatInternal: () => session,
-		useCoAgent: () => ({
-			state: { document: "" },
-			setState: vi.fn(),
-			running: false,
-			nodeName: undefined,
-		}),
-		useCopilotAction: vi.fn(),
-		useCopilotReadable: vi.fn(),
+		...actual,
+		fromMarkdown: (...args: Parameters<typeof actual.fromMarkdown>) => {
+			fakePage.markdown(args[0]);
+			return actual.fromMarkdown(...args);
+		},
 	};
 });
 vi.mock("@copilotkit/react-ui/styles.css", () => ({}));
@@ -254,6 +332,11 @@ describe("StoryWorkspacePage Focus Mode Integration", () => {
 
 	beforeEach(() => {
 		localStorage.clear();
+		runSignal.active = false;
+		fakePage.agent.state = {};
+		fakePage.agent.isRunning = false;
+		fakePage.renders.mockClear();
+		fakePage.markdown.mockClear();
 	});
 
 	function Wrapper({ children }: PropsWithChildren) {
@@ -265,6 +348,91 @@ describe("StoryWorkspacePage Focus Mode Integration", () => {
 			</QueryClientProvider>
 		);
 	}
+
+	it("real StoryWorkspace ignores unread agent/session events and receives streamed documents through real hooks", async () => {
+		render(
+			<StoryWorkspacePage
+				projectId="p1"
+				storyId="s1"
+				organizationSlug="acme"
+			/>,
+			{ wrapper: Wrapper },
+		);
+		await screen.findByTestId("engagement-profile-metadata-row");
+		act(() => {
+			fakePage.agent.isRunning = true;
+			fakePage.emit();
+		});
+		// Drain query/effect work before measuring event-driven page renders.
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 30));
+		});
+		const before = fakePage.renders.mock.calls.length;
+		for (let i = 0; i < 8; i++) {
+			act(() =>
+				fakePage.agent.setState({
+					...fakePage.agent.state,
+					reasoningByTurn: { i },
+				}),
+			);
+		}
+		expect(fakePage.renders).toHaveBeenCalledTimes(before);
+		act(() =>
+			fakePage.agent.setState({
+				...fakePage.agent.state,
+				document: "Streamed document reached the page",
+			}),
+		);
+		expect(fakePage.renders.mock.calls.length).toBeGreaterThan(before);
+		expect(fakePage.markdown).toHaveBeenCalledWith(
+			"Streamed document reached the page",
+		);
+	});
+
+	it("keeps profile and stage nodes mounted and noninteractive across a run", async () => {
+		const page = (
+			<StoryWorkspacePage
+				projectId="p1"
+				storyId="s1"
+				organizationSlug="acme"
+			/>
+		);
+		const view = render(page, { wrapper: Wrapper });
+		const profile = await screen.findByTestId(
+			"engagement-profile-metadata-row",
+		);
+		const stage = screen.getByTestId("drafting-stage-row");
+		runSignal.active = true;
+		view.rerender(
+			<StoryWorkspacePage
+				projectId="p1"
+				storyId="s1"
+				organizationSlug="acme"
+			/>,
+		);
+		expect(screen.getByTestId("engagement-profile-metadata-row")).toBe(
+			profile,
+		);
+		expect(screen.getByTestId("drafting-stage-row")).toBe(stage);
+		expect(profile).not.toBeVisible();
+		expect(stage).not.toBeVisible();
+		expect(profile).toHaveAttribute("inert");
+		expect(stage).toHaveAttribute("inert");
+		runSignal.active = false;
+		view.rerender(
+			<StoryWorkspacePage
+				projectId="p1"
+				storyId="s1"
+				organizationSlug="acme"
+			/>,
+		);
+		expect(screen.getByTestId("engagement-profile-metadata-row")).toBe(
+			profile,
+		);
+		expect(screen.getByTestId("drafting-stage-row")).toBe(stage);
+		expect(profile).toBeVisible();
+		expect(stage).toBeVisible();
+	});
 
 	it("hides header chrome and collapses engagement profile metadata row in Focus Mode and restores on exit", async () => {
 		const user = userEvent.setup();

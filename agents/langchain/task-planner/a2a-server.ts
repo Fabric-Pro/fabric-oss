@@ -116,7 +116,10 @@ const a2aExecutor = createLangGraphA2AExecutor(
 				userStory: userMessage,
 				projectDescription,
 			},
-			{ signal: runtimeConfig?.signal },
+			{
+				signal: runtimeConfig?.signal,
+				configurable: { thread_id: input.thread_id ?? input.contextId },
+			},
 		);
 
 		// Cast to our result type (messages will be BaseMessage[])

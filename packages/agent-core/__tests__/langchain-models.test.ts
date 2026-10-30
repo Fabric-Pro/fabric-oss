@@ -2790,3 +2790,16 @@ describe("canonical identity from model config APIs", () => {
 		},
 	);
 });
+
+it("normalizes long Databricks URL slash runs", () => {
+	const model = createProviderModel(
+		{
+			provider: "DATABRICKS",
+			apiKey: "example-key",
+			baseUrl: `https://example.com/${"/".repeat(200_000)}x`,
+			model: "custom-chat",
+		},
+		{},
+	) as unknown as { clientConfig: { baseURL: string } };
+	expect(model.clientConfig.baseURL).toContain("https://example.com/");
+});

@@ -28,6 +28,11 @@ import {
 // Model Catalog Queries
 // ============================================================================
 
+export const SELECTABLE_CATALOG_MODEL_FILTER = {
+	isActive: true,
+	deprecatedAt: null,
+} satisfies Prisma.AiModelWhereInput;
+
 /**
  * Get all active models from the catalog
  * CACHED: Results are cached for 1 hour to reduce DB load.
@@ -46,8 +51,7 @@ export async function getActiveModels(options?: {
 	return await aiModelCatalogCache.getOrSet(cacheKey, async () => {
 		return await db.aiModel.findMany({
 			where: {
-				isActive: true,
-				deprecatedAt: null,
+				...SELECTABLE_CATALOG_MODEL_FILTER,
 				...(options?.family && { family: options.family }),
 				...(options?.capabilities && {
 					capabilities: { hasSome: options.capabilities },
@@ -1012,7 +1016,11 @@ export async function getProviderModelMappingForCanonical(
 		where: { canonicalName },
 		include: {
 			providerMappings: {
-				where: { provider, isAvailable: true },
+				where: {
+					provider,
+					isAvailable: true,
+					model: SELECTABLE_CATALOG_MODEL_FILTER,
+				},
 				take: 1,
 			},
 		},
@@ -1030,6 +1038,7 @@ export async function getAvailableCanonicalNameForProviderModelId(
 ): Promise<string | null> {
 	const models = await db.aiModel.findMany({
 		where: {
+			...SELECTABLE_CATALOG_MODEL_FILTER,
 			providerMappings: {
 				some: { provider, providerModelId, isAvailable: true },
 			},

@@ -15,6 +15,8 @@ import {
 	flowToMermaid,
 	orgChartToMermaid,
 	PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
+	proposalFigureKind,
+	proposalVisualTemplateOptions,
 	SVG_CARD_FONT_STACK,
 	statToSvgCard,
 	timelineToMermaid,
@@ -1049,6 +1051,121 @@ describe("Proposal template options (Fizzy #2946)", () => {
 	it("dispatches the options through visualSpecToMermaid", () => {
 		expect(visualSpecToMermaid(timeline(6), options)).toBe(
 			timelineToMermaid(timeline(6), options),
+		);
+	});
+});
+
+describe("proposalFigureKind (Fizzy #2946)", () => {
+	it("asks for a process on a flow without lanes and a timeline on a timeline", () => {
+		expect(
+			proposalFigureKind({
+				kind: "flow",
+				steps: [
+					{ label: "Scope" },
+					{ label: "Build", lane: "Delivery" },
+				],
+			}),
+		).toBe("process");
+		expect(
+			proposalFigureKind({
+				kind: "timeline",
+				items: [{ date: "Week 1", label: "Discovery" }],
+			}),
+		).toBe("timeline");
+	});
+
+	it("leaves a flow with lanes and an org chart as Mermaid", () => {
+		expect(
+			proposalFigureKind({
+				kind: "flow",
+				steps: [
+					{ label: "Scope", lane: "Client" },
+					{ label: "Build", lane: "Delivery" },
+				],
+			}),
+		).toBeNull();
+		expect(
+			proposalFigureKind({
+				kind: "org_chart",
+				nodes: [{ id: "lead", label: "Lead", parentId: null }],
+			}),
+		).toBeNull();
+	});
+
+	it("is never written by the templating itself", () => {
+		const flow: FlowVisualSpec = {
+			kind: "flow",
+			steps: [{ label: "Scope" }, { label: "Build" }],
+		};
+		expect(
+			visualSpecToMermaid(flow, PROPOSAL_VISUAL_TEMPLATE_OPTIONS),
+		).not.toContain("%% figure:");
+		expect(visualSpecToMermaid(flow)).not.toContain("%% figure:");
+	});
+});
+
+describe("proposalVisualTemplateOptions", () => {
+	// 39 characters: two lines when wrapped at 28.
+	const TITLE = "Scope the work with both teams together";
+
+	it("writes the title as one label line in a fence a figure template draws", () => {
+		const flow: FlowVisualSpec = {
+			kind: "flow",
+			steps: [
+				{ label: TITLE, description: "Agree what done looks like" },
+				{ label: "Build" },
+			],
+		};
+		expect(
+			visualSpecToMermaid(flow, proposalVisualTemplateOptions(flow)),
+		).toContain(`f0["${TITLE}<br/>Agree what done looks like"]`);
+		const timeline: TimelineVisualSpec = {
+			kind: "timeline",
+			items: [{ date: "Week 1", label: TITLE }],
+		};
+		expect(
+			visualSpecToMermaid(
+				timeline,
+				proposalVisualTemplateOptions(timeline),
+			),
+		).toContain(`t0["Week 1<br/>${TITLE}"]`);
+	});
+
+	it("cuts a longer title at a word on that one line", () => {
+		const flow: FlowVisualSpec = {
+			kind: "flow",
+			steps: [
+				{
+					label: "Scope the work with both teams together before anything is built",
+				},
+				{ label: "Build" },
+			],
+		};
+		expect(
+			visualSpecToMermaid(flow, proposalVisualTemplateOptions(flow)),
+		).toContain('f0["Scope the work with both teams together before…"]');
+	});
+
+	it("keeps the wrapped title in a fence that stays Mermaid", () => {
+		const laned: FlowVisualSpec = {
+			kind: "flow",
+			steps: [
+				{ label: TITLE, lane: "Client" },
+				{ label: "Build", lane: "Delivery" },
+			],
+		};
+		expect(proposalVisualTemplateOptions(laned)).toEqual(
+			expect.objectContaining({ wrapTitle: true }),
+		);
+		const source = visualSpecToMermaid(
+			laned,
+			proposalVisualTemplateOptions(laned),
+		);
+		expect(source).toBe(
+			visualSpecToMermaid(laned, PROPOSAL_VISUAL_TEMPLATE_OPTIONS),
+		);
+		expect(source).toContain(
+			'f0["Scope the work with both<br/>teams together"]',
 		);
 	});
 });

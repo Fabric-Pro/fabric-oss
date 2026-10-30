@@ -8,7 +8,17 @@
  * string means `sendNow`, an object means `updateSettings`).
  */
 
-import { render, screen, within } from "@testing-library/react";
+import { render as baseRender, screen, within } from "@testing-library/react";
+import { NuqsTestingAdapter } from "nuqs/adapters/testing";
+import type { ReactElement } from "react";
+
+const render = (ui: ReactElement) =>
+	baseRender(ui, {
+		wrapper: ({ children }) => (
+			<NuqsTestingAdapter>{children}</NuqsTestingAdapter>
+		),
+	});
+
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -128,6 +138,7 @@ type SeenQueryOptions = {
 };
 const seenQueryOptions: Record<string, SeenQueryOptions> = {};
 vi.mock("@tanstack/react-query", () => ({
+	keepPreviousData: <T,>(data: T) => data,
 	useQuery: (opts: {
 		__q?: string;
 		enabled?: boolean;

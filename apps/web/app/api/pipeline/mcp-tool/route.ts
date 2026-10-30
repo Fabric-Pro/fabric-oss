@@ -3,6 +3,7 @@ import {
 	callMcpTool,
 	getCachedMcpClientForConfig,
 	invalidateMcpClientCache,
+	MCPClientError,
 	McpClientError,
 } from "@repo/mcp";
 import { isReadOnlyBlockedOutput } from "@repo/utils";
@@ -18,6 +19,16 @@ import {
 	resolveAtlassianSiteId,
 	toolDeclaresCloudId,
 } from "./atlassian-cloud-id";
+import { errorResponse, McpToolResultError } from "./error-response";
+
+function errorFields(error: unknown) {
+	return {
+		code: error instanceof McpClientError ? error.code : undefined,
+		...(MCPClientError.isInstance(error)
+			? { rpcCode: error.code, httpStatus: error.statusCode }
+			: {}),
+	};
+}
 
 /**
  * Generic MCP Tool Execution API
@@ -35,6 +46,7 @@ export async function POST(request: NextRequest) {
 	let mcpConfigId: string | undefined;
 	let sessionUserId: string | undefined;
 	let resolvedOrganizationId: string | undefined;
+	let executingTool = false;
 
 	try {
 		const session = await getSession();
@@ -121,6 +133,7 @@ export async function POST(request: NextRequest) {
 			// these are business-logic errors, not stale connections.
 			if (clientOrToolsError instanceof McpClientError) {
 				console.error("[MCP Tool API] MCP client error:", {
+					...errorFields(clientOrToolsError),
 					error:
 						clientOrToolsError instanceof Error
 							? clientOrToolsError.message
@@ -130,21 +143,7 @@ export async function POST(request: NextRequest) {
 							? clientOrToolsError.stack
 							: undefined,
 				});
-				const statusCode = clientOrToolsError.isAuthError
-					? 401
-					: clientOrToolsError.isRateLimitError
-						? 429
-						: 500;
-
-				return NextResponse.json(
-					{
-						error: clientOrToolsError.message,
-						code: clientOrToolsError.code,
-						serverName: clientOrToolsError.serverName,
-						retryAfter: clientOrToolsError.retryAfter,
-					},
-					{ status: statusCode },
-				);
+				return errorResponse(clientOrToolsError, "connect");
 			}
 
 			// Likely a stale cached connection. Invalidate and retry once with a fresh client.
@@ -178,6 +177,7 @@ export async function POST(request: NextRequest) {
 				tools = await retry.client.tools();
 			} catch (retryError) {
 				console.error("[MCP Tool API] Retry also failed:", {
+					...errorFields(retryError),
 					error:
 						retryError instanceof Error
 							? retryError.message
@@ -188,31 +188,7 @@ export async function POST(request: NextRequest) {
 							: undefined,
 				});
 
-				if (retryError instanceof McpClientError) {
-					const statusCode = retryError.isAuthError
-						? 401
-						: retryError.isRateLimitError
-							? 429
-							: 500;
-					return NextResponse.json(
-						{
-							error: retryError.message,
-							code: retryError.code,
-							serverName: retryError.serverName,
-							retryAfter: retryError.retryAfter,
-						},
-						{ status: statusCode },
-					);
-				}
-
-				const errorMessage =
-					retryError instanceof Error
-						? retryError.message
-						: "Failed to connect to MCP server";
-				return NextResponse.json(
-					{ error: `MCP connection failed: ${errorMessage}` },
-					{ status: 500 },
-				);
+				return errorResponse(retryError, "connect");
 			}
 		}
 
@@ -349,6 +325,7 @@ export async function POST(request: NextRequest) {
 		// Execute the tool through the shared external-dispatch funnel — a
 		// WRITE-classified tool is blocked here when the project is read-only,
 		// before it reaches the MCP server.
+		executingTool = true;
 		const result = await callMcpTool({
 			toolName,
 			projectId,
@@ -359,6 +336,7 @@ export async function POST(request: NextRequest) {
 				}),
 		});
 
+		executingTool = false;
 		if (isReadOnlyBlockedOutput(result)) {
 			return NextResponse.json(
 				{ error: result.error, code: result.code, toolName },
@@ -378,6 +356,7 @@ export async function POST(request: NextRequest) {
 		return NextResponse.json({ result: parsed, toolName, serverName });
 	} catch (error) {
 		console.error("[MCP Tool API] Error:", {
+			...errorFields(error),
 			error: error instanceof Error ? error.message : error,
 			stack: error instanceof Error ? error.stack : undefined,
 		});
@@ -413,12 +392,7 @@ export async function POST(request: NextRequest) {
 			);
 		}
 
-		return NextResponse.json(
-			{
-				error: errorMessage,
-			},
-			{ status: 500 },
-		);
+		return errorResponse(error, executingTool ? "execute" : "other");
 	}
 	// No finally { closeMcpClient } — the cache manages connection lifecycle.
 	// See report-agent-loop.ts:1012-1016 for the same pattern and rationale.
@@ -454,7 +428,7 @@ function parseMcpResult(result: unknown): unknown {
 					: null;
 				const errorMessage =
 					errorContent?.text || "MCP tool returned an error";
-				throw new Error(errorMessage as string);
+				throw new McpToolResultError(errorMessage as string);
 			}
 
 			// Check for { content: [...] } wrapper format (MCP SDK response)

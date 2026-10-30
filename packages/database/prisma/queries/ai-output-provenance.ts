@@ -42,6 +42,7 @@ export async function getAiOutputProvenance(subject: OutputSubject) {
 	return db.aiOutputProvenance.findUnique({
 		where: { organizationId_userId_subjectType_subjectId: subject },
 		select: {
+			agentId: true,
 			projectId: true,
 			modelCanonicalName: true,
 			promptVersionId: true,

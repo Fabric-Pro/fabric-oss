@@ -17,7 +17,7 @@ export type DraftVerdictRecorder = ((accepted: boolean) => Promise<void>) & {
  * Create a binding for its callbacks instead. The mounted card adopts
  * subsequent render bindings into its own token with useConfirmChangesVerdictCard.
  * Thus callbacks captured earlier by a review bar share the card's one decision.
- * No run/loading state owns identity; UUID allocation happens on the first click.
+ * Server args supply identity when available; fallback UUIDs are allocated on click.
  */
 export function useConfirmChangesVerdict(options: Surface) {
 	const projectId = "projectId" in options ? options.projectId : undefined;
@@ -59,7 +59,19 @@ export function useConfirmChangesVerdict(options: Surface) {
 }
 
 /** Bind a mounted confirm card and its earlier captured controls to one token. */
-export function useConfirmChangesVerdictCard(record: DraftVerdictRecorder) {
+export function useConfirmChangesVerdictCard(
+	record: DraftVerdictRecorder,
+	draftId?: unknown,
+) {
 	const card = useRef(record.binding.current);
+	if (
+		card.current.id === null &&
+		typeof draftId === "string" &&
+		/^msg_[1-9][0-9]{12}_[0-9a-f]{32}(?::[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/.test(
+			draftId,
+		)
+	) {
+		card.current.id = draftId;
+	}
 	record.binding.current = card.current;
 }

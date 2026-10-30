@@ -31,15 +31,25 @@ export const PROPOSAL_ANALYSIS_KINDS = ["GENERATION", "RERUN"] as const;
 export type ProposalAnalysisKind = (typeof PROPOSAL_ANALYSIS_KINDS)[number];
 
 /**
- * The kinds a member can give an answer. Needs Review is derived at read
- * time and never stored.
+ * The kinds a stored answer can have. A member gives CONFIRMED or RESPONDED;
+ * RESOLVED is written only when an applied recommendation is saved. Needs
+ * Review is derived at read time and never stored.
  */
 export const PROPOSAL_FINDING_RESPONSE_KINDS = [
 	"CONFIRMED",
 	"RESPONDED",
+	"RESOLVED",
 ] as const;
 export type ProposalFindingResponseKind =
 	(typeof PROPOSAL_FINDING_RESPONSE_KINDS)[number];
+
+/** The kinds a member writes through the answer path. */
+export const PROPOSAL_FINDING_ANSWER_KINDS = [
+	"CONFIRMED",
+	"RESPONDED",
+] as const satisfies readonly ProposalFindingResponseKind[];
+export type ProposalFindingAnswerKind =
+	(typeof PROPOSAL_FINDING_ANSWER_KINDS)[number];
 
 export const PROPOSAL_FINDING_SEVERITIES = [
 	"BLOCKING",

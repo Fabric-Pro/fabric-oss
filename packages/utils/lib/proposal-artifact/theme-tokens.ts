@@ -106,14 +106,25 @@ export interface ProposalThemeTokens<TAsset = ThemeAssetRef> {
 	};
 }
 
-/** The neutral professional style a document gets without brand values. */
+/**
+ * The neutral professional style a document gets without brand values. Three
+ * faces (Fizzy #2946): Poppins for display, Inter for body, JetBrains Mono
+ * for the mono role, which print embeds and the live page loads itself.
+ */
 export const NEUTRAL_THEME = {
 	primary: "#334155",
 	accents: ["#475569"],
 	surface: "#ffffff",
 	ink: "#111827",
-	font: "Inter",
+	fonts: {
+		display: "Poppins",
+		body: "Inter",
+		mono: "JetBrains Mono",
+	},
 } as const;
+
+/** A font role: the theme sets each in its own family. */
+type ThemeFontRole = keyof typeof NEUTRAL_THEME.fonts;
 
 /** Most accent and recipient colours a token carries. */
 const MAX_COLORS = 3;
@@ -243,11 +254,11 @@ export function buildProposalThemeTokens(
 			fonts: {
 				display: displayFamily
 					? { value: displayFamily, source: "BRAND_KIT" }
-					: fromDefault(NEUTRAL_THEME.font),
+					: fromDefault(NEUTRAL_THEME.fonts.display),
 				body: bodyFamily
 					? { value: bodyFamily, source: "BRAND_KIT" }
-					: fromDefault(NEUTRAL_THEME.font),
-				mono: fromDefault(NEUTRAL_THEME.font),
+					: fromDefault(NEUTRAL_THEME.fonts.body),
+				mono: fromDefault(NEUTRAL_THEME.fonts.mono),
 			},
 			// A file counts only with the family it is uploaded for.
 			fontFiles: {
@@ -340,6 +351,119 @@ function mix(color: string, base: string, weight: number): string {
 	return rgbToHex(blend(1), blend(3), blend(5));
 }
 
+/**
+ * How far the cover's grey text sits from its white towards the ink: light
+ * enough for a lead and labels to read as secondary, never below 4.5:1.
+ */
+const ON_INK_MUTED_WEIGHT = 0.78;
+
+/**
+ * The grey whose relative luminance is `luminance`, rounded up a step, so a
+ * veil worked out over it is never thinner than the picture needs.
+ */
+function greyOfLuminance(luminance: number): string {
+	const linear = Math.min(Math.max(luminance, 0), 1);
+	const encoded =
+		linear <= 0.0031308
+			? linear * 12.92
+			: 1.055 * linear ** (1 / 2.4) - 0.055;
+	const value = Math.min(Math.ceil(encoded * 255), 255);
+	return rgbToHex(value, value, value);
+}
+
+/**
+ * The least ink veil, at 1% steps, under which every colour of `texts`
+ * still reads at 4.5:1 over the hero, and on the ink's side of it. A colour
+ * lighter than the ink is checked over the hero's measured bright end when
+ * there is one, else over pure white; a darker one over pure black. Blended
+ * as the page composites it, in sRGB.
+ */
+function heroVeilFor(
+	ink: string,
+	texts: readonly string[],
+	heroLuminance: number | undefined,
+): number {
+	const brightest =
+		heroLuminance !== undefined && Number.isFinite(heroLuminance)
+			? greyOfLuminance(heroLuminance)
+			: "#ffffff";
+	// Contrast against white falls as a colour lightens, so it orders them.
+	const lightness = (color: string) => -contrastRatio(color, "#ffffff");
+	const holds = (opacity: number) =>
+		texts.every((color) => {
+			const lighter = lightness(color) > lightness(ink);
+			const veiled = mix(ink, lighter ? brightest : "#000000", opacity);
+			// Past the colour, some tone of the hero between the two would
+			// match it, however well the far end contrasts.
+			const onInkSide = lighter
+				? lightness(veiled) < lightness(color)
+				: lightness(veiled) > lightness(color);
+			return onInkSide && contrastRatio(color, veiled) >= TEXT_CONTRAST;
+		});
+	for (let step = 0; step < 100; step++) {
+		if (holds(step / 100)) {
+			return step / 100;
+		}
+	}
+	return 1;
+}
+
+/**
+ * The colours the cover and the section openers paint on the ink (Fizzy
+ * #2946), each checked against the ink itself. A brand colour is the
+ * primary, then each accent, whichever first holds: 4.5:1 for text, else
+ * the plain text colour; 3:1 for a rule, else the primary lightened until
+ * it does. The brand values are read as stored, not as the paper's paint,
+ * which drops a light accent that reads well on the ink.
+ */
+function onInkPaint(
+	ink: string,
+	surface: string,
+	brand: readonly string[],
+	primary: string,
+	heroLuminance: number | undefined,
+): Pick<
+	ProposalThemePaint,
+	"onInk" | "onInkMuted" | "onInkAccent" | "onInkRule" | "heroVeil"
+> {
+	// The surface always reads on the ink; white is preferred when it does.
+	const onInk =
+		contrastRatio("#ffffff", ink) >= TEXT_CONTRAST ? "#ffffff" : surface;
+	let onInkMuted = mix(onInk, ink, ON_INK_MUTED_WEIGHT);
+	if (contrastRatio(onInkMuted, ink) < TEXT_CONTRAST) {
+		onInkMuted = onInk;
+	}
+	const onInkAccent =
+		brand.find((color) => contrastRatio(color, ink) >= TEXT_CONTRAST) ??
+		onInk;
+	// At its lightest the mix is the text colour, which always holds.
+	let onInkRule = brand.find(
+		(color) => contrastRatio(color, ink) >= GRAPHIC_CONTRAST,
+	);
+	for (let step = 1; onInkRule === undefined; step++) {
+		const lighter = mix(primary, onInk, Math.max(1 - step / 10, 0));
+		if (contrastRatio(lighter, ink) >= GRAPHIC_CONTRAST || step >= 10) {
+			onInkRule = lighter;
+		}
+	}
+	return {
+		onInk,
+		onInkMuted,
+		onInkAccent,
+		onInkRule,
+		// The accent is text over the hero too: the cover's and each
+		// opener's eyebrow. The figures' rules are left out: one that only
+		// just holds 3:1 on the ink would need the hero veiled away, and
+		// they sit low on the cover, where the fade is taking the hero into
+		// the ink.
+		heroVeil: heroVeilFor(
+			ink,
+			[onInk, onInkMuted, onInkAccent],
+			heroLuminance,
+		),
+	};
+}
+
 /** The editor's own review hues (DocumentEditor.css), not brand values. */
 const REVIEW_INSERT = "#22c55e";
 const REVIEW_DELETE = "#f98181";
@@ -374,11 +498,35 @@ export interface ProposalThemePaint {
 	reviewDelete: string;
 	/** Recipient colours that hold up as graphics on the paper. */
 	recipient: string[];
+	/** Text on the ink: the cover and the section openers. */
+	onInk: string;
+	/** Secondary text on the ink: the cover's lead, labels and parties. */
+	onInkMuted: string;
+	/** A brand colour as text on the ink: eyebrows and labels. */
+	onInkAccent: string;
+	/** A brand colour as a rule on the ink: the cover's figure rules. */
+	onInkRule: string;
+	/**
+	 * The opacity of the ink laid over a hero, 0 to 1: enough that the
+	 * cover's text and grey text read at 4.5:1 over the hero's measured
+	 * bright end, or over a pure white hero when it was not measured.
+	 */
+	heroVeil: number;
 	fonts: { display: string; body: string; mono: string };
+}
+
+/** What the paint takes from outside the tokens. */
+export interface ThemePaintOptions {
+	/**
+	 * The hero's bright end as relative luminance (0 to 1), when print has
+	 * measured its bytes; the veil then lays only the ink that picture needs.
+	 */
+	heroLuminance?: number;
 }
 
 export function resolveThemePaint(
 	tokens: ProposalThemeTokens<unknown>,
+	options: ThemePaintOptions = {},
 ): ProposalThemePaint {
 	const proposer = tokens.proposer;
 	let surface = strictHex(proposer.surface.value) ?? NEUTRAL_THEME.surface;
@@ -430,22 +578,35 @@ export function resolveThemePaint(
 			tokens.recipient.colors.value,
 			MAX_COLORS,
 		).filter((color) => contrastRatio(color, surface) >= GRAPHIC_CONTRAST),
+		...onInkPaint(
+			ink,
+			surface,
+			[
+				...(brandPrimary ? [brandPrimary] : []),
+				...normalizeHexColorList(proposer.accents.value, MAX_COLORS),
+			],
+			primary,
+			options.heroLuminance,
+		),
 		fonts: {
 			display:
 				safeFontFamily(proposer.fonts.display.value) ??
-				NEUTRAL_THEME.font,
+				NEUTRAL_THEME.fonts.display,
 			body:
-				safeFontFamily(proposer.fonts.body.value) ?? NEUTRAL_THEME.font,
+				safeFontFamily(proposer.fonts.body.value) ??
+				NEUTRAL_THEME.fonts.body,
 			mono:
-				safeFontFamily(proposer.fonts.mono.value) ?? NEUTRAL_THEME.font,
+				safeFontFamily(proposer.fonts.mono.value) ??
+				NEUTRAL_THEME.fonts.mono,
 		},
 	};
 }
 
 /**
  * The paint as CSS custom properties for the theme root. Every value is a
- * `#rrggbb` colour or one quoted family name from the allowed character set,
- * so nothing a brand source holds can reach CSS as anything else. Keys are
+ * `#rrggbb` colour, one quoted family name from the allowed character set or
+ * the hero veil's opacity as a fixed-point number, so nothing a brand source
+ * holds can reach CSS as anything else. Keys are
  * the `--pa-*` names the theme stylesheet reads.
  */
 export function themeCustomProperties(
@@ -455,8 +616,8 @@ export function themeCustomProperties(
 	// `resolveThemePaint` still cannot write anything else into CSS.
 	const color = (value: string, fallback: string) =>
 		strictHex(value) ?? fallback;
-	const family = (value: string) =>
-		`"${safeFontFamily(value) ?? NEUTRAL_THEME.font}"`;
+	const family = (value: string, role: ThemeFontRole) =>
+		`"${safeFontFamily(value) ?? NEUTRAL_THEME.fonts[role]}"`;
 	const properties: Record<`--pa-${string}`, string> = {
 		"--pa-surface": color(paint.surface, NEUTRAL_THEME.surface),
 		"--pa-ink": color(paint.ink, NEUTRAL_THEME.ink),
@@ -470,9 +631,20 @@ export function themeCustomProperties(
 		"--pa-tint": color(paint.tint, NEUTRAL_THEME.surface),
 		"--pa-review-insert": color(paint.reviewInsert, NEUTRAL_THEME.surface),
 		"--pa-review-delete": color(paint.reviewDelete, NEUTRAL_THEME.surface),
-		"--pa-font-display": family(paint.fonts.display),
-		"--pa-font-body": family(paint.fonts.body),
-		"--pa-font-mono": family(paint.fonts.mono),
+		"--pa-on-ink": color(paint.onInk, NEUTRAL_THEME.surface),
+		"--pa-on-ink-muted": color(paint.onInkMuted, NEUTRAL_THEME.surface),
+		"--pa-on-ink-accent": color(paint.onInkAccent, NEUTRAL_THEME.surface),
+		"--pa-on-ink-rule": color(paint.onInkRule, NEUTRAL_THEME.surface),
+		// A number, never text: anything else paints the ink opaque.
+		"--pa-hero-veil":
+			Number.isFinite(paint.heroVeil) &&
+			paint.heroVeil >= 0 &&
+			paint.heroVeil <= 1
+				? paint.heroVeil.toFixed(2)
+				: "1.00",
+		"--pa-font-display": family(paint.fonts.display, "display"),
+		"--pa-font-body": family(paint.fonts.body, "body"),
+		"--pa-font-mono": family(paint.fonts.mono, "mono"),
 	};
 	normalizeHexColorList(paint.recipient, MAX_COLORS).forEach(
 		(value, index) => {
@@ -594,9 +766,11 @@ function hashHex(value: string, seed: number): string {
 
 /**
  * Version prefix: a later change to what is hashed reads as "unknown". `t2`
- * added the uploaded font files.
+ * added the uploaded font files. `t3` marks the three print faces (Fizzy
+ * #2946): print now sets display, body and mono in their own families, so a
+ * record made before reads as a design change, not a brand change.
  */
-const TOKEN_HASH_VERSION = "t2";
+const TOKEN_HASH_VERSION = "t3";
 
 /**
  * A stable hash of what the tokens look like (values, not sources), so a

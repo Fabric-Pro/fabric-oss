@@ -21,15 +21,17 @@
 export const LIGHT_INK = "#fff7f7";
 export const DARK_INK = "#000000";
 
+/** One sRGB channel byte (0 to 255) as linear light, as WCAG 2.1 reads it. */
+export function srgbChannelToLinear(byte: number): number {
+	const value = byte / 255;
+	return value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+}
+
 /** WCAG 2.1 relative luminance of a `#rrggbb` colour. */
 export function relativeLuminance(hex: string): number {
 	const raw = hex.replace("#", "");
-	const channel = (offset: number) => {
-		const value = Number.parseInt(raw.slice(offset, offset + 2), 16) / 255;
-		return value <= 0.03928
-			? value / 12.92
-			: ((value + 0.055) / 1.055) ** 2.4;
-	};
+	const channel = (offset: number) =>
+		srgbChannelToLinear(Number.parseInt(raw.slice(offset, offset + 2), 16));
 	return 0.2126 * channel(0) + 0.7152 * channel(2) + 0.0722 * channel(4);
 }
 

@@ -36,7 +36,10 @@
 import type { DocumentRefKind } from "@saas/projects/hooks/useDocumentAssistantHistory";
 import { createContext, type ReactNode, useContext, useMemo } from "react";
 import { useActiveDocumentAssistantConversation } from "../../hooks/useDocumentAssistantHistory";
-import type { DiffOutcomeChipToolCall } from "./DiffOutcomeChip";
+import {
+	type DiffOutcomeChipToolCall,
+	hasDiffOutcome,
+} from "./DiffOutcomeChip";
 
 interface OutcomeEntry extends DiffOutcomeChipToolCall {
 	id: string;
@@ -114,17 +117,23 @@ export function DocumentAssistantOutcomesProvider({
 				if (typeof t.id !== "string") {
 					continue;
 				}
+				// Only proposals have a decision to show: a search or any
+				// other tool the assistant called gets no chip (Fizzy #2946).
+				const name = typeof t.name === "string" ? t.name : undefined;
+				if (!hasDiffOutcome(name)) {
+					continue;
+				}
 				// Surface ALL diff-producing toolCalls — including
 				// Pending (no acceptedAt/rejectedAt). Previously this
 				// branch filtered them out, which meant a user who
 				// reloaded mid-review (TipTap state lost, DiffReviewBar
 				// gone) saw NO indication of the orphaned decision.
-				// The `DiffOutcomeChip` already renders the "Pending"
-				// badge variant when both stamps are null, so showing
-				// it here closes the UX gap without any chip changes.
+				// The `DiffOutcomeChip` renders "Pending" when both stamps
+				// are null while the chat waits on the call, and "No
+				// decision recorded" once it no longer does.
 				entries.push({
 					id: t.id,
-					name: typeof t.name === "string" ? t.name : undefined,
+					name,
 					acceptedAt:
 						typeof t.acceptedAt === "string" ? t.acceptedAt : null,
 					rejectedAt:

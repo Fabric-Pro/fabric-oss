@@ -76,7 +76,7 @@ Version compatibility: Fabric's SDK is pinned at `~1.16.3`. Run a server version
 
 ## 5. Task queues (the contract)
 
-Fabric's worker declares **20 task queues** (`packages/temporal/src/worker.ts`). These names are the contract: clients start workflows and workflows schedule activities on these exact strings. Every queue must be polled by at least one process. By default one process polls all queues; `WORKER_TASK_QUEUES` and `WORKER_EXCLUDED_TASK_QUEUES` select a subset for separate processes.
+Fabric's worker declares **21 task queues** (`packages/temporal/src/worker.ts`). These names are the contract: clients start workflows and workflows schedule activities on these exact strings. Every queue must be polled by at least one process. By default one process polls all queues; `WORKER_TASK_QUEUES` and `WORKER_EXCLUDED_TASK_QUEUES` select a subset for separate processes.
 
 | # | Task queue | Purpose | Concurrency (activity / workflow) | Source |
 |---|---|---|---|---|
@@ -100,8 +100,9 @@ Fabric's worker declares **20 task queues** (`packages/temporal/src/worker.ts`).
 | 18 | `project-embeddings` | Project embeddings, file ingestion, URL crawling, deletion, reprocessing and vector cleanup | 3 / 5 | `worker.ts` |
 | 19 | `project-operations` | Discovery, scope intake, meeting operations and ingestion control | 5 / 5 | `worker.ts` |
 | 20 | `proposal-export` | Proposal PDF and Word exports; each running activity holds one headless Chromium, so the slots cap the browsers per process | 2 / 4 | `worker.ts` |
+| 21 | `agui-runs` | Durable CopilotKit assistant runs (document, feature and topic assistants); each running activity streams one agent response into Redis and never opens a database connection | 10 / 10 | `worker.ts` |
 
-With all queues selected there are **104 activity slots and 106 workflow slots**. The shared database pool is sized at half the selected activity slots, rounded up: **52 connections** for all queues. The operations queue adds five activity slots and two pool connections to the generation/embedding split, and the Proposal export queue two activity slots and one connection. In the usual process split, the general worker excludes `atlas,code-indexing` and automatically includes these queues; its 99 activity slots require 50 connections, while the heavy worker's five slots require three.
+With all queues selected there are **114 activity slots and 116 workflow slots**. The shared database pool is sized at half the selected activity slots that can reach the database, rounded up: `agui-runs` is left out because its activity never opens a connection, so the pool stays at **52 connections** for all queues. The operations queue adds five activity slots and two pool connections to the generation/embedding split, and the Proposal export queue two activity slots and one connection. In the usual process split, the general worker excludes `atlas,code-indexing` and automatically includes these queues; its 109 activity slots (99 of them able to reach the database) require 50 connections, while the heavy worker's five slots require three.
 
 Document-generation workflow starts and children keep their existing workflow queue. Their foreground activity commands explicitly use `project-document-generation`, including the document embedding they await before completing. Sequential setup keeps that embedding in the foreground so the next document can retrieve its vectors without waiting behind background indexing or exhausting the generation child's 20-minute timeout. Independent document embedding workflows use `project-embeddings`. Context embedding starts from the API, repository sync, meeting/Slack ingestion and deletion recovery all use the same workflow definition, which routes project embedding activities to `project-embeddings`; company owners keep `company-context`. Existing vector-cleanup schedules keep their action queue and route their activities separately, so no schedule migration is required.
 

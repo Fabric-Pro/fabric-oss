@@ -37,7 +37,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // ---------------------------------------------------------------------------
 
 vi.mock("@copilotkit/react-core", () => ({
-	useCoAgent: vi.fn(),
 	useCopilotChatInternal: vi.fn(),
 }));
 
@@ -66,18 +65,7 @@ vi.mock("../ReasoningCollapsible", () => ({
 	ReasoningCollapsible: () => <div data-testid="reasoning-collapsible" />,
 }));
 
-// `McpAppFrame` is rendered as a sibling above the auto-insert button —
-// stub it so the tests focus on the button-wiring assertions.
-//
-// Note on relative paths: this test file sits in `__tests__/`, one level
-// deeper than `CopilotAssistantMessage.tsx`, so every `vi.mock` path
-// needs ONE EXTRA `../` compared with the import path written in the
-// source file. The sibling `CopilotAssistantMessage.test.tsx` uses the
-// same depth as the source (5 `../` instead of 6) but that's a silent
-// mismatch — none of its scenarios trigger `<McpAppFrame>` or the
-// other re-mocked modules, so the wrong path is a dead mock and the
-// production module loads instead. Our tests DO exercise those paths,
-// so the path counts must match the test file's location.
+// A reply row must leave frame rendering to the tool-call row.
 vi.mock("../../../../../../components/ai-elements/McpAppFrame", () => ({
 	McpAppFrame: (props: { resourceUri: string }) => (
 		<div data-testid="mcp-frame" data-resource-uri={props.resourceUri} />
@@ -193,8 +181,15 @@ vi.mock(
 	}),
 );
 
-import { useCoAgent, useCopilotChatInternal } from "@copilotkit/react-core";
+import { useCopilotChatInternal } from "@copilotkit/react-core";
 import { CopilotAssistantMessage } from "../CopilotAssistantMessage";
+
+let transcript: any[] = [];
+function TranscriptSlots(props: any) {
+	return <CopilotAssistantMessage {...props} messages={transcript} />;
+}
+
+import { useAgentStateReadOnly } from "../useAgentStateReadOnly";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -238,51 +233,51 @@ beforeEach(() => {
 		(_id: string) => "Draw a system diagram",
 	);
 	resolverTargetMock.value = null;
-	(useCoAgent as unknown as ReturnType<typeof vi.fn>).mockReset();
-	(useCoAgent as unknown as ReturnType<typeof vi.fn>).mockReturnValue({
+	(useAgentStateReadOnly as unknown as ReturnType<typeof vi.fn>).mockReset();
+	(
+		useAgentStateReadOnly as unknown as ReturnType<typeof vi.fn>
+	).mockReturnValue({
 		state: {},
 	});
-	(useCopilotChatInternal as unknown as ReturnType<typeof vi.fn>).mockReset();
+	(
+		useCopilotChatInternal as unknown as ReturnType<typeof vi.fn>
+	).mockReturnValue({});
+	transcript = [];
 });
 
 // ---------------------------------------------------------------------------
 // Render-gate tests
 // ---------------------------------------------------------------------------
 
-describe("CopilotAssistantMessage -- Excalidraw auto-insert button render gate", () => {
-	it("renders the button when the envelope's resourceUri contains 'excalidraw'", () => {
-		(
-			useCopilotChatInternal as unknown as ReturnType<typeof vi.fn>
-		).mockReturnValue({
-			visibleMessages: [
-				{
-					id: "u1",
-					role: "user",
-					content: "Draw a system diagram",
-				},
-				{
-					id: "r1",
-					type: "ResultMessage",
-					role: "tool",
-					result: envelopeJson({
-						resourceUri: "ui://excalidraw/scene-1",
-						configId: "cfg_excalidraw",
-						checkpointId: "cp_xyz",
-						toolArgs: {
-							elements: [{ type: "rect" }],
-							appState: {},
-						},
-					}),
-				},
-				{
-					id: "a1",
-					role: "assistant",
-					content: "Here's the diagram.",
-				},
-			],
-		});
+describe("findInlineMcpEnvelope + MCP slots -- Excalidraw render gate", () => {
+	it("renders ExcalidrawAutoInsertSlot when the envelope's resourceUri contains 'excalidraw'", () => {
+		transcript = [
+			{
+				id: "u1",
+				role: "user",
+				content: "Draw a system diagram",
+			},
+			{
+				id: "r1",
+				role: "tool",
+				content: envelopeJson({
+					resourceUri: "ui://excalidraw/scene-1",
+					configId: "cfg_excalidraw",
+					checkpointId: "cp_xyz",
+					toolArgs: {
+						elements: [{ type: "rect" }],
+						appState: {},
+					},
+				}),
+			},
+			{
+				id: "a1",
+				role: "assistant",
+				content: "Here's the diagram.",
+			},
+		];
 
-		render(<CopilotAssistantMessage {...baseProps} />);
+		render(<TranscriptSlots {...baseProps} />);
 
 		expect(
 			screen.getByTestId("excalidraw-auto-insert-button"),
@@ -295,51 +290,40 @@ describe("CopilotAssistantMessage -- Excalidraw auto-insert button render gate",
 		).toHaveAttribute("data-message-id", "a1");
 	});
 
-	it("does NOT render the button when the envelope's resourceUri is non-Excalidraw", () => {
-		(
-			useCopilotChatInternal as unknown as ReturnType<typeof vi.fn>
-		).mockReturnValue({
-			visibleMessages: [
-				{ id: "u1", role: "user", content: "Search the docs" },
-				{
-					id: "r1",
-					type: "ResultMessage",
-					role: "tool",
-					result: envelopeJson({
-						resourceUri: "ui://mermaid/abc",
-						configId: "cfg_mermaid",
-						checkpointId: "cp_xyz",
-					}),
-				},
-				{
-					id: "a1",
-					role: "assistant",
-					content: "Here are the docs.",
-				},
-			],
-		});
+	it("omits ExcalidrawAutoInsertSlot when the envelope's resourceUri is non-Excalidraw", () => {
+		transcript = [
+			{ id: "u1", role: "user", content: "Search the docs" },
+			{
+				id: "r1",
+				role: "tool",
+				content: envelopeJson({
+					resourceUri: "ui://mermaid/abc",
+					configId: "cfg_mermaid",
+					checkpointId: "cp_xyz",
+				}),
+			},
+			{
+				id: "a1",
+				role: "assistant",
+				content: "Here are the docs.",
+			},
+		];
 
-		render(<CopilotAssistantMessage {...baseProps} />);
+		render(<TranscriptSlots {...baseProps} />);
 
-		// `McpAppFrame` still renders for the non-Excalidraw envelope --
-		// only the auto-insert button is gated to Excalidraw.
-		expect(screen.getByTestId("mcp-frame")).toBeInTheDocument();
+		expect(screen.queryByTestId("mcp-frame")).not.toBeInTheDocument();
 		expect(
 			screen.queryByTestId("excalidraw-auto-insert-button"),
 		).not.toBeInTheDocument();
 	});
 
-	it("does NOT render the button when there is no inline-MCP envelope", () => {
-		(
-			useCopilotChatInternal as unknown as ReturnType<typeof vi.fn>
-		).mockReturnValue({
-			visibleMessages: [
-				{ id: "u1", role: "user", content: "Plain question" },
-				{ id: "a1", role: "assistant", content: "Plain answer." },
-			],
-		});
+	it("omits ExcalidrawAutoInsertSlot when there is no inline-MCP envelope", () => {
+		transcript = [
+			{ id: "u1", role: "user", content: "Plain question" },
+			{ id: "a1", role: "assistant", content: "Plain answer." },
+		];
 
-		render(<CopilotAssistantMessage {...baseProps} />);
+		render(<TranscriptSlots {...baseProps} />);
 
 		expect(screen.queryByTestId("mcp-frame")).not.toBeInTheDocument();
 		expect(
@@ -352,8 +336,8 @@ describe("CopilotAssistantMessage -- Excalidraw auto-insert button render gate",
 // Resolver / wiring assertions
 // ---------------------------------------------------------------------------
 
-describe("CopilotAssistantMessage -- Excalidraw auto-insert wiring", () => {
-	it("passes the same-page editor returned by the resolver (FR-2 happy path) through to the button", () => {
+describe("ExcalidrawAutoInsertSlot -- editor and chat-scope wiring", () => {
+	it("passes the slot's same-page editor returned by the resolver (FR-2 happy path) through to the button", () => {
 		// Resolver returns the editor registered on the page.
 		const samePageEditor = { commands: {}, state: {} };
 		resolverTargetMock.value = {
@@ -364,27 +348,22 @@ describe("CopilotAssistantMessage -- Excalidraw auto-insert wiring", () => {
 			editor: samePageEditor,
 		};
 
-		(
-			useCopilotChatInternal as unknown as ReturnType<typeof vi.fn>
-		).mockReturnValue({
-			visibleMessages: [
-				{ id: "u1", role: "user", content: "Draw it" },
-				{
-					id: "r1",
-					type: "ResultMessage",
-					role: "tool",
-					result: envelopeJson({
-						resourceUri: "ui://excalidraw/scene-1",
-						configId: "cfg_excalidraw",
-						checkpointId: "cp_xyz",
-						toolArgs: { elements: [{ type: "rect" }] },
-					}),
-				},
-				{ id: "a1", role: "assistant", content: "Here it is." },
-			],
-		});
+		transcript = [
+			{ id: "u1", role: "user", content: "Draw it" },
+			{
+				id: "r1",
+				role: "tool",
+				content: envelopeJson({
+					resourceUri: "ui://excalidraw/scene-1",
+					configId: "cfg_excalidraw",
+					checkpointId: "cp_xyz",
+					toolArgs: { elements: [{ type: "rect" }] },
+				}),
+			},
+			{ id: "a1", role: "assistant", content: "Here it is." },
+		];
 
-		render(<CopilotAssistantMessage {...baseProps} />);
+		render(<TranscriptSlots {...baseProps} />);
 
 		expect(
 			screen.getByTestId("excalidraw-auto-insert-button"),
@@ -407,27 +386,22 @@ describe("CopilotAssistantMessage -- Excalidraw auto-insert wiring", () => {
 		expect(tr.elements).toEqual([{ type: "rect" }]);
 	});
 
-	it("wires the chat-scope adapter with route projectId + active organizationId", () => {
-		(
-			useCopilotChatInternal as unknown as ReturnType<typeof vi.fn>
-		).mockReturnValue({
-			visibleMessages: [
-				{ id: "u1", role: "user", content: "Draw it" },
-				{
-					id: "r1",
-					type: "ResultMessage",
-					role: "tool",
-					result: envelopeJson({
-						resourceUri: "ui://excalidraw/scene-1",
-						configId: "cfg_excalidraw",
-						checkpointId: "cp_xyz",
-					}),
-				},
-				{ id: "a1", role: "assistant", content: "Here it is." },
-			],
-		});
+	it("wires the slot's chat-scope adapter with route projectId + active organizationId", () => {
+		transcript = [
+			{ id: "u1", role: "user", content: "Draw it" },
+			{
+				id: "r1",
+				role: "tool",
+				content: envelopeJson({
+					resourceUri: "ui://excalidraw/scene-1",
+					configId: "cfg_excalidraw",
+					checkpointId: "cp_xyz",
+				}),
+			},
+			{ id: "a1", role: "assistant", content: "Here it is." },
+		];
 
-		render(<CopilotAssistantMessage {...baseProps} />);
+		render(<TranscriptSlots {...baseProps} />);
 
 		expect(useChatScopedProjectFromCopilotChatMock).toHaveBeenCalledTimes(
 			1,
@@ -441,38 +415,188 @@ describe("CopilotAssistantMessage -- Excalidraw auto-insert wiring", () => {
 		expect(Array.isArray(arg.visibleMessages)).toBe(true);
 	});
 
-	it("derives the title from the chat-scope's lastUserPromptForMessage lookup", () => {
+	it("derives the slot title from the chat-scope's lastUserPromptForMessage lookup", () => {
 		chatScopeMock.lastUserPromptForMessage = vi.fn(
 			(_id: string) => "Sketch a sequence diagram for the login flow",
 		);
 
-		(
-			useCopilotChatInternal as unknown as ReturnType<typeof vi.fn>
-		).mockReturnValue({
-			visibleMessages: [
-				{
-					id: "u1",
-					role: "user",
-					content: "Sketch a sequence diagram for the login flow",
-				},
-				{
-					id: "r1",
-					type: "ResultMessage",
-					role: "tool",
-					result: envelopeJson({
-						resourceUri: "ui://excalidraw/scene-1",
-						configId: "cfg_excalidraw",
-						checkpointId: "cp_xyz",
-					}),
-				},
-				{ id: "a1", role: "assistant", content: "Here it is." },
-			],
-		});
+		transcript = [
+			{
+				id: "u1",
+				role: "user",
+				content: "Sketch a sequence diagram for the login flow",
+			},
+			{
+				id: "r1",
+				role: "tool",
+				content: envelopeJson({
+					resourceUri: "ui://excalidraw/scene-1",
+					configId: "cfg_excalidraw",
+					checkpointId: "cp_xyz",
+				}),
+			},
+			{ id: "a1", role: "assistant", content: "Here it is." },
+		];
 
-		render(<CopilotAssistantMessage {...baseProps} />);
+		render(<TranscriptSlots {...baseProps} />);
 
 		expect(buttonProps[0]?.title).toBe(
 			"title:Sketch a sequence diagram for the login flow",
 		);
 	});
+});
+
+vi.mock("../useAgentStateReadOnly", () => ({
+	useAgentStateReadOnly: vi.fn(),
+	useAgentTranscriptSelector: (
+		_name: string,
+		selector: (state: unknown, messages: unknown[]) => unknown,
+	) => selector({}, []),
+	useAgentStateSelector: (
+		_name: string,
+		selector: (state: unknown) => unknown,
+	) => selector(vi.mocked(useAgentStateReadOnly)().state),
+}));
+
+it("mounts the insert button on the reply only, without a second frame", () => {
+	transcript = [
+		{ id: "u1", role: "user", content: "Draw" },
+		{
+			id: "call",
+			role: "assistant",
+			content: "",
+			toolCalls: [{ id: "tc", function: { name: "create_view" } }],
+		},
+		{
+			id: "result",
+			role: "tool",
+			toolCallId: "tc",
+			content: envelopeJson({
+				resourceUri: "ui://excalidraw/scene",
+				configId: "example-config",
+			}),
+		},
+		{ id: "a1", role: "assistant", content: "Done" },
+	];
+	const view = render(
+		<TranscriptSlots {...baseProps} message={transcript[1]} />,
+	);
+	expect(screen.queryByTestId("excalidraw-auto-insert-button")).toBeNull();
+	view.rerender(<TranscriptSlots {...baseProps} message={transcript[3]} />);
+	expect(screen.getByTestId("excalidraw-auto-insert-button")).toHaveAttribute(
+		"data-message-id",
+		"a1",
+	);
+	expect(screen.queryByTestId("mcp-frame")).toBeNull();
+	const projection =
+		useChatScopedProjectFromCopilotChatMock.mock.calls.at(-1)?.[0]
+			?.visibleMessages;
+	transcript = transcript.map((m) =>
+		m.id === "a1" ? { ...m, content: "Done streaming" } : { ...m },
+	);
+	view.rerender(<TranscriptSlots {...baseProps} message={transcript[3]} />);
+	expect(
+		useChatScopedProjectFromCopilotChatMock.mock.calls.at(-1)?.[0]
+			?.visibleMessages,
+	).toBe(projection);
+	const renders = buttonProps.length;
+	transcript = [
+		...transcript,
+		{ id: "next-user", role: "user", content: "another question" },
+	];
+	view.rerender(<TranscriptSlots {...baseProps} message={transcript[3]} />);
+	expect(buttonProps).toHaveLength(renders);
+});
+
+it.each(["resourceUri", "configId", "checkpointId", "toolArgs"])(
+	"refreshes the insert button when envelope %s changes",
+	(field) => {
+		const envelope = {
+			resourceUri: "ui://excalidraw/scene",
+			configId: "example-config",
+			checkpointId: "cp1",
+			toolArgs: { elements: [] },
+		};
+		const makeTranscript = (env: object) => [
+			{ id: "u1", role: "user", content: "Draw" },
+			{
+				id: "result",
+				role: "tool",
+				content: envelopeJson(env as typeof envelope),
+			},
+			{ id: "a1", role: "assistant", content: "Done" },
+		];
+		transcript = makeTranscript(envelope);
+		const view = render(<TranscriptSlots {...baseProps} />);
+		const value =
+			field === "toolArgs"
+				? { elements: [{ type: "rect" }] }
+				: field === "resourceUri"
+					? "ui://excalidraw/new"
+					: "updated";
+		transcript = makeTranscript({ ...envelope, [field]: value });
+		view.rerender(<TranscriptSlots {...baseProps} />);
+		const toolResult = buttonProps.at(-1)?.toolResult as Record<
+			string,
+			unknown
+		>;
+		const key =
+			field === "configId"
+				? "mcpConfigId"
+				: field === "toolArgs"
+					? "elements"
+					: field;
+		expect(toolResult[key]).toEqual(
+			field === "toolArgs" ? [{ type: "rect" }] : value,
+		);
+	},
+);
+
+it("does not reparse diagram payloads while the last reply streams", () => {
+	const payloads = [0, 1, 2].map((i) =>
+		envelopeJson({
+			resourceUri: `ui://excalidraw/scene-${i}`,
+			configId: "example-config",
+			toolArgs: { elements: [{ id: `shape-${i}`, type: "rectangle" }] },
+		}),
+	);
+	transcript = payloads.flatMap((content, i) => [
+		{ id: `user-${i}`, role: "user", content: "Draw" },
+		{ id: `tool-${i}`, role: "tool", toolCallId: `call-${i}`, content },
+		{ id: `reply-${i}`, role: "assistant", content: "Done" },
+	]);
+	const parse = vi.spyOn(JSON, "parse");
+	const rows = () => (
+		<>
+			{transcript
+				.filter((m) => m.role === "assistant")
+				.map((message) => (
+					<TranscriptSlots
+						{...baseProps}
+						key={message.id}
+						message={message}
+					/>
+				))}
+		</>
+	);
+	try {
+		const view = render(rows());
+		const calls = () =>
+			parse.mock.calls.filter(([value]) => payloads.includes(value))
+				.length;
+		const initial = calls();
+		expect(initial).toBe(payloads.length);
+		for (let token = 0; token < 3; token++) {
+			transcript = transcript.map((m) =>
+				m.id === "reply-2" ? { ...m, content: `${m.content}.` } : m,
+			);
+			view.rerender(rows());
+		}
+		expect(calls()).toBe(initial);
+		transcript = transcript.map((message) => ({ ...message }));
+		view.rerender(rows());
+		expect(calls()).toBe(initial);
+	} finally {
+		parse.mockRestore();
+	}
 });

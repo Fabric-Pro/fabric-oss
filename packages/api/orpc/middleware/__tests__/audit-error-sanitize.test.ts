@@ -8,11 +8,31 @@
  *  - `buildException`: returns OTEL-shaped { type, message, stacktrace }.
  *  - `extractCauseChain`: walks `.cause` recursively, caps at depth 5.
  *  - `sanitizeInput`: redacts sensitive keys, handles circular refs,
- *    truncates over 8 KiB, returns undefined for undefined input.
+ *    truncates over 8 KiB (after redacting, never before), records a
+ *    placeholder when the redactor fails, returns undefined for undefined
+ *    input.
  *  - `computeFingerprint`: stable hash, type-sensitive.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+// The real redactor, wrapped so one test can make it fail.
+const redactor = vi.hoisted(() => ({ fail: false }));
+vi.mock("@repo/database", async (importOriginal) => {
+	const actual = (await importOriginal()) as {
+		redactSensitiveKeys: (input: unknown) => unknown;
+	};
+	return {
+		...actual,
+		redactSensitiveKeys: (input: unknown) => {
+			if (redactor.fail) {
+				throw new RangeError("Maximum call stack size exceeded");
+			}
+			return actual.redactSensitiveKeys(input);
+		},
+	};
+});
+
 import {
 	buildException,
 	computeFingerprint,
@@ -225,6 +245,66 @@ describe("sanitizeInput", () => {
 		// Over budget → wrapped in `_truncated`.
 		expect(result._truncated).toBeDefined();
 		expect((result._truncated as string).endsWith("…")).toBe(true);
+	});
+
+	it("redacts sensitive keys before it truncates a payload over 8 KiB", () => {
+		const result = sanitizeInput({
+			password: "example-password-123",
+			nested: { apiKey: "sk-example-0123456789" },
+			data: "x".repeat(9000),
+		}) as Record<string, unknown>;
+
+		const truncated = result._truncated as string;
+		expect(truncated).toBeDefined();
+		expect(truncated).toContain('"password":"[REDACTED]"');
+		expect(truncated).toContain('"apiKey":"[REDACTED]"');
+		expect(truncated).not.toContain("example-password-123");
+		expect(truncated).not.toContain("sk-example-0123456789");
+		// Still bounded by the cap.
+		expect(Buffer.byteLength(truncated, "utf8")).toBeLessThanOrEqual(8192);
+	});
+
+	it("cuts an over-cap payload between characters, never inside a surrogate pair", () => {
+		for (const prefix of ["", "a", "ab", "abc"]) {
+			const result = sanitizeInput({
+				note: `${prefix}${"😀".repeat(3000)}`,
+			}) as Record<string, unknown>;
+
+			const truncated = result._truncated as string;
+			expect(Buffer.byteLength(truncated, "utf8")).toBeLessThanOrEqual(
+				8192,
+			);
+			expect(truncated).not.toMatch(
+				/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/,
+			);
+			expect(truncated).not.toContain("�");
+			expect(truncated.endsWith("😀…")).toBe(true);
+		}
+	});
+
+	it("cuts a payload of a few megabytes in one pass", () => {
+		const started = performance.now();
+		const result = sanitizeInput({ data: "é".repeat(2_000_000) }) as Record<
+			string,
+			unknown
+		>;
+
+		expect(result._truncated).toBeDefined();
+		// A character-by-character walk took over ten seconds here.
+		expect(performance.now() - started).toBeLessThan(2000);
+	});
+
+	it("records a placeholder, never the raw text, when the redactor cannot walk the input", () => {
+		// The recursive redactor overflows the stack on an input nested a few
+		// thousand levels deep, which serializes in well under 8 KiB.
+		redactor.fail = true;
+		try {
+			expect(sanitizeInput({ password: "example-password-123" })).toEqual(
+				{ _truncated: "[redaction-failed]" },
+			);
+		} finally {
+			redactor.fail = false;
+		}
 	});
 
 	it("preserves a small payload as parsed JSON", () => {

@@ -55,6 +55,7 @@ export function AgentChatDocument({
 				useSingleEndpoint
 				agent={agent?.agentId}
 				showDevConsole={false}
+				enableInspector={false}
 				onError={onError}
 			>
 				<CopilotChatSessionProvider>
@@ -63,31 +64,33 @@ export function AgentChatDocument({
 						title={agent?.displayName || "Document Generator"}
 						AssistantMessage={AssistantMessage}
 						initialMessage={`Hi! I'm ${agent?.displayName || "your AI assistant"}. I can help you create and edit documents. What would you like to work on?`}
-						suggestions={[
-							{
-								title: "Create a PRD for user authentication",
-								message:
-									"Write a product requirements document for implementing user authentication with social login, email/password, and 2FA support",
-							},
-							{
-								title: "Design a microservices architecture",
-								message:
-									"Create an architecture document for migrating our monolith to microservices, including service boundaries, communication patterns, and data management strategies",
-							},
-							{
-								title: "Document API endpoints",
-								message:
-									"Generate technical documentation for our REST API, including authentication, rate limiting, request/response formats, and error handling",
-							},
-							{
-								title: "Write onboarding guide",
-								message:
-									"Create a comprehensive onboarding guide for new developers joining the team, covering setup, architecture overview, coding standards, and deployment process",
-							},
-						]}
+						suggestions={CHAT_SUGGESTIONS}
 					/>
 				</CopilotChatSessionProvider>
 			</CopilotKit>
 		</div>
 	);
 }
+
+const CHAT_SUGGESTIONS = [
+	{
+		title: "Create a PRD for user authentication",
+		message:
+			"Write a product requirements document for implementing user authentication with social login, email/password, and 2FA support",
+	},
+	{
+		title: "Design a microservices architecture",
+		message:
+			"Create an architecture document for migrating our monolith to microservices, including service boundaries, communication patterns, and data management strategies",
+	},
+	{
+		title: "Document API endpoints",
+		message:
+			"Generate technical documentation for our REST API, including authentication, rate limiting, request/response formats, and error handling",
+	},
+	{
+		title: "Write onboarding guide",
+		message:
+			"Create a comprehensive onboarding guide for new developers joining the team, covering setup, architecture overview, coding standards, and deployment process",
+	},
+];

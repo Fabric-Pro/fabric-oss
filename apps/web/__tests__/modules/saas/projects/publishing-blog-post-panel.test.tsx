@@ -13,6 +13,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mutate = vi.hoisted(() => ({
 	generate: vi.fn(),
+	claim: vi.fn(),
+	release: vi.fn(),
 	adopt: vi.fn(),
 	saveBody: vi.fn(),
 	refine: vi.fn(),
@@ -59,15 +61,15 @@ vi.mock("@tanstack/react-query", () => ({
 		captured[key] = opts;
 		const byKey: Record<string, ReturnType<typeof vi.fn>> = {
 			generateBlogPost: mutate.generate,
+			claimDraftLock: mutate.claim,
+			releaseDraftLock: mutate.release,
 			adoptBlogPostDraft: mutate.adopt,
 			saveBlogPostBody: mutate.saveBody,
 			refineDraft: mutate.refine,
 			acceptRefinement: mutate.acceptRefinement,
 			rejectRefinement: mutate.rejectRefinement,
 		};
-		// The advisory draft lock fires two mutations this suite does not
-		// assert on. A missing entry must be a no-op rather than `undefined`,
-		// which the hook would then call.
+		// Unrelated mutations use a no-op so the panel can render them.
 		return {
 			mutate: byKey[key] ?? noopMutate,
 			isPending: pending[key] ?? false,
@@ -1521,4 +1523,59 @@ describe("BlogPostPanel — the assistant boundary", () => {
 			screen.queryByText(/refine with ai is what edits/i),
 		).not.toBeInTheDocument();
 	});
+});
+
+it("keeps the original save baseline when the saved draft changes underneath edits", async () => {
+	const user = userEvent.setup();
+	const working = {
+		postType: "BLOG_POST" as const,
+		hasBody: true,
+		body: "Example saved body",
+		sourceDraftId: null,
+		sourceOptionLabel: null,
+		updatedAt: new Date("2026-01-01"),
+	};
+	const draft = readyDraft();
+	const view = renderPanel({ working, draft });
+	const editor = screen.getByRole("textbox", { name: /working/i });
+	await user.type(editor, " unsaved edit");
+	view.rerender(
+		<BlogPostPanel
+			projectId="example-project"
+			topicId="example-topic"
+			organizationId="example-org"
+			canEdit
+			draft={draft}
+			working={{
+				...working,
+				body: "Example replacement",
+				updatedAt: new Date("2026-01-02"),
+			}}
+		/>,
+	);
+	expect(
+		screen.getByText(/saved draft changed while you were editing/i),
+	).toBeVisible();
+	expect(editor).toHaveValue("Example saved body unsaved edit");
+	await user.click(screen.getByRole("button", { name: /^save/i }));
+	expect(mutate.saveBody).toHaveBeenCalledWith(
+		expect.objectContaining({ expectedUpdatedAt: new Date("2026-01-01") }),
+	);
+	await user.click(screen.getByRole("button", { name: "Discard my edits" }));
+	expect(editor).toHaveValue("Example replacement");
+});
+
+it("saving releases the edit claim and the next edit claims again", async () => {
+	const user = userEvent.setup();
+	renderPanel({ working: working() });
+	const box = screen.getByRole("textbox", { name: /working blog post/i });
+	await user.type(box, " Example edit");
+	expect(mutate.claim).toHaveBeenCalledTimes(1);
+	await user.click(screen.getByRole("button", { name: /save changes/i }));
+	await act(async () => {
+		await captured.saveBlogPostBody.onSuccess?.();
+	});
+	expect(mutate.release).toHaveBeenCalledTimes(1);
+	await user.type(box, " Another edit");
+	expect(mutate.claim).toHaveBeenCalledTimes(2);
 });

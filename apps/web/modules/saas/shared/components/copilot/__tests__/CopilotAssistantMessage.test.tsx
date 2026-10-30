@@ -14,7 +14,6 @@ import { CopilotAssistantMessage } from "../CopilotAssistantMessage";
 
 // Mock CopilotKit hooks
 vi.mock("@copilotkit/react-core", () => ({
-	useCoAgent: vi.fn(),
 	useCopilotChatInternal: vi.fn(),
 }));
 vi.mock("@copilotkit/react-ui", () => ({
@@ -37,7 +36,8 @@ vi.mock("@copilotkit/react-ui", () => ({
 		},
 	}),
 }));
-vi.mock("../ReasoningCollapsible", () => ({
+vi.mock("../ReasoningCollapsible", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../ReasoningCollapsible")>()),
 	ReasoningCollapsible: ({
 		text,
 		durationMs,
@@ -63,7 +63,8 @@ vi.mock("../../../../../components/ai-elements/McpAppFrame", () => ({
 	McpAppFrame: () => <div data-testid="mcp-frame" />,
 }));
 
-import { useCoAgent, useCopilotChatInternal } from "@copilotkit/react-core";
+import { useCopilotChatInternal } from "@copilotkit/react-core";
+import { useAgentStateReadOnly } from "../useAgentStateReadOnly";
 
 const baseProps = {
 	message: { id: "a1", content: "Assistant reply" } as any,
@@ -78,15 +79,16 @@ const baseProps = {
 };
 
 describe("CopilotAssistantMessage — reasoning lookup", () => {
-	it("renders ReasoningCollapsible when useCoAgent has matching turn entry", () => {
+	it("renders ReasoningCollapsible when useAgentStateReadOnly has matching turn entry", () => {
 		(useCopilotChatInternal as any).mockReturnValue({
-			visibleMessages: [
-				{ id: "u1", role: "user" },
-				{ id: "a1", role: "assistant" },
-			],
+			messages: [],
 		});
-		(useCoAgent as any).mockReturnValue({
+		(useAgentStateReadOnly as any).mockReturnValue({
 			state: {
+				messages: [
+					{ type: "human", id: "u1" },
+					{ type: "ai", id: "a1" },
+				],
 				reasoningByTurn: {
 					1: { text: "Some thinking", durationMs: 4200 },
 				},
@@ -100,12 +102,9 @@ describe("CopilotAssistantMessage — reasoning lookup", () => {
 
 	it("does not render ReasoningCollapsible when no matching turn entry", () => {
 		(useCopilotChatInternal as any).mockReturnValue({
-			visibleMessages: [
-				{ id: "u1", role: "user" },
-				{ id: "a1", role: "assistant" },
-			],
+			messages: [],
 		});
-		(useCoAgent as any).mockReturnValue({
+		(useAgentStateReadOnly as any).mockReturnValue({
 			state: { reasoningByTurn: {} },
 		});
 		render(<CopilotAssistantMessage {...baseProps} />);
@@ -114,14 +113,11 @@ describe("CopilotAssistantMessage — reasoning lookup", () => {
 		).not.toBeInTheDocument();
 	});
 
-	it("does not render ReasoningCollapsible on non-agent page (useCoAgent returns empty state)", () => {
+	it("does not render ReasoningCollapsible on non-agent page (useAgentStateReadOnly returns empty state)", () => {
 		(useCopilotChatInternal as any).mockReturnValue({
-			visibleMessages: [
-				{ id: "u1", role: "user" },
-				{ id: "a1", role: "assistant" },
-			],
+			messages: [],
 		});
-		(useCoAgent as any).mockReturnValue({ state: {} });
+		(useAgentStateReadOnly as any).mockReturnValue({ state: {} });
 		render(<CopilotAssistantMessage {...baseProps} />);
 		expect(
 			screen.queryByTestId("reasoning-collapsible"),
@@ -132,17 +128,17 @@ describe("CopilotAssistantMessage — reasoning lookup", () => {
 		);
 	});
 
-	it("computes turnIndex correctly for a later turn", () => {
+	it("uses the current agent human-message count for a later turn", () => {
 		(useCopilotChatInternal as any).mockReturnValue({
-			visibleMessages: [
-				{ id: "u1", role: "user" },
-				{ id: "a-old", role: "assistant" },
-				{ id: "u2", role: "user" },
-				{ id: "a-new", role: "assistant" },
-			],
+			messages: [],
 		});
-		(useCoAgent as any).mockReturnValue({
+		(useAgentStateReadOnly as any).mockReturnValue({
 			state: {
+				messages: [
+					{ type: "human", id: "u1" },
+					{ type: "human", id: "u2" },
+					{ type: "ai", id: "a-new" },
+				],
 				reasoningByTurn: {
 					2: { text: "Turn 2 reasoning", durationMs: 3000 },
 				},
@@ -158,65 +154,19 @@ describe("CopilotAssistantMessage — reasoning lookup", () => {
 			"reasoning:Turn 2 reasoning:3000",
 		);
 	});
-
-	it("returns null when message.id missing or not found in visibleMessages", () => {
-		(useCopilotChatInternal as any).mockReturnValue({
-			visibleMessages: [],
-		});
-		(useCoAgent as any).mockReturnValue({
-			state: {
-				reasoningByTurn: { 1: { text: "x", durationMs: 100 } },
-			},
-		});
-		render(<CopilotAssistantMessage {...baseProps} />);
-		expect(
-			screen.queryByTestId("reasoning-collapsible"),
-		).not.toBeInTheDocument();
-	});
-});
-
-describe("CopilotAssistantMessage — Thinking spinner", () => {
-	it("shows a Thinking spinner during the loading gap (no content yet)", () => {
-		(useCopilotChatInternal as any).mockReturnValue({
-			visibleMessages: [],
-		});
-		(useCoAgent as any).mockReturnValue({ state: {} });
-		render(
-			<CopilotAssistantMessage
-				{...baseProps}
-				isLoading={true}
-				message={{ id: "a1", content: "" } as any}
-			/>,
-		);
-		expect(screen.getByRole("status")).toHaveTextContent("Thinking");
-	});
-
-	it("hides the spinner once content has streamed in", () => {
-		(useCopilotChatInternal as any).mockReturnValue({
-			visibleMessages: [],
-		});
-		(useCoAgent as any).mockReturnValue({ state: {} });
-		render(
-			<CopilotAssistantMessage
-				{...baseProps}
-				isLoading={true}
-				message={{ id: "a1", content: "Here is the answer" } as any}
-			/>,
-		);
-		expect(screen.queryByRole("status")).not.toBeInTheDocument();
-	});
 });
 
 describe("CopilotAssistantMessage — tool calls lookup", () => {
 	it("renders ReasoningCollapsible with toolCalls when current turn has entries", () => {
 		(useCopilotChatInternal as any).mockReturnValue({
-			visibleMessages: [
-				{ id: "u1", role: "user" },
-				{ id: "a1", role: "assistant" },
-			],
+			messages: [],
 		});
-		(useCoAgent as any).mockReturnValue({
+		(useAgentStateReadOnly as any).mockReturnValue({
 			state: {
+				messages: [
+					{ type: "human", id: "u1" },
+					{ type: "ai", id: "a1" },
+				],
 				toolCallsByTurn: {
 					1: [
 						{
@@ -245,13 +195,14 @@ describe("CopilotAssistantMessage — tool calls lookup", () => {
 
 	it("renders ReasoningCollapsible with BOTH reasoning AND toolCalls", () => {
 		(useCopilotChatInternal as any).mockReturnValue({
-			visibleMessages: [
-				{ id: "u1", role: "user" },
-				{ id: "a1", role: "assistant" },
-			],
+			messages: [],
 		});
-		(useCoAgent as any).mockReturnValue({
+		(useAgentStateReadOnly as any).mockReturnValue({
 			state: {
+				messages: [
+					{ type: "human", id: "u1" },
+					{ type: "ai", id: "a1" },
+				],
 				reasoningByTurn: {
 					1: { text: "thoughts", durationMs: 4200 },
 				},
@@ -275,13 +226,14 @@ describe("CopilotAssistantMessage — tool calls lookup", () => {
 
 	it("does not render when neither reasoning nor toolCalls have current turn entry", () => {
 		(useCopilotChatInternal as any).mockReturnValue({
-			visibleMessages: [
-				{ id: "u1", role: "user" },
-				{ id: "a1", role: "assistant" },
-			],
+			messages: [],
 		});
-		(useCoAgent as any).mockReturnValue({
+		(useAgentStateReadOnly as any).mockReturnValue({
 			state: {
+				messages: [
+					{ type: "human", id: "u1" },
+					{ type: "ai", id: "a1" },
+				],
 				reasoningByTurn: {},
 				toolCallsByTurn: {},
 			},
@@ -294,13 +246,16 @@ describe("CopilotAssistantMessage — tool calls lookup", () => {
 
 	it("treats empty toolCalls array for current turn as 'no entries'", () => {
 		(useCopilotChatInternal as any).mockReturnValue({
-			visibleMessages: [
-				{ id: "u1", role: "user" },
-				{ id: "a1", role: "assistant" },
-			],
+			messages: [],
 		});
-		(useCoAgent as any).mockReturnValue({
-			state: { toolCallsByTurn: { 1: [] } },
+		(useAgentStateReadOnly as any).mockReturnValue({
+			state: {
+				messages: [
+					{ type: "human", id: "u1" },
+					{ type: "ai", id: "a1" },
+				],
+				toolCallsByTurn: { 1: [] },
+			},
 		});
 		render(<CopilotAssistantMessage {...baseProps} />);
 		expect(
@@ -308,17 +263,17 @@ describe("CopilotAssistantMessage — tool calls lookup", () => {
 		).not.toBeInTheDocument();
 	});
 
-	it("looks up toolCalls for a later turn correctly", () => {
+	it("looks up toolCalls using the selected agent turn", () => {
 		(useCopilotChatInternal as any).mockReturnValue({
-			visibleMessages: [
-				{ id: "u1", role: "user" },
-				{ id: "a-old", role: "assistant" },
-				{ id: "u2", role: "user" },
-				{ id: "a-new", role: "assistant" },
-			],
+			messages: [],
 		});
-		(useCoAgent as any).mockReturnValue({
+		(useAgentStateReadOnly as any).mockReturnValue({
 			state: {
+				messages: [
+					{ type: "human", id: "u1" },
+					{ type: "human", id: "u2" },
+					{ type: "ai", id: "a-new" },
+				],
 				toolCallsByTurn: {
 					1: [
 						{
@@ -361,7 +316,7 @@ describe("CopilotAssistantMessage — footer (timestamp + controls)", () => {
 		(useCopilotChatInternal as any).mockReturnValue({
 			visibleMessages: [],
 		});
-		(useCoAgent as any).mockReturnValue({ state: {} });
+		(useAgentStateReadOnly as any).mockReturnValue({ state: {} });
 		return render(
 			<CopilotReplyRatingContext.Provider
 				value={{
@@ -475,7 +430,9 @@ describe("reply rating controls", () => {
 		vote: "RATED_UP" | "RATED_DOWN" | undefined,
 		props: Partial<typeof baseProps> = {},
 	) {
-		vi.mocked(useCoAgent).mockReturnValue({ state: {} } as never);
+		vi.mocked(useAgentStateReadOnly).mockReturnValue({
+			state: {},
+		} as never);
 		vi.mocked(useCopilotChatInternal).mockReturnValue({
 			visibleMessages: [],
 		} as never);
@@ -558,7 +515,9 @@ describe("reply rating controls", () => {
 		).not.toBeInTheDocument();
 	});
 	it("hides CopilotKit's synthetic callbacks outside a rating-enabled sidebar", () => {
-		vi.mocked(useCoAgent).mockReturnValue({ state: {} } as never);
+		vi.mocked(useAgentStateReadOnly).mockReturnValue({
+			state: {},
+		} as never);
 		vi.mocked(useCopilotChatInternal).mockReturnValue({
 			visibleMessages: [],
 		} as never);
@@ -569,5 +528,81 @@ describe("reply rating controls", () => {
 		expect(
 			screen.getByRole("button", { name: "Copy" }),
 		).toBeInTheDocument();
+	});
+});
+
+vi.mock("../useAgentStateReadOnly", () => ({
+	useAgentTranscriptSelector: (
+		_name: string,
+		selector: (state: unknown, messages: unknown[]) => unknown,
+	) =>
+		selector(
+			vi.mocked(useAgentStateReadOnly)().state,
+			(
+				vi.mocked(useAgentStateReadOnly)().state as {
+					messages?: Array<{ type?: string; role?: string }>;
+				}
+			).messages?.map((message) => ({
+				...message,
+				role:
+					message.role ??
+					(message.type === "human" ? "user" : "assistant"),
+			})) ?? [],
+		),
+	useAgentStateReadOnly: vi.fn(),
+	useAgentStateSelector: (
+		_name: string,
+		selector: (state: unknown) => unknown,
+	) => selector(vi.mocked(useAgentStateReadOnly)().state),
+}));
+
+describe("CopilotAssistantMessage — missing turn", () => {
+	it("returns no trace when neither transcript nor fallback messages are available", () => {
+		vi.mocked(useCopilotChatInternal).mockReturnValue({
+			messages: [],
+		} as never);
+		vi.mocked(useAgentStateReadOnly).mockReturnValue({
+			state: {
+				reasoningByTurn: { 1: { text: "unattributed", durationMs: 1 } },
+				toolCallsByTurn: {
+					1: [{ id: "unused", name: "search", status: "pending" }],
+				},
+			},
+		});
+		render(<CopilotAssistantMessage {...baseProps} />);
+		expect(
+			screen.queryByTestId("reasoning-collapsible"),
+		).not.toBeInTheDocument();
+	});
+});
+describe("CopilotAssistantMessage — Thinking spinner", () => {
+	it("shows a Thinking spinner during the loading gap (no content yet)", () => {
+		(useCopilotChatInternal as any).mockReturnValue({
+			messages: [],
+		});
+		(useAgentStateReadOnly as any).mockReturnValue({ state: {} });
+		render(
+			<CopilotAssistantMessage
+				{...baseProps}
+				isLoading={true}
+				message={{ id: "a1", content: "" } as any}
+			/>,
+		);
+		expect(screen.getByRole("status")).toHaveTextContent("Thinking");
+	});
+
+	it("hides the spinner once content has streamed in", () => {
+		(useCopilotChatInternal as any).mockReturnValue({
+			messages: [],
+		});
+		(useAgentStateReadOnly as any).mockReturnValue({ state: {} });
+		render(
+			<CopilotAssistantMessage
+				{...baseProps}
+				isLoading={true}
+				message={{ id: "a1", content: "Here is the answer" } as any}
+			/>,
+		);
+		expect(screen.queryByRole("status")).not.toBeInTheDocument();
 	});
 });

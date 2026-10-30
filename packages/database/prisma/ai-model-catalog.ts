@@ -525,6 +525,35 @@ export const MODELS: ModelSeedData[] = [
 		],
 	},
 	{
+		canonicalName: "gpt-6.1-terra",
+		displayName: "GPT-6.1 Terra",
+		description:
+			"OpenAI's balanced GPT-6.1 model for everyday work and tool use at lower cost than Sol",
+		family: "gpt",
+		vendor: "OpenAI",
+		capabilities: ["TEXT", "VISION", "TOOL_CALLING", "CODE"],
+		contextWindow: 1050000,
+		maxOutputTokens: 128000,
+		speedTier: "BALANCED",
+		qualityTier: "STANDARD",
+		inputCostPer1M: 1,
+		outputCostPer1M: 5,
+		suitableForTasks: ["SIMPLE", "CHAT", "TOOL_CALLING", "EVAL"],
+		providerMappings: [
+			{ provider: "OPENAI_DIRECT", providerModelId: "gpt-6.1-terra" },
+			{
+				provider: "VERCEL_GATEWAY",
+				providerModelId: "openai/gpt-6.1-terra",
+			},
+			{ provider: "OPENROUTER", providerModelId: "openai/gpt-6.1-terra" },
+			// Also served by ChatGPT plans (Fizzy #2770); plan pickers label it.
+			{
+				provider: "OPENAI_CHATGPT_PLAN",
+				providerModelId: "gpt-6.1-terra",
+			},
+		],
+	},
+	{
 		canonicalName: "gpt-6-luna",
 		displayName: "GPT-6 Luna",
 		description:
@@ -2656,10 +2685,10 @@ export const TASK_DEFAULTS: TaskDefaultSeed[] = [
 	...createTaskDefaults("SIMPLE", "MEDIUM", {
 		// A member's own ChatGPT plan (Fizzy #2939); keep in step with
 		// CHATGPT_PLAN_TASK_DEFAULTS in @repo/ai.
-		OPENAI_CHATGPT_PLAN: "gpt-6-luna",
+		OPENAI_CHATGPT_PLAN: "gpt-6.1-terra",
 		DATABRICKS: "llama-3-3-70b",
 		VERCEL_GATEWAY: "claude-haiku-5-5",
-		OPENAI_DIRECT: "gpt-6-luna",
+		OPENAI_DIRECT: "gpt-6.1-terra",
 		ANTHROPIC_DIRECT: "claude-haiku-5-5",
 		GROQ: "llama-3-1-8b",
 		DEEPSEEK: "deepseek-chat",

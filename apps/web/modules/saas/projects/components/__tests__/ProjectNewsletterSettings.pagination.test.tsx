@@ -1,4 +1,18 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { NuqsTestingAdapter } from "nuqs/adapters/testing";
+import type { ReactElement } from "react";
+
+const render = (ui: ReactElement) =>
+	baseRender(ui, {
+		wrapper: ({ children }) => (
+			<NuqsTestingAdapter>{children}</NuqsTestingAdapter>
+		),
+	});
+
+import {
+	render as baseRender,
+	fireEvent,
+	screen,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Minimal next-intl mock: return the bare key so we can assert against the key
@@ -118,11 +132,18 @@ vi.mock("@shared/lib/orpc-client", () => ({ orpcClient: {} }));
 // settings update/regenerate mutations go through mutationOptions (no onSuccess
 // on the mocked options object), so their mutate() is a harmless no-op.
 const queryData: Record<string, unknown> = {};
+let sendInput: unknown;
 vi.mock("@tanstack/react-query", () => ({
-	useQuery: (opts: { __q?: string }) => ({
-		data: queryData[opts.__q ?? ""],
-		isLoading: false,
-	}),
+	keepPreviousData: (previous: unknown) => previous,
+	useQuery: (opts: { __q?: string; input?: unknown }) => {
+		if (opts.__q === "sends") {
+			sendInput = opts.input;
+		}
+		return {
+			data: queryData[opts.__q ?? ""],
+			isLoading: false,
+		};
+	},
 	useMutation: (opts: { onSuccess?: (result: unknown) => void }) => ({
 		isPending: false,
 		mutate: () => opts.onSuccess?.({ added: 1 }),
@@ -184,8 +205,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	setSettings();
 	queryData.subscribers = { subscribers: [] };
-	// Keep the sends-history pager from rendering — it uses generic "Next page"/
-	// "Previous page" labels and would otherwise collide with role queries.
+	// Send history uses its own accessible navigation names.
 	queryData.sends = { sends: [], total: 0 };
 	queryData.pending = { sends: [] };
 	queryData.repos = { integrations: [] };
@@ -318,4 +338,98 @@ describe("ProjectNewsletterSettings — subscriber pagination", () => {
 		expect(screen.getByText(/11 - 12 of 12/)).toBeInTheDocument();
 		expect(screen.queryByText(/of 25/)).not.toBeInTheDocument();
 	});
+});
+
+it("distinguishes active and unsubscribed pagination landmarks", () => {
+	setSubscribers(25, 15);
+	render(<ProjectNewsletterSettings projectId="p-1" organizationId={null} />);
+	fireEvent.click(
+		screen.getByRole("button", { name: "Show unsubscribed (15)" }),
+	);
+	expect(
+		screen.getByRole("navigation", {
+			name: "Active subscribers pagination",
+		}),
+	).toBeInTheDocument();
+	expect(
+		screen.getByRole("navigation", {
+			name: "Unsubscribed subscribers pagination",
+		}),
+	).toBeInTheDocument();
+});
+
+it("jumps send history independently from the subscriber roster", async () => {
+	setSubscribers(25);
+	queryData.sends = {
+		sends: [
+			{
+				id: "example-send",
+				createdAt: "2026-01-01",
+				status: "SENT",
+				trigger: "MANUAL",
+				sentCount: 1,
+				recipientCount: 1,
+				failedCount: 0,
+			},
+		],
+		total: 120,
+	};
+	render(
+		<ProjectNewsletterSettings
+			projectId="example-project"
+			organizationId={null}
+		/>,
+	);
+	const input = screen.getByRole("spinbutton", {
+		name: "Go to page, send history, Send history pagination",
+	});
+	expect(
+		document.body.textContent?.match(/1\s*[-–]\s*15\s+of\s+120/g),
+	).toHaveLength(1);
+	fireEvent.change(input, { target: { value: "4" } });
+	const form = input.closest("form");
+	if (!form) {
+		throw new Error("Expected pagination form");
+	}
+	fireEvent.submit(form);
+	expect(sendInput).toMatchObject({ offset: 45 });
+	fireEvent.click(screen.getByRole("button", { name: "Failed" }));
+	expect(sendInput).toMatchObject({ offset: 0, status: "failed" });
+});
+
+it("resets send history when its page size changes", () => {
+	queryData.sends = {
+		sends: [
+			{
+				id: "example-send",
+				createdAt: "2026-01-01",
+				status: "SENT",
+				trigger: "MANUAL",
+				sentCount: 1,
+				recipientCount: 1,
+				failedCount: 0,
+			},
+		],
+		total: 120,
+	};
+	render(
+		<ProjectNewsletterSettings
+			projectId="example-project"
+			organizationId={null}
+		/>,
+	);
+	const input = screen.getByRole("spinbutton", {
+		name: "Go to page, send history, Send history pagination",
+	});
+	fireEvent.change(input, { target: { value: "4" } });
+	const form = input.closest("form");
+	if (!form) {
+		throw new Error("Expected pagination form");
+	}
+	fireEvent.submit(form);
+	expect(sendInput).toMatchObject({ offset: 45 });
+	fireEvent.change(screen.getByRole("combobox", { name: "Rows per page" }), {
+		target: { value: "50" },
+	});
+	expect(sendInput).toMatchObject({ offset: 0, limit: 50 });
 });

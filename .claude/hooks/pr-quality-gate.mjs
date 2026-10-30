@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
-import { appendFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CHECK_TIMEOUTS_MS, effectiveTimeoutMs } from "./lib/gate-timeouts.mjs";
 import { leadingCdTarget } from "./lib/git-helpers.mjs";
@@ -832,6 +832,25 @@ async function main() {
 		writeFileSync(
 			2,
 			"pr-quality-gate: CLAUDE_PROJECT_DIR not set and no runnable cwd; skipping checks (fail open)\n",
+		);
+		process.exit(0);
+	}
+
+	let scripts;
+	try {
+		scripts = JSON.parse(
+			readFileSync(join(repoRoot, "package.json"), "utf8"),
+		)?.scripts;
+	} catch {
+		// Missing or unreadable manifests are not applicable to this gate.
+	}
+	const missing = CHECKS.find(
+		({ argv }) => !Object.hasOwn(scripts ?? {}, argv[0]),
+	);
+	if (missing) {
+		writeFileSync(
+			2,
+			`pr-quality-gate: ${repoRoot} has no ${missing.argv[0]} script; skipping checks\n`,
 		);
 		process.exit(0);
 	}

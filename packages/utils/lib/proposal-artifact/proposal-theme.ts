@@ -22,11 +22,10 @@
  *   it (which the theme never names) stays legible. The paper itself is
  *   painted from `--pa-*` only, never from the names it remaps — see
  *   `docs/solutions/design-patterns/remapping-theme-tokens-on-an-inverted-surface.md`.
- * - **Print**: page size, margins and running header and footer as `@page`
- *   margin boxes, the cover and landscape pages as named pages, the section
- *   opener band and the contents page, whose page numbers a second print pass
- *   writes in. Page furniture is CSS, not browser header and footer
- *   templates.
+ * - **Print**: page size, margins and the running footer as `@page` margin
+ *   boxes, the cover and landscape pages as named pages, the section opener
+ *   card and the contents page, whose page numbers a second print pass writes
+ *   in. Page furniture is CSS, not browser header and footer templates.
  *
  * Pure functions and data only: client components import this module, so it
  * must not pull in anything the browser bundle cannot carry.
@@ -50,6 +49,17 @@ export const PROPOSAL_THEME_CLASSES = {
 	statLabel: "pa-stat-label",
 	callout: "pa-callout",
 	dataTable: "pa-data-table",
+	/**
+	 * A data table whose first column holds only short ids, set in mono.
+	 * Only print can tell, so only print writes it.
+	 */
+	idColumn: "pa-id-column",
+	/**
+	 * An ordered list whose every item opens with bold text, numbered in
+	 * squares. Only print can tell: no selector can look two levels into
+	 * every item of the editor's list, so the live page keeps its decimals.
+	 */
+	steps: "pa-steps",
 	cover: "pa-cover",
 	sectionOpener: "pa-section-opener",
 } as const;
@@ -63,31 +73,53 @@ export const PROPOSAL_THEME_CLASSES = {
  *
  * ```html
  * <section class="pa-cover">
+ *   <div class="pa-cover-hero" style="background-image: url(data:…)"></div>
  *   <div class="pa-cover-brands">
  *     <img class="pa-cover-logo pa-cover-logo-proposer" alt="…">
- *     <img class="pa-cover-logo pa-cover-logo-recipient" alt="…">
+ *     <img class="pa-cover-logo pa-cover-logo-recipient pa-cover-logo-plate" alt="…">
  *   </div>
- *   <img class="pa-cover-hero" alt="">
  *   <div class="pa-cover-body">
  *     <p class="pa-eyebrow">Proposal</p>
  *     <h1 class="pa-cover-title">…</h1>
  *     <p class="pa-cover-lead">…</p>
+ *     <dl class="pa-cover-figures">
+ *       <div><dt>label</dt><dd>value</dd></div>
+ *     </dl>
  *   </div>
- *   <dl class="pa-cover-parties">
- *     <div><dt>Prepared for</dt><dd>…</dd></div>
- *     <div><dt>Prepared by</dt><dd>…</dd></div>
- *   </dl>
- *   <p class="pa-cover-date">…</p>
+ *   <div class="pa-cover-parties">
+ *     <dl class="pa-cover-party-for"><dt>Prepared for</dt><dd>…</dd></dl>
+ *     <div class="pa-cover-party-by">
+ *       <dl><dt>Prepared by</dt><dd>…</dd></dl>
+ *       <p class="pa-cover-date">… · Confidential</p>
+ *     </div>
+ *   </div>
  * </section>
  * ```
  *
- * A missing logo is left out rather than rendered empty: the proposer logo
- * holds the left edge and the recipient logo the right one on its own, and a
- * brands row with no logo at all (written with nothing inside, not even
- * whitespace) is hidden. The hero, the lead and the parties are left out
- * when there is nothing to put in them. A section opener is a
- * `<header class="pa-section-opener">` holding the `h2` and an optional
- * subtitle paragraph; its "Section N" eyebrow is a CSS counter.
+ * Whatever the cover has nothing for is left out rather than written empty:
+ * the hero, either logo, the brands row when there is neither, the lead,
+ * the figures and either party. The proposer logo holds the left edge and
+ * the recipient logo the right one on its own; a logo drawn for a light
+ * background carries `pa-cover-logo-plate`. The "Prepared by" column, which
+ * always holds the date line, keeps its place without "Prepared for".
+ *
+ * A section opener is an ink card, its "Section N" eyebrow a CSS counter:
+ *
+ * ```html
+ * <header class="pa-section-opener" id="pa-section-2">
+ *   <div class="pa-section-graphic" aria-hidden="true"></div>
+ *   <h2>…</h2>
+ *   <p>…</p>
+ * </header>
+ * ```
+ *
+ * The graphic is there only when the Brand kit has a hero, and the subtitle
+ * only when the paragraph after the heading is one short emphasis. The hero
+ * is written once, as `--pa-hero-image` on the body, and the cover reads
+ * it; every graphic reads its small copy, `--pa-hero-opener-image`, when
+ * the body has one, so the bytes are embedded once however many sections
+ * there are, and each crop print writes of them stays small. Every opener
+ * starts a page.
  *
  * The contents page is a `<nav class="pa-contents">` around an eyebrow and
  * an `ol` of entries, each
@@ -115,14 +147,25 @@ export const PROPOSAL_PRINT_CLASSES = {
 	coverLogo: "pa-cover-logo",
 	proposerLogo: "pa-cover-logo-proposer",
 	recipientLogo: "pa-cover-logo-recipient",
+	/** A logo drawn for a light background, set on a light plate. */
+	coverLogoPlate: "pa-cover-logo-plate",
 	coverBody: "pa-cover-body",
 	coverTitle: "pa-cover-title",
 	coverLead: "pa-cover-lead",
+	/** Up to three key figures, each over a rule. */
+	coverFigures: "pa-cover-figures",
+	/** The block pinned to the cover's foot. */
 	coverParties: "pa-cover-parties",
+	coverPartyFor: "pa-cover-party-for",
+	coverPartyBy: "pa-cover-party-by",
 	coverDate: "pa-cover-date",
-	/** An optional full-width picture between the brands and the title. */
+	/** The optional hero: a darkened background layer of the upper cover. */
 	coverHero: "pa-cover-hero",
+	/** The hero again, cropped to a section opener's right side. */
+	sectionGraphic: "pa-section-graphic",
 	contents: "pa-contents",
+	/** The contents page's "Contents" heading, under the title eyebrow. */
+	contentsTitle: "pa-contents-title",
 	/** The dotted rule between a contents entry's title and its page. */
 	contentsLeader: "pa-contents-leader",
 	/** A contents entry's page number, in a box of fixed width. */
@@ -135,8 +178,10 @@ export const PROPOSAL_PRINT_CLASSES = {
 	pageMarker: "pa-page-marker",
 	/** A figure holding a rendered diagram's SVG. */
 	diagram: "pa-diagram",
-	/** A figure holding the caption of a diagram that did not render. */
+	/** A figure holding the caption of a diagram only the live page draws. */
 	diagramPlaceholder: "pa-diagram-placeholder",
+	/** A diagram caption's leading "Figure n.", written out as text. */
+	figureNumber: "pa-figure-number",
 	/** The notes a document's footnote references point at, at its end. */
 	footnotes: "pa-footnotes",
 	landscape: "pa-landscape",
@@ -188,13 +233,38 @@ const PAGE_HEIGHTS = {
 	letter: "11in",
 } as const satisfies Record<typeof PROPOSAL_PAGE_SIZE, string>;
 
+/**
+ * The cover's geometry (Fizzy #2946): the brands row from the top margin,
+ * the body from one fixed line below it, and room kept at the foot for the
+ * parties, so the longest title and lead still end above them.
+ */
+const COVER_TOP = "0.7in";
+const COVER_SIDE = "0.8in";
+const COVER_BRANDS_HEIGHT = "0.56in";
+/** A logo's height; a plated one adds its padding, within the row. */
+const COVER_LOGO_HEIGHT = "0.36in";
+const COVER_BODY_TOP = "3.05in";
+/** The parties' block, its distance from the foot and the gap above it. */
+const COVER_FOOT_RESERVE = "2in";
+/**
+ * The hero fades into the ink from the top right towards the text at the
+ * lower left, and fully along its lower edge.
+ */
+const HERO_FADE =
+	"linear-gradient(to bottom, transparent 55%, var(--pa-ink) 92%), linear-gradient(200deg, transparent 25%, var(--pa-ink) 85%)";
+
+/** An opener's graphic fades into the ink along its left edge. */
+const GRAPHIC_FADE =
+	"linear-gradient(to right, var(--pa-ink), transparent 35%)";
+
+/** The ink veil over a hero, wherever it is drawn. */
+const HERO_VEIL: Declarations = {
+	"background-color": "var(--pa-ink)",
+	opacity: "var(--pa-hero-veil, 1)",
+};
+
 /** What the print layer needs that the stylesheet cannot work out itself. */
 export interface ProposalPrintThemeOptions {
-	/**
-	 * Running header text, usually the document title. Plain text: it is
-	 * escaped here, so pass it as the reader typed it.
-	 */
-	runningHeader: string;
 	/**
 	 * Running footer text, "proposer · title · date · Confidential". Plain
 	 * text, escaped here. The page counter is added on the right.
@@ -205,7 +275,8 @@ export interface ProposalPrintThemeOptions {
 	 * resolve custom properties, so it is written as a literal; it must be
 	 * the body family, embedded by the print page with `@font-face`, so the
 	 * font is loaded when the margin boxes are laid out. Defaults to the
-	 * neutral font; a name `safeFontFamily` refuses falls back to it too.
+	 * neutral body font, Inter; a name `safeFontFamily` refuses falls back to
+	 * it too.
 	 */
 	fontFamily?: string;
 }
@@ -236,18 +307,50 @@ function dot(name: string): string {
 	return `.${name}`;
 }
 
-const NEUTRAL_FAMILY = `"${NEUTRAL_THEME.font}"`;
+const NEUTRAL_FAMILY = `"${NEUTRAL_THEME.fonts.body}"`;
+const NEUTRAL_DISPLAY = `"${NEUTRAL_THEME.fonts.display}"`;
+const NEUTRAL_MONO = `"${NEUTRAL_THEME.fonts.mono}"`;
 /** The app's own Inter (next/font exposes it as `--font-inter`), then system. */
 const SANS_FALLBACK = `var(--font-inter, ${NEUTRAL_FAMILY}), ui-sans-serif, system-ui, sans-serif`;
+/*
+ * next/font registers each face under a hashed family name, so the live
+ * page reaches Poppins and JetBrains Mono only through the custom property
+ * next/font writes on the theme root. They follow the theme's own family: a
+ * Brand kit family the reader's browser lacks falls back to the neutral
+ * face, as print sets it. Print has no next/font property, and its literal
+ * fallback names the face the page embeds.
+ */
 const FONT_BODY = `var(--pa-font-body, ${NEUTRAL_FAMILY}), ${SANS_FALLBACK}`;
-const FONT_DISPLAY = `var(--pa-font-display, ${NEUTRAL_FAMILY}), ${SANS_FALLBACK}`;
-/** The mono role: eyebrows, labels, header cells. Neutral is Inter. */
-const FONT_MONO_ROLE = `var(--pa-font-mono, ${NEUTRAL_FAMILY}), ${SANS_FALLBACK}`;
+const FONT_DISPLAY = `var(--pa-font-display, ${NEUTRAL_DISPLAY}), var(--font-poppins, ${NEUTRAL_DISPLAY}), ${SANS_FALLBACK}`;
+/**
+ * The mono role: eyebrows, labels, header cells, captions in print. Set at
+ * 400 or 500 only, the weights both targets load; a heavier one would be
+ * drawn as a synthetic bold.
+ */
+const FONT_MONO_ROLE = `var(--pa-font-mono, ${NEUTRAL_MONO}), var(--font-jetbrains-mono, ${NEUTRAL_MONO}), ui-monospace, monospace`;
 /** Code is always set in a real monospace, whatever the brand. */
 const FONT_CODE = `ui-monospace, var(--font-mono, Menlo), Menlo, Consolas, "Liberation Mono", monospace`;
 
+/** The classes a figure template sets in the mono role. */
+const FIGURE_MONO_TEXT = [
+	"eyebrow",
+	"step-number",
+	"layer-title",
+	"side-title",
+	"team-title",
+] as const;
+
 /** A faint wash of ink on the paper, for code and the app's muted fills. */
 const WASH = "color-mix(in srgb, var(--pa-ink) 5%, var(--pa-surface))";
+
+/** The light grey behind a callout. */
+const CALLOUT_GREY = "color-mix(in srgb, var(--pa-ink) 6%, var(--pa-surface))";
+
+/** Every other data row. */
+const ZEBRA = "color-mix(in srgb, var(--pa-ink) 4%, var(--pa-surface))";
+
+/** The dark grey of every third stat tile, a step lighter than the ink. */
+const INK_GREY = "color-mix(in srgb, var(--pa-on-ink) 12%, var(--pa-ink))";
 
 /**
  * Inter's contextual alternates turn a hyphen between digits into a
@@ -288,17 +391,15 @@ const BASE_RULES: readonly ThemeRule[] = [
 		"margin-top": "0",
 		"margin-bottom": "0.45em",
 	}),
-	// The live page's section heading: a strong heading under a short primary
-	// rule. Print wraps it in the section opener band instead.
+	// A section heading is an ink card holding the heading alone. Print
+	// sets it in the section opener, which adds the eyebrow and the graphic.
 	rule("h2", {
 		"font-size": "1.55em",
 		"margin-top": "2.1em",
-		"padding-top": "0.65em",
-		"background-image":
-			"linear-gradient(var(--pa-primary), var(--pa-primary))",
-		"background-repeat": "no-repeat",
-		"background-position": "left top",
-		"background-size": "2.75rem 3px",
+		padding: "0.6em 0.85em 0.65em",
+		"border-radius": "6pt",
+		color: "var(--pa-on-ink)",
+		"background-color": "var(--pa-ink)",
 	}),
 	rule("h3", { "font-size": "1.22em" }),
 	rule("h4", { "font-size": "1.05em" }),
@@ -334,10 +435,9 @@ const BASE_RULES: readonly ThemeRule[] = [
 		"text-decoration-thickness": "0.08em",
 		"text-underline-offset": "0.18em",
 	}),
-	// A link in a header cell takes the cell's own text colour: the paper's
-	// link colour is the cell's fill. The print layer does the same for the
-	// section opener band.
-	rule("th a", {
+	// A link on an ink fill takes the fill's own text colour: the paper's
+	// link colour may be too dark to read there.
+	rule(["th a", "h2 a"], {
 		color: "inherit",
 		"text-decoration-color": "currentColor",
 	}),
@@ -361,13 +461,14 @@ const BASE_RULES: readonly ThemeRule[] = [
 		"list-style": "none",
 		padding: "0",
 	}),
+	// A callout: an ink rule on light grey.
 	rule(["blockquote", dot(THEME.callout)], {
-		margin: "1.5em 0",
-		padding: "0.95em 1.2em",
+		margin: "1.25em 0 1.4em",
+		padding: "0.95em 1.35em",
 		border: "0",
-		"border-left": "4px solid var(--pa-primary)",
-		"border-radius": "0 8px 8px 0",
-		"background-color": "var(--pa-tint)",
+		"border-left": "3pt solid var(--pa-ink)",
+		"border-radius": "0",
+		"background-color": CALLOUT_GREY,
 		color: "var(--pa-ink)",
 		"font-style": "normal",
 		"font-weight": "400",
@@ -420,52 +521,61 @@ const BASE_RULES: readonly ThemeRule[] = [
 		width: "100%",
 		"border-collapse": "collapse",
 		"border-spacing": "0",
-		margin: "1.5em 0",
-		"font-size": "0.9em",
-		"line-height": "1.5",
+		margin: "1.25em 0 1.4em",
+		"font-size": "0.85em",
+		"line-height": "1.45",
 		color: "var(--pa-ink)",
 	}),
 	// A table the editor marks as added or deleted while an AI change awaits
 	// review keeps the editor's green or red frame and wash; only an unmarked
-	// table takes the paper's frame.
+	// table takes the paper's, which is no frame at all.
 	rule(["table:not([data-diff])", dot(THEME.dataTable)], {
-		border: "1px solid var(--pa-border)",
+		border: "0",
 		"border-radius": "0",
 		"background-color": "var(--pa-surface)",
 	}),
+	// An ink header row of uppercase mono labels.
 	rule("th", {
 		"font-family": FONT_MONO_ROLE,
-		"font-size": "0.78em",
-		"font-weight": "600",
-		"letter-spacing": "0.06em",
+		"font-size": "0.8em",
+		"font-weight": "500",
+		"letter-spacing": "0.1em",
 		"text-transform": "uppercase",
 		"text-align": "left",
 		"vertical-align": "bottom",
-		color: "var(--pa-on-primary)",
-		"background-color": "var(--pa-primary)",
-		border: "1px solid var(--pa-primary)",
-		padding: "0.7em 0.85em",
+		color: "var(--pa-on-ink)",
+		"background-color": "var(--pa-ink)",
+		border: "1px solid var(--pa-ink)",
+		padding: "0.75em 0.95em",
 	}),
 	rule("td", {
 		"text-align": "left",
 		"vertical-align": "top",
 		color: "var(--pa-ink)",
 		"background-color": "transparent",
-		border: "1px solid var(--pa-border)",
-		padding: "0.6em 0.85em",
+		border: "0",
+		"border-bottom": "1px solid var(--pa-border)",
+		padding: "0.7em 0.95em",
 	}),
 	rule(["th p", "td p"], { margin: "0 0 0.5em" }),
 	rule(["th > :last-child", "td > :last-child"], { "margin-bottom": "0" }),
 	// Zebra rows. The editor keeps its header row inside `tbody`, print puts
-	// it in `thead`; both tint the first, third, fifth… data row.
-	rule("tbody > tr:nth-child(even) > td", {
-		"background-color": "var(--pa-tint)",
-	}),
-	rule("thead + tbody > tr:nth-child(even) > td", {
-		"background-color": "transparent",
+	// it in `thead`; both tint the second, fourth, sixth… data row.
+	rule("tbody > tr:nth-child(odd) > td", {
+		"background-color": ZEBRA,
 	}),
 	rule("thead + tbody > tr:nth-child(odd) > td", {
-		"background-color": "var(--pa-tint)",
+		"background-color": "transparent",
+	}),
+	rule("thead + tbody > tr:nth-child(even) > td", {
+		"background-color": ZEBRA,
+	}),
+	rule(`${dot(THEME.idColumn)} td:first-child`, {
+		"font-family": FONT_MONO_ROLE,
+		"font-size": "0.92em",
+		"font-weight": "500",
+		"white-space": "nowrap",
+		color: "var(--pa-heading)",
 	}),
 	rule(["figure", dot(THEME.figure)], {
 		margin: "1.75em 0",
@@ -492,47 +602,91 @@ const BASE_RULES: readonly ThemeRule[] = [
 	}),
 	// A `<dl>` of tiles, each `<div><dt>label</dt><dd>value</dd></div>`: the
 	// value reads first and large, the label under it, while the DOM keeps
-	// the "label: value" order a screen reader expects.
+	// the "label: value" order a screen reader expects. Filled in turn with
+	// ink, the primary, a dark grey whose value takes the brand colour that
+	// reads on the ink, and ink again.
 	rule(dot(THEME.statTiles), {
 		display: "grid",
 		"grid-template-columns": "repeat(auto-fit, minmax(9rem, 1fr))",
-		gap: "0.85em",
-		margin: "1.75em 0",
+		gap: "0.65em",
+		margin: "1.25em 0 1.5em",
 		padding: "0",
 	}),
 	rule(dot(THEME.statTile), {
 		display: "flex",
 		"flex-direction": "column-reverse",
 		"justify-content": "flex-end",
-		gap: "0.35em",
+		gap: "0.5em",
 		margin: "0",
-		padding: "1em 1.1em 1.05em",
-		"background-color": "var(--pa-surface)",
-		border: "1px solid var(--pa-border)",
-		"border-top": "3px solid var(--pa-primary)",
-		"border-radius": "0 0 8px 8px",
+		padding: "0.95em 1.05em 1.15em",
+		color: "var(--pa-on-ink)",
+		"background-color": "var(--pa-ink)",
+		border: "0",
+		"border-radius": "5pt",
+	}),
+	rule(`${dot(THEME.statTile)}:nth-child(4n + 2)`, {
+		color: "var(--pa-on-primary)",
+		"background-color": "var(--pa-primary)",
+	}),
+	rule(`${dot(THEME.statTile)}:nth-child(4n + 3)`, {
+		"background-color": INK_GREY,
 	}),
 	rule(dot(THEME.statValue), {
 		margin: "0",
 		padding: "0",
 		"font-family": FONT_DISPLAY,
-		"font-size": "2.1em",
+		"font-size": "1.6em",
 		"font-weight": "700",
 		"line-height": "1.05",
 		"letter-spacing": "-0.02em",
 		"font-variant-numeric": "lining-nums tabular-nums",
-		color: "var(--pa-heading)",
+		color: "inherit",
+	}),
+	rule(`${dot(THEME.statTile)}:nth-child(4n + 3) ${dot(THEME.statValue)}`, {
+		color: "var(--pa-on-ink-accent)",
 	}),
 	rule(dot(THEME.statLabel), {
 		margin: "0",
 		padding: "0",
-		"font-family": FONT_MONO_ROLE,
-		"font-size": "0.74em",
-		"font-weight": "600",
+		"font-size": "0.76em",
+		"font-weight": "400",
 		"line-height": "1.35",
-		"letter-spacing": "0.08em",
-		"text-transform": "uppercase",
-		color: "var(--pa-muted)",
+		"letter-spacing": "0",
+		"text-transform": "none",
+		color: "var(--pa-on-ink-muted)",
+	}),
+	rule(`${dot(THEME.statTile)}:nth-child(4n + 2) ${dot(THEME.statLabel)}`, {
+		color: "var(--pa-on-primary)",
+	}),
+	// Numbered steps: each number in a primary square beside its item. The
+	// list-item counter honours an ordered list's start.
+	rule(`ol${dot(THEME.steps)}`, {
+		"list-style": "none",
+		margin: "0.75em 0 1.25em",
+		padding: "0",
+	}),
+	rule(`ol${dot(THEME.steps)} > li`, {
+		position: "relative",
+		"min-height": "1.9em",
+		margin: "0 0 0.85em",
+		"padding-left": "2.75em",
+	}),
+	rule(`ol${dot(THEME.steps)} > li::before`, {
+		content: "counter(list-item)",
+		position: "absolute",
+		top: "0",
+		left: "0",
+		width: "2.2em",
+		height: "2.2em",
+		"line-height": "2.2em",
+		"text-align": "center",
+		"font-family": FONT_MONO_ROLE,
+		"font-size": "0.86em",
+		"font-weight": "500",
+		"font-variant-numeric": "tabular-nums",
+		color: "var(--pa-on-primary)",
+		"background-color": "var(--pa-primary)",
+		"border-radius": "2pt",
 	}),
 ];
 
@@ -603,6 +757,33 @@ const LIVE_RULES: readonly ThemeRule[] = [
 			"0 1px 2px color-mix(in srgb, var(--pa-ink) 10%, transparent), 0 12px 32px -12px color-mix(in srgb, var(--pa-ink) 18%, transparent)",
 	}),
 	rule("&", remapDeclarations()),
+	// Each drawn Proposal diagram is a numbered figure: the editor marks its
+	// wrapper and caption strip, and a diagram that failed to draw carries
+	// neither. Print writes the number out as text instead.
+	rule("&", { "counter-reset": "pa-section pa-figure" }),
+	rule(".pa-figure-counted", { "counter-increment": "pa-figure" }),
+	rule(".pa-figure-counted .pa-figure-caption::before", {
+		content: '"Figure " counter(pa-figure) "."',
+		"margin-inline-end": "0.6ch",
+		"font-family": FONT_MONO_ROLE,
+		"font-size": "0.8125rem",
+		"font-weight": "500",
+		color: "var(--pa-ink)",
+	}),
+	// A Proposal figure template names Inter and JetBrains Mono on its text,
+	// which print embeds under those names but next/font registers here
+	// under hashed ones. These rules beat the presentation attribute, so the
+	// live page draws each in the role's own face, as print does.
+	rule(`.pa-figure-counted svg[role="img"] text[font-family]`, {
+		"font-family": FONT_BODY,
+	}),
+	rule(
+		FIGURE_MONO_TEXT.map(
+			(name) =>
+				`.pa-figure-counted svg[role="img"] text[font-family].${name}`,
+		),
+		{ "font-family": FONT_MONO_ROLE },
+	),
 	// Text an AI change inserts or removes keeps the editor's review wash but
 	// takes the paper's ink: the dark mode review rules would otherwise paint
 	// it white on the light paper. `:not([hidden])` only lifts the rule above
@@ -660,7 +841,7 @@ const PRINT_RULES: readonly ThemeRule[] = [
 		margin: "0",
 		padding: "0",
 		"font-size": "10.5pt",
-		"line-height": "1.55",
+		"line-height": "1.6",
 		color: "var(--pa-ink)",
 		"background-color": "var(--pa-surface)",
 		"-webkit-print-color-adjust": "exact",
@@ -668,6 +849,7 @@ const PRINT_RULES: readonly ThemeRule[] = [
 	}),
 	rule("p", { "margin-top": "0", orphans: "3", widows: "3" }),
 	rule(HEADINGS, { "break-after": "avoid", "break-inside": "avoid" }),
+	rule("h3", { "font-size": "13.5pt" }),
 	rule("pre", {
 		"white-space": "pre-wrap",
 		"overflow-wrap": "anywhere",
@@ -691,157 +873,301 @@ const PRINT_RULES: readonly ThemeRule[] = [
 		],
 		{ "break-inside": "avoid" },
 	),
+	// Captions read as labels in print, set in the mono role. A numbered
+	// figure's caption starts at the column's left edge, its "Figure n." in
+	// ink.
+	rule(["figcaption", dot(THEME.caption)], {
+		"font-family": FONT_MONO_ROLE,
+		"font-size": "7.75pt",
+	}),
+	rule(`${dot(PRINT.diagram)} figcaption`, { "text-align": "left" }),
+	rule(dot(PRINT.figureNumber), {
+		"font-weight": "500",
+		color: "var(--pa-ink)",
+	}),
 	rule(dot(PRINT.eyebrow), {
 		margin: "0 0 0.9em",
 		"font-family": FONT_MONO_ROLE,
-		"font-size": "0.74em",
-		"font-weight": "600",
-		"letter-spacing": "0.14em",
+		"font-size": "7.5pt",
+		"font-weight": "500",
+		"letter-spacing": "0.16em",
 		"text-transform": "uppercase",
 		color: "var(--pa-muted)",
 	}),
-	// The cover: a page of its own with no furniture, both brands on a strip
-	// of paper (a logo drawn for a light background stays visible), the rest
-	// on the ink surface.
+	// The cover: one dark page with no furniture. The hero is a darkened
+	// layer behind everything; the brands and the body flow from the top,
+	// so the title starts at the same height whatever the cover holds, and
+	// only the parties are pinned to the foot. Block-level and out of any
+	// flex or grid container, so the named page applies.
 	rule(dot(THEME.cover), {
 		page: "cover",
 		"break-after": "page",
 		"break-inside": "avoid",
 		"box-sizing": "border-box",
-		display: "flex",
-		"flex-direction": "column",
+		display: "block",
+		position: "relative",
 		height: PAGE_HEIGHTS[PROPOSAL_PAGE_SIZE],
 		margin: "0",
+		padding: `${COVER_TOP} ${COVER_SIDE} 0`,
 		overflow: "hidden",
-		color: "var(--pa-surface)",
+		color: "var(--pa-on-ink)",
 		"background-color": "var(--pa-ink)",
 	}),
+	// The hero fills the upper cover under two layers of ink: a veil at the
+	// paint's opacity, worked out so the cover's text reads at 4.5:1 even
+	// over a pure white hero, and a fade into the plain ink towards the text
+	// and along the lower edge. The fade only softens the edge; the veil is
+	// what keeps the text legible. Painted over the hero rather than masking
+	// it: Chromium's print output masks a large layer only in part.
+	rule(dot(PRINT.coverHero), {
+		position: "absolute",
+		top: "0",
+		right: "0",
+		left: "0",
+		height: "7.4in",
+		"background-color": "transparent",
+		"background-image": "var(--pa-hero-image)",
+		"background-position": "center",
+		"background-repeat": "no-repeat",
+		"background-size": "cover",
+	}),
+	rule(
+		[`${dot(PRINT.coverHero)}::before`, `${dot(PRINT.coverHero)}::after`],
+		{ content: '""', position: "absolute", inset: "0" },
+	),
+	rule(`${dot(PRINT.coverHero)}::before`, HERO_VEIL),
+	// Past the hero's lower edge, so the picture's own edge is under solid
+	// ink rather than beside it, where a viewer draws a seam.
+	rule(`${dot(PRINT.coverHero)}::after`, {
+		bottom: "-0.25in",
+		"background-image": HERO_FADE,
+	}),
+	// Drawn after the hero, so above it.
+	rule([dot(PRINT.coverBrands), dot(PRINT.coverBody)], {
+		position: "relative",
+	}),
+	// A row of fixed height, so the body below it starts at one place.
 	rule(dot(PRINT.coverBrands), {
 		display: "flex",
 		"align-items": "center",
 		"justify-content": "space-between",
 		gap: "0.5in",
-		padding: "0.55in 0.75in 0.45in",
-		"background-color": "var(--pa-surface)",
-		"border-bottom": "6pt solid var(--pa-primary)",
+		height: COVER_BRANDS_HEIGHT,
 	}),
-	rule(`${dot(PRINT.coverBrands)}:empty`, { display: "none" }),
 	rule(dot(PRINT.coverLogo), {
 		display: "block",
 		width: "auto",
 		height: "auto",
-		"max-width": "2.75in",
-		"max-height": "0.75in",
+		"max-width": "2.4in",
+		"max-height": COVER_LOGO_HEIGHT,
 		"object-fit": "contain",
 		"border-radius": "0",
 	}),
 	rule(dot(PRINT.recipientLogo), { "margin-inline-start": "auto" }),
-	// A band of fixed height, cropped to fill it, so the cover's one page
-	// always has room for the title, the parties and the date below it.
-	rule(dot(PRINT.coverHero), {
-		display: "block",
-		flex: "0 0 auto",
-		width: "100%",
-		"max-width": "none",
-		height: "3in",
-		"object-fit": "cover",
-		"border-radius": "0",
+	// A logo drawn for a light background sits on a plate of the paper.
+	rule(dot(PRINT.coverLogoPlate), {
+		padding: "7pt 10pt",
+		"border-radius": "5pt",
+		"background-color": "var(--pa-surface)",
 	}),
 	rule(dot(PRINT.coverBody), {
-		flex: "1 1 auto",
-		display: "flex",
-		"flex-direction": "column",
-		"justify-content": "center",
-		padding: "0.75in",
+		"margin-top": `calc(${COVER_BODY_TOP} - ${COVER_TOP})`,
+		// Ends a gap above the parties, whatever the title and lead hold.
+		// The cover's content box starts at its top padding.
+		"max-height": `calc(100% + ${COVER_TOP} - ${COVER_BODY_TOP} - ${COVER_FOOT_RESERVE})`,
+		overflow: "hidden",
+	}),
+	rule(`${dot(PRINT.coverBrands)} + ${dot(PRINT.coverBody)}`, {
+		"margin-top": `calc(${COVER_BODY_TOP} - ${COVER_TOP} - ${COVER_BRANDS_HEIGHT})`,
 	}),
 	rule(`${dot(THEME.cover)} ${dot(PRINT.eyebrow)}`, {
-		color: "var(--pa-surface)",
+		margin: "0 0 12pt",
+		"font-size": "8pt",
+		"letter-spacing": "0.18em",
+		color: "var(--pa-on-ink-accent)",
 	}),
 	rule(dot(PRINT.coverTitle), {
-		margin: "0 0 0.28in",
+		display: "-webkit-box",
+		"-webkit-box-orient": "vertical",
+		"-webkit-line-clamp": "3",
+		"line-clamp": "3",
+		overflow: "hidden",
+		margin: "0 0 16pt",
 		padding: "0",
 		"font-family": FONT_DISPLAY,
 		"font-size": "34pt",
-		"font-weight": "800",
+		"font-weight": "700",
 		"line-height": "1.08",
 		"letter-spacing": "-0.02em",
 		"text-wrap": "balance",
-		color: "var(--pa-surface)",
+		color: "var(--pa-on-ink)",
 		"background-image": "none",
 	}),
 	rule(dot(PRINT.coverLead), {
 		margin: "0",
-		"max-width": "5.5in",
-		"font-size": "14pt",
-		"line-height": "1.45",
-		color: "var(--pa-surface)",
+		"max-width": "5.7in",
+		"font-size": "13pt",
+		"line-height": "1.5",
+		color: "var(--pa-on-ink-muted)",
 	}),
-	rule(dot(PRINT.coverParties), {
+	rule(`${dot(PRINT.coverLead)} a`, {
+		color: "inherit",
+		"text-decoration-color": "currentColor",
+	}),
+	// Up to three figures, each a third of the row from the left, so one or
+	// two keep the width three would have.
+	rule(dot(PRINT.coverFigures), {
 		display: "grid",
-		"grid-template-columns": "repeat(2, minmax(0, 1fr))",
+		"grid-template-columns": "repeat(3, minmax(0, 1fr))",
+		gap: "0.22in",
+		"max-width": "6.4in",
+		margin: "34pt 0 0",
+		padding: "0",
+	}),
+	rule(`${dot(PRINT.coverFigures)} > div`, {
+		display: "flex",
+		"flex-direction": "column",
+		"padding-top": "10pt",
+		"border-top": "2pt solid var(--pa-on-ink-rule)",
+	}),
+	// The value reads first, over its label.
+	rule(`${dot(PRINT.coverFigures)} dd`, {
+		order: "-1",
+		margin: "0 0 6pt",
+		"font-family": FONT_DISPLAY,
+		"font-size": "19pt",
+		"font-weight": "700",
+		"line-height": "1.15",
+		"letter-spacing": "-0.01em",
+		color: "var(--pa-on-ink)",
+	}),
+	rule(`${dot(PRINT.coverFigures)} dt`, {
+		margin: "0",
+		"font-size": "8.5pt",
+		"line-height": "1.45",
+		color: "var(--pa-on-ink-muted)",
+	}),
+	// Pinned to the foot: who it is for on the left, who it is from with the
+	// date on the right, each in its own column whether or not the other is
+	// there.
+	rule(dot(PRINT.coverParties), {
+		position: "absolute",
+		right: COVER_SIDE,
+		bottom: "0.75in",
+		left: COVER_SIDE,
+		display: "grid",
+		"grid-template-columns": "minmax(0, 1fr) minmax(0, 1.25fr)",
 		gap: "0.4in",
-		margin: "0",
-		padding: "0 0.75in",
+		"font-size": "9pt",
+		"line-height": "1.55",
+		color: "var(--pa-on-ink-muted)",
 	}),
+	rule(dot(PRINT.coverPartyFor), { "grid-column": "1", margin: "0" }),
+	rule(dot(PRINT.coverPartyBy), { "grid-column": "2", margin: "0" }),
+	rule(`${dot(PRINT.coverParties)} dl`, { margin: "0" }),
 	rule(`${dot(PRINT.coverParties)} dt`, {
-		margin: "0 0 4pt",
+		margin: "0 0 5pt",
 		"font-family": FONT_MONO_ROLE,
-		"font-size": "7.5pt",
-		"font-weight": "600",
-		"letter-spacing": "0.12em",
+		"font-size": "7pt",
+		"font-weight": "500",
+		"letter-spacing": "0.16em",
 		"text-transform": "uppercase",
-		color: "var(--pa-surface)",
+		color: "var(--pa-on-ink-accent)",
 	}),
-	rule(`${dot(PRINT.coverParties)} dd`, {
-		margin: "0",
-		"font-size": "12pt",
-		"font-weight": "600",
-		color: "var(--pa-surface)",
-	}),
-	rule(dot(PRINT.coverDate), {
-		margin: "0",
-		padding: "0.35in 0.75in 0.6in",
-		"font-size": "10pt",
-		color: "var(--pa-surface)",
-	}),
-	// A section opener: a rounded primary band with a "Section N" eyebrow,
-	// the heading and an optional subtitle.
+	rule(`${dot(PRINT.coverParties)} dd`, { margin: "0" }),
+	rule(dot(PRINT.coverDate), { margin: "0" }),
+	// A section opener: an ink card, at the top of its own page, with a
+	// "Section N" eyebrow, the heading, an optional subtitle and an optional
+	// graphic. A forced break right after the contents page, or a landscape
+	// page starting with the opener, is the same break, so no page is left
+	// blank.
 	rule(dot(THEME.sectionOpener), {
-		// The containing block of the first pass's page marker.
+		// The containing block of the graphic and the first pass's marker.
+		// Nothing clips it: the marker must never be cut by a corner.
 		position: "relative",
 		"counter-increment": "pa-section",
+		"break-before": "page",
 		"break-after": "avoid",
-		margin: "2em 0 1.4em",
-		padding: "1.25em 1.5em 1.35em",
-		"border-radius": "10px",
-		color: "var(--pa-on-primary)",
-		"background-color": "var(--pa-primary)",
+		"box-sizing": "border-box",
+		"min-height": "1.35in",
+		margin: "0 0 16pt",
+		padding: "18pt 22pt 20pt",
+		"border-radius": "6pt",
+		color: "var(--pa-on-ink)",
+		"background-color": "var(--pa-ink)",
 	}),
-	rule(`${dot(THEME.sectionOpener)}:first-child`, { "margin-top": "0" }),
 	rule(`${dot(THEME.sectionOpener)}::before`, {
 		content: '"Section " counter(pa-section)',
+		position: "relative",
 		display: "block",
-		"margin-bottom": "0.55em",
+		"margin-bottom": "8pt",
 		"font-family": FONT_MONO_ROLE,
-		"font-size": "0.72em",
-		"font-weight": "600",
-		"letter-spacing": "0.14em",
+		"font-size": "7.5pt",
+		"font-weight": "500",
+		"line-height": "1.4",
+		"letter-spacing": "0.16em",
 		"text-transform": "uppercase",
+		color: "var(--pa-on-ink-accent)",
 	}),
+	// Drawn after the graphic, so above it.
 	rule(`${dot(THEME.sectionOpener)} h2`, {
-		margin: "0",
+		position: "relative",
+		margin: "0 0 6pt",
 		padding: "0",
-		"font-size": "1.65em",
+		"font-size": "21pt",
+		"line-height": "1.15",
 		color: "inherit",
-		"background-image": "none",
+		"background-color": "transparent",
+		"border-radius": "0",
 	}),
+	rule(`${dot(THEME.sectionOpener)} h2:last-child`, { "margin-bottom": "0" }),
 	rule(`${dot(THEME.sectionOpener)} p`, {
-		margin: "0.45em 0 0",
-		color: "inherit",
+		position: "relative",
+		"max-width": "3.9in",
+		margin: "0",
+		"font-size": "10.5pt",
+		"line-height": "1.45",
+		color: "var(--pa-on-ink-muted)",
+	}),
+	// The hero on the card's right side, under the same veil as on the
+	// cover and faded into the ink towards the text. It rounds its own
+	// corners with the card's.
+	rule(dot(PRINT.sectionGraphic), {
+		position: "absolute",
+		top: "0",
+		right: "0",
+		bottom: "0",
+		left: "42%",
+		"border-radius": "0 6pt 6pt 0",
+		// Print writes a crop of the image per opener: the hero's small
+		// copy keeps each one small.
+		"background-image": "var(--pa-hero-opener-image, var(--pa-hero-image))",
+		"background-position": "center",
+		"background-repeat": "no-repeat",
+		"background-size": "cover",
+	}),
+	rule(
+		[
+			`${dot(PRINT.sectionGraphic)}::before`,
+			`${dot(PRINT.sectionGraphic)}::after`,
+		],
+		{
+			content: '""',
+			position: "absolute",
+			inset: "0",
+			"border-radius": "inherit",
+		},
+	),
+	rule(`${dot(PRINT.sectionGraphic)}::before`, HERO_VEIL),
+	// Past the graphic's left edge, so that edge sits under solid ink.
+	rule(`${dot(PRINT.sectionGraphic)}::after`, {
+		left: "-2pt",
+		"background-image": GRAPHIC_FADE,
 	}),
 	// The marker the first print pass looks a section's page up by: out of
-	// flow at the band's corner, so it moves nothing, and drawn in the band's
-	// own colour at a legible size, so the PDF's text holds it whole. It is
+	// flow at the card's corner, above the graphic, so it moves nothing, and
+	// drawn in the card's own text colour at a legible size, so the PDF's
+	// text holds it whole. It is
 	// deliberately not made invisible: Chromium's Linux print output leaves
 	// transparent text out of the PDF altogether, and only the first pass,
 	// which nobody sees, carries markers.
@@ -849,6 +1175,7 @@ const PRINT_RULES: readonly ThemeRule[] = [
 		position: "absolute",
 		top: "0",
 		left: "0",
+		"z-index": "1",
 		"font-size": "8px",
 		"line-height": "1",
 		"letter-spacing": "0",
@@ -858,6 +1185,16 @@ const PRINT_RULES: readonly ThemeRule[] = [
 	// which a second print pass writes in (Chromium has no `target-counter()`
 	// to look them up with).
 	rule(dot(PRINT.contents), { "break-after": "page" }),
+	// Not a heading element: the heading rules would make it a section card.
+	rule(dot(PRINT.contentsTitle), {
+		margin: "0 0 0.6em",
+		"font-family": FONT_DISPLAY,
+		"font-size": "22pt",
+		"font-weight": "700",
+		"line-height": "1.15",
+		"letter-spacing": "-0.015em",
+		color: "var(--pa-heading)",
+	}),
 	rule(`${dot(PRINT.contents)} ol`, {
 		"list-style": "none",
 		"counter-reset": "pa-contents",
@@ -880,7 +1217,7 @@ const PRINT_RULES: readonly ThemeRule[] = [
 		flex: "0 0 2.2em",
 		"font-family": FONT_MONO_ROLE,
 		"font-size": "0.8em",
-		"font-weight": "600",
+		"font-weight": "500",
 		"font-variant-numeric": "tabular-nums",
 		color: "var(--pa-heading)",
 	}),
@@ -906,7 +1243,8 @@ const PRINT_RULES: readonly ThemeRule[] = [
 		"font-weight": "600",
 		color: "var(--pa-heading)",
 	}),
-	// A diagram that did not render keeps its place as a captioned frame.
+	// A diagram only the live page draws keeps its place as a captioned
+	// frame, its note aligned with the numbered caption under it.
 	rule(dot(PRINT.diagramPlaceholder), {
 		padding: "1.4em 1.25em",
 		border: "1px dashed var(--pa-border)",
@@ -914,6 +1252,7 @@ const PRINT_RULES: readonly ThemeRule[] = [
 	}),
 	rule(`${dot(PRINT.diagramPlaceholder)} ${dot(THEME.caption)}`, {
 		margin: "0",
+		"text-align": "left",
 	}),
 	// The diagram's own caption under the "could not be drawn" note.
 	rule(`${dot(PRINT.diagramPlaceholder)} figcaption${dot(THEME.caption)}`, {
@@ -947,7 +1286,7 @@ const MARGIN_BOXES = [
 	"right-bottom",
 ] as const;
 
-/** Longest running header or footer, in characters, before it is cut. */
+/** Longest running footer, in characters, before it is cut. */
 const RUNNING_TEXT_LIMIT = 200;
 
 /**
@@ -1051,9 +1390,10 @@ function pageRule(
 }
 
 function printLayer(root: string, options: ProposalPrintThemeOptions): string {
-	const family = safeFontFamily(options.fontFamily) ?? NEUTRAL_THEME.font;
+	const family =
+		safeFontFamily(options.fontFamily) ?? NEUTRAL_THEME.fonts.body;
 	const literalStack =
-		family === NEUTRAL_THEME.font
+		family === NEUTRAL_THEME.fonts.body
 			? `${NEUTRAL_FAMILY}, ui-sans-serif, sans-serif`
 			: `"${family}", ${NEUTRAL_FAMILY}, ui-sans-serif, sans-serif`;
 	const furniture: Declarations = {
@@ -1065,11 +1405,6 @@ function printLayer(root: string, options: ProposalPrintThemeOptions): string {
 		// Resolves where the custom properties sit on the root element, and
 		// otherwise falls back to the inherited text colour.
 		color: "var(--pa-muted)",
-	};
-	const top: Declarations = {
-		...furniture,
-		"vertical-align": "bottom",
-		"padding-bottom": "0.22in",
 	};
 	const bottom: Declarations = {
 		...furniture,
@@ -1090,14 +1425,11 @@ function printLayer(root: string, options: ProposalPrintThemeOptions): string {
 		}),
 		emitRules(root, PRINT_RULES),
 		// The cover counts as page 1, so the first body page reads "Page 2".
+		// A footer only: the opener names each section at the top of its page.
 		pageRule(
 			null,
 			{ size: PROPOSAL_PAGE_SIZE, margin: "0.85in 0.8in 0.9in" },
 			{
-				"top-left": {
-					...top,
-					content: runningContent(options.runningHeader),
-				},
 				"bottom-left": {
 					...bottom,
 					content: runningContent(options.runningFooter),
@@ -1122,8 +1454,8 @@ function printLayer(root: string, options: ProposalPrintThemeOptions): string {
 /** The theme stylesheet for the live Main wrapper. */
 export function proposalThemeCss(target: "live"): string;
 /**
- * The theme stylesheet for the print page, with its running header and
- * footer. Header and footer are document text and are escaped here.
+ * The theme stylesheet for the print page, with its running footer, which is
+ * document text and is escaped here.
  */
 export function proposalThemeCss(
 	target: "print",
@@ -1145,8 +1477,7 @@ export function proposalThemeCss(
 			),
 		].join("\n");
 	}
-	return [
-		base,
-		printLayer(root, options ?? { runningHeader: "", runningFooter: "" }),
-	].join("\n");
+	return [base, printLayer(root, options ?? { runningFooter: "" })].join(
+		"\n",
+	);
 }

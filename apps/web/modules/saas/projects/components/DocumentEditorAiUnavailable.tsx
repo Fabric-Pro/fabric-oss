@@ -22,11 +22,9 @@ function reloadPage() {
  * AI-free fallback for the document editor (Fizzy #2393).
  *
  * `<DocumentEditorPage>` mounts `<DocumentEditor>` inside `<CopilotKit>` and
- * wraps both in an error boundary. `<DocumentEditor>` calls `useCopilotChat`,
- * `useCoAgent` and friends unconditionally and renders `<CopilotSidebar>`, and
- * on CopilotKit 1.70 every one of those throws when no provider is mounted
- * above it — so the boundary's fallback cannot be `<DocumentEditor>` itself
- * (that was the previous fallback, and it threw the moment it rendered).
+ * wraps both in an error boundary. The editor requires its CopilotKit provider
+ * and shared chat session for its agent handle, selectors, and sidebar. The
+ * boundary fallback must therefore render without mounting the editor again.
  *
  * This panel touches no CopilotKit hook. It keeps the document readable from
  * the markdown the page already fetched and offers a reload, which is the

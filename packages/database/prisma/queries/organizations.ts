@@ -1,41 +1,72 @@
 import type { z } from "zod";
-import { db } from "../client";
+import { db, Prisma } from "../client";
 import type { OrganizationSchema } from "../zod";
+
+export interface OrganizationListFilter {
+	query?: string;
+	status?: "active" | "deactivated" | "all";
+}
+
+function organizationWhere({
+	query,
+	status = "active",
+}: OrganizationListFilter) {
+	return {
+		name: { contains: query, mode: "insensitive" as const },
+		...(status === "all"
+			? {}
+			: { deletedAt: status === "active" ? null : { not: null } }),
+	};
+}
 
 export async function getOrganizations({
 	limit,
 	offset,
 	query,
-}: {
+	status = "active",
+	sort = "createdAt",
+	direction = "desc",
+}: OrganizationListFilter & {
 	limit: number;
 	offset: number;
-	query?: string;
+	sort?: "name" | "members" | "projects" | "createdAt";
+	direction?: "asc" | "desc";
 }) {
-	return db.organization
-		.findMany({
-			where: {
-				name: { contains: query, mode: "insensitive" },
-			},
-			include: {
-				_count: {
-					select: {
-						members: true,
-					},
-				},
-			},
-			take: limit,
-			skip: offset,
-		})
-		.then((res) =>
-			res.map((org) => ({
-				...org,
-				membersCount: org._count.members,
-			})),
-		);
+	const order = {
+		name: Prisma.sql`o.name`,
+		members: Prisma.sql`"membersCount"`,
+		projects: Prisma.sql`"projectsCount"`,
+		createdAt: Prisma.sql`o."createdAt"`,
+	}[sort];
+	const ordering = direction === "asc" ? Prisma.sql`ASC` : Prisma.sql`DESC`;
+	return db.$queryRaw<
+		Array<{
+			id: string;
+			name: string;
+			logo: string | null;
+			slug: string;
+			createdAt: Date;
+			deletedAt: Date | null;
+			scheduledPermanentDeleteAt: Date | null;
+			membersCount: number;
+			projectsCount: number;
+		}>
+	>(Prisma.sql`
+ SELECT o.id, o.name, o.logo, o.slug, o."createdAt", o."deletedAt", o."scheduledPermanentDeleteAt",
+ (SELECT count(*)::int FROM member m WHERE m."organizationId" = o.id) AS "membersCount",
+ (SELECT count(*)::int FROM project p WHERE p."organizationId" = o.id AND p."deletedAt" IS NULL) AS "projectsCount"
+ FROM organization o
+ WHERE ${status === "all" ? Prisma.sql`TRUE` : status === "active" ? Prisma.sql`o."deletedAt" IS NULL` : Prisma.sql`o."deletedAt" IS NOT NULL`}
+ AND o.name ILIKE ${`%${query ?? ""}%`}
+ ORDER BY ${order} ${ordering}, o.id ASC
+ LIMIT ${limit} OFFSET ${offset}
+ `);
 }
 
-export async function countAllOrganizations() {
-	return db.organization.count();
+export async function countAllOrganizations(
+	filter: OrganizationListFilter = {},
+) {
+	return db.organization.count({ where: organizationWhere(filter) });
 }
 
 export async function getOrganizationById(id: string) {

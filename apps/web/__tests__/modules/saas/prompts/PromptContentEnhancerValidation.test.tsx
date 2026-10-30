@@ -123,3 +123,54 @@ describe("PromptContentEnhancer content validation", () => {
 		expect(onSave).toHaveBeenCalledWith("A valid prompt.");
 	});
 });
+
+const reseedHarness = vi.hoisted(() => ({
+	subscriber: undefined as any,
+	unsubscribe: vi.fn(),
+	subscribe: vi.fn(),
+}));
+vi.mock("@copilotkit/react-core/v2", () => ({
+	useCopilotKit: () => ({ copilotkit: reseedHarness }),
+}));
+reseedHarness.subscribe.mockImplementation((subscriber: any) => {
+	reseedHarness.subscriber = subscriber;
+	return { unsubscribe: reseedHarness.unsubscribe };
+});
+
+it("restores the current editor content after a fresh-thread wipe", () => {
+	renderEnhancer("Original prompt");
+	fireEvent.change(textarea(), { target: { value: "Edited prompt" } });
+	const agent = { agentId: "prompt_enhancer", state: {}, setState: vi.fn() };
+	reseedHarness.subscriber.onAgentRunStarted({ agent });
+	expect(agent.setState).toHaveBeenCalledWith(
+		expect.objectContaining({
+			promptId: "p1",
+			promptName: "Meeting summary",
+			format: "PLAIN_TEXT",
+			tags: [],
+			currentContent: "Edited prompt",
+			enhancedContent: "Edited prompt",
+			streamingContent: "Edited prompt",
+			enhancementType: "general",
+			retryCount: 0,
+			reasoningByTurn: {},
+		}),
+	);
+	const live = {
+		...agent,
+		state: {
+			currentContent: "Live",
+			retryCount: 2,
+			userInstructions: "Keep it brief",
+		},
+	};
+	reseedHarness.subscriber.onAgentRunStarted({ agent: live });
+	// Fizzy #3414: kept state wins, except for the prompt the agent enhances,
+	// which comes from the editor.
+	expect(agent.setState).toHaveBeenLastCalledWith(
+		expect.objectContaining({
+			...live.state,
+			currentContent: "Edited prompt",
+		}),
+	);
+});
