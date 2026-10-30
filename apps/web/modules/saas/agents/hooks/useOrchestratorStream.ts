@@ -22,6 +22,7 @@ import {
 	type ApprovalSendResult,
 	approvalSendResult,
 } from "../lib/approval-response";
+import { createChatEventReplay } from "../lib/chat-event-replay";
 import { ChatStreamProtocolError } from "../lib/chat-stream-protocol";
 import { readChatGptPlanApiBilling } from "../lib/chatgpt-plan-api-billing";
 import { orchestratorRequestFields } from "../lib/orchestrator-request";
@@ -119,6 +120,7 @@ export function useOrchestratorStream(
 	const optionsRef = useRef(options);
 	optionsRef.current = options;
 
+	const eventReplayRef = useRef(createChatEventReplay());
 	const turn = useOrchestratorTurnState(options);
 	const {
 		state,
@@ -206,6 +208,7 @@ export function useOrchestratorStream(
 				conversationId: effectiveConversationId ?? null,
 			});
 			const { assistantMessage, controller: sendController } = started;
+			eventReplayRef.current = createChatEventReplay();
 
 			try {
 				// Debug: Log workspace IDs being sent
@@ -219,6 +222,7 @@ export function useOrchestratorStream(
 				// Start the streaming workflow
 				// Pass conversationId so backend can fetch attached workspaces if workspaceIds is empty
 				const initialRequestBody = JSON.stringify({
+					eventReplay: true,
 					message: content.trim(),
 					history: history.map((m) => ({
 						role: m.role,
@@ -255,6 +259,8 @@ export function useOrchestratorStream(
 				const buildResumeRequestBody = () =>
 					executionIdRef.current
 						? JSON.stringify({
+								eventReplay: true,
+								afterEvent: eventReplayRef.current.cursor,
 								executionId: executionIdRef.current,
 								organizationId,
 								conversationId: effectiveConversationId,
@@ -456,6 +462,14 @@ export function useOrchestratorStream(
 							dispatchOnLine: true,
 							parse: parseOrchestratorStreamEvent,
 							onEvent: (data) => {
+								if (
+									sendController.signal.aborted ||
+									!eventReplayRef.current.accept(
+										data.eventCursor,
+									)
+								) {
+									return;
+								}
 								if (data.type === "stream_timeout") {
 									sawStreamTimeout = true;
 								} else if (data.type === "start_pending") {
@@ -483,7 +497,12 @@ export function useOrchestratorStream(
 								) {
 									consecutiveUncleanResumes = 0;
 								}
-								handleStreamEvent(data, assistantMessage.id);
+								handleStreamEvent(
+									data,
+									assistantMessage.id,
+									Boolean(eventReplayRef.current.cursor),
+								);
+								eventReplayRef.current.commit(data.eventCursor);
 							},
 							isOutcome: (event) =>
 								[

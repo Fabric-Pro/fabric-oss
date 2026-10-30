@@ -2119,7 +2119,9 @@ model ConversationTurn {
   organization Organization              @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   conversation AgentConversation?        @relation(fields: [conversationId], references: [id], onDelete: SetNull)
   attempts     ConversationTurnAttempt[]
+  events       ConversationTurnEvent[]
 
+  @@unique([id, organizationId, userId])
   @@unique([userId, organizationId, clientRequestKey])
   @@unique([conversationId, generation])
   @@index([conversationId, status])
@@ -2135,6 +2137,29 @@ enum ConversationTurnStatus {
   FAILED
   LIMITED
   CANCELLED
+}
+
+/// Short-lived replay of output produced by one physical Temporal run.
+/// Tenant copies are constrained to the parent turn. The global sequence is
+/// allocated under the turn row lock so commits cannot overtake one another.
+model ConversationTurnEvent {
+  id             BigInt   @id @default(autoincrement())
+  turnId         String
+  organizationId String
+  userId         String
+  runId          String
+  sourceKey      String
+  event          String
+  data           Json
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime
+
+  turn ConversationTurn @relation(fields: [turnId, organizationId, userId], references: [id, organizationId, userId], onDelete: Cascade)
+
+  @@unique([turnId, runId, sourceKey])
+  @@index([turnId, runId, id])
+  @@index([expiresAt, id])
+  @@map("conversation_turn_event")
 }
 
 enum ConversationTurnBudgetEnforcement {

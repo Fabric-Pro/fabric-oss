@@ -149,6 +149,7 @@ describe("useOrchestratorStream — attaching to a running turn", () => {
 			expect(streamCalls()).toHaveLength(1);
 		});
 		expect(streamCalls()[0].body).toEqual({
+			eventReplay: true,
 			executionId: EXECUTION_ID,
 			organizationId: HOOK_OPTIONS.organizationId,
 			conversationId: HOOK_OPTIONS.conversationId,

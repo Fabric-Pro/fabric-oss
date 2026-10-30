@@ -261,8 +261,13 @@ export function useOrchestratorTurnState(
 
 	/** Handle one incoming stream event for the turn's assistant message. */
 	const handleStreamEvent = useCallback(
-		(data: OrchestratorStreamEvent, assistantMessageId: string) =>
+		(
+			data: OrchestratorStreamEvent,
+			assistantMessageId: string,
+			preserveContentOnResume = false,
+		) =>
 			applyOrchestratorStreamEvent(data, assistantMessageId, {
+				preserveContentOnResume,
 				setState,
 				setMessages,
 				setIsLoading,

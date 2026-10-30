@@ -10,9 +10,14 @@ import {
 	getConversationTurnOwnerForExecution,
 } from "@repo/database";
 import { getTemporalClient } from "@repo/temporal";
+import { chatEventCursorSchema } from "@repo/utils/chat-event-cursor";
 import type { AssertAssignable } from "@saas/agents/lib/chat-stream-protocol";
 import { limitSchema } from "@saas/agents/lib/direct-stream-protocol";
 import type { OrchestratorStreamInput } from "@saas/agents/lib/orchestrator-stream-protocol";
+import {
+	createChatReplayObserver,
+	isFatalChatReplayError,
+} from "@saas/agents/lib/server/chat-replay-observer";
 /**
  * Fabric AI Orchestrator - Streaming API
  * SSE streaming endpoint for Temporal orchestrator workflow.
@@ -112,6 +117,18 @@ export async function POST(request: NextRequest) {
 
 		const userId = session.user.id;
 		const body = await request.json();
+		const replayEnabled = body.eventReplay === true;
+		const cursorResult = chatEventCursorSchema.safeParse(body.afterEvent);
+		if (
+			body.afterEvent !== undefined &&
+			(!replayEnabled || !cursorResult.success || !body.executionId)
+		) {
+			return Response.json(
+				{ error: "Invalid replay cursor" },
+				{ status: 400 },
+			);
+		}
+		const afterEvent = cursorResult.success ? cursorResult.data : undefined;
 
 		// The hand parser, organization tie, conversation, key, budget
 		// continuation, workspaces, project, usage frame and history: see
@@ -507,12 +524,36 @@ export async function POST(request: NextRequest) {
 					}
 				};
 
+				const replay = createChatReplayObserver({
+					enabled: replayEnabled,
+					turnId: activeTurnId,
+					executionId,
+					userId,
+					organizationId,
+					after: afterEvent,
+					send: sendEvent,
+					isClosed: () => controllerClosed,
+					onFailure: (error) => {
+						sendEvent({
+							type: "error",
+							message:
+								error instanceof Error
+									? error.message
+									: "Replay unavailable",
+						});
+						closeController();
+						cleanupRedis();
+					},
+				});
+
 				// The Redis events and the Temporal poll, diffed into stream
 				// events (../execution-observer.ts, shared with the agent
 				// runtime). A continue-as-new pins the newest run with the same
 				// authorization as the first attach.
 				const observer = createOrchestratorExecutionObserver({
 					emit: sendEvent,
+					beforeState: replay.beforeState,
+					fatalPollError: isFatalChatReplayError,
 					reattach: async () =>
 						(
 							await getAuthorizedChatRun({
@@ -610,7 +651,8 @@ export async function POST(request: NextRequest) {
 						}
 						if (
 							memo?.projectId !== undefined ||
-							memo?.approvalProtocol === 2
+							memo?.approvalProtocol === 2 ||
+							replayEnabled
 						) {
 							handle = (
 								await getAuthorizedChatRun({
@@ -635,6 +677,9 @@ export async function POST(request: NextRequest) {
 						executionId,
 						onEvent: (event) => {
 							if (!controllerClosed) {
+								if (replay.onExecutionEvent(event)) {
+									return;
+								}
 								observer.onExecutionEvent(event);
 							}
 						},
@@ -766,6 +811,11 @@ export async function POST(request: NextRequest) {
 								OrchestratorStreamInput
 							>,
 						);
+					}
+
+					const replayRun = await replay.initialize();
+					if (replayRun) {
+						handle = replayRun.handle;
 					}
 
 					let isComplete = false;

@@ -25,4 +25,5 @@ export const WORKFLOW_INTERCEPTOR_MODULES: readonly string[] = [
 	// Forwards the workflow's correlation header onto every activity,
 	// child workflow and continue-as-new the workflow starts.
 	resolve(__dirname, "..", "workflows", "correlation-workflow-interceptor"),
+	resolve(__dirname, "..", "workflows", "chat-replay-workflow-interceptor"),
 ];

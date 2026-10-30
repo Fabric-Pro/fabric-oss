@@ -10,6 +10,7 @@
 	"main": "./index.ts",
 	"type": "module",
 	"exports": {
+		"./chat-event-cursor": "./lib/chat-event-cursor.ts",
 		"./conversation-turn-charge": {
 			"types": "./lib/conversation-turn-charge.ts",
 			"import": "./lib/conversation-turn-charge.ts",

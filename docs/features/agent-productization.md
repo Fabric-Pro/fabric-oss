@@ -29,7 +29,7 @@ do not complete a feature.
 | Agent lifecycle | [Version history](../../packages/api/modules/agents/procedures/get-instance-versions.ts), [restore](../../packages/api/modules/agents/procedures/restore-instance-version.ts), [builder Sidekick](../../apps/web/modules/saas/agents/sidekick/AgentBuilderSidekick.tsx) | Complete published snapshots, portable manifests, resource rebinding, version diffs and execution pinning |
 | Observability | [Project usage](../../packages/api/modules/projects/procedures/usage/get-summary.ts), [usage limits](../../packages/api/modules/payments/procedures/ai-usage-limits/upsert.ts), deployment metrics and audit infrastructure | Correlated conversation/tool/agent-version diagnostics and budgets at missing scopes |
 | Channels | [Unified inbound handler](../../apps/web/lib/channels/inbound-handler.ts) and [Teams mention workflow](../../packages/temporal/src/workflows/teams-mention-handler.ts) | Verify and unify assistant semantics, identity mapping, approvals, citations and delivery recovery across Slack and Teams |
-| Artifacts | [Artifact browser](../../apps/web/modules/saas/artifacts/components/ArtifactBrowser.tsx), [Frames](../../apps/web/modules/saas/frames/components/FrameViewer.tsx), chat artifact panels | Consistent conversation attachment, version history, authorized sharing and execution policy |
+| Artifacts | [Project artifacts](../../apps/web/modules/saas/projects/components/ProjectArtifactsList.tsx), [Frames](../../apps/web/modules/saas/frames/components/FrameViewer.tsx), chat artifact panels | Consistent conversation attachment, version history, authorized sharing and execution policy |
 
 These are source-level findings. End-to-end availability, permission completeness,
 and production readiness still require the acceptance checks below. In particular,
@@ -50,9 +50,33 @@ Implemented:
   outside React state, including fragmented Unicode, CRLF, multiline data and reader
   cleanup. Unknown event kinds remain additive; incompatible versions and malformed
   known events fail with a safe message. Unversioned producers remain readable.
-- EOF without an explicit outcome is an interrupted reply. Orchestrator preserves
-  its bounded reconnect-to-existing-run behavior; contract failures do not trigger
-  reconnection. Research reports interruption and keeps buffered partial output.
+- EOF without an explicit outcome is an interrupted reply. Orchestrator and
+  Research reconnect to the existing run within bounded retry budgets; contract
+  failures and authorization refusals do not trigger reconnection. Research keeps
+  buffered partial output and pending tool state across observation windows, checks
+  for silent connections, and stops observing when the user stops or leaves the
+  conversation. Reattachment carries the run identity and authorization scope,
+  without resending the message, attachments, or tool configuration. A stream that
+  never identifies its run is not retried automatically.
+- A short-lived PostgreSQL output journal records primary-run text, tool,
+  iteration, limit and compaction events before live publication. Research and
+  Orchestrator request replay after their last applied cursor; duplicate and older
+  entries are ignored before updating the UI. Cursors identify the server-admitted
+  turn and physical Temporal run, and authorize nothing by themselves. Research
+  persists exact text, tool state and its cursor together for history resumption.
+  Replaying output never dispatches a tool, starts a workflow or submits approval.
+  Pending approvals and cancellation are refreshed from authoritative workflow
+  state rather than replayed as commands.
+- Replay reads recheck current run/project access, fail on expired or mismatched
+  cursors, and stop delivery after observation cancellation. The replay window is
+  24 hours from turn admission, with at most 20,000 output entries per run (plus
+  one gap marker) and 1 MiB per entry. Credential fields are redacted before storage. Expired rows are removed
+  in bounded batches by the daily request-span
+  retention activity; deleting a turn cascades to its output. Storage failures or
+  output limits stop replay explicitly, while workflow execution remains separate.
+  Journal failure also survives worker changes through a private activity-result
+  flag and a query-only workflow interceptor. Redis wakes serialized reads;
+  terminal results remain available after journal expiry or gaps.
 - Partial answers and failure reasons remain separate in the UI and persisted
   Research/Orchestrator history. Pending tool cards settle on failed transport.
 - Modular [workflow confirmation controls](../../apps/web/modules/saas/agents/components/FabricChat/WorkflowConfirmationCard.tsx)
@@ -85,7 +109,20 @@ Implemented:
 The Direct workflow-start confirmations remain local controls, separate from these
 Orchestrator/Weave checkpoint decisions. They do not provide durable cross-tab start
 idempotency. Exact tool-argument digests, activity-time authorization across every
-executor, and Research observation resumption remain open.
+executor, and broader lifecycle-event convergence remain open. The journal covers
+committed primary-run output, not uncommitted provider chunks, external AG-UI
+streams, or the history of every approval transition. The final workflow result
+remains authoritative. Old workers retain live-only behavior during rollout.
+The flag-gated CopilotKit agent-runtime transport retains its current observation
+semantics; it needs a separate cursor integration before the stream transport can
+be retired. Shared observer and turn-state helpers preserve both paths.
+
+Apply the additive replay-journal migration and RLS policies before updating
+workers and web/API. Updated workers persist output independently of browser or
+Redis availability; updated browsers explicitly opt in to cursor replay. Older
+clients continue using live events. The existing daily request-span retention
+schedule also purges expired replay output, independently of the request-span
+retention period. No workflow command/control-flow change is required.
 
 Roll out updated Temporal workers before the web/API change. The controller retains
 legacy signal semantics on replay while exposing acknowledged decisions to older

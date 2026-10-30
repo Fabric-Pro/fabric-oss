@@ -11,6 +11,7 @@
  * as each stream progresses independently.
  */
 
+import type { ChatEventCursor } from "@repo/utils/chat-event-cursor";
 import {
 	isAiUsageLimitExceededPayload,
 	useShowAiUsageLimitToast,
@@ -26,8 +27,7 @@ import {
 	mergeStreamedText,
 	mergeToolCall,
 } from "../lib/multi-agent-response";
-import { parseResearchStreamEvent } from "../lib/orchestrator-stream-protocol";
-import { readChatEventStream } from "../lib/read-chat-event-stream";
+import { observeResearchStream } from "../lib/observe-research-stream";
 
 function isMcpDebugEnabled(): boolean {
 	if (typeof window === "undefined") {
@@ -324,6 +324,10 @@ export function useMultiAgentStream({
 
 	useEffect(() => {
 		return () => {
+			for (const controller of abortControllersRef.current.values()) {
+				controller.abort();
+			}
+			abortControllersRef.current.clear();
 			for (const timeoutId of textFlushTimeoutRef.current.values()) {
 				clearTimeout(timeoutId);
 			}
@@ -372,11 +376,16 @@ export function useMultiAgentStream({
 			signal: AbortSignal,
 			executionOptions?: MultiAgentExecutionOptions,
 			resumeExecutionId?: string,
+			resumeCursor?: ChatEventCursor,
 		) => {
 			let agent = selectedAgent;
+			let receivedReplayText = Boolean(resumeCursor);
 			const updateResponse = (
 				updater: (prev: AgentResponse) => AgentResponse,
 			) => {
+				if (signal.aborted) {
+					return;
+				}
 				setTurns((prevTurns) =>
 					prevTurns.map((turn) => {
 						if (turn.id !== turnId) {
@@ -409,7 +418,7 @@ export function useMultiAgentStream({
 
 			try {
 				const instanceId = getSelectedAgentInstanceId(agent);
-				if (instanceId) {
+				if (instanceId && !resumeExecutionId) {
 					agent = {
 						...agent,
 						...(await loadInstanceAgentConfig(
@@ -432,71 +441,91 @@ export function useMultiAgentStream({
 				});
 
 				const responseKey = `${turnId}::${agent.agentId}`;
+				const resumeBody = (
+					executionId: string,
+					afterEvent?: ChatEventCursor,
+				) =>
+					JSON.stringify({
+						eventReplay: true,
+						afterEvent,
+						executionId,
+						organizationId,
+						conversationId: executionOptions?.conversationId,
+						instanceId: agent.instanceId ?? instanceId,
+					});
 				const response = await fetch(
 					"/api/agents/fabric-ai/orchestrator-temporal/stream",
 					{
 						method: "POST",
 						headers: { "Content-Type": "application/json" },
-						body: JSON.stringify({
-							message,
-							history,
-							executionId: resumeExecutionId,
-							organizationId,
-							modelOverride: overrides.modelOverride,
-							executionMode:
-								executionOptions?.executionMode ?? "balanced",
-							enabledAgentIds:
-								executionOptions?.enabledAgentIds ?? [],
-							enabledMcpConfigIds: overrides.enabledMcpConfigIds,
-							enabledFabricToolIds:
-								overrides.enabledFabricToolIds,
-							enabledIntegrationIds:
-								overrides.enabledIntegrationIds,
-							attachedImageUrls:
-								executionOptions?.attachedImageUrls ?? [],
-							attachedDocumentIds:
-								executionOptions?.attachedDocumentIds ?? [],
-							inlineAttachmentContexts:
-								executionOptions?.inlineAttachmentContexts ??
-								[],
-							chatId: executionOptions?.chatId,
-							prioritizedToolIds:
-								executionOptions?.prioritizedToolIds,
-							prioritizedAgentIds:
-								executionOptions?.prioritizedAgentIds,
-							workspaceIds: overrides.workspaceIds,
-							instanceId: overrides.instanceId,
-							projectId: overrides.projectId,
-							systemPrompt: overrides.systemPrompt,
-							// Omit-when-undefined so non-opting callers
-							// (doc-editor copilot, agent template runner,
-							// Weave) send the same wire shape they always
-							// have. Tested by the E2E "other-surface guard".
-							...(executionOptions?.surface !== undefined
-								? { surface: executionOptions.surface }
-								: {}),
-							...(executionOptions?.organizationSlug !== undefined
-								? {
-										organizationSlug:
-											executionOptions.organizationSlug,
-									}
-								: {}),
-							// See `conversationId` doc on
-							// `MultiAgentExecutionOptions`. Same
-							// omit-when-undefined contract as `surface` /
-							// `organizationSlug` above so the wire shape on
-							// today's CopilotPage Nexus surface
-							// (`AgentConversation`-less) stays byte-identical
-							// to pre-PR2. The orchestrator stream route
-							// already accepts this field (PR1) so opt-in is
-							// purely additive.
-							...(executionOptions?.conversationId !== undefined
-								? {
-										conversationId:
-											executionOptions.conversationId,
-									}
-								: {}),
-						}),
+						body: resumeExecutionId
+							? resumeBody(resumeExecutionId, resumeCursor)
+							: JSON.stringify({
+									eventReplay: true,
+									message,
+									history,
+									organizationId,
+									modelOverride: overrides.modelOverride,
+									executionMode:
+										executionOptions?.executionMode ??
+										"balanced",
+									enabledAgentIds:
+										executionOptions?.enabledAgentIds ?? [],
+									enabledMcpConfigIds:
+										overrides.enabledMcpConfigIds,
+									enabledFabricToolIds:
+										overrides.enabledFabricToolIds,
+									enabledIntegrationIds:
+										overrides.enabledIntegrationIds,
+									attachedImageUrls:
+										executionOptions?.attachedImageUrls ??
+										[],
+									attachedDocumentIds:
+										executionOptions?.attachedDocumentIds ??
+										[],
+									inlineAttachmentContexts:
+										executionOptions?.inlineAttachmentContexts ??
+										[],
+									chatId: executionOptions?.chatId,
+									prioritizedToolIds:
+										executionOptions?.prioritizedToolIds,
+									prioritizedAgentIds:
+										executionOptions?.prioritizedAgentIds,
+									workspaceIds: overrides.workspaceIds,
+									instanceId: overrides.instanceId,
+									projectId: overrides.projectId,
+									systemPrompt: overrides.systemPrompt,
+									// Omit-when-undefined so non-opting callers
+									// (doc-editor copilot, agent template runner,
+									// Weave) send the same wire shape they always
+									// have. Tested by the E2E "other-surface guard".
+									...(executionOptions?.surface !== undefined
+										? { surface: executionOptions.surface }
+										: {}),
+									...(executionOptions?.organizationSlug !==
+									undefined
+										? {
+												organizationSlug:
+													executionOptions.organizationSlug,
+											}
+										: {}),
+									// See `conversationId` doc on
+									// `MultiAgentExecutionOptions`. Same
+									// omit-when-undefined contract as `surface` /
+									// `organizationSlug` above so the wire shape on
+									// today's CopilotPage Nexus surface
+									// (`AgentConversation`-less) stays byte-identical
+									// to pre-PR2. The orchestrator stream route
+									// already accepts this field (PR1) so opt-in is
+									// purely additive.
+									...(executionOptions?.conversationId !==
+									undefined
+										? {
+												conversationId:
+													executionOptions.conversationId,
+											}
+										: {}),
+								}),
 						signal,
 					},
 				);
@@ -551,22 +580,20 @@ export function useMultiAgentStream({
 					return;
 				}
 
-				await readChatEventStream(body, {
-					parse: parseResearchStreamEvent,
-					isOutcome: (event) =>
-						[
-							"done",
-							"completed",
-							"error",
-							"stream_timeout",
-						].includes(event.type),
-					isTerminal: (event) =>
-						[
-							"done",
-							"completed",
-							"error",
-							"stream_timeout",
-						].includes(event.type),
+				await observeResearchStream(body, {
+					executionId: resumeExecutionId,
+					afterEvent: resumeCursor,
+					signal,
+					reattach: (executionId, resumeSignal, afterEvent) =>
+						fetch(
+							"/api/agents/fabric-ai/orchestrator-temporal/stream",
+							{
+								method: "POST",
+								headers: { "Content-Type": "application/json" },
+								body: resumeBody(executionId, afterEvent),
+								signal: resumeSignal,
+							},
+						),
 					onEvent: (data) => {
 						if (cancelledAgentIdsRef.current.has(agent.agentId)) {
 							return;
@@ -579,10 +606,21 @@ export function useMultiAgentStream({
 										typeof data.executionId === "string"
 											? data.executionId
 											: prev.executionId,
+									pendingApproval: null,
 								}));
 								break;
 							case "text":
 							case "text_delta":
+								if (data.eventCursor && !receivedReplayText) {
+									// An old saved reply has no cursor. A full replay replaces
+									// its provisional prefix when the first durable text arrives.
+									clearBufferedText(responseKey);
+									updateResponse((prev) => ({
+										...prev,
+										content: "",
+									}));
+									receivedReplayText = true;
+								}
 								queueTextDelta(
 									responseKey,
 									typeof data.content === "string"
@@ -824,35 +862,6 @@ export function useMultiAgentStream({
 									pendingApproval: null,
 								}));
 								break;
-							case "stream_timeout":
-								// The orchestrator route now closes a
-								// long run's HTTP window with this instead
-								// of `error: "Execution timed out"`, and
-								// the workflow keeps running on Temporal
-								// (issue #2269). The Loom chat reconnects
-								// with the executionId; this surface has no
-								// resume loop, so end the agent's turn
-								// honestly rather than letting the close
-								// read as a clean finish.
-								flushBufferedText(responseKey);
-								updateResponse((prev) => ({
-									...prev,
-									isLoading: false,
-									status: "error",
-									isError: true,
-									content:
-										prev.content ||
-										"The streaming window closed before this agent finished. The workflow may still be running.",
-									errorMessage:
-										"The streaming window closed before this agent finished. The workflow may still be running.",
-									pendingApproval: null,
-									toolCalls:
-										settleUnfinishedToolCalls(
-											prev.toolCalls,
-										) ?? prev.toolCalls,
-								}));
-								clearBufferedText(responseKey);
-								break;
 							case "done":
 							case "completed":
 							case "error":
@@ -976,6 +985,15 @@ export function useMultiAgentStream({
 							default:
 								break;
 						}
+						if (data.eventCursor) {
+							// Persisting the cursor ahead of buffered text would skip that
+							// text on reload. Both state writes land in the same React batch.
+							flushBufferedText(responseKey);
+							updateResponse((prev) => ({
+								...prev,
+								eventCursor: data.eventCursor,
+							}));
+						}
 					},
 				});
 
@@ -992,6 +1010,9 @@ export function useMultiAgentStream({
 				}
 				clearBufferedText(responseKey);
 			} catch (err) {
+				if (signal.aborted) {
+					return;
+				}
 				const responseKey = `${turnId}::${agent.agentId}`;
 				flushBufferedText(responseKey);
 				clearBufferedText(responseKey);
@@ -1150,114 +1171,125 @@ export function useMultiAgentStream({
 	 * @param triggeredBy - whether the stop came from the morph button
 	 * click or the Esc keybinding. Threaded into telemetry.
 	 */
-	const stopAll = useCallback((triggeredBy: "button" | "esc" = "button") => {
-		const turnId = currentTurnIdRef.current;
-		if (!turnId) {
-			return;
-		}
-		const turn = turnsRef.current.find((t) => t.id === turnId);
-		if (!turn) {
-			return;
-		}
-
-		const cancelledAt = new Date().toISOString();
-		const startedAt = turnStartedAtRef.current;
-		const latencyMs =
-			startedAt !== null ? Math.max(0, Date.now() - startedAt) : 0;
-
-		// Snapshot the agents that are still in-flight RIGHT NOW so
-		// the race in decision 18 is honest: an agent that flipped
-		// to `completed` between click and iteration stays
-		// `completed`.
-		const inFlightAgents: AgentResponse[] = [];
-		for (const response of turn.agentResponses.values()) {
-			if (cancelledAgentIdsRef.current.has(response.agentId)) {
-				continue;
+	const stopAll = useCallback(
+		(triggeredBy: "button" | "esc" = "button") => {
+			const turnId = currentTurnIdRef.current;
+			if (!turnId) {
+				return;
 			}
-			const isInFlight =
-				response.status === "streaming" ||
-				(response.status === "idle" && response.isLoading);
-			if (isInFlight) {
-				inFlightAgents.push(response);
+			const turn = turnsRef.current.find((t) => t.id === turnId);
+			if (!turn) {
+				return;
 			}
-		}
 
-		if (inFlightAgents.length === 0) {
-			return;
-		}
+			const cancelledAt = new Date().toISOString();
+			const startedAt = turnStartedAtRef.current;
+			const latencyMs =
+				startedAt !== null ? Math.max(0, Date.now() - startedAt) : 0;
 
-		// 1. Synchronous flip — abort + mark cancelled per agent.
-		for (const response of inFlightAgents) {
-			cancelledAgentIdsRef.current.add(response.agentId);
-			abortControllersRef.current.get(response.agentId)?.abort();
-		}
-
-		setTurns((prev) =>
-			prev.map((t) => {
-				if (t.id !== turnId) {
-					return t;
+			// Snapshot the agents that are still in-flight RIGHT NOW so
+			// the race in decision 18 is honest: an agent that flipped
+			// to `completed` between click and iteration stays
+			// `completed`.
+			const inFlightAgents: AgentResponse[] = [];
+			for (const response of turn.agentResponses.values()) {
+				if (cancelledAgentIdsRef.current.has(response.agentId)) {
+					continue;
 				}
-				const next = new Map(t.agentResponses);
-				for (const response of inFlightAgents) {
-					const current = next.get(response.agentId);
-					if (!current) {
-						continue;
-					}
-					next.set(response.agentId, {
-						...current,
-						isLoading: false,
-						status: "cancelled",
-						cancelledAt,
-					});
+				const isInFlight =
+					response.status === "streaming" ||
+					(response.status === "idle" && response.isLoading);
+				if (isInFlight) {
+					inFlightAgents.push(response);
 				}
-				return { ...t, agentResponses: next };
-			}),
-		);
-
-		// 2. Telemetry — one event per cancelled agent so the funnel
-		// can break out which agents were halted.
-		for (const response of inFlightAgents) {
-			const partialTokenCount = Math.ceil(response.content.length / 4);
-			emitCancelEvent({
-				surface: "nexus",
-				agentId: response.agentId,
-				executionId: response.executionId ?? null,
-				partial_token_count: partialTokenCount,
-				latency_to_cancel_ms: latencyMs,
-				triggered_by: triggeredBy,
-			});
-		}
-
-		// 3. Fire-and-forget cancel POST per agent that has an
-		// executionId. Nexus's parallel-agent SSE stream is
-		// backed by the orchestrator-temporal workflow
-		// (executionId prefix `orch-`), so cancellation must go
-		// through the orchestrator-temporal cancel route. The
-		// direct-chat cancel route at
-		// `/api/agents/fabric-ai/stream/cancel` is reserved for
-		// `useDirectStream` (executionId prefix
-		// `direct-chat-`); routing Nexus cancels there 400s
-		// because its regex rejects `orch-…` ids.
-		for (const response of inFlightAgents) {
-			if (!response.executionId) {
-				continue;
 			}
-			const executionId = response.executionId;
-			void fetch("/api/agents/fabric-ai/orchestrator-temporal/cancel", {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ executionId }),
-			})
-				.then((cancelResponse) => {
-					if (!cancelResponse.ok) {
-						onStopFailedRef.current?.();
+
+			if (inFlightAgents.length === 0) {
+				return;
+			}
+
+			// 1. Synchronous flip — abort + mark cancelled per agent.
+			for (const response of inFlightAgents) {
+				const responseKey = `${turnId}::${response.agentId}`;
+				flushBufferedText(responseKey);
+				clearBufferedText(responseKey);
+				cancelledAgentIdsRef.current.add(response.agentId);
+				abortControllersRef.current.get(response.agentId)?.abort();
+			}
+
+			setTurns((prev) =>
+				prev.map((t) => {
+					if (t.id !== turnId) {
+						return t;
 					}
-				})
-				.catch(() => {
-					onStopFailedRef.current?.();
+					const next = new Map(t.agentResponses);
+					for (const response of inFlightAgents) {
+						const current = next.get(response.agentId);
+						if (!current) {
+							continue;
+						}
+						next.set(response.agentId, {
+							...current,
+							isLoading: false,
+							status: "cancelled",
+							cancelledAt,
+						});
+					}
+					return { ...t, agentResponses: next };
+				}),
+			);
+
+			// 2. Telemetry — one event per cancelled agent so the funnel
+			// can break out which agents were halted.
+			for (const response of inFlightAgents) {
+				const partialTokenCount = Math.ceil(
+					response.content.length / 4,
+				);
+				emitCancelEvent({
+					surface: "nexus",
+					agentId: response.agentId,
+					executionId: response.executionId ?? null,
+					partial_token_count: partialTokenCount,
+					latency_to_cancel_ms: latencyMs,
+					triggered_by: triggeredBy,
 				});
-		}
-	}, []);
+			}
+
+			// 3. Fire-and-forget cancel POST per agent that has an
+			// executionId. Nexus's parallel-agent SSE stream is
+			// backed by the orchestrator-temporal workflow
+			// (executionId prefix `orch-`), so cancellation must go
+			// through the orchestrator-temporal cancel route. The
+			// direct-chat cancel route at
+			// `/api/agents/fabric-ai/stream/cancel` is reserved for
+			// `useDirectStream` (executionId prefix
+			// `direct-chat-`); routing Nexus cancels there 400s
+			// because its regex rejects `orch-…` ids.
+			for (const response of inFlightAgents) {
+				if (!response.executionId) {
+					continue;
+				}
+				const executionId = response.executionId;
+				void fetch(
+					"/api/agents/fabric-ai/orchestrator-temporal/cancel",
+					{
+						method: "POST",
+						headers: { "Content-Type": "application/json" },
+						body: JSON.stringify({ executionId }),
+					},
+				)
+					.then((cancelResponse) => {
+						if (!cancelResponse.ok) {
+							onStopFailedRef.current?.();
+						}
+					})
+					.catch(() => {
+						onStopFailedRef.current?.();
+					});
+			}
+		},
+		[clearBufferedText, flushBufferedText],
+	);
 
 	const reset = useCallback(() => {
 		for (const ctrl of abortControllersRef.current.values()) {
@@ -1269,6 +1301,7 @@ export function useMultiAgentStream({
 		}
 		textFlushTimeoutRef.current.clear();
 		textBufferRef.current.clear();
+		needsTextSeparatorRef.current.clear();
 		setTurns([]);
 		currentTurnIdRef.current = null;
 		cancelledAgentIdsRef.current = new Set();
@@ -1280,6 +1313,12 @@ export function useMultiAgentStream({
 			ctrl.abort();
 		}
 		abortControllersRef.current.clear();
+		for (const timeoutId of textFlushTimeoutRef.current.values()) {
+			clearTimeout(timeoutId);
+		}
+		textFlushTimeoutRef.current.clear();
+		textBufferRef.current.clear();
+		needsTextSeparatorRef.current.clear();
 		setTurns(nextTurns);
 		turnsRef.current = nextTurns;
 		currentTurnIdRef.current =
@@ -1314,6 +1353,7 @@ export function useMultiAgentStream({
 					enabledIntegrationIds?: string[];
 				};
 				executionId: string;
+				eventCursor?: ChatEventCursor;
 			}>,
 		) => {
 			for (const resumption of resumptions) {
@@ -1327,6 +1367,11 @@ export function useMultiAgentStream({
 					ctrl.signal,
 					undefined,
 					resumption.executionId,
+					resumption.eventCursor ??
+						turnsRef.current
+							.find((turn) => turn.id === resumption.turnId)
+							?.agentResponses.get(resumption.agent.agentId)
+							?.eventCursor,
 				);
 			}
 		},

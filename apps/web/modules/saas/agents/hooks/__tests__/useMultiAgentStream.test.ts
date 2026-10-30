@@ -235,22 +235,17 @@ describe("useMultiAgentStream.stopAll()", () => {
 		});
 	});
 
-	it("ends an agent's turn honestly on stream_timeout instead of reading as completed (#2269)", async () => {
-		// The orchestrator route closes a long run's HTTP window with
-		// `stream_timeout` rather than `error: "Execution timed out"`. Nexus
-		// has no resume loop, so an unhandled event would fall through to the
-		// end-of-stream cleanup and mark a truncated run "completed".
+	it("resumes a timed-out window with only the existing run identity and authorization scope", async () => {
 		const sse = makeSseResponse();
+		const resumed = makeSseResponse();
 		const fetchSpy = vi
 			.fn()
 			.mockImplementationOnce(() => Promise.resolve(sse.response))
-			.mockImplementation(() =>
-				Promise.resolve({ ok: true, status: 200 } as Response),
-			);
+			.mockImplementationOnce(() => Promise.resolve(resumed.response));
 		global.fetch = fetchSpy as unknown as typeof fetch;
 
 		const { result } = renderHook(() =>
-			useMultiAgentStream({ organizationId: "org-1" }),
+			useMultiAgentStream({ organizationId: "example-org" }),
 		);
 
 		act(() => {
@@ -258,6 +253,10 @@ describe("useMultiAgentStream.stopAll()", () => {
 				"a long task",
 				[{ agentId: "agent-a", name: "Alpha" }],
 				[],
+				{
+					conversationId: "example-conversation",
+					attachedDocumentIds: ["example-document"],
+				},
 			);
 		});
 
@@ -283,14 +282,38 @@ describe("useMultiAgentStream.stopAll()", () => {
 		});
 
 		await waitFor(() => {
-			const a = result.current.turns[0]?.agentResponses.get("agent-a");
-			expect(a?.isLoading).toBe(false);
+			expect(fetchSpy).toHaveBeenCalledTimes(2);
+		});
+		expect(parseBody(fetchSpy.mock.calls[1]?.[1])).toEqual({
+			eventReplay: true,
+			executionId: "orch-aaaa",
+			organizationId: "example-org",
+			conversationId: "example-conversation",
+		});
+		expect(
+			result.current.turns[0]?.agentResponses.get("agent-a"),
+		).toMatchObject({
+			status: "streaming",
+			isLoading: true,
+			isError: false,
+		});
+		await act(async () => {
+			resumed.enqueueLine(
+				'data: {"type":"started","executionId":"orch-aaaa","resumed":true}',
+			);
+			resumed.enqueueLine(
+				'data: {"type":"completed","response":"partial work finished"}',
+			);
+		});
+		await waitFor(() => {
+			expect(
+				result.current.turns[0]?.agentResponses.get("agent-a")?.status,
+			).toBe("completed");
 		});
 
 		const a = result.current.turns[0]?.agentResponses.get("agent-a");
-		expect(a?.status).toBe("error");
-		// The text streamed before the window closed is kept.
-		expect(a?.content).toContain("partial work");
+		expect(a?.content).toBe("partial work finished");
+		expect(a?.errorMessage).toBeUndefined();
 	});
 
 	it("drops trailing SSE deltas for cancelled agents (freeze gate)", async () => {
@@ -459,7 +482,68 @@ describe("useMultiAgentStream.stopAll()", () => {
 
 describe("Research interrupted replies", () => {
 	afterEach(() => vi.restoreAllMocks());
-	it.each(["disconnect", "error", "invalid event"])(
+	it("saves acknowledged text and its cursor together and resumes without duplicating output", async () => {
+		const first = makeSseResponse();
+		const second = makeSseResponse();
+		const fetch = vi
+			.spyOn(global, "fetch")
+			.mockResolvedValueOnce(first.response as unknown as Response)
+			.mockResolvedValueOnce(second.response as unknown as Response);
+		const cursor = (sequence: string) => ({
+			turnId: "example-turn",
+			runId: "example-run",
+			sequence,
+		});
+		const { result } = renderHook(() =>
+			useMultiAgentStream({ organizationId: "example-org" }),
+		);
+		act(() =>
+			result.current.sendToAgents(
+				"Example",
+				[{ agentId: "example-agent", name: "Example" }],
+				[],
+			),
+		);
+		await act(async () => {
+			first.enqueueLine(
+				'data: {"type":"started","executionId":"orch-example"}',
+			);
+			first.enqueueLine(
+				`data: ${JSON.stringify({ type: "text_delta", content: "First", eventCursor: cursor("1") })}`,
+			);
+		});
+		expect(
+			result.current.turns[0]?.agentResponses.get("example-agent"),
+		).toMatchObject({ content: "First", eventCursor: cursor("1") });
+		await act(async () => {
+			first.enqueueLine('data: {"type":"stream_timeout"}');
+		});
+		expect(parseBody(fetch.mock.calls[1][1])).toMatchObject({
+			executionId: "orch-example",
+			afterEvent: cursor("1"),
+			eventReplay: true,
+		});
+		await act(async () => {
+			second.enqueueLine(
+				'data: {"type":"started","executionId":"orch-example","resumed":true}',
+			);
+			second.enqueueLine(
+				`data: ${JSON.stringify({ type: "text_delta", content: "First", eventCursor: cursor("1") })}`,
+			);
+			second.enqueueLine(
+				`data: ${JSON.stringify({ type: "text_delta", content: " Second", eventCursor: cursor("2") })}`,
+			);
+			second.enqueueLine('data: {"type":"completed"}');
+		});
+		expect(
+			result.current.turns[0]?.agentResponses.get("example-agent"),
+		).toMatchObject({
+			content: "First Second",
+			eventCursor: cursor("2"),
+			status: "completed",
+		});
+	});
+	it.each(["unidentified disconnect", "error", "invalid event"])(
 		"preserves buffered text and explains %s without starting another run",
 		async (failure) => {
 			const stream = makeSseResponse();
@@ -477,9 +561,11 @@ describe("Research interrupted replies", () => {
 				);
 			});
 			await act(async () => {
-				stream.enqueueLine(
-					'data: {"type":"started","executionId":"execution-1"}',
-				);
+				if (failure !== "unidentified disconnect") {
+					stream.enqueueLine(
+						'data: {"type":"started","executionId":"execution-1"}',
+					);
+				}
 				stream.enqueueLine(
 					'data: {"type":"text_delta","content":"Partial answer"}',
 				);
@@ -512,4 +598,249 @@ describe("Research interrupted replies", () => {
 			expect(fetchMock).toHaveBeenCalledOnce();
 		},
 	);
+
+	it("keeps partial content and settles tools when reattachment loses authorization", async () => {
+		const stream = makeSseResponse();
+		const fetchMock = vi
+			.spyOn(global, "fetch")
+			.mockResolvedValueOnce(stream.response as unknown as Response)
+			.mockResolvedValueOnce(new Response(null, { status: 403 }));
+		const { result } = renderHook(() =>
+			useMultiAgentStream({ organizationId: "example-org" }),
+		);
+		act(() =>
+			result.current.sendToAgents(
+				"Research",
+				[{ agentId: "agent-1", name: "Example" }],
+				[],
+			),
+		);
+		await act(async () => {
+			stream.enqueueLine(
+				'data: {"type":"started","executionId":"orch-example"}',
+			);
+			stream.enqueueLine(
+				'data: {"type":"text_delta","content":"Partial answer"}',
+			);
+			stream.enqueueLine(
+				'data: {"type":"tool_start","toolName":"search","toolCallId":"tool-1"}',
+			);
+			stream.enqueueLine(
+				'data: {"type":"stream_timeout","executionId":"orch-example"}',
+			);
+		});
+		await waitFor(() =>
+			expect(
+				result.current.turns[0]?.agentResponses.get("agent-1")?.status,
+			).toBe("error"),
+		);
+		expect(
+			result.current.turns[0]?.agentResponses.get("agent-1"),
+		).toMatchObject({
+			content: "Partial answer",
+			errorMessage: expect.stringContaining("could not be resumed"),
+			toolCalls: [{ id: "tool-1", status: "error" }],
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+	});
+
+	it("Stop during a reconnect gap freezes the partial answer and prevents another stream", async () => {
+		vi.useFakeTimers();
+		try {
+			const stream = makeSseResponse();
+			const fetchMock = vi
+				.spyOn(global, "fetch")
+				.mockResolvedValueOnce(stream.response as unknown as Response)
+				.mockResolvedValue(new Response(null));
+			const { result } = renderHook(() =>
+				useMultiAgentStream({ organizationId: "example-org" }),
+			);
+			act(() =>
+				result.current.sendToAgents(
+					"Research",
+					[{ agentId: "agent-1", name: "Example" }],
+					[],
+				),
+			);
+			await act(async () => {
+				stream.enqueueLine(
+					'data: {"type":"started","executionId":"orch-example"}',
+				);
+				stream.enqueueLine(
+					'data: {"type":"text_delta","content":"Partial answer"}',
+				);
+				stream.enqueueDone();
+				await vi.advanceTimersByTimeAsync(0);
+			});
+			expect(result.current.isLoading).toBe(true);
+			act(() => result.current.stopAll("button"));
+			expect(
+				result.current.turns[0]?.agentResponses.get("agent-1")?.content,
+			).toBe("Partial answer");
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(3000);
+			});
+			expect(
+				result.current.turns[0]?.agentResponses.get("agent-1"),
+			).toMatchObject({
+				content: "Partial answer",
+				status: "cancelled",
+				isLoading: false,
+			});
+			expect(
+				fetchMock.mock.calls.filter(([url]) =>
+					String(url).endsWith("/stream"),
+				),
+			).toHaveLength(1);
+			expect(
+				fetchMock.mock.calls.filter(([url]) =>
+					String(url).endsWith("/cancel"),
+				),
+			).toHaveLength(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("unmount aborts an open observation without sending a workflow cancellation", async () => {
+		const stream = makeSseResponse();
+		const fetchMock = vi
+			.spyOn(global, "fetch")
+			.mockResolvedValue(stream.response as unknown as Response);
+		const { result, unmount } = renderHook(() =>
+			useMultiAgentStream({ organizationId: "example-org" }),
+		);
+		act(() =>
+			result.current.sendToAgents(
+				"Research",
+				[{ agentId: "agent-1", name: "Example" }],
+				[],
+			),
+		);
+		await act(async () => {
+			stream.enqueueLine(
+				'data: {"type":"started","executionId":"orch-example"}',
+			);
+		});
+		unmount();
+		expect(fetchMock.mock.calls[0]?.[1]?.signal?.aborted).toBe(true);
+		expect(fetchMock).toHaveBeenCalledOnce();
+	});
+
+	it("hydrating a conversation discards buffered text from its previous observer", async () => {
+		vi.useFakeTimers();
+		try {
+			const stream = makeSseResponse();
+			vi.spyOn(global, "fetch").mockResolvedValue(
+				stream.response as unknown as Response,
+			);
+			const { result } = renderHook(() =>
+				useMultiAgentStream({ organizationId: "example-org" }),
+			);
+			act(() =>
+				result.current.sendToAgents(
+					"Research",
+					[{ agentId: "agent-1", name: "Example" }],
+					[],
+				),
+			);
+			await act(async () => {
+				stream.enqueueLine(
+					'data: {"type":"started","executionId":"orch-example"}',
+				);
+				stream.enqueueLine(
+					'data: {"type":"text_delta","content":"Old buffered text"}',
+				);
+			});
+			const turn = result.current.turns[0];
+			const response = turn?.agentResponses.get("agent-1");
+			if (!turn || !response) {
+				throw new Error("Expected an active turn");
+			}
+			expect(response.content).toBe("");
+			act(() =>
+				result.current.hydrateTurns([
+					{
+						...turn,
+						agentResponses: new Map([
+							[
+								"agent-1",
+								{ ...response, content: "Restored answer" },
+							],
+						]),
+					},
+				]),
+			);
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(100);
+			});
+			expect(
+				result.current.turns[0]?.agentResponses.get("agent-1")?.content,
+			).toBe("Restored answer");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("resumes hydrated history without resubmitting the message or tool configuration", async () => {
+		const stream = makeSseResponse();
+		const fetchMock = vi
+			.spyOn(global, "fetch")
+			.mockResolvedValue(stream.response as unknown as Response);
+		const { result } = renderHook(() =>
+			useMultiAgentStream({ organizationId: "example-org" }),
+		);
+		act(() => {
+			result.current.hydrateTurns([
+				{
+					id: "example-turn",
+					userMessage: "Research",
+					timestamp: new Date(),
+					agentResponses: new Map([
+						[
+							"agent-1",
+							{
+								agentId: "agent-1",
+								agentName: "Example",
+								executionId: "orch-example",
+								content: "Partial answer",
+								toolCalls: [],
+								isLoading: true,
+								isError: false,
+								status: "streaming",
+							},
+						],
+					]),
+				},
+			]);
+			result.current.resumeAgents([
+				{
+					turnId: "example-turn",
+					agent: { agentId: "agent-1", name: "Example" },
+					executionId: "orch-example",
+				},
+			]);
+		});
+		expect(parseBody(fetchMock.mock.calls[0]?.[1])).toEqual({
+			eventReplay: true,
+			executionId: "orch-example",
+			organizationId: "example-org",
+		});
+		await act(async () => {
+			stream.enqueueLine(
+				'data: {"type":"started","executionId":"orch-example","resumed":true}',
+			);
+			stream.enqueueLine(
+				'data: {"type":"completed","response":"Partial answer finished"}',
+			);
+		});
+		await waitFor(() =>
+			expect(
+				result.current.turns[0]?.agentResponses.get("agent-1")?.status,
+			).toBe("completed"),
+		);
+		expect(
+			result.current.turns[0]?.agentResponses.get("agent-1")?.content,
+		).toBe("Partial answer finished");
+	});
 });

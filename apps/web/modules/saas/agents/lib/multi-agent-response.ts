@@ -1,3 +1,4 @@
+import type { ChatEventCursor } from "@repo/utils/chat-event-cursor";
 /**
  * One agent's answer in a multi-agent turn, as Nexus (`useMultiAgentStream`)
  * and the Orchestrator chat's multi-agent mode both build it: its text, its
@@ -24,6 +25,7 @@ export interface AgentResponse {
 	/** vendor name for model agents — used to show provider logo */
 	vendor?: string;
 	executionId?: string;
+	eventCursor?: ChatEventCursor;
 	content: string;
 	toolCalls: MultiAgentToolCall[];
 	isLoading: boolean;

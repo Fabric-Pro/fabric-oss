@@ -230,6 +230,7 @@ async function applyRLS() {
 			// One Advisor chat turn of a member's conversation — the same
 			// per-member scope as the conversation it belongs to.
 			{ name: "conversation_turn", policy: "per_user_within_org" },
+			{ name: "conversation_turn_event", policy: "per_user_within_org" },
 			// Advisor summaries and preferences belong to a user within a tenant.
 			{ name: "episodic_memory", policy: "per_user_within_org" },
 			{

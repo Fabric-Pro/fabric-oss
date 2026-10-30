@@ -3691,6 +3691,7 @@ export function CopilotPage({
 						const persistedToolCalls = resp.toolCalls
 							.filter(
 								(tc) =>
+									resp.eventCursor ||
 									tc.mcpAppResourceUri ||
 									tc.status === "complete" ||
 									tc.status === "error",
@@ -3713,10 +3714,11 @@ export function CopilotPage({
 							agentName: resp.agentName,
 							vendor: resp.vendor,
 							executionId: resp.executionId,
+							eventCursor: resp.eventCursor,
 							streamStatus: resp.status,
 							errorMessage: resp.errorMessage,
 							content:
-								selectedAgents.length > 1
+								selectedAgents.length > 1 && !resp.eventCursor
 									? `[${resp.agentName}]: ${resp.content}`
 									: resp.content,
 							timestamp: new Date().toISOString(),
@@ -3740,6 +3742,7 @@ export function CopilotPage({
 				agentName: m.agentName,
 				vendor: m.vendor,
 				executionId: m.executionId,
+				eventCursor: m.eventCursor,
 				streamStatus: m.streamStatus,
 				errorMessage: m.errorMessage,
 				toolCalls: m.toolCalls,

@@ -1,3 +1,7 @@
+import {
+	markExecutionReplayUnavailable,
+	registerExecutionOutputDrain,
+} from "./execution-output-drain";
 /**
  * Redis Publisher for Execution Events
  *
@@ -8,8 +12,14 @@
  * - Channel naming: `execution:{executionId}`
  */
 
+import {
+	appendConversationTurnEventFromWorker,
+	ChatEventReplayError,
+} from "@repo/database";
 import { logger } from "@repo/logs";
+import type { ChatEventCursor } from "@repo/utils/chat-event-cursor";
 import { REDIS_KEEPALIVE_MS } from "@repo/utils/redis-connection";
+import { Context } from "@temporalio/activity";
 import { getRedisUrl, isPlaintextRedisRefused } from "./redis-url";
 
 let redisClient: import("ioredis").default | null = null;
@@ -54,6 +64,7 @@ async function connectRedis(): Promise<import("ioredis").default | null> {
 			// next write instead of a clean reconnect.
 			keepAlive: REDIS_KEEPALIVE_MS,
 			connectTimeout: 3000,
+			commandTimeout: 3000,
 			lazyConnect: true,
 			enableOfflineQueue: false,
 		});
@@ -140,6 +151,7 @@ export interface ChatExecutionToolCall {
 
 /** Payloads forwarded by the chat SSE route. The publisher checks literal event names. */
 export interface ChatExecutionEventData {
+	"execution.replay_unavailable": { message: string };
 	"execution.text_delta": { text: string };
 	"execution.iteration_start": { iteration: number; retryAttempt?: number };
 	"execution.tool_start": {
@@ -169,7 +181,10 @@ export type ChatExecutionEvent = {
 		event: K;
 		data: ChatExecutionEventData[K];
 	};
-}[keyof ChatExecutionEventData];
+}[keyof ChatExecutionEventData] & {
+	eventCursor?: ChatEventCursor;
+	replayUnavailable?: boolean;
+};
 export interface ExecutionEvent<Name extends string = string> {
 	event: Name;
 	data: Name extends keyof ChatExecutionEventData
@@ -184,9 +199,229 @@ export interface ExecutionEvent<Name extends string = string> {
  * @param executionId - The execution ID (used as channel name)
  * @param event - The event to publish
  */
-export async function publishExecutionEvent<const Name extends string>(
+const replayQueues = new WeakMap<Context, Promise<void>>();
+const replayQueueSizes = new WeakMap<Context, number>();
+const MAX_PENDING_REPLAY_EVENTS = 32;
+const replayOrdinals = new WeakMap<Context, number>();
+const replayFailures = new Map<
+	string,
+	{ expiresAt: number; nextMarkerAttemptAt: number }
+>();
+const replayEventNames = new Set([
+	"execution.text_delta",
+	"execution.iteration_start",
+	"execution.tool_start",
+	"execution.tool_input",
+	"execution.tool_complete",
+	"execution.limit_signal",
+	"execution.context_compacted",
+]);
+
+export function publishExecutionEvent<const Name extends string>(
 	executionId: string,
 	event: ExecutionEvent<Name>,
+): Promise<void> {
+	let context: Context | undefined;
+	try {
+		context = Context.current();
+	} catch {
+		/* Also used outside activities. */
+	}
+	const info = context?.info;
+	const workflow = info?.workflowExecution;
+	if (
+		!context ||
+		!info ||
+		!workflow ||
+		workflow.workflowId !== executionId ||
+		!executionId.startsWith("orch-") ||
+		!replayEventNames.has(event.event)
+	) {
+		return publishEvent(executionId, event);
+	}
+	const owner = context;
+	if (info.attempt > 1 && !replayFailures.has(workflow.runId)) {
+		replayFailures.set(workflow.runId, {
+			expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+			nextMarkerAttemptAt: 0,
+		});
+	}
+	if (replayFailures.has(workflow.runId)) {
+		markExecutionReplayUnavailable(owner);
+	}
+	registerExecutionOutputDrain(owner, async () => {
+		flushText(owner);
+		await replayQueues.get(owner);
+	});
+	if (
+		event.event === "execution.text_delta" &&
+		"text" in event.data &&
+		typeof event.data.text === "string"
+	) {
+		let pending = pendingTexts.get(context);
+		if (!pending) {
+			let resolve = () => {};
+			const promise = new Promise<void>((done) => {
+				resolve = done;
+			});
+			pending = {
+				executionId,
+				text: "",
+				promise,
+				resolve,
+				timer: setTimeout(() => flushText(owner), 50),
+			};
+			pendingTexts.set(context, pending);
+		}
+		pending.text += event.data.text;
+		if (pending.text.length >= 8192) {
+			flushText(context);
+		}
+		return pending.promise;
+	}
+	flushText(context);
+	return queueReplayEvent(context, executionId, event);
+}
+
+const pendingTexts = new WeakMap<
+	Context,
+	{
+		executionId: string;
+		text: string;
+		promise: Promise<void>;
+		resolve: () => void;
+		timer: ReturnType<typeof setTimeout>;
+	}
+>();
+
+function flushText(context: Context) {
+	const pending = pendingTexts.get(context);
+	if (!pending) {
+		return;
+	}
+	pendingTexts.delete(context);
+	clearTimeout(pending.timer);
+	void queueReplayEvent(context, pending.executionId, {
+		event: "execution.text_delta",
+		data: { text: pending.text },
+	}).then(pending.resolve, pending.resolve);
+}
+
+function queueReplayEvent<const Name extends string>(
+	context: Context,
+	executionId: string,
+	event: ExecutionEvent<Name>,
+): Promise<void> {
+	const info = context.info;
+	const workflow = info.workflowExecution;
+	if (!workflow) {
+		return publishEvent(executionId, event);
+	}
+	const queueSize = replayQueueSizes.get(context) ?? 0;
+	if (queueSize >= MAX_PENDING_REPLAY_EVENTS) {
+		markExecutionReplayUnavailable(context);
+		replayFailures.set(workflow.runId, {
+			expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+			nextMarkerAttemptAt: 0,
+		});
+		return Promise.resolve();
+	}
+	replayQueueSizes.set(context, queueSize + 1);
+	const ordinal = replayOrdinals.get(context) ?? 0;
+	if (ordinal === 0) {
+		for (const [runId, failure] of replayFailures) {
+			if (failure.expiresAt <= Date.now()) {
+				replayFailures.delete(runId);
+			}
+		}
+	}
+	replayOrdinals.set(context, ordinal + 1);
+	const previous = replayQueues.get(context) ?? Promise.resolve();
+	const next = previous
+		.then(async () => {
+			let metadata: Record<string, unknown>;
+			const markUnavailable = () =>
+				appendConversationTurnEventFromWorker({
+					executionId,
+					runId: workflow.runId,
+					sourceKey: "replay-unavailable",
+					event: "execution.replay_unavailable",
+					data: {
+						message:
+							"Replay output is incomplete. The workflow may still be running; refresh to check its final result.",
+					},
+				});
+			try {
+				const failure = replayFailures.get(workflow.runId);
+				if (failure) {
+					markExecutionReplayUnavailable(context);
+					if (failure.nextMarkerAttemptAt <= Date.now()) {
+						failure.nextMarkerAttemptAt =
+							Date.now() + RETRY_BACKOFF_MS;
+						await markUnavailable();
+					}
+					await publishEvent(executionId, {
+						...event,
+						replayUnavailable: true,
+					});
+					return;
+				}
+				const eventCursor = await appendReplayEvent({
+					executionId,
+					runId: workflow.runId,
+					sourceKey: `${info.activityId}:${info.attempt}:${ordinal}`,
+					event: event.event,
+					data: event.data,
+				});
+				metadata = eventCursor ? { eventCursor } : {};
+			} catch {
+				markExecutionReplayUnavailable(context);
+				replayFailures.set(workflow.runId, {
+					expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+					nextMarkerAttemptAt: Date.now() + RETRY_BACKOFF_MS,
+				});
+				await markUnavailable().catch(() => {});
+				// Never announce a resumable sequence before its transaction commits.
+				// Legacy observers may still use the live payload; replay clients are
+				// told explicitly that this window cannot offer complete recovery.
+				logger.warn(
+					"[RedisPublisher] Chat replay persistence unavailable",
+				);
+				metadata = { replayUnavailable: true };
+			}
+			await publishEvent(executionId, { ...event, ...metadata });
+		})
+		.finally(() => {
+			replayQueueSizes.set(
+				context,
+				(replayQueueSizes.get(context) ?? 1) - 1,
+			);
+		});
+	replayQueues.set(context, next);
+	return next;
+}
+
+async function appendReplayEvent(
+	input: Parameters<typeof appendConversationTurnEventFromWorker>[0],
+) {
+	try {
+		return await appendConversationTurnEventFromWorker(input);
+	} catch (error) {
+		if (error instanceof ChatEventReplayError) {
+			throw error;
+		}
+		// The source key makes an uncertain commit safe to retry once. A cache
+		// limit or malformed event is definitive and must not be retried.
+		return appendConversationTurnEventFromWorker(input);
+	}
+}
+
+async function publishEvent<const Name extends string>(
+	executionId: string,
+	event: ExecutionEvent<Name> & {
+		eventCursor?: ChatEventCursor;
+		replayUnavailable?: boolean;
+	},
 ): Promise<void> {
 	try {
 		const client = await getRedisPublisher();

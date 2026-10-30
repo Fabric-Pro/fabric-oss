@@ -37,6 +37,7 @@ interface Ref<T> {
 
 /** The turn state an event writes (see `useOrchestratorTurnState`). */
 export interface OrchestratorStreamEventContext {
+	preserveContentOnResume?: boolean;
 	setState: Dispatch<SetStateAction<OrchestratorStreamState>>;
 	setMessages: Dispatch<SetStateAction<OrchestratorStreamMessage[]>>;
 	setIsLoading: Dispatch<SetStateAction<boolean>>;
@@ -104,6 +105,13 @@ export function applyOrchestratorStreamEvent(
 			setState((prev) => ({
 				...prev,
 				executionId: data.executionId,
+				...(data.resumed
+					? {
+							pendingApproval: null,
+							pendingClarification: null,
+							status: "running" as const,
+						}
+					: {}),
 				turnId:
 					typeof data.turnId === "string" ? data.turnId : prev.turnId,
 				turnGeneration:
@@ -114,7 +122,7 @@ export function applyOrchestratorStreamEvent(
 			// The resume loop in `sendMessage` can't read
 			// `state.executionId` — see `executionIdRef`.
 			executionIdRef.current = data.executionId;
-			if (data.resumed) {
+			if (data.resumed && !ctx.preserveContentOnResume) {
 				// Reconnected mid-run: the text deltas that were in
 				// flight when the previous window closed are gone for
 				// good (Redis pub/sub doesn't replay). Appending the
