@@ -120,7 +120,9 @@ vi.mock(
 const {
 	NexusExcalidrawAutoInsertSlot,
 	shouldRenderNexusExcalidrawAutoInsertButton,
-} = await import("../CopilotPage");
+} = await import(
+	"@saas/agents/components/FabricChat/multi-agent/AgentResponseBlock"
+);
 
 // ---------------------------------------------------------------------------
 // Test helpers

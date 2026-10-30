@@ -1,4 +1,7 @@
-import { recordAuditFromRequest } from "@repo/api/lib/audit";
+import {
+	type AuditRequestContext,
+	recordAuditFromRequest,
+} from "@repo/api/lib/audit";
 import { canControlChatRun } from "@repo/api/lib/chat-control-permission";
 import { checkRateLimit } from "@repo/api/lib/rate-limit";
 import { getConversationTurnOwnerForExecution } from "@repo/database";
@@ -96,100 +99,34 @@ export async function controlChatRun(
 					);
 		}
 		if (action === "approve") {
-			if (
-				description.memo?.approvalProtocol === 2 &&
-				!command.approvalId
-			) {
-				return Response.json(
-					{ error: "approvalId is required" },
-					{ status: 400 },
-				);
-			}
-			const pending = await handle.query<PendingApprovalInfo | null>(
-				"pendingApproval",
-			);
-			if (description.memo?.approvalProtocol !== 2) {
-				if (
-					!pending ||
-					(command.approvalId !== undefined &&
-						command.approvalId !== pending.approvalId)
-				) {
-					return Response.json(
-						{
-							error: "This approval is no longer pending.",
-							code: "APPROVAL_NOT_PENDING",
-						},
-						{ status: 409 },
-					);
-				}
-				await handle.signal("approval", {
-					approved: command.approved,
+			const refusal = approvalRefusalResponse(
+				await decideChatRunApproval({
+					run: { handle, description, organizationId },
+					userId,
+					approvalId: command.approvalId,
+					approved: command.approved === true,
 					feedback: command.feedback,
-					decidedBy: userId,
-					approvalId: pending.approvalId,
-				});
-			} else {
-				if (
-					!pending?.requestId ||
-					pending.approvalId !== command.approvalId ||
-					pending.runId !== description.runId
-				) {
-					return Response.json(
-						{
-							error:
-								pending && !pending.requestId
-									? "This run uses an older approval protocol. Start a new run to review actions safely."
-									: "This approval is no longer available. Refresh the conversation.",
-						},
-						{ status: 409 },
-					);
-				}
-				const receipt = await handle.executeUpdate<
-					ApprovalReceipt,
-					[unknown]
-				>("decideApproval", {
-					args: [
-						{
-							approvalId: command.approvalId,
-							requestId: pending.requestId,
-							runId: description.runId,
-							organizationId,
-							decidedBy: userId,
-							approved: command.approved,
-							feedback: command.feedback,
-						},
-					],
-				});
-
-				if (!receipt.accepted) {
-					return Response.json(
-						{ error: `Approval ${receipt.reason}` },
-						{ status: receipt.reason === "forbidden" ? 403 : 409 },
-					);
-				}
+				}),
+			);
+			if (refusal) {
+				return refusal;
 			}
 		} else {
 			await handle.cancel();
 		}
-		await recordAuditFromRequest(
+		recordChatRunControlAudit(
 			{
 				headers: request.headers,
 				user: session.user,
 				session: session.session,
 			},
 			{
-				action:
-					action === "approve"
-						? "org.chat_approval.decided"
-						: "org.chat_run.cancel_requested",
+				action,
 				organizationId,
-				resource: { type: "chat_run", id: command.executionId },
-				metadata: {
-					runId: description.runId,
-					approvalId:
-						action === "approve" ? command.approvalId : undefined,
-					approved: command.approved,
-				},
+				executionId: command.executionId,
+				runId: description.runId,
+				approvalId: command.approvalId,
+				approved: command.approved,
 			},
 		);
 		return Response.json({
@@ -214,6 +151,171 @@ export async function controlChatRun(
 			{ status: 503 },
 		);
 	}
+}
+
+/** How an approval decision ended. Only `decided` reached the workflow. */
+export type ChatRunApprovalOutcome =
+	| { kind: "decided" }
+	| { kind: "approval_id_required" }
+	| { kind: "not_pending" }
+	| { kind: "older_protocol" }
+	| { kind: "unavailable" }
+	| {
+			kind: "rejected";
+			reason: Extract<ApprovalReceipt, { accepted: false }>["reason"];
+	  };
+
+/**
+ * Decide the pending approval of a running, authorized run: the v1 signal,
+ * or the v2 `decideApproval` update with the request and run ids the server
+ * reads from the run itself (never the client's). Shared by the approve
+ * route and the agent runtime's Orchestrator engine.
+ */
+export async function decideChatRunApproval({
+	run: { handle, description, organizationId },
+	userId,
+	approvalId,
+	approved,
+	feedback,
+}: {
+	run: Awaited<ReturnType<typeof getAuthorizedChatRun>>;
+	userId: string;
+	approvalId: string | undefined;
+	approved: boolean;
+	feedback: string | undefined;
+}): Promise<ChatRunApprovalOutcome> {
+	if (description.memo?.approvalProtocol === 2 && !approvalId) {
+		return { kind: "approval_id_required" };
+	}
+	const pending = await handle.query<PendingApprovalInfo | null>(
+		"pendingApproval",
+	);
+	if (description.memo?.approvalProtocol !== 2) {
+		if (
+			!pending ||
+			(approvalId !== undefined && approvalId !== pending.approvalId)
+		) {
+			return { kind: "not_pending" };
+		}
+		await handle.signal("approval", {
+			approved,
+			feedback,
+			decidedBy: userId,
+			approvalId: pending.approvalId,
+		});
+		return { kind: "decided" };
+	}
+	if (
+		!pending?.requestId ||
+		pending.approvalId !== approvalId ||
+		pending.runId !== description.runId
+	) {
+		return {
+			kind:
+				pending && !pending.requestId
+					? "older_protocol"
+					: "unavailable",
+		};
+	}
+	const receipt = await handle.executeUpdate<ApprovalReceipt, [unknown]>(
+		"decideApproval",
+		{
+			args: [
+				{
+					approvalId,
+					requestId: pending.requestId,
+					runId: description.runId,
+					organizationId,
+					decidedBy: userId,
+					approved,
+					feedback,
+				},
+			],
+		},
+	);
+	return receipt.accepted
+		? { kind: "decided" }
+		: { kind: "rejected", reason: receipt.reason };
+}
+
+/** The approve route's answer to an approval that did not reach the workflow. */
+function approvalRefusalResponse(
+	outcome: ChatRunApprovalOutcome,
+): Response | null {
+	switch (outcome.kind) {
+		case "decided":
+			return null;
+		case "approval_id_required":
+			return Response.json(
+				{ error: "approvalId is required" },
+				{ status: 400 },
+			);
+		case "not_pending":
+			return Response.json(
+				{
+					error: "This approval is no longer pending.",
+					code: "APPROVAL_NOT_PENDING",
+				},
+				{ status: 409 },
+			);
+		case "older_protocol":
+			return Response.json(
+				{
+					error: "This run uses an older approval protocol. Start a new run to review actions safely.",
+				},
+				{ status: 409 },
+			);
+		case "unavailable":
+			return Response.json(
+				{
+					error: "This approval is no longer available. Refresh the conversation.",
+				},
+				{ status: 409 },
+			);
+		case "rejected":
+			return Response.json(
+				{ error: `Approval ${outcome.reason}` },
+				{ status: outcome.reason === "forbidden" ? 403 : 409 },
+			);
+		default: {
+			const unhandled: never = outcome;
+			throw new Error(
+				`Unhandled approval outcome: ${JSON.stringify(unhandled)}`,
+			);
+		}
+	}
+}
+
+/**
+ * The audit row for a chat-run control, written after Temporal accepted it:
+ * the decision on an approval, or the request to cancel the run. Shared by
+ * the control routes and the agent runtime's stop.
+ */
+export function recordChatRunControlAudit(
+	context: AuditRequestContext,
+	control: {
+		action: "approve" | "cancel";
+		organizationId: string;
+		executionId: string;
+		runId: string | undefined;
+		approvalId?: string;
+		approved?: boolean;
+	},
+): void {
+	recordAuditFromRequest(context, {
+		action:
+			control.action === "approve"
+				? "org.chat_approval.decided"
+				: "org.chat_run.cancel_requested",
+		organizationId: control.organizationId,
+		resource: { type: "chat_run", id: control.executionId },
+		metadata: {
+			runId: control.runId,
+			approvalId:
+				control.action === "approve" ? control.approvalId : undefined,
+			approved: control.approved,
+		},
+	});
 }
 
 export class ChatRunAccessError extends Error {

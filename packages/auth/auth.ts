@@ -57,6 +57,7 @@ import {
 	resolveConsentOrganizationId,
 } from "./lib/oauth-provider";
 import { enforceRegistrationPolicy } from "./lib/oauth-registration-policy";
+import { enforceOperatorAdminPolicy } from "./lib/operator-admin-policy";
 import { updateSeatsInOrganizationSubscription } from "./lib/organization";
 import {
 	createPasskeyPlugin,
@@ -972,6 +973,60 @@ const authOptions = {
 						);
 					}
 				}
+			} else if (ctx.path === "/organization/remove-member") {
+				try {
+					const returned = ctx.context.returned;
+					const session = ctx.context.session;
+					if (
+						returned instanceof Error ||
+						!returned ||
+						typeof returned !== "object" ||
+						!("member" in returned) ||
+						!returned.member ||
+						!session?.user
+					) {
+						return;
+					}
+					const member = returned.member as {
+						userId: string;
+						organizationId: string;
+						role: string;
+					};
+					const targetUser = await db.user.findUnique({
+						where: { id: member.userId },
+						select: { email: true },
+					});
+					recordAudit({
+						// The in-app "Leave organization" action removes the
+						// caller's own member row through this endpoint, so a
+						// self-removal is a departure, not a removal.
+						action:
+							session.user.id === member.userId
+								? "org.member.left"
+								: "org.member.removed",
+						category: "org",
+						actor: {
+							type: "user",
+							userId: session.user.id,
+							emailSnapshot: session.user.email ?? null,
+							nameSnapshot: session.user.name ?? null,
+							impersonatedById:
+								session.session.impersonatedBy ?? null,
+						},
+						organizationId: member.organizationId,
+						resource: {
+							type: "user",
+							id: member.userId,
+							name: targetUser?.email ?? null,
+						},
+						metadata: { previousRole: member.role },
+					});
+				} catch (error) {
+					logger.error(
+						"[Auth] Failed to audit member removal:",
+						error,
+					);
+				}
 			} else if (ctx.path === "/organization/leave") {
 				// A member leaving of their own accord.
 				//
@@ -984,12 +1039,10 @@ const authOptions = {
 				//
 				// The ids are safe to take from the request: the endpoint requires
 				// `organizationId` in its body and resolves the member from the
-				// SESSION user, so the person leaving is the caller. An after-hook
-				// only runs on success, which means better-auth already found and
-				// deleted that member row.
+				// SESSION user, so the person leaving is the caller. The error guard
+				// below excludes endpoint failures before offboarding or auditing.
 				// Read defensively, like the other body reads in this file. The
-				// endpoint's schema makes `organizationId` required and an
-				// after-hook only runs on success, so a parsed body is there today
+				// endpoint's schema makes `organizationId` required on success
 				// — but a destructure of `undefined` throws, and a throw inside a
 				// global after-hook turns a departure that already committed into a
 				// 500, which is the one outcome this path exists to avoid.
@@ -997,7 +1050,11 @@ const authOptions = {
 					ctx.body as { organizationId?: string } | undefined
 				)?.organizationId;
 				const leavingUserId = ctx.context.session?.session.userId;
-				if (organizationId && leavingUserId) {
+				if (
+					organizationId &&
+					leavingUserId &&
+					!(ctx.context.returned instanceof Error)
+				) {
 					// AFTER, not before, and it cannot refuse. A global
 					// `hooks.before` would run ahead of better-auth's own
 					// preconditions — the member row must exist, and the only
@@ -1012,10 +1069,40 @@ const authOptions = {
 						trigger: "left",
 					});
 					await syncSeatsAfterDeparture(organizationId);
+					try {
+						const session = ctx.context.session;
+						recordAudit({
+							action: "org.member.left",
+							category: "org",
+							actor: {
+								type: "user",
+								userId: leavingUserId,
+								emailSnapshot: session?.user.email ?? null,
+								nameSnapshot: session?.user.name ?? null,
+								impersonatedById:
+									session?.session.impersonatedBy ?? null,
+							},
+							organizationId,
+							resource: {
+								type: "user",
+								id: leavingUserId,
+								name: session?.user.email ?? null,
+							},
+						});
+					} catch (error) {
+						logger.error(
+							"[Auth] Failed to audit member departure:",
+							error,
+						);
+					}
 				}
 			}
 		}),
 		before: createAuthMiddleware(async (ctx) => {
+			await enforceOperatorAdminPolicy(
+				ctx,
+				async () => (await getSessionFromCtx(ctx))?.user,
+			);
 			enforceOAuthDpopPolicy(ctx);
 			// Step-up 2FA lockout (issue #2819): refuse a locked account before
 			// Better Auth compares the submitted code. Runs before verification and is
@@ -1926,40 +2013,10 @@ const authOptions = {
 						trigger: "removed",
 					});
 				},
-				afterRemoveMember: async ({
-					member,
-					user: actingUser,
-					organization: org,
-				}) => {
-					const targetUser = await db.user.findUnique({
-						where: { id: member.userId },
-						select: { email: true },
-					});
-					recordAudit({
-						action: "org.member.removed",
-						category: "org",
-						actor: {
-							type: "user",
-							userId: actingUser.id,
-							emailSnapshot: actingUser.email ?? null,
-							nameSnapshot: actingUser.name ?? null,
-						},
-						organizationId: org.id,
-						resource: {
-							type: "user",
-							id: member.userId,
-							name: targetUser?.email ?? null,
-						},
-						metadata: {
-							previousRole: member.role,
-						},
-					});
-
-					// Seats, and only seats: the access revocation already ran
-					// in `beforeRemoveMember`. This has to be the AFTER hook
-					// because it counts the organization's members, and
-					// counting them before the deletion would keep paying for
-					// somebody on their way out.
+				afterRemoveMember: async ({ organization: org }) => {
+					// Access revocation runs before deletion; audit uses the global
+					// after-hook's session because this plugin passes the removed user.
+					// Seat counts need the completed deletion.
 					await syncSeatsAfterDeparture(org.id);
 				},
 			},

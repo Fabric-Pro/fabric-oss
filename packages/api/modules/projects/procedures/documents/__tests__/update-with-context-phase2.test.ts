@@ -237,7 +237,6 @@ describe("updateWithContextProcedure — the confirm names its base (Fizzy #2946
 	});
 
 	it("passes both halves of the base to the write", async () => {
-		mocks.isProposalClientDocument.mockResolvedValue(true);
 		mocks.isFeatureEnabled.mockResolvedValue(true);
 
 		const result = (await handlers.updateWithContext(
@@ -282,42 +281,6 @@ describe("updateWithContextProcedure — the confirm names its base (Fizzy #2946
 		).rejects.toMatchObject({ code: "CONFLICT" });
 		expect(stored.content).toBe(GENERATED_BODY);
 		expect(mocks.applyDocumentUpdateSideEffects).not.toHaveBeenCalled();
-	});
-
-	it("refuses a client-document Proposal confirm without a base while the room flag is on", async () => {
-		mocks.isProposalClientDocument.mockResolvedValue(true);
-		mocks.isFeatureEnabled.mockResolvedValue(true);
-
-		await expect(
-			handlers.updateWithContext(
-				phase2Input({ confirmedContent: "# Proposal\n\nUpdated." }),
-			),
-		).rejects.toMatchObject({
-			code: "PRECONDITION_FAILED",
-			data: { code: "DOCUMENT_SAVE_BASE_REQUIRED" },
-		});
-		expect(mocks.updateDocument).not.toHaveBeenCalled();
-		// Judged by the project's owning organization.
-		expect(mocks.isProposalClientDocument).toHaveBeenCalledWith({
-			organizationId: "org-owner",
-			documentType: "PROPOSAL",
-		});
-		expect(mocks.isFeatureEnabled).toHaveBeenCalledWith(
-			"DOCUMENT_ROOM_CONVERGENCE",
-			"org-owner",
-		);
-	});
-
-	it("keeps the version-only guard for a confirm without a base while the room flag is off", async () => {
-		mocks.isProposalClientDocument.mockResolvedValue(true);
-
-		await handlers.updateWithContext(
-			phase2Input({ confirmedContent: "# Proposal\n\nUpdated." }),
-		);
-
-		const [, data] = mocks.updateDocument.mock.calls[0];
-		expect(data.expectedVersion).toBe(5);
-		expect(data).not.toHaveProperty("expectedContentHash");
 	});
 
 	it("keeps a PRD confirm without a base on the version-only guard", async () => {
@@ -366,7 +329,6 @@ describe("updateWithContextProcedure — the confirm names its base (Fizzy #2946
 	});
 
 	it("answers CONFLICT when a generation run holds the Proposal", async () => {
-		mocks.isProposalClientDocument.mockResolvedValue(true);
 		mocks.updateDocument.mockRejectedValue(
 			new DocumentGenerationInProgressError(),
 		);
@@ -384,5 +346,149 @@ describe("updateWithContextProcedure — the confirm names its base (Fizzy #2946
 			data: { code: "DOCUMENT_GENERATION_IN_PROGRESS" },
 		});
 		expect(mocks.applyDocumentUpdateSideEffects).not.toHaveBeenCalled();
+	});
+});
+
+describe("updateWithContextProcedure — a client-document Proposal is not rewritten whole (Fizzy #2946)", () => {
+	function proposalDocument(type = "PROPOSAL") {
+		return makeDocument({
+			type,
+			status: "COMPLETE",
+			project: { organizationId: "org-owner" },
+		});
+	}
+
+	it.each([
+		["preview", { preview: true, currentContent: "# Proposal" }],
+		[
+			"confirm",
+			{
+				confirmedContent: "# Proposal\n\nRewritten.",
+				expectedVersion: 5,
+				expectedContentHash: "hash-of-preview-body",
+			},
+		],
+	])(
+		"refuses the %s, running no model and writing nothing",
+		async (_phase, overrides) => {
+			mocks.getDocumentById.mockResolvedValue(proposalDocument());
+			mocks.isProposalClientDocument.mockResolvedValue(true);
+
+			await expect(
+				handlers.updateWithContext(phase2Input(overrides)),
+			).rejects.toMatchObject({
+				code: "PRECONDITION_FAILED",
+				data: { code: "PROPOSAL_USE_CHAT_OR_REGENERATE" },
+			});
+			expect(mocks.fetchProjectContextSources).not.toHaveBeenCalled();
+			expect(mocks.runContextUpdate).not.toHaveBeenCalled();
+			expect(mocks.updateDocument).not.toHaveBeenCalled();
+			expect(mocks.applyDocumentUpdateSideEffects).not.toHaveBeenCalled();
+		},
+	);
+
+	it("judges the Proposal by the project's owning organization, not the caller's", async () => {
+		mocks.getDocumentById.mockResolvedValue(proposalDocument());
+		// The gate is on for the owning organization only.
+		mocks.isProposalClientDocument.mockImplementation(
+			async (args: { organizationId: string | null }) =>
+				args.organizationId === "org-owner",
+		);
+
+		await expect(
+			handlers.updateWithContext(
+				phase2Input({
+					organizationId: "org-session",
+					confirmedContent: "# Proposal\n\nRewritten.",
+				}),
+			),
+		).rejects.toMatchObject({
+			data: { code: "PROPOSAL_USE_CHAT_OR_REGENERATE" },
+		});
+		expect(mocks.isProposalClientDocument).toHaveBeenCalledWith({
+			organizationId: "org-owner",
+			documentType: "PROPOSAL",
+		});
+		expect(mocks.isProposalClientDocument).not.toHaveBeenCalledWith(
+			expect.objectContaining({ organizationId: "org-session" }),
+		);
+	});
+
+	it("still updates a Proposal with the gate off", async () => {
+		mocks.getDocumentById.mockResolvedValue(proposalDocument());
+		mocks.updateDocument.mockResolvedValue(makeDocument({ version: 6 }));
+
+		const result = (await handlers.updateWithContext(
+			phase2Input({ confirmedContent: "# Proposal\n\nRewritten." }),
+		)) as { applied: boolean };
+
+		expect(result.applied).toBe(true);
+		expect(mocks.updateDocument).toHaveBeenCalledTimes(1);
+	});
+
+	it("still previews a Technical Spec in an organization with the gate on", async () => {
+		mocks.getDocumentById.mockResolvedValue(
+			proposalDocument("TECHNICAL_SPEC"),
+		);
+		mocks.isProposalClientDocument.mockImplementation(
+			async (args: { documentType: string }) =>
+				args.documentType === "PROPOSAL",
+		);
+		mocks.fetchProjectContextSources.mockResolvedValue({
+			contextItems: [],
+			transcriptCount: 0,
+			teamsCount: 0,
+			slackCount: 0,
+			huddleNotesCount: 0,
+		});
+		mocks.runContextUpdate.mockResolvedValue({
+			hasRelevantContext: true,
+			summary: "Added the new endpoint.",
+			needsHumanResolution: false,
+			updatedDocument: "# Spec\n\nWith the new endpoint.",
+		});
+
+		const result = (await handlers.updateWithContext(
+			phase2Input({ preview: true, currentContent: "# Spec" }),
+		)) as { proposedContent: string | null };
+
+		expect(result.proposedContent).toBe("# Spec\n\nWith the new endpoint.");
+		expect(mocks.runContextUpdate).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("updateWithContextProcedure — the confirm's organization", () => {
+	it("writes the version and re-embeds in the project's owning organization, not the caller's", async () => {
+		// A caller whose request names another organization than the
+		// project's. In a router call the project permission check refuses
+		// that; the handler must not depend on it.
+		mocks.getDocumentById.mockResolvedValue(
+			makeDocument({ project: { organizationId: "org-owner" } }),
+		);
+		const updated = makeDocument({ version: 6 });
+		mocks.updateDocument.mockResolvedValue(updated);
+
+		const result = (await handlers.updateWithContext(
+			phase2Input({
+				organizationId: "org-guest",
+				confirmedContent: "# Spec\n\nUpdated body.",
+			}),
+		)) as { applied: boolean };
+
+		expect(result.applied).toBe(true);
+		expect(mocks.updateDocument).toHaveBeenCalledWith(
+			DOCUMENT_ID,
+			expect.objectContaining({
+				organizationId: "org-owner",
+				userId: "user-1",
+			}),
+		);
+		expect(mocks.applyDocumentUpdateSideEffects).toHaveBeenCalledWith(
+			expect.objectContaining({
+				projectId: PROJECT_ID,
+				document: updated,
+				organizationId: "org-owner",
+			}),
+		);
 	});
 });

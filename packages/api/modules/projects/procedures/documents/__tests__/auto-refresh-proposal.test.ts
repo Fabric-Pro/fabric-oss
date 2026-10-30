@@ -527,12 +527,11 @@ describe("applyDocumentAutoRefreshProposalProcedure — a Proposal under a run",
 	// The write refuses a run queued after this read on its own: the
 	// query's default for a Proposal's content write, which an accept never
 	// opts out of.
-	it("applies a finished Proposal through the guarded write, without consulting the Proposal gate", async () => {
+	it("applies a finished Proposal with the gate off through the guarded write", async () => {
 		mocks.getDocumentById.mockResolvedValue(proposal("COMPLETE"));
 
 		const result = await applyHandler({ input: input(), context: ctx() });
 
-		expect(mocks.isProposalClientDocument).not.toHaveBeenCalled();
 		expect(mocks.updateDocument).toHaveBeenCalledWith(
 			DOCUMENT_ID,
 			expect.objectContaining({ expectedVersion: 3 }),
@@ -567,6 +566,66 @@ describe("applyDocumentAutoRefreshProposalProcedure — a Proposal under a run",
 		const result = await applyHandler({ input: input(), context: ctx() });
 
 		expect(mocks.updateDocument).toHaveBeenCalledTimes(1);
+		expect(result).toEqual({ applied: true, version: 4 });
+	});
+});
+
+describe("applyDocumentAutoRefreshProposalProcedure — a client-document Proposal (Fizzy #2946)", () => {
+	const proposal = (type = "PROPOSAL") =>
+		makeDocument({
+			type,
+			status: "COMPLETE",
+			project: { organizationId: "org-owner" },
+		});
+
+	beforeEach(() => {
+		// The gate is on for the owning organization only.
+		mocks.isProposalClientDocument.mockImplementation(
+			async (args: {
+				organizationId: string | null;
+				documentType: string;
+			}) =>
+				args.documentType === "PROPOSAL" &&
+				args.organizationId === "org-owner",
+		);
+	});
+
+	it("refuses to apply the stored refresh, writing nothing and keeping the proposal", async () => {
+		mocks.getDocumentById.mockResolvedValue(proposal());
+
+		await expect(
+			applyHandler({ input: input(), context: ctx() }),
+		).rejects.toMatchObject({
+			code: "PRECONDITION_FAILED",
+			data: { code: "PROPOSAL_USE_CHAT_OR_REGENERATE" },
+		});
+		expect(mocks.updateDocument).not.toHaveBeenCalled();
+		expect(mocks.clearRefreshProposal).not.toHaveBeenCalled();
+		expect(mocks.applyDocumentUpdateSideEffects).not.toHaveBeenCalled();
+	});
+
+	it("judges it by the project's owning organization, not the caller's", async () => {
+		mocks.getDocumentById.mockResolvedValue(proposal());
+
+		await expect(
+			applyHandler({ input: input(), context: ctx() }),
+		).rejects.toMatchObject({
+			data: { code: "PROPOSAL_USE_CHAT_OR_REGENERATE" },
+		});
+		expect(mocks.isProposalClientDocument).toHaveBeenCalledWith({
+			organizationId: "org-owner",
+			documentType: "PROPOSAL",
+		});
+		expect(mocks.isProposalClientDocument).not.toHaveBeenCalledWith(
+			expect.objectContaining({ organizationId: ORG_ID }),
+		);
+	});
+
+	it("still applies a Technical Spec in an organization with the gate on", async () => {
+		mocks.getDocumentById.mockResolvedValue(proposal("TECHNICAL_SPEC"));
+
+		const result = await applyHandler({ input: input(), context: ctx() });
+
 		expect(result).toEqual({ applied: true, version: 4 });
 	});
 });

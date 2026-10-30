@@ -24,7 +24,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
 	assertKeyStaysOutside,
 	buildHookCommand,
@@ -34,6 +34,17 @@ import {
 	removeCommandHook,
 } from "../src/lib/instructions/hook.js";
 import { resolveDestinationRoot } from "../src/lib/instructions/safe-write.js";
+
+let configDirectory: string;
+beforeAll(async () => {
+	configDirectory = await mkdtemp(path.join(tmpdir(), "fabric-hook-config-"));
+});
+afterAll(async () => {
+	await rm(configDirectory, { recursive: true, force: true });
+});
+vi.mock("../src/lib/config.js", () => ({
+	getConfigPath: () => path.join(configDirectory, "config.json"),
+}));
 
 async function makeTree(): Promise<string> {
 	return resolveDestinationRoot(
@@ -693,7 +704,7 @@ describe("mergeCommandHook across events", () => {
 			.update("\0")
 			.update(".claude/settings.local.json")
 			.digest("hex");
-		const directory = path.join(tmpdir(), "fabric-instructions-hook-locks");
+		const directory = path.join(configDirectory, "hook-locks");
 		await mkdir(directory, { recursive: true });
 		const lockPath = path.join(directory, `${identity}.lock`);
 		await writeFile(lockPath, "0", { flag: "wx", mode: 0o600 });

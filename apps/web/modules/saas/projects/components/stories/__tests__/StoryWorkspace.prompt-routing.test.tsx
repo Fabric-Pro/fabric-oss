@@ -933,3 +933,12 @@ describe("StoryWorkspace — stage Enhance resolves its prompt server-side", () 
 		expect(mockPromptById).not.toHaveBeenCalled();
 	});
 });
+
+// Page-agent behavior is covered by page-agent-render-cost; retain this harness's agent fixture.
+vi.mock("@saas/shared/components/copilot/use-page-agent", async () => {
+	const core = await import("@copilotkit/react-core");
+	return {
+		usePageAgent: (name: string, initialState: object) =>
+			core.useCoAgent({ name, initialState }),
+	};
+});

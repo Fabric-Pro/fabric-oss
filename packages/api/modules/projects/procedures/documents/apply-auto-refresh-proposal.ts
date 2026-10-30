@@ -4,11 +4,13 @@ import {
 	DocumentGenerationInProgressError,
 	DocumentVersionConflictError,
 	getAutoRefreshSettings,
+	isProposalClientDocument,
 	updateDocument,
 } from "@repo/database";
 import { isRunGuardedDocumentType } from "@repo/utils/generation-run-guard";
 import { preserveVisualSlots } from "@repo/utils/glossy/visual-slots";
 import { preserveVisualMarkers } from "@repo/utils/proposal-artifact/visual-identity";
+import { PROPOSAL_USE_CHAT_OR_REGENERATE } from "@repo/utils/proposal-artifact/whole-body-writers";
 import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
 import { z } from "zod";
 import { applyDocumentUpdateSideEffects } from "../../../../lib/document-side-effects";
@@ -127,6 +129,25 @@ export const applyDocumentAutoRefreshProposalProcedure =
 				(current.status === "QUEUED" || current.status === "GENERATING")
 			) {
 				throw generationInProgress();
+			}
+
+			// A client-document Proposal is never rewritten whole (Fizzy #2946),
+			// and a refresh proposal is a whole body: accepting it would put
+			// back every section a person edited since, diagrams included.
+			// Judged by the project's OWNING organization. Nothing is written
+			// and the proposal is kept, so it can still be discarded, or
+			// accepted should the gate be turned off.
+			if (
+				await isProposalClientDocument({
+					organizationId: current.project?.organizationId ?? null,
+					documentType: current.type,
+				})
+			) {
+				throw new ORPCError("PRECONDITION_FAILED", {
+					message:
+						"This Proposal is not updated by auto-refresh. Ask for the change in chat, or regenerate it.",
+					data: { code: PROPOSAL_USE_CHAT_OR_REGENERATE },
+				});
 			}
 
 			let document: Awaited<ReturnType<typeof updateDocument>>;

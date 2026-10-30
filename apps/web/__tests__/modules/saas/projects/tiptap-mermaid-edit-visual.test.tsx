@@ -208,11 +208,9 @@ async function openPanel(user: ReturnType<typeof userEvent.setup>, index = 1) {
 	return { trigger, field };
 }
 
-/** The target diagram's polite live region. */
+/** The diagrams' one polite live region, beside the editor. */
 function liveRegion(container: HTMLElement) {
-	return container
-		.querySelectorAll(".mermaid-visual")[1]
-		?.querySelector("output[aria-live='polite']");
+	return container.querySelector("output[aria-live='polite']");
 }
 
 function generateButton() {
@@ -358,6 +356,35 @@ describe("generating a candidate", () => {
 				name: "What should change in this diagram?",
 			}),
 		).toHaveValue("Shorten the labels");
+	});
+
+	it("a panel closed mid-request clears the shared live region, so the next request is spoken again", async () => {
+		const user = userEvent.setup();
+		rpc.editVisual.mockImplementation(() => new Promise(() => {}));
+		const { container } = await renderEditor();
+		const { trigger, field } = await openPanel(user);
+		await user.type(field, "Shorten the labels");
+		await user.click(generateButton());
+		await waitFor(() =>
+			expect(liveRegion(container)?.textContent).toBe(
+				"Generating a proposed diagram…",
+			),
+		);
+
+		act(() => trigger.focus());
+		await user.keyboard("{Enter}");
+		await user.click(
+			await screen.findByRole("menuitem", { name: "Edit source" }),
+		);
+
+		await waitFor(() =>
+			expect(
+				screen.queryByRole("textbox", {
+					name: "What should change in this diagram?",
+				}),
+			).not.toBeInTheDocument(),
+		);
+		expect(liveRegion(container)?.textContent).toBe("");
 	});
 
 	it.each([

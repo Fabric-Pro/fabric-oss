@@ -5,6 +5,8 @@ import {
 	buildDetectionText,
 	buildVerifierPrompt,
 	CANDIDATE_COSINE_THRESHOLD,
+	calibratedFocusScore,
+	candidateScore,
 	canonicalPair,
 	classifyVerdict,
 	cosineSimilarity,
@@ -12,12 +14,14 @@ import {
 	type DetectionItem,
 	detectionTextForStory,
 	effectiveCandidateThreshold,
+	FOCUS_CANDIDATE_MARGIN,
 	hashDetectionText,
 	isProximatePair,
 	normalizeVerifierRelationship,
 	PROXIMITY_RELAXATION,
 	PROXIMITY_WINDOW_MS,
 	pairKey,
+	rescoreFlaggedFeaturePairs,
 	selectCandidatePairs,
 	selectCandidatePairsForTargets,
 } from "../prisma/queries/projects/duplicate-detection";
@@ -384,6 +388,23 @@ describe("buildVerifierPrompt — feature focus sections", () => {
 		expect(prompt).toMatch(/problemA/);
 	});
 
+	it("adds the placeholder rule for a feature pair only", () => {
+		const rule =
+			/If either feature is only a placeholder[\s\S]*answer "distinct"/;
+		expect(buildVerifierPrompt(a, b, { bothFeatures: true })).toMatch(rule);
+		expect(
+			buildVerifierPrompt(a, b, {
+				bothFeatures: true,
+				focus: scopeFocus,
+			}),
+		).toMatch(rule);
+		// Bug and mixed pairs keep the whole-document contract byte for byte.
+		expect(buildVerifierPrompt(a, b, { bothFeatures: false })).toBe(
+			buildVerifierPrompt(a, b),
+		);
+		expect(buildVerifierPrompt(a, b)).not.toMatch(/placeholder/);
+	});
+
 	it("uses acceptance-criteria blocks, without the Out-of-Scope rule, for an acceptance-criteria focus", () => {
 		const prompt = buildVerifierPrompt(a, b, {
 			focus: {
@@ -401,6 +422,289 @@ describe("buildVerifierPrompt — feature focus sections", () => {
 		);
 		expect(prompt).not.toMatch(/Out of Scope explicitly/);
 		expect(prompt).not.toContain("<scope_a>");
+	});
+});
+
+describe("selectCandidatePairs — feature sections", () => {
+	/** A feature whose document and Scope vectors sit at chosen cosines to
+	 * the reference feature's. */
+	const feature = (
+		storyId: string,
+		documentCos: number,
+		scopeCos: number,
+	): DetectionItem => ({
+		storyId,
+		embedding: vectorAtSimilarity(documentCos),
+		focusVectors: { scope: vectorAtSimilarity(scopeCos) },
+	});
+	const reference: DetectionItem = {
+		storyId: "ref",
+		embedding: [1, 0, 0],
+		focusVectors: { scope: [1, 0, 0] },
+	};
+
+	it("makes a pair a candidate on its Scope when the documents read apart", () => {
+		const { pairs } = selectCandidatePairs([
+			reference,
+			feature("f", 0.5, 1),
+		]);
+		expect(pairs).toHaveLength(1);
+		expect(pairs[0].similarity).toBeCloseTo(0.5, 10);
+		// 0.875 on the threshold's scale: 0.70 + 0.255 × 0.30 / 0.38.
+		expect(pairs[0].focus).toEqual({
+			kind: "scope",
+			similarity: expect.closeTo(1, 10),
+			weighted: expect.closeTo(0.875, 10),
+			score: expect.closeTo(0.7 + (0.255 * 0.3) / 0.38, 10),
+		});
+		expect(candidateScore(pairs[0])).toBe(pairs[0].focus?.score);
+	});
+
+	it("leaves out features whose documents read alike but whose Scope sections do not, and logs them", () => {
+		const { pairs, nearMisses, scopeExcluded } = selectCandidatePairs([
+			reference,
+			feature("f", 0.95, 0),
+		]);
+		// 0.75 × 0 + 0.25 × 0.95 = 0.2375: far under the bar.
+		expect(pairs).toHaveLength(0);
+		expect(nearMisses).toHaveLength(0);
+		// The document alone clears the threshold: the Scope kept it out.
+		expect(scopeExcluded).toEqual([
+			expect.objectContaining({
+				storyAId: "f",
+				storyBId: "ref",
+				similarity: expect.closeTo(0.95, 10),
+			}),
+		]);
+	});
+
+	it("does not log a pair as kept out by its Scope when its document is under the threshold too", () => {
+		const { scopeExcluded } = selectCandidatePairs([
+			reference,
+			feature("f", 0.69, 0),
+		]);
+		expect(scopeExcluded).toEqual([]);
+	});
+
+	it("selects a feature pair whose weighted score is within FOCUS_CANDIDATE_MARGIN of the threshold, at a score on the threshold's scale", () => {
+		const { pairs } = selectCandidatePairs([
+			reference,
+			feature("f", 0.6, 0.66),
+		]);
+		// 0.75 × 0.66 + 0.25 × 0.6 = 0.645 ≥ 0.70 − 0.08, shown as
+		// 0.70 + 0.025 × 0.30 / 0.38 — at/above the threshold every other pair
+		// is held to.
+		expect(FOCUS_CANDIDATE_MARGIN).toBe(0.08);
+		expect(pairs).toHaveLength(1);
+		expect(pairs[0].focus?.weighted).toBeCloseTo(0.645, 10);
+		expect(candidateScore(pairs[0])).toBeCloseTo(
+			0.7 + (0.025 * 0.3) / 0.38,
+			10,
+		);
+		expect(candidateScore(pairs[0])).toBeGreaterThanOrEqual(
+			CANDIDATE_COSINE_THRESHOLD,
+		);
+	});
+
+	it("keeps a bug pair on the plain threshold — the margin is for feature sections only", () => {
+		const bugs = selectCandidatePairs([
+			{ storyId: "a", embedding: [1, 0, 0] },
+			{ storyId: "b", embedding: vectorAtSimilarity(0.65) },
+		]);
+		expect(bugs.pairs).toHaveLength(0);
+		expect(bugs.nearMisses).toHaveLength(1);
+	});
+
+	it("leaves a pair out when neither its document nor its Scope reads alike", () => {
+		const { pairs, nearMisses } = selectCandidatePairs([
+			reference,
+			feature("f", 0.6, 0.56),
+		]);
+		expect(pairs).toHaveLength(0);
+		// 0.75 × 0.56 + 0.25 × 0.6 = 0.57: under the 0.62 bar, shown as
+		// 0.57 × 0.70 / 0.62 — within the near-miss margin.
+		expect(nearMisses).toHaveLength(1);
+		expect(candidateScore(nearMisses[0])).toBeCloseTo(
+			(0.57 * 0.7) / 0.62,
+			10,
+		);
+	});
+
+	it("compares on acceptance criteria when only those are shared, and never across kinds", () => {
+		const criteriaOnly: DetectionItem = {
+			storyId: "c",
+			embedding: vectorAtSimilarity(0.5),
+			focusVectors: { acceptance_criteria: [1, 0, 0] },
+		};
+		const both: DetectionItem = {
+			storyId: "b",
+			embedding: [1, 0, 0],
+			focusVectors: {
+				scope: [0, 1, 0],
+				acceptance_criteria: [1, 0, 0],
+			},
+		};
+		const scopeOnly: DetectionItem = {
+			storyId: "s",
+			embedding: vectorAtSimilarity(0.5),
+			focusVectors: { scope: [0, 1, 0] },
+		};
+		const { pairs } = selectCandidatePairs([both, criteriaOnly, scopeOnly]);
+		const byKey = new Map(
+			pairs.map((p) => [pairKey(p.storyAId, p.storyBId), p]),
+		);
+		expect(byKey.get(pairKey("b", "c"))?.focus?.kind).toBe(
+			"acceptance_criteria",
+		);
+		expect(byKey.get(pairKey("b", "s"))?.focus?.kind).toBe("scope");
+		// Scope against acceptance criteria is never compared: that pair is a
+		// candidate on its identical documents alone.
+		const mixed = byKey.get(pairKey("c", "s"));
+		expect(mixed?.similarity).toBeCloseTo(1, 10);
+		expect(mixed?.focus).toBeUndefined();
+	});
+
+	it("leaves pairs without section vectors — bugs, and a bug with a feature — on the document cosine", () => {
+		const bug: DetectionItem = {
+			storyId: "bug",
+			embedding: vectorAtSimilarity(0.5),
+		};
+		const { pairs } = selectCandidatePairs([reference, bug]);
+		expect(pairs).toHaveLength(0);
+		const near = selectCandidatePairs([
+			reference,
+			{ storyId: "bug", embedding: vectorAtSimilarity(0.9) },
+		]);
+		expect(near.pairs).toHaveLength(1);
+		expect(near.pairs[0].focus).toBeUndefined();
+	});
+
+	it("ranks and caps on the candidate score", () => {
+		// A bug, scored on its document; vectors chosen so it does not pair
+		// with the second feature.
+		const byDocument: DetectionItem = {
+			storyId: "doc",
+			embedding: [0.8, 0.6, 0],
+		};
+		const byScope: DetectionItem = {
+			storyId: "scope",
+			embedding: [0.5, 0, Math.sqrt(0.75)],
+			focusVectors: { scope: [1, 0, 0] },
+		};
+		const { pairs, droppedPairs } = selectCandidatePairs(
+			[reference, byDocument, byScope],
+			{ cap: 1 },
+		);
+		// 0.90 (Scope, calibrated) outranks 0.8 (document).
+		expect(pairs).toEqual([
+			expect.objectContaining({ storyAId: "ref", storyBId: "scope" }),
+		]);
+		expect(droppedPairs).toEqual([
+			expect.objectContaining({ storyAId: "doc", storyBId: "ref" }),
+		]);
+	});
+});
+
+describe("calibratedFocusScore", () => {
+	it("maps the bar onto the threshold and keeps 0 and 1", () => {
+		const threshold = 0.7;
+		const bar = threshold - FOCUS_CANDIDATE_MARGIN;
+		expect(calibratedFocusScore(bar, threshold)).toBeCloseTo(threshold, 12);
+		expect(calibratedFocusScore(0, threshold)).toBe(0);
+		expect(calibratedFocusScore(1, threshold)).toBeCloseTo(1, 12);
+	});
+
+	it("keeps the order of pairs on both sides of the bar", () => {
+		const scores = [0, 0.3, 0.6, 0.619, 0.62, 0.621, 0.7, 0.9, 1].map((w) =>
+			calibratedFocusScore(w, 0.7),
+		);
+		for (let i = 1; i < scores.length; i++) {
+			expect(scores[i]).toBeGreaterThan(scores[i - 1]);
+		}
+	});
+
+	it("follows the proximity-relaxed threshold", () => {
+		const relaxed = effectiveCandidateThreshold(true);
+		expect(
+			calibratedFocusScore(relaxed - FOCUS_CANDIDATE_MARGIN, relaxed),
+		).toBeCloseTo(relaxed, 12);
+	});
+});
+
+describe("rescoreFlaggedFeaturePairs", () => {
+	const feature = (
+		storyId: string,
+		documentCos: number,
+		scopeCos: number,
+	): DetectionItem => ({
+		storyId,
+		embedding: vectorAtSimilarity(documentCos),
+		focusVectors: { scope: vectorAtSimilarity(scopeCos) },
+	});
+	const reference: DetectionItem = {
+		storyId: "ref",
+		embedding: [1, 0, 0],
+		focusVectors: { scope: [1, 0, 0] },
+	};
+	const flag = (other: string, similarity = 0.9) => {
+		const [storyAId, storyBId] = canonicalPair("ref", other);
+		return { storyAId, storyBId, similarity };
+	};
+	const insideScore = 0.7 + (0.025 * 0.3) / 0.38;
+
+	it("withdraws feature flags under the threshold and rescores the rest, leaving bugs alone", () => {
+		const items = [
+			reference,
+			// 0.2375: documents alike, Scope sections not — under the bar.
+			feature("under", 0.95, 0),
+			// 0.645: inside the margin — a flag the current rule raises,
+			// stored on the old raw scale.
+			feature("inside", 0.6, 0.66),
+			// No section vectors: a bug, kept on its document cosine.
+			{ storyId: "bug", embedding: vectorAtSimilarity(0.3) },
+		];
+		const flagged = [
+			flag("under"),
+			flag("inside", 0.645),
+			flag("bug", 0.3),
+		];
+
+		const { withdraw, rescore } = rescoreFlaggedFeaturePairs(
+			flagged,
+			items,
+		);
+		expect(withdraw).toEqual([flag("under")]);
+		expect(rescore).toEqual([
+			{ ...flag("inside"), similarity: expect.closeTo(insideScore, 10) },
+		]);
+	});
+
+	it("does not rescore a flag already stored with its score", () => {
+		const items = [reference, feature("inside", 0.6, 0.66)];
+		expect(
+			rescoreFlaggedFeaturePairs([flag("inside", insideScore)], items),
+		).toEqual({ withdraw: [], rescore: [] });
+	});
+
+	it("skips a flag whose other side is not in the scan", () => {
+		expect(rescoreFlaggedFeaturePairs([flag("gone")], [reference])).toEqual(
+			{ withdraw: [], rescore: [] },
+		);
+	});
+
+	it("only considers flags touching a target in one-vs-rest mode", () => {
+		const items = [reference, feature("under", 0.95, 0)];
+
+		expect(
+			rescoreFlaggedFeaturePairs([flag("under")], items, {
+				targetIds: new Set(["elsewhere"]),
+			}).withdraw,
+		).toEqual([]);
+		expect(
+			rescoreFlaggedFeaturePairs([flag("under")], items, {
+				targetIds: new Set(["under"]),
+			}).withdraw,
+		).toEqual([flag("under")]);
 	});
 });
 

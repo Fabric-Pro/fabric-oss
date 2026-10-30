@@ -214,6 +214,10 @@ vi.mock("@saas/auth/hooks/use-session", () => ({
 	}),
 }));
 
+// `COPILOTKIT_ORCHESTRATOR_CHAT` off: the chat runs over the stream route.
+vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
+	useFeatureFlag: () => false,
+}));
 vi.mock("@saas/organizations/hooks/use-active-organization", () => ({
 	useActiveOrganization: () => ({
 		activeOrganization: modelBadge.enabled

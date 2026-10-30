@@ -51,3 +51,15 @@ describe("Databricks model-aware inference URL", () => {
 		expect(toDatabricksInferenceBaseUrl(baseUrl, modelId)).toBe(expected);
 	});
 });
+
+it("normalizes long slash runs", () => {
+	expect(
+		toDatabricksInferenceBaseUrl(
+			`${host + "/".repeat(200_000)}x`,
+			"custom",
+		),
+	).toContain("x");
+	expect(
+		toDatabricksInferenceBaseUrl(host + "/".repeat(200_000), "custom"),
+	).toBe(`${host}/serving-endpoints`);
+});

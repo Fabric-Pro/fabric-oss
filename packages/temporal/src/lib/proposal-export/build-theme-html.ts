@@ -5,10 +5,10 @@
  *
  * Self-contained means it loads nothing. There is no script, no `<link>` and
  * no external URL: every image is a `data:` URL of bytes the export already
- * re-encoded, the only font is the embedded Inter, and an `http(s):` URL can
- * appear only as the `href` of a link the reader may follow, or as visible
- * text. The browser that prints it also blocks every request, so this is the
- * second wall, not the only one.
+ * re-encoded, the only fonts are the embedded Poppins, Inter and JetBrains
+ * Mono, and an `http(s):` URL can appear only as the `href` of a link the
+ * reader may follow, or as visible text. The browser that prints it also
+ * blocks every request, so this is the second wall, not the only one.
  *
  * Main is untrusted text. Every piece of it reaches the page escaped
  * (`& < > " '`), through a fixed mapping of the Markdown tree onto the
@@ -45,6 +45,7 @@ import {
 import type {
 	Code,
 	Definition,
+	Emphasis,
 	FootnoteDefinition,
 	Html,
 	List,
@@ -55,6 +56,14 @@ import type {
 	Table,
 } from "mdast";
 import {
+	bodyStyle,
+	type CoverContent,
+	contentsHtml,
+	coverHtml,
+	coverPreamble,
+	hasHeroImage,
+} from "./build-cover-html";
+import {
 	isDocumentMediaKey,
 	isWideTable,
 	rawHtmlFallback,
@@ -63,20 +72,28 @@ import {
 	type UploadedImageTag,
 } from "./document-content";
 import { exportFailure } from "./failures";
-import { interFontFaceCss, PRINT_FONT_FAMILY, printTokensOf } from "./fonts";
+import { PRINT_FONTS, printFontFaceCss, printTokensOf } from "./fonts";
 import {
 	eachNode,
 	exportDiagramCaption,
 	flatText,
 	type PreparedExportMarkdown,
 } from "./markdown";
-import type {
-	ExportDiagram,
-	ExportDocumentImages,
-	ExportRaster,
-	ExportThemeTokens,
-	ProposalExportWarning,
-	ProposalExportWarningCode,
+import {
+	dataUrl,
+	escapeHtml,
+	isImageParagraph,
+	plainText,
+	present,
+} from "./print-markup";
+import {
+	diagramFigureNumbers,
+	type ExportDiagram,
+	type ExportDocumentImages,
+	type ExportRaster,
+	type ExportThemeTokens,
+	type ProposalExportWarning,
+	type ProposalExportWarningCode,
 } from "./types";
 import { ExportWarningTally } from "./warnings";
 
@@ -163,6 +180,8 @@ const MAX_RENDER_DEPTH = 64;
 /**
  * The most image data, in base64 characters, the body embeds across every
  * placement: the export's 40 MB image budget once over, with room to spare.
+ * Each image is already within the encoded cap Chromium draws a `data:` URL
+ * under (`fit-export-image.ts`).
  */
 export const MAX_EMBEDDED_IMAGE_CHARS = 80 * 1024 * 1024;
 
@@ -179,39 +198,72 @@ const CODE_LANGUAGE = /^[A-Za-z0-9_+-]{1,40}$/;
 /** An uploaded image's width, as `readUploadedImageTag` constrains it. */
 const IMAGE_WIDTH = /^(?:\d{1,4}px|\d{1,3}%)$/;
 
-/** The caption of a diagram the diagram step returned nothing for. */
-const MISSING_DIAGRAM_CAPTION = "This diagram could not be drawn for export.";
+/**
+ * The longest paragraph, in characters, a section opener takes as its
+ * subtitle; a longer one stays in the body.
+ */
+const SUBTITLE_MAX_CHARACTERS = 200;
 
-const ESCAPES: Readonly<Record<string, string>> = {
-	"&": "&amp;",
-	"<": "&lt;",
-	">": "&gt;",
-	'"': "&quot;",
-	"'": "&#39;",
-};
+/**
+ * A first-column cell that reads as an id, such as "FS-01": short, one word
+ * and with a digit, so a column of plain words ("Discovery", "Pro") is not.
+ */
+const SHORT_ID = /^(?=[\p{L}\p{N}-]*\p{N})[\p{L}\p{N}-]{1,12}$/u;
 
-/** Text or an attribute value, safe in either place. */
-function escapeHtml(text: string): string {
-	return text.replace(/[&<>"']/g, (character) => ESCAPES[character] ?? "");
+/** The children that are more than whitespace. */
+function meaningfulChildren(
+	children: readonly PhrasingContent[],
+): PhrasingContent[] {
+	return children.filter(
+		(child) => !(child.type === "text" && child.value.trim() === ""),
+	);
 }
 
-/** A trimmed, non-empty value, or null. */
-function present(value: string | null | undefined): string | null {
-	const trimmed = value?.trim() ?? "";
-	return trimmed === "" ? null : trimmed;
-}
-
-/** A raster as a `data:` URL; anything but PNG or JPEG is never written. */
-function dataUrl(raster: ExportRaster): string | null {
-	if (raster.mimeType !== "image/png" && raster.mimeType !== "image/jpeg") {
+/**
+ * The emphasis a paragraph right after a section heading is made of, when
+ * it is nothing else and short enough to be the opener's subtitle.
+ */
+function subtitleOf(node: Nodes | undefined): Emphasis | null {
+	if (node?.type !== "paragraph") {
 		return null;
 	}
-	return `data:${raster.mimeType};base64,${raster.bytes.toString("base64")}`;
+	const [only, ...rest] = meaningfulChildren(node.children);
+	if (only?.type !== "emphasis" || rest.length > 0) {
+		return null;
+	}
+	const text = plainText(only);
+	return text !== "" &&
+		Array.from(text).length <= SUBTITLE_MAX_CHARACTERS &&
+		!isImageParagraph(node)
+		? only
+		: null;
 }
 
-/** A node's text with all markup dropped, whitespace collapsed. */
-function plainText(node: Nodes): string {
-	return flatText(node).replace(/\s+/g, " ").trim();
+/** Whether every body cell of the first column reads as a short id. */
+function hasIdColumn(node: Table): boolean {
+	const rows = node.children.slice(1);
+	return (
+		rows.length > 0 &&
+		rows.every((row) => {
+			const cell = row.children[0];
+			return cell !== undefined && SHORT_ID.test(plainText(cell));
+		})
+	);
+}
+
+/** Whether every item of an ordered list opens with bold text. */
+function isStepList(node: List): boolean {
+	return (
+		node.ordered === true &&
+		node.children.length > 0 &&
+		node.children.every((item) => {
+			const first = item.children[0];
+			return (
+				first?.type === "paragraph" &&
+				meaningfulChildren(first.children)[0]?.type === "strong"
+			);
+		})
+	);
 }
 
 /** The tree walk, with what it collects on the way. */
@@ -220,8 +272,6 @@ class BodyRenderer {
 	/** How deep the walk is in the tree right now. */
 	private depth = 0;
 	private readonly tally = new ExportWarningTally();
-	/** Each raster's data URL, encoded once however often it is placed. */
-	private readonly dataUrls = new WeakMap<ExportRaster, string | null>();
 	/** Characters of image data the body has embedded so far. */
 	private embeddedImageChars = 0;
 	private readonly definitions = new Map<string, Definition>();
@@ -231,9 +281,36 @@ class BodyRenderer {
 	>();
 	/** Footnote identifiers in the order they are first referenced. */
 	private readonly footnoteOrder: string[] = [];
+	private readonly preamble: ReturnType<typeof coverPreamble>;
+	/** Main's nodes the cover took, which the body leaves out. */
+	private readonly lifted = new Set<Nodes>();
+	/** Each diagram's "Figure n." number, as the Word file numbers it. */
+	private readonly figureNumbers: readonly (number | null)[];
 
 	constructor(private readonly input: BuildThemeHtmlInput) {
 		this.collectDefinitions(input.prepared.root);
+		this.figureNumbers = diagramFigureNumbers(input.diagrams);
+		this.preamble = coverPreamble(input.prepared.root);
+		if (this.preamble.lead) {
+			this.lifted.add(this.preamble.lead);
+		}
+		if (this.preamble.figures) {
+			this.lifted.add(this.preamble.figures.node);
+		}
+	}
+
+	/**
+	 * The cover's lead and key figures. Called before {@link body}, so a
+	 * footnote the lead references keeps its place in the numbering.
+	 */
+	cover(): CoverContent {
+		const lead = this.preamble.lead
+			? this.phrasing(this.preamble.lead.children)
+			: null;
+		return {
+			lead: lead === null || lead.trim() === "" ? null : lead,
+			figures: this.preamble.figures?.items ?? [],
+		};
 	}
 
 	count(code: ProposalExportWarningCode, by = 1): void {
@@ -245,10 +322,11 @@ class BodyRenderer {
 	}
 
 	/**
-	 * Main's body: every root-level H2 opens a section. A section whose
-	 * first block is a table too wide for portrait opens on that table's
-	 * landscape page, so its opener is not left alone at the foot of the
-	 * page before it.
+	 * Main's body: every root-level H2 opens a section, and takes a short
+	 * emphasised paragraph right after it as the opener's subtitle. A
+	 * section whose first block is a table too wide for portrait opens on
+	 * that table's landscape page, so its opener is not left alone at the
+	 * foot of the page before it.
 	 */
 	body(): string {
 		const parts: string[] = [];
@@ -256,9 +334,14 @@ class BodyRenderer {
 		for (let index = 0; index < children.length; index++) {
 			const node = children[index];
 			if (node?.type === "heading" && node.depth === 2) {
+				const subtitle = subtitleOf(children[index + 1]);
+				if (subtitle) {
+					index++;
+				}
 				const opener = this.sectionOpener(
 					node.children,
 					plainText(node),
+					subtitle,
 				);
 				const next = children[index + 1];
 				if (next?.type === "table" && isWideTable(next)) {
@@ -269,7 +352,7 @@ class BodyRenderer {
 				} else {
 					parts.push(opener);
 				}
-			} else if (node) {
+			} else if (node && !this.lifted.has(node)) {
 				parts.push(this.flow(node));
 			}
 		}
@@ -297,15 +380,23 @@ class BodyRenderer {
 	private sectionOpener(
 		children: readonly PhrasingContent[],
 		title: string,
+		subtitle: Emphasis | null,
 	): string {
 		const index = this.sections.length + 1;
 		const id = `pa-section-${index}`;
 		this.sections.push({ index, id, title });
+		// The hero itself is the body's `--pa-hero-image`.
+		const graphic = hasHeroImage(this.input.tokens)
+			? `<div class="${PRINT.sectionGraphic}" aria-hidden="true"></div>`
+			: "";
 		const marker =
 			this.input.pass.kind === "locate"
 				? `<span class="${PRINT.pageMarker}" aria-hidden="true">${pageMarkerText(index)}</span>`
 				: "";
-		return `<header class="${THEME.sectionOpener}" id="${id}">${marker}<h2>${this.phrasing(children)}</h2></header>`;
+		const lead = subtitle
+			? `<p>${this.phrasing(subtitle.children)}</p>`
+			: "";
+		return `<header class="${THEME.sectionOpener}" id="${id}">${graphic}${marker}<h2>${this.phrasing(children)}</h2>${lead}</header>`;
 	}
 
 	/**
@@ -399,7 +490,11 @@ class BodyRenderer {
 		const tasks = node.children.some(
 			(item) => typeof item.checked === "boolean",
 		);
-		const taskClass = tasks ? ' class="contains-task-list"' : "";
+		const listClass = tasks
+			? ' class="contains-task-list"'
+			: isStepList(node)
+				? ` class="${THEME.steps}"`
+				: "";
 		const items = node.children
 			.map((item) => this.listItem(item, loose))
 			.join("");
@@ -410,9 +505,9 @@ class BodyRenderer {
 				node.start !== 1
 					? ` start="${node.start}"`
 					: "";
-			return `<ol${start}${taskClass}>${items}</ol>`;
+			return `<ol${start}${listClass}>${items}</ol>`;
 		}
-		return `<ul${taskClass}>${items}</ul>`;
+		return `<ul${listClass}>${items}</ul>`;
 	}
 
 	private listItem(item: ListItem, loose: boolean): string {
@@ -439,10 +534,7 @@ class BodyRenderer {
 	private code(node: Code): string {
 		const diagramIndex = this.input.prepared.diagramIndex.get(node);
 		if (diagramIndex !== undefined) {
-			return this.diagram(
-				this.input.diagrams[diagramIndex],
-				exportDiagramCaption(node.value),
-			);
+			return this.diagram(diagramIndex, exportDiagramCaption(node.value));
 		}
 		if (node.lang === STAT_TILES_LANGUAGE) {
 			const parsed = parseStatTiles(node.value);
@@ -465,25 +557,35 @@ class BodyRenderer {
 	}
 
 	/**
-	 * A diagram's figure, with the fence's `%% caption:` line, as plain
-	 * text, under it.
+	 * A diagram's figure, captioned "Figure n." and the fence's
+	 * `%% caption:` line as plain text, or nothing for one left out.
 	 */
-	private diagram(
-		diagram: ExportDiagram | undefined,
-		caption: string | null,
-	): string {
-		const figcaption = caption
-			? `<figcaption class="${THEME.caption}">${escapeHtml(caption)}</figcaption>`
-			: "";
-		if (diagram?.kind === "svg") {
+	private diagram(index: number, caption: string | null): string {
+		const diagram = this.input.diagrams[index];
+		if (!diagram) {
+			// The diagram step returned nothing for it: left out, as a
+			// diagram that failed to draw is.
+			this.count("DIAGRAM_PLACEHOLDER");
+			return "";
+		}
+		if (diagram.kind === "omitted") {
+			return "";
+		}
+		const number = this.figureNumbers[index] ?? null;
+		const label =
+			number === null
+				? ""
+				: `<span class="${PRINT.figureNumber}">Figure ${number}.</span>`;
+		const text = caption ? escapeHtml(caption) : "";
+		const figcaption =
+			label || text
+				? `<figcaption class="${THEME.caption}">${label}${label && text ? " " : ""}${text}</figcaption>`
+				: "";
+		if (diagram.kind === "svg") {
 			// Allowlisted by the diagram step, which owns its safety.
 			return `<figure class="${THEME.figure} ${PRINT.diagram}">${diagram.svg}${figcaption}</figure>`;
 		}
-		if (!diagram) {
-			this.count("DIAGRAM_PLACEHOLDER");
-		}
-		const placeholder = diagram?.caption ?? MISSING_DIAGRAM_CAPTION;
-		return `<figure class="${THEME.figure} ${PRINT.diagramPlaceholder}"><p class="${THEME.caption}">${escapeHtml(placeholder)}</p>${figcaption}</figure>`;
+		return `<figure class="${THEME.figure} ${PRINT.diagramPlaceholder}"><p class="${THEME.caption}">${escapeHtml(diagram.caption)}</p>${figcaption}</figure>`;
 	}
 
 	private table(node: Table): string {
@@ -513,7 +615,8 @@ class BodyRenderer {
 			rows.length > 0
 				? `<tbody>${rows.map((row) => `<tr>${cells("td", row)}</tr>`).join("")}</tbody>`
 				: "";
-		return `<table class="${THEME.dataTable}">${thead}${tbody}</table>`;
+		const ids = hasIdColumn(node) ? ` ${THEME.idColumn}` : "";
+		return `<table class="${THEME.dataTable}${ids}">${thead}${tbody}</table>`;
 	}
 
 	/** Raw HTML where a block stands. */
@@ -582,10 +685,7 @@ class BodyRenderer {
 	}
 
 	private image(tag: UploadedImageTag, raster: ExportRaster): string {
-		if (!this.dataUrls.has(raster)) {
-			this.dataUrls.set(raster, dataUrl(raster));
-		}
-		const src = this.dataUrls.get(raster) ?? null;
+		const src = dataUrl(raster);
 		if (src === null) {
 			return "";
 		}
@@ -723,114 +823,22 @@ class BodyRenderer {
 	}
 }
 
-/**
- * The cover: data-held fields only. The eyebrow, the title and the date
- * always; each party and each logo only when the tokens hold it; the hero
- * only when there is one. No lead sentence until the cover's fields are
- * settled in Fizzy #2946.
- */
-function coverHtml(input: BuildThemeHtmlInput): string {
-	const { tokens } = input;
-	const proposer = present(tokens.proposer.name.value);
-	const recipient = present(tokens.recipient.name.value);
-
-	const logo = (
-		raster: ExportRaster | null,
-		role: string,
-		name: string | null,
-		fallback: string,
-	): string => {
-		const src = raster ? dataUrl(raster) : null;
-		return src === null
-			? ""
-			: `<img class="${PRINT.coverLogo} ${role}" src="${escapeHtml(src)}" alt="${escapeHtml(name ? `${name} logo` : fallback)}">`;
-	};
-	// Nothing at all between the tags when there is no logo, not even
-	// whitespace: the theme hides the row with `:empty`.
-	const brands =
-		logo(
-			tokens.proposer.logo.value,
-			PRINT.proposerLogo,
-			proposer,
-			"Proposer logo",
-		) +
-		logo(
-			tokens.recipient.logo.value,
-			PRINT.recipientLogo,
-			recipient,
-			"Client logo",
-		);
-
-	const heroSrc = tokens.proposer.hero.value
-		? dataUrl(tokens.proposer.hero.value)
-		: null;
-	const hero =
-		heroSrc === null
-			? ""
-			: `<img class="${PRINT.coverHero}" src="${escapeHtml(heroSrc)}" alt="">`;
-
-	const party = (label: string, name: string | null) =>
-		name === null
-			? ""
-			: `<div><dt>${label}</dt><dd>${escapeHtml(name)}</dd></div>`;
-	const parties =
-		party("Prepared for", recipient) + party("Prepared by", proposer);
-
-	const date = present(input.dateLabel);
-
-	return [
-		`<section class="${THEME.cover}">`,
-		`<div class="${PRINT.coverBrands}">${brands}</div>`,
-		hero,
-		`<div class="${PRINT.coverBody}">`,
-		`<p class="${PRINT.eyebrow}">Proposal</p>`,
-		`<h1 class="${PRINT.coverTitle}">${escapeHtml(input.title.trim())}</h1>`,
-		"</div>",
-		parties === ""
-			? ""
-			: `<dl class="${PRINT.coverParties}">${parties}</dl>`,
-		date === null
-			? ""
-			: `<p class="${PRINT.coverDate}">${escapeHtml(date)}</p>`,
-		"</section>",
-	].join("");
-}
-
-/** A page number the final pass may print, or null. */
-function pageNumberOf(
-	pass: ThemeHtmlPass,
-	section: ExportSection,
-): number | null {
-	if (pass.kind !== "final" || pass.pageNumbers === null) {
-		return null;
-	}
-	const page = pass.pageNumbers.get(section.index);
-	return typeof page === "number" && Number.isSafeInteger(page) && page > 0
-		? page
-		: null;
-}
+/** Longest document title the footer shows, in characters. */
+const FOOTER_TITLE_LIMIT = 60;
 
 /**
- * The contents page, or nothing for a document without sections. Every
- * entry's leader and slot are the same markup in both passes, only the
- * slot's text differs, and the slot's width is fixed by the theme.
+ * The title as the footer shows it: cut at a word to
+ * {@link FOOTER_TITLE_LIMIT} characters with an ellipsis, so the footer
+ * stays on one line beside the page counter.
  */
-function contentsHtml(
-	sections: readonly ExportSection[],
-	pass: ThemeHtmlPass,
-): string {
-	if (sections.length === 0) {
-		return "";
+function footerTitle(title: string): string {
+	const characters = Array.from(title);
+	if (characters.length <= FOOTER_TITLE_LIMIT) {
+		return title;
 	}
-	const slots = pass.kind === "locate" || pass.pageNumbers !== null;
-	const entries = sections.map((section) => {
-		const page = pageNumberOf(pass, section);
-		const slot = slots
-			? `<span class="${PRINT.contentsLeader}" aria-hidden="true"></span><span class="${PRINT.contentsPage}">${page === null ? "" : page}</span>`
-			: "";
-		return `<li><a href="#${section.id}">${escapeHtml(section.title)}</a>${slot}</li>`;
-	});
-	return `<nav class="${PRINT.contents}" aria-label="Contents"><p class="${PRINT.eyebrow}">Contents</p><ol>${entries.join("")}</ol></nav>`;
+	const cut = characters.slice(0, FOOTER_TITLE_LIMIT - 1).join("");
+	const atWord = cut.replace(/\s+\S*$/u, "");
+	return `${(atWord.length > 0 ? atWord : cut).trimEnd()}…`;
 }
 
 /** A stylesheet for a `<style>` element, which nothing in it may close. */
@@ -849,7 +857,9 @@ export function buildThemeHtml(
 	input: BuildThemeHtmlInput,
 ): BuildThemeHtmlResult {
 	const renderer = new BodyRenderer(input);
-	// The body first: the contents page lists the sections it found.
+	// The cover's lead before the body, as a reader meets them; the body
+	// before the contents page, which lists the sections it found.
+	const cover = renderer.cover();
 	const body = renderer.body();
 	const sections = renderer.sections;
 
@@ -857,7 +867,7 @@ export function buildThemeHtml(
 	const proposer = present(input.tokens.proposer.name.value);
 	const runningFooter = [
 		proposer,
-		present(title),
+		present(footerTitle(title)),
 		present(input.dateLabel),
 		"Confidential",
 	]
@@ -865,9 +875,14 @@ export function buildThemeHtml(
 		.join(" · ");
 
 	// Margin boxes inherit from the root element, not from the body, so the
-	// custom properties sit on <html>.
+	// custom properties sit on <html>. The veil is as dense as the measured
+	// hero needs.
 	const properties = Object.entries(
-		themeCustomProperties(resolveThemePaint(printTokensOf(input.tokens))),
+		themeCustomProperties(
+			resolveThemePaint(printTokensOf(input.tokens), {
+				heroLuminance: input.tokens.proposer.hero.value?.luminance,
+			}),
+		),
 	)
 		.map(([name, value]) => `${name}: ${value}`)
 		.join("; ");
@@ -878,18 +893,17 @@ export function buildThemeHtml(
 		"<head>",
 		'<meta charset="utf-8">',
 		`<title>${escapeHtml(title)}</title>`,
-		styleElement(interFontFaceCss()),
+		styleElement(printFontFaceCss()),
 		styleElement(
 			proposalThemeCss("print", {
-				runningHeader: title,
 				runningFooter,
-				fontFamily: PRINT_FONT_FAMILY,
+				fontFamily: PRINT_FONTS.body,
 			}),
 		),
 		"</head>",
-		`<body ${PROPOSAL_THEME_ATTRIBUTE}="print">`,
-		coverHtml(input),
-		contentsHtml(sections, input.pass),
+		`<body ${PROPOSAL_THEME_ATTRIBUTE}="print"${bodyStyle(input.tokens)}>`,
+		coverHtml(input, cover),
+		contentsHtml(sections, input.pass, title),
 		body,
 		"</body>",
 		"</html>",

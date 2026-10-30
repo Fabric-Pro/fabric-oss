@@ -107,9 +107,9 @@ const SERVICE_DOWN_TESTID = "default-mcp-status-card";
 // ---------------------------------------------------------------------------
 
 interface AutoInsertStrings {
-	insertButton: string;
+	insertDocumentButton: string;
 	openPickerButton: string;
-	insertedButton: string;
+	insertedDocumentButton: string;
 	saveToDiagramsButton: string;
 	copyEmbedCodeButton: string;
 	pickerTitle: string;
@@ -238,7 +238,8 @@ test.describe("Excalidraw chat -> editor auto-insert", () => {
 		// name substituted. We don't know the exact doc name ahead of
 		// time (TEST_DOCUMENT_PATH points at whatever the seeder created)
 		// so we match by the literal prefix from the i18n template.
-		const insertLabel = strings.insertButton.split("{")[0].trim(); // "Insert into"
+		const insertLabel =
+			/Insert (?:this diagram into|into (?:document|feature))/i; // "Insert into"
 		const insertButton = insertRow.getByRole("button", {
 			name: new RegExp(`^${insertLabel}\\s`),
 		});
@@ -265,7 +266,7 @@ test.describe("Excalidraw chat -> editor auto-insert", () => {
 		});
 
 		// Button flips to "Inserted into <doc>".
-		const insertedLabel = strings.insertedButton.split("{")[0].trim();
+		const insertedLabel = /Inserted into (?:document|feature)/i;
 		await expect(
 			insertRow.getByRole("button", {
 				name: new RegExp(`^${insertedLabel}`),
@@ -322,7 +323,8 @@ test.describe("Excalidraw chat -> editor auto-insert", () => {
 			.first();
 		await insertRow.waitFor({ state: "visible", timeout: 15_000 });
 
-		const insertLabel = strings.insertButton.split("{")[0].trim();
+		const insertLabel =
+			/Insert (?:this diagram into|into (?:document|feature))/i;
 		const insertButton = insertRow.getByRole("button", {
 			name: new RegExp(`^${insertLabel}\\s`),
 		});
@@ -590,7 +592,8 @@ test.describe("Excalidraw chat -> editor auto-insert", () => {
 			.first();
 		await insertRow.waitFor({ state: "visible", timeout: 10_000 });
 
-		const insertLabel = strings.insertButton.split("{")[0].trim();
+		const insertLabel =
+			/Insert (?:this diagram into|into (?:document|feature))/i;
 		const button = insertRow.getByRole("button", {
 			name: new RegExp(`^${insertLabel}`),
 		});
@@ -666,7 +669,8 @@ test.describe("Excalidraw chat -> editor auto-insert", () => {
 		await insertRow.waitFor({ state: "visible", timeout: 10_000 });
 
 		// 1. The primary Insert button is disabled with the FR-8 tooltip.
-		const insertLabel = strings.insertButton.split("{")[0].trim();
+		const insertLabel =
+			/Insert (?:this diagram into|into (?:document|feature))/i;
 		const insertButton = insertRow.getByRole("button", {
 			name: new RegExp(`^${insertLabel}`),
 		});
@@ -764,8 +768,9 @@ test.describe("Excalidraw chat -> editor auto-insert", () => {
 			.first();
 		await insertRow.waitFor({ state: "visible", timeout: 15_000 });
 
-		const insertLabel = strings.insertButton.split("{")[0].trim();
-		const insertedLabel = strings.insertedButton.split("{")[0].trim();
+		const insertLabel =
+			/Insert (?:this diagram into|into (?:document|feature))/i;
+		const insertedLabel = /Inserted into (?:document|feature)/i;
 		const button = insertRow.getByRole("button", {
 			name: new RegExp(`^${insertLabel}\\s`),
 		});
@@ -878,7 +883,8 @@ test.describe("Excalidraw chat -> editor auto-insert", () => {
 			.first();
 		await insertRow.waitFor({ state: "visible", timeout: 15_000 });
 
-		const insertLabel = strings.insertButton.split("{")[0].trim();
+		const insertLabel =
+			/Insert (?:this diagram into|into (?:document|feature))/i;
 		await insertRow
 			.getByRole("button", { name: new RegExp(`^${insertLabel}\\s`) })
 			.click();
@@ -979,7 +985,8 @@ test.describe("Excalidraw chat -> editor auto-insert", () => {
 			.first();
 		await insertRow.waitFor({ state: "visible", timeout: 15_000 });
 
-		const insertLabel = strings.insertButton.split("{")[0].trim();
+		const insertLabel =
+			/Insert (?:this diagram into|into (?:document|feature))/i;
 		const insertButton = insertRow.getByRole("button", {
 			name: new RegExp(`^${insertLabel}\\s`),
 		});
@@ -1099,7 +1106,8 @@ test.describe("Excalidraw chat -> editor auto-insert", () => {
 			.first();
 		await insertRow.waitFor({ state: "visible", timeout: 15_000 });
 
-		const insertLabel = strings.insertButton.split("{")[0].trim();
+		const insertLabel =
+			/Insert (?:this diagram into|into (?:document|feature))/i;
 		const button = insertRow.getByRole("button", {
 			name: new RegExp(`^${insertLabel}\\s`),
 		});
@@ -1214,7 +1222,8 @@ test.describe("Excalidraw chat -> editor auto-insert", () => {
 			.isVisible({ timeout: 5_000 })
 			.catch(() => false);
 		if (rowVisible) {
-			const insertLabel = strings.insertButton.split("{")[0].trim();
+			const insertLabel =
+				/Insert (?:this diagram into|into (?:document|feature))/i;
 			const button = insertRow.getByRole("button", {
 				name: new RegExp(`^${insertLabel}`),
 			});
@@ -1276,7 +1285,8 @@ test.describe("Excalidraw chat -> editor auto-insert", () => {
 			.first();
 		await insertRow.waitFor({ state: "visible", timeout: 15_000 });
 
-		const insertLabel = strings.insertButton.split("{")[0].trim();
+		const insertLabel =
+			/Insert (?:this diagram into|into (?:document|feature))/i;
 		const button = insertRow.getByRole("button", {
 			name: new RegExp(`^${insertLabel}\\s`),
 		});

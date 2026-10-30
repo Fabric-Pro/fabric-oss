@@ -8,6 +8,7 @@
  * agent needs to continue from that point.
  *
  * Order matches the other write paths (`appendTurnForDocument`):
+ *   0. Project access: the caller can see the document's project
  *   1. Feature-flag gate
  *   2. 50/day soft cap (a fork counts as a new conversation per FR-11)
  *   3. Ownership check on the source conversation
@@ -43,6 +44,7 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
 import {
+	assertDocumentProjectAccess,
 	DocumentAssistantVisibilitySchema,
 	DocumentRefSchema,
 	HISTORY_DISABLED_MESSAGE,
@@ -80,6 +82,18 @@ export const forkForDocument = tenantProtectedProcedure
 			input.organizationId,
 			session,
 		);
+
+		// ----------------------------------------------------------------
+		// 0. The document's project. The permission gate's org-role
+		//    fallback admits an organization member who is not on the
+		//    project; a thread they started here would be shared with it.
+		// ----------------------------------------------------------------
+		await assertDocumentProjectAccess({
+			documentRefKind: input.documentRefKind,
+			documentRefId: input.documentRefId,
+			projectId: input.projectId,
+			userId: user.id,
+		});
 
 		// ----------------------------------------------------------------
 		// 1. Feature-flag gate (org context only)

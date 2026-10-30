@@ -18,6 +18,7 @@ import {
 	type ProposalSourceManifest,
 } from "@repo/database";
 import { hasPermission } from "@repo/permissions";
+import { isRunGuardedDocumentType } from "@repo/utils/generation-run-guard";
 import {
 	type DerivedResponse,
 	deriveFindingStates,
@@ -27,7 +28,10 @@ import {
 } from "@repo/utils/proposal-artifact/finding-state";
 import {
 	buildSectionMap,
+	DOCUMENT_SECTION_KEY,
 	documentProseHash,
+	findSection,
+	type SectionMap,
 } from "@repo/utils/proposal-artifact/section-hash";
 import { z } from "zod";
 import { resolveEffectiveProjectPermissions } from "../../../../lib/effective-project-permissions";
@@ -114,6 +118,12 @@ const findingSchema = z.object({
 	 * empty when the run has no source manifest to resolve them by.
 	 */
 	evidence: z.array(proposalEvidenceSchema),
+	/**
+	 * The caller may apply its recommendation to its section now: the rule
+	 * `reviseSection` checks before it drafts a revision, asked without
+	 * drafting one (see `findingCanApply`).
+	 */
+	canApply: z.boolean(),
 });
 
 const noLongerRaisedSchema = z.object({
@@ -375,6 +385,54 @@ async function callerCanRespond(input: {
 }
 
 /**
+ * Whether a finding's recommendation can be applied to its section now
+ * (Fizzy #2946), by the checks `reviseSection` makes before it drafts a
+ * revision, so the page offers Apply exactly where the server would draft
+ * one:
+ *
+ *  - the finding is keyed;
+ *  - it names a section with a heading in Main: not the whole document, not
+ *    the text before the first heading, and not a section since deleted;
+ *  - it has a recommendation or, failing that, a title to act on;
+ *  - that section's prose is what the finding was raised against;
+ *  - no generation run owns the body;
+ *  - the caller may respond.
+ *
+ * Whether the shown run is stale does not matter: an edit elsewhere in Main
+ * leaves this section, and so the finding, as it was.
+ */
+function findingCanApply(input: {
+	finding: {
+		stableKey: string | null;
+		sectionKey: string | null;
+		sectionHash: string | null;
+		recommendation: string | null;
+		title: string;
+	};
+	sectionMap: SectionMap;
+	runOwnsBody: boolean;
+	canRespond: boolean;
+}): boolean {
+	const { finding } = input;
+	if (
+		!input.canRespond ||
+		input.runOwnsBody ||
+		finding.stableKey === null ||
+		finding.sectionKey === null ||
+		finding.sectionKey === DOCUMENT_SECTION_KEY ||
+		!(finding.recommendation?.trim() || finding.title.trim())
+	) {
+		return false;
+	}
+	const section = findSection(input.sectionMap, finding.sectionKey);
+	return (
+		section !== undefined &&
+		section.headingText !== null &&
+		section.proseHash === finding.sectionHash
+	);
+}
+
+/**
  * The Internal Analysis of a Proposal (Fizzy #2801, Fizzy #2946): the run
  * that describes the document's current content, every finding's state and
  * answer and the evidence it cites, the run's report and the sources it
@@ -526,6 +584,11 @@ export const getProposalAnalysisProcedure = tenantProtectedProcedure
 		const byKey = new Map(
 			states.findings.map((finding) => [finding.stableKey, finding]),
 		);
+		// A queued or writing run is about to replace the body, so no section
+		// of it can be revised meanwhile.
+		const runOwnsBody =
+			isRunGuardedDocumentType(document.type) &&
+			(document.status === "QUEUED" || document.status === "GENERATING");
 
 		return {
 			run: shown
@@ -575,6 +638,12 @@ export const getProposalAnalysisProcedure = tenantProtectedProcedure
 						? presentResponse(derived.response)
 						: null,
 					evidence: resolveEvidence(finding.sourceRefs),
+					canApply: findingCanApply({
+						finding,
+						sectionMap,
+						runOwnsBody,
+						canRespond,
+					}),
 				};
 			}),
 			noLongerRaised: states.noLongerRaised.map((derived) => ({

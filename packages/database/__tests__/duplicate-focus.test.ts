@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+	choosePairFocusKind,
 	extractAcceptanceCriteriaText,
+	extractFocusTexts,
 	extractScopeText,
 	FOCUS_SECTION_WEIGHT,
 	type FocusStory,
 	focusSectionName,
 	MAX_FOCUS_CHARS,
-	selectPairFocus,
 	weightedFocusSimilarity,
 } from "../prisma/queries/projects/duplicate-focus";
 
@@ -147,6 +148,34 @@ describe("extractScopeText", () => {
 		expect(extractScopeText(spec)).toBe("");
 	});
 
+	it("yields nothing for a Scope section of placeholder bullets", () => {
+		const spec = [
+			"## Scope",
+			"### In Scope",
+			"-   ...",
+			"### Out of Scope",
+			"- …",
+		].join("\n");
+		expect(extractScopeText(spec)).toBe("");
+	});
+
+	it("reads headings an editor stored escaped", () => {
+		const spec = [
+			"\\## Overview",
+			"Intro.",
+			"\\## Scope",
+			"\\### In Scope",
+			"- Bulk edit",
+			"\\### Out of Scope",
+			"- Export",
+			"\\## Requirements",
+			"- R1",
+		].join("\n");
+		expect(extractScopeText(spec)).toBe(
+			"In scope:\n- Bulk edit\nOut of scope:\n- Export",
+		);
+	});
+
 	it("ignores prose that merely mentions scope", () => {
 		expect(
 			extractScopeText("Exporting is out of scope for now.\n- Bulk edit"),
@@ -251,6 +280,16 @@ describe("extractAcceptanceCriteriaText", () => {
 		).toBe("");
 	});
 
+	it("falls back to the description when the field holds only a placeholder", () => {
+		expect(
+			extractAcceptanceCriteriaText({
+				acceptanceCriteria: "...",
+				description:
+					"## Acceptance Criteria\n- Given a draft, it saves",
+			}),
+		).toBe("- Given a draft, it saves");
+	});
+
 	/** Shaped like a legacy stub import: template metadata lines first. */
 	const STUB_METADATA = [
 		"**Feature ID:** F-003 **Scope justification:** Needed for the launch",
@@ -315,7 +354,16 @@ describe("extractAcceptanceCriteriaText", () => {
 	});
 });
 
-describe("selectPairFocus", () => {
+describe("pair focus — which section two stories are compared on", () => {
+	/** The section and both texts, as the scan builds them for a pair. */
+	const selectPairFocus = (a: FocusStory, b: FocusStory) => {
+		const textsA = extractFocusTexts(a);
+		const textsB = extractFocusTexts(b);
+		const kind = choosePairFocusKind(textsA, textsB);
+		return kind
+			? { kind, textA: textsA?.[kind], textB: textsB?.[kind] }
+			: null;
+	};
 	const featureWithScope = (inScope: string): FocusStory => ({
 		kind: "FEATURE",
 		description: `## Scope\n### In Scope\n- ${inScope}`,
@@ -380,6 +428,40 @@ describe("selectPairFocus", () => {
 	});
 });
 
+describe("extractFocusTexts", () => {
+	it("returns every section a feature has, and nothing for a bug", () => {
+		const story: FocusStory = {
+			kind: "FEATURE",
+			description: "## Scope\n### In Scope\n- Guided checklist",
+			acceptanceCriteria: "AC1: works",
+		};
+		expect(extractFocusTexts(story)).toEqual({
+			scope: "In scope:\n- Guided checklist",
+			acceptance_criteria: "AC1: works",
+		});
+		expect(
+			extractFocusTexts({ kind: "FEATURE", description: "Plain text" }),
+		).toEqual({});
+		expect(extractFocusTexts({ ...story, kind: "BUG" })).toBeNull();
+		expect(extractFocusTexts({ ...story, kind: null })).toBeNull();
+	});
+});
+
+describe("choosePairFocusKind", () => {
+	it("prefers Scope, falls back to acceptance criteria, and never mixes kinds", () => {
+		const both = { scope: "s", acceptance_criteria: "c" };
+		expect(choosePairFocusKind(both, both)).toBe("scope");
+		expect(choosePairFocusKind(both, { acceptance_criteria: "c" })).toBe(
+			"acceptance_criteria",
+		);
+		expect(
+			choosePairFocusKind({ scope: "s" }, { acceptance_criteria: "c" }),
+		).toBeNull();
+		expect(choosePairFocusKind(both, null)).toBeNull();
+		expect(choosePairFocusKind(undefined, both)).toBeNull();
+	});
+});
+
 describe("weightedFocusSimilarity", () => {
 	it("weights the focus cosine by FOCUS_SECTION_WEIGHT and the document cosine by the rest", () => {
 		expect(FOCUS_SECTION_WEIGHT).toBe(0.75);
@@ -387,7 +469,7 @@ describe("weightedFocusSimilarity", () => {
 		expect(weightedFocusSimilarity(1, 0.8)).toBeCloseTo(0.95, 10);
 	});
 
-	it("pulls a topic-alike pair with non-overlapping sections below the candidate band", () => {
+	it("scores a topic-alike pair with non-overlapping sections below the threshold", () => {
 		// Near-identical documents, orthogonal Scope sections.
 		expect(weightedFocusSimilarity(0, 0.99)).toBeLessThan(0.7);
 	});

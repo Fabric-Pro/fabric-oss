@@ -478,7 +478,7 @@ describe("buildProposalDocx", () => {
 		expect(sizes[sectionOf("Start date: TBD")]?.orient).toBe("portrait");
 	});
 
-	it("writes the neutral style's font as Arial, which every Word has, and no Inter", async () => {
+	it("writes the neutral style's fonts as Arial, which every Word has, and none of the print faces", async () => {
 		const neutral = buildProposalThemeTokens({
 			organization: null,
 			style: null,
@@ -491,7 +491,9 @@ describe("buildProposalDocx", () => {
 		const styles = await pkg.read("word/styles.xml");
 		const documentXml = await pkg.read("word/document.xml");
 		expect(styles).toContain('w:ascii="Arial"');
-		expect(`${styles}${documentXml}`).not.toContain('"Inter"');
+		for (const face of ["Inter", "Poppins", "JetBrains Mono"]) {
+			expect(`${styles}${documentXml}`).not.toContain(`"${face}"`);
+		}
 	});
 
 	it("styles headings in the display font and the heading colour, never Word's blue", async () => {
@@ -689,9 +691,27 @@ describe("buildProposalDocx", () => {
 	it("embeds a rendered diagram and prints a placeholder's caption", async () => {
 		const png = await raster("png", 800, 400);
 		const diagrams: ExportDiagram[] = [
-			{ kind: "svg", svg: "<svg/>", width: 400, height: 200, png },
-			{ kind: "placeholder", caption: "Diagram could not be rendered." },
-			{ kind: "svg", svg: "<svg/>", width: 400, height: 200, png: null },
+			{
+				kind: "svg",
+				svg: "<svg/>",
+				width: 400,
+				height: 200,
+				png,
+				numbered: true,
+			},
+			{
+				kind: "placeholder",
+				caption: "Diagram could not be rendered.",
+				numbered: true,
+			},
+			{
+				kind: "svg",
+				svg: "<svg/>",
+				width: 400,
+				height: 200,
+				png: null,
+				numbered: true,
+			},
 		];
 		const fence = (label: string) =>
 			["```mermaid", "flowchart LR", `  A[${label}] --> B`, "```"].join(
@@ -712,6 +732,8 @@ describe("buildProposalDocx", () => {
 		expect(documentXml).toContain(
 			"This diagram is available in the online version of this document.",
 		);
+		// A drawn diagram without its picture keeps its number, as in print.
+		expect(documentXml).toContain("Figure 3.");
 		expect(documentXml).not.toContain("flowchart");
 	});
 
@@ -738,8 +760,13 @@ describe("buildProposalDocx", () => {
 							width: 400,
 							height: 200,
 							png,
+							numbered: true,
 						},
-						{ kind: "placeholder", caption: "Not available." },
+						{
+							kind: "placeholder",
+							caption: "Not available.",
+							numbered: true,
+						},
 					],
 				},
 			),
@@ -754,6 +781,64 @@ describe("buildProposalDocx", () => {
 			documentXml.indexOf("Launch plan"),
 		);
 		expect(documentXml).not.toContain("%% caption");
+	});
+
+	it("numbers the figures that print in document order and leaves a broken one out", async () => {
+		const png = await raster("png", 800, 400);
+		const drawn: ExportDiagram = {
+			kind: "svg",
+			svg: "<svg/>",
+			width: 400,
+			height: 200,
+			png,
+			numbered: true,
+		};
+		const fence = (caption: string | null, label: string) =>
+			[
+				"```mermaid",
+				...(caption ? [`%% caption: ${caption}`] : []),
+				"flowchart LR",
+				`  A[${label}] --> B`,
+				"```",
+			].join("\n");
+		const { pkg } = await build(
+			input(
+				[
+					fence("Delivery plan", "one"),
+					fence("Broken plan", "two"),
+					fence(null, "three"),
+					fence("Release calendar", "four"),
+				].join("\n\n"),
+				{
+					diagrams: [
+						drawn,
+						{ kind: "omitted", numbered: false },
+						drawn,
+						{
+							kind: "placeholder",
+							caption: "Not available.",
+							numbered: true,
+						},
+					],
+				},
+			),
+		);
+		const documentXml = await pkg.read("word/document.xml");
+		const text = Array.from(
+			documentXml.matchAll(/<w:t(?: [^>]*)?>([^<]*)<\/w:t>/g),
+			(match) => match[1],
+		).join("|");
+
+		expect(text).toContain("Figure 1.| Delivery plan");
+		// The uncaptioned figure still reads "Figure n.", numbered after the
+		// broken one is left out.
+		expect(text).toContain("|Figure 2.|");
+		expect(text).toContain("Not available.|Figure 3.| Release calendar");
+		expect(documentXml).not.toContain("Broken plan");
+		expect(documentXml).not.toContain("Figure 4.");
+		expect(documentXml.indexOf("Figure 1.")).toBeLessThan(
+			documentXml.indexOf("Figure 2."),
+		);
 	});
 
 	it("never fetches a Markdown image and reports the ones it left out", async () => {

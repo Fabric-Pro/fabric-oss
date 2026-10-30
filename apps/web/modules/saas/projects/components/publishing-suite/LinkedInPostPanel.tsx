@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { useWorkingDraftEdit } from "../../hooks/use-working-draft-edit";
 import { CopyDraftButton } from "./CopyDraftButton";
 import { DraftDownloadDropdown } from "./DraftDownloadDropdown";
 import { DraftLockBanner, useDraftEditLock } from "./DraftEditLock";
@@ -25,9 +26,9 @@ import { DraftVersions } from "./DraftVersions";
 import { FEED_FOLD_ESTIMATE, splitAtFeedFold } from "./feed-fold";
 import { GeneralizationNotes } from "./GeneralizationNotes";
 import type { TopicDraftState, TopicWorkingDraftState } from "./GenerationTabs";
+import { GUIDANCE_MAX } from "./topic-shared";
 
 /** Mirrors the API's own bound, so the field cannot submit what it would reject. */
-const GUIDANCE_MAX = 2000;
 
 /**
  * The saved draft gets a working area, not a four-row box.
@@ -326,12 +327,11 @@ export function LinkedInPostPanel({
 		// Generation only ever writes the candidate table, so nothing here can
 		// clobber saved work on its own — but REPLACING a saved draft with
 		// different text is a real overwrite. It is the user's own action either
-		// way, so this confirms rather than blocks. Keyed on the same identity as
-		// `isSavedOption`, so a same-labelled option from a newer draft asks
-		// instead of slipping through as "the same one".
+		// way, so this confirms rather than blocks. Compare the saved body with
+		// the option text: even the same source option can replace later edits.
 		if (
 			working?.hasBody &&
-			!isSavedOption(option) &&
+			working.body !== option.text &&
 			!window.confirm(
 				"This replaces the LinkedIn post you saved earlier. Continue?",
 			)
@@ -357,7 +357,8 @@ export function LinkedInPostPanel({
 		});
 	};
 
-	const [editedBody, setEditedBody] = useState<string | null>(null);
+	const { editedBody, setEditedBody, expectedUpdatedAt, savedDraftChanged } =
+		useWorkingDraftEdit(working);
 	const bodyValue = editedBody ?? working?.body ?? "";
 	const isBodyDirty =
 		editedBody !== null && editedBody !== (working?.body ?? "");
@@ -396,7 +397,7 @@ export function LinkedInPostPanel({
 			topicId,
 			organizationId,
 			body: bodyValue,
-			expectedUpdatedAt: new Date(working.updatedAt),
+			expectedUpdatedAt,
 		});
 	};
 
@@ -462,6 +463,23 @@ export function LinkedInPostPanel({
 				<p className="text-muted-foreground text-sm" role="alert">
 					{attempt.error ?? "The last draft could not be generated."}
 				</p>
+			) : null}
+
+			{savedDraftChanged ? (
+				<div role="status" className="space-y-2 text-sm">
+					<p>
+						The saved draft changed while you were editing. Your
+						text is still here; saving will check the original
+						version.
+					</p>
+					<Button
+						variant="outline"
+						size="sm"
+						onClick={() => setEditedBody(null)}
+					>
+						Discard my edits
+					</Button>
+				</div>
 			) : null}
 
 			{working?.hasBody ? (

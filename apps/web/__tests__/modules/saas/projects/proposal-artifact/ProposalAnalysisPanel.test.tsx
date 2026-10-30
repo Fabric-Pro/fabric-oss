@@ -642,6 +642,10 @@ describe("ProposalAnalysisPanel — states and their actions", () => {
 			],
 		},
 		{
+			state: "RESOLVED" as const,
+			actions: [copy.actions.answer, copy.actions.clear],
+		},
+		{
 			state: "NEEDS_REVIEW" as const,
 			actions: [
 				copy.actions.confirmAgain,
@@ -667,8 +671,9 @@ describe("ProposalAnalysisPanel — states and their actions", () => {
 									? null
 									: response({
 											kind:
-												state === "CONFIRMED"
-													? "CONFIRMED"
+												state === "CONFIRMED" ||
+												state === "RESOLVED"
+													? state
 													: "RESPONDED",
 										}),
 						}),

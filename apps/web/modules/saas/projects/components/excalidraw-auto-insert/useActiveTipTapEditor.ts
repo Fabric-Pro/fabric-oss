@@ -66,15 +66,7 @@ export interface UseActiveTipTapEditorOptions {
 	launcherContext: FabricAgentLaunchContext | null;
 }
 
-/**
- * Build a `ResolverTarget` from a registry entry. The `documentLabel`
- * field is the editor's "best display name" — for a story editor it's
- * the story identifier + title (already on the launcher context); for
- * a document editor we don't have a label here so we leave it empty
- * and let the caller (D1/D2) read the document title via its own
- * `projects.documents.get` query. The label is filled in opportunistically
- * for the story case below.
- */
+/** Prefer the registered display name, with the caller label or id as fallback. */
 function buildTargetFromRegistry(
 	entry: NonNullable<
 		ReturnType<TiptapEditorRegistryApi["mostRecentlyFocusedFor"]>
@@ -85,7 +77,7 @@ function buildTargetFromRegistry(
 		kind: entry.kind,
 		editor: entry.editor,
 		projectId: entry.projectId,
-		documentLabel,
+		documentLabel: entry.documentLabel || documentLabel,
 		documentId: entry.documentId,
 		storyId: entry.storyId,
 	};
@@ -156,9 +148,6 @@ export function useActiveTipTapEditor(
 		if (surface === "in-document" && chatProjectId) {
 			const target = registry.mostRecentlyFocusedFor(chatProjectId);
 			if (target) {
-				// For document targets, we don't have the document title on
-				// the registry entry. Leave the label empty; D1/D2 fill it
-				// from `projects.documents.get`.
 				const label = target.storyId
 					? (target.storyId ?? "")
 					: (target.documentId ?? "");

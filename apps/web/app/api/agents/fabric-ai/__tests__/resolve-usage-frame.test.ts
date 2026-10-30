@@ -129,8 +129,8 @@ describe("launch frame usage authorization", () => {
 
 describe("stream boundary wiring", () => {
 	it.each([
-		["stream/route.ts", "workspaceId"],
-		["orchestrator-temporal/stream/route.ts", "rawLaunchWorkspaceId"],
+		["stream/direct-turn.ts", "workspaceId"],
+		["orchestrator-temporal/orchestrator-turn.ts", "rawLaunchWorkspaceId"],
 	])("%s validates before model resolution", (path, launcher) => {
 		const route = readFileSync(
 			join(process.cwd(), "app/api/agents/fabric-ai", path),

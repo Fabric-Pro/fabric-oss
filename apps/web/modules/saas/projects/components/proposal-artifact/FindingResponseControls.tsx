@@ -87,6 +87,13 @@ type AnswerableFinding = Pick<
 	"id" | "title" | "stableKey" | "state" | "response"
 >;
 
+/** The finding a member asks to apply the recommendation of. */
+export type ApplyRecommendationRequest = {
+	id: string;
+	runId: string;
+	stableKey: string;
+};
+
 /**
  * What the panel holds for every finding's controls: the drafts, the keys
  * being saved, the last inline error per key, and the actions. Kept by the
@@ -100,11 +107,20 @@ export function useFindingControls({
 	actions,
 	runId,
 	announce,
+	onApplyRecommendation,
+	pendingRevisionFindingId = null,
 }: {
 	actions: ProposalAnalysisActions;
 	/** The run the tab shows; answers are given against its findings. */
 	runId: string | null;
 	announce: (message: string) => void;
+	/**
+	 * Hands a finding's recommendation to the page, which revises its
+	 * section on Main (Fizzy #2946). Without it nothing offers Apply.
+	 */
+	onApplyRecommendation?: (finding: ApplyRecommendationRequest) => void;
+	/** The finding whose revision is under way; null when none is. */
+	pendingRevisionFindingId?: string | null;
 }) {
 	const t = useTranslations("projects.proposalArtifact.analysis");
 	const { respond, clear, pendingKeys } = actions;
@@ -283,8 +299,10 @@ export function useFindingControls({
 			return;
 		}
 		const earlier = finding.response;
+		// An applied recommendation is only ever written by its save, so
+		// reaffirming one records a confirmation that keeps its note.
 		const kind =
-			mode === "reaffirm" && earlier
+			mode === "reaffirm" && earlier && earlier.kind !== "RESOLVED"
 				? earlier.kind
 				: ("CONFIRMED" as const);
 		setError(stableKey, null);
@@ -331,10 +349,29 @@ export function useFindingControls({
 		}
 	};
 
+	/**
+	 * Ask the page to apply the finding's recommendation. One revision at a
+	 * time: nothing is asked while another is under way.
+	 */
+	const applyRecommendation = onApplyRecommendation
+		? (finding: AnswerableFinding) => {
+				if (!finding.stableKey || !runId || pendingRevisionFindingId) {
+					return;
+				}
+				onApplyRecommendation({
+					id: finding.id,
+					runId,
+					stableKey: finding.stableKey,
+				});
+			}
+		: undefined;
+
 	return {
 		drafts,
 		errors,
 		pendingKeys,
+		applyRecommendation,
+		pendingRevisionFindingId,
 		openDraft,
 		updateDraft,
 		discardDraft,
@@ -350,6 +387,7 @@ const STATE_BADGE = {
 	UNADDRESSED: "outline",
 	CONFIRMED: "success",
 	RESPONDED: "default",
+	RESOLVED: "success",
 	NEEDS_REVIEW: "warning",
 } as const satisfies Record<FindingState, NonNullable<BadgeProps["variant"]>>;
 
@@ -388,6 +426,11 @@ function answerByline(
 		return needsReview
 			? t("answer.earlierConfirmedBy", { name })
 			: t("answer.confirmedBy", { name });
+	}
+	if (response.kind === "RESOLVED") {
+		return needsReview
+			? t("answer.earlierResolvedBy", { name })
+			: t("answer.resolvedBy", { name });
 	}
 	return needsReview
 		? t("answer.earlierAnswerBy", { name })
@@ -542,7 +585,13 @@ function firstControlOf(root: HTMLElement | null): HTMLElement | null {
  * | Unaddressed  | Confirm, Answer                           |
  * | Confirmed    | Answer, Clear                             |
  * | Responded    | Edit answer, Confirm, Clear               |
+ * | Resolved     | Answer, Clear                             |
  * | Needs Review | Confirm again, Answer again, Clear        |
+ *
+ * Confirmed and Resolved add Confirm when the answer's author lost edit
+ * rights. A finding the server says can be applied (`canApply`) also offers
+ * Apply recommendation; while its revision is under way it says so and its
+ * other actions wait, and no other finding's Apply is offered meanwhile.
  *
  * A finding written before stable keys existed cannot be answered; it says
  * a re-run gives it one. An answer whose author no longer holds edit rights
@@ -578,6 +627,9 @@ export function FindingResponseControls({
 	const draft = stableKey ? controls.drafts.get(stableKey) : undefined;
 	const error = stableKey ? controls.errors.get(stableKey) : undefined;
 	const authorLostRights = answerAuthorLostRights(response, needsReview);
+	const revisionPending = controls.pendingRevisionFindingId === finding.id;
+	const anyRevisionPending = controls.pendingRevisionFindingId != null;
+	const busy = saving || revisionPending;
 
 	const openEditor = () => {
 		focusRequested.current = true;
@@ -594,7 +646,7 @@ export function FindingResponseControls({
 			size="sm"
 			variant={variant}
 			onClick={onClick}
-			disabled={saving}
+			disabled={busy}
 			aria-describedby={titleId}
 		>
 			{label}
@@ -637,6 +689,7 @@ export function FindingResponseControls({
 				);
 				break;
 			case "CONFIRMED":
+			case "RESOLVED":
 				actions = (
 					<>
 						{authorLostRights ? confirm() : null}
@@ -671,8 +724,33 @@ export function FindingResponseControls({
 		}
 	}
 
+	const applyRecommendation = controls.applyRecommendation;
+	const apply =
+		canEdit &&
+		stableKey &&
+		!draft &&
+		finding.canApply &&
+		applyRecommendation ? (
+			<Button
+				type="button"
+				size="sm"
+				variant="secondary"
+				onClick={() => applyRecommendation(finding)}
+				disabled={saving || anyRevisionPending}
+				loading={revisionPending}
+				aria-busy={revisionPending || undefined}
+				aria-describedby={titleId}
+			>
+				{t("actions.applyRecommendation")}
+			</Button>
+		) : null;
+
 	return (
-		<div ref={rootRef} className="mt-2 space-y-2">
+		<div
+			ref={rootRef}
+			className="mt-2 space-y-2"
+			aria-busy={revisionPending || undefined}
+		>
 			<AnswerStatus
 				state={finding.state}
 				reason={finding.reason}
@@ -683,8 +761,14 @@ export function FindingResponseControls({
 			{canEdit && !finding.keyed ? (
 				<p className="text-muted-foreground text-xs">{t("notKeyed")}</p>
 			) : null}
-			{actions ? (
+			{revisionPending ? (
+				<p className="text-muted-foreground text-sm">
+					{t("revisionInProgress")}
+				</p>
+			) : null}
+			{actions || apply ? (
 				<div className="flex flex-wrap items-center gap-2">
+					{apply}
 					{actions}
 				</div>
 			) : null}

@@ -1,3 +1,4 @@
+import { WRITING_STYLE_CLAUSE } from "../../publishing-shared/writing-style-clause";
 /**
  * Topic Planning & Analysis — the pure half (Fizzy #1851, Phase 2A-2).
  *
@@ -713,6 +714,7 @@ describe("composePlanningAnalysisPrompt", () => {
 		});
 
 		expect(composed.bodyRecovered).toBe(false);
+		expect(composed.prompt).not.toContain(WRITING_STYLE_CLAUSE);
 		expect(composed.prompt).toContain("Analyse Bounded the retry window.");
 		expect(composed.prompt).toMatch(/do not.*generat/i);
 		expect(composed.prompt).toMatch(/approv/i);

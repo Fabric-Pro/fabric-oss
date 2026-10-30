@@ -676,6 +676,7 @@ export async function chatNode(
 		await logAgentUsageFromRunnableConfig(runnableConfig, response, {
 			model,
 			taskType: "TOOL_CALLING",
+			outputMessageId: runnableConfig.configurable?.output_message_id,
 			agentId: "document_generator",
 			latencyMs: Date.now() - generationStart,
 		});
@@ -745,6 +746,7 @@ export async function chatNode(
 			await logAgentUsageFromRunnableConfig(runnableConfig, response, {
 				model: retryModel,
 				taskType: "TOOL_CALLING",
+				outputMessageId: runnableConfig.configurable?.output_message_id,
 				agentId: "document_generator:truncation_retry",
 				latencyMs: Date.now() - generationStart,
 			});
@@ -1040,7 +1042,17 @@ export async function chatNode(
 							type: "function" as const,
 							function: {
 								name: "confirm_changes",
-								arguments: {},
+								arguments:
+									typeof runnableConfig.configurable
+										?.output_message_id === "string" &&
+									/^msg_[1-9][0-9]{12}_[0-9a-f]{32}$/.test(
+										runnableConfig.configurable
+											.output_message_id,
+									)
+										? {
+												draftId: `${runnableConfig.configurable.output_message_id}:${uuidv4()}`,
+											}
+										: {},
 							},
 						},
 					],

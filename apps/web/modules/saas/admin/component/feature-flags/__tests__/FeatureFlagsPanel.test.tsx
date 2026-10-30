@@ -42,8 +42,16 @@ const overriddenListQueryFn = async () => ({
 // aren't affected.
 let listQueryFn = defaultListQueryFn;
 
+const defaultOrgListQueryFn = async () => ({
+	flags: [flagRow({ envVar: null, orgOverride: undefined })],
+});
+
+// Swapped per-test the same way as `listQueryFn`, for the organization panel.
+let orgListQueryFn: () => Promise<{ flags: unknown[] }> = defaultOrgListQueryFn;
+
 afterEach(() => {
 	listQueryFn = defaultListQueryFn;
+	orgListQueryFn = defaultOrgListQueryFn;
 	toastErrorMock.mockClear();
 	setMutate.mockReset();
 	resetMutate.mockReset();
@@ -91,14 +99,7 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 					queryKey: () => ["example-org-flags"],
 					queryOptions: () => ({
 						queryKey: ["example-org-flags"],
-						queryFn: async () => ({
-							flags: [
-								flagRow({
-									envVar: null,
-									orgOverride: undefined,
-								}),
-							],
-						}),
+						queryFn: () => orgListQueryFn(),
 					}),
 				},
 				setForOrg: {
@@ -342,6 +343,77 @@ describe("FeatureFlagsPanel", () => {
 		expect(listQueryFnSpy).toHaveBeenCalledTimes(1);
 	});
 
+	describe("search", () => {
+		const twoFlagsQueryFn = async () => ({
+			flags: [
+				flagRow(),
+				flagRow({
+					key: "EXAMPLE_REPORTS",
+					label: "Scheduled reports",
+					description: "Emails a weekly summary.",
+					envVar: "FABRIC_FEATURE_EXAMPLE_REPORTS",
+					note: null,
+				}),
+			],
+		});
+
+		async function search(term: string) {
+			await userEvent.type(
+				await screen.findByRole("searchbox", {
+					name: /search feature flags/i,
+				}),
+				term,
+			);
+		}
+
+		it("narrows the list to flags whose label matches, ignoring case", async () => {
+			listQueryFn = twoFlagsQueryFn;
+			renderPanel();
+			await search("SCHEDULED");
+
+			expect(screen.getByText("Scheduled reports")).toBeInTheDocument();
+			expect(
+				screen.queryByText("Personal meetings in Meeting Digest"),
+			).not.toBeInTheDocument();
+		});
+
+		it("matches on the flag key and its environment variable", async () => {
+			listQueryFn = twoFlagsQueryFn;
+			renderPanel();
+			await search("personal_meetings");
+
+			expect(
+				screen.getByText("Personal meetings in Meeting Digest"),
+			).toBeInTheDocument();
+			expect(
+				screen.queryByText("Scheduled reports"),
+			).not.toBeInTheDocument();
+
+			await userEvent.clear(
+				screen.getByRole("searchbox", {
+					name: /search feature flags/i,
+				}),
+			);
+			await search("FEATURE_EXAMPLE_REPORTS");
+
+			expect(screen.getByText("Scheduled reports")).toBeInTheDocument();
+			expect(
+				screen.queryByText("Personal meetings in Meeting Digest"),
+			).not.toBeInTheDocument();
+		});
+
+		it("says so when no flag matches", async () => {
+			listQueryFn = twoFlagsQueryFn;
+			renderPanel();
+			await search("nothing-like-this");
+
+			expect(
+				screen.getByText(/no feature flags match “nothing-like-this”/i),
+			).toBeInTheDocument();
+			expect(screen.queryAllByRole("switch")).toHaveLength(0);
+		});
+	});
+
 	it("surfaces an error toast when the reset mutation fails", async () => {
 		listQueryFn = overriddenListQueryFn;
 		resetMutate.mockRejectedValue(new Error("could not clear override"));
@@ -427,4 +499,40 @@ describe("override-only flag explanation", () => {
 			).toBeInTheDocument();
 		},
 	);
+});
+
+describe("OrgFeatureFlagsPanel search", () => {
+	it("narrows the organization's flags to those matching the search", async () => {
+		orgListQueryFn = async () => ({
+			flags: [
+				flagRow({ orgOverride: null }),
+				flagRow({
+					key: "EXAMPLE_REPORTS",
+					label: "Scheduled reports",
+					description: "Emails a weekly summary.",
+					envVar: null,
+					note: null,
+					orgOverride: null,
+				}),
+			],
+		});
+		renderPanel(true);
+
+		const searchbox = await screen.findByRole("searchbox", {
+			name: /search this organization's feature flags/i,
+		});
+		await userEvent.type(searchbox, "weekly");
+
+		expect(screen.getByText("Scheduled reports")).toBeInTheDocument();
+		expect(
+			screen.queryByText("Personal meetings in Meeting Digest"),
+		).not.toBeInTheDocument();
+
+		await userEvent.clear(searchbox);
+		await userEvent.type(searchbox, "nothing-like-this");
+
+		expect(
+			screen.getByText(/no feature flags match “nothing-like-this”/i),
+		).toBeInTheDocument();
+	});
 });

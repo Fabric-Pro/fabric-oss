@@ -26,7 +26,7 @@ import { UnsupportedEmbeddingModelError } from "@repo/ai/lib/embedding-dimension
  *   pnpm --filter @repo/temporal test src/lib/__tests__/detect-duplicate-stories.test.ts
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Declared via vi.hoisted so the (also-hoisted) vi.mock factories below can
 // reference them without hitting the temporal-dead-zone.
@@ -42,8 +42,15 @@ const {
 	mockListStoryDuplicateEmbeddingMetadata,
 	mockListStoryDuplicateEmbeddings,
 	mockUpsertStoryDuplicateEmbeddings,
+	mockListStoryDuplicateFocusEmbeddings,
+	mockUpsertStoryDuplicateFocusEmbeddings,
 	mockUpsertPendingDuplicateLink,
 	mockRecordDistinctVerdict,
+	mockListPendingDuplicatePairs,
+	mockWithdrawPendingDuplicateLinks,
+	mockRefreshPendingDuplicateSimilarities,
+	mockGetDuplicateLinkState,
+	mockStampVerifiedHashes,
 	mockLoggerInfo,
 } = vi.hoisted(() => ({
 	mockGenerateEmbeddings: vi.fn(),
@@ -57,8 +64,15 @@ const {
 	mockListStoryDuplicateEmbeddingMetadata: vi.fn(),
 	mockListStoryDuplicateEmbeddings: vi.fn(),
 	mockUpsertStoryDuplicateEmbeddings: vi.fn(),
+	mockListStoryDuplicateFocusEmbeddings: vi.fn(),
+	mockUpsertStoryDuplicateFocusEmbeddings: vi.fn(),
 	mockUpsertPendingDuplicateLink: vi.fn(),
 	mockRecordDistinctVerdict: vi.fn(),
+	mockListPendingDuplicatePairs: vi.fn(),
+	mockWithdrawPendingDuplicateLinks: vi.fn(),
+	mockRefreshPendingDuplicateSimilarities: vi.fn(),
+	mockGetDuplicateLinkState: vi.fn(),
+	mockStampVerifiedHashes: vi.fn(),
 	mockLoggerInfo: vi.fn(),
 }));
 
@@ -115,18 +129,30 @@ vi.mock("@repo/database", async () => {
 			mockListStoryDuplicateEmbeddingMetadata,
 		listStoryDuplicateEmbeddings: mockListStoryDuplicateEmbeddings,
 		upsertStoryDuplicateEmbeddings: mockUpsertStoryDuplicateEmbeddings,
+		listStoryDuplicateFocusEmbeddings:
+			mockListStoryDuplicateFocusEmbeddings,
+		upsertStoryDuplicateFocusEmbeddings:
+			mockUpsertStoryDuplicateFocusEmbeddings,
 		upsertPendingDuplicateLink: mockUpsertPendingDuplicateLink,
 		recordDistinctVerdict: mockRecordDistinctVerdict,
+		listPendingDuplicatePairs: mockListPendingDuplicatePairs,
+		withdrawPendingDuplicateLinks: mockWithdrawPendingDuplicateLinks,
+		refreshPendingDuplicateSimilarities:
+			mockRefreshPendingDuplicateSimilarities,
+		getDuplicateLinkState: mockGetDuplicateLinkState,
+		stampVerifiedHashes: mockStampVerifiedHashes,
 	};
 });
 
 import { detectAndFlagDuplicateStories } from "../detect-duplicate-stories";
+import { RUN_TIME_BUDGET_MS } from "../duplicate-scan-core";
 
 type Story = {
 	id: string;
 	identifier: string;
 	title: string;
 	description: string | null;
+	kind?: "FEATURE" | "BUG";
 };
 
 /** Wire the mocks so `stories` embed to `embeddingFor(story.id)`. */
@@ -169,8 +195,17 @@ beforeEach(() => {
 	mockListStoryDuplicateEmbeddingMetadata.mockResolvedValue([]);
 	mockListStoryDuplicateEmbeddings.mockResolvedValue([]);
 	mockUpsertStoryDuplicateEmbeddings.mockResolvedValue(undefined);
+	// Empty section cache too: every feature section is embedded.
+	mockListStoryDuplicateFocusEmbeddings.mockResolvedValue([]);
+	mockUpsertStoryDuplicateFocusEmbeddings.mockResolvedValue(undefined);
 	mockUpsertPendingDuplicateLink.mockResolvedValue({});
 	mockRecordDistinctVerdict.mockResolvedValue(undefined);
+	mockListPendingDuplicatePairs.mockResolvedValue([]);
+	mockWithdrawPendingDuplicateLinks.mockResolvedValue(0);
+	mockRefreshPendingDuplicateSimilarities.mockResolvedValue(0);
+	// No stored row for any pair: every verdict is a first verdict.
+	mockGetDuplicateLinkState.mockResolvedValue(null);
+	mockStampVerifiedHashes.mockResolvedValue(undefined);
 	// A CONFIGURED tenant, which is what every test below assumes. The apiKey
 	// matters: the scan now refuses up front when the resolver comes back
 	// without credentials, because `resolveModelWithProvider` returns
@@ -198,6 +233,7 @@ describe("detectAndFlagDuplicateStories", () => {
 			candidates: 0,
 			confirmed: 0,
 			truncated: 0,
+			verifierFailures: 0,
 		});
 		expect(mockListActiveStoriesForDetection).not.toHaveBeenCalled();
 		expect(mockGenerateEmbeddings).not.toHaveBeenCalled();
@@ -560,8 +596,15 @@ describe("detectAndFlagDuplicateStories", () => {
 				identifier: "F-1",
 				title: "Login",
 				description: null,
+				kind: "FEATURE",
 			},
-			{ id: "new", identifier: "F-2", title: "Login", description: null },
+			{
+				id: "new",
+				identifier: "F-2",
+				title: "Login",
+				description: null,
+				kind: "FEATURE",
+			},
 		];
 		arrange(stories, (id) =>
 			id === "existing" ? [1, 1, 0] : [1, 1, 0.02],
@@ -587,6 +630,118 @@ describe("detectAndFlagDuplicateStories", () => {
 				storyBId: "new",
 				contentHashA: expect.stringMatching(/^[0-9a-f]{64}$/),
 				contentHashB: expect.stringMatching(/^[0-9a-f]{64}$/),
+				clearsPendingFlag: true,
+			}),
+		);
+	});
+
+	it.each([
+		["two bugs", "BUG", "BUG"],
+		["a bug and a feature", "BUG", "FEATURE"],
+	] as const)(
+		"caches a distinct verdict on %s without withdrawing an existing flag — their logic is unchanged",
+		async (_label, kindA, kindB) => {
+			const stories: Story[] = [
+				{
+					id: "existing",
+					identifier: "B-1",
+					title: "Login",
+					description: null,
+					kind: kindA,
+				},
+				{
+					id: "new",
+					identifier: "B-2",
+					title: "Login",
+					description: null,
+					kind: kindB,
+				},
+			];
+			arrange(stories, (id) =>
+				id === "existing" ? [1, 1, 0] : [1, 1, 0.02],
+			);
+			mockGenerateObject.mockResolvedValue({
+				object: {
+					relationship: "distinct",
+					confidence: 0.9,
+					reasoning: "different work",
+				},
+			});
+
+			await detectAndFlagDuplicateStories({
+				...baseParams,
+				targetStoryIds: ["new"],
+			});
+
+			expect(mockRecordDistinctVerdict).toHaveBeenCalledWith(
+				expect.objectContaining({ clearsPendingFlag: false }),
+			);
+		},
+	);
+
+	it("caches an unsure 'same work' verdict without withdrawing an existing flag", async () => {
+		const stories: Story[] = [
+			{
+				id: "existing",
+				identifier: "F-1",
+				title: "Login",
+				description: null,
+				kind: "FEATURE",
+			},
+			{
+				id: "new",
+				identifier: "F-2",
+				title: "Login",
+				description: null,
+				kind: "FEATURE",
+			},
+		];
+		arrange(stories, (id) =>
+			id === "existing" ? [1, 1, 0] : [1, 1, 0.02],
+		);
+		mockGenerateObject.mockResolvedValue({
+			object: {
+				relationship: "same_work_item",
+				confidence: 0.6,
+				reasoning: "probably the same login work",
+			},
+		});
+
+		await detectAndFlagDuplicateStories({
+			...baseParams,
+			targetStoryIds: ["new"],
+		});
+
+		expect(mockUpsertPendingDuplicateLink).not.toHaveBeenCalled();
+		expect(mockRecordDistinctVerdict).toHaveBeenCalledWith(
+			expect.objectContaining({ clearsPendingFlag: false }),
+		);
+	});
+
+	it("attributes the verifier's usage to duplicate detection", async () => {
+		const stories: Story[] = [
+			{
+				id: "existing",
+				identifier: "F-1",
+				title: "Login",
+				description: null,
+			},
+			{ id: "new", identifier: "F-2", title: "Login", description: null },
+		];
+		arrange(stories, (id) =>
+			id === "existing" ? [1, 1, 0] : [1, 1, 0.02],
+		);
+
+		await detectAndFlagDuplicateStories({
+			...baseParams,
+			targetStoryIds: ["new"],
+		});
+
+		expect(mockGetAIModelWithMetadata).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.objectContaining({
+				projectId: "proj-1",
+				featureKey: "duplicate-scan",
 			}),
 		);
 	});
@@ -788,8 +943,7 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 		return { ...detection, ...focus };
 	}
 
-	it("settles topic-alike features with non-overlapping Scope as distinct, without a verifier call", async () => {
-		const { cosineSimilarity, weightedFocusSimilarity } = await pure();
+	it("never verifies or flags topic-alike features whose Scope sections do not overlap, and withdraws an old flag on them", async () => {
 		const stories: KindStory[] = [
 			{
 				id: "existing",
@@ -824,16 +978,38 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 				? [1, 0, 0]
 				: [0, 1, 0];
 		});
+		// Flagged under the earlier rule, which let the near-identical
+		// documents alone select the pair; nobody has reviewed it.
+		const oldFlag = { storyAId: "existing", storyBId: "new" };
+		mockListPendingDuplicatePairs.mockResolvedValue([oldFlag]);
+		mockWithdrawPendingDuplicateLinks.mockResolvedValue(1);
 
 		const result = await detectAndFlagDuplicateStories({
 			...baseParams,
 			targetStoryIds: ["new"],
 		});
 
-		expect(result.candidates).toBe(1);
-		expect(result.confirmed).toBe(0);
+		// Near-identical documents, yet orthogonal Scope sections score the
+		// pair far under the bar: no candidate, no verifier call, no flag.
+		expect(result.candidates).toBe(0);
 		expect(mockGenerateObject).not.toHaveBeenCalled();
 		expect(mockUpsertPendingDuplicateLink).not.toHaveBeenCalled();
+		expect(mockWithdrawPendingDuplicateLinks).toHaveBeenCalledWith(
+			"proj-1",
+			[oldFlag],
+		);
+		// The pair the Scope kept out is logged, by identifier only.
+		const excludedLog = mockLoggerInfo.mock.calls.find(
+			([message]) =>
+				message ===
+				"[Auto Dup Detect] feature pairs kept out by their sections",
+		);
+		expect(excludedLog?.[1]).toEqual({
+			projectId: "proj-1",
+			scopeExcluded: [
+				expect.objectContaining({ a: "F-1", b: "F-2", focus: "scope" }),
+			],
+		});
 		// Second embedding call: the two Scope sections, polarity kept.
 		expect(mockGenerateEmbeddings).toHaveBeenCalledTimes(2);
 		expect(mockGenerateEmbeddings.mock.calls[1][0]).toEqual([
@@ -843,32 +1019,61 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 		expect(mockGenerateEmbeddings.mock.calls[1][1]).toMatchObject({
 			featureKey: "duplicate-scan",
 		});
-		const expected = weightedFocusSimilarity(
-			0,
-			cosineSimilarity([1, 1, 0], [1, 1, 0.02]),
-		);
-		expect(mockRecordDistinctVerdict).toHaveBeenCalledTimes(1);
-		const arg = mockRecordDistinctVerdict.mock.calls[0][0] as {
-			storyAId: string;
-			storyBId: string;
-			similarity: number;
-			confidence: number;
-			reasoning: string;
-			contentHashA: string;
-		};
-		expect(arg).toMatchObject({
-			storyAId: "existing",
-			storyBId: "new",
-			confidence: 1,
-			contentHashA: expect.stringMatching(/^[0-9a-f]{64}$/),
+	});
+
+	it("keeps a feature flag the current rule still raises", async () => {
+		const stories: KindStory[] = [
+			{
+				id: "existing",
+				identifier: "F-1",
+				title: "Clearer onboarding for new users",
+				description: spec(
+					"Guided first-run checklist",
+					"Admin reporting",
+				),
+				kind: "FEATURE",
+			},
+			{
+				id: "new",
+				identifier: "F-2",
+				title: "Onboarding checklist revamp",
+				description: spec(
+					"Guided first-run checklist",
+					"Admin reporting",
+				),
+				kind: "FEATURE",
+			},
+		];
+		arrangeByText(stories, () => [1, 0, 0]);
+		mockGenerateObject.mockResolvedValue({
+			object: {
+				relationship: "same_work_item",
+				confidence: 0.9,
+				reasoning: "the same checklist",
+			},
 		});
-		expect(arg.similarity).toBeCloseTo(expected, 10);
-		expect(arg.similarity).toBeLessThan(0.7);
-		expect(arg.reasoning).toMatch(/^Scope sections do not overlap/);
+		mockListPendingDuplicatePairs.mockResolvedValue([
+			{ storyAId: "existing", storyBId: "new" },
+		]);
+
+		await detectAndFlagDuplicateStories({
+			...baseParams,
+			targetStoryIds: ["new"],
+		});
+
+		expect(mockWithdrawPendingDuplicateLinks).toHaveBeenCalledWith(
+			"proj-1",
+			[],
+		);
 	});
 
 	it("verifies features with overlapping Scope on their Scope blocks, and flags them at the weighted score", async () => {
-		const { cosineSimilarity, weightedFocusSimilarity } = await pure();
+		const {
+			CANDIDATE_COSINE_THRESHOLD,
+			calibratedFocusScore,
+			cosineSimilarity,
+			weightedFocusSimilarity,
+		} = await pure();
 		const stories: KindStory[] = [
 			{
 				id: "existing",
@@ -929,10 +1134,14 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 			linkType: string;
 		};
 		expect(link.linkType).toBe("OVERLAP");
+		// Stored on the threshold's scale, as every pair's score is.
 		expect(link.similarity).toBeCloseTo(
-			weightedFocusSimilarity(
-				1,
-				cosineSimilarity([1, 0, 0], [0.8, 0.6, 0]),
+			calibratedFocusScore(
+				weightedFocusSimilarity(
+					1,
+					cosineSimilarity([1, 0, 0], [0.8, 0.6, 0]),
+				),
+				CANDIDATE_COSINE_THRESHOLD,
 			),
 			10,
 		);
@@ -984,7 +1193,10 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 			targetStoryIds: ["new"],
 		});
 
+		// Every section each feature has is embedded once; the pair is then
+		// compared on the one both have.
 		expect(mockGenerateEmbeddings.mock.calls[1][0]).toEqual([
+			"In scope:\n- Guided first-run checklist\nOut of scope:\n- Admin reporting",
 			"AC1: Given a new user, when they sign in, then the checklist shows",
 			"AC1: Given a new user, when they first sign in, then the checklist shows",
 		]);
@@ -995,6 +1207,341 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 			"<acceptance_criteria_a>\nAC1: Given a new user, when they sign in, then the checklist shows\n</acceptance_criteria_a>",
 		);
 		expect(prompt).not.toContain("<scope_a>");
+	});
+
+	it("verifies a feature pair whose weighted score falls just under the threshold", async () => {
+		const {
+			CANDIDATE_COSINE_THRESHOLD,
+			calibratedFocusScore,
+			cosineSimilarity,
+			weightedFocusSimilarity,
+		} = await pure();
+		const stories: KindStory[] = [
+			{
+				id: "existing",
+				identifier: "F-1",
+				title: "Capture images from proposal channels",
+				description:
+					"## Overview\nKeep screenshots posted with proposals.",
+				acceptanceCriteria:
+					"GIVEN a proposal posted in a monitored channel includes images WHEN the ticket is generated THEN the images are attached to it",
+				kind: "FEATURE",
+			},
+			{
+				id: "new",
+				identifier: "F-2",
+				title: "Attach screenshots to proposals",
+				description: "## Overview\nShow visual context on proposals.",
+				acceptanceCriteria:
+					"- A user can attach one or more screenshots to a feature proposal",
+				kind: "FEATURE",
+			},
+		];
+		// Two takes on images in proposals: criteria written for different
+		// surfaces score 0.62 — under the threshold once weighted, but within
+		// FOCUS_CANDIDATE_MARGIN — and the verifier sees the overlap.
+		arrangeByText(stories, (text) => {
+			if (text.startsWith("Capture images") || text.startsWith("GIVEN")) {
+				return [1, 0, 0];
+			}
+			if (text.startsWith("Attach screenshots")) {
+				return [0.72, 0.69, 0];
+			}
+			return [0.62, Math.sqrt(1 - 0.62 ** 2), 0];
+		});
+		mockGenerateObject.mockResolvedValue({
+			object: {
+				relationship: "overlapping_scope",
+				confidence: 0.85,
+				reasoning: "both put images on feature proposals",
+			},
+		});
+
+		const result = await detectAndFlagDuplicateStories({
+			...baseParams,
+			targetStoryIds: ["new"],
+		});
+
+		const weighted = weightedFocusSimilarity(
+			0.62,
+			cosineSimilarity([1, 0, 0], [0.72, 0.69, 0]),
+		);
+		expect(weighted).toBeLessThan(0.7);
+		expect(weighted).toBeGreaterThanOrEqual(0.62);
+		expect(mockGenerateObject).toHaveBeenCalledTimes(1);
+		expect(mockRecordDistinctVerdict).not.toHaveBeenCalled();
+		expect(result.confirmed).toBe(1);
+		const { prompt } = mockGenerateObject.mock.calls[0][0] as {
+			prompt: string;
+		};
+		expect(prompt).toContain("<acceptance_criteria_a>");
+		const link = mockUpsertPendingDuplicateLink.mock.calls[0][0] as {
+			similarity: number;
+			linkType: string;
+		};
+		expect(link.linkType).toBe("OVERLAP");
+		// Shown at/above the threshold, like every flag: the raw score's bar
+		// maps onto it.
+		expect(link.similarity).toBeCloseTo(
+			calibratedFocusScore(weighted, CANDIDATE_COSINE_THRESHOLD),
+			10,
+		);
+		expect(link.similarity).toBeGreaterThanOrEqual(
+			CANDIDATE_COSINE_THRESHOLD,
+		);
+	});
+
+	it("checks features whose Scope sections match even when their documents read apart", async () => {
+		const stories: KindStory[] = [
+			{
+				id: "existing",
+				identifier: "F-1",
+				title: "Bulk export of invoices",
+				description: spec(
+					"CSV export of all invoices",
+					"PDF statements",
+				),
+				kind: "FEATURE",
+			},
+			{
+				id: "new",
+				identifier: "F-2",
+				title: "Finance team reporting",
+				description: spec("CSV export of every invoice", "Dashboards"),
+				kind: "FEATURE",
+			},
+		];
+		// Documents at 0.5 — far under the threshold — but the Scope sections
+		// match: weighted 0.75 × 1 + 0.25 × 0.5 = 0.875.
+		arrangeByText(stories, (text) => {
+			if (text.startsWith("Bulk export")) {
+				return [1, 0, 0];
+			}
+			if (text.startsWith("Finance team")) {
+				return [0.5, Math.sqrt(0.75), 0];
+			}
+			return [1, 0, 0];
+		});
+		mockGenerateObject.mockResolvedValue({
+			object: {
+				relationship: "overlapping_scope",
+				confidence: 0.85,
+				reasoning: "both deliver the invoice CSV export",
+			},
+		});
+
+		const result = await detectAndFlagDuplicateStories({
+			...baseParams,
+			targetStoryIds: ["new"],
+		});
+
+		expect(result.candidates).toBe(1);
+		expect(result.confirmed).toBe(1);
+		const { prompt } = mockGenerateObject.mock.calls[0][0] as {
+			prompt: string;
+		};
+		expect(prompt).toContain(
+			"<scope_b>\nIn scope:\n- CSV export of every invoice",
+		);
+		const link = mockUpsertPendingDuplicateLink.mock.calls[0][0] as {
+			similarity: number;
+		};
+		const { calibratedFocusScore, CANDIDATE_COSINE_THRESHOLD } =
+			await pure();
+		expect(link.similarity).toBeCloseTo(
+			calibratedFocusScore(0.875, CANDIDATE_COSINE_THRESHOLD),
+			10,
+		);
+		const payload = focusedPairLogCalls()[0][1] as {
+			pairs: Array<Record<string, unknown>>;
+		};
+		expect(payload.pairs).toEqual([
+			expect.objectContaining({
+				a: "F-1",
+				b: "F-2",
+				documentSimilarity: 0.5,
+				weighted: 0.875,
+				byDocument: false,
+				outcome: "linked:OVERLAP",
+			}),
+		]);
+	});
+
+	it("reuses cached section vectors and embeds and stores only changed sections", async () => {
+		const { hashDetectionText } = await pure();
+		const existingScope =
+			"In scope:\n- Guided first-run checklist for new users\nOut of scope:\n- Developer integration setup";
+		const stories: KindStory[] = [
+			{
+				id: "existing",
+				identifier: "F-1",
+				title: "Clearer onboarding for new users",
+				description: spec(
+					"Guided first-run checklist for new users",
+					"Developer integration setup",
+				),
+				kind: "FEATURE",
+			},
+			{
+				id: "new",
+				identifier: "F-2",
+				title: "Onboarding checklist revamp",
+				description: spec(
+					"Guided first-run checklist with progress",
+					"Admin reporting",
+				),
+				kind: "FEATURE",
+			},
+		];
+		arrangeByText(stories, () => [1, 0, 0]);
+		mockGenerateObject.mockResolvedValue({
+			object: {
+				relationship: "overlapping_scope",
+				confidence: 0.85,
+				reasoning: "same checklist",
+			},
+		});
+		mockListStoryDuplicateFocusEmbeddings.mockResolvedValue([
+			{
+				storyId: "existing",
+				kind: "scope",
+				contentHash: hashDetectionText(existingScope),
+				model: "text-embedding-3-small",
+				embedding: [1, 0, 0],
+			},
+		]);
+
+		await detectAndFlagDuplicateStories({
+			...baseParams,
+			targetStoryIds: ["new"],
+		});
+
+		const newScope =
+			"In scope:\n- Guided first-run checklist with progress\nOut of scope:\n- Admin reporting";
+		expect(mockGenerateEmbeddings).toHaveBeenCalledTimes(2);
+		expect(mockGenerateEmbeddings.mock.calls[1][0]).toEqual([newScope]);
+		expect(mockUpsertStoryDuplicateFocusEmbeddings).toHaveBeenCalledWith(
+			"proj-1",
+			[
+				{
+					storyId: "new",
+					kind: "scope",
+					contentHash: hashDetectionText(newScope),
+					model: "text-embedding-3-small",
+					embedding: [1, 0, 0],
+				},
+			],
+		);
+		expect(mockGenerateObject).toHaveBeenCalledTimes(1);
+	});
+
+	it("re-checks a feature pair when Scope changes past where the document text is cut", async () => {
+		const longSpec = (inScope: string) =>
+			[
+				"## Overview",
+				"Background ".repeat(900),
+				"## Scope",
+				"### In Scope",
+				`- ${inScope}`,
+			].join("\n");
+		const run = async (inScope: string) => {
+			vi.clearAllMocks();
+			mockListDismissedDuplicatePairKeys.mockResolvedValue([]);
+			mockListVerdictValidPairKeys.mockResolvedValue([]);
+			mockListStoryDuplicateEmbeddingMetadata.mockResolvedValue([]);
+			mockListStoryDuplicateFocusEmbeddings.mockResolvedValue([]);
+			mockGenerateObject.mockResolvedValue({
+				object: {
+					relationship: "distinct",
+					confidence: 0.9,
+					reasoning: "different exports",
+				},
+			});
+			arrangeByText(
+				[
+					{
+						id: "existing",
+						identifier: "F-1",
+						title: "Invoice export",
+						description: longSpec("CSV export"),
+						kind: "FEATURE",
+					},
+					{
+						id: "new",
+						identifier: "F-2",
+						title: "Invoice tools",
+						description: longSpec(inScope),
+						kind: "FEATURE",
+					},
+				],
+				(text) => (text.startsWith("Invoice export") ? [1, 0] : [0, 1]),
+			);
+			await detectAndFlagDuplicateStories({
+				...baseParams,
+				targetStoryIds: ["new"],
+			});
+			const verdictHashes = mockListVerdictValidPairKeys.mock
+				.calls[0][1] as Map<string, string>;
+			const cacheRows = mockUpsertStoryDuplicateEmbeddings.mock
+				.calls[0][1] as Array<{ storyId: string; contentHash: string }>;
+			return {
+				verdictHash: verdictHashes.get("new"),
+				documentHash: cacheRows.find((row) => row.storyId === "new")
+					?.contentHash,
+			};
+		};
+
+		const first = await run("CSV export");
+		const second = await run("PDF statements");
+
+		// The edit sits past the detection-text cut, so the document hash —
+		// and the shared vector cache — are unchanged ...
+		expect(second.documentHash).toBe(first.documentHash);
+		// ... but the verdict hash moves, so the stored verdict no longer
+		// applies and the pair is verified again.
+		expect(second.verdictHash).not.toBe(first.verdictHash);
+	});
+
+	it("tells the verifier that an undefined placeholder feature is distinct", async () => {
+		const stories: KindStory[] = [
+			{
+				id: "existing",
+				identifier: "F-1",
+				title: "Test item",
+				description: "A placeholder feature stub. No description yet.",
+				kind: "FEATURE",
+			},
+			{
+				id: "new",
+				identifier: "F-2",
+				title: "Test link",
+				description: "A placeholder feature stub. No description yet.",
+				kind: "FEATURE",
+			},
+		];
+		arrangeByText(stories, () => [1, 0, 0]);
+		mockGenerateObject.mockResolvedValue({
+			object: {
+				relationship: "distinct",
+				confidence: 0.9,
+				reasoning: "neither defines any work",
+			},
+		});
+
+		await detectAndFlagDuplicateStories({
+			...baseParams,
+			targetStoryIds: ["new"],
+		});
+
+		const { prompt } = mockGenerateObject.mock.calls[0][0] as {
+			prompt: string;
+		};
+		expect(prompt).toMatch(
+			/If either feature is only a placeholder[\s\S]*answer "distinct"/,
+		);
+		// No sections, so no focus blocks — only the placeholder rule.
+		expect(prompt).not.toContain("<scope_a>");
+		expect(mockGenerateEmbeddings).toHaveBeenCalledTimes(1);
 	});
 
 	const wholeDocumentPairs: Array<
@@ -1040,13 +1587,17 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 			});
 
 			expect(result.confirmed).toBe(1);
-			// One embedding call: no focus sections are embedded.
-			expect(mockGenerateEmbeddings).toHaveBeenCalledTimes(1);
+			// A bug's sections are never embedded; a feature's are, for its
+			// pairs with other features.
+			expect(mockGenerateEmbeddings).toHaveBeenCalledTimes(
+				kindA === "FEATURE" ? 2 : 1,
+			);
 			const { prompt } = mockGenerateObject.mock.calls[0][0] as {
 				prompt: string;
 			};
 			expect(prompt).not.toContain("<scope_a>");
 			expect(prompt).not.toMatch(/PRIMARY/);
+			expect(prompt).not.toMatch(/placeholder/);
 			const link = mockUpsertPendingDuplicateLink.mock.calls[0][0] as {
 				similarity: number;
 			};
@@ -1108,18 +1659,29 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 			) {
 				return [0.8, 0.6, 0];
 			}
-			// Focus sections: the checklist scopes overlap, the MCP one does not.
-			return text.includes("Guided first-run checklist")
-				? [1, 0, 0]
-				: [0, 1, 0];
+			// Focus sections: the checklist scopes overlap; the MCP one only
+			// partly, close enough to be checked.
+			return text.includes("MCP server")
+				? [0.66, Math.sqrt(1 - 0.66 ** 2), 0]
+				: [1, 0, 0];
 		});
-		mockGenerateObject.mockResolvedValue({
-			object: {
-				relationship: "overlapping_scope",
-				confidence: 0.85,
-				reasoning: "both deliver the first-run checklist",
-			},
-		});
+		// The verifier links the pair whose Scope blocks share the checklist
+		// and calls the MCP one distinct.
+		mockGenerateObject.mockImplementation(
+			async ({ prompt }: { prompt: string }) => ({
+				object: prompt.includes("<scope_a>\nIn scope:\n- MCP server")
+					? {
+							relationship: "distinct",
+							confidence: 0.9,
+							reasoning: "different scopes",
+						}
+					: {
+							relationship: "overlapping_scope",
+							confidence: 0.85,
+							reasoning: "both deliver the first-run checklist",
+						},
+			}),
+		);
 
 		await detectAndFlagDuplicateStories({
 			...baseParams,
@@ -1145,17 +1707,18 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 					documentSimilarity: 0.8,
 					weighted: 0.95,
 					threshold: 0.7,
+					byDocument: true,
 					outcome: "linked:OVERLAP",
 				}),
-				// Settled: identical documents, orthogonal Scope sections.
+				// Verified distinct: identical documents, partly overlapping Scope.
 				expect.objectContaining({
 					a: "F-2",
 					b: "F-3",
 					focus: "scope",
-					focusSimilarity: 0,
+					focusSimilarity: 0.66,
 					documentSimilarity: 1,
-					weighted: 0.25,
-					outcome: "settled",
+					weighted: 0.745,
+					outcome: "distinct",
 				}),
 			]),
 		);
@@ -1169,6 +1732,468 @@ describe("feature pairs are judged mainly on their Scope sections", () => {
 		]) {
 			expect(logged).not.toContain(fragment);
 		}
+	});
+
+	describe("a re-check that would change a pair's state", () => {
+		/** Two features with identical documents and Scope: always a
+		 * candidate. */
+		const twins: KindStory[] = [
+			{
+				id: "existing",
+				identifier: "F-1",
+				title: "Clearer onboarding for new users",
+				description: spec(
+					"Guided first-run checklist",
+					"Admin reporting",
+				),
+				kind: "FEATURE",
+			},
+			{
+				id: "new",
+				identifier: "F-2",
+				title: "Onboarding checklist revamp",
+				description: spec(
+					"Guided first-run checklist",
+					"Admin reporting",
+				),
+				kind: "FEATURE",
+			},
+		];
+		const verdicts = (...relationships: string[]) => {
+			for (const relationship of relationships) {
+				mockGenerateObject.mockResolvedValueOnce({
+					object: {
+						relationship,
+						confidence: 0.9,
+						reasoning: "test",
+					},
+				});
+			}
+		};
+		const prior = (
+			status: "PENDING" | "NOT_DUPLICATE" | "DISMISSED",
+			linkType: "DUPLICATE" | "OVERLAP" = "DUPLICATE",
+		) =>
+			mockGetDuplicateLinkState.mockResolvedValue({
+				status,
+				linkType,
+				verifiedContentHashA: "old",
+				verifiedContentHashB: "old",
+			});
+		const run = () =>
+			detectAndFlagDuplicateStories({
+				...baseParams,
+				targetStoryIds: ["new"],
+			});
+
+		beforeEach(() => {
+			arrangeByText(twins, () => [1, 0, 0]);
+		});
+
+		it("takes a first verdict on a new pair without a second opinion", async () => {
+			verdicts("same_work_item");
+
+			await run();
+
+			expect(mockGenerateObject).toHaveBeenCalledTimes(1);
+			expect(mockUpsertPendingDuplicateLink).toHaveBeenCalledTimes(1);
+		});
+
+		it("clears an unreviewed flag only when a second opinion agrees", async () => {
+			prior("PENDING");
+			verdicts("distinct", "distinct");
+
+			await run();
+
+			expect(mockGenerateObject).toHaveBeenCalledTimes(2);
+			expect(mockTrackUsage).toHaveBeenCalledTimes(2);
+			expect(mockRecordDistinctVerdict).toHaveBeenCalledWith(
+				expect.objectContaining({ clearsPendingFlag: true }),
+			);
+			expect(mockStampVerifiedHashes).not.toHaveBeenCalled();
+		});
+
+		it("keeps the flag and stamps its hashes when the second opinion disagrees", async () => {
+			prior("PENDING");
+			verdicts("distinct", "same_work_item");
+
+			const result = await run();
+
+			expect(mockGenerateObject).toHaveBeenCalledTimes(2);
+			expect(mockRecordDistinctVerdict).not.toHaveBeenCalled();
+			expect(mockUpsertPendingDuplicateLink).not.toHaveBeenCalled();
+			expect(mockStampVerifiedHashes).toHaveBeenCalledWith(
+				expect.objectContaining({
+					projectId: "proj-1",
+					storyAId: "existing",
+					storyBId: "new",
+				}),
+			);
+			expect(result.confirmed).toBe(0);
+		});
+
+		it("confirms moving a flag to the other tier", async () => {
+			prior("PENDING", "DUPLICATE");
+			verdicts("overlapping_scope", "same_work_item");
+
+			await run();
+
+			expect(mockGenerateObject).toHaveBeenCalledTimes(2);
+			expect(mockUpsertPendingDuplicateLink).not.toHaveBeenCalled();
+			expect(mockStampVerifiedHashes).toHaveBeenCalledTimes(1);
+		});
+
+		it("confirms raising a flag over a cached negative verdict", async () => {
+			prior("NOT_DUPLICATE");
+			verdicts("same_work_item", "same_work_item");
+
+			await run();
+
+			expect(mockGenerateObject).toHaveBeenCalledTimes(2);
+			expect(mockUpsertPendingDuplicateLink).toHaveBeenCalledWith(
+				expect.objectContaining({ linkType: "DUPLICATE" }),
+			);
+		});
+
+		it("re-checks a flag at the same tier with one call", async () => {
+			prior("PENDING", "DUPLICATE");
+			verdicts("same_work_item");
+
+			await run();
+
+			expect(mockGenerateObject).toHaveBeenCalledTimes(1);
+			expect(mockUpsertPendingDuplicateLink).toHaveBeenCalledTimes(1);
+		});
+
+		it("lets an overlapping run's verdict on the same content stand", async () => {
+			// One run records the verdict hashes the scan computes.
+			verdicts("same_work_item");
+			await run();
+			const written = mockUpsertPendingDuplicateLink.mock.calls[0][0] as {
+				contentHashA: string;
+				contentHashB: string;
+			};
+			mockGenerateObject.mockClear();
+			mockUpsertPendingDuplicateLink.mockClear();
+			// Between the next run's selection and its verification, another
+			// run verified the same content.
+			mockGetDuplicateLinkState.mockResolvedValue({
+				status: "PENDING",
+				linkType: "DUPLICATE",
+				verifiedContentHashA: written.contentHashA,
+				verifiedContentHashB: written.contentHashB,
+			});
+
+			const result = await run();
+
+			expect(mockGenerateObject).not.toHaveBeenCalled();
+			expect(mockUpsertPendingDuplicateLink).not.toHaveBeenCalled();
+			expect(result.candidates).toBe(1);
+		});
+
+		it("never asks for a second opinion on a dismissed pair", async () => {
+			prior("DISMISSED");
+			verdicts("distinct");
+
+			await run();
+
+			expect(mockGenerateObject).toHaveBeenCalledTimes(1);
+		});
+
+		it("raises a flag at the softer tier when two verdicts flag it at different tiers", async () => {
+			prior("NOT_DUPLICATE");
+			verdicts("same_work_item", "overlapping_scope");
+
+			const result = await run();
+
+			expect(mockGenerateObject).toHaveBeenCalledTimes(2);
+			expect(mockUpsertPendingDuplicateLink).toHaveBeenCalledWith(
+				expect.objectContaining({ linkType: "OVERLAP" }),
+			);
+			expect(mockStampVerifiedHashes).not.toHaveBeenCalled();
+			expect(result.confirmed).toBe(1);
+		});
+
+		it("keeps a cached negative verdict when the second opinion does not flag the pair", async () => {
+			prior("NOT_DUPLICATE");
+			verdicts("same_work_item", "distinct");
+
+			await run();
+
+			expect(mockUpsertPendingDuplicateLink).not.toHaveBeenCalled();
+			expect(mockRecordDistinctVerdict).not.toHaveBeenCalled();
+			expect(mockStampVerifiedHashes).toHaveBeenCalledTimes(1);
+		});
+
+		it("asks a second opinion before flagging a bug pair over a cached negative verdict too", async () => {
+			const bugs: KindStory[] = twins.map((s) => ({ ...s, kind: "BUG" }));
+			arrangeByText(bugs, () => [1, 0, 0]);
+			prior("NOT_DUPLICATE");
+			verdicts("same_work_item", "same_work_item");
+
+			await run();
+
+			expect(mockGenerateObject).toHaveBeenCalledTimes(2);
+			expect(mockUpsertPendingDuplicateLink).toHaveBeenCalledWith(
+				expect.objectContaining({ linkType: "DUPLICATE" }),
+			);
+		});
+
+		it("lets a verdict another run wrote during the verifier calls stand", async () => {
+			const { hashDetectionText } = await pure();
+			verdicts("same_work_item");
+			await run();
+			const written = mockUpsertPendingDuplicateLink.mock.calls[0][0] as {
+				contentHashA: string;
+				contentHashB: string;
+			};
+			expect(written.contentHashA).not.toBe(hashDetectionText(""));
+			mockUpsertPendingDuplicateLink.mockClear();
+			mockGenerateObject.mockClear();
+			// Nothing stored when this run reads the pair; by the time its
+			// verdict is in, an overlapping run has stored one on the same
+			// content.
+			mockGetDuplicateLinkState
+				.mockResolvedValueOnce(null)
+				.mockResolvedValueOnce({
+					status: "PENDING",
+					linkType: "OVERLAP",
+					verifiedContentHashA: written.contentHashA,
+					verifiedContentHashB: written.contentHashB,
+				});
+			verdicts("same_work_item");
+
+			await run();
+
+			expect(mockGenerateObject).toHaveBeenCalledTimes(1);
+			expect(mockUpsertPendingDuplicateLink).not.toHaveBeenCalled();
+		});
+
+		it("fails the activity for retry when every pair's state read fails", async () => {
+			mockGetDuplicateLinkState.mockRejectedValue(new Error("db down"));
+
+			await expect(run()).rejects.toThrow(/verifier failed for all 1/);
+			expect(mockGenerateObject).not.toHaveBeenCalled();
+		});
+	});
+
+	it("verifies a sectionless feature's pairs again once it is no longer a bug", async () => {
+		const { hashDetectionText } = await pure();
+		const asKind = (kind: "FEATURE" | "BUG"): KindStory[] => [
+			{
+				id: "existing",
+				identifier: "1",
+				title: "Export fails on large invoices",
+				description: "The export times out.",
+				kind,
+			},
+			{
+				id: "new",
+				identifier: "2",
+				title: "Export fails on large invoices again",
+				description: "The export times out.",
+				kind: "BUG",
+			},
+		];
+		const hashOf = async (kind: "FEATURE" | "BUG") => {
+			mockUpsertPendingDuplicateLink.mockClear();
+			arrangeByText(asKind(kind), () => [1, 0, 0]);
+			mockGenerateObject.mockResolvedValue({
+				object: {
+					relationship: "same_work_item",
+					confidence: 0.9,
+					reasoning: "test",
+				},
+			});
+			await detectAndFlagDuplicateStories({
+				...baseParams,
+				targetStoryIds: ["new"],
+			});
+			return (
+				mockUpsertPendingDuplicateLink.mock.calls[0][0] as {
+					contentHashA: string;
+				}
+			).contentHashA;
+		};
+
+		const asBug = await hashOf("BUG");
+		const asFeature = await hashOf("FEATURE");
+
+		expect(asFeature).not.toBe(asBug);
+		expect(asFeature).not.toBe(hashDetectionText(""));
+	});
+
+	it("stores a kept flag's score on the threshold's scale", async () => {
+		const stories: KindStory[] = [
+			{
+				id: "existing",
+				identifier: "F-1",
+				title: "Clearer onboarding for new users",
+				description: spec(
+					"Guided first-run checklist",
+					"Admin reporting",
+				),
+				kind: "FEATURE",
+			},
+			{
+				id: "new",
+				identifier: "F-2",
+				title: "Onboarding checklist revamp",
+				description: spec(
+					"Guided first-run checklist",
+					"Admin reporting",
+				),
+				kind: "FEATURE",
+			},
+		];
+		arrangeByText(stories, () => [1, 0, 0]);
+		mockGenerateObject.mockResolvedValue({
+			object: {
+				relationship: "same_work_item",
+				confidence: 0.9,
+				reasoning: "the same checklist",
+			},
+		});
+		// Raised under the old scale at the raw weighted score.
+		mockListPendingDuplicatePairs.mockResolvedValue([
+			{ storyAId: "existing", storyBId: "new", similarity: 0.98 },
+		]);
+
+		await detectAndFlagDuplicateStories({
+			...baseParams,
+			targetStoryIds: ["new"],
+		});
+
+		expect(mockRefreshPendingDuplicateSimilarities).toHaveBeenCalledWith(
+			"proj-1",
+			[
+				{
+					storyAId: "existing",
+					storyBId: "new",
+					similarity: expect.closeTo(1, 10),
+				},
+			],
+		);
+	});
+});
+
+describe("candidates left over by the per-run cap", () => {
+	/** One new bug matching 61 identical existing bugs: 61 candidates, one
+	 * more than one run verifies. */
+	const overCap: Story[] = [
+		{ id: "new", identifier: "B-new", title: "Target", description: "x" },
+		...Array.from({ length: 61 }, (_, i) => ({
+			id: `old-${String(i).padStart(2, "0")}`,
+			identifier: `B-${i}`,
+			title: `Existing ${i}`,
+			description: "x",
+		})),
+	];
+
+	it("runs once and reports the pairs it left for the workflow's next run", async () => {
+		arrange(overCap, () => [1, 0, 0]);
+
+		const result = await detectAndFlagDuplicateStories({
+			...baseParams,
+			targetStoryIds: ["new"],
+		});
+
+		expect(mockListActiveStoriesForDetection).toHaveBeenCalledTimes(1);
+		expect(mockGenerateObject).toHaveBeenCalledTimes(60);
+		expect(result).toMatchObject({
+			candidates: 60,
+			confirmed: 60,
+			truncated: 1,
+			verifierFailures: 0,
+		});
+	});
+
+	it("reports the pairs it could not verify so the workflow stops", async () => {
+		arrange(overCap, () => [1, 0, 0]);
+		mockGenerateObject.mockRejectedValueOnce(new Error("rate limited"));
+
+		const result = await detectAndFlagDuplicateStories({
+			...baseParams,
+			targetStoryIds: ["new"],
+		});
+
+		expect(result).toMatchObject({ truncated: 1, verifierFailures: 1 });
+	});
+});
+
+describe("candidates left over by the run's time budget", () => {
+	/** One new bug matching 30 identical existing bugs: 30 candidates. */
+	const thirty: Story[] = [
+		{ id: "new", identifier: "B-new", title: "Target", description: "x" },
+		...Array.from({ length: 30 }, (_, i) => ({
+			id: `old-${String(i).padStart(2, "0")}`,
+			identifier: `B-${i}`,
+			title: `Existing ${i}`,
+			description: "x",
+		})),
+	];
+	let clock = 0;
+	let now: ReturnType<typeof vi.spyOn>;
+
+	beforeEach(() => {
+		clock = 0;
+		now = vi.spyOn(Date, "now").mockImplementation(() => clock);
+	});
+
+	afterEach(() => {
+		now.mockRestore();
+	});
+
+	it("stops starting verifications once the budget is spent and reports the rest for the next run", async () => {
+		arrange(thirty, () => [1, 0, 0]);
+		// Each verification takes a tenth of the budget, so ten fit.
+		mockGenerateObject.mockImplementation(async () => {
+			clock += RUN_TIME_BUDGET_MS / 10;
+			return {
+				object: {
+					sameWorkItem: true,
+					confidence: 0.95,
+					reasoning: "test",
+				},
+			};
+		});
+
+		const result = await detectAndFlagDuplicateStories({
+			...baseParams,
+			targetStoryIds: ["new"],
+		});
+
+		expect(mockGenerateObject).toHaveBeenCalledTimes(10);
+		expect(result).toMatchObject({
+			candidates: 10,
+			confirmed: 10,
+			truncated: 20,
+			verifierFailures: 0,
+		});
+		// The new bug is in every pair not reached, so it stays stale for the
+		// next run to re-select them.
+		const persisted = mockUpsertStoryDuplicateEmbeddings.mock.calls.flatMap(
+			([, rows]) =>
+				(rows as Array<{ storyId: string }>).map((r) => r.storyId),
+		);
+		expect(persisted).not.toContain("new");
+	});
+
+	it("verifies one pair even when the budget was spent before verification began", async () => {
+		arrange(thirty, () => [1, 0, 0]);
+		const embed = mockGenerateEmbeddings.getMockImplementation();
+		mockGenerateEmbeddings.mockImplementation(async (texts: string[]) => {
+			clock = RUN_TIME_BUDGET_MS;
+			return embed?.(texts);
+		});
+
+		const result = await detectAndFlagDuplicateStories({
+			...baseParams,
+			targetStoryIds: ["new"],
+		});
+
+		expect(mockGenerateObject).toHaveBeenCalledTimes(1);
+		expect(result).toMatchObject({ candidates: 1, truncated: 29 });
 	});
 });
 

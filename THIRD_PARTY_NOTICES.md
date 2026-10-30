@@ -70,6 +70,30 @@ Copyright (c) 2016 The Inter Project Authors. Licensed under the **SIL Open
 Font License, Version 1.1**; the full licence text is
 `packages/temporal/src/lib/proposal-export/fonts/LICENSE.txt`.
 
+### Poppins typeface (https://github.com/itfoundry/Poppins)
+
+The Proposal export embeds Poppins 4.003 in the PDFs it prints, for headings
+(Fizzy #2946). The font file is bundled unmodified, with its licence, in
+`packages/temporal/src/lib/proposal-export/fonts/`: `Poppins-Bold.ttf`, from
+the `ofl/poppins/` folder of the google/fonts repository.
+
+Copyright 2020 The Poppins Project Authors. Licensed under the **SIL Open Font
+License, Version 1.1**; the full licence text is
+`packages/temporal/src/lib/proposal-export/fonts/OFL-Poppins.txt`.
+
+### JetBrains Mono typeface (https://github.com/JetBrains/JetBrainsMono)
+
+The Proposal export embeds JetBrains Mono 2.200 in the PDFs it prints, for
+eyebrows, labels and captions (Fizzy #2946). The font files are bundled
+unmodified, with their licence, in
+`packages/temporal/src/lib/proposal-export/fonts/`:
+`JetBrainsMono-Regular.woff2` and `JetBrainsMono-Medium.woff2`, from the
+`fonts/webfonts/` folder of the JetBrains/JetBrainsMono repository.
+
+Copyright 2020 The JetBrains Mono Project Authors. Licensed under the **SIL
+Open Font License, Version 1.1**; the full licence text is
+`packages/temporal/src/lib/proposal-export/fonts/OFL-JetBrainsMono.txt`.
+
 ### Proposal export runtime dependencies
 
 The Temporal worker's Proposal export (Fizzy #2946) depends on these packages,

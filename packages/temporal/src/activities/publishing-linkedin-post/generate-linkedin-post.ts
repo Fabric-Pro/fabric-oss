@@ -45,7 +45,9 @@ import {
 	getEffectivePlanningAnalysis,
 	listTopicDecisions,
 	logDraftRefusal,
+	seedWorkingDraftIfAbsent,
 } from "@repo/database";
+import { logger } from "@repo/logs";
 import type { TemplateFormat } from "@repo/utils";
 import {
 	isRestrictingThread,
@@ -87,6 +89,7 @@ export interface GenerateLinkedInPostInput {
 	 * which is exactly what null does here.
 	 */
 	currentDraft?: string | null;
+	seedWorkingDraft?: boolean;
 }
 
 export interface GenerateLinkedInPostOutput {
@@ -106,6 +109,7 @@ export interface GenerateLinkedInPostOutput {
 	 * would fail that replay. Absent means "an older run that could not say".
 	 */
 	refusalReason?: DraftCommitRefusal;
+	seededWorkingDraft?: boolean;
 }
 
 export async function generateLinkedInPostActivity(
@@ -368,6 +372,54 @@ export async function generateLinkedInPostActivity(
 			},
 		);
 		return { status: "SUPERSEDED", refusalReason: commit.reason };
+	}
+
+	if (input.seedWorkingDraft) {
+		const option = parsed.data.options[0];
+		try {
+			const seeded = await seedWorkingDraftIfAbsent({
+				topicId,
+				projectId,
+				postType: "LINKEDIN_POST",
+				sourceDraftId: draftId,
+				sourceOptionLabel: option.label,
+				body: option.text,
+				updatedById: actorUserId,
+			});
+			const context = { draftId, topicId, projectId };
+			if (seeded.status === "project_ineligible") {
+				logger.warn(
+					"[publishing-linkedin-post] project became ineligible before the working draft could be seeded",
+					context,
+				);
+			} else if (seeded.status === "source_not_found") {
+				logger.info(
+					"[publishing-linkedin-post] draft was superseded before it could seed a working draft",
+					context,
+				);
+			} else if (seeded.status === "already_exists") {
+				logger.debug(
+					"[publishing-linkedin-post] topic already has a working draft; left untouched",
+					context,
+				);
+			}
+			return {
+				status: "READY",
+				seededWorkingDraft: seeded.status === "seeded",
+			};
+		} catch (error) {
+			logger.warn(
+				"[publishing-linkedin-post] failed to seed a working draft",
+				{
+					draftId,
+					topicId,
+					projectId,
+					error:
+						error instanceof Error ? error.message : String(error),
+				},
+			);
+			return { status: "READY", seededWorkingDraft: false };
+		}
 	}
 
 	return { status: "READY" };

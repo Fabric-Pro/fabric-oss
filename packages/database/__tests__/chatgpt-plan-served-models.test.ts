@@ -345,7 +345,12 @@ describe("the catalog seed", () => {
 		const { MODELS, TASK_DEFAULTS } = await import(
 			"../prisma/seed-ai-models"
 		);
-		for (const slug of ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"]) {
+		for (const slug of [
+			"gpt-6.1-sol",
+			"gpt-6.1-terra",
+			"gpt-6-sol",
+			"gpt-6-luna",
+		]) {
 			const row = MODELS.find((model) => model.canonicalName === slug);
 			expect(row?.providerMappings).toContainEqual({
 				provider: "OPENAI_CHATGPT_PLAN",
@@ -358,7 +363,7 @@ describe("the catalog seed", () => {
 			).map((entry) => [entry.taskType, entry.canonicalName]),
 		);
 		expect(planDefaults).toMatchObject({
-			SIMPLE: "gpt-6-luna",
+			SIMPLE: "gpt-6.1-terra",
 			COMPLEX: "gpt-6.1-sol",
 			REASONING: "gpt-6.1-sol",
 			TOOL_CALLING: "gpt-6.1-sol",

@@ -79,6 +79,7 @@ export const AUDIT_ACTIONS = [
 	"org.member.invited",
 	"org.member.role_changed",
 	"org.member.removed",
+	"org.member.left",
 	"org.api_key.created",
 	"org.api_key.revoked",
 	"org.api_key.rotated",
@@ -165,6 +166,8 @@ export const AUDIT_ACTIONS = [
 	// row per item would bury the fact that they were one action, and the counts
 	// are what make a partial batch legible.
 	"org.todo.bulk_resolved",
+	// Account-wide role changes.
+	"account.role_changed",
 	// account (3) — personal-context API key lifecycle for the
 	// public audit-log REST API. Mirrors `org.api_key.*` but writes
 	// rows scoped to `userId` (personal) instead of the org.
@@ -628,6 +631,10 @@ export const AUDIT_ACTIONS = [
 	"project.document_analysis.responded",
 	"project.document_analysis.cleared",
 	"project.document_analysis.rerun_started",
+	// A member saved a revision applying a finding's recommendation, which
+	// recorded the finding as Resolved in the same transaction. The row
+	// carries the stable key, run id and the answer's version only.
+	"project.document_analysis.resolved",
 	// Proposal export (Fizzy #2946): a member or a project guest started a
 	// PDF or Word export of a client-document Proposal. The row carries the
 	// format, the export id and whether the starter is a guest; never any
@@ -1006,6 +1013,7 @@ export function mapToLegacyEventType(action: string): AuditEventType {
 		case "org.member.invited":
 		case "org.member.role_changed":
 		case "org.member.removed":
+		case "org.member.left":
 			return "AUTHZ_ROLE_CHANGED";
 		case "org.integration.connected":
 			return "ADMIN_INTEGRATION_ADDED";

@@ -16,6 +16,7 @@ const { launch } = vi.hoisted(() => ({ launch: vi.fn() }));
 
 vi.mock("playwright", () => ({ chromium: { launch } }));
 
+import { PRINT_CHROMIUM_ARGS } from "../../print-chromium-args";
 import {
 	EXPORT_CONTEXT_OPTIONS,
 	type ExportBrowser,
@@ -168,6 +169,13 @@ describe("the export browser's launch", () => {
 		expect(options.args).toContain("--no-sandbox");
 		// Hinting rounds glyph positions to whole pixels in the Linux print.
 		expect(options.args).toContain("--font-render-hinting=none");
+		// Exactly the shared print flags, no more.
+		expect(options.args).toEqual([
+			"--no-sandbox",
+			"--disable-dev-shm-usage",
+			"--font-render-hinting=none",
+		]);
+		expect(options.args).toEqual(PRINT_CHROMIUM_ARGS);
 		expect(options.timeout).toBeGreaterThan(0);
 		expect(options.timeout).toBeLessThanOrEqual(30_000);
 	});

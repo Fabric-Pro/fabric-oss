@@ -24,13 +24,16 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const COPILOTKIT_ROUTE = join(process.cwd(), "app/api/copilotkit/route.ts");
+// The direct-chat stream route admits its turns through this module.
 const STREAM_ROUTE = join(
 	process.cwd(),
-	"app/api/agents/fabric-ai/stream/route.ts",
+	"app/api/agents/fabric-ai/stream/direct-turn.ts",
 );
+// The Orchestrator stream route and the agent runtime's Orchestrator engine
+// resolve, filter and build their turns through this module.
 const ORCHESTRATOR_STREAM_ROUTE = join(
 	process.cwd(),
-	"app/api/agents/fabric-ai/orchestrator-temporal/stream/route.ts",
+	"app/api/agents/fabric-ai/orchestrator-temporal/orchestrator-turn.ts",
 );
 
 /** The `filterAccessibleWorkspaceIds({ ... })` call, arguments included. */
@@ -137,7 +140,7 @@ describe("orchestrator stream workspace binding", () => {
 	);
 	const workflowInputLiteral = source.slice(
 		workflowInputAt,
-		source.indexOf("\n\t\t};", workflowInputAt),
+		source.indexOf("\n\t};", workflowInputAt),
 	);
 
 	it("filters workspace ids after the organization membership check and before the workflow input is built", () => {

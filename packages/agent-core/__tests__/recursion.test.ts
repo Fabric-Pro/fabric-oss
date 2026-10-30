@@ -1,5 +1,6 @@
-import { AIMessage, HumanMessage } from "@langchain/core/messages";
+import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import {
+	countMessagesSinceLastHuman,
 	countToolRoundsSinceLastHuman,
 	deriveRecursionLimit,
 	isSyntheticToolImageMessage,
@@ -221,5 +222,42 @@ describe("countToolRoundsSinceLastHuman — synthetic image turns", () => {
 			syntheticImageTurn(),
 		];
 		expect(countToolRoundsSinceLastHuman(messages)).toBe(2);
+	});
+});
+
+describe("countMessagesSinceLastHuman", () => {
+	const isTool = (_message: unknown, type: string) => type === "tool";
+	const toolResult = (id: string) =>
+		new ToolMessage({ content: "result", tool_call_id: id });
+
+	it("counts the matching messages of the current turn only", () => {
+		const messages = [
+			toolResult("0"),
+			new HumanMessage({ content: "go" }),
+			toolRound("1"),
+			toolResult("1"),
+			toolRound("2"),
+			toolResult("2"),
+		];
+		expect(countMessagesSinceLastHuman(messages, isTool)).toBe(2);
+	});
+
+	it("does not stop at a synthetic image turn", () => {
+		const messages = [
+			new HumanMessage({ content: "go" }),
+			toolResult("1"),
+			syntheticImageTurn(),
+			toolResult("2"),
+		];
+		expect(countMessagesSinceLastHuman(messages, isTool)).toBe(2);
+	});
+
+	it("reads serialized messages by role", () => {
+		const messages = [
+			{ role: "tool", content: "a" },
+			{ role: "user", content: "go" },
+			{ role: "tool", content: "b" },
+		];
+		expect(countMessagesSinceLastHuman(messages, isTool)).toBe(1);
 	});
 });

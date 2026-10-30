@@ -2,6 +2,15 @@ import { describe, expect, it } from "vitest";
 import { buildAgentConfigurable } from "../src/services/agent-configurable";
 
 describe("buildAgentConfigurable", () => {
+	it("preserves thread identity without adding it to usage content", () => {
+		const config = buildAgentConfigurable(
+			{ thread_id: "input-thread" },
+			{ thread_id: "t-1" },
+		);
+		expect(config.thread_id).toBe("t-1");
+		expect(config.fabric_usage).not.toHaveProperty("thread_id");
+		expect(buildAgentConfigurable({})).not.toHaveProperty("thread_id");
+	});
 	it("maps model, tenant and usage fields without granting tool authentication", () => {
 		const input = {
 			ai_api_key: "test-key",

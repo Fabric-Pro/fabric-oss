@@ -8,6 +8,7 @@
  */
 import { PUBLISHING_TOPIC_SUGGESTION_FALLBACK_BODY } from "@repo/utils/publishing-suggestion-prompt";
 import { describe, expect, it } from "vitest";
+import { WRITING_STYLE_CLAUSE } from "../../publishing-shared/writing-style-clause";
 import {
 	buildTopicSuggestionLockedClauses,
 	composeTopicSuggestionPrompt,
@@ -23,6 +24,7 @@ const compose = (
 describe("composeTopicSuggestionPrompt — role-aware fields", () => {
 	it("instructs postTypeRecommendations with type/theme/rationale", async () => {
 		const { prompt } = await compose({ stories: [] });
+		expect(prompt).not.toContain(WRITING_STYLE_CLAUSE);
 		expect(prompt).toContain("postTypeRecommendations");
 		expect(prompt).toContain("theme");
 		expect(prompt).toContain("rationale");

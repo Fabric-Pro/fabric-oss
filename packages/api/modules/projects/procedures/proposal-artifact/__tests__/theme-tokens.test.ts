@@ -347,7 +347,7 @@ describe("getThemeTokens", () => {
 		expect(signedKeys()).not.toContain(foreign);
 	});
 
-	it("gives the neutral tokens when no source holds a brand value: no logo, no hero, Inter, every value DEFAULT", async () => {
+	it("gives the neutral tokens when no source holds a brand value: no logo, no hero, the neutral faces, every value DEFAULT", async () => {
 		theme.resolveGuestSafeProposalThemeTokens.mockResolvedValue(
 			buildProposalThemeTokens({
 				organization: null,
@@ -363,8 +363,9 @@ describe("getThemeTokens", () => {
 		expect(tokens.proposer.hero.value).toBeNull();
 		expect(tokens.recipient.logo.value).toBeNull();
 		expect(tokens.proposer.primary.value).toBe("#334155");
-		expect(tokens.proposer.fonts.display.value).toBe("Inter");
+		expect(tokens.proposer.fonts.display.value).toBe("Poppins");
 		expect(tokens.proposer.fonts.body.value).toBe("Inter");
+		expect(tokens.proposer.fonts.mono.value).toBe("JetBrains Mono");
 		expect(tokens.proposer.fontFiles?.display.value).toBeNull();
 		expect(tokens.proposer.fontFiles?.body.value).toBeNull();
 		const sources = JSON.stringify(tokens).match(/"source":"[A-Z_]+"/g);

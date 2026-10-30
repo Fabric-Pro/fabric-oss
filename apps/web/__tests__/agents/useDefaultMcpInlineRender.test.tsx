@@ -39,6 +39,7 @@ vi.mock("@saas/projects/hooks/use-route-project-id", () => ({
 	useRouteProjectId: () => "proj-1",
 }));
 
+import { CREATE_VIEW_ACTION } from "@repo/utils/editor-frontend-actions";
 import { useDefaultMcpInlineRender } from "@saas/agents/hooks/useDefaultMcpInlineRender";
 
 const VALID_ELEMENTS = JSON.stringify([
@@ -130,6 +131,13 @@ describe("useDefaultMcpInlineRender — create_view", () => {
 			(p) => p.name === "elements",
 		);
 		expect(elementsParam?.description).toContain("NON-EMPTY");
+	});
+
+	it("registers the definition the agent binds on a client Proposal", async () => {
+		await mountHook();
+		const { description, parameters } = lastCreateView();
+		expect(description).toBe(CREATE_VIEW_ACTION.description);
+		expect(parameters).toEqual(CREATE_VIEW_ACTION.parameters);
 	});
 
 	it("refuses empty elements without a server round-trip", async () => {

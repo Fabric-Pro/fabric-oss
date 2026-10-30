@@ -30,6 +30,24 @@ vi.mock("next/navigation", () => ({
 	useParams: () => ({}),
 }));
 
+// `next/font/google` is an empty module outside Next's compiler, which turns
+// each loader call into the font's class names at build time. Under Vitest a
+// module that declares a font would throw on import, so each loader returns
+// stable stand-in classes named after the variable it defines.
+vi.mock("next/font/google", () => {
+	const loader = (name: string) => (options?: { variable?: string }) => ({
+		className: `next-font-${name}`,
+		variable: `next-font${options?.variable ?? `-${name}`}`,
+		style: { fontFamily: name },
+	});
+	return {
+		IBM_Plex_Mono: loader("IBM_Plex_Mono"),
+		Inter: loader("Inter"),
+		JetBrains_Mono: loader("JetBrains_Mono"),
+		Poppins: loader("Poppins"),
+	};
+});
+
 // Mock next-intl globally — components throughout the SaaS app use
 // `useTranslations`, which throws without a `NextIntlClientProvider`
 // ancestor. Tests that need to assert on translated strings can override

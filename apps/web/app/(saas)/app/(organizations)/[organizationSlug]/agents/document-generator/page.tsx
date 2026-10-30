@@ -111,6 +111,7 @@ export default function DocumentGeneratorPage() {
 						runtimeUrl={runtimeUrl}
 						useSingleEndpoint
 						showDevConsole={false}
+						enableInspector={false}
 						agent="document_generator"
 						onError={onError}
 					>
@@ -122,23 +123,7 @@ export default function DocumentGeneratorPage() {
 									agentId="document_generator"
 									title="AI Assistant"
 									initialMessage="Hi! I can help you write and edit documents. Try asking me to:\n\n• Write a story or document\n• Expand a specific section\n• Add more details\n• Refine the language"
-									suggestions={[
-										{
-											title: "Write a pirate story",
-											message:
-												"Please write a story about a pirate named Candy Beard.",
-										},
-										{
-											title: "Write a mermaid story",
-											message:
-												"Please write a story about a mermaid named Luna.",
-										},
-										{
-											title: "Add character",
-											message:
-												"Please add a character named Courage.",
-										},
-									]}
+									suggestions={CHAT_SUGGESTIONS}
 								/>
 							</AiLoadingSync>
 						</CopilotChatSessionProvider>
@@ -148,3 +133,18 @@ export default function DocumentGeneratorPage() {
 		</div>
 	);
 }
+
+const CHAT_SUGGESTIONS = [
+	{
+		title: "Write a pirate story",
+		message: "Please write a story about a pirate named Candy Beard.",
+	},
+	{
+		title: "Write a mermaid story",
+		message: "Please write a story about a mermaid named Luna.",
+	},
+	{
+		title: "Add character",
+		message: "Please add a character named Courage.",
+	},
+];

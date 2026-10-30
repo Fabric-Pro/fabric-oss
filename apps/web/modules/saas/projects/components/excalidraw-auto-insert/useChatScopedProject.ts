@@ -28,8 +28,8 @@
  *   - `useChatScopedProjectFromMultiAgentStream()`   — Nexus
  *     (`CopilotPage`). Reads the multi-agent stream hook.
  *   - `useChatScopedProjectFromCopilotChat()`        — in-document
- *     Copilot sidebar (`CopilotAssistantMessage`). Reads CopilotKit's
- *     `useCopilotChat().visibleMessages`.
+ *     Copilot sidebar (`CopilotAssistantMessage`). Reads the
+ *     assistant row’s `messages` prop.
  *
  * All four return the same shape:
  *
@@ -52,11 +52,9 @@
  */
 
 import { useFabricAgentLauncher } from "@saas/agents/components/FabricAgentLauncher";
-import type {
-	ConversationTurn,
-	MultiAgentToolCall,
-} from "@saas/agents/hooks/useMultiAgentStream";
+import type { ConversationTurn } from "@saas/agents/hooks/useMultiAgentStream";
 import type { OrchestratorStreamMessage } from "@saas/agents/hooks/useOrchestratorStream";
+import type { MultiAgentToolCall } from "@saas/agents/lib/multi-agent-response";
 import { useCallback, useMemo } from "react";
 
 /** The shared return shape every adapter produces. */
@@ -309,10 +307,8 @@ export function useChatScopedProjectFromMultiAgentStream(
 
 /**
  * Minimal shape of a CopilotKit chat message that the adapter cares
- * about. CopilotKit exposes a `visibleMessages` array of `Message`
- * objects with varying subclasses (`TextMessage`, `ActionExecutionMessage`,
- * `ResultMessage`). We only need `id`, `role`, and `content` (which
- * `TextMessage` exposes for user messages).
+ * about. The assistant row supplies a projection of its `messages` prop.
+ * We only need `id`, `role`, and user `content`.
  *
  * Modeled as `unknown[]` in the public option type to match
  * CopilotKit's typings — internal narrowing happens in the loop body.
@@ -321,8 +317,8 @@ export interface UseChatScopedProjectFromCopilotChatOptions {
 	projectId: string | null;
 	organizationId: string | null;
 	/**
-	 * The `visibleMessages` array returned by
-	 * `useCopilotChat()` (`@copilotkit/react-core`). Passed in by the
+	 * A stable ids/roles/user-text projection of the row's `messages` prop.
+	 * Passed in by the
 	 * caller so the adapter doesn't need to import CopilotKit (which
 	 * would force every consumer of this file to ship the CopilotKit
 	 * bundle even on surfaces that don't use it).
@@ -351,10 +347,8 @@ function isCopilotTextMessage(value: unknown): value is {
 }
 
 /**
- * In-document Copilot adapter. CopilotKit's `useCopilotChat()` returns
- * `visibleMessages`, which interleaves user / assistant text messages
- * with action-execution and result messages. We only walk the
- * user-role text messages.
+ * In-document Copilot adapter. The caller supplies the row transcript's
+ * ids, roles and user text; the backward scan returns the preceding prompt.
  */
 export function useChatScopedProjectFromCopilotChat(
 	options: UseChatScopedProjectFromCopilotChatOptions,

@@ -17,11 +17,13 @@ import { orpcClient } from "@shared/lib/orpc-client";
 import { type QueryClient, skipToken, useQuery } from "@tanstack/react-query";
 import { type CSSProperties, useEffect, useMemo, useState } from "react";
 import { getOrpcCode } from "../field-mapping/orpc-error";
+import { PROPOSAL_FONT_VARIABLES } from "./proposal-fonts";
 
 /**
- * What the theme root wears: the theme's class and target attribute, and the
- * paint as `--pa-*` custom properties. The stylesheet has no fallback
- * colours, so the properties always travel with the class.
+ * What the theme root wears: the theme's class and target attribute, the
+ * classes that load its display and mono faces, and the paint as `--pa-*`
+ * custom properties. The stylesheet has no fallback colours, so the
+ * properties always travel with the class.
  */
 export type ProposalThemeRootProps = {
 	className: string;
@@ -247,7 +249,7 @@ function withLoadedFonts(
 	for (const { slot, alias, family } of loaded) {
 		if (alias) {
 			style[THEME_FONT_PROPERTIES[slot]] =
-				`"${alias}", "${safeFontFamily(family) ?? NEUTRAL_THEME.font}"`;
+				`"${alias}", "${safeFontFamily(family) ?? NEUTRAL_THEME.fonts[slot]}"`;
 			changed = true;
 		}
 	}
@@ -258,7 +260,7 @@ function withLoadedFonts(
 
 function rootPropsFor(paint: ProposalThemePaint): ProposalThemeRootProps {
 	return {
-		className: PROPOSAL_THEME_CLASSES.root,
+		className: `${PROPOSAL_THEME_CLASSES.root} ${PROPOSAL_FONT_VARIABLES}`,
 		[PROPOSAL_THEME_ATTRIBUTE]: "live",
 		style: themeCustomProperties(paint) as CSSProperties,
 	};

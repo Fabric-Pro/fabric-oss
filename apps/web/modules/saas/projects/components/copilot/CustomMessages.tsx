@@ -1,5 +1,7 @@
 "use client";
 
+import { AssistantRunContext } from "@saas/shared/components/copilot/AssistantRunContext";
+
 /**
  * Custom `Messages` component for `<CopilotSidebar Messages={…}>`.
  *
@@ -15,7 +17,7 @@
  *
  *   1. **Historical** — `useHydratedMessages()` context, populated by
  *      `<HydratedMessagesProvider>` from the SSR-loaded conversation
- *      blob. Frozen at mount. Persistent across CopilotKit's internal
+ *      blob and refreshed as replies persist. Persistent across CopilotKit's internal
  *      agent swaps because it lives outside CopilotKit.
  *   2. **Live**   — `useCopilotChatSession().messages`, the standard
  *      live store CopilotKit owns, republished by the surface's single
@@ -23,10 +25,9 @@
  *      plus any streaming assistant turn, flow through this path
  *      normally.
  *
- * Merged and rendered in document order: greeting → historical →
- * live. Live messages whose id is already in the historical set are
- * filtered out (after persistence + reload the same message appears in
- * both lists; we keep the historical copy).
+ * Shared ids synchronize history and live order. Within each gap, history-only
+ * rows precede live-only rows.
+ * Duplicate ids keep the historical copy.
  *
  * # Why not use the default `messages` prop on MessagesProps
  *
@@ -250,7 +251,7 @@ export const CustomMessages = ({
 	markdownTagRenderers,
 	chatError,
 }: MessagesProps) => {
-	const { labels, icons } = useChatContext();
+	const { labels } = useChatContext();
 	const { messages: liveMessages, interrupt } = useCopilotChatSession();
 	const hydrated = useHydratedMessages();
 
@@ -298,11 +299,61 @@ export const CustomMessages = ({
 		});
 	}, [hydrated, liveMessages]);
 
-	// Final messages list in display order.
-	const messages = useMemo(
-		() => [...initialGreetings, ...historicalAgui, ...liveFiltered],
-		[initialGreetings, historicalAgui, liveFiltered],
-	) as Parameters<typeof useScrollToBottom>[0];
+	// Interleave at shared ids, with history-only rows before live-only rows
+	// in each gap. Text history omits live tool rows (Fizzy #3441).
+	const messages = useMemo(() => {
+		const historyIndex = new Map(
+			historicalAgui.map((message, index) => [message.id, index]),
+		);
+		const syncPoints: { history: number; live: number }[] = [];
+		let lastHistory = -1;
+		for (let live = 0; live < liveMessages.length; live++) {
+			const history = historyIndex.get(liveMessages[live].id);
+			if (history === undefined) {
+				continue;
+			}
+			if (history <= lastHistory) {
+				return [
+					...initialGreetings,
+					...historicalAgui,
+					...liveFiltered,
+				];
+			}
+			syncPoints.push({ history, live });
+			lastHistory = history;
+		}
+		const merged: (AguiMessage | (typeof liveMessages)[number])[] = [
+			...initialGreetings,
+		];
+		let historyStart = 0;
+		let liveStart = 0;
+		for (const point of [
+			...syncPoints,
+			{ history: historicalAgui.length, live: liveMessages.length },
+		]) {
+			for (; historyStart < point.history; historyStart++) {
+				merged.push(historicalAgui[historyStart]);
+			}
+			for (; liveStart < point.live; liveStart++) {
+				const message = liveMessages[liveStart];
+				if (!hydrated?.historicalIdSet.has(message.id)) {
+					merged.push(message);
+				}
+			}
+			if (point.history < historicalAgui.length) {
+				merged.push(historicalAgui[point.history]);
+				historyStart++;
+				liveStart++;
+			}
+		}
+		return merged;
+	}, [
+		initialGreetings,
+		historicalAgui,
+		liveMessages,
+		liveFiltered,
+		hydrated,
+	]) as Parameters<typeof useScrollToBottom>[0];
 
 	const rating = useCopilotReplyRatingState();
 	const setRatingMessageIds = rating?.setMessageIds;
@@ -354,67 +405,75 @@ export const CustomMessages = ({
 		});
 	}, [messages]);
 
-	const LoadingIcon = () => <span>{icons.activityIcon}</span>;
-
 	return (
-		<div className="copilotKitMessages" ref={messagesContainerRef}>
-			<div className="copilotKitMessagesContainer">
-				{messages.map((message, index) => {
-					const isCurrentMessage = index === messages.length - 1;
-					if (
-						message.role === "system" &&
-						isOperationResultMessage(message)
-					) {
-						const { outcome, artifact } = message.metadata;
-						// Suppress only the redundant SUCCESS card with no
-						// artifact link — the agent's own conversational
-						// confirmation ("Changes accepted.") already
-						// covers it. Keep the card for failure / partial /
-						// cancelled (durable status the success-phrased agent
-						// line won't convey) and for any row carrying an
-						// artifact link (rendered only here, never in content).
-						if (outcome === "success" && !artifact) {
-							return null;
+		<AssistantRunContext.Provider value={inProgress}>
+			<div className="copilotKitMessages" ref={messagesContainerRef}>
+				<div className="copilotKitMessagesContainer">
+					{messages.map((message, index) => {
+						const isCurrentMessage = index === messages.length - 1;
+						if (
+							message.role === "system" &&
+							isOperationResultMessage(message)
+						) {
+							const { outcome, artifact } = message.metadata;
+							// Suppress only the redundant SUCCESS card with no
+							// artifact link — the agent's own conversational
+							// confirmation ("Changes accepted.") already
+							// covers it. Keep the card for failure / partial /
+							// cancelled (durable status the success-phrased agent
+							// line won't convey) and for any row carrying an
+							// artifact link (rendered only here, never in content).
+							if (outcome === "success" && !artifact) {
+								return null;
+							}
+							return (
+								<SystemMessage
+									key={rowIdentities[index]?.key}
+									outcome={outcome}
+									content={message.content}
+									artifact={artifact}
+								/>
+							);
 						}
 						return (
-							<SystemMessage
+							<RenderMessage
 								key={rowIdentities[index]?.key}
-								outcome={outcome}
-								content={message.content}
-								artifact={artifact}
+								message={message as never}
+								messages={messages as never}
+								inProgress={inProgress}
+								index={rowIdentities[index]?.index ?? index}
+								isCurrentMessage={isCurrentMessage}
+								AssistantMessage={AssistantMessage}
+								UserMessage={UserMessage}
+								ImageRenderer={ImageRenderer}
+								onRegenerate={onRegenerate}
+								onCopy={onCopy}
+								onThumbsUp={onThumbsUp}
+								onThumbsDown={onThumbsDown}
+								messageFeedback={messageFeedback}
+								markdownTagRenderers={markdownTagRenderers}
 							/>
 						);
-					}
-					return (
-						<RenderMessage
-							key={rowIdentities[index]?.key}
-							message={message as never}
-							messages={messages as never}
-							inProgress={inProgress}
-							index={rowIdentities[index]?.index ?? index}
-							isCurrentMessage={isCurrentMessage}
-							AssistantMessage={AssistantMessage}
-							UserMessage={UserMessage}
-							ImageRenderer={ImageRenderer}
-							onRegenerate={onRegenerate}
-							onCopy={onCopy}
-							onThumbsUp={onThumbsUp}
-							onThumbsDown={onThumbsDown}
-							messageFeedback={messageFeedback}
-							markdownTagRenderers={markdownTagRenderers}
-						/>
-					);
-				})}
-				{messages[messages.length - 1]?.role === "user" &&
-					inProgress && <LoadingIcon />}
-				{interrupt}
-				{chatError && ErrorMessage && (
-					<ErrorMessage error={chatError} isCurrentMessage />
-				)}
+					})}
+					{messages[messages.length - 1]?.role === "user" &&
+						inProgress && <LoadingIcon />}
+					{interrupt}
+					{chatError && ErrorMessage && (
+						<ErrorMessage error={chatError} isCurrentMessage />
+					)}
+				</div>
+				<footer
+					className="copilotKitMessagesFooter"
+					ref={messagesEndRef}
+				>
+					{children}
+				</footer>
 			</div>
-			<footer className="copilotKitMessagesFooter" ref={messagesEndRef}>
-				{children}
-			</footer>
-		</div>
+		</AssistantRunContext.Provider>
 	);
 };
+
+function LoadingIcon() {
+	const { icons } = useChatContext();
+	return <span>{icons.activityIcon}</span>;
+}

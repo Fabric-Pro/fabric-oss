@@ -388,7 +388,7 @@ export async function generateBlogPostActivity(
 	// DV5/FR21: the first generation leaves the reader with something editable.
 	// Deliberately AFTER the draft commits and in its own transaction, not
 	// folded into `completeTopicDraft` — that helper is shared with the short
-	// post, which must not seed (DV4), and a postType branch inside it would be
+	// post, which seeds only when explicitly requested, and a postType branch inside it would be
 	// exactly the flag deciding which product it is that keeping these two
 	// slices apart was meant to avoid.
 	//

@@ -266,3 +266,40 @@ it.each(pmTargetFixtures)(
 		);
 	},
 );
+
+it.each([
+	"example",
+	"example/",
+	"example///",
+	`example${"/".repeat(200_000)}`,
+	`example${"/".repeat(200_000)}x`,
+])("normalizes account slashes", (account_slug) => {
+	const expected = account_slug.endsWith("x") ? account_slug : "example";
+	expect(
+		targets.buildExternalPmTarget({
+			...base,
+			pmTool: "fizzy",
+			additionalContext: { account_slug },
+		}),
+	).toBe(key(expected));
+});
+
+it("handles long ADO organization slash runs", () => {
+	const input = {
+		...base,
+		pmTool: "azure-devops",
+		containerId: "11111111-1111-4111-8111-111111111111",
+	};
+	expect(
+		targets.buildExternalPmTarget({
+			...input,
+			config: { commandArgs: [`example${"/".repeat(200_000)}`] },
+		}),
+	).toContain('"example"');
+	expect(
+		targets.buildExternalPmTarget({
+			...input,
+			config: { commandArgs: [`example${"/".repeat(200_000)}x`] },
+		}),
+	).toBeNull();
+});

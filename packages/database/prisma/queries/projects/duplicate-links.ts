@@ -99,7 +99,7 @@ export async function listActiveStoriesForDetection(projectId: string) {
 			acceptanceCriteria: true,
 			// A FEATURE↔FEATURE pair is compared mainly on its Scope (or
 			// acceptance-criteria) section; any pair involving a BUG keeps the
-			// whole-document comparison. See selectPairFocus.
+			// whole-document comparison. See extractFocusTexts.
 			kind: true,
 			// Creation time feeds the proximity relaxation: items created close
 			// together (possibly via different paths) get a slightly lower
@@ -209,10 +209,12 @@ export async function upsertPendingDuplicateLink(params: {
  * the "each pair paid at most once per content change" guarantee.
  *
  * A PENDING pair the verifier now judges distinct is CLEARED — moved to
- * NOT_DUPLICATE with the new similarity/confidence/reasoning. A pending flag
- * nobody has reviewed that the current detection logic judges distinct is a
- * stale false positive, and leaving it up keeps asking people to review work
- * the matcher no longer stands behind. This cannot flap from run to run: a
+ * NOT_DUPLICATE with the new similarity/confidence/reasoning — when the
+ * caller passes `clearsPendingFlag` (the scan does so for feature pairs, whose
+ * logic changed; bug and mixed pairs keep their flags as before). A pending
+ * flag nobody has reviewed that the current detection logic judges distinct
+ * is a stale false positive, and leaving it up keeps asking people to review
+ * work the matcher no longer stands behind. This cannot flap from run to run: a
  * pair is only re-verified when one side's text changes or DETECTION_VERSION
  * moves, and a later positive verdict reopens it through
  * {@link upsertPendingDuplicateLink}. (Earlier versions kept such a pair
@@ -221,6 +223,12 @@ export async function upsertPendingDuplicateLink(params: {
  *
  * DISMISSED and RESOLVED rows are human decisions: their status and display
  * fields are never touched, only their hashes are stamped.
+ *
+ * `clearsPendingFlag` is also false for a verdict that is not flagged only because
+ * its confidence is under the bar — the verifier still leaned towards the
+ * same or overlapping work. Such a verdict is cached like any other, but it
+ * leaves an existing PENDING flag (and its fields) as they were: an unsure
+ * re-check is no reason to withdraw a flag a confident one raised.
  */
 export async function recordDistinctVerdict(params: {
 	projectId: string;
@@ -231,6 +239,7 @@ export async function recordDistinctVerdict(params: {
 	reasoning?: string | null;
 	contentHashA: string;
 	contentHashB: string;
+	clearsPendingFlag: boolean;
 }) {
 	const { projectId, storyAId, storyBId, similarity, confidence, reasoning } =
 		params;
@@ -263,7 +272,11 @@ export async function recordDistinctVerdict(params: {
 			projectId,
 			storyAId,
 			storyBId,
-			status: { in: ["NOT_DUPLICATE", "PENDING"] },
+			status: {
+				in: params.clearsPendingFlag
+					? ["NOT_DUPLICATE", "PENDING"]
+					: ["NOT_DUPLICATE"],
+			},
 		},
 		data: {
 			status: "NOT_DUPLICATE",
@@ -310,6 +323,115 @@ export async function listVerdictValidPairKeys(
 				currentHashByStoryId.get(r.storyBId) === r.verifiedContentHashB,
 		)
 		.map((r) => `${r.storyAId}:${r.storyBId}`);
+}
+
+/** The pairs of a project's PENDING (unreviewed) flags, as canonical ids,
+ * with the score each is stored with. */
+export async function listPendingDuplicatePairs(projectId: string) {
+	return db.storyDuplicateLink.findMany({
+		where: { projectId, status: "PENDING" },
+		select: { storyAId: true, storyBId: true, similarity: true },
+	});
+}
+
+/**
+ * A pair's stored state, read just before its verdict is written: its status,
+ * tier and the content hashes its last verdict was given on. Null when the
+ * pair has no row.
+ */
+export async function getDuplicateLinkState(
+	projectId: string,
+	storyAId: string,
+	storyBId: string,
+) {
+	return db.storyDuplicateLink.findFirst({
+		where: { projectId, storyAId, storyBId },
+		select: {
+			status: true,
+			linkType: true,
+			verifiedContentHashA: true,
+			verifiedContentHashB: true,
+		},
+	});
+}
+
+/**
+ * Stamp the content hashes a verdict was given on without changing anything
+ * else, so the pair is not verified again until one side changes. Used when a
+ * re-check would change a pair's state but a second opinion does not agree:
+ * the state stays as it was and the pair stops being re-billed every scan.
+ */
+export async function stampVerifiedHashes(params: {
+	projectId: string;
+	storyAId: string;
+	storyBId: string;
+	contentHashA: string;
+	contentHashB: string;
+}) {
+	await db.storyDuplicateLink.updateMany({
+		where: {
+			projectId: params.projectId,
+			storyAId: params.storyAId,
+			storyBId: params.storyBId,
+		},
+		data: {
+			verifiedContentHashA: params.contentHashA,
+			verifiedContentHashB: params.contentHashB,
+		},
+	});
+}
+
+/**
+ * Store a new score on unreviewed flags, so the percentage people see is the
+ * one the current rule decided on. Only rows still PENDING change. Returns how
+ * many were updated.
+ */
+export async function refreshPendingDuplicateSimilarities(
+	projectId: string,
+	pairs: Array<{ storyAId: string; storyBId: string; similarity: number }>,
+): Promise<number> {
+	if (pairs.length === 0) {
+		return 0;
+	}
+	const results = await db.$transaction(
+		pairs.map(({ storyAId, storyBId, similarity }) =>
+			db.storyDuplicateLink.updateMany({
+				where: { projectId, storyAId, storyBId, status: "PENDING" },
+				data: { similarity },
+			}),
+		),
+	);
+	return results.reduce((sum, { count }) => sum + count, 0);
+}
+
+/**
+ * Withdraw unreviewed flags the current detection rule would not raise: each
+ * listed pair still PENDING moves to NOT_DUPLICATE with its verdict hashes
+ * cleared, so it is verified afresh if an edit ever makes it a candidate
+ * again rather than read as a cached negative verdict the verifier never
+ * gave. DISMISSED and RESOLVED rows are human decisions and never match.
+ * Returns how many flags were withdrawn.
+ */
+export async function withdrawPendingDuplicateLinks(
+	projectId: string,
+	pairs: Array<{ storyAId: string; storyBId: string }>,
+): Promise<number> {
+	if (pairs.length === 0) {
+		return 0;
+	}
+	const { count } = await db.storyDuplicateLink.updateMany({
+		where: {
+			projectId,
+			status: "PENDING",
+			OR: pairs.map(({ storyAId, storyBId }) => ({ storyAId, storyBId })),
+		},
+		data: {
+			status: "NOT_DUPLICATE",
+			verifiedContentHashA: null,
+			verifiedContentHashB: null,
+		},
+	});
+	return count;
 }
 
 /** PENDING links for a project, both members still active, richest first.

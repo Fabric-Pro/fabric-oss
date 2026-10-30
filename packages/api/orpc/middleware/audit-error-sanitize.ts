@@ -244,19 +244,19 @@ function safeStringify(value: unknown): string {
  * characters do not slip past the cap.
  */
 function truncateBytes(input: string): string {
-	if (Buffer.byteLength(input, "utf8") <= MAX_INPUT_BYTES) {
+	const bytes = Buffer.from(input, "utf8");
+	if (bytes.length <= MAX_INPUT_BYTES) {
 		return input;
 	}
-	// Walk backwards to find a byte-safe slice. A naive char slice is fine
-	// because the cap is bytes; we slice characters until under budget.
-	let slice = input;
-	while (Buffer.byteLength(slice, "utf8") > MAX_INPUT_BYTES - 3) {
-		slice = slice.slice(0, slice.length - 1);
-		if (slice.length === 0) {
-			break;
-		}
+	// Cut the encoded bytes once (the ellipsis takes 3), stepping back over
+	// continuation bytes so no character is split: a split pair would leave a
+	// lone surrogate, which Postgres refuses in jsonb, and a character-by-
+	// character walk with a byte count each step took seconds on a large input.
+	let end = MAX_INPUT_BYTES - 3;
+	while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) {
+		end--;
 	}
-	return `${slice}…`;
+	return `${bytes.subarray(0, end).toString("utf8")}…`;
 }
 
 /**
@@ -270,9 +270,17 @@ function truncateBytes(input: string): string {
  *   1. `safeStringify` first — this is the circular-aware serializer
  *      that emits `"[Circular]"` markers and `"[Function]"`/`"[Symbol]"`
  *      for non-JSONable values.
- *   2. Truncate to the byte cap.
- *   3. Parse the serialized form back into a plain JSON tree.
- *   4. THEN run `redactSensitiveKeys` over the now-flat structure.
+ *   2. Parse the serialized form back into a plain JSON tree.
+ *   3. Run `redactSensitiveKeys` over the now-acyclic tree.
+ *   4. ONLY THEN cut to the byte cap. An input over the cap is recorded as
+ *      `{ _truncated }`, a prefix of the REDACTED tree's JSON: once cut it is
+ *      a string, which the write-time redactor cannot look inside, so a
+ *      `password` or `apiKey` cut before redaction would be stored verbatim.
+ *
+ * Fields that hold a whole user-written body are summarized before this, by
+ * the middleware's per-path redaction. A tree the redactor cannot walk (one
+ * nested deeply enough to overflow the stack) is recorded as a placeholder,
+ * never as its raw text.
  *
  * Returns `undefined` when input is `undefined` so the caller can drop
  * the field cleanly.
@@ -290,19 +298,20 @@ export function sanitizeInput(input: unknown): unknown {
 		// that input was present but unprintable.
 		return { _truncated: "[serialization-failed]" };
 	}
-	const truncated = truncateBytes(serialized);
-	if (truncated.length === serialized.length) {
-		try {
-			const parsed = JSON.parse(serialized) as unknown;
-			// Now safe to recurse — the parsed tree has no cycles
-			// (safeStringify converted them to "[Circular]" leaves).
-			return redactSensitiveKeys(parsed);
-		} catch {
-			return { _truncated: serialized };
-		}
+	let redacted: unknown;
+	try {
+		// Safe to recurse — the parsed tree has no cycles (safeStringify
+		// converted them to "[Circular]" leaves).
+		redacted = redactSensitiveKeys(JSON.parse(serialized) as unknown);
+	} catch {
+		return { _truncated: "[redaction-failed]" };
 	}
-	// We truncated; the result is no longer valid JSON, so wrap it. No
-	// redaction pass needed here — the body is a single string.
+	const redactedSerialized = safeStringify(redacted);
+	const truncated = truncateBytes(redactedSerialized);
+	if (truncated === redactedSerialized) {
+		return redacted;
+	}
+	// We truncated; the result is no longer valid JSON, so wrap it.
 	return { _truncated: truncated };
 }
 

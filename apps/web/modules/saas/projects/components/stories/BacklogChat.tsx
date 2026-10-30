@@ -5,6 +5,7 @@ import { useAgent } from "@copilotkit/react-core/v2";
 import { CopilotSidebar, useChatContext } from "@copilotkit/react-ui";
 import { CopilotAssistantMessageForBacklogUpdater } from "@saas/shared/components/copilot/CopilotAssistantMessage";
 import { useCopilotChatSession } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
+import { useReseedAgentStateOnRunStart } from "@saas/shared/components/copilot/use-agent-state-reseed";
 import "@copilotkit/react-ui/styles.css";
 import type { EngagementProfile } from "@repo/database";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
@@ -343,18 +344,24 @@ export function BacklogChat({
 		},
 	});
 
-	// useCoAgent applies initialState from its onRunInitialized hook, after
-	// AG-UI has already copied the agent's state into the run input, so a
-	// first message can reach the agent with empty state. With no Teams
-	// integration in its prompt the agent answers in text instead of showing
-	// the conversation selector, which is one cause of the second-click
-	// symptom in Fizzy #3102. Seed the state from an effect, so it is in place
-	// before a run the user starts, and again when the provider swaps its
-	// provisional agent for the registered one or the context changes.
+	// useCoAgent applies initialState after AG-UI copies state into the run
+	// input. Seed eagerly below, but CopilotKit 1.80's async thread connect
+	// can clear that state later. The core run-start hook re-seeds after the
+	// wipe and before connect/run builds its input.
 	const { agent: backlogAgent } = useAgent({
 		agentId: "backlog_updater",
 		updates: [],
 	});
+	// Restore context after a fresh-thread connect clears state.
+	useReseedAgentStateOnRunStart(BACKLOG_AGENT_ID, (state) => ({
+		retryCount: 0,
+		reasoningByTurn: {},
+		...state,
+		...agentContext,
+	}));
+
+	// Keep context current on provider/context changes; run-start also covers
+	// CopilotKit 1.80 clearing state after this effect has already run.
 	useEffect(() => {
 		backlogAgent.setState({
 			retryCount: 0,
@@ -645,13 +652,16 @@ export function BacklogChat({
 	});
 
 	// Suggestions for the chat
-	const suggestions = [
-		{
-			title: "Review project conversations",
-			message:
-				"Let me pick meetings and Teams channels/chats to review as context for backlog updates.",
-		},
-	];
+	const suggestions = useMemo(
+		() => [
+			{
+				title: "Review project conversations",
+				message:
+					"Let me pick meetings and Teams channels/chats to review as context for backlog updates.",
+			},
+		],
+		[],
+	);
 
 	// Custom sidebar header — puts the "Session history" button next to the
 	// close control. Memoized so CopilotKit doesn't remount the header each render.
@@ -666,6 +676,39 @@ export function BacklogChat({
 		setMounted(true);
 	}, []);
 
+	const chatLabels = useMemo(
+		() => ({
+			title:
+				intake.intakeMode === "explore"
+					? "Explore: first spikes"
+					: "AI Backlog Update",
+			initial:
+				intake.intakeMode === "explore"
+					? intake.initialMessage
+					: hasTeamsIntegration ||
+							hasSlackIntegration ||
+							hasNotionIntegration
+						? `I can help update your backlog for **${projectName}** based on new context from ${[
+								hasTeamsIntegration &&
+									"Teams messages & meetings",
+								hasSlackIntegration && "Slack messages",
+								hasNotionIntegration && "Notion pages",
+							]
+								.filter(Boolean)
+								.join(
+									" and ",
+								)}. What would you like to analyze?`
+						: `I can help manage your backlog for **${projectName}**. Connect Teams, Slack, or Notion in Settings to enable context-based analysis.`,
+		}),
+		[
+			intake.intakeMode,
+			intake.intakeMode === "explore" ? intake.initialMessage : undefined,
+			hasTeamsIntegration,
+			hasSlackIntegration,
+			hasNotionIntegration,
+			projectName,
+		],
+	);
 	if (!mounted) {
 		return null;
 	}
@@ -681,29 +724,7 @@ export function BacklogChat({
 				AssistantMessage={CopilotAssistantMessageForBacklogUpdater}
 				defaultOpen={true}
 				clickOutsideToClose={false}
-				labels={{
-					title:
-						intake.intakeMode === "explore"
-							? "Explore: first spikes"
-							: "AI Backlog Update",
-					initial:
-						intake.intakeMode === "explore"
-							? intake.initialMessage
-							: hasTeamsIntegration ||
-									hasSlackIntegration ||
-									hasNotionIntegration
-								? `I can help update your backlog for **${projectName}** based on new context from ${[
-										hasTeamsIntegration &&
-											"Teams messages & meetings",
-										hasSlackIntegration && "Slack messages",
-										hasNotionIntegration && "Notion pages",
-									]
-										.filter(Boolean)
-										.join(
-											" and ",
-										)}. What would you like to analyze?`
-								: `I can help manage your backlog for **${projectName}**. Connect Teams, Slack, or Notion in Settings to enable context-based analysis.`,
-				}}
+				labels={chatLabels}
 				suggestions={
 					intake.intakeMode === "explore"
 						? intake.suggestions

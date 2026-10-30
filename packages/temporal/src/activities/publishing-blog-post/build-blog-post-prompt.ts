@@ -33,6 +33,7 @@ import {
 	type PlanningAnalysisContext,
 	type PlanningAnalysisTopic,
 } from "../publishing-planning/build-planning-analysis-prompt";
+import { WRITING_STYLE_CLAUSE } from "../publishing-shared";
 import { THIN_SUMMARY_IS_RAW_MATERIAL } from "../publishing-shared/authors-note-clause";
 import { recoverBoundBody } from "../publishing-shared/recover-bound-body";
 import { BODY_EXCEPTION_OVERRIDE_WITHOUT_SETTLED_DECISIONS } from "../publishing-shared/settled-approvals";
@@ -215,7 +216,9 @@ ${BODY_EXCEPTION_OVERRIDE_WITHOUT_SETTLED_DECISIONS}
   plausible substitute.
 - Where you generalized rather than asserted something, say so in your safety
   note. A generalized draft that does not say it was generalized reads as a
-  complete one.${restrictedBlock}`;
+  complete one.${restrictedBlock}
+
+${WRITING_STYLE_CLAUSE}`;
 }
 
 // =============================================================================

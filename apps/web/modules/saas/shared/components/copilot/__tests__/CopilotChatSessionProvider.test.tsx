@@ -23,6 +23,7 @@ vi.mock("@copilotkit/react-core", () => ({
 import {
 	CopilotChatSessionProvider,
 	useCopilotChatSession,
+	useCopilotChatSessionActions,
 } from "../CopilotChatSessionProvider";
 
 const SESSION = {
@@ -108,4 +109,25 @@ describe("CopilotChatSessionProvider", () => {
 		// The orphan never reached the hook's provider, so nothing connected.
 		expect(useCopilotChatInternalMock).not.toHaveBeenCalled();
 	});
+});
+
+it("keeps page actions stable while delegating to the latest session", () => {
+	useCopilotChatInternalMock.mockReturnValue(SESSION);
+	const seen: ReturnType<typeof useCopilotChatSessionActions>[] = [];
+	function Actions() {
+		seen.push(useCopilotChatSessionActions());
+		return null;
+	}
+	const child = <Actions />;
+	const view = render(
+		<CopilotChatSessionProvider>{child}</CopilotChatSessionProvider>,
+	);
+	const setMessages = vi.fn();
+	useCopilotChatInternalMock.mockReturnValue({ ...SESSION, setMessages });
+	view.rerender(
+		<CopilotChatSessionProvider>{child}</CopilotChatSessionProvider>,
+	);
+	expect(seen).toHaveLength(1);
+	seen[0].setMessages([]);
+	expect(setMessages).toHaveBeenCalledWith([]);
 });

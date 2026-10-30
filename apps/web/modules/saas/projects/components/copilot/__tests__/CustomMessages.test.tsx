@@ -156,7 +156,7 @@ describe("CustomMessages — a row's identity", () => {
 		liveMessages.length = 0;
 	});
 
-	it("does not mount a live tool call's card again when the history grows ahead of it, and still marks the last row current", () => {
+	it("does not mount a live tool call's card again when the history grows ahead of it, and keeps current status aligned with the merged list", () => {
 		let mounts = 0;
 		let unmounts = 0;
 		function Card() {
@@ -262,8 +262,115 @@ describe("CustomMessages — a row's identity", () => {
 		expect(mounts).toBe(1);
 		expect(unmounts).toBe(0);
 		expect(screen.getAllByTestId("card")).toHaveLength(1);
+		// Persisted outcomes precede the later live reply.
 		expect(current.get("a2")).toBe(true);
 		expect(current.get("a1-tools")).toBe(false);
 		view.unmount();
+	});
+});
+
+describe("CustomMessages — live tool turn ordering", () => {
+	afterEach(() => {
+		hydrated = null;
+		liveMessages.length = 0;
+	});
+	it("anchors live tools before the historical reply and preserves row mounts on reorder", () => {
+		let mounts = 0;
+		let unmounts = 0;
+		function Row({ message }: any) {
+			useEffect(() => {
+				mounts++;
+				return () => {
+					unmounts++;
+				};
+			}, []);
+			return <div data-testid="ordered-row">{message.id}</div>;
+		}
+		const user = { id: "u1", role: "user", content: "Draw" };
+		const reply = { id: "a1", role: "assistant", content: "Saved reply" };
+		const call = {
+			id: "call",
+			role: "assistant",
+			content: "",
+			toolCalls: [{ id: "tc", function: { name: "create_view" } }],
+		};
+		const result = {
+			id: "result",
+			role: "tool",
+			toolCallId: "tc",
+			content: "result",
+		};
+		const orphan = {
+			id: "orphan",
+			role: "assistant",
+			content: "unanchored",
+		};
+		liveMessages.push(orphan, user, call, result, {
+			...reply,
+			content: "Live reply",
+		});
+		const props = { inProgress: false, RenderMessage: Row } as any;
+		const view = render(<CustomMessages {...props} />);
+		const before = mounts;
+		hydrated = {
+			historicalMessages: [user, reply],
+			historicalIdSet: new Set(["u1", "a1"]),
+		};
+		view.rerender(<CustomMessages {...props} />);
+		expect(
+			screen.getAllByTestId("ordered-row").map((row) => row.textContent),
+		).toEqual(["orphan", "u1", "call", "result", "a1"]);
+		expect(mounts).toBe(before);
+		expect(unmounts).toBe(0);
+	});
+});
+
+describe("CustomMessages sync points", () => {
+	afterEach(() => {
+		hydrated = null;
+		liveMessages.length = 0;
+	});
+	it.each([
+		{
+			name: "outcomes before live tail",
+			history: [
+				{ id: "u1", role: "user" },
+				{ id: "a1", role: "assistant" },
+				{ id: "s1", role: "system" },
+				{ id: "s2", role: "system" },
+			],
+			live: ["u1", "a1", "call", "a2"],
+			expected: ["u1", "a1", "s1", "s2", "call", "a2"],
+		},
+		{
+			name: "dropped history ids do not swallow following live rows",
+			history: [
+				{ id: "u1", role: "user" },
+				{ id: "dropped", role: "tool" },
+				{ id: "a1", role: "assistant" },
+			],
+			live: ["u1", "dropped", "call", "a1"],
+			expected: ["u1", "call", "a1"],
+		},
+		{
+			name: "inverted shared ids fall back",
+			history: [
+				{ id: "u1", role: "user" },
+				{ id: "a1", role: "assistant" },
+			],
+			live: ["a1", "call", "u1", "tail"],
+			expected: ["u1", "a1", "call", "tail"],
+		},
+	])("$name", ({ history, live, expected }) => {
+		hydrated = {
+			historicalMessages: history.map((m) => ({ ...m, content: m.id })),
+			historicalIdSet: new Set(history.map((m) => m.id)),
+		};
+		renderWith(live.map((id) => ({ id, role: "assistant", content: id })));
+		expect(
+			screen
+				.getAllByTestId("rendered-message")
+				.map((row) => row.textContent),
+		).toEqual(expected);
 	});
 });

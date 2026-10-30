@@ -15,6 +15,7 @@ export * from "./prisma/queries/lib/conversation-turn-room";
 export * from "./prisma/queries/lib/owner-scoped-schedule";
 // Report instance scheduling (pure: normalization + next-run math)
 export * from "./prisma/queries/lib/report-schedule";
+export * from "./prisma/queries/platform-admin";
 export * from "./prisma/queries/projects/knowledge-search";
 // Daily brief shared schemas
 export * from "./src/daily-brief-schema";

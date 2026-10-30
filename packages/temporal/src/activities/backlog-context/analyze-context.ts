@@ -4716,16 +4716,15 @@ async function applyBacklogChangesWithMergeSignal(
 		skippedDuplicates: skippedDuplicates.length,
 	});
 
-	// Automatic semantic duplicate detection over the newly-created backlog
-	// LEAVES (story/bug-typed changes — matching the manual scan's corpus).
-	// Catches different-title near-duplicates the exact-title guard above
-	// cannot. Enqueued as a fire-and-forget, RETRIED Temporal workflow (not
-	// run inline) so a transient embedding/LLM blip is retried with backoff
-	// instead of being silently swallowed, and so it never blocks or fails
-	// the apply.
-	const createdStoryIds = createdItems
-		.filter((i) => i.type === "story" || i.type === "bug")
-		.map((i) => i.id);
+	// Automatic semantic duplicate detection over every newly-created work
+	// item. Each one is a user_story row (feature, legacy story or bug; epics
+	// were normalized to features), so all of them are in the manual scan's
+	// corpus. Catches different-title near-duplicates the exact-title guard
+	// above cannot. Enqueued as a fire-and-forget, RETRIED Temporal workflow
+	// (not run inline) so a transient embedding/LLM blip is retried with
+	// backoff instead of being silently swallowed, and so it never blocks or
+	// fails the apply.
+	const createdStoryIds = createdItems.map((i) => i.id);
 	let duplicateDetectionWorkflowId: string | null = null;
 	if (createdStoryIds.length > 0) {
 		const enqueued = await triggerDuplicateDetection({

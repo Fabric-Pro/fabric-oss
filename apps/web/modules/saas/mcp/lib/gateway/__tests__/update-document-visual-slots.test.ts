@@ -26,7 +26,20 @@ const mocks = vi.hoisted(() => ({
 	emitDocumentChange: vi.fn(),
 	isProposalClientDocument: vi.fn(),
 	getProjectAccessContext: vi.fn(),
+	buildSettledDecisionsBlock: vi.fn(),
 }));
+
+// The AI write check of a client-document Proposal's content write; its
+// rules are covered in update-document-client-proposal-check.test.ts.
+vi.mock(
+	"@repo/temporal/proposal-artifact-settled-decisions",
+	async (importOriginal) => ({
+		...(await importOriginal<
+			typeof import("@repo/temporal/proposal-artifact-settled-decisions")
+		>()),
+		buildSettledDecisionsBlock: mocks.buildSettledDecisionsBlock,
+	}),
+);
 
 vi.mock("@repo/api/lib/realtime", () => ({
 	emitDocumentChange: mocks.emitDocumentChange,
@@ -51,6 +64,8 @@ vi.mock("@repo/database", () => ({
 	updateDocument: mocks.updateDocument,
 	getDocumentById: mocks.getDocumentById,
 	isProposalClientDocument: mocks.isProposalClientDocument,
+	listProposalVisualSpecSummaries: vi.fn(async () => []),
+	sanitizeContent: (content: string) => content,
 	getProjectAccessContext: mocks.getProjectAccessContext,
 	IntegrationContractStatusManagedError: class extends Error {},
 	DocumentVersionConflictError: class DocumentVersionConflictError extends Error {},
@@ -149,6 +164,7 @@ beforeEach(() => {
 	);
 	mocks.getDocumentById.mockResolvedValue(storedDocument(STORED_WITH_SLOT));
 	mocks.isProposalClientDocument.mockResolvedValue(false);
+	mocks.buildSettledDecisionsBlock.mockResolvedValue(null);
 	mocks.updateDocument.mockResolvedValue({
 		id: "doc-1",
 		title: "Proposal",
@@ -872,7 +888,7 @@ describe("fabric_update_document honours a base", () => {
 		expect(mocks.emitDocumentChange).not.toHaveBeenCalled();
 	});
 
-	it("guards a finished Proposal's write with the Proposal gate off, without consulting it", async () => {
+	it("guards a finished Proposal's write with the Proposal gate off", async () => {
 		mocks.isProposalClientDocument.mockResolvedValue(false);
 		mocks.getDocumentById.mockResolvedValue(proposalRow());
 
@@ -883,7 +899,13 @@ describe("fabric_update_document honours a base", () => {
 		);
 
 		expect(result.isError).toBeUndefined();
-		expect(mocks.isProposalClientDocument).not.toHaveBeenCalled();
+		// The gate is read for the AI write check only, which a gate-off
+		// Proposal skips; the guard is the same either way.
+		expect(mocks.isProposalClientDocument).toHaveBeenCalledWith({
+			organizationId: "org-owner",
+			documentType: "PROPOSAL",
+		});
+		expect(mocks.buildSettledDecisionsBlock).not.toHaveBeenCalled();
 		expect(writeOptions().expectedVersion).toBe(7);
 		expect(writeOptions().expectedContentHash).toBe(
 			contentIdentity(STORED_WITHOUT_SLOT),

@@ -15,6 +15,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Tabs, TabsList } from "@ui/components/tabs";
+import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 // FR6(b). The tab must DELEGATE its label, not compute one. A spy rather than a
@@ -114,6 +115,19 @@ function thread(over: Record<string, unknown> = {}) {
  * `publishing-topic-item-page.test.tsx`. What is asserted here is the part this
  * module still owns: a failed read must not let a type claim GENERATED.
  */
+function ControlledTabs({
+	children,
+}: {
+	children: (activeTab: string) => React.ReactNode;
+}) {
+	const [activeTab, setActiveTab] = useState("TWEET");
+	return (
+		<Tabs value={activeTab} onValueChange={setActiveTab}>
+			{children(activeTab)}
+		</Tabs>
+	);
+}
+
 function renderTabs(
 	over: Partial<
 		Parameters<typeof buildGenerationTabModel>[0] &
@@ -137,28 +151,33 @@ function renderTabs(
 	const model = buildGenerationTabModel(input);
 	return render(
 		<QueryClientProvider client={client}>
-			<Tabs defaultValue="TWEET">
-				<TabsList aria-label="Content generation">
-					<GenerationTabTriggers
-						model={model}
-						postTypes={ALL_POST_TYPES}
-					/>
-				</TabsList>
-				<GenerationTabPanels
-					model={model}
-					postTypes={ALL_POST_TYPES}
-					projectId="p1"
-					organizationId="org1"
-					topicId="t1"
-					canEdit={true}
-					analysis={input.analysis}
-					drafts={input.drafts}
-					workingDrafts={input.workingDrafts}
-					decisionThreads={input.decisionThreads}
-					isLoading={false}
-					{...over}
-				/>
-			</Tabs>
+			<ControlledTabs>
+				{(activeTab) => (
+					<>
+						<TabsList aria-label="Content generation">
+							<GenerationTabTriggers
+								model={model}
+								postTypes={ALL_POST_TYPES}
+							/>
+						</TabsList>
+						<GenerationTabPanels
+							activeTab={activeTab}
+							model={model}
+							postTypes={ALL_POST_TYPES}
+							projectId="p1"
+							organizationId="org1"
+							topicId="t1"
+							canEdit={true}
+							analysis={input.analysis}
+							drafts={input.drafts}
+							workingDrafts={input.workingDrafts}
+							decisionThreads={input.decisionThreads}
+							isLoading={false}
+							{...over}
+						/>
+					</>
+				)}
+			</ControlledTabs>
 		</QueryClientProvider>,
 	);
 }
@@ -298,7 +317,7 @@ describe("GenerationTabs — state is in the accessible name (FR5)", () => {
 		).toBeInTheDocument();
 	});
 
-	it("shows how many questions stand in the way, not the words", () => {
+	it("does not repeat topic-wide questions on content tabs", () => {
 		// The strip used to stack a state chip, a caution chip and a changed
 		// chip -- four 10px uppercase pills on one row, louder than the tabs
 		// they annotated. One mark now, and where there is a count it IS the
@@ -321,9 +340,9 @@ describe("GenerationTabs — state is in the accessible name (FR5)", () => {
 		});
 
 		const tab = within(tablist()).getByRole("tab", {
-			name: /blog post.*2 unresolved questions/i,
+			name: /blog post/i,
 		});
-		expect(within(tab).getByText("2")).toBeInTheDocument();
+		expect(within(tab).queryByText(/unresolved questions/i)).toBeNull();
 	});
 
 	it("says a draft is being written, so a reader elsewhere learns it finished", () => {
@@ -399,7 +418,7 @@ describe("GenerationTabs — state is in the accessible name (FR5)", () => {
 		).toBeInTheDocument();
 		expect(
 			within(tablist()).queryByRole("tab", {
-				name: /blog post.*needs confirmation/i,
+				name: /blog post.*available/i,
 			}),
 		).not.toBeInTheDocument();
 	});
@@ -428,7 +447,7 @@ describe("GenerationTabs — state is in the accessible name (FR5)", () => {
 		expect(tab).toBeInTheDocument();
 	});
 
-	it("says Needs confirmation when there IS something to answer", () => {
+	it("does not mark content tabs for global approvals", () => {
 		// The other side of the split: an unresolved approval that constrains
 		// every content type is answerable, and keeps the original wording.
 		renderTabs({
@@ -448,7 +467,7 @@ describe("GenerationTabs — state is in the accessible name (FR5)", () => {
 
 		expect(
 			within(tablist()).getByRole("tab", {
-				name: /blog post.*needs confirmation/i,
+				name: /blog post.*available/i,
 			}),
 		).toBeInTheDocument();
 	});
@@ -537,14 +556,18 @@ describe("GenerationTabs — panel content", () => {
 			}),
 		});
 
-		expect(screen.getByText(/a crisp result/i)).toBeInTheDocument();
+		expect(
+			within(screen.getByRole("tabpanel")).getByText(/a crisp result/i),
+		).toBeInTheDocument();
 	});
 
 	it("says planning has not run rather than inventing a recommendation", () => {
 		renderTabs({ analysis: null });
 
 		expect(
-			screen.getByText(/no planning analysis yet/i),
+			within(screen.getByRole("tabpanel")).getByText(
+				/no planning analysis yet/i,
+			),
 		).toBeInTheDocument();
 	});
 
@@ -555,9 +578,13 @@ describe("GenerationTabs — panel content", () => {
 		// only one of them actionable.
 		renderTabs({ decisionThreads: [thread()] });
 
-		expect(screen.getByText("the customer name")).toBeInTheDocument();
 		expect(
-			screen.queryByText(/may we name the customer\?/i),
+			within(screen.getByRole("tabpanel")).getByText("the customer name"),
+		).toBeInTheDocument();
+		expect(
+			within(screen.getByRole("tabpanel")).queryByText(
+				/may we name the customer\?/i,
+			),
 		).not.toBeInTheDocument();
 	});
 
@@ -664,15 +691,19 @@ describe("GenerationTabs — panel content", () => {
 		// a tweet — a tweet that cannot yet claim a number simply omits it — so
 		// neither restriction section appears at all.
 		expect(
-			screen.queryByText(/unresolved approvals/i),
+			within(screen.getByRole("tabpanel")).queryByText(
+				/unresolved approvals/i,
+			),
 		).not.toBeInTheDocument();
 		expect(
-			screen.queryByText(
+			within(screen.getByRole("tabpanel")).queryByText(
 				/unresolved questions that constrain this type/i,
 			),
 		).not.toBeInTheDocument();
 		expect(
-			screen.queryByText("how strongly the result may be stated"),
+			within(screen.getByRole("tabpanel")).queryByText(
+				"how strongly the result may be stated",
+			),
 		).not.toBeInTheDocument();
 
 		await user.click(
@@ -680,7 +711,9 @@ describe("GenerationTabs — panel content", () => {
 		);
 
 		expect(
-			screen.getByText(/unresolved questions that constrain this type/i),
+			within(screen.getByRole("tabpanel")).getByText(
+				/unresolved questions that constrain this type/i,
+			),
 		).toBeInTheDocument();
 		expect(
 			screen.getAllByRole("listitem").map((li) => li.textContent),
@@ -744,10 +777,10 @@ describe("GenerationTabs — panel content", () => {
 
 		// Scoped to each section, so a build that rendered both subjects under
 		// one heading cannot pass.
-		const approvals = screen
+		const approvals = within(screen.getByRole("tabpanel"))
 			.getByText(/unresolved approvals/i)
 			.closest("section") as HTMLElement;
-		const questions = screen
+		const questions = within(screen.getByRole("tabpanel"))
 			.getByText(/unresolved questions that constrain this type/i)
 			.closest("section") as HTMLElement;
 
@@ -777,12 +810,16 @@ describe("GenerationTabs — panel content", () => {
 		const user = userEvent.setup();
 		renderTabs({ decisionThreads: [thread()] });
 
-		expect(screen.getByText("the customer name")).toBeInTheDocument();
+		expect(
+			within(screen.getByRole("tabpanel")).getByText("the customer name"),
+		).toBeInTheDocument();
 
 		await user.click(
 			within(tablist()).getByRole("tab", { name: /case study/i }),
 		);
-		expect(screen.getByText("the customer name")).toBeInTheDocument();
+		expect(
+			within(screen.getByRole("tabpanel")).getByText("the customer name"),
+		).toBeInTheDocument();
 	});
 
 	it("gives the two 2C types DIFFERENT restriction sets on the same thread", async () => {
@@ -843,7 +880,9 @@ describe("GenerationTabs — panel content", () => {
 		await user.click(
 			within(tablist()).getByRole("tab", { name: /stakeholder email/i }),
 		);
-		expect(screen.getByText("the customer name")).toBeInTheDocument();
+		expect(
+			within(screen.getByRole("tabpanel")).getByText("the customer name"),
+		).toBeInTheDocument();
 	});
 
 	it("DOES offer a generate control on the case study tab", async () => {
@@ -892,7 +931,9 @@ describe("GenerationTabs — panel content", () => {
 		// And the 2B-1 placeholder it replaced is gone rather than merely
 		// hidden behind it.
 		expect(
-			screen.queryByText(/arrives in the next release/i),
+			within(screen.getByRole("tabpanel")).queryByText(
+				/arrives in the next release/i,
+			),
 		).not.toBeInTheDocument();
 	});
 
@@ -1096,7 +1137,7 @@ describe("GenerationTabs — naming an unresolved approval (Fizzy #1988)", () =>
 		await user.click(
 			within(tablist()).getByRole("tab", { name: /case study/i }),
 		);
-		const approvals = screen
+		const approvals = within(screen.getByRole("tabpanel"))
 			.getByText(/unresolved approvals/i)
 			.closest("section") as HTMLElement;
 		expect(
@@ -1126,7 +1167,7 @@ describe("GenerationTabs — naming an unresolved approval (Fizzy #1988)", () =>
 		await user.click(
 			within(tablist()).getByRole("tab", { name: /case study/i }),
 		);
-		const approvals = screen
+		const approvals = within(screen.getByRole("tabpanel"))
 			.getByText(/unresolved approvals/i)
 			.closest("section") as HTMLElement;
 		const labels = within(approvals)
@@ -1198,4 +1239,74 @@ describe("GenerationTabs — naming an unresolved approval (Fizzy #1988)", () =>
 		// Named rather than counted, so a failure says WHICH file to look at.
 		expect(offenders).toEqual([]);
 	});
+});
+
+it("marks only the type with a type-specific question and preserves Changed beside its caution", async () => {
+	const model = buildGenerationTabModel({
+		analysis: null,
+		drafts: [],
+		workingDrafts: [],
+		decisionThreads: [
+			thread({
+				decisionKind: "CODEBASE_DETAIL",
+				subject: "Example technical detail",
+			}),
+		],
+		hasError: false,
+	});
+	expect(model.byPostType.get("CASE_STUDY")?.attention.typeQuestion).toBe(
+		true,
+	);
+	expect(model.restrictions.countByPostType.get("CASE_STUDY")).toBe(1);
+	renderTabs({
+		readMarkers: { CASE_STUDY: "2025-01-01" },
+		decisionThreads: [
+			thread({
+				decisionKind: "CODEBASE_DETAIL",
+				subject: "Example technical detail",
+			}),
+		],
+		drafts: [
+			{
+				postType: "CASE_STUDY",
+				latestReady: {
+					id: "example-ready",
+					version: 2,
+					status: "READY",
+					createdAt: "2026-01-01",
+					updatedAt: "2026-01-01",
+				},
+				latestAttempt: null,
+				versions: [],
+			},
+		],
+	});
+	const tab = within(tablist()).getByRole("tab", {
+		name: /case study.*needs confirmation/i,
+	});
+	expect(tab).toHaveAccessibleName(/changed since your last visit/i);
+	expect(within(tab).getByText("Changed")).toBeVisible();
+	expect(
+		within(tablist()).getAllByRole("tab", { name: /needs confirmation/i }),
+	).toHaveLength(2);
+});
+
+it("places the Advanced caution paragraph at the top of the content panel", async () => {
+	const user = userEvent.setup();
+	renderTabs({
+		decisionThreads: [
+			thread({
+				decisionKind: "CODEBASE_DETAIL",
+				subject: "Example technical detail",
+			}),
+		],
+	});
+	await user.click(
+		within(tablist()).getByRole("tab", { name: /case study/i }),
+	);
+	const caution = within(screen.getByRole("tabpanel")).getByText(
+		"Needs confirmation — unresolved questions or approvals constrain this draft.",
+	);
+	expect(caution).toBeVisible();
+	expect(caution.parentElement?.firstElementChild).toBe(caution);
 });

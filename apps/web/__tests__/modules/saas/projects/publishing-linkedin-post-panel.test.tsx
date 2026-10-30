@@ -21,6 +21,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mutate = vi.hoisted(() => ({
 	generate: vi.fn(),
+	saveBody: vi.fn(),
 	select: vi.fn(),
 	refine: vi.fn(),
 	confirm: vi.fn(() => true),
@@ -67,6 +68,7 @@ vi.mock("@tanstack/react-query", () => ({
 		// that wrote on the reader's behalf pass every assertion here.
 		const byKey: Record<string, ReturnType<typeof vi.fn>> = {
 			generateLinkedInPost: mutate.generate,
+			saveLinkedInPostBody: mutate.saveBody,
 			refineDraft: mutate.refine,
 			acceptRefinement: mutate.acceptRefinement,
 			rejectRefinement: mutate.rejectRefinement,
@@ -1129,4 +1131,44 @@ describe("LinkedInPostPanel — the refine pending state", () => {
 			/revising your saved linkedin post/i,
 		);
 	});
+});
+
+it("keeps the original save baseline when the saved draft changes underneath edits", async () => {
+	const user = userEvent.setup();
+	const working = {
+		postType: "LINKEDIN_POST" as const,
+		hasBody: true,
+		body: "Example saved body",
+		sourceDraftId: null,
+		sourceOptionLabel: null,
+		updatedAt: new Date("2026-01-01"),
+	};
+	const draft = readyDraft();
+	const view = renderPanel({ working, draft });
+	const editor = screen.getByRole("textbox", { name: /working/i });
+	await user.type(editor, " unsaved edit");
+	view.rerender(
+		<LinkedInPostPanel
+			projectId="example-project"
+			topicId="example-topic"
+			organizationId="example-org"
+			canEdit
+			draft={draft}
+			working={{
+				...working,
+				body: "Example replacement",
+				updatedAt: new Date("2026-01-02"),
+			}}
+		/>,
+	);
+	expect(
+		screen.getByText(/saved draft changed while you were editing/i),
+	).toBeVisible();
+	expect(editor).toHaveValue("Example saved body unsaved edit");
+	await user.click(screen.getByRole("button", { name: /^save/i }));
+	expect(mutate.saveBody).toHaveBeenCalledWith(
+		expect.objectContaining({ expectedUpdatedAt: new Date("2026-01-01") }),
+	);
+	await user.click(screen.getByRole("button", { name: "Discard my edits" }));
+	expect(editor).toHaveValue("Example replacement");
 });

@@ -24,11 +24,28 @@ import {
 	type AgentRuntimeConfig,
 	createUnifiedServer,
 	getUserFacingError,
+	type LangGraphExecutor,
+	type LangGraphPlatformStreamExecutor,
 	type LangGraphStreamEvent,
 } from "@repo/agent-core/unified-server";
 import type { DocumentType, ProjectContext } from "@repo/agent-types";
 import { v4 as uuidv4 } from "uuid";
 import { projectDocumentGeneratorGraph } from "./agent.js";
+import {
+	offeredFrontendActions,
+	selectFrontendActions,
+} from "./nodes/frontend-actions.js";
+import {
+	guestEmittedState,
+	isGuestArtifactRun,
+	PROPOSAL_GUEST_ERROR_REPLY,
+	proposalRunKeys,
+	readProposalClientConfig,
+} from "./nodes/proposal-client-mode.js";
+import {
+	PUBLISHING_TOPIC_READABLE,
+	readPublishingTopic,
+} from "./publishing-topic.js";
 import { DEFAULT_RECURSION_LIMIT } from "./utils/index.js";
 
 /**
@@ -73,8 +90,116 @@ function parseToolCallArgs(
 	return {};
 }
 
+/**
+ * Message content stays out of the logs on a classified Proposal run: the
+ * conversation can carry a server-only prompt the model repeated
+ * (Fizzy #2946). Ids and counts only.
+ */
+function contentPreviewForLog(
+	content: unknown,
+	length: number,
+	redact: boolean,
+): { contentPreview?: string } {
+	if (redact) {
+		return {};
+	}
+	return {
+		contentPreview:
+			typeof content === "string"
+				? content.substring(0, length)
+				: JSON.stringify(content)?.substring(0, length),
+	};
+}
+
+/** Whether the run config names a guest's artifact Proposal run. */
+function isGuestRunConfig(config: AgentRuntimeConfig | undefined): boolean {
+	return isGuestArtifactRun(
+		readProposalClientConfig(
+			config?.configurable as Record<string, unknown> | undefined,
+		),
+	);
+}
+
+/**
+ * The generic error a guest's failed run ends in, with the failure logged by
+ * its type and codes only: a provider's or the runtime's error text can
+ * repeat the request, the bound prompt included. A new error with no
+ * `cause`, since the server logs the thrown error whole.
+ */
+function guestRunError(error: unknown): Error {
+	const details = (error ?? {}) as {
+		code?: unknown;
+		status?: unknown;
+	};
+	console.error("[UnifiedServer] Guest run on a client Proposal failed", {
+		errorType:
+			error instanceof Error ? error.constructor.name : typeof error,
+		...(typeof details.code === "string" || typeof details.code === "number"
+			? { errorCode: details.code }
+			: {}),
+		...(typeof details.status === "number"
+			? { httpStatus: details.status }
+			: {}),
+	});
+	return new Error(PROPOSAL_GUEST_ERROR_REPLY);
+}
+
+/**
+ * The stream executor, with a guest's failed run on an artifact Proposal
+ * ending in one generic error (Fizzy #2946). The server turns a thrown error's
+ * message into the browser's `RUN_ERROR`. Every other run's error passes as
+ * it is.
+ */
+function withGuestRunErrors(
+	execute: LangGraphPlatformStreamExecutor,
+): LangGraphPlatformStreamExecutor {
+	return async function* (input, config) {
+		try {
+			yield* execute(input, config);
+		} catch (error) {
+			if (!isGuestRunConfig(config)) {
+				throw error;
+			}
+			throw guestRunError(error);
+		}
+	};
+}
+
+/**
+ * The synchronous executor, the same for a guest on an artifact Proposal: a
+ * thrown error becomes the generic one, and an output carrying an error
+ * returns the generic reply as its error and its text, which the server and
+ * the A2A transform hand back as they are. Every other run's result passes
+ * as it is.
+ */
+function withGuestInvokeErrors(execute: LangGraphExecutor): LangGraphExecutor {
+	return async (input, config) => {
+		if (!isGuestRunConfig(config)) {
+			return execute(input, config);
+		}
+		let output: Awaited<ReturnType<LangGraphExecutor>>;
+		try {
+			output = await execute(input, config);
+		} catch (error) {
+			throw guestRunError(error);
+		}
+		if (!output.error) {
+			return output;
+		}
+		console.error("[UnifiedServer] Guest run on a client Proposal failed", {
+			errorType: "graph_error",
+		});
+		return {
+			...output,
+			error: PROPOSAL_GUEST_ERROR_REPLY,
+			textResponse: PROPOSAL_GUEST_ERROR_REPLY,
+		};
+	};
+}
+
 function normalizeMessages(
 	messages: Array<Record<string, unknown>>,
+	options: { redactContent?: boolean } = {},
 ): BaseMessage[] {
 	// Debug: Log raw messages to understand what CopilotKit sends
 	console.log(
@@ -89,10 +214,11 @@ function normalizeMessages(
 				0,
 			hasToolCallId: !!(msg.tool_call_id || msg.toolCallId),
 			toolCallId: msg.tool_call_id || msg.toolCallId,
-			contentPreview:
-				typeof msg.content === "string"
-					? msg.content.substring(0, 100)
-					: JSON.stringify(msg.content)?.substring(0, 100),
+			...contentPreviewForLog(
+				msg.content,
+				100,
+				options.redactContent === true,
+			),
 		})),
 	);
 
@@ -396,10 +522,14 @@ const { app, start } = createUnifiedServer(
 		supportsStreaming: true, // Enable streaming for CopilotKit
 	},
 	// Invoke function - wraps the LangGraph graph
-	async (input, runtimeConfig) => {
+	withGuestInvokeErrors(async (input, runtimeConfig) => {
 		const rawMessages = input.messages as Array<Record<string, unknown>>;
+		const proposalConfig = readProposalClientConfig(
+			runtimeConfig?.configurable as Record<string, unknown> | undefined,
+		);
+		const redactContent = proposalConfig.mode !== "none";
 		// Normalize messages from CopilotKit format to LangChain format
-		const messages = normalizeMessages(rawMessages);
+		const messages = normalizeMessages(rawMessages, { redactContent });
 		const documentType = ((input.documentType as string) ||
 			"general") as DocumentType;
 
@@ -532,6 +662,9 @@ const { app, start } = createUnifiedServer(
 			undefined;
 		const suppressFabricMethodology =
 			copilotKitState?.suppressFabricMethodology === true;
+		const publishingTopic = readPublishingTopic(
+			findReadableValue(PUBLISHING_TOPIC_READABLE),
+		);
 
 		// Extract current document for editing/regeneration context
 		// PRIORITY: state > readable context > direct input
@@ -551,30 +684,16 @@ const { app, start } = createUnifiedServer(
 			(input.document as string) ||
 			"";
 
-		// Extract CopilotKit frontend actions from various locations
-		// CopilotKit sends actions in different locations depending on the protocol version:
-		// - AG-UI protocol: body.tools (array of actions)
-		// - CopilotKit SDK: body.state.copilotkit.actions
-		const bodyTools = input.tools as any[] | undefined;
-		const stateCopilotkit = (input.state as any)?.copilotkit as
-			| { actions?: any[] }
-			| undefined;
-
-		// Build copilotkit object from whichever source has actions
-		// Filter out MCP server tools - they typically have patterns like "server-id_tool_name"
-		// Keep only CopilotKit frontend actions which use simple names like "confirm_changes", "regenerate_document"
-		const allActions = stateCopilotkit?.actions || bodyTools || [];
-		const actions = allActions.filter((a: any) => {
-			const name = a.name || "";
-			// MCP tools have patterns like "fizzy-mcp-xxx_tool_name" or "firecrawl_tool_name"
-			// They typically contain both dashes and underscores, or multiple underscores
-			// CopilotKit actions are simple: "confirm_changes", "regenerate_document"
-			const hasDashAndUnderscore =
-				name.includes("-") && name.includes("_");
-			const hasMultipleUnderscores = (name.match(/_/g) || []).length > 1;
-			const isMcpTool = hasDashAndUnderscore || hasMultipleUnderscores;
-			return !isMcpTool;
-		});
+		// CopilotKit's frontend actions (AG-UI `tools`, or the SDK's
+		// `state.copilotkit.actions`), less any MCP server's tool. A
+		// classified Proposal run keeps only the actions that leave Main
+		// alone: the graph binds this list and routes frontend calls by it, so
+		// a writer such as `suggest_diagram` never reaches the model.
+		const allActions = offeredFrontendActions(input);
+		const actions = selectFrontendActions(
+			allActions,
+			proposalConfig,
+		) as any[];
 		const copilotkit =
 			actions.length > 0
 				? {
@@ -608,8 +727,12 @@ const { app, start } = createUnifiedServer(
 				systemPromptLength: systemPrompt?.length || 0,
 				hasCurrentDocument: !!currentDocument,
 				currentDocumentLength: currentDocument?.length || 0,
-				currentDocumentPreview:
-					currentDocument?.substring(0, 100) || "(empty)",
+				...(redactContent
+					? {}
+					: {
+							currentDocumentPreview:
+								currentDocument?.substring(0, 100) || "(empty)",
+						}),
 				// Debug: What state did CopilotKit send?
 				hasCopilotKitState: !!copilotKitState,
 				copilotKitStateKeys: copilotKitState
@@ -633,10 +756,14 @@ const { app, start } = createUnifiedServer(
 						"tool_calls" in m &&
 						!!(m as AIMessage).tool_calls?.length,
 					hasToolCallId: "tool_call_id" in m,
-					contentPreview:
-						typeof m.content === "string"
-							? m.content.substring(0, 50)
-							: String(m.content).substring(0, 50),
+					...(redactContent
+						? {}
+						: {
+								contentPreview:
+									typeof m.content === "string"
+										? m.content.substring(0, 50)
+										: String(m.content).substring(0, 50),
+							}),
 				})),
 			},
 		);
@@ -646,6 +773,11 @@ const { app, start } = createUnifiedServer(
 		const configurable = {
 			...buildAgentConfigurable(input),
 			...(input.ai_base_url ? { ai_gateway_url: input.ai_base_url } : {}),
+			...proposalRunKeys(
+				runtimeConfig?.configurable as
+					| Record<string, unknown>
+					| undefined,
+			),
 		};
 
 		// Invoke the LangGraph graph with FULL message history
@@ -662,6 +794,7 @@ const { app, start } = createUnifiedServer(
 				ragContexts: ragContexts,
 				systemPrompt, // Pass custom system prompt from Temporal workflow or Prompt Library
 				suppressFabricMethodology,
+				publishingTopic,
 				document: currentDocument, // Pass current document for regeneration context
 				copilotkit, // Pass CopilotKit state (frontend actions) to the graph
 				// Teams integration state for server-side tool execution
@@ -739,7 +872,7 @@ const { app, start } = createUnifiedServer(
 			textResponse: responseText,
 			error: result.error,
 		};
-	},
+	}),
 	// Transform output for A2A response
 	(output) => {
 		// Prefer document, but fall back to textResponse if available
@@ -772,7 +905,7 @@ const { app, start } = createUnifiedServer(
 	undefined,
 	// Platform streaming executor for CopilotKit LangGraphAgent
 	// Uses streamMode: ["updates", "messages"] to get both node updates AND LLM token streaming
-	async function* (
+	withGuestRunErrors(async function* (
 		input,
 		config?: AgentRuntimeConfig,
 	): AsyncGenerator<LangGraphStreamEvent> {
@@ -790,8 +923,22 @@ const { app, start } = createUnifiedServer(
 		});
 
 		const rawMessages = input.messages as Array<Record<string, unknown>>;
+		// A classified Proposal run logs ids and counts only, and an artifact
+		// run ignores any prompt, methodology flag or skill in the client's
+		// state: its prompt arrives as run config (Fizzy #2946).
+		const proposalConfig = readProposalClientConfig(
+			config?.configurable as Record<string, unknown> | undefined,
+		);
+		const proposalMode = proposalConfig.mode;
+		const redactContent = proposalMode !== "none";
+		const artifactProposal = proposalMode === "artifact";
+		// A guest on an artifact Proposal receives each update with its
+		// assistant messages reduced to the checked reply and tool calls and
+		// no reasoning; the graph's own state keeps the rest for replay.
+		const guestArtifact =
+			artifactProposal && proposalConfig.viewer === "guest";
 		// Normalize messages from CopilotKit format to LangChain format
-		const messages = normalizeMessages(rawMessages);
+		const messages = normalizeMessages(rawMessages, { redactContent });
 		const documentType = ((input.documentType as string) ||
 			"general") as DocumentType;
 
@@ -919,6 +1066,9 @@ const { app, start } = createUnifiedServer(
 			undefined;
 		const suppressFabricMethodology =
 			copilotKitState?.suppressFabricMethodology === true;
+		const publishingTopic = readPublishingTopic(
+			findReadableValue(PUBLISHING_TOPIC_READABLE),
+		);
 
 		// Extract current document for editing/regeneration context
 		// PRIORITY: state > readable context > direct input
@@ -938,30 +1088,16 @@ const { app, start } = createUnifiedServer(
 			(input.document as string) ||
 			"";
 
-		// Extract CopilotKit frontend actions from various locations
-		// CopilotKit sends actions in different locations depending on the protocol version:
-		// - AG-UI protocol: body.tools (array of actions)
-		// - CopilotKit SDK: body.state.copilotkit.actions
-		const bodyTools = input.tools as any[] | undefined;
-		const stateCopilotkit = (input.state as any)?.copilotkit as
-			| { actions?: any[] }
-			| undefined;
-
-		// Build copilotkit object from whichever source has actions
-		// Filter out MCP server tools - they typically have patterns like "server-id_tool_name"
-		// Keep only CopilotKit frontend actions which use simple names like "confirm_changes", "regenerate_document"
-		const allActions = stateCopilotkit?.actions || bodyTools || [];
-		const actions = allActions.filter((a: any) => {
-			const name = a.name || "";
-			// MCP tools have patterns like "fizzy-mcp-xxx_tool_name" or "firecrawl_tool_name"
-			// They typically contain both dashes and underscores, or multiple underscores
-			// CopilotKit actions are simple: "confirm_changes", "regenerate_document"
-			const hasDashAndUnderscore =
-				name.includes("-") && name.includes("_");
-			const hasMultipleUnderscores = (name.match(/_/g) || []).length > 1;
-			const isMcpTool = hasDashAndUnderscore || hasMultipleUnderscores;
-			return !isMcpTool;
-		});
+		// CopilotKit's frontend actions (AG-UI `tools`, or the SDK's
+		// `state.copilotkit.actions`), less any MCP server's tool. A
+		// classified Proposal run keeps only the actions that leave Main
+		// alone: the graph binds this list and routes frontend calls by it, so
+		// a writer such as `suggest_diagram` never reaches the model.
+		const allActions = offeredFrontendActions(input);
+		const actions = selectFrontendActions(
+			allActions,
+			proposalConfig,
+		) as any[];
 		const copilotkit =
 			actions.length > 0
 				? {
@@ -987,8 +1123,12 @@ const { app, start } = createUnifiedServer(
 				systemPromptLength: systemPrompt?.length || 0,
 				hasCurrentDocument: !!currentDocument,
 				currentDocumentLength: currentDocument?.length || 0,
-				currentDocumentPreview:
-					currentDocument?.substring(0, 100) || "(empty)",
+				...(redactContent
+					? {}
+					: {
+							currentDocumentPreview:
+								currentDocument?.substring(0, 100) || "(empty)",
+						}),
 				// Debug: What state did CopilotKit send? (prioritized over input.document)
 				hasCopilotKitState: !!copilotKitState,
 				copilotKitStateKeys: copilotKitState
@@ -1016,10 +1156,14 @@ const { app, start } = createUnifiedServer(
 						"tool_calls" in m &&
 						!!(m as AIMessage).tool_calls?.length,
 					hasToolCallId: "tool_call_id" in m,
-					contentPreview:
-						typeof m.content === "string"
-							? m.content.substring(0, 50)
-							: String(m.content).substring(0, 50),
+					...(redactContent
+						? {}
+						: {
+								contentPreview:
+									typeof m.content === "string"
+										? m.content.substring(0, 50)
+										: String(m.content).substring(0, 50),
+							}),
 				})),
 			},
 		);
@@ -1031,14 +1175,27 @@ const { app, start } = createUnifiedServer(
 			{
 				messages,
 				documentType,
-				projectContext: {
-					name: projectContext.name || "",
-					techStack: projectContext.techStack || [],
-					features: projectContext.features || [],
-				} as ProjectContext,
-				ragContexts: ragContexts,
-				systemPrompt, // Pass custom system prompt from Temporal workflow or Prompt Library
-				suppressFabricMethodology,
+				// An artifact Proposal takes no project context or rag context
+				// from the client, readable, state or input alike: no client
+				// text may sit beside its bound prompt. Its chat reads the
+				// project through `search_project_knowledge`, and the project
+				// id below still resolves.
+				projectContext: (artifactProposal
+					? { name: "", techStack: [], features: [] }
+					: {
+							name: projectContext.name || "",
+							techStack: projectContext.techStack || [],
+							features: projectContext.features || [],
+						}) as ProjectContext,
+				ragContexts: artifactProposal ? [] : ragContexts,
+				// Pass custom system prompt from Temporal workflow or Prompt
+				// Library. An artifact Proposal's prompt is run config, so any
+				// prompt or methodology flag in the client's state is dropped.
+				systemPrompt: artifactProposal ? undefined : systemPrompt,
+				suppressFabricMethodology: artifactProposal
+					? false
+					: suppressFabricMethodology,
+				publishingTopic,
 				document: currentDocument, // Pass current document for regeneration context
 				copilotkit, // Pass CopilotKit state (frontend actions) to the graph
 				// Teams integration state for server-side tool execution
@@ -1077,9 +1234,10 @@ const { app, start } = createUnifiedServer(
 					(copilotKitState?.documentId as string) ||
 					(input.documentId as string) ||
 					undefined,
-				activeSkill: ((copilotKitState?.activeSkill ||
-					input.activeSkill) ??
-					undefined) as
+				activeSkill: (artifactProposal
+					? undefined
+					: ((copilotKitState?.activeSkill || input.activeSkill) ??
+						undefined)) as
 					| {
 							slug: string;
 							skillMd: string;
@@ -1127,7 +1285,11 @@ const { app, start } = createUnifiedServer(
 				for (const [nodeName, stateUpdate] of Object.entries(
 					data as Record<string, unknown>,
 				)) {
-					const state = stateUpdate as Record<string, unknown>;
+					const state = (
+						guestArtifact
+							? guestEmittedState(stateUpdate)
+							: stateUpdate
+					) as Record<string, unknown>;
 					lastNodeName = nodeName;
 
 					console.log(
@@ -1181,9 +1343,15 @@ const { app, start } = createUnifiedServer(
 				}
 				streamUpdateCount++;
 
-				// Check if this is a tool call chunk with document content
+				// Check if this is a tool call chunk with document content.
+				// An artifact run streams no preview, for a member as for a
+				// guest: an artifact Proposal never takes a whole-body write
+				// (the chat node refuses one), so the preview would show a
+				// document that never applies, and for a guest unchecked text
+				// as the model writes it.
 				const msgAny = message as any;
 				if (
+					!artifactProposal &&
 					msgAny?.tool_call_chunks &&
 					msgAny.tool_call_chunks.length > 0
 				) {
@@ -1198,7 +1366,11 @@ const { app, start } = createUnifiedServer(
 								"[Project Document Generator] Predictive state update:",
 								{
 									partialDocLength: partialDoc.length,
-									preview: `${partialDoc.substring(0, 50)}...`,
+									...(redactContent
+										? {}
+										: {
+												preview: `${partialDoc.substring(0, 50)}...`,
+											}),
 								},
 							);
 
@@ -1218,7 +1390,7 @@ const { app, start } = createUnifiedServer(
 				}
 			}
 		}
-	},
+	}),
 );
 
 // Start the server

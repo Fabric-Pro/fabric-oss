@@ -10,6 +10,7 @@ const { mockFindFirst, mockFetch } = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	canUseWorkflowIntegrations: vi.fn().mockResolvedValue(true),
 	db: {
 		workflowIntegration: {
 			findFirst: mockFindFirst,

@@ -42,6 +42,13 @@ vi.mock("@repo/database", () => ({
 	parseRepoUrl: (url: string) => parseRepoUrl(url),
 }));
 
+// The repository-read permission has its own suite next to the route; these
+// cases are about tenancy, so the permission always holds here.
+vi.mock("@repo/api/orpc/procedures", () => ({
+	userHasProjectPermission: vi.fn(async () => true),
+	Permissions: { REPOSITORY_READ: "repository:read" },
+}));
+
 vi.mock("@repo/connectors", () => ({
 	getRepositoryFile: vi.fn(),
 	listRepositoryStructure: vi.fn(),

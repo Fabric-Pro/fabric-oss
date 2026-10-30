@@ -16,6 +16,7 @@ import type { ChatTurnTruncation } from "../../../lib/chat-turn-truncation";
 import type { ChatGptPlanApiBilling } from "../../../lib/chatgpt-plan-api-billing";
 import type { ClarificationTurn } from "../../../lib/clarification-turns";
 import type { FrameLaunchContext } from "../../../lib/expand-handoff";
+import type { MultiAgentTurnRecord } from "../../../lib/multi-agent-runtime-protocol";
 
 interface ConversationDetail {
 	id: string;
@@ -131,6 +132,12 @@ export interface FabricTemporalOrchestratorChatProps {
 	 * own, so the chip says "not applied" when it carries no model.
 	 */
 	agentPickerCatalog?: "all" | "models";
+	/**
+	 * Offers multi-agent turns (`COPILOTKIT_MULTI_AGENT_CHAT`): picking more
+	 * than one agent sends the next message to each of them. The Fabric AI
+	 * page opts in; the launcher drawer keeps one pick.
+	 */
+	multiAgentOffered?: boolean;
 	onActivityChange?: (activity: TemporalOrchestratorActivityState) => void;
 	onUsageChange?: (usage: TemporalOrchestratorTokenUsage) => void;
 	// Optional customization for different agent types
@@ -235,6 +242,8 @@ export interface FabricTemporalOrchestratorChatProps {
 export interface CompletedExecution {
 	id: string;
 	userMessage: string;
+	/** A multi-agent turn's agents and answers (rendered side by side). */
+	multiAgent?: MultiAgentTurnRecord;
 	/** Structured question when a saved-message fallback represents a clarification. */
 	userMessageClarification?: ClarificationTurn;
 	/**

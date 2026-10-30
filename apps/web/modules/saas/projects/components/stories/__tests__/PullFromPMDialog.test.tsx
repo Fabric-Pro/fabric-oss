@@ -348,3 +348,18 @@ describe("PullFromPMDialog — nothing new to pull (FR44, FR45)", () => {
 		expect(listPMTickets).not.toHaveBeenCalled();
 	});
 });
+
+it("jumps to a typed ticket page", async () => {
+	listPMTickets.mockResolvedValue(
+		baseResponse({ total: 80, totalOnBoard: 80 }),
+	);
+	renderDialog();
+	await applyTicketIds(userEvent.setup(), "1,2");
+	const input = await screen.findByRole("spinbutton", {
+		name: "pullFromPmJumpLabel, pullFromPmPaginationAria",
+	});
+	await userEvent.type(input, "3{Enter}");
+	await waitFor(() =>
+		expect(listPMTickets.mock.calls.at(-1)?.[0]).toMatchObject({ page: 3 }),
+	);
+});

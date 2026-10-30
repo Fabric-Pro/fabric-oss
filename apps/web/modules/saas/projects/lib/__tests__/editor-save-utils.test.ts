@@ -147,6 +147,50 @@ describe("stripDiffTags", () => {
 		});
 	});
 
+	describe("a deleted list item that holds a link (Fizzy #2946)", () => {
+		// The editor's own markup: a link is the outer mark of deleted
+		// linked text.
+		const LINK = '<a class="tiptap-link" href="https://example.com/r">';
+		const DEL = '<del class="diff-del">';
+		const item = (inner: string) => `<li><p>${inner}</p></li>`;
+
+		it("drops an item that is only a deleted link", () => {
+			const html = `<ul>${item("First")}${item(`${LINK}${DEL}Report link</del></a>`)}${item("Third")}</ul>`;
+
+			expect(stripDiffTags(html)).toBe(
+				`<ul>${item("First")}${item("Third")}</ul>`,
+			);
+		});
+
+		it("drops an item of deleted text and a deleted link", () => {
+			const html = `<ul>${item("First")}${item(`${DEL}See </del>${LINK}${DEL}the report</del></a>`)}${item("Third")}</ul>`;
+
+			expect(stripDiffTags(html)).toBe(
+				`<ul>${item("First")}${item("Third")}</ul>`,
+			);
+		});
+
+		it("moves a numbered list's start past a deleted first item that is a link", () => {
+			const html = `<ol>${item(`${LINK}${DEL}Open the inbox</del></a>`)}${item("Choose a mode")}</ol>`;
+
+			expect(stripDiffTags(html)).toBe(
+				`<ol start="2">${item("Choose a mode")}</ol>`,
+			);
+		});
+
+		it("keeps an item with text the diff kept, inside the link or beside it", () => {
+			const keptBeside = item(
+				`See ${LINK}${DEL}the report</del></a>${DEL} </del>now`,
+			);
+			const keptInLink = item(`${LINK}${DEL}old </del>Report</a>`);
+			const html = `<ul>${keptBeside}${keptInLink}</ul>`;
+
+			expect(stripDiffTags(html)).toBe(
+				`<ul>${item(`See ${LINK}</a>now`)}${item(`${LINK}Report</a>`)}</ul>`,
+			);
+		});
+	});
+
 	describe("table deletions (diff-table-deleted wrapper)", () => {
 		it("removes deleted tables entirely - div AND content", () => {
 			const html = `<p>Text before</p>

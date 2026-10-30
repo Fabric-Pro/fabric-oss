@@ -14,7 +14,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-const STREAM_ROUTE_PATH = "app/api/agents/fabric-ai/stream/route.ts";
+// The stream route's admission and workflow input live beside it.
+const STREAM_ROUTE_PATH = "app/api/agents/fabric-ai/stream/direct-turn.ts";
+const ADMISSION_START = "export async function admitDirectChatTurn(";
 
 function readRoute(): string {
 	return readFileSync(join(process.cwd(), STREAM_ROUTE_PATH), "utf8");
@@ -27,7 +29,8 @@ describe("fabric-ai stream route — focused context stays out of systemPrompt",
 			"async function buildAgentContextSystemPrompt(",
 		);
 		expect(start).toBeGreaterThan(-1);
-		const end = source.indexOf("export async function POST(", start);
+		const end = source.indexOf(ADMISSION_START, start);
+		expect(end).toBeGreaterThan(start);
 		const builder = source.slice(start, end);
 		// Every return hands back the two halves as separate fields.
 		expect(builder).toMatch(
@@ -40,9 +43,8 @@ describe("fabric-ai stream route — focused context stays out of systemPrompt",
 
 	it("passes projectContext to the workflow input as its own field", () => {
 		const source = readRoute();
-		const handler = source.slice(
-			source.indexOf("export async function POST("),
-		);
+		expect(source.indexOf(ADMISSION_START)).toBeGreaterThan(-1);
+		const handler = source.slice(source.indexOf(ADMISSION_START));
 		expect(handler).toMatch(
 			/systemPrompt: contextualSystemPrompt,\s*projectContext,/,
 		);

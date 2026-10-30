@@ -92,6 +92,10 @@ const fixture = vi.hoisted(() => ({
 		generationStartedAt: new Date().toISOString(),
 		updatedAt: new Date().toISOString(),
 	} as Record<string, unknown>,
+	project: { name: "proj-1", techStack: [], features: [] } as Record<
+		string,
+		unknown
+	>,
 }));
 
 function cannedResponseFor(path: string[]): unknown {
@@ -100,7 +104,7 @@ function cannedResponseFor(path: string[]): unknown {
 		return { document: fixture.document };
 	}
 	if (joined === "projects.get") {
-		return { project: { name: "proj-1", techStack: [], features: [] } };
+		return { project: fixture.project };
 	}
 	return {};
 }
@@ -175,6 +179,9 @@ vi.mock("@copilotkit/react-core", () => ({
 	useCoAgent: () => ({ state: {}, setState: vi.fn(), nodeName: undefined }),
 	useCopilotAction: (action: { name: string }) =>
 		meetingActions.set(action.name, action as never),
+	// The repository tools register here, with their availability.
+	useFrontendTool: (tool: { name: string }) =>
+		meetingActions.set(tool.name, tool as never),
 	useCopilotChat: () => ({ isLoading: false, visibleMessages: [] }),
 	useCopilotChatInternal: () => ({
 		messages: meetingState.messages,
@@ -364,6 +371,21 @@ vi.mock(
 );
 
 import {
+	CONFIRM_CHANGES_ACTION,
+	type EditorActionDefinition,
+	FETCH_MEETING_NOTES_ACTION,
+	githubGetFileContentsAction,
+	githubGetRepositoryAction,
+	githubListIssuesAction,
+	githubListPullRequestsAction,
+	gitlabGetFileContentsAction,
+	gitlabGetProjectAction,
+	gitlabListIssuesAction,
+	gitlabListMergeRequestsAction,
+	REGENERATE_DOCUMENT_ACTION,
+	SELECT_MEETINGS_ACTION,
+} from "@repo/utils/editor-frontend-actions";
+import {
 	buildProposalThemeTokens,
 	NEUTRAL_THEME,
 	resolveThemePaint,
@@ -387,7 +409,7 @@ function renderEditor(props: Partial<Parameters<typeof DocumentEditor>[0]>) {
 		</QueryClientProvider>
 	);
 	const view = render(tree());
-	return { ...view, refresh: () => view.rerender(tree()) };
+	return { ...view, client, refresh: () => view.rerender(tree()) };
 }
 
 beforeEach(() => {
@@ -399,6 +421,7 @@ beforeEach(() => {
 		status: "GENERATING",
 		content: "",
 	};
+	fixture.project = { name: "proj-1", techStack: [], features: [] };
 });
 
 describe("DocumentEditor — generation overlay", () => {
@@ -876,5 +899,187 @@ describe("DocumentEditor meeting selections", () => {
 			restored.queryByText("Meeting notes fetched successfully."),
 		).toBeNull();
 		expect(meetingFetch).toHaveBeenCalledTimes(1);
+	});
+});
+
+// Page-agent behavior is covered by page-agent-render-cost; retain this harness's agent fixture.
+vi.mock("@saas/shared/components/copilot/use-page-agent", async () => {
+	const core = await import("@copilotkit/react-core");
+	return {
+		usePageAgent: (name: string, initialState: object) =>
+			core.useCoAgent({ name, initialState }),
+	};
+});
+
+// These editor harnesses predate the enclosing page's session provider.
+vi.mock(
+	"@saas/shared/components/copilot/CopilotChatSessionProvider",
+	async (importOriginal) => {
+		const actual =
+			await importOriginal<
+				typeof import("@saas/shared/components/copilot/CopilotChatSessionProvider")
+			>();
+		const core = await import("@copilotkit/react-core");
+		return {
+			...actual,
+			useCopilotChatSessionSelector: (
+				select: (session: object) => unknown,
+			) =>
+				select({
+					...core.useCopilotChatInternal(),
+					...core.useCopilotChat(),
+				}),
+			useCopilotChatSessionActions: () => core.useCopilotChatInternal(),
+		};
+	},
+);
+
+describe("DocumentEditor frontend action definitions", () => {
+	// The agent binds the same definitions on a client Proposal's chat, so
+	// what the editor registers is exactly the shared definition.
+	const REPOSITORY = "example-org/example-repo";
+	const project = (repositoryUrl: string) => ({
+		name: "proj-1",
+		techStack: [],
+		features: [],
+		repositoryOwner: "example-org",
+		repositoryName: "example-repo",
+		repositoryUrl,
+	});
+
+	type Registered = Map<
+		string,
+		{ description?: string; parameters?: unknown; available?: string }
+	>;
+
+	async function registered(): Promise<Registered> {
+		meetingActions.clear();
+		renderEditor({});
+		await waitFor(() =>
+			expect(meetingActions.has("gitlab_list_issues")).toBe(true),
+		);
+		return meetingActions as never;
+	}
+
+	const GITHUB_TOOLS = [
+		"github_get_file_contents",
+		"github_get_repository",
+		"github_list_pull_requests",
+		"github_list_issues",
+	];
+	const GITLAB_TOOLS = [
+		"gitlab_get_file_contents",
+		"gitlab_get_project",
+		"gitlab_list_merge_requests",
+		"gitlab_list_issues",
+	];
+
+	/** Each tool's `available`, by name. */
+	function availability(actions: Registered, names: string[]) {
+		return Object.fromEntries(
+			names.map((name) => [name, actions.get(name)?.available]),
+		);
+	}
+	function every(names: string[], available: string) {
+		return Object.fromEntries(names.map((name) => [name, available]));
+	}
+
+	function expectShared(
+		actions: Map<string, { description?: string; parameters?: unknown }>,
+		definition: EditorActionDefinition,
+	) {
+		const action = actions.get(definition.name);
+		expect(action?.description).toBe(definition.description);
+		expect(action?.parameters).toEqual(definition.parameters);
+	}
+
+	it("registers the meeting, Regenerate and confirm actions as shared", async () => {
+		const actions = await registered();
+
+		expectShared(actions, SELECT_MEETINGS_ACTION);
+		expectShared(actions, FETCH_MEETING_NOTES_ACTION);
+		expectShared(actions, REGENERATE_DOCUMENT_ACTION);
+		// The confirm card registers by name alone, with no description.
+		expect(actions.has(CONFIRM_CHANGES_ACTION.name)).toBe(true);
+		expect(
+			actions.get(CONFIRM_CHANGES_ACTION.name)?.description,
+		).toBeUndefined();
+	});
+
+	it("names a connected GitHub repository in the shared GitHub actions", async () => {
+		fixture.project = project(
+			"https://github.com/example-org/example-repo",
+		);
+		const actions = await registered();
+
+		expectShared(actions, githubGetFileContentsAction(REPOSITORY));
+		expectShared(actions, githubGetRepositoryAction(REPOSITORY));
+		expectShared(actions, githubListPullRequestsAction(REPOSITORY));
+		expectShared(actions, githubListIssuesAction(REPOSITORY));
+		expect(availability(actions, GITHUB_TOOLS)).toEqual(
+			every(GITHUB_TOOLS, "enabled"),
+		);
+		// A GitHub project offers the agent no GitLab tool.
+		expect(availability(actions, GITLAB_TOOLS)).toEqual(
+			every(GITLAB_TOOLS, "disabled"),
+		);
+	});
+
+	it("names a connected GitLab repository in the shared GitLab actions", async () => {
+		fixture.project = project(
+			"https://gitlab.com/example-org/example-repo",
+		);
+		const actions = await registered();
+
+		expectShared(actions, gitlabGetFileContentsAction(REPOSITORY));
+		expectShared(actions, gitlabGetProjectAction(REPOSITORY));
+		expectShared(actions, gitlabListMergeRequestsAction(REPOSITORY));
+		expectShared(actions, gitlabListIssuesAction(REPOSITORY));
+		expect(availability(actions, GITLAB_TOOLS)).toEqual(
+			every(GITLAB_TOOLS, "enabled"),
+		);
+		expect(availability(actions, GITHUB_TOOLS)).toEqual(
+			every(GITHUB_TOOLS, "disabled"),
+		);
+	});
+
+	// A tool registered `available: "disabled"` is sent to no agent, so a
+	// chat without a repository binds none of the eight, and a client
+	// Proposal's model is told of no repository it lacks.
+	it("offers no repository tool to a project without a repository", async () => {
+		const actions = await registered();
+
+		expect(
+			availability(actions, [...GITHUB_TOOLS, ...GITLAB_TOOLS]),
+		).toEqual(every([...GITHUB_TOOLS, ...GITLAB_TOOLS], "disabled"));
+	});
+
+	it("offers the GitHub tools once a repository is connected while the page is open", async () => {
+		meetingActions.clear();
+		const { client } = renderEditor({});
+		await waitFor(() =>
+			expect(meetingActions.has("github_list_issues")).toBe(true),
+		);
+		const actions = meetingActions as unknown as Registered;
+		expect(availability(actions, GITHUB_TOOLS)).toEqual(
+			every(GITHUB_TOOLS, "disabled"),
+		);
+
+		fixture.project = project(
+			"https://github.com/example-org/example-repo",
+		);
+		await act(async () => {
+			await client.invalidateQueries();
+		});
+
+		await waitFor(() =>
+			expect(availability(actions, GITHUB_TOOLS)).toEqual(
+				every(GITHUB_TOOLS, "enabled"),
+			),
+		);
+		expectShared(actions, githubGetFileContentsAction(REPOSITORY));
+		expect(availability(actions, GITLAB_TOOLS)).toEqual(
+			every(GITLAB_TOOLS, "disabled"),
+		);
 	});
 });

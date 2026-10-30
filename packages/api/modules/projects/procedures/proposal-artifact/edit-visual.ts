@@ -15,9 +15,11 @@ import {
 import { extractGlossyVisual } from "@repo/temporal";
 import { violationCode } from "@repo/utils/glossy/fact-guard";
 import {
-	PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
+	proposalFigureKind,
+	proposalVisualTemplateOptions,
 	visualSpecToMermaid,
 } from "@repo/utils/glossy/visual-templates";
+import { withFigureKind } from "@repo/utils/proposal-artifact/proposal-figures";
 import { mintVisualId } from "@repo/utils/proposal-artifact/visual-id-server";
 import {
 	type DiagramSection,
@@ -237,8 +239,16 @@ export const editProposalVisualProcedure = tenantProtectedProcedure
 			}
 
 			const visualId = located.keptId ?? mintVisualId();
+			// The candidate asks for its figure template as the visuals
+			// step's fences do.
 			const body = toMermaidFenceBody(
-				visualSpecToMermaid(spec, PROPOSAL_VISUAL_TEMPLATE_OPTIONS),
+				withFigureKind(
+					visualSpecToMermaid(
+						spec,
+						proposalVisualTemplateOptions(spec),
+					),
+					proposalFigureKind(spec),
+				),
 				visualId,
 			);
 

@@ -81,6 +81,7 @@ export interface DraftRefinementInput {
 	 * and the next Save writes that text back over what they just accepted.
 	 */
 	onAccepted?: () => void;
+	onStarted?: () => void;
 }
 
 export interface DraftRefinementController {
@@ -138,6 +139,9 @@ export function useDraftRefinement(
 	const start = useMutation(
 		orpc.projects.publishingSuite.refineDraft.mutationOptions({
 			onSuccess: async (result) => {
+				if (result.started) {
+					input.onStarted?.();
+				}
 				// `started: false` is an ANSWER, not a failure — Temporal is
 				// down, or a run this tab has not seen yet already holds the
 				// slot. Reporting either as an error would send the reader

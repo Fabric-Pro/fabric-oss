@@ -24,14 +24,18 @@ export function InterfaceModeToggle({
 	onChange,
 	disabled = false,
 	compact = false,
+	tooltipNamespace = "tooltips.agents.interfaceMode",
 }: {
 	value: UiMode;
 	onChange: (next: UiMode) => void;
 	/** Held while a turn streams: switching mid-reply would swap the surface under it. */
 	disabled?: boolean;
 	compact?: boolean;
+	tooltipNamespace?:
+		| "tooltips.agents.interfaceMode"
+		| "tooltips.publishing.interfaceMode";
 }) {
-	const t = useTranslations("tooltips.agents");
+	const t = useTranslations(tooltipNamespace);
 
 	return (
 		<TooltipProvider>
@@ -73,7 +77,7 @@ export function InterfaceModeToggle({
 								</button>
 							</TooltipTrigger>
 							<TooltipContent>
-								<p>{t(`interfaceMode.${mode}`)}</p>
+								<p>{t(mode)}</p>
 							</TooltipContent>
 						</Tooltip>
 					);

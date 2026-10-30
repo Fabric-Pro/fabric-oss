@@ -251,6 +251,20 @@ describe("withoutDiagramDiffMarks", () => {
 		);
 	});
 
+	it("drops the marks inside a diagram fence whose language keeps its capital letter", () => {
+		const html =
+			'<pre><code class="language-Mermaid">flowchart LR\n<del class="diff-del">A --> B\n</del></code></pre>';
+		expect(withoutDiagramDiffMarks(html)).toBe(
+			'<pre><code class="language-Mermaid">flowchart LR\nA --&gt; B\n</code></pre>',
+		);
+	});
+
+	it("leaves the marks inside a fence of another language", () => {
+		const html =
+			'<pre><code class="language-Stat-Tiles"><ins class="diff-ins">42% | Faster</ins></code></pre>';
+		expect(withoutDiagramDiffMarks(html)).toBe(html);
+	});
+
 	it("leaves a document without diagrams as it was", () => {
 		const html = '<p>Hello <del class="diff-del">old</del> world</p>';
 		expect(withoutDiagramDiffMarks(html)).toBe(html);

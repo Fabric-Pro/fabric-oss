@@ -31,6 +31,7 @@ import { AnalysisReport } from "./AnalysisReport";
 import { FindingEvidence } from "./FindingEvidence";
 import {
 	AnswerStatus,
+	type ApplyRecommendationRequest,
 	answerAuthorLostRights,
 	type FindingControls,
 	type FindingDraft,
@@ -68,6 +69,17 @@ export type ProposalAnalysisPanelProps = {
 	 * the server has is either nothing or a run of the previous Main.
 	 */
 	awaitingNewRun?: boolean;
+	/**
+	 * Applies a finding's recommendation to its section on Main (Fizzy
+	 * #2946): the page switches to Main and hands the request to the
+	 * editor. Without it no finding offers Apply recommendation.
+	 */
+	onApplyRecommendation?: (finding: ApplyRecommendationRequest) => void;
+	/**
+	 * The finding whose revision the page is running; it says so and its
+	 * other actions wait. Null when none is.
+	 */
+	pendingRevisionFindingId?: string | null;
 };
 
 type Translate = ReturnType<typeof useTranslations>;
@@ -193,6 +205,8 @@ export function ProposalAnalysisPanel({
 	documentId,
 	isGenerating,
 	awaitingNewRun = false,
+	onApplyRecommendation,
+	pendingRevisionFindingId = null,
 }: ProposalAnalysisPanelProps) {
 	const t = useTranslations("projects.proposalArtifact.analysis");
 	const query = useProposalAnalysis({
@@ -208,6 +222,8 @@ export function ProposalAnalysisPanel({
 		actions,
 		runId: data?.run?.id ?? null,
 		announce,
+		onApplyRecommendation,
+		pendingRevisionFindingId,
 	});
 	// Where focus lands when the control a member used is gone with
 	// everything around it, such as Clear on the last answer no longer raised.
@@ -747,8 +763,13 @@ function FindingItem({
 
 	return (
 		// Focusable by script only: where focus returns after an action when
-		// no control of the finding is left to take it.
-		<li tabIndex={-1} className="rounded-lg border p-3">
+		// no control of the finding is left to take it, and where the page
+		// returns a member to, by `data-finding-id`, after a revision.
+		<li
+			tabIndex={-1}
+			data-finding-id={finding.id}
+			className="rounded-lg border p-3"
+		>
 			<div className="flex flex-wrap items-start gap-2">
 				{/* The type as words, so it never rests on colour alone. */}
 				<Badge variant="outline">{t(`type.${type}`)}</Badge>

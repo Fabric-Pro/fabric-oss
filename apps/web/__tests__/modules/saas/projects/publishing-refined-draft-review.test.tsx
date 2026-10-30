@@ -98,7 +98,9 @@ const { capturedEditorOptions, fakeEditor } = vi.hoisted(() => {
 
 vi.mock("@tiptap/react", () => ({
 	useEditor: (options: { content?: string }) => {
-		capturedEditorOptions.current = options;
+		if (options.content !== "<p>diffed</p>") {
+			capturedEditorOptions.current = options;
+		}
 		return fakeEditor;
 	},
 	EditorContent: ({ className }: { className?: string }) => (
@@ -122,11 +124,19 @@ const baseProps = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	window.localStorage.setItem("fabric:diff-view-mode", "inline");
 	capturedEditorOptions.current = null;
 	getEditorMarkdownForSaveMock.mockReturnValue("Builds used to start warm.");
 });
 
 describe("RefinedDraftReview — what reaches the editor", () => {
+	it("opens side by side when no preference is stored", () => {
+		window.localStorage.clear();
+		render(<RefinedDraftReview {...baseProps} />);
+		expect(
+			screen.getByRole("radio", { name: "diffModeSideBySide" }),
+		).toHaveAttribute("aria-checked", "true");
+	});
 	it("seeds the editor with the saved draft marked up against the refined one", () => {
 		render(<RefinedDraftReview {...baseProps} />);
 

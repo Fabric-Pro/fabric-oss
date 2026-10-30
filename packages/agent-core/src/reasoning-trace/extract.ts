@@ -12,7 +12,7 @@ import { isSyntheticToolImageMessage } from "../recursion";
  * deserializes state into plain objects across the graph boundary — class
  * identity is lost.
  *
- * @internal Exported for tests only.
+ * Shared by the agent and transcript rows.
  */
 export function isHumanMessage(m: unknown): boolean {
 	if (!m || typeof m !== "object") {
@@ -276,7 +276,7 @@ export function extractReasoningFromMessage(message: unknown): string {
  *     output_token_details?: { reasoning?: number };
  *   }
  *
- * @internal Exported for tests only.
+ * Shared by the agent and transcript rows.
  */
 export function extractReasoningTokens(message: unknown): number {
 	if (!message || typeof message !== "object") {

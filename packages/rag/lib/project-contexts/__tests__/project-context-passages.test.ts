@@ -1,6 +1,6 @@
-import type { RetrievedContext } from "@repo/rag";
 import { beforeEach, expect, it, vi } from "vitest";
-import { compactProjectContextPassages } from "../src/activities/shared/project-context-passages";
+import { compactProjectContextPassages } from "../project-context-passages";
+import type { RetrievedContext } from "../retrieval";
 
 const h = vi.hoisted(() => ({ summary: vi.fn(), covered: vi.fn() }));
 vi.mock("@repo/database", () => ({
@@ -15,7 +15,7 @@ vi.mock("@repo/utils/feature-flag", () => ({
 }));
 vi.mock("@repo/logs", () => ({ logger: { info: vi.fn() } }));
 
-import { applyContextSummary } from "@repo/rag/lib/project-contexts/summary-injection";
+import { applyContextSummary } from "../summary-injection";
 
 const render = (contexts: RetrievedContext[]) =>
 	compactProjectContextPassages(contexts, "Search results", () => "");
@@ -294,4 +294,47 @@ it("extends all matched passages by score even across source and passage positio
 	expect(result.context).toContain("L".repeat(800));
 	expect(result.context).not.toContain("L".repeat(801));
 	expect(JSON.stringify(result).length).toBeLessThanOrEqual(10000);
+});
+
+it("pins the previous Advisor default output exactly", async () => {
+	const { default: baseline } = await import(
+		"./project-context-passages.baseline.json"
+	);
+	expect(
+		render([
+			{
+				id: "example-source",
+				type: "TEXT",
+				score: 0.9,
+				content: "Whole document",
+				matchedPassages: [
+					{ content: "Matched detail\n".repeat(1500), score: 0.9 },
+				],
+			},
+		]),
+	).toEqual(baseline);
+});
+it("extends the budget and names the editor source tool", () => {
+	const input = [
+		{
+			id: "example-source",
+			type: "TEXT",
+			score: 1,
+			content: "x".repeat(50000),
+		},
+	];
+	const result = compactProjectContextPassages(
+		input,
+		"Search results",
+		() => "",
+		{
+			maxChars: 24000,
+			fullSourceNote: (id) => `read_project_source({"sourceId":"${id}"})`,
+		},
+	);
+	expect(result.context.length).toBeGreaterThan(render(input).context.length);
+	expect(JSON.stringify(result).length).toBeLessThanOrEqual(24000);
+	expect(result.context).toContain(
+		'read_project_source({"sourceId":"example-source"})',
+	);
 });

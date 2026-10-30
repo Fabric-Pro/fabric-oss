@@ -19,8 +19,8 @@
  */
 import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
+import { getConfigPath } from "../config.js";
 import {
 	ExclusiveLockBusyError,
 	withExclusiveLock,
@@ -120,8 +120,8 @@ async function withHookConfigLock<T>(
 	posixPath: string,
 	work: () => Promise<T>,
 ): Promise<T> {
-	const directory = path.join(tmpdir(), "fabric-instructions-hook-locks");
-	await mkdir(directory, { recursive: true });
+	const directory = path.join(path.dirname(getConfigPath()), "hook-locks");
+	await mkdir(directory, { recursive: true, mode: 0o700 });
 	const identity = createHash("sha256")
 		.update(path.resolve(root))
 		.update("\0")

@@ -164,7 +164,7 @@ function forLog(value: string, max: number): string {
  * outright — the secret would otherwise cross the wire in the clear.
  */
 function toStrictHttpsOrigin(baseUrl: string): string {
-	const trimmed = baseUrl?.trim().replace(/\/+$/, "") ?? "";
+	const trimmed = trimTrailingSlashes(baseUrl?.trim() ?? "");
 	if (!trimmed) {
 		throw new DatabricksOAuthError(
 			"Databricks service-principal auth requires a workspace URL. Configure the base URL for this provider in Settings → AI Providers.",
@@ -374,4 +374,12 @@ export async function resolveProviderApiKey(
 		clientSecret,
 		options,
 	);
+}
+
+function trimTrailingSlashes(value: string): string {
+	let end = value.length;
+	while (end > 0 && value.charCodeAt(end - 1) === 0x2f) {
+		end--;
+	}
+	return value.slice(0, end);
 }

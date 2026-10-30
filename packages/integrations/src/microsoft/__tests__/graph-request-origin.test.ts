@@ -74,10 +74,26 @@ describe.each(tools)("%s Graph request origin", (tool) => {
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 
+	it("keeps a double-slash path on the Graph host and drops fragments", async () => {
+		const nextPageToken =
+			"https://graph.microsoft.com//evil.example/x?cursor=example#fragment";
+		await executeMicrosoftTeamsTool(
+			tool,
+			{ ...args, nextPageToken },
+			"example-user",
+			"example-org",
+		);
+		expect(fetchMock).toHaveBeenCalledWith(
+			"https://graph.microsoft.com//evil.example/x?cursor=example",
+			expect.objectContaining({ redirect: "error" }),
+		);
+	});
+
 	it.each([
 		"graph.microsoft.com",
 		"graph.microsoft.us",
 		"graph.microsoft.de",
+		"graph.microsoft.com/",
 	])(
 		"keeps supported Graph pagination on %s and refuses redirects",
 		async (host) => {

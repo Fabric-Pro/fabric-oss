@@ -47,6 +47,8 @@ const MODULES = join(__dirname, "..", "..", "modules");
 
 /** Reviewed: the permission call is inert here, and that is correct. */
 const ACCEPTED: Record<string, string> = {
+	"admin/procedures/hosted-adoption.ts":
+		"Platform-wide counts are authorized by adminProcedure; the organization permission decorator has no tenant to evaluate.",
 	"admin/procedures/ai-adoption.ts":
 		"adminProcedure gates on deployment admin, which is a different axis from an organization role — and these read across tenants by design.",
 	"admin/procedures/audit-log-via-api-key.ts": "As ai-adoption.",

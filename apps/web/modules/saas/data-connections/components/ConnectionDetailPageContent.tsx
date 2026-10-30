@@ -4,7 +4,15 @@ import {
 	useContextPath,
 	useOrganizationContext,
 } from "@saas/organizations/hooks/use-organization-context";
+
+import { Pagination } from "@saas/shared/components/Pagination";
 import { orpcClient } from "@shared/lib/orpc-client";
+import {
+	keepPreviousData,
+	useMutation,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import {
@@ -39,7 +47,7 @@ import {
 	X,
 } from "lucide-react";
 import Link from "next/link";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { parseAsInteger, useQueryState } from "nuqs";
 import { useEffect, useRef, useState } from "react";
 import { useConnection } from "../hooks/useConnection";
 import {
@@ -116,24 +124,54 @@ export function ConnectionDetailPageContent({
 
 	const [editingName, setEditingName] = useState(false);
 	const [nameInput, setNameInput] = useState("");
-	const [resourcePage, setResourcePage] = useState(0);
+	const [urlresourcePage, setUrlresourcePage] = useQueryState(
+		"resourcesPage",
+		parseAsInteger.withDefault(1),
+	);
+	const resourcePage = Math.max(0, urlresourcePage - 1);
+	const setResourcePage = (next: number) =>
+		setUrlresourcePage(next + 1, { history: "replace" });
 	const RESOURCES_PER_PAGE = 10;
 
 	const queryClient = useQueryClient();
 
-	const { data: resourcesData } = useQuery({
-		queryKey: ["synced-resources", connectionId, resourcePage],
-		queryFn: async () => {
-			const result = await orpcClient.dataConnections.resources.list({
-				id: connectionId,
-				organizationId: organizationId ?? null,
-				limit: RESOURCES_PER_PAGE,
-				offset: resourcePage * RESOURCES_PER_PAGE,
-			});
-			return result;
-		},
-		enabled: Boolean(connectionId),
-	});
+	const { data: resourcesData, isPlaceholderData: resourcesPlaceholder } =
+		useQuery({
+			placeholderData: keepPreviousData,
+			queryKey: ["synced-resources", connectionId, resourcePage],
+			queryFn: async () => {
+				const result = await orpcClient.dataConnections.resources.list({
+					id: connectionId,
+					organizationId: organizationId ?? null,
+					limit: RESOURCES_PER_PAGE,
+					offset: resourcePage * RESOURCES_PER_PAGE,
+				});
+				return result;
+			},
+			enabled: Boolean(connectionId),
+		});
+
+	const resourceTotal = connection?._count.syncedResources ?? 0;
+	useEffect(() => {
+		const lastPage = Math.max(
+			0,
+			Math.ceil(resourceTotal / RESOURCES_PER_PAGE) - 1,
+		);
+		if (
+			connection &&
+			resourcesData &&
+			!resourcesPlaceholder &&
+			resourcePage > lastPage
+		) {
+			void setResourcePage(lastPage);
+		}
+	}, [
+		resourceTotal,
+		resourcePage,
+		resourcesPlaceholder,
+		connection,
+		resourcesData,
+	]);
 
 	const relinkFromActions = useMutation({
 		mutationFn: async () => {
@@ -672,38 +710,20 @@ export function ConnectionDetailPageContent({
 										{connection._count.syncedResources}{" "}
 										total
 									</p>
-									<div className="flex gap-2">
-										<Button
-											variant="outline"
-											size="sm"
-											disabled={resourcePage === 0}
-											onClick={() =>
-												setResourcePage((p) =>
-													Math.max(0, p - 1),
-												)
-											}
-										>
-											Previous
-										</Button>
-										<span className="flex items-center px-2 text-xs text-muted-foreground">
-											Page {resourcePage + 1}
-										</span>
-										<Button
-											variant="outline"
-											size="sm"
-											disabled={
-												(resourcePage + 1) *
-													RESOURCES_PER_PAGE >=
+									{connection._count.syncedResources >
+										RESOURCES_PER_PAGE && (
+										<Pagination
+											totalItems={
 												connection._count
 													.syncedResources
 											}
-											onClick={() =>
-												setResourcePage((p) => p + 1)
+											itemsPerPage={RESOURCES_PER_PAGE}
+											currentPage={resourcePage + 1}
+											onChangeCurrentPage={(next) =>
+												setResourcePage(next - 1)
 											}
-										>
-											Next
-										</Button>
-									</div>
+										/>
+									)}
 								</div>
 							</>
 						)}

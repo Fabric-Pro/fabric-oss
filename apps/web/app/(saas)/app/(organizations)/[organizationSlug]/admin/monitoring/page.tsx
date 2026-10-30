@@ -1,3 +1,4 @@
+import { isPlatformAdmin } from "@repo/database";
 import { MonitoringDashboard } from "@saas/admin/component/monitoring/MonitoringDashboard";
 import { getSession } from "@saas/auth/lib/server";
 import { isMonitoringFeatureEnabled } from "@saas/shared/lib/feature-flags";
@@ -35,7 +36,7 @@ export default async function OrganizationAdminMonitoringPage() {
 	if (!session) {
 		redirect("/auth/login");
 	}
-	if (session.user?.role !== "admin") {
+	if (!(await isPlatformAdmin(session.user))) {
 		redirect("/app");
 	}
 	if (!isMonitoringFeatureEnabled("feature-admin-monitoring-dashboard")) {

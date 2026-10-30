@@ -246,8 +246,9 @@ describe("historyWindowSchema", () => {
 });
 
 describe("stream route wiring", () => {
+	// The route's workflow stream lives in its admission module.
 	const source = readFileSync(
-		join(process.cwd(), "app/api/agents/fabric-ai/stream/route.ts"),
+		join(process.cwd(), "app/api/agents/fabric-ai/stream/direct-turn.ts"),
 		"utf-8",
 	);
 

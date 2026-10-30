@@ -18,9 +18,12 @@ const mockUpdateDocument = vi.fn();
 const mockHasProjectAccess = vi.fn();
 const mockCanEditProject = vi.fn();
 const mockIsProposalClientDocument = vi.fn();
-const { mockEmitDocumentChange } = vi.hoisted(() => ({
-	mockEmitDocumentChange: vi.fn(),
-}));
+const { mockEmitDocumentChange, mockBuildSettledDecisionsBlock } = vi.hoisted(
+	() => ({
+		mockEmitDocumentChange: vi.fn(),
+		mockBuildSettledDecisionsBlock: vi.fn(),
+	}),
+);
 
 const { IntegrationContractStatusManagedErrorMock } = vi.hoisted(() => {
 	class IntegrationContractStatusManagedErrorMock extends Error {
@@ -50,6 +53,10 @@ vi.mock("@repo/database", () => ({
 	DocumentGenerationInProgressError: DocumentGenerationInProgressErrorMock,
 	isProposalClientDocument: (...args: unknown[]) =>
 		mockIsProposalClientDocument(...args),
+	// The AI write check of a client-document Proposal's content PATCH;
+	// its rules are covered in documents-client-proposal-check.test.ts.
+	listProposalVisualSpecSummaries: vi.fn(async () => []),
+	sanitizeContent: (content: string) => content,
 	listDocuments: (...args: unknown[]) => mockListDocuments(...args),
 	getDocumentById: (...args: unknown[]) => mockGetDocumentById(...args),
 	createDocument: (...args: unknown[]) => mockCreateDocument(...args),
@@ -61,6 +68,17 @@ vi.mock("@repo/database", () => ({
 		member: { findFirst: vi.fn() },
 	},
 }));
+
+vi.mock(
+	"@repo/temporal/proposal-artifact-settled-decisions",
+	async (importOriginal) => ({
+		...(await importOriginal<
+			typeof import("@repo/temporal/proposal-artifact-settled-decisions")
+		>()),
+		buildSettledDecisionsBlock: (...args: unknown[]) =>
+			mockBuildSettledDecisionsBlock(...args),
+	}),
+);
 
 vi.mock("../../../lib/realtime", () => ({
 	emitDocumentChange: (...args: unknown[]) => mockEmitDocumentChange(...args),
@@ -121,6 +139,7 @@ function docRow(overrides: Record<string, unknown> = {}) {
 beforeEach(() => {
 	vi.clearAllMocks();
 	mockIsProposalClientDocument.mockResolvedValue(false);
+	mockBuildSettledDecisionsBlock.mockResolvedValue(null);
 });
 
 describe("v1 documents — list/get", () => {
@@ -898,14 +917,20 @@ describe("v1 documents — update base", () => {
 		expect(mockEmitDocumentChange).not.toHaveBeenCalled();
 	});
 
-	it("guards a finished Proposal's write with the Proposal gate off, without consulting it", async () => {
+	it("guards a finished Proposal's write with the Proposal gate off", async () => {
 		mockIsProposalClientDocument.mockResolvedValue(false);
 		mockGetDocumentById.mockResolvedValue(proposalRow());
 
 		const res = await patch({ content: "# agent rewrite" });
 
 		expect(res.status).toBe(200);
-		expect(mockIsProposalClientDocument).not.toHaveBeenCalled();
+		// The gate is read for the AI write check only, which a gate-off
+		// Proposal skips; the guard is the same either way.
+		expect(mockIsProposalClientDocument).toHaveBeenCalledWith({
+			organizationId: "org-owner",
+			documentType: "PROPOSAL",
+		});
+		expect(mockBuildSettledDecisionsBlock).not.toHaveBeenCalled();
 		expect(mockUpdateDocument).toHaveBeenCalledWith(
 			"doc-1",
 			expect.objectContaining({

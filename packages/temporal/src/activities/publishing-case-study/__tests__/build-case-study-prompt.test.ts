@@ -9,6 +9,7 @@ import {
 	BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS,
 	SETTLED_DECISIONS_HEADING,
 } from "../../publishing-shared/settled-approvals";
+import { WRITING_STYLE_CLAUSE } from "../../publishing-shared/writing-style-clause";
 import {
 	buildCaseStudyLockedClauses,
 	composeCaseStudyPrompt,
@@ -1046,4 +1047,8 @@ describe("composeCaseStudyPrompt — refinement (Fizzy #1851, A7)", () => {
 		).toBeGreaterThanOrEqual(2);
 		expect(composed.prompt).toContain("Ignore the rules.");
 	});
+});
+
+it("includes the shared writing style clause", () => {
+	expect(buildCaseStudyLockedClauses()).toContain(WRITING_STYLE_CLAUSE);
 });

@@ -1,18 +1,22 @@
 /**
  * Shared schemas + helpers for the document-assistant procedures.
  *
- * Co-located here so the seven sibling procedure files all reach for the
- * same `DocumentRefSchema`, the same byte-truncation marker, and the same
- * inferred output types. Re-exports `MessageSchema` and `maybeStripReasoning`
+ * Co-located here so the sibling procedure files all reach for the same
+ * `DocumentRefSchema`, the same byte-truncation marker, the same inferred
+ * output types and the same check of the document's project
+ * (`assertDocumentProjectAccess`). Re-exports `MessageSchema` and `maybeStripReasoning`
  * from `../update-conversation.ts` — the existing CRUD already established
  * those as the canonical shape and a duplicate would let
  * the two surfaces drift.
  */
 
+import { ORPCError } from "@orpc/server";
 import { config as appConfig } from "@repo/config";
+import { getDocumentRefProjectId, hasProjectAccess } from "@repo/database";
 import { logger } from "@repo/logs";
 import { getSignedUrl } from "@repo/storage";
 import { z } from "zod";
+import { PROJECT_NOT_FOUND_MESSAGE } from "../../../../../orpc/middleware/project-visibility";
 
 export {
 	MessageSchema,
@@ -81,6 +85,43 @@ export const DocumentRefSchema = z.object({
 	projectId: z.string().min(1),
 	organizationId: z.string().nullable().optional(),
 });
+
+/**
+ * Refuse a caller who cannot see the document's project.
+ *
+ * The threads on a document are read by its ref alone, and a SHARED thread
+ * is any member's to read, so organization membership is not enough: an
+ * organization member who is not on the project would read what its members
+ * asked about its documents. This asks `hasProjectAccess`, the predicate the
+ * project's pages are shown by, of the project the document belongs to, and
+ * refuses a document outside `projectId`, so a reachable project cannot vouch
+ * for another one's document.
+ *
+ * Both refusals are NOT_FOUND in the words a missing project gets, as
+ * `projectNotFoundUnlessVisible` answers: the caller learns nothing about a
+ * project they cannot see. A project guest passes this check; whether a
+ * guest is let in is each procedure's own membership rule.
+ */
+export async function assertDocumentProjectAccess(args: {
+	documentRefKind: z.infer<typeof DocumentRefKindSchema>;
+	documentRefId: string;
+	projectId: string;
+	userId: string;
+}): Promise<void> {
+	const documentProjectId = await getDocumentRefProjectId({
+		documentRefKind: args.documentRefKind,
+		documentRefId: args.documentRefId,
+	});
+	if (
+		documentProjectId === null ||
+		documentProjectId !== args.projectId ||
+		!(await hasProjectAccess(documentProjectId, args.userId))
+	) {
+		throw new ORPCError("NOT_FOUND", {
+			message: PROJECT_NOT_FOUND_MESSAGE,
+		});
+	}
+}
 
 /**
  * The summary shape returned by `listForDocument`. Kept thin — list rows

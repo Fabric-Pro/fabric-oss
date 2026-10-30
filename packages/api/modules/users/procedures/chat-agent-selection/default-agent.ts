@@ -2,6 +2,7 @@ import {
 	type AiTaskType,
 	db,
 	type PersistedSelectedAgent,
+	SELECTABLE_CATALOG_MODEL_FILTER,
 } from "@repo/database";
 import { DEFAULT_FABRIC_AI_MODEL } from "@repo/database/prisma/ai-model-catalog";
 import { getConfiguredProviders } from "../../../ai-config/lib/configured-providers";
@@ -51,8 +52,7 @@ export async function resolveDefaultChatAgent(
 		const model = await db.aiModel.findFirst({
 			where: {
 				canonicalName: DEFAULT_CHAT_AGENT_MODEL,
-				isActive: true,
-				deprecatedAt: null,
+				...SELECTABLE_CATALOG_MODEL_FILTER,
 				suitableForTasks: { has: "CHAT" as AiTaskType },
 				providerMappings: {
 					some: {

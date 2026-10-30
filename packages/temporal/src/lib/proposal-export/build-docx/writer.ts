@@ -70,6 +70,11 @@ export interface Writer {
 	imagesOverLimit: number;
 	/** Drawings placed so far, for each one's own id. */
 	drawings: number;
+	/**
+	 * Each diagram's "Figure n." number, by `input.diagrams` order, or null
+	 * for one left out: the numbers print gives the same diagrams.
+	 */
+	figureNumbers: readonly (number | null)[];
 }
 
 /** Where a block is being laid out. */

@@ -14,6 +14,7 @@ import {
 	useConfirmChangesVerdictCard,
 } from "@saas/agents/copilot/useConfirmChangesVerdict";
 import { CopilotAssistantMessageForPromptEnhancer } from "@saas/shared/components/copilot/CopilotAssistantMessage";
+import { useReseedAgentStateOnRunStart } from "@saas/shared/components/copilot/use-agent-state-reseed";
 import "@copilotkit/react-ui/styles.css";
 import "./PromptContentEnhancer.css";
 import { diffPartialText, diffToHtml } from "@saas/projects/lib/diff-utils";
@@ -190,6 +191,29 @@ export function PromptContentEnhancer({
 			reasoningByTurn: {},
 		},
 	});
+
+	// Restore browser context after a fresh-thread connect clears state.
+	// `currentContent` follows the spread: the agent enhances that field, and
+	// state kept from an earlier run still holds the text that run started from.
+	useReseedAgentStateOnRunStart("prompt_enhancer", (state) => ({
+		enhancementType: "general",
+		userInstructions: undefined,
+		enhancedContent: currentContentRef.current,
+		streamingContent: currentContentRef.current,
+		explanation: undefined,
+		focusAnchor: undefined,
+		error: undefined,
+		retryCount: 0,
+		reasoningByTurn: {},
+		...state,
+		currentContent: currentContentRef.current,
+		promptId,
+		promptName,
+		promptDescription,
+		format,
+		category,
+		tags,
+	}));
 
 	// Keep agentStateRef in sync
 	useEffect(() => {
@@ -436,35 +460,43 @@ export function PromptContentEnhancer({
 	// Use the ref to track post-streaming diff state
 	const showDiffHighlighting = isAILoading || showingDiffRef.current;
 
+	const chatLabels = useMemo(
+		() => ({
+			title: "AI Assistant",
+			initial:
+				"Hi! I can help you enhance and improve your prompt.\n\nTry asking me to:\n• Rewrite for clarity and professionalism\n• Add template variables in the correct format\n• Expand sections with more detail\n• Restructure content for better flow",
+		}),
+		[],
+	);
+	const chatSuggestions = useMemo(
+		() => [
+			{
+				title: "Rewrite for clarity",
+				message:
+					"Rewrite this prompt to be more clear and professional",
+			},
+			{
+				title: "Add template variables",
+				message: `Add appropriate template variables in ${format} format`,
+			},
+			{
+				title: "Expand with examples",
+				message: "Expand this prompt with concrete examples",
+			},
+			{
+				title: "Apply best practices",
+				message: `Apply best practices for ${category || "this type of"} prompts`,
+			},
+		],
+		[format, category],
+	);
 	return (
 		<CopilotSidebar
 			AssistantMessage={CopilotAssistantMessageForPromptEnhancer}
 			defaultOpen={true}
 			clickOutsideToClose={false}
-			labels={{
-				title: "AI Assistant",
-				initial:
-					"Hi! I can help you enhance and improve your prompt.\n\nTry asking me to:\n• Rewrite for clarity and professionalism\n• Add template variables in the correct format\n• Expand sections with more detail\n• Restructure content for better flow",
-			}}
-			suggestions={[
-				{
-					title: "Rewrite for clarity",
-					message:
-						"Rewrite this prompt to be more clear and professional",
-				},
-				{
-					title: "Add template variables",
-					message: `Add appropriate template variables in ${format} format`,
-				},
-				{
-					title: "Expand with examples",
-					message: "Expand this prompt with concrete examples",
-				},
-				{
-					title: "Apply best practices",
-					message: `Apply best practices for ${category || "this type of"} prompts`,
-				},
-			]}
+			labels={chatLabels}
+			suggestions={chatSuggestions}
 		>
 			{/* `h-full`, not `h-screen`: both host pages give this a definite
 			    height below their breadcrumb row. `h-screen` overflowed that
@@ -646,13 +678,14 @@ interface ConfirmChangesProps {
 }
 
 function ConfirmChanges({
+	args,
 	recordVerdict,
 	respond,
 	status,
 	onReject,
 	onConfirm,
 }: ConfirmChangesProps) {
-	useConfirmChangesVerdictCard(recordVerdict);
+	useConfirmChangesVerdictCard(recordVerdict, args?.draftId);
 	const [userChoice, setUserChoice] = useState<
 		"accepted" | "rejected" | null
 	>(null);

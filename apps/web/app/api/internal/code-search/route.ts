@@ -4,12 +4,19 @@
  * Called by LangGraph agents to search repository code, fetch file contents,
  * and list directory structures via GitHub/Azure DevOps APIs.
  *
- * Auth: Uses X-AI-Token JWT. Validates tenant isolation and project access.
+ * Auth: Uses X-AI-Token JWT. Validates tenant isolation and project access,
+ * then requires the caller's `REPOSITORY_READ` on the project — the
+ * permission the repository's native Git routes enforce — before any
+ * repository credential is resolved.
  *
  * Pattern: Same as /api/internal/project-context-search
  */
 
 import { AI_TOKEN_HEADER, verifyAIToken } from "@repo/ai-token";
+import {
+	Permissions,
+	userHasProjectPermission,
+} from "@repo/api/orpc/procedures";
 import {
 	type CodeSearchResponse,
 	type FileContentResult,
@@ -262,6 +269,34 @@ export async function POST(req: Request) {
 		if (projectOrgId !== organizationId) {
 			return NextResponse.json(
 				{ error: "Tenant context mismatch" },
+				{ status: 403 },
+			);
+		}
+
+		// Project access is not repository access. The credential resolved
+		// below is usually the project's shared one, connected by an
+		// organization member, so without this a Viewer or Commenter — member
+		// or project guest — could have the assistant read code that the
+		// repository's native Git routes refuse them. Same permission
+		// (`REPOSITORY_READ`, deliberately apart from the viewer-safe
+		// `INSTRUCTION_READ`), same project-authoritative resolution (an
+		// active ProjectMember role decides, the organization role is the
+		// fallback), checked before any credential is touched.
+		const mayReadRepository = await userHasProjectPermission({
+			userId,
+			projectId,
+			permission: Permissions.REPOSITORY_READ,
+		});
+		if (!mayReadRepository) {
+			console.warn("[Internal Code Search] Repository read refused", {
+				projectId,
+				userId,
+			});
+			return NextResponse.json(
+				{
+					error: "Your project role does not allow reading the connected repository",
+					code: "REPOSITORY_READ_REQUIRED",
+				},
 				{ status: 403 },
 			);
 		}

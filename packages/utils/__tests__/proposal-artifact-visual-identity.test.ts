@@ -7,6 +7,11 @@
 
 import { describe, expect, it } from "vitest";
 import { preserveVisualSlots } from "../lib/glossy/visual-slots";
+import {
+	readFigureKind,
+	tryRenderFigure,
+	withFigureKind,
+} from "../lib/proposal-artifact/proposal-figures";
 import { parseStatTiles } from "../lib/proposal-artifact/stat-tiles";
 import { mintVisualId } from "../lib/proposal-artifact/visual-id-server";
 import {
@@ -132,6 +137,28 @@ describe("source hash", () => {
 			HASH,
 		);
 		expect(visualSourceHash(SOURCE.replace("  s0", "s0"))).not.toBe(HASH);
+	});
+
+	it("hashes a fence without a figure line exactly as before the line existed", () => {
+		expect(HASH).toBe("v1:7ffb6f12ac204b9e");
+	});
+
+	it("leaves the figure line out, with or without a caption", () => {
+		const marked = bodyOf(FENCE);
+		const figured = withFigureKind(marked, "process");
+
+		expect(figured.split("\n")[1]).toBe("%% figure: process");
+		expect(visualSourceHash(figured)).toBe(HASH);
+		expect(visualSourceHash(withFigureKind(figured, "layers"))).toBe(HASH);
+		expect(visualSourceHash(withFigureKind(figured, null))).toBe(HASH);
+		expect(
+			visualSourceHash(withDiagramCaption(figured, "Delivery plan")),
+		).toBe(HASH);
+		expect(visualSourceHash(withFigureKind(SOURCE, "timeline"))).toBe(HASH);
+		// Only the leading comment block holds a figure line.
+		expect(visualSourceHash(lines(SOURCE, "%% figure: process"))).not.toBe(
+			HASH,
+		);
 	});
 
 	it("keeps a malformed marker in the hashed source", () => {
@@ -433,6 +460,151 @@ describe("preserveVisualMarkers", () => {
 		expect(preserveVisualMarkers(document(FENCE), next)).toBe(next);
 	});
 
+	describe("figure line", () => {
+		const marked = bodyOf(FENCE);
+		const fenced = (body: string) => lines("```mermaid", body, "```");
+		const FIGURED = fenced(withFigureKind(marked, "process"));
+		const CAPTIONED = fenced(
+			withFigureKind(
+				withDiagramCaption(marked, "Delivery plan"),
+				"process",
+			),
+		);
+
+		it("comes back with a dropped marker", () => {
+			const result = preserveVisualMarkers(
+				document(FIGURED),
+				document(bare),
+			);
+
+			expect(result).toBe(document(FIGURED));
+			expect(classifyVisualFences(result, [row()])[0].state).toBe(
+				"generated",
+			);
+		});
+
+		it("comes back when the writer kept the marker", () => {
+			expect(
+				preserveVisualMarkers(document(FIGURED), document(FENCE)),
+			).toBe(document(FIGURED));
+		});
+
+		it("goes back after the caption, as marker, caption, figure", () => {
+			const captionOnly = fenced(
+				withDiagramCaption(SOURCE, "Delivery plan"),
+			);
+			const markedCaptionOnly = fenced(
+				withDiagramCaption(marked, "Delivery plan"),
+			);
+
+			expect(
+				preserveVisualMarkers(
+					document(CAPTIONED),
+					document(captionOnly),
+				),
+			).toBe(document(CAPTIONED));
+			expect(
+				preserveVisualMarkers(
+					document(CAPTIONED),
+					document(markedCaptionOnly),
+				),
+			).toBe(document(CAPTIONED));
+			expect(
+				diagramFences(document(CAPTIONED))[0].value.split("\n"),
+			).toEqual([
+				MARKER,
+				"%% caption: Delivery plan",
+				"%% figure: process",
+				...SOURCE.split("\n"),
+			]);
+		});
+
+		it("keeps CRLF line endings and container prefixes", () => {
+			const quoted = (fence: string) =>
+				fence
+					.split("\n")
+					.map((line) => `> ${line}`)
+					.join("\n");
+			const crlf = (text: string) => text.replace(/\n/g, "\r\n");
+
+			expect(
+				preserveVisualMarkers(
+					document(CAPTIONED),
+					crlf(
+						document(
+							fenced(withDiagramCaption(SOURCE, "Delivery plan")),
+						),
+					),
+				),
+			).toBe(crlf(document(CAPTIONED)));
+			expect(
+				preserveVisualMarkers(
+					document(quoted(FIGURED)),
+					document(quoted(FENCE)),
+				),
+			).toBe(document(quoted(FIGURED)));
+		});
+
+		it("is not restored into a changed diagram, or over the writer's own figure line", () => {
+			const changed = document(FENCE.replace("Launch", "Go-live"));
+			const ownLine = document(
+				fenced(withFigureKind(marked, "timeline")),
+			);
+			const unknownKind = document(
+				fenced(lines(MARKER, "%% figure: swimlane", SOURCE)),
+			);
+
+			expect(preserveVisualMarkers(document(FIGURED), changed)).toBe(
+				changed,
+			);
+			expect(preserveVisualMarkers(document(FIGURED), ownLine)).toBe(
+				ownLine,
+			);
+			expect(preserveVisualMarkers(document(FIGURED), unknownKind)).toBe(
+				unknownKind,
+			);
+		});
+
+		it("keeps a writer's `%% figure: none`, which draws the fence as Mermaid", () => {
+			const palette = {
+				ink: "#16171a",
+				onInk: "#ffffff",
+				primary: "#c2410c",
+				onPrimary: "#ffffff",
+				tint: "#fbefe9",
+				border: "#d9dade",
+				surface: "#ffffff",
+				muted: "#5b5e66",
+			};
+			const optedOut = fenced(lines(MARKER, "%% figure: none", SOURCE));
+			const unmarked = fenced(lines("%% figure: none", SOURCE));
+
+			expect(
+				preserveVisualMarkers(document(FIGURED), document(optedOut)),
+			).toBe(document(optedOut));
+			expect(
+				preserveVisualMarkers(document(FIGURED), document(unmarked)),
+			).toBe(document(optedOut));
+			expect(
+				classifyVisualFences(document(optedOut), [row()])[0].state,
+			).toBe("generated");
+
+			const body = bodyOf(optedOut);
+			expect(readFigureKind(body)).toBeNull();
+			expect(tryRenderFigure(body, palette)).toBeNull();
+			expect(tryRenderFigure(bodyOf(FIGURED), palette)).not.toBeNull();
+		});
+
+		it("restores each figure line to its own diagram", () => {
+			const second = toMermaidFence(SOURCE, OTHER_ID);
+			const previous = document(FIGURED, "", second);
+
+			expect(
+				preserveVisualMarkers(previous, document(FENCE, "", bare)),
+			).toBe(previous);
+		});
+	});
+
 	it("composes with visual slot preservation", () => {
 		const slot =
 			'<visual-slot data-slot-id="slot-a" data-kind="flow" data-hint="Phases"></visual-slot>';
@@ -489,6 +661,30 @@ describe("diagram caption", () => {
 		expect(withDiagramCaption(SOURCE, null)).toBe(SOURCE);
 		const captioned = withDiagramCaption(SOURCE, "Delivery plan");
 		expect(withDiagramCaption(captioned, "Delivery plan")).toBe(captioned);
+	});
+
+	it("writes the caption above a figure line, with or without a marker", () => {
+		expect(
+			withDiagramCaption(
+				withFigureKind(marked, "process"),
+				"Delivery plan",
+			)
+				.split("\n")
+				.slice(0, 4),
+		).toEqual([
+			MARKER,
+			"%% caption: Delivery plan",
+			"%% figure: process",
+			"flowchart LR",
+		]);
+		expect(
+			withDiagramCaption(
+				withFigureKind(SOURCE, "process"),
+				"Delivery plan",
+			),
+		).toBe(
+			lines("%% caption: Delivery plan", "%% figure: process", SOURCE),
+		);
 	});
 
 	it("moves a caption written above the marker back below it", () => {

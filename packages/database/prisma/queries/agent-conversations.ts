@@ -180,6 +180,7 @@ export async function withConversationTurnResults<
 
 // Create a new conversation
 export async function createAgentConversation({
+	id,
 	userId,
 	organizationId,
 	agentId,
@@ -187,6 +188,12 @@ export async function createAgentConversation({
 	messages,
 	metadata,
 }: {
+	/**
+	 * The id to create it under, when the caller names its conversations
+	 * itself (the agent runtime: its thread id is the conversation id).
+	 * Omitted, the database generates one.
+	 */
+	id?: string;
 	userId: string;
 	organizationId?: string | null;
 	agentId: string;
@@ -196,6 +203,7 @@ export async function createAgentConversation({
 }) {
 	return await db.agentConversation.create({
 		data: {
+			...(id ? { id } : {}),
 			userId,
 			organizationId,
 			agentId,

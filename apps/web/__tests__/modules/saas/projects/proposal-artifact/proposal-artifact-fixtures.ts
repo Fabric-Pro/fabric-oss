@@ -40,6 +40,7 @@ export function finding(
 		reason: null,
 		response: null,
 		evidence: [],
+		canApply: false,
 		...overrides,
 	};
 }

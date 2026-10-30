@@ -781,22 +781,31 @@ export async function executeMicrosoftTeamsTool(
 			// Cursors and provider nextLink values share this credential boundary.
 			// Validate the destination again for refreshes and transient retries.
 			const destination = new URL(url);
-			if (
-				!new Set([
-					"https://graph.microsoft.com",
-					"https://graph.microsoft.us",
-					"https://graph.microsoft.de",
-				]).has(destination.origin) ||
-				destination.username ||
-				destination.password
-			) {
+			if (destination.username || destination.password) {
 				throw new Error("Invalid Microsoft Graph request destination");
+			}
+			const rest = destination.pathname.slice(1) + destination.search;
+			let requestUrl: string;
+			switch (destination.origin) {
+				case "https://graph.microsoft.com":
+					requestUrl = `https://graph.microsoft.com/${rest}`;
+					break;
+				case "https://graph.microsoft.us":
+					requestUrl = `https://graph.microsoft.us/${rest}`;
+					break;
+				case "https://graph.microsoft.de":
+					requestUrl = `https://graph.microsoft.de/${rest}`;
+					break;
+				default:
+					throw new Error(
+						"Invalid Microsoft Graph request destination",
+					);
 			}
 			const method = (options.method ?? "GET").toUpperCase();
 			if (method !== "GET" && method !== "HEAD") {
 				throwIfDispatchStopped();
 			}
-			return fetch(url, {
+			return fetch(requestUrl, {
 				...options,
 				redirect: "error",
 				headers: {

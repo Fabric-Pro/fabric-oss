@@ -31,6 +31,7 @@ const EXPECTED_KEYS = [
 	"org.member.invited",
 	"org.member.role_changed",
 	"org.member.removed",
+	"org.member.left",
 	"org.api_key.created",
 	"org.api_key.revoked",
 	"org.integration.connected",
@@ -109,7 +110,7 @@ describe("ACTION_CATALOG", () => {
 		});
 	});
 
-	it("covers every closed-taxonomy key (48 success + 8 error + 6 incident = 62)", () => {
+	it("covers the listed closed-taxonomy keys", () => {
 		// 8 auth + 12 org + 10 project + 7 story + 6 document_assistant +
 		// 3 audit = 46 success keys, plus 8 open-namespace error keys (D16)
 		// and 6 incident bridge keys (D17). The task spec's "27 success"
@@ -121,7 +122,8 @@ describe("ACTION_CATALOG", () => {
 		// adds `story.pm_status_synced` (one row per status move the PM
 		// status sync applies). The 12 `*.ai_provider.*` keys record AI
 		// provider credential configuration.
-		expect(EXPECTED_KEYS.length).toBe(74);
+		// Voluntary organization departures add org.member.left.
+		expect(EXPECTED_KEYS.length).toBe(75);
 		for (const key of EXPECTED_KEYS) {
 			expect(ACTION_CATALOG[key]).toBeDefined();
 		}

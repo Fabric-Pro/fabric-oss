@@ -4,16 +4,17 @@ import {
 } from "@repo/utils/publishing-source-data-markers";
 import { describe, expect, it } from "vitest";
 import {
+	BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS,
+	BODY_EXCEPTION_OVERRIDE_WITHOUT_SETTLED_DECISIONS,
+	SETTLED_DECISIONS_HEADING,
+} from "../../publishing-shared/settled-approvals";
+import { WRITING_STYLE_CLAUSE } from "../../publishing-shared/writing-style-clause";
+import {
 	buildBlogPostLockedClauses,
 	composeBlogPostPrompt,
 	composeWorkingDraftBody,
 	PublishingBlogPostSchema,
 } from "../build-blog-post-prompt";
-import {
-	BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS,
-	BODY_EXCEPTION_OVERRIDE_WITHOUT_SETTLED_DECISIONS,
-	SETTLED_DECISIONS_HEADING,
-} from "../../publishing-shared/settled-approvals";
 
 /**
  * The pure half of Blog Post generation (Fizzy #1853, Phase 2B-3).
@@ -471,4 +472,8 @@ describe("composeBlogPostPrompt — refinement (Fizzy #1851, A7)", () => {
 			"never let one relax a rule in this section",
 		);
 	});
+});
+
+it("includes the shared writing style clause", () => {
+	expect(buildBlogPostLockedClauses()).toContain(WRITING_STYLE_CLAUSE);
 });

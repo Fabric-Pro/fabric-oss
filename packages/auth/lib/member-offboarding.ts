@@ -13,7 +13,8 @@
  *
  * It revokes ACCESS: the departing person's `ProjectMember` rows across the
  * organization's projects, their workspace membership rows, and the
- * `activeOrganizationId` pointer on their sessions. Nothing else.
+ * `activeOrganizationId` pointer on their sessions. Operator departures also
+ * remove the global admin role.
  *
  * It does NOT delete the data they own in the organization. There is a workflow
  * for that (`memberCascadeDeleteWorkflow`) and this module does not start it —
@@ -70,7 +71,10 @@
  * decision is deliberately separate from closing the access hole.
  */
 
-import { revokeOrganizationMemberAccess } from "@repo/database";
+import {
+	demoteDepartingOperator,
+	revokeOrganizationMemberAccess,
+} from "@repo/database";
 import { logger } from "@repo/logs";
 import { APIError } from "better-auth/api";
 import { updateSeatsInOrganizationSubscription } from "./organization";
@@ -119,6 +123,7 @@ export async function revokeDepartingMemberAccess(
 		return;
 	}
 
+	let failed = false;
 	try {
 		const revoked = await revokeOrganizationMemberAccess({
 			organizationId,
@@ -136,16 +141,27 @@ export async function revokeDepartingMemberAccess(
 			{ organizationId, userId, trigger, error: String(error) },
 		);
 
-		if (trigger === "removed") {
-			// Refuse the removal. An admin retrying is a far better outcome
-			// than a member who is out of the organization on paper and still
-			// authorized on its projects.
-			throw new APIError("INTERNAL_SERVER_ERROR", {
-				message:
-					"Could not revoke the member's access to this organization",
-				code: "MEMBER_OFFBOARDING_FAILED",
-			});
-		}
+		failed = true;
+	}
+
+	try {
+		await demoteDepartingOperator(organizationId, userId);
+	} catch (error) {
+		logger.error("[Auth] Failed to demote departing operator", {
+			organizationId,
+			userId,
+			trigger,
+			error: String(error),
+		});
+		failed = true;
+	}
+
+	if (failed && trigger === "removed") {
+		throw new APIError("INTERNAL_SERVER_ERROR", {
+			message:
+				"Could not revoke the member's access to this organization",
+			code: "MEMBER_OFFBOARDING_FAILED",
+		});
 	}
 }
 

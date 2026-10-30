@@ -305,6 +305,122 @@ describe("appendTurnForDocument — agent catalog and scope check", () => {
 	});
 });
 
+describe("appendTurnForDocument — proposed conversation id", () => {
+	const THREAD_ID = "3f0c9a52-7d1e-4b8a-9c11-0d5e2f6a8b47";
+
+	function appendWithProposal() {
+		return handlers.appendTurnForDocument({
+			context: makeContext() as unknown as BuiltContext,
+			input: {
+				documentRefKind: "PROJECT_DOCUMENT",
+				documentRefId: DOC_ID,
+				projectId: PROJECT_ID,
+				organizationId: ORG_ID,
+				proposedConversationId: THREAD_ID,
+				message: userMessage,
+				agentId: "doc-agent",
+			},
+		});
+	}
+
+	function stubAppend(conversationId: string, joinId: string): void {
+		stubTransaction();
+		dbMock.agentConversation.findFirst.mockResolvedValue({
+			id: conversationId,
+			messages: [],
+			agentId: "doc-agent",
+		});
+		dbMock.agentConversation.update.mockResolvedValue({
+			updatedAt: new Date("2026-05-19T10:01:00Z"),
+		});
+		dbMock.documentAssistantConversation.update.mockResolvedValue({
+			id: joinId,
+		});
+	}
+
+	beforeEach(() => {
+		repoDatabaseMock.getActiveDocumentAssistantConversation.mockResolvedValue(
+			null,
+		);
+		repoDatabaseMock.countDocumentAssistantConversationsInLast24h.mockResolvedValue(
+			0,
+		);
+	});
+
+	it("creates the conversation under the proposed thread id", async () => {
+		repoDatabaseMock.createDocumentAssistantConversation.mockResolvedValue({
+			conversation: { id: THREAD_ID, messages: [], agentId: "doc-agent" },
+			join: { id: JOIN_ID, conversationId: THREAD_ID },
+		});
+		stubAppend(THREAD_ID, JOIN_ID);
+
+		await expect(appendWithProposal()).resolves.toMatchObject({
+			conversationId: THREAD_ID,
+		});
+		expect(
+			repoDatabaseMock.createDocumentAssistantConversation,
+		).toHaveBeenCalledWith(
+			expect.objectContaining({ proposedId: THREAD_ID }),
+		);
+	});
+
+	it("returns the database's id when the proposal was not free", async () => {
+		// The query falls back to a generated id when the proposed one is
+		// taken; the procedure reports whatever was actually created.
+		repoDatabaseMock.createDocumentAssistantConversation.mockResolvedValue({
+			conversation: { id: CONV_ID, messages: [], agentId: "doc-agent" },
+			join: { id: JOIN_ID, conversationId: CONV_ID },
+		});
+		stubAppend(CONV_ID, JOIN_ID);
+
+		await expect(appendWithProposal()).resolves.toMatchObject({
+			conversationId: CONV_ID,
+		});
+	});
+
+	it("reuses the active conversation and ignores the proposal", async () => {
+		repoDatabaseMock.getActiveDocumentAssistantConversation.mockResolvedValueOnce(
+			{ id: JOIN_ID, conversationId: CONV_ID },
+		);
+		stubAppend(CONV_ID, JOIN_ID);
+
+		await expect(appendWithProposal()).resolves.toMatchObject({
+			conversationId: CONV_ID,
+		});
+		expect(
+			repoDatabaseMock.createDocumentAssistantConversation,
+		).not.toHaveBeenCalled();
+	});
+
+	it("never offers the proposal when the client names a conversation", async () => {
+		dbMock.documentAssistantConversation.findUnique.mockResolvedValue({
+			id: JOIN_ID,
+			userId: "user-1",
+			organizationId: ORG_ID,
+		});
+		stubAppend(CONV_ID, JOIN_ID);
+
+		await expect(
+			handlers.appendTurnForDocument({
+				context: makeContext() as unknown as BuiltContext,
+				input: {
+					documentRefKind: "PROJECT_DOCUMENT",
+					documentRefId: DOC_ID,
+					projectId: PROJECT_ID,
+					organizationId: ORG_ID,
+					conversationId: CONV_ID,
+					proposedConversationId: THREAD_ID,
+					message: userMessage,
+					agentId: "doc-agent",
+				},
+			}),
+		).resolves.toMatchObject({ conversationId: CONV_ID });
+		expect(
+			repoDatabaseMock.createDocumentAssistantConversation,
+		).not.toHaveBeenCalled();
+	});
+});
+
 describe("appendTurnForDocument — feature flag", () => {
 	it("rejects with CONFLICT when the org flag is OFF", async () => {
 		dbMock.organization.findUnique.mockResolvedValue({
@@ -421,6 +537,64 @@ describe("appendTurnForDocument — existing conversation", () => {
 		expect(dbMock.agentConversation.update).not.toHaveBeenCalled();
 		// No created/spilled audit (idempotent retry).
 		expect(recordAuditMock).not.toHaveBeenCalled();
+	});
+
+	it("merges a late tool outcome by id while preserving review stamps", async () => {
+		dbMock.documentAssistantConversation.findUnique.mockResolvedValue({
+			id: JOIN_ID,
+			userId: "user-1",
+			organizationId: ORG_ID,
+			updatedAt: new Date(),
+		});
+		stubTransaction();
+		const call = {
+			id: "question",
+			name: "ask_clarifying_question",
+			args: {},
+			status: "pending",
+			acceptedAt: "2026-05-19T10:00:05Z",
+		};
+		dbMock.agentConversation.findFirst.mockResolvedValue({
+			id: CONV_ID,
+			messages: [{ ...assistantMessage, toolCalls: [call] }],
+			agentId: "doc-agent",
+		});
+		await handlers.appendTurnForDocument({
+			context: makeContext() as unknown as BuiltContext,
+			input: {
+				documentRefKind: "PROJECT_DOCUMENT",
+				documentRefId: DOC_ID,
+				projectId: PROJECT_ID,
+				organizationId: ORG_ID,
+				conversationId: CONV_ID,
+				message: {
+					...assistantMessage,
+					toolCalls: [
+						{
+							id: call.id,
+							name: call.name,
+							args: {},
+							status: "success",
+							result: "Yes",
+						},
+					],
+				},
+				agentId: "doc-agent",
+			},
+		});
+		expect(dbMock.agentConversation.update).toHaveBeenCalledWith(
+			expect.objectContaining({
+				data: {
+					messages: [
+						expect.objectContaining({
+							toolCalls: [
+								{ ...call, status: "success", result: "Yes" },
+							],
+						}),
+					],
+				},
+			}),
+		);
 	});
 
 	it("sets visibilityLockedAt on the first user message", async () => {
@@ -681,3 +855,92 @@ describe("appendTurnForDocument — 200-turn spill", () => {
 // of the test file; without it the import block could be tree-shaken in
 // some toolchains.
 void ORPCError;
+
+for (const exists of [false, true]) {
+	it(`patch-only ${exists ? "merges the existing reply" : "does not append a missing reply"}`, async () => {
+		stubTransaction();
+		dbMock.documentAssistantConversation.findUnique.mockResolvedValue({
+			id: JOIN_ID,
+			userId: "user-1",
+			organizationId: ORG_ID,
+			updatedAt: new Date(),
+		});
+		dbMock.agentConversation.findFirst.mockResolvedValue({
+			id: CONV_ID,
+			agentId: "doc-agent",
+			messages: exists
+				? [
+						{
+							...assistantMessage,
+							toolCalls: [
+								{
+									id: "question",
+									name: "ask_clarifying_question",
+									args: {},
+									status: "pending",
+								},
+							],
+						},
+					]
+				: [],
+		});
+		dbMock.agentConversation.update.mockResolvedValue({
+			updatedAt: new Date(),
+		});
+		const result = await handlers.appendTurnForDocument({
+			context: makeContext(),
+			input: {
+				conversationId: CONV_ID,
+				documentRefKind: "PROJECT_DOCUMENT",
+				documentRefId: DOC_ID,
+				projectId: PROJECT_ID,
+				organizationId: ORG_ID,
+				agentId: "doc-agent",
+				patchOnly: true,
+				message: {
+					...assistantMessage,
+					content: "",
+					toolCalls: [
+						{
+							id: "question",
+							name: "ask_clarifying_question",
+							args: {},
+							status: "success",
+							result: "answered",
+						},
+						{
+							id: "late",
+							name: "search_project_knowledge",
+							args: {},
+							status: "pending",
+						},
+					],
+				},
+			},
+		});
+		expect(result).toMatchObject({ patchApplied: exists });
+		if (exists) {
+			expect(
+				dbMock.agentConversation.update.mock.calls[0][0].data.messages,
+			).toEqual([
+				expect.objectContaining({
+					content: "hi back",
+					toolCalls: [
+						expect.objectContaining({
+							status: "success",
+							result: "answered",
+						}),
+						expect.objectContaining({
+							id: "late",
+							status: "pending",
+						}),
+					],
+				}),
+			]);
+		} else {
+			expect(dbMock.agentConversation.update).not.toHaveBeenCalled();
+			expect(dbMock.agentConversation.create).not.toHaveBeenCalled();
+			expect(recordAuditMock).not.toHaveBeenCalled();
+		}
+	});
+}

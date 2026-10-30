@@ -29,7 +29,7 @@ export interface FormattedMessageTimestamp {
 	iso: string;
 	/**
 	 * Human-readable absolute timestamp in the READER'S LOCAL timezone, for
-	 * the hover `title`. Built with `toLocaleString` so a reader in any
+	 * the hover `title`. Built with `Intl.DateTimeFormat` so a reader in any
 	 * timezone sees their own wall-clock plus the zone name
 	 * (e.g. "May 31, 2026, 2:34 PM GMT+3") instead of a UTC "…Z" string.
 	 */
@@ -74,11 +74,13 @@ function readMessageTimestamp(source: TimestampSource): Date | null {
  * `title`. `timeZoneName: "short"` makes the zone explicit so a distributed
  * team never has to guess whether a time is UTC or local — directly fixing
  * the "tooltip shows UTC" report. Falls back to the UTC ISO only if
- * `toLocaleString` throws on an exotic/unsupported runtime locale.
+ * date formatting throws on an exotic/unsupported runtime locale.
  */
+let tooltipFormatter: Intl.DateTimeFormat | undefined;
+
 function formatLocalTooltip(when: Date): string {
 	try {
-		return when.toLocaleString(undefined, {
+		tooltipFormatter ??= new Intl.DateTimeFormat(undefined, {
 			year: "numeric",
 			month: "short",
 			day: "numeric",
@@ -86,6 +88,7 @@ function formatLocalTooltip(when: Date): string {
 			minute: "2-digit",
 			timeZoneName: "short",
 		});
+		return tooltipFormatter.format(when);
 	} catch {
 		return when.toISOString();
 	}

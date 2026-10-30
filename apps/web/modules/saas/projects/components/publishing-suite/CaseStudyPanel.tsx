@@ -13,6 +13,7 @@ import { Textarea } from "@ui/components/textarea";
 import { Loader2Icon, PencilLineIcon, SparklesIcon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { useWorkingDraftEdit } from "../../hooks/use-working-draft-edit";
 import { CopyDraftButton } from "./CopyDraftButton";
 import {
 	CandidateDraft,
@@ -25,9 +26,10 @@ import { DraftRefinementReview, useDraftRefinement } from "./DraftRefinement";
 import { DraftVersions } from "./DraftVersions";
 import { GeneralizationNotes, OTHER_VERSION_NOTE } from "./GeneralizationNotes";
 import type { TopicDraftState, TopicWorkingDraftState } from "./GenerationTabs";
+import { GUIDANCE_MAX } from "./topic-shared";
 
 /** Mirrors the API's own bounds, so a field cannot submit what it would reject. */
-const GUIDANCE_MAX = 2000;
+
 const BODY_MAX = 40000;
 
 /**
@@ -404,7 +406,8 @@ export function CaseStudyPanel({
 	 * NOT typed shows the newer text, and one landing while they HAVE typed does
 	 * not silently discard what they wrote.
 	 */
-	const [editedBody, setEditedBody] = useState<string | null>(null);
+	const { editedBody, setEditedBody, expectedUpdatedAt, savedDraftChanged } =
+		useWorkingDraftEdit(working);
 	const attempt = draft?.latestAttempt ?? null;
 	// `isExpired` splits GENERATING in two: a LIVE run is genuinely in flight, a
 	// STRANDED one will never report back on its own. The button must stay
@@ -625,7 +628,7 @@ export function CaseStudyPanel({
 			topicId,
 			organizationId,
 			body: bodyValue,
-			expectedUpdatedAt: new Date(working.updatedAt),
+			expectedUpdatedAt,
 		});
 	};
 
@@ -668,6 +671,7 @@ export function CaseStudyPanel({
 			>
 				Guidance (optional)
 			</label>
+
 			<Textarea
 				id="case-study-guidance"
 				value={guidance}
@@ -711,6 +715,22 @@ export function CaseStudyPanel({
 
 	const savedDraft = working?.hasBody ? (
 		<section className="space-y-2">
+			{savedDraftChanged ? (
+				<div role="status" className="space-y-2 text-sm">
+					<p>
+						The saved draft changed while you were editing. Your
+						text is still here; saving will check the original
+						version.
+					</p>
+					<Button
+						variant="outline"
+						size="sm"
+						onClick={() => setEditedBody(null)}
+					>
+						Discard my edits
+					</Button>
+				</div>
+			) : null}
 			<div className="flex items-baseline justify-between gap-3">
 				<h3 className="publishing-label" id="case-study-editor">
 					Working case study
@@ -999,68 +1019,7 @@ export function CaseStudyPanel({
 				</section>
 			) : null}
 
-			{doc &&
-			(doc.confirmedAssets.length > 0 ||
-				doc.assetsNeedingConfirmation.length > 0 ||
-				doc.clamped.assets.length > 0) ? (
-				<div className="grid gap-4 sm:grid-cols-2">
-					{doc.confirmedAssets.length > 0 ? (
-						<section className="space-y-2 rounded-xl border border-border bg-muted/40 p-4">
-							<h3 className="publishing-label">
-								Assets cleared for use
-							</h3>
-							{/* NOT "approved, and safe to publish". Every other
-							    field in this panel is labelled as whose claim it
-							    is, and this one is the model's: it reports what
-							    the source material led it to believe, and no
-							    approval record was consulted to produce it. The
-							    two enum fields above are at least clamped
-							    against unresolved threads; a reader told "safe to
-							    publish" stops checking, which is the one
-							    behaviour this list must not cause. */}
-							<p className="text-muted-foreground text-xs leading-relaxed">
-								The draft lists these as cleared for use. That
-								is its own account of the source material, not
-								an approval record — check anything you have not
-								confirmed yourself.
-							</p>
-							<ul className="list-disc space-y-1.5 pl-5 text-sm leading-relaxed">
-								{doc.confirmedAssets.map((asset) => (
-									<li key={asset}>{asset}</li>
-								))}
-							</ul>
-						</section>
-					) : null}
-					{doc.assetsNeedingConfirmation.length > 0 ||
-					doc.clamped.assets.length > 0 ? (
-						<section className="space-y-2 rounded-xl border border-highlight/40 bg-highlight/10 p-4">
-							<h3 className="publishing-label">
-								Assets awaiting confirmation
-							</h3>
-							<p className="text-xs leading-relaxed">
-								Referenced by the draft but NOT approved.
-								Confirm each one before publishing.
-							</p>
-							{/* Named separately from the list they are now in.
-							    An entry the model itself was unsure about and
-							    one Fabric took off the cleared list are the same
-							    line otherwise, and only the second says the
-							    draft claimed something an unresolved thread contradicts. */}
-							{doc.clamped.assets.length > 0 ? (
-								<p className="text-xs leading-relaxed">
-									{ASSET_CLAMP_NOTE}{" "}
-									{doc.clamped.assets.join(", ")}.
-								</p>
-							) : null}
-							<ul className="list-disc space-y-1.5 pl-5 text-sm leading-relaxed">
-								{doc.assetsNeedingConfirmation.map((asset) => (
-									<li key={asset}>{asset}</li>
-								))}
-							</ul>
-						</section>
-					) : null}
-				</div>
-			) : null}
+			<CaseStudyAssets document={doc} />
 
 			{/* ABOVE the comparison rather than in place of it. The two now
 			    answer different questions and can both be true at once: the
@@ -1273,4 +1232,72 @@ export function CaseStudyPanel({
 			) : null}
 		</div>
 	);
+}
+
+export function CaseStudyAssets({
+	content,
+	document: parsedDocument,
+}: {
+	content?: unknown;
+	document?: CaseStudyDocument | null;
+}) {
+	const doc = parsedDocument ?? readCaseStudyDocument(content);
+	return doc &&
+		(doc.confirmedAssets.length > 0 ||
+			doc.assetsNeedingConfirmation.length > 0 ||
+			doc.clamped.assets.length > 0) ? (
+		<div className="grid gap-4 sm:grid-cols-2">
+			{doc.confirmedAssets.length > 0 ? (
+				<section className="space-y-2 rounded-xl border border-border bg-muted/40 p-4">
+					<h3 className="publishing-label">Assets cleared for use</h3>
+					{/* NOT "approved, and safe to publish". Every other
+							    field in this panel is labelled as whose claim it
+							    is, and this one is the model's: it reports what
+							    the source material led it to believe, and no
+							    approval record was consulted to produce it. The
+							    two enum fields above are at least clamped
+							    against unresolved threads; a reader told "safe to
+							    publish" stops checking, which is the one
+							    behaviour this list must not cause. */}
+					<p className="text-muted-foreground text-xs leading-relaxed">
+						The draft lists these as cleared for use. That is its
+						own account of the source material, not an approval
+						record — check anything you have not confirmed yourself.
+					</p>
+					<ul className="list-disc space-y-1.5 pl-5 text-sm leading-relaxed">
+						{doc.confirmedAssets.map((asset) => (
+							<li key={asset}>{asset}</li>
+						))}
+					</ul>
+				</section>
+			) : null}
+			{doc.assetsNeedingConfirmation.length > 0 ||
+			doc.clamped.assets.length > 0 ? (
+				<section className="space-y-2 rounded-xl border border-highlight/40 bg-highlight/10 p-4">
+					<h3 className="publishing-label">
+						Assets awaiting confirmation
+					</h3>
+					<p className="text-xs leading-relaxed">
+						Referenced by the draft but NOT approved. Confirm each
+						one before publishing.
+					</p>
+					{/* Named separately from the list they are now in.
+							    An entry the model itself was unsure about and
+							    one Fabric took off the cleared list are the same
+							    line otherwise, and only the second says the
+							    draft claimed something an unresolved thread contradicts. */}
+					{doc.clamped.assets.length > 0 ? (
+						<p className="text-xs leading-relaxed">
+							{ASSET_CLAMP_NOTE} {doc.clamped.assets.join(", ")}.
+						</p>
+					) : null}
+					<ul className="list-disc space-y-1.5 pl-5 text-sm leading-relaxed">
+						{doc.assetsNeedingConfirmation.map((asset) => (
+							<li key={asset}>{asset}</li>
+						))}
+					</ul>
+				</section>
+			) : null}
+		</div>
+	) : null;
 }

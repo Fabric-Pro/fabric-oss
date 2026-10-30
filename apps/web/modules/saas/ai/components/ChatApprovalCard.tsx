@@ -2,6 +2,7 @@
 
 import {
 	APPROVAL_STALE_MESSAGE,
+	type ApprovalSendResult,
 	approvalSendResult,
 } from "@saas/agents/lib/approval-response";
 import { Button } from "@ui/components/button";
@@ -18,19 +19,66 @@ import {
 import { useState } from "react";
 import { toast } from "sonner";
 
-interface ChatApprovalCardProps {
+/** The person's answer to the card's approval. */
+export interface ChatApprovalDecision {
+	approved: boolean;
+	feedback?: string;
+}
+
+type ChatApprovalCardProps = {
 	approvalId: string;
 	stepId: string;
 	reason: string;
-	executionId: string;
 	organizationId?: string | null;
+} & (
+	| {
+			/** Answered through the orchestrator's approve route for this execution. */
+			executionId: string;
+			onRespond?: never;
+	  }
+	| {
+			/** Answered by the host (a multi-agent turn answers through its run). */
+			onRespond: (
+				decision: ChatApprovalDecision,
+			) => Promise<ApprovalSendResult>;
+			executionId?: never;
+	  }
+);
+
+/** Send an answer through the orchestrator's approve route. */
+async function sendToApproveRoute(
+	executionId: string,
+	approvalId: string,
+	decision: ChatApprovalDecision,
+): Promise<ApprovalSendResult> {
+	const response = await fetch(
+		"/api/agents/fabric-ai/orchestrator-temporal/approve",
+		{
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				executionId,
+				approved: decision.approved,
+				feedback: decision.feedback,
+				// The run takes the answer only for this card's approval.
+				approvalId,
+			}),
+		},
+	);
+	const result = approvalSendResult(response);
+	if (result === "failed") {
+		const error = await response.json();
+		throw new Error(error.error || "Failed to send approval");
+	}
+	return result;
 }
 
-export function ChatApprovalCard({
-	approvalId,
-	reason,
-	executionId,
-}: ChatApprovalCardProps) {
+export function ChatApprovalCard(props: ChatApprovalCardProps) {
+	const { reason } = props;
+	const respond = (answer: ChatApprovalDecision) =>
+		props.onRespond
+			? props.onRespond(answer)
+			: sendToApproveRoute(props.executionId, props.approvalId, answer);
 	const [feedback, setFeedback] = useState("");
 	const [showFeedback, setShowFeedback] = useState(false);
 	const [responded, setResponded] = useState(false);
@@ -47,25 +95,12 @@ export function ChatApprovalCard({
 		setSubmittingAction(action);
 
 		try {
-			const response = await fetch(
-				"/api/agents/fabric-ai/orchestrator-temporal/approve",
-				{
-					method: "POST",
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify({
-						executionId,
-						approved,
-						feedback: feedback.trim() || undefined,
-						// The run takes the answer only for this card's approval.
-						approvalId,
-					}),
-				},
-			);
-
-			const result = approvalSendResult(response);
+			const result = await respond({
+				approved,
+				feedback: feedback.trim() || undefined,
+			});
 			if (result === "failed") {
-				const error = await response.json();
-				throw new Error(error.error || "Failed to send approval");
+				throw new Error("Failed to send approval");
 			}
 
 			if (result === "stale") {

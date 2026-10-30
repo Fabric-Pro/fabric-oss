@@ -12,6 +12,7 @@ import {
 } from "../prisma/queries/prompts";
 import { getUserByEmail } from "../prisma/queries/users";
 import { isDirectRun } from "./lib/is-direct-run";
+import { addOperatorMembershipForAdmin } from "./queries/platform-admin";
 
 /**
  * Document type bindings for system prompts
@@ -158,13 +159,19 @@ async function seedUsers() {
 				// is a one-time prompt on first login for new seeded users (cleared by the auth after-hook
 				// once the user changes their password). Re-setting it on every seed run would force every
 				// seeded user to change their password again on the next re-seed.
-				await db.user.update({
-					where: { id: existingUser.id },
-					data: {
+				await db.$transaction(async (tx) => {
+					await addOperatorMembershipForAdmin(tx, {
+						id: existingUser.id,
 						role: testUser.role,
-						emailVerified: true,
-						onboardingComplete: true,
-					},
+					});
+					await tx.user.update({
+						where: { id: existingUser.id },
+						data: {
+							role: testUser.role,
+							emailVerified: true,
+							onboardingComplete: true,
+						},
+					});
 				});
 				logger.info(
 					`User ${testUser.email} already exists, updated role/verification.`,
@@ -201,6 +208,7 @@ async function seedUsers() {
 					},
 				});
 
+				await addOperatorMembershipForAdmin(tx, created);
 				await tx.account.create({
 					data: {
 						userId: created.id,

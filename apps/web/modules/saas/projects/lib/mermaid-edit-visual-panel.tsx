@@ -138,7 +138,7 @@ export function MermaidEditVisualPanel({
 	renderCandidate: (code: string) => Promise<string>;
 	/** The panel is done: applied, discarded or cancelled. */
 	onClose: (result: "applied" | "discarded" | "cancelled") => void;
-	/** Says progress and outcomes in the diagram's polite live region. */
+	/** Says progress and outcomes in the diagrams' polite live region. */
 	announce: (message: string) => void;
 	textareaRef: RefObject<HTMLTextAreaElement | null>;
 }) {
@@ -150,11 +150,22 @@ export function MermaidEditVisualPanel({
 	const abortRef = useRef<AbortController | null>(null);
 	const counterId = useId();
 	const errorId = useId();
+	// Read by the unmount cleanup, which sees only the first render's phase.
+	const generatingRef = useRef(false);
+	generatingRef.current = phase.kind === "generating";
+	const announceRef = useRef(announce);
+	announceRef.current = announce;
 
 	useEffect(
 		() => () => {
 			requestRef.current += 1;
 			abortRef.current?.abort();
+			// The live region is shared by every diagram on the page: a panel
+			// closed mid-request clears its "Generating" line, or the next
+			// request, saying the same words, would not be spoken.
+			if (generatingRef.current) {
+				announceRef.current("");
+			}
 		},
 		[],
 	);

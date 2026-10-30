@@ -9,6 +9,15 @@ afterEach(() => {
 });
 
 describe("useDiffViewMode", () => {
+	it("uses the caller default when storage is empty", () => {
+		const { result } = renderHook(() => useDiffViewMode("sideBySide"));
+		expect(result.current.mode).toBe("sideBySide");
+	});
+	it("honors stored inline over the caller default", () => {
+		window.localStorage.setItem(DIFF_VIEW_MODE_STORAGE_KEY, "inline");
+		const { result } = renderHook(() => useDiffViewMode("sideBySide"));
+		expect(result.current.mode).toBe("inline");
+	});
 	it("defaults to inline when storage is empty", () => {
 		const { result } = renderHook(() => useDiffViewMode());
 		expect(result.current.mode).toBe("inline");
@@ -122,4 +131,10 @@ describe("useDiffPreview", () => {
 			"<ins",
 		);
 	});
+});
+
+it("invalid stored mode uses the caller default", () => {
+	window.localStorage.setItem(DIFF_VIEW_MODE_STORAGE_KEY, "garbage");
+	const { result } = renderHook(() => useDiffViewMode("sideBySide"));
+	expect(result.current.mode).toBe("sideBySide");
 });

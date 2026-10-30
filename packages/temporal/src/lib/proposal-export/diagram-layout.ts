@@ -6,9 +6,8 @@
  * thread that would stall every queue the process polls, heartbeats
  * included, and no timer could stop it. So the export lays its diagrams out
  * in a worker thread of its own: each diagram has a wall-clock limit, and a
- * diagram that runs past it is abandoned by terminating the thread, which
- * prints its placeholder; the next diagram gets a fresh thread. The thread
- * also has its own heap limit.
+ * diagram that runs past it is abandoned by terminating the thread, and the
+ * next diagram gets a fresh thread. The thread also has its own heap limit.
  *
  * The thread imports the engine by its file URL: the package is ESM-only
  * and the worker runs as CommonJS, so the entry is read from the package's
@@ -21,17 +20,29 @@ import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
 import type { RenderOptions } from "beautiful-mermaid";
 
-/** Lays one diagram out, or answers null for its placeholder. */
+/**
+ * Why a layout was abandoned: it ran past its limit or no time was left
+ * (`timeLimit`), or the thread failed or could not start (`thread`).
+ */
+export type DiagramLayoutAbandonment = "timeLimit" | "thread";
+
+/**
+ * One diagram's layout: its SVG, or null when there is none. `abandoned`
+ * says the null came from the thread, not the source, and why. A source the
+ * engine refused (or an engine that cannot load) is not abandoned.
+ */
+export type DiagramLayoutResult =
+	| { svg: string; abandoned: false }
+	| { svg: null; abandoned: false | DiagramLayoutAbandonment };
+
+/** Lays one diagram out. */
 export interface DiagramLayout {
-	/**
-	 * The SVG, or null when the engine refused the source, failed, or ran
-	 * past `timeoutMs`. Never rejects.
-	 */
+	/** The diagram's SVG or why there is none. Never rejects. */
 	render(
 		source: string,
 		options: RenderOptions,
 		timeoutMs: number,
-	): Promise<string | null>;
+	): Promise<DiagramLayoutResult>;
 	/** Stops the thread, if one is running. */
 	close(): Promise<void>;
 }
@@ -121,20 +132,23 @@ export function openDiagramLayout(
 	return {
 		render(source, options, timeoutMs) {
 			if (timeoutMs <= 0) {
-				return Promise.resolve(null);
+				return Promise.resolve({ svg: null, abandoned: "timeLimit" });
 			}
 			if (thread === null) {
 				try {
 					thread = spawn();
 				} catch {
-					return Promise.resolve(null);
+					return Promise.resolve({ svg: null, abandoned: "thread" });
 				}
 			}
 			const current = thread;
 			const id = ++nextId;
 			return new Promise((resolveRender) => {
 				let settled = false;
-				const settle = (svg: string | null, abandon: boolean) => {
+				const settle = (
+					svg: string | null,
+					abandon: false | DiagramLayoutAbandonment,
+				) => {
 					if (settled) {
 						return;
 					}
@@ -149,7 +163,11 @@ export function openDiagramLayout(
 						}
 						void current.terminate().catch(() => undefined);
 					}
-					resolveRender(svg);
+					resolveRender(
+						svg === null
+							? { svg: null, abandoned: abandon }
+							: { svg, abandoned: false },
+					);
 				};
 				const onMessage = (message: {
 					id?: unknown;
@@ -164,8 +182,11 @@ export function openDiagramLayout(
 						);
 					}
 				};
-				const onFailure = () => settle(null, true);
-				const timer = setTimeout(() => settle(null, true), timeoutMs);
+				const onFailure = () => settle(null, "thread");
+				const timer = setTimeout(
+					() => settle(null, "timeLimit"),
+					timeoutMs,
+				);
 				current.on("message", onMessage);
 				current.once("error", onFailure);
 				current.once("exit", onFailure);

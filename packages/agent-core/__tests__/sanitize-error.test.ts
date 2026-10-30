@@ -282,3 +282,75 @@ it("ends an Authorization redaction at the line break", () => {
 		),
 	).toBe("<redacted>\nRequest rejected with 401");
 });
+
+it("bounds email matching on large near misses", () => {
+	expect(sanitizeMcpErrorMessage(`a${"!@".repeat(50_000)}`)).toHaveLength(
+		500,
+	);
+});
+
+describe("linear email redaction", () => {
+	it("matches the former regex on 20,000 seeded random inputs", () => {
+		const alphabet = [
+			"a",
+			"Z",
+			"0",
+			"_",
+			"@",
+			".",
+			"-",
+			"!",
+			" ",
+			"\t",
+			"\n",
+			"\u00a0",
+		];
+		let state = 0x12345678;
+		const random = () => {
+			state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+			return state >>> 8;
+		};
+		for (let sample = 0; sample < 20_000; sample++) {
+			const length = random() % 25;
+			let input = "";
+			for (let i = 0; i < length; i++) {
+				input += alphabet[random() % alphabet.length];
+			}
+			expect(sanitizeMcpErrorMessage(input), JSON.stringify(input)).toBe(
+				input.replace(/\b\S+@\S+\.\S+\b/g, "<redacted>"),
+			);
+		}
+	});
+	it.each([
+		"a@".repeat(1000),
+		"a@".repeat(50_000),
+		`a${"@.".repeat(50_000)}`,
+	])("handles a worst-case non-match in linear time", (input) => {
+		const start = performance.now();
+		const result = sanitizeMcpErrorMessage(input);
+		const elapsed = performance.now() - start;
+		expect(result).toBe(`${input.slice(0, 499)}…`);
+		expect(elapsed).toBeLessThan(250);
+	});
+	it("redacts a match whose final word boundary is beyond the former input cap", () => {
+		expect(sanitizeMcpErrorMessage(`a@${".".repeat(5000)}z`)).toBe(
+			"<redacted>",
+		);
+	});
+	it.each([
+		"!a@b.c!",
+		"a@.b",
+		"a@@.b",
+		"a@b.c!d@e.f!",
+		"éa@b.cé",
+		"😀a@b.c😀",
+		"a@b.c\u2028d@e.f",
+		"a@b.c\ufeffd@e.f",
+		"a@b.c\u200bd@e.f",
+		"a@b.c\r\nv@w.x",
+	])("preserves boundaries and whitespace for %j", (input) => {
+		expect(sanitizeMcpErrorMessage(input)).toBe(
+			input.replace(/\b\S+@\S+\.\S+\b/g, "<redacted>"),
+		);
+	});
+});

@@ -104,6 +104,8 @@ describe("auth.ts wiring — member offboarding", () => {
 		const block = sliceBetween("afterRemoveMember: async", "openAPI()");
 
 		expect(block).toMatch(/await\s+syncSeatsAfterDeparture\(org\.id\)/);
+		expect(block).not.toContain("recordAudit");
+		expect(block).not.toContain("db.user.findUnique");
 	});
 
 	it("offboards a departing member from a /organization/leave after-hook", () => {
@@ -128,6 +130,13 @@ describe("auth.ts wiring — member offboarding", () => {
 			'ctx.path.startsWith("/organization/remove-member")',
 		);
 		expect(AUTH_SOURCE).not.toContain("memberIdOrEmail");
+		const block = sliceBetween(
+			'ctx.path === "/organization/remove-member"',
+			'ctx.path === "/organization/leave"',
+		);
+		expect(block).toContain("ctx.context.returned");
+		expect(block).toContain("ctx.context.session");
+		expect(block).not.toMatch(/db\.member\./);
 	});
 
 	it("does not start the owned-data cascade workflow", () => {
@@ -137,4 +146,12 @@ describe("auth.ts wiring — member offboarding", () => {
 		// access hole, so its absence is asserted rather than assumed.
 		expect(AUTH_SOURCE).not.toContain("memberCascadeDeleteWorkflow");
 	});
+});
+
+it("checks operator policy in the global before-hook", () => {
+	const before = AUTH_SOURCE.slice(
+		AUTH_SOURCE.indexOf("before: createAuthMiddleware"),
+	);
+	expect(before).toContain("await enforceOperatorAdminPolicy(");
+	expect(before).toContain("await getSessionFromCtx(ctx)");
 });

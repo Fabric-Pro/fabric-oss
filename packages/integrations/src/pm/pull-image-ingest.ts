@@ -937,7 +937,14 @@ export function buildFizzyIngestOptions(
 	| "providerLabel"
 > {
 	const auth = `Bearer ${apiKey}`;
-	const slug = accountSlug.replace(/^\/+|\/+$/g, "");
+	let start = 0;
+	while (
+		start < accountSlug.length &&
+		accountSlug.charCodeAt(start) === 0x2f
+	) {
+		start++;
+	}
+	const slug = trimTrailingSlashes(accountSlug.slice(start));
 	return {
 		urlFilter: (url) => isFizzyAttachmentUrl(url),
 		fetchAuth: (url) =>
@@ -1046,7 +1053,7 @@ export function buildGitLabIngestOptions(
 	| "providerLabel"
 	| "fetchImpl"
 > {
-	const root = baseUrl.replace(/\/+$/, "");
+	const root = trimTrailingSlashes(baseUrl);
 	const apiBase = root.endsWith("/api/v4") ? root : `${root}/api/v4`;
 	return {
 		urlFilter: (url) => GITLAB_UPLOAD_RE.test(url),
@@ -1079,4 +1086,12 @@ export function buildGitLabIngestOptions(
 		// guarded unless it is gitlab.com.
 		fetchImpl: gitlabOutboundFetch,
 	};
+}
+
+function trimTrailingSlashes(value: string): string {
+	let end = value.length;
+	while (end > 0 && value.charCodeAt(end - 1) === 0x2f) {
+		end--;
+	}
+	return value.slice(0, end);
 }

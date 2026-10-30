@@ -2090,3 +2090,43 @@ describe("NewsletterBlurbPanel — the refine pending state", () => {
 		);
 	});
 });
+
+it("keeps the original save baseline when the saved draft changes underneath edits", async () => {
+	const user = userEvent.setup();
+	const working = {
+		postType: "NEWSLETTER_BLURB" as const,
+		hasBody: true,
+		body: "Example saved body",
+		sourceDraftId: null,
+		sourceOptionLabel: null,
+		updatedAt: new Date("2026-01-01"),
+	};
+	const draft = readyDraft();
+	const view = renderPanel({ working, draft });
+	const editor = screen.getByRole("textbox", { name: /working/i });
+	await user.type(editor, " unsaved edit");
+	view.rerender(
+		<NewsletterBlurbPanel
+			projectId="example-project"
+			topicId="example-topic"
+			organizationId="example-org"
+			canEdit
+			draft={draft}
+			working={{
+				...working,
+				body: "Example replacement",
+				updatedAt: new Date("2026-01-02"),
+			}}
+		/>,
+	);
+	expect(
+		screen.getByText(/saved draft changed while you were editing/i),
+	).toBeVisible();
+	expect(editor).toHaveValue("Example saved body unsaved edit");
+	await user.click(screen.getByRole("button", { name: /^save/i }));
+	expect(mutate.saveBody).toHaveBeenCalledWith(
+		expect.objectContaining({ expectedUpdatedAt: new Date("2026-01-01") }),
+	);
+	await user.click(screen.getByRole("button", { name: "Discard my edits" }));
+	expect(editor).toHaveValue("Example replacement");
+});

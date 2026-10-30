@@ -14,9 +14,10 @@ import { db, type Prisma } from "../../client";
 import { sanitizeContent } from "./documents";
 import {
 	assertDocumentOrganization,
-	PROPOSAL_FINDING_RESPONSE_KINDS,
+	PROPOSAL_FINDING_ANSWER_KINDS,
 	PROPOSAL_FINDING_RESPONSE_TEXT_MAX_LENGTH,
 	ProposalArtifactTenantError,
+	type ProposalFindingAnswerKind,
 	type ProposalFindingResponseKind,
 } from "./proposal-artifact-shared";
 
@@ -39,10 +40,12 @@ export class FindingResponseValidationError extends Error {
  * member typed it.
  */
 export function normalizeFindingResponseText(
-	kind: ProposalFindingResponseKind,
+	kind: ProposalFindingAnswerKind,
 	text: string | null | undefined,
 ): string | null {
-	if (!PROPOSAL_FINDING_RESPONSE_KINDS.includes(kind)) {
+	// RESOLVED is stored too, but only the save of an applied recommendation
+	// writes it; the answer path refuses it.
+	if (!(PROPOSAL_FINDING_ANSWER_KINDS as readonly string[]).includes(kind)) {
 		throw new FindingResponseValidationError("invalidKind");
 	}
 	const trimmed = text ? sanitizeContent(text).trim() : "";
@@ -100,7 +103,7 @@ interface UpsertFindingResponseFields {
 	projectId: string;
 	documentId: string;
 	stableKey: string;
-	kind: ProposalFindingResponseKind;
+	kind: ProposalFindingAnswerKind;
 	text?: string | null;
 	/** A copy of the answered finding's title. */
 	findingTitle: string;
@@ -258,6 +261,131 @@ export async function upsertFindingResponse(
 		});
 		return { outcome: "stale" as const, current };
 	});
+}
+
+/**
+ * The answer a finding-driven revision started from is no longer the one
+ * saved: it was given, changed or cleared since. Thrown by
+ * {@link writeResolvedFindingResponse} inside the save's transaction, so the
+ * body saved with it rolls back too.
+ */
+export class FindingResponseChangedError extends Error {
+	constructor(
+		readonly documentId: string,
+		readonly stableKey: string,
+	) {
+		super(
+			`The answer to finding ${stableKey} on document ${documentId} changed since the revision started`,
+		);
+		this.name = "FindingResponseChangedError";
+	}
+}
+
+export interface WriteResolvedFindingResponseInput {
+	/** The owning organization the caller resolved; checked, never stored. */
+	organizationId: string;
+	projectId: string;
+	documentId: string;
+	stableKey: string;
+	/** A copy of the resolved finding's title. */
+	findingTitle: string;
+	/** The run whose finding's recommendation was applied. */
+	answeredRunId: string;
+	/** The finding's section key and its prose hash in the body as saved. */
+	sectionKey: string;
+	sectionHash: string;
+	/** The session user who saved the revision. */
+	authorId: string;
+	/**
+	 * The answer the revision started from, by row `id` and `version`, or
+	 * null when there was none: then the write only creates.
+	 */
+	expected: { id: string; version: number } | null;
+}
+
+/**
+ * Record a finding as RESOLVED, inside the transaction that saves the
+ * revision applying its recommendation (Fizzy #2946). Nothing else writes
+ * RESOLVED: the member answer path refuses it.
+ *
+ * A compare-and-swap on the answer the revision started from, as in
+ * {@link upsertFindingResponse}: with none, an `INSERT … ON CONFLICT DO
+ * NOTHING`; with one, an `UPDATE` guarded on that row id and version, which
+ * bumps the version. Anything else saved meanwhile throws
+ * {@link FindingResponseChangedError}. Earlier answer text is kept: an
+ * applied recommendation does not erase what a member said about it. The
+ * author becomes the person who saved the revision.
+ */
+export async function writeResolvedFindingResponse(
+	tx: Prisma.TransactionClient,
+	input: WriteResolvedFindingResponseInput,
+): Promise<FindingResponseView> {
+	const { organizationId, projectId } = await documentTenant(tx, input);
+	const answeredRun = await tx.projectDocumentAnalysis.findFirst({
+		where: {
+			id: input.answeredRunId,
+			documentId: input.documentId,
+			organizationId,
+		},
+		select: { id: true },
+	});
+	if (!answeredRun) {
+		throw new ProposalArtifactTenantError(
+			"The answered run is not a run of this document",
+		);
+	}
+
+	const key = {
+		documentId: input.documentId,
+		stableKey: input.stableKey,
+		organizationId,
+	};
+	const fields = {
+		kind: "RESOLVED" as const,
+		findingTitle: sanitizeContent(input.findingTitle),
+		answeredRunId: input.answeredRunId,
+		sectionKey: input.sectionKey,
+		sectionHash: input.sectionHash,
+		authorId: input.authorId,
+	};
+	const { count } =
+		input.expected === null
+			? await tx.projectDocumentFindingResponse.createMany({
+					data: [
+						{
+							organizationId,
+							projectId,
+							documentId: input.documentId,
+							stableKey: input.stableKey,
+							text: null,
+							...fields,
+						},
+					],
+					skipDuplicates: true,
+				})
+			: await tx.projectDocumentFindingResponse.updateMany({
+					where: {
+						...key,
+						id: input.expected.id,
+						version: input.expected.version,
+					},
+					// `text` is left as it is.
+					data: { ...fields, version: { increment: 1 } },
+				});
+	const response =
+		count > 0
+			? await tx.projectDocumentFindingResponse.findFirst({
+					where: key,
+					select: FINDING_RESPONSE_VIEW_SELECT,
+				})
+			: null;
+	if (!response) {
+		throw new FindingResponseChangedError(
+			input.documentId,
+			input.stableKey,
+		);
+	}
+	return response;
 }
 
 export type ClearFindingResponseResult =

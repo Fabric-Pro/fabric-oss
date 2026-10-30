@@ -39,7 +39,17 @@ export const ORGANIZATION_MEMBERSHIP_REQUIRED_CODE =
 	"ORGANIZATION_MEMBERSHIP_REQUIRED";
 
 interface ProposalArtifactDocumentAccess {
-	document: { id: string; type: string; content: string };
+	/**
+	 * `status` is the row's generation status: QUEUED or GENERATING while a
+	 * run owns the body. `version` is the body's save version.
+	 */
+	document: {
+		id: string;
+		type: string;
+		content: string;
+		status: string;
+		version: number;
+	};
 	/** The project's owning organization: the one every query runs in. */
 	organizationId: string;
 }
@@ -85,7 +95,13 @@ export async function loadProposalArtifactDocument(args: {
 
 	const document = await db.projectDocument.findFirst({
 		where: { id: args.documentId, projectId: args.projectId },
-		select: { id: true, type: true, content: true },
+		select: {
+			id: true,
+			type: true,
+			content: true,
+			status: true,
+			version: true,
+		},
 	});
 	if (!document) {
 		throw new ORPCError("NOT_FOUND", { message: "Document not found" });
@@ -142,6 +158,8 @@ export interface ProposalFindingTarget {
 	finding: {
 		id: string;
 		title: string;
+		/** Internal guidance: never quoted into a document a reader sees. */
+		recommendation: string | null;
 		/** Null on findings written before keys existed. */
 		stableKey: string | null;
 		sectionKey: string | null;
@@ -181,6 +199,7 @@ export async function loadProposalFinding(args: {
 				select: {
 					id: true,
 					title: true,
+					recommendation: true,
 					stableKey: true,
 					sectionKey: true,
 					sectionHash: true,

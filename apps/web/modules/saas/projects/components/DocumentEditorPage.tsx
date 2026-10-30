@@ -13,6 +13,10 @@ import {
 	AI_SIDEBAR_CONTENT_SHIFT_CLASS,
 	useAiSidebarExpanded,
 } from "@saas/shared/components/copilot/ai-sidebar-layout";
+import {
+	AssistantThreadProvider,
+	useAssistantThreadId,
+} from "@saas/shared/components/copilot/assistant-thread";
 import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import type { MessageAttachmentListItem } from "@saas/shared/components/copilot/MessageAttachmentList";
 import { useCopilotErrorHandler } from "@saas/shared/components/copilot/use-copilot-error-handler";
@@ -27,6 +31,7 @@ import {
 	useQuery,
 	useQueryClient,
 } from "@tanstack/react-query";
+import { Alert, AlertDescription } from "@ui/components/alert";
 import { Avatar, AvatarFallback, AvatarImage } from "@ui/components/avatar";
 import { Badge } from "@ui/components/badge";
 import {
@@ -88,6 +93,7 @@ import {
 	DeprecatedDocumentTypeBadge,
 	FeaturesDeprecationNotice,
 } from "./FeaturesDeprecationNotice";
+import type { ApplyRecommendationRequest } from "./proposal-artifact/FindingResponseControls";
 import {
 	describeGenerationRefusal,
 	resolveRegenerateToastKey,
@@ -106,6 +112,10 @@ import {
 	ProposalThemeStyle,
 	useProposalTheme,
 } from "./proposal-artifact/use-proposal-theme";
+import {
+	type SectionRevisionOutcome,
+	sectionRevisionReasonKey,
+} from "./proposal-artifact/useSectionRevision";
 
 // Error boundary to catch CopilotKit initialization failures. The fallback
 // must not mount anything that calls a CopilotKit hook — `<DocumentEditor>`
@@ -203,6 +213,18 @@ function GlossyVersionLinkButton({ href }: { href: string }) {
 
 /** The tabs of a Proposal's page in artifact mode (Fizzy #2801). */
 type ProposalArtifactTab = "main" | "analysis" | "style";
+
+/**
+ * A finding's recommendation on its way to Main (Fizzy #2946): the editor
+ * drafts the section's revision and reviews it, then settles the request by
+ * its `id`.
+ */
+type SectionRevisionRequest = {
+	id: string;
+	runId: string;
+	findingId: string;
+	stableKey: string;
+};
 
 /**
  * What the Internal Analysis tab shows beside its label. Each state carries
@@ -510,6 +532,9 @@ export function DocumentEditorPage({
 	const { setIsFullscreen } = useFullscreen();
 	const { organizationId } = useOrganizationContext();
 	const onCopilotError = useCopilotErrorHandler();
+	const assistantThread = useAssistantThreadId(
+		initialAssistantConversationId,
+	);
 	const router = useRouter();
 
 	// Derive the list of message ids that came back from the SSR-loaded
@@ -680,6 +705,13 @@ export function DocumentEditorPage({
 	const artifactMode = isArtifactProposal && !isGuestInOrg;
 	const tTabs = useTranslations("projects.proposalArtifactPage.tabs");
 	const [activeTab, setActiveTab] = useState<ProposalArtifactTab>("main");
+	// The tab shown, read where a callback needs it as it is now.
+	const activeTabRef = useRef<ProposalArtifactTab>(activeTab);
+	activeTabRef.current = activeTab;
+	const selectTab = useCallback((tab: ProposalArtifactTab) => {
+		activeTabRef.current = tab;
+		setActiveTab(tab);
+	}, []);
 	const tabIdBase = useId();
 	const isGenerationRunning = isDocumentGenerationRunning(
 		documentData?.document?.status ?? "",
@@ -867,6 +899,125 @@ export function DocumentEditorPage({
 		}
 	}, [isGenerationRunning, artifactMode, queryClient, projectId, documentId]);
 
+	// Apply recommendation (Fizzy #2946): the Analysis tab asks, the page
+	// switches to Main and hands the request to the editor, which drafts the
+	// section's revision and reviews it there. The tabs stay free while it
+	// drafts; once its review is shown the page brings the member back to
+	// Main, where it waits for an answer. Once the editor settles the
+	// request the page returns to the finding on Analysis, if the member is
+	// still on Main: an accept refetches the analysis, which then shows the
+	// finding Resolved; anything else says why and leaves the finding as it
+	// was. One revision at a time, and an outcome for any other request is
+	// ignored.
+	const tAnalysis = useTranslations("projects.proposalArtifact.analysis");
+	const tRevision = useTranslations("projects.proposalArtifact.revision");
+	const [revisionRequest, setRevisionRequest] =
+		useState<SectionRevisionRequest | null>(null);
+	const revisionRequestRef = useRef<SectionRevisionRequest | null>(null);
+	const revisionCountRef = useRef(0);
+	const [revisionNotice, setRevisionNotice] = useState<string | null>(null);
+	const [returnToFindingId, setReturnToFindingId] = useState<string | null>(
+		null,
+	);
+	const analysisPanelRef = useRef<HTMLDivElement>(null);
+
+	const handleApplyRecommendation = useCallback(
+		(finding: ApplyRecommendationRequest) => {
+			if (revisionRequestRef.current) {
+				return;
+			}
+			revisionCountRef.current += 1;
+			const request: SectionRevisionRequest = {
+				id: `${tabIdBase}-revision-${revisionCountRef.current}`,
+				runId: finding.runId,
+				findingId: finding.id,
+				stableKey: finding.stableKey,
+			};
+			revisionRequestRef.current = request;
+			setRevisionRequest(request);
+			setRevisionNotice(null);
+			selectTab("main");
+		},
+		[tabIdBase, selectTab],
+	);
+
+	const handleSectionRevisionShown = useCallback(
+		(id: string) => {
+			if (revisionRequestRef.current?.id === id) {
+				selectTab("main");
+			}
+		},
+		[selectTab],
+	);
+
+	const handleSectionRevisionSettled = useCallback(
+		(outcome: SectionRevisionOutcome) => {
+			const current = revisionRequestRef.current;
+			if (!current || outcome.id !== current.id) {
+				return;
+			}
+			revisionRequestRef.current = null;
+			setRevisionRequest(null);
+			// The member moved on to another tab meanwhile: it stays.
+			if (activeTabRef.current === "main") {
+				selectTab("analysis");
+				setReturnToFindingId(current.findingId);
+			}
+			if (outcome.result === "accepted") {
+				setRevisionNotice(null);
+				void queryClient.invalidateQueries({
+					queryKey: proposalAnalysisQueryKey(projectId, documentId),
+				});
+				return;
+			}
+			if (outcome.result === "rejected") {
+				setRevisionNotice(tAnalysis("revisionRejected"));
+				return;
+			}
+			setRevisionNotice(
+				tAnalysis("revisionRefused", {
+					reason: tRevision(
+						`reasons.${sectionRevisionReasonKey(outcome.code)}`,
+					),
+				}),
+			);
+		},
+		[queryClient, projectId, documentId, tAnalysis, tRevision, selectTab],
+	);
+
+	// What the editor gets: the request without the key it never needs, the
+	// same object for as long as the request stands.
+	const sectionRevisionRequest = useMemo(
+		() =>
+			revisionRequest
+				? {
+						id: revisionRequest.id,
+						runId: revisionRequest.runId,
+						findingId: revisionRequest.findingId,
+					}
+				: null,
+		[revisionRequest],
+	);
+
+	// Back on Analysis, the finding the revision was for is brought into view
+	// and takes focus, so the member lands where they left. The panel was
+	// hidden until now, which is why this waits for the tab to show.
+	useLayoutEffect(() => {
+		if (!returnToFindingId || activeTab !== "analysis") {
+			return;
+		}
+		const item = [
+			...(analysisPanelRef.current?.querySelectorAll<HTMLElement>(
+				"[data-finding-id]",
+			) ?? []),
+		].find((element) => element.dataset.findingId === returnToFindingId);
+		if (item) {
+			item.scrollIntoView?.({ block: "center" });
+			item.focus({ preventScroll: true });
+		}
+		setReturnToFindingId(null);
+	}, [returnToFindingId, activeTab]);
+
 	// Real-time presence for this project (tracking that we're editing this document)
 	// Note: True collaborative editing is now handled by PartyKit + Yjs in the DocumentEditor
 	const { activeUsers, isConnected } = useProjectPresence({
@@ -892,12 +1043,22 @@ export function DocumentEditorPage({
 	// memoization, CopilotKit re-runs its mount-time AG-UI handshakes (info /
 	// agent/connect) on each render, burning the per-user 500/min rate-limit
 	// budget on a single document load.
+	//
+	// The route resolves what the chat may do on this document from its id
+	// (Fizzy #2946), so a project document names itself beside the
+	// organization. A story's id names no project document: the route would
+	// refuse it.
 	const copilotRuntimeUrl = useMemo(() => {
 		const orgId = project?.organizationId;
-		return orgId
-			? `/api/copilotkit?organizationId=${orgId}`
-			: "/api/copilotkit";
-	}, [project?.organizationId]);
+		if (!orgId) {
+			return "/api/copilotkit";
+		}
+		const params = new URLSearchParams({ organizationId: orgId });
+		if (documentRefKind === "PROJECT_DOCUMENT") {
+			params.set("documentId", documentId);
+		}
+		return `/api/copilotkit?${params.toString()}`;
+	}, [project?.organizationId, documentRefKind, documentId]);
 
 	if (isLoading) {
 		return (
@@ -1203,10 +1364,15 @@ export function DocumentEditorPage({
 					subjectId={documentId}
 					projectId={projectId}
 				/>
-				<DocumentAutoRefreshToggle
-					documentId={documentId}
-					projectId={projectId}
-				/>
+				{/* A client-document Proposal is never refreshed as a whole
+				  body (Fizzy #2946): the server refuses the enrolment, so
+				  nobody — member or guest — is offered it. */}
+				{!isArtifactProposal && (
+					<DocumentAutoRefreshToggle
+						documentId={documentId}
+						projectId={projectId}
+					/>
+				)}
 				<GlossyVersionLink
 					href={glossyHref}
 					projectId={projectId}
@@ -1257,7 +1423,7 @@ export function DocumentEditorPage({
 				<Tabs
 					value={activeTab}
 					onValueChange={(value) =>
-						setActiveTab(value as ProposalArtifactTab)
+						selectTab(value as ProposalArtifactTab)
 					}
 					className="shrink-0 border-b bg-background px-6 pt-2 overflow-x-auto"
 				>
@@ -1353,7 +1519,9 @@ export function DocumentEditorPage({
 								runtimeUrl={copilotRuntimeUrl}
 								useSingleEndpoint
 								agent="project_document_generator"
+								threadId={assistantThread.threadId}
 								showDevConsole={false}
+								enableInspector={false}
 								onError={onCopilotError}
 							>
 								{/* One `useCopilotChatInternal()` for the whole
@@ -1361,51 +1529,66 @@ export function DocumentEditorPage({
 						  `useCopilotChat`) opens its own agent/connect on
 						  1.70, so the consumers inside share this one
 						  instead of each connecting (Fizzy #2389). */}
-								<CopilotChatSessionProvider>
-									<DocumentEditor
-										projectId={projectId}
-										documentId={documentId}
-										isAiSidebarExpanded={
-											isAiSidebarExpanded
-										}
-										actionSlot={actionSlotEl}
-										saveSlot={saveSlotEl}
-										syncSlot={syncSlotEl}
-										documentRefKind={documentRefKind}
-										initialAssistantConversationId={
-											initialAssistantConversationId
-										}
-										initialAssistantVisibility={
-											initialAssistantVisibility
-										}
-										initialAssistantVisibilityLockedAt={
-											initialAssistantVisibilityLockedAt
-										}
-										initialAssistantMessages={
-											initialAssistantMessages as ReadonlyArray<
-												Record<string, unknown>
-											>
-										}
-										initialPersistedMessageIds={
-											initialPersistedMessageIds
-										}
-										initialAttachmentsByMessageId={
-											initialAttachmentsByMessageId
-										}
-										suppressGenerationOverlay={artifactMode}
-										attachToServerRun={
-											showLiveMain && canEdit
-										}
-										promptSelectorReplacement={
-											promptSelectorReplacement
-										}
-										contentThemeProps={
-											proposalTheme.rootProps
-										}
-										statTiles={isArtifactProposal}
-										proposalVisuals={proposalVisuals}
-									/>
-								</CopilotChatSessionProvider>
+								<AssistantThreadProvider
+									value={assistantThread}
+								>
+									<CopilotChatSessionProvider>
+										<DocumentEditor
+											projectId={projectId}
+											documentId={documentId}
+											isAiSidebarExpanded={
+												isAiSidebarExpanded
+											}
+											actionSlot={actionSlotEl}
+											saveSlot={saveSlotEl}
+											syncSlot={syncSlotEl}
+											documentRefKind={documentRefKind}
+											initialAssistantConversationId={
+												initialAssistantConversationId
+											}
+											initialAssistantVisibility={
+												initialAssistantVisibility
+											}
+											initialAssistantVisibilityLockedAt={
+												initialAssistantVisibilityLockedAt
+											}
+											initialAssistantMessages={
+												initialAssistantMessages as ReadonlyArray<
+													Record<string, unknown>
+												>
+											}
+											initialPersistedMessageIds={
+												initialPersistedMessageIds
+											}
+											initialAttachmentsByMessageId={
+												initialAttachmentsByMessageId
+											}
+											suppressGenerationOverlay={
+												artifactMode
+											}
+											attachToServerRun={
+												showLiveMain && canEdit
+											}
+											promptSelectorReplacement={
+												promptSelectorReplacement
+											}
+											contentThemeProps={
+												proposalTheme.rootProps
+											}
+											statTiles={isArtifactProposal}
+											proposalVisuals={proposalVisuals}
+											sectionRevisionRequest={
+												sectionRevisionRequest
+											}
+											onSectionRevisionSettled={
+												handleSectionRevisionSettled
+											}
+											onSectionRevisionShown={
+												handleSectionRevisionShown
+											}
+										/>
+									</CopilotChatSessionProvider>
+								</AssistantThreadProvider>
 							</CopilotKit>
 						</CopilotErrorBoundary>
 					</div>
@@ -1419,12 +1602,28 @@ export function DocumentEditorPage({
 							hidden={activeTab !== "analysis"}
 							className="h-full overflow-y-auto"
 						>
-							<div className="mx-auto w-full max-w-4xl p-6">
+							<div
+								ref={analysisPanelRef}
+								className="mx-auto w-full max-w-4xl space-y-4 p-6"
+							>
+								{revisionNotice ? (
+									<Alert variant="warning" role="status">
+										<AlertDescription className="mt-0">
+											{revisionNotice}
+										</AlertDescription>
+									</Alert>
+								) : null}
 								<ProposalAnalysisPanel
 									projectId={projectId}
 									documentId={documentId}
 									isGenerating={isGenerationRunning}
 									awaitingNewRun={awaitingNewAnalysis}
+									onApplyRecommendation={
+										handleApplyRecommendation
+									}
+									pendingRevisionFindingId={
+										revisionRequest?.findingId ?? null
+									}
 								/>
 							</div>
 						</div>

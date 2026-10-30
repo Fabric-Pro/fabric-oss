@@ -437,6 +437,12 @@ function serverResolvedAgentConfig<T extends Record<string, unknown>>(
 		credentials?.baseUrl || headers.get("X-AI-Base-URL") || undefined;
 	return {
 		...effective,
+		thread_id:
+			effective.thread_id ??
+			(effective.config as { configurable?: KeyBag } | undefined)
+				?.configurable?.thread_id ??
+			effective.threadId ??
+			effective.contextId,
 		ai_canonical_model_name:
 			typeof canonicalName === "string" && canonicalName
 				? canonicalName
@@ -791,6 +797,7 @@ export function createUnifiedServer(
 					messages,
 					contextId,
 					...metadata,
+					thread_id: metadata?.thread_id ?? contextId,
 				},
 				{ signal },
 			);
@@ -827,6 +834,7 @@ export function createUnifiedServer(
 					messages,
 					contextId,
 					...metadata,
+					thread_id: metadata?.thread_id ?? contextId,
 				},
 				{ signal },
 			);
@@ -1526,6 +1534,8 @@ export function createUnifiedServer(
 						],
 						["project_id", "projectId"],
 					),
+					// The path thread keys the ChatGPT plan session; a body value wins.
+					thread_id: threadId,
 					// Spread any additional configurable properties
 					...configurable,
 					// Also spread context properties
@@ -2874,6 +2884,7 @@ export function createUnifiedServer(
 						...bodyContext,
 						...bodyForwardedProps,
 						...bodyProperties,
+						thread_id: bodyConfigurable.thread_id ?? threadId,
 						// Assignment after request spreads keeps the reply id server-owned.
 						output_message_id: messageId,
 					},
@@ -3244,6 +3255,7 @@ export function createUnifiedServer(
 										// tool-node.ts must appear here, otherwise the raw tool call
 										// leaks to the frontend and confuses the CopilotKit runtime.
 										"search_project_knowledge",
+										"read_project_source",
 										// Microsoft Teams tools
 										"search_teams_messages",
 										"get_chat_messages",
@@ -3746,6 +3758,7 @@ export function createUnifiedServer(
 									},
 									[runtimeConfig.configurable, body],
 								),
+								runtimeConfig,
 							);
 
 							for await (const chunk of generator) {

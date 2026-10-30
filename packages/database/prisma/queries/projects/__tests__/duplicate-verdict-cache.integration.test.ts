@@ -23,9 +23,18 @@ import { hasReachableDatabaseUrl } from "../../../../__tests__/_helpers/db-avail
 import { db, type FeatureDraftingStage, Prisma } from "../../../client";
 import { canonicalPair } from "../duplicate-detection";
 import {
+	listStoryDuplicateFocusEmbeddings,
+	upsertStoryDuplicateFocusEmbeddings,
+} from "../duplicate-embeddings";
+import {
+	getDuplicateLinkState,
+	listPendingDuplicatePairs,
 	listVerdictValidPairKeys,
 	recordDistinctVerdict,
+	refreshPendingDuplicateSimilarities,
+	stampVerifiedHashes,
 	upsertPendingDuplicateLink,
+	withdrawPendingDuplicateLinks,
 } from "../duplicate-links";
 
 const RUN_ID = `${Date.now()}-${process.pid}`;
@@ -134,6 +143,7 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 				reasoning: "actually different on re-read",
 				contentHashA: HASH_A,
 				contentHashB: HASH_B,
+				clearsPendingFlag: true,
 			});
 
 			const row = await db.storyDuplicateLink.findUnique({
@@ -158,6 +168,53 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 			).toContain(`${storyAId}:${storyBId}`);
 		});
 
+		it("keeps a PENDING flag through an unsure re-check, stamping only its hashes", async () => {
+			const { projectId, storyAId, storyBId } =
+				await seedProjectWithPair();
+			await db.storyDuplicateLink.create({
+				data: {
+					projectId,
+					storyAId,
+					storyBId,
+					similarity: 0.82,
+					confidence: 0.9,
+					reasoning: "same checklist",
+					status: "PENDING",
+					linkType: "DUPLICATE",
+				},
+			});
+
+			// Re-verified as the same work, but under the confidence bar.
+			await recordDistinctVerdict({
+				projectId,
+				storyAId,
+				storyBId,
+				similarity: 0.8,
+				confidence: 0.6,
+				reasoning: "probably the same checklist",
+				contentHashA: HASH_A,
+				contentHashB: HASH_B,
+				clearsPendingFlag: false,
+			});
+
+			const row = await db.storyDuplicateLink.findUnique({
+				where: { storyAId_storyBId: { storyAId, storyBId } },
+			});
+			expect(row?.status).toBe("PENDING");
+			expect(row?.confidence).toBe(0.9);
+			expect(row?.reasoning).toBe("same checklist");
+			expect(row?.verifiedContentHashA).toBe(HASH_A);
+			expect(
+				await listVerdictValidPairKeys(
+					projectId,
+					new Map([
+						[storyAId, HASH_A],
+						[storyBId, HASH_B],
+					]),
+				),
+			).toContain(`${storyAId}:${storyBId}`);
+		});
+
 		it("creates a NOT_DUPLICATE row with hashes for a brand-new distinct pair", async () => {
 			const { projectId, storyAId, storyBId } =
 				await seedProjectWithPair();
@@ -170,6 +227,7 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 				reasoning: "different work",
 				contentHashA: HASH_A,
 				contentHashB: HASH_B,
+				clearsPendingFlag: true,
 			});
 			const row = await db.storyDuplicateLink.findUnique({
 				where: { storyAId_storyBId: { storyAId, storyBId } },
@@ -213,6 +271,7 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					reasoning: "re-verified distinct",
 					contentHashA: HASH_A,
 					contentHashB: HASH_B,
+					clearsPendingFlag: true,
 				});
 				const row = await db.storyDuplicateLink.findUnique({
 					where: { storyAId_storyBId: { storyAId, storyBId } },
@@ -257,6 +316,250 @@ describe.skipIf(!hasReachableDatabaseUrl())(
 					]),
 				),
 			).toContain(`${storyAId}:${storyBId}`);
+		});
+
+		it("withdraws a listed PENDING flag and clears its hashes so the pair is verified afresh", async () => {
+			const { projectId, storyAId, storyBId } =
+				await seedProjectWithPair();
+			await upsertPendingDuplicateLink({
+				projectId,
+				storyAId,
+				storyBId,
+				similarity: 0.5,
+				confidence: 0.85,
+				reasoning: "both touch onboarding",
+				linkType: "OVERLAP",
+				contentHashA: HASH_A,
+				contentHashB: HASH_B,
+			});
+			expect(await listPendingDuplicatePairs(projectId)).toEqual([
+				{ storyAId, storyBId, similarity: 0.5 },
+			]);
+
+			expect(
+				await withdrawPendingDuplicateLinks(projectId, [
+					{ storyAId, storyBId },
+				]),
+			).toBe(1);
+
+			const row = await db.storyDuplicateLink.findUnique({
+				where: { storyAId_storyBId: { storyAId, storyBId } },
+			});
+			expect(row?.status).toBe("NOT_DUPLICATE");
+			expect(row?.verifiedContentHashA).toBeNull();
+			expect(row?.verifiedContentHashB).toBeNull();
+			expect(await listPendingDuplicatePairs(projectId)).toEqual([]);
+			// Not read as a cached negative verdict the verifier never gave.
+			expect(
+				await listVerdictValidPairKeys(
+					projectId,
+					new Map([
+						[storyAId, HASH_A],
+						[storyBId, HASH_B],
+					]),
+				),
+			).not.toContain(`${storyAId}:${storyBId}`);
+		});
+
+		it("never withdraws a DISMISSED or RESOLVED row", async () => {
+			const { projectId, storyAId, storyBId } =
+				await seedProjectWithPair();
+			await db.storyDuplicateLink.create({
+				data: {
+					projectId,
+					storyAId,
+					storyBId,
+					similarity: 0.8,
+					confidence: 0.9,
+					status: "RESOLVED",
+					verifiedContentHashA: HASH_A,
+					verifiedContentHashB: HASH_B,
+				},
+			});
+
+			expect(
+				await withdrawPendingDuplicateLinks(projectId, [
+					{ storyAId, storyBId },
+				]),
+			).toBe(0);
+
+			const row = await db.storyDuplicateLink.findUnique({
+				where: { storyAId_storyBId: { storyAId, storyBId } },
+			});
+			expect(row?.status).toBe("RESOLVED");
+			expect(row?.verifiedContentHashA).toBe(HASH_A);
+		});
+
+		it("reads a pair's state within its project only", async () => {
+			const { projectId, storyAId, storyBId } =
+				await seedProjectWithPair();
+			expect(
+				await getDuplicateLinkState(projectId, storyAId, storyBId),
+			).toBeNull();
+			await upsertPendingDuplicateLink({
+				projectId,
+				storyAId,
+				storyBId,
+				similarity: 0.8,
+				confidence: 0.9,
+				linkType: "OVERLAP",
+				contentHashA: HASH_A,
+				contentHashB: HASH_B,
+			});
+
+			expect(
+				await getDuplicateLinkState(projectId, storyAId, storyBId),
+			).toEqual({
+				status: "PENDING",
+				linkType: "OVERLAP",
+				verifiedContentHashA: HASH_A,
+				verifiedContentHashB: HASH_B,
+			});
+			expect(
+				await getDuplicateLinkState(
+					"other-project",
+					storyAId,
+					storyBId,
+				),
+			).toBeNull();
+		});
+
+		it("stamps verified hashes without touching status, tier or the shown fields", async () => {
+			const { projectId, storyAId, storyBId } =
+				await seedProjectWithPair();
+			await upsertPendingDuplicateLink({
+				projectId,
+				storyAId,
+				storyBId,
+				similarity: 0.8,
+				confidence: 0.9,
+				reasoning: "same capability",
+				linkType: "DUPLICATE",
+				contentHashA: HASH_A,
+				contentHashB: HASH_A,
+			});
+
+			await stampVerifiedHashes({
+				projectId,
+				storyAId,
+				storyBId,
+				contentHashA: HASH_B,
+				contentHashB: HASH_B,
+			});
+			// Another project's stamp reaches nothing.
+			await stampVerifiedHashes({
+				projectId: "other-project",
+				storyAId,
+				storyBId,
+				contentHashA: HASH_A,
+				contentHashB: HASH_A,
+			});
+
+			const row = await db.storyDuplicateLink.findUnique({
+				where: { storyAId_storyBId: { storyAId, storyBId } },
+			});
+			expect(row).toMatchObject({
+				status: "PENDING",
+				linkType: "DUPLICATE",
+				similarity: 0.8,
+				confidence: 0.9,
+				reasoning: "same capability",
+				verifiedContentHashA: HASH_B,
+				verifiedContentHashB: HASH_B,
+			});
+		});
+
+		it("refreshes the score of a PENDING flag only", async () => {
+			const { projectId, storyAId, storyBId } =
+				await seedProjectWithPair();
+			await upsertPendingDuplicateLink({
+				projectId,
+				storyAId,
+				storyBId,
+				similarity: 0.645,
+				confidence: 0.9,
+				linkType: "OVERLAP",
+				contentHashA: HASH_A,
+				contentHashB: HASH_B,
+			});
+
+			expect(
+				await refreshPendingDuplicateSimilarities(projectId, [
+					{ storyAId, storyBId, similarity: 0.72 },
+				]),
+			).toBe(1);
+			expect(await listPendingDuplicatePairs(projectId)).toEqual([
+				{ storyAId, storyBId, similarity: 0.72 },
+			]);
+
+			await db.storyDuplicateLink.updateMany({
+				where: { projectId, storyAId, storyBId },
+				data: { status: "DISMISSED" },
+			});
+			expect(
+				await refreshPendingDuplicateSimilarities(projectId, [
+					{ storyAId, storyBId, similarity: 0.9 },
+				]),
+			).toBe(0);
+			const row = await db.storyDuplicateLink.findUnique({
+				where: { storyAId_storyBId: { storyAId, storyBId } },
+			});
+			expect(row?.similarity).toBe(0.72);
+		});
+
+		it("caches feature-section vectors per story and section, replacing a changed one", async () => {
+			const { projectId, storyAId, storyBId } =
+				await seedProjectWithPair();
+			await upsertStoryDuplicateFocusEmbeddings(projectId, [
+				{
+					storyId: storyAId,
+					kind: "scope",
+					contentHash: HASH_A,
+					model: "text-embedding-3-small",
+					embedding: [0.1, 0.2],
+				},
+				{
+					storyId: storyAId,
+					kind: "acceptance_criteria",
+					contentHash: HASH_B,
+					model: "text-embedding-3-small",
+					embedding: [0.3, 0.4],
+				},
+				{
+					storyId: storyBId,
+					kind: "scope",
+					contentHash: HASH_B,
+					model: "text-embedding-3-small",
+					embedding: [0.5, 0.6],
+				},
+			]);
+			// A's Scope changed: same story and section, new text and vector.
+			await upsertStoryDuplicateFocusEmbeddings(projectId, [
+				{
+					storyId: storyAId,
+					kind: "scope",
+					contentHash: "c".repeat(64),
+					model: "text-embedding-3-large",
+					embedding: [0.7, 0.8],
+				},
+			]);
+
+			const rows = await listStoryDuplicateFocusEmbeddings(projectId);
+			const byKey = new Map(
+				rows.map((r) => [`${r.storyId}:${r.kind}`, r]),
+			);
+			expect(rows).toHaveLength(3);
+			expect(byKey.get(`${storyAId}:scope`)).toEqual({
+				storyId: storyAId,
+				kind: "scope",
+				contentHash: "c".repeat(64),
+				model: "text-embedding-3-large",
+				embedding: [0.7, 0.8],
+			});
+			expect(
+				byKey.get(`${storyAId}:acceptance_criteria`)?.embedding,
+			).toEqual([0.3, 0.4]);
+			expect(byKey.get(`${storyBId}:scope`)?.contentHash).toBe(HASH_B);
 		});
 	},
 );

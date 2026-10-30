@@ -49,6 +49,7 @@ export {
 export {
 	type ClearFindingResponseResult,
 	clearFindingResponse,
+	FindingResponseChangedError,
 	type FindingResponseCurrent,
 	type FindingResponseValidationCode,
 	FindingResponseValidationError,
@@ -58,6 +59,8 @@ export {
 	type UpsertFindingResponseInput,
 	type UpsertFindingResponseResult,
 	upsertFindingResponse,
+	type WriteResolvedFindingResponseInput,
+	writeResolvedFindingResponse,
 } from "./proposal-artifact-responses";
 export {
 	type AnalysisFindingInput,

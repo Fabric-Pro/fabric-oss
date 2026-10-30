@@ -668,3 +668,12 @@ describe("StoryWorkspace — maturation tab round trip with a pending draft", ()
 		expect(reviewControls().length).toBeGreaterThan(0);
 	});
 });
+
+// Keep the stateful agent fixture used by this page scenario.
+vi.mock("@saas/shared/components/copilot/use-page-agent", async () => {
+	const core = await import("@copilotkit/react-core");
+	return {
+		usePageAgent: (name: string, initialState: object) =>
+			core.useCoAgent({ name, initialState }),
+	};
+});

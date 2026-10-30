@@ -120,6 +120,7 @@ import {
 	WorkspacePanel,
 } from "@saas/agents/components/WorkspacePanel";
 import { useConversationHistory } from "@saas/agents/hooks/useConversationHistory";
+import { useMultiAgentOffered } from "@saas/agents/hooks/useMultiAgentChat";
 import { useSavedAgentUnavailableNotice } from "@saas/agents/hooks/useSavedAgentUnavailableNotice";
 import { useWorkflowTemplateStream } from "@saas/agents/hooks/useWorkflowTemplateStream";
 import { useWorkspaceFiles } from "@saas/agents/hooks/useWorkspaceFiles";
@@ -1657,6 +1658,8 @@ function FabricChatContent({
 		organizationId,
 		enabled: chrome.showAgentPicker,
 	});
+	// Multi-agent turns are offered on this page only (not the drawer).
+	const multiAgentOffered = useMultiAgentOffered(organizationId);
 
 	// The landing offers the last conversation with a Resume link, but only
 	// while nothing is open: once a conversation is active the landing is gone.
@@ -3249,6 +3252,8 @@ function FabricChatContent({
 							onUsageChange={setTokenUsage}
 							showAgentPicker={chrome.showAgentPicker}
 							agentPickerCatalog={chrome.agentPickerCatalog}
+							// The page only: the launcher drawer keeps one pick.
+							multiAgentOffered={multiAgentOffered}
 							showToolPicker={chrome.showToolPicker}
 							onDocumentChatCreated={handleDocumentChatCreated}
 							documentChatId={documentChatId}

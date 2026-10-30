@@ -41,12 +41,14 @@ const FOUND_RESULT = {
 	scanned: 12,
 	candidates: 5,
 	verifierFailures: 0,
+	remaining: 0,
 };
 const ZERO_RESULT = {
 	flaggedItems: 0,
 	scanned: 12,
 	candidates: 4,
 	verifierFailures: 0,
+	remaining: 0,
 };
 // Every candidate pair failed verification — a wholesale AI outage, not a clean
 // scan. `flaggedItems` is a stale count from a prior scan and must NOT surface.
@@ -55,6 +57,7 @@ const INCOMPLETE_RESULT = {
 	scanned: 12,
 	candidates: 6,
 	verifierFailures: 6,
+	remaining: 0,
 };
 // Some pairs verified, some failed: the found count is real but partial.
 const PARTIAL_RESULT = {
@@ -62,6 +65,7 @@ const PARTIAL_RESULT = {
 	scanned: 12,
 	candidates: 6,
 	verifierFailures: 2,
+	remaining: 0,
 };
 
 function renderDialog(props?: Partial<DuplicateScanCompletionDialogProps>) {
@@ -90,6 +94,25 @@ async function flushMacrotasks() {
 		});
 	});
 }
+
+describe("DuplicateScanCompletionDialog — candidate pairs left over", () => {
+	it("says pairs are still waiting only when some are", () => {
+		const { view } = renderDialog({
+			result: { ...FOUND_RESULT, remaining: 40 },
+		});
+		expect(screen.getByText("scanRemainingNote")).toBeInTheDocument();
+
+		view.rerender(
+			<DuplicateScanCompletionDialog
+				open
+				onOpenChange={vi.fn()}
+				result={FOUND_RESULT}
+				onViewDuplicates={vi.fn()}
+			/>,
+		);
+		expect(screen.queryByText("scanRemainingNote")).toBeNull();
+	});
+});
 
 describe("DuplicateScanCompletionDialog — found variant", () => {
 	it("renders the title, count line, tagged confirmation, both actions and the X close", () => {

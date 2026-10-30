@@ -35,6 +35,9 @@ import { describe, expect, it } from "vitest";
  *      #2999). Also a failed run that still produced a trace, and the trace is
  *      what shows the model reasoning its way into more research instead of
  *      writing.
+ *   H) handleProposalPatches extraStateUpdate, the patch tool path of a
+ *      client-document Proposal (Fizzy #2946). Its plain "not applied"
+ *      replies carry the same update as `reasoningUpdate`.
  */
 
 const CHAT_NODE_PATH = join(__dirname, "..", "nodes", "chat-node.ts");
@@ -53,10 +56,10 @@ describe("chat-node — reasoningByTurnUpdate spread regression guard", () => {
 		expect(callMatches.length).toBe(2);
 	});
 
-	it("spreads reasoningByTurnUpdate at exactly 7 sites (A–G)", () => {
+	it("spreads reasoningByTurnUpdate at exactly 8 sites (A–H)", () => {
 		const spreadMatches =
 			source.match(/\.\.\.reasoningByTurnUpdate\b/g) ?? [];
-		expect(spreadMatches.length).toBe(7);
+		expect(spreadMatches.length).toBe(8);
 	});
 
 	it("calls stripRawResponseEnvelope after buildReasoningUpdate (protocol P1)", () => {

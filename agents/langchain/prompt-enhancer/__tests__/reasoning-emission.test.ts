@@ -241,3 +241,48 @@ describe("prompt-enhancer enhanceNode — reasoning emission", () => {
 		expect(invokeMock).not.toHaveBeenCalled();
 	});
 });
+
+it.each([undefined, `msg_1793200000000_${"a".repeat(32)}`])(
+	"carries draft provenance and usage identity: %s",
+	async (outputId) => {
+		invokeMock.mockReset();
+		invokeMock.mockResolvedValueOnce(
+			new AIMessage({
+				content: "",
+				tool_calls: [
+					{
+						id: "example-write",
+						name: "enhance_prompt_local",
+						args: {
+							enhancedContent: "Example enhanced prompt",
+							explanation: "Clearer",
+						},
+					},
+				],
+			}),
+		);
+		const command = await enhanceNode(
+			{
+				...baseState,
+				messages: [new HumanMessage("Draft example")],
+			} as never,
+			{ configurable: { output_message_id: outputId } },
+		);
+		const messages = (command as any).update.messages;
+		const call = messages.at(-1).tool_calls[0];
+		const draftId = (call.args ?? call.function.arguments).draftId;
+		if (outputId) {
+			expect(draftId).toMatch(new RegExp(`^${outputId}:[0-9a-f-]{36}$`));
+		} else {
+			expect(draftId).toBeUndefined();
+		}
+		const { logAgentUsageFromRunnableConfig } = await import(
+			"@repo/agent-core"
+		);
+		expect(logAgentUsageFromRunnableConfig).toHaveBeenLastCalledWith(
+			expect.anything(),
+			expect.anything(),
+			expect.objectContaining({ outputMessageId: outputId }),
+		);
+	},
+);

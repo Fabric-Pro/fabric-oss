@@ -20,6 +20,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@repo/database", () => ({
 	revokeOrganizationMemberAccess: vi.fn(),
+	demoteDepartingOperator: vi.fn(),
 }));
 
 vi.mock("@repo/logs", () => ({
@@ -35,7 +36,10 @@ vi.mock("../organization", () => ({
 	updateSeatsInOrganizationSubscription: vi.fn(),
 }));
 
-import { revokeOrganizationMemberAccess } from "@repo/database";
+import {
+	demoteDepartingOperator,
+	revokeOrganizationMemberAccess,
+} from "@repo/database";
 import { logger } from "@repo/logs";
 import type { Mock } from "vitest";
 import {
@@ -56,6 +60,7 @@ const LEFT = { ...REMOVED, trigger: "left" as const };
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	vi.mocked(demoteDepartingOperator).mockReset();
 	revoke.mockResolvedValue({
 		projectMemberships: 3,
 		workspaceMemberships: 2,
@@ -206,3 +211,60 @@ describe("syncSeatsAfterDeparture", () => {
 		expect(revoke).not.toHaveBeenCalled();
 	});
 });
+
+it.each([REMOVED, LEFT])(
+	"demotes departing operators for $trigger",
+	async (input) => {
+		await revokeDepartingMemberAccess(input);
+		expect(demoteDepartingOperator).toHaveBeenCalledWith(
+			input.organizationId,
+			input.userId,
+		);
+	},
+);
+
+it.each([REMOVED, LEFT])(
+	"revokes access despite demotion failure for $trigger",
+	async (input) => {
+		vi.mocked(demoteDepartingOperator).mockRejectedValue(
+			new Error("demotion unavailable"),
+		);
+		const result = revokeDepartingMemberAccess(input);
+		if (input.trigger === "removed") {
+			await expect(result).rejects.toMatchObject({
+				status: "INTERNAL_SERVER_ERROR",
+			});
+		} else {
+			await expect(result).resolves.toBeUndefined();
+		}
+		expect(revoke).toHaveBeenCalledWith({
+			organizationId: input.organizationId,
+			userId: input.userId,
+		});
+		expect(logger.error).toHaveBeenCalledWith(
+			"[Auth] Failed to demote departing operator",
+			expect.objectContaining({ trigger: input.trigger }),
+		);
+	},
+);
+it.each([REMOVED, LEFT])(
+	"demotes despite revocation failure for $trigger",
+	async (input) => {
+		revoke.mockRejectedValue(new Error("revocation unavailable"));
+		const result = revokeDepartingMemberAccess(input);
+		if (input.trigger === "removed") {
+			await expect(result).rejects.toMatchObject({
+				status: "INTERNAL_SERVER_ERROR",
+			});
+		} else {
+			await expect(result).resolves.toBeUndefined();
+		}
+		expect(demoteDepartingOperator).toHaveBeenCalledWith(
+			input.organizationId,
+			input.userId,
+		);
+		expect(revoke.mock.invocationCallOrder[0]).toBeLessThan(
+			vi.mocked(demoteDepartingOperator).mock.invocationCallOrder[0],
+		);
+	},
+);

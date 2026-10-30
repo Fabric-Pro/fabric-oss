@@ -15,10 +15,8 @@
  * the persisted message array — there is no turn table and no migration.
  */
 
-import type {
-	AgentResponse,
-	ConversationTurn,
-} from "../hooks/useMultiAgentStream";
+import type { ConversationTurn } from "../hooks/useMultiAgentStream";
+import type { AgentResponse } from "./multi-agent-response";
 
 /** Display name for a response with no agent attribution of its own. */
 export const DEFAULT_AI_AGENT_NAME = "Nexus";

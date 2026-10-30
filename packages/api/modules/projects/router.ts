@@ -437,6 +437,7 @@ import { getProposalThemeTokensProcedure } from "./procedures/proposal-artifact/
 import { listProposalVisualSpecsProcedure } from "./procedures/proposal-artifact/list-visual-specs";
 import { rerunProposalAnalysisProcedure } from "./procedures/proposal-artifact/rerun-analysis";
 import { respondToFindingProcedure } from "./procedures/proposal-artifact/respond-to-finding";
+import { reviseProposalSectionProcedure } from "./procedures/proposal-artifact/revise-section";
 import { updateProposalStyleProcedure } from "./procedures/proposal-artifact/update-style";
 import {
 	acceptRefinementProcedure,
@@ -2316,6 +2317,10 @@ export const projectsRouter = {
 		// open to a project guest who holds them, as chat is.
 		listVisualSpecs: listProposalVisualSpecsProcedure,
 		editVisual: editProposalVisualProcedure,
+		// Fizzy #2946: apply a finding's recommendation to its section and
+		// return the candidate; members of the owning organization with edit
+		// rights only, since findings are internal.
+		reviseSection: reviseProposalSectionProcedure,
 	},
 
 	// @mentions autocomplete search

@@ -237,6 +237,13 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 		"warning",
 		"org",
 	),
+	"org.member.left": D(
+		"org.member.left",
+		"Member left",
+		UserMinus,
+		"warning",
+		"org",
+	),
 	"org.api_key.created": D(
 		"org.api_key.created",
 		"API key created",
@@ -256,6 +263,13 @@ export const ACTION_CATALOG: Record<string, ActionDescriptor> = {
 		"API key rotated",
 		KeySquare,
 		"info",
+		"org",
+	),
+	"account.role_changed": D(
+		"account.role_changed",
+		"Account role changed",
+		UserCog,
+		"warning",
 		"org",
 	),
 	"account.api_key.created": D(

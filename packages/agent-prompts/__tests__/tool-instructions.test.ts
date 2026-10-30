@@ -96,4 +96,14 @@ describe("buildToolInstructionsWithoutFormatting (patch-mode)", () => {
 		// …without weakening the default single-occurrence contract.
 		expect(instructions).toMatch(/MUST appear exactly once/);
 	});
+
+	it("does not change when an edit changes the document's length", () => {
+		// The patch-mode rules sit in the system prompt; text that varies per
+		// edit invalidates the provider's prompt cache for the whole request.
+		const build = (doc: string) =>
+			buildToolInstructionsWithoutFormatting(doc, true, true, "patch");
+		expect(build(`${existingDocument}\n\nOne more paragraph.`)).toBe(
+			build(existingDocument),
+		);
+	});
 });

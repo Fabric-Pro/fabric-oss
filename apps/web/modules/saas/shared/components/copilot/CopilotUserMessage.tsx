@@ -2,12 +2,15 @@
 
 import type { UserMessageProps } from "@copilotkit/react-ui";
 import { Paperclip } from "lucide-react";
+import { memo } from "react";
 import { useAttachmentRegistry } from "./AttachmentRegistry";
-import { MessageAttachmentList } from "./MessageAttachmentList";
 import {
+	type FormattedMessageTimestamp,
 	formatMessageTimestamp,
 	type TimestampSource,
 } from "./formatMessageTimestamp";
+import { MessageAttachmentList } from "./MessageAttachmentList";
+import { equalMessageFields } from "./message-row-equality";
 
 /**
  * Defense-in-depth strip for the legacy `<attached_documents>` envelope from
@@ -138,14 +141,13 @@ function renderAttachmentCaption(names: string[]) {
  * attribute carries the full date + time in the reader's local timezone
  * so hovering shows the exact moment in their own wall-clock.
  *
- * Returns `null` when there is no usable timestamp on the source —
+ * Returns `null` when there is no usable formatted timestamp —
  * callers can mount this unconditionally.
  */
 function renderMessageTimestamp(
-	source: TimestampSource,
+	formatted: FormattedMessageTimestamp | null,
 	align: "end" | "start",
 ) {
-	const formatted = formatMessageTimestamp(source);
 	if (!formatted) {
 		return null;
 	}
@@ -173,7 +175,11 @@ function renderMessageTimestamp(
  * outside the wrapper means it does not pick up the bubble's background
  * colour and does not visually compete with the message content.
  */
-export function CopilotUserMessage(props: UserMessageProps) {
+function CopilotUserMessageInner(
+	props: UserMessageProps & {
+		formattedTimestamp: FormattedMessageTimestamp | null;
+	},
+) {
 	const { message, ImageRenderer } = props;
 	const legacyImage = getLegacyImage(message);
 
@@ -208,7 +214,9 @@ export function CopilotUserMessage(props: UserMessageProps) {
 	// `message` carries the runtime timestamp on `createdAt` (CopilotKit
 	// runtime) or our persisted `timestamp` (when SSR-hydrated). The
 	// formatter takes both shapes so we don't need to coerce here.
-	const timestampSource = (message ?? {}) as TimestampSource;
+	const formattedTimestamp = formatMessageTimestamp(
+		(message ?? {}) as TimestampSource,
+	);
 
 	if (legacyImage) {
 		return (
@@ -223,7 +231,7 @@ export function CopilotUserMessage(props: UserMessageProps) {
 				) : (
 					renderAttachmentCaption(attachmentNames)
 				)}
-				{renderMessageTimestamp(timestampSource, "end")}
+				{renderMessageTimestamp(formattedTimestamp, "end")}
 			</>
 		);
 	}
@@ -240,7 +248,7 @@ export function CopilotUserMessage(props: UserMessageProps) {
 					<MessageAttachmentList
 						attachments={registeredAttachments!}
 					/>
-					{renderMessageTimestamp(timestampSource, "end")}
+					{renderMessageTimestamp(formattedTimestamp, "end")}
 				</>
 			);
 		}
@@ -248,7 +256,7 @@ export function CopilotUserMessage(props: UserMessageProps) {
 			return (
 				<>
 					{renderAttachmentCaption(attachmentNames)}
-					{renderMessageTimestamp(timestampSource, "end")}
+					{renderMessageTimestamp(formattedTimestamp, "end")}
 				</>
 			);
 		}
@@ -264,7 +272,34 @@ export function CopilotUserMessage(props: UserMessageProps) {
 			) : (
 				renderAttachmentCaption(attachmentNames)
 			)}
-			{renderMessageTimestamp(timestampSource, "end")}
+			{renderMessageTimestamp(formattedTimestamp, "end")}
 		</>
+	);
+}
+
+const MemoUserMessage = memo(
+	CopilotUserMessageInner,
+	(a, b) =>
+		a.ImageRenderer === b.ImageRenderer &&
+		equalMessageFields(a.formattedTimestamp, b.formattedTimestamp, [
+			"label",
+			"iso",
+			"tooltip",
+		]) &&
+		equalMessageFields(a.message, b.message, [
+			"id",
+			"content",
+			"image",
+			"createdAt",
+			"timestamp",
+		]),
+);
+
+export function CopilotUserMessage(props: UserMessageProps) {
+	const formattedTimestamp = formatMessageTimestamp(
+		(props.message ?? {}) as TimestampSource,
+	);
+	return (
+		<MemoUserMessage {...props} formattedTimestamp={formattedTimestamp} />
 	);
 }

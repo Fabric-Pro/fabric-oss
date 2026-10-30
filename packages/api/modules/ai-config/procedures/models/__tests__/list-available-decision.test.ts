@@ -4,6 +4,7 @@ const mockFindMany = vi.hoisted(() => vi.fn());
 const mockConfiguredProviders = vi.hoisted(() => vi.fn());
 
 vi.mock("@repo/database", () => ({
+	SELECTABLE_CATALOG_MODEL_FILTER: { isActive: true, deprecatedAt: null },
 	db: { aiModel: { findMany: mockFindMany } },
 	getOrganizationDefaultProvider: vi.fn(async () => "VERCEL_GATEWAY"),
 	getProviderDisplayName: (provider: string) => provider,

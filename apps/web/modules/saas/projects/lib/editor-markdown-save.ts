@@ -59,6 +59,81 @@ const highlightMarkRule: TurndownService.Rule = {
 	},
 };
 
+const ELEMENT_NODE = 1;
+const TEXT_NODE = 3;
+
+function isDiffDeletion(node: Node): boolean {
+	return (
+		node.nodeName === "DEL" &&
+		Boolean((node as Element).classList?.contains("diff-del"))
+	);
+}
+
+/**
+ * What `node` shows once the save has dropped the diff's deletions: any
+ * text, else an image, else nothing.
+ */
+function visibleContent(node: Node): "text" | "image" | null {
+	let image = false;
+	for (const child of Array.from(node.childNodes)) {
+		if (child.nodeType === TEXT_NODE) {
+			if ((child.textContent ?? "").trim()) {
+				return "text";
+			}
+			continue;
+		}
+		if (child.nodeType !== ELEMENT_NODE || isDiffDeletion(child)) {
+			continue;
+		}
+		if (child.nodeName === "IMG") {
+			image = true;
+			continue;
+		}
+		const inner = visibleContent(child);
+		if (inner === "text") {
+			return "text";
+		}
+		image ||= inner === "image";
+	}
+	return image ? "image" : null;
+}
+
+/** A link's destination and title, as Turndown's own link rule writes them. */
+function linkTarget(link: Element): string {
+	const href = (link.getAttribute("href") ?? "").replace(/([()])/g, "\\$1");
+	const title = (link.getAttribute("title") ?? "")
+		.replace(/(\n+\s*)+/g, "\n")
+		.replace(/"/g, '\\"');
+	return title ? `${href} "${title}"` : href;
+}
+
+/**
+ * Turndown rule for a link with no visible text (Fizzy #2946).
+ *
+ * Turndown keeps an empty `<a>` (it counts as meaningful when blank), so it
+ * would save `[](url)`. One reaches the save when an accepted AI change
+ * deletes a linked phrase: the diff marks the deleted text inside the link,
+ * and stripping the deletion leaves the link with nothing in it. Saved, the
+ * empty link keeps the destination the change removed — a finding revision's
+ * accept is then refused, since its signed section fingerprint counts link
+ * destinations. Such a link gives way to what it holds (a `<br>`, say).
+ * Text inside a diff deletion is not counted, as the save drops it.
+ *
+ * A link around an image is kept, on one line: the image rule pads its
+ * output with blank lines, which would split `[`…`](url)` apart.
+ *
+ * Registered on BOTH Turndown services, as the highlight rule is: a table
+ * cell's content goes through the inline cell service.
+ */
+const emptyLinkRule: TurndownService.Rule = {
+	filter: (node: any) =>
+		node.nodeName === "A" && visibleContent(node) !== "text",
+	replacement: (content: string, node: any) =>
+		visibleContent(node) === "image" && node.getAttribute("href")
+			? `[${content.trim()}](${linkTarget(node)})`
+			: content,
+};
+
 // Inline Turndown service used to serialize the CONTENT of a single table cell.
 // It is built from the SAME overrides as the main service (disableEmphasisEscape
 // + applyGfmStrikethroughFix) so in-cell `**bold**`, `*italic*`, `code`, links,
@@ -81,6 +156,7 @@ function getInlineCellService(): TurndownService {
 	disableEmphasisEscape(service);
 	// Highlights inside a cell go through this service, not the main one.
 	service.addRule("highlightMark", highlightMarkRule);
+	service.addRule("emptyLink", emptyLinkRule);
 	inlineCellServiceSingleton = service;
 	return service;
 }
@@ -276,6 +352,14 @@ export function createTurndownService(): TurndownService {
 			if (caption && !img.getAttribute("data-caption")) {
 				img.setAttribute("data-caption", caption);
 			}
+			// A linked image: the editor writes `<p><a><figure><img>`, and
+			// parsing that HTML moves the figure out of the paragraph, with
+			// the link rebuilt inside it around the image. A link around
+			// the whole figure is written by the link rule instead.
+			const link = img.closest("a[href]");
+			if (link && node.contains(link)) {
+				return `\n\n[${buildImgTag(img).trim()}](${linkTarget(link)})\n\n`;
+			}
 			return buildImgTag(img);
 		},
 	});
@@ -287,6 +371,7 @@ export function createTurndownService(): TurndownService {
 			(node as HTMLElement).outerHTML,
 	});
 	service.addRule("highlightMark", highlightMarkRule);
+	service.addRule("emptyLink", emptyLinkRule);
 
 	return service;
 }

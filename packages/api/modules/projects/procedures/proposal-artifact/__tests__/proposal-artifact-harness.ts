@@ -438,6 +438,7 @@ const fakeDb = {
 						id: document.id,
 						type: document.type,
 						content: document.content,
+						status: document.status ?? "COMPLETE",
 					}
 				: null;
 		},

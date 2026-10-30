@@ -38,23 +38,26 @@ type VersionRow = {
 
 type PromptRow = { id: string; key: string; name: string; scope: Scope };
 
-const { table, findFirst, promptFindUnique } = vi.hoisted(() => {
-	const table = {
-		bindings: [] as BindingRow[],
-		versions: [] as VersionRow[],
-		prompts: [] as PromptRow[],
-	};
-	return {
-		table,
-		findFirst: vi.fn(),
-		promptFindUnique: vi.fn(),
-	};
-});
+const { table, findFirst, promptFindUnique, promptVersionFindUnique } =
+	vi.hoisted(() => {
+		const table = {
+			bindings: [] as BindingRow[],
+			versions: [] as VersionRow[],
+			prompts: [] as PromptRow[],
+		};
+		return {
+			table,
+			findFirst: vi.fn(),
+			promptFindUnique: vi.fn(),
+			promptVersionFindUnique: vi.fn(),
+		};
+	});
 
 vi.mock("@repo/database/prisma/client", () => ({
 	db: {
 		promptBinding: { findFirst },
 		prompt: { findUnique: promptFindUnique },
+		promptVersion: { findUnique: promptVersionFindUnique },
 	},
 	Prisma: {},
 }));
@@ -63,15 +66,20 @@ vi.mock("@repo/database", async () => {
 	const prompts = await vi.importActual<
 		typeof import("@repo/database/prisma/queries/prompts")
 	>("@repo/database/prisma/queries/prompts");
-	return { getBoundPromptForAgent: prompts.getBoundPromptForAgent };
+	const client = await import("@repo/database/prisma/client");
+	return {
+		db: client.db,
+		getBoundPromptForAgent: prompts.getBoundPromptForAgent,
+	};
 });
 
 import {
 	findBoundProposalPrompt,
+	loadBoundProposalPromptText,
 	proposalPromptNotBoundMessage,
 	resolveBoundProposalPrompt,
 } from "../prompts";
-import { PROPOSAL_PROMPT_NOT_BOUND } from "../types";
+import { PROPOSAL_PROMPT_NOT_BOUND, type ProposalPromptAction } from "../types";
 
 // PostgreSQL orders an enum by declaration: SYSTEM, ORG, USER.
 const SCOPE_ORDER: Record<Scope, number> = { SYSTEM: 0, ORG: 1, USER: 2 };
@@ -160,7 +168,7 @@ const lookup = (
 	userId: "user-1",
 	organizationId: "org-1",
 	projectId: "project-1",
-	action: "proposal_client_main" as const,
+	action: "proposal_client_main" as ProposalPromptAction,
 	...overrides,
 });
 
@@ -189,6 +197,7 @@ beforeEach(() => {
 		},
 	);
 	promptFindUnique.mockReset();
+	promptVersionFindUnique.mockReset();
 	promptFindUnique.mockImplementation(
 		async (args: { where: { id: string } }) => {
 			const prompt = table.prompts.find((p) => p.id === args.where.id);
@@ -222,6 +231,15 @@ beforeEach(() => {
 			scope: "SYSTEM",
 		},
 		[{ id: "pv-sys-analysis-1", version: 1 }],
+	);
+	seedPrompt(
+		{
+			id: "prompt-sys-revision",
+			key: "proposal_client_revision",
+			name: "Client Proposal (revision)",
+			scope: "SYSTEM",
+		},
+		[{ id: "pv-sys-revision-1", version: 1 }],
 	);
 });
 
@@ -620,6 +638,191 @@ describe("findBoundProposalPrompt / resolveBoundProposalPrompt", () => {
 		findFirst.mockRejectedValueOnce(outage);
 
 		await expect(resolveBoundProposalPrompt(lookup())).rejects.toBe(outage);
+	});
+});
+
+describe("the client revision action (Fizzy #2946)", () => {
+	const revision = () => lookup({ action: "proposal_client_revision" });
+
+	it("asks for its own default binding at PROPOSAL without the personal tier", async () => {
+		bind({
+			targetKey: "proposal_client_revision",
+			scope: "SYSTEM",
+			promptVersionId: "pv-sys-revision-1",
+		});
+
+		await expect(resolveBoundProposalPrompt(revision())).resolves.toEqual({
+			promptId: "prompt-sys-revision",
+			versionNumber: 1,
+			promptVersionId: "pv-sys-revision-1",
+		});
+		const where = issuedWheres()[0];
+		expect(where).toMatchObject({
+			targetKey: "proposal_client_revision",
+			documentType: "PROPOSAL",
+			storyKind: null,
+			isDefault: true,
+		});
+		expect(where.OR).toEqual([
+			{ scope: "SYSTEM" },
+			{
+				scope: "ORG",
+				organizationId: "org-1",
+				OR: [{ projectId: "project-1" }, { projectId: null }],
+			},
+		]);
+	});
+
+	it("ignores a personal binding on it, even one written straight to the table", async () => {
+		seedPrompt(
+			{
+				id: "prompt-personal-revision",
+				key: "my_client_revision",
+				name: "My client revision",
+				scope: "USER",
+			},
+			[{ id: "pv-personal-revision-1", version: 1 }],
+		);
+		bind({
+			targetKey: "proposal_client_revision",
+			scope: "USER",
+			userId: "user-1",
+			promptVersionId: "pv-personal-revision-1",
+		});
+		bind({
+			targetKey: "proposal_client_revision",
+			scope: "SYSTEM",
+			promptVersionId: "pv-sys-revision-1",
+		});
+
+		const resolved = await resolveBoundProposalPrompt(revision());
+		expect(resolved.promptId).toBe("prompt-sys-revision");
+	});
+
+	it("never borrows the Main action's binding, and fails closed naming itself", async () => {
+		bind({
+			targetKey: "proposal_client_main",
+			scope: "SYSTEM",
+			promptVersionId: "pv-sys-main-1",
+		});
+		bind({
+			targetKey: "proposal_client_revision",
+			scope: "USER",
+			userId: "user-1",
+			promptVersionId: "pv-sys-revision-1",
+		});
+
+		await expect(findBoundProposalPrompt(revision())).resolves.toBeNull();
+		const failure = await resolveBoundProposalPrompt(revision()).catch(
+			(error: unknown) => error,
+		);
+		expect((failure as ApplicationFailure).type).toBe(
+			PROPOSAL_PROMPT_NOT_BOUND,
+		);
+		expect((failure as ApplicationFailure).nonRetryable).toBe(true);
+		expect((failure as ApplicationFailure).message).toContain(
+			'"Client proposal (revision)"',
+		);
+		expect((failure as ApplicationFailure).message).toMatch(
+			/cannot be revised/,
+		);
+	});
+});
+
+describe("loadBoundProposalPromptText", () => {
+	function storedVersion(
+		content: string,
+		prompt: {
+			format?: string;
+			scope: Scope;
+			organizationId?: string | null;
+		},
+	) {
+		promptVersionFindUnique.mockResolvedValueOnce({
+			content,
+			prompt: {
+				format: prompt.format ?? "PLAIN_TEXT",
+				scope: prompt.scope,
+				organizationId: prompt.organizationId ?? null,
+			},
+		});
+	}
+
+	it("reads the bound version and returns its text trimmed, with & and < kept as written", async () => {
+		storedVersion("\n  Keep R&D costs <10% & say so.  \n", {
+			scope: "ORG",
+			organizationId: "org-1",
+		});
+
+		await expect(
+			loadBoundProposalPromptText({
+				promptVersionId: "pv-org-revision-2",
+				organizationId: "org-1",
+			}),
+		).resolves.toBe("Keep R&D costs <10% & say so.");
+		expect(promptVersionFindUnique).toHaveBeenCalledWith({
+			where: { id: "pv-org-revision-2" },
+			select: {
+				content: true,
+				prompt: {
+					select: { format: true, scope: true, organizationId: true },
+				},
+			},
+		});
+	});
+
+	it("renders a template format without escaping", async () => {
+		storedVersion("Use {{missing}}R&D <terms>.", {
+			format: "HANDLEBARS",
+			scope: "SYSTEM",
+		});
+
+		await expect(
+			loadBoundProposalPromptText({
+				promptVersionId: "pv-sys-revision-1",
+				organizationId: "org-1",
+			}),
+		).resolves.toBe("Use R&D <terms>.");
+	});
+
+	it("refuses a version of another organization's prompt", async () => {
+		storedVersion("Another organization's wording.", {
+			scope: "ORG",
+			organizationId: "org-2",
+		});
+
+		await expect(
+			loadBoundProposalPromptText({
+				promptVersionId: "pv-other-org",
+				organizationId: "org-1",
+			}),
+		).resolves.toBeNull();
+	});
+
+	it("refuses a personal prompt's version", async () => {
+		storedVersion("My own wording.", { scope: "USER" });
+
+		await expect(
+			loadBoundProposalPromptText({
+				promptVersionId: "pv-personal",
+				organizationId: "org-1",
+			}),
+		).resolves.toBeNull();
+	});
+
+	it("answers null for a missing version, a blank one, and one that does not render", async () => {
+		promptVersionFindUnique.mockResolvedValueOnce(null);
+		storedVersion("   \n  ", { scope: "SYSTEM" });
+		storedVersion("{{#if}}", { format: "HANDLEBARS", scope: "SYSTEM" });
+
+		for (const promptVersionId of ["pv-gone", "pv-blank", "pv-broken"]) {
+			await expect(
+				loadBoundProposalPromptText({
+					promptVersionId,
+					organizationId: "org-1",
+				}),
+			).resolves.toBeNull();
+		}
 	});
 });
 

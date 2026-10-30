@@ -15,6 +15,14 @@
  * generation run is queued or writing it is refused with 409
  * `DOCUMENT_GENERATION_IN_PROGRESS`.
  *
+ * A content PATCH of a client-document Proposal is checked as an AI write
+ * no person reviewed (Fizzy #2946): one that changes or removes an existing
+ * diagram, its section's removal or renaming included, is refused with 422
+ * `REVISION_CHANGED_DIAGRAM`, `error.data.violations` naming each by section
+ * key, position and visual id; one that repeats the wording of an answer the
+ * key's creator was shown as settled is refused with 422 `RESPONSE_ECHOED`.
+ * Prose may change anywhere, and a diagram may move.
+ *
  * QUEUED and GENERATING belong to generation runs: a create or PATCH that
  * sends either status is refused with 400 `DOCUMENT_STATUS_GENERATION_OWNED`.
  * Both still work as a list filter.
@@ -35,15 +43,15 @@ import {
 } from "@repo/database";
 import { contentIdentity } from "@repo/utils/content-identity";
 import {
+	isCreatableDocumentType,
+	RETIRED_TYPE_MESSAGE,
+} from "@repo/utils/document-type-catalog";
+import {
 	DOCUMENT_STATUS_GENERATION_OWNED,
 	generationOwnedStatusMessage,
 	isGenerationOwnedStatus,
 	isRunGuardedDocumentType,
 } from "@repo/utils/generation-run-guard";
-import {
-	isCreatableDocumentType,
-	RETIRED_TYPE_MESSAGE,
-} from "@repo/utils/document-type-catalog";
 import {
 	hasVisualSlots,
 	preserveVisualSlots,
@@ -52,6 +60,10 @@ import { preserveVisualMarkers } from "@repo/utils/proposal-artifact/visual-iden
 import type { Hono } from "hono";
 import { requireScope } from "../external-api/middleware/api-key-auth";
 import type { ExternalApiVariables } from "../external-api/types";
+import {
+	checkWholeBodyAiWrite,
+	wholeBodyRefusalMessage,
+} from "../projects/lib/client-proposal-main-check";
 import {
 	badRequest,
 	forbidden,
@@ -629,6 +641,64 @@ export function registerDocumentRoutes(
 		) {
 			return generationInProgress();
 		}
+		const versionConflict = () =>
+			c.json(
+				{
+					error: {
+						message:
+							"The document changed while it was being updated. Read it again and retry.",
+						code: DOCUMENT_VERSION_CONFLICT,
+					},
+				},
+				409,
+			);
+
+		// A client-document Proposal's Main is checked like an AI chat accept
+		// (Fizzy #2946), stricter on diagrams since no person reviews this
+		// diff: every AI writer is held to it, and an API key is one. Against
+		// the body this request read, which the write is guarded by, with the
+		// key creator's settled answers in the project's owning organization.
+		// Only a Proposal can be a client document, so no other type reads
+		// the gate.
+		if (runGuardedContentWrite && updates.content !== undefined) {
+			const verdict = await checkWholeBodyAiWrite({
+				surface: "v1",
+				projectId: existing.projectId,
+				documentId: existing.id,
+				documentType: existing.type,
+				owningOrganizationId: existing.project?.organizationId ?? null,
+				userId: ctx.userId,
+				previous: existing.content,
+				next: updates.content,
+			});
+			if (!verdict.ok) {
+				// Checked against a body the caller's base no longer names:
+				// answered as the guarded write would answer it.
+				if (
+					expectedVersion !== undefined &&
+					(existing.version !== expectedVersion ||
+						contentIdentity(existing.content) !==
+							expectedContentHash)
+				) {
+					return versionConflict();
+				}
+				return c.json(
+					{
+						error: {
+							message: wholeBodyRefusalMessage(
+								verdict,
+								existing.content,
+							),
+							code: verdict.code,
+							...("violations" in verdict
+								? { data: { violations: verdict.violations } }
+								: {}),
+						},
+					},
+					422,
+				);
+			}
+		}
 
 		let updated: Awaited<ReturnType<typeof updateDocument>>;
 		try {
@@ -668,16 +738,7 @@ export function registerDocumentRoutes(
 				return generationInProgress();
 			}
 			if (error instanceof DocumentVersionConflictError) {
-				return c.json(
-					{
-						error: {
-							message:
-								"The document changed while it was being updated. Read it again and retry.",
-							code: DOCUMENT_VERSION_CONFLICT,
-						},
-					},
-					409,
-				);
+				return versionConflict();
 			}
 			throw error;
 		}

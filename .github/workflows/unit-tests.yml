@@ -610,9 +610,12 @@ jobs:
   # only when @repo/temporal is affected: the relay depends on
   # @repo/utils/url-security, and a one-file run is cheap.
   #
-  # The same job prints a synthetic Proposal PDF with this Chromium
+  # The same job prints synthetic Proposal PDFs with this Chromium
   # (`packages/temporal/__tests__/proposal-export-print.e2e.test.ts`): font
   # hinting and the cover's page geometry only show in a real Linux print.
+  # The PDFs it prints (synthetic content only) are uploaded as the
+  # `proposal-print-pdfs` artifact for a page-by-page human review; run the
+  # workflow by dispatch on a branch to get them before a PR exists.
   browser-security:
     name: Browser relay security (real Chromium)
     needs: [plan, promotion_policy]
@@ -698,7 +701,20 @@ jobs:
           pnpm --filter @repo/temporal exec playwright install-deps chromium
 
       - name: Run browser relay security suite
+        env:
+          # The print e2e writes its PDFs here (runner context is not
+          # available in job-level env).
+          PROPOSAL_PRINT_ARTIFACT_DIR: ${{ runner.temp }}/proposal-print-pdfs
         run: pnpm --filter @repo/temporal exec vitest run __tests__/browser-automation-redirect-credentials.e2e.test.ts __tests__/qa-agentic-browser-security.e2e.test.ts __tests__/proposal-export-print.e2e.test.ts
+
+      - name: Upload Proposal print PDFs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: proposal-print-pdfs
+          path: ${{ runner.temp }}/proposal-print-pdfs
+          if-no-files-found: warn
+          retention-days: 5
 
   # The migration chain, replayed into an empty database, must match
   # schema.prisma exactly (Fizzy #2268). `prisma migrate dev` diffs that

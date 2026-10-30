@@ -1,4 +1,5 @@
 "use client";
+import { useMemo } from "react";
 
 /**
  * AgentChatAPI - Specialized interface for API Agent
@@ -53,6 +54,7 @@ export function AgentChatAPI({ agent, runtimeUrl }: AgentChatAPIProps) {
 				useSingleEndpoint
 				agent={agent?.agentId}
 				showDevConsole={false}
+				enableInspector={false}
 				onError={onError}
 			>
 				<CopilotChatSessionProvider>
@@ -92,6 +94,31 @@ function APIAgentContent({ agent }: { agent: any }) {
 		}, 1000);
 	};
 
+	const chatLabels = useMemo(
+		() => ({
+			title: agent?.displayName || "API Agent",
+			initial:
+				"Hi! I can help you test APIs, validate responses, and generate API documentation. What would you like to do?",
+		}),
+		[agent?.displayName],
+	);
+	const chatSuggestions = useMemo(
+		() => [
+			{
+				title: "Test endpoint",
+				message: "Test my REST endpoint at /api/users",
+			},
+			{
+				title: "Generate docs",
+				message: "Generate API documentation from my OpenAPI spec",
+			},
+			{
+				title: "Validate spec",
+				message: "Validate my OpenAPI specification",
+			},
+		],
+		[],
+	);
 	return (
 		<>
 			<div className="flex h-full">
@@ -198,26 +225,8 @@ function APIAgentContent({ agent }: { agent: any }) {
 						AssistantMessage={CopilotAssistantMessage}
 						defaultOpen={true}
 						clickOutsideToClose={false}
-						labels={{
-							title: agent?.displayName || "API Agent",
-							initial:
-								"Hi! I can help you test APIs, validate responses, and generate API documentation. What would you like to do?",
-						}}
-						suggestions={[
-							{
-								title: "Test endpoint",
-								message: "Test my REST endpoint at /api/users",
-							},
-							{
-								title: "Generate docs",
-								message:
-									"Generate API documentation from my OpenAPI spec",
-							},
-							{
-								title: "Validate spec",
-								message: "Validate my OpenAPI specification",
-							},
-						]}
+						labels={chatLabels}
+						suggestions={chatSuggestions}
 					>
 						<div />
 					</CopilotSidebar>

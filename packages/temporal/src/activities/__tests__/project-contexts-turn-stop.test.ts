@@ -29,7 +29,10 @@ vi.mock("@repo/database", () => ({
 	tenantWhere: vi.fn(),
 }));
 
-vi.mock("@repo/rag", () => ({
+vi.mock("@repo/rag", async () => ({
+	...(await import(
+		"@repo/rag/lib/project-contexts/project-context-passages"
+	)),
 	retrieveProjectContexts: mocks.retrieveProjectContexts,
 	contextMetaHeader: mocks.contextMetaHeader,
 }));

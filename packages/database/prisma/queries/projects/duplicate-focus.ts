@@ -21,11 +21,21 @@
 
 /**
  * The focus-section cosine's share of a feature pair's score; the
- * whole-document cosine gets the rest. A starting value, meant to be tuned
- * against reviewed scan results: high enough that two features whose Scope
- * sections do not overlap fall below the candidate threshold even when their
- * documents read alike, while the document term still lifts a pair whose
- * sections are worded differently but describe the same work.
+ * whole-document cosine gets the rest. The score does two jobs:
+ *
+ *  - it is the similarity a feature pair is stored and shown with, so two
+ *    features whose Scope sections do not overlap read as low even when their
+ *    documents read alike;
+ *  - it is the score a feature pair is selected on (see `candidateScore`), so
+ *    two features whose Scope sections match are checked even when the rest
+ *    of their documents are written differently, and two whose documents
+ *    read alike but whose Scope sections do not are not.
+ *
+ * It never flags a pair by itself — the verifier, reading the same sections
+ * as its primary signal, decides every candidate (see `buildVerifierPrompt`).
+ * Checked against verifier verdicts on 68 staging feature pairs: ranking
+ * linked above distinct pairs, 0.75 scored an AUC of 0.92, the whole document
+ * alone 0.79, and every weight from 0.6 to 1.0 was within 0.01 of 0.75.
  */
 export const FOCUS_SECTION_WEIGHT = 0.75;
 
@@ -48,12 +58,15 @@ const MAX_FOCUS_SOURCE_CHARS = 40000;
  * a heading. */
 const BOLD_LABEL_LEVEL = 7;
 
-const HEADING_LINE = /^ {0,3}(#{1,6})[ \t]+(\S.*)$/;
+/** An ATX heading, also when an editor stored it escaped (`\## Scope`). */
+const HEADING_LINE = /^ {0,3}\\?(#{1,6})[ \t]+(\S.*)$/;
 /** Matched against an already-trimmed line, so no trailing-space quantifier
  * is needed next to the optional colon. */
 const BOLD_LABEL_LINE = /^(\*\*|__)([^*_]+)\1:?$/;
 const LEADING_NUMBERING = /^\d+(?:\.\d+)*[.)]?[ \t]+/;
-const RULE_LINE = /^[-*_ \t]+$/;
+/** A content line counts only when it has a letter or digit, so rules
+ * (`---`) and placeholder bullets (`- ...`) leave a section empty. */
+const HAS_TEXT = /[\p{L}\p{N}]/u;
 /**
  * A template metadata line in an acceptance-criteria field: optionally a
  * `-`/`*` bullet, optionally bold, then a feature id, scope justification,
@@ -68,8 +81,11 @@ const TEMPLATE_METADATA_LINE =
  * regex — and only ever spaced, so "In-Scope" stays one word. */
 const LABEL_SEPARATORS = [" / ", " & ", " and ", " — ", " – "];
 
+/** The sections a feature pair can be compared on, in order of preference. */
+export const PAIR_FOCUS_KINDS = ["scope", "acceptance_criteria"] as const;
+
 /** The section a feature pair is compared on. */
-export type PairFocusKind = "scope" | "acceptance_criteria";
+export type PairFocusKind = (typeof PAIR_FOCUS_KINDS)[number];
 
 /** The fields of a story the focus selection reads. `kind` mirrors the
  * `StoryKind` enum; a row without one is treated as not-a-feature, so it
@@ -79,6 +95,9 @@ export type FocusStory = {
 	description?: string | null;
 	acceptanceCriteria?: string | null;
 };
+
+/** A feature's comparable section texts, one entry per section it has. */
+export type FocusTexts = Partial<Record<PairFocusKind, string>>;
 
 /** The comparable section text of both sides of a FEATURE↔FEATURE pair. */
 export type PairFocus = {
@@ -202,7 +221,7 @@ function extractSection(
 			continue;
 		}
 		const content = (label ? label.text : line).trim();
-		if (content && !RULE_LINE.test(content)) {
+		if (HAS_TEXT.test(content)) {
 			groups[groups.length - 1].lines.push(content);
 		}
 	}
@@ -279,7 +298,7 @@ export function extractAcceptanceCriteriaText(story: FocusStory): string {
 	const fieldText = stripTemplateMetadata(field)
 		.slice(0, MAX_FOCUS_CHARS)
 		.trim();
-	if (fieldText) {
+	if (HAS_TEXT.test(fieldText)) {
 		return fieldText;
 	}
 	return extractSection(
@@ -289,37 +308,41 @@ export function extractAcceptanceCriteriaText(story: FocusStory): string {
 }
 
 /**
- * The section a pair should be compared on, or null to keep the
- * whole-document comparison.
- *
- * Only a FEATURE↔FEATURE pair is focused. Both sides must have the SAME kind
- * of section — comparing one feature's Scope with the other's acceptance
- * criteria would measure two different kinds of text — so Scope is used when
- * both have one, acceptance criteria when both have those, and otherwise the
- * pair falls back to the whole document.
+ * A story's comparable sections, or null when it is not a feature (bugs keep
+ * the whole-document comparison). Only non-empty sections get an entry.
  */
-export function selectPairFocus(
-	a: FocusStory,
-	b: FocusStory,
-): PairFocus | null {
-	if (a.kind !== "FEATURE" || b.kind !== "FEATURE") {
+export function extractFocusTexts(story: FocusStory): FocusTexts | null {
+	if (story.kind !== "FEATURE") {
 		return null;
 	}
-	const scopeA = extractScopeText(a.description);
-	const scopeB = extractScopeText(b.description);
-	if (scopeA && scopeB) {
-		return { kind: "scope", textA: scopeA, textB: scopeB };
+	const texts: FocusTexts = {};
+	const scope = extractScopeText(story.description);
+	if (scope) {
+		texts.scope = scope;
 	}
-	const criteriaA = extractAcceptanceCriteriaText(a);
-	const criteriaB = extractAcceptanceCriteriaText(b);
-	if (criteriaA && criteriaB) {
-		return {
-			kind: "acceptance_criteria",
-			textA: criteriaA,
-			textB: criteriaB,
-		};
+	const criteria = extractAcceptanceCriteriaText(story);
+	if (criteria) {
+		texts.acceptance_criteria = criteria;
 	}
-	return null;
+	return texts;
+}
+
+/**
+ * The section two features are compared on, given which sections each one has
+ * (texts or their vectors), or null to keep the whole-document comparison.
+ *
+ * Both sides must have the SAME kind of section — comparing one feature's
+ * Scope with the other's acceptance criteria would measure two different kinds
+ * of text — so Scope is used when both have one, acceptance criteria when both
+ * have those, and otherwise the pair falls back to the whole document. The
+ * candidate selection and the verifier prompt both go through this, so a pair
+ * is always verified on the section it was scored on.
+ */
+export function choosePairFocusKind(
+	a: Partial<Record<PairFocusKind, unknown>> | null | undefined,
+	b: Partial<Record<PairFocusKind, unknown>> | null | undefined,
+): PairFocusKind | null {
+	return PAIR_FOCUS_KINDS.find((kind) => a?.[kind] && b?.[kind]) ?? null;
 }
 
 /** A feature pair's score: the focus-section cosine weighted by `weight`,

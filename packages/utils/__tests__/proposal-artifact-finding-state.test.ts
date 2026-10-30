@@ -115,6 +115,33 @@ describe("one answer's state", () => {
 		});
 	});
 
+	it("treats an applied recommendation like any other answer", () => {
+		const resolved = answer("gap:timeline#0:dates", "p1:timeline#0", {
+			kind: "RESOLVED",
+		});
+		const changed = buildSectionMap(
+			BODY.replace("Twelve weeks", "Ten weeks"),
+		);
+
+		expect(summary(deriveOne(resolved, MAP, null))).toEqual({
+			state: "RESOLVED",
+			reason: null,
+			versionUnknown: false,
+		});
+		expect(summary(deriveOne(resolved, changed, null))).toEqual({
+			state: "NEEDS_REVIEW",
+			reason: "SECTION_CHANGED",
+			versionUnknown: false,
+		});
+		expect(
+			summary(deriveOne(resolved, MAP, run(["gap:timeline#0:dates"]))),
+		).toEqual({
+			state: "NEEDS_REVIEW",
+			reason: "RAISED_AGAIN",
+			versionUnknown: false,
+		});
+	});
+
 	it("needs review when the section's prose changed", () => {
 		const changed = buildSectionMap(
 			BODY.replace("Twelve weeks", "Ten weeks"),

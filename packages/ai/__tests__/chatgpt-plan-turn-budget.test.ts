@@ -455,8 +455,8 @@ describe("a plan account rotation inside a ledgered chat turn", () => {
 				fairShareBefore,
 			);
 			expect(sends).toEqual([
-				"org:acc_A:gpt-6-luna",
-				"org:acc_A:gpt-6-luna",
+				"org:acc_A:gpt-6.1-terra",
+				"org:acc_A:gpt-6.1-terra",
 			]);
 			const rows = vi
 				.mocked(logAiUsageAsync)

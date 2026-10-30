@@ -101,17 +101,18 @@ describe("plan model defaults", () => {
 		);
 	});
 
-	// Fizzy #2770 (DSU 2026-10-07): Sol for Fabric's work, Luna for light
-	// tasks, each at its own default reasoning level; Astra only as the
-	// fallback for a model a plan refuses, and no Terra.
-	it("give GPT-6.1 Sol to every task but SIMPLE, which gets GPT-6 Luna, with no reasoning override", () => {
+	// Fizzy #2770 (DSU 2026-10-07): Sol for Fabric's work, GPT-6.1 Terra for
+	// light tasks (in place of Luna since 2026-10-28), each at its own
+	// default reasoning level; Astra only as the fallback for a model a plan
+	// refuses.
+	it("give GPT-6.1 Sol to every task but SIMPLE, which gets GPT-6.1 Terra, with no reasoning override", () => {
 		expect(CHATGPT_PLAN_TASK_DEFAULTS).toEqual({
 			COMPLEX: { model: "gpt-6.1-sol" },
 			REASONING: { model: "gpt-6.1-sol" },
 			TOOL_CALLING: { model: "gpt-6.1-sol" },
 			CHAT: { model: "gpt-6.1-sol" },
 			EVAL: { model: "gpt-6.1-sol" },
-			SIMPLE: { model: "gpt-6-luna" },
+			SIMPLE: { model: "gpt-6.1-terra" },
 		});
 		expect(Object.values(CHATGPT_PLAN_TASK_DEFAULTS)).not.toContainEqual(
 			expect.objectContaining({ model: CHATGPT_PLAN_HEAVY_MODEL }),
@@ -122,8 +123,12 @@ describe("plan model defaults", () => {
 		expect(chatGptPlanApiPriceReference("gpt-6-astra")).toBe("gpt-6-astra");
 		expect(chatGptPlanApiPriceReference("gpt-5.6-luna")).toBe("gpt-6-luna");
 		expect(chatGptPlanApiPriceReference("gpt-5.6-sol")).toBe("gpt-6-sol");
-		// F9: no API Terra; priced as Sol, not as Astra.
+		// F9: no API GPT-5.6 Terra; priced as Sol, not as Astra.
 		expect(chatGptPlanApiPriceReference("gpt-5.6-terra")).toBe("gpt-6-sol");
+		// GPT-6.1 Terra has its own API price.
+		expect(chatGptPlanApiPriceReference("gpt-6.1-terra")).toBe(
+			"gpt-6.1-terra",
+		);
 		// A model the plan lists before the catalog knows it: same family.
 		expect(chatGptPlanApiPriceReference("gpt-6.1-luna")).toBe("gpt-6-luna");
 		expect(chatGptPlanApiPriceReference("an-unknown-plan-model")).toBe(
@@ -428,7 +433,7 @@ describe("unsupported-model fallback (F10)", () => {
 			userId: "user-1",
 			taskType: "SIMPLE",
 		});
-		expect(next.model).toBe("gpt-6-luna");
+		expect(next.model).toBe("gpt-6.1-terra");
 	});
 
 	it("re-reads the plan's model list once when OpenAI refuses the model", async () => {

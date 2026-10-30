@@ -66,6 +66,7 @@ import {
 import { neutralizeSourceDataMarkers } from "@repo/utils/publishing-source-data-markers";
 import { WORKING_DRAFT_BODY_MAX } from "@repo/utils/publishing-working-draft-limits";
 import { z } from "zod";
+import { WRITING_STYLE_CLAUSE } from "../publishing-shared";
 import { THIN_SUMMARY_IS_RAW_MATERIAL } from "../publishing-shared/authors-note-clause";
 import { recoverBoundBody } from "../publishing-shared/recover-bound-body";
 import { BODY_EXCEPTION_OVERRIDE_WITHOUT_SETTLED_DECISIONS } from "../publishing-shared/settled-approvals";
@@ -238,7 +239,9 @@ ${BODY_EXCEPTION_OVERRIDE_WITHOUT_SETTLED_DECISIONS}
   declines an instruction is indistinguishable from one that missed it.
 - Where you generalized rather than asserted something, say so in your safety
   note. A generalized revision that does not say it was generalized reads as a
-  complete one.${restrictedBlock}`;
+  complete one.${restrictedBlock}
+
+${WRITING_STYLE_CLAUSE}`;
 }
 
 /**

@@ -12,7 +12,7 @@
 
 /** True when the stored base URL carries a path beyond the workspace root. */
 export function hasDatabricksExplicitPath(baseUrl: string): boolean {
-	const trimmed = baseUrl.trim().replace(/\/+$/, "");
+	const trimmed = trimTrailingSlashes(baseUrl.trim());
 	try {
 		const { pathname } = new URL(trimmed);
 		return pathname !== "" && pathname !== "/";
@@ -28,7 +28,7 @@ export function toDatabricksInferenceBaseUrl(
 	baseUrl: string,
 	modelId: string,
 ): string {
-	const trimmed = baseUrl.trim().replace(/\/+$/, "");
+	const trimmed = trimTrailingSlashes(baseUrl.trim());
 	try {
 		const { origin, pathname } = new URL(trimmed);
 		if (
@@ -50,7 +50,7 @@ export function toDatabricksInferenceBaseUrl(
 
 /** Model-less normalization retained for endpoint discovery. */
 export function toDatabricksServingBaseUrl(baseUrl: string): string {
-	const trimmed = baseUrl.trim().replace(/\/+$/, "");
+	const trimmed = trimTrailingSlashes(baseUrl.trim());
 	return hasDatabricksExplicitPath(trimmed)
 		? trimmed
 		: `${trimmed}/serving-endpoints`;
@@ -65,7 +65,7 @@ export function toDatabricksServingBaseUrl(baseUrl: string): string {
  * endpoint yields a 404; normalize inference URLs before workspace requests.
  */
 export function toDatabricksWorkspaceHost(baseUrl: string): string {
-	const trimmed = baseUrl.trim().replace(/\/+$/, "");
+	const trimmed = trimTrailingSlashes(baseUrl.trim());
 	try {
 		return new URL(trimmed).origin;
 	} catch {
@@ -75,4 +75,12 @@ export function toDatabricksWorkspaceHost(baseUrl: string): string {
 			.replace(/\/serving-endpoints$/, "")
 			.replace(/\/ai-gateway\/.*$/, "");
 	}
+}
+
+function trimTrailingSlashes(value: string): string {
+	let end = value.length;
+	while (end > 0 && value.charCodeAt(end - 1) === 0x2f) {
+		end--;
+	}
+	return value.slice(0, end);
 }

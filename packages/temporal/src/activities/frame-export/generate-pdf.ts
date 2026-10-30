@@ -15,6 +15,7 @@
 
 import type { FrameDocument } from "@repo/database";
 import { type BrowserContextOptions, chromium } from "playwright";
+import { PRINT_CHROMIUM_ARGS } from "../../lib/print-chromium-args";
 import { sanitizeFrameHtml } from "./sanitize-frame-html";
 
 /**
@@ -178,7 +179,9 @@ export async function generatePDFActivity(
 	input: GeneratePDFInput,
 ): Promise<Buffer> {
 	const browser = await chromium.launch({
-		args: ["--no-sandbox", "--disable-setuid-sandbox"],
+		// The print flags every server-side PDF shares, font hinting off
+		// among them (see `print-chromium-args.ts`).
+		args: [...PRINT_CHROMIUM_ARGS, "--disable-setuid-sandbox"],
 	});
 
 	try {

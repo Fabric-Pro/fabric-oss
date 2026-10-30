@@ -1,3 +1,4 @@
+import { isPlatformAdmin } from "@repo/database";
 import { FeatureFlagsPanel } from "@saas/admin/component/feature-flags/FeatureFlagsPanel";
 import { getSession } from "@saas/auth/lib/server";
 import { redirect } from "next/navigation";
@@ -30,7 +31,7 @@ export default async function OrganizationFeatureFlagsPage() {
 		redirect("/auth/login");
 	}
 
-	if (session.user?.role !== "admin") {
+	if (!(await isPlatformAdmin(session.user))) {
 		redirect("/app");
 	}
 

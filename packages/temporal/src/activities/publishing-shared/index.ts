@@ -10,3 +10,5 @@
 export { assertGenerationActorAuthorized } from "./assert-generation-actor";
 export { resolveContributorNames } from "./contributor-names";
 export { schemaMismatchDetail } from "./schema-mismatch-detail";
+
+export { WRITING_STYLE_CLAUSE } from "./writing-style-clause";

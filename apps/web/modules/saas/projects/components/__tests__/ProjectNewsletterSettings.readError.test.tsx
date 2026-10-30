@@ -9,7 +9,21 @@
  *
  * Run with: pnpm --filter web test ProjectNewsletterSettings.readError
  */
-import { fireEvent, render, screen } from "@testing-library/react";
+import {
+	render as baseRender,
+	fireEvent,
+	screen,
+} from "@testing-library/react";
+import { NuqsTestingAdapter } from "nuqs/adapters/testing";
+import type { ReactElement } from "react";
+
+const render = (ui: ReactElement) =>
+	baseRender(ui, {
+		wrapper: ({ children }) => (
+			<NuqsTestingAdapter>{children}</NuqsTestingAdapter>
+		),
+	});
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("next-intl", () => ({
@@ -131,6 +145,7 @@ const refetchSpy = vi.fn();
 const queryError: Record<string, boolean> = {};
 
 vi.mock("@tanstack/react-query", () => ({
+	keepPreviousData: <T,>(data: T) => data,
 	useQuery: (opts: { __q?: string }) => {
 		const key = opts.__q ?? "";
 		const isError = queryError[key] === true;

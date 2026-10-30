@@ -600,6 +600,12 @@ interface AppendTurnInput {
 	/** `null` on the first turn of a brand-new thread — the procedure
 	 * lazy-creates the conversation row in that case. */
 	conversationId: string | null;
+	/**
+	 * The assistant's thread id, offered as the id of the conversation a
+	 * first turn lazily creates. Ignored server-side when the id is taken.
+	 */
+	proposedConversationId?: string;
+	patchOnly?: boolean;
 	scope: DocumentAssistantHistoryScope;
 	message: AppendTurnMessage;
 	agentId: string;
@@ -629,6 +635,8 @@ export function useAppendDocumentAssistantTurn() {
 				projectId: input.scope.projectId,
 				organizationId: input.scope.organizationId,
 				conversationId: input.conversationId ?? undefined,
+				proposedConversationId: input.proposedConversationId,
+				patchOnly: input.patchOnly,
 				message: input.message,
 				agentId: input.agentId,
 				requestedVisibility: input.requestedVisibility,

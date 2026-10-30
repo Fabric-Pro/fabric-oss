@@ -61,6 +61,14 @@
 			"types": "./src/reasoning-trace/index.ts",
 			"default": "./src/reasoning-trace/index.ts"
 		},
+		"./tool-result": {
+			"types": "./src/tool-result.ts",
+			"default": "./src/tool-result.ts"
+		},
+		"./reasoning-trace/extract": {
+			"types": "./src/reasoning-trace/extract.ts",
+			"default": "./src/reasoning-trace/extract.ts"
+		},
 		"./recursion": {
 			"types": "./src/recursion.ts",
 			"default": "./src/recursion.ts"

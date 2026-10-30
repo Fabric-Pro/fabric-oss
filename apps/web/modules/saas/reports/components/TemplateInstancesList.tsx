@@ -1,9 +1,10 @@
 "use client";
 
 import { useEffectiveOrganizationId } from "@saas/organizations/hooks";
+import { Pagination } from "@saas/shared/components/Pagination";
 import { Spinner } from "@shared/components/Spinner";
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import {
@@ -24,8 +25,6 @@ import {
 import { formatDistanceToNow } from "date-fns";
 import {
 	CalendarIcon,
-	ChevronLeftIcon,
-	ChevronRightIcon,
 	Loader2Icon,
 	MoreVerticalIcon,
 	PlayIcon,
@@ -33,7 +32,8 @@ import {
 	TrashIcon,
 } from "lucide-react";
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { parseAsInteger, useQueryState } from "nuqs";
+import { useEffect } from "react";
 import { toast } from "sonner";
 
 /**
@@ -57,17 +57,22 @@ export function TemplateInstancesList({
 }: Props) {
 	// Use effective organization ID to properly handle personal vs org context
 	const organizationId = useEffectiveOrganizationId(propOrgId);
-	const [currentPage, setCurrentPage] = useState(1);
+	const [currentPage, setCurrentPage] = useQueryState(
+		"instancesPage",
+		parseAsInteger.withDefault(1),
+	);
 
-	const { data, isLoading, refetch } = useQuery(
-		orpc.reports.instances.list.queryOptions({
+	const { data, isLoading, refetch, isPlaceholderData } = useQuery({
+		...orpc.reports.instances.list.queryOptions({
 			input: {
 				templateId,
 				organizationId,
-				limit: 50,
+				limit: ITEMS_PER_PAGE,
+				offset: (Math.max(1, currentPage) - 1) * ITEMS_PER_PAGE,
 			},
 		}),
-	);
+		placeholderData: keepPreviousData,
+	});
 
 	const executeMutation = useMutation(
 		orpc.reports.instances.execute.mutationOptions({
@@ -95,13 +100,21 @@ export function TemplateInstancesList({
 
 	const instances = data?.instances ?? [];
 
-	// Pagination logic - avoid rendering all 50 items at once
-	// See: rendering-content-visibility rule from Vercel React Best Practices
-	const totalPages = Math.ceil(instances.length / ITEMS_PER_PAGE);
-	const paginatedInstances = useMemo(() => {
-		const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
-		return instances.slice(startIndex, startIndex + ITEMS_PER_PAGE);
-	}, [instances, currentPage]);
+	const total = data?.total ?? 0;
+	const totalPages = Math.max(1, Math.ceil(total / ITEMS_PER_PAGE));
+	const paginatedInstances = instances;
+	useEffect(() => {
+		if (
+			data &&
+			!isPlaceholderData &&
+			(currentPage > totalPages || currentPage < 1)
+		) {
+			void setCurrentPage(
+				Math.max(1, Math.min(currentPage, totalPages)),
+				{ history: "replace" },
+			);
+		}
+	}, [data, isPlaceholderData, currentPage, totalPages, setCurrentPage]);
 
 	const handleExecute = (instanceId: string) => {
 		executeMutation.mutate({ instanceId, organizationId });
@@ -283,47 +296,13 @@ export function TemplateInstancesList({
 				</TableBody>
 			</Table>
 
-			{/* Pagination Controls */}
-			{totalPages > 1 && (
-				<div className="flex items-center justify-between px-4 py-3 border-t">
-					<div className="text-sm text-muted-foreground">
-						Showing {(currentPage - 1) * ITEMS_PER_PAGE + 1} to{" "}
-						{Math.min(
-							currentPage * ITEMS_PER_PAGE,
-							instances.length,
-						)}{" "}
-						of {instances.length} instances
-					</div>
-					<div className="flex items-center gap-2">
-						<Button
-							variant="outline"
-							size="sm"
-							onClick={() =>
-								setCurrentPage((p) => Math.max(1, p - 1))
-							}
-							disabled={currentPage === 1}
-						>
-							<ChevronLeftIcon className="h-4 w-4" />
-							Previous
-						</Button>
-						<span className="text-sm text-muted-foreground">
-							Page {currentPage} of {totalPages}
-						</span>
-						<Button
-							variant="outline"
-							size="sm"
-							onClick={() =>
-								setCurrentPage((p) =>
-									Math.min(totalPages, p + 1),
-								)
-							}
-							disabled={currentPage === totalPages}
-						>
-							Next
-							<ChevronRightIcon className="h-4 w-4" />
-						</Button>
-					</div>
-				</div>
+			{total > ITEMS_PER_PAGE && (
+				<Pagination
+					totalItems={total}
+					itemsPerPage={ITEMS_PER_PAGE}
+					currentPage={currentPage}
+					onChangeCurrentPage={setCurrentPage}
+				/>
 			)}
 		</div>
 	);

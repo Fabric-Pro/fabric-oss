@@ -38,7 +38,7 @@ export type DatabricksAuthResult =
  * `/ai-gateway/mlflow/v1`, …).
  */
 export function toDatabricksApiHost(baseUrl: string): string {
-	const trimmed = baseUrl.trim().replace(/\/+$/, "");
+	const trimmed = trimTrailingSlashes(baseUrl.trim());
 	try {
 		return new URL(trimmed).origin;
 	} catch {
@@ -191,4 +191,12 @@ export async function listDatabricksModels(
 				.filter((name): name is string => Boolean(name));
 
 	return { ok: true, models };
+}
+
+function trimTrailingSlashes(value: string): string {
+	let end = value.length;
+	while (end > 0 && value.charCodeAt(end - 1) === 0x2f) {
+		end--;
+	}
+	return value.slice(0, end);
 }

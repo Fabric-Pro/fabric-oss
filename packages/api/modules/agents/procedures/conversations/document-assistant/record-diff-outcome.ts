@@ -7,6 +7,12 @@
  * accept / reject the diff via `DiffReviewBar` (a non-author teammate
  * can accept a teammate's draft edit). No audit event (spec §5.8 — diff
  * outcomes already log through the document-version pipeline).
+ *
+ * Like the other procedures on a document's threads, the caller must be
+ * able to see the document's project (`assertDocumentProjectAccess`): the
+ * permission gate's org-role fallback admits an organization member who is
+ * not on the project, who would otherwise write into its shared threads.
+ * The input names no document, so the check reads the thread's own.
  */
 
 import { ORPCError } from "@orpc/server";
@@ -18,6 +24,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
+import { assertDocumentProjectAccess } from "./_shared";
 
 interface StoredToolCall {
 	id: string;
@@ -71,6 +78,8 @@ export const recordDiffOutcome = tenantProtectedProcedure
 				userId: true,
 				organizationId: true,
 				projectId: true,
+				documentRefKind: true,
+				documentRefId: true,
 				conversation: {
 					select: { id: true, messages: true },
 				},
@@ -93,6 +102,14 @@ export const recordDiffOutcome = tenantProtectedProcedure
 				message: "Conversation not found",
 			});
 		}
+		// The thread's document must be in that project, and the caller must
+		// be able to see it, before anything in the thread is written.
+		await assertDocumentProjectAccess({
+			documentRefKind: join.documentRefKind,
+			documentRefId: join.documentRefId,
+			projectId: input.projectId,
+			userId: user.id,
+		});
 
 		const messages = Array.isArray(join.conversation.messages)
 			? (join.conversation.messages as StoredMessage[])
@@ -163,10 +180,6 @@ export const recordDiffOutcome = tenantProtectedProcedure
 			where: { id: join.conversation.id },
 			data: { messages: next as never },
 		});
-
-		// Touch the user binding to keep the linter from complaining; this
-		// procedure has no per-user side effects beyond authorization.
-		void user;
 
 		return { success: true as const };
 	});

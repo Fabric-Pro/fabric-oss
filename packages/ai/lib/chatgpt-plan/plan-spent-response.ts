@@ -122,6 +122,27 @@ export async function chatGptPlanChatPreflight(context: {
 }
 
 /**
+ * What a chat turn tells the member about its billing (Fizzy #3048): when
+ * it runs on the organization's API billing, the plans' reset time (null
+ * when unknown); when it runs on the member's own key (Fizzy #3086), that
+ * key's provider as well. Null when the turn runs on a plan as usual.
+ */
+export function chatGptPlanApiBillingMarker(
+	preflight: ChatGptPlanChatPreflight,
+): { resetAt: Date | null; personalKeyProvider?: string } | null {
+	if (!preflight || "refusal" in preflight) {
+		return null;
+	}
+	if ("personalKey" in preflight) {
+		return {
+			resetAt: preflight.personalKey.resetAt,
+			personalKeyProvider: preflight.personalKey.provider,
+		};
+	}
+	return { resetAt: preflight.apiBilling.resetAt };
+}
+
+/**
  * Marks a chat route's stream whose turn runs on the organization's API
  * billing (Fizzy #3048) with the plans' reset time, or empty when it is
  * unknown, so the chat can say so under the reply. A turn on the member's
@@ -131,21 +152,18 @@ export function withChatGptPlanApiBilling(
 	response: Response,
 	preflight: ChatGptPlanChatPreflight,
 ): Response {
-	if (!response.ok || !preflight || "refusal" in preflight) {
+	const marker = chatGptPlanApiBillingMarker(preflight);
+	if (!response.ok || !marker) {
 		return response;
 	}
-	const marker =
-		"apiBilling" in preflight
-			? preflight.apiBilling
-			: preflight.personalKey;
 	response.headers.set(
 		CHATGPT_PLAN_API_BILLING_HEADER,
 		marker.resetAt?.toISOString() ?? "",
 	);
-	if ("personalKey" in preflight) {
+	if (marker.personalKeyProvider !== undefined) {
 		response.headers.set(
 			CHATGPT_PLAN_PERSONAL_KEY_HEADER,
-			preflight.personalKey.provider,
+			marker.personalKeyProvider,
 		);
 	}
 	return response;

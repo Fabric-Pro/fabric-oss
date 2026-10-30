@@ -2443,3 +2443,78 @@ describe("TopicQuestionsPanel — an answer carries the version it was written a
 		});
 	});
 });
+
+it("leaves hidden question panels off the notification scroll path", () => {
+	window.location.hash = "#q-decision-1";
+	const page = render(
+		<TopicQuestionsPanel
+			{...BASE}
+			isActive={false}
+			threads={[{ root: root(), replies: [] }]}
+		/>,
+	);
+	expect(screen.getByTestId("question-decision-1")).not.toHaveClass(
+		"mention-flash",
+	);
+	page.rerender(
+		<TopicQuestionsPanel
+			{...BASE}
+			isActive
+			threads={[{ root: root(), replies: [] }]}
+		/>,
+	);
+	expect(screen.getByTestId("question-decision-1")).toHaveClass(
+		"mention-flash",
+	);
+	window.location.hash = "";
+});
+it("scrolls the visible copy when a mounted hidden question has the same anchor", () => {
+	window.location.hash = "#q-decision-1";
+	render(
+		<>
+			<div hidden>
+				<div
+					data-question-anchor="decision-1"
+					data-testid="hidden-anchor"
+				/>
+			</div>
+			<TopicQuestionsPanel
+				{...BASE}
+				threads={[{ root: root(), replies: [] }]}
+			/>
+		</>,
+	);
+	expect(screen.getByTestId("hidden-anchor")).not.toHaveClass(
+		"mention-flash",
+	);
+	expect(screen.getByTestId("question-decision-1")).toHaveClass(
+		"mention-flash",
+	);
+	window.location.hash = "";
+});
+
+it("keeps collapsed group controls local to each mounted panel", async () => {
+	const threads = [RESOLVED_THREAD, POSSIBLY_RESOLVED_THREAD];
+	const { container } = render(
+		<>
+			<TopicQuestionsPanel {...BASE} threads={threads} />
+			<TopicQuestionsPanel {...BASE} threads={threads} />
+		</>,
+	);
+	const user = userEvent.setup();
+	const controls = Array.from(
+		container.querySelectorAll<HTMLButtonElement>("button[aria-controls]"),
+	);
+	expect(
+		new Set(controls.map((button) => button.getAttribute("aria-controls")))
+			.size,
+	).toBe(controls.length);
+	for (const button of controls) {
+		await user.click(button);
+		const region = document.getElementById(
+			button.getAttribute("aria-controls")!,
+		);
+		expect(region).not.toBeNull();
+		expect(button.closest("section")?.contains(region)).toBe(true);
+	}
+});

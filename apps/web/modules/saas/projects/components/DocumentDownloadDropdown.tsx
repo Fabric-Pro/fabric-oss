@@ -205,6 +205,7 @@ function stillActivated(clickedAt: number): boolean {
 /** The words for each warning an export can carry; any other goes unnamed. */
 const EXPORT_WARNING_KEYS = {
 	DIAGRAM_PLACEHOLDER: "exportWarningDiagramPlaceholder",
+	DIAGRAM_NOT_PRINTABLE: "exportWarningDiagramNotPrintable",
 	DIAGRAM_LIMIT: "exportWarningDiagramLimit",
 	DIAGRAM_BELOW_PRINT_FLOOR: "exportWarningDiagramBelowPrintFloor",
 	IMAGE_DROPPED: "exportWarningImageDropped",

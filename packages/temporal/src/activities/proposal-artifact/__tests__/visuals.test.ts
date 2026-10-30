@@ -13,9 +13,16 @@
  */
 
 import {
-	PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
+	proposalVisualTemplateOptions,
 	visualSpecToMermaid,
 } from "@repo/utils/glossy/visual-templates";
+import {
+	type FigurePalette,
+	parseFigureSource,
+	readFigureKind,
+	renderFigureSvg,
+	withFigureKind,
+} from "@repo/utils/proposal-artifact/proposal-figures";
 import {
 	buildProposalThemeTokens,
 	type ProposalThemeSources,
@@ -137,11 +144,14 @@ function brand(
 	};
 }
 
-/** The timeline's fence body as the step draws it: roles, no colour. */
-const TIMELINE_SOURCE = visualSpecToMermaid(
+/**
+ * The timeline's fence body as the step draws it: the timeline figure line,
+ * then roles, no colour.
+ */
+const TIMELINE_SOURCE = `%% figure: timeline\n${visualSpecToMermaid(
 	TIMELINE,
-	PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
-);
+	proposalVisualTemplateOptions(TIMELINE),
+)}`;
 
 type DetectionCall = {
 	featureKey?: string;
@@ -291,6 +301,32 @@ describe("generateProposalVisuals — rendering and placement", () => {
 		expect(result.content).not.toMatch(/GLOSSY_COLOR_/);
 		expect(result.content).not.toMatch(/^style /m);
 		expect(result.content).not.toMatch(/#[0-9a-f]{6}/i);
+	});
+
+	it("writes a long timeline title as one label line, as its figure template reads it", async () => {
+		const title = "Scope the work with both teams together";
+		detects([["Timeline and Milestones", "timeline"]]);
+		extract.extractGlossyVisual.mockResolvedValueOnce({
+			status: "extracted",
+			spec: {
+				kind: "timeline",
+				items: [
+					{ date: "March", label: title },
+					{ date: "May", label: "Launch" },
+				],
+			},
+		});
+
+		const result = await generateProposalVisuals(INPUT);
+
+		expect(result.insertedCount).toBe(1);
+		const [body] = mermaidBodies(result.content);
+		expect(readFigureKind(body)).toBe("timeline");
+		expect(body).toContain(`t0["March<br/>${title}"]`);
+		expect(parseFigureSource(body)?.nodes[0].lines).toEqual([
+			"March",
+			title,
+		]);
 	});
 
 	it("renders a comparison as a markdown table", async () => {
@@ -558,9 +594,12 @@ describe("generateProposalVisuals — fact-check retry (Fizzy #2946)", () => {
 		expect(rows[0].spec).toEqual(RETRY_SPEC);
 		expect(result.content).toContain(
 			toMermaidFence(
-				visualSpecToMermaid(
-					RETRY_SPEC,
-					PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
+				withFigureKind(
+					visualSpecToMermaid(
+						RETRY_SPEC,
+						proposalVisualTemplateOptions(RETRY_SPEC),
+					),
+					"timeline",
 				),
 				rows[0].visualId,
 			),
@@ -762,6 +801,101 @@ describe("generateProposalVisuals — colour roles", () => {
 			expect(result.content).not.toMatch(/#[0-9a-f]{6}/i);
 		},
 	);
+});
+
+describe("generateProposalVisuals — figure templates (Fizzy #2946)", () => {
+	const FLOW = {
+		kind: "flow" as const,
+		steps: [
+			{ label: "Scope", description: "Agree what done looks like" },
+			{ label: "Build" },
+			{ label: "Review" },
+		],
+	};
+	const LANED_FLOW = {
+		kind: "flow" as const,
+		steps: [
+			{ label: "Scope", lane: "Client" },
+			{ label: "Build", lane: "Delivery team" },
+		],
+	};
+	const ORG_CHART = {
+		kind: "org_chart" as const,
+		nodes: [
+			{ id: "lead", label: "Delivery lead", parentId: null },
+			{ id: "dev", label: "Developer", parentId: "lead" },
+		],
+	};
+	const PALETTE: FigurePalette = {
+		ink: "#16171a",
+		onInk: "#ffffff",
+		primary: "#c2410c",
+		onPrimary: "#ffffff",
+		tint: "#fbefe9",
+		border: "#d9dade",
+		surface: "#ffffff",
+		muted: "#5b5e66",
+	};
+
+	/** The one generated fence body after extracting `spec`. */
+	async function generatedBody(spec: unknown): Promise<string> {
+		extract.extractGlossyVisual.mockResolvedValue({
+			status: "extracted",
+			spec,
+		});
+		detects([["Timeline and Milestones", (spec as { kind: string }).kind]]);
+		const result = await generateProposalVisuals(INPUT);
+		const body = mermaidBodies(result.content).find((candidate) =>
+			candidate.startsWith("%% fabric-visual:"),
+		);
+		if (!body) {
+			throw new Error("no generated fence");
+		}
+		return body;
+	}
+
+	it.each([
+		["a flow without lanes", FLOW, "process"],
+		["a timeline", TIMELINE, "timeline"],
+	] as const)(
+		"asks for the template on %s, after the marker, and the template draws it",
+		async (_, spec, kind) => {
+			const body = await generatedBody(spec);
+
+			const [{ visualId }] = storedSpecs();
+			expect(body.split("\n").slice(0, 3)).toEqual([
+				`%% fabric-visual: ${visualId}`,
+				`%% figure: ${kind}`,
+				"flowchart TD",
+			]);
+			expect(readFigureKind(body)).toBe(kind);
+			expect(parseFigureSource(body)).not.toBeNull();
+			expect(renderFigureSvg(kind, body, PALETTE)).toMatch(/^<svg[\s>]/);
+		},
+	);
+
+	it.each([
+		["a flow with lanes", LANED_FLOW],
+		["an org chart", ORG_CHART],
+	] as const)(
+		"leaves %s as Mermaid, with no figure line",
+		async (_, spec) => {
+			const body = await generatedBody(spec);
+
+			expect(readFigureKind(body)).toBeNull();
+			expect(body).not.toContain("%% figure:");
+		},
+	);
+
+	it("stores the source hash the fence has with or without its figure line", async () => {
+		const body = await generatedBody(FLOW);
+
+		const [row] = storedSpecs();
+		expect(row.sourceHash).toBe(visualSourceHash(body));
+		expect(row.sourceHash).toBe(
+			visualSourceHash(withFigureKind(body, null)),
+		);
+	});
 });
 
 describe("generateProposalVisuals — audience (Fizzy #2946)", () => {

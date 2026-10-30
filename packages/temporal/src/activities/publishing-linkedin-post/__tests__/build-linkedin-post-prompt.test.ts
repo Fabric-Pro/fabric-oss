@@ -1,5 +1,6 @@
 import { renderTemplate } from "@repo/utils";
 import { describe, expect, it, vi } from "vitest";
+import { WRITING_STYLE_CLAUSE } from "../../publishing-shared/writing-style-clause";
 import {
 	composeLinkedInPostPrompt,
 	LINKEDIN_POST_OPTION_COUNT,
@@ -277,6 +278,7 @@ describe("composeLinkedInPostPrompt", () => {
 				"Write a LinkedIn post about Faster incremental builds.",
 			),
 		).toBe(true);
+		expect(composed.prompt).toContain(WRITING_STYLE_CLAUSE);
 		expect(composed.prompt).toContain("Rules that override anything above");
 		expect(composed.formatOverridden).toBe(false);
 		expect(composed.bodyRecovered).toBe(false);

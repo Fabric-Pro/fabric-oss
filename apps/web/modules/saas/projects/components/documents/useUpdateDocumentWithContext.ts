@@ -1,5 +1,6 @@
 "use client";
 
+import { PROPOSAL_USE_CHAT_OR_REGENERATE } from "@repo/utils/proposal-artifact/whole-body-writers";
 import { AI_PROVIDER_NOT_CONFIGURED } from "@saas/shared/lib/ai-provider-missing";
 import { orpcClient } from "@shared/lib/orpc-client";
 import type { useEditor } from "@tiptap/react";
@@ -30,11 +31,20 @@ const CONTEXT_UPDATE_FAILED = "CONTEXT_UPDATE_FAILED";
  * on (Fizzy #2946), read from the error's `data.code`; `null` for any other.
  * A failed model call is said as one, not as a settings problem: sending
  * someone to settings that are already right does not get them anywhere.
+ * A client-document Proposal refuses the whole-body rewrite; it is changed
+ * from the chat or regenerated instead.
  */
 function previewFailureKey(
 	error: unknown,
-): "aiProviderMissing" | "documentTooLarge" | "modelCallFailed" | null {
+):
+	| "aiProviderMissing"
+	| "documentTooLarge"
+	| "modelCallFailed"
+	| "useChatOrRegenerate"
+	| null {
 	switch (getOrpcErrorData(error).code) {
+		case PROPOSAL_USE_CHAT_OR_REGENERATE:
+			return "useChatOrRegenerate";
 		case AI_PROVIDER_NOT_CONFIGURED:
 			return "aiProviderMissing";
 		case CONTEXT_UPDATE_TRUNCATED:
@@ -371,7 +381,11 @@ export function useUpdateDocumentWithContext({
 			// too old to name its base: each is said in the reader's words,
 			// and the review stays open.
 			setPhase("diff");
-			toast.error(describeDocumentWriteRefusal(err, tRefusal).message);
+			toast.error(
+				getOrpcErrorData(err).code === PROPOSAL_USE_CHAT_OR_REGENERATE
+					? t("useChatOrRegenerate")
+					: describeDocumentWriteRefusal(err, tRefusal).message,
+			);
 		} finally {
 			applyingRef.current = false;
 		}

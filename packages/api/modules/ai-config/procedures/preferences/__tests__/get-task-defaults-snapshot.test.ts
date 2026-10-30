@@ -28,13 +28,13 @@ vi.mock("../../../../../../database/prisma/queries/cache", () => ({
 }));
 vi.mock("@repo/ai/model-selector", () => ({ selectModelDynamic: vi.fn() }));
 vi.mock("@repo/database", async () => {
-	const { getTaskDefaultModel } = await import(
-		"../../../../../../database/prisma/queries/ai-models"
-	);
+	const { getTaskDefaultModel, SELECTABLE_CATALOG_MODEL_FILTER } =
+		await import("../../../../../../database/prisma/queries/ai-models");
 	const { TEXT_TASK_TYPES, readTaskDefaultsSnapshot } = await import(
 		"../../../../../../database/prisma/queries/task-default-snapshots"
 	);
 	return {
+		SELECTABLE_CATALOG_MODEL_FILTER,
 		db: mockDb,
 		getTaskDefaultModel,
 		readTaskDefaultsSnapshot,

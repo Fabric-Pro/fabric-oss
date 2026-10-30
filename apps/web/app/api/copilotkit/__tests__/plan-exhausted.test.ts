@@ -17,12 +17,19 @@ const mocks = vi.hoisted(() => ({
 	resolvePlanModel: vi.fn(),
 	resolveCopilotOrgModel: vi.fn(),
 	handleRequest: vi.fn(),
-	openai: vi.fn(),
 	providerConfig: vi.fn(),
-	databricksFetch: vi.fn(),
-	endpoint: vi.fn(),
+	runtime: vi.fn(),
+	handler: vi.fn(),
 	agent: vi.fn(),
 	session: { user: { id: "user-1" }, session: {} as Record<string, unknown> },
+	copilotDurableRuntime: vi.fn(),
+	/** What `copilotDurableRuntime` answers: null while the org flag is off. */
+	durable: {
+		current: null as {
+			runner: { durable: true };
+			onBeforeHandler: () => Promise<void>;
+		} | null,
+	},
 }));
 
 vi.mock("next/headers", () => ({ headers: async () => new Headers() }));
@@ -35,11 +42,14 @@ vi.mock("@ag-ui/langgraph", () => ({
 	},
 }));
 
-vi.mock("@copilotkit/runtime", () => ({
-	CopilotRuntime: class {},
-	ExperimentalEmptyAdapter: class {},
-	OpenAIAdapter: class {},
-	copilotRuntimeNextJSAppRouterEndpoint: mocks.endpoint,
+vi.mock("@copilotkit/runtime/v2", () => ({
+	CopilotRuntime: class {
+		constructor(options: unknown) {
+			mocks.runtime(options);
+		}
+	},
+	createCopilotRuntimeHandler: mocks.handler,
+	InMemoryAgentRunner: class {},
 }));
 
 vi.mock("@repo/agent-core", () => ({
@@ -65,13 +75,8 @@ vi.mock("@repo/agent-tools", () => ({
 	WRITE_TASK_PLAN_TOOL: {},
 }));
 
-vi.mock("@repo/ai", async () => ({
-	...(await vi.importActual<typeof import("@repo/ai/lib/databricks-url")>(
-		"@repo/ai/lib/databricks-url",
-	)),
+vi.mock("@repo/ai", () => ({
 	buildEffectiveBaseUrl: (_provider: string, baseUrl: string) => baseUrl,
-	createDatabricksFetch: mocks.databricksFetch,
-	getCurrentDateContext: () => "",
 	getRAGProviderConfig: mocks.providerConfig,
 	isReasoningModelName: (name: string) =>
 		name.toLowerCase().includes("deepseek-r1"),
@@ -130,9 +135,7 @@ vi.mock("@repo/auth", () => ({
 	auth: { api: { getSession: async () => mocks.session } },
 }));
 
-vi.mock("@repo/database", () => ({
-	getBoundPromptVersion: async () => null,
-}));
+vi.mock("@repo/database", () => ({}));
 
 vi.mock("@repo/logs", () => ({
 	logger: { warn: vi.fn(), error: vi.fn(), debug: vi.fn(), info: vi.fn() },
@@ -142,19 +145,24 @@ vi.mock("@repo/payments", () => ({
 	AiUsageLimitExceededError: class extends Error {},
 }));
 
-vi.mock("openai", () => ({
-	default: class {
-		constructor(options: unknown) {
-			mocks.openai(options);
-		}
-	},
-}));
-
 vi.mock("../org-model", () => ({
 	resolveCopilotOrgModel: mocks.resolveCopilotOrgModel,
 }));
 
+vi.mock("@saas/agents/runtime/thread", () => ({
+	readThreadAccess: async () => ({ kind: "absent" }),
+}));
+
+// The durable runner and its guard have their own test (durable-runs.test.ts).
+vi.mock("../durable-runs", () => ({
+	copilotDurableRuntime: async (...args: unknown[]) => {
+		mocks.copilotDurableRuntime(...args);
+		return mocks.durable.current;
+	},
+}));
+
 const { POST } = await import("../route");
+const { ProposalPropsRedactingRunner } = await import("../proposal-run-runner");
 
 const PROVIDER_MODEL = {
 	metadata: {
@@ -189,7 +197,8 @@ function call(method: string): Promise<Response> {
 
 beforeEach(() => {
 	vi.clearAllMocks();
-	mocks.endpoint.mockReturnValue({ handleRequest: mocks.handleRequest });
+	mocks.durable.current = null;
+	mocks.handler.mockReturnValue(mocks.handleRequest);
 	mocks.providerConfig.mockResolvedValue({
 		apiKey: "sk-test",
 		baseUrl: "https://gateway.example.com/v1",
@@ -429,56 +438,85 @@ describe("/api/copilotkit — the plan model hint", () => {
 	});
 });
 
-describe("CopilotKit Databricks URL routing", () => {
-	it.each([
-		["system.ai.claude-sonnet-5", "ai-gateway/mlflow/v1"],
-		["custom-chat", "serving-endpoints"],
-	])("routes %s to %s", async (modelId, path) => {
+// Every `<CopilotKit useSingleEndpoint>` mount posts a `{ method, params, body }`
+// envelope to this one path, so the handler must stay in single-route mode.
+describe("/api/copilotkit — the runtime handler", () => {
+	it("serves the single-route envelope at /api/copilotkit", async () => {
 		mocks.pickChatGptPlanSource.mockResolvedValue(null);
-		mocks.providerConfig.mockResolvedValue({
-			apiKey: "example-key",
-			baseUrl: "https://example.cloud.databricks.com",
-		});
-		mocks.resolveCopilotOrgModel.mockResolvedValue({
-			metadata: {
-				provider: "DATABRICKS",
-				modelString: modelId,
-				canonicalName: "claude-sonnet-5",
-			},
-			trackUsage: () => {},
-		});
-		expect((await call("agent/run")).status).toBe(200);
-		expect(mocks.openai).toHaveBeenCalledWith(
+		expect((await call("info")).status).toBe(200);
+		expect(mocks.handler).toHaveBeenCalledWith(
 			expect.objectContaining({
-				baseURL: `https://example.cloud.databricks.com/${path}`,
+				basePath: "/api/copilotkit",
+				mode: "single-route",
+				cors: true,
+			}),
+		);
+		expect(mocks.handleRequest).toHaveBeenCalledTimes(1);
+	});
+
+	it("marks the tenant on CopilotKit's telemetry as the v1 endpoint did", async () => {
+		mocks.pickChatGptPlanSource.mockResolvedValue(null);
+		await call("info");
+		expect(mocks.runtime).toHaveBeenCalledWith(
+			expect.objectContaining({
+				telemetryProperties: {
+					_copilotkit: { tenantId: `org-${orgCounter}` },
+				},
 			}),
 		);
 	});
-});
 
-describe("CopilotKit canonical prompt-cache decision", () => {
-	it.each([
-		["custom-chat", "claude-sonnet-5", true],
-		["claude-alias", "llama-3-3-70b", false],
-	])(
-		"%s backed by %s enables caching: %s",
-		async (modelString, canonicalName, promptCache) => {
-			mocks.pickChatGptPlanSource.mockResolvedValue(null);
-			mocks.resolveCopilotOrgModel.mockResolvedValue({
-				metadata: {
-					provider: "DATABRICKS",
-					modelString,
-					canonicalName,
-				},
-				trackUsage: () => {},
-			});
-			expect((await call("agent/run")).status).toBe(200);
-			expect(mocks.databricksFetch).toHaveBeenCalledWith(
-				undefined,
-				expect.objectContaining({ promptCache }),
-			);
-		},
-	);
+	it("never forwards browser-sent tenant or model headers to the agents", async () => {
+		mocks.pickChatGptPlanSource.mockResolvedValue(null);
+		await call("info");
+		expect(mocks.runtime).toHaveBeenCalledWith(
+			expect.objectContaining({
+				forwardHeaders: { denyPrefixes: ["x-ai-", "x-tenant-"] },
+			}),
+		);
+	});
+
+	it("keeps its in-memory runner and no hook while durable runs are off for the organization", async () => {
+		mocks.pickChatGptPlanSource.mockResolvedValue(null);
+		await call("info");
+
+		const [runtimeOptions] = mocks.runtime.mock.calls[0];
+		const [handlerOptions] = mocks.handler.mock.calls[0];
+		// The route's own runner, which keeps the Proposal chat's server-only
+		// keys out of the browser's events (`proposal-run-runner.ts`).
+		expect(runtimeOptions.runner).toBeInstanceOf(
+			ProposalPropsRedactingRunner,
+		);
+		expect(handlerOptions).not.toHaveProperty("hooks");
+	});
+
+	it("hands the durable runtime that same in-memory runner for its fallback and the other agents", async () => {
+		mocks.pickChatGptPlanSource.mockResolvedValue(null);
+		await call("info");
+
+		const [runtimeOptions] = mocks.runtime.mock.calls[0];
+		const [, , inProcess] = mocks.copilotDurableRuntime.mock.calls[0];
+		expect(inProcess).toBe(runtimeOptions.runner);
+	});
+
+	it("runs on the durable runner, behind its guard, while durable runs are on", async () => {
+		const durable = {
+			runner: { durable: true as const },
+			onBeforeHandler: async () => undefined,
+		};
+		mocks.durable.current = durable;
+		mocks.pickChatGptPlanSource.mockResolvedValue(null);
+		await call("info");
+
+		expect(mocks.runtime).toHaveBeenCalledWith(
+			expect.objectContaining({ runner: durable.runner }),
+		);
+		expect(mocks.handler).toHaveBeenCalledWith(
+			expect.objectContaining({
+				hooks: { onBeforeHandler: durable.onBeforeHandler },
+			}),
+		);
+	});
 });
 
 it.each(["org", "plan", "personal", "org-nonreasoning"])(
@@ -522,24 +560,17 @@ it.each(["org", "plan", "personal", "org-nonreasoning"])(
 			});
 		}
 		expect((await call("agent/run")).status).toBe(200);
-		const properties = mocks.endpoint.mock.calls.at(-1)?.[0].properties;
 		const headers = mocks.agent.mock.calls.at(-1)?.[0].headers;
 		expect(headers).toBeDefined();
 		if (source.startsWith("org")) {
-			expect(properties.ai_model).toBe("prod-chat");
-			expect(properties.ai_canonical_model_name).toBe(
-				source === "org" ? "deepseek-r1" : "llama-3-3-70b",
-			);
-			expect(properties.ai_is_reasoning).toBe(source === "org");
+			expect(headers["X-AI-Model"]).toBe("prod-chat");
 			expect(headers["X-AI-Is-Reasoning"]).toBe(
 				source === "org" ? "true" : "false",
 			);
 		} else {
-			expect(properties.ai_model).toBe(
+			expect(headers["X-AI-Model"]).toBe(
 				source === "plan" ? "gpt-5" : "personal-model",
 			);
-			expect(properties).not.toHaveProperty("ai_canonical_model_name");
-			expect(properties).not.toHaveProperty("ai_is_reasoning");
 			expect(headers).not.toHaveProperty("X-AI-Is-Reasoning");
 		}
 	},

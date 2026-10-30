@@ -13,6 +13,7 @@ import { getTrustedClientIp } from "@repo/auth/lib/client-ip";
 import {
 	getOrganizationMembership,
 	getTenantContext,
+	isPlatformAdmin,
 	StoryVersionConflictError,
 } from "@repo/database";
 import { aiUsageLimitToORPCError } from "../lib/ai-usage-limit-errors";
@@ -439,7 +440,7 @@ export const agentRateLimitedProcedure = protectedProcedure.use(
 
 export const adminProcedure = protectedProcedure.use(
 	async ({ context, next }) => {
-		if (context.user.role !== "admin") {
+		if (!(await isPlatformAdmin(context.user))) {
 			throw new ORPCError("FORBIDDEN");
 		}
 

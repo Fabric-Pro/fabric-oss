@@ -23,12 +23,20 @@
  *                          version history still lets them inspect the
  *                          surrounding state).
  *   - neither set        → "Pending"  (Badge `secondary` — muted fill)
+ *                          while the chat waits on the call: its confirm
+ *                          card is live in the editor (Fizzy #2946)
+ *   - neither set, and the chat waits on nothing for it
+ *                        → "No decision recorded" (Badge `outline`, muted):
+ *                          an old proposal nobody answered, or one answered
+ *                          without a stamp. It used to read "Pending"
+ *                          forever, with no review to answer in the editor.
  *
  * The chip itself is purely informational (no role, no tabIndex). The
  * adjacent "View version" affordance IS a proper `<button>` so keyboard
  * users can activate it via Tab + Enter.
  */
 
+import { CopilotKitContext } from "@copilotkit/react-core/v2/context";
 import { Badge } from "@ui/components/badge";
 import {
 	Tooltip,
@@ -37,10 +45,43 @@ import {
 } from "@ui/components/tooltip";
 import { History } from "lucide-react";
 import { useTranslations } from "next-intl";
+import { useContext } from "react";
 
 export interface DiffOutcomeChipToolCall {
+	/** The tool call's id, matched against the calls the chat waits on. */
+	id?: string | null;
 	acceptedAt?: string | null;
 	rejectedAt?: string | null;
+}
+
+/**
+ * The tool calls whose accept or reject the editors stamp — the proposals
+ * the chip speaks for. Any other tool the assistant calls has no decision
+ * to show.
+ */
+const REVIEWED_TOOL_NAMES: ReadonlySet<string> = new Set([
+	"write_document_local",
+	"confirm_changes",
+]);
+
+/**
+ * Whether a tool call named `name` gets an outcome chip: a proposal the
+ * editors stamp, or a call whose name was not kept.
+ */
+export function hasDiffOutcome(name: string | null | undefined): boolean {
+	return typeof name !== "string" || REVIEWED_TOOL_NAMES.has(name);
+}
+
+const NO_TOOL_CALLS: ReadonlySet<string> = new Set();
+
+/**
+ * The tool calls the chat waits on for an answer right now — a proposal's
+ * confirm card is live while its call is among them (Fizzy #2946). None
+ * outside a CopilotKit provider, as in the History drawer of a page without
+ * one.
+ */
+function useAwaitedToolCallIds(): ReadonlySet<string> {
+	return useContext(CopilotKitContext)?.executingToolCallIds ?? NO_TOOL_CALLS;
 }
 
 /**
@@ -115,6 +156,7 @@ export function DiffOutcomeChip({
 	toolCall: DiffOutcomeChipToolCall;
 }) {
 	const tTooltips = useTranslations("tooltips.common");
+	const awaited = useAwaitedToolCallIds();
 	if (toolCall.acceptedAt) {
 		const when = formatRelativeTimestamp(toolCall.acceptedAt);
 		const badgeTooltip = when ? `Accepted ${when}` : "Accepted";
@@ -177,13 +219,24 @@ export function DiffOutcomeChip({
 			</span>
 		);
 	}
+	if (toolCall.id && awaited.has(toolCall.id)) {
+		return (
+			<Badge
+				variant="secondary"
+				className="font-normal"
+				title="Awaiting user decision — open the document to accept or reject this change"
+			>
+				Pending
+			</Badge>
+		);
+	}
 	return (
 		<Badge
-			variant="secondary"
-			className="font-normal"
-			title="Awaiting user decision — open the document to accept or reject this change"
+			variant="outline"
+			className="font-normal text-muted-foreground"
+			title="No longer awaiting a decision — no accept or reject was recorded for this change"
 		>
-			Pending
+			No decision recorded
 		</Badge>
 	);
 }

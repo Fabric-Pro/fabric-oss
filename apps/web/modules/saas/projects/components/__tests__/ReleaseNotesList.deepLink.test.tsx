@@ -1,5 +1,16 @@
+import { NuqsTestingAdapter } from "nuqs/adapters/testing";
+import type { ReactElement } from "react";
+
+const render = (ui: ReactElement) =>
+	baseRender(<NuqsTestingAdapter>{ui}</NuqsTestingAdapter>);
+
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import {
+	act,
+	render as baseRender,
+	fireEvent,
+	screen,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Fizzy #2286: the Slack/Teams teaser links to `?releaseNote=<sendId>`; the
@@ -13,6 +24,8 @@ const { mocks } = vi.hoisted(() => {
 			replace,
 			router: { replace },
 			memberGet: vi.fn(),
+			memberInput: {} as Record<string, unknown>,
+			memberTotal: 0,
 		},
 	};
 });
@@ -30,7 +43,13 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 				memberList: {
 					queryOptions: (o: { input: unknown }) => ({
 						queryKey: ["memberList", o.input],
-						queryFn: async () => ({ sends: [], total: 0 }),
+						queryFn: async () => {
+							mocks.memberInput = o.input as Record<
+								string,
+								unknown
+							>;
+							return { sends: [], total: mocks.memberTotal };
+						},
 					}),
 				},
 				memberGet: {
@@ -90,6 +109,7 @@ function renderList() {
 
 beforeEach(() => {
 	mocks.search = "";
+	mocks.memberTotal = 0;
 	mocks.replace.mockReset();
 	mocks.memberGet.mockReset();
 });
@@ -152,4 +172,28 @@ describe("ReleaseNotesList ?releaseNote deep link", () => {
 		await screen.findByText("No release notes yet.");
 		expect(screen.queryByRole("dialog")).toBeNull();
 	});
+});
+
+it("jumps to a release notes page and resets when size changes", async () => {
+	mocks.memberTotal = 200;
+	renderList();
+	const input = await screen.findByRole("spinbutton");
+	expect(
+		document.body.textContent?.match(/1\s*[-–]\s*15\s+of\s+200/g),
+	).toHaveLength(1);
+	fireEvent.change(input, { target: { value: "4" } });
+	const form = input.closest("form");
+	if (!form) {
+		throw new Error("Expected pagination form");
+	}
+	fireEvent.submit(form);
+	await vi.waitFor(() =>
+		expect(mocks.memberInput).toMatchObject({ offset: 45 }),
+	);
+	fireEvent.change(screen.getByRole("combobox", { name: "Rows per page" }), {
+		target: { value: "50" },
+	});
+	await vi.waitFor(() =>
+		expect(mocks.memberInput).toMatchObject({ offset: 0, limit: 50 }),
+	);
 });

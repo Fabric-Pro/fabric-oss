@@ -1,3 +1,4 @@
+import { logger } from "@repo/logs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
@@ -49,6 +50,7 @@ const getBoundPromptForAgent = vi.fn();
 const listTopicDecisions = vi.fn();
 const getEffectivePlanningAnalysis = vi.fn();
 const completeTopicDraft = vi.fn();
+const seedWorkingDraftIfAbsent = vi.fn();
 vi.mock("@repo/database", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("@repo/database")>();
 	return {
@@ -83,6 +85,8 @@ vi.mock("@repo/database", async (importOriginal) => {
 			getEffectivePlanningAnalysis(...a),
 		listTopicDecisions: (...a: unknown[]) => listTopicDecisions(...a),
 		completeTopicDraft: (...a: unknown[]) => completeTopicDraft(...a),
+		seedWorkingDraftIfAbsent: (...a: unknown[]) =>
+			seedWorkingDraftIfAbsent(...a),
 	};
 });
 
@@ -407,5 +411,70 @@ describe("generateLinkedInPostActivity — how it fails", () => {
 			nonRetryable: true,
 		});
 		expect(completeTopicDraft).not.toHaveBeenCalled();
+	});
+});
+
+describe("Simple mode seeding", () => {
+	it("keeps READY when seeding throws", async () => {
+		seedWorkingDraftIfAbsent.mockRejectedValue(new Error("seed failed"));
+		await expect(run({ seedWorkingDraft: true })).resolves.toMatchObject({
+			status: "READY",
+		});
+		expect(logger.warn).toHaveBeenCalledWith(
+			expect.stringContaining("failed to seed"),
+			expect.objectContaining({
+				draftId: "draft-1",
+				topicId: "topic-1",
+				projectId: "proj-1",
+				error: "seed failed",
+			}),
+		);
+	});
+	it.each([
+		["source_not_found", "info"],
+		["project_ineligible", "warn"],
+		["already_exists", "debug"],
+	] as const)("logs %s", async (status, level) => {
+		seedWorkingDraftIfAbsent.mockResolvedValue({ status });
+		await expect(run({ seedWorkingDraft: true })).resolves.toEqual({
+			status: "READY",
+			seededWorkingDraft: false,
+		});
+		expect(logger[level]).toHaveBeenCalledWith(
+			expect.stringContaining("working draft"),
+			{ draftId: "draft-1", topicId: "topic-1", projectId: "proj-1" },
+		);
+	});
+
+	it("seeds option zero with its provenance after READY", async () => {
+		seedWorkingDraftIfAbsent.mockResolvedValue({ status: "seeded" });
+		await expect(run({ seedWorkingDraft: true })).resolves.toEqual({
+			status: "READY",
+			seededWorkingDraft: true,
+		});
+		expect(seedWorkingDraftIfAbsent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				body: MODEL_OUTPUT.options[0].text,
+				sourceOptionLabel: MODEL_OUTPUT.options[0].label,
+				sourceDraftId: "draft-1",
+			}),
+		);
+		expect(completeTopicDraft.mock.invocationCallOrder[0]).toBeLessThan(
+			seedWorkingDraftIfAbsent.mock.invocationCallOrder[0],
+		);
+	});
+	it("accepts an existing working draft without an overwrite", async () => {
+		seedWorkingDraftIfAbsent.mockResolvedValue({
+			status: "already_exists",
+		});
+		expect(await run({ seedWorkingDraft: true })).toEqual({
+			status: "READY",
+			seededWorkingDraft: false,
+		});
+		expect(seedWorkingDraftIfAbsent).toHaveBeenCalledTimes(1);
+	});
+	it("does not seed when absent", async () => {
+		await run();
+		expect(seedWorkingDraftIfAbsent).not.toHaveBeenCalled();
 	});
 });

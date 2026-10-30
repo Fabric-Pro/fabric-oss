@@ -6,6 +6,8 @@
 // Original agent execution activities (registry-based)
 // biome-ignore assist/source/organizeImports: Activity exports are intentionally grouped by domain.
 export * from "./agent-execution";
+// Durable AG-UI agent runs (CopilotKit document, feature and topic assistants)
+export { runAgUiAgentActivity } from "./ag-ui-agent-run";
 // Shared agent execution core module (reusable by deployment-execution, template-instance, etc.)
 export * from "./agent-execution-core";
 // Agent health monitor activities (scheduled health checks for registered agents)
