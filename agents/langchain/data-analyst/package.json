@@ -30,7 +30,7 @@
 		"@ai-sdk/openai": "^4.0.87",
 		"@ai-sdk/react": "4.0.143",
 		"@anthropic-ai/claude-agent-sdk": "^0.2.141",
-		"@hono/node-server": "^2.0.11",
+		"@hono/node-server": "^2.1.3",
 		"@langchain/anthropic": "^1.5.9",
 		"@langchain/core": "^1.2.9",
 		"@langchain/groq": "1.3.1",
