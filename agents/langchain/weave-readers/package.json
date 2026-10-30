@@ -13,7 +13,7 @@
 		"test": "vitest run"
 	},
 	"dependencies": {
-		"@hono/node-server": "^2.0.11",
+		"@hono/node-server": "^2.1.3",
 		"@repo/agent-runtime": "workspace:*",
 		"@repo/agent-types": "workspace:*",
 		"@repo/ai": "workspace:*",
