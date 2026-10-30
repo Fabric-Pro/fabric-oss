@@ -66,6 +66,7 @@ const PER_USER_ORG_TABLES = new Set([
 	"BrowserTask", // A user's browser-automation jobs
 	"AgentConversation", // A user's conversation with an agent
 	"ConversationTurn", // One Advisor chat turn of a user's conversation
+	"ConversationTurnEvent", // Replay output belongs to the same member and turn
 	"EpisodicMemory", // A user's Advisor conversation summaries
 	"OrchestratorMemoryPreferences", // Includes the user's learned patterns
 	"ConversationTurnAttempt", // One model request a user's chat turn reserved

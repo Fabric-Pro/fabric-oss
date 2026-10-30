@@ -1,3 +1,7 @@
+import {
+	type ChatEventCursor,
+	chatEventCursorSchema,
+} from "@repo/utils/chat-event-cursor";
 import type { z } from "zod";
 
 const CHAT_STREAM_VERSION = 1;
@@ -10,7 +14,7 @@ export function parseVersionedChatEvent<T>(
 	schema: z.ZodType<T> & {
 		options: readonly { shape: { type: { value: string } } }[];
 	},
-): T | null {
+): (T & { eventCursor?: ChatEventCursor }) | null {
 	if (typeof value !== "object" || value === null) {
 		return null;
 	}
@@ -21,7 +25,16 @@ export function parseVersionedChatEvent<T>(
 	}
 	const result = schema.safeParse(value);
 	if (result.success) {
-		return result.data;
+		if ("eventCursor" in value) {
+			const cursor = chatEventCursorSchema.safeParse(value.eventCursor);
+			if (!cursor.success) {
+				throw new ChatStreamProtocolError(
+					"The chat stream contained an invalid replay cursor.",
+				);
+			}
+			return { ...result.data, eventCursor: cursor.data };
+		}
+		return { ...result.data, eventCursor: undefined };
 	}
 	if (
 		"type" in value &&

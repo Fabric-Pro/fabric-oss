@@ -286,6 +286,12 @@ export const ConversationTurnScalarFieldEnumSchema = z.enum(['id', 'organization
 
 export type ConversationTurnScalarFieldEnum = z.infer<typeof ConversationTurnScalarFieldEnumSchema>;
 
+// File: ConversationTurnEventScalarFieldEnum.schema.ts
+
+export const ConversationTurnEventScalarFieldEnumSchema = z.enum(['id', 'turnId', 'organizationId', 'userId', 'runId', 'sourceKey', 'event', 'data', 'createdAt', 'expiresAt'])
+
+export type ConversationTurnEventScalarFieldEnum = z.infer<typeof ConversationTurnEventScalarFieldEnumSchema>;
+
 // File: ConversationTurnAttemptScalarFieldEnum.schema.ts
 
 export const ConversationTurnAttemptScalarFieldEnumSchema = z.enum(['id', 'turnId', 'organizationId', 'userId', 'generation', 'kind', 'enforced', 'reservedTokens', 'status', 'inputTokens', 'cacheReadTokens', 'outputTokens', 'workflowId', 'runId', 'activityId', 'activityAttempt', 'modelId', 'createdAt', 'settledAt'])
@@ -5064,6 +5070,24 @@ export const ConversationTurnSchema = z.object({
 });
 
 export type ConversationTurnType = z.infer<typeof ConversationTurnSchema>;
+
+
+// File: ConversationTurnEvent.schema.ts
+
+export const ConversationTurnEventSchema = z.object({
+  id: z.bigint(),
+  turnId: z.string(),
+  organizationId: z.string(),
+  userId: z.string(),
+  runId: z.string(),
+  sourceKey: z.string(),
+  event: z.string(),
+  data: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  createdAt: z.date(),
+  expiresAt: z.date(),
+});
+
+export type ConversationTurnEventType = z.infer<typeof ConversationTurnEventSchema>;
 
 
 // File: ConversationTurnAttempt.schema.ts

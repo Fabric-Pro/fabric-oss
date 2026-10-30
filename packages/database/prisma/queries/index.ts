@@ -53,6 +53,7 @@ export * from "./code-symbols";
 export * from "./coding-runs";
 export * from "./company-context";
 export * from "./component-incidents";
+export * from "./conversation-turn-events";
 export * from "./conversation-turn-ledger";
 export * from "./conversation-turns";
 export * from "./dashboard";

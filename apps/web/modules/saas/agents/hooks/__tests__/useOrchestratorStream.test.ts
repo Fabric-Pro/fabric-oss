@@ -699,6 +699,87 @@ describe("useOrchestratorStream.stop()", () => {
 });
 
 describe("useOrchestratorStream — resumable streaming windows (#2269)", () => {
+	it("discards stale approval cards until the resumed run sends its current snapshot", async () => {
+		const { windows } = mockStreamWindows(2);
+		const { result } = renderHook(() => useOrchestratorStream());
+		let sending: ReturnType<typeof result.current.sendMessage> | undefined;
+		act(() => {
+			sending = result.current.sendMessage("Example");
+		});
+		await act(async () => {
+			windows[0].enqueueLine(
+				'data: {"type":"started","executionId":"orch-example"}',
+			);
+			windows[0].enqueueLine(
+				'data: {"type":"approval_required","approvalId":"example-approval","stepId":"example-step","reason":"Review"}',
+			);
+			windows[0].enqueueLine('data: {"type":"stream_timeout"}');
+		});
+		expect(result.current.state.pendingApproval?.approvalId).toBe(
+			"example-approval",
+		);
+		await act(async () => {
+			windows[1].enqueueLine(
+				'data: {"type":"started","executionId":"orch-example","resumed":true}',
+			);
+		});
+		expect(result.current.state.pendingApproval).toBeNull();
+		expect(result.current.state.status).toBe("running");
+		await act(async () => {
+			windows[1].enqueueLine(
+				'data: {"type":"completed","status":"completed"}',
+			);
+			await sending;
+		});
+	});
+	it("replays missing text once while preserving the prefix acknowledged in an earlier window", async () => {
+		const { windows, streamBodies } = mockStreamWindows(2);
+		const { result } = renderHook(() =>
+			useOrchestratorStream({ organizationId: "example-org" }),
+		);
+		let sending: ReturnType<typeof result.current.sendMessage> | undefined;
+		act(() => {
+			sending = result.current.sendMessage("Example");
+		});
+		const cursor = (sequence: string) => ({
+			turnId: "example-turn",
+			runId: "example-run",
+			sequence,
+		});
+		await act(async () => {
+			windows[0].enqueueLine(
+				'data: {"type":"started","executionId":"orch-example"}',
+			);
+			windows[0].enqueueLine(
+				`data: ${JSON.stringify({ type: "text_delta", content: "First", eventCursor: cursor("1") })}`,
+			);
+			windows[0].enqueueLine('data: {"type":"stream_timeout"}');
+		});
+		expect(JSON.parse(streamBodies[1])).toMatchObject({
+			executionId: "orch-example",
+			organizationId: "example-org",
+			afterEvent: cursor("1"),
+			eventReplay: true,
+		});
+		await act(async () => {
+			windows[1].enqueueLine(
+				'data: {"type":"started","executionId":"orch-example","resumed":true}',
+			);
+			windows[1].enqueueLine(
+				`data: ${JSON.stringify({ type: "text_delta", content: "First", eventCursor: cursor("1") })}`,
+			);
+			windows[1].enqueueLine(
+				`data: ${JSON.stringify({ type: "text_delta", content: " Second", eventCursor: cursor("2") })}`,
+			);
+		});
+		expect(result.current.messages.at(-1)?.content).toBe("First Second");
+		await act(async () => {
+			windows[1].enqueueLine(
+				'data: {"type":"completed","status":"completed"}',
+			);
+			await sending;
+		});
+	});
 	const originalFetch = global.fetch;
 
 	afterEach(() => {

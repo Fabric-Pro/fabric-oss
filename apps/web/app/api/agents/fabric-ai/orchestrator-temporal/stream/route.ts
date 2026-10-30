@@ -1,6 +1,11 @@
+import { chatEventCursorSchema } from "@repo/utils/chat-event-cursor";
 import type { AssertAssignable } from "@saas/agents/lib/chat-stream-protocol";
 import { limitSchema } from "@saas/agents/lib/direct-stream-protocol";
 import type { OrchestratorStreamInput } from "@saas/agents/lib/orchestrator-stream-protocol";
+import {
+	ChatReplayAuthorizationError,
+	createServerChatReplay,
+} from "@saas/agents/lib/server/chat-event-replay";
 /**
  * Fabric AI Orchestrator - Streaming API
  * SSE streaming endpoint for Temporal orchestrator workflow.
@@ -36,6 +41,7 @@ import {
 import { mintActingGrantForTurn } from "@repo/api/lib/agent-service-auth";
 import {
 	abandonConversationTurnStart,
+	ChatEventReplayError,
 	type ConversationTurn,
 	db,
 	getConversationTurnForExecution,
@@ -62,7 +68,10 @@ import {
 	encodeOrchestratorStreamEvent,
 	parseOrchestratorStreamEvent,
 } from "@saas/agents/lib/orchestrator-stream-protocol";
-import { getAuthorizedChatRun } from "@saas/agents/lib/server/chat-run-control";
+import {
+	ChatRunAccessError,
+	getAuthorizedChatRun,
+} from "@saas/agents/lib/server/chat-run-control";
 import { getSession } from "@saas/auth/lib/server";
 import type { NextRequest } from "next/server";
 import { v4 as uuidv4 } from "uuid";
@@ -199,6 +208,18 @@ export async function POST(request: NextRequest) {
 
 		const userId = session.user.id;
 		const body = await request.json();
+		const replayEnabled = body.eventReplay === true;
+		const cursorResult = chatEventCursorSchema.safeParse(body.afterEvent);
+		if (
+			body.afterEvent !== undefined &&
+			(!replayEnabled || !cursorResult.success || !body.executionId)
+		) {
+			return Response.json(
+				{ error: "Invalid replay cursor" },
+				{ status: 400 },
+			);
+		}
+		const afterEvent = cursorResult.success ? cursorResult.data : undefined;
 
 		const {
 			message,
@@ -1401,6 +1422,42 @@ export async function POST(request: NextRequest) {
 
 				// eslint-disable-next-line @typescript-eslint/no-explicit-any -- Temporal WorkflowHandle from getHandle/start
 				let handle: any;
+				let replay: (() => Promise<void>) | undefined;
+				let replayStopped = false;
+				const replayFailureIsFinal = (error: unknown) =>
+					error instanceof ChatRunAccessError ||
+					error instanceof ChatEventReplayError ||
+					(error instanceof ChatReplayAuthorizationError &&
+						error.cause instanceof ChatRunAccessError);
+				let wakePending = false;
+				const wakeReplay = () => {
+					if (
+						!replay ||
+						wakePending ||
+						controllerClosed ||
+						replayStopped
+					) {
+						return;
+					}
+					wakePending = true;
+					void replay()
+						.catch((error: unknown) => {
+							if (replayFailureIsFinal(error)) {
+								sendEvent({
+									type: "error",
+									message:
+										error instanceof Error
+											? error.message
+											: "Replay unavailable",
+								});
+								closeController();
+								cleanupRedis();
+							}
+						})
+						.finally(() => {
+							wakePending = false;
+						});
+				};
 
 				try {
 					// =====================================================================
@@ -1470,7 +1527,8 @@ export async function POST(request: NextRequest) {
 						}
 						if (
 							memo?.projectId !== undefined ||
-							memo?.approvalProtocol === 2
+							memo?.approvalProtocol === 2 ||
+							replayEnabled
 						) {
 							handle = (
 								await getAuthorizedChatRun({
@@ -1539,7 +1597,39 @@ export async function POST(request: NextRequest) {
 									try {
 										const event = JSON.parse(
 											message,
-										) as ChatExecutionEvent;
+										) as ChatExecutionEvent & {
+											eventCursor?: unknown;
+											replayUnavailable?: boolean;
+										};
+										if (
+											event.event ===
+											"execution.limit_signal"
+										) {
+											metricsTracker.trackAiLimitSignal(
+												event.data.kind,
+												event.data.provider,
+											);
+										}
+										if (
+											replayEnabled &&
+											event.replayUnavailable
+										) {
+											sendEvent({
+												type: "error",
+												message:
+													"Live replay is unavailable. Your partial reply has been kept; the workflow may still be running.",
+											});
+											closeController();
+											cleanupRedis();
+											return;
+										}
+										if (
+											replayEnabled &&
+											event.eventCursor
+										) {
+											wakeReplay();
+											return;
+										}
 										if (
 											event.event ===
 											"execution.text_delta"
@@ -1630,18 +1720,6 @@ export async function POST(request: NextRequest) {
 														Forwarded1597,
 														OrchestratorStreamInput
 													>,
-												);
-											}
-											const signalData = event.data as
-												| {
-														kind?: string;
-														provider?: string;
-												  }
-												| undefined;
-											if (signalData?.kind) {
-												metricsTracker.trackAiLimitSignal(
-													signalData.kind,
-													signalData.provider,
 												);
 											}
 										} else if (
@@ -1873,6 +1951,84 @@ export async function POST(request: NextRequest) {
 						);
 					}
 
+					if (replayEnabled && activeTurnId) {
+						const authorized = await getAuthorizedChatRun({
+							executionId,
+							userId,
+							engine: "orchestrator",
+							action: "reattach",
+							expectedOrganizationId: organizationId,
+						});
+						const runId = authorized.description.runId;
+						if (!runId) {
+							throw new ChatEventReplayError(
+								"The run cannot provide replay context",
+							);
+						}
+						handle = authorized.handle;
+						replay = createServerChatReplay({
+							scope: {
+								turnId: activeTurnId,
+								executionId,
+								organizationId,
+								userId,
+								runId,
+							},
+							after: afterEvent,
+							authorize: async () => {
+								const current = await getAuthorizedChatRun({
+									executionId,
+									userId,
+									engine: "orchestrator",
+									action: "reattach",
+									expectedOrganizationId: organizationId,
+								});
+								if (current.description.runId !== runId) {
+									throw new ChatRunAccessError();
+								}
+							},
+							validateIntegrity: async () => {
+								// Read journal rows first, then query history-derived status:
+								// a later activity cannot conceal an earlier producer failure.
+								let status: unknown;
+								try {
+									status =
+										await handle.query("chatReplayStatus");
+								} catch (error) {
+									if (
+										error instanceof Error &&
+										/query.*(not registered|not found|expected to be registered|unknown)|no query handler/i.test(
+											error.message,
+										)
+									) {
+										throw new ChatEventReplayError(
+											"This run cannot safely replay output. Refresh to check its final result.",
+										);
+									}
+									throw error;
+								}
+								if (
+									!status ||
+									typeof status !== "object" ||
+									!("version" in status) ||
+									status.version !== 1 ||
+									!("unavailable" in status) ||
+									status.unavailable !== false
+								) {
+									throw new ChatEventReplayError(
+										"Replay output is incomplete. Refresh to check the run's final result.",
+									);
+								}
+							},
+							send: forwardEvent,
+							isClosed: () => controllerClosed || replayStopped,
+						});
+					} else if (afterEvent) {
+						throw new ChatEventReplayError(
+							"The run has no replay log",
+						);
+					}
+
 					// Track state for change detection
 					let lastProgress: OrchestratorProgressUpdate | null = null;
 					let lastPlan: TaskPlan | null = null;
@@ -1889,6 +2045,7 @@ export async function POST(request: NextRequest) {
 						options?: string[];
 					} | null = null;
 					let isComplete = false;
+					let lastReplayPoll = 0;
 
 					// The ping keeps its own clock, so a poll waiting on a slow
 					// Temporal call (a worker restarting) never reads to the
@@ -1914,6 +2071,32 @@ export async function POST(request: NextRequest) {
 					) {
 						try {
 							const description = await handle.describe();
+							if (
+								[
+									"COMPLETED",
+									"FAILED",
+									"CANCELLED",
+									"TERMINATED",
+									"TIMED_OUT",
+								].includes(description.status.name)
+							) {
+								try {
+									await replay?.();
+								} catch (error) {
+									if (
+										error instanceof ChatRunAccessError ||
+										error instanceof
+											ChatReplayAuthorizationError
+									) {
+										throw error;
+									}
+									// The authorized terminal result remains authoritative even if the transport cache is unavailable.
+								}
+								replayStopped = true;
+							} else if (Date.now() - lastReplayPoll >= 1000) {
+								await replay?.();
+								lastReplayPoll = Date.now();
+							}
 
 							if (
 								description.status.name === "CONTINUED_AS_NEW"
@@ -2613,6 +2796,9 @@ export async function POST(request: NextRequest) {
 								}
 							}
 						} catch (pollError) {
+							if (replayFailureIsFinal(pollError)) {
+								throw pollError;
+							}
 							console.error(
 								"[Orchestrator Stream] Poll error:",
 								pollError,

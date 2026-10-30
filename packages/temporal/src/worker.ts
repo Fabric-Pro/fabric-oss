@@ -1,3 +1,4 @@
+import { ChatReplayActivityInboundInterceptor } from "./lib/chat-replay-interceptor";
 /**
  * Temporal Worker
  *
@@ -86,6 +87,7 @@ function getCombinedInterceptors(): Partial<
 			...existingInterceptors,
 			activityInbound: [
 				...existingActivityInbound,
+				() => new ChatReplayActivityInboundInterceptor(),
 				() => new CorrelationActivityInboundInterceptor(),
 				// Read-only mode: set ambient project context from
 				// the activity input so the external-dispatch gate covers every

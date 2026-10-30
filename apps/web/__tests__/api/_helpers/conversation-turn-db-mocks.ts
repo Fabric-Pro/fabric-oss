@@ -14,6 +14,7 @@ import { vi } from "vitest";
 
 export function conversationTurnDbMocks() {
 	return {
+		ChatEventReplayError: class ChatEventReplayError extends Error {},
 		hasOrganizationTie: vi.fn(async () => true),
 		admitConversationTurn: vi.fn(
 			async (args: {

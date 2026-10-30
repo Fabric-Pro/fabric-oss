@@ -28,6 +28,7 @@ import {
 import type { AccountDefinition } from "@repo/mcp-registry";
 import { getBaseUrl } from "@repo/utils";
 import { Context, heartbeat } from "@temporalio/activity";
+import { flushExecutionEvents } from "../../lib/execution-output-drain";
 import { publishExecutionEvent } from "../../lib/redis-publisher";
 import { synthesizeToolSpeech } from "../../lib/text-to-speech";
 import {
@@ -529,7 +530,7 @@ export async function executeAgentTurn(
 						executionId,
 					});
 					if (executionId) {
-						publishExecutionEvent(executionId, {
+						void publishExecutionEvent(executionId, {
 							event: "execution.text_delta",
 							data: { text: chunk.text },
 						});
@@ -629,7 +630,7 @@ export async function executeAgentTurn(
 					markFirstText();
 					observeAgentText(chunk.text);
 					if (executionId) {
-						publishExecutionEvent(executionId, {
+						void publishExecutionEvent(executionId, {
 							event: "execution.text_delta",
 							data: { text: chunk.text },
 						});
@@ -680,6 +681,8 @@ export async function executeAgentTurn(
 			success: false,
 			error: errorMessage,
 		};
+	} finally {
+		await flushExecutionEvents();
 	}
 }
 

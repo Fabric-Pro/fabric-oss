@@ -30,6 +30,7 @@ import {
 	approvalSendResult,
 } from "../lib/approval-response";
 import { emitCancelEvent } from "../lib/cancel-telemetry";
+import { createChatEventReplay } from "../lib/chat-event-replay";
 import { ChatStreamProtocolError } from "../lib/chat-stream-protocol";
 import {
 	type ChatTurnTruncation,
@@ -691,6 +692,7 @@ export function useOrchestratorStream(
 	 * reads it here (issue #2269).
 	 */
 	const executionIdRef = useRef<string | null>(null);
+	const eventReplayRef = useRef(createChatEventReplay());
 	/**
 	 * The in-flight message's idempotency key and the conversation it was
 	 * sent in. Sent on the initial POST and on every retry of that message,
@@ -915,6 +917,7 @@ export function useOrchestratorStream(
 			// New turn — the previous run's executionId must not be reachable
 			// by this turn's resume loop, and its counted steps start over.
 			executionIdRef.current = attachExecutionId;
+			eventReplayRef.current = createChatEventReplay();
 			completedStepIdsRef.current = new Set();
 			hasTurnOutputRef.current = false;
 			// One key per user message; retries of this message reuse it. An
@@ -1097,6 +1100,7 @@ export function useOrchestratorStream(
 				// Start the streaming workflow
 				// Pass conversationId so backend can fetch attached workspaces if workspaceIds is empty
 				const initialRequestBody = JSON.stringify({
+					eventReplay: true,
 					message: content.trim(),
 					history: history.map((m) => ({
 						role: m.role,
@@ -1150,6 +1154,8 @@ export function useOrchestratorStream(
 				const buildResumeRequestBody = () =>
 					executionIdRef.current
 						? JSON.stringify({
+								eventReplay: true,
+								afterEvent: eventReplayRef.current.cursor,
 								executionId: executionIdRef.current,
 								organizationId,
 								conversationId: effectiveConversationId,
@@ -1370,6 +1376,14 @@ export function useOrchestratorStream(
 							dispatchOnLine: true,
 							parse: parseOrchestratorStreamEvent,
 							onEvent: (data) => {
+								if (
+									sendController.signal.aborted ||
+									!eventReplayRef.current.accept(
+										data.eventCursor,
+									)
+								) {
+									return;
+								}
 								if (data.type === "stream_timeout") {
 									sawStreamTimeout = true;
 								} else if (data.type === "start_pending") {
@@ -1398,6 +1412,7 @@ export function useOrchestratorStream(
 									consecutiveUncleanResumes = 0;
 								}
 								handleStreamEvent(data, assistantMessage.id);
+								eventReplayRef.current.commit(data.eventCursor);
 							},
 							isOutcome: (event) =>
 								[
@@ -1676,6 +1691,13 @@ export function useOrchestratorStream(
 					setState((prev) => ({
 						...prev,
 						executionId: data.executionId,
+						...(data.resumed
+							? {
+									pendingApproval: null,
+									pendingClarification: null,
+									status: "running" as const,
+								}
+							: {}),
 						turnId:
 							typeof data.turnId === "string"
 								? data.turnId
@@ -1688,7 +1710,7 @@ export function useOrchestratorStream(
 					// The resume loop in `sendMessage` can't read
 					// `state.executionId` — see `executionIdRef`.
 					executionIdRef.current = data.executionId;
-					if (data.resumed) {
+					if (data.resumed && !eventReplayRef.current.cursor) {
 						// Reconnected mid-run: the text deltas that were in
 						// flight when the previous window closed are gone for
 						// good (Redis pub/sub doesn't replay). Appending the

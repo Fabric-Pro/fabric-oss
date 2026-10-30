@@ -273,6 +273,21 @@ jobs:
         # tenant_isolation policies under test still apply regardless.
         run: pnpm --filter @repo/database exec tsx ./scripts/apply-rls-direct.ts
 
+      - name: Run chat replay journal isolation against real Postgres
+        env:
+          RUN_DB_INTEGRATION: '1'
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            __tests__/conversation-turn-events.integration.test.ts \
+            --reporter=json --outputFile=chat-replay-results.json
+          node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+          const report = JSON.parse(readFileSync("packages/database/chat-replay-results.json", "utf8"));
+          if (report.numTotalTests < 1 || report.numPendingTests > 0 || report.numFailedTests > 0) {
+            throw new Error("Chat replay integration tests must execute without skips or failures");
+          }
+          NODE
+
       - name: Run the tenant-db RLS context suite against real Postgres
         env:
           RUN_DB_INTEGRATION: '1'

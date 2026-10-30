@@ -15,6 +15,10 @@
  * the persisted message array — there is no turn table and no migration.
  */
 
+import {
+	type ChatEventCursor,
+	chatEventCursorSchema,
+} from "@repo/utils/chat-event-cursor";
 import type {
 	AgentResponse,
 	ConversationTurn,
@@ -48,6 +52,7 @@ export interface HistoryChatMessage {
 	agentName?: string;
 	vendor?: string;
 	executionId?: string;
+	eventCursor?: ChatEventCursor;
 	errorMessage?: string;
 	streamStatus?: "idle" | "streaming" | "completed" | "error" | "cancelled";
 	toolCalls?: Array<{
@@ -132,10 +137,12 @@ export function getHistoryAssistantIdentity(message: HistoryChatMessage): {
 	vendor?: string;
 	content: string;
 	executionId?: string;
+	eventCursor?: ChatEventCursor;
 	errorMessage?: string;
 	streamStatus?: "idle" | "streaming" | "completed" | "error" | "cancelled";
 } {
 	const parsed = parseHistoryAssistantMessage(message.content);
+	const cursor = chatEventCursorSchema.safeParse(message.eventCursor);
 
 	if (message.agentId && message.agentName) {
 		return {
@@ -143,8 +150,9 @@ export function getHistoryAssistantIdentity(message: HistoryChatMessage): {
 			agentId: message.agentId,
 			vendor:
 				message.vendor ?? inferVendorFromAgentName(message.agentName),
-			content: parsed.content,
+			content: cursor.success ? message.content : parsed.content,
 			executionId: message.executionId,
+			eventCursor: cursor.success ? cursor.data : undefined,
 			streamStatus: message.streamStatus,
 			errorMessage: message.errorMessage,
 		};
@@ -153,6 +161,7 @@ export function getHistoryAssistantIdentity(message: HistoryChatMessage): {
 	return {
 		...parsed,
 		executionId: message.executionId,
+		eventCursor: cursor.success ? cursor.data : undefined,
 		streamStatus: message.streamStatus,
 		errorMessage: message.errorMessage,
 	};
@@ -209,6 +218,7 @@ export function buildTurnsFromHistory(
 			agentName: parsed.agentName,
 			vendor: parsed.vendor,
 			executionId: parsed.executionId,
+			eventCursor: parsed.eventCursor,
 			content: parsed.content,
 			toolCalls: (message.toolCalls ?? []).map((tc) => ({
 				id: tc.id,
