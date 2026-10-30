@@ -16,6 +16,10 @@
  * it. That is what made moving it from seven days to thirty a one-line change.
  */
 import { db } from "../../client";
+import {
+	demoteDepartingOperator,
+	getOperatorOrganizationId,
+} from "../platform-admin";
 
 /**
  * How long a deleted organization stays recoverable.
@@ -293,6 +297,19 @@ const ORGANIZATION_PURGE_TRANSACTION = {
  */
 export async function permanentDeleteOrganization(organizationId: string) {
 	return await db.$transaction(async (tx) => {
+		if (organizationId === getOperatorOrganizationId()) {
+			const members = await tx.member.findMany({
+				where: { organizationId },
+				select: { userId: true },
+			});
+			for (const member of members) {
+				await demoteDepartingOperator(
+					organizationId,
+					member.userId,
+					tx,
+				);
+			}
+		}
 		const organization = await tx.organization.delete({
 			where: {
 				id: organizationId,

@@ -274,10 +274,31 @@ describe("activity slots and the database pool", () => {
 		expect(worker.ACTIVITY_SLOTS.proposalExport).toBe(2);
 	});
 
-	it("sizes the pool at half the slot total, rounded up", () => {
-		expect(total()).toBe(104);
+	it("gives durable assistant runs ten slots on their own queue", () => {
+		expect(worker.ACTIVITY_SLOTS.aguiRuns).toBe(10);
+		const agui = mocks.create.mock.calls.find(
+			([options]) => options.taskQueue === "agui-runs",
+		);
+		expect(agui?.[0]).toMatchObject({
+			maxConcurrentActivityTaskExecutions: 10,
+			maxHeartbeatThrottleInterval: "1s",
+		});
+		expect(agui?.[0].activities).toBe(
+			mocks.create.mock.calls[0][0].activities,
+		);
+	});
+
+	it("sizes the pool at half the slots that can touch the database, rounded up", () => {
+		expect(total()).toBe(114);
+		// The assistant-run slots never open a database connection, so they
+		// add no pool connections.
+		const databaseSlots = total() - worker.ACTIVITY_SLOTS.aguiRuns;
+		expect(databaseSlots).toBe(104);
+		expect(
+			worker.databaseSlotTotal(worker.selectTaskQueueWorkers({})),
+		).toBe(databaseSlots);
 		expect(process.env.DATABASE_POOL_MAX).toBe(
-			String(Math.ceil(total() / 2)),
+			String(Math.ceil(databaseSlots / 2)),
 		);
 		expect(process.env.DATABASE_POOL_MAX).toBe("52");
 	});
@@ -297,7 +318,7 @@ describe("task queue selection (Fizzy #2730)", () => {
 		Object.values(worker.ACTIVITY_SLOTS).reduce((sum, n) => sum + n, 0);
 
 	it("polls every queue when no selection is set", () => {
-		expect(createdQueues()).toHaveLength(20);
+		expect(createdQueues()).toHaveLength(21);
 		expect(
 			worker.selectTaskQueueWorkers({}).map((queue) => queue.taskQueue),
 		).toEqual(createdQueues());

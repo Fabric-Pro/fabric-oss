@@ -167,6 +167,7 @@ vi.mock("@copilotkit/react-core", () => ({
 	useCopilotAction: (config: Record<string, any>) => {
 		actionConfigs.set(config.name, config);
 	},
+	useFrontendTool: vi.fn(),
 	useCopilotChat: () => ({ isLoading: mockIsLoading, visibleMessages: [] }),
 	useCopilotChatInternal: () => ({ messages: [], setMessages: vi.fn() }),
 	useCopilotReadable: vi.fn(),
@@ -705,3 +706,35 @@ describe("DocumentEditor — visual slots on programmatic applications (KTD17)",
 		});
 	});
 });
+
+// Page-agent behavior is covered by page-agent-render-cost; retain this harness's agent fixture.
+vi.mock("@saas/shared/components/copilot/use-page-agent", async () => {
+	const core = await import("@copilotkit/react-core");
+	return {
+		usePageAgent: (name: string, initialState: object) =>
+			core.useCoAgent({ name, initialState }),
+	};
+});
+
+// These editor harnesses predate the enclosing page's session provider.
+vi.mock(
+	"@saas/shared/components/copilot/CopilotChatSessionProvider",
+	async (importOriginal) => {
+		const actual =
+			await importOriginal<
+				typeof import("@saas/shared/components/copilot/CopilotChatSessionProvider")
+			>();
+		const core = await import("@copilotkit/react-core");
+		return {
+			...actual,
+			useCopilotChatSessionSelector: (
+				select: (session: object) => unknown,
+			) =>
+				select({
+					...core.useCopilotChatInternal(),
+					...core.useCopilotChat(),
+				}),
+			useCopilotChatSessionActions: () => core.useCopilotChatInternal(),
+		};
+	},
+);

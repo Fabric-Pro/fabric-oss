@@ -461,6 +461,11 @@
 			"import": "./lib/document-type-catalog.ts",
 			"default": "./lib/document-type-catalog.ts"
 		},
+		"./editor-frontend-actions": {
+			"types": "./lib/editor-frontend-actions.ts",
+			"import": "./lib/editor-frontend-actions.ts",
+			"default": "./lib/editor-frontend-actions.ts"
+		},
 		"./prompt-action-catalog": {
 			"types": "./lib/prompt-action-catalog.ts",
 			"import": "./lib/prompt-action-catalog.ts",
@@ -576,6 +581,26 @@
 			"import": "./lib/proposal-artifact/section-hash.ts",
 			"default": "./lib/proposal-artifact/section-hash.ts"
 		},
+		"./proposal-artifact/section-splice": {
+			"types": "./lib/proposal-artifact/section-splice.ts",
+			"import": "./lib/proposal-artifact/section-splice.ts",
+			"default": "./lib/proposal-artifact/section-splice.ts"
+		},
+		"./proposal-artifact/visual-placeholders": {
+			"types": "./lib/proposal-artifact/visual-placeholders.ts",
+			"import": "./lib/proposal-artifact/visual-placeholders.ts",
+			"default": "./lib/proposal-artifact/visual-placeholders.ts"
+		},
+		"./proposal-artifact/preservation": {
+			"types": "./lib/proposal-artifact/preservation.ts",
+			"import": "./lib/proposal-artifact/preservation.ts",
+			"default": "./lib/proposal-artifact/preservation.ts"
+		},
+		"./proposal-artifact/response-echo": {
+			"types": "./lib/proposal-artifact/response-echo.ts",
+			"import": "./lib/proposal-artifact/response-echo.ts",
+			"default": "./lib/proposal-artifact/response-echo.ts"
+		},
 		"./proposal-artifact/report-text": {
 			"types": "./lib/proposal-artifact/report-text.ts",
 			"import": "./lib/proposal-artifact/report-text.ts",
@@ -611,6 +636,16 @@
 			"import": "./lib/proposal-artifact/proposal-theme.ts",
 			"default": "./lib/proposal-artifact/proposal-theme.ts"
 		},
+		"./proposal-artifact/proposal-figures": {
+			"types": "./lib/proposal-artifact/proposal-figures/index.ts",
+			"import": "./lib/proposal-artifact/proposal-figures/index.ts",
+			"default": "./lib/proposal-artifact/proposal-figures/index.ts"
+		},
+		"./proposal-artifact/diagram-printability": {
+			"types": "./lib/proposal-artifact/diagram-printability.ts",
+			"import": "./lib/proposal-artifact/diagram-printability.ts",
+			"default": "./lib/proposal-artifact/diagram-printability.ts"
+		},
 		"./proposal-artifact/stat-tiles": {
 			"types": "./lib/proposal-artifact/stat-tiles.ts",
 			"import": "./lib/proposal-artifact/stat-tiles.ts",
@@ -620,6 +655,16 @@
 			"types": "./lib/proposal-artifact/export-scrub.ts",
 			"import": "./lib/proposal-artifact/export-scrub.ts",
 			"default": "./lib/proposal-artifact/export-scrub.ts"
+		},
+		"./proposal-artifact/whole-body-writers": {
+			"types": "./lib/proposal-artifact/whole-body-writers.ts",
+			"import": "./lib/proposal-artifact/whole-body-writers.ts",
+			"default": "./lib/proposal-artifact/whole-body-writers.ts"
+		},
+		"./proposal-artifact/scoped-revision-codes": {
+			"types": "./lib/proposal-artifact/scoped-revision-codes.ts",
+			"import": "./lib/proposal-artifact/scoped-revision-codes.ts",
+			"default": "./lib/proposal-artifact/scoped-revision-codes.ts"
 		},
 		"./brand-colors": {
 			"types": "./lib/brand-colors.ts",

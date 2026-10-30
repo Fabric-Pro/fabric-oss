@@ -181,6 +181,7 @@ export default function OrganizationPromptEnhancerAgentPage() {
 					useSingleEndpoint
 					agent="prompt_enhancer"
 					showDevConsole={false}
+					enableInspector={false}
 					onError={onError}
 				>
 					<CopilotChatSessionProvider>

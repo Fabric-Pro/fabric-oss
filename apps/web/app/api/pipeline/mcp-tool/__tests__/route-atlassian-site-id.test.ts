@@ -22,6 +22,7 @@ vi.mock("@repo/mcp", () => ({
 	callMcpTool: mocks.callMcpTool,
 	invalidateMcpClientCache: vi.fn(),
 	McpClientError: class extends Error {},
+	MCPClientError: { isInstance: () => false },
 }));
 
 vi.mock("@repo/database", () => ({

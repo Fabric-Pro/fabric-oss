@@ -53,7 +53,7 @@ const SOURCE_ENTRY =
 const INLINE_CODE = /`[^`\n]*`/g;
 
 /** A line left holding only a list marker, or nothing, once its markers go. */
-const EMPTY_AFTER_REMOVAL = /^\s*(?:[-*+]|\d{1,3}[.)])?\s*$/;
+const EMPTY_AFTER_REMOVAL = /^\s*(?:(?:[-*+]|\d{1,3}[.)])\s*)?$/;
 
 /**
  * Remove citation markers and Source Index sections from a client-document
@@ -179,7 +179,11 @@ function removeMarkers(line: string): { text: string; count: number } {
 	// Indentation and trailing spaces are the original line's: a marker at
 	// either end must not add a space there, or take a hard break away.
 	const indent = /^[ \t]*/.exec(line)?.[0] ?? "";
-	const trailing = /[ \t]*$/.exec(line)?.[0] ?? "";
+	let end = line.length;
+	while (end > 0 && (line[end - 1] === " " || line[end - 1] === "\t")) {
+		end--;
+	}
+	const trailing = line.slice(end);
 	let text = line;
 	let count = 0;
 	for (let pass = 0; pass < MAX_PASSES; pass++) {

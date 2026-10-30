@@ -2,8 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const findFirstTrigger = vi.fn();
 const findFirstIntegration = vi.fn();
+const canUseWorkflowIntegrations = vi.fn();
 
 vi.mock("@repo/database", () => ({
+	canUseWorkflowIntegrations: (...args: unknown[]) =>
+		canUseWorkflowIntegrations(...args),
 	db: {
 		agentDeploymentTrigger: {
 			findFirst: (...args: unknown[]) => findFirstTrigger(...args),
@@ -27,6 +30,7 @@ describe("addSlackReaction", () => {
 	beforeEach(() => {
 		findFirstTrigger.mockReset();
 		findFirstIntegration.mockReset();
+		canUseWorkflowIntegrations.mockReset().mockResolvedValue(true);
 		fetchMock.mockReset();
 		globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
 	});
@@ -136,5 +140,62 @@ describe("addSlackReaction", () => {
 			{ headers: Record<string, string> },
 		];
 		expect(init.headers.Authorization).toBe("Bearer xoxb-legacy");
+	});
+
+	it("refuses a user who is not a member of the organization, without reading a token or calling Slack", async () => {
+		canUseWorkflowIntegrations.mockResolvedValue(false);
+		findFirstTrigger.mockResolvedValue({ deployment: { id: "dep-1" } });
+		findFirstIntegration.mockResolvedValue({
+			credentials: JSON.stringify({ access_token: "xoxb-test" }),
+		});
+
+		const result = await addSlackReaction({
+			teamId: "T1",
+			channel: "C1",
+			timestamp: "1700000000.000100",
+			name: "eyes",
+			userId: "u1",
+			organizationId: "o1",
+		});
+
+		expect(result).toEqual({
+			ok: false,
+			error: "No Slack bot token found for team T1. Connect Slack in Settings > Integrations.",
+		});
+		expect(canUseWorkflowIntegrations).toHaveBeenCalledWith("u1", "o1");
+		expect(findFirstTrigger).not.toHaveBeenCalled();
+		expect(findFirstIntegration).not.toHaveBeenCalled();
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("reads a personal connection when no organization is named", async () => {
+		findFirstTrigger.mockResolvedValue({ deployment: { id: "dep-1" } });
+		findFirstIntegration.mockResolvedValue({
+			credentials: JSON.stringify({ access_token: "xoxb-personal" }),
+		});
+		fetchMock.mockResolvedValue({
+			ok: true,
+			json: async () => ({ ok: true }),
+		});
+
+		const result = await addSlackReaction({
+			teamId: "T1",
+			channel: "C1",
+			timestamp: "1700000000.000100",
+			name: "eyes",
+			userId: "u1",
+		});
+
+		expect(result).toEqual({ ok: true });
+		expect(canUseWorkflowIntegrations).toHaveBeenCalledWith(
+			"u1",
+			undefined,
+		);
+		expect(findFirstIntegration).toHaveBeenCalledWith({
+			where: expect.objectContaining({
+				userId: "u1",
+				organizationId: null,
+			}),
+		});
 	});
 });

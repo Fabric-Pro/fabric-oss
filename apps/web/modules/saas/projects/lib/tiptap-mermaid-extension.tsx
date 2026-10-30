@@ -1,6 +1,11 @@
 "use client";
 
 import {
+	isLiveFigureCounted,
+	type LiveDiagramEngine,
+	printsAsDrawn,
+} from "@repo/utils/proposal-artifact/diagram-printability";
+import {
 	type ProposalThemePaint,
 	withVisualRoleClassDefs,
 } from "@repo/utils/proposal-artifact/theme-tokens";
@@ -61,6 +66,10 @@ import {
 	useRef,
 	useState,
 } from "react";
+import {
+	cleanDiagramStylesheet,
+	isInertDiagramAttribute,
+} from "./diagram-svg-url-guard";
 import { getEditorMarkdownForSave } from "./editor-markdown-save";
 import {
 	diagramEditVisualId,
@@ -69,7 +78,14 @@ import {
 	useDiagramOrigin,
 } from "./mermaid-diagram-index";
 import { MermaidEditVisualPanel } from "./mermaid-edit-visual-panel";
+import { MermaidFailureView } from "./mermaid-failure-view";
 import { withMermaidLock } from "./mermaid-lock";
+import {
+	drawFigureTemplate,
+	FIGURE_MIN_LIVE_WIDTH,
+	figureIdPrefix,
+	livePrintability,
+} from "./mermaid-proposal-figure";
 import { useMermaidVisualContext } from "./mermaid-visual-context";
 import { useMermaidDiagramSizing } from "./use-mermaid-diagram-sizing";
 
@@ -97,11 +113,49 @@ import { useMermaidDiagramSizing } from "./use-mermaid-diagram-sizing";
  * renderer needs it. The primary one emits `<text>`; the fallback is configured
  * to do the same. If a future renderer starts emitting `foreignObject`, labels
  * will disappear rather than render unsafely, and the test named for it says so.
+ *
+ * The profile removes what runs, not what loads, so a dedicated DOMPurify
+ * instance adds two hooks (`diagram-svg-url-guard.ts`): an attribute whose
+ * value loads anything (a `url()` other than a same-document `#id`) is
+ * dropped, and every `<style>` loses its at-rules and loading declarations.
+ * The instance is the sanitizer's own, so no other DOMPurify caller sees them.
  */
 export function sanitizeDiagramSvg(dirty: string): string {
-	return DOMPurify.sanitize(dirty, {
+	return diagramPurifier().sanitize(dirty, {
 		USE_PROFILES: { svg: true, svgFilters: true },
+		// The SVG profile drops `role`, an HTML attribute; a figure template
+		// names itself an image with it, and it carries no behaviour.
+		ADD_ATTR: ["role"],
 	});
+}
+
+let purifier: typeof DOMPurify | null = null;
+
+/** The diagram sanitizer's own DOMPurify, made on first use in the browser. */
+function diagramPurifier(): typeof DOMPurify {
+	if (purifier === null) {
+		const instance = DOMPurify();
+		instance.addHook("uponSanitizeElement", (node, data) => {
+			if (data.tagName === "style") {
+				node.textContent = cleanDiagramStylesheet(
+					node.textContent ?? "",
+				);
+			}
+		});
+		instance.addHook("uponSanitizeAttribute", (node, data) => {
+			if (
+				!isInertDiagramAttribute(
+					node.nodeName,
+					data.attrName,
+					data.attrValue,
+				)
+			) {
+				data.keepAttr = false;
+			}
+		});
+		purifier = instance;
+	}
+	return purifier;
 }
 
 // Initialize mermaid as fallback only — beautiful-mermaid is the primary renderer
@@ -216,24 +270,42 @@ const BEAUTIFUL_MERMAID_COLORS = {
 	transparent: true,
 } as const;
 
+interface DiagramRenderOptions {
+	isDark: boolean;
+	paint?: ProposalThemePaint | null;
+	/** Prefix of a figure template's ids, unique to the diagram. */
+	figureIdPrefix?: string;
+}
+
 /**
- * Draw diagram source as sanitized SVG: beautiful-mermaid first, mermaid.js
- * for the types it does not support.
+ * Draw diagram source as sanitized SVG, saying which engine drew it:
+ * beautiful-mermaid first, mermaid.js for the types it does not support.
  *
  * With a theme `paint` (a client-document Proposal's page, Fizzy #2946) a
+ * fence with a `%% figure:` line draws its SVG template instead, and a
  * flowchart gets the theme's role class definitions appended first, so a
  * generated diagram's `class <id> surface` lines take the brand's colours
  * and follow a Style change without its text changing. Without one the
  * source is drawn as written, without its caption line.
  */
-async function renderDiagramSvg(
+async function drawDiagram(
 	code: string,
-	{ isDark, paint }: { isDark: boolean; paint?: ProposalThemePaint | null },
-): Promise<string> {
+	{
+		isDark,
+		paint,
+		figureIdPrefix: idPrefix = "figure",
+	}: DiagramRenderOptions,
+): Promise<{ svg: string; engine: LiveDiagramEngine }> {
+	// A template the parser refuses draws as Mermaid, below.
+	const template = paint ? drawFigureTemplate(code, paint, idPrefix) : null;
+	if (template !== null) {
+		return { svg: sanitizeDiagramSvg(template), engine: "template" };
+	}
 	// The caption is printed under the diagram, never drawn in it.
 	const drawn = withDiagramCaption(code, null);
 	const source = paint ? withVisualRoleClassDefs(drawn, paint) : drawn;
 	let svg = "";
+	let engine: LiveDiagramEngine = "beautiful-mermaid";
 	try {
 		const beautifulMermaid = await import("beautiful-mermaid");
 		// Use CSS variables so the SVG adapts to light/dark theme automatically.
@@ -247,8 +319,9 @@ async function renderDiagramSvg(
 		// Fallback to native mermaid.js for unsupported diagram types
 		// (gantt, pie, mindmap, C4, timeline, etc.)
 		svg = await renderNativeMermaidSvg(source, isDark);
+		engine = "mermaid";
 	}
-	return sanitizeDiagramSvg(svg);
+	return { svg: sanitizeDiagramSvg(svg), engine };
 }
 
 /** A `style`, `classDef` or `linkStyle` line with a literal hex colour. */
@@ -587,7 +660,12 @@ function MermaidNodeView({ node, editor, getPos }: MermaidNodeViewProps) {
 	const tEditorTooltips = useTranslations("tooltips.editor");
 	const [svg, setSvg] = useState<string>("");
 	const [error, setError] = useState<string | null>(null);
-	const [showCode, setShowCode] = useState(false);
+	// The source view, and where it was opened from: from the failure view,
+	// a save returns to it while the source still does not draw.
+	const [sourceOrigin, setSourceOrigin] = useState<"menu" | "failure" | null>(
+		null,
+	);
+	const showCode = sourceOrigin !== null;
 	const [isRendering, setIsRendering] = useState(false);
 	const [mounted, setMounted] = useState(false);
 	const [editableCode, setEditableCode] = useState<string | null>(null);
@@ -624,8 +702,11 @@ function MermaidNodeView({ node, editor, getPos }: MermaidNodeViewProps) {
 	const codeTextareaRef = useRef<HTMLTextAreaElement>(null);
 	const menuActionRef = useRef<MenuAction | null>(null);
 	const [focusRequest, setFocusRequest] = useState<FocusTarget | null>(null);
-	const [announcement, setAnnouncement] = useState("");
 	const menuIds = useId();
+	// Which engine drew the diagram; a figure template's ids are unique to
+	// this block.
+	const [engine, setEngine] = useState<LiveDiagramEngine | null>(null);
+	const figureIds = figureIdPrefix(menuIds);
 
 	// While an AI edit of the diagram is under review its text holds the
 	// removed and the added lines together, marked. Drawn as one diagram they
@@ -885,12 +966,13 @@ Rules:
 		setError(null);
 
 		try {
-			setSvg(
-				await renderDiagramSvg(code, {
-					isDark: resolvedTheme === "dark",
-					paint,
-				}),
-			);
+			const drawn = await drawDiagram(code, {
+				isDark: resolvedTheme === "dark",
+				paint,
+				figureIdPrefix: figureIds,
+			});
+			setSvg(drawn.svg);
+			setEngine(drawn.engine);
 			setError(null);
 		} catch (err) {
 			console.error("Mermaid render error:", err);
@@ -898,10 +980,11 @@ Rules:
 				err instanceof Error ? err.message : "Failed to render diagram",
 			);
 			setSvg("");
+			setEngine(null);
 		} finally {
 			setIsRendering(false);
 		}
-	}, [node.textContent, resolvedTheme, paint, underReview]);
+	}, [node.textContent, resolvedTheme, paint, underReview, figureIds]);
 
 	useEffect(() => {
 		setMounted(true);
@@ -923,13 +1006,14 @@ Rules:
 			return;
 		}
 		let current = true;
-		renderDiagramSvg(proposedSource, {
+		drawDiagram(proposedSource, {
 			isDark: resolvedTheme === "dark",
 			paint,
+			figureIdPrefix: `${figureIds}-review`,
 		}).then(
 			(drawn) => {
 				if (current) {
-					setReviewSvg(drawn);
+					setReviewSvg(drawn.svg);
 				}
 			},
 			() => {
@@ -941,7 +1025,7 @@ Rules:
 		return () => {
 			current = false;
 		};
-	}, [mounted, proposedSource, resolvedTheme, paint]);
+	}, [mounted, proposedSource, resolvedTheme, paint, figureIds]);
 
 	const code = node.textContent;
 
@@ -1053,7 +1137,7 @@ Rules:
 					setFocusRequest("ai");
 					return;
 				case "source":
-					setShowCode(true);
+					setSourceOrigin("menu");
 					setFocusRequest("code");
 					return;
 				case "caption":
@@ -1147,12 +1231,15 @@ Rules:
 	);
 
 	const renderCandidate = useCallback(
-		(candidate: string) =>
-			renderDiagramSvg(candidate, {
-				isDark: resolvedTheme === "dark",
-				paint,
-			}),
-		[resolvedTheme, paint],
+		async (candidate: string) =>
+			(
+				await drawDiagram(candidate, {
+					isDark: resolvedTheme === "dark",
+					paint,
+					figureIdPrefix: `${figureIds}-candidate`,
+				})
+			).svg,
+		[resolvedTheme, paint, figureIds],
 	);
 
 	const closeInstructionPanel = useCallback(() => {
@@ -1178,6 +1265,17 @@ Rules:
 		visual !== null &&
 		isFlowchartSource(node.textContent) &&
 		hasFixedColours(node.textContent);
+	// What the export does with the fence (`diagram-printability.ts`). A
+	// drawn diagram that does not print as drawn (a kind only mermaid.js
+	// draws, which prints as a placeholder, or a fence only mermaid.js could
+	// draw, which is left out) is noted to the people who can change it.
+	const printability = livePrintability(node.textContent);
+	const notPrintable =
+		visual !== null &&
+		editor.isEditable &&
+		svg !== "" &&
+		engine !== null &&
+		!printsAsDrawn(printability, engine);
 
 	const {
 		areaRef: diagramRef,
@@ -1189,6 +1287,8 @@ Rules:
 		showCode: showCode || underReview,
 		error,
 		mounted,
+		// A template keeps its text at 10 px or more down to this width.
+		minWidth: engine === "template" ? FIGURE_MIN_LIVE_WIDTH : undefined,
 	});
 	const scrollable = sizing?.scrollable === true;
 
@@ -1309,19 +1409,11 @@ Rules:
 				applyCandidate={applyCandidate}
 				renderCandidate={renderCandidate}
 				onClose={closeInstructionPanel}
-				announce={setAnnouncement}
+				announce={visual.announce}
 				textareaRef={instructionInputRef}
 			/>
 		);
 	};
-
-	/** The polite live region Edit with instructions speaks through. */
-	const liveRegion =
-		visual !== null ? (
-			<output className="sr-only" aria-live="polite">
-				{announcement}
-			</output>
-		) : null;
 
 	if (!mounted) {
 		return (
@@ -1377,7 +1469,7 @@ Rules:
 							</figcaption>
 							<div
 								className="mermaid-diagram-area flex items-center justify-center p-6 overflow-auto"
-								// biome-ignore lint/security/noDangerouslySetInnerHtml: run through sanitizeDiagramSvg in renderDiagramSvg, the only writer of this state
+								// biome-ignore lint/security/noDangerouslySetInnerHtml: run through sanitizeDiagramSvg in drawDiagram, the only writer of this state
 								dangerouslySetInnerHTML={{ __html: reviewSvg }}
 							/>
 						</figure>
@@ -1387,11 +1479,55 @@ Rules:
 		);
 	}
 
+	// A client-document Proposal's diagram that does not draw: the page
+	// says what the exports do in its place (`MermaidFailureView`).
+	if (visual !== null && error && !showCode) {
+		return (
+			<NodeViewWrapper className="mermaid-wrapper">
+				<HiddenSource />
+				<MermaidFailureView
+					labelId={`${menuIds}-failure`}
+					caption={storedCaption}
+					readOnly={!editor.isEditable}
+					variant={
+						isLiveFigureCounted(printability, null)
+							? "placeholder"
+							: "omitted"
+					}
+					onEditSource={() => {
+						setShowInstructionPanel(false);
+						setSourceOrigin("failure");
+						setFocusRequest("code");
+					}}
+					onEditWithInstructions={
+						canEditWithInstructions
+							? openInstructionPanel
+							: undefined
+					}
+					onDelete={deleteNodeKeepingCaret}
+					instructionsTriggerRef={triggerRef}
+				>
+					{renderInstructionPanel()}
+				</MermaidFailureView>
+			</NodeViewWrapper>
+		);
+	}
+
 	// If showing code or there's an error, show the code view
 	if (showCode || error) {
 		const isEditing = editableCode !== null;
 		const displayCode = isEditing ? editableCode : code;
 		const hasChanges = isEditing && editableCode !== code;
+		/**
+		 * Save the edited source. Opened from the failure view, the view
+		 * closes: the diagram draws, or the failure view returns.
+		 */
+		const saveSource = (text: string) => {
+			saveCode(text);
+			if (sourceOrigin === "failure") {
+				setSourceOrigin(null);
+			}
+		};
 
 		return (
 			<NodeViewWrapper className="mermaid-wrapper">
@@ -1415,7 +1551,7 @@ Rules:
 									type="button"
 									onClick={() => {
 										if (editableCode) {
-											saveCode(editableCode);
+											saveSource(editableCode);
 										}
 									}}
 									className="flex items-center gap-1 px-2 py-1 text-xs font-medium rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-colors"
@@ -1477,13 +1613,13 @@ Rules:
 									{tTooltips("reload")}
 								</TooltipContent>
 							</Tooltip>
-							{!error && (
+							{(!error || sourceOrigin === "failure") && (
 								<Tooltip>
 									<TooltipTrigger asChild>
 										<button
 											type="button"
 											onClick={() => {
-												setShowCode(false);
+												setSourceOrigin(null);
 												setEditableCode(null);
 											}}
 											className="p-1.5 hover:bg-muted rounded text-muted-foreground hover:text-foreground transition-colors"
@@ -1548,7 +1684,7 @@ Rules:
 								) {
 									e.preventDefault();
 									if (editableCode) {
-										saveCode(editableCode);
+										saveSource(editableCode);
 									}
 								}
 								// Tab inserts spaces instead of moving focus
@@ -1582,7 +1718,6 @@ Rules:
 							Ctrl+Enter to save changes
 						</div>
 					)}
-					{liveRegion}
 				</div>
 			</NodeViewWrapper>
 		);
@@ -1616,14 +1751,26 @@ Rules:
 		/>
 	);
 
+	// A drawn diagram on a client-document Proposal's page is a numbered
+	// figure when the export numbers it too (`isLiveFigureCounted`): the
+	// theme's stylesheet counts each `pa-figure-counted` wrapper and prints
+	// "Figure n." before its `pa-figure-caption`. A fence only mermaid.js
+	// could draw, of a kind the export draws, is left out of print and takes
+	// no number here either; the failure view numbers itself.
+	const counted =
+		visual !== null &&
+		svg !== "" &&
+		engine !== null &&
+		isLiveFigureCounted(printability, engine);
+	const captionClassName = counted
+		? "pa-figure-caption px-3 py-2 border-t text-center"
+		: "px-3 py-2 border-t text-center";
+
 	// Caption display / edit
 	const captionSection = (
 		<>
 			{(showCaptionInput || captionValue) && (
-				<div
-					className="px-3 py-2 border-t text-center"
-					contentEditable={false}
-				>
+				<div className={captionClassName} contentEditable={false}>
 					{showCaptionInput ? (
 						<input
 							ref={captionInputRef}
@@ -1666,6 +1813,14 @@ Rules:
 					)}
 				</div>
 			)}
+			{/* An uncaptioned figure still reads "Figure n." under the
+			    theme, whose stylesheet prints the number into this line. */}
+			{counted &&
+				paint !== null &&
+				!showCaptionInput &&
+				!captionValue && (
+					<div className={captionClassName} contentEditable={false} />
+				)}
 		</>
 	);
 
@@ -1677,7 +1832,7 @@ Rules:
 			<NodeViewWrapper className="mermaid-wrapper">
 				<HiddenSource />
 				<div
-					className="mermaid-container mermaid-visual group relative my-4 rounded-lg border bg-card overflow-hidden"
+					className={`mermaid-container mermaid-visual group relative my-4 rounded-lg border bg-card overflow-hidden${counted ? " pa-figure-counted" : ""}`}
 					data-visual-menu=""
 				>
 					{/* A strip of its own above the scrolling area, so the
@@ -1691,6 +1846,11 @@ Rules:
 								{originLabel && <p>{originLabel}</p>}
 								{fixedColours && (
 									<p>{tVisuals("fixedColours")}</p>
+								)}
+								{notPrintable && (
+									<p data-diagram-not-printable="">
+										{tVisuals("notPrintable")}
+									</p>
 								)}
 							</div>
 							{editor.isEditable && (
@@ -1800,7 +1960,6 @@ Rules:
 					{renderInstructionPanel()}
 
 					{captionSection}
-					{liveRegion}
 				</div>
 			</NodeViewWrapper>
 		);
@@ -1852,7 +2011,9 @@ Rules:
 									<TooltipTrigger asChild>
 										<button
 											type="button"
-											onClick={() => setShowCode(true)}
+											onClick={() =>
+												setSourceOrigin("menu")
+											}
 											className="p-1.5 rounded text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
 											aria-label={tEditorTooltips(
 												"editDiagramSource",
@@ -1937,6 +2098,14 @@ export const MermaidBlock = Node.create({
 	// first. Under `marks: ""` a `<del>` inside a diagram was dropped on parse
 	// while its text survived, so an accepted edit saved `A --> BC`.
 	marks: "diffInsert diffDelete",
+
+	// The source is code: its whitespace is kept as written. Without it,
+	// ProseMirror reading the node back from the DOM (an overlay's
+	// `aria-hidden` on the blocks around it is enough) turned every line
+	// break into a space, and the autosave kept the one-line diagram
+	// (Fizzy #2946). Enter inside the source adds a line, as in a code
+	// block, rather than splitting the diagram in two.
+	code: true,
 
 	defining: true,
 

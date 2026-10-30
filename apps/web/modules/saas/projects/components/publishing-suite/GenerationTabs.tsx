@@ -3,19 +3,10 @@
 import { Button } from "@ui/components/button";
 import { TabsContent, TabsTrigger } from "@ui/components/tabs";
 import { cn } from "@ui/lib";
-import {
-	AlertTriangleIcon,
-	CheckCircle2Icon,
-	Loader2Icon,
-	StarIcon,
-} from "lucide-react";
+import { CheckCircle2Icon, Loader2Icon, StarIcon } from "lucide-react";
 import { BlogPostPanel } from "./BlogPostPanel";
 import { CaseStudyPanel } from "./CaseStudyPanel";
-import type {
-	GenerationTabInfo,
-	GenerationTabState,
-	Restrictions,
-} from "./generation-tab-state";
+import type { GenerationTabInfo, Restrictions } from "./generation-tab-state";
 import {
 	decisionLabel,
 	isRestrictingThread,
@@ -406,11 +397,15 @@ export function GenerationTabTriggers({
 							value={t.value}
 							disabled={!active}
 							className={cn(
+								"mb-0 rounded-full border border-border px-3 py-1 text-xs data-[state=active]:bg-foreground data-[state=active]:text-background",
 								awaitingAnalysis &&
 									"opacity-60 data-[state=active]:opacity-100",
 							)}
 						>
-							{t.generationLabel ?? t.label}
+							<span className="sr-only">
+								{t.generationLabel ?? t.label}
+							</span>
+							<span aria-hidden="true">{t.shortLabel}</span>
 							{!active ? (
 								<Badge tone="muted">Coming soon</Badge>
 							) : (
@@ -428,10 +423,9 @@ export function GenerationTabTriggers({
 												t.value,
 											)}
 											unresolvedCount={
-												model.restrictions.globalCount +
-												(model.restrictions.countByPostType.get(
+												model.restrictions.countByPostType.get(
 													t.value,
-												) ?? 0)
+												) ?? 0
 											}
 											hasChanged={model.changedSinceRead.has(
 												t.value,
@@ -439,9 +433,9 @@ export function GenerationTabTriggers({
 										/>
 									) : null}
 									{awaitingAnalysis ? (
-										<Badge tone="muted">
+										<span className="sr-only">
 											Needs analysis
-										</Badge>
+										</span>
 									) : null}
 								</>
 							)}
@@ -458,6 +452,7 @@ export function GenerationTabTriggers({
  * content. Only the selected types render, and only those with a panel.
  */
 export function GenerationTabPanels({
+	activeTab,
 	model,
 	postTypes,
 	projectId,
@@ -471,6 +466,7 @@ export function GenerationTabPanels({
 	canEdit,
 	onReviewQuestions,
 }: {
+	activeTab: string;
 	model: GenerationTabModel;
 	postTypes: readonly PostType[];
 	projectId: string;
@@ -506,6 +502,8 @@ export function GenerationTabPanels({
 					<TabsContent
 						key={t.value}
 						value={t.value}
+						forceMount
+						hidden={activeTab !== t.value}
 						className="space-y-4"
 					>
 						<GenerationPanel
@@ -536,17 +534,6 @@ export function GenerationTabPanels({
 		</>
 	);
 }
-
-const STATE_LABELS: Record<GenerationTabState, string | null> = {
-	GENERATED: "Generated",
-	NEEDS_CONFIRMATION: "Needs confirmation",
-	RECOMMENDED: "Recommended",
-	// A type that is available but not recommended "should not be visually
-	// promoted" (the card), so it gets no badge. The accessible name below
-	// still says "Available", so the state is not invisible to a screen-reader
-	// user while being visible to a sighted one.
-	AVAILABLE: null,
-};
 
 /**
  * The primary state badge, plus the independent caution marker.
@@ -598,7 +585,10 @@ function StateBadge({
 	// Keying the mark on the count alone left exactly those tabs silent — which
 	// the caution exists to prevent, since it is meant to be seen on a tab the
 	// reader has not opened.
-	const cautious = info.state === "NEEDS_CONFIRMATION" || info.needsAttention;
+	const cautious =
+		info.state === "NEEDS_CONFIRMATION" ||
+		info.attention.analysisBucket ||
+		info.attention.typeQuestion;
 
 	// WHICH caution, in the accessible name. The amber mark merged three
 	// independent causes, and only two of them are answerable: a type the
@@ -606,10 +596,7 @@ function StateBadge({
 	// confirmation" sent its reader to a questions tab with nothing in it. The
 	// visible mark is deliberately unchanged — one chip, not three — but a
 	// reader who asks what it means now gets the reason rather than a label.
-	const answerable =
-		unresolvedCount > 0 ||
-		info.attention.globalQuestion ||
-		info.attention.typeQuestion;
+	const answerable = unresolvedCount > 0 || info.attention.typeQuestion;
 	const cautionReason = answerable
 		? unresolvedCount > 0
 			? `Needs confirmation — ${unresolvedCount} unresolved ${
@@ -620,25 +607,22 @@ function StateBadge({
 
 	if (unresolvedCount > 0 || cautious) {
 		return (
-			<Badge tone="warn">
-				<AlertTriangleIcon className="size-3" aria-hidden="true" />
+			<span className="ml-1 inline-flex items-center gap-1">
+				<span
+					aria-hidden="true"
+					className="size-2 rounded-full bg-highlight"
+				/>
 				{hasChanged ? (
-					<span
-						aria-hidden="true"
-						className="size-1.5 rounded-full bg-current"
-					/>
+					<span aria-hidden="true" className="text-xs">
+						Changed
+					</span>
 				) : null}
-				{unresolvedCount > 0 ? unresolvedCount : null}
-				{/* ONE visible mark, BOTH facts announced. A generated tab with
-				    an unresolved caution has two things worth knowing, and the
-				    accessible name is where the second one goes now that the
-				    strip shows a single chip instead of three word pills. */}
 				<span className="sr-only">
 					{info.state === "GENERATED" ? "Generated, " : ""}
 					{cautionReason}
 					{hasChanged ? ", changed since your last visit" : ""}
 				</span>
-			</Badge>
+			</span>
 		);
 	}
 
@@ -805,6 +789,14 @@ function GenerationPanel({
 
 	return (
 		<div className="space-y-5">
+			{info?.needsAttention ? (
+				<p className="rounded-lg border border-highlight/40 bg-highlight/10 p-3 text-sm">
+					{info.attention.globalQuestion ||
+					info.attention.typeQuestion
+						? "Needs confirmation — unresolved questions or approvals constrain this draft."
+						: "Set aside by the planning analysis — nothing to answer here."}
+				</p>
+			) : null}
 			<Section label="Recommendation">
 				{info?.rationale ? (
 					<p className="text-muted-foreground text-sm leading-relaxed">

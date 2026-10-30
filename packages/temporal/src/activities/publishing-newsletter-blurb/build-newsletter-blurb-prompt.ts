@@ -58,6 +58,7 @@ import {
 	type PlanningAnalysisContext,
 	type PlanningAnalysisTopic,
 } from "../publishing-planning/build-planning-analysis-prompt";
+import { WRITING_STYLE_CLAUSE } from "../publishing-shared";
 import { THIN_SUMMARY_IS_RAW_MATERIAL } from "../publishing-shared/authors-note-clause";
 import { recoverBoundBody } from "../publishing-shared/recover-bound-body";
 import {
@@ -312,7 +313,9 @@ ${BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS}
   note. A blurb that quietly wrote around a sensitive detail otherwise reads as
   fully cleared to send — and this is the format in this family most likely to
   be pasted into a template and sent to a list without a second read, because it
-  is short enough to look already checked.${restrictedBlock}${openQuestionBlock}${renderSettledDecisionsBlock(settledApprovals)}`;
+  is short enough to look already checked.${restrictedBlock}${openQuestionBlock}${renderSettledDecisionsBlock(settledApprovals)}
+
+${WRITING_STYLE_CLAUSE}`;
 }
 
 // =============================================================================

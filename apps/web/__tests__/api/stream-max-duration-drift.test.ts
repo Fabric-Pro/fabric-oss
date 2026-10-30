@@ -54,12 +54,38 @@ function extractSingleMatch(
 	return Number(matches[0][1]);
 }
 
-describe.each([
+describe.each<{
+	name: string;
+	routePath: string;
+	/** Where the deadline constant lives, when not in the route itself. */
+	deadlinePath?: string;
+	deadlinePattern: RegExp;
+	deadlineLabel: string;
+}>([
 	{
 		name: "fabric-ai/stream",
 		routePath: "app/api/agents/fabric-ai/stream/route.ts",
+		// The poll loop the route runs lives beside it.
+		deadlinePath: "app/api/agents/fabric-ai/stream/direct-turn.ts",
 		deadlinePattern: /MAX_POLL_DURATION = (\d+)/,
 		deadlineLabel: "MAX_POLL_DURATION",
+	},
+	{
+		// One SSE response tails a run for at most the runner's stream
+		// window, then tells the client to reconnect.
+		name: "agents/runtime",
+		routePath: "app/api/agents/runtime/[[...path]]/route.ts",
+		deadlinePath: "modules/saas/agents/runtime/fabric-temporal-runner.ts",
+		deadlinePattern: /MAX_STREAM_WINDOW_MS = (\d+)/,
+		deadlineLabel: "MAX_STREAM_WINDOW_MS",
+	},
+	{
+		// The Orchestrator engine's own, longer window on the same route.
+		name: "agents/runtime (Orchestrator)",
+		routePath: "app/api/agents/runtime/[[...path]]/route.ts",
+		deadlinePath: "modules/saas/agents/runtime/orchestrator-engine.ts",
+		deadlinePattern: /ORCHESTRATOR_STREAM_WINDOW_MS = (\d+)/,
+		deadlineLabel: "ORCHESTRATOR_STREAM_WINDOW_MS",
 	},
 	{
 		name: "orchestrator-temporal/stream",
@@ -76,7 +102,7 @@ describe.each([
 	},
 ])(
 	"$name maxDuration vs. internal deadline",
-	({ routePath, deadlinePattern, deadlineLabel }) => {
+	({ routePath, deadlinePath, deadlinePattern, deadlineLabel }) => {
 		it("exports one static maxDuration literal with enough headroom over its deadline constant", () => {
 			const source = readRouteSource(routePath);
 
@@ -86,7 +112,7 @@ describe.each([
 				"export const maxDuration = <n>;",
 			);
 			const deadlineMs = extractSingleMatch(
-				source,
+				readRouteSource(deadlinePath ?? routePath),
 				deadlinePattern,
 				deadlineLabel,
 			);

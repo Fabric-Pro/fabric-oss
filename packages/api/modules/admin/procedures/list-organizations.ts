@@ -17,18 +17,19 @@ export const listOrganizations = adminProcedure
 	.input(
 		z.object({
 			query: z.string().optional(),
-			limit: z.number().min(1).max(100).default(10),
-			offset: z.number().min(0).default(0),
+			status: z.enum(["active", "deactivated", "all"]).default("active"),
+			sort: z
+				.enum(["name", "members", "projects", "createdAt"])
+				.default("createdAt"),
+			direction: z.enum(["asc", "desc"]).default("desc"),
+			limit: z.number().int().min(1).max(100).default(10),
+			offset: z.number().int().min(0).default(0),
 		}),
 	)
-	.handler(async ({ input: { query, limit, offset } }) => {
-		const organizations = await getOrganizations({
-			limit,
-			offset,
-			query,
-		});
-
-		const total = await countAllOrganizations();
-
+	.handler(async ({ input }) => {
+		const [organizations, total] = await Promise.all([
+			getOrganizations(input),
+			countAllOrganizations(input),
+		]);
 		return { organizations, total };
 	});

@@ -4,6 +4,7 @@ import {
 	isUnresolvedDecisionStatus,
 	toSingleLineSubject,
 } from "@repo/utils/publishing-restrictions";
+import { InterfaceModeToggle } from "@saas/agents/components/InterfaceModeToggle";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { useAiSidebarExpanded } from "@saas/shared/components/copilot/ai-sidebar-layout";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -32,6 +33,7 @@ import {
 	SparklesIcon,
 } from "lucide-react";
 import dynamic from "next/dynamic";
+import { usePathname, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { AssigneesPicker } from "./AssigneesPicker";
@@ -49,6 +51,7 @@ import {
 	isEmptyAnalysis,
 	readPlanningAnalysis,
 } from "./planning-analysis-content";
+import { SimpleTopicView } from "./SimpleTopicView";
 import type { TopicAssistantContext } from "./TopicAssistant";
 import { TopicBlockers } from "./TopicBlockers";
 import { TopicDecisionLog } from "./TopicDecisionLog";
@@ -203,6 +206,9 @@ const TOPIC_ACCESS_REFUSAL_CODES: ReadonlySet<string> = new Set([
  * many readers — two independently-timed queries could land on different rows
  * mid-regeneration and leave two tabs contradicting each other.
  */
+const GENERATION_READ_FAILURE =
+	"We couldn't load this topic's draft state or decisions. Generation is paused until they can be loaded.";
+
 export function TopicItemPage({
 	projectId,
 	topicId,
@@ -217,7 +223,49 @@ export function TopicItemPage({
 	const queryClient = useQueryClient();
 	const { user } = useSession();
 	const viewerUserId = user?.id ?? null;
-	const [tab, setTab] = useState<ActiveTab>("summaryQuestions");
+	const pathname = usePathname();
+	const searchParams = useSearchParams();
+	const [questionArrival, setQuestionArrival] = useState(false);
+	useEffect(() => {
+		if (
+			/^#q-[0-9a-z_-]+$/i.test(window.location.hash) &&
+			searchParams.get("mode") !== "simple"
+		) {
+			setQuestionArrival(true);
+			setTab("summaryQuestions");
+		}
+	}, []);
+	const mode =
+		searchParams.get("mode") === "advanced" ||
+		(searchParams.get("mode") !== "simple" && questionArrival)
+			? "advanced"
+			: "simple";
+	const urlType = searchParams.get("type") as PostType | null;
+	const selectedType =
+		urlType && GENERATION_ACTIVE_POST_TYPES.has(urlType) ? urlType : null;
+	const changeView = (
+		nextMode: "simple" | "advanced",
+		type = selectedType,
+	) => {
+		setQuestionArrival(false);
+		const params = new URLSearchParams(searchParams.toString());
+		params.set("mode", nextMode);
+		if (type) {
+			params.set("type", type);
+		}
+		// The `#q-` arrival fragment is dropped here: it has been handled by
+		// the time the reader changes view, and keeping it would scroll back
+		// to that question on every return to the questions panel.
+		window.history.replaceState(
+			null,
+			"",
+			`${pathname}?${params.toString()}`,
+		);
+	};
+	const [tab, setTab] = useState<ActiveTab>(
+		selectedType ?? "summaryQuestions",
+	);
+
 	// The metadata editors `TopicDetails` triggers. Held here rather than inside
 	// that component because it is the SAME block the Inbox row mounts: giving
 	// it its own dialogs would put two of each in the tree whenever both
@@ -470,6 +518,35 @@ export function TopicItemPage({
 		}),
 	);
 
+	const markVisibleDraftRead = (value: ActiveTab) => {
+		if (
+			GENERATION_ACTIVE_POST_TYPES.has(value as PostType) &&
+			selectedPostTypes.includes(value as PostType)
+		) {
+			markDraftRead.mutate({
+				projectId,
+				topicId,
+				organizationId,
+				postType: value as PostType,
+			});
+		}
+	};
+	const selectAdvancedTab = (value: ActiveTab) => {
+		setTab(value);
+		markVisibleDraftRead(value);
+	};
+	// Initial URL selection counts as reading. View-only mode changes do not write.
+	const initialDraftRead = useRef(false);
+	useEffect(() => {
+		if (initialDraftRead.current || !topicQuery.data?.topic) {
+			return;
+		}
+		initialDraftRead.current = true;
+		if (mode === "advanced" && !window.location.hash.startsWith("#q-")) {
+			markVisibleDraftRead(tab);
+		}
+	});
+
 	const decisionsQuery = useQuery(
 		orpc.projects.publishingSuite.listTopicDecisions.queryOptions({
 			input: { projectId, topicId, organizationId },
@@ -488,15 +565,8 @@ export function TopicItemPage({
 	 * Analysis tab's own mount, which at the time only ran if the reader opened
 	 * that tab. The default tab is Summary & Questions, so a reader who never
 	 * clicked through to the third tab got an empty questions panel and no
-	 * explanation. (That tab is force-mounted now, so its own trigger fires on
-	 * page load too — this one is no longer the only cover, but it is still the
-	 * one that does not depend on the tab existing.)
-	 *
-	 * A second caller of the same procedure is safe HERE, unlike the two
-	 * Regenerate controls: the server claims the attempt under a partial unique
-	 * index and answers `in-progress` to whoever loses, so the two cannot both
-	 * run. What they must not do is disagree about whether one is running, and
-	 * neither of these renders a disabled state.
+	 * explanation. The tab is now force-mounted with `autoStart={false}`;
+	 * this page owns the once-per-load start, independent of the view mode.
 	 */
 	const autoStarted = useRef(false);
 	const startAnalysis = useMutation(
@@ -1237,7 +1307,7 @@ export function TopicItemPage({
 				// `AI_SIDEBAR_CONTENT_SHIFT_CLASS`: that is a `right-` utility
 				// and means nothing outside the fixed page chrome the document
 				// editor shifts with it. This page is normal flow, so it pads.
-				isAssistantOpen && "sm:pr-[28rem]",
+				mode === "advanced" && isAssistantOpen && "sm:pr-[28rem]",
 			)}
 		>
 			<div className="space-y-3">
@@ -1285,6 +1355,11 @@ export function TopicItemPage({
 					    fixed slot keeps that row's width constant. */}
 					<div className="flex w-full shrink-0 flex-col items-start gap-2 sm:w-auto sm:flex-row sm:items-center">
 						<TopicRankReason topic={topic} variant="pill" />
+						<InterfaceModeToggle
+							tooltipNamespace="tooltips.publishing.interfaceMode"
+							value={mode}
+							onChange={(next) => changeView(next)}
+						/>
 						{canEdit ? (
 							<div className="flex shrink-0 items-center gap-2">
 								<Select
@@ -1500,41 +1575,85 @@ export function TopicItemPage({
 					) : null}
 				</div>
 			) : null}
-			<Tabs
-				value={activeTab}
-				onValueChange={(v) => {
-					setTab(v as ActiveTab);
-					// Opening a format tab IS looking at it — the strongest
-					// form of looking there is — so the marker moves here
-					// rather than waiting for a scroll or a click inside.
-					// Fire-and-forget: a failed marker costs a stale "Changed"
-					// badge, which is not worth a toast interrupting the thing
-					// the reader just asked for.
-					if (
-						GENERATION_ACTIVE_POST_TYPES.has(v as PostType) &&
-						selectedPostTypes.includes(v as PostType)
-					) {
-						markDraftRead.mutate({
+			<div hidden={mode !== "simple"} inert={mode !== "simple"}>
+				{draftsQuery.isError || decisionsQuery.isError ? (
+					<p role="status" className="text-muted-foreground text-xs">
+						{GENERATION_READ_FAILURE}
+					</p>
+				) : null}
+				<SimpleTopicView
+					isActive={mode === "simple"}
+					projectId={projectId}
+					topicId={topicId}
+					organizationId={organizationId}
+					canEdit={canEdit}
+					postTypes={selectedPostTypes}
+					selectedType={selectedType}
+					onSelectType={(type) => changeView("simple", type)}
+					onAddType={async (postTypes) => {
+						await updatePostTypes.mutateAsync({
 							projectId,
 							topicId,
 							organizationId,
-							postType: v as PostType,
+							postTypes,
 						});
+					}}
+					onAdvanced={(type) => {
+						selectAdvancedTab(type);
+						changeView("advanced", type);
+					}}
+					drafts={draftsQuery.data?.drafts ?? []}
+					workingDrafts={draftsQuery.data?.workingDrafts ?? []}
+					threads={decisionsQuery.data?.threads ?? []}
+					tabs={generationModel.tabs}
+					isLoading={
+						draftsQuery.isLoading ||
+						draftsQuery.isError ||
+						decisionsQuery.isLoading ||
+						decisionsQuery.isError
 					}
-				}}
-				className="space-y-4"
-			>
-				{/* The two rows share ONE rule. Every `TabsList` carries its own
+					hasBlockers={
+						openBlockerCount > 0 ||
+						generationModel.restrictions.globalCount > 0
+					}
+					members={members}
+				/>
+			</div>
+			<div hidden={mode !== "advanced"} inert={mode !== "advanced"}>
+				<Tabs
+					value={activeTab}
+					onValueChange={(v) => selectAdvancedTab(v as ActiveTab)}
+					className="space-y-4"
+				>
+					{/* The two rows share ONE rule. Every `TabsList` carries its own
 				    `border-b` and is `inline-flex`, so stacking two of them
 				    unchanged paints two underlines of DIFFERENT widths — the
 				    wrapper owns the rule instead and both lists drop theirs.
 				    Row 2's active trigger still tucks onto it via `-mb-px`. */}
-				<div className="flex flex-col items-start border-border border-b">
-					<TabsList aria-label="Topic review" className="border-b-0">
-						{REVIEW_TABS.map((t) => (
-							<TabsTrigger key={t.value} value={t.value}>
-								{t.label}
-								{/* Two counts, and they are different colours
+					<div className="flex flex-col items-start border-border border-b">
+						<TabsList
+							aria-label="Topic review"
+							className="border-b-0"
+						>
+							{REVIEW_TABS.map((t) => (
+								<TabsTrigger key={t.value} value={t.value}>
+									{t.label}
+									{t.value === "summaryQuestions" &&
+									openQuestionCount === 0 &&
+									generationModel.restrictions.globalCount >
+										0 ? (
+										<span
+											className="ml-1 rounded-full border border-highlight/60 bg-highlight/20 px-1.5 text-xs"
+											aria-label={`${generationModel.restrictions.globalCount} unresolved topic-wide ${generationModel.restrictions.globalCount === 1 ? "question" : "questions"}`}
+										>
+											⚠{" "}
+											{
+												generationModel.restrictions
+													.globalCount
+											}
+										</span>
+									) : null}
+									{/* Two counts, and they are different colours
 								    because they are different asks. RED is a
 								    blocker: something the topic is missing, and
 								    somebody has to go and get it. AMBER is an
@@ -1547,39 +1666,43 @@ export function TopicItemPage({
 								    when there are any — a zero badge is a
 								    permanent mark, and a permanent mark stops
 								    being read. */}
-								{t.value === "summaryQuestions" &&
-								openBlockerCount > 0 ? (
-									<span
-										aria-label={`${openBlockerCount} blocking ${openBlockerCount === 1 ? "item" : "items"}`}
-										className="ml-1.5 inline-flex min-w-[1.125rem] items-center justify-center rounded-full bg-destructive px-1.5 py-0 font-bold text-[10px] text-destructive-foreground tabular-nums"
-									>
-										{openBlockerCount}
-									</span>
-								) : null}
-								{t.value === "summaryQuestions" &&
-								openQuestionCount > 0 ? (
-									<span
-										aria-label={`${openQuestionCount} open ${openQuestionCount === 1 ? "question" : "questions"}`}
-										className="ml-1.5 inline-flex min-w-[1.125rem] items-center justify-center rounded-full border border-highlight/60 bg-highlight/20 px-1.5 py-0 font-bold text-[10px] text-foreground tabular-nums"
-									>
-										{openQuestionCount}
-									</span>
-								) : null}
-							</TabsTrigger>
-						))}
-					</TabsList>
-
-					<div className="flex flex-wrap items-center">
-						<TabsList
-							aria-label="Content generation"
-							className="flex-wrap border-b-0"
-						>
-							<GenerationTabTriggers
-								model={generationModel}
-								postTypes={selectedPostTypes}
-							/>
+									{t.value === "summaryQuestions" &&
+									openBlockerCount > 0 ? (
+										<span
+											aria-label={`${openBlockerCount} blocking ${openBlockerCount === 1 ? "item" : "items"}`}
+											className="ml-1.5 inline-flex min-w-[1.125rem] items-center justify-center rounded-full bg-destructive px-1.5 py-0 font-bold text-[10px] text-destructive-foreground tabular-nums"
+										>
+											{openBlockerCount}
+										</span>
+									) : null}
+									{t.value === "summaryQuestions" &&
+									openQuestionCount > 0 ? (
+										<span
+											aria-label={`${openQuestionCount} open ${openQuestionCount === 1 ? "question" : "questions"}`}
+											className="ml-1.5 inline-flex min-w-[1.125rem] items-center justify-center rounded-full border border-highlight/60 bg-highlight/20 px-1.5 py-0 font-bold text-[10px] text-foreground tabular-nums"
+										>
+											<AlertTriangleIcon
+												className="mr-1 size-3"
+												aria-hidden="true"
+											/>
+											{openQuestionCount}
+										</span>
+									) : null}
+								</TabsTrigger>
+							))}
 						</TabsList>
-						{/* Immediately after the last tab, not pushed to the
+
+						<div className="flex flex-wrap items-center">
+							<TabsList
+								aria-label="Content generation"
+								className="flex-wrap gap-1.5 border-b-0 py-3"
+							>
+								<GenerationTabTriggers
+									model={generationModel}
+									postTypes={selectedPostTypes}
+								/>
+							</TabsList>
+							{/* Immediately after the last tab, not pushed to the
 						    right edge: the row IS the set of things this topic
 						    is producing, and "+" says you can add to it without
 						    needing a label. "Edit post types" lived on a
@@ -1592,56 +1715,55 @@ export function TopicItemPage({
 						    analysis's own verdict, and the inline checklist
 						    stays on Summary & Questions for anyone who prefers
 						    it there. */}
-						{canEdit ? (
-							<Popover
-								open={addTypeOpen}
-								onOpenChange={setAddTypeOpen}
-							>
-								<PopoverTrigger asChild>
-									<Button
-										type="button"
-										variant="ghost"
-										size="sm"
-										className="ml-1 border border-border border-dashed"
-									>
-										<PlusIcon
-											className="mr-1 size-3.5"
-											aria-hidden="true"
-										/>
-										Add type
-									</Button>
-								</PopoverTrigger>
-								<PopoverContent
-									align="start"
-									className="w-[min(28rem,calc(100vw-2rem))] p-3"
+							{canEdit ? (
+								<Popover
+									open={addTypeOpen}
+									onOpenChange={setAddTypeOpen}
 								>
-									<ContentTypesChecklist
-										analysis={analysisDocument}
-										selected={selectedPostTypes}
-										canEdit={canEdit}
-										isPending={postTypesPending}
-										createdAt={topic.createdAt}
-										alwaysOpen
-										onChange={handlePostTypesSubmit}
-									/>
-								</PopoverContent>
-							</Popover>
-						) : null}
+									<PopoverTrigger asChild>
+										<Button
+											type="button"
+											variant="ghost"
+											size="sm"
+											aria-label="Add content type"
+											className="ml-1 size-8 rounded-full border border-border border-dashed p-0"
+										>
+											<PlusIcon
+												className="size-3.5"
+												aria-hidden="true"
+											/>
+										</Button>
+									</PopoverTrigger>
+									<PopoverContent
+										align="start"
+										className="w-[min(28rem,calc(100vw-2rem))] p-3"
+									>
+										<ContentTypesChecklist
+											analysis={analysisDocument}
+											selected={selectedPostTypes}
+											canEdit={canEdit}
+											isPending={postTypesPending}
+											createdAt={topic.createdAt}
+											alwaysOpen
+											onChange={handlePostTypesSubmit}
+										/>
+									</PopoverContent>
+								</Popover>
+							) : null}
+						</div>
 					</div>
-				</div>
 
-				{draftsQuery.isError ? (
-					<p
-						className="text-muted-foreground text-xs"
-						data-testid="generation-tabs-degraded"
-					>
-						We couldn't load this topic's draft state. The content
-						tabs still open, but they can't say what has been
-						generated yet.
-					</p>
-				) : null}
+					{draftsQuery.isError || decisionsQuery.isError ? (
+						<p
+							className="text-muted-foreground text-xs"
+							data-testid="generation-tabs-degraded"
+						>
+							Some topic draft data or decisions could not be
+							loaded. Refresh to try again.
+						</p>
+					) : null}
 
-				{/* A READING MEASURE on the review tabs, and only there.
+					{/* A READING MEASURE on the review tabs, and only there.
 				    
 				    The page had no max-width anywhere -- one paragraph was
 				    capped and everything else ran the full width of a 1440
@@ -1650,71 +1772,77 @@ export function TopicItemPage({
 				    panel is `mx-auto max-w-3xl`. The generation tabs stay
 				    full-bleed deliberately: three candidate columns need the
 				    room, and a cap there would squeeze them back into one. */}
-				<TabsContent
-					value="summaryQuestions"
-					className={cn(REVIEW_MEASURE_CLASS, "space-y-6")}
-				>
-					<TopicSummary
-						pitch={topic.pitch}
-						canEdit={canEdit}
-						isSaving={updateSummary.isPending}
-						onSave={(pitch) =>
-							updateSummary.mutateAsync({
-								projectId,
-								topicId,
-								organizationId,
-								pitch,
-							})
-						}
-					/>
-					{/* No content-types list here. It used to render in full
+					<TabsContent
+						value="summaryQuestions"
+						forceMount
+						hidden={activeTab !== "summaryQuestions"}
+						className={cn(REVIEW_MEASURE_CLASS, "space-y-6")}
+					>
+						<TopicSummary
+							pitch={topic.pitch}
+							canEdit={canEdit}
+							isSaving={updateSummary.isPending}
+							onSave={(pitch) =>
+								updateSummary.mutateAsync({
+									projectId,
+									topicId,
+									organizationId,
+									pitch,
+								})
+							}
+						/>
+						{/* No content-types list here. It used to render in full
 					    above the questions, which put the same checklist on
 					    screen twice: `+ Add type` in the tab strip opens the
 					    very same component, one row up and already in view.
 					    The tab strip is the right home — the types ARE the
 					    tabs, so the control that changes them belongs beside
 					    them rather than in a second copy further down. */}
-					{/* ABOVE the readiness bar and the questions: it is the
+						{/* ABOVE the readiness bar and the questions: it is the
 					    shorter list and the one that decides whether the other
 					    is worth working through. Answering five questions for a
 					    case study nobody can approve is wasted effort. */}
-					<TopicBlockers
-						projectId={projectId}
-						topicId={topicId}
-						organizationId={organizationId}
-						threads={decisionsQuery.data?.threads ?? []}
-						canEdit={canEdit}
-					/>
-					<TopicReadiness
-						threads={decisionsQuery.data?.threads ?? []}
-					/>
-					<TopicQuestionsPanel
-						projectId={projectId}
-						topicId={topicId}
-						organizationId={organizationId}
-						canEdit={canEdit}
-						isLoading={decisionsQuery.isLoading}
-						isFetching={decisionsQuery.isFetching}
-						analysisFailed={latestAttempt?.status === "FAILED"}
-						isGeneratingAnalysis={isGeneratingAnalysis}
-						threads={decisionsQuery.data?.threads ?? []}
-						members={members}
-					/>
-					<TopicNotes
-						notes={topic.notes}
-						canEdit={canEdit}
-						onSave={(notes) =>
-							saveNotes.mutate({
-								projectId,
-								topicId,
-								organizationId,
-								notes,
-							})
-						}
-					/>
-				</TabsContent>
+						<TopicBlockers
+							projectId={projectId}
+							topicId={topicId}
+							organizationId={organizationId}
+							threads={decisionsQuery.data?.threads ?? []}
+							canEdit={canEdit}
+						/>
+						<TopicReadiness
+							threads={decisionsQuery.data?.threads ?? []}
+						/>
+						<TopicQuestionsPanel
+							isActive={
+								mode === "advanced" &&
+								activeTab === "summaryQuestions"
+							}
+							projectId={projectId}
+							topicId={topicId}
+							organizationId={organizationId}
+							canEdit={canEdit}
+							isLoading={decisionsQuery.isLoading}
+							isFetching={decisionsQuery.isFetching}
+							analysisFailed={latestAttempt?.status === "FAILED"}
+							isGeneratingAnalysis={isGeneratingAnalysis}
+							threads={decisionsQuery.data?.threads ?? []}
+							members={members}
+						/>
+						<TopicNotes
+							notes={topic.notes}
+							canEdit={canEdit}
+							onSave={(notes) =>
+								saveNotes.mutate({
+									projectId,
+									topicId,
+									organizationId,
+									notes,
+								})
+							}
+						/>
+					</TabsContent>
 
-				{/* FORCE-MOUNTED, and only this tab. Radix unmounts inactive
+					{/* Keep unsaved analysis mounted, as with the other editable tabs. Radix unmounts inactive
 				    tab content, which meant a person who typed into the
 				    analysis and then looked at Decision Log came back to an
 				    empty editor — their words were gone with the component.
@@ -1728,14 +1856,9 @@ export function TopicItemPage({
 				    only writer, after an autosave raced an in-flight agent
 				    and overwrote the server with pre-answer text.
 
-				    Only this tab, because only this tab holds unsaved work.
-				    The other two render server state and cost a mount they do
-				    not need. Safe to keep mounted: `PlanningAnalysisTab` runs
-				    no queries of its own — every value it renders arrives as a
-				    prop from this component — and neither it, the editor, nor
-				    `DocumentTocRail` measures the DOM, so being display:none
-				    costs it nothing. `EDITOR_MEASURE_CLASS` is `w-full`, with
-				    no `display` of its own to fight the rule below.
+                This panel holds unsaved editor state. The parent owns the
+                page queries and initial analysis request; keeping this tree
+                mounted also preserves it across Simple / Advanced changes.
 
 				    `forceMount` ALONE IS NOT ENOUGH, and the failure is
 				    visible rather than subtle: Radix hands a force-mounted
@@ -1752,70 +1875,78 @@ export function TopicItemPage({
 				    `display: none` is what is wanted either way — it keeps the
 				    component mounted with its React state intact, which is the
 				    whole point, while costing it no layout. */}
-				<TabsContent
-					value="planningAnalysis"
-					className={EDITOR_MEASURE_CLASS}
-					forceMount
-					hidden={activeTab !== "planningAnalysis"}
-				>
-					<PlanningAnalysisTab
-						generateActionIsElsewhere={analysisIsBehind}
-						projectId={projectId}
-						topicId={topicId}
-						organizationId={organizationId}
-						canEdit={canEdit}
-						isLoading={analysisQuery.isLoading}
-						latestAttempt={latestAttempt}
-						effective={effective}
-						aiVersion={analysisQuery.data?.aiVersion ?? null}
-						aiModel={analysisQuery.data?.aiModel ?? null}
-						aiPromptSource={
-							analysisQuery.data?.aiPromptSource ?? null
-						}
-						revisionVersion={
-							analysisQuery.data?.revisionVersion ?? null
-						}
-						sourceAnalysisVersion={
-							analysisQuery.data?.sourceAnalysisVersion ?? null
-						}
-						author={analysisQuery.data?.author ?? null}
-						revisionCreatedAt={
-							analysisQuery.data?.revisionCreatedAt ?? null
-						}
-						assistantProposal={assistantProposal}
-						onAssistantProposalConsumed={handleProposalConsumed}
-						assistantRunActive={assistantRunActive}
-					/>
-				</TabsContent>
+					<TabsContent
+						value="planningAnalysis"
+						className={EDITOR_MEASURE_CLASS}
+						forceMount
+						hidden={activeTab !== "planningAnalysis"}
+					>
+						<PlanningAnalysisTab
+							autoStart={false}
+							generateActionIsElsewhere={analysisIsBehind}
+							projectId={projectId}
+							topicId={topicId}
+							organizationId={organizationId}
+							canEdit={canEdit}
+							isLoading={analysisQuery.isLoading}
+							latestAttempt={latestAttempt}
+							effective={effective}
+							aiVersion={analysisQuery.data?.aiVersion ?? null}
+							aiModel={analysisQuery.data?.aiModel ?? null}
+							aiPromptSource={
+								analysisQuery.data?.aiPromptSource ?? null
+							}
+							revisionVersion={
+								analysisQuery.data?.revisionVersion ?? null
+							}
+							sourceAnalysisVersion={
+								analysisQuery.data?.sourceAnalysisVersion ??
+								null
+							}
+							author={analysisQuery.data?.author ?? null}
+							revisionCreatedAt={
+								analysisQuery.data?.revisionCreatedAt ?? null
+							}
+							assistantProposal={assistantProposal}
+							onAssistantProposalConsumed={handleProposalConsumed}
+							assistantRunActive={assistantRunActive}
+						/>
+					</TabsContent>
 
-				<TabsContent
-					value="decisionLog"
-					className={REVIEW_MEASURE_CLASS}
-				>
-					<TopicDecisionLog
-						threads={decisionsQuery.data?.threads ?? []}
-						isLoading={decisionsQuery.isLoading}
+					<TabsContent
+						value="decisionLog"
+						forceMount
+						hidden={activeTab !== "decisionLog"}
+						className={REVIEW_MEASURE_CLASS}
+					>
+						<TopicDecisionLog
+							threads={decisionsQuery.data?.threads ?? []}
+							isLoading={decisionsQuery.isLoading}
+							projectId={projectId}
+							topicId={topicId}
+							organizationId={organizationId}
+							canEdit={canEdit}
+						/>
+					</TabsContent>
+					<GenerationTabPanels
+						activeTab={activeTab}
+						model={generationModel}
+						postTypes={selectedPostTypes}
 						projectId={projectId}
-						topicId={topicId}
 						organizationId={organizationId}
+						topicId={topicId}
 						canEdit={canEdit}
+						analysis={analysisDocument}
+						drafts={draftsQuery.data?.drafts ?? []}
+						workingDrafts={draftsQuery.data?.workingDrafts ?? []}
+						decisionThreads={decisionsQuery.data?.threads ?? []}
+						onReviewQuestions={() =>
+							selectAdvancedTab("summaryQuestions")
+						}
+						isLoading={draftsQuery.isLoading}
 					/>
-				</TabsContent>
-				<GenerationTabPanels
-					model={generationModel}
-					postTypes={selectedPostTypes}
-					projectId={projectId}
-					organizationId={organizationId}
-					topicId={topicId}
-					canEdit={canEdit}
-					analysis={analysisDocument}
-					drafts={draftsQuery.data?.drafts ?? []}
-					workingDrafts={draftsQuery.data?.workingDrafts ?? []}
-					decisionThreads={decisionsQuery.data?.threads ?? []}
-					onReviewQuestions={() => setTab("summaryQuestions")}
-					isLoading={draftsQuery.isLoading}
-				/>
-			</Tabs>
+				</Tabs>
+			</div>
 
 			{/* The editors behind `TopicDetails`' two affordances. Mounted only
 			    for an editor: the controls that open them are themselves
@@ -1856,15 +1987,18 @@ export function TopicItemPage({
 			    Last in the tree because it introduces the CopilotKit provider,
 			    and the rest of this page must render whether or not that
 			    starts. */}
-			<TopicAssistant
-				projectId={projectId}
-				organizationId={organizationId}
-				context={assistantContext}
-				analysisMarkdown={effective?.prose ?? null}
-				canEdit={canEdit}
-				onApplyRewrite={handleApplyRewrite}
-				onRunStateChange={setAssistantRunActive}
-			/>
+			<div hidden={mode !== "advanced"} inert={mode !== "advanced"}>
+				<TopicAssistant
+					isActive={mode === "advanced"}
+					projectId={projectId}
+					organizationId={organizationId}
+					context={assistantContext}
+					analysisMarkdown={effective?.prose ?? null}
+					canEdit={canEdit}
+					onApplyRewrite={handleApplyRewrite}
+					onRunStateChange={setAssistantRunActive}
+				/>
+			</div>
 		</div>
 	);
 }

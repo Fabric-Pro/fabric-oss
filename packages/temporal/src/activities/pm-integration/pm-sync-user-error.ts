@@ -26,7 +26,7 @@ export function redactDatabaseErrorText(
 ): string {
 	if (
 		isDatabaseError({ name: errorClass }) ||
-		/(?:Invalid |in the )`[^`\r\n]+\.[^`\r\n]+\([^`\r\n]*\)` invocation\b/.test(
+		/(?:Invalid |in the )`[^`\r\n]{1,256}\.[^`\r\n]{1,256}\([^`\r\n]{0,256}\)` invocation\b/.test(
 			message,
 		)
 	) {

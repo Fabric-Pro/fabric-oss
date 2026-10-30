@@ -304,6 +304,7 @@ describe("getAnalysis", () => {
 			reason: null,
 			response: null,
 			evidence: [],
+			canApply: true,
 		});
 	});
 
@@ -1416,6 +1417,134 @@ describe("getAnalysis", () => {
 				expect(JSON.stringify(read)).not.toContain("NEWER RUN");
 			},
 		);
+	});
+
+	describe("can apply", () => {
+		function canApplyOf(read: Read, id: string) {
+			return read.findings.find((entry) => entry.id === id)?.canApply;
+		}
+
+		it("lets a member apply a keyed section finding whose section is as it was raised", async () => {
+			showing(shownRun());
+
+			const read = await getAnalysis();
+
+			expect(canApplyOf(read, "finding-0")).toBe(true);
+			expect(canApplyOf(read, "finding-1")).toBe(true);
+		});
+
+		it("refuses a finding written before stable keys", async () => {
+			showing(shownRun());
+
+			expect(canApplyOf(await getAnalysis(), "finding-2")).toBe(false);
+		});
+
+		it("refuses a finding about the whole document or the text before the first heading", async () => {
+			showing(
+				shownRun({
+					findings: [
+						finding(0, {
+							stableKey: "GAP|document|pricing",
+							sectionKey: DOCUMENT_SECTION_KEY,
+							sectionHash: MAP.documentProseHash,
+						}),
+						finding(1, {
+							stableKey: "GAP|preamble|intro",
+							sectionKey: "p1:@preamble",
+							sectionHash: SCOPE.proseHash,
+						}),
+						finding(2, { sectionKey: null, sectionHash: null }),
+					],
+				}),
+			);
+
+			const read = await getAnalysis();
+
+			expect(read.findings.map((entry) => entry.canApply)).toEqual([
+				false,
+				false,
+				false,
+			]);
+		});
+
+		it("applies the title when there is no recommendation, and refuses a finding with neither", async () => {
+			showing(
+				shownRun({
+					findings: [
+						finding(0, { recommendation: null }),
+						finding(1, {
+							stableKey: KEY_GONE,
+							recommendation: "  ",
+							title: " ",
+						}),
+					],
+				}),
+			);
+
+			const read = await getAnalysis();
+
+			expect(canApplyOf(read, "finding-0")).toBe(true);
+			expect(canApplyOf(read, "finding-1")).toBe(false);
+		});
+
+		it("refuses a finding whose section changed or is gone, and keeps the one whose section did not", async () => {
+			showing(shownRun());
+
+			setBody(
+				PROPOSAL_BODY.replace(
+					"the data migration and the reporting dashboard",
+					"the reporting dashboard only",
+				),
+			);
+			const edited = await getAnalysis();
+			expect(canApplyOf(edited, "finding-0")).toBe(true);
+			expect(canApplyOf(edited, "finding-1")).toBe(false);
+
+			setBody(PROPOSAL_BODY.split("\n## Scope")[0] as string);
+			expect(canApplyOf(await getAnalysis(), "finding-1")).toBe(false);
+		});
+
+		it("does not depend on whether the shown run is stale", async () => {
+			showing(shownRun(), { isStale: true });
+
+			const read = await getAnalysis();
+
+			expect(read.isStale).toBe(true);
+			expect(canApplyOf(read, "finding-0")).toBe(true);
+			expect(canApplyOf(read, "finding-1")).toBe(true);
+		});
+
+		it("refuses every finding while a generation run is queued or writing", async () => {
+			showing(shownRun());
+			for (const status of ["QUEUED", "GENERATING"]) {
+				const document = world.documents.get(DOC_A);
+				world.documents.set(DOC_A, {
+					...(document as NonNullable<typeof document>),
+					status,
+				});
+
+				const read = await getAnalysis();
+
+				expect(read.findings.map((entry) => entry.canApply)).toEqual([
+					false,
+					false,
+					false,
+				]);
+			}
+		});
+
+		it("refuses a viewer who may not respond", async () => {
+			showing(shownRun());
+
+			const read = await getAnalysis(USERS.memberViewer);
+
+			expect(read.viewer.canRespond).toBe(false);
+			expect(read.findings.map((entry) => entry.canApply)).toEqual([
+				false,
+				false,
+				false,
+			]);
+		});
 	});
 
 	describe("viewer", () => {

@@ -64,6 +64,15 @@ export type PromptStoryKind = "FEATURE" | "BUG" | null;
 export const PROPOSAL_CLIENT_MAIN_AGENT_KEY = "proposal_client_main";
 
 /**
+ * Scoped revisions of a coordinated Proposal's client-only Main document
+ * (Fizzy #2946): the instructions an AI writer follows when it changes part of
+ * a Main the client will read. Client-only like
+ * {@link PROPOSAL_CLIENT_MAIN_AGENT_KEY}, so it refuses a personal (USER)
+ * binding and its resolver never consults the personal tier.
+ */
+export const PROPOSAL_CLIENT_REVISION_AGENT_KEY = "proposal_client_revision";
+
+/**
  * The Internal Analysis a coordinated Proposal runs over its saved Main
  * document (Fizzy #2801). Only the instructions live in the prompt; the output
  * contract is supplied by the code that calls the model.
@@ -282,6 +291,15 @@ export const PROMPT_AGENT_TARGETS: readonly PromptAgentTarget[] = [
 		// nothing is bound here.
 		key: PROPOSAL_CLIENT_MAIN_AGENT_KEY,
 		label: "Client proposal (Main)",
+		featureType: "PROJECT_DOCUMENTS",
+		actions: nonStage("PROPOSAL"),
+	},
+	{
+		// Revisions of that client-only Main (Fizzy #2946). Whatever an AI
+		// writer changes in Main follows this prompt, so it is client-only too:
+		// no personal default, and a revision refuses while nothing is bound.
+		key: PROPOSAL_CLIENT_REVISION_AGENT_KEY,
+		label: "Client proposal (revision)",
 		featureType: "PROJECT_DOCUMENTS",
 		actions: nonStage("PROPOSAL"),
 	},

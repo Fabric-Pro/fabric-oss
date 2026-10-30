@@ -33,6 +33,7 @@ export function BacklogChatPanel({
 			useSingleEndpoint
 			agent="backlog_updater"
 			showDevConsole={false}
+			enableInspector={false}
 			onError={onCopilotError}
 		>
 			<CopilotChatSessionProvider>

@@ -234,8 +234,11 @@ describe("editVisual", () => {
 			sectionFingerprint: diagramSectionFingerprint(before, 0),
 		});
 		const fence = String(result.fence);
-		expect(fence.split("\n")[0]).toBe(`%% fabric-visual: ${MARKED_ID}`);
-		expect(fence).toContain("flowchart");
+		expect(fence.split("\n").slice(0, 3)).toEqual([
+			`%% fabric-visual: ${MARKED_ID}`,
+			"%% figure: process",
+			"flowchart TD",
+		]);
 		expect(fence).toContain("Rollout");
 		expect(fence).not.toContain("```");
 		// Main is the editor's to write: the document is as it was.
@@ -275,6 +278,99 @@ describe("editVisual", () => {
 		});
 		expect(classified[1].state).toBe("none");
 	});
+
+	it.each([
+		[
+			"a timeline",
+			{
+				kind: "timeline",
+				title: null,
+				items: [
+					{ date: "Q3 2026", label: "Rollout", description: null },
+					{ date: "Q3 2026", label: "Build", description: null },
+				],
+			},
+			"%% figure: timeline",
+		],
+		[
+			"a flow with lanes",
+			{
+				kind: "flow",
+				title: null,
+				steps: [
+					{
+						label: "Discovery",
+						description: null,
+						lane: "Discovery",
+					},
+					{
+						label: "Build",
+						description: null,
+						lane: "Build",
+					},
+				],
+			},
+			null,
+		],
+	])(
+		"asks for the figure template generation would on %s",
+		async (_, spec, line) => {
+			modelReturns(spec);
+
+			// The stored row's kind is what the extraction redraws as.
+			edit.getLatestProposalVisualSpec.mockResolvedValue({
+				...(await edit.getLatestProposalVisualSpec()),
+				kind: spec.kind,
+			});
+
+			const result = await editVisual();
+
+			expect(result.status).toBe("CANDIDATE");
+			const fence = String(result.fence);
+			const figureLines = fence
+				.split("\n")
+				.filter((candidate) => candidate.startsWith("%% figure:"));
+			expect(figureLines).toEqual(line ? [line] : []);
+			expect(
+				edit.appendProposalVisualSpec.mock.calls[0][0].sourceHash,
+			).toBe(visualSourceHash(fence));
+		},
+	);
+
+	it.each([
+		["a process", null, 'f0["First comes discovery then the build"]'],
+		[
+			"a flow with lanes",
+			"Discovery",
+			'f0["First comes discovery then<br/>the build"]',
+		],
+	])(
+		"writes a long step title as generation would on %s",
+		async (_, lane, label) => {
+			const spec = {
+				kind: "flow",
+				title: null,
+				steps: [
+					{
+						label: "First comes discovery then the build",
+						description: null,
+						lane,
+					},
+					{
+						label: "Rollout",
+						description: null,
+						lane: lane && "Rollout",
+					},
+				],
+			};
+			modelReturns(spec);
+
+			const result = await editVisual();
+
+			expect(result.status).toBe("CANDIDATE");
+			expect(String(result.fence)).toContain(label);
+		},
+	);
 
 	it("gives a project guest with edit rights a candidate, on the owning organization's model", async () => {
 		modelReturns(FLOW_SPEC);

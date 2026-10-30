@@ -12,6 +12,7 @@ import { Textarea } from "@ui/components/textarea";
 import { Loader2Icon, PencilLineIcon, SparklesIcon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { useWorkingDraftEdit } from "../../hooks/use-working-draft-edit";
 import { CopyDraftButton } from "./CopyDraftButton";
 import {
 	CandidateDraft,
@@ -24,9 +25,10 @@ import { DraftRefinementReview, useDraftRefinement } from "./DraftRefinement";
 import { DraftVersions } from "./DraftVersions";
 import { GeneralizationNotes } from "./GeneralizationNotes";
 import type { TopicDraftState, TopicWorkingDraftState } from "./GenerationTabs";
+import { GUIDANCE_MAX } from "./topic-shared";
 
 /** Mirrors the API's own bounds, so a field cannot submit what it would reject. */
-const GUIDANCE_MAX = 2000;
+
 const BODY_MAX = 40000;
 
 /**
@@ -135,7 +137,8 @@ export function BlogPostPanel({
 	 * initialised from `working.body` and synced in an effect: the effect version
 	 * has to guess which of the two just changed.
 	 */
-	const [editedBody, setEditedBody] = useState<string | null>(null);
+	const { editedBody, setEditedBody, expectedUpdatedAt, savedDraftChanged } =
+		useWorkingDraftEdit(working);
 	const attempt = draft?.latestAttempt ?? null;
 	// `isExpired` splits GENERATING in two: a LIVE run is genuinely in flight, a
 	// STRANDED one will never report back on its own. The button must stay
@@ -346,7 +349,7 @@ export function BlogPostPanel({
 			topicId,
 			organizationId,
 			body: bodyValue,
-			expectedUpdatedAt: new Date(working.updatedAt),
+			expectedUpdatedAt,
 		});
 	};
 
@@ -389,6 +392,7 @@ export function BlogPostPanel({
 			>
 				Guidance (optional)
 			</label>
+
 			<Textarea
 				id="blog-post-guidance"
 				value={guidance}
@@ -478,6 +482,22 @@ export function BlogPostPanel({
 
 	const savedDraft = working?.hasBody ? (
 		<section className="space-y-2">
+			{savedDraftChanged ? (
+				<div role="status" className="space-y-2 text-sm">
+					<p>
+						The saved draft changed while you were editing. Your
+						text is still here; saving will check the original
+						version.
+					</p>
+					<Button
+						variant="outline"
+						size="sm"
+						onClick={() => setEditedBody(null)}
+					>
+						Discard my edits
+					</Button>
+				</div>
+			) : null}
 			<div className="flex items-baseline justify-between gap-3">
 				<h3 className="publishing-label" id="blog-post-editor">
 					Working blog post

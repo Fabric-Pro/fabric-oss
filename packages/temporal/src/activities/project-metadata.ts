@@ -27,7 +27,6 @@ import {
 	startTurnHeartbeat,
 	type TurnScope,
 } from "./orchestrator/turn-dispatch";
-import { compactProjectContextPassages } from "./shared/project-context-passages";
 import { headAtLineBreak } from "./shared/text-head";
 
 export async function getProjectMetadataActivity(
@@ -224,9 +223,11 @@ async function retrieveProjectContextsForTool(
 	usage?: SecondaryUsageInput & { maxPassageChars?: number },
 ): Promise<{ context: string; chunkCount: number }> {
 	try {
-		const { retrieveProjectContexts, contextMetaHeader } = await import(
-			"@repo/rag"
-		);
+		const {
+			retrieveProjectContexts,
+			contextMetaHeader,
+			compactProjectContextPassages,
+		} = await import("@repo/rag");
 
 		const results = await retrieveProjectContexts({
 			conversationId: usage?.usageConversationId,

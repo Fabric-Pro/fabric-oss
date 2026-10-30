@@ -1,5 +1,6 @@
 "use client";
 
+import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslations } from "next-intl";
@@ -13,6 +14,9 @@ import {
 	DuplicateScanCompletionDialog,
 	type DuplicateScanCompletionResult,
 } from "../components/stories/DuplicateScanCompletionDialog";
+
+/** Most scan requests one click makes while candidate pairs are left over. */
+const MAX_SCAN_ROUNDS = 10;
 
 /** Info passed to a story card so it can render a "possible duplicate" chip.
  * `overlapOnly` = every pending link is OVERLAP (overlapping scope, not a true
@@ -100,37 +104,76 @@ export function useDuplicateScan(
 		[queryClient, projectId, organizationId],
 	);
 
-	const scanMutation = useMutation(
-		orpc.projects.stories.scanDuplicates.mutationOptions({
-			onSuccess: async (result) => {
-				// Refetch the duplicate links (and stories) BEFORE opening the
-				// completion dialog so the "Possible duplicate" chips are
-				// already visible on the roadmap behind it.
-				await invalidate();
-				setCompletionResult({
-					flaggedItems: result.flaggedItems,
-					scanned: result.scanned,
-					// Surfaced so the dialog can distinguish a clean scan from one
-					// that couldn't verify: this path does not throw on a
-					// wholesale verifier outage, so "0 confirmed" alone is
-					// ambiguous. `?? 0` tolerates an older cached client shape.
-					candidates: result.candidates,
-					verifierFailures: result.verifierFailures ?? 0,
-				});
-				setCompletionOpen(true);
-			},
-			onError: (error) => {
-				// Scan FAILURES intentionally stay a toast: the completion
-				// dialog reports the results of a finished scan, while errors
-				// follow the app-wide toast convention for failed mutations.
-				// Do not convert this path to the dialog.
-				toast.error(t("scanFailed"), {
-					description:
-						error instanceof Error ? error.message : String(error),
-				});
-			},
-		}),
-	);
+	const scanMutation = useMutation({
+		mutationKey: orpc.projects.stories.scanDuplicates.mutationKey(),
+		// One scan request verifies at most a fixed number of candidate pairs
+		// and reports the rest as `truncated`; their pairs are the next
+		// request's candidates. Keep scanning while pairs are left over and the
+		// last request verified every pair it tried, so one click covers a
+		// large backlog (after an edit sweep, say) instead of needing a click
+		// per batch. A request with failures stops the loop rather than
+		// re-trying the same failing pairs; so does a request that errors
+		// after the first, reporting what the earlier ones finished — their
+		// flags are already saved.
+		mutationFn: async (input: {
+			projectId: string;
+			organizationId: string | null;
+		}): Promise<DuplicateScanCompletionResult> => {
+			const scan = () =>
+				orpcClient.projects.stories.scanDuplicates(input);
+			type ScanResponse = Awaited<ReturnType<typeof scan>>;
+			// `?? 0` tolerates an older cached client shape.
+			const failuresOf = (response: ScanResponse) =>
+				response.verifierFailures ?? 0;
+			let response = await scan();
+			let candidates = response.candidates;
+			let verifierFailures = failuresOf(response);
+			for (
+				let round = 2;
+				round <= MAX_SCAN_ROUNDS &&
+				response.truncated > 0 &&
+				failuresOf(response) === 0;
+				round++
+			) {
+				try {
+					response = await scan();
+				} catch {
+					break;
+				}
+				candidates += response.candidates;
+				verifierFailures += failuresOf(response);
+			}
+			return {
+				flaggedItems: response.flaggedItems,
+				scanned: response.scanned,
+				candidates,
+				verifierFailures,
+				remaining: response.truncated,
+			};
+		},
+		onSuccess: async (result) => {
+			// Refetch the duplicate links (and stories) BEFORE opening the
+			// completion dialog so the "Possible duplicate" chips are already
+			// visible on the roadmap behind it. `candidates` and
+			// `verifierFailures` let the dialog distinguish a clean scan from
+			// one that couldn't verify: this path does not throw on a wholesale
+			// verifier outage, so "0 confirmed" alone is ambiguous.
+			await invalidate();
+			setCompletionResult(result);
+			setCompletionOpen(true);
+		},
+		onError: (error) => {
+			// Scan FAILURES intentionally stay a toast: the completion dialog
+			// reports the results of a finished scan, while errors follow the
+			// app-wide toast convention for failed mutations. Do not convert
+			// this path to the dialog.
+			void invalidate();
+			toast.error(t("scanFailed"), {
+				description:
+					error instanceof Error ? error.message : String(error),
+			});
+		},
+	});
 
 	// Build each story's duplicate-chip data ONCE per scan result so the object
 	// identity stays stable between renders — this is what lets the memoized

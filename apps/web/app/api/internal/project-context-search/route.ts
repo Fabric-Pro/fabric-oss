@@ -12,7 +12,12 @@
 
 import { AI_TOKEN_HEADER, verifyAIToken } from "@repo/ai-token";
 import { getProjectAccessContext } from "@repo/database";
-import { formatContextsForPrompt, retrieveProjectContexts } from "@repo/rag";
+import {
+	compactProjectContextPassages,
+	contextMetaHeader,
+	formatContextsForPrompt,
+	retrieveProjectContexts,
+} from "@repo/rag";
 import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
@@ -20,7 +25,11 @@ export const runtime = "nodejs";
 export async function POST(req: Request) {
 	try {
 		const body = await req.json();
-		const { projectId, query, topK } = body;
+		const { projectId, query, topK, maxChars } = body;
+		const compactBudget =
+			typeof maxChars === "number" && Number.isFinite(maxChars)
+				? Math.min(60_000, Math.max(4_000, Math.trunc(maxChars)))
+				: undefined;
 
 		if (!projectId || !query) {
 			return NextResponse.json(
@@ -78,11 +87,28 @@ export async function POST(req: Request) {
 			query,
 			userId,
 			organizationId,
+			...(compactBudget !== undefined
+				? { includeMatchedPassages: true }
+				: {}),
 			topK: typeof topK === "number" ? Math.min(topK, 20) : undefined,
 		});
 
 		const formatted =
-			contexts.length > 0 ? formatContextsForPrompt(contexts) : "";
+			contexts.length > 0
+				? compactBudget === undefined
+					? formatContextsForPrompt(contexts)
+					: compactProjectContextPassages(
+							contexts,
+							"Project knowledge\nSimilarity-ranked matched passages from the project's knowledge base; this is a sample, not a complete or date-ordered listing.",
+							(ctx) =>
+								`[${ctx.type}, relevance: ${(ctx.score * 100).toFixed(1)}%]\n${contextMetaHeader(ctx)}`,
+							{
+								maxChars: compactBudget,
+								fullSourceNote: (id) =>
+									`Read the full source with read_project_source({"sourceId":${JSON.stringify(id)}}).`,
+							},
+						).context
+				: "";
 
 		return NextResponse.json({
 			contexts: contexts.map((ctx) => ({

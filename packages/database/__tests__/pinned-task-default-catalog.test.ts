@@ -35,7 +35,7 @@ describe("new connection task templates", () => {
 				const expected =
 					provider === "OPENAI_DIRECT"
 						? taskType === "SIMPLE"
-							? "gpt-6-luna"
+							? "gpt-6.1-terra"
 							: "gpt-6.1-sol"
 						: provider === "XAI"
 							? "grok-4-1-fast"

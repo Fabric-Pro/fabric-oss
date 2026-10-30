@@ -57,6 +57,11 @@ export const repoDatabaseMock = {
 	archiveDocumentAssistantConversation: vi.fn(),
 	deleteDocumentAssistantConversationByConversationId: vi.fn(),
 	countDocumentAssistantConversationsInLast24h: vi.fn(),
+	// The document's project and the caller's access to it: by default the
+	// document is in the project every test names, and the caller can see
+	// it, so tests that don't exercise the check pass it.
+	getDocumentRefProjectId: vi.fn().mockResolvedValue("proj-1"),
+	hasProjectAccess: vi.fn().mockResolvedValue(true),
 	// Lazy-create checks the agent against the catalog; default to a SYSTEM
 	// agent so tests that don't exercise that check reach the create.
 	getRegisteredAgentByAgentId: vi.fn().mockResolvedValue({

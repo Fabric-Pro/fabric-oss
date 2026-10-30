@@ -165,6 +165,105 @@ describe("FEATURE_FLAG_REGISTRY", () => {
 		expect(ORG_SCOPABLE_FLAG_KEYS).toContain("AI_RECOMMENDED_LIFECYCLE");
 	});
 
+	// Durable assistants roll out one organization at a time: off for every
+	// tenant on deploy, on only where an organization row (or the instance
+	// switch) says so, and an organization's off beats the instance's on.
+	it("registers COPILOTKIT_DURABLE_ASSISTANTS off by default, org-scopable", () => {
+		expect(FEATURE_FLAG_REGISTRY.COPILOTKIT_DURABLE_ASSISTANTS.envVar).toBe(
+			"FABRIC_FEATURE_COPILOTKIT_DURABLE_ASSISTANTS",
+		);
+		expect(
+			FEATURE_FLAG_REGISTRY.COPILOTKIT_DURABLE_ASSISTANTS.default,
+		).toBe(false);
+		expect(ORG_SCOPABLE_FLAG_KEYS).toContain(
+			"COPILOTKIT_DURABLE_ASSISTANTS",
+		);
+		expect(
+			resolveFlag("COPILOTKIT_DURABLE_ASSISTANTS", {}, {}).enabled,
+		).toBe(false);
+		expect(
+			resolveFlag("COPILOTKIT_DURABLE_ASSISTANTS", { org: true }, {})
+				.enabled,
+		).toBe(true);
+		expect(
+			resolveFlag(
+				"COPILOTKIT_DURABLE_ASSISTANTS",
+				{ org: false, global: true },
+				{},
+			).enabled,
+		).toBe(false);
+	});
+
+	// The Direct chat's runtime transport rolls out the same way: off for every
+	// tenant on deploy, and an organization's off beats the instance's on.
+	it("registers COPILOTKIT_DIRECT_CHAT off by default, org-scopable", () => {
+		expect(FEATURE_FLAG_REGISTRY.COPILOTKIT_DIRECT_CHAT.envVar).toBe(
+			"FABRIC_FEATURE_COPILOTKIT_DIRECT_CHAT",
+		);
+		expect(FEATURE_FLAG_REGISTRY.COPILOTKIT_DIRECT_CHAT.default).toBe(
+			false,
+		);
+		expect(ORG_SCOPABLE_FLAG_KEYS).toContain("COPILOTKIT_DIRECT_CHAT");
+		expect(resolveFlag("COPILOTKIT_DIRECT_CHAT", {}, {}).enabled).toBe(
+			false,
+		);
+		expect(
+			resolveFlag("COPILOTKIT_DIRECT_CHAT", { org: true }, {}).enabled,
+		).toBe(true);
+		expect(
+			resolveFlag(
+				"COPILOTKIT_DIRECT_CHAT",
+				{ org: false, global: true },
+				{},
+			).enabled,
+		).toBe(false);
+	});
+
+	// The Orchestrator chat's runtime transport rolls out the same way.
+	it("registers COPILOTKIT_ORCHESTRATOR_CHAT off by default, org-scopable", () => {
+		expect(FEATURE_FLAG_REGISTRY.COPILOTKIT_ORCHESTRATOR_CHAT.envVar).toBe(
+			"FABRIC_FEATURE_COPILOTKIT_ORCHESTRATOR_CHAT",
+		);
+		expect(FEATURE_FLAG_REGISTRY.COPILOTKIT_ORCHESTRATOR_CHAT.default).toBe(
+			false,
+		);
+		expect(ORG_SCOPABLE_FLAG_KEYS).toContain(
+			"COPILOTKIT_ORCHESTRATOR_CHAT",
+		);
+		expect(
+			resolveFlag("COPILOTKIT_ORCHESTRATOR_CHAT", {}, {}).enabled,
+		).toBe(false);
+		expect(
+			resolveFlag("COPILOTKIT_ORCHESTRATOR_CHAT", { org: true }, {})
+				.enabled,
+		).toBe(true);
+		expect(
+			resolveFlag(
+				"COPILOTKIT_ORCHESTRATOR_CHAT",
+				{ org: false, global: true },
+				{},
+			).enabled,
+		).toBe(false);
+	});
+
+	// The multi-agent mode of that chat rolls out on its own switch.
+	it("registers COPILOTKIT_MULTI_AGENT_CHAT off by default, org-scopable", () => {
+		expect(FEATURE_FLAG_REGISTRY.COPILOTKIT_MULTI_AGENT_CHAT.envVar).toBe(
+			"FABRIC_FEATURE_COPILOTKIT_MULTI_AGENT_CHAT",
+		);
+		expect(FEATURE_FLAG_REGISTRY.COPILOTKIT_MULTI_AGENT_CHAT.default).toBe(
+			false,
+		);
+		expect(ORG_SCOPABLE_FLAG_KEYS).toContain("COPILOTKIT_MULTI_AGENT_CHAT");
+		expect(resolveFlag("COPILOTKIT_MULTI_AGENT_CHAT", {}, {}).enabled).toBe(
+			false,
+		);
+		expect(
+			resolveFlag("COPILOTKIT_MULTI_AGENT_CHAT", { org: true }, {})
+				.enabled,
+		).toBe(true);
+	});
+
 	// The two #1694 flags are deliberately independent: the shortcuts work from
 	// recency alone, so a fault on the favorite write surface must not force the
 	// shortcuts off with it.

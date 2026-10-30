@@ -44,10 +44,14 @@ vi.mock("next-intl", () => ({
 		const t = (key: string, values?: Record<string, string>) => {
 			if (ns === "diagrams.autoInsert") {
 				switch (key) {
-					case "insertButton":
-						return `Insert into ${values?.docName ?? ""}`;
-					case "insertedButton":
-						return `Inserted into ${values?.docName ?? ""}`;
+					case "insertDocumentButton":
+						return "Insert into document";
+					case "insertFeatureButton":
+						return "Insert into feature";
+					case "insertedDocumentButton":
+						return "Inserted into document";
+					case "insertedFeatureButton":
+						return "Inserted into feature";
 					case "openPickerButton":
 						return "Open a document to insert";
 					case "saveToDiagramsButton":
@@ -364,7 +368,7 @@ describe("ChatMessageInsertDiagramButton -- render-decision branches", () => {
 
 		// Disabled button is rendered (label still includes "Insert into ...").
 		const button = screen.getByRole("button", {
-			name: /Insert into Other doc/i,
+			name: /Insert into document/i,
 		});
 		expect(button).toBeDisabled();
 
@@ -387,7 +391,7 @@ describe("ChatMessageInsertDiagramButton -- render-decision branches", () => {
 		);
 
 		const insertButton = screen.getByRole("button", {
-			name: /Insert into Architecture/i,
+			name: /Insert into document/i,
 		});
 		expect(insertButton).toBeDisabled();
 
@@ -427,12 +431,26 @@ describe("ChatMessageInsertDiagramButton -- active path", () => {
 		);
 		expect(
 			screen.getByRole("button", { name: /Insert this diagram/i }),
-		).toBeInTheDocument();
+		).toHaveTextContent("Insert into document");
 		expect(
 			screen.getByRole("button", {
 				name: /Copy <excalidraw-embed> markup/i,
 			}),
 		).toBeInTheDocument();
+	});
+
+	it("shows a short feature label and retains its full accessible name", () => {
+		const props = buildProps();
+		renderWithProviders(
+			<ChatMessageInsertDiagramButton
+				{...props}
+				resolverTarget={{ ...props.resolverTarget!, kind: "story" }}
+			/>,
+		);
+		const button = screen.getByRole("button", {
+			name: /Insert this diagram into Architecture/i,
+		});
+		expect(button).toHaveTextContent("Insert into feature");
 	});
 
 	it("clicking the active button calls the hook's click()", async () => {
@@ -453,7 +471,7 @@ describe("ChatMessageInsertDiagramButton -- active path", () => {
 		);
 		expect(
 			screen.getByRole("button", {
-				name: /Inserted into Architecture/i,
+				name: /Inserted into document: Architecture/i,
 			}),
 		).toBeInTheDocument();
 	});

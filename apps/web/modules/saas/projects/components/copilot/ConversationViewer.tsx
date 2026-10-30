@@ -30,7 +30,7 @@ import {
 } from "@ui/components/tooltip";
 import { GitForkIcon, Loader2Icon, Paperclip } from "lucide-react";
 import { useTranslations } from "next-intl";
-import { DiffOutcomeChip } from "./DiffOutcomeChip";
+import { DiffOutcomeChip, hasDiffOutcome } from "./DiffOutcomeChip";
 
 /**
  * Per-message "Fork from here" button. Mounted under user-message bubbles
@@ -360,7 +360,9 @@ function ReadOnlyMessage({
 									<span className="font-mono text-muted-foreground">
 										{tc.name ?? "tool"}
 									</span>
-									<DiffOutcomeChip toolCall={tc} />
+									{hasDiffOutcome(tc.name) ? (
+										<DiffOutcomeChip toolCall={tc} />
+									) : null}
 								</div>
 							))}
 						</div>

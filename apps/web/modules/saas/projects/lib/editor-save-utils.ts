@@ -280,8 +280,14 @@ const DIFF_INS_PAIR_RE =
 // A list item whose only content is a diff deletion (a whole deleted bullet).
 // Removing just the deletion would leave an empty item, which saves as a
 // blank line that turns the surrounding list loose.
-const DELETED_PARAGRAPH_SOURCE =
-	"<p\\b[^>]*>\\s*(?:<del\\b[^>]*\\bclass=(?:\"[^\"]*\\bdiff-del\\b[^\"]*\"|'[^']*\\bdiff-del\\b[^']*')[^>]*>(?:(?!</del>)[\\s\\S])*</del>\\s*)+</p>";
+//
+// A link is the outer mark: deleted linked text is `<a …><del …>…</del></a>`,
+// so a paragraph also counts as deleted when it holds only deletions and
+// links holding only deletions. A link with any text the diff kept, or
+// kept text beside it, leaves the paragraph alone.
+const DIFF_DEL_SOURCE =
+	"<del\\b[^>]*\\bclass=(?:\"[^\"]*\\bdiff-del\\b[^\"]*\"|'[^']*\\bdiff-del\\b[^']*')[^>]*>(?:(?!</del>)[\\s\\S])*</del>";
+const DELETED_PARAGRAPH_SOURCE = `<p\\b[^>]*>\\s*(?:(?:${DIFF_DEL_SOURCE}|<a\\b[^>]*>\\s*(?:${DIFF_DEL_SOURCE}\\s*)+</a>)\\s*)+</p>`;
 const DELETED_LIST_ITEM_RE = new RegExp(
 	`<li\\b[^>]*>\\s*(?:${DELETED_PARAGRAPH_SOURCE}\\s*)+</li>`,
 	"gi",

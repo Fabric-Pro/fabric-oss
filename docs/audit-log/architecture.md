@@ -67,7 +67,10 @@ purpose without compromising one or both surfaces.
 an `as const` array of 56+ action keys grouped by category prefix:
 
 - `auth.*` — login, logout, MFA, impersonation, password
-- `org.*` — organization + member + API key + integration lifecycle
+- `org.*` — organization + member + API key + integration lifecycle.
+  `org.member.removed` attributes removal of another member to the session actor;
+  `org.member.left` records a voluntary departure (`/organization/leave`, or a
+  member removing themselves) with the leaving user as both actor and resource.
 - `account.*` — personal API key lifecycle
 - `project.*`, `story.*` — project + feature management
 - `audit.*` — viewer + export + retention + REST API requests
@@ -100,6 +103,43 @@ code, severity from the classifier, the cleaned stack trace, the
 fingerprint (`sha256(type | code | topFrame)`), and the full cause
 chain. Zero per-callsite work — every existing and future procedure is
 covered.
+
+The row also keeps a snapshot of the call's input. It is the raw input,
+taken before the procedure's own validation, so a call refused for bad
+input is captured too. The snapshot goes through the sensitive-key
+redactor first and is only then cut to 8 KiB: a snapshot over the cap
+is stored as a `_truncated` string, a prefix of the already redacted
+JSON, so a `password` or `apiKey` past the cap is `[REDACTED]` there
+too. A snapshot the redactor cannot walk is stored as a placeholder.
+
+Before that, any field that carries a whole user-written body (a
+document, a context source or its summary, a file, a prompt or skill, a
+publishing draft, a private notebook, a chat transcript or an agent run's
+execution record, a story, task, test case or other work item, a comment,
+an answer to an open question, an architecture decision, a message or
+feedback to a running agent) is replaced by
+`{ redacted: true, bytes, contentHash }`, so a refused call never copies
+that text into a row organization admins read. A body that is not a
+string is recorded as `{ redacted: true }`, and a null one stays null.
+The other fields, such as ids, versions, statuses, timestamps and file
+paths, stay. The fields are listed per procedure path in
+`REDACTED_BODY_FIELDS` in the middleware, as dotted paths that can reach
+into nested objects and arrays: `content` on `projects.documents.update`,
+`projectManagementAdditionalContext.prdContent` on `projects.create`,
+`blocks[].content` on `frames.update`, `messages[].toolCalls[].result`
+and `execution.finalResponse` on `agents.conversations.saveTurn`, and
+`messages[].parts[].output` on `ai.chats.messages.add`. Secrets that are
+not on the sensitive-key denylist, such as an OAuth callback's `code`,
+are listed in `REDACTED_SECRET_FIELDS` in the same form and recorded as
+`{ redacted: true }` alone, with no size or hash. The input of a listed
+path is not trusted to be an object: each element of an array input has
+its fields replaced the same way, and any other value is summarized
+whole. A test checks every listed path and field against the router.
+Paths whose input is private in full are skipped instead
+(`ALWAYS_SKIP_PATHS` in the middleware).
+
+An unlisted body is still recorded as sent, up to the 8 KiB cap: a new
+procedure that takes user-written text needs its own entry.
 
 ### Automatic latency capture
 
@@ -323,3 +363,6 @@ at the database layer as a defense in depth.
 - [`../adr/006-audit-log-separate-table.md`](../adr/006-audit-log-separate-table.md)
   — the decision to use a dedicated table rather than extend the
   operational log stream or `ProjectActivity`.
+
+Global admin demotion on operator organization departure emits `account.role_changed`
+with a system actor and the previous and resulting roles, in the role update transaction.

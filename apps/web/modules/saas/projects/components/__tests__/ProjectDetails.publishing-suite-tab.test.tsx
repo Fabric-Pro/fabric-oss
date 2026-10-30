@@ -27,7 +27,7 @@
  */
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -348,5 +348,58 @@ describe("ProjectDetails — Publishing Suite tab (visibility-driven)", () => {
 		expect(
 			screen.queryByRole("button", { name: /publishing suite/i }),
 		).toBeNull();
+	});
+
+	it("leaves the More trigger room for an overflowed active tab's name", async () => {
+		// jsdom has no layout, so fake it: every element is as wide as its
+		// text plus padding, and the tab row is narrow enough to overflow.
+		// The trigger takes the active tab's name when that tab overflowed,
+		// and "Publishing Suite" is far wider than the "More" the old fixed
+		// reserve was sized for: the trigger ran past the row's clipped edge
+		// and lost its chevron, so it looked like a plain tab.
+		const ROW_WIDTH = 700;
+		const widthOf = (el: HTMLElement) =>
+			(el.textContent?.length ?? 0) * 8 + 40;
+		const offsetWidth = vi
+			.spyOn(HTMLElement.prototype, "offsetWidth", "get")
+			.mockImplementation(function (this: HTMLElement) {
+				return widthOf(this);
+			});
+		const clientWidth = vi
+			.spyOn(HTMLElement.prototype, "clientWidth", "get")
+			.mockReturnValue(ROW_WIDTH);
+		try {
+			window.sessionStorage.setItem(
+				"fabric-project-active-tab-proj-1",
+				"publishing-suite",
+			);
+			const { ProjectDetails } = await import("../ProjectDetails");
+
+			const { container } = renderWithClient(
+				<ProjectDetails projectId="proj-1" />,
+			);
+
+			const trigger = await waitFor(() => {
+				const found = container.querySelector<HTMLButtonElement>(
+					'button[aria-haspopup="menu"]',
+				);
+				expect(found).not.toBeNull();
+				return found as HTMLButtonElement;
+			});
+			expect(trigger).toHaveTextContent("Publishing Suite");
+
+			const row = trigger.parentElement as HTMLElement;
+			const inlineTabs = Array.from(
+				row.querySelectorAll<HTMLButtonElement>(":scope > button"),
+			).filter((tab) => tab !== trigger && tab.tabIndex !== -1);
+			const used = inlineTabs.reduce(
+				(sum, tab) => sum + widthOf(tab) + 4,
+				0,
+			);
+			expect(used + widthOf(trigger)).toBeLessThanOrEqual(ROW_WIDTH);
+		} finally {
+			offsetWidth.mockRestore();
+			clientWidth.mockRestore();
+		}
 	});
 });

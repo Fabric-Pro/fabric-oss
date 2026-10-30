@@ -80,6 +80,7 @@ export const generateLinkedInPostProcedure = tenantProtectedProcedure
 			 * what puts it on the attempt row and in the audit trail.
 			 */
 			refineFromWorkingDraft: z.boolean().optional(),
+			seedWorkingDraft: z.boolean().optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -181,6 +182,9 @@ export const generateLinkedInPostProcedure = tenantProtectedProcedure
 							planUserId: context.user.id,
 							guidance,
 							currentDraft,
+							...(input.seedWorkingDraft
+								? { seedWorkingDraft: true }
+								: {}),
 						},
 					],
 				},

@@ -945,6 +945,77 @@ export async function getConversationTurnForExecution(args: {
 	});
 }
 
+/**
+ * The caller's turn for a client key, or null. The start token is never
+ * returned: a read is not the turn's start owner.
+ */
+export async function getConversationTurnByClientKey(args: {
+	clientRequestKey: string;
+	userId: string;
+	organizationId: string;
+}): Promise<ConversationTurn | null> {
+	const turn = await db.conversationTurn.findUnique({
+		where: {
+			userId_organizationId_clientRequestKey: {
+				userId: args.userId,
+				organizationId: args.organizationId,
+				clientRequestKey: args.clientRequestKey,
+			},
+		},
+	});
+	return turn ? withoutStartToken(turn) : null;
+}
+
+/**
+ * The caller's turns under any of these client keys (in no particular
+ * order; a key with no turn is simply absent). The start token is never
+ * returned.
+ */
+export async function getConversationTurnsByClientKeys(args: {
+	clientRequestKeys: string[];
+	userId: string;
+	organizationId: string;
+}): Promise<ConversationTurn[]> {
+	if (args.clientRequestKeys.length === 0) {
+		return [];
+	}
+	const turns = await db.conversationTurn.findMany({
+		where: {
+			userId: args.userId,
+			organizationId: args.organizationId,
+			clientRequestKey: { in: args.clientRequestKeys },
+		},
+	});
+	return turns.map(withoutStartToken);
+}
+
+/**
+ * The caller's latest turn in a conversation that has an execution (a
+ * cancel-before-start tombstone has none), by generation; null when there is
+ * none. The start token is never returned.
+ */
+export async function getLatestConversationTurn(args: {
+	conversationId: string;
+	userId: string;
+	organizationId: string;
+}): Promise<ConversationTurn | null> {
+	const turn = await db.conversationTurn.findFirst({
+		where: {
+			conversationId: args.conversationId,
+			userId: args.userId,
+			organizationId: args.organizationId,
+			executionId: { not: null },
+		},
+		// A turn claimed by a later save has no generation; it is not this
+		// conversation's latest.
+		orderBy: [
+			{ generation: { sort: "desc", nulls: "last" } },
+			{ createdAt: "desc" },
+		],
+	});
+	return turn ? withoutStartToken(turn) : null;
+}
+
 /** Any turn for an execution id, for owner checks that must fail closed. */
 export async function getConversationTurnOwnerForExecution(
 	executionId: string,

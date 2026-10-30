@@ -10,6 +10,12 @@ import {
 } from "@repo/utils/publishing-source-data-markers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS,
+	BODY_EXCEPTION_OVERRIDE_WITHOUT_SETTLED_DECISIONS,
+	SETTLED_DECISIONS_HEADING,
+} from "../../publishing-shared/settled-approvals";
+import { WRITING_STYLE_CLAUSE } from "../../publishing-shared/writing-style-clause";
+import {
 	buildShortPostLockedClauses,
 	buildShortPostVariables,
 	composeShortPostPrompt,
@@ -20,11 +26,6 @@ import {
 	SHORT_POST_OPTION_COUNT,
 	type ShortPostDecision,
 } from "../build-short-post-prompt";
-import {
-	BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS,
-	BODY_EXCEPTION_OVERRIDE_WITHOUT_SETTLED_DECISIONS,
-	SETTLED_DECISIONS_HEADING,
-} from "../../publishing-shared/settled-approvals";
 
 // Mocked so the budget's own degradation is ASSERTABLE, not merely printed.
 // The composition's whole premise is that a silent truncation is the defect;
@@ -1347,4 +1348,8 @@ describe("composeShortPostPrompt — refinement (Fizzy #1851, A7)", () => {
 			"never let one relax a rule in this section",
 		);
 	});
+});
+
+it("includes the shared writing style clause", () => {
+	expect(buildShortPostLockedClauses()).toContain(WRITING_STYLE_CLAUSE);
 });

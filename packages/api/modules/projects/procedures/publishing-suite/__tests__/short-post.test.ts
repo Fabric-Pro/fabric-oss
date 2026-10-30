@@ -704,3 +704,17 @@ describe("generateShortPost — refine", () => {
 		).rejects.toMatchObject({ message: "No saved short post to refine." });
 	});
 });
+
+it.each([true, false, undefined])(
+	"forwards opt-in seeding: %s",
+	async (seedWorkingDraft) => {
+		await generate.handler({
+			input: { ...INPUT, seedWorkingDraft },
+			context: CONTEXT,
+		});
+		expect(
+			temporalMocks.workflowStart.mock.calls[0][1].args[0]
+				.seedWorkingDraft,
+		).toBe(seedWorkingDraft || undefined);
+	},
+);

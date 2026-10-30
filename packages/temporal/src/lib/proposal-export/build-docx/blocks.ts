@@ -359,7 +359,8 @@ function renderList(
 }
 
 /**
- * A fence: a diagram's render or its placeholder caption, stat tiles when
+ * A fence: a diagram's render or its placeholder caption (nothing for one
+ * left out), stat tiles when
  * the block is valid, and otherwise a shaded monospace block that keeps its
  * lines. A diagram is looked up by its node, never by counting fences, so
  * it can never take another fence's render.
@@ -375,7 +376,10 @@ function renderCode(
 		renderDiagram(
 			writer,
 			writer.input.diagrams[diagramIndex],
-			exportDiagramCaption(node.value),
+			{
+				number: writer.figureNumbers[diagramIndex] ?? null,
+				text: exportDiagramCaption(node.value),
+			},
 			out,
 			context,
 		);
@@ -432,18 +436,28 @@ function renderCode(
 	);
 }
 
+/** A diagram's "Figure n." number and the fence's `%% caption:` line. */
+interface DiagramCaption {
+	number: number | null;
+	text: string | null;
+}
+
 /**
- * A diagram's picture or placeholder, then the fence's `%% caption:` line
- * as a caption paragraph kept with it, as an uploaded image's caption is.
+ * A diagram's picture or placeholder, then its caption ("Figure n." and
+ * the fence's `%% caption:` line) as a paragraph kept with it, as an
+ * uploaded image's caption is. A diagram left out writes nothing.
  */
 function renderDiagram(
 	writer: Writer,
 	diagram: ExportDiagram | undefined,
-	caption: string | null,
+	caption: DiagramCaption,
 	out: Out[],
 	context: BlockContext,
 ): void {
-	const captioned = caption !== null;
+	if (diagram?.kind === "omitted") {
+		return;
+	}
+	const captioned = caption.number !== null || caption.text !== null;
 	if (diagram?.kind === "svg" && diagram.png) {
 		// Shown at the SVG's own size, as print does, shrunk to the column.
 		const size = fitImage(
@@ -452,7 +466,12 @@ function renderDiagram(
 			context.textWidth - context.indent,
 			MAX_IMAGE_HEIGHT,
 		);
-		const image = imageRun(writer, diagram.png, size, caption ?? "Diagram");
+		const image = imageRun(
+			writer,
+			diagram.png,
+			size,
+			caption.text ?? "Diagram",
+		);
 		if (image) {
 			pushParagraph(out, writer, context, {
 				alignment: AlignmentType.CENTER,
@@ -490,25 +509,42 @@ function renderDiagram(
 	pushDiagramCaption(writer, caption, out, context);
 }
 
+/**
+ * "Figure n." and the caption, in document order across the diagrams that
+ * print; an uncaptioned figure still reads "Figure n.".
+ */
 function pushDiagramCaption(
 	writer: Writer,
-	caption: string | null,
+	caption: DiagramCaption,
 	out: Out[],
 	context: BlockContext,
 ): void {
-	if (caption === null) {
+	if (caption.number === null && caption.text === null) {
 		return;
+	}
+	const style: RunStyle = {
+		font: writer.fonts.body,
+		color: writer.colors.muted,
+		size: CAPTION_SIZE,
+	};
+	const children: ParagraphChild[] = [];
+	if (caption.number !== null) {
+		children.push(
+			textRun(`Figure ${caption.number}.`, { ...style, bold: true }),
+		);
+	}
+	if (caption.text !== null) {
+		children.push(
+			textRun(
+				`${children.length > 0 ? " " : ""}${proseText(caption.text)}`,
+				style,
+			),
+		);
 	}
 	pushParagraph(out, writer, context, {
 		alignment: AlignmentType.CENTER,
 		spacing: { after: BODY_AFTER + 60, line: SINGLE_LINE },
-		children: [
-			textRun(proseText(caption), {
-				font: writer.fonts.body,
-				color: writer.colors.muted,
-				size: CAPTION_SIZE,
-			}),
-		],
+		children,
 	});
 }
 

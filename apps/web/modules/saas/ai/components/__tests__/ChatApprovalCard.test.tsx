@@ -101,4 +101,33 @@ describe("ChatApprovalCard", () => {
 			approvalId: "authority-sess-1-call-1",
 		});
 	});
+
+	it("answers through its host when given one, with the feedback, and never calls the route", async () => {
+		const fetchMock = vi.fn();
+		global.fetch = fetchMock as unknown as typeof fetch;
+		const onRespond = vi.fn(async () => "sent" as const);
+		render(
+			<ChatApprovalCard
+				approvalId="agent-2:approval-1"
+				stepId="step-1"
+				reason="Send the email?"
+				onRespond={onRespond}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: /Add feedback/ }));
+		fireEvent.change(screen.getByLabelText("Approval feedback"), {
+			target: { value: " Today only. " },
+		});
+		await act(async () => {
+			fireEvent.click(screen.getByRole("button", { name: /Reject/ }));
+		});
+
+		expect(onRespond).toHaveBeenCalledWith({
+			approved: false,
+			feedback: "Today only.",
+		});
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(screen.getByText("Rejection accepted.")).toBeTruthy();
+	});
 });

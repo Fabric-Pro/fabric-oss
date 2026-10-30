@@ -137,3 +137,17 @@ describe("generatePublishingShortPostWorkflow", () => {
 		);
 	});
 });
+
+it.each([true, false, undefined])(
+	"forwards opt-in seeding: %s",
+	async (seedWorkingDraft) => {
+		await generatePublishingShortPostWorkflow({
+			...INPUT,
+			seedWorkingDraft,
+		});
+		expect(
+			activityStubs.generateShortPostActivity.mock.calls[0][0]
+				.seedWorkingDraft,
+		).toBe(seedWorkingDraft || undefined);
+	},
+);

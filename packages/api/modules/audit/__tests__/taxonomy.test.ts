@@ -304,8 +304,13 @@ describe("audit.taxonomy handler", () => {
 		// + 2 org.{chat_approval.decided, chat_run.cancel_requested} (a
 		// member approved or rejected a chat/Weave checkpoint, or requested
 		// cancellation of a chat run; run id and checkpoint id only, never
-		// prompt or feedback text) = 221.
-		expect(result.actions).toHaveLength(221);
+		// prompt or feedback text) = 221, plus account role changes = 222.
+		// + 1 org.member.left for voluntary departures = 223.
+		// + 1 project.document_analysis.resolved (a saved revision applied a
+		// finding's recommendation and recorded it as Resolved; stable key,
+		// run id and version only, never text, Fizzy #2946) = 224.
+		expect(result.actions).toHaveLength(224);
+		expect(result.actions).toContain("org.member.left");
 		expect(result.actions).toContain("org.chat_approval.decided");
 		expect(result.actions).toContain("org.chat_run.cancel_requested");
 		expect(result.actions).toContain("org.agent_definition.imported");
@@ -318,6 +323,7 @@ describe("audit.taxonomy handler", () => {
 		);
 		expect(result.actions).toContain("project.document_analysis.responded");
 		expect(result.actions).toContain("project.document_analysis.cleared");
+		expect(result.actions).toContain("project.document_analysis.resolved");
 		expect(result.actions).toContain(
 			"project.document_analysis.rerun_started",
 		);

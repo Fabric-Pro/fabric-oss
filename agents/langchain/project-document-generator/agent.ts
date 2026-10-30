@@ -74,9 +74,9 @@ export function shouldContinue(state: AgentState): "tool_node" | "__end__" {
 
 			// write_document_local and confirm_changes are handled inline by chat_node.
 			// CopilotKit actions are handled client-side via AG-UI protocol.
-			// ask_clarifying_question is a synthesized client-side HITL action (the
-			// model emits a `clarifying-question` block which chat_node turns into the
-			// tool call) — like confirm_changes it must end the run so CopilotKit
+			// ask_clarifying_question is a client-side HITL action (the model calls
+			// it, or emits a `clarifying-question` block which chat_node turns into
+			// the tool call) — like confirm_changes it must end the run so CopilotKit
 			// renders the card and waits; routing it to tool_node (which has no
 			// implementation for it) caused a chat_node↔tool_node loop that stacked
 			// duplicate cards.

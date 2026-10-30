@@ -10,6 +10,7 @@ import {
 import {
 	findPromptAgentTarget,
 	PROPOSAL_CLIENT_MAIN_AGENT_KEY,
+	PROPOSAL_CLIENT_REVISION_AGENT_KEY,
 	promptDocumentTypeLabel,
 } from "@repo/utils/prompt-action-catalog";
 import { z } from "zod";
@@ -97,24 +98,32 @@ async function assertMayBindAtScope({
  * The client-only Main prompt of a coordinated Proposal is everything the
  * client reads, and a personal default outranks the organization's, so one
  * person's preference could otherwise put internal notes in front of a client
- * (Fizzy #2801). Only the write is refused: precedence and the readers are
- * unchanged, and clearing stays open so nothing can be stranded.
+ * (Fizzy #2801). Its revision prompt steers every AI change to that same
+ * document, so it is refused alike (Fizzy #2946). Only the write is refused:
+ * precedence and the readers are unchanged, and clearing stays open so nothing
+ * can be stranded.
  */
 const PERSONAL_BINDING_REFUSED_TARGETS: ReadonlySet<string> = new Set([
 	PROPOSAL_CLIENT_MAIN_AGENT_KEY,
+	PROPOSAL_CLIENT_REVISION_AGENT_KEY,
 ]);
 
 function assertPersonalBindingAllowed(
 	scope: "SYSTEM" | "ORG" | "USER",
 	targetKeys: readonly string[],
 ) {
-	if (
-		scope === "USER" &&
-		targetKeys.some((key) => PERSONAL_BINDING_REFUSED_TARGETS.has(key))
-	) {
+	if (scope !== "USER") {
+		return;
+	}
+	const refused = targetKeys.find((key) =>
+		PERSONAL_BINDING_REFUSED_TARGETS.has(key),
+	);
+	if (refused) {
+		// Named as the Prompt Library lists it, so the member knows which
+		// action to leave out.
+		const label = findPromptAgentTarget(refused)?.label ?? refused;
 		throw new ORPCError("BAD_REQUEST", {
-			message:
-				"The client proposal prompt applies to the whole organization and cannot be set as a personal default. Ask an organization admin to change the organization's prompt instead.",
+			message: `The "${label}" prompt applies to the whole organization and cannot be set as a personal default. Ask an organization admin to change the organization's prompt instead.`,
 		});
 	}
 }

@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	SELECTABLE_CATALOG_MODEL_FILTER: { isActive: true, deprecatedAt: null },
 	db: { aiModel: { findFirst: mocks.findFirst } },
 }));
 

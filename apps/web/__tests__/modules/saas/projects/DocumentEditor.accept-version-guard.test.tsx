@@ -35,6 +35,7 @@
 
 import { countDocumentWords } from "@repo/utils/document-word-count";
 import { serializeVisualSlot } from "@repo/utils/glossy/visual-slots";
+import { buildSectionMap } from "@repo/utils/proposal-artifact/section-hash";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
 	act,
@@ -58,6 +59,8 @@ const server = { content: "", version: 7 };
 // `server` as a whole still read as "content and version, nothing else".
 let serverStatus = "COMPLETED";
 let serverType = "BUSINESS_CASE";
+/** Whether a read names the body's identity; a server older than it does not. */
+let serverNamesHash = true;
 let documentGetCalls = 0;
 const saveCalls: Array<Record<string, unknown>> = [];
 /** The next save is refused with this error, writing nothing. */
@@ -74,8 +77,19 @@ function serverDocument() {
 			content: server.content,
 			version: server.version,
 			status: serverStatus,
+			contentHash: serverNamesHash ? hashOf(server.content) : null,
 		},
 	};
+}
+
+/** A stand-in for the server's body identity; the editor never computes it. */
+function hashOf(content: string): string {
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < content.length; i += 1) {
+		hash ^= content.charCodeAt(i);
+		hash = Math.imul(hash, 0x01000193) >>> 0;
+	}
+	return `h${hash.toString(16)}-${content.length}`;
 }
 
 async function fakeUpdate(vars: Record<string, unknown>) {
@@ -87,7 +101,9 @@ async function fakeUpdate(vars: Record<string, unknown>) {
 	}
 	if (
 		vars.expectedVersion !== undefined &&
-		vars.expectedVersion !== server.version
+		(vars.expectedVersion !== server.version ||
+			(vars.expectedContentHash !== undefined &&
+				vars.expectedContentHash !== hashOf(server.content)))
 	) {
 		throw Object.assign(
 			new Error(
@@ -263,6 +279,7 @@ vi.mock("@copilotkit/react-core", () => ({
 	useCopilotAction: (config: Record<string, any>) => {
 		actionConfigs.set(config.name, config);
 	},
+	useFrontendTool: vi.fn(),
 	useCopilotChat: () => ({ isLoading: mockIsLoading, visibleMessages: [] }),
 	useCopilotChatInternal: () => ({
 		messages: mockChatMessages,
@@ -279,8 +296,12 @@ vi.mock("@copilotkit/react-ui", () => ({
 	CopilotSidebar: ({ children }: { children?: import("react").ReactNode }) =>
 		sidebar.rendersChildren ? children : null,
 }));
+// Every flag off unless a test turns one on.
+const featureFlags = vi.hoisted(() => ({
+	values: {} as Record<string, boolean>,
+}));
 vi.mock("@saas/shared/components/FeatureFlagProvider", () => ({
-	useFeatureFlag: () => false,
+	useFeatureFlag: (key: string) => featureFlags.values[key] ?? false,
 }));
 vi.mock("@saas/projects/components/DocumentGenerationProgress", () => ({
 	DocumentGenerationProgress: () => (
@@ -366,6 +387,7 @@ vi.mock("sonner", () => ({
 		error: vi.fn(),
 		success: vi.fn(),
 		info: vi.fn(),
+		warning: vi.fn(),
 		dismiss: vi.fn(),
 	},
 }));
@@ -489,6 +511,7 @@ vi.mock(
 
 import { DocumentEditor } from "@saas/projects/components/DocumentEditor";
 import { GENERATION_RUN_AWARENESS_FIELD } from "@saas/projects/components/proposal-artifact/generation-run-awareness";
+import { aiAcceptOfferToastId } from "@saas/projects/components/proposal-artifact/useSectionRevision";
 import { fromMarkdown, toAgentDocument } from "@saas/projects/lib/diff-utils";
 import { getEditorMarkdownForSave } from "@saas/projects/lib/editor-markdown-save";
 import { createAdvancedExtensions } from "@saas/projects/lib/tiptap-extensions-advanced";
@@ -638,6 +661,7 @@ describe("DocumentEditor — the assistant accept's version guard (KTD17)", () =
 		serverType = "BUSINESS_CASE";
 		documentGetCalls = 0;
 		refuseNextSave = null;
+		featureFlags.values = {};
 		saveSlot = window.document.createElement("div");
 		window.document.body.appendChild(saveSlot);
 		queryClient = new QueryClient({
@@ -1731,3 +1755,328 @@ describe("DocumentEditor — the assistant accept's version guard (KTD17)", () =
 		});
 	});
 });
+
+describe("DocumentEditor — an AI accept on a client-document Proposal (Fizzy #2946)", () => {
+	const CLIENT_STORED = [
+		"## Approach",
+		"",
+		"We start with a pilot for Example Org.",
+		"",
+		"## Pricing",
+		"",
+		"A fixed fee for the first phase.",
+		"",
+		"### Terms",
+		"",
+		"Net 30.",
+		"",
+		"## Timeline",
+		"",
+		"Four weeks.",
+	].join("\n");
+	/** The chat patched the Pricing subtree, Terms included. */
+	const CLIENT_PROPOSED = CLIENT_STORED.replace(
+		"A fixed fee for the first phase.",
+		"A fixed fee covers both phases.",
+	).replace("Net 30.", "Net 45.");
+
+	function keysOf(markdown: string, headings: string[]): string[] {
+		return buildSectionMap(markdown)
+			.sections.filter((section) =>
+				headings.includes(section.headingText ?? ""),
+			)
+			.map((section) => section.key);
+	}
+
+	/** The lines of every section outside `headings`, in order. */
+	function untouched(markdown: string, headings: string[]): string {
+		const lines = markdown.split("\n");
+		return buildSectionMap(markdown)
+			.sections.filter(
+				(section) => !headings.includes(section.headingText ?? ""),
+			)
+			.map((section) =>
+				lines.slice(section.startLine - 1, section.endLine).join("\n"),
+			)
+			.join("\n---\n");
+	}
+
+	const PATCHED = ["Pricing", "Terms"];
+
+	afterEach(() => {
+		mockEditor?.destroy();
+		mockEditor = null;
+		saveSlot.remove();
+	});
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockChatMessages = [];
+		capturedUpdateMutationConfig = undefined;
+		saveCalls.length = 0;
+		actionConfigs.clear();
+		contextUpdateOptions = {};
+		latestEditorOptions = {};
+		mockIsLoading = false;
+		mockAgentState = {};
+		server.content = "";
+		server.version = 7;
+		serverStatus = "COMPLETED";
+		serverNamesHash = true;
+		documentGetCalls = 0;
+		refuseNextSave = null;
+		saveSlot = window.document.createElement("div");
+		window.document.body.appendChild(saveSlot);
+		queryClient = new QueryClient({
+			defaultOptions: {
+				queries: { retry: false },
+				mutations: { retry: false },
+			},
+		});
+		serverType = "PROPOSAL";
+		featureFlags.values = {
+			PROPOSAL_ARTIFACT: true,
+			DOCUMENT_ROOM_CONVERGENCE: true,
+		};
+	});
+
+	/** One run that proposes `proposed`, answered Accept on its card. */
+	async function acceptOnCard(
+		rerender: (ui: ReactElement) => void,
+		proposed: string,
+	) {
+		mockAgentState = {};
+		mockIsLoading = true;
+		rerender(tree());
+		await flush();
+		mockAgentState = {
+			document: proposed,
+			proposalPatchedSectionKeys: keysOf(CLIENT_STORED, PATCHED),
+		};
+		mockIsLoading = false;
+		rerender(tree());
+		await flush();
+		const respond = vi.fn();
+		let card: ReactElement | undefined;
+		await act(async () => {
+			card = actionConfigs
+				.get("confirm_changes")
+				?.renderAndWaitForResponse({
+					args: {},
+					respond,
+					status: "executing",
+				});
+			await Promise.resolve();
+		});
+		await flush();
+		await act(async () => {
+			(card?.props as { onConfirm: () => void }).onConfirm();
+		});
+		await flush();
+		await nextFrames();
+		return respond;
+	}
+
+	it("sends the CHAT descriptor with the patched sections from the saved base; everything outside them is byte-identical from the editor to the save", async () => {
+		const { rerender, editor } = await mount(CLIENT_STORED);
+		const before = getEditorMarkdownForSave(editor) ?? "";
+
+		const respond = await acceptOnCard(rerender, CLIENT_PROPOSED);
+
+		expect(respond).toHaveBeenCalledWith({ accepted: true });
+		expect(saveCalls).toHaveLength(1);
+		expect(saveCalls[0]).toMatchObject({
+			aiReview: {
+				kind: "CHAT",
+				patchedSectionKeys: keysOf(CLIENT_STORED, PATCHED),
+			},
+			expectedVersion: 7,
+			expectedContentHash: hashOf(CLIENT_STORED),
+		});
+		const saved = saveCalls[0].content as string;
+		expect(saved).toContain("A fixed fee covers both phases.");
+		expect(untouched(saved, PATCHED)).toBe(untouched(before, PATCHED));
+		expect(untouched(getEditorMarkdownForSave(editor) ?? "", PATCHED)).toBe(
+			untouched(before, PATCHED),
+		);
+		await waitFor(() => {
+			expect(recordOutcome).toHaveBeenCalledWith(
+				expect.objectContaining({
+					accepted: true,
+					summary: "Changes applied.",
+				}),
+			);
+		});
+		// A saved accept takes down an offer left by an earlier refused one.
+		expect(toast.dismiss).toHaveBeenCalledWith(
+			aiAcceptOfferToastId("doc-1"),
+		);
+	});
+
+	it("an accept with no base to be checked against is not applied: the proposal goes back out of the editor and nothing is saved", async () => {
+		// The read named no body identity, so the editor knows no base.
+		serverNamesHash = false;
+		const { rerender, editor } = await mount(CLIENT_STORED);
+		const before = getEditorMarkdownForSave(editor) ?? "";
+
+		const respond = await acceptOnCard(rerender, CLIENT_PROPOSED);
+
+		expect(respond).toHaveBeenCalledWith({ accepted: false });
+		expect(getEditorMarkdownForSave(editor)).toBe(before);
+		expect(saveCalls).toEqual([]);
+		expect(server.content).toBe(CLIENT_STORED);
+		expect(recordOutcome).toHaveBeenCalledWith({
+			accepted: false,
+			summary:
+				"Not applied: the editor was still syncing with the saved document.",
+		});
+		expect(toast.error).toHaveBeenCalledWith("chatNotApplied");
+	});
+
+	it("with the room flag off, an accept still names the body the editor loaded as its base, and is saved", async () => {
+		featureFlags.values = { PROPOSAL_ARTIFACT: true };
+		const { rerender } = await mount(CLIENT_STORED);
+
+		const respond = await acceptOnCard(rerender, CLIENT_PROPOSED);
+
+		expect(respond).toHaveBeenCalledWith({ accepted: true });
+		expect(saveCalls).toHaveLength(1);
+		expect(saveCalls[0]).toMatchObject({
+			aiReview: { kind: "CHAT" },
+			expectedVersion: 7,
+			expectedContentHash: hashOf(CLIENT_STORED),
+		});
+		expect(server.content).toContain("A fixed fee covers both phases.");
+		expect(toast.error).not.toHaveBeenCalledWith("chatNotApplied");
+	});
+
+	it("with the room flag off, a later accept names the body the previous save answered with", async () => {
+		featureFlags.values = { PROPOSAL_ARTIFACT: true };
+		const { rerender } = await mount(CLIENT_STORED);
+		await acceptOnCard(rerender, CLIENT_PROPOSED);
+		await waitFor(() => {
+			expect(server.version).toBe(8);
+		});
+		const firstSaved = server.content;
+
+		const respond = await acceptOnCard(
+			rerender,
+			CLIENT_PROPOSED.replace("Four weeks.", "Five weeks."),
+		);
+
+		expect(respond).toHaveBeenCalledWith({ accepted: true });
+		expect(saveCalls).toHaveLength(2);
+		expect(saveCalls[1]).toMatchObject({
+			aiReview: { kind: "CHAT" },
+			expectedVersion: 8,
+			expectedContentHash: hashOf(firstSaved),
+		});
+		expect(server.version).toBe(9);
+	});
+
+	it("a refused accept puts back the body it was accepted over — not the proposal — offers the refused text once, records why, and is never autosaved", async () => {
+		const { rerender, editor } = await mount(CLIENT_STORED);
+		const before = getEditorMarkdownForSave(editor) ?? "";
+		refuseNextSave = Object.assign(new Error("refused"), {
+			code: "PRECONDITION_FAILED",
+			data: { code: "REVISION_OUTSIDE_TARGET" },
+		});
+
+		const respond = await acceptOnCard(rerender, CLIENT_PROPOSED);
+
+		expect(respond).toHaveBeenCalledWith({ accepted: true });
+		expect(saveCalls).toHaveLength(1);
+		expect(getEditorMarkdownForSave(editor)).toBe(before);
+		expect(server.content).toBe(CLIENT_STORED);
+		const offers = vi
+			.mocked(toast.warning)
+			.mock.calls.filter(([message]) => message === "offerBack");
+		expect(offers).toHaveLength(1);
+		// Under the document's one offer toast, which stays until a later
+		// revision or saved accept takes it down.
+		expect(offers[0]?.[1]).toMatchObject({
+			id: aiAcceptOfferToastId("doc-1"),
+			duration: Number.POSITIVE_INFINITY,
+		});
+		expect(toast.dismiss).not.toHaveBeenCalledWith(
+			aiAcceptOfferToastId("doc-1"),
+		);
+		expect(recordOutcome).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accepted: false,
+				summary:
+					"Not applied: it changed a section outside the one it targeted.",
+			}),
+		);
+		expect(toast.error).toHaveBeenCalledWith("chatNotApplied");
+		// Nothing is left to save: the editor holds the saved body again.
+		await waitFor(() => {
+			expect(saveButton()).toHaveAccessibleName(
+				"Document saved, no changes to save",
+			);
+		});
+		expect(editor.isEditable).toBe(true);
+	});
+
+	it("a version conflict keeps today's answer: the accepted text stays in the editor, unsaved, and is recorded as not saved", async () => {
+		const { rerender, editor } = await mount(CLIENT_STORED);
+		refuseNextSave = Object.assign(new Error("Document changed"), {
+			code: "CONFLICT",
+		});
+
+		await acceptOnCard(rerender, CLIENT_PROPOSED);
+
+		expect(getEditorMarkdownForSave(editor)).toContain(
+			"A fixed fee covers both phases.",
+		);
+		expect(recordOutcome).toHaveBeenCalledWith(
+			expect.objectContaining({
+				accepted: true,
+				outcome: "failure",
+			}),
+		);
+		expect(toast.warning).not.toHaveBeenCalled();
+	});
+
+	it("with the gate off, a Proposal's accept sends no descriptor", async () => {
+		featureFlags.values = { DOCUMENT_ROOM_CONVERGENCE: true };
+		const { rerender } = await mount(CLIENT_STORED);
+
+		await acceptOnCard(rerender, CLIENT_PROPOSED);
+
+		expect(saveCalls).toHaveLength(1);
+		expect(saveCalls[0]).not.toHaveProperty("aiReview");
+	});
+});
+
+// Page-agent behavior is covered by page-agent-render-cost; retain this harness's agent fixture.
+vi.mock("@saas/shared/components/copilot/use-page-agent", async () => {
+	const core = await import("@copilotkit/react-core");
+	return {
+		usePageAgent: (name: string, initialState: object) =>
+			core.useCoAgent({ name, initialState }),
+	};
+});
+
+// These editor harnesses predate the enclosing page's session provider.
+vi.mock(
+	"@saas/shared/components/copilot/CopilotChatSessionProvider",
+	async (importOriginal) => {
+		const actual =
+			await importOriginal<
+				typeof import("@saas/shared/components/copilot/CopilotChatSessionProvider")
+			>();
+		const core = await import("@copilotkit/react-core");
+		return {
+			...actual,
+			useCopilotChatSessionSelector: (
+				select: (session: object) => unknown,
+			) =>
+				select({
+					...core.useCopilotChatInternal(),
+					...core.useCopilotChat(),
+				}),
+			useCopilotChatSessionActions: () => core.useCopilotChatInternal(),
+		};
+	},
+);

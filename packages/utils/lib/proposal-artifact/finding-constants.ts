@@ -45,8 +45,15 @@ export type FindingType = (typeof PROPOSAL_FINDING_TYPES)[number];
  */
 export const FINDING_ANSWER_MAX_LENGTH = 2000;
 
-/** The kinds a member's answer can have. */
-export const FINDING_RESPONSE_KINDS = ["CONFIRMED", "RESPONDED"] as const;
+/**
+ * The kinds a stored answer can have. RESOLVED means the finding's
+ * recommendation was applied to its section; only that save writes it.
+ */
+export const FINDING_RESPONSE_KINDS = [
+	"CONFIRMED",
+	"RESPONDED",
+	"RESOLVED",
+] as const;
 
 export type FindingResponseKind = (typeof FINDING_RESPONSE_KINDS)[number];
 

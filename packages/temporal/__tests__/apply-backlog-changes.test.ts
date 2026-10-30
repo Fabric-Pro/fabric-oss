@@ -106,6 +106,7 @@ import {
 	applyBacklogChanges,
 	type ChangeProposal,
 } from "../src/activities/backlog-context/analyze-context";
+import { triggerDuplicateDetection } from "../src/lib/trigger-duplicate-detection";
 
 // Use a minimal empty backlog so the activity skips the story fetch.
 // `user_story` is the only work-item table — the backlog is a flat list.
@@ -551,6 +552,33 @@ describe("applyBacklogChanges → feature routing (always a roadmap UserStory)",
 		// PM sync resolves items by type — a UserStory leaf must be corrected
 		// to "story" so the sync looks in the user_story table.
 		expect(result.typeCorrections[0]).toBe("story");
+	});
+
+	it("sends every created work item, features included, to the background duplicate check", async () => {
+		mocks.createStoryFromProposal
+			.mockResolvedValueOnce(
+				makeCreatedStory({ kind: "FEATURE", id: "f-dup" }),
+			)
+			.mockResolvedValueOnce(
+				makeCreatedStory({ kind: "BUG", id: "b-dup" }),
+			);
+
+		const result = await applyBacklogChanges({
+			projectId: "project-1",
+			userId: "user-1",
+			organizationId: "org-1",
+			approvedChanges: [makeFeatureChange(), makeBugChange()],
+			existingBacklog: EMPTY_BACKLOG,
+		});
+
+		expect(triggerDuplicateDetection).toHaveBeenCalledOnce();
+		expect(triggerDuplicateDetection).toHaveBeenCalledWith({
+			projectId: "project-1",
+			userId: "user-1",
+			organizationId: "org-1",
+			targetStoryIds: ["f-dup", "b-dup"],
+		});
+		expect(result.duplicateDetectionWorkflowId).toBe("dup-detect-test");
 	});
 
 	it("the feature's description + acceptanceCriteria are forwarded verbatim to the UserStory", async () => {

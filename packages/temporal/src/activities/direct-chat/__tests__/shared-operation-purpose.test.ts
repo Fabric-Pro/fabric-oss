@@ -165,6 +165,9 @@ vi.mock("@repo/rag/lib/project-contexts/summary-injection", () => ({
 	applyContextSummary: (rows: unknown) => rows,
 }));
 vi.mock("@repo/rag", async () => ({
+	...(await import(
+		"@repo/rag/lib/project-contexts/project-context-passages"
+	)),
 	generateEmbedding: async () => {
 		await (
 			createEmbeddingUsageLoggingMiddleware({

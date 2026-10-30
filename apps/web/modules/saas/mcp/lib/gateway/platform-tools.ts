@@ -4050,6 +4050,10 @@ async function handleCreateDocument(
 const GENERATION_RUN_WRITING =
 	"A generation run is writing this document; try again when it finishes.";
 
+/** A write whose base no longer matches the stored document. */
+const DOCUMENT_CHANGED_DURING_UPDATE =
+	"The document changed while it was being updated. Read it again with fabric_get_document and retry.";
+
 /**
  * Refusal text for a status only a generation run may set. The tool enums
  * leave both out, but nothing checks a call against its schema before it
@@ -4188,6 +4192,55 @@ async function handleUpdateDocument(
 		typeof args.content === "string" &&
 		(hasVisualSlots(doc.content) || hasVisualSlots(args.content));
 
+	// A client-document Proposal's Main is checked like an AI chat accept
+	// (Fizzy #2946), stricter on diagrams since no person reviews this diff:
+	// every AI writer is held to it, and an agent calling this tool is one.
+	// Against the body read above, which the write is guarded by, with the
+	// session user's settled answers in the project's owning organization.
+	// Only a Proposal can be a client document, so no other type reads the
+	// gate or loads the check.
+	if (runGuardedContentWrite && content !== undefined) {
+		const {
+			checkWholeBodyAiWrite,
+			wholeBodyRefusalMessage,
+			refusedDiagrams,
+		} = await import(
+			"@repo/api/modules/projects/lib/client-proposal-main-check"
+		);
+		const verdict = await checkWholeBodyAiWrite({
+			surface: "mcp",
+			projectId: doc.projectId,
+			documentId,
+			documentType: doc.type,
+			owningOrganizationId: doc.project?.organizationId ?? null,
+			userId: session.userId,
+			previous: doc.content,
+			next: content,
+		});
+		if (!verdict.ok) {
+			// Checked against a body the caller's base no longer names:
+			// answered as the guarded write would answer it.
+			if (
+				expectedVersion !== undefined &&
+				(doc.version !== expectedVersion ||
+					contentIdentity(doc.content) !== expectedContentHash)
+			) {
+				return errorResult(DOCUMENT_CHANGED_DURING_UPDATE);
+			}
+			return errorResult(wholeBodyRefusalMessage(verdict, doc.content), {
+				code: verdict.code,
+				...("violations" in verdict
+					? {
+							diagrams: refusedDiagrams(
+								doc.content,
+								verdict.violations,
+							),
+						}
+					: {}),
+			});
+		}
+	}
+
 	let updated: Awaited<ReturnType<typeof updateDocument>>;
 	try {
 		updated = await updateDocument(documentId, {
@@ -4235,9 +4288,7 @@ async function handleUpdateDocument(
 			return errorResult(GENERATION_RUN_WRITING);
 		}
 		if (error instanceof DocumentVersionConflictError) {
-			return errorResult(
-				"The document changed while it was being updated. Read it again with fabric_get_document and retry.",
-			);
+			return errorResult(DOCUMENT_CHANGED_DURING_UPDATE);
 		}
 		throw error;
 	}

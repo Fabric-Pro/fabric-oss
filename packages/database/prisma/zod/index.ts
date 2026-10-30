@@ -1024,6 +1024,12 @@ export const StoryDuplicateEmbeddingScalarFieldEnumSchema = z.enum(['id', 'story
 
 export type StoryDuplicateEmbeddingScalarFieldEnum = z.infer<typeof StoryDuplicateEmbeddingScalarFieldEnumSchema>;
 
+// File: StoryDuplicateFocusEmbeddingScalarFieldEnum.schema.ts
+
+export const StoryDuplicateFocusEmbeddingScalarFieldEnumSchema = z.enum(['id', 'storyId', 'projectId', 'kind', 'contentHash', 'model', 'embedding', 'createdAt', 'updatedAt'])
+
+export type StoryDuplicateFocusEmbeddingScalarFieldEnum = z.infer<typeof StoryDuplicateFocusEmbeddingScalarFieldEnumSchema>;
+
 // File: StoryRoutingEmbeddingScalarFieldEnum.schema.ts
 
 export const StoryRoutingEmbeddingScalarFieldEnumSchema = z.enum(['id', 'storyId', 'projectId', 'contentHash', 'model', 'embedding', 'createdAt', 'updatedAt'])
@@ -2586,7 +2592,7 @@ export type ProjectDocumentFindingType = z.infer<typeof ProjectDocumentFindingTy
 
 // File: ProjectDocumentFindingResponseKind.schema.ts
 
-export const ProjectDocumentFindingResponseKindSchema = z.enum(['CONFIRMED', 'RESPONDED'])
+export const ProjectDocumentFindingResponseKindSchema = z.enum(['CONFIRMED', 'RESPONDED', 'RESOLVED'])
 
 export type ProjectDocumentFindingResponseKind = z.infer<typeof ProjectDocumentFindingResponseKindSchema>;
 
@@ -8177,6 +8183,23 @@ export const StoryDuplicateEmbeddingSchema = z.object({
 });
 
 export type StoryDuplicateEmbeddingType = z.infer<typeof StoryDuplicateEmbeddingSchema>;
+
+
+// File: StoryDuplicateFocusEmbedding.schema.ts
+
+export const StoryDuplicateFocusEmbeddingSchema = z.object({
+  id: z.string(),
+  storyId: z.string(),
+  projectId: z.string(),
+  kind: z.string(),
+  contentHash: z.string(),
+  model: z.string(),
+  embedding: z.unknown().refine((val) => { const getDepth = (obj: unknown, depth: number = 0): number => { if (depth > 10) return depth; if (obj === null || typeof obj !== 'object') return depth; const values = Object.values(obj as Record<string, unknown>); if (values.length === 0) return depth; return Math.max(...values.map(v => getDepth(v, depth + 1))); }; return getDepth(val) <= 10; }, "JSON nesting depth exceeds maximum of 10"),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type StoryDuplicateFocusEmbeddingType = z.infer<typeof StoryDuplicateFocusEmbeddingSchema>;
 
 
 // File: StoryRoutingEmbedding.schema.ts

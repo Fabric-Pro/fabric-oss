@@ -37,20 +37,26 @@ describe("openDiagramLayout", () => {
 	it("lays a diagram out in its thread and answers with the SVG", async () => {
 		const layout = openDiagramLayout(STAND_IN_URL);
 		try {
-			expect(await layout.render("flowchart LR", {}, 5_000)).toBe(
-				'<svg data-source="flowchart LR"></svg>',
-			);
+			expect(await layout.render("flowchart LR", {}, 5_000)).toEqual({
+				svg: '<svg data-source="flowchart LR"></svg>',
+				abandoned: false,
+			});
 		} finally {
 			await layout.close();
 		}
 	});
 
-	it("answers null when the engine refuses the source", async () => {
+	it("answers no SVG, not abandoned, when the engine refuses the source", async () => {
 		const layout = openDiagramLayout(STAND_IN_URL);
 		try {
-			expect(await layout.render("THROW", {}, 5_000)).toBeNull();
+			expect(await layout.render("THROW", {}, 5_000)).toEqual({
+				svg: null,
+				abandoned: false,
+			});
 			// The thread is still usable.
-			expect(await layout.render("next", {}, 5_000)).toContain("next");
+			expect((await layout.render("next", {}, 5_000)).svg).toContain(
+				"next",
+			);
 		} finally {
 			await layout.close();
 		}
@@ -64,27 +70,37 @@ describe("openDiagramLayout", () => {
 		}, 20);
 		try {
 			const started = Date.now();
-			expect(await layout.render("LOOP", {}, 400)).toBeNull();
+			expect(await layout.render("LOOP", {}, 400)).toEqual({
+				svg: null,
+				abandoned: "timeLimit",
+			});
 			const elapsed = Date.now() - started;
 			expect(elapsed).toBeGreaterThanOrEqual(350);
 			expect(elapsed).toBeLessThan(5_000);
 			// The event loop kept running while the thread spun.
 			expect(ticks).toBeGreaterThan(5);
 			// A fresh thread takes the next diagram.
-			expect(await layout.render("after", {}, 5_000)).toContain("after");
+			expect((await layout.render("after", {}, 5_000)).svg).toContain(
+				"after",
+			);
 		} finally {
 			clearInterval(ticker);
 			await layout.close();
 		}
 	});
 
-	it("answers null when the thread ends mid-diagram, then carries on in a fresh one", async () => {
+	it("answers abandoned by the thread when it ends mid-diagram, then carries on in a fresh one", async () => {
 		const layout = openDiagramLayout(STAND_IN_URL);
 		try {
 			const started = Date.now();
-			expect(await layout.render("EXIT", {}, 5_000)).toBeNull();
+			expect(await layout.render("EXIT", {}, 5_000)).toEqual({
+				svg: null,
+				abandoned: "thread",
+			});
 			expect(Date.now() - started).toBeLessThan(4_000);
-			expect(await layout.render("after", {}, 5_000)).toContain("after");
+			expect((await layout.render("after", {}, 5_000)).svg).toContain(
+				"after",
+			);
 		} finally {
 			await layout.close();
 		}
@@ -93,31 +109,41 @@ describe("openDiagramLayout", () => {
 	it("survives a thread that fails after its diagram was answered", async () => {
 		const layout = openDiagramLayout(STAND_IN_URL);
 		try {
-			expect(await layout.render("LATE", {}, 5_000)).toContain("LATE");
+			expect((await layout.render("LATE", {}, 5_000)).svg).toContain(
+				"LATE",
+			);
 			// The thread throws once nothing waits on it; unheard, that
 			// error would fail this test run as an uncaught exception.
 			await new Promise((resolve) => setTimeout(resolve, 300));
-			expect(await layout.render("after", {}, 5_000)).toContain("after");
+			expect((await layout.render("after", {}, 5_000)).svg).toContain(
+				"after",
+			);
 		} finally {
 			await layout.close();
 		}
 	});
 
-	it("answers null at once when no time is left", async () => {
+	it("answers abandoned at its time limit at once when no time is left", async () => {
 		const layout = openDiagramLayout(STAND_IN_URL);
 		try {
-			expect(await layout.render("flowchart LR", {}, 0)).toBeNull();
+			expect(await layout.render("flowchart LR", {}, 0)).toEqual({
+				svg: null,
+				abandoned: "timeLimit",
+			});
 		} finally {
 			await layout.close();
 		}
 	});
 
-	it("answers null for every diagram when the engine cannot load", async () => {
+	it("answers no SVG for every diagram when the engine cannot load", async () => {
 		const layout = openDiagramLayout(
 			pathToFileURL(join(directory, "missing.mjs")).href,
 		);
 		try {
-			expect(await layout.render("flowchart LR", {}, 5_000)).toBeNull();
+			expect(await layout.render("flowchart LR", {}, 5_000)).toEqual({
+				svg: null,
+				abandoned: false,
+			});
 		} finally {
 			await layout.close();
 		}
@@ -126,7 +152,7 @@ describe("openDiagramLayout", () => {
 	it("lays a flowchart out with the real engine, as the page's engine draws it", async () => {
 		const layout = openDiagramLayout(beautifulMermaidEntryUrl());
 		try {
-			const svg = await layout.render(
+			const { svg } = await layout.render(
 				"flowchart LR\n  A[Discovery] --> B[Build]",
 				{ bg: "#ffffff", fg: "#111827" },
 				10_000,

@@ -643,6 +643,50 @@ jobs:
           }
           EOF
 
+      - name: 'Duplicate-detection verdict and section caches (database package, real Postgres)'
+        # What only Postgres shows for duplicate detection's caches: a verdict
+        # stamps its hashes onto whatever link row exists, a distinct verdict
+        # clears an unreviewed flag while an unsure one keeps it, a reviewer's
+        # DISMISSED/RESOLVED decision is never rewritten, and the raw-SQL
+        # section-vector upsert keys on (story, section). The unit suites mock
+        # these writes; this suite pins what the rows end up as.
+        env:
+          RUN_DB_INTEGRATION: '1'
+        run: |
+          pnpm --filter @repo/database exec vitest run \
+            prisma/queries/projects/__tests__/duplicate-verdict-cache.integration.test.ts \
+            --passWithNoTests=false \
+            --reporter=dot \
+            --reporter=json --outputFile=duplicate-cache-results.json
+
+      - name: 'Guard: assert the duplicate-detection cache suite executed (exact count, zero skips)'
+        run: |
+          node <<'EOF'
+          const fs = require("node:fs");
+          // 12: a stale PENDING flag stamped and cleared, an unsure re-check
+          // keeping its flag, a new distinct pair, DISMISSED and RESOLVED rows
+          // left as reviewed, an edited pair no longer verdict-valid, a listed
+          // PENDING flag withdrawn with its hashes cleared, a RESOLVED row never
+          // withdrawn, a pair's state read within its project, hashes stamped
+          // with nothing else changed, a PENDING flag's score refreshed (and a
+          // DISMISSED one's not), and the section-vector cache upsert.
+          const EXPECTED = 12;
+          const report = JSON.parse(fs.readFileSync("packages/database/duplicate-cache-results.json","utf8"));
+          const files = report.testResults?.length ?? 0;
+          const total = report.numTotalTests ?? 0;
+          const passed = report.numPassedTests ?? 0;
+          const skipped = (report.numSkippedTests ?? 0) + (report.numPendingTests ?? 0);
+          const todo = report.numTodoTests ?? 0;
+          console.log(`duplicate caches: ${files} file(s), total=${total} passed=${passed} skipped=${skipped} todo=${todo}`);
+          if (files !== 1) { console.error("::error::Expected exactly 1 test file (duplicate-verdict-cache.integration.test.ts)"); process.exit(1); }
+          if (skipped > 0) { console.error("::error::suite self-skipped — DATABASE_URL is not a reachable Postgres — false pass"); process.exit(1); }
+          if (todo > 0) { console.error("::error::a case is .todo — coverage silently dropped"); process.exit(1); }
+          if (total !== EXPECTED || passed !== EXPECTED) {
+            console.error(`::error::expected exactly ${EXPECTED} passing tests, got total=${total} passed=${passed}`);
+            process.exit(1);
+          }
+          EOF
+
       - name: 'Workspace pages and shared conversations (database package, real Postgres)'
         # What only Postgres shows for agent-written pages and shared Fabric
         # Agent conversations: writers to one page queue on its advisory lock,

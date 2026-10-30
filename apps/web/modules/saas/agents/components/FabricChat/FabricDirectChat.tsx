@@ -126,10 +126,8 @@ import {
 import { Response } from "../../../../../components/ai-elements/response";
 import { Sources } from "../../../../../components/ai-elements/sources";
 import { useChatConfirmation } from "../../hooks/useChatConfirmation";
-import {
-	type DirectStreamMessage,
-	useDirectStream,
-} from "../../hooks/useDirectStream";
+import { useDirectChatStream } from "../../hooks/useDirectChatStream";
+import type { DirectStreamMessage } from "../../hooks/useDirectStream";
 import { useEscToStopOrClose } from "../../hooks/useEscToStopOrClose";
 import { useRemoveConversationProject } from "../../hooks/useRemoveConversationProject";
 import { useSkillSlashCommand } from "../../hooks/useSkillSlashCommand";
@@ -148,26 +146,14 @@ import {
 	identifyRelatedFiles,
 } from "../../lib/code-references";
 import { deriveTrajectorySteps } from "../../lib/derive-trajectory";
-import {
-	persistedMetadata,
-	readPersistedModel,
-	readPersistedTurnOutcome,
-	readPersistedUsage,
-} from "../../lib/direct-chat-history";
+import { loadedDirectMessages } from "../../lib/direct-chat-history";
 import {
 	getSelectedConversationToolIds,
 	mergeDirectConversationMetadata,
 } from "../../lib/direct-chat-tools";
-import {
-	dropDuplicatedOperationResults,
-	isConversationSwitch,
-	settleUnfinishedToolCalls,
-} from "../../lib/direct-chat-turns";
+import { isConversationSwitch } from "../../lib/direct-chat-turns";
 import { loadInstanceAgentConfig } from "../../lib/load-instance-agent-config";
-import {
-	persistedToToolCallStatus,
-	toolCallToPersistedStatus,
-} from "../../lib/tool-call-status";
+import { toolCallToPersistedStatus } from "../../lib/tool-call-status";
 import { ChatConfirmationCard } from "./ChatConfirmationCard";
 import { ConversationToolPicker } from "./ConversationToolPicker";
 import {
@@ -1093,6 +1079,32 @@ export const FabricDirectChat = forwardRef<
 		[attachedWorkspaceIds, selectedAgent, selectedInstanceConfig],
 	);
 
+	// On the agent runtime the server creates the conversation under the
+	// chat's thread id and saves every turn; this adopts it as the chat's own
+	// once its first run started, as `ensureConversation` does for a create.
+	const handleRuntimeConversationStarted = useCallback(
+		(startedId: string) => {
+			savedConversationIdRef.current = startedId;
+			setConversationId(startedId);
+			onConversationCreated?.(startedId);
+			if (attachedProjectId) {
+				orpcClient.projects.conversations
+					.attach({
+						conversationId: startedId,
+						projectId: attachedProjectId,
+						organizationId,
+					})
+					.catch((error: unknown) => {
+						console.error(
+							"[FabricDirectChat] Failed to attach the project to the conversation:",
+							error,
+						);
+					});
+			}
+		},
+		[attachedProjectId, onConversationCreated, organizationId],
+	);
+
 	// Use the streaming hook for real-time responses
 	const {
 		messages: streamMessages,
@@ -1102,7 +1114,11 @@ export const FabricDirectChat = forwardRef<
 		contextInfo,
 		restoreContextUsage,
 		stop: stopStream,
-	} = useDirectStream({
+		transport,
+	} = useDirectChatStream({
+		onConversationStarted: handleRuntimeConversationStarted,
+		// What the runtime's reattach compares its saved messages against.
+		shownMessages: loadedMessages,
 		// The launcher passes `undefined` when it has no organization prop;
 		// fall back to the active organization so the stream route binds the
 		// turn to the tenant the user is actually working in instead of a
@@ -1483,50 +1499,9 @@ export const FabricDirectChat = forwardRef<
 					"[FabricDirectChat] Loading conversation:",
 					activeConversation.id,
 				);
-				// The workflow also records each finished turn as a "SYSTEM"
-				// operation-result row; beside the saved answer it is a
-				// duplicate bubble and duplicated history (review F33).
-				const loaded: DirectStreamMessage[] =
-					dropDuplicatedOperationResults(
-						activeConversation.messages,
-					).map((msg) => ({
-						id: msg.id,
-						// Conversations persist a third role — `system`, written
-						// by `agents.conversations.recordOperationResult` — that
-						// the chat API does not accept. Casting it through left
-						// it in the outgoing `history`, and the route rejected
-						// the whole request, so one operation-result row made a
-						// thread permanently unusable ("Invalid request body").
-						role: msg.role === "user" ? "user" : "assistant",
-						timestamp: new Date(msg.timestamp),
-						// A saved turn is over: a call it recorded as still
-						// pending/running can never resolve (review F11).
-						toolCalls: settleUnfinishedToolCalls(
-							msg.toolCalls?.map((tc) => ({
-								id: tc.id,
-								name: tc.name,
-								args: tc.args,
-								result: tc.result,
-								status: persistedToToolCallStatus(
-									tc.status ?? "pending",
-								),
-							})),
-						),
-						// Carry persisted stream lifecycle through rehydration so
-						// the inline `Stopped` caption survives a page reload
-						// (spec § 5.1 / AC-5).
-						streamStatus: msg.streamStatus,
-						cancelledAt: msg.cancelledAt,
-						// Carry reasoning trace through rehydration so the
-						// "Thought for X.Ys" header renders correctly after reload.
-						reasoningText: msg.reasoningText,
-						reasoningDurationMs: msg.reasoningDurationMs,
-						// Persisted with the assistant message on save.
-						usage: readPersistedUsage(persistedMetadata(msg)),
-						model: readPersistedModel(persistedMetadata(msg)),
-						// `content`, plus the failure / tools-off-retry state.
-						...readPersistedTurnOutcome(msg),
-					}));
+				const loaded = loadedDirectMessages(
+					activeConversation.messages,
+				);
 				setLoadedMessages(loaded);
 				setConversationId(activeConversation.id);
 				resetStream(); // Clear any streaming state
@@ -1693,8 +1668,14 @@ export const FabricDirectChat = forwardRef<
 
 	// Fires when the user's message enters the stream, not when the reply
 	// lands — that gap is exactly the window the expand control was blocked in.
+	// The agent runtime creates its own (`handleRuntimeConversationStarted`).
 	useEffect(() => {
-		if (conversationId || !isLoading || eagerCreateRef.current) {
+		if (
+			transport === "runtime" ||
+			conversationId ||
+			!isLoading ||
+			eagerCreateRef.current
+		) {
 			return;
 		}
 		const lastUser = [...streamMessages]
@@ -1704,7 +1685,13 @@ export const FabricDirectChat = forwardRef<
 			return;
 		}
 		void ensureConversation(lastUser);
-	}, [streamMessages, isLoading, conversationId, ensureConversation]);
+	}, [
+		transport,
+		streamMessages,
+		isLoading,
+		conversationId,
+		ensureConversation,
+	]);
 
 	const persistConversation = useCallback(
 		async (
@@ -1717,6 +1704,12 @@ export const FabricDirectChat = forwardRef<
 				return;
 			}
 			lastPersistedRef.current = persistKey;
+
+			// The agent runtime saved the turn before its run finished.
+			if (transport === "runtime") {
+				onConversationSaved?.();
+				return;
+			}
 
 			console.log("[FabricDirectChat] Persisting conversation...", {
 				conversationId,
@@ -1861,6 +1854,7 @@ export const FabricDirectChat = forwardRef<
 			}
 		},
 		[
+			transport,
 			conversationId,
 			organizationId,
 			ensureConversation,
@@ -3257,7 +3251,7 @@ export const FabricDirectChat = forwardRef<
 														title={
 															inactiveProviderNote
 														}
-														className="text-muted-foreground"
+														className="text-highlight-ink"
 													>
 														not applied
 													</span>

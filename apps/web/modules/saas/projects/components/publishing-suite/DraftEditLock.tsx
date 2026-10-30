@@ -110,6 +110,15 @@ export function useDraftEditLock({
 		}),
 	);
 
+	const releaseMutate = release.mutate;
+	useEffect(() => {
+		if (!isDirty && claimedRef.current) {
+			claimedRef.current = false;
+			setHeldBy(null);
+			releaseMutate({ projectId, topicId, organizationId, postType });
+		}
+	}, [isDirty, releaseMutate, projectId, topicId, organizationId, postType]);
+
 	// Give it back on the way out, so the next person does not wait out a
 	// ten-minute expiry for a tab somebody closed.
 	useEffect(() => {

@@ -2556,6 +2556,7 @@ model Project {
   storyPriorityChanges              StoryPriorityChange[]
   duplicateLinks                    StoryDuplicateLink[]
   duplicateEmbeddings               StoryDuplicateEmbedding[]
+  duplicateFocusEmbeddings          StoryDuplicateFocusEmbedding[]
   routingEmbeddings                 StoryRoutingEmbedding[]
 
   architectureDecisions       ArchitectureDecision[]
@@ -3141,6 +3142,9 @@ enum ProjectDocumentAnalysisKind {
 enum ProjectDocumentFindingResponseKind {
   CONFIRMED
   RESPONDED
+  /// The finding's recommendation was applied to its section by a reviewed
+  /// revision; written only together with that revision's save.
+  RESOLVED
 }
 
 enum ProjectDocumentFindingSeverity {
@@ -8977,6 +8981,8 @@ model UserStory {
   // story delete (onDelete: Cascade on the child side).
   duplicateEmbedding StoryDuplicateEmbedding?
   routingEmbedding   StoryRoutingEmbedding?
+  // Scope / acceptance-criteria section vectors, one row per section kind.
+  duplicateFocusEmbeddings StoryDuplicateFocusEmbedding[]
 
   // Test case coverage links (case <-> work-item)
   testCaseLinks   TestCaseWorkItemLink[]
@@ -9312,6 +9318,33 @@ model StoryDuplicateEmbedding {
 
   @@index([projectId])
   @@map("story_duplicate_embedding")
+}
+
+/// Cached embedding of one comparable section of a FEATURE (its Scope, or its
+/// acceptance criteria) for duplicate detection, keyed by the section text's
+/// hash and the embedding model. A feature pair is a duplicate candidate when
+/// its Scope-weighted score clears the threshold, which needs every feature's
+/// section vectors on every scan; caching them keeps a scan from re-embedding
+/// the whole feature backlog's sections. Same staleness contract, tenant
+/// isolation and cascade as StoryDuplicateEmbedding; at most one row per
+/// story and section kind.
+model StoryDuplicateFocusEmbedding {
+  id          String   @id @default(cuid())
+  storyId     String
+  projectId   String
+  kind        String // "scope" | "acceptance_criteria" (PairFocusKind)
+  contentHash String // hashDetectionText of the section text
+  model       String // embedding model used (base name from generateEmbeddings)
+  embedding   Json // number[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  story   UserStory @relation(fields: [storyId], references: [id], onDelete: Cascade)
+
+  @@unique([storyId, kind])
+  @@index([projectId])
+  @@map("story_duplicate_focus_embedding")
 }
 
 // DEPRECATED (expand/contract, contract phase pending). Nothing reads or

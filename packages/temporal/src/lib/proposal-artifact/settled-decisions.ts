@@ -71,10 +71,29 @@ import {
 	type FindingResponseKind,
 	type ShownRunInput,
 } from "@repo/utils/proposal-artifact/finding-state";
+import type { CarriedSettledText } from "@repo/utils/proposal-artifact/response-echo";
 import {
 	buildSectionMap,
 	documentProseHash,
 } from "@repo/utils/proposal-artifact/section-hash";
+
+// The echo check and the join are pure and live in `@repo/utils`, so the
+// agent and the save path run the same code; every existing import of them
+// from here keeps working.
+export type {
+	CarriedSettledText,
+	ResponseEchoGuard,
+	ResponseEchoInput,
+	ResponseEchoResult,
+} from "@repo/utils/proposal-artifact/response-echo";
+export {
+	buildEchoGuard,
+	checkEcho,
+	checkResponseEcho,
+	echoedStableKeys,
+	joinSettledDecisions,
+	RESPONSE_ECHO_MIN_WORDS,
+} from "@repo/utils/proposal-artifact/response-echo";
 
 // =============================================================================
 // Constants
@@ -114,14 +133,6 @@ export const SETTLED_DECISIONS_MAX_ITEMS = 20;
 export const SETTLED_DECISIONS_MAX_ITEMS_CHARS = 6000;
 
 /**
- * Consecutive normalised words a Main must repeat from one carried answer or
- * title before it counts as an echo. A carried text shorter than this can
- * never trigger the check, so a plain factual answer (a price, a duration, a
- * date, a short name) is always free to appear in Main.
- */
-export const RESPONSE_ECHO_MIN_WORDS = 12;
-
-/**
  * The message to raise `RESPONSE_ECHOED` (from `./types`) with. It lands in
  * the document's FAILED status, which every reader of the document sees,
  * project guests included, so it names no answer, finding or text and says
@@ -134,10 +145,14 @@ export const RESPONSE_ECHOED_MESSAGE =
 /** The only document type with an Internal Analysis. */
 const PROPOSAL_DOCUMENT_TYPE = "PROPOSAL";
 
-/** The response kinds that can settle a point. */
+/**
+ * The response kinds that can settle a point. An applied recommendation
+ * settles it like a confirmation: the change is already in the document.
+ */
 const SETTLING_KINDS: readonly FindingResponseKind[] = [
 	"CONFIRMED",
 	"RESPONDED",
+	"RESOLVED",
 ];
 
 /** Shown for a title that sanitises to nothing. */
@@ -157,21 +172,6 @@ export interface SettledDecisionItem {
 	title: string;
 	/** The answer, one line; null for a bare confirmation. */
 	text: string | null;
-}
-
-/**
- * The text a prompt carried, for {@link checkResponseEcho}. Prompt-only: the
- * texts and titles must never enter an activity result, a log or a failure
- * message. The keys, one per text and one per title in the same order, are
- * ids and may be logged.
- */
-export interface CarriedSettledText {
-	responseTexts: readonly string[];
-	findingTitles: readonly string[];
-	/** The stable key of each entry of `responseTexts`, in order. */
-	responseKeys?: readonly string[];
-	/** The stable key of each entry of `findingTitles`, in order. */
-	titleKeys?: readonly string[];
 }
 
 export interface SettledDecisionsBlock {
@@ -393,6 +393,62 @@ export async function buildSettledDecisionsBlock(
 	}
 }
 
+/** The finding a revision applies, as {@link buildFindingEchoCarried} reads it. */
+interface EchoCarriedFinding {
+	stableKey: string;
+	title: string;
+	recommendation: string | null;
+}
+
+/**
+ * Everything internal a finding-driven revision must not repeat, for the
+ * echo check of its candidate and of the accept that saves it, so both
+ * check the same texts: what the member's block carried, the finding's own
+ * answer (which may not be in the block: an answer in Needs Review settles
+ * nothing, yet the revision still started from it), and the finding's title
+ * and recommendation. Every text comes with its stable key.
+ *
+ * Prompt-only, like {@link SettledDecisionsBlock.carried}.
+ */
+export function buildFindingEchoCarried(input: {
+	settled: Pick<SettledDecisionsBlock, "carried"> | null;
+	finding: EchoCarriedFinding;
+	/** The finding's answer; null when it has none. */
+	response: { text: string | null } | null;
+}): CarriedSettledText {
+	const carried = input.settled?.carried;
+	const { finding } = input;
+	const answer = input.response?.text?.trim() || null;
+	const recommendation = finding.recommendation?.trim() || null;
+	const ownTitles = [
+		finding.title,
+		...(recommendation ? [recommendation] : []),
+	];
+	return {
+		responseTexts: [
+			...(carried?.responseTexts ?? []),
+			...(answer ? [answer] : []),
+		],
+		responseKeys: [
+			...keysFor(carried?.responseTexts, carried?.responseKeys),
+			...(answer ? [finding.stableKey] : []),
+		],
+		findingTitles: [...(carried?.findingTitles ?? []), ...ownTitles],
+		titleKeys: [
+			...keysFor(carried?.findingTitles, carried?.titleKeys),
+			...ownTitles.map(() => finding.stableKey),
+		],
+	};
+}
+
+/** `keys`, or a blank key per text when the carried text named none. */
+function keysFor(
+	texts: readonly string[] | undefined,
+	keys: readonly string[] | undefined,
+): readonly string[] {
+	return keys ?? (texts ?? []).map(() => "");
+}
+
 type SettlingKind = { kind: FindingResponseKind };
 
 function isSettlingResponse(
@@ -502,28 +558,14 @@ function renderItem(item: SettledDecisionItem): string {
 	const outcome =
 		item.kind === "RESPONDED"
 			? `answered: "${item.text ?? ""}"`
-			: item.text
-				? `confirmed, with the note: "${item.text}"`
-				: "confirmed";
+			: item.kind === "RESOLVED"
+				? item.text
+					? `recommendation applied, with the earlier note: "${item.text}"`
+					: "recommendation applied"
+				: item.text
+					? `confirmed, with the note: "${item.text}"`
+					: "confirmed";
 	return `- "${item.title}" — ${outcome}`;
-}
-
-/**
- * Add the block to text a caller already has, after it. With no block,
- * `base` comes back unchanged, byte for byte, so a prompt without answers is
- * exactly today's.
- */
-export function joinSettledDecisions(
-	base: string,
-	block: string | null | undefined,
-): string {
-	if (!block) {
-		return base;
-	}
-	if (!base) {
-		return block;
-	}
-	return `${base}\n\n${block}`;
 }
 
 // =============================================================================
@@ -590,180 +632,6 @@ function cutWithEllipsis(text: string, max: number): string {
 }
 
 // =============================================================================
-// Echo check
-// =============================================================================
-
-export interface ResponseEchoInput {
-	/** The Main about to be saved. */
-	mainText: string;
-	/** What the prompt carried: the builder's `carried`, or a caller's own. */
-	carried: CarriedSettledText;
-	/**
-	 * The generation's source context. A run of words found here is the
-	 * source's, not the answer's, and never counts.
-	 */
-	sourceContext?: string | readonly string[] | null;
-	/** The Main before this save. A run already there never counts. */
-	previousMain?: string | null;
-}
-
-export interface ResponseEchoResult {
-	echoed: boolean;
-	/** Indexes into `carried.responseTexts` whose wording Main repeats. */
-	responseIndexes: number[];
-	/** Indexes into `carried.findingTitles` whose wording Main repeats. */
-	titleIndexes: number[];
-}
-
-/**
- * Whether `mainText` repeats {@link RESPONSE_ECHO_MIN_WORDS} or more
- * consecutive words of a carried answer or finding title, leaving out every
- * run that also appears in the source context or the previous Main.
- *
- * Words are compared normalised: NFKC, lower case, split on anything that is
- * not a letter, mark or digit, so markdown emphasis, punctuation and case do
- * not hide a copy. A carried text shorter than the threshold can never match,
- * so short factual answers pass. The result names indexes only, never words:
- * a caller raises `RESPONSE_ECHOED` (from `./types`) with
- * {@link RESPONSE_ECHOED_MESSAGE} and logs the indexes at most.
- *
- * One check of one Main. A caller that checks many texts against the same
- * carried text and context (every live preview of a run) builds a
- * {@link buildEchoGuard} once and asks {@link checkEcho} instead; the answers
- * are the same.
- */
-export function checkResponseEcho(
-	input: ResponseEchoInput,
-): ResponseEchoResult {
-	const { mainText, ...fixed } = input;
-	return checkEcho(buildEchoGuard(fixed), mainText);
-}
-
-/**
- * {@link checkResponseEcho} prepared once for inputs that do not change
- * between checks: each carried text's word runs, computed up front, and the
- * text a run may also appear in, normalised on first need and kept, with
- * every run's verdict against it. Built by {@link buildEchoGuard}; read only
- * by {@link checkEcho}. Holds carried text, so it is prompt-only like
- * {@link CarriedSettledText}.
- */
-export interface ResponseEchoGuard {
-	/** What the prompt carried, for {@link echoedStableKeys}. */
-	readonly carried: CarriedSettledText;
-	/** Each carried text's runs: every answer in order, then every title. */
-	readonly entries: readonly CarriedEchoEntry[];
-	/** Whether a run also appears in the source context or previous Main. */
-	readonly allowed: (run: string) => boolean;
-}
-
-interface CarriedEchoEntry {
-	kind: "response" | "title";
-	/** Index into `carried.responseTexts` or `carried.findingTitles`. */
-	index: number;
-	runs: readonly string[];
-}
-
-/**
- * The guard for an echo check's inputs other than the Main, which stay fixed
- * for a whole attempt.
- */
-export function buildEchoGuard(
-	input: Omit<ResponseEchoInput, "mainText">,
-): ResponseEchoGuard {
-	const allowedTexts = [
-		...(typeof input.sourceContext === "string"
-			? [input.sourceContext]
-			: (input.sourceContext ?? [])),
-		input.previousMain ?? "",
-	];
-	let haystack: string | null = null;
-	const verdicts = new Map<string, boolean>();
-	const carriedRuns = (text: string) => wordRuns(normalizedWords(text));
-	return {
-		carried: input.carried,
-		entries: [
-			...input.carried.responseTexts.map((text, index) => ({
-				kind: "response" as const,
-				index,
-				runs: carriedRuns(text),
-			})),
-			...input.carried.findingTitles.map((text, index) => ({
-				kind: "title" as const,
-				index,
-				runs: carriedRuns(text),
-			})),
-		],
-		allowed: (run) => {
-			let verdict = verdicts.get(run);
-			if (verdict === undefined) {
-				// `|` is never part of a word, so no run spans two texts.
-				haystack ??= ` ${allowedTexts
-					.map((text) => normalizedWords(text).join(" "))
-					.join(" | ")} `;
-				verdict = haystack.includes(` ${run} `);
-				verdicts.set(run, verdict);
-			}
-			return verdict;
-		},
-	};
-}
-
-/** {@link checkResponseEcho} of `mainText`, against a prepared guard. */
-export function checkEcho(
-	guard: ResponseEchoGuard,
-	mainText: string,
-): ResponseEchoResult {
-	const responseIndexes: number[] = [];
-	const titleIndexes: number[] = [];
-	if (guard.entries.length === 0) {
-		return { echoed: false, responseIndexes, titleIndexes };
-	}
-	const mainWords = normalizedWords(mainText);
-	if (mainWords.length < RESPONSE_ECHO_MIN_WORDS) {
-		return { echoed: false, responseIndexes, titleIndexes };
-	}
-	const mainRuns = new Set(wordRuns(mainWords));
-
-	for (const entry of guard.entries) {
-		const repeated = entry.runs.some(
-			(run) => mainRuns.has(run) && !guard.allowed(run),
-		);
-		if (repeated) {
-			(entry.kind === "response" ? responseIndexes : titleIndexes).push(
-				entry.index,
-			);
-		}
-	}
-
-	return {
-		echoed: responseIndexes.length > 0 || titleIndexes.length > 0,
-		responseIndexes,
-		titleIndexes,
-	};
-}
-
-const NON_WORD = /[^\p{L}\p{M}\p{N}]+/u;
-
-function normalizedWords(text: string): string[] {
-	return text.normalize("NFKC").toLowerCase().split(NON_WORD).filter(Boolean);
-}
-
-/** Every run of exactly {@link RESPONSE_ECHO_MIN_WORDS} words, space-joined. */
-function wordRuns(words: readonly string[]): string[] {
-	const runs: string[] = [];
-	for (
-		let start = 0;
-		start + RESPONSE_ECHO_MIN_WORDS <= words.length;
-		start += 1
-	) {
-		runs.push(
-			words.slice(start, start + RESPONSE_ECHO_MIN_WORDS).join(" "),
-		);
-	}
-	return runs;
-}
-
-// =============================================================================
 // Helpers
 // =============================================================================
 
@@ -774,29 +642,4 @@ function isId(value: unknown): value is string {
 /** A content-free name for an error: never its message, which may hold data. */
 function errorName(error: unknown): string {
 	return error instanceof Error ? error.name : typeof error;
-}
-
-/**
- * The stable keys of the answers an echo repeated, for a log line that lets
- * someone find the answer to reword or clear (Fizzy #2946). Keys only, never
- * the text; empty when the carried text came without keys.
- */
-export function echoedStableKeys(
-	carried: CarriedSettledText,
-	echo: Pick<ResponseEchoResult, "responseIndexes" | "titleIndexes">,
-): string[] {
-	const keys = new Set<string>();
-	for (const index of echo.responseIndexes) {
-		const key = carried.responseKeys?.[index];
-		if (key) {
-			keys.add(key);
-		}
-	}
-	for (const index of echo.titleIndexes) {
-		const key = carried.titleKeys?.[index];
-		if (key) {
-			keys.add(key);
-		}
-	}
-	return [...keys];
 }

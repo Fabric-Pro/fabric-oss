@@ -3,6 +3,7 @@ import {
 	SOURCE_DATA_OPEN_PREFIX,
 } from "@repo/utils/publishing-source-data-markers";
 import { describe, expect, it } from "vitest";
+import { WRITING_STYLE_CLAUSE } from "../../publishing-shared/writing-style-clause";
 import {
 	buildRefineLockedClauses,
 	composeRefinePrompt,
@@ -231,4 +232,8 @@ describe("buildRefineLockedClauses", () => {
 			"Return ONE revised short social post",
 		);
 	});
+});
+
+it("includes the shared writing style clause", () => {
+	expect(buildRefineLockedClauses("TWEET")).toContain(WRITING_STYLE_CLAUSE);
 });

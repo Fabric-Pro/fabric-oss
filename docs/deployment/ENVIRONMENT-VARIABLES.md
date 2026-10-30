@@ -39,6 +39,7 @@ The table below lists the **functional consumer** for each variable: where the v
 | `NEXT_PUBLIC_SITE_URL` | ConfigMap | yes (HTTPS) | Rendered from `global.siteUrl` if set (explicit override, precedence over domain; ingress stays host-less), else `https://<global.domain>` when domain set, else empty. |
 | `DATABASE_URL` | Secret | yes | Auto-populated by Terraform (`aws_secretsmanager_secret_version.database`); verify-full TLS against the mounted RDS CA bundle (§3.1) |
 | `DIRECT_URL` | Secret | yes | Same database as `DATABASE_URL`, in Prisma's TLS form; used by Prisma CLI database commands through `prisma.config.ts` (§3.1) |
+| `OPERATOR_ORGANIZATION_ID` | ConfigMap | no | Empty preserves role-only admin access; when set, global admins must be members of this organization. |
 | `BETTER_AUTH_SECRET` | Secret | yes | `openssl rand -base64 48` |
 | `BRUTE_FORCE_IP_LOCKOUT_CAP` | ConfigMap | no | Default `3` |
 | `REDIS_URL` | Secret (`redis` group) | yes | `rediss://default:<token>@<endpoint>:6379` — Terraform-managed |
@@ -152,6 +153,7 @@ Consumes the same DB/Redis/AI/agent-URL set as `web`. Additionally:
 
 | Env var | Source | Required | Notes |
 |---|---|---|---|
+| `OPERATOR_ORGANIZATION_ID` | ConfigMap | no | Same value as web; used for operator admin demotion during organization purge. |
 | `TEMPORAL_ADDRESS` | ConfigMap | yes | |
 | `TEMPORAL_NAMESPACE` | ConfigMap | yes | |
 | `TEMPORAL_CLOUD_API_KEY` | Secret | yes | Worker auths to Temporal Cloud with this |
@@ -519,3 +521,32 @@ kubectl exec -n fabric deploy/web -- env | sort | head -50
 ```
 
 If `kubectl get externalsecret` shows `Ready=False`, see [TROUBLESHOOTING.md § External Secrets Operator](./TROUBLESHOOTING.md#5-external-secrets-operator).
+
+### Operator organization
+
+`OPERATOR_ORGANIZATION_ID` is an optional server-only organization ID, not a slug.
+The web app and Temporal worker must both receive the same value. The worker
+uses it when demoting admins during organization purge.
+Unset or empty leaves admin behavior as it was: the admin console and admin RPCs
+keep the exact `role === "admin"` check, and Better Auth's own checks decide its
+admin endpoints. With a
+value, admin grants require membership and the admin console, admin RPCs, and Better Auth admin endpoints
+check membership on entry. The local Aspire AppHost forwards this value from
+`.env.local` to both processes through its existing environment forwarding loops.
+Turbo hashes it.
+
+Before enabling or changing the setting, reconcile existing admin accounts with
+the selected organization's membership. Configuration changes do not migrate
+existing roles. The admin provisioning script and seed add ordinary `member`
+membership in the same transaction as the admin write; the organization must
+already exist. The generic user creation helper refuses admin creation while
+configured. A new Better Auth account cannot already be a member: create it as a
+user, add membership, then grant admin. Hard purging the configured organization
+demotes its admin members in the organization deletion transaction.
+
+Leaving or removal demotes global admins and preserves their other roles. Better
+Auth leaves commit membership deletion before the cleanup hook, so cleanup
+failures can leave a stale role; membership checks still refuse admin entry.
+Role grants and membership deletion are separate Better Auth operations, so the
+before-hook checks do not provide a database-level invariant against concurrent
+grant/departure requests.

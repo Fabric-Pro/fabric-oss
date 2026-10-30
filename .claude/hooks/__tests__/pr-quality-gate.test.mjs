@@ -124,6 +124,20 @@ let stubDir;
 /** @type {string} */
 let stubRepoRoot;
 
+/** @param {string} root */
+function writeFabricManifest(root) {
+	writeFileSync(
+		join(root, "package.json"),
+		JSON.stringify({
+			scripts: {
+				"type-check:changed": "stub",
+				lint: "stub",
+				"format:check": "stub",
+			},
+		}),
+	);
+}
+
 before(() => {
 	stubDir = mkdtempSync(join(tmpdir(), "pr-quality-gate-stub-"));
 	const stubPath = join(stubDir, "pnpm");
@@ -134,6 +148,7 @@ before(() => {
 		writeFileSync(join(stubDir, "pnpm.cmd"), winStubCmd(gitBash()), "utf8");
 	}
 	stubRepoRoot = mkdtempSync(join(tmpdir(), "pr-quality-gate-cwd-"));
+	writeFabricManifest(stubRepoRoot);
 });
 
 after(() => {
@@ -348,12 +363,38 @@ describe("pr-quality-gate — asks the user on a failing check", () => {
 	});
 });
 
+describe("pr-quality-gate — skips unrelated repositories", () => {
+	for (const manifest of ['{"name":"other","scripts":{}}', null]) {
+		it(`skips a git repo ${manifest ? "without check scripts" : "without a package.json"}`, async () => {
+			const repo = mkdtempSync(join(tmpdir(), "pr-quality-gate-other-"));
+			try {
+				execSync("git init -q", { cwd: repo });
+				if (manifest) {
+					writeFileSync(join(repo, "package.json"), manifest);
+				}
+				const result = await bash(
+					`cd "${repo}" && open-pr.sh --title t --body-file b`,
+				);
+				assert.equal(result.exitCode, 0);
+				assert.equal(result.stdout.trim(), "");
+				assert.match(
+					result.stderr,
+					/pr-quality-gate: .*skipping checks/,
+				);
+			} finally {
+				rmSync(repo, { recursive: true, force: true });
+			}
+		});
+	}
+});
+
 describe("pr-quality-gate — validates the worktree the PR command runs in", () => {
 	it("runs checks in a leading `cd <worktree>` over CLAUDE_PROJECT_DIR", async () => {
 		// A real git worktree, distinct from CLAUDE_PROJECT_DIR (stubRepoRoot,
 		// which is a bare temp dir, not a git repo).
 		const worktree = mkdtempSync(join(tmpdir(), "pr-quality-gate-wt-"));
 		execSync("git init -q", { cwd: worktree });
+		writeFabricManifest(worktree);
 		try {
 			const result = await bash(
 				`cd "${worktree}" && gh pr create --fill`,

@@ -34,6 +34,7 @@ import {
 	extractTextFromContent,
 	stripRawResponseEnvelope,
 } from "@repo/agent-core/reasoning-trace";
+import { isSyntheticToolImageMessage } from "@repo/agent-core/recursion";
 import { logAgentUsageFromRunnableConfig } from "@repo/agent-core/services/usage-logging";
 import {
 	applyPatches,
@@ -56,8 +57,17 @@ import { logger } from "@repo/logs";
 import { classifyLimitError } from "@repo/utils/classify-limit-error";
 import { straightenIntroducedQuotes } from "@repo/utils/introduced-quotes";
 import { normalizeForComparison } from "@repo/utils/normalize-for-comparison";
+import {
+	checkResponseEcho,
+	echoedStableKeys,
+} from "@repo/utils/proposal-artifact/response-echo";
+import {
+	restoreVisualPlaceholders,
+	type VisualPlaceholderView,
+} from "@repo/utils/proposal-artifact/visual-placeholders";
 import { v4 as uuidv4 } from "uuid";
 import { buildSystemPromptAsync, getPredictStateConfig } from "../prompts";
+import { buildPublishingTopicSection } from "../publishing-topic";
 import type { AgentState } from "../state";
 import {
 	buildPatchToolResponseContent,
@@ -82,6 +92,39 @@ import {
 	summarizeMessagesForLogging,
 } from "../utils";
 import { reconcileToolCalls } from "./chat-node-tools";
+import {
+	buildGuestEchoCheck,
+	buildProposalAnchorList,
+	buildProposalAttachmentBlock,
+	buildProposalClientSystemPrompt,
+	buildVisualPlaceholderView,
+	collectPatchedSectionKeys,
+	countCorrectionsSinceLastHuman,
+	diagramsBesideChangedText,
+	ECHO_CORRECTION_PREFIX,
+	guestCarriedText,
+	isGuestArtifactRun,
+	isProposalFrontendAction,
+	isProposalPatchOp,
+	neutralizeTag,
+	PATCH_ONLY_CORRECTION_PREFIX,
+	PLACEHOLDER_CORRECTION_PREFIX,
+	PROPOSAL_ECHO_NOT_APPLIED_REPLY,
+	PROPOSAL_GENERATE_FIRST_REPLY,
+	PROPOSAL_GUEST_ERROR_REPLY,
+	PROPOSAL_PATCHES_TOOL,
+	PROPOSAL_PROMPT_REFUSAL_REPLY,
+	PROPOSAL_UNBOUND_REPLY,
+	PROPOSAL_UNVERIFIED_REPLY,
+	PROPOSAL_VISUALS_NOT_APPLIED_REPLY,
+	placeholdersInDeletedSections,
+	proposalDiagramNote,
+	proposalFrontendActions,
+	readProposalClientConfig,
+	replaceReplyText,
+	toolArgumentText,
+	visibleReplyText,
+} from "./proposal-client-mode";
 
 /**
  * Minimum baseline-document size in characters for which we switch from
@@ -152,10 +195,10 @@ const MAX_FINALIZE_GUARD_RETRIES = 2;
 function buildFinalizeDirectiveMessage(params: {
 	toolRounds: number;
 	patchModeAvailable: boolean;
+	/** An artifact Proposal edits through patches only (Fizzy #2946). */
+	patchOnly?: boolean;
 }): HumanMessage {
-	const finalArtifact = params.patchModeAvailable
-		? "edit (apply_document_patches or write_document_local)"
-		: "document (write_document_local)";
+	const finalArtifact = finalEditLabel(params);
 	return new HumanMessage({
 		content: `[SYSTEM DIRECTIVE — not from the user]
 
@@ -163,6 +206,23 @@ function buildFinalizeDirectiveMessage(params: {
 
 You have used your available tool-calling budget for this turn (${params.toolRounds} rounds). Do NOT call search, browse, or lookup tools again — any such call is rejected and wastes the turn. Produce your final ${finalArtifact} now using only the information you have already gathered.`,
 	});
+}
+
+/**
+ * What the model is told to produce once a turn's budget is spent. An
+ * artifact Proposal has no full-rewrite tool, so its wording names patches
+ * only.
+ */
+function finalEditLabel(params: {
+	patchModeAvailable: boolean;
+	patchOnly?: boolean;
+}): string {
+	if (params.patchOnly) {
+		return "edit (apply_document_patches)";
+	}
+	return params.patchModeAvailable
+		? "edit (apply_document_patches or write_document_local)"
+		: "document (write_document_local)";
 }
 
 /**
@@ -269,17 +329,31 @@ function stripDisallowedToolCalls(
 	if (disallowedToolCallNames(response, allowed).length === 0) {
 		return response;
 	}
+	return withoutToolCalls(
+		response,
+		(entry) => !allowed.has(readToolCallName(entry)),
+	);
+}
 
-	const isAllowed = (entry: unknown): boolean =>
-		allowed.has(readToolCallName(entry));
-
+/**
+ * A copy of `response` without every tool call `drop` matches, in each lane
+ * a call can live in: the three shapes above, and the function calls of an
+ * OpenAI Responses `output`, which LangChain replays verbatim in place of the
+ * others. Its reasoning and message items stay. `dropInvalid` does the same
+ * for `invalid_tool_calls`, kept whole when it is left out.
+ */
+function withoutToolCalls(
+	response: AIMessage,
+	drop: (entry: unknown) => boolean,
+	dropInvalid?: (entry: unknown) => boolean,
+): AIMessage {
 	const kwargs: Record<string, unknown> = {
 		...((response.additional_kwargs ?? {}) as Record<string, unknown>),
 	};
 	if (Array.isArray(kwargs.tool_calls)) {
 		const keptRawCalls = (
 			kwargs.tool_calls as Array<Record<string, unknown>>
-		).filter(isAllowed);
+		).filter((entry) => !drop(entry));
 		if (keptRawCalls.length > 0) {
 			kwargs.tool_calls = keptRawCalls;
 		} else {
@@ -289,19 +363,66 @@ function stripDisallowedToolCalls(
 
 	const content: MessageContent = Array.isArray(response.content)
 		? ((response.content as Array<Record<string, unknown>>).filter(
-				(block) => !isToolCallContentBlock(block) || isAllowed(block),
+				(block) => !isToolCallContentBlock(block) || !drop(block),
 			) as MessageContent)
 		: response.content;
 
+	const metadata = response.response_metadata as
+		| Record<string, unknown>
+		| undefined;
+	const responseMetadata =
+		metadata && Array.isArray(metadata.output)
+			? {
+					...metadata,
+					output: (metadata.output as unknown[]).filter(
+						(item) =>
+							(item as { type?: unknown } | null)?.type !==
+								"function_call" || !drop(item),
+					),
+				}
+			: response.response_metadata;
+
 	return new AIMessage({
 		content,
-		tool_calls: (response.tool_calls ?? []).filter(isAllowed),
-		invalid_tool_calls: response.invalid_tool_calls,
+		tool_calls: (response.tool_calls ?? []).filter((entry) => !drop(entry)),
+		invalid_tool_calls: dropInvalid
+			? (response.invalid_tool_calls ?? []).filter(
+					(entry) => !dropInvalid(entry),
+				)
+			: response.invalid_tool_calls,
 		additional_kwargs: kwargs,
-		response_metadata: response.response_metadata,
+		response_metadata: responseMetadata,
 		usage_metadata: response.usage_metadata,
 		id: response.id,
 	});
+}
+
+/** A tool call's arguments in any lane: parsed, raw JSON, or block input. */
+function readToolCallArgs(entry: unknown): unknown {
+	const call = entry as
+		| {
+				args?: unknown;
+				input?: unknown;
+				arguments?: unknown;
+				function?: { arguments?: unknown };
+		  }
+		| null
+		| undefined;
+	return (
+		call?.function?.arguments ??
+		call?.args ??
+		call?.input ??
+		call?.arguments
+	);
+}
+
+/** A tool call's id in any lane; a Responses `output` item names it `call_id`. */
+function readToolCallId(entry: unknown): unknown {
+	const call = entry as
+		| { id?: unknown; call_id?: unknown }
+		| null
+		| undefined;
+	return call?.call_id ?? call?.id;
 }
 
 /**
@@ -830,6 +951,7 @@ function isAfterConfirmation(messages: BaseMessage[]): {
  * state; the only difference upstream is how the document text was produced.
  */
 function buildConfirmChangesCommand(params: {
+	outputMessageId?: unknown;
 	state: AgentState;
 	messages: BaseMessage[];
 	toolCall: { id?: string; args?: Record<string, any> };
@@ -855,6 +977,11 @@ function buildConfirmChangesCommand(params: {
 	 * "Replaced 7 occurrences in total.").
 	 */
 	followUpNote?: string;
+	/**
+	 * Keep model text out of the logs: an artifact Proposal's run carries a
+	 * server-only prompt the model may repeat (Fizzy #2946).
+	 */
+	redactPreviews?: boolean;
 }): Command {
 	const {
 		state,
@@ -869,6 +996,7 @@ function buildConfirmChangesCommand(params: {
 		sectionWarning,
 		toolResponseContent: toolResponseContentOverride,
 		followUpNote,
+		redactPreviews,
 	} = params;
 	const documentType = state.documentType || "general";
 
@@ -1033,7 +1161,9 @@ function buildConfirmChangesCommand(params: {
 			"[Project Document Generator] Using model-generated follow-up",
 			{
 				contentLength: modelContent.length,
-				preview: modelContent.substring(0, 100),
+				...(redactPreviews
+					? {}
+					: { preview: modelContent.substring(0, 100) }),
 				mode: logMode,
 			},
 		);
@@ -1091,6 +1221,12 @@ function buildConfirmChangesCommand(params: {
 				id: uuidv4(),
 				name: "confirm_changes",
 				args: {
+					...(typeof params.outputMessageId === "string" &&
+					/^msg_[1-9][0-9]{12}_[0-9a-f]{32}$/.test(
+						params.outputMessageId,
+					)
+						? { draftId: `${params.outputMessageId}:${uuidv4()}` }
+						: {}),
 					__inlineTool: { id: toolCall.id, name: inlineName },
 				},
 				type: "tool_call" as const,
@@ -1335,6 +1471,390 @@ function evaluateSectionPreservation(params: {
 			},
 		}),
 	};
+}
+
+/**
+ * The state the chat node's guards read for an artifact Proposal run
+ * (Fizzy #2946). A local view only, never emitted: the bound prompt lives in
+ * run config, so the guards are told "custom structure, bound methodology"
+ * through a marker rather than the prompt itself, and the client's own
+ * prompt, skill and regeneration flag are ignored.
+ */
+const PROPOSAL_PROMPT_MARKER = "[bound client proposal revision prompt]";
+
+function proposalGuardState(state: AgentState): AgentState {
+	return {
+		...state,
+		systemPrompt: PROPOSAL_PROMPT_MARKER,
+		suppressFabricMethodology: true,
+		activeSkill: undefined,
+		isRegeneration: false,
+	};
+}
+
+/**
+ * Answer an artifact Proposal run in plain text and end it, writing no
+ * document (Fizzy #2946). A model response that carried a tool call is
+ * dropped, like the model-initiated `confirm_changes` interception, so no
+ * unanswered call and no pending trace entry stays behind. The patched keys
+ * are cleared so a stale list can never ride a later accept.
+ */
+function proposalReplyCommand(
+	state: AgentState,
+	reply: string,
+	extraStateUpdate: Record<string, unknown> = {},
+): Command {
+	return new Command({
+		goto: END,
+		update: {
+			messages: [...state.messages, new AIMessage({ content: reply })],
+			error: undefined,
+			retryCount: 0,
+			proposalPatchedSectionKeys: [],
+			...extraStateUpdate,
+		},
+	});
+}
+
+/**
+ * Send the model back with a corrective tool message for one of the checks
+ * that allow a single retry (placeholders, echo). The prefix is how the
+ * retry budget is counted: see `countCorrectionsSinceLastHuman`.
+ */
+function proposalCorrectionCommand(params: {
+	state: AgentState;
+	messages: BaseMessage[];
+	toolCall: { id?: string };
+	content: string;
+}): Command {
+	return new Command({
+		goto: "chat_node" as typeof END,
+		update: {
+			messages: [
+				...params.messages,
+				new ToolMessage({
+					content: params.content,
+					tool_call_id: params.toolCall.id || uuidv4(),
+				}),
+			],
+			retryCount: params.state.retryCount + 1,
+		},
+	});
+}
+
+/**
+ * The `apply_document_patches` handler for an artifact Proposal
+ * (Fizzy #2946). Patches apply to the placeholder document the model saw;
+ * markdown repairs run on each patch's content only, never across the
+ * untouched sections; placeholders are restored before anything is emitted;
+ * and the proposed document is checked for echoed reference wording before
+ * it reaches the conversation.
+ */
+function handleProposalPatches(params: {
+	state: AgentState;
+	guardState: AgentState;
+	messages: BaseMessage[];
+	toolCall: { id?: string; args?: Record<string, any> };
+	response: AIMessage;
+	view: VisualPlaceholderView;
+	echoCarried: ReturnType<typeof readProposalClientConfig>["echoCarried"];
+	extraStateUpdate: Record<string, unknown>;
+	reasoningUpdate: Record<string, unknown>;
+}): Command {
+	const {
+		state,
+		guardState,
+		messages,
+		toolCall,
+		response,
+		view,
+		echoCarried,
+		extraStateUpdate,
+		reasoningUpdate,
+	} = params;
+	const patches = toolCall.args?.patches as DocumentPatch[] | undefined;
+	const modelDocument = view.modelDocument;
+
+	if (!Array.isArray(patches) || patches.length === 0) {
+		logger.error(
+			"[Project Document Generator] apply_document_patches called with empty patches",
+			{
+				toolCallId: toolCall.id,
+				retryCount: state.retryCount,
+				stopReason: resolveStopReason(response),
+			},
+		);
+		return buildInvalidToolArgsRetry({
+			state,
+			messages,
+			toolCall,
+			correctionContent:
+				'ERROR: Your apply_document_patches call had an empty or missing "patches" array. You MUST include at least one patch operation. Each patch needs "op" and "anchor" (a full heading path like "## Overview"). Please try again.',
+			exhaustedMessage:
+				"The AI model was unable to generate document edits after multiple attempts. Please try again or use a different model.",
+			truncated: isOutputTruncated(response),
+			truncatedMessage:
+				"The AI model's output limit cut the edit off before it was complete. Try asking for a smaller change to one section.",
+		});
+	}
+
+	const refusedOps = patches
+		.map((patch) => (patch as { op?: unknown })?.op)
+		.filter((op) => !isProposalPatchOp(op));
+	if (refusedOps.length > 0) {
+		logger.warn(
+			"[Project Document Generator] Artifact Proposal patch used an operation it does not accept",
+			{
+				toolCallId: toolCall.id,
+				refusedOps: refusedOps.map((op) =>
+					typeof op === "string" ? op : typeof op,
+				),
+				retryCount: state.retryCount,
+			},
+		);
+		return buildInvalidToolArgsRetry({
+			state,
+			messages,
+			toolCall,
+			correctionContent:
+				`${PATCH_ONLY_CORRECTION_PREFIX} — this document accepts only heading-anchored patches; replace_text and other operations are not available. ` +
+				"Re-emit the whole edit in ONE apply_document_patches call using replace_section (to rename a heading, set keepHeading: false and start content with the new heading line), insert_after, insert_before, append_to_section, prepend_to_section or delete_section, with anchors copied verbatim from the anchor list.",
+			exhaustedMessage:
+				"The change was not applied: the AI kept using an edit this proposal does not accept. Your proposal is unchanged. Try again and name the section you want changed.",
+		});
+	}
+
+	// Markdown repairs on each patch's content only: a whole-document repair
+	// would also rewrite sections nobody asked about.
+	const sanitizeContent = (content: string) =>
+		repairDegradedMarkdown(stripToolDefinitions(content, modelDocument));
+	const { success, result, errors, appliedCount, availableAnchorPaths } =
+		applyPatches(modelDocument, patches, { sanitizeContent });
+
+	if (!success) {
+		logger.warn("[Project Document Generator] Patch application failed", {
+			errorCount: errors.length,
+			errors: errors.map((e) => ({
+				patchIndex: e.patchIndex,
+				code: e.code,
+				anchor: e.anchor,
+			})),
+			retryCount: state.retryCount,
+			proposalClient: true,
+		});
+		const errorSummary = errors
+			.map((e) => {
+				const message =
+					e.code === "excessive_content_loss"
+						? "These patches would remove most of the document. Use narrower anchors that target only the sections the person asked to change."
+						: e.message;
+				const suggestionLine = e.suggestions?.length
+					? `\n  Did you mean: ${e.suggestions.slice(0, 3).join(", ")}`
+					: "";
+				return `- patch[${e.patchIndex}] (${e.op}, anchor="${e.anchor}"): ${message}${suggestionLine}`;
+			})
+			.join("\n");
+		const anchorPathsBlock = (availableAnchorPaths ?? [])
+			.slice(0, 20)
+			.map((p) => `- \`${p}\``)
+			.join("\n");
+
+		let intentHint = "";
+		const renameIntent = detectRenameIntent(modelDocument, errors);
+		if (renameIntent) {
+			logger.warn(
+				"[Project Document Generator] Rename intent detected on patch failure",
+				{
+					currentAnchor: renameIntent.currentAnchor,
+					proposedAnchor: renameIntent.proposedAnchor,
+				},
+			);
+			const newText = renameIntent.proposedAnchor.replace(/^#+\s+/, "");
+			const hashes = "#".repeat(renameIntent.level);
+			intentHint =
+				`RENAME INTENT DETECTED — your patches anchor to "${renameIntent.proposedAnchor}", but the document currently has "${renameIntent.currentAnchor}". ` +
+				"Anchors resolve against the CURRENT document, not against the post-rename result. Fix it within the SAME apply_document_patches call:\n" +
+				`1. In every patch, replace the anchor's leading "${renameIntent.proposedAnchor}" with "${renameIntent.currentAnchor}".\n` +
+				`2. Rename the heading with ONE replace_section patch on "${renameIntent.currentAnchor}" with keepHeading: false, whose content starts with "${hashes} ${newText}" followed by the section's full new body. Fold any other edits to that section into it rather than patching under it.\n\n`;
+		} else {
+			const overlapIntent = diagnoseOverlap(modelDocument, errors);
+			if (overlapIntent) {
+				logger.warn(
+					"[Project Document Generator] Overlap intent detected on patch failure",
+					{
+						dominantPatchIndex: overlapIntent.dominantPatchIndex,
+						dominantCoveragePercent:
+							overlapIntent.dominantCoveragePercent,
+						subsumedPatchIndexes:
+							overlapIntent.subsumedPatchIndexes,
+						kind: overlapIntent.kind,
+					},
+				);
+				const dom = overlapIntent.dominantPatchIndex;
+				const rangeStr = formatLineRange(overlapIntent.dominantRange);
+				const others = overlapIntent.subsumedPatchIndexes
+					.map((i) => `[${i}]`)
+					.join(", ");
+				intentHint =
+					`OVERLAP DETECTED — patch[${dom}] (${rangeStr}, ~${overlapIntent.dominantCoveragePercent}% of the body) overlaps with the other patch(es). All anchors resolve against the baseline, so a wide patch on a heading cannot coexist with narrower patches anchored under it in the same call.\n` +
+					"\nPick ONE recovery path:\n" +
+					`1. Keep ONLY patch[${dom}] and fold the content of patch(es) ${others || "(the narrower ones)"} into its \`content\`.\n` +
+					`2. Drop patch[${dom}] and keep only the narrower patch(es) ${others || "(the non-dominant ones)"}.\n\n`;
+			}
+		}
+
+		return buildInvalidToolArgsRetry({
+			state,
+			messages,
+			toolCall,
+			correctionContent:
+				intentHint +
+				`Your apply_document_patches call failed:\n${errorSummary}\n\n` +
+				`Valid anchor paths in this document (first 20):\n${anchorPathsBlock}\n\n` +
+				"Retry with corrected anchors. Use the full heading path including parent headings " +
+				'(e.g. "## Requirements > ### Must Have"). Copy an anchor from the list verbatim.',
+			exhaustedMessage:
+				"Failed to apply document patches after multiple attempts. The document is unchanged. Please try rephrasing your request.",
+		});
+	}
+
+	// Quotes are judged against the whole document, which leaves every
+	// untouched line exactly as it was.
+	const straightened = straightenIntroducedQuotes(result, modelDocument);
+	const restored = restoreVisualPlaceholders(
+		view,
+		straightened,
+		placeholdersInDeletedSections(view, patches),
+	);
+	if (!restored.ok) {
+		const retried =
+			countCorrectionsSinceLastHuman(
+				state.messages,
+				PLACEHOLDER_CORRECTION_PREFIX,
+			) > 0;
+		logger.warn(
+			"[Project Document Generator] Artifact Proposal patch changed a visual placeholder",
+			{
+				toolCallId: toolCall.id,
+				missingCount: restored.missing.length,
+				repeatedCount: restored.repeated.length,
+				unknownCount: restored.unknown.length,
+				misplacedCount: restored.misplaced.length,
+				outcome: retried ? "not_applied" : "retry",
+			},
+		);
+		if (retried) {
+			return proposalReplyCommand(
+				state,
+				PROPOSAL_VISUALS_NOT_APPLIED_REPLY,
+				reasoningUpdate,
+			);
+		}
+		const list = (label: string, tokens: string[]) =>
+			tokens.length > 0 ? `\n- ${label}: ${tokens.join(", ")}` : "";
+		return proposalCorrectionCommand({
+			state,
+			messages,
+			toolCall,
+			content:
+				`${PLACEHOLDER_CORRECTION_PREFIX} — every placeholder line such as ${view.placeholders[0]?.token ?? "[[fabric-visual-1]]"} stands for a diagram or visual and must stay exactly once, unchanged and on its own line, unless you delete its whole section with delete_section.` +
+				list("missing", restored.missing) +
+				list("repeated", restored.repeated) +
+				list("not a placeholder of this document", restored.unknown) +
+				list("not on a line of its own", restored.misplaced) +
+				"\n\nRe-emit the patches keeping each placeholder in place.",
+		});
+	}
+	const document = restored.document;
+
+	logger.info("[Project Document Generator] Patches applied", {
+		patchCount: patches.length,
+		appliedCount,
+		beforeLength: view.sourceDocument.length,
+		afterLength: document.length,
+		placeholderCount: view.placeholders.length,
+		mode: "patch",
+		proposalClient: true,
+	});
+
+	const sectionGuard = evaluateSectionPreservation({
+		state: guardState,
+		messages,
+		toolCall,
+		baselineDocument: view.sourceDocument,
+		document,
+		mode: "patch",
+	});
+	if (sectionGuard.action === "retry") {
+		return sectionGuard.command;
+	}
+
+	if (
+		echoCarried &&
+		(echoCarried.responseTexts.length > 0 ||
+			echoCarried.findingTitles.length > 0)
+	) {
+		const echo = checkResponseEcho({
+			mainText: document,
+			carried: echoCarried,
+			previousMain: view.sourceDocument,
+		});
+		if (echo.echoed) {
+			const retried =
+				countCorrectionsSinceLastHuman(
+					state.messages,
+					ECHO_CORRECTION_PREFIX,
+				) > 0;
+			logger.warn(
+				"[Project Document Generator] Artifact Proposal edit repeated carried wording",
+				{
+					toolCallId: toolCall.id,
+					responseIndexes: echo.responseIndexes,
+					titleIndexes: echo.titleIndexes,
+					stableKeys: echoedStableKeys(echoCarried, echo),
+					outcome: retried ? "not_applied" : "retry",
+				},
+			);
+			if (retried) {
+				return proposalReplyCommand(
+					state,
+					PROPOSAL_ECHO_NOT_APPLIED_REPLY,
+					reasoningUpdate,
+				);
+			}
+			return proposalCorrectionCommand({
+				state,
+				messages,
+				toolCall,
+				content: `${ECHO_CORRECTION_PREFIX} — your edit reproduces a long run of words from reference material verbatim. Rewrite the changed text in your own words, keep the meaning, and re-emit the patches.`,
+			});
+		}
+	}
+
+	return buildConfirmChangesCommand({
+		state: guardState,
+		messages,
+		toolCall,
+		document,
+		baselineDocument: view.sourceDocument,
+		response,
+		focusAnchor: toolCall.args?.focusAnchor,
+		logMode: "patch",
+		sectionWarning: sectionGuard.warning,
+		// Said by the agent, not the model: a diagram beside the changed
+		// text was kept, and where it can be changed.
+		followUpNote:
+			proposalDiagramNote(diagramsBesideChangedText(view, patches)) ??
+			undefined,
+		redactPreviews: true,
+		extraStateUpdate: {
+			...extraStateUpdate,
+			proposalPatchedSectionKeys: collectPatchedSectionKeys(
+				view,
+				patches,
+			),
+		},
+	});
 }
 
 /**
@@ -1848,10 +2368,11 @@ export function sanitizeMessagesForModel(
  */
 /**
  * Detect a clarifying question the model emitted as a structured block instead
- * of calling the (HITL) `ask_clarifying_question` tool. This agent's model only
- * emits `write_document_local`; like the synthetic `confirm_changes` tool call,
- * we parse the model's `clarifying-question` JSON block and synthesize the tool
- * call ourselves so the frontend renders the interactive card.
+ * of calling the (HITL) `ask_clarifying_question` tool. The prompt asks for the
+ * block, while the editor also offers the tool; when the model writes only the
+ * block, like the synthetic `confirm_changes` tool call, we parse its
+ * `clarifying-question` JSON and synthesize the tool call ourselves so the
+ * frontend renders the interactive card.
  *
  * Lenient: accepts a fenced ```clarifying-question / ```json block (or a bare
  * JSON object), requires a non-empty `question`, and caps `options` at 3.
@@ -1903,6 +2424,46 @@ export function extractClarifyingQuestion(
 	return null;
 }
 
+/**
+ * A ```clarifying-question fence whose first ``` line is a bare closing
+ * line, and the blank space around it. One left open (its next ``` line opens
+ * another fence, or there is none) stays as written, so it never reaches into
+ * a later fence and takes the prose between them.
+ */
+const CLARIFYING_QUESTION_FENCE_RE =
+	/\s*```clarifying-question\b[^\n]*\n(?:(?![ \t]*```)[^\n]*\n)*[ \t]*```[ \t]*(?=\n|$)\s*/gi;
+
+/**
+ * `content` without its ```clarifying-question blocks, for a turn that also
+ * called `ask_clarifying_question`: the card shows the question, so the raw
+ * block must not show above it. The rest of the reply stays. Reads and
+ * rewrites the reply text as the guest check does (`visibleReplyText`,
+ * `replaceReplyText`), so thinking and tool-use blocks are kept. Returns
+ * `content` itself when it holds no such block.
+ */
+function withoutClarifyingQuestionBlocks(content: unknown): unknown {
+	const shown = visibleReplyText(content);
+	const kept = shown.replace(CLARIFYING_QUESTION_FENCE_RE, "\n\n");
+	if (kept === shown) {
+		return content;
+	}
+	const text = kept.trim();
+	const replaced = replaceReplyText(content, text);
+	if (text || !Array.isArray(replaced)) {
+		return replaced;
+	}
+	// Providers reject an empty text block on replay: keep the other blocks.
+	return replaced.filter(
+		(block) =>
+			!(
+				block &&
+				typeof block === "object" &&
+				(block as { type?: unknown }).type === "text" &&
+				(block as { text?: unknown }).text === ""
+			),
+	);
+}
+
 export async function chatNode(
 	state: AgentState,
 	config?: RunnableConfig,
@@ -1929,6 +2490,15 @@ export async function chatNode(
 	// back is a no-op rather than a clear, which matches the pre-existing
 	// behaviour of that branch.
 	const nodeEntryDocument = state.document;
+	// Whether this run edits an artifact Proposal, and with what (Fizzy #2946).
+	// Read from run config only: the bound prompt and the settled block never
+	// enter state, and in this mode the state's own prompt, skill and
+	// regeneration flag are ignored. Any classified Proposal run keeps model
+	// text out of the logs.
+	const proposalConfig = readProposalClientConfig(
+		config?.configurable as Record<string, unknown> | undefined,
+	);
+	const redactModelText = proposalConfig.mode !== "none";
 	// `attemptedImageCount` is hoisted above the try-block so the catch
 	// branch can report it in the vision-unsupported telemetry log
 	// (`feature_assistant_vision_unsupported`).
@@ -2225,6 +2795,70 @@ export async function chatNode(
 			});
 		}
 
+		// =====================================================================
+		// CLIENT PROPOSAL (Fizzy #2946)
+		// =====================================================================
+		// An artifact Proposal is edited only through heading-anchored patches
+		// on the bound revision prompt. Without that prompt, or from a page
+		// the route could not verify, there are no write tools at all: the
+		// run answers in text and never reaches a whole-body writer.
+		if (
+			proposalConfig.mode === "unbound" ||
+			proposalConfig.mode === "unverified"
+		) {
+			logger.info(
+				"[Project Document Generator] Client proposal run without write tools",
+				{ proposalMode: proposalConfig.mode },
+			);
+			return proposalReplyCommand(
+				state,
+				proposalConfig.mode === "unbound"
+					? PROPOSAL_UNBOUND_REPLY
+					: PROPOSAL_UNVERIFIED_REPLY,
+			);
+		}
+		let proposalView: VisualPlaceholderView | null = null;
+		if (proposalConfig.mode === "artifact") {
+			proposalView = buildVisualPlaceholderView(preEditDocument);
+			if (
+				!proposalView.sourceDocument.trim() ||
+				listAnchorPaths(proposalView.modelDocument).length === 0
+			) {
+				logger.info(
+					"[Project Document Generator] Client proposal has no sections to patch",
+					{ documentLength: preEditDocument.length },
+				);
+				return proposalReplyCommand(
+					state,
+					PROPOSAL_GENERATE_FIRST_REPLY,
+				);
+			}
+			logger.info("[Project Document Generator] Client proposal run", {
+				placeholderCount: proposalView.placeholders.length,
+				hasSettledBlock: !!proposalConfig.settledBlock,
+				hasEchoCarried: !!proposalConfig.echoCarried,
+				viewer: proposalConfig.viewer,
+				ignoredRegeneration: !!state.isRegeneration,
+			});
+		}
+		// The state the guards read: in artifact mode a local view with the
+		// bound methodology set, never emitted.
+		const guardState = proposalView ? proposalGuardState(state) : state;
+		// A guest on an artifact Proposal must never read the bound prompt
+		// (Fizzy #2946): every text the chat shows them from this turn goes
+		// through this check first, and their turn records no reasoning.
+		// Null for everyone else.
+		const guestEchoCheck =
+			proposalView &&
+			proposalConfig.viewer === "guest" &&
+			proposalConfig.clientPrompt
+				? buildGuestEchoCheck({
+						clientPrompt: proposalConfig.clientPrompt,
+						echoCarried: proposalConfig.echoCarried,
+						document: proposalView.sourceDocument,
+					})
+				: null;
+
 		// Build system prompt using async version for Fabric AI integration.
 		// Use `preEditDocument` (the wrapper-scrubbed baseline) for both the
 		// presence check and the prompt body, so any `<fabric_source_document>`
@@ -2235,9 +2869,11 @@ export async function chatNode(
 		// Passing it triggers editing/preservation mode which tells the model to preserve
 		// the old format and suppress template structure reminders. Regeneration should
 		// produce a fresh document from the prompt template, not edit the old one.
-		const existingDocForPrompt = state.isRegeneration
-			? undefined
-			: preEditDocument || undefined;
+		const existingDocForPrompt = proposalView
+			? proposalView.modelDocument
+			: state.isRegeneration
+				? undefined
+				: preEditDocument || undefined;
 
 		// When editing, exclude the document body from the system prompt.
 		// The document content is injected as a user message instead, keeping
@@ -2250,11 +2886,15 @@ export async function chatNode(
 		// regeneration (intentional full rewrite), small documents, and
 		// headingless documents (where there's nothing for the model to anchor
 		// patches against — every patch would fail with anchor_not_found).
+		//
+		// An artifact Proposal is always in patch mode, whatever its size: it
+		// has no full-rewrite tool (Fizzy #2946).
 		const patchModeAvailable =
-			isEditing &&
-			!state.isRegeneration &&
-			preEditDocument.length >= PATCH_MODE_MIN_DOC_CHARS &&
-			listAnchorPaths(preEditDocument).length > 0;
+			!!proposalView ||
+			(isEditing &&
+				!state.isRegeneration &&
+				preEditDocument.length >= PATCH_MODE_MIN_DOC_CHARS &&
+				listAnchorPaths(preEditDocument).length > 0);
 
 		// Tool budget for this human turn — mirrors shouldContinue's backstop
 		// (agent.ts) but acts earlier: once the budget is exhausted, this node
@@ -2276,33 +2916,62 @@ export async function chatNode(
 		// re-attached below as `image_url` content parts on the user message
 		// for vision-capable tenant models — see fix follow-up to PR #724
 		// where the image arrived at the agent but was treated as base64 text.
+		//
+		// An artifact Proposal reads no rag context: no client text may sit
+		// beside its bound prompt (Fizzy #2946). The person's attachments
+		// arrive as run config instead and go only into their latest turn,
+		// text and images alike (below); the chat reads the project through
+		// `search_project_knowledge`.
 		const {
 			textOnlyContexts: ragContextsForPrompt,
 			images: pendingImages,
-		} = splitRagContextImages(state.ragContexts);
+		} = splitRagContextImages(
+			proposalView ? proposalConfig.attachments : state.ragContexts,
+		);
+		const proposalAttachmentBlock = proposalView
+			? buildProposalAttachmentBlock(ragContextsForPrompt)
+			: null;
 		// Record the image count for the outer-scope hoisted counter so the
 		// catch branch can report it if the provider rejects vision input.
 		attemptedImageCount = pendingImages.length;
 
-		let contextualPrompt = await buildSystemPromptAsync(
-			state.systemPrompt,
-			state.documentType,
-			state.projectContext,
-			ragContextsForPrompt,
-			existingDocForPrompt,
-			{
-				excludeDocumentBody: isEditing,
-				toolMode: patchModeAvailable ? "patch" : "write",
-				activeSkill: state.activeSkill,
-				suppressFabricMethodology: state.suppressFabricMethodology,
-			},
-		);
+		let contextualPrompt =
+			proposalView && proposalConfig.clientPrompt
+				? buildProposalClientSystemPrompt({
+						clientPrompt: proposalConfig.clientPrompt,
+						settledBlock: proposalConfig.settledBlock,
+						view: proposalView,
+					})
+				: await buildSystemPromptAsync(
+						state.systemPrompt,
+						state.documentType,
+						state.projectContext,
+						ragContextsForPrompt,
+						existingDocForPrompt,
+						{
+							excludeDocumentBody: isEditing,
+							toolMode: patchModeAvailable ? "patch" : "write",
+							activeSkill: state.activeSkill,
+							suppressFabricMethodology:
+								state.suppressFabricMethodology,
+						},
+					);
+
+		// An artifact Proposal's prompt is built from run config alone, so a
+		// publishing topic in the client's state never joins it (Fizzy #2946).
+		if (state.publishingTopic && !proposalView) {
+			contextualPrompt += buildPublishingTopicSection(
+				state.publishingTopic,
+				state.document,
+			);
+		}
 
 		// Patch mode also binds write_document_local as an escape hatch. The
 		// system prompt above teaches patches; add a short note so the model
 		// knows when to switch tools instead of grinding the patch path into
-		// the excessive_content_loss guard.
-		if (patchModeAvailable) {
+		// the excessive_content_loss guard. An artifact Proposal has no
+		// escape hatch.
+		if (patchModeAvailable && !proposalView) {
 			contextualPrompt += `
 
 ---
@@ -2423,7 +3092,9 @@ This project has a connected code repository. You MUST use these tools to search
 		const hasExcalidrawCreateView = (state.copilotkit?.actions ?? []).some(
 			(a: { name?: string }) => a?.name === "create_view",
 		);
-		if (hasExcalidrawCreateView) {
+		// Its routing is written for the full-rewrite tool, so an artifact
+		// Proposal (patches only) leaves it out.
+		if (hasExcalidrawCreateView && !proposalView) {
 			// The persisted `<excalidraw-embed>` must carry the active org id so
 			// the document/feature editor can resolve the (org-scoped) Excalidraw
 			// MCP config when it later fetches the scene via `read_checkpoint`.
@@ -2650,12 +3321,23 @@ exact schema. Read it before invoking.`;
 		// write_document_local is bound — patches add nothing there.
 		// Do NOT use tool_choice to force a tool: the model needs freedom to
 		// respond without tools when handling confirmation replies.
-		const copilotKitActions = state.copilotkit?.actions || [];
+		// An artifact Proposal offers only the frontend actions that leave
+		// Main alone; a writer such as `suggest_diagram` would skip every
+		// patch-only check. The server narrows the list as well.
+		const copilotKitActions = proposalView
+			? proposalFrontendActions(
+					state.copilotkit?.actions || [],
+					proposalConfig.clarifyingPolicy,
+				)
+			: state.copilotkit?.actions || [];
 		const copilotKitTools =
 			convertActionsToDynamicStructuredTools(copilotKitActions);
-		const documentTools = patchModeAvailable
-			? [APPLY_DOCUMENT_PATCHES_TOOL, WRITE_DOCUMENT_TOOL]
-			: [WRITE_DOCUMENT_TOOL];
+		// An artifact Proposal binds only its heading-anchored patches tool.
+		const documentTools = proposalView
+			? [PROPOSAL_PATCHES_TOOL]
+			: patchModeAvailable
+				? [APPLY_DOCUMENT_PATCHES_TOOL, WRITE_DOCUMENT_TOOL]
+				: [WRITE_DOCUMENT_TOOL];
 		// Inline tools handled by chat_node itself (never routed to
 		// tool_node). This is also the allow-list the post-invoke finalize
 		// guard enforces once the tool budget is spent: any server-side tool
@@ -2670,7 +3352,7 @@ exact schema. Read it before invoking.`;
 		const tools: any[] = [...inlineTools];
 		const boundToolNames = [...inlineToolNames];
 
-		// search_project_knowledge: Always available — searches all embedded project context
+		// Project knowledge tools are bound here independently of integration gates.
 		// (meeting transcripts, uploaded docs, codebase analysis, integration content)
 		tools.push({
 			type: "function",
@@ -2679,6 +3361,7 @@ exact schema. Read it before invoking.`;
 				description: `Search the project's knowledge base for relevant information.
 This searches all embedded project context including meeting transcripts, uploaded documents,
 codebase analysis, and integration content using semantic similarity.
+Results contain matched passages. Use read_project_source for full text to quote, follow its structure, or continue cut passages.
 
 Use this tool when you need to:
 - Find what was discussed in meetings (meeting transcripts are embedded here)
@@ -2709,6 +3392,23 @@ Examples:
 			},
 		});
 		boundToolNames.push("search_project_knowledge");
+		tools.push({
+			type: "function",
+			function: {
+				name: "read_project_source",
+				description:
+					"Read a project knowledge source in full; continue with offset when truncated.",
+				parameters: {
+					type: "object",
+					properties: {
+						sourceId: { type: "string" },
+						offset: { type: "number" },
+					},
+					required: ["sourceId"],
+				},
+			},
+		});
+		boundToolNames.push("read_project_source");
 
 		if (state.hasTeamsIntegration) {
 			// Add Teams tool schemas (execution handled by tool_node)
@@ -3214,7 +3914,7 @@ Examples:
 		// write_document_asset: persist a non-markdown artifact (HTML diagram,
 		// SVG, etc.) produced by an active Anthropic Agent Skill as a
 		// ProjectDocumentAsset. Execution handled server-side by tool_node.
-		if (state.activeSkill && state.documentId) {
+		if (!proposalView && state.activeSkill && state.documentId) {
 			tools.push({
 				type: "function",
 				function: {
@@ -3447,10 +4147,12 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 		// small and cacheable, and puts data where it belongs — in user context.
 		//
 		// We wrap the body in a unique <fabric_source_document> tag rather than
-		// a generic <document> tag, and we defensively neutralize any literal
-		// occurrences of that tag inside the document body. Without this guard,
-		// a document containing the literal closing tag would terminate the
-		// wrapper early and leak its tail content into the instruction context.
+		// a generic <document> tag, and we defensively neutralize every
+		// occurrence of that tag inside the document body, in any case and
+		// with spaces or attributes inside the brackets (`neutralizeTag`).
+		// Without this guard, a document containing the closing tag would
+		// terminate the wrapper early and leak its tail content into the
+		// instruction context.
 		//
 		// `documentContextMessageCount` records how many messages this block
 		// contributes so `applyInputBudgetGate` can pin them: the document body
@@ -3459,12 +4161,19 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 		let documentContextMessageCount = 0;
 		if (isEditing && existingDocForPrompt) {
 			const SOURCE_DOC_TAG = "fabric_source_document";
-			const sanitizedDocument = existingDocForPrompt
-				.replaceAll(`<${SOURCE_DOC_TAG}>`, `<${SOURCE_DOC_TAG}_>`)
-				.replaceAll(`</${SOURCE_DOC_TAG}>`, `</${SOURCE_DOC_TAG}_>`);
+			const sanitizedDocument = neutralizeTag(
+				existingDocForPrompt,
+				SOURCE_DOC_TAG,
+			);
+			// An artifact Proposal's anchor list follows the document here,
+			// as its data: headings are the browser's text, so they never
+			// reach the system message (Fizzy #2946).
+			const anchorList = proposalView
+				? `\n\n${buildProposalAnchorList(proposalView)}`
+				: "";
 			modelMessages.push(
 				new HumanMessage({
-					content: `Here is the current document you are editing:\n\n<${SOURCE_DOC_TAG}>\n${sanitizedDocument}\n</${SOURCE_DOC_TAG}>`,
+					content: `Here is the current document you are editing:\n\n<${SOURCE_DOC_TAG}>\n${sanitizedDocument}\n</${SOURCE_DOC_TAG}>${anchorList}`,
 				}),
 			);
 			modelMessages.push(
@@ -3485,7 +4194,7 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 		// before this change). Most modern provider/model combinations the
 		// platform supports accept `image_url` content parts.
 		const messagesWithImages: BaseMessage[] = [...filteredMessages];
-		if (pendingImages.length > 0) {
+		if (!proposalView && pendingImages.length > 0) {
 			let lastHumanIdx = -1;
 			for (let i = messagesWithImages.length - 1; i >= 0; i--) {
 				if (getMessageType(messagesWithImages[i]) === "human") {
@@ -3518,6 +4227,55 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 				messagesWithImages.push(multimodal);
 			}
 		}
+		// An artifact Proposal's attachments join the person's latest turn,
+		// never the system message (Fizzy #2946): the text as one block
+		// labelled as their material, each image an `image_url` part. A turn
+		// the agent synthesized (tool images) is not the person's, so it is
+		// passed over, and the person's own content is kept as it was.
+		if (
+			proposalView &&
+			(proposalAttachmentBlock || pendingImages.length > 0)
+		) {
+			let personIdx = -1;
+			for (let i = messagesWithImages.length - 1; i >= 0; i--) {
+				if (
+					getMessageType(messagesWithImages[i]) === "human" &&
+					!isSyntheticToolImageMessage(messagesWithImages[i])
+				) {
+					personIdx = i;
+					break;
+				}
+			}
+			const own =
+				personIdx >= 0 ? messagesWithImages[personIdx].content : "";
+			const ownParts = Array.isArray(own)
+				? own
+				: own
+					? [{ type: "text" as const, text: own }]
+					: [];
+			const withAttachments = new HumanMessage({
+				content: [
+					...ownParts,
+					...(proposalAttachmentBlock
+						? [
+								{
+									type: "text" as const,
+									text: proposalAttachmentBlock,
+								},
+							]
+						: []),
+					...pendingImages.map((img) => ({
+						type: "image_url" as const,
+						image_url: { url: img.dataUrl },
+					})),
+				],
+			});
+			if (personIdx >= 0) {
+				messagesWithImages[personIdx] = withAttachments;
+			} else {
+				messagesWithImages.push(withAttachments);
+			}
+		}
 
 		modelMessages.push(...messagesWithImages);
 
@@ -3547,8 +4305,13 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 		// byte-identical to the previous round, which is the point: this is
 		// the largest call of the run and it has to hit the provider's prompt
 		// cache (issue #2999).
+		const patchOnly = !!proposalView;
 		const finalizeDirective = finalizeMode
-			? buildFinalizeDirectiveMessage({ toolRounds, patchModeAvailable })
+			? buildFinalizeDirectiveMessage({
+					toolRounds,
+					patchModeAvailable,
+					patchOnly,
+				})
 			: undefined;
 		const invokeMessages: BaseMessage[] = finalizeDirective
 			? [...gatedMessages, finalizeDirective]
@@ -3764,6 +4527,7 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 					buildFinalizeDirectiveMessage({
 						toolRounds,
 						patchModeAvailable,
+						patchOnly,
 					}),
 				];
 
@@ -3822,7 +4586,7 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 				} as Record<string, unknown>);
 				const fallbackMessages: BaseMessage[] = [
 					new SystemMessage({
-						content: `${contextualPrompt}\n\n---\n\n## Research Budget Exhausted\n\nYou have used your available tool-calling budget for this turn (${toolRounds} rounds). Search, browse, and lookup tools are no longer available. Do NOT attempt to call them. Produce your final ${patchModeAvailable ? "edit (apply_document_patches or write_document_local)" : "document (write_document_local)"} now using only the information you have already gathered.`,
+						content: `${contextualPrompt}\n\n---\n\n## Research Budget Exhausted\n\nYou have used your available tool-calling budget for this turn (${toolRounds} rounds). Search, browse, and lookup tools are no longer available. Do NOT attempt to call them. Produce your final ${finalEditLabel({ patchModeAvailable, patchOnly })} now using only the information you have already gathered.`,
 					}),
 					...gatedMessages.slice(1),
 				];
@@ -3889,13 +4653,16 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 		let carriedReasoningUpdate: ReturnType<typeof buildReasoningUpdate> =
 			{};
 		if (isEmptyModelResponse(response) && isOutputTruncated(response)) {
-			carriedReasoningUpdate = buildReasoningUpdate({
-				response,
-				existingByTurn: state.reasoningByTurn,
-				stateMessages: state.messages,
-				turnStart,
-				loggerLabel: "[Project Document Generator]",
-			});
+			// A guest's turn records no reasoning (see `guestEchoCheck`).
+			if (!guestEchoCheck) {
+				carriedReasoningUpdate = buildReasoningUpdate({
+					response,
+					existingByTurn: state.reasoningByTurn,
+					stateMessages: state.messages,
+					turnStart,
+					loggerLabel: "[Project Document Generator]",
+				});
+			}
 
 			const retryBaseMaxTokens = baseMaxTokens * 2;
 			logger.warn(
@@ -3942,7 +4709,7 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 			const retryMessages = await applyInputBudgetGate(
 				[
 					new SystemMessage({
-						content: `${contextualPrompt}\n\n---\n\n## Output Budget Exceeded — Finalize Now\n\nYour previous response was cut off by the output-token limit before it produced anything. Search, browse, and lookup tools are no longer available for this turn. Do NOT attempt to call them. Produce your final ${patchModeAvailable ? "edit (apply_document_patches or write_document_local)" : "document (write_document_local)"} now using only the information you have already gathered, and keep any accompanying prose short.`,
+						content: `${contextualPrompt}\n\n---\n\n## Output Budget Exceeded — Finalize Now\n\nYour previous response was cut off by the output-token limit before it produced anything. Search, browse, and lookup tools are no longer available for this turn. Do NOT attempt to call them. Produce your final ${finalEditLabel({ patchModeAvailable, patchOnly })} now using only the information you have already gathered, and keep any accompanying prose short.`,
 					}),
 					...modelMessages.slice(1),
 				],
@@ -4000,9 +4767,117 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 			}
 		}
 
-		// This agent's model only emits write_document_local, so it signals a
-		// clarifying question as a structured `clarifying-question` block in its
-		// text content rather than calling the HITL ask_clarifying_question tool.
+		// A model that calls ask_clarifying_question may also write the
+		// ```clarifying-question block the prompt describes. The card shows the
+		// question, so the block goes from the reply, in every mode. Before the
+		// guest check below, so that check reads the reply as it is shown.
+		if (
+			response.tool_calls?.some(
+				(toolCall) => toolCall.name === "ask_clarifying_question",
+			)
+		) {
+			(response as { content?: unknown }).content =
+				withoutClarifyingQuestionBlocks(response.content);
+		}
+
+		// A guest on an artifact Proposal must never read the bound prompt
+		// (Fizzy #2946). The browser receives this node's state update, never
+		// streamed text, and for a guest the stream executor reduces each
+		// assistant message in it to its reply text and tool calls, keeping
+		// arguments only for a frontend action (`guestEmittedState`). Those
+		// are checked here, after the last model call and before any branch
+		// below reads them (a clarifying card, a confirm follow-up, a plain
+		// reply): a frontend action whose arguments repeat the prompt is
+		// dropped from every lane, and a reply that repeats it, or that came
+		// with such a call, becomes the refusal. A server-side call that
+		// repeats it runs as usual; its arguments never reach the browser.
+		if (guestEchoCheck) {
+			const isFrontendCall = (entry: unknown): boolean =>
+				isProposalFrontendAction(readToolCallName(entry));
+			const echoes = (entry: unknown): boolean =>
+				guestEchoCheck(toolArgumentText(readToolCallArgs(entry)))
+					.echoed;
+			const shapes = readToolCallShapes(response);
+			const echoingCalls = [
+				...shapes.normalized,
+				...shapes.raw,
+				...shapes.contentBlocks,
+				...(response.invalid_tool_calls ?? []),
+			].filter(echoes);
+			const echoingServerCalls = echoingCalls.filter(
+				(entry) => !isFrontendCall(entry),
+			);
+			if (echoingServerCalls.length > 0) {
+				logger.warn(
+					"[Project Document Generator] Guest server-side call repeated the bound prompt; arguments withheld from the browser",
+					{
+						toolNames: [
+							...new Set(
+								echoingServerCalls.map(readToolCallName),
+							),
+						],
+						toolCallCount: echoingServerCalls.length,
+					},
+				);
+			}
+			const echoingFrontendCalls = echoingCalls.filter(isFrontendCall);
+			let refuse = false;
+			if (echoingFrontendCalls.length > 0) {
+				// A lane that mirrors a matched call under the same id goes too,
+				// whatever its own copy of the arguments says.
+				const echoingIds = new Set(
+					echoingFrontendCalls
+						.map(readToolCallId)
+						.filter(hasUsableToolCallId),
+				);
+				const drop = (entry: unknown): boolean =>
+					isFrontendCall(entry) &&
+					(echoes(entry) ||
+						echoingIds.has(readToolCallId(entry) as string));
+				logger.warn(
+					"[Project Document Generator] Guest tool call repeated the bound prompt; dropped",
+					{
+						toolNames: [
+							...new Set(
+								echoingFrontendCalls.map(readToolCallName),
+							),
+						],
+						toolCallIds: [...echoingIds],
+					},
+				);
+				response = withoutToolCalls(
+					response,
+					drop,
+					drop,
+				) as typeof response;
+				refuse = true;
+			}
+			const reply = visibleReplyText(response.content);
+			const echo = guestEchoCheck(reply);
+			if (echo.echoed) {
+				logger.warn(
+					"[Project Document Generator] Guest reply repeated the bound prompt; replaced",
+					{
+						replyLength: reply.length,
+						responseIndexes: echo.responseIndexes,
+						titleIndexes: echo.titleIndexes,
+						stableKeys: echo.stableKeys,
+						toolCallCount: response.tool_calls?.length ?? 0,
+					},
+				);
+				refuse = true;
+			}
+			if (refuse) {
+				(response as { content?: unknown }).content = replaceReplyText(
+					response.content,
+					PROPOSAL_PROMPT_REFUSAL_REPLY,
+				);
+			}
+		}
+
+		// A model may signal a clarifying question as a structured
+		// `clarifying-question` block in its text content without calling the
+		// HITL ask_clarifying_question tool, as the prompt tells it to.
 		// Synthesize the tool call ONTO the model's response here so it flows
 		// through the exact same external frontend-tool path as select_meetings /
 		// confirm_changes below (no goto; shouldContinue routes to END and
@@ -4071,10 +4946,19 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 			toolCallCount: response.tool_calls?.length || 0,
 			toolNames: response.tool_calls?.map((tc: any) => tc.name) || [],
 			hasContent: !!response.content,
-			contentPreview:
-				typeof response.content === "string"
-					? response.content.substring(0, 200)
-					: JSON.stringify(response.content)?.substring(0, 200),
+			// A classified Proposal run logs no model text: the model may repeat
+			// its server-only prompt (Fizzy #2946).
+			...(redactModelText
+				? {}
+				: {
+						contentPreview:
+							typeof response.content === "string"
+								? response.content.substring(0, 200)
+								: JSON.stringify(response.content)?.substring(
+										0,
+										200,
+									),
+					}),
 			// A turn with no content and no tool calls is otherwise
 			// indistinguishable from one whose call was truncated at the
 			// output-token cap — LangChain parks a cut-off call in
@@ -4125,14 +5009,21 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 		// own, `buildReasoningUpdate` returns `{}` — fall back to the carried
 		// update so the failed attempt's trace still reaches the UI. Both are
 		// `{}` on an ordinary turn, so this is a no-op there.
-		const responseReasoningUpdate = buildReasoningUpdate({
-			response,
-			existingByTurn:
-				carriedReasoningUpdate.reasoningByTurn ?? state.reasoningByTurn,
-			stateMessages: state.messages,
-			turnStart,
-			loggerLabel: "[Project Document Generator]",
-		});
+		//
+		// A guest's turn records no reasoning (see `guestEchoCheck`): the
+		// trace is shown in the chat, and nothing checks it for the prompt.
+		const responseReasoningUpdate: ReturnType<typeof buildReasoningUpdate> =
+			guestEchoCheck
+				? {}
+				: buildReasoningUpdate({
+						response,
+						existingByTurn:
+							carriedReasoningUpdate.reasoningByTurn ??
+							state.reasoningByTurn,
+						stateMessages: state.messages,
+						turnStart,
+						loggerLabel: "[Project Document Generator]",
+					});
 		const reasoningByTurnUpdate = responseReasoningUpdate.reasoningByTurn
 			? responseReasoningUpdate
 			: carriedReasoningUpdate;
@@ -4302,6 +5193,52 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 				});
 			}
 
+			// An artifact Proposal has no full-rewrite or asset tool; a model that
+			// calls one anyway is sent back to the patches tool (Fizzy #2946).
+			if (
+				proposalView &&
+				(toolCall.name === "write_document_local" ||
+					toolCall.name === "write_document_asset")
+			) {
+				logger.warn(
+					"[Project Document Generator] Client proposal run called an unavailable tool",
+					{ toolCallId: toolCall.id, toolName: toolCall.name },
+				);
+				return buildInvalidToolArgsRetry({
+					state,
+					messages,
+					toolCall,
+					correctionContent: `${PATCH_ONLY_CORRECTION_PREFIX} — ${toolCall.name} is not available for this document. Make the change with apply_document_patches, using heading-anchored operations and anchors copied verbatim from the anchor list.`,
+					exhaustedMessage:
+						"The change was not applied: the AI kept trying to rewrite the whole proposal. Your proposal is unchanged. Try again and name the section you want changed.",
+				});
+			}
+
+			if (proposalView && toolCall.name === "apply_document_patches") {
+				return handleProposalPatches({
+					state,
+					guardState,
+					messages,
+					toolCall,
+					response,
+					view: proposalView,
+					// A guest's patch is checked for the prompt even when the
+					// carried text came without it, as their reply is.
+					echoCarried:
+						guestEchoCheck && proposalConfig.clientPrompt
+							? guestCarriedText(
+									proposalConfig.clientPrompt,
+									proposalConfig.echoCarried,
+								)
+							: proposalConfig.echoCarried,
+					reasoningUpdate: reasoningByTurnUpdate,
+					extraStateUpdate: {
+						...reasoningByTurnUpdate,
+						...toolCallsByTurnUpdate,
+					},
+				});
+			}
+
 			if (toolCall.name === "write_document_local") {
 				// A non-string document (an object, an array) is as unusable as a
 				// missing one and would otherwise throw in stripToolDefinitions,
@@ -4419,6 +5356,8 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 				}
 
 				return buildConfirmChangesCommand({
+					outputMessageId:
+						runnableConfig.configurable?.output_message_id,
 					state,
 					messages,
 					toolCall,
@@ -4642,6 +5581,8 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 				}
 
 				return buildConfirmChangesCommand({
+					outputMessageId:
+						runnableConfig.configurable?.output_message_id,
 					state,
 					messages,
 					toolCall,
@@ -4783,7 +5724,7 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 
 		const errorDetails: Record<string, unknown> = {};
 		if (error instanceof Error) {
-			if ((error as any).cause) {
+			if ((error as any).cause && !redactModelText) {
 				errorDetails.cause = String((error as any).cause);
 			}
 			if ((error as any).response) {
@@ -4800,13 +5741,22 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 			errorDetails.errorKeys = Object.keys(error);
 		}
 
+		// A classified Proposal run logs no error text: a provider's error can
+		// repeat the request, the bound prompt included (Fizzy #2946). The
+		// type, the codes and the stack frames stay.
 		logger.error("[Project Document Generator] Error in chat node", {
-			error: errorMessage,
+			...(redactModelText ? {} : { error: errorMessage }),
 			errorType:
 				error instanceof Error ? error.constructor.name : typeof error,
 			errorStack:
 				error instanceof Error
-					? error.stack?.split("\n").slice(0, 5).join("\n")
+					? redactModelText
+						? error.stack
+								?.split("\n")
+								.filter((line) => /^\s+at /.test(line))
+								.slice(0, 4)
+								.join("\n")
+						: error.stack?.split("\n").slice(0, 5).join("\n")
 					: undefined,
 			errorDetails,
 			isJsonParseError: isJsonError,
@@ -4821,6 +5771,13 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 			// an empty response body.
 			requestMessageShape: lastRequestShape,
 		});
+
+		// A guest on an artifact Proposal reads one generic reply whatever
+		// failed: error text can repeat the request, and the fixed replies
+		// below speak to the organization's own setup (Fizzy #2946).
+		const guestRun = isGuestArtifactRun(proposalConfig);
+		const replyFor = (text: string) =>
+			guestRun ? PROPOSAL_GUEST_ERROR_REPLY : text;
 
 		// Fail-fast on deterministic "this model does not accept images"
 		// errors. The tenant's TOOL_CALLING model is text-only; retrying
@@ -4850,7 +5807,7 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 					attemptedImageCount,
 				},
 			);
-			const userFacingError = VISION_UNSUPPORTED_USER_MESSAGE;
+			const userFacingError = replyFor(VISION_UNSUPPORTED_USER_MESSAGE);
 			return new Command({
 				goto: END,
 				update: {
@@ -4880,8 +5837,9 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 					model: errorProviderConfig?.model,
 				},
 			);
-			const userFacingError =
-				"The AI request exceeded the model's context window. Try narrowing the scope — for example, ask about a single feature or a specific stage — or remove unrelated document sections before retrying.";
+			const userFacingError = replyFor(
+				"The AI request exceeded the model's context window. Try narrowing the scope — for example, ask about a single feature or a specific stage — or remove unrelated document sections before retrying.",
+			);
 			return new Command({
 				goto: END,
 				update: {
@@ -4922,8 +5880,9 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 					limitKind: limitSignal.kind,
 				},
 			);
-			const userFacingError =
-				"The AI provider account has run out of credit, so the request was rejected. An administrator needs to top up the provider account before the assistant can respond — retrying will not help until then.";
+			const userFacingError = replyFor(
+				"The AI provider account has run out of credit, so the request was rejected. An administrator needs to top up the provider account before the assistant can respond — retrying will not help until then.",
+			);
 			return new Command({
 				goto: END,
 				update: {
@@ -4976,7 +5935,9 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 					requestMessageShape: lastRequestShape,
 				},
 			);
-			const userFacingError = `Failed to generate document: ${errorMessage}`;
+			const userFacingError = replyFor(
+				`Failed to generate document: ${errorMessage}`,
+			);
 			return new Command({
 				goto: END,
 				update: {
@@ -5047,6 +6008,7 @@ After saving, reference the artifact in the markdown body with: <!-- asset:<file
 		} else {
 			userFacingError = `Failed to generate document: ${errorMessage}`;
 		}
+		userFacingError = replyFor(userFacingError);
 
 		const errorResponse = {
 			role: "assistant" as const,

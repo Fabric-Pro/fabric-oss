@@ -4,6 +4,8 @@
  */
 
 export * from "../types";
+// Durable AG-UI agent run (CopilotKit document, feature and topic assistants)
+export { agUiAgentRunWorkflow } from "./ag-ui-agent-run";
 // Agent Health Monitor workflow (scheduled health checks for registered agents)
 export {
 	type AgentHealthMonitorWorkflowInput,

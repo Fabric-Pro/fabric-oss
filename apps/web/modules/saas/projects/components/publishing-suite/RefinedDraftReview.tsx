@@ -165,7 +165,7 @@ function RefinementEditor({
 		diffViews,
 		effectiveDiffViewMode,
 		showDiffPreviewPanes,
-	} = useDiffPreview(editor, true);
+	} = useDiffPreview(editor, true, "sideBySide");
 
 	const isBusy = isSaving || isRejecting;
 

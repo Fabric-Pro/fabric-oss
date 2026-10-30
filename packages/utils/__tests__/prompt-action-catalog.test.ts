@@ -27,6 +27,7 @@ import {
 	PROMPT_AGENT_TARGETS,
 	PROMPT_FEATURE_TYPES,
 	PROPOSAL_CLIENT_MAIN_AGENT_KEY,
+	PROPOSAL_CLIENT_REVISION_AGENT_KEY,
 	PROPOSAL_INTERNAL_ANALYSIS_AGENT_KEY,
 	promptActionFeatureType,
 	promptActionId,
@@ -402,6 +403,7 @@ describe("Publishing Suite prompts (#1851, #1853, #1854)", () => {
 describe("coordinated Proposal prompt actions (Fizzy #2801)", () => {
 	it.each([
 		[PROPOSAL_CLIENT_MAIN_AGENT_KEY, "Client proposal (Main)"],
+		[PROPOSAL_CLIENT_REVISION_AGENT_KEY, "Client proposal (revision)"],
 		[PROPOSAL_INTERNAL_ANALYSIS_AGENT_KEY, "Proposal internal analysis"],
 	])(
 		"lists %s under Project Documents, bindable for PROPOSAL only",
@@ -419,11 +421,12 @@ describe("coordinated Proposal prompt actions (Fizzy #2801)", () => {
 		},
 	);
 
-	it("keeps the two actions apart from each other and from the Draft flow's PROPOSAL action", () => {
-		// All three resolve at (PROPOSAL, null); only the agent key tells the
-		// client document, its analysis and the Draft prompt apart.
+	it("keeps the Proposal actions apart from each other and from the Draft flow's PROPOSAL action", () => {
+		// All resolve at (PROPOSAL, null); only the agent key tells the client
+		// document, its revision, its analysis and the Draft prompt apart.
 		const keys = [
 			PROPOSAL_CLIENT_MAIN_AGENT_KEY,
+			PROPOSAL_CLIENT_REVISION_AGENT_KEY,
 			PROPOSAL_INTERNAL_ANALYSIS_AGENT_KEY,
 			"project_document_generator",
 		];
@@ -529,6 +532,11 @@ describe("actions the Proposal artifact supersedes (Fizzy #2946)", () => {
 		"PROPOSAL",
 		null,
 	);
+	const REVISION = promptActionId(
+		PROPOSAL_CLIENT_REVISION_AGENT_KEY,
+		"PROPOSAL",
+		null,
+	);
 	const PRD = promptActionId("project_document_generator", "PRD", null);
 	const agentFor = (key: string) => {
 		const agent = findPromptAgentTarget(key);
@@ -546,15 +554,23 @@ describe("actions the Proposal artifact supersedes (Fizzy #2946)", () => {
 		expect(removed.sort()).toEqual([LEGACY_GENERATOR, LEGACY_DRAFT].sort());
 	});
 
-	it("keeps Client proposal (Main), the internal analysis and every other document offered", () => {
+	it("keeps Client proposal (Main), its revision, the internal analysis and every other document offered", () => {
 		const offered = listOfferedPromptActions(true).map((a) => a.id);
 
 		expect(offered).toContain(MAIN);
+		expect(offered).toContain(REVISION);
 		expect(offered).toContain(ANALYSIS);
 		expect(offered).toContain(PRD);
 		expect(
 			isSupersededPromptAction(
 				PROPOSAL_CLIENT_MAIN_AGENT_KEY,
+				"PROPOSAL",
+				true,
+			),
+		).toBe(false);
+		expect(
+			isSupersededPromptAction(
+				PROPOSAL_CLIENT_REVISION_AGENT_KEY,
 				"PROPOSAL",
 				true,
 			),
@@ -596,6 +612,13 @@ describe("actions the Proposal artifact supersedes (Fizzy #2946)", () => {
 			"ARCHITECTURE",
 		]);
 		expect(offeredDocumentTypes(main, null, true)).toEqual(["PROPOSAL"]);
+		expect(
+			offeredDocumentTypes(
+				agentFor(PROPOSAL_CLIENT_REVISION_AGENT_KEY),
+				null,
+				true,
+			),
+		).toEqual(["PROPOSAL"]);
 		expect(offeredDocumentTypes(draftAgent, null, false)).toEqual(
 			bindableDocumentTypes(draftAgent, null),
 		);

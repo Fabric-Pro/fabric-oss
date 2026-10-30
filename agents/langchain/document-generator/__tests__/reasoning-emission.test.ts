@@ -35,6 +35,10 @@ vi.mock("../utils", async (importOriginal) => {
 	};
 });
 
+vi.mock("@repo/agent-core", async (importOriginal) => ({
+	...(await importOriginal<typeof import("@repo/agent-core")>()),
+	logAgentUsageFromRunnableConfig: vi.fn(async () => {}),
+}));
 // Import AFTER vi.mock so the chatNode sees the stubbed util.
 const { chatNode } = await import("../nodes/chat-node");
 
@@ -286,4 +290,75 @@ describe("document-generator chatNode — reasoning emission", () => {
 		).reasoningByTurn;
 		expect(reasoningByTurn?.[1].text).toBe("Just answer in chat.");
 	});
+});
+
+it.each([undefined, `msg_1793200000000_${"a".repeat(32)}`])(
+	"carries draft provenance and usage identity: %s",
+	async (outputId) => {
+		invokeMock.mockReset();
+		invokeMock.mockResolvedValueOnce(
+			new AIMessage({
+				content: "",
+				tool_calls: [
+					{
+						id: "example-write",
+						name: "write_document_local",
+						args: { document: "# Example\n\nExample content" },
+					},
+				],
+			}),
+		);
+		const command = await chatNode(
+			{
+				...baseState,
+				messages: [new HumanMessage("Draft example")],
+			} as never,
+			{ configurable: { output_message_id: outputId } },
+		);
+		const messages = (command as any).update.messages;
+		const call = messages.at(-1).tool_calls[0];
+		const draftId = (call.args ?? call.function.arguments).draftId;
+		if (outputId) {
+			expect(draftId).toMatch(new RegExp(`^${outputId}:[0-9a-f-]{36}$`));
+		} else {
+			expect(draftId).toBeUndefined();
+		}
+		const { logAgentUsageFromRunnableConfig } = await import(
+			"@repo/agent-core"
+		);
+		expect(logAgentUsageFromRunnableConfig).toHaveBeenLastCalledWith(
+			expect.anything(),
+			expect.anything(),
+			expect.objectContaining({ outputMessageId: outputId }),
+		);
+	},
+);
+
+it("attributes both reply-producing calls during truncation recovery", async () => {
+	const outputId = `msg_1793200000000_${"a".repeat(32)}`;
+	invokeMock.mockReset();
+	invokeMock.mockResolvedValueOnce(
+		new AIMessage({
+			content: "",
+			tool_calls: [],
+			response_metadata: { finish_reason: "length" },
+		}),
+	);
+	invokeMock.mockResolvedValueOnce(new AIMessage({ content: "Recovered" }));
+	const { logAgentUsageFromRunnableConfig } = await import(
+		"@repo/agent-core"
+	);
+	vi.mocked(logAgentUsageFromRunnableConfig).mockClear();
+	await chatNode(
+		{
+			...baseState,
+			messages: [new HumanMessage("Draft example")],
+		} as never,
+		{ configurable: { output_message_id: outputId } },
+	);
+	expect(logAgentUsageFromRunnableConfig).toHaveBeenCalledTimes(2);
+	for (const [, , usage] of vi.mocked(logAgentUsageFromRunnableConfig).mock
+		.calls) {
+		expect(usage.outputMessageId).toBe(outputId);
+	}
 });

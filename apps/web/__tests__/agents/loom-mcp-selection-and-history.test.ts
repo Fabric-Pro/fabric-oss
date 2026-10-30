@@ -33,7 +33,8 @@ function readSource(relativePath: string): string {
 
 const DIRECT_CHAT_PATH =
 	"modules/saas/agents/components/FabricChat/FabricDirectChat.tsx";
-const STREAM_ROUTE_PATH = "app/api/agents/fabric-ai/stream/route.ts";
+// The stream route's admission (body schema, history mapping) lives here.
+const STREAM_ROUTE_PATH = "app/api/agents/fabric-ai/stream/direct-turn.ts";
 const HISTORY_WINDOW_PATH = "app/api/agents/fabric-ai/stream/history-window.ts";
 
 describe("Direct chat MCP selection", () => {
@@ -64,7 +65,9 @@ describe("Direct chat MCP selection", () => {
 });
 
 describe("conversation rehydration", () => {
-	const source = readSource(DIRECT_CHAT_PATH);
+	// The Direct chat loads a saved conversation through this module, which
+	// both of its transports share.
+	const source = readSource("modules/saas/agents/lib/direct-chat-history.ts");
 
 	it("normalizes persisted roles instead of casting them", () => {
 		expect(source).not.toMatch(/role: msg\.role as "user" \| "assistant"/);

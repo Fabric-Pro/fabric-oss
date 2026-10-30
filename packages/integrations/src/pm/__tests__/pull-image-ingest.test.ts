@@ -1246,3 +1246,21 @@ describe("buildGitLabIngestOptions — the download goes only where it may", () 
 		expect(init.dispatcher).toBeDefined();
 	});
 });
+
+it("normalizes long PM slash runs", () => {
+	const options = buildFizzyIngestOptions(
+		"example-key",
+		`${"/".repeat(200_000)}example${"/".repeat(200_000)}`,
+	);
+	expect(
+		options.resolveFetchUrl?.(
+			"/rails/active_storage/blobs/redirect/example/file",
+		),
+	).toContain("/example/rails/");
+	expect(
+		buildGitLabIngestOptions(
+			`https://example.com/${"/".repeat(200_000)}x`,
+			"example-key",
+		),
+	).toBeDefined();
+});

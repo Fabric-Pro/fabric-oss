@@ -457,12 +457,18 @@ describe("the header bar", () => {
 		).not.toBeInTheDocument();
 	});
 
-	it("the error view keeps its header buttons and offers Edit with instructions for a flowchart", async () => {
+	// A diagram that does not draw shows the failure view first; its Edit
+	// source opens the source view, which keeps its header and message.
+	it("the error's source view keeps its header buttons and offers Edit with instructions for a flowchart", async () => {
+		const user = userEvent.setup();
 		const broken = fence([MARKER, "flowchart LR", '  a["BROKEN']);
 		render(
 			<DiagramHarness markdown={`## Flow\n\n${broken}`} visual={{}} />,
 		);
 
+		await user.click(
+			await screen.findByRole("button", { name: "Edit source" }),
+		);
 		await screen.findByText("Parse error on line 2");
 		expect(
 			screen.getByRole("button", { name: "Delete diagram" }),

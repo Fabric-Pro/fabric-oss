@@ -8,8 +8,15 @@
  * the avatars bucket, the hero a promoted Brand kit hero of the export's own
  * organization, a recipient logo sits under this project's promoted
  * recipient-brand prefix. An asset that fails a check, cannot be read, would
- * overrun the export's image budget or does not decode is left off the
- * cover, and the export says so with one warning.
+ * overrun the export's image budget, does not decode or stays over the
+ * encoded cap at its smallest edge is left off the cover, and the export
+ * says so with one warning.
+ *
+ * Each logo is also measured, so the dark cover can tell a logo drawn for a
+ * light background (set on a light plate) from one drawn for a dark one, and
+ * so is the hero, so the ink laid over it is only as dense as it needs. Each
+ * asset is kept small enough to print, the hero with a small copy for the
+ * openers.
  */
 
 import { config } from "@repo/config";
@@ -17,20 +24,28 @@ import {
 	isRecipientLogoKeyForProject,
 	trustedOrganizationLogoKey,
 } from "@repo/database";
+import { srgbChannelToLinear } from "@repo/utils/brand-colors";
 import { isOrganizationHeroKey } from "@repo/utils/proposal-artifact/brand-sources";
 import {
 	mapThemeAssets,
 	type ProposalThemeTokens,
 	type ThemeAssetRef,
 } from "@repo/utils/proposal-artifact/theme-tokens";
+import sharp, { type Sharp } from "sharp";
 import type { ExportImageBudget } from "../../lib/proposal-export/extract-document-images";
-import { normalizeExportImage } from "../../lib/proposal-export/normalize-image";
+import { fitExportImage } from "../../lib/proposal-export/fit-export-image";
+import {
+	type NormalizeExportImageResult,
+	normalizeExportImage,
+} from "../../lib/proposal-export/normalize-image";
 import { readStoredObjectWithin } from "../../lib/proposal-export/read-stored-object";
 import {
+	type ExportRaster,
 	type ExportThemeTokens,
 	PROPOSAL_EXPORT_LIMITS,
 	type ProposalExportWarning,
 } from "../../lib/proposal-export/types";
+import { activityLogger } from "../lib/activity-logger";
 
 /**
  * The longest edge a logo is kept at: the cover draws one at most 2.75 inches
@@ -38,11 +53,133 @@ import {
  */
 const LOGO_MAX_EDGE = 1200;
 
-/** The longest edge an asset is kept at: the hero fills the cover's width. */
-function maxEdgeFor(ref: ThemeAssetRef): number {
-	return ref.kind === "organization-hero"
-		? PROPOSAL_EXPORT_LIMITS.maxImageEdge
-		: LOGO_MAX_EDGE;
+/**
+ * The longest edge of the hero's copy for the section openers, whose
+ * graphic is at most about four inches wide.
+ */
+const HERO_OPENER_EDGE = 900;
+
+/**
+ * The hero, re-encoded at the largest edge that keeps it printable (it
+ * fills the cover's width, and steps down only to fit the encoded cap),
+ * with its small copy for the openers.
+ */
+async function normalizeHero(
+	bytes: Buffer,
+): Promise<NormalizeExportImageResult> {
+	const result = await fitExportImage(bytes, {
+		maxEdge: PROPOSAL_EXPORT_LIMITS.maxImageEdge,
+	});
+	if (!result.ok) {
+		return result;
+	}
+	const opener = await normalizeExportImage(bytes, {
+		maxEdge: HERO_OPENER_EDGE,
+	});
+	return opener.ok
+		? { ok: true, image: { ...result.image, openerCopy: opener.image } }
+		: result;
+}
+
+/** One sRGB channel byte as linear light, as WCAG's luminance reads it. */
+const LINEAR = Array.from({ length: 256 }, (_, value) =>
+	srgbChannelToLinear(value),
+);
+
+/** One pixel's relative luminance from its sRGB channel bytes. */
+function pixelLuminance(data: Buffer, offset: number): number {
+	return (
+		0.2126 * (LINEAR[data[offset] as number] as number) +
+		0.7152 * (LINEAR[data[offset + 1] as number] as number) +
+		0.0722 * (LINEAR[data[offset + 2] as number] as number)
+	);
+}
+
+/** Calls `visit` with each pixel's luminance and alpha (0 to 1). */
+async function eachPixel(
+	image: Sharp,
+	visit: (luminance: number, alpha: number) => void,
+): Promise<void> {
+	const { data, info } = await image
+		.ensureAlpha()
+		.raw()
+		.toBuffer({ resolveWithObject: true });
+	const channels = info.channels;
+	for (let offset = 0; offset + channels <= data.length; offset += channels) {
+		visit(pixelLuminance(data, offset), (data[offset + 3] as number) / 255);
+	}
+}
+
+/**
+ * A logo's mean relative luminance over its opaque pixels, each weighted by
+ * its alpha, and whether it has no transparent pixel at all. A logo with no
+ * opaque pixel has no luminance.
+ */
+export async function measureLogo(
+	raster: ExportRaster,
+): Promise<{ luminance?: number; opaque: boolean }> {
+	let weight = 0;
+	let sum = 0;
+	let opaque = true;
+	await eachPixel(sharp(raster.bytes), (luminance, alpha) => {
+		if (alpha < 1) {
+			opaque = false;
+		}
+		if (alpha > 0) {
+			weight += alpha;
+			sum += luminance * alpha;
+		}
+	});
+	return weight > 0 ? { luminance: sum / weight, opaque } : { opaque };
+}
+
+/** The hero is measured at this longest edge: its tones, not its detail. */
+const HERO_MEASURE_EDGE = 400;
+
+/** The share of the hero's pixels the veil's bright end is darker than. */
+const HERO_BRIGHT_PERCENTILE = 0.9;
+
+/** Luminance buckets of the hero's histogram. */
+const HERO_BUCKETS = 1024;
+
+/**
+ * The hero's bright end: the relative luminance its brightest tenth of
+ * visible pixels starts at, counting a pixel by its alpha, rounded up to its
+ * bucket's top. A hero with no visible pixel has none. The cover's text sits
+ * over the whole picture, so its bright end, not its mean, sets the veil.
+ */
+export async function measureHero(
+	raster: ExportRaster,
+): Promise<{ luminance?: number }> {
+	const buckets = new Float64Array(HERO_BUCKETS);
+	let total = 0;
+	await eachPixel(
+		sharp(raster.bytes).resize(HERO_MEASURE_EDGE, HERO_MEASURE_EDGE, {
+			fit: "inside",
+			withoutEnlargement: true,
+		}),
+		(luminance, alpha) => {
+			if (alpha > 0) {
+				const bucket = Math.min(
+					Math.floor(luminance * HERO_BUCKETS),
+					HERO_BUCKETS - 1,
+				);
+				buckets[bucket] = (buckets[bucket] as number) + alpha;
+				total += alpha;
+			}
+		},
+	);
+	if (total === 0) {
+		return {};
+	}
+	let seen = 0;
+	for (let bucket = 0; bucket < HERO_BUCKETS; bucket++) {
+		seen += buckets[bucket] as number;
+		if (seen >= total * HERO_BRIGHT_PERCENTILE) {
+			return { luminance: (bucket + 1) / HERO_BUCKETS };
+		}
+	}
+	return { luminance: 1 };
 }
 
 /** Where a stored asset lives. */
@@ -129,15 +266,28 @@ export async function loadThemeAssets(input: {
 				unavailable++;
 				return null;
 			}
-			const result = await normalizeExportImage(bytes, {
-				maxEdge: maxEdgeFor(ref),
-			});
+			const result =
+				ref.kind === "organization-hero"
+					? await normalizeHero(bytes)
+					: await fitExportImage(bytes, { maxEdge: LOGO_MAX_EDGE });
 			if (!result.ok) {
 				unavailable++;
 				return null;
 			}
 			loaded.add(ref);
-			return result.image;
+			// An unmeasured hero prints under the veil a white one needs, an
+			// unmeasured logo straight on the ink.
+			const measured = await (ref.kind === "organization-hero"
+				? measureHero(result.image)
+				: measureLogo(result.image)
+			).catch((error: unknown) => {
+				activityLogger.warn("Proposal export asset measure failed", {
+					kind: ref.kind,
+					error: error instanceof Error ? error.name : "unknown",
+				});
+				return {};
+			});
+			return { ...result.image, ...measured };
 		} catch {
 			unavailable++;
 			return null;

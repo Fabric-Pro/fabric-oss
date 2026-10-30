@@ -2,6 +2,11 @@ import type { z } from "zod";
 import { db } from "../client";
 import type { Prisma } from "../generated/client";
 import type { UserSchema } from "../zod";
+import {
+	getOperatorOrganizationId,
+	hasOperatorMembership,
+	includesAdminRole,
+} from "./platform-admin";
 
 function userSearchWhere(query?: string) {
 	if (!query) {
@@ -85,6 +90,11 @@ export async function createUser({
 	emailVerified: boolean;
 	onboardingComplete: boolean;
 }) {
+	if (getOperatorOrganizationId() && includesAdminRole(role)) {
+		throw new Error(
+			"Create operator admins with the transactional admin provisioning script",
+		);
+	}
 	return await db.user.create({
 		data: {
 			email,
@@ -132,6 +142,14 @@ export async function createUserAccount({
 export async function updateUser(
 	user: Partial<z.infer<typeof UserSchema>> & { id: string },
 ) {
+	if (
+		includesAdminRole(user.role) &&
+		!(await hasOperatorMembership(user.id))
+	) {
+		throw new Error(
+			"The admin role requires operator organization membership",
+		);
+	}
 	return await db.user.update({
 		where: {
 			id: user.id,

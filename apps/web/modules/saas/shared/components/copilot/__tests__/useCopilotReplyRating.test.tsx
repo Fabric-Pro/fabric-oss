@@ -272,3 +272,15 @@ describe("Copilot reply ratings", () => {
 		expect(client.getQueryCache().getAll()[0].isStale()).toBe(false);
 	});
 });
+
+it("preserves the context value and callbacks across unchanged parent renders", async () => {
+	const { result, rerender } = setup();
+	await waitFor(() => expect(result.current.canRate(reply.id)).toBe(true));
+	const previous = result.current;
+	rerender();
+	expect(result.current).toBe(previous);
+	await act(() => result.current.onThumbsUp(reply));
+	expect(result.current).not.toBe(previous);
+	expect(result.current.onThumbsUp).toBe(previous.onThumbsUp);
+	expect(result.current.onThumbsDown).toBe(previous.onThumbsDown);
+});

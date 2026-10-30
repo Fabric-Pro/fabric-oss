@@ -1,7 +1,6 @@
 /**
  * CopilotKit Runtime API Route
  * Routes through Vercel AI Gateway like the AI Chatbot
- * Using OpenAI-compatible API: https://vercel.com/docs/ai-gateway/openai-compat
  *
  * DO NOT MODIFY this route's proxy semantics.
  * See fabric/specs/2026-05-19-ai-assistant-document-chat-history/spec.md §6.7
@@ -10,6 +9,13 @@
  * (Group H), NOT here. The existing tenant cache, AI-token issuance, and
  * rate-limit semantics must remain the sole authority for who-can-write-what
  * at the runtime level.
+ *
+ * The one rewrite of what reaches the agents: every `agent/run` and
+ * `agent/suggest` carries the server-resolved Proposal chat config in its
+ * `forwardedProps`, and client values for those keys are dropped (Fizzy
+ * #2946, `./proposal-client-run`). A thread is run and replayed only for the
+ * user who started it, and only for its conversation's owner when it names
+ * one (`./proposal-run-runner`).
  */
 
 // `LangGraphHttpAgent` must come from `@ag-ui/langgraph` (bundled by Turbopack),
@@ -22,11 +28,9 @@
 import { LangGraphHttpAgent } from "@ag-ui/langgraph";
 import {
 	CopilotRuntime,
-	type CopilotServiceAdapter,
-	copilotRuntimeNextJSAppRouterEndpoint,
-	ExperimentalEmptyAdapter,
-	OpenAIAdapter,
-} from "@copilotkit/runtime";
+	createCopilotRuntimeHandler,
+	InMemoryAgentRunner,
+} from "@copilotkit/runtime/v2";
 import {
 	AgentRegistry,
 	LangGraphAgentAdapter,
@@ -43,16 +47,12 @@ import {
 	CHATGPT_PLAN_EXHAUSTED_CODE,
 	SubscriptionPlanExhaustedError,
 } from "@repo/agent-types/chatgpt-plan-fetch";
-import { databricksPromptCacheForModel } from "@repo/agent-types/databricks-compat";
 import {
 	buildEffectiveBaseUrl,
-	createDatabricksFetch,
 	type getAIModelWithMetadata,
-	getCurrentDateContext,
 	getRAGProviderConfig,
 	isReasoningModelName,
 	resolveModelWithProvider,
-	toDatabricksInferenceBaseUrl,
 } from "@repo/ai";
 import { chatGptPlanReconnectRefusal } from "@repo/ai/lib/chatgpt-plan/agent-config";
 import {
@@ -76,14 +76,23 @@ import {
 	resolveRequestedOrganization,
 } from "@repo/api/lib/requested-organization";
 import { auth } from "@repo/auth";
-import { getBoundPromptVersion } from "@repo/database";
 import { logger } from "@repo/logs";
 import { AiUsageLimitExceededError } from "@repo/payments";
+import { readThreadAccess } from "@saas/agents/runtime/thread";
 import { headers } from "next/headers";
 import type { NextRequest } from "next/server";
-import OpenAI from "openai";
 import { AI_TOKEN_TTL_SECONDS } from "./config";
+import { copilotDurableRuntime } from "./durable-runs";
 import { resolveCopilotOrgModel } from "./org-model";
+import {
+	readDocumentIdParam,
+	readSingleRouteEnvelope,
+	resolveProposalRunConfig,
+	rewriteAgentRunBody,
+	withEnvelope,
+	withoutClientProposalProps,
+} from "./proposal-client-run";
+import { ProposalPropsRedactingRunner } from "./proposal-run-runner";
 
 // Note: `./default-mcp-tools` (PR #892 / #897) is no longer imported
 // here. See the comment near the `CopilotRuntime` constructor below for
@@ -91,11 +100,8 @@ import { resolveCopilotOrgModel } from "./org-model";
 // and how the equivalent surface now lives in
 // `useDefaultMcpInlineRender.tsx` as frontend `useCopilotAction`s.
 
-const DOCUMENT_GENERATOR_DOC_TYPE = "GENERAL";
-const PROJECT_DOCUMENT_GENERATOR_DOC_TYPE = "PRD";
-
 // AG-UI makes several polls per agent connection. A short cache window
-// collapses repeated AI-provider/bound-prompt lookups for the same tenant
+// collapses repeated AI-provider lookups for the same tenant
 // without making provider switches feel sticky. Tunable for tests/incidents.
 const TENANT_CACHE_TTL_MS = Number.parseInt(
 	process.env.COPILOTKIT_TENANT_CACHE_TTL_MS ?? "60000",
@@ -110,29 +116,11 @@ const TENANT_CACHE_MAX_ENTRIES = Number.parseInt(
 	10,
 );
 
-// Databricks Model Serving is the fourth inference path (outside @ai-sdk and the
-// LangChain agents). Its serving endpoints diverge from the strict OpenAI schema,
-// so the built-in `OpenAIAdapter` client below needs the same compat shim the
-// @ai-sdk model factory uses: strip `stream_options` / `parallel_tool_calls`
-// (Databricks 400s) + `temperature` (Claude serving rejects it), and flatten
-// Claude's array-shaped `delta.content` back to a plain string. (The shim's
-// json_schema-strict relaxation is inert here: `OpenAIAdapter` never sends
-// `response_format.json_schema`.)
-//
-// The compat fetch is built PER TENANT inside `getTenantConfig` (not module-
-// scoped) because its `stripReasoning` flag depends on the resolved model:
-// `stripReasoning` removes raw `<think>…</think>` spans a DeepSeek-R1 endpoint
-// served over Databricks emits in `delta.content` (no native `reasoning_content`),
-// which `OpenAIAdapter` would otherwise stream verbatim into the chat answer
-// (Bug #1942). It's gated on the CANONICAL model identity — not the serving-
-// endpoint alias — so an R1 endpoint mapped to an opaque alias (`prod-chat`) is
-// still stripped, and a non-R1 model's literal `<think>` markup is preserved.
-
 // ─── Module-scope agent registry ─────────────────────────────────────────
 // Agents are static: deploymentUrl/graphId/tools come from env + constants.
 // `LangGraphHttpAgent` only transmits url+headers on the wire; per-user
-// model state arrives via the `ai_model` property / `X-AI-Model` header,
-// so the adapter doesn't need request-scoped data. Build once at module load.
+// model state arrives via the `X-AI-*` headers, so the adapter doesn't
+// need request-scoped data. Build once at module load.
 
 const SHARED_AGENT_DEFAULTS = {
 	temperature: 0.7,
@@ -446,47 +434,6 @@ const AGENT_DEFINITIONS: LangGraphAgentConfig[] = [
 			],
 		},
 	},
-	{
-		name: "orchestrator",
-		displayName: "Fabric AI",
-		description:
-			"Central orchestrator that intelligently routes tasks to specialized agents with multi-agent coordination",
-		deploymentUrl: process.env.ORCHESTRATOR_URL || "http://localhost:8130",
-		graphId: "orchestrator",
-		langsmithApiKey: process.env.LANGSMITH_API_KEY,
-		tools: [],
-		language: "typescript",
-		version: "1.0.0",
-		tags: ["orchestrator", "routing", "multi-agent", "coordination"],
-		agentConfig: {
-			temperature: 0.3,
-			maxTokens: 4000,
-			timeout: 120000,
-			recursionLimit: 25,
-			predictiveStates: [
-				{
-					state_key: "stage",
-					tool: "orchestrator_status",
-					tool_argument: "stage",
-				},
-				{
-					state_key: "output",
-					tool: "orchestrator_result",
-					tool_argument: "output",
-				},
-				{
-					state_key: "plan",
-					tool: "orchestrator_plan",
-					tool_argument: "plan",
-				},
-				{
-					state_key: "riskScores",
-					tool: "orchestrator_plan",
-					tool_argument: "riskScores",
-				},
-			],
-		},
-	},
 ];
 
 const agentRegistry = buildAgentRegistry();
@@ -500,25 +447,20 @@ function buildAgentRegistry(): AgentRegistry {
 }
 
 // ─── Per-tenant config cache ─────────────────────────────────────────────
-// Caches the per-request DB lookups (AI provider config, model resolution,
-// bound prompts) plus the constructed OpenAI client / service adapter per
-// (userId, organizationId). Stores the Promise so that concurrent first-
+// Caches the per-request DB lookups (AI provider config, model resolution)
+// per (userId, organizationId). Stores the Promise so that concurrent first-
 // misses dedupe into a single fetch. Rejected promises evict so the next
 // request retries cleanly.
 
 type AIModelResult = Awaited<ReturnType<typeof getAIModelWithMetadata>>;
 type ProviderConfig = Awaited<ReturnType<typeof getRAGProviderConfig>>;
-type BoundPrompt = Awaited<ReturnType<typeof getBoundPromptVersion>>;
 
 interface TenantConfig {
 	/** Null for an organization with no provider whose member runs on their own plan. */
 	aiGatewayUrl: string | null;
 	providerConfig: ProviderConfig | null;
-	boundDocPrompt: BoundPrompt;
-	boundProjectDocPrompt: BoundPrompt;
 	metadata: AIModelResult["metadata"];
 	trackUsage: AIModelResult["trackUsage"];
-	serviceAdapter: CopilotServiceAdapter;
 }
 
 class TenantConfigError extends Error {
@@ -552,31 +494,12 @@ async function getTenantConfig(
 	}
 
 	const promise = (async () => {
-		const [
-			aiModelResult,
-			providerConfig,
-			boundDocPrompt,
-			boundProjectDocPrompt,
-		] = await Promise.all([
+		const [aiModelResult, providerConfig] = await Promise.all([
 			// The agents' plan decision is made per request below.
 			resolveCopilotOrgModel({ userId, organizationId }),
 			getRAGProviderConfig({ userId, organizationId }).catch(
 				(error: unknown) => error as Error,
 			),
-			getBoundPromptVersion({
-				targetType: "AGENT",
-				targetKey: "document_generator",
-				documentType: DOCUMENT_GENERATOR_DOC_TYPE,
-				userId,
-				organizationId,
-			}),
-			getBoundPromptVersion({
-				targetType: "AGENT",
-				targetKey: "project_document_generator",
-				documentType: PROJECT_DOCUMENT_GENERATOR_DOC_TYPE,
-				userId,
-				organizationId,
-			}),
 		]);
 
 		if (!aiModelResult) {
@@ -588,8 +511,6 @@ async function getTenantConfig(
 			return {
 				aiGatewayUrl: null,
 				providerConfig: null,
-				boundDocPrompt,
-				boundProjectDocPrompt,
 				metadata: {
 					modelString: planModel,
 					provider: "OPENAI_CHATGPT_PLAN" as const,
@@ -601,9 +522,6 @@ async function getTenantConfig(
 					billingCustomerId: null,
 				},
 				trackUsage: () => {},
-				// No provider to build CopilotKit's own adapter from; the
-				// LangGraph agents do all the model work on the member's plan.
-				serviceAdapter: new ExperimentalEmptyAdapter(),
 			};
 		}
 		if (providerConfig instanceof Error) {
@@ -623,43 +541,11 @@ async function getTenantConfig(
 			);
 		}
 
-		// providerConfig.apiKey is already decrypted by getRAGProviderConfig.
-		// Both client and adapter are stateless beyond construction args, so
-		// caching them shaves the per-request allocation on the AG-UI poll path.
-		//
-		// Route Databricks using the actual model ID, including custom aliases.
-		// The compat fetch handles the provider's OpenAI-schema divergences.
-		const isDatabricks = metadata.provider === "DATABRICKS";
-		// Gate <think> stripping on the resolved CANONICAL identity (Bug #1942
-		// review) — the alias in `metadata.modelString` may be opaque (`prod-chat`).
-		const isReasoning = isReasoningModelName(metadata.canonicalName);
-		const databricksFetch = createDatabricksFetch(undefined, {
-			stripReasoning: isDatabricks && isReasoning,
-			promptCache: databricksPromptCacheForModel(metadata.canonicalName),
-		});
-		const openaiClient = new OpenAI({
-			apiKey: providerConfig.apiKey,
-			baseURL: isDatabricks
-				? toDatabricksInferenceBaseUrl(
-						aiGatewayUrl,
-						metadata.modelString,
-					)
-				: aiGatewayUrl,
-			...(isDatabricks && { fetch: databricksFetch }),
-		});
-		const serviceAdapter = new OpenAIAdapter({
-			model: metadata.modelString,
-			openai: openaiClient,
-		} as never);
-
 		return {
 			aiGatewayUrl,
 			providerConfig,
-			boundDocPrompt,
-			boundProjectDocPrompt,
 			metadata,
 			trackUsage,
-			serviceAdapter,
 		};
 	})();
 
@@ -685,21 +571,6 @@ async function getTenantConfig(
 	return promise;
 }
 
-/**
- * Whether this call starts a turn. Only a turn is refused for a spent ChatGPT
- * plan: the mount-time `info` / `agent/connect` calls must still succeed.
- */
-async function isAgentRunRequest(req: NextRequest): Promise<boolean> {
-	try {
-		const body = JSON.parse(await req.clone().text()) as {
-			method?: unknown;
-		};
-		return body?.method === "agent/run";
-	} catch {
-		return false;
-	}
-}
-
 /** A 429 the fetch interceptor shows as "every plan is spent until …" (Fizzy #2770). */
 function planExhaustedResponse(
 	error: SubscriptionPlanExhaustedError,
@@ -721,17 +592,32 @@ function planExhaustedResponse(
 /**
  * POST is the ONLY method this route exports — do not add a `GET`.
  *
- * `copilotRuntimeNextJSAppRouterEndpoint` builds a *single-route* endpoint:
- * every client call (`info`, `agent/connect`, `agent/run`, `agent/stop`)
- * arrives as a POST to this one path carrying a `{ method, params, body }`
- * envelope. Every `<CopilotKit>` mount passes `useSingleEndpoint` so the
- * client uses that transport directly and never probes for a REST runtime.
+ * `createCopilotRuntimeHandler` runs in `single-route` mode: every client
+ * call (`info`, `agent/connect`, `agent/run`, `agent/stop`) arrives as a
+ * POST to this one path carrying a `{ method, params, body }` envelope.
+ * Every `<CopilotKit>` mount passes `useSingleEndpoint` so the client uses
+ * that transport directly and never probes for a REST runtime.
+ *
+ * Auth, tenancy, limits, the plan refusals and the Proposal run rewrite stay
+ * here rather than in the handler's hooks: the agents are built from what
+ * they resolve, and a Response thrown from a hook gets the handler's CORS
+ * headers and its generic `internal_error` 500, which these answers never
+ * carried. The one hook, `durable.onBeforeHandler` (only while durable runs
+ * are on for the organization), needs the method, agent and thread only the
+ * handler parses, and refuses a durable run, connect or stop on someone
+ * else's thread with a 403 (`durable-runs.ts`).
  *
  * Keep the mounts and this route in step. Drop the prop from a mount and
  * the 1.70+ client defaults to `transport: "auto"`, probing
  * `GET <runtimeUrl>/info` first; this POST-only route answers with a 405,
  * and the app's fetch interceptor surfaces that as an error toast before
  * the client falls back to single-route transport.
+ *
+ * Every mount also passes `enableInspector={false}`. In local development
+ * the 1.80 client otherwise mounts CopilotKit's inspector, which lists
+ * threads with `GET <runtimeUrl>/threads`. The runtime URL already carries
+ * `?organizationId=`, so the client cannot turn that request into a
+ * single-route POST, and this route answers with a 405.
  */
 export async function POST(req: NextRequest) {
 	try {
@@ -756,9 +642,9 @@ export async function POST(req: NextRequest) {
 
 		// The organization arrives on the query string from the mount
 		// (`/api/copilotkit?organizationId=...`). It selects the tenant's
-		// model, provider key, bound prompts and the tenant headers sent to
-		// the agents, so it is bound to the caller's memberships below
-		// before anything reads it.
+		// model, provider key, the document check below and the tenant
+		// headers sent to the agents, so it is bound to the caller's
+		// memberships below before anything reads it.
 		const url = new URL(req.url);
 		const requestedOrganizationId =
 			url.searchParams.get("organizationId") || undefined;
@@ -805,7 +691,7 @@ export async function POST(req: NextRequest) {
 			);
 		}
 
-		// Resolve per-tenant AI config + bound prompts (cached for TENANT_CACHE_TTL_MS)
+		// Resolve per-tenant AI config (cached for TENANT_CACHE_TTL_MS)
 		// An omitted id resolves to the session's active organization, tie
 		// checked the same way; a session with none is refused (ADR-018).
 		const organizationResolution = await resolveRequestedOrganization({
@@ -821,6 +707,14 @@ export async function POST(req: NextRequest) {
 			return forbiddenOrganizationResponse(organizationResolution);
 		}
 		const organizationId = organizationResolution.organizationId;
+
+		// Only a turn (`agent/run`) is refused for a spent ChatGPT plan and
+		// has its run input rewritten: the mount-time `info` /
+		// `agent/connect` calls must still succeed and resolve nothing.
+		const envelope = await readSingleRouteEnvelope(req);
+		const isAgentRun = envelope?.method === "agent/run";
+		// A suggestion runs the agent too, so it gets the same resolution.
+		const invokesAgent = isAgentRun || envelope?.method === "agent/suggest";
 
 		let tenantConfig: TenantConfig;
 		let agentOnPlan: boolean;
@@ -879,7 +773,7 @@ export async function POST(req: NextRequest) {
 				"exhausted" in plan &&
 				!apiFallback &&
 				!personalKeyHint &&
-				(await isAgentRunRequest(req))
+				isAgentRun
 			) {
 				return planExhaustedResponse(
 					chatGptPlanSpentError(plan),
@@ -972,24 +866,76 @@ export async function POST(req: NextRequest) {
 			);
 		}
 
-		const {
-			aiGatewayUrl,
-			providerConfig,
-			boundDocPrompt,
-			boundProjectDocPrompt,
-			metadata,
-			trackUsage,
-			serviceAdapter,
-		} = tenantConfig;
+		// What the chat may do on its document (Fizzy #2946), resolved per
+		// run and written into the run input the agent receives. The editor
+		// adds `documentId` to the query beside `organizationId`.
+		let runtimeRequest: Request = req;
+		if (
+			envelope &&
+			!invokesAgent &&
+			typeof envelope.body === "object" &&
+			envelope.body !== null &&
+			!Array.isArray(envelope.body)
+		) {
+			// Nothing is resolved for other calls, but no client value for a
+			// route-owned key ever reaches the agent either.
+			const sent = envelope.body as Record<string, unknown>;
+			const stripped = withoutClientProposalProps(sent);
+			if (stripped !== sent) {
+				runtimeRequest = withEnvelope(req, {
+					...envelope,
+					body: stripped,
+				});
+			}
+		}
+		if (invokesAgent && envelope) {
+			const runInput =
+				typeof envelope.body === "object" &&
+				envelope.body !== null &&
+				!Array.isArray(envelope.body)
+					? (envelope.body as Record<string, unknown>)
+					: null;
+			const resolution = await resolveProposalRunConfig({
+				documentId: readDocumentIdParam(url),
+				organizationId,
+				userId: session.user.id,
+				state: runInput?.state,
+			});
+			if (!resolution.ok) {
+				return new Response(
+					JSON.stringify({
+						error:
+							resolution.status === 403
+								? "Forbidden"
+								: "The assistant could not be prepared for this document. Please try again.",
+						code: resolution.code,
+					}),
+					{
+						status: resolution.status,
+						headers: { "Content-Type": "application/json" },
+					},
+				);
+			}
+			// A malformed run input is left for the runtime to refuse.
+			if (runInput) {
+				runtimeRequest = withEnvelope(req, {
+					...envelope,
+					body: rewriteAgentRunBody(runInput, resolution.config),
+				});
+			}
+		}
+
+		const { aiGatewayUrl, providerConfig, metadata, trackUsage } =
+			tenantConfig;
 
 		// Track usage (fire-and-forget) — kept per-request to preserve
 		// existing usage-accounting semantics.
 		trackUsage();
 
-		// The CopilotKit service adapter itself stays on the organization's
-		// provider; only the agents' hints follow the plan, or the member's
-		// own key. Neither may be pointed at the organization's base URL or
-		// deployment: the agent would send that key there.
+		// The agents' hints follow the plan, or the member's own key, where
+		// one serves this request. Neither may be pointed at the
+		// organization's base URL or deployment: the agent would send that
+		// key there.
 		const agentOffOrgProvider = agentOnPlan || personalKeyHint !== null;
 		const agentProvider = agentOnPlan
 			? "OPENAI_CHATGPT_PLAN"
@@ -1039,8 +985,6 @@ export async function POST(req: NextRequest) {
 			modelSource: metadata.selectionSource || "fallback",
 			model: metadata.modelString,
 			gatewayUrl: aiGatewayUrl,
-			boundDocPromptId: boundDocPrompt?.id ?? null,
-			boundProjectDocPromptId: boundProjectDocPrompt?.id ?? null,
 		});
 
 		// Build per-request headers (carries fresh AI token + tenant context).
@@ -1053,18 +997,13 @@ export async function POST(req: NextRequest) {
 			);
 		}
 		// Org metadata describes agentModel only while the org resolution supplies it.
-		const agentModelHints =
+		const agentIsReasoning =
 			!agentOffOrgProvider && agentModel === metadata.modelString
-				? {
-						ai_canonical_model_name: metadata.canonicalName,
-						ai_is_reasoning: isReasoningModelName(
-							metadata.canonicalName,
-						),
-					}
-				: undefined;
+				? isReasoningModelName(metadata.canonicalName)
+				: null;
 		const agentHeaders = {
-			...(agentModelHints && {
-				"X-AI-Is-Reasoning": String(agentModelHints.ai_is_reasoning),
+			...(agentIsReasoning !== null && {
+				"X-AI-Is-Reasoning": String(agentIsReasoning),
 			}),
 			// Service-to-service auth — verified by agent-core auth middleware
 			// against the AGENT_API_KEY secret each agent container has.
@@ -1122,55 +1061,82 @@ export async function POST(req: NextRequest) {
 		// `/api/mcp-app/invoke` with the tenant's configId, which executes
 		// the MCP tool server-side. Tool result is enriched with the same
 		// `__fabricMcpRender` envelope the wildcard render path expects.
+		//
+		// The assistants' agent runs durably on Temporal (`durable-runs.ts`).
+		// The worker rebuilds `agentHeaders` from these hints, this request's
+		// AI token and its own AGENT_API_KEY. The token reaches the worker only
+		// inside the run's Redis input record, which the worker deletes on
+		// pickup — never in the workflow's input or history — and the worker
+		// holds no AI_TOKEN_SECRET to mint one itself. Its lifetime
+		// (AI_TOKEN_TTL_SECONDS) bounds the durable run: the activity's
+		// start-to-close is that less a pickup slack (`agui-run-contract.ts`).
+		// When the durable path cannot take a run, the agent built above runs
+		// in this request as before (`AgUiAgentEngine`'s fallback), on the
+		// in-memory runner below, which also serves every other agent.
+		// Null while COPILOTKIT_DURABLE_ASSISTANTS is off for the organization:
+		// the in-memory runner then serves every agent.
+		//
+		// The in-memory runner keeps the Proposal chat's server-only
+		// `forwardedProps` out of the events the browser receives, and runs,
+		// replays and stops a thread only for the user who started it and,
+		// when the thread names a saved conversation, only for that
+		// conversation's owner (`./proposal-run-runner`). Built per request,
+		// so it is bound to this session's user and organization. The durable
+		// path never stores those keys where the browser reads
+		// (`./durable-runs`).
+		const caller = { userId: session.user.id, organizationId };
+		const inProcessRunner = new ProposalPropsRedactingRunner(
+			new InMemoryAgentRunner(),
+			session.user.id,
+			(threadId) => readThreadAccess(threadId, caller),
+		);
+		const durable = await copilotDurableRuntime(
+			caller,
+			{
+				modelHints: {
+					...(agentModel && { model: agentModel }),
+					...(agentProvider && { provider: agentProvider }),
+					...(agentGatewayUrl && { baseUrl: agentGatewayUrl }),
+					...(agentDeploymentName && {
+						deploymentName: agentDeploymentName,
+					}),
+					...(agentIsReasoning !== null && {
+						isReasoning: agentIsReasoning,
+					}),
+				},
+				aiToken,
+			},
+			inProcessRunner,
+		);
 		const runtime = new CopilotRuntime({
 			agents,
-		});
-
-		const properties = {
-			tenant_user_id: session.user.id,
-			tenant_organization_id: organizationId ?? null,
-			prompts_document_generator_version_id: boundDocPrompt?.id ?? null,
-			prompts_document_generator_content:
-				(boundDocPrompt as { content?: string } | null)?.content ??
-				null,
-			prompts_project_document_generator_version_id:
-				boundProjectDocPrompt?.id ?? null,
-			prompts_project_document_generator_content:
-				(boundProjectDocPrompt as { content?: string } | null)
-					?.content ?? null,
-			fabric_api_url: url.origin,
-			_copilotkit: { tenantId: organizationId ?? session.user.id },
-			// AI model config for agents
-			ai_provider: agentProvider,
-			ai_token: aiToken, // Token for secure API key exchange
-			ai_model: agentModel,
-			...agentModelHints,
-			ai_gateway_url: agentGatewayUrl,
-			...(!agentOffOrgProvider &&
-				providerConfig?.baseUrl && {
-					ai_base_url: providerConfig.baseUrl,
-				}),
-			// Azure AI Foundry deployment name (user-defined in Azure portal)
-			...(agentDeploymentName && {
-				ai_deployment_name: agentDeploymentName,
-			}),
-		};
-
-		const systemPrompt = `You are Fabric AI, a helpful assistant for planning, coding, document generation, and more.\n\n${getCurrentDateContext()}`;
-
-		// Use the Next.js App Router endpoint helper
-		const { handleRequest } = copilotRuntimeNextJSAppRouterEndpoint({
-			runtime,
-			serviceAdapter,
-			endpoint: "/api/copilotkit",
-			properties: {
-				...properties,
-				// Pass system prompt to be used by the runtime
-				system_prompt: systemPrompt,
+			runner: durable ? durable.runner : inProcessRunner,
+			// The only part of the v1 endpoint's `properties` it ever used:
+			// a tenant marker on CopilotKit's telemetry. The agents never saw
+			// those properties; everything they get is in `agentHeaders`.
+			telemetryProperties: {
+				_copilotkit: { tenantId: organizationId ?? session.user.id },
 			},
+			// The handler forwards the browser's `x-*` headers the server did
+			// not set, and agent-core falls back to `X-AI-Base-URL` and
+			// `X-AI-Deployment-Name` when the token exchange has none. Tenant
+			// and model context come only from `agentHeaders`.
+			forwardHeaders: { denyPrefixes: ["x-ai-", "x-tenant-"] },
 		});
 
-		const upstreamResponse = await handleRequest(req);
+		// The same handler the v1 endpoint built, permissive CORS included,
+		// without its Hono wrapper.
+		const handleRequest = createCopilotRuntimeHandler({
+			runtime,
+			basePath: "/api/copilotkit",
+			mode: "single-route",
+			cors: true,
+			...(durable && {
+				hooks: { onBeforeHandler: durable.onBeforeHandler },
+			}),
+		});
+
+		const upstreamResponse = await handleRequest(runtimeRequest);
 
 		// Diagnostic: tag upstream 429s so the client interceptor can show the
 		// correct "provider is busy" message instead of blaming the user, and

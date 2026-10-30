@@ -9,6 +9,7 @@ import {
 	BODY_EXCEPTION_OVERRIDE_WITH_SETTLED_DECISIONS,
 	SETTLED_DECISIONS_HEADING,
 } from "../../publishing-shared/settled-approvals";
+import { WRITING_STYLE_CLAUSE } from "../../publishing-shared/writing-style-clause";
 import {
 	buildWebinarScriptLockedClauses,
 	buildWebinarScriptPrompt,
@@ -579,4 +580,8 @@ describe("the SOURCE DATA fence around interpolated values", () => {
 			),
 		).toBe(true);
 	});
+});
+
+it("includes the shared writing style clause", () => {
+	expect(buildWebinarScriptLockedClauses()).toContain(WRITING_STYLE_CLAUSE);
 });

@@ -14,7 +14,10 @@
 
 import deMessages from "@repo/i18n/translations/de.json";
 import enMessages from "@repo/i18n/translations/en.json";
-import { PROPOSAL_CLIENT_MAIN_AGENT_KEY } from "@repo/utils/prompt-action-catalog";
+import {
+	PROPOSAL_CLIENT_MAIN_AGENT_KEY,
+	PROPOSAL_CLIENT_REVISION_AGENT_KEY,
+} from "@repo/utils/prompt-action-catalog";
 import { SetAsDefaultDialog } from "@saas/prompts/components/SetAsDefaultDialog";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
@@ -77,6 +80,7 @@ vi.mock("@saas/organizations/hooks/use-active-organization", () => ({
 
 const PERSONAL = /my prompts \(just for me\)/i;
 const CLIENT_PROPOSAL = /^client proposal \(main\)$/i;
+const CLIENT_REVISION = /^client proposal \(revision\)$/i;
 
 function openDialog(initialDocumentType?: string) {
 	const client = new QueryClient({
@@ -279,6 +283,92 @@ describe("SetAsDefaultDialog — client proposal prompt (Fizzy #2801)", () => {
 		expect(
 			screen.queryByTestId("set-default-personal-refused"),
 		).not.toBeInTheDocument();
+	});
+});
+
+describe("SetAsDefaultDialog — client revision prompt (Fizzy #2946)", () => {
+	beforeEach(() => {
+		bindSet.mockReset();
+		bindSet.mockResolvedValue({ id: "binding-1" });
+		bindSetMany.mockReset();
+		bindSetMany.mockResolvedValue({ count: 2 });
+		listForPrompt.mockReset();
+		listForPrompt.mockResolvedValue({ actions: [] });
+		nominate.mockReset();
+		orgAdmin.current = true;
+	});
+
+	it("withholds the personal tier and writes an organization default", async () => {
+		const user = userEvent.setup();
+		openDialog();
+		await waitFor(() => expect(listForPrompt).toHaveBeenCalledTimes(1));
+		await pick(user, /agent/i, CLIENT_REVISION);
+		await pick(user, /document type/i, /^proposal$/i);
+
+		expect(
+			screen.getByRole("combobox", { name: /scope/i }),
+		).toHaveTextContent(/organization \(for all members\)/i);
+		expect(await scopeOptions(user)).not.toEqual(
+			expect.arrayContaining([expect.stringMatching(PERSONAL)]),
+		);
+		expect(
+			screen.getByTestId("set-default-personal-refused"),
+		).toHaveTextContent(/cannot be a personal default/i);
+
+		await user.click(
+			screen.getByRole("button", { name: /^set as default$/i }),
+		);
+
+		await waitFor(() => expect(bindSet).toHaveBeenCalledTimes(1));
+		expect(bindSet).toHaveBeenCalledWith(
+			expect.objectContaining({
+				targetKey: PROPOSAL_CLIENT_REVISION_AGENT_KEY,
+				documentType: "PROPOSAL",
+				scope: "ORG",
+				organizationId: "org-1",
+			}),
+		);
+	});
+
+	it("refuses the personal tier when it rides along under Also apply to", async () => {
+		listForPrompt.mockResolvedValue({
+			actions: [
+				{
+					targetKey: PROPOSAL_CLIENT_REVISION_AGENT_KEY,
+					documentType: "PROPOSAL",
+					storyKind: null,
+				},
+			],
+		});
+		const user = userEvent.setup();
+		openDialog();
+		await waitFor(() => expect(listForPrompt).toHaveBeenCalledTimes(1));
+		await pick(user, /agent/i, /^document generator$/i);
+		await pick(user, /document type/i, /^prd$/i);
+
+		await waitFor(() =>
+			expect(
+				screen.getByRole("combobox", { name: /scope/i }),
+			).toHaveTextContent(/organization \(for all members\)/i),
+		);
+		expect(
+			screen.getByTestId("set-default-personal-refused"),
+		).toBeInTheDocument();
+
+		await user.click(
+			screen.getByRole("button", { name: /^set as default$/i }),
+		);
+
+		await waitFor(() => expect(bindSetMany).toHaveBeenCalledTimes(1));
+		const input = bindSetMany.mock.calls[0][0];
+		expect(input.scope).toBe("ORG");
+		expect(input.targets).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					targetKey: PROPOSAL_CLIENT_REVISION_AGENT_KEY,
+				}),
+			]),
+		);
 	});
 });
 

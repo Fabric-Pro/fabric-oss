@@ -23,6 +23,7 @@ import type {
 } from "../../../lib/proposal-export/browser";
 import type { DiagramLayout } from "../../../lib/proposal-export/diagram-layout";
 import {
+	diagramFigureNumbers,
 	type ExportDiagram,
 	PROPOSAL_EXPORT_LIMITS,
 } from "../../../lib/proposal-export/types";
@@ -124,9 +125,12 @@ const inProcessLayout: DiagramLayout = {
 	async render(source, options) {
 		const mermaid = await import("beautiful-mermaid");
 		try {
-			return mermaid.renderMermaidSVG(source, options);
+			return {
+				svg: mermaid.renderMermaidSVG(source, options),
+				abandoned: false,
+			};
 		} catch {
-			return null;
+			return { svg: null, abandoned: false };
 		}
 	},
 	async close() {},
@@ -299,23 +303,21 @@ describe("renderExportDiagrams", () => {
 		}
 	});
 
-	it("prints a placeholder for a syntax error and carries on", async () => {
+	it("leaves out a source that fails to draw and carries on", async () => {
 		const { diagrams, warnings } = await renderExportDiagrams(
 			input([
 				"flowchart XY\n  A --> B",
+				"flowchart LRt0TD\n  A --> B",
 				"",
 				`flowchart TD\n  a[${ENGINE_THROWS}] --> b`,
 				FLOW,
 			]),
 		);
-		for (const diagram of diagrams.slice(0, 3)) {
-			expect(diagram).toEqual({
-				kind: "placeholder",
-				caption: DIAGRAM_PLACEHOLDER_CAPTION,
-			});
+		for (const diagram of diagrams.slice(0, 4)) {
+			expect(diagram).toEqual({ kind: "omitted", numbered: false });
 		}
-		expect(diagrams[3]?.kind).toBe("svg");
-		expect(warnings).toEqual([{ code: "DIAGRAM_PLACEHOLDER", count: 3 }]);
+		expect(diagrams[4]).toMatchObject({ kind: "svg", numbered: true });
+		expect(warnings).toEqual([{ code: "DIAGRAM_PLACEHOLDER", count: 4 }]);
 	});
 
 	it.each([
@@ -331,22 +333,27 @@ describe("renderExportDiagrams", () => {
 			`---\ntitle: Plan\nconfig:\n  theme: dark\n---\n${FLOW}`,
 		],
 		["a graph without a direction", "graph\n  A --> B"],
+		["a one-line graph", "graph TD; A --> B"],
 		[
 			"a comment before a sequence header",
 			"%% notes\nsequenceDiagram\n  A->>B: hi",
 		],
 	])(
-		"prints %s as a placeholder without opening a page",
+		"prints %s, which only the live page draws, as a numbered placeholder without opening a page",
 		async (_, source) => {
 			const fake = fakeBrowser();
 			const { diagrams, warnings } = await renderExportDiagrams(
 				input([source], { browser: fake.browser, withPng: true }),
 			);
 			expect(diagrams).toEqual([
-				{ kind: "placeholder", caption: DIAGRAM_PLACEHOLDER_CAPTION },
+				{
+					kind: "placeholder",
+					caption: DIAGRAM_PLACEHOLDER_CAPTION,
+					numbered: true,
+				},
 			]);
 			expect(warnings).toEqual([
-				{ code: "DIAGRAM_PLACEHOLDER", count: 1 },
+				{ code: "DIAGRAM_NOT_PRINTABLE", count: 1 },
 			]);
 			expect(fake.newPageCalls).toEqual([]);
 			expect(fake.contents).toEqual([]);
@@ -402,21 +409,45 @@ describe("renderExportDiagrams", () => {
 		for (const diagram of diagrams.slice(
 			PROPOSAL_EXPORT_LIMITS.maxDiagrams,
 		)) {
-			expect(diagram.kind).toBe("placeholder");
+			expect(diagram).toMatchObject({
+				kind: "placeholder",
+				numbered: true,
+			});
 		}
-		expect(warnings).toEqual([
-			{ code: "DIAGRAM_PLACEHOLDER", count: extra },
-			{ code: "DIAGRAM_LIMIT", count: extra },
-		]);
+		// Kept in place, not left out: only the limit is reported.
+		expect(warnings).toEqual([{ code: "DIAGRAM_LIMIT", count: extra }]);
 	});
 
-	it("prints a source longer than one diagram may be as a placeholder", async () => {
+	it("prints a source longer than one diagram may be as a numbered placeholder", async () => {
 		const long = `${FLOW}\n%% ${"x".repeat(PROPOSAL_EXPORT_LIMITS.maxDiagramSourceLength)}`;
 		const { diagrams, warnings } = await renderExportDiagrams(
 			input([long]),
 		);
-		expect(diagrams[0]?.kind).toBe("placeholder");
-		expect(warnings).toEqual([{ code: "DIAGRAM_PLACEHOLDER", count: 1 }]);
+		expect(diagrams[0]).toEqual({
+			kind: "placeholder",
+			caption: DIAGRAM_PLACEHOLDER_CAPTION,
+			numbered: true,
+		});
+		expect(warnings).toEqual([{ code: "DIAGRAM_NOT_PRINTABLE", count: 1 }]);
+	});
+
+	it("prints a layout whose SVG is past its size limit as a numbered placeholder", async () => {
+		const { diagrams, warnings } = await renderExportDiagrams(
+			input([FLOW], {
+				layout: {
+					render: async () => ({
+						svg: `<svg>${"x".repeat(PROPOSAL_EXPORT_LIMITS.maxSvgLength)}</svg>`,
+						abandoned: false,
+					}),
+					close: async () => {},
+				},
+			}),
+		);
+		expect(diagrams[0]).toMatchObject({
+			kind: "placeholder",
+			numbered: true,
+		});
+		expect(warnings).toEqual([{ code: "DIAGRAM_NOT_PRINTABLE", count: 1 }]);
 	});
 
 	it("draws the same input to the same SVG", async () => {
@@ -457,7 +488,7 @@ describe("renderExportDiagrams", () => {
 			"placeholder",
 			"placeholder",
 		]);
-		expect(warnings).toEqual([{ code: "DIAGRAM_PLACEHOLDER", count: 2 }]);
+		expect(warnings).toEqual([{ code: "DIAGRAM_NOT_PRINTABLE", count: 2 }]);
 		expect(render).not.toHaveBeenCalled();
 	});
 
@@ -479,7 +510,7 @@ describe("renderExportDiagrams", () => {
 			"placeholder",
 			"placeholder",
 		]);
-		expect(warnings).toEqual([{ code: "DIAGRAM_PLACEHOLDER", count: 2 }]);
+		expect(warnings).toEqual([{ code: "DIAGRAM_NOT_PRINTABLE", count: 2 }]);
 		expect(warn).toHaveBeenCalledWith(
 			"Proposal export diagram engine failed to load",
 			expect.objectContaining({ error: "Error" }),
@@ -490,6 +521,181 @@ describe("renderExportDiagrams", () => {
 		await expect(
 			renderExportDiagrams(input([FLOW], { withPng: true })),
 		).rejects.toThrow(TypeError);
+	});
+});
+
+describe("figure templates and diagrams that do not draw (Fizzy #2946)", () => {
+	/** A sideways process whose labels beautiful-mermaid would print small. */
+	const PROCESS = [
+		"%% figure: process",
+		"flowchart LR",
+		'  s0["Discovery<br/>Agree on goals, users, the workflow and success measures"]',
+		'  s1["Definition<br/>Confirm the pilot scope, integrations and acceptance criteria"]',
+		'  s2["Pilot<br/>Configure the agreed scope with example data"]',
+		"  s0 --> s1 --> s2",
+		"  class s1 highlight",
+	].join("\n");
+
+	/** A layout that records each source and answers from a script. */
+	function scriptedLayout(
+		answers: ("timeLimit" | "thread" | "refused" | "draw")[],
+	): DiagramLayout & { sources: string[] } {
+		const sources: string[] = [];
+		return {
+			sources,
+			async render(source, options) {
+				sources.push(source);
+				const answer = answers[sources.length - 1] ?? "draw";
+				if (answer === "draw") {
+					return {
+						svg: renderMermaidSVG(source, options),
+						abandoned: false,
+					};
+				}
+				return {
+					svg: null,
+					abandoned: answer === "refused" ? false : answer,
+				};
+			},
+			close: async () => undefined,
+		};
+	}
+
+	it("draws a figure template cleaned, with its role, title and desc, and no layout", async () => {
+		const layout = scriptedLayout([]);
+		const { diagrams, warnings } = await renderExportDiagrams(
+			input([PROCESS], {
+				captions: ["How a pilot runs"],
+				layout,
+			}),
+		);
+		expect(layout.sources).toEqual([]);
+		expect(diagrams[0]).toMatchObject({
+			kind: "svg",
+			width: 662,
+			numbered: true,
+		});
+		const svg = svgOf(diagrams[0]);
+		expect(svg).toMatch(/^<svg [^>]*\bid="pa-diagram-1"[^>]*\brole="img"/);
+		expect(svg).toContain("<title>How a pilot runs</title>");
+		expect(svg).toMatch(
+			/<desc>[^<]*Discovery[^<]*Definition[^<]*Pilot[^<]*<\/desc>/,
+		);
+		// Coloured from the paint the diagram roles use.
+		expect(svg).toContain(`fill="${paint.tint}"`);
+		expect(svg).not.toMatch(/<script|foreignObject|\son\w+=/i);
+		// Never turned or re-wrapped, so never measured against the floor.
+		expect(warnings).toEqual([]);
+	});
+
+	it("titles an uncaptioned template by its kind", async () => {
+		const { diagrams } = await renderExportDiagrams(input([PROCESS]));
+		expect(svgOf(diagrams[0])).toMatch(/<title>[^<]+<\/title>/);
+	});
+
+	it.each([
+		["a click line", `${PROCESS}\n  click s0 callback`],
+		[
+			"a tag in a label",
+			PROCESS.replace("Pilot<br/>", "<b>Pilot</b><br/>"),
+		],
+	])(
+		"draws a fence the template refuses (%s) with beautiful-mermaid",
+		async (_, source) => {
+			const layout = scriptedLayout([]);
+			const { diagrams } = await renderExportDiagrams(
+				input([source], { layout }),
+			);
+			expect(layout.sources.length).toBeGreaterThan(0);
+			expect(layout.sources[0]).not.toContain("%% figure");
+			const svg = svgOf(diagrams[0]);
+			expect(svg).not.toContain('role="img"');
+			expect(svg).toContain(">Discovery");
+		},
+	);
+
+	it("numbers what prints and leaves a broken fence out, by cause", async () => {
+		const gantt =
+			"gantt\n  title Plan\n  dateFormat YYYY-MM-DD\n  section A\n  Task :a1, 2026-01-01, 3d";
+		const { diagrams, warnings } = await renderExportDiagrams(
+			input([PROCESS, "flowchart LRt0TD\n  A --> B", FLOW, gantt]),
+		);
+		expect(diagrams.map((diagram) => diagram.kind)).toEqual([
+			"svg",
+			"omitted",
+			"svg",
+			"placeholder",
+		]);
+		expect(diagramFigureNumbers(diagrams)).toEqual([1, null, 2, 3]);
+		expect(warnings).toEqual([
+			{ code: "DIAGRAM_PLACEHOLDER", count: 1 },
+			{ code: "DIAGRAM_NOT_PRINTABLE", count: 1 },
+		]);
+	});
+
+	it("tries a layout whose thread failed once more before printing a placeholder", async () => {
+		const retried = scriptedLayout(["thread", "draw"]);
+		const drawn = await renderExportDiagrams(
+			input([FLOW], { layout: retried }),
+		);
+		expect(retried.sources).toHaveLength(2);
+		expect(retried.sources[1]).toBe(retried.sources[0]);
+		expect(drawn.diagrams[0]?.kind).toBe("svg");
+		expect(drawn.warnings).toEqual([]);
+
+		const abandoned = scriptedLayout(["thread", "thread", "draw"]);
+		const left = await renderExportDiagrams(
+			input([FLOW], { layout: abandoned }),
+		);
+		expect(abandoned.sources).toHaveLength(2);
+		expect(left.diagrams[0]).toMatchObject({
+			kind: "placeholder",
+			numbered: true,
+		});
+		expect(left.warnings).toEqual([
+			{ code: "DIAGRAM_NOT_PRINTABLE", count: 1 },
+		]);
+	});
+
+	it("never tries a layout that ran past its time limit again", async () => {
+		const layout = scriptedLayout(["timeLimit", "draw"]);
+		const { diagrams, warnings } = await renderExportDiagrams(
+			input([FLOW], { layout }),
+		);
+		expect(layout.sources).toHaveLength(1);
+		expect(diagrams[0]).toMatchObject({
+			kind: "placeholder",
+			numbered: true,
+		});
+		expect(warnings).toEqual([{ code: "DIAGRAM_NOT_PRINTABLE", count: 1 }]);
+	});
+
+	it("never tries a source the engine refused again, and leaves it out", async () => {
+		const layout = scriptedLayout(["refused", "draw"]);
+		const { diagrams, warnings } = await renderExportDiagrams(
+			input([FLOW], { layout }),
+		);
+		expect(layout.sources).toHaveLength(1);
+		expect(diagrams[0]?.kind).toBe("omitted");
+		expect(warnings).toEqual([{ code: "DIAGRAM_PLACEHOLDER", count: 1 }]);
+	});
+
+	it("screenshots a template for DOCX on the page that embeds the print faces", async () => {
+		const fake = fakeBrowser();
+		const { diagrams } = await renderExportDiagrams(
+			input([PROCESS], { browser: fake.browser, withPng: true }),
+		);
+		expect(diagrams[0]).toMatchObject({
+			kind: "svg",
+			png: { mimeType: "image/png" },
+		});
+		expect(fake.selectors).toEqual(["#pa-diagram-1"]);
+		const html = String(fake.contents[0]);
+		expect(html).toContain('font-family: "Inter"');
+		expect(html).toContain("font-weight: 600");
+		expect(html).toContain('font-family: "JetBrains Mono"');
+		expect(html).toContain("font-weight: 500");
+		expect(html).toContain(svgOf(diagrams[0]));
 	});
 });
 
@@ -529,7 +735,7 @@ describe("renderExportDiagrams with PNGs", () => {
 			kind: "svg",
 			png: { mimeType: "image/png", width: 402, height: 200 },
 		});
-		expect(warnings).toEqual([{ code: "DIAGRAM_PLACEHOLDER", count: 1 }]);
+		expect(warnings).toEqual([{ code: "DIAGRAM_NOT_PRINTABLE", count: 1 }]);
 	});
 
 	it("sizes the screenshot explicitly, never past the image edge", async () => {
@@ -570,16 +776,27 @@ describe("renderExportDiagrams with PNGs", () => {
 		expect(sizes[1]?.height).toBeCloseTo(small.height, 1);
 	});
 
-	it("leaves png null when a screenshot fails and counts the placeholder", async () => {
+	it("keeps a diagram whose screenshot fails numbered as in print, and counts it", async () => {
 		const fake = fakeBrowser([1]);
 		const { diagrams, warnings } = await renderExportDiagrams(
 			input([FLOW, FLOW], { browser: fake.browser, withPng: true }),
 		);
-		expect(diagrams[0]).toMatchObject({ kind: "svg", png: null });
+		const printed = await renderExportDiagrams(
+			input([FLOW, FLOW], { withPng: false }),
+		);
+		expect(diagrams[0]).toMatchObject({
+			kind: "svg",
+			png: null,
+			numbered: true,
+		});
 		expect(diagrams[1]).toMatchObject({
 			kind: "svg",
 			png: { mimeType: "image/png" },
 		});
+		expect(diagramFigureNumbers(diagrams)).toEqual([1, 2]);
+		expect(diagramFigureNumbers(diagrams)).toEqual(
+			diagramFigureNumbers(printed.diagrams),
+		);
 		expect(warnings).toEqual([{ code: "DIAGRAM_PLACEHOLDER", count: 1 }]);
 		expect(warn).toHaveBeenCalledWith(
 			"Proposal export diagram screenshot failed",
@@ -619,9 +836,12 @@ function recordingLayout(): DiagramLayout & { sources: string[] } {
 		render: async (source, options) => {
 			sources.push(source);
 			try {
-				return renderMermaidSVG(source, options);
+				return {
+					svg: renderMermaidSVG(source, options),
+					abandoned: false,
+				};
 			} catch {
-				return null;
+				return { svg: null, abandoned: false };
 			}
 		},
 		close: async () => undefined,

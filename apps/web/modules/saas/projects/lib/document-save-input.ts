@@ -1,4 +1,5 @@
 import { DOCUMENT_SAVE_BASE_REQUIRED } from "@repo/utils/document-save-base";
+import type { DocumentAiReviewDescriptor } from "@repo/utils/proposal-artifact/scoped-revision-codes";
 
 /**
  * The saved body a save's content descends from (Fizzy #2946): its version
@@ -34,6 +35,10 @@ export const DOCUMENT_AUTOSAVE_TIMINGS = { delayMs: 10_000 };
  * the body it loaded or last adopted (Fizzy #2946). `expectedVersion` alone is
  * the older guard of an accepted assistant proposal that carries visual
  * slots; a `base` supersedes it.
+ *
+ * `aiReview` marks the save as the accept of an AI change to a
+ * client-document Proposal (a chat proposal or a finding-driven revision),
+ * which the server checks before it writes; it goes out only when given.
  */
 export function buildDocumentSaveInput({
 	projectId,
@@ -44,6 +49,7 @@ export function buildDocumentSaveInput({
 	expectedVersion,
 	skipVersionBump,
 	organizationId,
+	aiReview,
 }: {
 	projectId: string;
 	documentId: string;
@@ -54,6 +60,7 @@ export function buildDocumentSaveInput({
 	/** The Reject fallback rewrites the body without a new version. */
 	skipVersionBump?: boolean;
 	organizationId?: string | null;
+	aiReview?: DocumentAiReviewDescriptor;
 }) {
 	return {
 		projectId,
@@ -70,6 +77,7 @@ export function buildDocumentSaveInput({
 				: {}),
 		...(skipVersionBump ? { skipVersionBump: true as const } : {}),
 		...(organizationId !== undefined ? { organizationId } : {}),
+		...(aiReview ? { aiReview } : {}),
 	};
 }
 

@@ -284,17 +284,14 @@ describe("IncidentTimelineList", () => {
 		expect(screen.getByText(/1\s*-\s*25 of 60/)).toBeInTheDocument();
 	});
 
-	/** Locate the pager's enabled "next" button by scoping to the pager
-	 * container (found via its "{start} - {end} of {total}" label) and taking
-	 * the trailing enabled icon button. Avoids colliding with the collapse
-	 * chevrons inside the timeline rows. */
-	function getPagerNext(total: number): HTMLButtonElement {
-		const label = screen.getByText(new RegExp(`-\\s*\\d+ of ${total}`));
-		const pager = label.parentElement as HTMLElement;
-		const buttons = within(pager).getAllByRole("button");
-		// prev (disabled on page 1) then next.
-		const next = buttons[buttons.length - 1] as HTMLButtonElement;
-		return next;
+	function getPagerNext(): HTMLButtonElement {
+		return within(
+			screen.getByRole("navigation", {
+				name: "Incident timeline pagination",
+			}),
+		).getByRole("button", {
+			name: "Next page, incident timeline",
+		}) as HTMLButtonElement;
 	}
 
 	it("advances the page via Pagination Next and requests page 2", () => {
@@ -302,7 +299,7 @@ describe("IncidentTimelineList", () => {
 		render(<IncidentTimelineList />);
 		mockListHistory.mockClear();
 
-		fireEvent.click(getPagerNext(60));
+		fireEvent.click(getPagerNext());
 		expect(lastHistoryInput).toMatchObject({ page: 2 });
 	});
 
@@ -311,7 +308,7 @@ describe("IncidentTimelineList", () => {
 		render(<IncidentTimelineList />);
 
 		// Page forward first.
-		fireEvent.click(getPagerNext(200));
+		fireEvent.click(getPagerNext());
 		expect(lastHistoryInput).toMatchObject({ page: 2 });
 
 		// Now change the window → page must snap back to 1.

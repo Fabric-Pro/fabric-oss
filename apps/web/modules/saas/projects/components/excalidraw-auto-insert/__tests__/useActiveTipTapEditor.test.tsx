@@ -359,3 +359,49 @@ describe("useActiveTipTapEditor — fallback order", () => {
 		expect(result.current).toBeNull();
 	});
 });
+
+it.each(["story", "document"] as const)(
+	"uses the registered human label for a %s and updates it",
+	(kind) => {
+		const editor = makeFakeEditor();
+		const wrapper = ({ children }: { children: ReactNode }) => (
+			<TiptapEditorRegistryProvider>
+				{children}
+			</TiptapEditorRegistryProvider>
+		);
+		const { result, rerender } = renderHook(
+			({ label }) => {
+				useRegisterTiptapEditor({
+					projectId: "example-project",
+					kind,
+					storyId: kind === "story" ? "story-id" : undefined,
+					documentId: kind === "document" ? "doc-id" : undefined,
+					editor,
+					documentLabel: label,
+				} as any);
+				return useActiveTipTapEditor({
+					chatContext: {
+						projectId: "example-project",
+						organizationId: "example-org",
+						surface: "in-document",
+					},
+					launcherContext: null,
+				});
+			},
+			{
+				wrapper,
+				initialProps: {
+					label:
+						kind === "story"
+							? "F-123 Example feature"
+							: "Example document",
+				},
+			},
+		);
+		expect(result.current?.documentLabel).toBe(
+			kind === "story" ? "F-123 Example feature" : "Example document",
+		);
+		rerender({ label: "Renamed" });
+		expect(result.current?.documentLabel).toBe("Renamed");
+	},
+);

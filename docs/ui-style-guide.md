@@ -204,6 +204,15 @@ today and are being reconciled, so do not read them as precedent.
 - Use `transition-all duration-200` or `duration-300` for state changes
 - Prefer `transition-colors` for color-only changes
 
+### Pagination
+
+- Paged lists with a known total (admin tables, member lists, history and log tables) use the shared `Pagination` component (`apps/web/modules/saas/shared/components/Pagination.tsx`). Do not build your own previous/next controls.
+- The component shows the range ("1 – 10 of 240"), numbered pages with the first and last page and ellipses for gaps, and a "Go to page" input. Do not hide any of them.
+- When one screen renders two pagers, pass distinct `navigationLabel`, `goToPageLabel`, `previousLabel` and `nextLabel` values so screen-reader users can tell them apart.
+- Keep page, search, filter and sort in the URL (`nuqs`), and return to page 1 when search, filter or sort changes.
+- While the next page loads, keep the current rows on screen (`placeholderData: keepPreviousData`), key rows by record ID, and show the full loading state only when there is no data yet.
+- Feeds read in order without a meaningful total (chat history, notifications, activity streams) use "Load more" or infinite scroll instead.
+
 ---
 
 ## 6. Mandatory Rules (Non-Negotiable)

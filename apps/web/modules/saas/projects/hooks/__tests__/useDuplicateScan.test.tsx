@@ -64,12 +64,18 @@ vi.mock("@shared/lib/orpc-query-utils", () => ({
 					],
 				},
 				scanDuplicates: {
-					mutationOptions: (overrides: Record<string, unknown>) => ({
-						...overrides,
-						mutationFn: (input: unknown) =>
-							mockScanDuplicates(input),
-					}),
+					mutationKey: () => ["stories", "scanDuplicates"],
 				},
+			},
+		},
+	},
+}));
+
+vi.mock("@shared/lib/orpc-client", () => ({
+	orpcClient: {
+		projects: {
+			stories: {
+				scanDuplicates: (input: unknown) => mockScanDuplicates(input),
 			},
 		},
 	},
@@ -133,6 +139,104 @@ beforeEach(() => {
 	mockScanDuplicates.mockReset();
 	mockListDuplicatesQueryFn.mockReset();
 	mockListDuplicatesQueryFn.mockResolvedValue({ links: [] });
+});
+
+describe("useDuplicateScan — candidates left over by the per-request cap", () => {
+	const batch = (overrides: Partial<ScanResult>): ScanResult => ({
+		scanned: 200,
+		candidates: 60,
+		confirmed: 2,
+		truncated: 0,
+		verifierFailures: 0,
+		flaggedItems: 4,
+		...overrides,
+	});
+
+	it("keeps scanning while pairs are left over and reports the whole scan", async () => {
+		const user = userEvent.setup();
+		mockScanDuplicates
+			.mockResolvedValueOnce(batch({ truncated: 70 }))
+			.mockResolvedValueOnce(batch({ truncated: 10 }))
+			.mockResolvedValueOnce(
+				batch({
+					candidates: 10,
+					truncated: 0,
+					verifierFailures: 1,
+					flaggedItems: 5,
+				}),
+			);
+		renderHarness();
+
+		await user.click(screen.getByRole("button", { name: "start scan" }));
+
+		const dialog = await screen.findByRole("dialog");
+		expect(mockScanDuplicates).toHaveBeenCalledTimes(3);
+		expect(mockScanDuplicates).toHaveBeenLastCalledWith({
+			projectId: "project-1",
+			organizationId: null,
+		});
+		// The last request's flagged count; failures summed over the scan.
+		expect(
+			within(dialog).getByText('scanCompleteItems {"count":5}'),
+		).toBeInTheDocument();
+		expect(
+			within(dialog).getByText('scanPartialWarning {"count":1}'),
+		).toBeInTheDocument();
+		expect(within(dialog).queryByText(/scanRemainingNote/)).toBeNull();
+	});
+
+	it("stops instead of retrying when a request could not verify some pairs", async () => {
+		const user = userEvent.setup();
+		mockScanDuplicates.mockResolvedValue(
+			batch({ truncated: 30, verifierFailures: 2 }),
+		);
+		renderHarness();
+
+		await user.click(screen.getByRole("button", { name: "start scan" }));
+
+		const dialog = await screen.findByRole("dialog");
+		expect(mockScanDuplicates).toHaveBeenCalledTimes(1);
+		expect(
+			within(dialog).getByText('scanPartialWarning {"count":2}'),
+		).toBeInTheDocument();
+		expect(
+			within(dialog).getByText('scanRemainingNote {"count":30}'),
+		).toBeInTheDocument();
+	});
+
+	it("reports what earlier requests finished when a later one errors", async () => {
+		const user = userEvent.setup();
+		mockScanDuplicates
+			.mockResolvedValueOnce(batch({ truncated: 25, flaggedItems: 6 }))
+			.mockRejectedValueOnce(new Error("network down"));
+		renderHarness();
+
+		await user.click(screen.getByRole("button", { name: "start scan" }));
+
+		const dialog = await screen.findByRole("dialog");
+		expect(mockScanDuplicates).toHaveBeenCalledTimes(2);
+		expect(
+			within(dialog).getByText('scanCompleteItems {"count":6}'),
+		).toBeInTheDocument();
+		expect(
+			within(dialog).getByText('scanRemainingNote {"count":25}'),
+		).toBeInTheDocument();
+		expect(toast.error).not.toHaveBeenCalled();
+	});
+
+	it("stops after a bounded number of requests and says how many pairs are left", async () => {
+		const user = userEvent.setup();
+		mockScanDuplicates.mockResolvedValue(batch({ truncated: 500 }));
+		renderHarness();
+
+		await user.click(screen.getByRole("button", { name: "start scan" }));
+
+		const dialog = await screen.findByRole("dialog");
+		expect(mockScanDuplicates).toHaveBeenCalledTimes(10);
+		expect(
+			within(dialog).getByText('scanRemainingNote {"count":500}'),
+		).toBeInTheDocument();
+	});
 });
 
 describe("useDuplicateScan — scan completion", () => {

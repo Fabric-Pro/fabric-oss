@@ -19,6 +19,7 @@
 
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import { agentUsageConfigFromInput } from "@repo/agent-core/services/usage-logging";
+import { logger } from "@repo/logs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { toolNode } from "../nodes/tool-node";
 import type { AgentState } from "../state";
@@ -284,5 +285,138 @@ describe("toolNode — per-call gating without per-call construction", () => {
 		expect(toolNodeConstructions.mock.calls.length).toBe(
 			countAfterFirstCall + 1,
 		);
+	});
+});
+
+describe("project source tools", () => {
+	afterEach(() => vi.unstubAllGlobals());
+	it("sends the search budget", async () => {
+		const fetchMock = mockFetchOk();
+		vi.stubGlobal("fetch", fetchMock);
+		await toolNode(
+			createMockState({
+				projectId: "example-project",
+				userId: "example-user",
+				messages: [searchKnowledgeCall("example-call")],
+			}),
+			{ configurable: { ai_token: "example-token" } },
+		);
+		expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+			maxChars: 24000,
+		});
+	});
+	it("reads a source with the token and returns the continuation", async () => {
+		const fetchMock = vi.fn().mockResolvedValue({
+			ok: true,
+			json: async () => ({
+				title: "Example",
+				content: "page",
+				contentAvailable: true,
+				truncated: true,
+				nextOffset: 24000,
+			}),
+		});
+		vi.stubGlobal("fetch", fetchMock);
+		const result = await toolNode(
+			createMockState({
+				projectId: "example-project",
+				userId: "example-user",
+				messages: [
+					toolCallMessage("example-call", "read_project_source", {
+						sourceId: "example-source",
+						offset: 10,
+					}),
+				],
+			}),
+			{ configurable: { ai_token: "example-token" } },
+		);
+		expect(fetchMock).toHaveBeenCalledWith(
+			expect.stringContaining("/api/internal/project-source"),
+			expect.objectContaining({
+				headers: {
+					"Content-Type": "application/json",
+					"X-AI-Token": "example-token",
+				},
+			}),
+		);
+		expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+			projectId: "example-project",
+			sourceId: "example-source",
+			offset: 10,
+		});
+		expect(String(result.messages?.[0].content)).toContain(
+			"Example\n\npage\nNext offset: 24000",
+		);
+	});
+	it.each([401, 403, 404])(
+		"handles source read status %s",
+		async (status) => {
+			vi.stubGlobal(
+				"fetch",
+				vi.fn().mockResolvedValue({ ok: false, status }),
+			);
+			const result = await toolNode(
+				createMockState({
+					projectId: "example-project",
+					userId: "example-user",
+					messages: [
+						toolCallMessage("example-call", "read_project_source", {
+							sourceId: "example-source",
+						}),
+					],
+				}),
+				{ configurable: { ai_token: "example-token" } },
+			);
+			expect(String(result.messages?.[0].content)).toMatch(
+				/failed|authentication|token/i,
+			);
+		},
+	);
+});
+
+// A classified Proposal run logs ids and counts only (Fizzy #2946): the model
+// may have written its server-only prompt into a tool's query.
+describe("toolNode — logged arguments on a Proposal run", () => {
+	const QUERY = "SECRET QUERY TEXT the model wrote";
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		vi.restoreAllMocks();
+	});
+
+	async function loggedSearch(configurable: Record<string, unknown>) {
+		vi.stubGlobal("fetch", mockFetchOk());
+		const spies = (["info", "warn", "error", "debug"] as const).map(
+			(method) =>
+				vi.spyOn(logger, method).mockImplementation(() => undefined),
+		);
+		await toolNode(
+			createMockState({
+				messages: [searchKnowledgeCall("call_proposal", QUERY)],
+				projectId: "project-example",
+				userId: "user-example",
+			}),
+			{ configurable },
+		);
+		return spies
+			.flatMap((spy) =>
+				spy.mock.calls.map((args) => JSON.stringify(args)),
+			)
+			.join("\n");
+	}
+
+	it("logs only the length of a query on a Proposal run", async () => {
+		const logs = await loggedSearch({
+			proposal_mode: "artifact",
+			proposal_client_prompt: "A bound prompt for the example proposal.",
+		});
+		expect(logs).toContain("Executing search_project_knowledge");
+		expect(logs).not.toContain("SECRET QUERY TEXT");
+		expect(logs).toContain(`[${QUERY.length} chars]`);
+	});
+
+	it("still logs the query outside a Proposal", async () => {
+		const logs = await loggedSearch({});
+		expect(logs).toContain("SECRET QUERY TEXT");
 	});
 });

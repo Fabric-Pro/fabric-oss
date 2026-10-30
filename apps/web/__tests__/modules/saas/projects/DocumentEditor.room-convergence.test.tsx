@@ -206,6 +206,15 @@ const harness = await vi.hoisted(async () => {
 		recordDiffOutcome: vi.fn(),
 		/** What the editor handed its review bar last. */
 		reviewBarProps: null as Record<string, any> | null,
+		/** The server's `projects.proposalArtifact.reviseSection`. */
+		reviseSection: vi.fn(),
+		/** The section revision handed to a tab's editor, by tab. */
+		sectionRevisionRequests: new Map<
+			string,
+			{ id: string; runId: string; findingId: string }
+		>(),
+		/** What the editors said of their section revisions. */
+		sectionRevisionOutcomes: [] as Array<Record<string, unknown>>,
 	};
 });
 
@@ -436,6 +445,11 @@ function makeOrpcProxy(): any {
 			apply(_target, _thisArg, args: unknown[]) {
 				if (path.join(".") === "ai.feedback.confirmDraft") {
 					return harness.confirmDraft(args[0]);
+				}
+				if (
+					path.join(".") === "projects.proposalArtifact.reviseSection"
+				) {
+					return harness.reviseSection(args[0]);
 				}
 				if (
 					path.join(".") ===
@@ -677,6 +691,7 @@ vi.mock("@copilotkit/react-core", async () => {
 			const tab = React.useContext(harness.TabContext);
 			tab?.actions.set(config.name, config);
 		},
+		useFrontendTool: () => {},
 		useCopilotChat: () => {
 			const tab = React.useContext(harness.TabContext);
 			return {
@@ -958,6 +973,7 @@ vi.mock("@saas/projects/lib/editor-markdown-save", async (importOriginal) => {
 	};
 });
 
+import { buildSectionMap } from "@repo/utils/proposal-artifact/section-hash";
 import { getEditorMarkdownForSave } from "@saas/projects/lib/editor-markdown-save";
 import { ROOM_BODY_FRAGMENT } from "@saas/projects/lib/room-body-fragment";
 import { createCollaborativeExtensions } from "@saas/projects/lib/tiptap-extensions";
@@ -1178,6 +1194,15 @@ function TabRoot({ tab }: { tab: Tab }) {
 						tab.attachToServerRun &&
 						(server.status === "QUEUED" ||
 							server.status === "GENERATING")
+					}
+					sectionRevisionRequest={
+						harness.sectionRevisionRequests.get(tab.name) ?? null
+					}
+					onSectionRevisionSettled={(outcome) =>
+						harness.sectionRevisionOutcomes.push({
+							tab: tab.name,
+							...outcome,
+						})
 					}
 				/>
 			</QueryClientProvider>
@@ -1428,6 +1453,9 @@ beforeEach(() => {
 	harness.chatMessages = [];
 	harness.recordDiffOutcome.mockReset();
 	harness.reviewBarProps = null;
+	harness.reviseSection.mockReset();
+	harness.sectionRevisionRequests = new Map();
+	harness.sectionRevisionOutcomes = [];
 	server.content = BODY_A;
 	server.version = 7;
 	server.status = "COMPLETE";
@@ -10052,3 +10080,358 @@ describe("with the room flag off (Fizzy #2946)", () => {
 		expect(readConvergenceClaim(room.doc)).toBeNull();
 	});
 });
+
+describe("an AI accept on a client-document Proposal in a room (Fizzy #2946)", () => {
+	const ACCEPTED = "An accepted paragraph.";
+
+	beforeEach(() => {
+		harness.flags = {
+			DOCUMENT_ROOM_CONVERGENCE: true,
+			PROPOSAL_ARTIFACT: true,
+		};
+	});
+
+	async function openRoom() {
+		await persistRoom(BODY_A, savedStamp());
+		const reviewing = await openTab("reviewing", { clientId: 10 });
+		const other = await openTab("other", { clientId: 20 });
+		await settle(200);
+		return { reviewing, other };
+	}
+
+	/** The assistant proposes `proposed` in `tab`, and the person accepts it. */
+	async function acceptProposal(tab: Tab, proposed: string) {
+		harness.chatIn = tab.name;
+		harness.agentState = {
+			document: proposed,
+			proposalPatchedSectionKeys: ["p1:pricing#0"],
+		};
+		rerender(tab);
+		await settle(20);
+		const respond = vi.fn();
+		let card: any;
+		await act(async () => {
+			card = tab.actions
+				.get("confirm_changes")
+				?.renderAndWaitForResponse({
+					args: {},
+					respond,
+					status: "executing",
+				});
+			await Promise.resolve();
+		});
+		await settle(50);
+		await act(async () => {
+			card?.props.onConfirm();
+		});
+		await settle(50);
+		return respond;
+	}
+
+	async function answerHeld() {
+		await act(async () => {
+			for (const answer of server.held.splice(0)) {
+				answer();
+			}
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		await settle(50);
+	}
+
+	function reviewPublished(tab: Tab): boolean {
+		return Boolean(tab.awareness.own[PROPOSAL_REVIEW_AWARENESS_FIELD]);
+	}
+
+	async function expectHeld(tab: Tab) {
+		await waitFor(() => {
+			expect(mainEditor(tab)?.isEditable).toBe(false);
+		});
+		expect(saveButton(tab)).toBeDisabled();
+		expect(saveButton(tab)).toHaveAccessibleDescription(
+			"saveBlocked.proposalElsewhere",
+		);
+	}
+
+	async function expectResumed(tab: Tab) {
+		await waitFor(() => {
+			expect(mainEditor(tab)?.isEditable).toBe(true);
+		});
+		expect(saveButton(tab)).not.toHaveAccessibleDescription(
+			"saveBlocked.proposalElsewhere",
+		);
+	}
+
+	function refusedTextOffers() {
+		return vi
+			.mocked(toast.warning)
+			.mock.calls.filter(([message]) => message === "offerBack");
+	}
+
+	it("keeps its review published and its editor read-only until the save answers: the other tab is held, and neither autosaves in that gap", async () => {
+		harness.autosave.delayMs = 300;
+		const { reviewing, other } = await openRoom();
+		server.holdAnswers = true;
+
+		const respond = await acceptProposal(
+			reviewing,
+			`${BODY_A}\n\n${ACCEPTED}`,
+		);
+		expect(respond).toHaveBeenCalledWith({ accepted: true });
+		await waitFor(() => {
+			expect(server.held).toHaveLength(1);
+		});
+		expect(saveCalls[0]).toMatchObject({
+			tab: "reviewing",
+			aiReview: { kind: "CHAT", patchedSectionKeys: ["p1:pricing#0"] },
+			expectedVersion: 7,
+			expectedContentHash: hashOf(BODY_A),
+		});
+		expect(reviewPublished(reviewing)).toBe(true);
+		expect(mainEditor(reviewing)?.isEditable).toBe(false);
+		await expectHeld(other);
+		// Past the autosave's delay, nothing else goes from either tab.
+		await settle(700);
+		expect(saveCalls).toHaveLength(1);
+
+		server.holdAnswers = false;
+		await answerHeld();
+		await waitFor(() => {
+			expect(server.content).toContain(ACCEPTED);
+		});
+		await expectResumed(other);
+		await waitFor(() => {
+			expect(mainEditor(reviewing)?.isEditable).toBe(true);
+		});
+		expect(reviewPublished(reviewing)).toBe(false);
+		expect(editorBody(other)).toContain(ACCEPTED);
+		await settle(500);
+		expect(saveCalls).toHaveLength(1);
+		expect(harness.recordOutcome).toHaveBeenCalledWith(SAVED_ACCEPT_RECORD);
+	});
+
+	it("refused: every tab ends on the body it was accepted over, the refused text is offered once, it is recorded as not applied, and nothing more is saved", async () => {
+		harness.autosave.delayMs = 300;
+		const { reviewing, other } = await openRoom();
+		const before = editorBody(reviewing);
+		server.failNext = Object.assign(new Error("refused"), {
+			code: "PRECONDITION_FAILED",
+			data: { code: "REVISION_OUTSIDE_TARGET" },
+		});
+
+		await acceptProposal(reviewing, `${BODY_A}\n\n${ACCEPTED}`);
+		await waitFor(() => {
+			expect(editorBody(reviewing)).toBe(before);
+		});
+		await waitFor(() => {
+			expect(editorBody(other)).toBe(before);
+		});
+		await expectResumed(other);
+		await waitFor(() => {
+			expect(mainEditor(reviewing)?.isEditable).toBe(true);
+		});
+		expect(refusedTextOffers()).toHaveLength(1);
+		expect(harness.recordOutcome).toHaveBeenCalledTimes(1);
+		expect(harness.recordOutcome).toHaveBeenCalledWith({
+			accepted: false,
+			summary:
+				"Not applied: it changed a section outside the one it targeted.",
+			operationKey: expect.any(String),
+		});
+		await settle(800);
+		expect(saveCalls).toHaveLength(1);
+		expect(server.content).toBe(BODY_A);
+		expect(editorBody(reviewing)).not.toContain(ACCEPTED);
+	});
+
+	it("a version conflict keeps today's answer: the room is brought back to the saved document and the accepted text offered", async () => {
+		const { reviewing } = await openRoom();
+		server.failNext = Object.assign(new Error("Document changed"), {
+			code: "CONFLICT",
+		});
+
+		await acceptProposal(reviewing, `${BODY_A}\n\n${ACCEPTED}`);
+		await waitFor(() => {
+			expect(harness.recordOutcome).toHaveBeenCalledWith(
+				FAILED_OFFERED_ACCEPT_RECORD,
+			);
+		});
+		expect(refusedTextOffers()).toHaveLength(0);
+		// Not sent again without its descriptor.
+		expect(saveCalls).toHaveLength(1);
+	});
+
+	it("waiting behind the autosave when the page is left, its save still names its descriptor", async () => {
+		await persistRoom(BODY_A, savedStamp());
+		const tab = await openTab("tab");
+		vi.useFakeTimers({
+			toFake: ["setTimeout", "clearTimeout"],
+			shouldAdvanceTime: true,
+		});
+		try {
+			await type(tab, " First edit.");
+			server.holdAnswers = true;
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(10_500);
+			});
+			await waitFor(() => {
+				expect(saveCalls).toHaveLength(1);
+			});
+			await acceptProposal(tab, `${editorBody(tab)}\n\n${ACCEPTED}`);
+			expect(saveCalls).toHaveLength(1);
+			await act(async () => {
+				tab.view?.unmount();
+				await new Promise((resolve) => setTimeout(resolve, 0));
+			});
+
+			server.holdAnswers = false;
+			await act(async () => {
+				for (const answer of server.held.splice(0)) {
+					answer();
+				}
+				await vi.advanceTimersByTimeAsync(50);
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+		await waitFor(() => {
+			expect(saveCalls).toHaveLength(2);
+		});
+		expect(saveCalls[1]?.content).toContain(ACCEPTED);
+		expect(saveCalls[1]).toMatchObject({
+			aiReview: { kind: "CHAT", patchedSectionKeys: ["p1:pricing#0"] },
+		});
+	});
+
+	describe("a section revision under review", () => {
+		const PRICING_KEY = buildSectionMap(BODY_A).sections.find(
+			(section) => section.headingText === "Pricing",
+		)?.key as string;
+		const REVISED = "A fixed fee covers both phases.";
+
+		async function openRevision(tab: Tab) {
+			harness.reviseSection.mockResolvedValue({
+				status: "CANDIDATE",
+				sectionKey: PRICING_KEY,
+				body: REVISED,
+				baseVersion: server.version,
+				baseContentHash: hashOf(server.content),
+				revisionToken: "token-example",
+			});
+			harness.sectionRevisionRequests.set(tab.name, {
+				id: "revision-1",
+				runId: "run-1",
+				findingId: "finding-1",
+			});
+			rerender(tab);
+			await waitFor(() => {
+				expect(editorBody(tab)).toContain(REVISED);
+			});
+			await settle(50);
+		}
+
+		it("holds the other tab and keeps the reviewing editor read-only; Accept saves it with the FINDING descriptor and releases both", async () => {
+			const { reviewing, other } = await openRoom();
+			await openRevision(reviewing);
+
+			expect(harness.reviseSection).toHaveBeenCalledWith({
+				projectId: "proj-1",
+				documentId: "doc-1",
+				runId: "run-1",
+				findingId: "finding-1",
+				baseVersion: 7,
+				baseContentHash: hashOf(BODY_A),
+			});
+			expect(mainEditor(reviewing)?.isEditable).toBe(false);
+			expect(reviewPublished(reviewing)).toBe(true);
+			await expectHeld(other);
+
+			await act(async () => {
+				harness.reviewBarProps?.onAcceptAll();
+			});
+			await waitFor(() => {
+				expect(server.content).toContain(REVISED);
+			});
+			expect(saveCalls).toHaveLength(1);
+			expect(saveCalls[0]).toMatchObject({
+				tab: "reviewing",
+				aiReview: {
+					kind: "FINDING",
+					runId: "run-1",
+					findingId: "finding-1",
+					revisionToken: "token-example",
+				},
+			});
+			await expectResumed(other);
+			expect(editorBody(other)).toContain(REVISED);
+			expect(harness.sectionRevisionOutcomes).toEqual([
+				{ tab: "reviewing", id: "revision-1", result: "accepted" },
+			]);
+		});
+
+		it("rejected: the other tab resumes on the body from before it, and nothing is saved", async () => {
+			const { reviewing, other } = await openRoom();
+			const before = editorBody(reviewing);
+			await openRevision(reviewing);
+			await expectHeld(other);
+
+			await act(async () => {
+				harness.reviewBarProps?.onRejectAll();
+			});
+			await expectResumed(other);
+			expect(editorBody(reviewing)).toBe(before);
+			expect(editorBody(other)).toBe(before);
+			await settle(300);
+			expect(saveCalls).toEqual([]);
+			expect(harness.sectionRevisionOutcomes).toEqual([
+				{ tab: "reviewing", id: "revision-1", result: "rejected" },
+			]);
+		});
+
+		it("left within the app while under review, is rejected on the way out: the other tab resumes on the body from before it", async () => {
+			const { reviewing, other } = await openRoom();
+			const before = editorBody(reviewing);
+			await openRevision(reviewing);
+			await expectHeld(other);
+
+			await act(async () => {
+				reviewing.view?.unmount();
+				await new Promise((resolve) => setTimeout(resolve, 0));
+			});
+			await expectResumed(other);
+			expect(editorBody(other)).toBe(before);
+			expect(saveCalls).toEqual([]);
+		});
+	});
+});
+
+// Page-agent behavior is covered by page-agent-render-cost; retain this harness's agent fixture.
+vi.mock("@saas/shared/components/copilot/use-page-agent", async () => {
+	const core = await import("@copilotkit/react-core");
+	return {
+		usePageAgent: (name: string, initialState: object) =>
+			core.useCoAgent({ name, initialState }),
+	};
+});
+
+// These editor harnesses predate the enclosing page's session provider.
+vi.mock(
+	"@saas/shared/components/copilot/CopilotChatSessionProvider",
+	async (importOriginal) => {
+		const actual =
+			await importOriginal<
+				typeof import("@saas/shared/components/copilot/CopilotChatSessionProvider")
+			>();
+		const core = await import("@copilotkit/react-core");
+		return {
+			...actual,
+			useCopilotChatSessionSelector: (
+				select: (session: object) => unknown,
+			) =>
+				select({
+					...core.useCopilotChatInternal(),
+					...core.useCopilotChat(),
+				}),
+			useCopilotChatSessionActions: () => core.useCopilotChatInternal(),
+		};
+	},
+);

@@ -72,6 +72,7 @@ type TiptapEditorRegistryEntry = {
 	projectId: string;
 	documentId?: string;
 	storyId?: string;
+	documentLabel?: string;
 	editor: Editor;
 	/**
 	 * `performance.now()` timestamp of the last focus event observed
@@ -343,6 +344,7 @@ export type RegisterTiptapEditorOptions = {
 	editor: Editor | null;
 	documentId?: string | null;
 	storyId?: string | null;
+	documentLabel?: string;
 };
 
 /**
@@ -371,7 +373,8 @@ export function useRegisterTiptapEditor(
 	// no entries and the UI button falls back to the picker path).
 	const ctx = useContext(TiptapEditorRegistryContext);
 
-	const { projectId, kind, editor, documentId, storyId } = options;
+	const { projectId, kind, editor, documentId, storyId, documentLabel } =
+		options;
 	const documentIdNormalized = documentId ?? undefined;
 	const storyIdNormalized = storyId ?? undefined;
 
@@ -397,6 +400,7 @@ export function useRegisterTiptapEditor(
 			projectId,
 			documentId: documentIdNormalized,
 			storyId: storyIdNormalized,
+			documentLabel,
 			editor,
 			lastFocusedAt: initialFocusedAt,
 		};
@@ -415,5 +419,13 @@ export function useRegisterTiptapEditor(
 			editor.off("focus", onFocus);
 			unregister();
 		};
-	}, [ctx, editor, kind, projectId, documentIdNormalized, storyIdNormalized]);
+	}, [
+		ctx,
+		editor,
+		kind,
+		projectId,
+		documentIdNormalized,
+		storyIdNormalized,
+		documentLabel,
+	]);
 }

@@ -7,7 +7,12 @@ import { useCapabilityGate } from "@saas/projects/components/capability-gates/us
 import { Pagination } from "@saas/shared/components/Pagination";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+	keepPreviousData,
+	useMutation,
+	useQuery,
+	useQueryClient,
+} from "@tanstack/react-query";
 import { Alert, AlertDescription, AlertTitle } from "@ui/components/alert";
 import {
 	AlertDialog,
@@ -51,6 +56,7 @@ import {
 	TrashIcon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
+import { parseAsInteger, parseAsStringLiteral, useQueryState } from "nuqs";
 import { Fragment, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { ConnectChatChannelButton } from "./ConnectChatChannelButton";
@@ -305,10 +311,24 @@ export function ProjectNewsletterSettings({
 		{ key: "failed", label: "Failed" },
 		{ key: "skipped", label: "Skipped" },
 	] as const;
-	const [pageSize, setPageSize] = useState<(typeof PAGE_SIZES)[number]>(15);
-	const [page, setPage] = useState(0);
-	const [sendStatus, setSendStatus] =
-		useState<(typeof SEND_FILTERS)[number]["key"]>("all");
+	const [urlPageSize, setPageSize] = useQueryState(
+		"sendHistorySize",
+		parseAsInteger.withDefault(15),
+	);
+	const pageSize = PAGE_SIZES.find((size) => size === urlPageSize) ?? 15;
+	const [urlpage, setUrlpage] = useQueryState(
+		"sendHistoryPage",
+		parseAsInteger.withDefault(1),
+	);
+	const page = Math.max(0, urlpage - 1);
+	const setPage = (next: number) =>
+		setUrlpage(next + 1, { history: "replace" });
+	const [sendStatus, setSendStatus] = useQueryState(
+		"sendHistoryStatus",
+		parseAsStringLiteral(
+			SEND_FILTERS.map((filter) => filter.key),
+		).withDefault("all"),
+	);
 	const [showUnsubscribed, setShowUnsubscribed] = useState(false);
 	const [activeSubscriberPage, setActiveSubscriberPage] = useState(1);
 	const [unsubscribedSubscriberPage, setUnsubscribedSubscriberPage] =
@@ -333,6 +353,7 @@ export function ProjectNewsletterSettings({
 		}),
 	);
 	const sendsQuery = useQuery({
+		placeholderData: keepPreviousData,
 		...orpc.newsletter.sends.list.queryOptions({
 			input: {
 				projectId,
@@ -682,10 +703,15 @@ export function ProjectNewsletterSettings({
 	// and leaves the user on an out-of-range page (the empty state would render
 	// with no pagination controls, stranding the user).
 	useEffect(() => {
-		if (page > 0 && page >= pageCount) {
+		if (
+			!sendsQuery.isPlaceholderData &&
+			sendsQuery.data &&
+			page > 0 &&
+			page >= pageCount
+		) {
 			setPage(Math.max(0, pageCount - 1));
 		}
-	}, [page, pageCount]);
+	}, [page, pageCount, sendsQuery.isPlaceholderData, sendsQuery.data]);
 
 	// While settings are loading we render disabled controls with defaults so
 	// the form never flashes empty. `s` resolves to the persisted row or the
@@ -1554,6 +1580,7 @@ export function ProjectNewsletterSettings({
 									onChangeCurrentPage={
 										setActiveSubscriberPage
 									}
+									navigationLabel="Active subscribers pagination"
 									previousLabel="Previous page, active subscribers"
 									nextLabel="Next page, active subscribers"
 								/>
@@ -1611,6 +1638,7 @@ export function ProjectNewsletterSettings({
 											onChangeCurrentPage={
 												setUnsubscribedSubscriberPage
 											}
+											navigationLabel="Unsubscribed subscribers pagination"
 											previousLabel="Previous page, unsubscribed subscribers"
 											nextLabel="Next page, unsubscribed subscribers"
 										/>
@@ -2131,46 +2159,31 @@ export function ProjectNewsletterSettings({
 											</option>
 										))}
 									</select>
-									<span className="tabular-nums">
-										{sendsTotal === 0
-											? "0 of 0"
-											: `${page * pageSize + 1}–${Math.min(
-													(page + 1) * pageSize,
-													sendsTotal,
-												)} of ${sendsTotal}`}
-									</span>
+									{sendsTotal <= pageSize && (
+										<span className="tabular-nums">
+											{sendsTotal === 0
+												? "0 of 0"
+												: `${page * pageSize + 1}–${Math.min(
+														(page + 1) * pageSize,
+														sendsTotal,
+													)} of ${sendsTotal}`}
+										</span>
+									)}
 								</div>
-								<div className="flex items-center gap-2">
-									<Button
-										type="button"
-										size="sm"
-										variant="outline"
-										disabled={page === 0}
-										onClick={() =>
-											setPage((p) => Math.max(0, p - 1))
+								{sendsTotal > pageSize && (
+									<Pagination
+										totalItems={sendsTotal}
+										itemsPerPage={pageSize}
+										currentPage={page + 1}
+										onChangeCurrentPage={(next) =>
+											setPage(next - 1)
 										}
-										aria-label="Previous page"
-									>
-										Prev
-									</Button>
-									<span className="tabular-nums">
-										Page {page + 1} of {pageCount}
-									</span>
-									<Button
-										type="button"
-										size="sm"
-										variant="outline"
-										disabled={page + 1 >= pageCount}
-										onClick={() =>
-											setPage((p) =>
-												Math.min(pageCount - 1, p + 1),
-											)
-										}
-										aria-label="Next page"
-									>
-										Next
-									</Button>
-								</div>
+										navigationLabel="Send history pagination"
+										goToPageLabel="Go to page, send history"
+										previousLabel="Previous page, send history"
+										nextLabel="Next page, send history"
+									/>
+								)}
 							</div>
 						</>
 					)}

@@ -301,6 +301,12 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"Member removed from the organization — they lose access to every project in this org.",
 	},
 	{
+		key: "org.member.left",
+		categoryId: "org",
+		labelKey: "settings.auditLog.actions.org.member.left",
+		description: "Member voluntarily left the organization.",
+	},
+	{
 		key: "org.api_key.created",
 		categoryId: "org",
 		labelKey: "settings.auditLog.actions.org.api_key.created",
@@ -535,6 +541,13 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 			"A contact was ERASED — the name, email and company of a person who never had an account are anonymised in place, every to-do assigned to them is detached, and their name is stripped from the stored suggestion lists that had denormalised it. This is the receipt for an erasure request, and it is the one contact action that cannot be undone. The counts say how much moved; the person's details appear nowhere in this row, which is the point.",
 	},
 	// ---- Personal account -----------------------------------------------
+	{
+		key: "account.role_changed",
+		categoryId: "account",
+		labelKey: "settings.auditLog.actions.account.role_changed",
+		description:
+			"The global admin role was removed because operator organization membership ended. Other account roles are preserved.",
+	},
 	{
 		key: "account.api_key.created",
 		categoryId: "account",
@@ -1859,6 +1872,14 @@ export const AUDIT_ACTIONS: AuditActionEntry[] = [
 		labelKey: "settings.auditLog.actions.project.document_analysis.cleared",
 		description:
 			"A member cleared an answer to a finding of a Proposal's Internal Analysis, so it no longer informs later generations. Records the finding key and answer kind only.",
+	},
+	{
+		key: "project.document_analysis.resolved",
+		categoryId: "project",
+		labelKey:
+			"settings.auditLog.actions.project.document_analysis.resolved",
+		description:
+			"A member saved a revision that applied a finding's recommendation from a Proposal's Internal Analysis, recording the finding as Resolved. Records the finding key, run id and answer version, never text.",
 	},
 	{
 		key: "project.document_analysis.rerun_started",

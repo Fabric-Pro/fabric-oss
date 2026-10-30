@@ -113,6 +113,9 @@ executor, and broader lifecycle-event convergence remain open. The journal cover
 committed primary-run output, not uncommitted provider chunks, external AG-UI
 streams, or the history of every approval transition. The final workflow result
 remains authoritative. Old workers retain live-only behavior during rollout.
+The flag-gated CopilotKit agent-runtime transport retains its current observation
+semantics; it needs a separate cursor integration before the stream transport can
+be retired. Shared observer and turn-state helpers preserve both paths.
 
 Apply the additive replay-journal migration and RLS policies before updating
 workers and web/API. Updated workers persist output independently of browser or

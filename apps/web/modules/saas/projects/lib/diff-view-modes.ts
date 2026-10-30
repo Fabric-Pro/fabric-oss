@@ -96,13 +96,16 @@ function unwrapAll(root: ParentNode, selector: string): void {
 
 /**
  * A diagram fence as the editor (`data-language`) or `fromMarkdown` (the
- * `<code>` class) writes it.
+ * `<code>` class) writes it. `fromMarkdown` keeps the fence's language as
+ * written, so ```` ```Mermaid ```` counts too, as the diagram node reads it.
  */
 function isDiagramPre(pre: Element): boolean {
-	return (
-		pre.getAttribute("data-language") === "mermaid" ||
-		pre.querySelector("code")?.classList.contains("language-mermaid") ===
-			true
+	if (pre.getAttribute("data-language")?.toLowerCase() === "mermaid") {
+		return true;
+	}
+	const classes = pre.querySelector("code")?.classList;
+	return Array.from(classes ?? []).some(
+		(name) => name.toLowerCase() === "language-mermaid",
 	);
 }
 

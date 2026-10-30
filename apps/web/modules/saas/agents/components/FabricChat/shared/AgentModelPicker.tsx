@@ -322,7 +322,12 @@ export function AgentModelPicker({
 							data-testid="inactive-provider-pick"
 							className="px-3 py-2 text-xs text-muted-foreground"
 						>
-							<span>{agent.name} · not applied</span>
+							<span>
+								{agent.name}{" "}
+								<span className="text-highlight-ink">
+									· not applied
+								</span>
+							</span>
 							<p>{getInactiveNote(agent)}</p>
 							{planSettingsHref && (
 								<a
@@ -347,7 +352,7 @@ export function AgentModelPicker({
 
 							{chatgptPlan.spent && (
 								<p
-									className="px-3 py-1.5 text-xs text-muted-foreground"
+									className="px-3 py-1.5 text-xs text-highlight-ink"
 									data-testid="agent-picker-chatgpt-plan-spent"
 								>
 									{chatgptPlan.spent.until

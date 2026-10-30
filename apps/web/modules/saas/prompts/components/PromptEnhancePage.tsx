@@ -260,6 +260,7 @@ export function PromptEnhancePage({ promptId, organizationId }: Props) {
 					useSingleEndpoint
 					agent="prompt_enhancer"
 					showDevConsole={false}
+					enableInspector={false}
 					onError={onError}
 				>
 					<CopilotChatSessionProvider>

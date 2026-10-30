@@ -201,10 +201,14 @@ export function escapeMermaidLabel(text: string): string {
  *   no colour and the renderer paints the role from the theme at draw time.
  * - `layout`: `"proposal"` keeps labels short enough to read at page width
  *   (see `proposalNodeLabel`) and always draws a timeline top-down.
+ * - `wrapTitle`: with the `"proposal"` layout, `false` writes a node's title
+ *   as one label line instead of wrapping it, for a fence a figure template
+ *   draws (see `proposalVisualTemplateOptions`). Glossy never reads it.
  */
 export interface VisualTemplateOptions {
 	colorMode?: "style" | "roles";
 	layout?: "glossy" | "proposal";
+	wrapTitle?: boolean;
 }
 
 export const PROPOSAL_VISUAL_TEMPLATE_OPTIONS = {
@@ -322,17 +326,29 @@ function detailRepeatsTitle(title: string, detail: string): boolean {
  * word with an ellipsis rather than dropped, so what it adds still shows;
  * the extraction asks for one that needs no cut. Every line shown is a
  * prefix of the text that was checked.
+ *
+ * Without `wrapTitle` the title is one line cut at the same two-line budget:
+ * a figure template reads only the first line after the date as the title
+ * and wraps it to its own width, so a second title line would draw as
+ * detail.
  */
 function proposalNodeLabel(
 	title: string,
 	detail: string | undefined,
+	wrapTitle: boolean,
 	date?: string,
 ): string {
 	const width = PROPOSAL_VISUAL_LINE_MAX_CHARS;
 	const lines = date ? [cutLabelAtWord(date, width)] : [];
-	lines.push(
-		...wrapLabelAtWords(title, width, PROPOSAL_VISUAL_TITLE_MAX_LINES),
-	);
+	if (wrapTitle) {
+		lines.push(
+			...wrapLabelAtWords(title, width, PROPOSAL_VISUAL_TITLE_MAX_LINES),
+		);
+	} else {
+		lines.push(
+			cutLabelAtWord(title, width * PROPOSAL_VISUAL_TITLE_MAX_LINES),
+		);
+	}
 	if (detail?.trim() && !detailRepeatsTitle(title, detail)) {
 		lines.push(cutLabelAtWord(detail, width));
 	}
@@ -377,7 +393,12 @@ function timelineItemLabel(
 	options: VisualTemplateOptions,
 ): string {
 	if (options.layout === "proposal") {
-		return proposalNodeLabel(item.label, item.description, item.date);
+		return proposalNodeLabel(
+			item.label,
+			item.description,
+			options.wrapTitle !== false,
+			item.date,
+		);
 	}
 	const base = `${item.date} — ${item.label}`;
 	return escapeMermaidLabel(
@@ -410,7 +431,11 @@ function flowStepLabel(
 	options: VisualTemplateOptions,
 ): string {
 	if (options.layout === "proposal") {
-		return proposalNodeLabel(step.label, step.description);
+		return proposalNodeLabel(
+			step.label,
+			step.description,
+			options.wrapTitle !== false,
+		);
 	}
 	return escapeMermaidLabel(
 		step.description ? `${step.label} (${step.description})` : step.label,
@@ -515,6 +540,42 @@ export function orgChartToMermaid(
 		}
 	}
 	return lines.join("\n");
+}
+
+/**
+ * The figure template a Proposal fence of `spec` asks for, written as its
+ * `%% figure:` line (`proposal-artifact/proposal-figures/`) by the
+ * callers that assemble a Proposal fence: a flow without lanes draws as a
+ * numbered process, a timeline as a dated one. A flow with lanes and an org
+ * chart stay Mermaid (null). The templating itself never writes the line,
+ * so its output, Glossy's included, is unchanged.
+ */
+export function proposalFigureKind(
+	spec: VisualSpec,
+): "process" | "timeline" | null {
+	switch (spec.kind) {
+		case "timeline":
+			return "timeline";
+		case "flow":
+			return flowLanes(spec.steps) ? null : "process";
+		default:
+			return null;
+	}
+}
+
+/**
+ * The template options a Proposal fence of `spec` is written with: a fence
+ * that asks for a figure template (`proposalFigureKind`) gets each title as
+ * one label line, since the template wraps it to its own width; a fence that
+ * stays Mermaid keeps the wrapped title.
+ */
+export function proposalVisualTemplateOptions(
+	spec: VisualSpec,
+): VisualTemplateOptions {
+	return {
+		...PROPOSAL_VISUAL_TEMPLATE_OPTIONS,
+		wrapTitle: proposalFigureKind(spec) === null,
+	};
 }
 
 /** Dispatch a spec to the matching Mermaid template. Throws for a kind this module does not template (`stat`, `comparison`, `existing_mermaid`, `auto`). */

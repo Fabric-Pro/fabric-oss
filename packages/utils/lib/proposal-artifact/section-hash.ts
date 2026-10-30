@@ -75,7 +75,14 @@
  * editor bundle all import it.
  */
 
-import type { Code, Heading, Nodes, PhrasingContent, RootContent } from "mdast";
+import type {
+	Code,
+	Heading,
+	Nodes,
+	PhrasingContent,
+	Root,
+	RootContent,
+} from "mdast";
 import { fnv1aHex64 } from "../fnv1a";
 import { headingAnchor } from "../glossy/outline";
 import { parseMarkdownAst } from "./markdown-ast";
@@ -124,7 +131,19 @@ export interface SectionMap {
  */
 export function buildSectionMap(markdown: string): SectionMap {
 	const source = normalizeSource(markdown);
-	const blocks = parseMarkdownAst(source).children;
+	return buildSectionMapFromRoot(parseMarkdownAst(source), source);
+}
+
+/**
+ * {@link buildSectionMap} over a body a caller already normalised with
+ * {@link normalizeSource} and parsed, for a caller that reads the tree too.
+ * `source` must be that normalised text, or the line numbers drift.
+ */
+export function buildSectionMapFromRoot(
+	root: Root,
+	source: string,
+): SectionMap {
+	const blocks = root.children;
 	const lineCount = source.split("\n").length;
 
 	const headingIndexes: number[] = [];
@@ -257,7 +276,11 @@ export function isCurrentSectionVersion(value: string): boolean {
  */
 const LONE_SURROGATE = /[\uD800-\uDFFF]/gu;
 
-function normalizeSource(markdown: string): string {
+/**
+ * Line endings to `\n`, a lone surrogate replaced, text to NFC: the text
+ * every line number here is counted against.
+ */
+export function normalizeSource(markdown: string): string {
 	return markdown
 		.replace(/\r\n?/g, "\n")
 		.replace(LONE_SURROGATE, "\uFFFD")

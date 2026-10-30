@@ -1,10 +1,6 @@
 "use client";
 
-import {
-	useCoAgent,
-	useCopilotAction,
-	useCopilotReadable,
-} from "@copilotkit/react-core";
+import { useCopilotAction, useCopilotReadable } from "@copilotkit/react-core";
 import { useChatContext } from "@copilotkit/react-ui";
 import { MessageRole, TextMessage } from "@copilotkit/runtime-client-gql";
 import { featureKeyForAgentId } from "@repo/ai/lib/feature-keys";
@@ -14,8 +10,12 @@ import {
 	useConfirmChangesVerdictCard,
 } from "@saas/agents/copilot/useConfirmChangesVerdict";
 import { AttachmentRegistryProvider } from "@saas/shared/components/copilot/AttachmentRegistry";
+import { useAssistantThread } from "@saas/shared/components/copilot/assistant-thread";
 import { CopilotAssistantMessage } from "@saas/shared/components/copilot/CopilotAssistantMessage";
-import { useCopilotChatSession } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
+import {
+	useCopilotChatSessionActions,
+	useCopilotChatSessionSelector,
+} from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import { AI_REQUEST_TOO_LARGE_EVENT } from "@saas/shared/components/copilot/CopilotFetchErrorInterceptor";
 import { CopilotReplyRatingSidebar } from "@saas/shared/components/copilot/CopilotReplyRatingSidebar";
 import { createCopilotSidebarInput } from "@saas/shared/components/copilot/CopilotSidebarInput";
@@ -25,6 +25,7 @@ import {
 	makeAssistantMessageWithRunMark,
 	makeSuggestionsListWithRunMark,
 } from "@saas/shared/components/copilot/run-mark-wrappers";
+import { usePageAgent } from "@saas/shared/components/copilot/use-page-agent";
 import { useUserRunSignal } from "@saas/shared/components/copilot/use-user-run-signal";
 import {
 	type ClarifyingQuestionFrequency,
@@ -279,6 +280,8 @@ function CloseAssistantOnNarrowViewport() {
 }
 
 // Agent state interface - matches other document editors
+const PAGE_AGENT_KEYS = ["document", "focusAnchor"] as const;
+
 interface AgentState {
 	document: string;
 	focusAnchor?: string;
@@ -1795,11 +1798,11 @@ export function StoryWorkspace({
 	// rather than a local `useCopilotChat()` / `useCopilotChatInternal()`
 	// pair: on 1.70 each of those call sites opens its own `agent/connect`
 	// (Fizzy #2389). Same fields, same values, one connect.
-	const {
-		isLoading: isAiLoading,
-		appendMessage,
-		agent,
-	} = useCopilotChatSession();
+	const isAiLoading = useCopilotChatSessionSelector(
+		(session) => session.isLoading,
+	);
+	const agent = useCopilotChatSessionSelector((session) => session.agent);
+	const { appendMessage } = useCopilotChatSessionActions();
 	const { isUserGenerationActive, markUserRunInitiated, clearUserRunMark } =
 		useUserRunSignal(isAiLoading);
 
@@ -2049,13 +2052,8 @@ export function StoryWorkspace({
 			refreshSpecContexts: [],
 			systemPrompt: "",
 			suppressFabricMethodology: false,
-			// Declare reasoningByTurn / toolCallsByTurn in initialState so
-			// CopilotKit's useCoAgent doesn't filter them out of React state
-			// updates. Mirrors DocumentEditor — without these keys, the
-			// STATE_SNAPSHOT events that carry per-turn reasoning/tool-call
-			// traces (PR #976/#1023/#1024) reach the SSE wire but are dropped
-			// before CopilotAssistantMessage's useCoAgent subscription sees
-			// them on the Stories Feature Assistant surface.
+			// Default per-turn trace containers for a fresh run. CopilotKit 1.80
+			// exposes incoming state keys without filtering by this seed.
 			reasoningByTurn: {},
 			toolCallsByTurn: {},
 		}),
@@ -2074,10 +2072,11 @@ export function StoryWorkspace({
 		state: agentState,
 		setState: setCoAgentState,
 		nodeName,
-	} = useCoAgent<AgentState>({
-		name: "project_document_generator",
-		initialState: initialAgentState,
-	});
+	} = usePageAgent<AgentState>(
+		"project_document_generator",
+		initialAgentState,
+		PAGE_AGENT_KEYS,
+	);
 
 	// Every document handed to the agent goes through `toAgentDocument`, so the
 	// model never sees (and echoes back) Turndown's escapes. What the agent
@@ -2089,11 +2088,8 @@ export function StoryWorkspace({
 				: update,
 		);
 
-	// `useCoAgent` returns a new `setState` function every render, so listing it
-	// in a useEffect dep array causes an infinite render loop. Stash the latest
-	// reference in a ref and read through it from effects that only need to fire
-	// when their *data* dependencies change. (Existing code below at the Fabric
-	// Agent launcher also uses this pattern.)
+	// The document-normalizing wrapper is created during render. Keep its latest
+	// reference in a ref so effects below can depend on their input data.
 	const setAgentStateRef = useRef(setAgentState);
 	setAgentStateRef.current = setAgentState;
 
@@ -2609,7 +2605,11 @@ export function StoryWorkspace({
 			if (markdownContent !== null) {
 				setCurrentDocument(markdownContent);
 				baselineRef.current = markdownContent; // Keep ref in sync
-				setAgentState({ document: markdownContent });
+				if (
+					agent?.state?.document !== toAgentDocument(markdownContent)
+				) {
+					setAgentState({ document: markdownContent });
+				}
 			}
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2749,6 +2749,9 @@ export function StoryWorkspace({
 		projectId,
 		kind: "story",
 		storyId: story.id,
+		documentLabel: [story.identifier, story.title]
+			.filter(Boolean)
+			.join(" "),
 		editor,
 	});
 
@@ -3877,24 +3880,39 @@ export function StoryWorkspace({
 		{
 			description:
 				"The current feature being edited. The AI can modify this content by generating new document content.",
-			value: {
-				storyId: story.id,
-				projectId,
-				identifier: story.identifier,
-				title,
-				description: currentDocument,
-				currentContent: currentDocument,
-				version: story.version ?? 1,
-				draftingStage: story.draftingStage,
-				priority,
-				size,
-				storyPoints,
-				tasks: tasks.map((t) => ({
-					title: t.title,
-					isCompleted: t.isCompleted,
-					estimatedHours: t.estimatedHours,
-				})),
-			},
+			value: useMemo(
+				() => ({
+					storyId: story.id,
+					projectId,
+					identifier: story.identifier,
+					title,
+					description: currentDocument,
+					currentContent: currentDocument,
+					version: story.version ?? 1,
+					draftingStage: story.draftingStage,
+					priority,
+					size,
+					storyPoints,
+					tasks: tasks.map((t) => ({
+						title: t.title,
+						isCompleted: t.isCompleted,
+						estimatedHours: t.estimatedHours,
+					})),
+				}),
+				[
+					story.id,
+					projectId,
+					story.identifier,
+					title,
+					currentDocument,
+					story.version,
+					story.draftingStage,
+					priority,
+					size,
+					storyPoints,
+					tasks,
+				],
+			),
 		},
 		[
 			story.id,
@@ -3917,35 +3935,54 @@ export function StoryWorkspace({
 	// when "Enable code search for AI agents" is toggled on for the project.
 	useCopilotReadable({
 		description: "Project context for the feature",
-		value: {
-			projectId,
-			projectName: project?.name,
-			projectDescription: project?.description,
-			techStack: project?.techStack,
-			features: project?.features,
-			documentTitles: documents.map((d) => d.title),
-			hasTeamsIntegration: !!teamsMessagesData?.hasTeamsIntegration,
-			hasSlackIntegration: !!slackMessagesData?.hasSlackIntegration,
-			hasGitHubIntegration: hasRepoUrl,
-			hasRepoIntegration: codeSearchEnabled && hasRepoUrl,
-		},
+		value: useMemo(
+			() => ({
+				projectId,
+				projectName: project?.name,
+				projectDescription: project?.description,
+				techStack: project?.techStack,
+				features: project?.features,
+				documentTitles: documents.map((d) => d.title),
+				hasTeamsIntegration: !!teamsMessagesData?.hasTeamsIntegration,
+				hasSlackIntegration: !!slackMessagesData?.hasSlackIntegration,
+				hasGitHubIntegration: hasRepoUrl,
+				hasRepoIntegration: codeSearchEnabled && hasRepoUrl,
+			}),
+			[
+				projectId,
+				project,
+				documents,
+				teamsMessagesData?.hasTeamsIntegration,
+				slackMessagesData?.hasSlackIntegration,
+				hasRepoUrl,
+				codeSearchEnabled,
+			],
+		),
 	});
 
 	// Expose available context sources (metadata only — agent searches on-demand via tools)
 	useCopilotReadable({
 		description:
 			"Available project context sources. The agent can search these using the search_project_knowledge tool (for meeting transcripts, documents, codebase) and search_teams_messages / search_slack_messages tools (for live chat messages).",
-		value: {
-			meetingTranscriptCount: transcriptContextData?.transcriptCount ?? 0,
-			meetingSubjects: (transcriptContextData?.transcripts ?? []).map(
-				(t) => ({
-					subject: t.meetingSubject,
-					date: t.meetingDate,
-				}),
-			),
-			teamsMessageCount: teamsMessagesData?.messages?.length ?? 0,
-			slackMessageCount: slackMessagesData?.messages?.length ?? 0,
-		},
+		value: useMemo(
+			() => ({
+				meetingTranscriptCount:
+					transcriptContextData?.transcriptCount ?? 0,
+				meetingSubjects: (transcriptContextData?.transcripts ?? []).map(
+					(t) => ({
+						subject: t.meetingSubject,
+						date: t.meetingDate,
+					}),
+				),
+				teamsMessageCount: teamsMessagesData?.messages?.length ?? 0,
+				slackMessageCount: slackMessagesData?.messages?.length ?? 0,
+			}),
+			[
+				transcriptContextData,
+				teamsMessagesData?.messages?.length,
+				slackMessagesData?.messages?.length,
+			],
+		),
 	});
 
 	// Render default-MCP tool results (e.g. Excalidraw `create_view`)
@@ -5179,10 +5216,13 @@ export function StoryWorkspace({
 	useCopilotReadable({
 		description:
 			"RAG context — content extracted from files the user has attached in this chat session AND images attached to the active UserStory itself. Each entry is prefixed with the filename and contains either the raw text (documents) or a markdown image link with a base64 data URL (images, for vision-capable models).",
-		value: {
-			ragContexts: mergedRagContexts,
-			ragContextsCount: mergedRagContexts.length,
-		},
+		value: useMemo(
+			() => ({
+				ragContexts: mergedRagContexts,
+				ragContextsCount: mergedRagContexts.length,
+			}),
+			[mergedRagContexts],
+		),
 	});
 
 	// The readable above is the ONLY channel carrying this payload, deliberately.
@@ -5316,9 +5356,11 @@ export function StoryWorkspace({
 		// context state (not a save) — `?? ""` is fine here; a failed read
 		// just means the agent temporarily sees an empty document.
 		const markdown = getEditorMarkdownForSave(editor) ?? "";
-		flushSync(() => {
-			setAgentStateRef.current({ document: markdown } as AgentState);
-		});
+		if (agent?.state?.document !== toAgentDocument(markdown)) {
+			flushSync(() => {
+				setAgentStateRef.current({ document: markdown } as AgentState);
+			});
+		}
 	};
 	const handleBeforeSend = useCallback(() => {
 		syncDocumentBeforeSendRef.current();
@@ -5395,7 +5437,7 @@ export function StoryWorkspace({
 	// historical half (`<HydratedMessagesProvider>`) is cleared
 	// implicitly when `activeAssistantConversationId` flips. Read via the
 	// shared session so this call site doesn't open its own connect.
-	const { setMessages: setCopilotMessages } = useCopilotChatSession();
+	const { setMessages: setCopilotMessages } = useCopilotChatSessionActions();
 
 	// Group E — "New conversation" affordance handler (FR-10).
 	// Mirrors `DocumentEditor.handleNewConversation` so both surfaces behave
@@ -5414,8 +5456,11 @@ export function StoryWorkspace({
 	// worst case is "the old thread reappears on next reload", which is
 	// safer than silently leaving the user staring at the previous
 	// transcript.
+	const startNewThread = useAssistantThread()?.startNewThread;
 	const handleNewConversation = useCallback(async () => {
 		const archivingId = activeAssistantConversationId;
+		// The next turn runs on a fresh CopilotKit thread (`assistant-thread`).
+		startNewThread?.();
 		try {
 			if (archivingId) {
 				await orpcClient.agents.conversations.archiveForDocument({
@@ -5451,6 +5496,7 @@ export function StoryWorkspace({
 		}
 	}, [
 		activeAssistantConversationId,
+		startNewThread,
 		organizationId,
 		setCopilotMessages,
 		clearUploadedRagContexts,
@@ -5510,6 +5556,38 @@ export function StoryWorkspace({
 		return createCopilotSidebarLauncher();
 	}, [documentAssistantHistoryEnabled]);
 
+	const chatLabels = useMemo(
+		() => ({
+			title: "AI Feature Assistant",
+			initial:
+				"Hi! I can help you refine this feature. Ask me to:\n\n" +
+				"- Improve the feature description\n" +
+				"- Generate acceptance criteria in Given-When-Then format\n" +
+				"- Suggest feature sizing\n" +
+				"- Draw an Excalidraw diagram (architecture, flow, etc.)\n\n" +
+				"Just type your request or use the suggestions below.",
+		}),
+		[],
+	);
+	const chatSuggestions = useMemo(
+		() => [
+			{
+				title: "Improve description",
+				message: `Please improve the description section of this feature. Make it more detailed, user-focused, and follow the "As a [persona], I want [action], so that [benefit]" format. Keep the existing acceptance criteria.`,
+			},
+			{
+				title: "Generate acceptance criteria",
+				message:
+					"Generate comprehensive acceptance criteria for this feature using the Given-When-Then format. Include edge cases and error scenarios. Keep the existing description.",
+			},
+			{
+				title: "Suggest size",
+				message:
+					"Analyze this feature's complexity and suggest an appropriate T-shirt size (XS, S, M, L, XL) with your reasoning. Consider the scope of work, technical complexity, and acceptance criteria.",
+			},
+		],
+		[],
+	);
 	return (
 		<AttachmentRegistryProvider
 			pendingAttachmentsRef={pendingAttachmentsRef}
@@ -5554,32 +5632,8 @@ export function StoryWorkspace({
 						// round launcher renders. When ON, the header owns closing and
 						// this branded pill owns reopening.
 						Button={CustomSidebarLauncher}
-						labels={{
-							title: "AI Feature Assistant",
-							initial:
-								"Hi! I can help you refine this feature. Ask me to:\n\n" +
-								"- Improve the feature description\n" +
-								"- Generate acceptance criteria in Given-When-Then format\n" +
-								"- Suggest feature sizing\n" +
-								"- Draw an Excalidraw diagram (architecture, flow, etc.)\n\n" +
-								"Just type your request or use the suggestions below.",
-						}}
-						suggestions={[
-							{
-								title: "Improve description",
-								message: `Please improve the description section of this feature. Make it more detailed, user-focused, and follow the "As a [persona], I want [action], so that [benefit]" format. Keep the existing acceptance criteria.`,
-							},
-							{
-								title: "Generate acceptance criteria",
-								message:
-									"Generate comprehensive acceptance criteria for this feature using the Given-When-Then format. Include edge cases and error scenarios. Keep the existing description.",
-							},
-							{
-								title: "Suggest size",
-								message:
-									"Analyze this feature's complexity and suggest an appropriate T-shirt size (XS, S, M, L, XL) with your reasoning. Consider the scope of work, technical complexity, and acceptance criteria.",
-							},
-						]}
+						labels={chatLabels}
+						suggestions={chatSuggestions}
 					>
 						{/* Below `sm`, CopilotKit renders this sidebar
 						    FULL-SCREEN, so `defaultOpen` buries the whole
@@ -6207,16 +6261,26 @@ export function StoryWorkspace({
 							{/* Delivery track, estimate confidence, readiness gates,
 							    discovery runs and spike evidence (inverted-loop
 							    Slices 2–5, 7) — collapsed in Focus Mode to maximize editor space. */}
-							{!isUserGenerationActive && (
+							{
 								<div
 									data-testid="engagement-profile-metadata-row"
 									className={cn(
 										"border-b px-6 py-2",
-										isFocusMode && "hidden",
+										(isFocusMode ||
+											isUserGenerationActive) &&
+											"hidden",
 									)}
-									hidden={isFocusMode}
-									aria-hidden={isFocusMode}
-									inert={isFocusMode ? true : undefined}
+									hidden={
+										isFocusMode || isUserGenerationActive
+									}
+									aria-hidden={
+										isFocusMode || isUserGenerationActive
+									}
+									inert={
+										isFocusMode || isUserGenerationActive
+											? true
+											: undefined
+									}
 								>
 									<Button
 										type="button"
@@ -6304,9 +6368,20 @@ export function StoryWorkspace({
 										/>
 									</div>
 								</div>
-							)}
-							{!isUserGenerationActive &&
-								(() => {
+							}
+							<div
+								hidden={isUserGenerationActive}
+								inert={
+									isUserGenerationActive ? true : undefined
+								}
+								className={
+									isUserGenerationActive
+										? "hidden"
+										: "contents"
+								}
+								data-testid="drafting-stage-row"
+							>
+								{(() => {
 									const isBug = story.kind === "BUG";
 									// F-171: bugs have a single-stage workflow (PLACEHOLDER →
 									// DRAFT → CLOSED/DECLINED). No maturation pipeline; the
@@ -7030,6 +7105,7 @@ export function StoryWorkspace({
 										</div>
 									);
 								})()}
+							</div>
 
 							{/* Feature Maturation V2 — three-tab control fronting the
 								  document-editor region (spec §9, TG5). The Clean
@@ -8578,6 +8654,7 @@ export function StoryWorkspace({
 								// user send comes from the LangGraph backend reading
 								// the persisted blob, not from the client runtime.
 								setCopilotMessages([]);
+								startNewThread?.(forkedConversationId);
 								setEffectiveAssistantMessages(
 									copiedMessages as unknown as ReadonlyArray<
 										Record<string, unknown>
@@ -8820,6 +8897,7 @@ interface ConfirmChangesProps {
 }
 
 function ConfirmChanges({
+	args,
 	recordVerdict,
 	respond: _respond,
 	status,
@@ -8827,7 +8905,7 @@ function ConfirmChanges({
 	onReject,
 	canEdit,
 }: ConfirmChangesProps) {
-	useConfirmChangesVerdictCard(recordVerdict);
+	useConfirmChangesVerdictCard(recordVerdict, args?.draftId);
 	const [accepted, setAccepted] = useState<boolean | null>(null);
 	/** Which decision is currently being written, `null` when none is. */
 	const [resolving, setResolving] = useState<boolean | null>(null);

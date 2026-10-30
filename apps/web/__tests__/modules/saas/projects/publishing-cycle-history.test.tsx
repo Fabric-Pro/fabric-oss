@@ -1,3 +1,9 @@
+import { NuqsTestingAdapter } from "nuqs/adapters/testing";
+import type { ReactElement } from "react";
+
+const render = (ui: ReactElement) =>
+	baseRender(<NuqsTestingAdapter>{ui}</NuqsTestingAdapter>);
+
 /**
  * PublishingCycleHistory — the refresh-history table (Fizzy #1850, Phase 1C-4a).
  *
@@ -9,7 +15,7 @@
  * rather than what was rendered.
  */
 
-import { render, screen, within } from "@testing-library/react";
+import { render as baseRender, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it, vi } from "vitest";
 
@@ -44,6 +50,7 @@ const {
 }));
 
 vi.mock("@tanstack/react-query", () => ({
+	keepPreviousData: (previous: unknown) => previous,
 	useQuery: (opts: { queryKey?: unknown[]; enabled?: boolean }) => {
 		const procedure = Array.isArray(opts?.queryKey)
 			? opts.queryKey[0]
@@ -229,7 +236,7 @@ it("sends the chosen outcome filter to the query and resets to the first page", 
 	state.total = 200;
 	renderHistory();
 
-	await userEvent.click(screen.getByRole("button", { name: "Next" }));
+	await userEvent.click(screen.getByRole("button", { name: "Next page" }));
 	expect((lastInput.value as { offset: number }).offset).toBe(15);
 
 	await userEvent.click(screen.getByRole("button", { name: "Failed" }));
@@ -402,7 +409,7 @@ it.each([
 	[
 		"Next",
 		async () =>
-			userEvent.click(screen.getByRole("button", { name: "Next" })),
+			userEvent.click(screen.getByRole("button", { name: "Next page" })),
 	],
 	[
 		"a filter chip",
@@ -755,4 +762,29 @@ it("spans the expanded chat detail across every column", async () => {
 		.getAllByRole("cell")
 		.find((cell) => cell.hasAttribute("colspan"));
 	expect(detail?.getAttribute("colspan")).toBe(String(headers));
+});
+
+it("jumps to a typed page and resets on a filter change", async () => {
+	state.cycles = [READY_MANUAL];
+	state.total = 200;
+	renderHistory();
+	await userEvent.type(
+		screen.getByRole("spinbutton", { name: "Go to page, Pagination" }),
+		"4{Enter}",
+	);
+	expect(lastInput.value).toMatchObject({ offset: 45 });
+	await userEvent.click(screen.getByRole("button", { name: "Failed" }));
+	expect(lastInput.value).toMatchObject({ offset: 0 });
+});
+
+it("resets a jumped page when the page size changes", async () => {
+	state.cycles = [READY_MANUAL];
+	state.total = 200;
+	renderHistory();
+	await userEvent.type(screen.getByRole("spinbutton"), "4{Enter}");
+	await userEvent.click(
+		screen.getByRole("combobox", { name: "Rows per page" }),
+	);
+	await userEvent.click(screen.getByRole("option", { name: "50" }));
+	expect(lastInput.value).toMatchObject({ offset: 0, limit: 50 });
 });

@@ -89,14 +89,32 @@ export const POST_TYPE_LABELS: ReadonlyArray<{
 	value: PostType;
 	label: string;
 	generationLabel?: string;
+	shortLabel: string;
 }> = [
-	{ value: "TWEET", label: "Tweet", generationLabel: "Short Post / Tweet" },
-	{ value: "LINKEDIN_POST", label: "LinkedIn Post" },
-	{ value: "BLOG_POST", label: "Blog Post" },
-	{ value: "CASE_STUDY", label: "Case Study" },
-	{ value: "STAKEHOLDER_EMAIL", label: "Stakeholder Email" },
-	{ value: "WEBINAR_SCRIPT", label: "Webinar / Demo Script" },
-	{ value: "NEWSLETTER_BLURB", label: "Newsletter Blurb" },
+	{
+		value: "TWEET",
+		shortLabel: "Short post",
+		label: "Tweet",
+		generationLabel: "Short Post / Tweet",
+	},
+	{ value: "LINKEDIN_POST", shortLabel: "LinkedIn", label: "LinkedIn Post" },
+	{ value: "BLOG_POST", shortLabel: "Blog", label: "Blog Post" },
+	{ value: "CASE_STUDY", shortLabel: "Case study", label: "Case Study" },
+	{
+		value: "STAKEHOLDER_EMAIL",
+		shortLabel: "Email",
+		label: "Stakeholder Email",
+	},
+	{
+		value: "WEBINAR_SCRIPT",
+		shortLabel: "Webinar",
+		label: "Webinar / Demo Script",
+	},
+	{
+		value: "NEWSLETTER_BLURB",
+		shortLabel: "Newsletter",
+		label: "Newsletter Blurb",
+	},
 ];
 
 /**
@@ -267,3 +285,6 @@ export function formatMeetingParticipants(m: MeetingSpeakers): string {
 	const overflow = m.overflowCount > 0 ? ` +${m.overflowCount} more` : "";
 	return `Meeting participants — ${shown}${overflow}`;
 }
+
+/** Maximum guidance and refinement instruction length accepted by the API. */
+export const GUIDANCE_MAX = 2000;

@@ -45,7 +45,9 @@ import {
 	getEffectivePlanningAnalysis,
 	listTopicDecisions,
 	logDraftRefusal,
+	seedWorkingDraftIfAbsent,
 } from "@repo/database";
+import { logger } from "@repo/logs";
 import type { TemplateFormat } from "@repo/utils";
 import {
 	isRestrictingThread,
@@ -88,6 +90,7 @@ export interface GenerateShortPostInput {
 	 * which is exactly what null does here.
 	 */
 	currentDraft?: string | null;
+	seedWorkingDraft?: boolean;
 }
 
 export interface GenerateShortPostOutput {
@@ -107,6 +110,7 @@ export interface GenerateShortPostOutput {
 	 * would fail that replay. Absent means "an older run that could not say".
 	 */
 	refusalReason?: DraftCommitRefusal;
+	seededWorkingDraft?: boolean;
 }
 
 /**
@@ -403,6 +407,54 @@ export async function generateShortPostActivity(
 			},
 		);
 		return { status: "SUPERSEDED", refusalReason: commit.reason };
+	}
+
+	if (input.seedWorkingDraft) {
+		const option = parsed.data.options[0];
+		try {
+			const seeded = await seedWorkingDraftIfAbsent({
+				topicId,
+				projectId,
+				postType: "TWEET",
+				sourceDraftId: draftId,
+				sourceOptionLabel: option.label,
+				body: option.text,
+				updatedById: actorUserId,
+			});
+			const context = { draftId, topicId, projectId };
+			if (seeded.status === "project_ineligible") {
+				logger.warn(
+					"[publishing-short-post] project became ineligible before the working draft could be seeded",
+					context,
+				);
+			} else if (seeded.status === "source_not_found") {
+				logger.info(
+					"[publishing-short-post] draft was superseded before it could seed a working draft",
+					context,
+				);
+			} else if (seeded.status === "already_exists") {
+				logger.debug(
+					"[publishing-short-post] topic already has a working draft; left untouched",
+					context,
+				);
+			}
+			return {
+				status: "READY",
+				seededWorkingDraft: seeded.status === "seeded",
+			};
+		} catch (error) {
+			logger.warn(
+				"[publishing-short-post] failed to seed a working draft",
+				{
+					draftId,
+					topicId,
+					projectId,
+					error:
+						error instanceof Error ? error.message : String(error),
+				},
+			);
+			return { status: "READY", seededWorkingDraft: false };
+		}
 	}
 
 	return { status: "READY" };

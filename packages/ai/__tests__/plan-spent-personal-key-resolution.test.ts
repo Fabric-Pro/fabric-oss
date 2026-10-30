@@ -31,6 +31,10 @@ vi.mock("@repo/database", () => ({
 	getEmbeddingProviderConfig: vi.fn(),
 	getModelForTask: mocks.getModelForTask,
 	getProviderModelIdForCanonical: vi.fn(async () => null),
+	getProviderModelMappingForCanonical: vi.fn(async () => ({
+		exists: true,
+		providerModelId: null,
+	})),
 	getSystemAiProviderApiKey: vi.fn(),
 	getTaskDefaultModel: mocks.getTaskDefaultModel,
 	updateProviderLastUsed: mocks.updateProviderLastUsed,
@@ -286,4 +290,18 @@ describe("getRAGProviderConfigForModel", () => {
 			source: "organization",
 		});
 	});
+});
+
+it("runs the task default for a pick with no selectable mapping off a plan", async () => {
+	mocks.sourceForCall.mockResolvedValue(null);
+	const { metadata } = await getAIModelWithMetadata(
+		{ taskType: "CHAT", modelOverride: "example-retired-model" },
+		CONTEXT,
+	);
+	expect(mocks.sourceForCall).toHaveBeenCalled();
+	expect(mocks.getModel).toHaveBeenCalledWith(
+		"gpt-4o-mini",
+		expect.anything(),
+	);
+	expect(metadata.selectionSource).not.toBe("override");
 });

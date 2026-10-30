@@ -9,6 +9,8 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
 
+import { resolveOutputProvenance } from "./output-provenance";
+
 const fields = {
 	draftId: z.string().min(1).max(128),
 	verdict: z.enum(["accepted", "accepted-with-edits", "rejected"]),
@@ -86,6 +88,38 @@ export const confirmAiDraft = tenantProtectedProcedure
 			undefined,
 			context.session,
 		);
+		// Cards keep distinct outcome subjects while sharing their run's provenance.
+		const replyId = input.draftId.match(
+			/^(msg_[1-9][0-9]{12}_[0-9a-f]{32})(?::[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})?$/,
+		)?.[1];
+		const provenance = replyId
+			? await resolveOutputProvenance(
+					{
+						subjectType: "copilot-message",
+						subjectId: replyId,
+						projectId:
+							"projectId" in input ? input.projectId : null,
+					},
+					organizationId,
+					context.user.id,
+				)
+			: null;
+		// The generic agent-chat page renders the document-generator editor for
+		// project_document_generator and custom agents built on either graph.
+		const expectedAgents =
+			input.surface === "document-generator"
+				? ["document_generator", "project_document_generator"]
+				: input.surface === "prompt-enhancer"
+					? ["prompt_enhancer"]
+					: ["project_document_generator"];
+		const storedAgent = provenance?.agentId;
+		const matchingAgent =
+			storedAgent != null &&
+			expectedAgents.some(
+				(agent) =>
+					storedAgent === agent ||
+					storedAgent.startsWith(`${agent}:`),
+			);
 		try {
 			await recordAiOutcome({
 				featureKey: featureKeys[input.surface],
@@ -95,7 +129,9 @@ export const confirmAiDraft = tenantProtectedProcedure
 				userId: context.user.id,
 				organizationId,
 				projectId: "projectId" in input ? input.projectId : null,
-				modelCanonicalName: null,
+				modelCanonicalName: matchingAgent
+					? (provenance?.modelCanonicalName ?? null)
+					: null,
 				promptVersionId: null,
 			});
 		} catch (error) {

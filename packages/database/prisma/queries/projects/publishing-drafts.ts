@@ -1168,6 +1168,7 @@ export async function seedWorkingDraftIfAbsent(input: {
 	projectId: string;
 	postType: DraftPostType;
 	sourceDraftId: string;
+	sourceOptionLabel?: string | null;
 	body: string;
 	updatedById: string;
 }): Promise<SeedWorkingDraftResult> {
@@ -1220,9 +1221,7 @@ export async function seedWorkingDraftIfAbsent(input: {
 					organizationId: tenant.organizationId,
 					userId: tenant.userId,
 					sourceDraftId: input.sourceDraftId,
-					// No option to name: a blog generation produces one draft
-					// rather than a labeled set.
-					sourceOptionLabel: null,
+					sourceOptionLabel: input.sourceOptionLabel ?? null,
 					body: input.body,
 					updatedById: input.updatedById,
 				},

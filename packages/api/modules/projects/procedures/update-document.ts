@@ -34,6 +34,11 @@ import {
 import { runInBackground } from "../../weave/lib/run-in-background";
 import { cancelStalledGenerationRun } from "../lib/cancel-stalled-generation-run";
 import {
+	documentAiReviewSchema,
+	type ReviewedAiSave,
+	reviewAiAcceptedSave,
+} from "../lib/document-ai-review";
+import {
 	diffGroupMentions,
 	diffMentionIds,
 	extractDocumentGroupMentions,
@@ -104,6 +109,18 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 			 * whether this request completed it.
 			 */
 			completeDraft: z.boolean().optional(),
+			/**
+			 * The save is the accept of an AI change (Fizzy #2946): a chat
+			 * proposal (`CHAT`, with the section keys it patched) or a
+			 * finding-driven revision (`FINDING`, with the token the revision
+			 * returned). Honoured only on a client-document Proposal, where it
+			 * needs the base and `content`: the change is checked as it would
+			 * be saved, a refusal answers PRECONDITION_FAILED with a
+			 * `SCOPED_REVISION_REFUSAL` code, and a `FINDING` accept records
+			 * the finding as Resolved with the save. Ignored on any other
+			 * document.
+			 */
+			aiReview: documentAiReviewSchema.optional(),
 		}),
 	)
 	.handler(async ({ input, context }) => {
@@ -275,14 +292,39 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 			}
 		}
 
+		// An AI accept on a client-document Proposal is checked as it would
+		// be saved, and refused before anything is written (Fizzy #2946).
+		const reviewed = await reviewAiAcceptIfApplicable({
+			// Only the fields the check reads: never the input organization,
+			// which the owning organization on `prior` replaces.
+			input: {
+				projectId: input.projectId,
+				id: input.id,
+				content: input.content,
+				status: input.status,
+				skipVersionBump: input.skipVersionBump,
+				expectedVersion: input.expectedVersion,
+				expectedContentHash: input.expectedContentHash,
+				aiReview: input.aiReview,
+			},
+			prior,
+			hasBase,
+			context,
+		});
+
 		// Update document
 		// TENANT ISOLATION: Pass userId and organizationId for DocumentVersion tenant filtering
 		const saved = await updateDocument(input.id, {
 			title: input.title,
-			content: input.content,
+			content: reviewed ? reviewed.content : input.content,
 			status: input.status,
 			lastEditedBy: user.id,
-			changeDescription: input.changeDescription,
+			// A checked AI accept the client did not describe gets a generic
+			// description rather than none.
+			changeDescription:
+				reviewed && !input.changeDescription?.trim()
+					? reviewed.changeDescription
+					: input.changeDescription,
 			userId: user.id,
 			organizationId,
 			skipVersionBump: input.skipVersionBump,
@@ -299,6 +341,9 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 			// content or status write keeps the live-run refusal.
 			...(editorContentSave
 				? { allowDuringLiveRun: "editor-content-save" as const }
+				: {}),
+			...(reviewed?.inTransaction
+				? { inTransaction: reviewed.inTransaction }
 				: {}),
 		}).catch((error: unknown) => {
 			// The query layer is the last line of defence for contract status
@@ -485,6 +530,94 @@ export const updateDocumentProcedure = tenantProtectedProcedure
 			draftCompleted,
 		};
 	});
+
+const DOCUMENT_CHANGED_MESSAGE =
+	"The document changed while your changes were being saved, so nothing was saved. Review the latest version and apply your changes again.";
+
+/**
+ * The `aiReview` descriptor's checks, when it applies: on a client-document
+ * Proposal, judged by the project's OWNING organization. Returns null when
+ * there is no descriptor or it does not apply, and the save goes ahead as
+ * any other.
+ *
+ * Where it applies it needs a content save that names its whole base, and
+ * the body it checks against is the base's: a base the stored body no
+ * longer matches is answered CONFLICT here, as the guarded write would,
+ * rather than as a change outside the target.
+ */
+async function reviewAiAcceptIfApplicable(args: {
+	input: {
+		projectId: string;
+		id: string;
+		content?: string;
+		status?: unknown;
+		skipVersionBump?: boolean;
+		expectedVersion?: number;
+		expectedContentHash?: string;
+		aiReview?: z.infer<typeof documentAiReviewSchema>;
+	};
+	prior: {
+		content: string;
+		type: string;
+		version: number;
+		project: { organizationId: string | null } | null;
+	};
+	hasBase: boolean;
+	context: Parameters<typeof reviewAiAcceptedSave>[0]["context"];
+}): Promise<ReviewedAiSave | null> {
+	const { input, prior } = args;
+	const review = input.aiReview;
+	if (!review) {
+		return null;
+	}
+	const owningOrganizationId = prior.project?.organizationId ?? null;
+	if (
+		!owningOrganizationId ||
+		!(await isProposalClientDocument({
+			organizationId: owningOrganizationId,
+			documentType: prior.type,
+		}))
+	) {
+		return null;
+	}
+	if (
+		input.content === undefined ||
+		input.status !== undefined ||
+		input.skipVersionBump === true
+	) {
+		throw new ORPCError("BAD_REQUEST", {
+			message:
+				"An AI accept saves content only, without a status or a version rewind.",
+		});
+	}
+	if (
+		!args.hasBase ||
+		input.expectedVersion === undefined ||
+		input.expectedContentHash === undefined
+	) {
+		throw new ORPCError("PRECONDITION_FAILED", {
+			message:
+				"This editor is out of date, so your changes were not saved. Reload the page to keep editing.",
+			data: { code: DOCUMENT_SAVE_BASE_REQUIRED },
+		});
+	}
+	if (
+		prior.version !== input.expectedVersion ||
+		contentIdentity(prior.content) !== input.expectedContentHash
+	) {
+		throw new ORPCError("CONFLICT", { message: DOCUMENT_CHANGED_MESSAGE });
+	}
+	return await reviewAiAcceptedSave({
+		review,
+		projectId: input.projectId,
+		documentId: input.id,
+		owningOrganizationId,
+		stored: { content: prior.content, version: prior.version },
+		content: input.content,
+		expectedVersion: input.expectedVersion,
+		context: args.context,
+	});
+}
 
 export async function dispatchDocumentMentions(args: {
 	projectId: string;

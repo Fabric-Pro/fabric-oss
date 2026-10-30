@@ -312,3 +312,14 @@ describe("saved chat reply ratings", () => {
 		);
 	});
 });
+
+vi.mock("../useAgentStateReadOnly", () => ({
+	useAgentTranscriptSelector: (
+		_name: string,
+		selector: (state: unknown, messages: unknown[]) => unknown,
+	) => selector({}, []),
+	useAgentStateSelector: (
+		_name: string,
+		selector: (state: object) => unknown,
+	) => selector({}),
+}));

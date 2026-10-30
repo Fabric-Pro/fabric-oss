@@ -1,3 +1,4 @@
+import { isPlatformAdmin } from "@repo/database";
 /**
  * Workspace-scoped admin audit-log explorer —
  * `/app/{organizationSlug}/admin/audit-log-explorer`.
@@ -31,7 +32,7 @@ export default async function OrganizationAdminAuditLogExplorerPage() {
 	if (!session) {
 		redirect("/auth/login");
 	}
-	if (session.user?.role !== "admin") {
+	if (!(await isPlatformAdmin(session.user))) {
 		redirect("/app");
 	}
 	return <AuditLogExplorer />;

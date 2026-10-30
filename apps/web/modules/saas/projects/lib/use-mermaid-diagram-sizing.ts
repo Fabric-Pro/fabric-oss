@@ -30,7 +30,9 @@ function scrollEdgeOf(area: HTMLElement): ScrollEdge {
  * need to be wider than its column scrolls, and its scroll edge is tracked.
  *
  * `showCode`, `error` and `mounted` decide whether the diagram area is in
- * the DOM, so a change to any of them measures again.
+ * the DOM, so a change to any of them measures again. `minWidth`, when
+ * given, replaces the label rule: the diagram shrinks to its column down to
+ * that width, and scrolls in a narrower one.
  */
 export function useMermaidDiagramSizing(
 	svg: string,
@@ -38,7 +40,13 @@ export function useMermaidDiagramSizing(
 		showCode,
 		error,
 		mounted,
-	}: { showCode: boolean; error: string | null; mounted: boolean },
+		minWidth,
+	}: {
+		showCode: boolean;
+		error: string | null;
+		mounted: boolean;
+		minWidth?: number;
+	},
 ) {
 	const areaRef = useRef<HTMLDivElement>(null);
 	const [sizing, setSizing] = useState<DiagramSizing | null>(null);
@@ -65,6 +73,13 @@ export function useMermaidDiagramSizing(
 				naturalWidth: natural.width,
 				labelPx: natural.labelPx,
 				columnWidth: column,
+				// The label size at which the diagram is `minWidth` wide.
+				...(minWidth !== undefined && minWidth < natural.width
+					? {
+							minLabelPx:
+								(natural.labelPx * minWidth) / natural.width,
+						}
+					: {}),
 			});
 			setSizing((previous) =>
 				previous?.width === next.width &&
@@ -80,7 +95,7 @@ export function useMermaidDiagramSizing(
 		const observer = new ResizeObserver(measure);
 		observer.observe(area);
 		return () => observer.disconnect();
-	}, [svg, showCode, error, mounted]);
+	}, [svg, showCode, error, mounted, minWidth]);
 
 	const onScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
 		setScrollEdge(scrollEdgeOf(event.currentTarget));

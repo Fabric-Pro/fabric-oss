@@ -6,18 +6,23 @@ import {
 	useCopilotAction,
 	useCopilotReadable,
 } from "@copilotkit/react-core";
-import { useChatContext } from "@copilotkit/react-ui";
 import {
 	type DraftVerdictRecorder,
 	useConfirmChangesVerdict,
 	useConfirmChangesVerdictCard,
 } from "@saas/agents/copilot/useConfirmChangesVerdict";
 import { CopilotReplyRatingSidebar } from "@saas/shared/components/copilot/CopilotReplyRatingSidebar";
+import { useReseedAgentStateOnRunStart } from "@saas/shared/components/copilot/use-agent-state-reseed";
 import "@copilotkit/react-ui/styles.css";
 import { useSession } from "@saas/auth/hooks/use-session";
 import { useActiveDocumentAssistantConversation } from "@saas/projects/hooks/useDocumentAssistantHistory";
 import { useDocumentAssistantHistoryEnabled } from "@saas/projects/hooks/useDocumentAssistantHistoryEnabled";
 import { AttachmentRegistryProvider } from "@saas/shared/components/copilot/AttachmentRegistry";
+import {
+	AssistantThreadProvider,
+	useAssistantThread,
+	useAssistantThreadId,
+} from "@saas/shared/components/copilot/assistant-thread";
 import { CopilotAssistantMessage } from "@saas/shared/components/copilot/CopilotAssistantMessage";
 import {
 	CopilotChatSessionProvider,
@@ -49,6 +54,7 @@ import { CustomMessages } from "../copilot/CustomMessages";
 import type { HydratedMessage } from "../copilot/HydratedMessagesContext";
 import { HydratedMessagesProvider } from "../copilot/HydratedMessagesContext";
 import { createTopicAssistantHeader } from "./TopicAssistantHeader";
+import { TopicAssistantVisibility } from "./TopicAssistantVisibility";
 
 /**
  * The assistant rail beside a publishing topic (Fizzy #1851, finding #15).
@@ -170,6 +176,7 @@ export interface TopicAssistantContext {
 }
 
 export function TopicAssistant({
+	isActive = true,
 	projectId,
 	organizationId,
 	context,
@@ -178,6 +185,7 @@ export function TopicAssistant({
 	onApplyRewrite,
 	onRunStateChange,
 }: {
+	isActive?: boolean;
 	projectId: string;
 	organizationId: string | null;
 	context: TopicAssistantContext;
@@ -212,19 +220,30 @@ export function TopicAssistant({
 		[organizationId],
 	);
 
+	// The CopilotKit thread is the topic's conversation (`assistant-thread`),
+	// and no SSR payload names it here: the provider mounts once the active
+	// conversation is known, so its thread never changes under a live
+	// transcript. `TopicAssistantConversation` reads the same cached query.
+	const { topicId, scope } = useTopicConversationScope(
+		projectId,
+		organizationId,
+	);
+	const { data: activeConversation, isLoading } =
+		useActiveDocumentAssistantConversation(scope, {
+			enabled: topicId !== null,
+		});
+	if (isLoading) {
+		return null;
+	}
+
 	return (
 		<TopicAssistantErrorBoundary>
-			<CopilotKit
+			<TopicCopilotKit
 				runtimeUrl={runtimeUrl}
-				// The 1.70 client probes `GET <runtimeUrl>/info` before falling
-				// back to single-route POST, and this route is POST-only — the
-				// probe 405s and surfaces as an error toast. Every
-				// `<CopilotKit>` mount in this repo carries this; keep them in
-				// step.
-				useSingleEndpoint
-				agent="project_document_generator"
-				showDevConsole={false}
 				onError={onCopilotError}
+				initialConversationId={
+					activeConversation?.conversation?.conversationId ?? null
+				}
 			>
 				{/* One `useCopilotChatInternal()` for the surface: on 1.70
 				    every call site of that hook opens its own agent/connect
@@ -241,13 +260,74 @@ export function TopicAssistant({
 						onRunStateChange={onRunStateChange}
 					/>
 					<TopicAssistantConversation
+						isActive={isActive}
 						projectId={projectId}
 						organizationId={organizationId}
 					/>
 				</CopilotChatSessionProvider>
-			</CopilotKit>
+			</TopicCopilotKit>
 		</TopicAssistantErrorBoundary>
 	);
+}
+
+/** The `<CopilotKit>` mount, on the thread `useAssistantThreadId` keeps. */
+function TopicCopilotKit({
+	runtimeUrl,
+	onError,
+	initialConversationId,
+	children,
+}: {
+	runtimeUrl: string;
+	onError: ReturnType<typeof useCopilotErrorHandler>;
+	initialConversationId: string | null;
+	children: ReactNode;
+}) {
+	const assistantThread = useAssistantThreadId(initialConversationId);
+	return (
+		<CopilotKit
+			runtimeUrl={runtimeUrl}
+			// The 1.70 client probes `GET <runtimeUrl>/info` before falling
+			// back to single-route POST, and this route is POST-only — the
+			// probe 405s and surfaces as an error toast. Every
+			// `<CopilotKit>` mount in this repo carries this; keep them in
+			// step.
+			useSingleEndpoint
+			agent="project_document_generator"
+			threadId={assistantThread.threadId}
+			showDevConsole={false}
+			enableInspector={false}
+			onError={onError}
+		>
+			<AssistantThreadProvider value={assistantThread}>
+				{children}
+			</AssistantThreadProvider>
+		</CopilotKit>
+	);
+}
+
+/**
+ * The topic the assistant sits beside (from the route) and the scope its
+ * conversation is stored under. Memoised: the scope is the active-conversation
+ * query key and is passed to three providers, so a fresh literal per render
+ * would refetch and re-render the whole persisted thread on every streaming
+ * tick.
+ */
+function useTopicConversationScope(
+	projectId: string,
+	organizationId: string | null,
+) {
+	const params = useParams<{ topicId?: string }>();
+	const topicId = params?.topicId ?? null;
+	const scope = useMemo(
+		() => ({
+			documentRefKind: TOPIC_REF_KIND,
+			documentRefId: topicId ?? "",
+			projectId,
+			organizationId,
+		}),
+		[topicId, projectId, organizationId],
+	);
+	return { topicId, scope };
 }
 
 /**
@@ -305,14 +385,18 @@ const TOPIC_REF_KIND = "PUBLISHING_TOPIC" as const;
  * own close control, so the panel is closable in both states.
  */
 function TopicAssistantConversation({
+	isActive,
 	projectId,
 	organizationId,
 }: {
+	isActive: boolean;
 	projectId: string;
 	organizationId: string | null;
 }) {
-	const params = useParams<{ topicId?: string }>();
-	const topicId = params?.topicId ?? null;
+	const { topicId, scope } = useTopicConversationScope(
+		projectId,
+		organizationId,
+	);
 	const { user } = useSession();
 	const historyEnabled = useDocumentAssistantHistoryEnabled();
 
@@ -335,24 +419,14 @@ function TopicAssistantConversation({
 		[],
 	);
 
-	// Memoised because it is the query key for the active-conversation read and
-	// is passed to three providers; a fresh literal per render would refetch and
-	// re-render the whole persisted thread on every streaming tick.
-	const scope = useMemo(
-		() => ({
-			documentRefKind: TOPIC_REF_KIND,
-			documentRefId: topicId ?? "",
-			projectId,
-			organizationId,
-		}),
-		[topicId, projectId, organizationId],
-	);
-
 	const { data: activeConversation } = useActiveDocumentAssistantConversation(
 		scope,
 		{ enabled: topicId !== null },
 	);
-	const serverConversationId = activeConversation?.conversation?.id ?? null;
+	// `conversation.id` is the topic's link row; every read and write this id
+	// reaches (append, archive, hydration) keys on the conversation itself.
+	const serverConversationId =
+		activeConversation?.conversation?.conversationId ?? null;
 
 	// The id `CopilotPersistenceHook` lazy-creates on the first turn, or the
 	// continuation id it spills to at the 200-turn cap. Null until one of those
@@ -456,8 +530,11 @@ function TopicAssistantConversation({
 	 * the sidebar keeps CopilotKit's default input, so nothing ever fills the
 	 * FIFO and there is no upload for a new conversation to inherit.
 	 */
+	const startNewThread = useAssistantThread()?.startNewThread;
 	const handleNewConversation = useCallback(async () => {
 		const archivingId = conversationIdRef.current;
+		// The next turn runs on a fresh CopilotKit thread (`assistant-thread`).
+		startNewThread?.();
 		try {
 			if (archivingId !== null) {
 				await orpcClient.agents.conversations.archiveForDocument({
@@ -488,7 +565,7 @@ function TopicAssistantConversation({
 			}
 			setLiveMessagesRef.current([]);
 		}
-	}, [organizationId]);
+	}, [organizationId, startNewThread]);
 
 	/**
 	 * Adopt a conversation the drawer just forked.
@@ -507,18 +584,22 @@ function TopicAssistantConversation({
 	 */
 	const handleForked = useCallback<
 		NonNullable<CopilotHistoryDrawerProps["onForked"]>
-	>(({ forkedConversationId, copiedMessages }) => {
-		setLiveMessagesRef.current([]);
-		setForkedThread({
-			conversationId: forkedConversationId,
-			messages:
-				copiedMessages as unknown as ReadonlyArray<HydratedMessage>,
-			persistedMessageIds: copiedMessages
-				.map((message) => message.id)
-				.filter((id): id is string => typeof id === "string"),
-		});
-		setResolvedConversationId(forkedConversationId);
-	}, []);
+	>(
+		({ forkedConversationId, copiedMessages }) => {
+			setLiveMessagesRef.current([]);
+			startNewThread?.(forkedConversationId);
+			setForkedThread({
+				conversationId: forkedConversationId,
+				messages:
+					copiedMessages as unknown as ReadonlyArray<HydratedMessage>,
+				persistedMessageIds: copiedMessages
+					.map((message) => message.id)
+					.filter((id): id is string => typeof id === "string"),
+			});
+			setResolvedConversationId(forkedConversationId);
+		},
+		[startNewThread],
+	);
 
 	// Memoised: an unmemoised factory returns a new component TYPE each render,
 	// which React remounts. `undefined` when the flag is off, which hands the
@@ -544,6 +625,14 @@ function TopicAssistantConversation({
 	// gains an attachment-capable input. It costs one ref and one context.
 	const pendingAttachmentsRef = useRef<PendingAttachment[][]>([]);
 
+	const chatLabels = useMemo(
+		() => ({
+			title: "AI Assistant",
+			initial:
+				"Ask about this topic, or tell me how to change the planning analysis — say what you want different and I'll rewrite it for your review.",
+		}),
+		[],
+	);
 	return (
 		<AttachmentRegistryProvider
 			pendingAttachmentsRef={pendingAttachmentsRef}
@@ -591,7 +680,9 @@ function TopicAssistantConversation({
 					// mounted at page level, outside `<Tabs>` — but behind
 					// a launcher, so the two surfaces read as different
 					// features while running the same component.
-					defaultOpen={true}
+					defaultOpen={isActive}
+					hitEscapeToClose={isActive}
+					shortcut={isActive ? "/" : ""}
 					clickOutsideToClose={false}
 					Button={Launcher}
 					// Title, new conversation, history, close.
@@ -600,13 +691,9 @@ function TopicAssistantConversation({
 					// see the component docblock for why this affordance
 					// is gated when the persistence hook is not.
 					Header={Header}
-					labels={{
-						title: "AI Assistant",
-						initial:
-							"Ask about this topic, or tell me how to change the planning analysis — say what you want different and I'll rewrite it for your review.",
-					}}
+					labels={chatLabels}
 				>
-					<CloseAssistantOnNarrowViewport />
+					<TopicAssistantVisibility isActive={isActive} />
 					{/* Writes each terminal turn through
 						    `appendTurnForDocument`. Renders null; it is a
 						    child of the sidebar so its
@@ -649,7 +736,7 @@ function TopicAssistantConversation({
 					    author-only decisions that cannot be made without it. */}
 				{historyEnabled && user && topicId !== null ? (
 					<CopilotHistoryDrawer
-						open={isHistoryOpen}
+						open={isActive && isHistoryOpen}
 						onOpenChange={setIsHistoryOpen}
 						documentRefKind={TOPIC_REF_KIND}
 						documentRefId={topicId}
@@ -663,40 +750,6 @@ function TopicAssistantConversation({
 			</HydratedMessagesProvider>
 		</AttachmentRegistryProvider>
 	);
-}
-
-/** Tailwind `sm` — the width below which CopilotKit goes full-screen. */
-const ASSISTANT_FULLSCREEN_BELOW = 640;
-
-/**
- * Close the assistant on arrival at a phone-width viewport.
- *
- * Side-effect only; renders nothing. Below `sm` CopilotKit renders the sidebar
- * as a full-screen overlay, so docking it open there would bury the whole topic
- * — `StoryWorkspace` measured this on a real feature at 375px: the tab bar sat
- * at x=499 in a 360px window and only the assistant was reachable.
- *
- * A CHILD of `<CopilotSidebar>` rather than logic in `TopicAssistant`'s own
- * body, because `useChatContext` resolves only inside it. And done here rather
- * than by computing `defaultOpen`: that prop is read once at mount, so a
- * viewport measured in an effect arrives too late.
- *
- * Mount only. A later resize is the reader's own doing, and yanking the panel
- * shut mid-conversation because they rotated the device would be worse than
- * leaving it where they put it.
- */
-function CloseAssistantOnNarrowViewport() {
-	const { setOpen } = useChatContext();
-	useEffect(() => {
-		if (
-			window.matchMedia(
-				`(max-width: ${ASSISTANT_FULLSCREEN_BELOW - 1}px)`,
-			).matches
-		) {
-			setOpen(false);
-		}
-	}, [setOpen]);
-	return null;
 }
 
 /**
@@ -749,6 +802,15 @@ function TopicAssistantAgent({
 			initialState,
 		});
 
+	// Restore browser context after a fresh-thread connect clears state.
+	useReseedAgentStateOnRunStart("project_document_generator", (state) => ({
+		...state,
+		projectId,
+		userId,
+		organizationId: organizationId ?? undefined,
+		document: state.document || analysisMarkdown || "",
+	}));
+
 	// `useCoAgent` returns a new `setState` every render, so naming it in a
 	// dependency array is an infinite loop. The rest of this codebase mirrors
 	// it into a ref and reads through that; so does this.
@@ -779,17 +841,28 @@ function TopicAssistantAgent({
 	useCopilotReadable({
 		description:
 			"The publishing topic currently open, and the planning analysis being discussed.",
-		value: {
-			title: context.title,
-			angle: context.angle,
-			pitch: context.pitch,
-			status: context.status,
-			contentFormats: context.postTypes,
-			unansweredQuestions: context.openQuestions,
-			planningAnalysis:
-				analysisMarkdown ??
-				"No planning analysis has been generated for this topic yet.",
-		},
+		value: useMemo(
+			() => ({
+				title: context.title,
+				angle: context.angle,
+				pitch: context.pitch,
+				status: context.status,
+				contentFormats: context.postTypes,
+				unansweredQuestions: context.openQuestions,
+				planningAnalysis:
+					analysisMarkdown ??
+					"No planning analysis has been generated for this topic yet.",
+			}),
+			[
+				context.title,
+				context.angle,
+				context.pitch,
+				context.status,
+				context.postTypes,
+				context.openQuestions,
+				analysisMarkdown,
+			],
+		),
 	});
 
 	const handleAccept = useCallback(() => {
@@ -881,10 +954,11 @@ function TopicAssistantAgent({
 	useCopilotAction(
 		{
 			name: "confirm_changes",
-			renderAndWaitForResponse: ({ respond, status }) => {
+			renderAndWaitForResponse: ({ args, respond, status }) => {
 				const recordVerdict = verdictFactory();
 				return (
 					<ConfirmRewrite
+						args={args}
 						recordVerdict={recordVerdict}
 						status={status}
 						respond={respond}
@@ -929,6 +1003,7 @@ function TopicAssistantAgent({
  * promise something this suite deliberately does not do.
  */
 function ConfirmRewrite({
+	args,
 	recordVerdict,
 	status,
 	respond,
@@ -937,6 +1012,7 @@ function ConfirmRewrite({
 	onAccept,
 	onReject,
 }: {
+	args?: { draftId?: unknown };
 	recordVerdict: DraftVerdictRecorder;
 	status: string;
 	respond?: (payload: unknown) => void;
@@ -946,7 +1022,7 @@ function ConfirmRewrite({
 	onAccept: () => boolean;
 	onReject: () => boolean;
 }) {
-	useConfirmChangesVerdictCard(recordVerdict);
+	useConfirmChangesVerdictCard(recordVerdict, args?.draftId);
 	const [resolved, setResolved] = useState<"accepted" | "rejected" | null>(
 		null,
 	);

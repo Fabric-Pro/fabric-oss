@@ -273,7 +273,10 @@ const TAB_GROUPS: ReadonlyArray<{ label: string; ids: readonly TabId[] }> = [
 	{ label: "Manage", ids: ["usage", "settings"] },
 ];
 
-/** Room the "More" trigger needs once the row overflows, gap included. */
+/**
+ * The least room the "More" trigger gets once the row overflows, gap
+ * included. The trigger's measured width raises it when the label is longer.
+ */
 const MORE_TRIGGER_RESERVE_PX = 112;
 const TAB_GAP_PX = 4;
 
@@ -641,6 +644,11 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 	// the value under jsdom, where nothing has a width, so tests see every tab.
 	const [inlineCount, setInlineCount] = useState(Number.POSITIVE_INFINITY);
 	const [moreOpen, setMoreOpen] = useState(false);
+	// Callback-ref state for the same reason as `tabRow`: the trigger mounts
+	// only once the row overflows, and its width decides the reserve.
+	const [moreTrigger, setMoreTrigger] = useState<HTMLButtonElement | null>(
+		null,
+	);
 
 	// Settings is pinned at the right end of the bar rather than competing for
 	// row space: it is the one tab every project has, and the one people find
@@ -671,7 +679,17 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 				setInlineCount(Number.POSITIVE_INFINITY);
 				return;
 			}
-			const available = width - MORE_TRIGGER_RESERVE_PX;
+			// The trigger reads "More", or the active tab's name when that tab
+			// has overflowed, which can be far wider than "More". Reserve its
+			// measured width, but never less than the floor: if a short name
+			// shrank the reserve, the active tab could fit back on the row, the
+			// trigger would read "More" again, and the row would flip between
+			// the two.
+			const reserve = Math.max(
+				MORE_TRIGGER_RESERVE_PX,
+				(moreTrigger?.offsetWidth ?? 0) + TAB_GAP_PX,
+			);
+			const available = width - reserve;
 			let used = 0;
 			let count = 0;
 			for (const w of widths) {
@@ -686,8 +704,11 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 		update();
 		const ro = new ResizeObserver(update);
 		ro.observe(el);
+		if (moreTrigger) {
+			ro.observe(moreTrigger);
+		}
 		return () => ro.disconnect();
-	}, [tabRow, rowTabs]);
+	}, [tabRow, rowTabs, moreTrigger]);
 
 	const overflowTabs = useMemo(
 		() => rowTabs.filter((_, index) => index >= inlineCount),
@@ -1223,6 +1244,7 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 								>
 									<PopoverTrigger asChild>
 										<button
+											ref={setMoreTrigger}
 											type="button"
 											aria-haspopup="menu"
 											aria-expanded={moreOpen}
@@ -1245,9 +1267,15 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 													className="pointer-events-none absolute inset-0"
 												/>
 											))}
-											{activeOverflowTab
-												? tabLabel(activeOverflowTab)
-												: "More"}
+											{/* Capped so a long name cannot push the
+											    chevron past the row's clipped edge. */}
+											<span className="max-w-40 truncate">
+												{activeOverflowTab
+													? tabLabel(
+															activeOverflowTab,
+														)
+													: "More"}
+											</span>
 											<ChevronDownIcon
 												aria-hidden="true"
 												className="size-3.5 text-muted-foreground"

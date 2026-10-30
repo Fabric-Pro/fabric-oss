@@ -56,6 +56,7 @@ vi.mock("@repo/observability", () => ({
 	auditWritesTotal: { inc: vi.fn() },
 }));
 
+import { createHash } from "node:crypto";
 import { runWithCorrelationId } from "@repo/utils/correlation-id";
 import {
 	recordAuthorizedProject,
@@ -65,10 +66,14 @@ import {
 	__captureErrorForTest,
 	__isCaptureDisabledForTest,
 	__readSkipPatternsForTest,
+	__redactBodyFieldsForTest,
 	__shouldSkipForTest,
 	ALWAYS_SKIP_PATHS,
 	auditErrorMiddleware,
+	REDACTED_BODY_FIELDS,
+	REDACTED_SECRET_FIELDS,
 } from "../audit-error-middleware";
+import { sanitizeInput } from "../audit-error-sanitize";
 
 beforeEach(() => {
 	mocks.recordAuditMock.mockReset();
@@ -196,6 +201,1068 @@ describe("ALWAYS_SKIP_PATHS (#1899)", () => {
 		expect(ALWAYS_SKIP_PATHS).toContain(
 			"projects.proposalArtifact.respondToFinding",
 		);
+	});
+});
+
+describe("REDACTED_BODY_FIELDS (Fizzy #2946)", () => {
+	// A document save's input, and every other listed path's, carries a whole
+	// user-written body. These failures are still captured, but each body
+	// field is recorded as its size and hash, never its text — see the
+	// module-level REDACTED_BODY_FIELDS comment.
+	const BODY =
+		"Our internal answer: the client's budget is café-tier — never quote it.";
+
+	function expectedSummary(body: string) {
+		return {
+			redacted: true,
+			bytes: Buffer.byteLength(body, "utf8"),
+			contentHash: createHash("sha256")
+				.update(body, "utf8")
+				.digest("hex"),
+		};
+	}
+
+	async function captureAt(dottedPath: string, input: unknown) {
+		mocks.recordAuditMock.mockReset();
+		await __captureErrorForTest(
+			Object.assign(new Error("conflict"), { code: "CONFLICT" }),
+			buildContext(),
+			input,
+			dottedPath.split("."),
+		);
+		expect(mocks.recordAuditMock).toHaveBeenCalledTimes(1);
+		return mocks.recordAuditMock.mock.calls[0]?.[0] as {
+			metadata: { input: Record<string, unknown> };
+		};
+	}
+
+	it("covers the document save paths", () => {
+		expect(REDACTED_BODY_FIELDS.get("projects.documents.update")).toEqual([
+			"content",
+		]);
+		expect(
+			REDACTED_BODY_FIELDS.get("projects.documents.updateWithContext"),
+		).toEqual(["currentContent", "confirmedContent"]);
+		expect(REDACTED_BODY_FIELDS.get("projects.documents.create")).toEqual([
+			"content",
+			"sourceText",
+		]);
+	});
+
+	it.each([...REDACTED_BODY_FIELDS.keys(), ...REDACTED_SECRET_FIELDS.keys()])(
+		"%s is captured, not skipped, so its entry is live",
+		(path) => {
+			vi.stubEnv("FABRIC_AUDIT_ERROR_CAPTURE_SKIP_PATHS", "");
+			expect(ALWAYS_SKIP_PATHS as readonly string[]).not.toContain(path);
+			expect(__shouldSkipForTest(path)).toBe(false);
+		},
+	);
+
+	it("records a thrown projects.documents.update body as its size and hash, keeping the other fields", async () => {
+		const input = {
+			projectId: "proj-1",
+			id: "doc-1",
+			organizationId: "org-1",
+			content: BODY,
+			expectedVersion: 7,
+			expectedContentHash: "a".repeat(64),
+			completeDraft: true,
+			aiReview: {
+				kind: "FINDING",
+				runId: "run-1",
+				findingId: "finding-1",
+				revisionToken: "signed.revision.token",
+			},
+		};
+		const arg = await captureAt("projects.documents.update", input);
+
+		expect(arg.metadata.input).toEqual({
+			projectId: "proj-1",
+			id: "doc-1",
+			organizationId: "org-1",
+			content: expectedSummary(BODY),
+			expectedVersion: 7,
+			expectedContentHash: "a".repeat(64),
+			completeDraft: true,
+			aiReview: {
+				kind: "FINDING",
+				runId: "run-1",
+				findingId: "finding-1",
+				// Already on the sensitive-key denylist (`token`).
+				revisionToken: "[REDACTED]",
+			},
+		});
+		// The body is under 8 KiB, so truncation never touched it: the
+		// summary is what replaced it.
+		expect(Buffer.byteLength(BODY, "utf8")).toBeLessThan(8192);
+		expect(JSON.stringify(arg)).not.toContain("internal answer");
+		// The request's own input is left as it was.
+		expect(input.content).toBe(BODY);
+	});
+
+	it("keeps an over-8 KiB body's sibling fields as fields rather than a truncated string", async () => {
+		const longBody = `${BODY}\n${"Section prose. ".repeat(2000)}`;
+		expect(Buffer.byteLength(longBody, "utf8")).toBeGreaterThan(8192);
+		const arg = await captureAt("projects.documents.update", {
+			projectId: "proj-1",
+			id: "doc-1",
+			content: longBody,
+			aiReview: { kind: "CHAT", patchedSectionKeys: ["h2:pricing"] },
+		});
+
+		expect(arg.metadata.input).not.toHaveProperty("_truncated");
+		expect(arg.metadata.input.projectId).toBe("proj-1");
+		expect(arg.metadata.input.content).toEqual(expectedSummary(longBody));
+		expect(arg.metadata.input.aiReview).toEqual({
+			kind: "CHAT",
+			patchedSectionKeys: ["h2:pricing"],
+		});
+		expect(JSON.stringify(arg)).not.toContain("Section prose.");
+	});
+
+	it("records both bodies of projects.documents.updateWithContext as summaries", async () => {
+		const confirmed = `${BODY} Accepted.`;
+		const arg = await captureAt("projects.documents.updateWithContext", {
+			projectId: "proj-1",
+			id: "doc-1",
+			preview: false,
+			currentContent: BODY,
+			confirmedContent: confirmed,
+			expectedVersion: 3,
+		});
+
+		expect(arg.metadata.input).toEqual({
+			projectId: "proj-1",
+			id: "doc-1",
+			preview: false,
+			currentContent: expectedSummary(BODY),
+			confirmedContent: expectedSummary(confirmed),
+			expectedVersion: 3,
+		});
+		expect(JSON.stringify(arg)).not.toContain("internal answer");
+	});
+
+	it("records projects.documents.create's body and pasted source as summaries", async () => {
+		const source = "Pasted meeting notes: renewal at risk.";
+		const arg = await captureAt("projects.documents.create", {
+			projectId: "proj-1",
+			type: "PRD",
+			title: "Example PRD",
+			content: BODY,
+			sourceText: source,
+			generateWithAi: true,
+		});
+
+		expect(arg.metadata.input).toEqual({
+			projectId: "proj-1",
+			type: "PRD",
+			title: "Example PRD",
+			content: expectedSummary(BODY),
+			sourceText: expectedSummary(source),
+			generateWithAi: true,
+		});
+		expect(JSON.stringify(arg)).not.toContain("renewal at risk");
+	});
+
+	it("redacts a body that is not a string, as a request refused by validation sends it", async () => {
+		const arg = await captureAt("projects.documents.update", {
+			projectId: "proj-1",
+			id: "doc-1",
+			content: { blocks: [BODY] },
+		});
+
+		expect(arg.metadata.input.content).toEqual({ redacted: true });
+		expect(JSON.stringify(arg)).not.toContain("internal answer");
+	});
+
+	it("adds nothing for a body field the request did not send", async () => {
+		const arg = await captureAt("projects.documents.update", {
+			projectId: "proj-1",
+			id: "doc-1",
+			title: "Renamed",
+		});
+
+		expect(arg.metadata.input).toEqual({
+			projectId: "proj-1",
+			id: "doc-1",
+			title: "Renamed",
+		});
+	});
+
+	it("leaves a path that is not listed unchanged", async () => {
+		const arg = await captureAt("projects.testCases.recordResult", {
+			testCaseId: "case-1",
+			result: "FAILED",
+			note: "kept verbatim",
+		});
+
+		expect(arg.metadata.input).toEqual({
+			testCaseId: "case-1",
+			result: "FAILED",
+			note: "kept verbatim",
+		});
+	});
+
+	it("covers context, nested and array fields", () => {
+		expect(REDACTED_BODY_FIELDS.get("projects.contexts.create")).toEqual([
+			"content",
+		]);
+		expect(
+			REDACTED_BODY_FIELDS.get("projects.contexts.updateSummary"),
+		).toEqual(["content"]);
+		expect(
+			REDACTED_BODY_FIELDS.get("organizations.companyContext.createText"),
+		).toEqual(["content"]);
+		expect(REDACTED_BODY_FIELDS.get("projects.create")).toEqual([
+			"projectManagementAdditionalContext.prdContent",
+			"projectManagementAdditionalContext.archContent",
+			"projectManagementAdditionalContext.specsContent",
+		]);
+		expect(REDACTED_BODY_FIELDS.get("frames.update")).toEqual([
+			"blocks[].content",
+		]);
+	});
+
+	// Every entry, generically: each listed field is placed in an input of
+	// the shape its path describes, next to small fields that must survive.
+	type Leaf = (field: string, element: number) => unknown;
+
+	function place(
+		target: Record<string, unknown>,
+		segments: readonly string[],
+		field: string,
+		leaf: Leaf,
+		element: number,
+	): void {
+		const [segment = "", ...rest] = segments;
+		if (segment.endsWith("[]")) {
+			const key = segment.slice(0, -2);
+			if (rest.length === 0) {
+				target[key] = [leaf(field, 0), leaf(field, 1)];
+				return;
+			}
+			target[key] ??= [{ label: "first" }, { label: "second" }];
+			(target[key] as Record<string, unknown>[]).forEach(
+				(item, index) => {
+					place(item, rest, field, leaf, index);
+				},
+			);
+			return;
+		}
+		if (rest.length === 0) {
+			target[segment] = leaf(field, element);
+			return;
+		}
+		target[segment] ??= { label: "nested" };
+		place(
+			target[segment] as Record<string, unknown>,
+			rest,
+			field,
+			leaf,
+			element,
+		);
+	}
+
+	function inputWith(fields: readonly string[], leaf: Leaf) {
+		const input: Record<string, unknown> = {
+			id: "rec-1",
+			organizationId: "org-1",
+			expectedVersion: 2,
+		};
+		for (const field of fields) {
+			place(input, field.split("."), field, leaf, 0);
+		}
+		return input;
+	}
+
+	const bodyOf = (field: string, element: number) =>
+		`${BODY} (${field} #${element})`;
+
+	it.each([...REDACTED_BODY_FIELDS])(
+		"%s records its listed bodies as size and hash, never their text",
+		async (path, fields) => {
+			const input = inputWith(fields, bodyOf);
+			const sent = structuredClone(input);
+
+			const arg = await captureAt(path, input);
+
+			// Through the sanitizer like the capture: an entry with many
+			// fields can sum past 8 KiB of summaries, which is then cut.
+			expect(arg.metadata.input).toEqual(
+				sanitizeInput(
+					inputWith(fields, (field, element) =>
+						expectedSummary(bodyOf(field, element)),
+					),
+				),
+			);
+			expect(JSON.stringify(arg)).not.toContain("internal answer");
+			expect(input).toEqual(sent);
+		},
+	);
+
+	it("keeps the rest of projects.create's PM additional context", async () => {
+		const prd = `${BODY} PRD.`;
+		const input = {
+			name: "Example project",
+			organizationId: "org-1",
+			projectManagementMcpServerId: "mcp-1",
+			projectManagementAdditionalContext: {
+				team: "Example team",
+				labelStatusMap: { done: "Done" },
+				prdContent: prd,
+			},
+		};
+		const arg = await captureAt("projects.create", input);
+
+		expect(arg.metadata.input).toEqual({
+			name: "Example project",
+			organizationId: "org-1",
+			projectManagementMcpServerId: "mcp-1",
+			projectManagementAdditionalContext: {
+				team: "Example team",
+				labelStatusMap: { done: "Done" },
+				prdContent: expectedSummary(prd),
+			},
+		});
+		expect(JSON.stringify(arg)).not.toContain("internal answer");
+		expect(input.projectManagementAdditionalContext.prdContent).toBe(prd);
+	});
+
+	it("leaves projects.create alone when the PM additional context is null or absent", async () => {
+		const withNull = await captureAt("projects.create", {
+			name: "Example project",
+			projectManagementAdditionalContext: null,
+		});
+		expect(withNull.metadata.input).toEqual({
+			name: "Example project",
+			projectManagementAdditionalContext: null,
+		});
+
+		const without = await captureAt("projects.create", {
+			name: "Example project",
+		});
+		expect(without.metadata.input).toEqual({ name: "Example project" });
+	});
+
+	it("summarizes a step that is not the object or array its path expects", async () => {
+		const created = await captureAt("projects.create", {
+			name: "Example project",
+			projectManagementAdditionalContext: BODY,
+		});
+		expect(
+			created.metadata.input.projectManagementAdditionalContext,
+		).toEqual(expectedSummary(BODY));
+
+		const notAnArray = await captureAt("frames.update", {
+			id: "frame-1",
+			blocks: { content: BODY },
+		});
+		expect(notAnArray.metadata.input.blocks).toEqual({ redacted: true });
+
+		const stringElement = await captureAt("frames.update", {
+			id: "frame-1",
+			blocks: [BODY, { id: "block-2", type: "markdown", content: BODY }],
+		});
+		expect(stringElement.metadata.input.blocks).toEqual([
+			expectedSummary(BODY),
+			{ id: "block-2", type: "markdown", content: expectedSummary(BODY) },
+		]);
+		for (const arg of [created, notAnArray, stringElement]) {
+			expect(JSON.stringify(arg)).not.toContain("internal answer");
+		}
+	});
+
+	it("keeps every other field of a frame block", async () => {
+		const arg = await captureAt("frames.create", {
+			title: "Example frame",
+			blocks: [
+				{
+					id: "block-1",
+					type: "html",
+					title: "Pricing",
+					content: BODY,
+					language: "html",
+				},
+			],
+			theme: { mode: "dark" },
+		});
+
+		expect(arg.metadata.input).toEqual({
+			title: "Example frame",
+			blocks: [
+				{
+					id: "block-1",
+					type: "html",
+					title: "Pricing",
+					content: expectedSummary(BODY),
+					language: "html",
+				},
+			],
+			theme: { mode: "dark" },
+		});
+	});
+
+	it("records an agent memory import's whole file map as redacted", async () => {
+		const arg = await captureAt("agentMemory.import", {
+			agentInstanceId: "agent-1",
+			files: { "notes/client.md": BODY },
+			validateFirst: true,
+		});
+
+		expect(arg.metadata.input).toEqual({
+			agentInstanceId: "agent-1",
+			files: { redacted: true },
+			validateFirst: true,
+		});
+		expect(JSON.stringify(arg)).not.toContain("internal answer");
+	});
+
+	it("keeps a null body as null: a cleared field holds no text", async () => {
+		const arg = await captureAt("projects.stories.update", {
+			projectId: "proj-1",
+			storyId: "story-1",
+			description: null,
+			acceptanceCriteria: BODY,
+		});
+
+		expect(arg.metadata.input).toEqual({
+			projectId: "proj-1",
+			storyId: "story-1",
+			description: null,
+			acceptanceCriteria: expectedSummary(BODY),
+		});
+	});
+
+	it("records a chat turn's text, reasoning and tool calls as summaries, keeping ids and kinds", async () => {
+		const result = `${BODY} Tool result.`;
+		const arg = await captureAt(
+			"agents.conversations.appendTurnForDocument",
+			{
+				documentRefKind: "PROJECT_DOCUMENT",
+				documentRefId: "doc-1",
+				projectId: "proj-1",
+				agentId: "doc-agent",
+				message: {
+					id: "msg-1",
+					role: "assistant",
+					content: BODY,
+					timestamp: "2026-10-30T09:00:00Z",
+					reasoningText: BODY,
+					toolCalls: [
+						{
+							id: "call-1",
+							name: "proposeEdit",
+							args: { markdown: BODY },
+							result,
+							status: "complete",
+						},
+					],
+				},
+			},
+		);
+
+		expect(arg.metadata.input).toEqual({
+			documentRefKind: "PROJECT_DOCUMENT",
+			documentRefId: "doc-1",
+			projectId: "proj-1",
+			agentId: "doc-agent",
+			message: {
+				id: "msg-1",
+				role: "assistant",
+				content: expectedSummary(BODY),
+				timestamp: "2026-10-30T09:00:00Z",
+				reasoningText: expectedSummary(BODY),
+				toolCalls: [
+					{
+						id: "call-1",
+						name: "proposeEdit",
+						// An object is recorded as redacted, without a hash.
+						args: { redacted: true },
+						result: expectedSummary(result),
+						status: "complete",
+					},
+				],
+			},
+		});
+		expect(JSON.stringify(arg)).not.toContain("internal answer");
+	});
+
+	it("records an applied backlog change's bodies as summaries, keeping its kind, title, ids and source kind", async () => {
+		const arg = await captureAt("projects.backlog.applyChanges", {
+			projectId: "proj-1",
+			operationKey: "op-1",
+			approvedChanges: [
+				{
+					type: "STORY",
+					action: "UPDATE",
+					existingId: "story-1",
+					title: { from: "Old title", to: "New title" },
+					description: { from: null, to: BODY },
+					acceptanceCriteria: null,
+					reasoning: BODY,
+					sourceContext: "meeting_transcript",
+				},
+			],
+			messages: [{ role: "user", content: BODY }],
+		});
+
+		expect(arg.metadata.input).toEqual({
+			projectId: "proj-1",
+			operationKey: "op-1",
+			approvedChanges: [
+				{
+					type: "STORY",
+					action: "UPDATE",
+					existingId: "story-1",
+					title: { from: "Old title", to: "New title" },
+					description: { from: null, to: expectedSummary(BODY) },
+					acceptanceCriteria: null,
+					reasoning: expectedSummary(BODY),
+					// The kind of source, an enum, not its text.
+					sourceContext: "meeting_transcript",
+				},
+			],
+			messages: [{ role: "user", content: expectedSummary(BODY) }],
+		});
+		expect(JSON.stringify(arg)).not.toContain("internal answer");
+	});
+
+	it("passes through an input that is not an object on a path that is not listed, and a missing one anywhere", () => {
+		expect(
+			__redactBodyFieldsForTest("projects.testCases.recordResult", "raw"),
+		).toBe("raw");
+		expect(
+			__redactBodyFieldsForTest("projects.documents.update", undefined),
+		).toBeUndefined();
+		expect(
+			__redactBodyFieldsForTest("projects.documents.update", null),
+		).toBeNull();
+	});
+
+	it("summarizes a listed path's input whole when it is not an object", async () => {
+		expect(
+			__redactBodyFieldsForTest("projects.documents.update", BODY),
+		).toEqual(expectedSummary(BODY));
+
+		const arg = await captureAt("projects.documents.update", BODY);
+		expect(arg.metadata.input).toEqual(expectedSummary(BODY));
+		expect(JSON.stringify(arg)).not.toContain("internal answer");
+	});
+
+	it("redacts the listed fields of each element of a listed path's array input", async () => {
+		const arg = await captureAt("projects.documents.update", [
+			{ id: "doc-1", content: BODY },
+			BODY,
+			[{ content: BODY }],
+			null,
+		]);
+
+		expect(arg.metadata.input).toEqual([
+			{ id: "doc-1", content: expectedSummary(BODY) },
+			expectedSummary(BODY),
+			{ redacted: true },
+			null,
+		]);
+		expect(JSON.stringify(arg)).not.toContain("internal answer");
+	});
+
+	it("covers the task, test case, comment, answer and agent message bodies", () => {
+		expect(
+			Object.fromEntries(
+				[
+					"projects.stories.tasks.create",
+					"projects.stories.tasks.update",
+					"projects.testCases.create",
+					"projects.testCases.update",
+					"projects.stories.comments.create",
+					"projects.stories.tasks.comments.create",
+					"projects.architectureDecisions.comments.create",
+					"incidents.errorRate.addComment",
+					"integrationHealth.addComment",
+					"projects.stories.maturation.answerQuestion",
+					"projects.stories.maturation.amendAnswer",
+					"projects.stories.maturation.appendDecisionEntry",
+					"projects.stories.maturation.recordChangeNote",
+					"projects.publishingSuite.answerTopicQuestion",
+					"projects.publishingSuite.amendTopicQuestion",
+					"codingRuns.sendFollowUp",
+					"weave.executions.signalApproval",
+					"projects.stories.tasks.agent.resolveCheckpoint",
+					"ai.chats.messages.add",
+				].map((path) => [path, REDACTED_BODY_FIELDS.get(path)]),
+			),
+		).toEqual({
+			"projects.stories.tasks.create": ["description"],
+			"projects.stories.tasks.update": ["description"],
+			"projects.testCases.create": ["description", "steps[]"],
+			"projects.testCases.update": [
+				"description",
+				"steps[]",
+				"playwrightScript",
+			],
+			"projects.stories.comments.create": ["content"],
+			"projects.stories.tasks.comments.create": ["content"],
+			"projects.architectureDecisions.comments.create": ["content"],
+			"incidents.errorRate.addComment": ["message"],
+			"integrationHealth.addComment": ["message"],
+			"projects.stories.maturation.answerQuestion": ["answer", "summary"],
+			"projects.stories.maturation.amendAnswer": ["answer"],
+			"projects.stories.maturation.appendDecisionEntry": [
+				"content",
+				"summary",
+			],
+			"projects.stories.maturation.recordChangeNote": ["bullets[]"],
+			"projects.publishingSuite.answerTopicQuestion": ["answer"],
+			"projects.publishingSuite.amendTopicQuestion": ["answer"],
+			"codingRuns.sendFollowUp": ["message"],
+			"weave.executions.signalApproval": ["feedback"],
+			"projects.stories.tasks.agent.resolveCheckpoint": [
+				"feedback",
+				"userData",
+			],
+			"ai.chats.messages.add": [
+				"messages[].parts[].text",
+				"messages[].parts[].input",
+				"messages[].parts[].rawInput",
+				"messages[].parts[].output",
+				"messages[].parts[].url",
+				"messages[].parts[].data",
+			],
+		});
+	});
+
+	it("records a test case's steps and Playwright script as summaries, keeping its title and state", async () => {
+		const script = `test("checkout", async () => { /* ${BODY} */ });`;
+		const arg = await captureAt("projects.testCases.update", {
+			projectId: "proj-1",
+			testCaseId: "case-1",
+			title: "Checkout applies the discount",
+			state: "READY",
+			description: BODY,
+			steps: [{ id: "step-1", action: BODY, expected: "Discount shown" }],
+			playwrightScript: script,
+		});
+
+		expect(arg.metadata.input).toEqual({
+			projectId: "proj-1",
+			testCaseId: "case-1",
+			title: "Checkout applies the discount",
+			state: "READY",
+			description: expectedSummary(BODY),
+			// A step is an object, so it is recorded as redacted alone.
+			steps: [{ redacted: true }],
+			playwrightScript: expectedSummary(script),
+		});
+		expect(JSON.stringify(arg)).not.toContain("internal answer");
+	});
+
+	it("records an AI chat message's tool input and output and a file part's data URL, keeping part kinds and ids", async () => {
+		const dataUrl = `data:text/plain;base64,${Buffer.from(BODY).toString("base64")}`;
+		const output = `${BODY} Tool output.`;
+		const arg = await captureAt("ai.chats.messages.add", {
+			chatId: "chat-1",
+			messages: [
+				{
+					id: "msg-1",
+					role: "user",
+					parts: [
+						{ type: "text", text: BODY },
+						{
+							type: "file",
+							mediaType: "text/plain",
+							filename: "notes.txt",
+							url: dataUrl,
+						},
+					],
+				},
+				{
+					id: "msg-2",
+					role: "assistant",
+					parts: [
+						{
+							type: "tool-searchDocuments",
+							toolCallId: "call-1",
+							state: "output-available",
+							input: { query: BODY },
+							output,
+						},
+					],
+				},
+			],
+		});
+
+		expect(arg.metadata.input).toEqual({
+			chatId: "chat-1",
+			messages: [
+				{
+					id: "msg-1",
+					role: "user",
+					parts: [
+						{ type: "text", text: expectedSummary(BODY) },
+						{
+							type: "file",
+							mediaType: "text/plain",
+							filename: "notes.txt",
+							url: expectedSummary(dataUrl),
+						},
+					],
+				},
+				{
+					id: "msg-2",
+					role: "assistant",
+					parts: [
+						{
+							type: "tool-searchDocuments",
+							toolCallId: "call-1",
+							state: "output-available",
+							input: { redacted: true },
+							output: expectedSummary(output),
+						},
+					],
+				},
+			],
+		});
+		expect(JSON.stringify(arg)).not.toContain("internal answer");
+		expect(JSON.stringify(arg)).not.toContain("base64,");
+	});
+});
+
+describe("an Advisor execution record (saveTurn, update, create)", () => {
+	const BODY =
+		"Our internal answer: the client's budget is café-tier — never quote it.";
+
+	function summary(body: string) {
+		return {
+			redacted: true,
+			bytes: Buffer.byteLength(body, "utf8"),
+			contentHash: createHash("sha256")
+				.update(body, "utf8")
+				.digest("hex"),
+		};
+	}
+
+	/**
+	 * An execution record as the Advisor builds it for a saved turn (the
+	 * `OrchestratorExecution` shape), with every prose field holding BODY.
+	 */
+	function executionRecord() {
+		return {
+			id: "exec-1",
+			workflowId: "exec-1",
+			userMessage: BODY,
+			imageUrls: ["data:image/png;base64,ZXhhbXBsZQ=="],
+			error: `Provider refused: ${BODY}`,
+			clarifications: [
+				{ question: `Which client? ${BODY}`, answer: BODY },
+			],
+			model: { provider: "example", modelId: "example-model" },
+			routingDecision: {
+				primaryAgent: "research",
+				agentName: "Research",
+				confidence: 0.92,
+				riskLevel: "low",
+			},
+			plan: {
+				id: "plan-1",
+				description: BODY,
+				riskLevel: "low",
+				steps: [
+					{
+						id: "step-1",
+						description: BODY,
+						status: "complete",
+						order: 1,
+						riskLevel: "low",
+						requiresApproval: true,
+					},
+				],
+			},
+			stepResults: [
+				{
+					stepId: "step-1",
+					stepDescription: BODY,
+					status: "complete",
+					response: BODY,
+					toolCalls: [
+						{
+							id: "call-1",
+							name: "search_documents",
+							args: { query: BODY },
+							result: `${BODY} Tool result.`,
+							status: "success",
+							durationMs: 120,
+						},
+					],
+					durationMs: 900,
+				},
+			],
+			approvalHistory: [
+				{
+					approvalId: "approval-1",
+					stepId: "step-1",
+					stepDescription: BODY,
+					riskLevel: "medium",
+					requestedAt: "2026-10-30T09:00:10.000Z",
+					decidedAt: "2026-10-30T09:00:20.000Z",
+					approved: true,
+					feedback: BODY,
+				},
+			],
+			variables: { client: BODY },
+			status: "complete",
+			startedAt: "2026-10-30T09:00:00.000Z",
+			completedAt: "2026-10-30T09:01:00.000Z",
+			finalResponse: `${BODY} Final answer.`,
+			artifacts: [
+				{
+					id: "artifact-1",
+					type: "document",
+					name: "Draft reply",
+					content: BODY,
+					stepId: "step-1",
+					createdAt: "2026-10-30T09:00:50.000Z",
+				},
+			],
+			sourcesUsed: ["doc-1"],
+		};
+	}
+
+	/** The same record as an error capture keeps it. */
+	function recordedExecution() {
+		const record = executionRecord();
+		return {
+			...record,
+			userMessage: summary(BODY),
+			imageUrls: { redacted: true },
+			error: summary(`Provider refused: ${BODY}`),
+			clarifications: [
+				{
+					question: summary(`Which client? ${BODY}`),
+					answer: summary(BODY),
+				},
+			],
+			plan: {
+				...record.plan,
+				description: summary(BODY),
+				steps: [
+					{ ...record.plan.steps[0], description: summary(BODY) },
+				],
+			},
+			stepResults: [
+				{
+					...record.stepResults[0],
+					stepDescription: summary(BODY),
+					response: summary(BODY),
+					toolCalls: [
+						{
+							...record.stepResults[0]?.toolCalls[0],
+							args: { redacted: true },
+							result: summary(`${BODY} Tool result.`),
+						},
+					],
+				},
+			],
+			approvalHistory: [
+				{
+					...record.approvalHistory[0],
+					stepDescription: summary(BODY),
+					feedback: summary(BODY),
+				},
+			],
+			variables: { redacted: true },
+			finalResponse: summary(`${BODY} Final answer.`),
+			artifacts: [{ ...record.artifacts[0], content: summary(BODY) }],
+		};
+	}
+
+	async function captureAt(dottedPath: string, input: unknown) {
+		mocks.recordAuditMock.mockReset();
+		await __captureErrorForTest(
+			Object.assign(new Error("conflict"), { code: "CONFLICT" }),
+			buildContext(),
+			input,
+			dottedPath.split("."),
+		);
+		expect(mocks.recordAuditMock).toHaveBeenCalledTimes(1);
+		return mocks.recordAuditMock.mock.calls[0]?.[0] as {
+			metadata: { input: Record<string, unknown> };
+		};
+	}
+
+	it("records a saved turn's execution bodies as summaries, keeping its id, status, timestamps and routing", async () => {
+		const input = {
+			conversationId: "conv-1",
+			organizationId: "org-1",
+			messages: [
+				{
+					id: "msg-1",
+					role: "user",
+					content: BODY,
+					timestamp: "2026-10-30T09:00:00.000Z",
+					metadata: {
+						clarification: {
+							question: "Which client?",
+							answer: BODY,
+						},
+					},
+					attachments: [
+						{
+							id: "file-1",
+							name: "brief.pdf",
+							previewUrl:
+								"https://storage.example.com/brief.pdf?sig=abc",
+						},
+					],
+				},
+			],
+			execution: executionRecord(),
+			settings: { executionMode: "balanced" },
+		};
+		const sent = structuredClone(input);
+
+		const arg = await captureAt("agents.conversations.saveTurn", input);
+
+		expect(arg.metadata.input).toEqual({
+			conversationId: "conv-1",
+			organizationId: "org-1",
+			messages: [
+				{
+					id: "msg-1",
+					role: "user",
+					content: summary(BODY),
+					timestamp: "2026-10-30T09:00:00.000Z",
+					metadata: { clarification: { redacted: true } },
+					attachments: [
+						{
+							id: "file-1",
+							name: "brief.pdf",
+							previewUrl: summary(
+								"https://storage.example.com/brief.pdf?sig=abc",
+							),
+						},
+					],
+				},
+			],
+			execution: recordedExecution(),
+			settings: { executionMode: "balanced" },
+		});
+		const execution = arg.metadata.input.execution as Record<
+			string,
+			unknown
+		>;
+		expect(execution.id).toBe("exec-1");
+		expect(execution.status).toBe("complete");
+		expect(execution.startedAt).toBe("2026-10-30T09:00:00.000Z");
+		expect(JSON.stringify(arg)).not.toContain("internal answer");
+		expect(JSON.stringify(arg)).not.toContain("sig=abc");
+		expect(JSON.stringify(arg)).not.toContain("base64,");
+		expect(input).toEqual(sent);
+	});
+
+	it.each(["agents.conversations.update", "agents.conversations.create"])(
+		"records the execution records %s keeps in its metadata the same way",
+		async (path) => {
+			const arg = await captureAt(path, {
+				id: "conv-1",
+				organizationId: "org-1",
+				metadata: {
+					mode: "orchestrator",
+					executionMode: "balanced",
+					lastUpdated: "2026-10-30T09:01:00.000Z",
+					executions: [executionRecord()],
+				},
+			});
+
+			expect(arg.metadata.input).toEqual({
+				id: "conv-1",
+				organizationId: "org-1",
+				metadata: {
+					mode: "orchestrator",
+					executionMode: "balanced",
+					lastUpdated: "2026-10-30T09:01:00.000Z",
+					executions: [recordedExecution()],
+				},
+			});
+			expect(JSON.stringify(arg)).not.toContain("internal answer");
+		},
+	);
+});
+
+describe("REDACTED_SECRET_FIELDS", () => {
+	const CODE = "example-oauth-authorization-code-0123456789";
+
+	it("covers every OAuth callback that takes a code", () => {
+		expect([...REDACTED_SECRET_FIELDS]).toEqual([
+			["integrations.github.callback", ["code"]],
+			["integrations.gitlab.callback", ["code"]],
+			["integrations.oauth.callback", ["code"]],
+			["mcp.oauth.callback", ["code"]],
+			["mcp.atlassianCloud.callback", ["code"]],
+		]);
+	});
+
+	it.each([...REDACTED_SECRET_FIELDS.keys()])(
+		"%s records its code as redacted with no size or hash, keeping the state and error",
+		async (path) => {
+			mocks.recordAuditMock.mockReset();
+			const input = {
+				code: CODE,
+				state: "state-1",
+				error: "access_denied",
+			};
+
+			await __captureErrorForTest(
+				Object.assign(new Error("bad state"), { code: "BAD_REQUEST" }),
+				buildContext(),
+				input,
+				path.split("."),
+			);
+
+			expect(mocks.recordAuditMock).toHaveBeenCalledTimes(1);
+			const arg = mocks.recordAuditMock.mock.calls[0]?.[0] as {
+				metadata: { input: Record<string, unknown> };
+			};
+			expect(arg.metadata.input).toEqual({
+				code: { redacted: true },
+				state: "state-1",
+				error: "access_denied",
+			});
+			expect(JSON.stringify(arg)).not.toContain(CODE);
+			expect(input.code).toBe(CODE);
+		},
+	);
+
+	it("leaves a callback without a code as it is", () => {
+		expect(
+			__redactBodyFieldsForTest("integrations.github.callback", {
+				state: "state-1",
+				error: "access_denied",
+			}),
+		).toEqual({ state: "state-1", error: "access_denied" });
+	});
+
+	it("redacts a code inside an array input, and a callback input that is not an object as a secret", async () => {
+		mocks.recordAuditMock.mockReset();
+		await __captureErrorForTest(
+			Object.assign(new Error("bad request"), { code: "BAD_REQUEST" }),
+			buildContext(),
+			[{ code: CODE, state: "state-1" }],
+			["mcp", "oauth", "callback"],
+		);
+
+		expect(mocks.recordAuditMock).toHaveBeenCalledTimes(1);
+		const arg = mocks.recordAuditMock.mock.calls[0]?.[0] as {
+			metadata: { input: unknown };
+		};
+		expect(arg.metadata.input).toEqual([
+			{ code: { redacted: true }, state: "state-1" },
+		]);
+		expect(JSON.stringify(arg)).not.toContain(CODE);
+
+		// A bare string gets no size or hash either.
+		expect(__redactBodyFieldsForTest("mcp.oauth.callback", CODE)).toEqual({
+			redacted: true,
+		});
 	});
 });
 

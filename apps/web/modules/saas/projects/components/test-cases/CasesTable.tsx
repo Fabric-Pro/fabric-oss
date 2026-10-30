@@ -1,5 +1,7 @@
 "use client";
 
+import { Pagination } from "@saas/shared/components/Pagination";
+
 import { Button } from "@ui/components/button";
 import { Checkbox } from "@ui/components/checkbox";
 import {
@@ -18,8 +20,6 @@ import { cn } from "@ui/lib";
 import {
 	ArrowDownIcon,
 	ArrowUpIcon,
-	ChevronLeftIcon,
-	ChevronRightIcon,
 	ClipboardCheckIcon,
 	PlusIcon,
 	SearchXIcon,
@@ -31,10 +31,8 @@ import {
 	CASES_COL_COVERS,
 	CASES_COL_LASTRUN,
 	CASES_GRID_COLS,
-	PAGE_GAP,
 	pageCount,
 	pageRange,
-	paginationPages,
 } from "./cases-table";
 import type { SortDirection, SortKey } from "./constants";
 import { PAGE_SIZES, type PageSize } from "./use-test-cases-view";
@@ -463,25 +461,24 @@ export function CasesPagination({
 	const t = useTranslations("projects.testCases");
 	const pages = pageCount(total, pageSize);
 	const range = pageRange(page, pageSize, total);
-	const tokens = paginationPages(page, pages);
 
 	return (
-		<nav
+		<div
 			data-onboarding-target="test-cases-pagination"
-			aria-label={t("pagination.aria")}
 			className="flex flex-wrap items-center justify-between gap-3 border-border border-t bg-muted/45 px-3 py-2.5"
 		>
 			<p className="text-muted-foreground text-xs tabular-nums">
-				{range
-					? t("pagination.range", {
-							from: range.from,
-							to: range.to,
-							total,
-						})
-					: t("pagination.none")}
+				{pages <= 1 &&
+					(range
+						? t("pagination.range", {
+								from: range.from,
+								to: range.to,
+								total,
+							})
+						: t("pagination.none"))}
 				{note && (
 					<>
-						{" · "}
+						{pages <= 1 && " · "}
 						{note}
 					</>
 				)}
@@ -515,69 +512,26 @@ export function CasesPagination({
 				</span>
 
 				{pages > 1 && (
-					<div className="flex items-center gap-1">
-						<Button
-							type="button"
-							variant="outline"
-							size="icon-sm"
-							className="size-7"
-							disabled={page <= 1}
-							onClick={() => onPage(page - 1)}
-							aria-label={t("pagination.previous")}
-						>
-							<ChevronLeftIcon
-								aria-hidden="true"
-								className="size-3.5"
-							/>
-						</Button>
-						{tokens.map((token, i) =>
-							token === PAGE_GAP ? (
-								<span
-									// Position is the only identity a gap has.
-									key={`gap-${i}`}
-									aria-hidden="true"
-									className="px-1 text-muted-foreground text-xs"
-								>
-									…
-								</span>
-							) : (
-								<Button
-									key={token}
-									type="button"
-									variant={
-										token === page ? "primary" : "outline"
-									}
-									size="sm"
-									className="h-7 min-w-7 px-2 text-xs tabular-nums"
-									aria-label={t("pagination.goToPage", {
-										page: token,
-									})}
-									aria-current={
-										token === page ? "page" : undefined
-									}
-									onClick={() => onPage(token)}
-								>
-									{token}
-								</Button>
-							),
-						)}
-						<Button
-							type="button"
-							variant="outline"
-							size="icon-sm"
-							className="size-7"
-							disabled={page >= pages}
-							onClick={() => onPage(page + 1)}
-							aria-label={t("pagination.next")}
-						>
-							<ChevronRightIcon
-								aria-hidden="true"
-								className="size-3.5"
-							/>
-						</Button>
-					</div>
+					<Pagination
+						totalItems={total}
+						itemsPerPage={pageSize}
+						currentPage={page}
+						onChangeCurrentPage={onPage}
+						navigationLabel={t("pagination.aria")}
+						goToPageLabel={t("pagination.jumpLabel")}
+						goLabel={t("pagination.go")}
+						pageRangeError={(lastPage) =>
+							t("pagination.rangeError", { lastPage })
+						}
+						previousLabel={t("pagination.previous")}
+						nextLabel={t("pagination.next")}
+						pageLabel={(page) => t("pagination.goToPage", { page })}
+						formatRange={(from, to, total) =>
+							t("pagination.range", { from, to, total })
+						}
+					/>
 				)}
 			</div>
-		</nav>
+		</div>
 	);
 }

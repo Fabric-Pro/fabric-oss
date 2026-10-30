@@ -1,3 +1,13 @@
+vi.mock("../ResourceManagementPanel", () => ({
+	ResourceManagementPanel: () => null,
+}));
+
+import { NuqsTestingAdapter } from "nuqs/adapters/testing";
+import type { ReactElement } from "react";
+
+const render = (ui: ReactElement) =>
+	baseRender(<NuqsTestingAdapter>{ui}</NuqsTestingAdapter>);
+
 /**
  * Tests for the connection-detail page's not-found card.
  *
@@ -9,7 +19,11 @@
  * drive the component straight into its `!connection` branch.
  */
 
-import { render, screen } from "@testing-library/react";
+import {
+	render as baseRender,
+	fireEvent,
+	screen,
+} from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
@@ -17,10 +31,14 @@ vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useOrganizationContext: () => ({ organizationId: null }),
 }));
 
+const fixture = vi.hoisted(() => ({
+	connection: null as unknown,
+	query: {} as { queryFn?: () => unknown },
+}));
 // No connection and not loading -- the not-found card.
 vi.mock("../../hooks/useConnection", () => ({
 	useConnection: () => ({
-		data: null,
+		data: fixture.connection,
 		isLoading: false,
 		refetch: vi.fn(),
 	}),
@@ -45,7 +63,26 @@ vi.mock("@shared/lib/orpc-client", () => ({
 }));
 
 vi.mock("@tanstack/react-query", () => ({
-	useQuery: () => ({ data: undefined, isLoading: false, isError: false }),
+	keepPreviousData: (previous: unknown) => previous,
+	useQuery: (options: { queryFn: () => unknown }) => {
+		fixture.query = options;
+		return {
+			data: {
+				resources: [
+					{
+						id: "example-resource",
+						name: "Example resource",
+						title: "Example resource",
+						syncStatus: "SYNCED",
+						resourceType: "DOCUMENT",
+						updatedAt: "2026-01-01",
+					},
+				],
+			},
+			isLoading: false,
+			isError: false,
+		};
+	},
 	useMutation: () => ({
 		mutate: vi.fn(),
 		mutateAsync: vi.fn().mockResolvedValue(undefined),
@@ -73,3 +110,31 @@ describe("ConnectionDetailPageContent — not-found card", () => {
 		);
 	});
 });
+
+it("jumps to the requested resource offset", () => {
+	fixture.connection = {
+		id: "example-connection",
+		name: "Example connection",
+		provider: "NOTION",
+		status: "CONNECTED",
+		config: {},
+		syncJobs: [],
+		schedules: [],
+		_count: { syncedResources: 35, syncJobs: 0 },
+	};
+	render(<ConnectionDetailPageContent connectionId="example-connection" />);
+	const input = screen.getByRole("spinbutton");
+	fireEvent.change(input, { target: { value: "3" } });
+	const form = input.closest("form");
+	if (!form) {
+		throw new Error("Expected pagination form");
+	}
+	fireEvent.submit(form);
+	fixture.query.queryFn?.();
+	expect(orpcClient.dataConnections.resources.list).toHaveBeenLastCalledWith(
+		expect.objectContaining({ offset: 20, limit: 10 }),
+	);
+	fixture.connection = null;
+});
+
+import { orpcClient } from "@shared/lib/orpc-client";

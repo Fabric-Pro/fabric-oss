@@ -52,9 +52,11 @@ describe("i18n -- diagrams.autoInsert (D5 / spec § 14.7)", () => {
 	const ns = en.diagrams.autoInsert;
 
 	it.each([
-		["insertButton"],
+		["insertDocumentButton"],
+		["insertFeatureButton"],
 		["openPickerButton"],
-		["insertedButton"],
+		["insertedDocumentButton"],
+		["insertedFeatureButton"],
 		["saveToDiagramsButton"],
 		["copyEmbedCodeButton"],
 		["pickerTitle"],
@@ -73,14 +75,6 @@ describe("i18n -- diagrams.autoInsert (D5 / spec § 14.7)", () => {
 		const value = ns[key as keyof typeof ns];
 		expect(typeof value).toBe("string");
 		expect((value as string).length).toBeGreaterThan(0);
-	});
-
-	it("`insertButton` carries the {docName} interpolation token", () => {
-		expect(ns.insertButton).toContain("{docName}");
-	});
-
-	it("`insertedButton` carries the {docName} interpolation token", () => {
-		expect(ns.insertedButton).toContain("{docName}");
 	});
 
 	it("`pickerDescription` carries the {projectName} interpolation token", () => {

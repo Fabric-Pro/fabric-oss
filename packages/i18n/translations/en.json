@@ -102,6 +102,27 @@
 			}
 		},
 		"organizations": {
+			"overview": {
+				"totals": "Platform totals",
+				"organizations": "Organizations",
+				"projects": "Projects",
+				"users": "User accounts",
+				"organizationsHint": "Deactivated excluded",
+				"projectsHint": "Drafts and archived included",
+				"usersHint": "Registered, not active usage",
+				"error": "Unable to load data.",
+				"loading": "Loading {label}…",
+				"status": "Status",
+				"active": "Active",
+				"deactivated": "Deactivated",
+				"all": "All",
+				"name": "Organization",
+				"members": "Members",
+				"createdAt": "Created",
+				"actions": "Actions",
+				"purges": "Purges {date}",
+				"empty": "No results."
+			},
 			"backToList": "Back to organizations",
 			"confirmDelete": {
 				"confirm": "Delete",
@@ -127,7 +148,6 @@
 				"updateTitle": "Edit organization"
 			},
 			"loading": "Loading organizations...",
-			"membersCount": "{count} {count, plural, one {member} other {members}}",
 			"search": "Search for an organization...",
 			"title": "Manage organizations"
 		},
@@ -1608,7 +1628,8 @@
 					"member": {
 						"invited": "Member invited",
 						"role_changed": "Member role changed",
-						"removed": "Member removed"
+						"removed": "Member removed",
+						"left": "Member left"
 					},
 					"api_key": {
 						"created": "API key created",
@@ -1665,6 +1686,7 @@
 					}
 				},
 				"account": {
+					"role_changed": "Account role changed",
 					"api_key": {
 						"created": "Personal API key created",
 						"revoked": "Personal API key revoked",
@@ -1777,7 +1799,8 @@
 					"document_analysis": {
 						"responded": "Analysis finding answered",
 						"cleared": "Answer to analysis finding cleared",
-						"rerun_started": "Internal analysis re-run started"
+						"rerun_started": "Internal analysis re-run started",
+						"resolved": "Analysis finding resolved"
 					},
 					"proposal_artifact": {
 						"export_started": "Proposal export started"
@@ -4018,6 +4041,7 @@
 				"scanIncompleteDescription": "The AI reviewer couldn't check {count, plural, one {the # candidate pair} other {any of the # candidate pairs}} this time — usually a temporary AI hiccup.",
 				"scanIncompleteUnchanged": "Nothing was changed and your existing duplicate flags are unaffected. Try scanning again in a moment.",
 				"scanPartialWarning": "Heads up: {count, plural, one {# pair} other {# pairs}} couldn't be checked this time and will be retried on the next scan.",
+				"scanRemainingNote": "{count, plural, one {# more candidate pair is} other {# more candidate pairs are}} still waiting to be checked. Scan again to check them.",
 				"scanAgain": "Scan again",
 				"scanAgainAria": "Scan again — retry the duplicate scan",
 				"viewDuplicates": "View Duplicates",
@@ -4043,9 +4067,9 @@
 				"similarConfidence": "{similarity}% similar · {confidence}% match confidence",
 				"similarConfidenceAria": "How these scores are calculated",
 				"similarHelpLabel": "Similarity",
-				"similarHelpBody": "How close the two items read once converted to AI embeddings — a cosine comparison of their title and description. Only highly similar pairs are even considered.",
+				"similarHelpBody": "How closely the two items match once converted to AI embeddings. For two features it is mostly their Scope sections (or acceptance criteria when either has no Scope, or the full items when they share neither), with the rest of each item counting less; other items are compared in full. Both are shown on the same scale, and only pairs that reach the same threshold are considered, so two features whose text reads alike but whose Scope does not are left out.",
 				"confidenceHelpLabel": "Match confidence",
-				"confidenceHelpBody": "An AI reviewer then reads both items in full and rates how certain it is they describe the same work. Both checks must agree before a duplicate is flagged.",
+				"confidenceHelpBody": "An AI reviewer then reads both items in full and rates how certain it is that they describe the same or overlapping work. The reviewer makes the call, so a pair can be flagged at a modest similarity when different wording describes the same work.",
 				"keepLabel": "Which one to keep",
 				"keepInstruction": "Each card can show its Original text or an AI-merged version. Merge keeps that card; the other is retired.",
 				"keepThis": "Keep this",
@@ -5471,7 +5495,10 @@
 				"rowsAria": "Cases per page",
 				"previous": "Previous page",
 				"next": "Next page",
-				"goToPage": "Go to page {page}"
+				"goToPage": "Go to page {page}",
+				"jumpLabel": "Go to page",
+				"go": "Go",
+				"rangeError": "Enter a page from 1 to {lastPage}"
 			},
 			"about": {
 				"trigger": "About {segment}",
@@ -6044,6 +6071,11 @@
 				"empty": "No work items found.",
 				"loadFailed": "Couldn't load work items from your PM tool.",
 				"pageInfo": "Page {page} · {total} total",
+				"paginationAria": "PM test case pages",
+				"jumpLabel": "Go to page",
+				"go": "Go",
+				"rangeError": "Enter a page from 1 to {lastPage}",
+				"pageLabel": "Page {page}",
 				"prev": "Previous",
 				"next": "Next"
 			},
@@ -8064,7 +8096,8 @@
 			"exportRateLimited": "Too many exports. Try again in {seconds} seconds.",
 			"exportRateLimitedSoon": "Too many exports. Try again in a few minutes.",
 			"exportLeftOut": "Some content was left out of the {format}",
-			"exportWarningDiagramPlaceholder": "{count, plural, one {# diagram is} other {# diagrams are}} shown as a placeholder.",
+			"exportWarningDiagramPlaceholder": "{count, plural, one {# diagram could not be drawn and was left out. Fix or delete it in the editor if it shows an error there, or export again.} other {# diagrams could not be drawn and were left out. Fix or delete them in the editor if they show an error there, or export again.}}",
+			"exportWarningDiagramNotPrintable": "{count, plural, one {# diagram can only be drawn on the online page, so it is printed as a placeholder.} other {# diagrams can only be drawn on the online page, so they are printed as placeholders.}}",
 			"exportWarningDiagramLimit": "{count, plural, one {# diagram} other {# diagrams}} over the limit {count, plural, one {is} other {are}} shown as a placeholder.",
 			"exportWarningDiagramBelowPrintFloor": "{count, plural, one {# diagram is} other {# diagrams are}} too wide for the page, so {count, plural, one {its} other {their}} labels print small.",
 			"exportWarningImageDropped": "{count, plural, one {# image} other {# images}} could not be included.",
@@ -8326,6 +8359,12 @@
 					"instruction": "Updated with instructions"
 				},
 				"fixedColours": "Colours are fixed in this diagram. Use Edit with instructions to restyle it.",
+				"notPrintable": "Not included in PDF",
+				"failure": {
+					"title": "This diagram can't be drawn",
+					"exports": "It will be left out of PDF and Word exports.",
+					"placeholder": "PDF and Word exports show a numbered placeholder in its place."
+				},
 				"panel": {
 					"title": "Edit with instructions",
 					"instructionLabel": "What should change in this diagram?",
@@ -8420,6 +8459,7 @@
 					"UNADDRESSED": "Unaddressed",
 					"CONFIRMED": "Confirmed",
 					"RESPONDED": "Responded",
+					"RESOLVED": "Resolved",
 					"NEEDS_REVIEW": "Needs review"
 				},
 				"reason": {
@@ -8432,8 +8472,10 @@
 					"unnamedMember": "a member",
 					"saving": "Saving…",
 					"confirmedBy": "Confirmed by {name}",
+					"resolvedBy": "Recommendation applied by {name}",
 					"answeredBy": "Answered by {name}",
 					"earlierConfirmedBy": "Previously confirmed by {name}",
+					"earlierResolvedBy": "Recommendation previously applied by {name}",
 					"earlierAnswerBy": "Earlier answer by {name}"
 				},
 				"actions": {
@@ -8447,7 +8489,8 @@
 					"apply": "Apply to the current finding",
 					"cancel": "Cancel",
 					"replaceWithMine": "Replace with mine",
-					"keepTheirs": "Keep theirs"
+					"keepTheirs": "Keep theirs",
+					"applyRecommendation": "Apply recommendation"
 				},
 				"editor": {
 					"label": "Your answer",
@@ -8526,7 +8569,10 @@
 					"citationLabel": "S{source}",
 					"citationName": "{label}: {title}",
 					"sourceRemoved": "{label} · Source removed"
-				}
+				},
+				"revisionInProgress": "Revision in progress",
+				"revisionRejected": "The revision was rejected; nothing changed.",
+				"revisionRefused": "The revision was not applied: {reason}"
 			},
 			"style": {
 				"title": "Style",
@@ -8666,6 +8712,39 @@
 			},
 			"promptBinding": {
 				"diagramsNote": "Diagrams are added by Fabric after generation; a section that already has its own diagram is left alone."
+			},
+			"revision": {
+				"inProgress": "Revising the section…",
+				"reviewTitle": "AI revision of “{section}”",
+				"reviewHint": "Accepting saves this section only. Rejecting puts back the text from before.",
+				"applying": "Saving the revision…",
+				"accepted": "The revision was saved and the finding marked Resolved.",
+				"rejected": "The revision was rejected; nothing changed.",
+				"notApplied": "The revision was not applied: {reason}",
+				"chatNotApplied": "The accepted changes were not applied: {reason}",
+				"offerBack": "The refused text was taken out of the editor. Copy it if you want to keep it.",
+				"reasons": {
+					"REVISION_OUTSIDE_TARGET": "it changed a section outside the one it targeted.",
+					"REVISION_CHANGED_DIAGRAM": "it changed an existing diagram.",
+					"RESPONSE_ECHOED": "it repeated wording from the Internal Analysis.",
+					"FINDING_RESPONSE_CHANGED": "the finding's answer changed in the meantime.",
+					"FINDING_SECTION_CHANGED": "the finding's section changed since the analysis raised it.",
+					"REVISION_TOKEN_INVALID": "the revision has expired, or the accepted text differs from what was reviewed. Request it again.",
+					"STALE": "the document changed while the revision was being drafted.",
+					"SECTION_NOT_FOUND": "the finding's section is no longer in the document.",
+					"INVALID_CANDIDATE": "the AI's answer did not keep to the section's structure.",
+					"AI_PROVIDER_NOT_CONFIGURED": "no AI provider is configured for this organization.",
+					"PROPOSAL_PROMPT_NOT_BOUND": "no prompt is bound to Client proposal (revision) in the Prompt Library.",
+					"RATE_LIMITED": "too many AI requests were made. Try again in a minute.",
+					"SECTION_CHANGED_MEANWHILE": "the section was edited while the revision was being drafted.",
+					"NO_BASE": "the editor is still syncing with the saved document.",
+					"SAVE_FAILED": "the editor's changes could not be saved first.",
+					"HELD_ELSEWHERE": "another tab is reviewing an AI proposal for this document.",
+					"EDITOR_BUSY": "the editor is busy with another change.",
+					"NO_CHANGE": "the revision left the section unchanged.",
+					"INTERRUPTED": "the editor closed or reconnected before the revision finished.",
+					"unknown": "something went wrong."
+				}
 			}
 		},
 		"proposalArtifactPage": {
@@ -9059,7 +9138,8 @@
 			"loadingStage": {
 				"scanning": "Scanning project context",
 				"drafting": "AI reviewing and drafting updates"
-			}
+			},
+			"useChatOrRegenerate": "Update using context isn't available for this Proposal. Change it from the chat, or regenerate it."
 		},
 		"planPause": {
 			"title": "Paused — waiting for ChatGPT plan reset",
@@ -9818,7 +9898,13 @@
 			"estimateExport": "Downloads the scope estimate grouped by phase and by track, as markdown or CSV. Phases that hold Low-confidence items show a point range instead of one number.",
 			"stageRequestsConcept": "Under a governed profile a drafting-stage change is recorded as a request instead of applied; a configured approver reviews it here.",
 			"kanbanColumnPreset": "Renames the board's columns to a preset that matches how this engagement runs, and creates any columns the preset needs. Titles can be edited afterwards; cards keep their state.",
-			"classifyConcept": "A delivery track says what a feature must show before Published: Spike (accepted spike run), Discovery (completed integration contract), Specify (description and acceptance criteria) or Defer (parked)."
+			"classifyConcept": "A delivery track says what a feature must show before Published: Spike (accepted spike run), Discovery (completed integration contract), Specify (description and acceptance criteria) or Defer (parked).",
+			"pullFromPmPaginationAria": "PM ticket pages",
+			"pullFromPmJumpLabel": "Go to page",
+			"pullFromPmGo": "Go",
+			"pullFromPmRangeError": "Enter a page from 1 to {lastPage}",
+			"pullFromPmPageLabel": "Page {page}",
+			"pullFromPmRange": "{from}–{to} of {total} tickets"
 		},
 		"testCases": {
 			"new": "Create a new test case with ordered steps.",
@@ -9842,6 +9928,8 @@
 			"automationRef": "This case is covered by the automated test {ref}."
 		},
 		"copilot": {
+			"traceWaiting": "Waiting for your response",
+			"traceStopped": "Stopped",
 			"attachDocument": "Attach a file or image ({documentFormats}, {imageFormats}).",
 			"sendMessage": "Send this message to the assistant.",
 			"stopGeneration": "Stop the assistant's current response.",
@@ -10018,6 +10106,10 @@
 			"generationError": "This run stopped before producing a report. The message comes from the report engine — re-running the template retries from the start."
 		},
 		"publishing": {
+			"interfaceMode": {
+				"simple": "Pick a content type and get a ready-to-copy draft.",
+				"advanced": "The full workflow: analysis, decisions and every content panel."
+			},
 			"markRead": "Mark this topic as read. It stays in the Inbox — only the unread dot goes.",
 			"markUnread": "Mark this topic as unread, so it stands out in the Inbox again.",
 			"snooze": "Hide this topic from the Inbox until a date you pick. It comes back on its own.",
@@ -10034,9 +10126,11 @@
 	},
 	"diagrams": {
 		"autoInsert": {
-			"insertButton": "Insert into {docName}",
+			"insertFeatureButton": "Insert into feature",
+			"insertDocumentButton": "Insert into document",
 			"openPickerButton": "Open a document to insert",
-			"insertedButton": "Inserted into {docName}",
+			"insertedFeatureButton": "Inserted into feature",
+			"insertedDocumentButton": "Inserted into document",
 			"saveToDiagramsButton": "Save to Diagrams",
 			"copyEmbedCodeButton": "Copy embed code",
 			"pickerTitle": "Insert diagram into…",

@@ -129,3 +129,24 @@ describe("human draft verdicts independent of conversation history", () => {
 		expect(warn).toHaveBeenCalledOnce();
 	});
 });
+
+it.each([undefined, "malformed", `msg_1793200000000_${"a".repeat(32)}`])(
+	"uses server card identity or a fallback: %s",
+	async (id) => {
+		const { result } = renderHook(() => {
+			const factory = useConfirmChangesVerdict({
+				surface: "prompt-enhancer",
+			});
+			const record = factory();
+			useConfirmChangesVerdictCard(record, id);
+			return record;
+		});
+		await result.current(true);
+		const actual = confirmDraft.mock.calls[0][0].draftId;
+		if (id?.startsWith("msg_")) {
+			expect(actual).toBe(id);
+		} else {
+			expect(actual).toMatch(/^[0-9a-f-]{36}$/);
+		}
+	},
+);

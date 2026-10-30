@@ -148,3 +148,11 @@ it("bounds cyclic, deep, and hostile cause chains without treating text as prove
 	expect(isDatabaseError(deep)).toBe(false);
 	expect(prismaErrorCode(deep)).toBeNull();
 });
+
+it("bounds invocation matching on long near misses", () => {
+	const input = `Invalid \`${"a.".repeat(100_000)}x`;
+	expect(redactDatabaseErrorText(input)).toBe(input);
+	expect(
+		redactDatabaseErrorText("Invalid `prisma.user.update()` invocation"),
+	).toBe("database error");
+});

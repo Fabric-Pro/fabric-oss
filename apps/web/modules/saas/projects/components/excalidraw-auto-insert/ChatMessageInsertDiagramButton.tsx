@@ -47,7 +47,12 @@ import {
 	TooltipTrigger,
 } from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
-import { CheckIcon, ClipboardIcon, ExternalLinkIcon } from "lucide-react";
+import {
+	CheckIcon,
+	ClipboardIcon,
+	ExternalLinkIcon,
+	FileInput,
+} from "lucide-react";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
@@ -402,9 +407,11 @@ function ChatMessageInsertDiagramButtonBody({
 				data-slot="excalidraw-auto-insert-row"
 			>
 				<DisabledButtonWithTooltip
-					label={t("insertButton", {
-						docName: resolverTarget?.documentLabel ?? "",
-					})}
+					label={t(
+						resolverTarget?.kind === "story"
+							? "insertFeatureButton"
+							: "insertDocumentButton",
+					)}
 					tooltip={tTip("insertNoCreatePermission")}
 				/>
 			</div>
@@ -414,14 +421,17 @@ function ChatMessageInsertDiagramButtonBody({
 	// Cross-project mismatch (FR-6) -- disabled with informational tooltip
 	// scoped to the chat project name.
 	if (computedBlockedReason === "cross_project") {
-		const docName = resolverTarget?.documentLabel ?? "";
 		return (
 			<div
 				className="flex items-center gap-2"
 				data-slot="excalidraw-auto-insert-row"
 			>
 				<DisabledButtonWithTooltip
-					label={t("insertButton", { docName })}
+					label={t(
+						resolverTarget?.kind === "story"
+							? "insertFeatureButton"
+							: "insertDocumentButton",
+					)}
 					tooltip={tTip("insertCrossProject", {
 						projectName:
 							chatScopeProjectName ??
@@ -449,7 +459,11 @@ function ChatMessageInsertDiagramButtonBody({
 				data-slot="excalidraw-auto-insert-row"
 			>
 				<DisabledButtonWithTooltip
-					label={t("insertButton", { docName })}
+					label={t(
+						resolverTarget?.kind === "story"
+							? "insertFeatureButton"
+							: "insertDocumentButton",
+					)}
 					tooltip={tTip("insertNoPermission", { docName })}
 				/>
 				{onSaveToDiagrams ? (
@@ -516,7 +530,7 @@ function ChatMessageInsertDiagramButtonBody({
 				>
 					<Button
 						type="button"
-						variant="default"
+						variant="outline"
 						size="sm"
 						onClick={handleOpenPicker}
 						aria-label={t("openPickerButton")}
@@ -560,39 +574,55 @@ function ChatMessageInsertDiagramButtonBody({
 	const isInserted = action.status === "inserted";
 	const isInserting = action.status === "inserting";
 	const insertLabel = isInserted
-		? t("insertedButton", { docName })
-		: t("insertButton", { docName });
+		? t(
+				resolverTarget?.kind === "story"
+					? "insertedFeatureButton"
+					: "insertedDocumentButton",
+			)
+		: t(
+				resolverTarget?.kind === "story"
+					? "insertFeatureButton"
+					: "insertDocumentButton",
+			);
 
 	return (
 		<div
 			className="flex items-center gap-2"
 			data-slot="excalidraw-auto-insert-row"
 		>
-			<Button
-				type="button"
-				variant="default"
-				size="sm"
-				loading={isInserting}
-				autoLoading={false}
-				disabled={!action.enabled && !isInserted}
-				onClick={() => {
-					void action.click();
-				}}
-				aria-label={
-					isInserted
-						? `${insertLabel}`
-						: `Insert this diagram into ${docName || "document"}`
-				}
-			>
-				{isInserted ? (
-					<>
-						<ExternalLinkIcon className="size-3.5 motion-safe:transition-opacity motion-safe:duration-150" />
-						{insertLabel}
-					</>
-				) : (
-					insertLabel
-				)}
-			</Button>
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						loading={isInserting}
+						autoLoading={false}
+						disabled={!action.enabled && !isInserted}
+						onClick={() => {
+							void action.click();
+						}}
+						aria-label={
+							isInserted
+								? `${insertLabel}: ${docName}`
+								: `Insert this diagram into ${docName || "document"}`
+						}
+					>
+						{isInserted ? (
+							<>
+								<ExternalLinkIcon className="size-3.5 motion-safe:transition-opacity motion-safe:duration-150" />
+								{insertLabel}
+							</>
+						) : (
+							<>
+								<FileInput className="size-3.5" />
+								{insertLabel}
+							</>
+						)}
+					</Button>
+				</TooltipTrigger>
+				<TooltipContent>{docName}</TooltipContent>
+			</Tooltip>
 			<CopyEmbedCodeButton
 				t={t}
 				tTip={tTip}
@@ -625,7 +655,7 @@ function DisabledButtonWithTooltip({
 				<span tabIndex={0} className="inline-flex">
 					<Button
 						type="button"
-						variant="default"
+						variant="outline"
 						size="sm"
 						disabled
 						aria-label={label}

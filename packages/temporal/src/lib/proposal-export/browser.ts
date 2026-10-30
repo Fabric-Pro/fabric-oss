@@ -12,11 +12,10 @@
  * reach small, it is launched with an explicit minimal environment (no
  * database, storage or model credentials; Playwright would otherwise pass
  * the worker's whole `process.env`), it never runs page JavaScript, and it
- * only ever loads the committed Inter font.
+ * only ever loads the committed print fonts.
  *
- * Font hinting is off: the worker's Linux Chromium otherwise places every
- * glyph at a whole pixel and the PDF draws the unhinted outlines at those
- * rounded positions, so letters print with gaps between them.
+ * Font hinting is off, as for every server-side print: see
+ * `print-chromium-args.ts`.
  */
 
 import { tmpdir } from "node:os";
@@ -27,6 +26,7 @@ import {
 	type LaunchOptions,
 	type Page,
 } from "playwright";
+import { PRINT_CHROMIUM_ARGS } from "../print-chromium-args";
 import { exportFailure } from "./failures";
 
 /** Context options every export page uses. */
@@ -59,11 +59,7 @@ export function exportLaunchOptions(timeoutMs: number): LaunchOptions {
 	return {
 		headless: true,
 		// Interim sandbox and font hinting: see the module comment.
-		args: [
-			"--no-sandbox",
-			"--disable-dev-shm-usage",
-			"--font-render-hinting=none",
-		],
+		args: [...PRINT_CHROMIUM_ARGS],
 		env: exportBrowserEnv(),
 		timeout: Math.max(1, Math.min(LAUNCH_TIMEOUT_MS, timeoutMs)),
 	};

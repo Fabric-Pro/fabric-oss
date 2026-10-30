@@ -39,9 +39,9 @@ vi.mock("@repo/database", () => ({
 	replaceChatGptPlanServedModels: async () => {},
 	listChatGptPlanModels: async () => [
 		{
-			canonicalName: "gpt-6-luna",
-			slug: "gpt-6-luna",
-			displayName: "GPT-6 Luna (ChatGPT plan)",
+			canonicalName: "gpt-6.1-terra",
+			slug: "gpt-6.1-terra",
+			displayName: "GPT-6.1 Terra (ChatGPT plan)",
 			description: null,
 			autoDetected: false,
 		},
@@ -131,7 +131,7 @@ const response = (output: object[], status = "completed") => ({
 	object: "response",
 	created_at: 1_790_000_000,
 	status,
-	model: "gpt-6-luna",
+	model: "gpt-6.1-terra",
 	output,
 	incomplete_details: null,
 	usage: {
@@ -234,11 +234,11 @@ describe("testChatGptPlanSource", () => {
 
 		expect(result).toEqual({
 			outcome: "ok",
-			model: "gpt-6-luna",
-			modelName: "GPT-6 Luna",
+			model: "gpt-6.1-terra",
+			modelName: "GPT-6.1 Terra",
 			latencyMs: expect.any(Number),
 		});
-		expect(calls).toEqual([{ token: "org:acc_1", model: "gpt-6-luna" }]);
+		expect(calls).toEqual([{ token: "org:acc_1", model: "gpt-6.1-terra" }]);
 		expect(state.logUsage).toHaveBeenCalledWith(
 			expect.objectContaining({
 				featureKey: "chatgpt-plan-test",

@@ -1,5 +1,10 @@
 import { interactivePlanModel } from "@repo/ai/lib/chatgpt-plan/pool";
-import { type AiTaskType, db, getProviderDisplayName } from "@repo/database";
+import {
+	type AiTaskType,
+	db,
+	getProviderDisplayName,
+	SELECTABLE_CATALOG_MODEL_FILTER,
+} from "@repo/database";
 import {
 	getConfiguredProviders,
 	PROVIDERS_WITH_SUBPROVIDERS,
@@ -97,8 +102,7 @@ export async function listAvailableModels(input: {
 	try {
 		models = await db.aiModel.findMany({
 			where: {
-				isActive: true,
-				deprecatedAt: null,
+				...SELECTABLE_CATALOG_MODEL_FILTER,
 				providerMappings: {
 					some: {
 						provider: { in: effectiveProviders },

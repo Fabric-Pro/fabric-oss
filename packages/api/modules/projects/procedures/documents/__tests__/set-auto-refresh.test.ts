@@ -38,6 +38,7 @@ const { mocks } = vi.hoisted(() => ({
 		getAutoRefreshSettings: vi.fn(),
 		upsertAutoRefreshSettings: vi.fn(),
 		isFeatureEnabled: vi.fn(),
+		isProposalClientDocument: vi.fn(),
 	},
 }));
 
@@ -47,6 +48,7 @@ vi.mock("@repo/database", () => ({
 	getAutoRefreshSettings: mocks.getAutoRefreshSettings,
 	upsertAutoRefreshSettings: mocks.upsertAutoRefreshSettings,
 	isFeatureEnabled: mocks.isFeatureEnabled,
+	isProposalClientDocument: mocks.isProposalClientDocument,
 	DEFAULT_DOCUMENT_REFRESH_CADENCE: "BIWEEKLY",
 }));
 
@@ -182,6 +184,7 @@ beforeEach(() => {
 	mocks.upsertAutoRefreshSettings.mockImplementation(
 		async (input: Record<string, unknown>) => makeSettings(input),
 	);
+	mocks.isProposalClientDocument.mockResolvedValue(false);
 });
 
 afterEach(() => {
@@ -363,6 +366,93 @@ describe("setDocumentAutoRefreshProcedure — unenrollment", () => {
 		expect(payload).not.toHaveProperty("lastRefreshedAt");
 		expect(result.enabled).toBe(false);
 		expect(result.lastRefreshedAt).toEqual(lastRefreshedAt);
+	});
+});
+
+describe("setDocumentAutoRefreshProcedure — a client-document Proposal (Fizzy #2946)", () => {
+	/** A Proposal whose project belongs to `org-owner`. */
+	const proposal = (type = "PROPOSAL") =>
+		makeDocument({ type, project: { organizationId: "org-owner" } });
+
+	beforeEach(() => {
+		// The gate is on for the owning organization only.
+		mocks.isProposalClientDocument.mockImplementation(
+			async (args: {
+				organizationId: string | null;
+				documentType: string;
+			}) =>
+				args.documentType === "PROPOSAL" &&
+				args.organizationId === "org-owner",
+		);
+	});
+
+	it("refuses to enrol it, writing nothing", async () => {
+		mocks.getDocumentById.mockResolvedValue(proposal());
+
+		await expect(
+			setHandler({ input: setInput({ enabled: true }), context: ctx() }),
+		).rejects.toMatchObject({
+			code: "PRECONDITION_FAILED",
+			data: { code: "PROPOSAL_AUTO_REFRESH_UNSUPPORTED" },
+		});
+		expect(mocks.upsertAutoRefreshSettings).not.toHaveBeenCalled();
+	});
+
+	it("judges it by the project's owning organization, not the caller's", async () => {
+		mocks.getDocumentById.mockResolvedValue(proposal());
+
+		await expect(
+			setHandler({ input: setInput({ enabled: true }), context: ctx() }),
+		).rejects.toMatchObject({
+			data: { code: "PROPOSAL_AUTO_REFRESH_UNSUPPORTED" },
+		});
+		expect(mocks.isProposalClientDocument).toHaveBeenCalledWith({
+			organizationId: "org-owner",
+			documentType: "PROPOSAL",
+		});
+		expect(mocks.isProposalClientDocument).not.toHaveBeenCalledWith(
+			expect.objectContaining({ organizationId: ORG_ID }),
+		);
+	});
+
+	it("still lets it be turned off", async () => {
+		mocks.getDocumentById.mockResolvedValue(proposal());
+		mocks.getAutoRefreshSettings.mockResolvedValue(
+			makeSettings({ enabled: true }),
+		);
+
+		const result = await setHandler({
+			input: setInput({ enabled: false }),
+			context: ctx(),
+		});
+
+		expect(mocks.upsertAutoRefreshSettings).toHaveBeenCalledWith(
+			expect.objectContaining({ enabled: false }),
+		);
+		expect(result.enabled).toBe(false);
+	});
+
+	it("still enrols a Proposal with the gate off", async () => {
+		mocks.isProposalClientDocument.mockResolvedValue(false);
+		mocks.getDocumentById.mockResolvedValue(proposal());
+
+		const result = await setHandler({
+			input: setInput({ enabled: true }),
+			context: ctx(),
+		});
+
+		expect(result.enabled).toBe(true);
+	});
+
+	it("still enrols a Technical Spec in an organization with the gate on", async () => {
+		mocks.getDocumentById.mockResolvedValue(proposal("TECHNICAL_SPEC"));
+
+		const result = await setHandler({
+			input: setInput({ enabled: true }),
+			context: ctx(),
+		});
+
+		expect(result.enabled).toBe(true);
 	});
 });
 

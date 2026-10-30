@@ -16,6 +16,7 @@
 import { fnv1aHex64 } from "@repo/utils/fnv1a";
 import type {
 	PROPOSAL_CLIENT_MAIN_AGENT_KEY,
+	PROPOSAL_CLIENT_REVISION_AGENT_KEY,
 	PROPOSAL_INTERNAL_ANALYSIS_AGENT_KEY,
 } from "@repo/utils/prompt-action-catalog";
 
@@ -68,9 +69,13 @@ export const RESPONSE_ECHOED = "RESPONSE_ECHOED";
 // Prompts
 // =============================================================================
 
-/** The two prompt actions the coordinated job resolves. */
+/**
+ * The prompt actions a coordinated Proposal resolves: the two of the job, and
+ * the client revision its scoped AI writers use (Fizzy #2946).
+ */
 export type ProposalPromptAction =
 	| typeof PROPOSAL_CLIENT_MAIN_AGENT_KEY
+	| typeof PROPOSAL_CLIENT_REVISION_AGENT_KEY
 	| typeof PROPOSAL_INTERNAL_ANALYSIS_AGENT_KEY;
 
 /**

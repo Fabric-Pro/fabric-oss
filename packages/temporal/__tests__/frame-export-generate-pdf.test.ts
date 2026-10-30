@@ -26,6 +26,7 @@ import {
 	PDF_TEMPLATE_UTILITY_CSS,
 } from "../src/activities/frame-export/generate-pdf";
 import { sanitizeFrameHtml } from "../src/activities/frame-export/sanitize-frame-html";
+import { PRINT_CHROMIUM_ARGS } from "../src/lib/print-chromium-args";
 
 function frame(blocks: Array<{ type: string; content: string }>) {
 	return {
@@ -54,6 +55,21 @@ beforeEach(() => {
 });
 
 describe("generatePDFActivity", () => {
+	it("launches with the shared print flags, font hinting off, and keeps its setuid flag", async () => {
+		await generatePDFActivity({
+			content: frame([{ type: "markdown", content: "hello" }]),
+			orientation: "portrait",
+		});
+		expect(launchMock).toHaveBeenCalledTimes(1);
+		const { args } = launchMock.mock.calls[0]?.[0] as { args: string[] };
+		// Hinting rounds glyph positions to whole pixels in the Linux print.
+		expect(args).toContain("--font-render-hinting=none");
+		expect(args).toEqual([
+			...PRINT_CHROMIUM_ARGS,
+			"--disable-setuid-sandbox",
+		]);
+	});
+
 	it("renders in a context with JavaScript off, offline and service workers blocked", async () => {
 		await generatePDFActivity({
 			content: frame([{ type: "markdown", content: "hello" }]),

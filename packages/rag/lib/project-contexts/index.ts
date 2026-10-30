@@ -14,6 +14,7 @@ export * from "./auto-embed";
 export * from "./client";
 export * from "./code-search";
 export * from "./document-intents";
+export * from "./project-context-passages";
 export * from "./retrieval";
 export * from "./retrieve-for-spec";
 export * from "./store";

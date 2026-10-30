@@ -60,6 +60,9 @@ vi.mock("@saas/shared/components/copilot/CopilotAssistantMessage", () => ({
 vi.mock("@saas/shared/components/copilot/useClarifyingQuestions", () => ({
 	useClarifyingQuestions: vi.fn(),
 }));
+vi.mock("@saas/shared/components/copilot/use-agent-state-reseed", () => ({
+	useReseedAgentStateOnRunStart: vi.fn(),
+}));
 
 import { PromptContentEnhancer } from "@saas/prompts/components/PromptContentEnhancer";
 import { DocumentGeneratorEditor } from "../../components/DocumentGeneratorEditor";

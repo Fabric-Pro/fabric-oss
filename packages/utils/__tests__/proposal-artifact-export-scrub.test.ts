@@ -207,3 +207,26 @@ describe("scrubProposalExport", () => {
 		expect(scrub(input)).toBe(input);
 	});
 });
+
+it("handles long whitespace near misses", () => {
+	expect(scrub(`[S1]${"\t".repeat(200_000)}x`)).toContain("x");
+	expect(scrub(`${" ".repeat(200_000)}x`)).toContain("x");
+});
+it.each([
+	"",
+	" ",
+	"\t",
+	"-",
+	" + ",
+	"*\t",
+	"1.",
+	"123) ",
+	"1234.",
+	"x",
+	"- x",
+	"\n-\n",
+])("preserves empty-marker equivalence: %j", (line) => {
+	const old = /^\s*(?:[-*+]|\d{1,3}[.)])?\s*$/;
+	const replacement = /^\s*(?:(?:[-*+]|\d{1,3}[.)])\s*)?$/;
+	expect(replacement.test(line)).toBe(old.test(line));
+});

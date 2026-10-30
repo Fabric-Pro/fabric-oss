@@ -106,6 +106,57 @@ describe("buildDocumentSaveInput", () => {
 	});
 });
 
+describe("the AI accept descriptor (Fizzy #2946)", () => {
+	const base = { version: 8, contentHash: "hash-of-the-saved-body" };
+
+	it("passes a chat accept's descriptor through with its base", () => {
+		const aiReview = {
+			kind: "CHAT" as const,
+			patchedSectionKeys: ["p1:scope#0", "p1:scope/detail#0"],
+		};
+
+		expect(
+			buildDocumentSaveInput({
+				...SAVE,
+				isManualSave: false,
+				base,
+				aiReview,
+			}),
+		).toEqual({
+			projectId: "proj_1",
+			id: "doc_1",
+			content: SAVE.content,
+			expectedVersion: 8,
+			expectedContentHash: "hash-of-the-saved-body",
+			aiReview,
+		});
+	});
+
+	it("passes a finding-driven revision's descriptor through unchanged", () => {
+		const aiReview = {
+			kind: "FINDING" as const,
+			runId: "run_1",
+			findingId: "finding_1",
+			revisionToken: "signed.token",
+		};
+
+		expect(
+			buildDocumentSaveInput({
+				...SAVE,
+				isManualSave: true,
+				base,
+				aiReview,
+			}).aiReview,
+		).toBe(aiReview);
+	});
+
+	it("sends none when not given", () => {
+		expect(
+			buildDocumentSaveInput({ ...SAVE, isManualSave: false, base }),
+		).not.toHaveProperty("aiReview");
+	});
+});
+
 describe("isSaveBaseRequiredRefusal", () => {
 	it("recognizes the refusal of a save that named no base", () => {
 		expect(

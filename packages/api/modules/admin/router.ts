@@ -11,6 +11,7 @@ import {
 	setFeatureFlagProcedure,
 } from "./procedures/feature-flags";
 import { findOrganization } from "./procedures/find-organization";
+import { getHostedAdoptionCountsProcedure } from "./procedures/hosted-adoption";
 import { listOrganizations } from "./procedures/list-organizations";
 import { listUsers } from "./procedures/list-users";
 import {
@@ -21,6 +22,7 @@ import {
 } from "./procedures/org-feature-flags";
 
 export const adminRouter = {
+	hostedAdoption: { counts: getHostedAdoptionCountsProcedure },
 	aiAdoption: {
 		metrics: getAiAdoptionMetricsProcedure,
 	},

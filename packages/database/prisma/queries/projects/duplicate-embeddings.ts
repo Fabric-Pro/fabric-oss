@@ -15,6 +15,7 @@
 
 import { randomUUID } from "node:crypto";
 import { db } from "../../client";
+import { PAIR_FOCUS_KINDS, type PairFocusKind } from "./duplicate-focus";
 
 /** A cached embedding row in the shape the scan consumes (embedding decoded to
  * a number[] from its stored JSON). */
@@ -106,6 +107,77 @@ export async function upsertStoryDuplicateEmbeddings(
 		FROM jsonb_to_recordset(${payload}::jsonb)
 			AS x(id text, "storyId" text, "contentHash" text, "model" text, embedding text)
 		ON CONFLICT ("storyId") DO UPDATE SET
+			"projectId" = ${projectId},
+			"contentHash" = EXCLUDED."contentHash",
+			"model" = EXCLUDED."model",
+			"embedding" = EXCLUDED."embedding",
+			"updatedAt" = now();
+	`;
+}
+
+/** A cached feature-section vector: one Scope or acceptance-criteria section
+ * of one story. */
+export type CachedFocusEmbedding = CachedStoryEmbedding & {
+	kind: PairFocusKind;
+};
+
+/** All cached section vectors for a project. Rows of a kind this code no
+ * longer knows are dropped rather than trusted. */
+export async function listStoryDuplicateFocusEmbeddings(
+	projectId: string,
+): Promise<CachedFocusEmbedding[]> {
+	const rows = await db.storyDuplicateFocusEmbedding.findMany({
+		where: { projectId },
+		select: {
+			storyId: true,
+			kind: true,
+			contentHash: true,
+			model: true,
+			embedding: true,
+		},
+	});
+	return rows.flatMap((row) => {
+		const kind = PAIR_FOCUS_KINDS.find((known) => known === row.kind);
+		return kind
+			? [
+					{
+						storyId: row.storyId,
+						kind,
+						contentHash: row.contentHash,
+						model: row.model,
+						embedding: row.embedding as number[],
+					},
+				]
+			: [];
+	});
+}
+
+/** Upsert freshly-embedded section vectors (keyed by story and section kind)
+ * in one set-based statement, like {@link upsertStoryDuplicateEmbeddings}. */
+export async function upsertStoryDuplicateFocusEmbeddings(
+	projectId: string,
+	rows: CachedFocusEmbedding[],
+): Promise<void> {
+	if (rows.length === 0) {
+		return;
+	}
+	const payload = JSON.stringify(
+		rows.map((row) => ({
+			id: randomUUID(),
+			storyId: row.storyId,
+			kind: row.kind,
+			contentHash: row.contentHash,
+			model: row.model,
+			embedding: JSON.stringify(row.embedding),
+		})),
+	);
+	await db.$executeRaw`
+		INSERT INTO "story_duplicate_focus_embedding"
+			("id", "storyId", "projectId", "kind", "contentHash", "model", "embedding", "createdAt", "updatedAt")
+		SELECT x.id, x."storyId", ${projectId}, x."kind", x."contentHash", x."model", x.embedding::jsonb, now(), now()
+		FROM jsonb_to_recordset(${payload}::jsonb)
+			AS x(id text, "storyId" text, "kind" text, "contentHash" text, "model" text, embedding text)
+		ON CONFLICT ("storyId", "kind") DO UPDATE SET
 			"projectId" = ${projectId},
 			"contentHash" = EXCLUDED."contentHash",
 			"model" = EXCLUDED."model",

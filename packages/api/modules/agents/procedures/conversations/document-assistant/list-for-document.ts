@@ -19,6 +19,7 @@ import {
 } from "../../../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../../../organizations/lib/membership";
 import {
+	assertDocumentProjectAccess,
 	type DocumentAssistantConversationSummarySchema,
 	DocumentRefSchema,
 } from "./_shared";
@@ -84,6 +85,15 @@ export const listForDocument = tenantProtectedProcedure
 				});
 			}
 		}
+
+		// Membership alone would let a member who is not on the project read
+		// its documents' SHARED threads. A guest is refused above.
+		await assertDocumentProjectAccess({
+			documentRefKind: input.documentRefKind,
+			documentRefId: input.documentRefId,
+			projectId: input.projectId,
+			userId: user.id,
+		});
 
 		// Feature flag: spec §3.11 FR-27. Personal context (no org) is
 		// always treated as enabled — there is no per-user equivalent.

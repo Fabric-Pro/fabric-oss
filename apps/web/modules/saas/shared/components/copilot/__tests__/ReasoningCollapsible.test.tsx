@@ -1,6 +1,16 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import en from "../../../../../../../../packages/i18n/translations/en.json";
+import {
+	captureAssistantTrace,
+	selectTranscriptTrace,
+} from "../assistant-transcript";
 import { ReasoningCollapsible } from "../ReasoningCollapsible";
+
+vi.mock("next-intl", () => ({
+	useTranslations: () => (key: "traceWaiting" | "traceStopped") =>
+		en.tooltips.copilot[key],
+}));
 
 // CopilotKit's <Markdown> renders react-markdown internally; for the tests we
 // just need to confirm the rendered text contains our content. Mock it
@@ -361,3 +371,69 @@ describe("ReasoningCollapsible", () => {
 		});
 	});
 });
+
+for (const status of ["waiting", "stopped"] as const) {
+	it(`renders saved ${status} without a spinner or failure`, () => {
+		const messages = [
+			{ id: "u", role: "user" },
+			{ id: "a", role: "assistant", content: "Question" },
+		];
+		const captured = captureAssistantTrace(
+			"a",
+			messages,
+			{
+				toolCallsByTurn: {
+					1: [
+						{
+							id: "q",
+							name: "ask_clarifying_question",
+							status: "pending",
+						},
+					],
+				},
+			},
+			status === "waiting" ? "completed" : "cancelled",
+		);
+		const transcript = [messages[0], { ...messages[1], ...captured }];
+		const renderTrace = (rows: unknown[]) => (
+			<ReasoningCollapsible
+				text="Question"
+				toolCalls={
+					selectTranscriptTrace({ id: "a" }, rows).saved.toolCalls ??
+					undefined
+				}
+			/>
+		);
+		const { container, rerender } = render(
+			renderTrace(JSON.parse(JSON.stringify(transcript))),
+		);
+		fireEvent.click(screen.getByRole("button"));
+		expect(screen.getByTestId("tool-call-row")).toHaveTextContent(
+			status === "waiting" ? "Waiting for your response" : "Stopped",
+		);
+		expect(container.querySelector(".animate-spin")).toBeNull();
+		expect(screen.queryByLabelText("Error")).toBeNull();
+		const answered = [
+			transcript[0],
+			{
+				...transcript[1],
+				toolCalls: [
+					{
+						id: "q",
+						status: "success",
+						result: '{"answered":true,"answer":"Yes"}',
+					},
+				],
+			},
+			{ id: "u2", role: "user" },
+		];
+		for (const rows of [answered, JSON.parse(JSON.stringify(answered))]) {
+			rerender(renderTrace(rows));
+			expect(screen.getByTestId("tool-call-row")).toHaveAttribute(
+				"data-tool-status",
+				"success",
+			);
+			expect(container.querySelector(".animate-spin")).toBeNull();
+		}
+	});
+}

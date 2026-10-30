@@ -14,9 +14,9 @@ import {
 	fetchProjectContextSources,
 	runContextUpdate,
 } from "@repo/temporal";
-import { DOCUMENT_SAVE_BASE_REQUIRED } from "@repo/utils/document-save-base";
 import { preserveVisualSlots } from "@repo/utils/glossy/visual-slots";
 import { preserveVisualMarkers } from "@repo/utils/proposal-artifact/visual-identity";
+import { PROPOSAL_USE_CHAT_OR_REGENERATE } from "@repo/utils/proposal-artifact/whole-body-writers";
 import { normalizeQuoteArtifacts } from "@repo/utils/quote-artifacts";
 import { z } from "zod";
 import { applyDocumentUpdateSideEffects } from "../../../../lib/document-side-effects";
@@ -26,7 +26,6 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../../orpc/procedures";
-import { isRoomConvergenceOn } from "../../lib/room-convergence-enabled";
 
 /**
  * `data.code` of the preview failures (Fizzy #2946), so the editor says them
@@ -98,9 +97,7 @@ export const updateDocumentWithContextProcedure = tenantProtectedProcedure
 			 * CONFLICT, and writes nothing, when the document no longer holds
 			 * that body, so an edit or a generated body saved between preview
 			 * and confirm is never overwritten. Without it the confirm is
-			 * guarded by the version it reads itself, except where the base is
-			 * required (a client-document Proposal while the collaborative room
-			 * flag is on), as for `projects.documents.update`.
+			 * guarded by the version it reads itself.
 			 */
 			expectedVersion: z.number().int().nonnegative().optional(),
 			expectedContentHash: z.string().min(1).max(128).optional(),
@@ -131,6 +128,36 @@ export const updateDocumentWithContextProcedure = tenantProtectedProcedure
 			});
 		}
 
+		// A client-document Proposal is never rewritten whole (Fizzy #2946):
+		// the model would hand back every section, the ones a person edited
+		// and the diagrams included. It is changed from chat, which touches
+		// only what it targets, or regenerated. Both phases refuse, so a
+		// preview drafted before the gate turned on cannot be confirmed
+		// after. Judged by the project's OWNING organization, never the
+		// caller's: a guest working from their own organization would
+		// otherwise be judged by the wrong gate.
+		const owningOrganizationId = document.project?.organizationId ?? null;
+		// Everything below acts in that organization too: the version row the
+		// confirm writes, the re-embed it starts, the project context the
+		// preview retrieves, and the model that drafts it. Inside a router
+		// call this is the organization `resolveOrganizationId` returned (the
+		// project permission check binds the request to the project's
+		// organization and refuses another), so this only keeps a caller's
+		// organization from ever mixing in.
+		const documentOrganizationId = owningOrganizationId ?? undefined;
+		if (
+			await isProposalClientDocument({
+				organizationId: owningOrganizationId,
+				documentType: document.type,
+			})
+		) {
+			throw new ORPCError("PRECONDITION_FAILED", {
+				message:
+					"This Proposal is not updated from context as a whole. Ask for the change in chat, or regenerate it.",
+				data: { code: PROPOSAL_USE_CHAT_OR_REGENERATE },
+			});
+		}
+
 		// ── Phase 2: Apply pre-confirmed content ────────────────────────────────
 		if (!input.preview) {
 			if (input.confirmedContent === undefined) {
@@ -156,31 +183,11 @@ export const updateDocumentWithContextProcedure = tenantProtectedProcedure
 				input.expectedContentHash !== undefined;
 
 			// A Proposal's body is written by generation runs as well as by
-			// people (Fizzy #2946). A client document's confirm names the body
-			// its preview was drafted from (judged by the project's OWNING
-			// organization). Any Proposal's confirm is refused while a run is
-			// queued or writing, by `updateDocument` itself (its default for a
-			// Proposal's content writes), decided by type, not by the rollout
-			// gate: a run keeps writing when the gate is turned off mid-run.
-			const owningOrganizationId =
-				document.project?.organizationId ?? null;
-			const clientProposal = await isProposalClientDocument({
-				organizationId: owningOrganizationId,
-				documentType: document.type,
-			});
-			if (
-				clientProposal &&
-				!hasBase &&
-				(await isRoomConvergenceOn(owningOrganizationId))
-			) {
-				// A client from before the confirm named its base: it would
-				// write over a run's body at the same version.
-				throw new ORPCError("PRECONDITION_FAILED", {
-					message:
-						"This editor is out of date, so your changes were not saved. Reload the page to keep editing.",
-					data: { code: DOCUMENT_SAVE_BASE_REQUIRED },
-				});
-			}
+			// people (Fizzy #2946). Any Proposal's confirm is refused while a
+			// run is queued or writing, by `updateDocument` itself (its default
+			// for a Proposal's content writes), decided by type, not by the
+			// rollout gate: a run keeps writing when the gate is turned off
+			// mid-run.
 
 			// Visual slots (KTD17) come from the CURRENT stored body, not from the
 			// confirmed text: the preview was drafted minutes earlier, so a slot a
@@ -207,7 +214,7 @@ export const updateDocumentWithContextProcedure = tenantProtectedProcedure
 					lastEditedBy: user.id,
 					changeDescription: "Updated with latest context",
 					userId: user.id,
-					organizationId,
+					organizationId: documentOrganizationId,
 					...(hasBase
 						? {
 								expectedVersion: input.expectedVersion,
@@ -236,7 +243,7 @@ export const updateDocumentWithContextProcedure = tenantProtectedProcedure
 				projectId: input.projectId,
 				document: updated,
 				user,
-				organizationId,
+				organizationId: documentOrganizationId,
 				logScope: "UpdateDocumentWithContext",
 			});
 
@@ -284,7 +291,7 @@ export const updateDocumentWithContextProcedure = tenantProtectedProcedure
 		const sources = await fetchProjectContextSources({
 			projectId: input.projectId,
 			userId: user.id,
-			organizationId,
+			organizationId: documentOrganizationId,
 			baselineDate: document.createdAt,
 			specMarkdown: documentMarkdown,
 			// The baseline stays at `createdAt` here on purpose — a person pressing
@@ -305,7 +312,11 @@ export const updateDocumentWithContextProcedure = tenantProtectedProcedure
 				documentMarkdown,
 				contextItems: sources.contextItems,
 				userId: user.id,
-				organizationId,
+				// The model is the project's owning organization's, as for the
+				// Proposal gate above, never the caller's: a guest working from
+				// their own organization would otherwise draft with its provider
+				// and be billed to it.
+				organizationId: documentOrganizationId,
 				projectId: input.projectId,
 			});
 		} catch (error) {

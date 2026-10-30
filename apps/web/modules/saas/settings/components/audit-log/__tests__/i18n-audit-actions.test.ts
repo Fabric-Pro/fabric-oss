@@ -45,6 +45,9 @@ function resolveAction(
 }
 
 describe("audit action i18n parity", () => {
+	it("includes operator admin role changes in the display catalog", () => {
+		expect(KNOWN_ACTIONS).toContain("account.role_changed");
+	});
 	const enJson = en as unknown as Record<string, unknown>;
 	const deJson = de as unknown as Record<string, unknown>;
 

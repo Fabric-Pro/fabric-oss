@@ -16,7 +16,11 @@ import {
 	tenantProtectedProcedure,
 } from "../../../../../orpc/procedures";
 import { verifyOrganizationMembership } from "../../../../organizations/lib/membership";
-import { DocumentRefSchema, resignMessageAttachments } from "./_shared";
+import {
+	assertDocumentProjectAccess,
+	DocumentRefSchema,
+	resignMessageAttachments,
+} from "./_shared";
 
 export const getActiveForDocument = tenantProtectedProcedure
 	.use(requirePermission(Permissions.PROJECT_READ))
@@ -47,6 +51,15 @@ export const getActiveForDocument = tenantProtectedProcedure
 				});
 			}
 		}
+
+		// Membership alone would let a member who is not on the project read
+		// its documents' SHARED threads. A guest is refused above.
+		await assertDocumentProjectAccess({
+			documentRefKind: input.documentRefKind,
+			documentRefId: input.documentRefId,
+			projectId: input.projectId,
+			userId: user.id,
+		});
 
 		// Feature flag: spec §3.11 FR-27. Personal context (no org) is
 		// always treated as enabled.

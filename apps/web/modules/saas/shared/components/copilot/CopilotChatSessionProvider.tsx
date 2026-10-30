@@ -38,7 +38,7 @@
  * where every call site now reads this context, the steady-state connect
  * count is two (sidebar + this provider) regardless of message count. Other surfaces
  * still hold direct `useCopilotChat` / `useCopilotChatInternal` calls of their
- * own (`DocumentEditor`, `DocumentGeneratorEditor`, `TaskPlannerEditor`,
+ * own (`DocumentGeneratorEditor`, `TaskPlannerEditor`,
  * `AiLoadingSync`, `AgentChatCode`); each of those adds one connect until it
  * is converted to read this context.
  *
@@ -47,53 +47,111 @@
  * would quietly reintroduce the very per-instance connect this provider exists
  * to remove.
  *
- * The published value is the full `useCopilotChatInternal()` return, a strict
- * superset of `useCopilotChat()`'s (`react-core/dist/index.d.mts:303` types the
- * latter as an `Omit<>` of the former), so consumers of either hook can read
- * the same fields — `visibleMessages`, `messages`, `isLoading`, `appendMessage`,
- * `setMessages`, `interrupt`, `agent` — with unchanged semantics.
+ * Context publishes a stable external store. The compatibility hook returns the
+ * full session; selectors notify consumers when their selected values change,
+ * and action delegates call the latest committed session implementation.
  */
 
 import { useCopilotChatInternal } from "@copilotkit/react-core";
-import { createContext, type ReactNode, useContext } from "react";
+import {
+	createContext,
+	type ReactNode,
+	useContext,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useSyncExternalStore,
+} from "react";
 
 export type CopilotChatSession = ReturnType<typeof useCopilotChatInternal>;
-
-const CopilotChatSessionContext = createContext<CopilotChatSession | null>(
-	null,
-);
+type Store = {
+	session: CopilotChatSession;
+	listeners: Set<() => void>;
+	subscribe: (listener: () => void) => () => void;
+};
+const CopilotChatSessionContext = createContext<Store | null>(null);
 
 export function CopilotChatSessionProvider({
 	children,
 }: {
 	children: ReactNode;
 }) {
-	// The one and only connecting call for this surface. Its return object is
-	// a fresh reference on every render of this provider, exactly as it was
-	// when each consumer held its own hook — so consumer re-render timing is
-	// unchanged by the consolidation.
 	const session = useCopilotChatInternal();
-
+	const storeRef = useRef<Store | null>(null);
+	if (!storeRef.current) {
+		const listeners = new Set<() => void>();
+		storeRef.current = {
+			session,
+			listeners,
+			subscribe: (listener) => {
+				listeners.add(listener);
+				return () => {
+					listeners.delete(listener);
+				};
+			},
+		};
+	}
+	const store = storeRef.current;
+	useLayoutEffect(() => {
+		store.session = session;
+		for (const listener of store.listeners) {
+			listener();
+		}
+	}, [store, session]);
 	return (
-		<CopilotChatSessionContext.Provider value={session}>
+		<CopilotChatSessionContext.Provider value={store}>
 			{children}
 		</CopilotChatSessionContext.Provider>
 	);
 }
 
-/**
- * Read the surface's shared CopilotKit chat session.
- *
- * @throws When no `<CopilotChatSessionProvider>` is mounted above the caller.
- */
-export function useCopilotChatSession(): CopilotChatSession {
-	const session = useContext(CopilotChatSessionContext);
-	if (session === null) {
+export function useCopilotChatSessionSelector<S>(
+	selector: (session: CopilotChatSession) => S,
+	equality: (a: S, b: S) => boolean = Object.is,
+): S {
+	const store = useContext(CopilotChatSessionContext);
+	if (!store) {
 		throw new Error(
-			"useCopilotChatSession() requires a <CopilotChatSessionProvider> above it. " +
-				"Mount one immediately inside this surface's <CopilotKit> provider — " +
-				"see CopilotChatSessionProvider.tsx for why the hook must not be called directly.",
+			"useCopilotChatSession() requires a <CopilotChatSessionProvider> above it.",
 		);
 	}
-	return session;
+	const snapshot = useMemo(() => {
+		let initialized = false;
+		let cached: S;
+		return () => {
+			const next = selector(store.session);
+			if (!initialized || !equality(cached, next)) {
+				cached = next;
+				initialized = true;
+			}
+			return cached;
+		};
+	}, [store, selector, equality]);
+	return useSyncExternalStore(store.subscribe, snapshot, snapshot);
+}
+
+/** Full-session compatibility read; prefer a selector for page components. */
+export function useCopilotChatSession(): CopilotChatSession {
+	return useCopilotChatSessionSelector((session) => session);
+}
+
+/** Stable delegates read the latest committed session, including after agent replacement. */
+export function useCopilotChatSessionActions() {
+	const store = useContext(CopilotChatSessionContext);
+	if (!store) {
+		throw new Error(
+			"useCopilotChatSessionActions requires a CopilotChatSessionProvider",
+		);
+	}
+	return useMemo(
+		() => ({
+			appendMessage: (
+				...args: Parameters<CopilotChatSession["appendMessage"]>
+			) => store.session.appendMessage(...args),
+			setMessages: (
+				...args: Parameters<CopilotChatSession["setMessages"]>
+			) => store.session.setMessages(...args),
+		}),
+		[store],
+	);
 }

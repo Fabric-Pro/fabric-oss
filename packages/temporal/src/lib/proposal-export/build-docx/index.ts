@@ -29,13 +29,13 @@
  * uses, so colours that fail contrast are already replaced. Fonts are named,
  * never embedded: Word substitutes a family it lacks, and without a hint it
  * falls back to its default, often a serif. So the neutral style, which
- * prints in Inter, is written as Arial, which every Word has; a font the
- * brand chose keeps its name.
+ * prints in Poppins, Inter and JetBrains Mono, is written as Arial, which
+ * every Word has; a font the brand chose keeps its name.
  */
 
 import { resolveThemePaint } from "@repo/utils/proposal-artifact/theme-tokens";
 import { Document, Packer } from "docx";
-import type { ProposalExportWarning } from "../types";
+import { diagramFigureNumbers, type ProposalExportWarning } from "../types";
 import { ExportWarningTally } from "../warnings";
 import { bodySections, contentsSection, coverSection } from "./sections";
 import { documentStyles, docxColors, docxFonts, listLevels } from "./styles";
@@ -83,6 +83,7 @@ export async function buildProposalDocx(
 		placedImageBytes: 0,
 		imagesOverLimit: 0,
 		drawings: 0,
+		figureNumbers: diagramFigureNumbers(input.diagrams),
 	};
 
 	// The cover first, so its logos and hero are placed before any body

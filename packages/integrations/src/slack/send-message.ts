@@ -8,7 +8,7 @@
  * and by Weave/orchestrator for agent status updates.
  */
 
-import { db } from "@repo/database";
+import { canUseWorkflowIntegrations, db } from "@repo/database";
 import { decryptApiKey } from "@repo/utils";
 
 interface SendSlackMessageInput {
@@ -26,11 +26,25 @@ interface SendSlackMessageResult {
 	error?: string;
 }
 
+/**
+ * The bot token of the user's Slack connection for `teamId`.
+ *
+ * An organization's connection is used only while the user is a member of
+ * that organization (`canUseWorkflowIntegrations`, as `getSlackCredentials`
+ * checks): the callers act for a user named by a trigger, and a user who has
+ * left, or who never belonged, gets no token even if a trigger and a
+ * connection row with their id remain. A refusal reads as no token; with no
+ * organization the user's personal connection is read as before.
+ */
 async function resolveSlackBotToken(
 	teamId: string,
 	userId: string,
 	organizationId?: string,
 ): Promise<string> {
+	if (!(await canUseWorkflowIntegrations(userId, organizationId))) {
+		throw new Error(noSlackBotTokenMessage(teamId));
+	}
+
 	// Look for a deployment trigger with this team ID to find the right integration
 	const trigger = await db.agentDeploymentTrigger.findFirst({
 		where: {
@@ -77,9 +91,11 @@ async function resolveSlackBotToken(
 		}
 	}
 
-	throw new Error(
-		`No Slack bot token found for team ${teamId}. Connect Slack in Settings > Integrations.`,
-	);
+	throw new Error(noSlackBotTokenMessage(teamId));
+}
+
+function noSlackBotTokenMessage(teamId: string): string {
+	return `No Slack bot token found for team ${teamId}. Connect Slack in Settings > Integrations.`;
 }
 
 export async function sendSlackMessage(

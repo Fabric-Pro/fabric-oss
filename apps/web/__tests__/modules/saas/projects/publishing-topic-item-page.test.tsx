@@ -27,8 +27,45 @@ import {
 	within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const releaseDraftLock = vi.hoisted(() => vi.fn());
+
+const navigation = vi.hoisted(() => ({
+	params: "mode=advanced",
+	replace: vi.fn(),
+	mutations: vi.fn(),
+	refuseAnalysis: false,
+}));
+vi.mock("next/navigation", () => ({
+	useRouter: () => ({ replace: navigation.replace }),
+	usePathname: () =>
+		"/app/example-org/projects/example-project/publishing/example-topic",
+	useSearchParams: () => new URLSearchParams(navigation.params),
+}));
+vi.mock("@saas/agents/components/InterfaceModeToggle", () => ({
+	InterfaceModeToggle: ({
+		value,
+		onChange,
+	}: {
+		value: string;
+		onChange: (v: "simple" | "advanced") => void;
+	}) => (
+		<div>
+			{(["simple", "advanced"] as const).map((mode) => (
+				<button
+					key={mode}
+					type="button"
+					aria-pressed={value === mode}
+					onClick={() => onChange(mode)}
+				>
+					{mode}
+				</button>
+			))}
+		</div>
+	),
+}));
 const {
 	state,
 	refetchTopic,
@@ -81,6 +118,7 @@ const {
 		drafts: [] as Record<string, unknown>[],
 		workingDrafts: [] as Record<string, unknown>[],
 		draftsError: false,
+		decisionsError: false,
 		// Task 6: the project's members, for the contributors picker.
 		members: [] as Array<Record<string, unknown>>,
 		// Task 7: the members.list query's own readiness — a topic's
@@ -160,6 +198,8 @@ vi.mock("sonner", () => ({ toast: { error: toastError } }));
 const assistantCapture = vi.hoisted(() => ({
 	// `status` too (Fizzy #2646): the assistant must be told the SAVED status,
 	// not the header's pending one.
+	mounts: 0,
+	unmounts: 0,
 	context: null as { openQuestions: string[]; status: string } | null,
 	// The rewrite hand-off, captured so a test can fire it the way the
 	// assistant's accept card does. Force-mounting the analysis tab changed
@@ -174,9 +214,15 @@ vi.mock("@saas/projects/components/publishing-suite/TopicAssistant", () => ({
 		context: { openQuestions: string[]; status: string };
 		onApplyRewrite: (markdown: string) => void;
 	}) => {
+		useEffect(() => {
+			assistantCapture.mounts++;
+			return () => {
+				assistantCapture.unmounts++;
+			};
+		}, []);
 		assistantCapture.context = props.context;
 		assistantCapture.onApplyRewrite = props.onApplyRewrite;
-		return null;
+		return <input aria-label="Example assistant composer" />;
 	},
 }));
 
@@ -253,7 +299,7 @@ vi.mock("@tanstack/react-query", () => ({
 				isPending: false,
 				isLoading: false,
 				isFetching: state.decisionsFetching,
-				isError: false,
+				isError: state.decisionsError,
 				refetch: vi.fn(),
 			};
 		}
@@ -412,7 +458,29 @@ vi.mock("@tanstack/react-query", () => ({
 				isPending: false,
 			};
 		}
-		return { mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false };
+		if (procedure === "projects.publishingSuite.releaseDraftLock")
+			return {
+				mutate: releaseDraftLock,
+				mutateAsync: vi.fn(),
+				isPending: false,
+			};
+		return {
+			mutate: (variables: unknown) => {
+				navigation.mutations(procedure, variables);
+				if (
+					navigation.refuseAnalysis &&
+					procedure ===
+						"projects.publishingSuite.generatePlanningAnalysis"
+				)
+					void opts.onSuccess?.(
+						{ started: false, reason: "unavailable" },
+						variables,
+						undefined,
+					);
+			},
+			mutateAsync: vi.fn(),
+			isPending: false,
+		};
 	},
 	useQueryClient: () => ({ invalidateQueries }),
 }));
@@ -792,6 +860,19 @@ function renderPage(canEdit = true) {
 }
 
 beforeEach(() => {
+	releaseDraftLock.mockClear();
+	navigation.params = "mode=advanced";
+	vi.spyOn(window.history, "replaceState").mockImplementation(
+		(_data, _unused, url) => {
+			navigation.params = new URL(
+				String(url),
+				"http://localhost",
+			).search.slice(1);
+		},
+	);
+	navigation.replace.mockReset();
+	navigation.mutations.mockClear();
+	navigation.refuseAnalysis = false;
 	invalidateQueries.mockClear();
 	assistantCapture.context = null;
 	state.topic = topic();
@@ -803,6 +884,10 @@ beforeEach(() => {
 	state.aiCreatedAt = null;
 	state.decisionThreads = [];
 	state.decisionsFetching = false;
+	state.drafts = [];
+	state.workingDrafts = [];
+	state.draftsError = false;
+	state.decisionsError = false;
 	state.members = [];
 	state.membersPending = false;
 	state.membersError = false;
@@ -1075,7 +1160,7 @@ describe("TopicItemPage — the review tabs' width", () => {
 		};
 
 		const user = userEvent.setup();
-		renderPage();
+		const page = renderPage();
 
 		await user.click(
 			screen.getByRole("tab", { name: /planning & analysis/i }),
@@ -1089,6 +1174,29 @@ describe("TopicItemPage — the review tabs' width", () => {
 		await user.type(editor, "A sentence nobody has saved yet.");
 		expect(editor).toHaveValue("A sentence nobody has saved yet.");
 
+		// The router mock feeds the URL back into the page on re-render.
+		navigation.replace.mockImplementation((url: string) => {
+			navigation.params = url.split("?")[1] ?? "";
+		});
+		fireEvent.click(screen.getByRole("button", { name: "simple" }));
+		page.rerender(
+			<TopicItemPage
+				projectId="proj-1"
+				topicId="topic-1"
+				organizationId={null}
+				canEdit
+			/>,
+		);
+		expect(editor).not.toBeVisible();
+		fireEvent.click(screen.getByRole("button", { name: "advanced" }));
+		page.rerender(
+			<TopicItemPage
+				projectId="proj-1"
+				topicId="topic-1"
+				organizationId={null}
+				canEdit
+			/>,
+		);
 		// Away, and back.
 		await user.click(screen.getByRole("tab", { name: /decision log/i }));
 		await user.click(
@@ -1249,7 +1357,7 @@ describe("TopicItemPage — media-tab gate (Fizzy #1851, Task 8)", () => {
 		// hasAnalysis === true: the panel says the analysis is silent on this
 		// type, NOT that there is no analysis to read yet.
 		expect(
-			screen.getByText(
+			within(screen.getByRole("tabpanel")).getByText(
 				/the planning analysis doesn't say anything about/i,
 			),
 		).toBeInTheDocument();
@@ -2516,7 +2624,7 @@ describe("TopicItemPage — adding a content type from the tab strip", () => {
 		renderPage();
 
 		expect(
-			screen.getByRole("button", { name: /add type/i }),
+			screen.getByRole("button", { name: /add content type/i }),
 		).toBeInTheDocument();
 	});
 
@@ -2524,7 +2632,7 @@ describe("TopicItemPage — adding a content type from the tab strip", () => {
 		renderPage(false);
 
 		expect(
-			screen.queryByRole("button", { name: /add type/i }),
+			screen.queryByRole("button", { name: /add content type/i }),
 		).not.toBeInTheDocument();
 	});
 
@@ -2532,7 +2640,7 @@ describe("TopicItemPage — adding a content type from the tab strip", () => {
 		renderPage();
 
 		await userEvent.click(
-			screen.getByRole("button", { name: /add type/i }),
+			screen.getByRole("button", { name: /add content type/i }),
 		);
 
 		// The checklist's own reset control is the cheapest proof it is the
@@ -3039,9 +3147,7 @@ describe("TopicItemPage — tab counts", () => {
 			screen.queryByLabelText(/^\d+ open questions?$/),
 		).not.toBeInTheDocument();
 		expect(
-			screen.getAllByText(
-				/1 unresolved question before this can be drafted cleanly/i,
-			).length,
+			screen.getAllByLabelText("1 unresolved topic-wide question").length,
 		).toBeGreaterThan(0);
 	});
 });
@@ -3702,9 +3808,9 @@ describe("#2646 — the header status control does not move while the save note 
 			"sm:items-center",
 		);
 		const pill = screen.getByText("Based on your contribution");
-		expect(outer.children).toHaveLength(2);
+		expect(outer.children).toHaveLength(3);
 		expect(outer.children[0]).toBe(pill);
-		expect(outer.children[1]).toBe(cluster);
+		expect(outer.children[2]).toBe(cluster);
 	});
 });
 
@@ -3907,5 +4013,572 @@ describe("#2647 — a topic on screen survives a failed background re-read", () 
 				screen.queryByText(/topic not found/i),
 			).not.toBeInTheDocument();
 		},
+	);
+});
+
+describe("TopicItemPage simple mode", () => {
+	it("defaults to Simple and hides the assistant and review tabs", () => {
+		navigation.params = "";
+		renderPage();
+		expect(screen.getByRole("button", { name: "simple" })).toHaveAttribute(
+			"aria-pressed",
+			"true",
+		);
+		expect(
+			screen.getByRole("heading", {
+				name: "Make a post from this topic",
+			}),
+		).toBeVisible();
+		expect(
+			screen.queryByRole("tablist", { name: "Topic review" }),
+		).toBeNull();
+		expect(assistantCapture.context).not.toBeNull();
+		expect(
+			screen.getByLabelText("Example assistant composer"),
+		).not.toBeVisible();
+	});
+	it("switching modes only updates the URL", () => {
+		renderPage();
+		updatePostTypesMutate.mockClear();
+		fireEvent.click(screen.getByRole("button", { name: "simple" }));
+		expect(window.history.replaceState).toHaveBeenCalledWith(
+			null,
+			"",
+			expect.stringContaining("mode=simple"),
+		);
+		expect(updatePostTypesMutate).not.toHaveBeenCalled();
+	});
+});
+
+it("shows a topic-wide caution once on Summary and not on content tabs", () => {
+	state.decisionThreads = [
+		openQuestionThread("example-approval", {
+			decisionKind: "CUSTOMER_NAME",
+			status: "OPEN",
+		}),
+	];
+	renderPage();
+	expect(screen.getByLabelText("1 open question")).toBeVisible();
+	const content = screen.getByRole("tablist", { name: "Content generation" });
+	expect(within(content).queryByText(/needs confirmation/i)).toBeNull();
+});
+
+it("URL mode round trips do not repeat a refused initial analysis or perform mutations", () => {
+	navigation.params = "mode=simple";
+	navigation.refuseAnalysis = true;
+	navigation.replace.mockImplementation((url: string) => {
+		navigation.params = url.split("?")[1] ?? "";
+	});
+	const page = renderPage();
+	expect(
+		navigation.mutations.mock.calls.filter(
+			([procedure]) =>
+				procedure ===
+				"projects.publishingSuite.generatePlanningAnalysis",
+		),
+	).toHaveLength(1);
+	navigation.mutations.mockClear();
+	setReadStateMutate.mockClear();
+	updatePostTypesMutate.mockClear();
+	updateSummaryMutate.mockClear();
+	for (const mode of ["advanced", "simple", "advanced"]) {
+		fireEvent.click(screen.getByRole("button", { name: mode }));
+		page.rerender(
+			<TopicItemPage
+				projectId="proj-1"
+				topicId="topic-1"
+				organizationId={null}
+				canEdit
+			/>,
+		);
+	}
+	expect(navigation.mutations).not.toHaveBeenCalled();
+	expect(setReadStateMutate).not.toHaveBeenCalled();
+	expect(updatePostTypesMutate).not.toHaveBeenCalled();
+	expect(updateSummaryMutate).not.toHaveBeenCalled();
+});
+it("Simple explains a draft read failure and disables generation", () => {
+	navigation.params = "mode=simple&type=LINKEDIN_POST";
+	state.draftsError = true;
+	renderPage();
+	expect(screen.getAllByText(/Generation is paused until/)[0]).toBeVisible();
+	for (const button of screen.queryAllByRole("button", { name: "Generate" }))
+		expect(button).toBeDisabled();
+});
+it("picking a Simple chip updates the URL type", () => {
+	navigation.params = "mode=simple";
+	renderPage();
+	fireEvent.click(screen.getByRole("button", { name: "Blog Post" }));
+	expect(window.history.replaceState).toHaveBeenCalledWith(
+		null,
+		"",
+		expect.stringContaining("type=BLOG_POST"),
+	);
+});
+
+it.each(["question", "read-error"])(
+	"switching back after a %s clears does not generate or write",
+	(kind) => {
+		navigation.params = "mode=simple&type=LINKEDIN_POST";
+		if (kind === "question")
+			state.decisionThreads = [
+				openQuestionThread("example-question", {
+					decisionKind: "CUSTOMER_NAME",
+					status: "OPEN",
+				}),
+			];
+		else state.draftsError = true;
+		navigation.replace.mockImplementation((url: string) => {
+			navigation.params = url.split("?")[1] ?? "";
+		});
+		const page = renderPage();
+		const refresh = () =>
+			page.rerender(
+				<TopicItemPage
+					projectId="proj-1"
+					topicId="topic-1"
+					organizationId={null}
+					canEdit
+				/>,
+			);
+		fireEvent.click(screen.getByRole("button", { name: "LinkedIn Post" }));
+		refresh();
+		navigation.mutations.mockClear();
+		fireEvent.click(screen.getByRole("button", { name: "advanced" }));
+		refresh();
+		state.decisionThreads = [];
+		state.draftsError = false;
+		state.decisionsError = false;
+		refresh();
+		fireEvent.click(screen.getByRole("button", { name: "simple" }));
+		refresh();
+		state.drafts = [...state.drafts];
+		refresh();
+		expect(navigation.mutations).not.toHaveBeenCalled();
+	},
+);
+
+it("keeps the assistant composer mounted through a Simple Advanced Simple round trip", () => {
+	navigation.params = "mode=simple";
+	navigation.replace.mockImplementation((url: string) => {
+		navigation.params = url.split("?")[1] ?? "";
+	});
+	const page = renderPage();
+	const composer = screen.getByLabelText("Example assistant composer");
+	fireEvent.change(composer, { target: { value: "Example unsent message" } });
+	const mounts = assistantCapture.mounts;
+	const unmounts = assistantCapture.unmounts;
+	for (const mode of ["advanced", "simple"]) {
+		fireEvent.click(screen.getByRole("button", { name: mode }));
+		page.rerender(
+			<TopicItemPage
+				projectId="proj-1"
+				topicId="topic-1"
+				organizationId={null}
+				canEdit
+			/>,
+		);
+	}
+	expect(composer).toHaveValue("Example unsent message");
+	expect(assistantCapture.mounts).toBe(mounts);
+	expect(assistantCapture.unmounts).toBe(unmounts);
+});
+it.each(["draftsError", "decisionsError"] as const)(
+	"Advanced describes a failed %s read without promising a generation pause",
+	(error) => {
+		state[error] = true;
+		renderPage();
+		expect(
+			screen.getByTestId("generation-tabs-degraded"),
+		).toHaveTextContent(
+			"Some topic draft data or decisions could not be loaded. Refresh to try again.",
+		);
+	},
+);
+
+it.each([
+	"empty",
+	"saved",
+	"running",
+	"failed",
+	"question",
+	"drafts-error",
+	"decisions-error",
+	"reader",
+])("a full mode round trip writes nothing in %s state", (kind) => {
+	navigation.params = "mode=simple&type=LINKEDIN_POST";
+	if (kind === "saved")
+		state.workingDrafts = [
+			{
+				postType: "LINKEDIN_POST",
+				hasBody: true,
+				body: "Example saved body",
+				updatedAt: new Date("2026-01-01"),
+				sourceDraftId: null,
+				sourceOptionLabel: null,
+			},
+		];
+	if (kind === "running" || kind === "failed")
+		state.drafts = [
+			{
+				postType: "LINKEDIN_POST",
+				versions: [],
+				latestReady: null,
+				latestAttempt: {
+					id: "example-attempt",
+					status: kind === "running" ? "GENERATING" : "FAILED",
+					isExpired: false,
+				},
+			},
+		];
+	if (kind === "question")
+		state.decisionThreads = [
+			openQuestionThread("example-question", {
+				decisionKind: "CUSTOMER_NAME",
+				status: "OPEN",
+			}),
+		];
+	state.draftsError = kind === "drafts-error";
+	state.decisionsError = kind === "decisions-error";
+	navigation.replace.mockImplementation((url: string) => {
+		navigation.params = url.split("?")[1] ?? "";
+	});
+	const page = renderPage(kind !== "reader");
+	navigation.mutations.mockClear();
+	setReadStateMutate.mockClear();
+	updatePostTypesMutate.mockClear();
+	updateSummaryMutate.mockClear();
+	for (const mode of ["advanced", "simple", "advanced", "simple"]) {
+		fireEvent.click(screen.getByRole("button", { name: mode }));
+		page.rerender(
+			<TopicItemPage
+				projectId="proj-1"
+				topicId="topic-1"
+				organizationId={null}
+				canEdit={kind !== "reader"}
+			/>,
+		);
+	}
+	expect(navigation.mutations).not.toHaveBeenCalled();
+	expect(setReadStateMutate).not.toHaveBeenCalled();
+	expect(updatePostTypesMutate).not.toHaveBeenCalled();
+	expect(updateSummaryMutate).not.toHaveBeenCalled();
+});
+it("reloading an empty URL-selected LinkedIn type offers Generate without starting it", () => {
+	navigation.params = "mode=simple&type=LINKEDIN_POST";
+	renderPage();
+	expect(screen.getByRole("button", { name: "Generate" })).toBeVisible();
+	expect(
+		navigation.mutations.mock.calls.filter(([procedure]) =>
+			String(procedure).includes("generateLinkedInPost"),
+		),
+	).toHaveLength(0);
+});
+
+it.each([
+	"BLOG_POST",
+	"TWEET",
+	"answer",
+	"notes",
+	"summary",
+	"refine",
+	"guidance",
+])(
+	"isolates unsaved %s through Simple type selection and explicit navigation",
+	async (kind) => {
+		state.topic = topic({
+			postTypes: ["BLOG_POST", "TWEET", "LINKEDIN_POST", "CASE_STUDY"],
+		});
+		state.workingDrafts = [
+			"BLOG_POST",
+			"TWEET",
+			"LINKEDIN_POST",
+			"CASE_STUDY",
+		].map((postType) => ({
+			postType,
+			hasBody: true,
+			body: "Example saved text",
+			updatedAt: new Date("2026-01-01"),
+			sourceDraftId: null,
+			sourceOptionLabel: null,
+		}));
+		if (kind === "answer")
+			state.decisionThreads = [
+				openQuestionThread("example-question", { status: "OPEN" }),
+			];
+		navigation.replace.mockImplementation((url: string) => {
+			navigation.params = url.split("?")[1] ?? "";
+		});
+		const page = renderPage();
+		const refresh = () =>
+			page.rerender(
+				<TopicItemPage
+					projectId="proj-1"
+					topicId="topic-1"
+					organizationId={null}
+					canEdit
+				/>,
+			);
+		const user = userEvent.setup();
+		if (kind === "BLOG_POST" || kind === "TWEET")
+			await user.click(
+				screen.getByRole("tab", {
+					name:
+						kind === "BLOG_POST"
+							? /Blog Post/
+							: /Short Post \/ Tweet/,
+				}),
+			);
+		if (kind === "refine" || kind === "guidance") {
+			await user.click(screen.getByRole("tab", { name: /Blog Post/ }));
+			if (kind === "refine")
+				await user.click(
+					screen.getByRole("button", { name: "Refine with AI" }),
+				);
+		}
+		if (kind === "summary")
+			await user.click(
+				screen.getByRole("button", {
+					name: /(?:Edit summary|Add a summary)/i,
+				}),
+			);
+		const field =
+			kind === "refine"
+				? screen.getByLabelText("Refine the saved draft")
+				: kind === "guidance"
+					? within(screen.getByRole("tabpanel")).getByLabelText(
+							"Guidance (optional)",
+						)
+					: kind === "BLOG_POST" || kind === "TWEET"
+						? screen.getByRole("textbox", {
+								name:
+									kind === "BLOG_POST"
+										? "Working blog post"
+										: "Working short post",
+							})
+						: kind === "answer"
+							? screen.getByPlaceholderText(
+									"Type an answer, or @name to ask someone…",
+								)
+							: screen.getByRole("textbox", {
+									name:
+										kind === "notes"
+											? "Notes"
+											: "Topic summary",
+								});
+		fireEvent.change(field, { target: { value: "Example unsaved input" } });
+		if (kind === "refine" || kind === "guidance") {
+			fireEvent.keyDown(field, { key: "Escape" });
+		}
+
+		fireEvent.click(screen.getByRole("button", { name: "simple" }));
+		refresh();
+		fireEvent.click(screen.getByRole("button", { name: /LinkedIn Post/ }));
+		refresh();
+		fireEvent.click(screen.getByRole("button", { name: /Case Study/i }));
+		refresh();
+		fireEvent.click(screen.getByRole("button", { name: "Edit text" }));
+		refresh();
+		fireEvent.click(screen.getByRole("button", { name: "simple" }));
+		refresh();
+		fireEvent.click(screen.getByRole("button", { name: "advanced" }));
+		refresh();
+		expect(
+			screen.getByRole("tab", { name: /Case Study/i }),
+		).toHaveAttribute("aria-selected", "true");
+		if (kind === "BLOG_POST" || kind === "TWEET")
+			fireEvent.click(
+				screen.getByRole("tab", {
+					name:
+						kind === "BLOG_POST"
+							? /Blog Post/
+							: /Short Post \/ Tweet/,
+				}),
+			);
+		else if (kind === "refine" || kind === "guidance") {
+			await user.click(screen.getByRole("tab", { name: /Blog Post/ }));
+			if (kind === "refine")
+				await user.click(
+					screen.getByRole("button", { name: "Refine with AI" }),
+				);
+		} else
+			await user.click(
+				screen.getByRole("tab", { name: /Summary & Questions/ }),
+			);
+		if (kind !== "refine" && kind !== "guidance")
+			expect(field).toBeInTheDocument();
+		expect(
+			kind === "refine"
+				? screen.getByLabelText("Refine the saved draft")
+				: kind === "guidance"
+					? within(screen.getByRole("tabpanel")).getByLabelText(
+							"Guidance (optional)",
+						)
+					: field,
+		).toHaveValue("Example unsaved input");
+		if (kind === "TWEET") expect(releaseDraftLock).not.toHaveBeenCalled();
+	},
+);
+
+it("plain mode switching preserves Advanced's tab independently of Simple's type", async () => {
+	navigation.replace.mockImplementation((url: string) => {
+		navigation.params = url.split("?")[1] ?? "";
+	});
+	const page = renderPage();
+	const refresh = () =>
+		page.rerender(
+			<TopicItemPage
+				projectId="proj-1"
+				topicId="topic-1"
+				organizationId={null}
+				canEdit
+			/>,
+		);
+	await userEvent
+		.setup()
+		.click(screen.getByRole("tab", { name: /Decision Log/ }));
+	fireEvent.click(screen.getByRole("button", { name: "simple" }));
+	refresh();
+	fireEvent.click(screen.getByRole("button", { name: /Blog Post/ }));
+	refresh();
+	fireEvent.click(screen.getByRole("button", { name: "advanced" }));
+	refresh();
+	expect(screen.getByRole("tab", { name: /Decision Log/ })).toHaveAttribute(
+		"aria-selected",
+		"true",
+	);
+});
+
+it.each(["type=BLOG_POST", "mode=advanced&type=BLOG_POST"])(
+	"question fragment opens Advanced Summary and scrolls to the question (%s)",
+	async (params) => {
+		navigation.params = params;
+		window.location.hash = "#q-example-linked";
+		state.decisionThreads = [
+			openQuestionThread("example-linked", {
+				id: "example-linked",
+				status: "OPEN",
+			}),
+		];
+		const scroll = vi.spyOn(HTMLElement.prototype, "scrollIntoView");
+		renderPage();
+		expect(
+			screen.getByRole("button", { name: "advanced" }),
+		).toHaveAttribute("aria-pressed", "true");
+		expect(
+			screen.getByRole("tab", { name: /Summary & Questions/ }),
+		).toHaveAttribute("aria-selected", "true");
+		await waitFor(() => expect(scroll).toHaveBeenCalled());
+		expect(
+			scroll.mock.instances.some(
+				(el) =>
+					(el as HTMLElement).dataset.questionAnchor ===
+					"example-linked",
+			),
+		).toBe(true);
+		scroll.mockRestore();
+		await userEvent
+			.setup()
+			.click(screen.getByRole("tab", { name: /Decision Log/ }));
+		expect(
+			screen.getByRole("button", { name: "advanced" }),
+		).toHaveAttribute("aria-pressed", "true");
+		expect(
+			screen.getByRole("tab", { name: /Decision Log/ }),
+		).toHaveAttribute("aria-selected", "true");
+	},
+);
+it("explicit Simple mode wins over a question fragment", () => {
+	navigation.params = "mode=simple";
+	window.location.hash = "#q-example-linked";
+	renderPage();
+	expect(screen.getByRole("button", { name: "simple" })).toHaveAttribute(
+		"aria-pressed",
+		"true",
+	);
+});
+it("a view change drops the handled question fragment from the URL", () => {
+	window.location.hash = "#q-example-linked";
+	const history = vi.spyOn(window.history, "replaceState");
+	renderPage();
+	fireEvent.click(screen.getByRole("button", { name: "simple" }));
+	const url = history.mock.calls.at(-1)?.[2];
+	expect(url).toEqual(expect.stringContaining("mode=simple"));
+	expect(url).not.toEqual(expect.stringContaining("#q-"));
+});
+it("mode and existing type picks update history without router navigation", () => {
+	navigation.params = "mode=advanced";
+	state.workingDrafts = [
+		{
+			postType: "BLOG_POST",
+			hasBody: true,
+			body: "Example body",
+			updatedAt: "2026-01-01",
+		},
+	];
+	const history = vi.spyOn(window.history, "replaceState");
+	const page = renderPage();
+	navigation.mutations.mockClear();
+	fireEvent.click(screen.getByRole("button", { name: "simple" }));
+	expect(navigation.replace).not.toHaveBeenCalled();
+	expect(history).toHaveBeenCalledWith(
+		null,
+		"",
+		expect.stringContaining("mode=simple"),
+	);
+	page.rerender(
+		<TopicItemPage
+			projectId="proj-1"
+			topicId="topic-1"
+			organizationId={null}
+			canEdit
+		/>,
+	);
+	fireEvent.click(screen.getByRole("button", { name: "Blog Post" }));
+	expect(history).toHaveBeenLastCalledWith(
+		null,
+		"",
+		expect.stringContaining("type=BLOG_POST"),
+	);
+	expect(navigation.replace).not.toHaveBeenCalled();
+	expect(navigation.mutations).not.toHaveBeenCalled();
+	history.mockRestore();
+});
+it("marks an initially visible Advanced format read", () => {
+	navigation.params = "mode=advanced&type=BLOG_POST";
+	renderPage();
+	expect(navigation.mutations).toHaveBeenCalledWith(
+		"projects.publishingSuite.markTopicDraftRead",
+		expect.objectContaining({ postType: "BLOG_POST" }),
+	);
+});
+it("Edit text marks the displayed Advanced format read", () => {
+	navigation.params = "mode=simple&type=BLOG_POST";
+	state.workingDrafts = [
+		{
+			postType: "BLOG_POST",
+			hasBody: true,
+			body: "Example body",
+			updatedAt: "2026-01-01",
+		},
+	];
+	const page = renderPage();
+	expect(
+		navigation.mutations.mock.calls.some(
+			([name]) => name === "projects.publishingSuite.markTopicDraftRead",
+		),
+	).toBe(false);
+	fireEvent.click(screen.getByRole("button", { name: "Edit text" }));
+	page.rerender(
+		<TopicItemPage
+			projectId="proj-1"
+			topicId="topic-1"
+			organizationId={null}
+			canEdit
+		/>,
+	);
+	expect(navigation.mutations).toHaveBeenCalledWith(
+		"projects.publishingSuite.markTopicDraftRead",
+		expect.objectContaining({ postType: "BLOG_POST" }),
 	);
 });

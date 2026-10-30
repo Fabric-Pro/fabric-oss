@@ -519,6 +519,9 @@ export function IncidentTimelineList() {
 						))}
 					</ol>
 					<Pagination
+						navigationLabel="Incident timeline pagination"
+						previousLabel="Previous page, incident timeline"
+						nextLabel="Next page, incident timeline"
 						className="pt-2"
 						totalItems={total}
 						itemsPerPage={pageSize}

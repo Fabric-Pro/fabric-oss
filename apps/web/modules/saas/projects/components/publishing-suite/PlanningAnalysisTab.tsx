@@ -70,6 +70,7 @@ interface PlanningAnalysisTabProps {
 	organizationId: string | null;
 	canEdit: boolean;
 	isLoading: boolean;
+	autoStart?: boolean;
 	/**
 	 * The topic-level "answers recorded after the analysis" banner is on
 	 * screen, and it carries its own Regenerate.
@@ -185,6 +186,7 @@ export function PlanningAnalysisTab({
 	canEdit,
 	isLoading,
 	generateActionIsElsewhere = false,
+	autoStart = true,
 	latestAttempt,
 	effective,
 	aiVersion,
@@ -523,48 +525,11 @@ export function PlanningAnalysisTab({
 	const onGenerate = () =>
 		generate.mutate({ projectId, topicId, organizationId });
 
-	/**
-	 * Start the first analysis when this tab is opened on a topic that has
-	 * never had one.
-	 *
-	 * The tab used to open on an empty dashed box with a button, and the owner's
-	 * complaint was that there is nothing to work with there — every other tab
-	 * on the page depends on this document, so the first thing anyone does on
-	 * arriving is press Generate. Feature Maturation drafts its spec at creation
-	 * for the same reason.
-	 *
-	 * The conditions are narrow on purpose, because this spends an LLM call:
-	 *
-	 *  - `latestAttempt === null` — NEVER attempted, not merely "no READY row".
-	 *    A failed or stranded run has already cost money and its retry is a
-	 *    decision for the person looking at the failure, not for a mount.
-	 *  - `canEdit` — the server gates generation, so a reader must not fire a
-	 *    request that can only 403.
-	 *  - `!isLoading` — before the query settles, `latestAttempt` is null
-	 *    because nothing has been read yet, which is a different thing from
-	 *    nothing existing.
-	 *
-	 * The ref guard is load-bearing rather than defensive. `generate.mutate`
-	 * invalidates the analysis query, the refetch re-renders this component,
-	 * and for the moment before the new row lands `latestAttempt` is still
-	 * null — so without it this effect re-enters and starts a second run.
-	 *
-	 * MOUNT NO LONGER MEANS "OPENED". This tab is force-mounted by
-	 * `TopicItemPage` so an editor full of unsaved words survives a trip to
-	 * another tab, which means this effect now runs on page load for everyone,
-	 * not just for someone who clicked through to the third tab.
-	 *
-	 * That is safe, and it was already the shape of things: the page-level
-	 * auto-start in `TopicItemPage` fires on the same load, under the same
-	 * conditions, and the two have always been allowed to race. The server
-	 * claims the attempt under a partial unique index and answers
-	 * `in-progress` to whichever call loses, so at most one run starts. The
-	 * cost of force-mounting is one extra call that the server refuses, not an
-	 * extra generation.
-	 */
+	// TopicItemPage owns its initial request; standalone callers can start here.
 	const autoStarted = useRef(false);
 	useEffect(() => {
 		if (
+			!autoStart ||
 			autoStarted.current ||
 			isLoading ||
 			!canEdit ||
@@ -575,7 +540,14 @@ export function PlanningAnalysisTab({
 		}
 		autoStarted.current = true;
 		onGenerate();
-	}, [isLoading, canEdit, latestAttempt, generate.isPending, onGenerate]);
+	}, [
+		autoStart,
+		isLoading,
+		canEdit,
+		latestAttempt,
+		generate.isPending,
+		onGenerate,
+	]);
 
 	/**
 	 * Open a review: paint `proposed` over `baseline` as diff marks and hand

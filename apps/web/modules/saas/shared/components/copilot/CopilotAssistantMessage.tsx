@@ -1,6 +1,5 @@
 "use client";
 
-import { useCoAgent } from "@copilotkit/react-core";
 import type { AssistantMessageProps } from "@copilotkit/react-ui";
 import { Markdown, useChatContext } from "@copilotkit/react-ui";
 import {
@@ -11,8 +10,14 @@ import {
 import { Loader2 } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useTranslations } from "next-intl";
-import { useMemo, useState } from "react";
-import { McpAppFrame } from "../../../../../components/ai-elements/McpAppFrame";
+import {
+	createContext,
+	memo,
+	useContext,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { useOrganizationId } from "../../../organizations/hooks/use-organization-context";
 import { DiffOutcomeChip } from "../../../projects/components/copilot/DiffOutcomeChip";
 import { useDocumentAssistantOutcomes } from "../../../projects/components/copilot/DocumentAssistantOutcomesProvider";
@@ -20,131 +25,32 @@ import { ChatMessageInsertDiagramButton } from "../../../projects/components/exc
 import { deriveDiagramTitle } from "../../../projects/components/excalidraw-auto-insert/deriveDiagramTitle";
 import { useActiveTipTapEditor } from "../../../projects/components/excalidraw-auto-insert/useActiveTipTapEditor";
 import { useChatScopedProjectFromCopilotChat } from "../../../projects/components/excalidraw-auto-insert/useChatScopedProject";
-import { useCopilotChatSession } from "./CopilotChatSessionProvider";
+import { AssistantRunContext } from "./AssistantRunContext";
+import {
+	equalExcludedTurnIds,
+	type FabricMcpRenderEnvelope,
+	findInlineMcpEnvelope,
+	findTranscriptPrompt,
+	selectAgentTurn,
+	selectExcludedTurnIds,
+	selectTranscriptTrace,
+} from "./assistant-transcript";
 import { useCopilotReplyRatingState } from "./CopilotReplyRatingContext";
 import {
+	type FormattedMessageTimestamp,
 	formatMessageTimestamp,
 	type TimestampSource,
 } from "./formatMessageTimestamp";
+import { equalMessageFields } from "./message-row-equality";
 import {
+	AWAITING_CONFIRMATION_TOOLS,
 	ReasoningCollapsible,
 	type ToolCallEntry,
 } from "./ReasoningCollapsible";
-
-/**
- * MCP-app envelope shape written by `/api/mcp-app/invoke` and read
- * here to mount `<McpAppFrame>` inline in the chat.
- *
- * Why this lives here (and not on `useCopilotAction({ render })`):
- * CopilotKit's `useCopilotAction` `render` only fires for assistant
- * messages whose `generativeUI` is set during action dispatch. When a
- * frontend `useCopilotAction` is paired with an external LangGraph
- * agent (CopilotSidebar + `useCoAgent`), the action's `handler` runs
- * client-side and the result lands in the message stream as a
- * `ResultMessage`/`tool` role — but `generativeUI` is never attached
- * to the next assistant message, so the per-action `render` is dead
- * code. The result IS present in `messages` though, so we extract the
- * envelope here and inject the canvas next to the assistant reply.
- *
- * Keep the key in lockstep with the writer at
- * `apps/web/app/api/mcp-app/invoke/route.ts`.
- */
-const FABRIC_MCP_RENDER_KEY = "__fabricMcpRender";
-
-interface FabricMcpRenderEnvelope {
-	resourceUri: string;
-	configId: string;
-	checkpointId?: string | null;
-	toolArgs?: Record<string, unknown>;
-}
-
-function extractEnvelopeFromMessage(
-	msg: unknown,
-): FabricMcpRenderEnvelope | null {
-	if (!msg || typeof msg !== "object") {
-		return null;
-	}
-	const m = msg as Record<string, unknown>;
-	// CopilotKit's runtime-client-gql exposes tool results either as a
-	// `ResultMessage` (with `result: string`) or as `content`. Try both.
-	const candidates: unknown[] = [m.result, m.content];
-	for (const cand of candidates) {
-		if (typeof cand !== "string") {
-			continue;
-		}
-		try {
-			const parsed = JSON.parse(cand);
-			if (parsed && typeof parsed === "object") {
-				const env = (parsed as Record<string, unknown>)[
-					FABRIC_MCP_RENDER_KEY
-				];
-				if (
-					env &&
-					typeof env === "object" &&
-					typeof (env as { resourceUri?: unknown }).resourceUri ===
-						"string" &&
-					typeof (env as { configId?: unknown }).configId === "string"
-				) {
-					return env as FabricMcpRenderEnvelope;
-				}
-			}
-		} catch {
-			// fall through
-		}
-	}
-	return null;
-}
-
-function isResultMessage(
-	msg: unknown,
-): msg is { type: "ResultMessage"; result: string } {
-	if (!msg || typeof msg !== "object") {
-		return false;
-	}
-	const m = msg as Record<string, unknown>;
-	return (
-		m.type === "ResultMessage" ||
-		(m as { isResultMessage?: () => boolean }).isResultMessage?.() === true
-	);
-}
-
-/**
- * Inline `<McpAppFrame>` mount for a tool-result envelope. Isolated
- * into its own component (same pattern as `ExcalidrawAutoInsertSlot`
- * below) so the `useOrganizationId` hook only runs when an envelope is
- * actually present. The org id matters: `<ExcalidrawPreview>` resolves
- * the scene via `read_checkpoint` through `/api/mcp-app/call-tool`,
- * whose config lookup is tenant-scoped — a hardcoded `null` here made
- * org-tenant lookups run in personal context and 404 ("Failed to load
- * diagram (404)"), the failure class documented in the agent's
- * `<excalidraw-embed>` prompt block.
- *
- * Exported for unit tests.
- */
-export function InlineMcpFrameSlot({
-	envelope,
-}: {
-	envelope: FabricMcpRenderEnvelope;
-}) {
-	const activeOrganizationId = useOrganizationId();
-	return (
-		<McpAppFrame
-			resourceUri={envelope.resourceUri}
-			configId={envelope.configId}
-			organizationId={activeOrganizationId ?? null}
-			toolArgs={envelope.toolArgs}
-			toolResult={
-				envelope.checkpointId
-					? JSON.stringify({
-							checkpointId: envelope.checkpointId,
-						})
-					: undefined
-			}
-			surface="chat"
-			className="mb-2"
-		/>
-	);
-}
+import {
+	useAgentStateSelector,
+	useAgentTranscriptSelector,
+} from "./useAgentStateReadOnly";
 
 /**
  * Mount point for the Excalidraw chat -> editor auto-insert button
@@ -245,10 +151,9 @@ export interface CopilotAssistantMessageOptions {
 	 * `"project_document_generator"` for backward compatibility with the
 	 * F-1171 surfaces (DocumentEditor + StoryWorkspace).
 	 *
-	 * Passing a name that isn't a registered coagent is safe — CopilotKit's
-	 * `useCoAgent` returns a noop `{ state: {} }` in that case (verified at
-	 * `@copilotkit/react-core` dist/index.cjs:3395-3411). The reasoning UI
-	 * simply doesn't render.
+	 * Passing a name that isn't a registered agent is safe —
+	 * `useAgentStateSelector` selects from empty state in that case. The
+	 * reasoning UI simply doesn't render.
 	 */
 	agentName?: string;
 }
@@ -287,7 +192,16 @@ export function makeCopilotAssistantMessage(
 	opts: CopilotAssistantMessageOptions = {},
 ) {
 	const agentName = opts.agentName ?? "project_document_generator";
-	function CopilotAssistantMessageInner(props: AssistantMessageProps) {
+	function CopilotAssistantMessageInner(
+		props: AssistantMessageProps & {
+			generativeSlot?: React.ReactNode;
+			formattedTimestamp: FormattedMessageTimestamp | null;
+			traceSelection: Selection;
+			traceInProgress: boolean;
+			inlineMcpEnvelope: FabricMcpRenderEnvelope | null;
+			promptMessages: { id: string; role: string; content: string }[];
+		},
+	) {
 		const tTooltips = useTranslations("tooltips.common");
 		const tCopilot = useTranslations("tooltips.copilot");
 		const { icons, labels } = useChatContext();
@@ -310,212 +224,20 @@ export function makeCopilotAssistantMessage(
 		const canRate = Boolean(message?.id && rating?.canRate(message.id));
 
 		const content = message?.content || "";
-		const subComponent = message?.generativeUI?.();
 
-		// Pair this assistant message with the most recent preceding
-		// tool-result message that carries an MCP-app render envelope.
-		// CopilotKit's `RenderMessage` only handles `user` / `assistant`
-		// roles — `ResultMessage`s are filtered out before reaching the
-		// AssistantMessage component, and the `messages` prop CopilotKit
-		// passes here contains the same filtered list, so we can't find
-		// the tool result via props. The full stream (including
-		// ResultMessages) lives in `visibleMessages`,
-		// which is what we scan. Scope: only the LATEST tool result before
-		// this assistant message — so each canvas appears exactly once,
-		// next to the assistant turn that produced it.
-		//
-		// Read from the surface-wide session rather than a local
-		// `useCopilotChat()`: this component renders once per assistant
-		// message, and on 1.70 each such call opened its own
-		// `agent/connect` (Fizzy #2389). `visibleMessages` is the same
-		// field carrying the same value.
-		const { visibleMessages } = useCopilotChatSession();
-
-		const inlineMcpEnvelope =
-			useMemo<FabricMcpRenderEnvelope | null>(() => {
-				if (!message) {
-					return null;
-				}
-				const all = (visibleMessages || []) as unknown[];
-				if (all.length === 0) {
-					return null;
-				}
-				const targetId = (message as { id?: string }).id;
-				// Locate this assistant message in the full stream.
-				const idx = all.findIndex(
-					(m) => (m as { id?: string }).id === targetId,
-				);
-				// If we can't find the message, default to scanning the whole
-				// stream (e.g. the assistant message hasn't been registered yet
-				// but the result has — show the latest pending envelope).
-				const upper = idx === -1 ? all.length : idx;
-				// Walk backwards from the assistant message until we hit the
-				// previous user message; pick the first ResultMessage that
-				// carries an envelope.
-				for (let i = upper - 1; i >= 0; i--) {
-					const m = all[i];
-					const role = (m as { role?: string }).role;
-					if (role === "user") {
-						break;
-					}
-					if (isResultMessage(m)) {
-						const env = extractEnvelopeFromMessage(m);
-						if (env) {
-							return env;
-						}
-					}
-				}
-				return null;
-			}, [message, visibleMessages]);
-
-		// Reasoning trace lookup (PO follow-up to F-1171).
-		//
-		// Source of data flow:
-		//   chat-node writes state.reasoningByTurn[turnIndex] keyed by
-		//   countHumanMessages(state.messages) → AG-UI STATE_SNAPSHOT →
-		//   useCoAgent({ name: agentName }).state.
-		//
-		// `agentName` is closed over from the factory args. The 4 module-scope
-		// exports below bind it to the per-surface agent name; the default
-		// export is bound to `project_document_generator` for F-1171 surfaces.
-		//
-		// turnIndex here MIRRORS the backend computation: count user-role
-		// messages in visibleMessages up to and including the user message
-		// immediately preceding this assistant message. So the first
-		// assistant reply → turnIndex 1, second → 2, etc.
-		//
-		// Safety on non-agent pages: `useCoAgent` with a name that isn't
-		// registered (e.g. surfaces that use CopilotChat but no CoAgent)
-		// returns a noop `{ state: {} }`. Verified at @copilotkit/react-core
-		// (dist/index.cjs:3395-3411). So this lookup is a safe no-op on
-		// surfaces where the agent isn't bound.
-		const { state: agentState } = useCoAgent<{
-			reasoningByTurn?: Record<
-				number,
-				{ text: string; durationMs: number }
-			>;
-			toolCallsByTurn?: Record<number, ToolCallEntry[]>;
-		}>({ name: agentName });
-
-		// Compute the turnIndex for this assistant message once and share it
-		// across the reasoning and tool-call lookups. turnIndex MIRRORS the
-		// backend's `countHumanMessages(state.messages)` so the same key
-		// resolves the agent's per-turn writes. AG-UI uses `role === "user"`
-		// on the wire; LangChain uses `HumanMessage` class on the backend —
-		// both produce the same count.
-		const turnIndex = useMemo<number | null>(() => {
-			if (!message) {
-				return null;
-			}
-			// Primary: count user messages in visibleMessages preceding this
-			// assistant message. Works when the session returns populated
-			// visibleMessages.
-			const all = (visibleMessages || []) as unknown[];
-			if (all.length > 0) {
-				const targetId = (message as { id?: string }).id;
-				if (targetId) {
-					const idx = all.findIndex(
-						(m) => (m as { id?: string }).id === targetId,
-					);
-					if (idx !== -1) {
-						let count = 0;
-						for (let i = 0; i < idx; i++) {
-							if ((all[i] as { role?: string }).role === "user") {
-								count++;
-							}
-						}
-						if (count >= 1) {
-							return count;
-						}
-					}
-				}
-			}
-			// Fallback: `visibleMessages` comes back [] inside
-			// CopilotAssistantMessage in some CopilotKit configurations (the
-			// hook subscribes to a different context than the surrounding
-			// RenderMessage tree). Derive turnIndex from agentState.messages
-			// — count HumanMessages — which matches the backend's
-			// countHumanMessages(state.messages) keying.
-			//
-			// CRITICAL: gate this fallback on `isCurrentMessage`. The agent
-			// state only carries trace data for the CURRENT in-progress turn,
-			// so applying the fallback to historical assistant messages would
-			// paint each scroll-back reply with the latest turn's reasoning
-			// and tools — a misattribution that lies about state. Only the
-			// in-progress (current) message is allowed the fallback; older
-			// messages return null so the trace silently disappears for them
-			// (preferred over showing wrong trace). Proper per-message
-			// carry — embedding toolCalls into AIMessage.additional_kwargs
-			// (DirectChat pattern) — is tracked as a separate follow-up.
-			if (isCurrentMessage) {
-				const agentMsgs = (agentState as { messages?: unknown[] })
-					?.messages;
-				if (Array.isArray(agentMsgs) && agentMsgs.length > 0) {
-					let humanCount = 0;
-					for (const m of agentMsgs) {
-						const o = m as {
-							id?: unknown;
-							type?: string;
-							role?: string;
-							_getType?: () => string;
-						};
-						if (typeof o?._getType === "function") {
-							if (o._getType() === "human") {
-								humanCount++;
-							}
-							continue;
-						}
-						if (
-							Array.isArray(o?.id) &&
-							(o.id as unknown[]).includes("HumanMessage")
-						) {
-							humanCount++;
-							continue;
-						}
-						if (o?.type === "human" || o?.role === "user") {
-							humanCount++;
-						}
-					}
-					if (humanCount >= 1) {
-						return humanCount;
-					}
-				}
-			}
-			return null;
-		}, [message, visibleMessages, agentState, isCurrentMessage]);
-
-		const reasoning = useMemo<{
-			text: string;
-			durationMs?: number;
-		} | null>(() => {
-			if (turnIndex === null) {
-				return null;
-			}
-			const reasoningByTurn = agentState?.reasoningByTurn;
-			if (!reasoningByTurn) {
-				return null;
-			}
-			const entry = reasoningByTurn[turnIndex];
-			if (!entry || typeof entry.text !== "string") {
-				return null;
-			}
-			return { text: entry.text, durationMs: entry.durationMs };
-		}, [turnIndex, agentState]);
-
-		const toolCalls = useMemo<ToolCallEntry[] | null>(() => {
-			if (turnIndex === null) {
-				return null;
-			}
-			const toolCallsByTurn = agentState?.toolCallsByTurn;
-			if (!toolCallsByTurn) {
-				return null;
-			}
-			const entries = toolCallsByTurn[turnIndex];
-			if (!Array.isArray(entries) || entries.length === 0) {
-				return null;
-			}
-			return entries;
-		}, [turnIndex, agentState]);
+		const {
+			inlineMcpEnvelope,
+			promptMessages,
+			traceInProgress,
+			traceSelection: selected,
+		} = props;
+		const reasoning =
+			typeof selected.reasoning?.text === "string"
+				? selected.reasoning
+				: null;
+		const toolCalls = selected.toolCalls?.length
+			? selected.toolCalls
+			: null;
 
 		const handleCopy = () => {
 			if (content && onCopy) {
@@ -558,22 +280,9 @@ export function makeCopilotAssistantMessage(
 		// while text is still streaming would lie about completion). Reads
 		// CopilotKit's live `createdAt` or our persisted `timestamp`; `null`
 		// when neither is present (very old rows) → no `<time>` rendered.
-		const formattedTimestamp =
-			content && !isLoading && !isGenerating
-				? formatMessageTimestamp((message ?? {}) as TimestampSource)
-				: null;
+		const formattedTimestamp = props.formattedTimestamp;
 
-		// Excalidraw chat -> editor auto-insert (F4 / spec § 8.1 row 4).
-		// The button renders BELOW the inline `<McpAppFrame>` block,
-		// conditional on the envelope's resource URI containing
-		// "excalidraw". The Copilot sidebar is mounted INSIDE the
-		// document/story page that owns the editor, so exactly one
-		// matching editor will be registered with the TiptapEditorRegistry
-		// (spec § 9 step 2). The hook setup is moved into a sibling
-		// sub-component so the new hooks (`useParams`, `useOrganizationId`,
-		// `useActiveTipTapEditor`, etc.) only mount when an Excalidraw
-		// envelope is actually present — keeping non-Excalidraw render
-		// paths free of the new dependency graph.
+		// The tool-call row owns the frame; the text reply owns the insert button.
 		const isExcalidrawEnvelope =
 			!!inlineMcpEnvelope &&
 			typeof inlineMcpEnvelope.resourceUri === "string" &&
@@ -583,16 +292,14 @@ export function makeCopilotAssistantMessage(
 
 		return (
 			<>
-				{inlineMcpEnvelope && (
-					<InlineMcpFrameSlot envelope={inlineMcpEnvelope} />
-				)}
-				{isExcalidrawEnvelope &&
+				{content &&
+					isExcalidrawEnvelope &&
 					inlineMcpEnvelope &&
 					excalidrawMessageId && (
 						<ExcalidrawAutoInsertSlot
 							envelope={inlineMcpEnvelope}
 							messageId={excalidrawMessageId}
-							visibleMessages={visibleMessages}
+							visibleMessages={promptMessages}
 						/>
 					)}
 				{(reasoning || toolCalls) && (
@@ -600,11 +307,7 @@ export function makeCopilotAssistantMessage(
 						text={reasoning?.text ?? ""}
 						durationMs={reasoning?.durationMs}
 						toolCalls={toolCalls ?? undefined}
-						inProgress={
-							isCurrentMessage &&
-							(isLoading || isGenerating) &&
-							!content
-						}
+						inProgress={traceInProgress}
 					/>
 				)}
 				{persistedOutcomes && (
@@ -808,7 +511,7 @@ export function makeCopilotAssistantMessage(
 						)}
 					</div>
 				)}
-				<div style={{ marginBottom: "0.5rem" }}>{subComponent}</div>
+				{props.generativeSlot}
 				{/*
 				 * Live "Thinking…" spinner for the gap between sending and the
 				 * first reasoning/content token. CopilotKit's default
@@ -836,7 +539,202 @@ export function makeCopilotAssistantMessage(
 		);
 	}
 	CopilotAssistantMessageInner.displayName = `CopilotAssistantMessage[${agentName}]`;
-	return CopilotAssistantMessageInner;
+	const MemoRow = memo(
+		CopilotAssistantMessageInner,
+		(a, b) =>
+			equalMessageFields(a.message, b.message, [
+				"id",
+				"content",
+				"createdAt",
+				"timestamp",
+			]) &&
+			equalMessageFields(a.formattedTimestamp, b.formattedTimestamp, [
+				"label",
+				"iso",
+				"tooltip",
+			]) &&
+			equalSelection(a.traceSelection, b.traceSelection) &&
+			a.traceInProgress === b.traceInProgress &&
+			a.inlineMcpEnvelope === b.inlineMcpEnvelope &&
+			a.promptMessages === b.promptMessages &&
+			a.isLoading === b.isLoading &&
+			a.isGenerating === b.isGenerating &&
+			a.isCurrentMessage === b.isCurrentMessage &&
+			a.markdownTagRenderers === b.markdownTagRenderers &&
+			Boolean(a.onThumbsUp) === Boolean(b.onThumbsUp) &&
+			Boolean(a.onThumbsDown) === Boolean(b.onThumbsDown),
+	);
+	function CopilotAssistantMessageRow(props: AssistantMessageProps) {
+		const transcript = props.messages ?? [];
+		const excluded = useAgentStateSelector(
+			agentName,
+			selectExcludedTurnIds,
+			equalExcludedTurnIds,
+		);
+		const trace = selectTranscriptTrace(
+			props.message,
+			transcript,
+			excluded,
+		);
+		const runActive = useContext(AssistantRunContext);
+		const traceInProgress =
+			trace.ownsTrace &&
+			trace.latest &&
+			(runActive || props.isLoading || props.isGenerating);
+		const messageId = props.message?.id;
+		const turnSelector = useMemo(
+			() => (state: AssistantAgentState, messages: unknown[]) =>
+				selectAgentTurn(messages, messageId, excluded, state.messages),
+			[messageId, excluded],
+		);
+		const transcriptTurn = useAgentTranscriptSelector(
+			agentName,
+			turnSelector,
+		);
+		// Select the rendered trace, so unrelated tool results do not invalidate the body.
+		const previousResults = useRef(trace.results);
+		const resultIds = Object.keys(trace.results);
+		if (
+			resultIds.length !== Object.keys(previousResults.current).length ||
+			resultIds.some(
+				(id) => trace.results[id] !== previousResults.current[id],
+			)
+		) {
+			previousResults.current = trace.results;
+		}
+		const results = previousResults.current;
+		const traceSelector = useMemo(() => {
+			return (state: AssistantAgentState): Selection => {
+				const turn = trace.ownsTrace ? transcriptTurn : null;
+				return {
+					turn,
+					reasoning:
+						turn === null
+							? null
+							: (state.reasoningByTurn?.[turn] ?? null),
+					toolCalls:
+						turn === null
+							? null
+							: (state.toolCallsByTurn?.[turn]?.map((entry) =>
+									entry.status === "pending" &&
+									!AWAITING_CONFIRMATION_TOOLS.has(
+										entry.name,
+									) &&
+									results[entry.id]
+										? {
+												...entry,
+												status: results[entry.id],
+											}
+										: entry,
+								) ?? null),
+				};
+			};
+		}, [transcriptTurn, trace.ownsTrace, results]);
+		const liveSelection = useAgentStateSelector(
+			agentName,
+			traceSelector,
+			equalSelection,
+		);
+		const settledTools =
+			!traceInProgress && trace.saved.toolCalls?.length
+				? (liveSelection.toolCalls?.map((entry) =>
+						entry.status === "pending"
+							? (trace.saved.toolCalls?.find(
+									(saved) => saved.id === entry.id,
+								) ?? entry)
+							: entry,
+					) ?? trace.saved.toolCalls)
+				: liveSelection.toolCalls;
+		const settledSelection = { ...liveSelection, toolCalls: settledTools };
+		const traceSelection =
+			liveSelection.reasoning !== null || liveSelection.toolCalls !== null
+				? settledSelection
+				: { turn: null, ...trace.saved };
+		const inlineMcpEnvelope = props.message?.toolCalls?.length
+			? null
+			: findInlineMcpEnvelope(props.message, transcript, excluded);
+		// The prompt adapter needs only the preceding user and the reply id.
+		const user = findTranscriptPrompt(props.message, transcript, excluded);
+		const userId = user?.id;
+		const userContent =
+			typeof user?.content === "string" ? user.content : "";
+		const hasDiagram = Boolean(
+			props.message?.content &&
+				inlineMcpEnvelope?.resourceUri.includes("excalidraw"),
+		);
+		const promptMessages = useMemo(
+			() =>
+				hasDiagram
+					? [
+							...(userId
+								? [
+										{
+											id: userId,
+											role: "user",
+											content: userContent,
+										},
+									]
+								: []),
+							{
+								id: messageId ?? "",
+								role: "assistant",
+								content: "",
+							},
+						]
+					: EMPTY_PROMPT_MESSAGES,
+			[hasDiagram, userId, userContent, messageId],
+		);
+		// Snapshot the displayed clock-derived value before the memo boundary.
+		const formattedTimestamp =
+			props.message?.content && !props.isLoading && !props.isGenerating
+				? formatMessageTimestamp(props.message as TimestampSource)
+				: null;
+		const latest = useRef(props);
+		latest.current = props;
+		const callbacks = useMemo(
+			() => ({
+				onRegenerate: () => latest.current.onRegenerate?.(),
+				onCopy: (text: string) => latest.current.onCopy?.(text),
+				onThumbsUp: () => {
+					if (latest.current.message) {
+						latest.current.onThumbsUp?.(latest.current.message);
+					}
+				},
+				onThumbsDown: () => {
+					if (latest.current.message) {
+						latest.current.onThumbsDown?.(latest.current.message);
+					}
+				},
+			}),
+			[latest],
+		);
+		const slot = useMemo(() => <GenerativeSlot />, []);
+		return (
+			<GenerativeContext.Provider value={props.message?.generativeUI}>
+				<MemoRow
+					{...props}
+					{...callbacks}
+					onThumbsUp={
+						props.onThumbsUp ? callbacks.onThumbsUp : undefined
+					}
+					onThumbsDown={
+						props.onThumbsDown ? callbacks.onThumbsDown : undefined
+					}
+					generativeSlot={slot}
+					formattedTimestamp={formattedTimestamp}
+					traceSelection={traceSelection}
+					traceInProgress={
+						traceInProgress && traceSelection.turn !== null
+					}
+					inlineMcpEnvelope={inlineMcpEnvelope}
+					promptMessages={promptMessages}
+				/>
+			</GenerativeContext.Provider>
+		);
+	}
+	CopilotAssistantMessageRow.displayName =
+		CopilotAssistantMessageInner.displayName;
+	return CopilotAssistantMessageRow;
 }
 
 // =============================================================================
@@ -889,3 +787,46 @@ export const CopilotAssistantMessageForDocumentGenerator =
  */
 export const CopilotAssistantMessageForStoryBreakdown =
 	makeCopilotAssistantMessage({ agentName: "story_breakdown" });
+
+type AssistantAgentState = {
+	messages?: unknown[];
+	reasoningByTurn?: Record<number, { text: string; durationMs?: number }>;
+	toolCallsByTurn?: Record<number, ToolCallEntry[]>;
+};
+type Selection = {
+	turn: number | null;
+	reasoning: { text: string; durationMs?: number } | null;
+	toolCalls: ToolCallEntry[] | null;
+};
+function equalSelection(a: Selection, b: Selection) {
+	return (
+		a.turn === b.turn &&
+		a.reasoning?.text === b.reasoning?.text &&
+		a.reasoning?.durationMs === b.reasoning?.durationMs &&
+		(a.toolCalls === b.toolCalls ||
+			(Boolean(a.toolCalls && b.toolCalls) &&
+				a.toolCalls?.length === b.toolCalls?.length &&
+				(a.toolCalls ?? []).every((entry, index) => {
+					const next = b.toolCalls?.[index];
+					return (
+						entry.id === next?.id &&
+						entry.name === next?.name &&
+						entry.status === next?.status &&
+						entry.startedAt === next?.startedAt &&
+						entry.durationMs === next?.durationMs &&
+						entry.errorMessage === next?.errorMessage
+					);
+				})))
+	);
+}
+const GenerativeContext =
+	createContext<
+		NonNullable<AssistantMessageProps["message"]>["generativeUI"]
+	>(undefined);
+function GenerativeSlot() {
+	const render = useContext(GenerativeContext);
+	return <div style={{ marginBottom: "0.5rem" }}>{render?.()}</div>;
+}
+
+const EMPTY_PROMPT_MESSAGES: { id: string; role: string; content: string }[] =
+	[];

@@ -152,6 +152,7 @@ const a2aExecutor = createLangGraphA2AExecutor(
 			{
 				recursionLimit: DEFAULT_RECURSION_LIMIT,
 				signal: runtimeConfig?.signal,
+				configurable: { thread_id: input.thread_id ?? input.contextId },
 			},
 		);
 

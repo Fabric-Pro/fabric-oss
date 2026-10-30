@@ -136,6 +136,7 @@ vi.mock("@saas/auth/hooks/use-session", () => ({
 vi.mock("@copilotkit/react-core", () => ({
 	useCoAgent: () => ({ state: {}, setState: vi.fn(), nodeName: undefined }),
 	useCopilotAction: vi.fn(),
+	useFrontendTool: vi.fn(),
 	useCopilotChat: () => ({ isLoading: false, visibleMessages: [] }),
 	useCopilotChatInternal: () => ({ messages: [], setMessages: vi.fn() }),
 	useCopilotReadable: vi.fn(),
@@ -344,3 +345,35 @@ describe("DocumentEditor save mutation — cache key consistency", () => {
 		expect(afterError).toEqual(seeded);
 	});
 });
+
+// Page-agent behavior is covered by page-agent-render-cost; retain this harness's agent fixture.
+vi.mock("@saas/shared/components/copilot/use-page-agent", async () => {
+	const core = await import("@copilotkit/react-core");
+	return {
+		usePageAgent: (name: string, initialState: object) =>
+			core.useCoAgent({ name, initialState }),
+	};
+});
+
+// These editor harnesses predate the enclosing page's session provider.
+vi.mock(
+	"@saas/shared/components/copilot/CopilotChatSessionProvider",
+	async (importOriginal) => {
+		const actual =
+			await importOriginal<
+				typeof import("@saas/shared/components/copilot/CopilotChatSessionProvider")
+			>();
+		const core = await import("@copilotkit/react-core");
+		return {
+			...actual,
+			useCopilotChatSessionSelector: (
+				select: (session: object) => unknown,
+			) =>
+				select({
+					...core.useCopilotChatInternal(),
+					...core.useCopilotChat(),
+				}),
+			useCopilotChatSessionActions: () => core.useCopilotChatInternal(),
+		};
+	},
+);

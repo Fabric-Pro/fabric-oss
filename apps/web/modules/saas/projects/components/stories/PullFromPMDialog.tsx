@@ -7,6 +7,7 @@ import type {
 	PMTicketListError,
 	PMTicketListNote,
 } from "@repo/api/modules/projects/procedures/stories/sync/list-pm-tickets-filters.types";
+import { Pagination } from "@saas/shared/components/Pagination";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
@@ -29,8 +30,6 @@ import {
 	AlertCircleIcon,
 	AlertTriangleIcon,
 	CheckCircle2Icon,
-	ChevronLeftIcon,
-	ChevronRightIcon,
 	CloudDownloadIcon,
 	Loader2Icon,
 	SearchIcon,
@@ -106,29 +105,6 @@ const PAGE_SIZE = 20;
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Returns a window of page numbers to show around the current page. */
-function pageWindow(current: number, total: number): (number | "…")[] {
-	if (total <= 7) {
-		return Array.from({ length: total }, (_, i) => i + 1);
-	}
-	const pages: (number | "…")[] = [1];
-	if (current > 3) {
-		pages.push("…");
-	}
-	for (
-		let p = Math.max(2, current - 1);
-		p <= Math.min(total - 1, current + 1);
-		p++
-	) {
-		pages.push(p);
-	}
-	if (current < total - 2) {
-		pages.push("…");
-	}
-	pages.push(total);
-	return pages;
-}
 
 // ---------------------------------------------------------------------------
 // Component
@@ -608,89 +584,26 @@ export function PullFromPMDialog({
 
 				{/* ── Pagination ── */}
 				{showPagination && (
-					<div className="px-4 py-2 border-t border-border/40 flex flex-col items-center gap-1.5">
-						<div className="flex items-center gap-1">
-							<Tooltip>
-								<TooltipTrigger asChild>
-									<Button
-										variant="ghost"
-										size="icon"
-										className="size-7"
-										onClick={() => goToPage(page - 1)}
-										disabled={page <= 1 || isFetching}
-										aria-label="Previous page"
-									>
-										<ChevronLeftIcon className="size-3.5" />
-									</Button>
-								</TooltipTrigger>
-								<TooltipContent>
-									{tStories("pullFromPmPreviousPage")}
-								</TooltipContent>
-							</Tooltip>
-
-							{pageWindow(page, totalPages).map((p, i) =>
-								p === "…" ? (
-									<span
-										key={`ellipsis-${i}`}
-										className="px-1 text-xs text-muted-foreground select-none"
-									>
-										…
-									</span>
-								) : (
-									<Button
-										key={p}
-										variant={
-											p === page ? "default" : "ghost"
-										}
-										size="icon"
-										className="size-7 text-xs"
-										onClick={() => goToPage(p)}
-										disabled={isFetching}
-										aria-label={`Page ${p}`}
-										aria-current={
-											p === page ? "page" : undefined
-										}
-									>
-										{p}
-									</Button>
-								),
-							)}
-
-							<Tooltip>
-								<TooltipTrigger asChild>
-									<Button
-										variant="ghost"
-										size="icon"
-										className="size-7"
-										onClick={() => goToPage(page + 1)}
-										disabled={
-											page >= totalPages || isFetching
-										}
-										aria-label="Next page"
-									>
-										<ChevronRightIcon className="size-3.5" />
-									</Button>
-								</TooltipTrigger>
-								<TooltipContent>
-									{tStories("pullFromPmNextPage")}
-								</TooltipContent>
-							</Tooltip>
-						</div>
-						<span className="text-xs text-muted-foreground">
-							Page {page} of {totalPages}
-							{data && (
-								<>
-									{" · "}
-									{Math.min(
-										(page - 1) * PAGE_SIZE + 1,
-										data.total,
-									)}
-									–{Math.min(page * PAGE_SIZE, data.total)} of{" "}
-									{data.total} tickets
-								</>
-							)}
-						</span>
-					</div>
+					<Pagination
+						totalItems={data?.total ?? 0}
+						itemsPerPage={PAGE_SIZE}
+						currentPage={page}
+						onChangeCurrentPage={goToPage}
+						navigationLabel={tStories("pullFromPmPaginationAria")}
+						goToPageLabel={tStories("pullFromPmJumpLabel")}
+						goLabel={tStories("pullFromPmGo")}
+						pageRangeError={(lastPage) =>
+							tStories("pullFromPmRangeError", { lastPage })
+						}
+						pageLabel={(page) =>
+							tStories("pullFromPmPageLabel", { page })
+						}
+						formatRange={(from, to, total) =>
+							tStories("pullFromPmRange", { from, to, total })
+						}
+						previousLabel={tStories("pullFromPmPreviousPage")}
+						nextLabel={tStories("pullFromPmNextPage")}
+					/>
 				)}
 
 				{/* ── Overwrite warning when synced tickets selected ── */}

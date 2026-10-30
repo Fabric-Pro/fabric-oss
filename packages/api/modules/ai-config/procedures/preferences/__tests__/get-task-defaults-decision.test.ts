@@ -33,6 +33,7 @@ vi.mock("@repo/ai/model-selector", () => ({
 }));
 
 vi.mock("@repo/database", () => ({
+	SELECTABLE_CATALOG_MODEL_FILTER: { isActive: true, deprecatedAt: null },
 	readTaskDefaultsSnapshot: vi.fn(() => null),
 	TEXT_TASK_TYPES: [
 		"SIMPLE",

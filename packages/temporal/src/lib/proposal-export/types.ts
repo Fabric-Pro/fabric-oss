@@ -22,7 +22,28 @@ export interface ExportRaster {
 	bytes: Buffer;
 	width: number;
 	height: number;
+	/**
+	 * Relative luminance (0 to 1) of a measured brand asset, weighted by
+	 * alpha: a logo's mean over its opaque pixels, which picks its plate,
+	 * and the hero's bright end (its 90th percentile), which sets the veil.
+	 * Absent when not measured or when no pixel is opaque at all.
+	 */
+	luminance?: number;
+	/** A measured logo with no transparent pixel: its own edge is its box. */
+	opaque?: boolean;
+	/**
+	 * The hero again at a section opener graphic's size. Print writes a
+	 * separate crop of the image for each opener, so the openers crop this
+	 * small copy rather than the full hero. Absent on anything else.
+	 */
+	openerCopy?: ExportRaster;
 }
+
+/**
+ * Below this mean luminance a logo is drawn for a light background, so the
+ * dark cover sets it on a light plate.
+ */
+export const COVER_LOGO_DARK_LUMINANCE = 0.45;
 
 /**
  * Brand tokens as print reads them: every asset is already re-encoded bytes,
@@ -34,10 +55,22 @@ export type ExportThemeTokens = ProposalThemeTokens<ExportRaster>;
 export type ExportDocumentImages = ReadonlyMap<string, ExportRaster>;
 
 /**
- * A diagram fence as it prints, in document order. A fence that did not
- * render (an engine refusal, a syntax error, a kind only the browser engine
- * draws, a budget) prints as a captioned placeholder and never fails the
- * export.
+ * A diagram fence as it prints, in document order. Nothing about a diagram
+ * fails the export; one that does not draw is either left out or kept as a
+ * captioned placeholder, by cause:
+ *
+ * - `svg`: drawn, from a figure template or by the engine; when its DOCX
+ *   screenshot fails, `png` stays null and the DOCX prints a placeholder
+ *   in its place, under the same number;
+ * - `placeholder`: a kind only the live page draws (gantt, pie, mindmap, a
+ *   mermaid `timeline`, frontmatter), or a fence past the export's diagram
+ *   limit; it holds its place in print;
+ * - `omitted`: a source the export can draw that failed to draw (a syntax
+ *   error, a layout that failed or ran out of time, a refused SVG); it
+ *   prints nothing.
+ *
+ * `numbered` says whether it takes a "Figure n." number: every figure that
+ * prints does, a left-out one does not. Numbers count in document order.
  */
 export type ExportDiagram =
 	| {
@@ -49,16 +82,40 @@ export type ExportDiagram =
 			height: number;
 			/** A 2x screenshot of the cleaned SVG, rendered only for DOCX. */
 			png: ExportRaster | null;
+			numbered: true;
 	  }
-	| { kind: "placeholder"; caption: string };
+	| { kind: "placeholder"; caption: string; numbered: true }
+	| { kind: "omitted"; numbered: false };
+
+/**
+ * Each diagram's "Figure n." number, in document order, or null for one
+ * that is left out and takes none.
+ */
+export function diagramFigureNumbers(
+	diagrams: readonly (ExportDiagram | undefined)[],
+): (number | null)[] {
+	let next = 0;
+	return diagrams.map((diagram) => (diagram?.numbered ? ++next : null));
+}
 
 /**
  * What an export left out or could not do, reported to whoever started it.
  * Codes only: never a source, a key or a piece of content.
  */
 export const PROPOSAL_EXPORT_WARNING_CODES = [
-	/** A diagram printed as its captioned placeholder. */
+	/**
+	 * A diagram whose source could not be drawn and was left out, or a drawn
+	 * one whose DOCX picture failed and prints a placeholder there. The code
+	 * keeps its older name, from when every such diagram printed as a
+	 * placeholder.
+	 */
 	"DIAGRAM_PLACEHOLDER",
+	/**
+	 * A diagram the live page draws and the export could not: a kind only
+	 * the live page draws, or a layout the export gave up on (out of time, a
+	 * failed thread, past a size limit). Printed as its captioned placeholder.
+	 */
+	"DIAGRAM_NOT_PRINTABLE",
 	/** More diagrams than one export renders; the rest are placeholders. */
 	"DIAGRAM_LIMIT",
 	/** A diagram whose labels print below the legible size, even top-down. */
@@ -134,6 +191,12 @@ export const PROPOSAL_EXPORT_LIMITS = {
 	maxImagePixels: 6000 * 6000,
 	/** The longest edge an image is re-encoded at. */
 	maxImageEdge: 2400,
+	/**
+	 * One re-encoded image, in bytes. Print inlines each image as a `data:`
+	 * URL, and Chromium draws nothing for a URL longer than 2 MiB; base64
+	 * makes this 2,000,000 characters, with room for the URL's prefix.
+	 */
+	maxEncodedImageBytes: 1_500_000,
 	/**
 	 * Image bytes the Word file places in all (cover assets, uploads and
 	 * diagrams), each repeat of an image counted again, as the writer handles

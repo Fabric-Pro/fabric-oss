@@ -73,9 +73,10 @@ describe("buildProposalThemeTokens", () => {
 		]);
 		expect(tokens.proposer.surface.value).toBe(NEUTRAL_THEME.surface);
 		expect(tokens.proposer.ink.value).toBe(NEUTRAL_THEME.ink);
-		expect(tokens.proposer.fonts.display.value).toBe("Inter");
+		// Three faces (Fizzy #2946): Poppins, Inter and JetBrains Mono.
+		expect(tokens.proposer.fonts.display.value).toBe("Poppins");
 		expect(tokens.proposer.fonts.body.value).toBe("Inter");
-		expect(tokens.proposer.fonts.mono.value).toBe("Inter");
+		expect(tokens.proposer.fonts.mono.value).toBe("JetBrains Mono");
 		expect(tokens.proposer.name.value).toBeNull();
 		expect(tokens.proposer.logo.value).toBeNull();
 		expect(tokens.proposer.hero.value).toBeNull();
@@ -109,10 +110,11 @@ describe("buildProposalThemeTokens", () => {
 		expect(paint.accent).toBe(NEUTRAL_THEME.accents[0]);
 		expect(paint.recipient).toEqual([]);
 		expect(paint.fonts).toEqual({
-			display: "Inter",
+			display: "Poppins",
 			body: "Inter",
-			mono: "Inter",
+			mono: "JetBrains Mono",
 		});
+		expect(paint.fonts).toEqual(NEUTRAL_THEME.fonts);
 	});
 
 	it("does not let an empty neutral accent list alias the shared default", () => {
@@ -283,7 +285,7 @@ describe("buildProposalThemeTokens", () => {
 		);
 
 		expect(tokens.proposer.fonts.display).toEqual({
-			value: NEUTRAL_THEME.font,
+			value: NEUTRAL_THEME.fonts.display,
 			source: "DEFAULT",
 		});
 		expect(tokens.proposer.fontFiles?.display.value).toBeNull();
@@ -629,12 +631,186 @@ describe("resolveThemePaint", () => {
 				}),
 			),
 		);
-		const { fonts, recipient, ...colors } = paint;
+		const { fonts, recipient, heroVeil, ...colors } = paint;
 
 		for (const color of [...Object.values(colors), ...recipient]) {
 			expect(color).toMatch(HEX);
 		}
 		expect(fonts.body).toBe("Inter");
+		expect(heroVeil).toBeGreaterThanOrEqual(0);
+		expect(heroVeil).toBeLessThanOrEqual(1);
+	});
+});
+
+describe("resolveThemePaint: colours on the ink", () => {
+	/** `weight` of `color` over `base`, as the page composites it. */
+	const over = (color: string, base: string, weight: number) => {
+		const channel = (hex: string, offset: number) =>
+			Number.parseInt(hex.slice(offset, offset + 2), 16);
+		const blend = (offset: number) =>
+			Math.round(
+				channel(color, offset) * weight +
+					channel(base, offset) * (1 - weight),
+			)
+				.toString(16)
+				.padStart(2, "0");
+		return `#${blend(1)}${blend(3)}${blend(5)}`;
+	};
+	const branded = (primaryColor: string, accentColors: string[] = []) =>
+		resolveThemePaint(
+			buildProposalThemeTokens(
+				sources({ style: { primaryColor, accentColors } }),
+			),
+		);
+
+	it("sets white text on the neutral ink, and a lightened rule where the neutral primary is too dark", () => {
+		const paint = resolveThemePaint(buildProposalThemeTokens(NO_SOURCES));
+
+		expect(paint.onInk).toBe("#ffffff");
+		expect(
+			contrastRatio(paint.onInkMuted, paint.ink),
+		).toBeGreaterThanOrEqual(TEXT_CONTRAST);
+		expect(paint.onInkMuted).not.toBe(paint.onInk);
+		// The neutral primary and accent are too close to the ink to read.
+		expect(paint.onInkAccent).toBe("#ffffff");
+		expect(paint.onInkRule).not.toBe(NEUTRAL_THEME.primary);
+		expect(
+			contrastRatio(paint.onInkRule, paint.ink),
+		).toBeGreaterThanOrEqual(GRAPHIC_CONTRAST);
+	});
+
+	it("gives a dark navy brand white text and a lightened navy rule", () => {
+		const paint = branded("#0b1f3a");
+
+		expect(paint.onInkAccent).toBe("#ffffff");
+		expect(paint.onInkRule).not.toBe("#0b1f3a");
+		expect(paint.onInkRule).not.toBe("#ffffff");
+		expect(
+			contrastRatio(paint.onInkRule, paint.ink),
+		).toBeGreaterThanOrEqual(GRAPHIC_CONTRAST);
+		// Lighter than the navy, still bluer than it is red.
+		const [red, , blue] = [1, 3, 5].map((offset) =>
+			Number.parseInt(paint.onInkRule.slice(offset, offset + 2), 16),
+		);
+		expect(blue).toBeGreaterThan(red as number);
+	});
+
+	it("keeps a bright brand colour that reads on the ink, for text and rules alike", () => {
+		const paint = branded("#f97316");
+
+		expect(paint.onInkAccent).toBe("#f97316");
+		expect(paint.onInkRule).toBe("#f97316");
+	});
+
+	it("keeps a red primary for rules and takes a light accent for text when the red does not read as text", () => {
+		// The primary holds 3:1 on the ink but not 4.5:1; the accent, which
+		// the paper itself drops as too light, reads as text on the ink.
+		const paint = branded("#d6452b", ["#f08f72"]);
+
+		expect(contrastRatio("#d6452b", paint.ink)).toBeLessThan(TEXT_CONTRAST);
+		expect(paint.accent).not.toBe("#f08f72");
+		expect(paint.onInkRule).toBe("#d6452b");
+		expect(paint.onInkAccent).toBe("#f08f72");
+	});
+
+	it("veils a hero just enough that white and grey text read at 4.5:1 over pure white", () => {
+		for (const paint of [
+			resolveThemePaint(buildProposalThemeTokens(NO_SOURCES)),
+			resolveThemePaint(
+				withProposer({ ink: { value: "#2b2b2b", source: "MANUAL" } }),
+			),
+		]) {
+			const worst = over(paint.ink, "#ffffff", paint.heroVeil);
+			expect(contrastRatio(paint.onInk, worst)).toBeGreaterThanOrEqual(
+				TEXT_CONTRAST,
+			);
+			expect(
+				contrastRatio(paint.onInkMuted, worst),
+			).toBeGreaterThanOrEqual(TEXT_CONTRAST);
+			// No more ink than that.
+			const lighter = over(paint.ink, "#ffffff", paint.heroVeil - 0.01);
+			expect(
+				Math.min(
+					contrastRatio(paint.onInk, lighter),
+					contrastRatio(paint.onInkMuted, lighter),
+				),
+			).toBeLessThan(TEXT_CONTRAST);
+		}
+	});
+
+	it("veils a white hero more densely for a mid-tone brand accent, so the eyebrows still read", () => {
+		const neutral = resolveThemePaint(buildProposalThemeTokens(NO_SOURCES));
+		const paint = branded("#3b82f6");
+
+		// The blue reads on the plain ink, so it is the accent, not white.
+		expect(paint.ink).toBe(neutral.ink);
+		expect(paint.onInkAccent).toBe("#3b82f6");
+		expect(paint.heroVeil).toBeGreaterThan(neutral.heroVeil);
+
+		const worst = over(paint.ink, "#ffffff", paint.heroVeil);
+		expect(contrastRatio(paint.onInkAccent, worst)).toBeGreaterThanOrEqual(
+			TEXT_CONTRAST,
+		);
+		// No more ink than the accent needs.
+		const lighter = over(paint.ink, "#ffffff", paint.heroVeil - 0.01);
+		expect(contrastRatio(paint.onInkAccent, lighter)).toBeLessThan(
+			TEXT_CONTRAST,
+		);
+	});
+
+	it("veils a measured hero only as much as its bright end needs", () => {
+		const tokens = buildProposalThemeTokens(NO_SOURCES);
+		const unmeasured = resolveThemePaint(tokens).heroVeil;
+		const veil = (heroLuminance: number) =>
+			resolveThemePaint(tokens, { heroLuminance }).heroVeil;
+
+		// A dark brand graphic stays visible under a thin veil…
+		expect(veil(0.02)).toBeLessThan(0.35);
+		// …a white one needs what an unmeasured hero gets…
+		expect(veil(1)).toBe(unmeasured);
+		// …and the veil never thins as the hero brightens.
+		const steps = [0, 0.1, 0.2, 0.4, 0.6, 0.8, 1].map(veil);
+		expect(steps).toEqual([...steps].sort((a, b) => a - b));
+
+		// Whatever it lays, white and grey text read at 4.5:1 over a grey of
+		// that luminance (#808080 measures about 0.216).
+		const paint = resolveThemePaint(tokens, { heroLuminance: 0.216 });
+		const under = over(paint.ink, "#808080", paint.heroVeil);
+		expect(contrastRatio(paint.onInk, under)).toBeGreaterThanOrEqual(
+			TEXT_CONTRAST,
+		);
+		expect(contrastRatio(paint.onInkMuted, under)).toBeGreaterThanOrEqual(
+			TEXT_CONTRAST,
+		);
+	});
+
+	it("veils an unmeasurable hero as though it were white", () => {
+		const tokens = buildProposalThemeTokens(NO_SOURCES);
+		const unmeasured = resolveThemePaint(tokens).heroVeil;
+
+		expect(
+			resolveThemePaint(tokens, { heroLuminance: undefined }).heroVeil,
+		).toBe(unmeasured);
+		expect(
+			resolveThemePaint(tokens, { heroLuminance: Number.NaN }).heroVeil,
+		).toBe(unmeasured);
+	});
+
+	it("sets the paper as text on an ink too light for white", () => {
+		const paint = resolveThemePaint(
+			withProposer({
+				surface: { value: "#111111", source: "MANUAL" },
+				ink: { value: "#f5f5f5", source: "MANUAL" },
+			}),
+		);
+
+		expect(paint.onInk).toBe("#111111");
+		expect(contrastRatio(paint.onInk, paint.ink)).toBeGreaterThanOrEqual(
+			TEXT_CONTRAST,
+		);
+		expect(
+			contrastRatio(paint.onInkAccent, paint.ink),
+		).toBeGreaterThanOrEqual(TEXT_CONTRAST);
 	});
 });
 
@@ -696,7 +872,18 @@ describe("themeCustomProperties", () => {
 		expect(entries.length).toBeGreaterThanOrEqual(13);
 		for (const [name, value] of entries) {
 			expect(name).toMatch(/^--pa-[a-z0-9-]+$/);
-			expect(value).toMatch(/^(#[0-9a-f]{6}|"[A-Za-z0-9 -]+")$/);
+			expect(value).toMatch(
+				/^(#[0-9a-f]{6}|"[A-Za-z0-9 -]+"|[01]\.\d{2})$/,
+			);
+		}
+		expect(properties["--pa-hero-veil"]).toMatch(/^[01]\.\d{2}$/);
+		for (const name of [
+			"--pa-on-ink",
+			"--pa-on-ink-muted",
+			"--pa-on-ink-accent",
+			"--pa-on-ink-rule",
+		] as const) {
+			expect(properties[name]).toMatch(HEX);
 		}
 		// Only the recipient colours that hold up on the paper are written.
 		expect(properties["--pa-recipient-1"]).toBe("#0b3d91");
@@ -717,14 +904,15 @@ describe("themeCustomProperties", () => {
 		);
 		const properties = themeCustomProperties(paint);
 
+		// Each role falls back to its own neutral face.
 		expect(paint.fonts).toEqual({
-			display: "Inter",
+			display: "Poppins",
 			body: "Example Sans",
-			mono: "Inter",
+			mono: "JetBrains Mono",
 		});
-		expect(properties["--pa-font-display"]).toBe('"Inter"');
+		expect(properties["--pa-font-display"]).toBe('"Poppins"');
 		expect(properties["--pa-font-body"]).toBe('"Example Sans"');
-		expect(properties["--pa-font-mono"]).toBe('"Inter"');
+		expect(properties["--pa-font-mono"]).toBe('"JetBrains Mono"');
 	});
 
 	it("checks a paint that did not come from the resolver", () => {
@@ -732,19 +920,46 @@ describe("themeCustomProperties", () => {
 			...resolveThemePaint(buildProposalThemeTokens(sources({}))),
 			primary: "red; background: url(https://example.com/x)",
 			tint: "#fff",
+			onInkAccent: "currentColor",
+			heroVeil: Number.NaN,
 			recipient: ["#0b3d91", "expression(alert(1))"],
 			fonts: { display: 'x"}', body: "Example Sans", mono: "" },
 		};
 		const properties = themeCustomProperties(paint);
 
 		for (const value of Object.values(properties)) {
-			expect(value).toMatch(/^(#[0-9a-f]{6}|"[A-Za-z0-9 -]+")$/);
+			expect(value).toMatch(
+				/^(#[0-9a-f]{6}|"[A-Za-z0-9 -]+"|[01]\.\d{2})$/,
+			);
 		}
 		expect(properties["--pa-primary"]).toBe(NEUTRAL_THEME.primary);
+		expect(properties["--pa-on-ink-accent"]).toBe(NEUTRAL_THEME.surface);
+		// An opacity that is not one paints the ink opaque over the hero.
+		expect(properties["--pa-hero-veil"]).toBe("1.00");
 		expect(properties["--pa-tint"]).toBe(NEUTRAL_THEME.surface);
 		expect(properties["--pa-recipient-1"]).toBe("#0b3d91");
 		expect(properties["--pa-recipient-2"]).toBeUndefined();
-		expect(properties["--pa-font-display"]).toBe('"Inter"');
+		expect(properties["--pa-font-display"]).toBe('"Poppins"');
+		expect(properties["--pa-font-body"]).toBe('"Example Sans"');
+		expect(properties["--pa-font-mono"]).toBe('"JetBrains Mono"');
+	});
+
+	it("writes a Brand kit display family for the live page", () => {
+		const paint = resolveThemePaint(
+			buildProposalThemeTokens(
+				sources({
+					brandKit: {
+						accentColors: [],
+						displayFontFamily: "Example Display",
+					},
+				}),
+			),
+		);
+		const properties = themeCustomProperties(paint);
+
+		expect(properties["--pa-font-display"]).toBe('"Example Display"');
+		expect(properties["--pa-font-body"]).toBe('"Inter"');
+		expect(properties["--pa-font-mono"]).toBe('"JetBrains Mono"');
 	});
 });
 
@@ -766,7 +981,16 @@ describe("themeTokenHash", () => {
 		const hash = themeTokenHash(branded());
 
 		expect(themeTokenHash(branded())).toBe(hash);
-		expect(hash).toMatch(/^t2:[0-9a-f]{16}$/);
+		expect(hash).toMatch(/^t3:[0-9a-f]{16}$/);
+	});
+
+	it("reads a record made before the three print faces as a different design", () => {
+		// A `t2` record named Inter for every role; the same brand now hashes
+		// under `t3`, so a later comparison cannot mistake it for unchanged.
+		const hash = themeTokenHash(buildProposalThemeTokens(NO_SOURCES));
+
+		expect(hash.startsWith("t2:")).toBe(false);
+		expect(hash).toBe(themeTokenHash(buildProposalThemeTokens(NO_SOURCES)));
 	});
 
 	it("does not depend on key order", () => {

@@ -1,16 +1,93 @@
 import type {
 	DirectStreamMessage,
 	StreamModelInfo,
+	StreamStatus,
 	TokenUsage,
 } from "../hooks/useDirectStream";
 import { parseTurnTruncation } from "./chat-turn-truncation";
 import { parseChatGptPlanApiBilling } from "./chatgpt-plan-api-billing";
+import {
+	dropDuplicatedOperationResults,
+	settleUnfinishedToolCalls,
+} from "./direct-chat-turns";
+import {
+	type PersistedToolCallStatus,
+	persistedToToolCallStatus,
+} from "./tool-call-status";
+
+/** A saved conversation message, as far as the Direct chat reads it back. */
+export interface PersistedDirectMessage {
+	id: string;
+	role: "user" | "assistant" | "system";
+	content: string;
+	timestamp: string;
+	toolCalls?: Array<{
+		id: string;
+		name: string;
+		args: Record<string, unknown>;
+		result?: string;
+		status?: PersistedToolCallStatus;
+	}>;
+	metadata?: Record<string, unknown>;
+	streamStatus?: StreamStatus;
+	cancelledAt?: string;
+	reasoningText?: string;
+	reasoningDurationMs?: number;
+}
+
+/**
+ * A saved conversation as the Direct chat shows it when it is opened again.
+ *
+ * The workflow also records each finished turn as a "SYSTEM" operation-result
+ * row; beside the saved answer it is a duplicate bubble and duplicated history
+ * (review F33), so it is dropped.
+ */
+export function loadedDirectMessages(
+	messages: readonly PersistedDirectMessage[],
+): DirectStreamMessage[] {
+	return dropDuplicatedOperationResults([...messages]).map((msg) => ({
+		id: msg.id,
+		// Conversations persist a third role — `system`, written
+		// by `agents.conversations.recordOperationResult` — that
+		// the chat API does not accept. Casting it through left
+		// it in the outgoing `history`, and the route rejected
+		// the whole request, so one operation-result row made a
+		// thread permanently unusable ("Invalid request body").
+		role: msg.role === "user" ? "user" : "assistant",
+		timestamp: new Date(msg.timestamp),
+		// A saved turn is over: a call it recorded as still
+		// pending/running can never resolve (review F11).
+		toolCalls: settleUnfinishedToolCalls(
+			msg.toolCalls?.map((tc) => ({
+				id: tc.id,
+				name: tc.name,
+				args: tc.args,
+				result: tc.result,
+				status: persistedToToolCallStatus(tc.status ?? "pending"),
+			})),
+		),
+		// Carry persisted stream lifecycle through rehydration so
+		// the inline `Stopped` caption survives a page reload
+		// (spec § 5.1 / AC-5).
+		streamStatus: msg.streamStatus,
+		cancelledAt: msg.cancelledAt,
+		// Carry reasoning trace through rehydration so the
+		// "Thought for X.Ys" header renders correctly after reload.
+		reasoningText: msg.reasoningText,
+		reasoningDurationMs: msg.reasoningDurationMs,
+		// Persisted with the assistant message on save.
+		usage: readPersistedUsage(persistedMetadata(msg)),
+		model: readPersistedModel(persistedMetadata(msg)),
+		// `content`, plus the failure / tools-off-retry state.
+		...readPersistedTurnOutcome(msg),
+	}));
+}
 
 /**
  * The conversation API's message type does not declare `metadata`, though
  * the row carries it (the add-message schema accepts it). Read it loosely.
  */
-export function persistedMetadata(
+function persistedMetadata(
 	message: unknown,
 ): Record<string, unknown> | undefined {
 	const metadata = (message as { metadata?: unknown } | null)?.metadata;
@@ -24,7 +101,7 @@ export function persistedMetadata(
  * this was persisted, a reload rendered a failed turn as a normal bubble —
  * the partial preamble read as a finished answer (review F22).
  */
-export function readPersistedTurnOutcome(message: {
+function readPersistedTurnOutcome(message: {
 	content: string;
 	streamStatus?: string;
 }): Pick<
@@ -80,7 +157,7 @@ export function readPersistedTurnOutcome(message: {
 	};
 }
 
-export function readPersistedUsage(
+function readPersistedUsage(
 	metadata: Record<string, unknown> | undefined,
 ): TokenUsage | undefined {
 	const usage = metadata?.usage;

@@ -141,3 +141,9 @@ describe("Databricks connection checks remain workspace-scoped", () => {
 		);
 	});
 });
+
+it("handles a long slash run followed by a non-slash", () => {
+	expect(
+		toDatabricksApiHost(`https://example.com/${"/".repeat(200_000)}x`),
+	).toBe("https://example.com");
+});

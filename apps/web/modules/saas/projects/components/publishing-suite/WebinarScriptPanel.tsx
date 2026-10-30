@@ -17,6 +17,7 @@ import { Textarea } from "@ui/components/textarea";
 import { Loader2Icon, PencilLineIcon, SparklesIcon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { useWorkingDraftEdit } from "../../hooks/use-working-draft-edit";
 import { CopyDraftButton } from "./CopyDraftButton";
 import {
 	CandidateDraft,
@@ -29,9 +30,10 @@ import { DraftRefinementReview, useDraftRefinement } from "./DraftRefinement";
 import { DraftVersions } from "./DraftVersions";
 import { GeneralizationNotes, OTHER_VERSION_NOTE } from "./GeneralizationNotes";
 import type { TopicDraftState, TopicWorkingDraftState } from "./GenerationTabs";
+import { GUIDANCE_MAX } from "./topic-shared";
 
 /** Mirrors the API's own bounds, so a field cannot submit what it would reject. */
-const GUIDANCE_MAX = 2000;
+
 const BODY_MAX = 40000;
 
 /**
@@ -639,7 +641,8 @@ export function WebinarScriptPanel({
 	 * has NOT typed shows the newer text, and one landing while they HAVE
 	 * typed does not silently discard what they wrote.
 	 */
-	const [editedBody, setEditedBody] = useState<string | null>(null);
+	const { editedBody, setEditedBody, expectedUpdatedAt, savedDraftChanged } =
+		useWorkingDraftEdit(working);
 	const attempt = draft?.latestAttempt ?? null;
 	const isStranded = attempt?.status === "GENERATING" && attempt.isExpired;
 	const isGenerating = attempt?.status === "GENERATING" && !isStranded;
@@ -851,7 +854,7 @@ export function WebinarScriptPanel({
 			topicId,
 			organizationId,
 			body: bodyValue,
-			expectedUpdatedAt: new Date(working.updatedAt),
+			expectedUpdatedAt,
 		});
 	};
 
@@ -895,6 +898,7 @@ export function WebinarScriptPanel({
 			>
 				Guidance (optional)
 			</label>
+
 			<Textarea
 				id="webinar-script-guidance"
 				value={guidance}
@@ -933,6 +937,22 @@ export function WebinarScriptPanel({
 
 	const savedDraft = working?.hasBody ? (
 		<section className="space-y-2">
+			{savedDraftChanged ? (
+				<div role="status" className="space-y-2 text-sm">
+					<p>
+						The saved draft changed while you were editing. Your
+						text is still here; saving will check the original
+						version.
+					</p>
+					<Button
+						variant="outline"
+						size="sm"
+						onClick={() => setEditedBody(null)}
+					>
+						Discard my edits
+					</Button>
+				</div>
+			) : null}
 			<div className="flex items-baseline justify-between gap-3">
 				<h3 className="publishing-label" id="webinar-script-editor">
 					Working webinar script

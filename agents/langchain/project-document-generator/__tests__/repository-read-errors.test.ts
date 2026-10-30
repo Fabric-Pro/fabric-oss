@@ -395,3 +395,79 @@ describe("search_repository_code search errors", () => {
 		);
 	});
 });
+
+// /api/internal/code-search answers 403 `REPOSITORY_READ_REQUIRED` when the
+// person's project role does not grant repository read. Every repository
+// tool would be refused the same way, so the model is told to stop calling
+// them; any other 403 keeps its tool's own wording.
+
+describe("a project role without repository read", () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+	});
+
+	function stubRefusal(body: unknown) {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue({
+				ok: false,
+				status: 403,
+				json: async () => body,
+			}),
+		);
+	}
+
+	const REFUSED = {
+		error: "Your project role does not allow reading the connected repository",
+		code: "REPOSITORY_READ_REQUIRED",
+	};
+
+	it.each([
+		["search_repository_code", { query: "login" }],
+		["get_repository_file", { path: "src/app.ts" }],
+		["list_repository_structure", {}],
+	])(
+		"tells the model %s cannot read the repository and not to retry the repository tools",
+		async (name, args) => {
+			stubRefusal(REFUSED);
+
+			const text = await runTool(name, args);
+
+			expect(text).toContain(
+				"The person's project role does not allow reading the connected repository.",
+			);
+			expect(text).toContain(
+				"Do not call search_repository_code, get_repository_file or list_repository_structure again in this conversation",
+			);
+		},
+	);
+
+	it.each([
+		[
+			"search_repository_code",
+			{ query: "login" },
+			"Code search failed (403). Continuing without code context.",
+		],
+		[
+			"get_repository_file",
+			{ path: "src/app.ts" },
+			"File retrieval failed (403).",
+		],
+		["list_repository_structure", {}, "Structure listing failed (403)."],
+	])("keeps %s's wording for any other 403", async (name, args, wording) => {
+		stubRefusal({ error: "You do not have access to this project" });
+		expect(await runTool(name, args)).toBe(wording);
+
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue({
+				ok: false,
+				status: 403,
+				json: async () => {
+					throw new SyntaxError("Unexpected token");
+				},
+			}),
+		);
+		expect(await runTool(name, args)).toBe(wording);
+	});
+});

@@ -114,7 +114,9 @@
   background: #1f2937;
   border-radius: 0.5rem;
   color: #f9fafb;
-  font-family: "JetBrainsMono", monospace;
+  /* The Proposal theme root defines it (proposal-fonts.ts); elsewhere the
+     editor keeps the system monospace it always resolved to. */
+  font-family: var(--font-jetbrains-mono, monospace), monospace;
   margin: 1.5rem 0;
   padding: 0.75rem 1rem;
 }
@@ -1107,7 +1109,7 @@
 /* Mermaid code editor textarea */
 .mermaid-container textarea {
   color: var(--foreground);
-  font-family: "JetBrainsMono", ui-monospace, monospace;
+  font-family: var(--font-jetbrains-mono, monospace), ui-monospace, monospace;
   line-height: 1.5;
 }
 

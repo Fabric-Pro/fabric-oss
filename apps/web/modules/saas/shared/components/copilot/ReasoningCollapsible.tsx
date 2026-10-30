@@ -9,12 +9,16 @@ import {
 	Clock,
 	Loader2,
 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useState } from "react";
+import { AWAITING_CONFIRMATION_TOOLS } from "./confirmation-tools";
+
+export { AWAITING_CONFIRMATION_TOOLS } from "./confirmation-tools";
 
 export interface ToolCallEntry {
 	id: string;
 	name: string;
-	status: "pending" | "success" | "error";
+	status: "pending" | "waiting" | "stopped" | "success" | "error";
 	startedAt?: number;
 	durationMs?: number;
 	errorMessage?: string;
@@ -46,9 +50,9 @@ interface ReasoningCollapsibleProps {
  *     → state.reasoningByTurn[turnIndex]  → `text`/`durationMs`
  *     → state.toolCallsByTurn[turnIndex]  → `toolCalls`
  *   → AG-UI STATE_SNAPSHOT
- *   → useCoAgent({ name: "project_document_generator" }).state
+ *   → useAgentStateSelector("project_document_generator", rowSelector)
  *   → CopilotAssistantMessage looks up by turnIndex (count of human
- *     messages preceding this assistant message in visibleMessages)
+ *     messages in state.messages through this reply, using agent-core isHumanMessage)
  *   → this component renders the result.
  *
  * Renders nothing when both `text` is empty AND `toolCalls` is empty/undefined.
@@ -142,26 +146,6 @@ interface ToolCallRowProps {
 }
 
 /**
- * Tools that don't fire on the server immediately — they synthesize a
- * matching ToolMessage via `buildConfirmChangesCommand` and stay
- * `pending` in `state.toolCallsByTurn` until the user accepts the
- * confirm_changes modal. Backend semantic (`agents/.../chat-node.ts`):
- * pending = awaiting user, NOT in-flight. Render them with a
- * non-spinning clock so the trace stops lying about state ("Calling X…"
- * implied the server was working; in reality the agent is parked,
- * waiting for the human). Match on canonical tool name only.
- *
- * Keep in sync with `INLINE_TOOLS` in chat-node.ts. Adding a tool that
- * does round-trip through `tool_node` (e.g. `write_document_asset`)
- * here would mask real in-flight failures as "awaiting confirmation"
- * — do not add server-side tools to this set.
- */
-const AWAITING_CONFIRMATION_TOOLS = new Set([
-	"write_document_local",
-	"apply_document_patches",
-]);
-
-/**
  * Single row in the tool-calls list. Compact layout:
  *   [icon] [name]                                            [duration|...]
  *
@@ -169,6 +153,7 @@ const AWAITING_CONFIRMATION_TOOLS = new Set([
  *   "awaiting" hint; trace stays honest while the user reviews the
  *   confirm_changes modal (no spinner means no false "in flight").
  * - `pending` (other tools) → animated Loader2 spinner + name + "…"
+ * - `waiting` / `stopped` → static Clock with the saved-run status
  * - `success`  → green Check + name + duration (e.g. "0.4s")
  * - `error`    → amber AlertCircle + name + duration; tooltip carries the
  *                error message (kept compact in the list to preserve
@@ -176,6 +161,7 @@ const AWAITING_CONFIRMATION_TOOLS = new Set([
  */
 function ToolCallRow({ entry }: ToolCallRowProps) {
 	const { name, status, durationMs, errorMessage } = entry;
+	const t = useTranslations("tooltips.copilot");
 	const hasDuration =
 		typeof durationMs === "number" && Number.isFinite(durationMs);
 	const durationText = hasDuration
@@ -187,7 +173,16 @@ function ToolCallRow({ entry }: ToolCallRowProps) {
 	let title: string | undefined;
 	let dataPendingKind: string | undefined;
 
-	if (status === "pending") {
+	if (status === "waiting" || status === "stopped") {
+		trailing = t(status === "waiting" ? "traceWaiting" : "traceStopped");
+		icon = (
+			<Clock
+				className="h-3 w-3 text-muted-foreground"
+				aria-label={trailing}
+			/>
+		);
+		title = `${name} — ${trailing}`;
+	} else if (status === "pending") {
 		if (AWAITING_CONFIRMATION_TOOLS.has(name)) {
 			icon = (
 				<Clock

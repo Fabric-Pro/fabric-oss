@@ -21,6 +21,12 @@ import { getSelectedAgentInstanceId } from "../components/FabricChat/shared/agen
 import { emitCancelEvent } from "../lib/cancel-telemetry";
 import { settleUnfinishedToolCalls } from "../lib/direct-chat-turns";
 import { loadInstanceAgentConfig } from "../lib/load-instance-agent-config";
+import { multiAgentRequestOverrides } from "../lib/multi-agent-request";
+import {
+	type AgentResponse,
+	mergeStreamedText,
+	mergeToolCall,
+} from "../lib/multi-agent-response";
 import { observeResearchStream } from "../lib/observe-research-stream";
 
 function isMcpDebugEnabled(): boolean {
@@ -104,141 +110,6 @@ export interface MultiAgentExecutionOptions {
 	 * still hits the same key once.
 	 */
 	conversationId?: string;
-}
-
-export interface MultiAgentToolCall {
-	id: string;
-	name: string;
-	args: unknown;
-	result?: unknown;
-	serverName?: string;
-	status: "pending" | "running" | "complete" | "error" | "success";
-	/** MCP App: ui:// resource URI for the interactive HTML UI */
-	mcpAppResourceUri?: string;
-	/** MCP App: config ID for proxying tool calls back to the MCP server */
-	mcpAppConfigId?: string;
-}
-
-export interface AgentResponse {
-	agentId: string;
-	agentName: string;
-	/** vendor name for model agents — used to show provider logo */
-	vendor?: string;
-	executionId?: string;
-	eventCursor?: ChatEventCursor;
-	content: string;
-	toolCalls: MultiAgentToolCall[];
-	isLoading: boolean;
-	isError: boolean;
-	errorMessage?: string;
-	/**
-	 * Per-agent stream lifecycle status.
-	 * `"cancelled"` is set by `stopAll` only on agents that were
-	 * still in-flight at click-time. Already-`"completed"` agents in
-	 * the same turn keep their status — they are not retroactively
-	 * relabelled (decision 18 /).
-	 * `extractResumableExecutions` in `CopilotPage.tsx` filters by
-	 * `status === "streaming"` so cancelled agents are implicitly
-	 * non-resumable on next page reload (/ decision 14).
-	 */
-	status: "idle" | "streaming" | "completed" | "error" | "cancelled";
-	/** ISO timestamp stamped when this agent was cancelled. */
-	cancelledAt?: string;
-	/** Set when the orchestrator is waiting for user approval before proceeding */
-	pendingApproval?: {
-		approvalId: string;
-		stepId: string;
-		reason: string;
-	} | null;
-}
-
-/**
- * The orchestrator's `buildWorkflowOutput` truncates oversized tool call
- * args/results to a sentinel string before returning the workflow output.
- * That sentinel can arrive on the `completed`/`step_complete` events
- * AFTER the live `tool_input`/`tool_result` events have already populated
- * the full payload. If we let it overwrite the live data, MCP App
- * iframes (e.g. Excalidraw) re-sync the truncated string to their bridge
- * and the canvas blanks. Reject the sentinel here as defense-in-depth —
- * the cap bump in `completion.ts` is the primary fix.
- */
-function isTruncatedSentinel(value: unknown): boolean {
-	return typeof value === "string" && value.startsWith("[Object truncated,");
-}
-
-function mergeToolCall(
-	existingToolCalls: MultiAgentToolCall[],
-	incoming: MultiAgentToolCall,
-): MultiAgentToolCall[] {
-	const existingIndex = existingToolCalls.findIndex(
-		(tc) => tc.id === incoming.id || tc.name === incoming.name,
-	);
-
-	if (existingIndex < 0) {
-		return [...existingToolCalls, incoming];
-	}
-
-	return existingToolCalls.map((tc, index) =>
-		index === existingIndex
-			? {
-					...tc,
-					...incoming,
-					args: isTruncatedSentinel(incoming.args)
-						? tc.args
-						: (incoming.args ?? tc.args),
-					result: isTruncatedSentinel(incoming.result)
-						? tc.result
-						: (incoming.result ?? tc.result),
-					status:
-						tc.status === "complete" ? tc.status : incoming.status,
-					mcpAppResourceUri:
-						incoming.mcpAppResourceUri ?? tc.mcpAppResourceUri,
-					mcpAppConfigId:
-						incoming.mcpAppConfigId ?? tc.mcpAppConfigId,
-				}
-			: tc,
-	);
-}
-
-function mergeStreamedText(
-	currentContent: string,
-	incomingContent: unknown,
-): string {
-	if (typeof incomingContent !== "string" || incomingContent.length === 0) {
-		return currentContent;
-	}
-
-	if (!currentContent) {
-		return incomingContent;
-	}
-
-	if (incomingContent === currentContent) {
-		return currentContent;
-	}
-
-	if (incomingContent.startsWith(currentContent)) {
-		return incomingContent;
-	}
-
-	if (currentContent.startsWith(incomingContent)) {
-		return currentContent;
-	}
-
-	const overlapLimit = Math.min(
-		currentContent.length,
-		incomingContent.length,
-	);
-	for (let overlap = overlapLimit; overlap > 0; overlap--) {
-		if (
-			currentContent.slice(-overlap) === incomingContent.slice(0, overlap)
-		) {
-			return currentContent + incomingContent.slice(overlap);
-		}
-	}
-
-	return currentContent.length >= incomingContent.length
-		? currentContent
-		: incomingContent;
 }
 
 export interface ConversationTurn {
@@ -558,66 +429,16 @@ export function useMultiAgentStream({
 				}
 				signal.throwIfAborted();
 
-				// Chatbot-specific formatting policy to keep responses compact and readable.
-				const chatFormattingPolicy = `
-
-Respond for a chat interface:
-- Be concise by default.
-- Avoid decorative emojis unless they are explicitly useful.
-- Prefer short headings, or no headings, unless structure materially improves clarity.
-- Use tables only when they clearly improve readability.
-- Do not write like a blog post, essay, or newsletter unless asked.
-`.trim();
-
-				// Build system prompt: use full instructions if available (template instances),
-				// otherwise fall back to a default prompt built from name + description
-				const systemPrompt = agent.instructions
-					? agent.instructions
-					: agent.description
-						? `You are ${agent.name}. ${agent.description}\n\n${chatFormattingPolicy}`
-						: `You are ${agent.name}, an AI assistant.\n\n${chatFormattingPolicy}`;
-
-				// Agent-level MCP configs take precedence over execution options
-				const resolvedMcpConfigIds =
-					agent.enabledMcpConfigIds !== undefined
-						? agent.enabledMcpConfigIds
-						: (executionOptions?.enabledMcpConfigIds ?? null);
-
-				// For focused agents (specific MCP servers configured), default Fabric AI tools
-				// to [] so only the agent's own MCP tools are available via search_tools.
-				// Fabric tools (web search, RAG, file creation, etc.) are only added back when
-				// the user explicitly enables a capability (e.g. discover-knowledge, web-search-browse).
-				// General agents (null = all servers) keep full Fabric tool access.
-				const isFocusedAgent =
-					resolvedMcpConfigIds !== null &&
-					resolvedMcpConfigIds.length > 0;
-
-				// For focused agents, default to [] (no Fabric tools), but always include
-				// workspace RAG tools if the agent has workspaces configured.
-				// This ensures agents can query their own knowledge base even in focused mode.
-				const RAG_TOOLS = [
-					"workspace_rag_query",
-					"workspace_rag_summarize",
-				] as const;
-				const baseFabricToolIds =
-					agent.enabledFabricToolIds ??
-					(isFocusedAgent
-						? (executionOptions?.enabledFabricToolIds ?? [])
-						: (executionOptions?.enabledFabricToolIds ?? null));
-				const resolvedFabricToolIds: string[] | null = (() => {
-					if (!isFocusedAgent) {
-						return baseFabricToolIds as string[] | null;
-					}
-					// Focused agent: merge base tools with RAG tools if workspaces exist
-					const base = Array.isArray(baseFabricToolIds)
-						? baseFabricToolIds
-						: [];
-					const withRag =
-						agent.workspaceIds && agent.workspaceIds.length > 0
-							? [...new Set([...base, ...RAG_TOOLS])]
-							: base;
-					return withRag;
-				})();
+				// The agent's prompt and tool scope over the chat's (shared with
+				// the agent runtime's multi-agent turns).
+				const overrides = multiAgentRequestOverrides(agent, {
+					enabledMcpConfigIds: executionOptions?.enabledMcpConfigIds,
+					enabledFabricToolIds:
+						executionOptions?.enabledFabricToolIds,
+					enabledIntegrationIds:
+						executionOptions?.enabledIntegrationIds,
+					projectId: executionOptions?.projectId,
+				});
 
 				const responseKey = `${turnId}::${agent.agentId}`;
 				const resumeBody = (
@@ -644,21 +465,18 @@ Respond for a chat interface:
 									message,
 									history,
 									organizationId,
-									modelOverride: agent.modelOverride,
+									modelOverride: overrides.modelOverride,
 									executionMode:
 										executionOptions?.executionMode ??
 										"balanced",
 									enabledAgentIds:
 										executionOptions?.enabledAgentIds ?? [],
-									enabledMcpConfigIds: resolvedMcpConfigIds,
-									enabledFabricToolIds: resolvedFabricToolIds,
+									enabledMcpConfigIds:
+										overrides.enabledMcpConfigIds,
+									enabledFabricToolIds:
+										overrides.enabledFabricToolIds,
 									enabledIntegrationIds:
-										// Agent-level integration IDs take precedence over execution options
-										agent.enabledIntegrationIds !==
-										undefined
-											? agent.enabledIntegrationIds
-											: (executionOptions?.enabledIntegrationIds ??
-												null),
+										overrides.enabledIntegrationIds,
 									attachedImageUrls:
 										executionOptions?.attachedImageUrls ??
 										[],
@@ -673,14 +491,10 @@ Respond for a chat interface:
 										executionOptions?.prioritizedToolIds,
 									prioritizedAgentIds:
 										executionOptions?.prioritizedAgentIds,
-									workspaceIds: agent.workspaceIds ?? [],
-									instanceId: agent.instanceId,
-									projectId:
-										executionOptions?.projectId !==
-										undefined
-											? executionOptions.projectId
-											: agent.boundProjectId,
-									systemPrompt,
+									workspaceIds: overrides.workspaceIds,
+									instanceId: overrides.instanceId,
+									projectId: overrides.projectId,
+									systemPrompt: overrides.systemPrompt,
 									// Omit-when-undefined so non-opting callers
 									// (doc-editor copilot, agent template runner,
 									// Weave) send the same wire shape they always

@@ -572,7 +572,7 @@ describe("rating output provenance", () => {
 				}),
 			);
 			expect(logger.warn).toHaveBeenCalledExactlyOnceWith(
-				"[ai.feedback.rate] Failed to look up output provenance",
+				"[ai.feedback] Failed to look up output provenance",
 				diagnostics,
 			);
 		},

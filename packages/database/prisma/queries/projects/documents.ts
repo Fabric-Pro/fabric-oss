@@ -18,6 +18,7 @@ import { normalizeForComparison } from "@repo/utils/normalize-for-comparison";
 import {
 	db,
 	Prisma,
+	type ProjectDocument,
 	type ProjectDocumentStatus,
 	type ProjectDocumentType,
 } from "../../client";
@@ -511,8 +512,39 @@ export async function updateDocument(
 		 * next autosave would be refused until the watchdog failed the run.
 		 */
 		allowDuringLiveRun?: "editor-content-save";
+		/**
+		 * Work that must commit or roll back with this write (Fizzy #2946):
+		 * the accept of a finding-driven revision records the finding as
+		 * Resolved, with its audit row, in the same transaction as the body
+		 * it saved. Runs inside the guarded write's transaction, after the
+		 * row is written, with the saved row (its content as sanitized and
+		 * stored). A throw rolls the whole write back and propagates.
+		 *
+		 * Only for a write that names its whole base (`expectedVersion` and
+		 * `expectedContentHash`) and is not a `skipVersionBump` rewind; any
+		 * other call with it throws before anything is read. Runs whether or
+		 * not the body changed.
+		 */
+		inTransaction?: (
+			tx: Prisma.TransactionClient,
+			saved: ProjectDocument,
+		) => Promise<void>;
 	},
 ) {
+	const inTransaction = data.inTransaction;
+	if (
+		inTransaction &&
+		(data.expectedVersion === undefined ||
+			data.expectedContentHash === undefined ||
+			data.skipVersionBump === true)
+	) {
+		// The callback's work belongs to the body the caller checked, which
+		// only a write guarded on its whole base is sure to replace.
+		throw new TypeError(
+			"inTransaction requires expectedVersion and expectedContentHash, and no skipVersionBump",
+		);
+	}
+
 	// Get current document
 	const currentDoc = await db.projectDocument.findUnique({
 		where: { id: documentId },
@@ -792,9 +824,13 @@ export async function updateDocument(
 				throw await conflictAfterLostRace(tx);
 			}
 
-			return await tx.projectDocument.findUniqueOrThrow({
+			const saved = await tx.projectDocument.findUniqueOrThrow({
 				where: { id: documentId },
 			});
+			if (inTransaction) {
+				await inTransaction(tx, saved);
+			}
+			return saved;
 		});
 	}
 

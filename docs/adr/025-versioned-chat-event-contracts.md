@@ -103,6 +103,13 @@ authoritative answer. Terminal turn records bypass the transport cache, includin
 expired cursors and incomplete journals; a newly terminal workflow drains its tail
 before delivering its outcome. Access-check failures never use that fallback.
 
+The flag-gated `/api/agents/runtime` transport is a separate rollout. This
+milestone adds cursors to the Orchestrator stream endpoint and its Research and
+Orchestrator hooks. The extracted execution observer and turn-state helpers
+accept replay callbacks and resume options; callers that omit them retain the
+runtime's current event semantics. Extend cursor recovery to the runtime before
+retiring the stream transport.
+
 Deploy the migration and RLS policies before workers and web/API. Older readers
 ignore cursor metadata; older workers retain their current publication path.
 Only activity I/O changes; no Temporal workflow command sequence changes.

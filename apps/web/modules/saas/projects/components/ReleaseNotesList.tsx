@@ -2,11 +2,13 @@
 
 import type { NewsletterContent } from "@repo/database";
 import { PageTourButton } from "@saas/get-started/components/PageTourButton";
+import { Pagination } from "@saas/shared/components/Pagination";
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Card } from "@ui/components/card";
 import { SettingsIcon } from "lucide-react";
+import { parseAsInteger, useQueryState } from "nuqs";
 import { useEffect, useRef, useState } from "react";
 import { formatNewsletterSendStatus } from "./newsletter-send-status";
 import { ReleaseNoteDetailModal } from "./ReleaseNoteDetailModal";
@@ -61,12 +63,22 @@ export function ReleaseNotesList({ project }: Props) {
 		project.userRole === "owner" ||
 		project.userRole === "project_admin";
 
-	const [pageSize, setPageSize] = useState<(typeof PAGE_SIZES)[number]>(15);
-	const [page, setPage] = useState(0);
+	const [urlPageSize, setPageSize] = useQueryState(
+		"releaseNotesSize",
+		parseAsInteger.withDefault(15),
+	);
+	const pageSize = PAGE_SIZES.find((size) => size === urlPageSize) ?? 15;
+	const [urlPage, setUrlPage] = useQueryState(
+		"releaseNotesPage",
+		parseAsInteger.withDefault(1),
+	);
+	const page = Math.max(0, urlPage - 1);
+	const setPage = (next: number) =>
+		setUrlPage(next + 1, { history: "replace" });
 	const [selected, setSelected] = useState<MemberSend | null>(null);
 
-	const { data, isLoading } = useQuery(
-		orpc.newsletter.sends.memberList.queryOptions({
+	const { data, isLoading, isPlaceholderData } = useQuery({
+		...orpc.newsletter.sends.memberList.queryOptions({
 			input: {
 				projectId: project.id,
 				organizationId: orgId,
@@ -74,7 +86,8 @@ export function ReleaseNotesList({ project }: Props) {
 				offset: page * pageSize,
 			},
 		}),
-	);
+		placeholderData: keepPreviousData,
+	});
 
 	// A chat teaser links to one note, which may sit past the first page, so it
 	// is fetched on its own. A note that no longer resolves just leaves the list.
@@ -113,10 +126,10 @@ export function ReleaseNotesList({ project }: Props) {
 	// Clamp the current page when a concurrent change reduces the page count and
 	// leaves the user on an out-of-range page (mirrors ProjectNewsletterSettings).
 	useEffect(() => {
-		if (page > 0 && page >= pageCount) {
+		if (!isPlaceholderData && data && page > 0 && page >= pageCount) {
 			setPage(Math.max(0, pageCount - 1));
 		}
-	}, [page, pageCount]);
+	}, [page, pageCount, isPlaceholderData, data]);
 
 	return (
 		<div className="space-y-6">
@@ -237,44 +250,25 @@ export function ReleaseNotesList({ project }: Props) {
 										</option>
 									))}
 								</select>
-								<span className="tabular-nums">
-									{`${page * pageSize + 1}–${Math.min(
-										(page + 1) * pageSize,
-										total,
-									)} of ${total}`}
-								</span>
+								{total <= pageSize && (
+									<span className="tabular-nums">
+										{`${page * pageSize + 1}–${Math.min(
+											(page + 1) * pageSize,
+											total,
+										)} of ${total}`}
+									</span>
+								)}
 							</div>
-							<div className="flex items-center gap-2">
-								<Button
-									type="button"
-									size="sm"
-									variant="outline"
-									disabled={page === 0}
-									onClick={() =>
-										setPage((p) => Math.max(0, p - 1))
+							{total > pageSize && (
+								<Pagination
+									totalItems={total}
+									itemsPerPage={pageSize}
+									currentPage={page + 1}
+									onChangeCurrentPage={(next) =>
+										setPage(next - 1)
 									}
-									aria-label="Previous page"
-								>
-									Prev
-								</Button>
-								<span className="tabular-nums">
-									Page {page + 1} of {pageCount}
-								</span>
-								<Button
-									type="button"
-									size="sm"
-									variant="outline"
-									disabled={page + 1 >= pageCount}
-									onClick={() =>
-										setPage((p) =>
-											Math.min(pageCount - 1, p + 1),
-										)
-									}
-									aria-label="Next page"
-								>
-									Next
-								</Button>
-							</div>
+								/>
+							)}
 						</div>
 					) : null}
 				</div>

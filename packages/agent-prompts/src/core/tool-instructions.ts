@@ -334,10 +334,7 @@ export function buildToolInstructionsWithoutFormatting(
 	toolMode: "write" | "patch" = "write",
 ): string {
 	if (toolMode === "patch") {
-		return buildPatchModeInstructions(
-			existingDocument,
-			documentBodyInUserMessage,
-		);
+		return buildPatchModeInstructions(documentBodyInUserMessage);
 	}
 
 	const hasExistingDocument =
@@ -601,19 +598,18 @@ ${responseFormat}`;
  * need to reproduce the existing document — it only emits small, targeted
  * patches via `apply_document_patches`.
  */
-function buildPatchModeInstructions(
-	existingDocument?: string,
-	documentBodyInUserMessage = false,
-): string {
+function buildPatchModeInstructions(documentBodyInUserMessage = false): string {
 	const documentLocationHint = documentBodyInUserMessage
 		? "the document content provided in the user message above"
 		: "the Current Document State below";
-	const currentDocumentLength = existingDocument?.length ?? 0;
 
+	// No document length here: this text sits in the system prompt, and any
+	// value that changes on every edit invalidates the provider's prompt cache
+	// for the whole request (Fizzy #3435).
 	return `
 ## Patch-Based Editing
 
-You are editing an existing document (${currentDocumentLength} characters) by emitting small, targeted patches via \`apply_document_patches\`. You do NOT rewrite the full document — the tool cannot accept the full document as content.
+You are editing an existing document by emitting small, targeted patches via \`apply_document_patches\`. You do NOT rewrite the full document — the tool cannot accept the full document as content.
 
 Each patch references a section by its FULL HEADING PATH using \` > \` as a separator. Examples:
 - \`## Requirements\`

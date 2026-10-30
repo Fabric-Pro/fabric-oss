@@ -57,3 +57,16 @@ describe("PromptContentEnhancer inline reason placement", () => {
 		expect(textarea).toHaveAttribute("aria-describedby", alert.id);
 	});
 });
+
+const reseedHarness = vi.hoisted(() => ({
+	subscriber: undefined as any,
+	unsubscribe: vi.fn(),
+	subscribe: vi.fn(),
+}));
+vi.mock("@copilotkit/react-core/v2", () => ({
+	useCopilotKit: () => ({ copilotkit: reseedHarness }),
+}));
+reseedHarness.subscribe.mockImplementation((subscriber: any) => {
+	reseedHarness.subscriber = subscriber;
+	return { unsubscribe: reseedHarness.unsubscribe };
+});

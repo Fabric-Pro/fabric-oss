@@ -85,6 +85,7 @@ const a2aExecutor = createLangGraphA2AExecutor(
 			{
 				signal: runtimeConfig?.signal,
 				configurable: {
+					thread_id: input.thread_id ?? input.contextId,
 					fabric_api_url: FABRIC_API_URL,
 					openapi_tools: input.openapi_tools,
 					// This legacy development server has no authenticated tenant transport.

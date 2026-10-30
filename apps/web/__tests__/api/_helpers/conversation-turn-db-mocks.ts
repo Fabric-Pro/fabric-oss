@@ -16,6 +16,8 @@ export function conversationTurnDbMocks() {
 	return {
 		ChatEventReplayError: class ChatEventReplayError extends Error {},
 		hasOrganizationTie: vi.fn(async () => true),
+		// No multi-agent turn in the conversation (admission's sibling check).
+		getLatestConversationTurn: vi.fn(async () => null),
 		admitConversationTurn: vi.fn(
 			async (args: {
 				userId: string;

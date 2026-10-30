@@ -5,10 +5,6 @@
  */
 
 export {
-	AGUINativeAgentAdapter,
-	type AGUINativeAgentConfig,
-} from "./agui-native-adapter";
-export {
 	LangGraphAgentAdapter,
 	type LangGraphAgentConfig,
 } from "./langgraph-adapter";

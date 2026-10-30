@@ -1,4 +1,5 @@
 "use client";
+import { useMemo } from "react";
 
 /**
  * AgentChatGeneral - General chat interface for non-document agents
@@ -139,7 +140,10 @@ export function AgentChatGeneral({
 	reasoningMode,
 	useOrchestrator = false,
 }: AgentChatGeneralProps) {
-	const suggestions = getAgentSuggestions(agent?.agentId, useOrchestrator);
+	const suggestions = useMemo(
+		() => getAgentSuggestions(agent?.agentId, useOrchestrator),
+		[agent?.agentId, useOrchestrator],
+	);
 	const onError = useCopilotErrorHandler();
 
 	return (
@@ -149,6 +153,7 @@ export function AgentChatGeneral({
 				useSingleEndpoint
 				agent={useOrchestrator ? "orchestrator" : agent?.agentId}
 				showDevConsole={false}
+				enableInspector={false}
 				onError={onError}
 			>
 				<CopilotChatSessionProvider>
@@ -181,18 +186,22 @@ function AgentChatGeneralContent({
 			defaultTimeout: 60000,
 		});
 
+	const chatLabels = useMemo(
+		() => ({
+			title: agent?.displayName || "AI Assistant",
+			initial: useOrchestrator
+				? "Hi! I'm Advisor. I can help you with planning, coding, document generation, and more. What would you like to work on today?"
+				: `Hi! I'm ${agent?.displayName}. ${agent?.description || "How can I help you today?"}`,
+		}),
+		[agent?.displayName, agent?.description, useOrchestrator],
+	);
 	return (
 		<>
 			<CopilotSidebar
 				AssistantMessage={CopilotAssistantMessage}
 				defaultOpen={true}
 				clickOutsideToClose={false}
-				labels={{
-					title: agent?.displayName || "AI Assistant",
-					initial: useOrchestrator
-						? "Hi! I'm Advisor. I can help you with planning, coding, document generation, and more. What would you like to work on today?"
-						: `Hi! I'm ${agent?.displayName}. ${agent?.description || "How can I help you today?"}`,
-				}}
+				labels={chatLabels}
 				suggestions={suggestions}
 			>
 				<div className="flex items-center justify-center h-full">

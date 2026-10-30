@@ -35,7 +35,6 @@
  * throws.
  */
 
-const EMAIL_PATTERN = /\b\S+@\S+\.\S+\b/g;
 const MAX_LENGTH = 500;
 const REDACTED = "<redacted>";
 
@@ -56,12 +55,59 @@ const REDACTED = "<redacted>";
 export function sanitizeMcpErrorMessage(error: unknown): string {
 	const raw = coerceToString(error);
 	const withoutSecrets = redactSecrets(raw);
-	const withoutEmails = withoutSecrets.replace(EMAIL_PATTERN, REDACTED);
+	const withoutEmails = redactEmails(withoutSecrets);
 	if (withoutEmails.length <= MAX_LENGTH) {
 		return withoutEmails;
 	}
 	// Reserve one char for the ellipsis so the result is ≤ MAX_LENGTH.
 	return `${withoutEmails.slice(0, MAX_LENGTH - 1)}…`;
+}
+
+/**
+ * Equivalent to /\b\S+@\S+\.\S+\b/g without backtracking.
+ * Within a non-whitespace run, the first word character is the earliest
+ * possible start boundary; a later start cannot enable an otherwise missing
+ * @ / dot / suffix. The last word character ends the furthest possible match.
+ * Greedy matching reaches that boundary, leaving no further match in the run.
+ * The scan index only advances, and output slices cover disjoint spans.
+ */
+function redactEmails(raw: string): string {
+	const parts: string[] = [];
+	let consumed = 0;
+	let index = 0;
+	while (index < raw.length) {
+		if (/\s/.test(raw[index])) {
+			index++;
+			continue;
+		}
+		let start = -1;
+		let end = -1;
+		let at = -1;
+		let dot = -1;
+		while (index < raw.length && !/\s/.test(raw[index])) {
+			const char = raw[index];
+			// Without the Unicode/ignore-case flags, \b uses ASCII \w.
+			if (/\w/.test(char)) {
+				if (start === -1) {
+					start = index;
+				}
+				end = index + 1;
+			}
+			if (start !== -1 && at === -1 && char === "@") {
+				at = index;
+			}
+			if (at !== -1 && dot === -1 && char === "." && index > at + 1) {
+				dot = index;
+			}
+			index++;
+		}
+		if (dot !== -1 && end > dot + 1) {
+			parts.push(raw.slice(consumed, start), REDACTED);
+			consumed = end;
+		}
+	}
+	parts.push(raw.slice(consumed));
+	return parts.join("");
 }
 
 /** Prefix matching is bounded; value scanning consumes each credential once. */

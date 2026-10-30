@@ -16,6 +16,9 @@ import {
 	fillVisualColors,
 } from "@repo/utils/glossy/visual-colors";
 import { visualSpecToMermaid } from "@repo/utils/glossy/visual-templates";
+import { sectionFingerprint } from "@repo/utils/proposal-artifact/preservation";
+import { buildSectionMap } from "@repo/utils/proposal-artifact/section-hash";
+import { spliceSectionBody } from "@repo/utils/proposal-artifact/section-splice";
 import {
 	classifyVisualFences,
 	visualSourceHash,
@@ -27,7 +30,11 @@ import {
 	buildCauseLines,
 	formatFailureOutput,
 } from "../../../../../../../packages/database/prisma/queries/projects/bug-cause-lines";
-import { fromMarkdown, repairMarkdownDocument } from "../diff-utils";
+import {
+	diffPartialText,
+	fromMarkdown,
+	repairMarkdownDocument,
+} from "../diff-utils";
 import {
 	createTurndownService,
 	getEditorMarkdownForSave,
@@ -328,6 +335,236 @@ describe("editor-markdown-save: highlight survives outside tables", () => {
 		const saved = createTurndownService().turndown("<p><mark>A</mark></p>");
 		expect(saved).toContain("<mark>A</mark>");
 	});
+});
+
+describe("editor-markdown-save: a link left without text (Fizzy #2946)", () => {
+	// An accepted AI change that deletes a linked phrase: the diff marks the
+	// deleted text inside the link, and the save strips it, leaving the link
+	// empty. Saved as `[](url)`, it kept the removed destination, so a
+	// finding revision's accept was refused (the signed section fingerprint
+	// counts link destinations).
+	const STORED = [
+		"## Experience",
+		"",
+		"Our team has run three pilots of this kind.[Read the pilot report](https://example.com/pilot-report)",
+		"",
+		"Each one ended with a written plan.",
+		"",
+		"## Next steps",
+		"",
+		"A [short call](https://example.com/call) and a plan.",
+		"",
+		"![Team photo](https://example.com/team.png)",
+	].join("\n");
+	const CANDIDATE =
+		"Our team has run three pilots of this kind.\n\nEach one ended with a written plan.";
+
+	function sectionKey(markdown: string, heading: string): string {
+		const found = buildSectionMap(markdown).sections.find(
+			(section) => section.headingText === heading,
+		);
+		if (!found) {
+			throw new Error(`no section ${heading}`);
+		}
+		return found.key;
+	}
+
+	/** The accept path: the diff in the editor, then the save. */
+	function acceptCandidate(): {
+		key: string;
+		proposed: string;
+		saved: string;
+	} {
+		const key = sectionKey(STORED, "Experience");
+		const proposed = spliceSectionBody(STORED, key, CANDIDATE);
+		if (proposed === null) {
+			throw new Error("no section to splice");
+		}
+		const editor = new Editor({
+			extensions: advancedExtensions,
+			content: fromMarkdown(diffPartialText(STORED, proposed, true)),
+		});
+		const saved = getEditorMarkdownForSave(editor);
+		editor.destroy();
+		if (saved === null) {
+			throw new Error("serialization failed");
+		}
+		return { key, proposed, saved };
+	}
+
+	it("saves no empty link when an accepted change removes a linked sentence", () => {
+		const { saved } = acceptCandidate();
+
+		expect(saved).not.toContain("[](");
+		expect(saved).not.toContain("https://example.com/pilot-report");
+		expect(saved).toContain(
+			"Our team has run three pilots of this kind.\n\nEach one ended with a written plan.",
+		);
+	});
+
+	it("saves the section as the candidate's fingerprint, which the accept-time check compares", () => {
+		const { key, proposed, saved } = acceptCandidate();
+
+		expect(sectionFingerprint(saved, key)).toBeDefined();
+		expect(sectionFingerprint(saved, key)).toBe(
+			sectionFingerprint(proposed, key),
+		);
+	});
+
+	it("keeps a link with text and an image unchanged", () => {
+		const { saved } = acceptCandidate();
+
+		expect(saved).toContain(
+			"A [short call](https://example.com/call) and a plan.",
+		);
+		expect(saved).toContain("![Team photo](https://example.com/team.png)");
+	});
+
+	it("drops an empty anchor but keeps one around an image, on both services", () => {
+		const turndown = createTurndownService();
+
+		expect(
+			turndown.turndown(
+				'<p>Before.<a href="https://example.com/gone"></a> After.</p>',
+			),
+		).toBe("Before. After.");
+		expect(
+			turndown.turndown(
+				'<p><a href="https://example.com/x"><img src="https://example.com/i.png" alt="i"></a></p>',
+			),
+		).toBe("[![i](https://example.com/i.png)](https://example.com/x)");
+		expect(
+			turndown.turndown(
+				'<p>See <a href="https://example.com/x" title="Team"><img src="https://example.com/i.png" alt="i"></a> here.</p>',
+			),
+		).toBe(
+			'See [![i](https://example.com/i.png)](https://example.com/x "Team") here.',
+		);
+		const table = turndown.turndown(
+			'<table><tr><th>H</th></tr><tr><td>a<a href="https://example.com/gone"></a></td><td><a href="https://example.com/x"><img src="https://example.com/i.png" alt="i"></a></td></tr></table>',
+		);
+		expect(table).not.toContain("[](");
+		expect(table).toContain(
+			"| a | [![i](https://example.com/i.png)](https://example.com/x) |",
+		);
+	});
+
+	it("keeps what an empty link holds, such as a line break", () => {
+		const turndown = createTurndownService();
+
+		expect(
+			turndown.turndown(
+				'<p>a<a href="https://example.com/x"><br></a>b</p>',
+			),
+		).toBe("a  \nb");
+	});
+
+	it("counts no text inside a diff deletion, so a deletion the strip missed saves no empty link", () => {
+		const turndown = createTurndownService();
+
+		expect(
+			turndown.turndown(
+				'<p>Before.<a href="https://example.com/gone"><del class="diff-del">Read the report</del></a> After.</p>',
+			),
+		).toBe("Before. After.");
+		expect(
+			turndown.turndown(
+				'<p><a href="https://example.com/x"><del class="diff-del">old</del>kept</a></p>',
+			),
+		).toBe("[kept](https://example.com/x)");
+	});
+
+	it("keeps a linked image through the editor", () => {
+		const stored =
+			"Intro.\n\n[![Team photo](https://example.com/team.png)](https://example.com/team)\n\nOutro.";
+		const editor = new Editor({
+			extensions: advancedExtensions,
+			content: fromMarkdown(stored),
+		});
+		const saved = getEditorMarkdownForSave(editor);
+		editor.destroy();
+
+		expect(saved).toBe(stored);
+	});
+});
+
+describe("editor-markdown-save: a deleted bullet that holds a link (Fizzy #2946)", () => {
+	// A link is the outer mark of deleted linked text, so the deleted item
+	// is `<li><p><a …><del …>…</del></a></p></li>`. Unless the save drops the
+	// whole item, it keeps an empty bullet, and the accepted section no
+	// longer matches the candidate's signed fingerprint.
+	function acceptInSection(
+		body: string,
+		candidate: string,
+	): { key: string; proposed: string; saved: string } {
+		const stored = `## Scope\n\n${body}\n\n## Next\n\nMore.`;
+		const key = buildSectionMap(stored).sections.find(
+			(section) => section.headingText === "Scope",
+		)?.key;
+		const proposed = key && spliceSectionBody(stored, key, candidate);
+		if (!key || !proposed) {
+			throw new Error("no section to splice");
+		}
+		const editor = new Editor({
+			extensions: advancedExtensions,
+			content: fromMarkdown(diffPartialText(stored, proposed, true)),
+		});
+		const saved = getEditorMarkdownForSave(editor);
+		editor.destroy();
+		if (saved === null) {
+			throw new Error("serialization failed");
+		}
+		return { key, proposed, saved };
+	}
+
+	it.each([
+		{
+			name: "a plain bullet (control)",
+			body: "- First\n- Plain second\n- Third",
+			candidate: "- First\n- Third",
+			items: ["First", "Third"],
+		},
+		{
+			name: "a bullet that is only a link",
+			body: "- First\n- [Report link](https://example.com/report)\n- Third",
+			candidate: "- First\n- Third",
+			items: ["First", "Third"],
+		},
+		{
+			name: "a bullet of text and a link",
+			body: "- First\n- See [the report](https://example.com/report)\n- Third",
+			candidate: "- First\n- Third",
+			items: ["First", "Third"],
+		},
+		{
+			name: "the first item of a numbered list, a link",
+			body: "1. [Open the inbox](https://example.com/inbox)\n2. Choose a mode\n3. Accept",
+			candidate: "2. Choose a mode\n3. Accept",
+			items: ["Choose a mode", "Accept"],
+		},
+		{
+			name: "only the link of a bullet that keeps its other text",
+			body: "- First\n- See [the report](https://example.com/report) now\n- Third",
+			candidate: "- First\n- See now\n- Third",
+			items: ["First", "See now", "Third"],
+		},
+	])(
+		"$name: saves no empty item, and the candidate's fingerprint",
+		({ body, candidate, items }) => {
+			const { key, proposed, saved } = acceptInSection(body, candidate);
+
+			const savedItems = saved
+				.split("\n")
+				.map((line) => line.match(/^(?:-|\d+\.)\s+(.*)$/)?.[1])
+				.filter((item) => item !== undefined);
+			expect(savedItems).toEqual(items);
+			expect(saved).not.toContain("https://example.com/report");
+			expect(saved).not.toContain("https://example.com/inbox");
+			expect(sectionFingerprint(saved, key)).toBe(
+				sectionFingerprint(proposed, key),
+			);
+		},
+	);
 });
 
 describe("editor-markdown-save: emphasis is not re-escaped", () => {

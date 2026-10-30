@@ -10,6 +10,9 @@
  *   - Cross-project conversationId returns NOT_FOUND.
  *   - Cross-tenant conversationId returns NOT_FOUND.
  *   - Unknown tool-call returns NOT_FOUND.
+ *   - A caller who cannot see the thread's document's project, or a
+ *     thread whose document is in another project, is NOT_FOUND and
+ *     nothing is written.
  *   - Stamps the correct tool-call by (messageId, toolCallId) and
  *     preserves every other tool call intact.
  *   - Does NOT emit an audit event (per spec §5.8).
@@ -21,6 +24,7 @@ import {
 	handlers,
 	makeContext,
 	recordAuditMock,
+	repoDatabaseMock,
 	setPendingHandlerKey,
 } from "./_harness";
 
@@ -55,6 +59,8 @@ const messages = [
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	repoDatabaseMock.getDocumentRefProjectId.mockResolvedValue("proj-1");
+	repoDatabaseMock.hasProjectAccess.mockResolvedValue(true);
 });
 
 describe("recordDiffOutcome — happy path", () => {
@@ -64,6 +70,8 @@ describe("recordDiffOutcome — happy path", () => {
 			userId: "user-1",
 			organizationId: "org-1",
 			projectId: "proj-1",
+			documentRefKind: "PROJECT_DOCUMENT",
+			documentRefId: "doc-1",
 			conversation: { id: "conv-1", messages },
 		});
 
@@ -104,6 +112,8 @@ describe("recordDiffOutcome — happy path", () => {
 			userId: "user-1",
 			organizationId: "org-1",
 			projectId: "proj-1",
+			documentRefKind: "PROJECT_DOCUMENT",
+			documentRefId: "doc-1",
 			conversation: { id: "conv-1", messages },
 		});
 
@@ -136,6 +146,8 @@ describe("recordDiffOutcome — guard rails", () => {
 			userId: "user-1",
 			organizationId: "org-1",
 			projectId: "other-proj",
+			documentRefKind: "PROJECT_DOCUMENT",
+			documentRefId: "doc-1",
 			conversation: { id: "conv-1", messages },
 		});
 
@@ -162,6 +174,8 @@ describe("recordDiffOutcome — guard rails", () => {
 			userId: "user-1",
 			organizationId: "other-org",
 			projectId: "proj-1",
+			documentRefKind: "PROJECT_DOCUMENT",
+			documentRefId: "doc-1",
 			conversation: { id: "conv-1", messages },
 		});
 
@@ -187,6 +201,8 @@ describe("recordDiffOutcome — guard rails", () => {
 			userId: "user-1",
 			organizationId: "org-1",
 			projectId: "proj-1",
+			documentRefKind: "PROJECT_DOCUMENT",
+			documentRefId: "doc-1",
 			conversation: { id: "conv-1", messages },
 		});
 
@@ -205,5 +221,79 @@ describe("recordDiffOutcome — guard rails", () => {
 			}),
 		).rejects.toMatchObject({ code: "NOT_FOUND" });
 		expect(dbMock.agentConversation.update).not.toHaveBeenCalled();
+	});
+});
+
+describe("recordDiffOutcome — the document's project", () => {
+	const input = {
+		conversationId: "conv-1",
+		projectId: "proj-1",
+		organizationId: "org-1",
+		messageId: "msg-1",
+		toolCallId: "tc-a",
+		outcome: "accepted" as const,
+		at: "2026-05-19T10:00:00.000Z",
+	};
+
+	beforeEach(() => {
+		// Another member's thread on a document in the named project.
+		dbMock.documentAssistantConversation.findUnique.mockResolvedValue({
+			id: "join-1",
+			userId: "user-99",
+			organizationId: "org-1",
+			projectId: "proj-1",
+			documentRefKind: "USER_STORY",
+			documentRefId: "story-1",
+			conversation: { id: "conv-1", messages },
+		});
+	});
+
+	it("refuses a member who cannot see the project, writing nothing", async () => {
+		repoDatabaseMock.hasProjectAccess.mockResolvedValue(false);
+
+		await expect(
+			handlers.recordDiffOutcome({
+				context: makeContext() as unknown as BuiltContext,
+				input,
+			}),
+		).rejects.toMatchObject({
+			code: "NOT_FOUND",
+			message: "Project not found",
+		});
+		// Checked against the thread's own document, since the input names none.
+		expect(repoDatabaseMock.getDocumentRefProjectId).toHaveBeenCalledWith({
+			documentRefKind: "USER_STORY",
+			documentRefId: "story-1",
+		});
+		expect(repoDatabaseMock.hasProjectAccess).toHaveBeenCalledWith(
+			"proj-1",
+			"user-1",
+		);
+		expect(dbMock.agentConversation.update).not.toHaveBeenCalled();
+	});
+
+	it("refuses a thread whose document is in another project, writing nothing", async () => {
+		repoDatabaseMock.getDocumentRefProjectId.mockResolvedValue(
+			"proj-other",
+		);
+
+		await expect(
+			handlers.recordDiffOutcome({
+				context: makeContext() as unknown as BuiltContext,
+				input,
+			}),
+		).rejects.toMatchObject({ code: "NOT_FOUND" });
+		expect(repoDatabaseMock.hasProjectAccess).not.toHaveBeenCalled();
+		expect(dbMock.agentConversation.update).not.toHaveBeenCalled();
+	});
+
+	it("records the outcome for a member who can see the project", async () => {
+		await expect(
+			handlers.recordDiffOutcome({
+				context: makeContext() as unknown as BuiltContext,
+				input,
+			}),
+		).resolves.toEqual({ success: true });
+		expect(dbMock.agentConversation.update).toHaveBeenCalledTimes(1);
 	});
 });
