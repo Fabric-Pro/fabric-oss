@@ -212,7 +212,7 @@ const Pagination = ({
 				>
 					<ChevronLeftIcon />
 				</Button>
-				<span className="text-gray-500 text-sm">
+				<span className="text-muted-foreground text-sm tabular-nums">
 					{formatRange(
 						(currentPage - 1) * itemsPerPage + 1,
 						Math.min(currentPage * itemsPerPage, totalItems),

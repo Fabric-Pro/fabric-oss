@@ -63,6 +63,7 @@ import {
 	LockIcon,
 	LogOutIcon,
 	MenuIcon,
+	PlusIcon,
 	SettingsIcon,
 	ShieldCheckIcon,
 	StarIcon,
@@ -115,6 +116,7 @@ type UtilityItem = {
 	icon: ComponentType<{ className?: string }>;
 	href?: string;
 	onClick?: () => void;
+	isActive?: boolean;
 	destructive?: boolean;
 	onboardingId?: string;
 };
@@ -294,6 +296,12 @@ export function NavBar({
 					label: accountLabel,
 					href: accountHref,
 					icon: rootInOwnOrg ? SettingsIcon : Building2Icon,
+					isActive: rootInOwnOrg
+						? pathname.includes("/settings/account")
+						: pathname.includes("/settings") &&
+							!pathname.includes("/settings/account") &&
+							!pathname.includes("/settings/integrations") &&
+							!pathname.includes("/settings/agents"),
 				},
 				// In an organization the entry above points at the
 				// ORGANIZATION's settings, which left the account's own
@@ -316,6 +324,8 @@ export function NavBar({
 								label: t("app.userMenu.accountSettings"),
 								href: accountSettingsPath,
 								icon: SettingsIcon,
+								isActive:
+									pathname.includes("/settings/account"),
 							},
 						]),
 				...(user.role === "admin"
@@ -329,6 +339,7 @@ export function NavBar({
 								// points for them.
 								href: `${effectiveBasePath}/admin`,
 								icon: ShieldCheckIcon,
+								isActive: pathname.includes("/admin"),
 							},
 						]
 					: []),
@@ -348,7 +359,6 @@ export function NavBar({
 	// while a guest views a shared project under /app/{slug}/projects/{id}.
 	const navSections: NavSection[] = [
 		{
-			label: "Main navigation",
 			items: [
 				{
 					label: t("app.menu.start"),
@@ -435,6 +445,25 @@ export function NavBar({
 						]
 					: []),
 				{
+					label: "Workspaces",
+					href: `${effectiveBasePath}/workspaces`,
+					icon: LayoutPanelTopIcon,
+					onboardingId: "nav-workspaces",
+					isActive: pathname.includes("/workspaces"),
+				},
+				{
+					label: "Libraries",
+					href: `${effectiveBasePath}/libraries`,
+					icon: Square3Stack3DIcon,
+					onboardingId: "nav-libraries",
+					isActive: pathname.includes("/libraries"),
+				},
+			],
+		},
+		{
+			label: "AI/ML",
+			items: [
+				{
 					label: "AI Agents",
 					href: `${effectiveBasePath}/agents`,
 					icon: RobotIcon,
@@ -445,20 +474,18 @@ export function NavBar({
 						!pathname.includes("/agent-templates") &&
 						!pathname.includes("/agents/fabric-ai") &&
 						!pathname.includes("/skills"),
-					children: [
-						{
-							label: "Skills",
-							href: `${effectiveBasePath}/skills`,
-							icon: PuzzleIcon,
-							isActive: pathname.includes("/skills"),
-						},
-						{
-							label: "Templates",
-							href: `${effectiveBasePath}/agent-templates`,
-							icon: LayoutTemplateIcon,
-							isActive: pathname.includes("/agent-templates"),
-						},
-					],
+				},
+				{
+					label: "Skills",
+					href: `${effectiveBasePath}/skills`,
+					icon: PuzzleIcon,
+					isActive: pathname.includes("/skills"),
+				},
+				{
+					label: "Templates",
+					href: `${effectiveBasePath}/agent-templates`,
+					icon: LayoutTemplateIcon,
+					isActive: pathname.includes("/agent-templates"),
 				},
 				{
 					label: "Workflows",
@@ -482,20 +509,11 @@ export function NavBar({
 						pathname.includes("/workflows/integrations") ||
 						pathname.includes("/settings/integrations"),
 				},
-				{
-					label: "Workspaces",
-					href: `${effectiveBasePath}/workspaces`,
-					icon: LayoutPanelTopIcon,
-					onboardingId: "nav-workspaces",
-					isActive: pathname.includes("/workspaces"),
-				},
-				{
-					label: "Libraries",
-					href: `${effectiveBasePath}/libraries`,
-					icon: Square3Stack3DIcon,
-					onboardingId: "nav-libraries",
-					isActive: pathname.includes("/libraries"),
-				},
+			],
+		},
+		{
+			label: "Operations",
+			items: [
 				{
 					label: "Reports",
 					href: `${effectiveBasePath}/report-templates`,
@@ -539,6 +557,7 @@ export function NavBar({
 							<Link
 								href="/app"
 								onClick={() => setIsMobileMenuOpen(false)}
+								className="flex w-full items-center justify-center"
 							>
 								<Logo />
 							</Link>
@@ -548,12 +567,28 @@ export function NavBar({
 								)}
 						</div>
 
+						{/* Pinned + New CTA */}
+						<div className="shrink-0 px-3 pt-3">
+							<Link
+								href={`${effectiveBasePath}/projects/new`}
+								onClick={() => setIsMobileMenuOpen(false)}
+								className="flex h-9 min-h-[36px] shrink-0 w-full items-center gap-2.5 rounded-[6px] border border-[#E5C5C0] bg-[#F3E2E0] px-3 text-sm font-semibold text-foreground transition-colors duration-150 hover:bg-[#EBD3D0] dark:border-[#FF5C4D]/25 dark:bg-[#FF3621]/[0.16] dark:hover:bg-[#FF3621]/[0.24] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+							>
+								<PlusIcon
+									className="size-4 shrink-0 text-[#C82210] dark:text-[#FF6B5B]"
+									strokeWidth={1.75}
+									aria-hidden="true"
+								/>
+								<span>New</span>
+							</Link>
+						</div>
+
 						{/* Drawer nav sections */}
-						<div className="no-scrollbar flex flex-1 flex-col gap-4 overflow-y-auto px-3 py-4">
+						<div className="no-scrollbar flex flex-1 flex-col gap-3.5 overflow-y-auto px-3 py-3">
 							{navSections.map((section) => (
 								<div key={section.label ?? "main"}>
 									{section.label && (
-										<p className="fab-label mb-2 px-2 select-none">
+										<p className="mb-1 px-2.5 text-xs font-normal text-muted-foreground select-none">
 											{section.label}
 										</p>
 									)}
@@ -572,7 +607,7 @@ export function NavBar({
 												{item.children &&
 													item.children.length >
 														0 && (
-														<ul className="mt-0.5 ml-4 flex flex-col gap-0.5 border-l border-dashed border-border/40 pl-3">
+														<ul className="mt-0.5 ml-3.5 flex flex-col gap-0.5 border-l border-border pl-2.5">
 															{item.children.map(
 																(child) => (
 																	<li
@@ -662,9 +697,9 @@ export function NavBar({
 											<Link
 												href="/app"
 												aria-label="Home"
-												className="block shrink-0 md:flex md:items-center md:justify-center"
+												className="mx-auto flex size-9 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-muted/60"
 											>
-												<FabricLogo size={32} />
+												<FabricLogo size={28} />
 											</Link>
 										</TooltipTrigger>
 										<TooltipContent side="right">
@@ -676,7 +711,7 @@ export function NavBar({
 								<Link
 									href="/app"
 									className={cn("block shrink-0", {
-										"md:flex md:items-center":
+										"md:flex md:w-full md:items-center md:justify-center":
 											useSidebarLayout,
 									})}
 								>
@@ -708,7 +743,7 @@ export function NavBar({
 													"hidden",
 													showLabels
 														? "md:hidden"
-														: "md:flex md:justify-center",
+														: "md:flex md:w-full md:items-center md:justify-center",
 												)}
 											>
 												<OrganzationSelect collapsed />
@@ -761,7 +796,7 @@ export function NavBar({
 										onClick={() =>
 											setIsMobileMenuOpen(true)
 										}
-										className="flex items-center justify-center rounded-md p-2 text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+										className="flex items-center justify-center rounded-md p-2 text-muted-foreground hover:bg-muted/60 hover:text-foreground transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
 										aria-label="Open navigation menu"
 										data-onboarding-target="mobile-nav-trigger"
 									>
@@ -815,17 +850,46 @@ export function NavBar({
 					{/* ── SIDEBAR NAV (desktop) ── */}
 					{useSidebarLayout && (
 						<TooltipProvider delayDuration={500}>
-							<div className="no-scrollbar mt-4 hidden flex-1 flex-col gap-5 overflow-y-auto pb-4 md:flex">
+							<div className="mt-3 hidden shrink-0 md:flex md:w-full md:items-center md:justify-center">
+								{showLabels ? (
+									<Link
+										href={`${effectiveBasePath}/projects/new`}
+										className="flex h-9 min-h-[36px] shrink-0 w-full items-center gap-2.5 rounded-[6px] border border-[#F2CEBD] bg-[#FDF1EB] px-3 text-sm font-semibold text-foreground transition-colors duration-150 hover:bg-[#F9E3D8] dark:border-[#FF8547]/30 dark:bg-[#EA580C]/[0.16] dark:hover:bg-[#EA580C]/[0.24] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+									>
+										<PlusIcon
+											className="size-4 shrink-0 text-[#D94E14] dark:text-[#FF8547]"
+											strokeWidth={1.75}
+											aria-hidden="true"
+										/>
+										<span>New</span>
+									</Link>
+								) : (
+									<RailTooltip label="New">
+										<Link
+											href={`${effectiveBasePath}/projects/new`}
+											aria-label="New"
+											className="mx-auto flex size-9 min-h-[36px] min-w-[36px] shrink-0 items-center justify-center rounded-[8px] border border-[#F2CEBD] bg-[#FDF1EB] text-foreground transition-colors duration-150 hover:bg-[#F9E3D8] dark:border-[#FF8547]/30 dark:bg-[#EA580C]/[0.16] dark:hover:bg-[#EA580C]/[0.24] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+										>
+											<PlusIcon
+												className="size-4 shrink-0 text-[#D94E14] dark:text-[#FF8547]"
+												strokeWidth={1.75}
+												aria-hidden="true"
+											/>
+										</Link>
+									</RailTooltip>
+								)}
+							</div>
+							<div className="no-scrollbar mt-2.5 hidden flex-1 flex-col gap-3.5 overflow-y-auto pb-4 md:flex">
 								{navSections.map((section) => (
 									<div key={section.label ?? "main"}>
 										{/* Section header — only when expanded */}
 										{section.label && showLabels && (
-											<p className="mb-2 px-2.5 text-[10px] font-semibold uppercase tracking-[0.24em] text-muted-foreground/60 select-none whitespace-nowrap overflow-hidden transition-opacity duration-200">
+											<p className="mb-1 px-2.5 text-xs font-normal text-muted-foreground select-none whitespace-nowrap overflow-hidden transition-opacity duration-200">
 												{section.label}
 											</p>
 										)}
 										{section.label && !showLabels && (
-											<div className="mb-2 h-px mx-2 bg-border/40" />
+											<div className="mb-2 h-px mx-2 bg-border" />
 										)}
 
 										{/* Section items */}
@@ -843,7 +907,7 @@ export function NavBar({
 														item.children &&
 														item.children.length >
 															0 && (
-															<ul className="mt-0.5 ml-4 flex flex-col gap-0.5 border-l border-dashed border-border/40 pl-3">
+															<ul className="mt-0.5 ml-3.5 flex flex-col gap-0.5 border-l border-border pl-2.5">
 																{item.children.map(
 																	(child) => (
 																		<li
@@ -927,7 +991,9 @@ function RailTooltip({
 	return (
 		<Tooltip>
 			<TooltipTrigger asChild>
-				<span className="inline-flex">{children}</span>
+				<span className="inline-flex items-center justify-center">
+					{children}
+				</span>
 			</TooltipTrigger>
 			<TooltipContent side="right">{label}</TooltipContent>
 		</Tooltip>
@@ -1003,6 +1069,7 @@ function SidebarUtilityItem({
 	icon: Icon,
 	label,
 	onClick,
+	isActive = false,
 	collapsed = false,
 	destructive = false,
 	onboardingId,
@@ -1013,6 +1080,7 @@ function SidebarUtilityItem({
 	icon: ComponentType<{ className?: string }>;
 	label: string;
 	onClick?: () => void;
+	isActive?: boolean;
 	collapsed?: boolean;
 	destructive?: boolean;
 	onboardingId?: string;
@@ -1028,17 +1096,17 @@ function SidebarUtilityItem({
 }) {
 	const router = useRouter();
 	const className = cn(
-		"flex min-h-[36px] items-center rounded-lg text-sm transition-colors outline-none focus-visible:ring-1 focus-visible:ring-primary/35",
+		"group flex min-h-[28px] items-center rounded-md text-sm transition-colors duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 		// Collapsed: full-width + centered icon so utility items sit in the same
 		// straight column as the nav items. `w-full` is required for the logout
 		// <button> (an <a> stretches on its own, a <button> doesn't), otherwise
 		// it renders fit-content and lands a few px left of the column center.
-		collapsed
-			? "w-full justify-center px-2.5 py-1.5"
-			: "gap-2.5 px-2.5 py-1.5",
+		collapsed ? "w-full justify-center px-2 py-1" : "gap-2.5 px-2.5 py-1",
 		destructive
 			? "text-destructive hover:bg-destructive/10"
-			: "text-muted-foreground/85 hover:bg-muted/55 hover:text-foreground",
+			: isActive
+				? "bg-primary/[0.12] dark:bg-primary/[0.20] font-semibold text-primary"
+				: "text-foreground hover:bg-foreground/[0.06]",
 	);
 
 	const content = (
@@ -1047,7 +1115,17 @@ function SidebarUtilityItem({
 			 * correct in the expanded sidebar, the collapsed rail, and the
 			 * mobile sheet alike. */}
 			<span className="relative flex shrink-0">
-				<Icon className="size-[19px] shrink-0" aria-hidden="true" />
+				<Icon
+					className={cn(
+						"size-4 shrink-0 transition-colors",
+						destructive
+							? "text-destructive"
+							: isActive
+								? "text-primary"
+								: "text-foreground",
+					)}
+					aria-hidden="true"
+				/>
 				{/* Collapsed rail: a word does not fit. The button is 72px
 				 * wide around a centred 19px icon and the nav container is
 				 * `overflow-hidden`, so a text chip would be cut off at the
@@ -1086,6 +1164,7 @@ function SidebarUtilityItem({
 			onFocus={() => router.prefetch(href)}
 			className={className}
 			onClick={onClick}
+			aria-current={isActive ? "page" : undefined}
 			aria-label={
 				collapsed
 					? [label, adornmentLabel].filter(Boolean).join(". ")
@@ -1203,40 +1282,21 @@ function SidebarNavItem({
 			onFocus={prefetchOnIntent}
 			onClick={onNavigate}
 			className={cn(
-				"relative flex min-h-[32px] items-center rounded-[4px] px-2.5 py-1.5 text-sm transition-colors outline-none focus-visible:ring-1 focus-visible:ring-ring/50 focus-visible:ring-offset-0",
+				"group relative flex min-h-[28px] items-center rounded-md px-2.5 py-1 text-sm transition-colors duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 				collapsed ? "justify-center" : "gap-2.5",
 				item.isActive
-					? "text-foreground"
-					: "text-muted-foreground hover:bg-muted hover:text-foreground",
-				isChild && "min-h-[32px] py-1 text-xs",
+					? "bg-primary/[0.12] dark:bg-primary/[0.20] font-semibold text-primary"
+					: "text-foreground hover:bg-foreground/[0.06]",
+				isChild && "min-h-[26px] py-1",
 			)}
-			style={
-				item.isActive
-					? {
-							/* The design system: the active item sits on the wash with a crimson bar; the text stays ink. */
-							backgroundColor: "var(--accent)",
-						}
-					: undefined
-			}
 			aria-label={collapsed ? item.label : undefined}
 			aria-current={item.isActive ? "page" : undefined}
 			data-onboarding-target={item.onboardingId}
 		>
-			{/* Active indicator bar */}
-			{item.isActive && !collapsed && (
-				<span
-					className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-[2px]"
-					style={{
-						backgroundColor:
-							"var(--org-accent, var(--fab-accent-fill))",
-					}}
-				/>
-			)}
 			<item.icon
 				className={cn(
-					"shrink-0 transition-colors",
-					isChild ? "size-[17px]" : "size-[19px]",
-					item.isActive ? "" : "opacity-60",
+					"size-4 shrink-0 transition-colors",
+					item.isActive ? "text-primary" : "text-foreground",
 				)}
 				aria-hidden="true"
 			/>

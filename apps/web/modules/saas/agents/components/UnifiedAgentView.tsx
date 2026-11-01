@@ -2,7 +2,7 @@
 
 import { FABRIC_AGENT_ID } from "@repo/utils/page-limits";
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
-import { FabricLogo } from "@saas/shared/components/FabricLogo";
+import { SparklesIcon } from "@saas/shared/components/icons/SparklesIcon";
 import { Spinner } from "@shared/components/Spinner";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -12,15 +12,20 @@ import { SearchInput } from "@ui/components/search-input";
 import { cn } from "@ui/lib";
 import {
 	AlertCircle,
+	BadgeCheck,
 	BrainIcon,
+	ChevronDown,
 	CodeIcon,
 	FileTextIcon,
+	Flame,
 	GridIcon,
 	ListChecksIcon,
 	ListIcon,
 	Network,
 	Plus,
 	Search,
+	SlidersHorizontal,
+	Star,
 } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -61,7 +66,10 @@ export function UnifiedAgentView() {
 		}
 	}, [isOrgContext]);
 
-	const [viewMode, setViewMode] = useState<ViewMode>("grid");
+	const [viewMode, setViewMode] = useState<ViewMode>("list");
+	const [certifiedOnly, setCertifiedOnly] = useState(false);
+	const [popularOnly, setPopularOnly] = useState(false);
+	const [favoritedOnly, setFavoritedOnly] = useState(false);
 
 	const basePath = `${contextBasePath}/agents`;
 
@@ -161,6 +169,25 @@ export function UnifiedAgentView() {
 			filtered = filtered.filter((item) => item.scope === scopeFilter);
 		}
 
+		if (favoritedOnly) {
+			filtered = filtered.filter(
+				(item) =>
+					Boolean(
+						item.isFavorited || item.isPinned || item.isFeatured,
+					) || item._type === "instance",
+			);
+		}
+
+		if (certifiedOnly) {
+			filtered = filtered.filter((item) => item._type === "system");
+		}
+
+		if (popularOnly) {
+			filtered = [...filtered].sort(
+				(a, b) => (b.runCount || 0) - (a.runCount || 0),
+			);
+		}
+
 		// Apply search filter
 		if (searchQuery.trim()) {
 			const query = searchQuery.toLowerCase();
@@ -181,7 +208,15 @@ export function UnifiedAgentView() {
 		}
 
 		return filtered;
-	}, [systemAgents, instances, scopeFilter, searchQuery]);
+	}, [
+		systemAgents,
+		instances,
+		scopeFilter,
+		searchQuery,
+		favoritedOnly,
+		certifiedOnly,
+		popularOnly,
+	]);
 
 	const isLoading = loadingAvailable || loadingInstances;
 
@@ -204,7 +239,7 @@ export function UnifiedAgentView() {
 		(i) => i.scope === "PERSONAL",
 	).length;
 
-	// Build chip config — hide Organization in personal context
+	// Build chip config — hide Organization in personal context, and only show Personal when personal items exist
 	const chips: { value: AgentScope; label: string; count: number }[] = [
 		{ value: "ALL", label: "All", count: totalCount },
 		{ value: "SYSTEM", label: "System", count: systemCount },
@@ -217,111 +252,145 @@ export function UnifiedAgentView() {
 					},
 				]
 			: []),
-		{ value: "PERSONAL", label: "Personal", count: personalCount },
+		...(personalCount > 0
+			? [
+					{
+						value: "PERSONAL" as const,
+						label: "Personal",
+						count: personalCount,
+					},
+				]
+			: []),
 	];
 
 	return (
 		<div className="space-y-4">
-			<AgentsHero />
-
-			{/* One toolbar: scope on the left, search and actions on the
-			    right. The scope filter and the New button keep their
-			    onboarding anchors. */}
-			<div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-				<div
-					data-onboarding-target="agents-scope-filter"
-					className="flex flex-wrap items-center gap-1.5"
-				>
-					{chips.map(({ value, label, count }) => (
-						<button
-							key={value}
-							type="button"
-							onClick={() => setScopeFilter(value)}
-							aria-pressed={scopeFilter === value}
-							className={cn(
-								"rounded-[6px] border px-3 py-1.5 text-[13px] transition-colors",
-								scopeFilter === value
-									? "border-border bg-accent text-foreground"
-									: "border-transparent text-muted-foreground hover:bg-accent/60 hover:text-foreground",
-							)}
+			<AgentsHero
+				className="border-b-0 pb-1"
+				actions={
+					<div className="flex items-center gap-2">
+						<Link
+							href={`${basePath}/register`}
+							className="hidden sm:block"
 						>
-							{label}
-							<span className="ml-1.5 font-mono text-[11px] text-muted-foreground">
-								{count}
-							</span>
-						</button>
-					))}
-				</div>
-
-				<div className="flex flex-wrap items-center gap-2">
-					<div className="relative w-full sm:w-64">
-						<Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-						<SearchInput
-							placeholder="Search agents..."
-							value={searchQuery}
-							onChange={(e) => setSearchQuery(e.target.value)}
-							className="h-9 pl-9 text-sm"
-						/>
-					</div>
-
-					<div className="flex gap-0.5 rounded-[6px] border p-0.5">
-						<Button
-							variant={
-								viewMode === "grid" ? "secondary" : "ghost"
-							}
-							size="icon-sm"
-							onClick={() => setViewMode("grid")}
-							aria-label="Grid view"
-							aria-pressed={viewMode === "grid"}
-						>
-							<GridIcon className="h-4 w-4" />
-						</Button>
-						<Button
-							variant={
-								viewMode === "list" ? "secondary" : "ghost"
-							}
-							size="icon-sm"
-							onClick={() => setViewMode("list")}
-							aria-label="List view"
-							aria-pressed={viewMode === "list"}
-						>
-							<ListIcon className="h-4 w-4" />
-						</Button>
-					</div>
-
-					<Link
-						href={`${basePath}/register`}
-						className="hidden sm:block"
-					>
-						<Button variant="outline" size="sm">
-							<Network className="mr-2 h-4 w-4" />
-							Register External
-						</Button>
-					</Link>
-
-					<Button
-						asChild
-						size="sm"
-						data-onboarding-target="agents-new"
-						className="flex-1 sm:flex-none"
-					>
-						<Link href={`${contextBasePath}/agents/create`}>
-							<Plus className="mr-2 h-4 w-4" />
-							New Agent
+							<Button variant="outline" size="sm">
+								<Network className="mr-1.5 h-3.5 w-3.5" />
+								Register External
+							</Button>
 						</Link>
-					</Button>
-				</div>
+
+						<Button
+							asChild
+							size="sm"
+							data-onboarding-target="agents-new"
+						>
+							<Link href={`${contextBasePath}/agents/create`}>
+								<Plus className="mr-1.5 h-4 w-4" />
+								New
+							</Link>
+						</Button>
+					</div>
+				}
+			/>
+
+			{/* Full-width Databricks Genie search bar */}
+			<div className="relative w-full">
+				<Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+				<SearchInput
+					placeholder="Search Genie Agents..."
+					value={searchQuery}
+					onChange={(e) => setSearchQuery(e.target.value)}
+					className="h-10 w-full rounded-full border-border bg-background pl-10 pr-4 text-[13px] shadow-2xs"
+				/>
+			</div>
+
+			{/* Databricks Genie pill filter row */}
+			<div
+				data-onboarding-target="agents-scope-filter"
+				className="flex flex-wrap items-center gap-2"
+			>
+				<span
+					aria-hidden="true"
+					className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-border bg-background text-muted-foreground"
+				>
+					<SlidersHorizontal className="h-3.5 w-3.5" />
+				</span>
+
+				{chips.map(({ value, label, count }) => (
+					<button
+						key={value}
+						type="button"
+						onClick={() => setScopeFilter(value)}
+						aria-pressed={scopeFilter === value}
+						className={cn(
+							"inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-xs font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
+							scopeFilter === value
+								? "border-primary/40 bg-primary/[0.08] text-primary dark:bg-primary/[0.15]"
+								: "border-border bg-background text-foreground hover:bg-muted/60",
+						)}
+					>
+						<span>{label}</span>
+						<span className="font-mono text-[11px] text-muted-foreground">
+							{count}
+						</span>
+					</button>
+				))}
+
+				<button
+					type="button"
+					onClick={() => setFavoritedOnly((v) => !v)}
+					aria-pressed={favoritedOnly}
+					className={cn(
+						"inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-xs font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
+						favoritedOnly
+							? "border-primary/40 bg-primary/[0.08] text-primary dark:bg-primary/[0.15]"
+							: "border-border bg-background text-foreground hover:bg-muted/60",
+					)}
+				>
+					<Star className="h-3.5 w-3.5 text-amber-500" />
+					<span>Favorited</span>
+				</button>
+
+				<button
+					type="button"
+					onClick={() => setCertifiedOnly((v) => !v)}
+					aria-pressed={certifiedOnly}
+					className={cn(
+						"inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-xs font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
+						certifiedOnly
+							? "border-primary/40 bg-primary/[0.08] text-primary dark:bg-primary/[0.15]"
+							: "border-border bg-background text-foreground hover:bg-muted/60",
+					)}
+				>
+					<BadgeCheck className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
+					<span>Certified</span>
+				</button>
+
+				<button
+					type="button"
+					onClick={() => setPopularOnly((v) => !v)}
+					aria-pressed={popularOnly}
+					className={cn(
+						"inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-xs font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
+						popularOnly
+							? "border-primary/40 bg-primary/[0.08] text-primary dark:bg-primary/[0.15]"
+							: "border-border bg-background text-foreground hover:bg-muted/60",
+					)}
+				>
+					<Flame className="h-3.5 w-3.5 text-rose-500" />
+					<span>Popular</span>
+				</button>
 			</div>
 
 			{/* Fabric Loom, the orchestrator, always first and full width.
 			    Product kept this card's name when the assistant became
-			    Advisor; the page it opens is still Advisor. */}
+			    Genie; the page it opens is Genie. */}
 			<div data-onboarding-target="agents-featured">
 				<FeaturedAgentCard
 					name="Fabric Loom"
-					description="Hub-and-spoke orchestrator that routes tasks to specialized agents via A2A protocol"
+					description="Genie is the AI coworker for engineering & product teams. Start a conversation across your agents, codebases, documents, and workflows."
 					href={`${basePath}/fabric-ai`}
-					icon={<FabricLogo className="h-6 w-6" size={24} />}
+					icon={<SparklesIcon className="h-6 w-6" />}
 					badge="Orchestrator"
 					badgeVariant="outline"
 					capabilities={[
@@ -351,18 +420,65 @@ export function UnifiedAgentView() {
 						"Supports Fast, Balanced & Thorough reasoning modes",
 					]}
 					isPrimary
-					ctaLabel="Try Agent"
+					ctaLabel="Explore Genie"
 				/>
 			</div>
 
+			{/* Section header bar: All Agents + Sort & View Switcher */}
+			<div className="flex items-center justify-between pt-2">
+				<h2 className="text-[14px] font-semibold text-foreground">
+					All Agents
+				</h2>
+
+				<div className="flex items-center gap-2">
+					<button
+						type="button"
+						onClick={() => setPopularOnly((v) => !v)}
+						className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+					>
+						<span>{popularOnly ? "Popular" : "Relevance"}</span>
+						<ChevronDown className="h-3.5 w-3.5" />
+					</button>
+
+					<div className="flex gap-0.5 rounded-[6px] border border-border bg-background p-0.5">
+						<Button
+							variant={
+								viewMode === "list" ? "secondary" : "ghost"
+							}
+							size="sm"
+							onClick={() => setViewMode("list")}
+							aria-label="List view"
+							aria-pressed={viewMode === "list"}
+							className="h-7 gap-1.5 px-2 text-xs"
+						>
+							<ListIcon className="h-3.5 w-3.5" />
+							<span>List</span>
+						</Button>
+						<Button
+							variant={
+								viewMode === "grid" ? "secondary" : "ghost"
+							}
+							size="sm"
+							onClick={() => setViewMode("grid")}
+							aria-label="Grid view"
+							aria-pressed={viewMode === "grid"}
+							className="h-7 gap-1.5 px-2 text-xs"
+						>
+							<GridIcon className="h-3.5 w-3.5" />
+							<span>Grid</span>
+						</Button>
+					</div>
+				</div>
+			</div>
+
 			{/* No Results */}
-			{filteredItems.length === 0 && searchQuery && (
+			{filteredItems.length === 0 && (
 				<Alert>
 					<AlertCircle className="h-4 w-4" />
 					<AlertTitle>No Results</AlertTitle>
 					<AlertDescription>
-						No agents match your search query. Try different
-						keywords.
+						No agents match your current filters. Try adjusting your
+						search or filter selection.
 					</AlertDescription>
 				</Alert>
 			)}

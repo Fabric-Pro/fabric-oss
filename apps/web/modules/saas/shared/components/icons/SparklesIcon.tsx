@@ -1,6 +1,13 @@
-import type { SVGProps } from "react";
+import { type SVGProps, useId } from "react";
 
+/**
+ * Databricks Genie lamp + 4-point sparkle icon with the signature
+ * blue → violet → coral-red gradient.
+ */
 export function SparklesIcon(props: SVGProps<SVGSVGElement>) {
+	const rawId = useId();
+	const gradientId = `genie-grad-${rawId.replace(/:/g, "")}`;
+
 	return (
 		<svg
 			xmlns="http://www.w3.org/2000/svg"
@@ -11,9 +18,44 @@ export function SparklesIcon(props: SVGProps<SVGSVGElement>) {
 			aria-hidden="true"
 			{...props}
 		>
+			<defs>
+				<linearGradient
+					id={gradientId}
+					x1="3"
+					y1="4"
+					x2="21"
+					y2="20"
+					gradientUnits="userSpaceOnUse"
+				>
+					<stop offset="0%" stopColor="#4285F4" />
+					<stop offset="48%" stopColor="#A855F7" />
+					<stop offset="100%" stopColor="#FF5F46" />
+				</linearGradient>
+			</defs>
+			{/* Top 4-point Genie sparkle star */}
 			<path
-				fill="currentColor"
-				d="M14 5c0-.31.255-.556.558-.627a2.44 2.44 0 0 0 1.815-1.815C16.444 2.255 16.69 2 17 2c.31 0 .556.255.627.558.21.898.917 1.605 1.815 1.815.303.071.558.316.558.627 0 .31-.255.556-.558.627a2.44 2.44 0 0 0-1.815 1.815C17.556 7.745 17.31 8 17 8c-.31 0-.556-.255-.627-.558a2.44 2.44 0 0 0-1.815-1.815C14.255 5.556 14 5.31 14 5M1 12c0-.552.451-.991.996-1.082a6.005 6.005 0 0 0 4.922-4.922C7.008 5.45 7.448 5 8 5s.991.451 1.082.996a6.005 6.005 0 0 0 4.922 4.922c.545.09.996.53.996 1.082s-.451.991-.996 1.082a6.005 6.005 0 0 0-4.922 4.922C8.992 18.55 8.552 19 8 19s-.991-.451-1.082-.996a6.005 6.005 0 0 0-4.922-4.922C1.45 12.992 1 12.552 1 12m17 2c-.414 0-.741.34-.835.744a3.26 3.26 0 0 1-2.421 2.42c-.404.095-.744.422-.744.836s.34.741.744.835a3.26 3.26 0 0 1 2.42 2.421c.095.404.422.744.836.744s.741-.34.835-.744a3.26 3.26 0 0 1 2.421-2.42c.404-.095.744-.422.744-.836s-.34-.741-.744-.835a3.26 3.26 0 0 1-2.42-2.421C18.74 14.34 18.414 14 18 14"
+				d="M12.5 2.5C12.9 5.1 14.1 6.3 16.7 6.7C14.1 7.1 12.9 8.3 12.5 10.9C12.1 8.3 10.9 7.1 8.3 6.7C10.9 6.3 12.1 5.1 12.5 2.5Z"
+				fill={`url(#${gradientId})`}
+				stroke={`url(#${gradientId})`}
+				strokeWidth={1.6}
+				strokeLinejoin="round"
+			/>
+			{/* Curved Genie lamp handle, bowl, and spout */}
+			<path
+				d="M4.5 14.8V12A1.85 1.85 0 0 1 8.2 11.6C9.1 15.2 10.8 16.4 12.5 16.4C14.2 16.4 16.1 14.8 17.2 10.8H20.8"
+				stroke={`url(#${gradientId})`}
+				strokeWidth={2.4}
+				strokeLinecap="butt"
+				strokeLinejoin="round"
+			/>
+			{/* Lamp base bar */}
+			<rect
+				x="9.2"
+				y="19"
+				width="6.6"
+				height="2.4"
+				rx="0.4"
+				fill={`url(#${gradientId})`}
 			/>
 		</svg>
 	);

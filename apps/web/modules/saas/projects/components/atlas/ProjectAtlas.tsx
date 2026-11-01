@@ -1106,7 +1106,7 @@ export function ProjectAtlas({ projectId }: ProjectAtlasProps) {
 					    needed. */}
 					<div
 						data-onboarding-target="atlas-view-switch"
-						className="inline-flex items-center gap-1 rounded-xl border border-border/60 bg-muted/60 p-1"
+						className="inline-flex items-center gap-1 rounded-lg border border-border/60 bg-muted/60 p-1"
 					>
 						{(["OVERVIEW", "GRAPH", "SYSTEM"] as const).map(
 							(option) => {
@@ -1136,7 +1136,7 @@ export function ProjectAtlas({ projectId }: ProjectAtlasProps) {
 										disabled={disabled}
 										onClick={() => setView(option)}
 										className={cn(
-											"flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+											"flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 											isActive
 												? "bg-card text-foreground shadow-sm"
 												: "text-muted-foreground hover:text-foreground",
@@ -1218,7 +1218,7 @@ export function ProjectAtlas({ projectId }: ProjectAtlasProps) {
 					    on the Overview view (the dashboard it snapshots). */}
 					{isReady && view === "OVERVIEW" && (
 						<>
-							<span className="hidden text-[11px] uppercase tracking-[0.16em] text-muted-foreground/70 sm:inline">
+							<span className="hidden text-[11px] uppercase tracking-wide text-muted-foreground/70 sm:inline">
 								{t("overview.export")}
 							</span>
 							<Button
@@ -1305,8 +1305,8 @@ export function ProjectAtlas({ projectId }: ProjectAtlasProps) {
 	if (statusQuery.isLoading || reposQuery.isLoading) {
 		return (
 			<div className="space-y-4">
-				<Skeleton className="h-14 w-full rounded-xl" />
-				<Skeleton className="h-[600px] w-full rounded-xl" />
+				<Skeleton className="h-14 w-full rounded-lg" />
+				<Skeleton className="h-[600px] w-full rounded-lg" />
 			</div>
 		);
 	}
@@ -1318,12 +1318,12 @@ export function ProjectAtlas({ projectId }: ProjectAtlasProps) {
 	// below — with Re-analyse gated until the repo is re-authenticated.
 	if (!status?.hasRepository && !status?.analysisId) {
 		return (
-			<div className="rounded-2xl border border-border/60 bg-card/70 py-12">
+			<div className="rounded-lg border border-border/60 bg-card/70 py-12">
 				<EmptyState>
 					<EmptyStateIcon>
 						<NetworkIcon className="size-10" />
 					</EmptyStateIcon>
-					<EmptyStateTitle className="font-serif text-2xl font-normal">
+					<EmptyStateTitle className="text-2xl font-semibold">
 						{t("empty.noRepoTitle")}
 					</EmptyStateTitle>
 					<EmptyStateDescription className="max-w-md">
@@ -1358,7 +1358,7 @@ export function ProjectAtlas({ projectId }: ProjectAtlasProps) {
 				{controlsRow}
 				<div
 					className={cn(
-						"rounded-2xl border py-12",
+						"rounded-lg border py-12",
 						wasCancelled
 							? "border-border/60 bg-muted/40"
 							: needsReconnect || repoUnavailable
@@ -1381,7 +1381,7 @@ export function ProjectAtlas({ projectId }: ProjectAtlasProps) {
 								/>
 							)}
 						</EmptyStateIcon>
-						<EmptyStateTitle className="font-serif text-2xl font-normal">
+						<EmptyStateTitle className="text-2xl font-semibold">
 							{wasCancelled
 								? t("cancel.cancelledTitle")
 								: repoUnavailable
@@ -1468,12 +1468,12 @@ export function ProjectAtlas({ projectId }: ProjectAtlasProps) {
 		return (
 			<div className="space-y-4">
 				{controlsRow}
-				<div className="rounded-2xl border border-border/60 bg-card/70 py-16">
+				<div className="rounded-lg border border-border/60 bg-card/70 py-16">
 					<EmptyState>
 						<EmptyStateIcon>
 							<NetworkIcon className="size-10" />
 						</EmptyStateIcon>
-						<EmptyStateTitle className="font-serif text-2xl font-normal">
+						<EmptyStateTitle className="text-2xl font-semibold">
 							{t("empty.notAnalyzedTitle")}
 						</EmptyStateTitle>
 						<EmptyStateDescription className="max-w-md">
@@ -1554,7 +1554,7 @@ export function ProjectAtlas({ projectId }: ProjectAtlasProps) {
 						ref={canvasRef}
 						tabIndex={-1}
 						className={cn(
-							"min-w-0 overflow-hidden rounded-2xl border border-border/60",
+							"min-w-0 overflow-hidden rounded-lg border border-border/60",
 							"h-[520px] lg:h-[680px]",
 							// `flex-1` only on lg+ (horizontal split). On mobile the
 							// parent is a flex-col with no fixed height, where an
@@ -1562,7 +1562,7 @@ export function ProjectAtlas({ projectId }: ProjectAtlasProps) {
 							// 0px — so the fixed h-[520px] must win there.
 							"relative lg:flex-1",
 							// Programmatic focus target on panel close — no ring.
-							"focus-visible:outline-none",
+							"focus-visible:outline-hidden",
 						)}
 					>
 						{graphQuery.isLoading ? (
@@ -1627,7 +1627,7 @@ export function ProjectAtlas({ projectId }: ProjectAtlasProps) {
 								className={cn(
 									"absolute inset-x-3 top-3 bottom-3 z-20",
 									"lg:left-auto lg:w-[22rem] lg:max-w-[calc(100%-1.5rem)]",
-									"overflow-hidden rounded-xl border border-border/60 bg-background shadow-md",
+									"overflow-hidden rounded-lg border border-border/60 bg-background shadow-md",
 									"motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-right-2",
 								)}
 							>
@@ -1657,7 +1657,7 @@ export function ProjectAtlas({ projectId }: ProjectAtlasProps) {
 								className={cn(
 									"absolute inset-x-3 top-3 bottom-3 z-20",
 									"lg:left-auto lg:w-[22rem] lg:max-w-[calc(100%-1.5rem)]",
-									"overflow-hidden rounded-xl border border-border/60 bg-background shadow-md",
+									"overflow-hidden rounded-lg border border-border/60 bg-background shadow-md",
 									"motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-right-2",
 								)}
 							>
@@ -1723,9 +1723,9 @@ export function ProjectAtlas({ projectId }: ProjectAtlasProps) {
 				<div className="flex flex-col gap-4 lg:flex-row">
 					<div
 						className={cn(
-							"relative min-w-0 overflow-hidden rounded-2xl border border-border/60",
+							"relative min-w-0 overflow-hidden rounded-lg border border-border/60",
 							"h-[520px] lg:h-[680px] lg:flex-1",
-							"focus-visible:outline-none",
+							"focus-visible:outline-hidden",
 						)}
 					>
 						{systemGraphQuery.isLoading ? (
@@ -1795,7 +1795,7 @@ export function ProjectAtlas({ projectId }: ProjectAtlasProps) {
 								className={cn(
 									"absolute inset-x-3 top-3 bottom-3 z-20",
 									"lg:left-auto lg:w-[22rem] lg:max-w-[calc(100%-1.5rem)]",
-									"overflow-hidden rounded-xl border border-border/60 bg-background shadow-md",
+									"overflow-hidden rounded-lg border border-border/60 bg-background shadow-md",
 									"motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-right-2",
 								)}
 							>
@@ -1825,7 +1825,7 @@ export function ProjectAtlas({ projectId }: ProjectAtlasProps) {
 								className={cn(
 									"absolute inset-x-3 top-3 bottom-3 z-20",
 									"lg:left-auto lg:w-[22rem] lg:max-w-[calc(100%-1.5rem)]",
-									"overflow-hidden rounded-xl border border-border/60 bg-background shadow-md",
+									"overflow-hidden rounded-lg border border-border/60 bg-background shadow-md",
 									"motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-right-2",
 								)}
 							>

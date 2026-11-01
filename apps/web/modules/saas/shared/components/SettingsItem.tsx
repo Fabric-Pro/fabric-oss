@@ -13,12 +13,12 @@ export function SettingsItem({
 	danger?: boolean;
 }>) {
 	return (
-		<Card className="@container rounded-md border p-4 md:p-6">
+		<Card className="@container rounded-lg border border-border p-4 md:p-6">
 			<div className="grid grid-cols-1 gap-4 @-xl:grid-cols-[min(100%/3,280px)_auto] @xl:gap-6">
 				<div className="flex shrink-0 flex-col gap-1.5">
 					<h3
 						className={cn(
-							"m-0 text-sm font-medium leading-tight",
+							"m-0 text-sm font-semibold leading-tight",
 							danger && "text-destructive",
 						)}
 					>

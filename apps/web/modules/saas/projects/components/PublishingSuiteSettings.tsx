@@ -56,7 +56,7 @@ const CADENCE_OPTIONS: { value: PublishingCadence; label: string }[] = [
 ];
 
 const sectionTitleClass =
-	"text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground";
+	"text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
 
 /** A selected chat broadcast target. Mirrors `PublishingChatChannel` from
  *  `@repo/database`; declared locally because this component talks to the
@@ -414,7 +414,7 @@ export function PublishingSuiteSettings({
 				 * later slice, deliberately, so an admin is never handed a
 				 * switch that visibly does nothing.
 				 */}
-				<div className="space-y-4 rounded-xl border border-border p-4">
+				<div className="space-y-4 rounded-lg border border-border p-4">
 					<div>
 						<p className="font-medium text-foreground">
 							Recommendation preferences
@@ -514,7 +514,7 @@ export function PublishingSuiteSettings({
 					</div>
 				</div>
 
-				<div className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-border p-4">
+				<div className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-border p-4">
 					<div className="min-w-0">
 						<p className="font-medium text-foreground">
 							Notify contributors
@@ -545,7 +545,7 @@ export function PublishingSuiteSettings({
 						chat off.
 					</p>
 					{hasLinkedChatChannels ? (
-						<ul className="divide-y divide-border rounded-xl border border-border">
+						<ul className="divide-y divide-border rounded-lg border border-border">
 							{linkedChatChannels.map((channel) => {
 								const key = chatChannelKey(channel);
 								const checked = selectedChatChannels.some(

@@ -266,7 +266,7 @@ function NodeLinkifiedText({
 						key={i}
 						type="button"
 						onClick={() => onFocusNode(seg.key)}
-						className="inline-flex items-center gap-0.5 rounded bg-primary/10 px-1 py-0.5 text-[0.8em] font-medium text-primary underline-offset-2 hover:bg-primary/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						className="inline-flex items-center gap-0.5 rounded bg-primary/10 px-1 py-0.5 text-[0.8em] font-medium text-primary underline-offset-2 hover:bg-primary/20 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 						aria-label={`Focus node: ${seg.label}`}
 					>
 						{seg.label}
@@ -943,7 +943,7 @@ export function AtlasChatPanel({
 						<button
 							type="button"
 							onClick={() => handleSelectConversation(conv)}
-							className="flex min-w-0 flex-1 items-center gap-2 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							className="flex min-w-0 flex-1 items-center gap-2 rounded text-left focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 						>
 							<span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
 								{conv.title}
@@ -1067,7 +1067,7 @@ export function AtlasChatPanel({
 	return (
 		<section
 			aria-label={t("regionLabel")}
-			className="flex h-full flex-col rounded-xl border border-border/60 bg-card"
+			className="flex h-full flex-col rounded-lg border border-border/60 bg-card"
 		>
 			<header className="flex items-center gap-2 border-b border-border/60 px-4 py-3">
 				<SparklesIcon
@@ -1129,7 +1129,7 @@ export function AtlasChatPanel({
 				   history never grows the panel. */
 				<div className="flex min-h-0 flex-1 flex-col">
 					<div className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-2">
-						<span className="text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
+						<span className="text-[11px] uppercase tracking-wide text-muted-foreground">
 							{t("conversations")}
 						</span>
 						<div className="flex items-center gap-1.5">
@@ -1174,7 +1174,7 @@ export function AtlasChatPanel({
 											key={bucket}
 											className="flex flex-col gap-0.5"
 										>
-											<p className="px-2 pb-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
+											<p className="px-2 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">
 												{t(BUCKET_LABEL_KEY[bucket])}
 											</p>
 											<ul className="flex flex-col gap-0.5 overflow-x-hidden">
@@ -1199,7 +1199,7 @@ export function AtlasChatPanel({
 												setOlderExpanded((v) => !v)
 											}
 											aria-expanded={olderExpanded}
-											className="flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+											className="flex items-center gap-1 rounded px-2 py-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 										>
 											<ChevronDownIcon
 												aria-hidden="true"
@@ -1288,7 +1288,7 @@ export function AtlasChatPanel({
 												void send(suggestion)
 											}
 											disabled={streaming}
-											className="w-full rounded-lg border border-border/60 bg-card px-3 py-2 text-left text-[12.5px] text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+											className="w-full rounded-lg border border-border/60 bg-card px-3 py-2 text-left text-[12.5px] text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
 										>
 											{suggestion}
 										</button>
@@ -1327,7 +1327,7 @@ export function AtlasChatPanel({
 								>
 									<div
 										className={cn(
-											"min-w-0 max-w-full overflow-hidden rounded-2xl px-3.5 py-2 text-sm",
+											"min-w-0 max-w-full overflow-hidden rounded-lg px-3.5 py-2 text-sm",
 											message.role === "user"
 												? "bg-primary text-primary-foreground"
 												: "bg-muted text-foreground",
@@ -1380,7 +1380,7 @@ export function AtlasChatPanel({
 					<label htmlFor={inputId} className="sr-only">
 						{t("inputLabel")}
 					</label>
-					<div className="flex items-end gap-2 rounded-xl border border-input bg-background p-1.5 transition-colors focus-within:border-ring focus-within:ring-1 focus-within:ring-ring">
+					<div className="flex items-end gap-2 rounded-lg border border-input bg-background p-1.5 transition-colors focus-within:border-ring focus-within:ring-1 focus-within:ring-ring">
 						<Textarea
 							id={inputId}
 							ref={textareaRef}

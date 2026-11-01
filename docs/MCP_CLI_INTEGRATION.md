@@ -1,6 +1,9 @@
 # MCP CLI Integration
 
-This document describes the integration of `mcp-cli` into Fabric Portal as a runtime tool for AI agents, enabling dynamic MCP server discovery and tool execution.
+- **Audience**: Developers and operators
+- **Owner**: Platform engineering
+
+This document describes the integration of `mcp-cli` and the official `@fabricorg/cli` / `@fabricorg/sdk-mcp` packages with Fabric Portal for AI agent delegation, stateless/durable MCP tool execution, and interactive MCP Apps (`ui://fabric/*`).
 
 ## Overview
 
@@ -284,11 +287,65 @@ mcp-cli  # Should list servers
 
 Check server configuration and ensure required environment variables are set.
 
+## `@fabricorg/cli` and `@fabricorg/sdk-mcp` Commands
+
+The published `@fabricorg/cli` (`0.7.6`) and `@fabricorg/sdk-mcp` (`0.1.16`) packages expose first-class terminal commands and programmatic helpers for Fabric Agents, MCP Gateway tool calls, and interactive MCP Apps.
+
+### Agent Delegation & Subscriptions (`fabric agents`)
+
+```bash
+# Delegate a coding task to a remote Fabric Agents server or local harness
+fabric agents delegate \
+  --project <project-id> \
+  --prompt "Audit tenant isolation across project procedures" \
+  --target fabric-remote \
+  --harness claude
+
+# Generate or open a deep link for Fabric Agents Desktop (fabric-agents://handoff?...)
+fabric agents desktop --project <project-id> --harness claude --print-url
+
+# List active subscription harnesses and available credit pools
+fabric agents subscriptions --json
+```
+
+### MCP Gateway, Durable Tool Execution & MCP Apps (`fabric mcp`)
+
+```bash
+# List tools exposed by the Fabric MCP Gateway (stateless mode supported)
+fabric mcp tools --stateless
+
+# Execute an MCP tool with Temporal durability and an idempotency key
+fabric mcp call --durable --idempotency-key <key> <tool-name> '{"projectId":"proj_123"}'
+
+# List or inspect interactive Fabric MCP Apps (ui://fabric/*)
+fabric mcp apps
+fabric mcp apps --uri ui://fabric/visualize --json
+
+# Run a local stdio MCP server bridged to your Fabric organization
+fabric mcp serve --project <project-id>
+```
+
+### Built-in Interactive MCP Apps (`ui://fabric/*`)
+
+Both the HTTP MCP Gateway (`/mcp` and `/api/mcp-gateway`) and `@fabricorg/sdk-mcp` serve self-contained `text/html;profile=mcp-app` resources built with the Fabric UI Kit (`#bc3e0b` warm vermilion palette, 3-arc Fabric mark, SHA-256 script CSP, and A2UI v0.9.1 runtime):
+
+| Resource URI | Companion Tool | Description |
+|---|---|---|
+| `ui://fabric/project-dashboard` | `fabric_project_dashboard` | Interactive project overview with instructions, living memory, and quick actions |
+| `ui://fabric/agent-delegation` | `fabric_delegate_task` | Live delegation status card for remote Fabric Agents Server and Desktop handoffs |
+| `ui://fabric/workflow-visualizer` | `fabric_workflow_graph` | Visual DAG pipeline inspector for Temporal workflows and node execution telemetry |
+| `ui://fabric/genie-insights` | `fabric_genie_query` | Databricks Genie Agents & Lakebase workspace card with SQL and metric summaries |
+| `ui://fabric/visualize` | `fabric_visualize` | Declarative A2UI v0.9.1 canvas rendering KpiGrid, BarChart, LineChart, DataTable, BadgeList, and Timeline |
+
 ## Related Files
 
 - `services/fabric-ai-server/internal/tools/mcpcli/mcpcli.go` - Go wrapper
 - `services/fabric-ai-server/internal/server/delegated.go` - HTTP endpoints
 - `packages/fabric-ai/client.ts` - TypeScript client methods
+- `packages/sdk-mcp/src/mcp-apps.ts` - SDK MCP Apps & A2UI v0.9.1 catalog
+- `packages/cli/src/commands/agents/index.ts` - `fabric agents` CLI commands
+- `packages/cli/src/commands/mcp/index.ts` - `fabric mcp` CLI commands
+- `apps/web/modules/saas/mcp/lib/gateway/mcp-apps.ts` - Gateway MCP Apps & Durable Temporal execution
 - `packages/temporal/src/activities/orchestrator/tools/fabric-ai-tools.ts` - Virtual tool definitions
 - `packages/temporal/src/activities/orchestrator/execution/handlers/fabric-ai-handler.ts` - Tool handlers
 

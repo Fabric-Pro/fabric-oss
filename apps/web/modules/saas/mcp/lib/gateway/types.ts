@@ -154,13 +154,19 @@ export interface GatewayToolDefinition {
 	 * wire). A gateway client that does not know the key ignores it, and the
 	 * gateway itself stays prompt-free (keys are governed by scopes).
 	 */
-	_meta?: ConfirmationMeta;
+	_meta?: Partial<ConfirmationMeta> & {
+		ui?: {
+			resourceUri: string;
+		};
+		"ui/resourceUri"?: string;
+	};
 }
 
 export interface ToolCallResult {
 	content: Array<{ type: "text"; text: string }>;
 	isError?: boolean;
 	structuredContent?: unknown;
+	_meta?: Record<string, unknown>;
 }
 
 export interface JsonRpcRequest {

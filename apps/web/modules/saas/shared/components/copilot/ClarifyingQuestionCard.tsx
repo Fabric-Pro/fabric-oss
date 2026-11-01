@@ -224,7 +224,7 @@ export function ClarifyingQuestionCard({
 			</output>
 
 			<div className="mb-2 flex items-start justify-between gap-2">
-				<span className="inline-flex items-center gap-2 text-[0.6875rem] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+				<span className="inline-flex items-center gap-2 text-xs font-semibold text-muted-foreground">
 					<span
 						className="h-3 w-0.5 rounded-full bg-primary"
 						aria-hidden="true"
@@ -271,7 +271,7 @@ export function ClarifyingQuestionCard({
 							onClick={() => submitOption(option)}
 							onKeyDown={(e) => handleOptionKeyDown(e, index)}
 							aria-keyshortcuts={String(index + 1)}
-							className="flex w-full items-start gap-2.5 rounded-md border border-border bg-background px-3 py-2 text-left text-sm text-foreground transition-colors hover:border-primary/40 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							className="flex w-full items-start gap-2.5 rounded-md border border-border bg-background px-3 py-2 text-left text-sm text-foreground transition-colors duration-150 hover:border-primary/40 hover:bg-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 						>
 							<span
 								className="flex size-5 shrink-0 items-center justify-center rounded border border-border bg-muted text-[0.6875rem] font-medium text-muted-foreground"

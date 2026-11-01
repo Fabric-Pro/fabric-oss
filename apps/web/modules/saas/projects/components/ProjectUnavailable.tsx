@@ -37,7 +37,7 @@ export function ProjectUnavailable({
 
 	return (
 		<div className="flex flex-col items-center justify-center py-12">
-			<div className="mb-4 rounded-2xl bg-muted p-4">
+			<div className="mb-4 rounded-lg bg-muted p-4">
 				{notFound ? (
 					<FolderIcon className="size-8 text-muted-foreground" />
 				) : (

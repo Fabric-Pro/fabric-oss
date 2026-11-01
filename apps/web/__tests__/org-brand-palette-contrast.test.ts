@@ -30,9 +30,9 @@ import { readableForegroundFor } from "../modules/saas/organizations/components/
 
 const AA_NORMAL_TEXT = 4.5;
 
-/** Surfaces brand ink is expected to be legible on, per theme. */
-const LIGHT_SURFACES = { background: "#f7f6f2", card: "#fffdf9" };
-const DARK_SURFACES = { background: "#111110", card: "#1b1a19" };
+/** Surfaces brand ink is expected to be legible on, per theme (DuBois surfaces). */
+const LIGHT_SURFACES = { background: "#ffffff", card: "#ffffff" };
+const DARK_SURFACES = { background: "#11171c", card: "#182026" };
 
 type Rgb = [number, number, number];
 

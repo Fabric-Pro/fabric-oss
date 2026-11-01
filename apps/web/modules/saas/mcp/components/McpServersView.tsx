@@ -1260,7 +1260,7 @@ export function McpServersView({
 	return (
 		<div className="space-y-6">
 			{/* Header with Search and Add Button */}
-			<div className="app-surface flex flex-col gap-3 rounded-2xl p-3 sm:flex-row sm:items-center sm:justify-between">
+			<div className="app-surface flex flex-col gap-3 rounded-lg p-3 sm:flex-row sm:items-center sm:justify-between">
 				<div
 					data-onboarding-target="mcp-servers-search"
 					className="relative w-full max-w-xl flex-1"
@@ -1270,13 +1270,13 @@ export function McpServersView({
 						placeholder="Search MCP servers..."
 						value={searchQuery}
 						onChange={(e) => setSearchQuery(e.target.value)}
-						className="h-10 rounded-xl border-border/70 bg-background/70 pl-9"
+						className="h-10 rounded-lg border-border/70 bg-background/70 pl-9"
 					/>
 				</div>
 
 				<div className="flex flex-wrap items-center gap-2">
 					{/* View Toggle */}
-					<div className="flex gap-1 rounded-xl border border-border/70 bg-muted/35 p-1">
+					<div className="flex gap-1 rounded-lg border border-border/70 bg-muted/35 p-1">
 						<Button
 							variant={viewMode === "grid" ? "default" : "ghost"}
 							size="icon-sm"
@@ -1335,7 +1335,7 @@ export function McpServersView({
 					<Spinner />
 				</div>
 			) : filteredConfigs.length === 0 ? (
-				<div className="app-surface rounded-2xl py-14 text-center">
+				<div className="app-surface rounded-lg py-14 text-center">
 					<p className="text-muted-foreground mb-4">
 						{searchQuery
 							? "No MCP servers found matching your search"

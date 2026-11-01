@@ -146,7 +146,7 @@ export function AgentTemplateCard({
 	return (
 		<Card
 			className={cn(
-				"group relative flex h-full cursor-pointer flex-col rounded-2xl border bg-card p-5 transition-all duration-300 hover:border-primary/50 hover:shadow-lg",
+				"group relative flex h-full cursor-pointer flex-col rounded-lg border bg-card p-5 transition-all duration-300 hover:border-primary/50 hover:shadow-lg",
 			)}
 			onClick={onClick}
 			onKeyDown={(e) => {
@@ -171,7 +171,7 @@ export function AgentTemplateCard({
 			<div className="flex items-start gap-4">
 				<div
 					className={cn(
-						"flex h-14 w-14 flex-shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br shadow-lg",
+						"flex h-14 w-14 flex-shrink-0 items-center justify-center rounded-lg bg-gradient-to-br shadow-lg",
 						categoryGradient,
 					)}
 				>
@@ -243,7 +243,7 @@ export function AgentTemplateCard({
 				{template.description}
 			</p>
 
-			<div className="mt-4 rounded-xl border bg-muted/30 p-3">
+			<div className="mt-4 rounded-lg border bg-muted/30 p-3">
 				<p className="line-clamp-4 whitespace-pre-wrap text-xs text-muted-foreground">
 					{template.instructions}
 				</p>

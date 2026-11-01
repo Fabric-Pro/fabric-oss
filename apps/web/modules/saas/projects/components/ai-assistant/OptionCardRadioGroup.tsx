@@ -47,7 +47,7 @@ export function OptionCardRadioGroup<T extends string>({
 				<RadioGroupPrimitive.Item
 					key={option.value}
 					value={option.value}
-					className="group flex flex-col gap-1.5 rounded-lg border border-border bg-background px-3.5 py-3 text-left transition-colors hover:border-foreground/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:border-border data-[state=checked]:border-foreground/40 data-[state=checked]:bg-muted"
+					className="group flex flex-col gap-1.5 rounded-lg border border-border bg-background px-3.5 py-3 text-left transition-colors hover:border-foreground/30 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:border-border data-[state=checked]:border-foreground/40 data-[state=checked]:bg-muted"
 				>
 					<span className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
 						<span

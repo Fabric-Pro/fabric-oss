@@ -122,7 +122,7 @@ function sessionStatusMeta(status: string): {
 function SessionConversation({ messages }: { messages: SessionMessage[] }) {
 	return (
 		<div>
-			<p className="mb-2 font-medium text-[11px] text-muted-foreground uppercase tracking-[0.14em]">
+			<p className="mb-2 font-medium text-[11px] text-muted-foreground uppercase tracking-wide">
 				Conversation
 			</p>
 			{messages.length > 0 ? (
@@ -140,7 +140,7 @@ function SessionConversation({ messages }: { messages: SessionMessage[] }) {
 							>
 								<div
 									className={cn(
-										"max-w-[85%] rounded-2xl px-3.5 py-2",
+										"max-w-[85%] rounded-lg px-3.5 py-2",
 										isUser
 											? "rounded-br-sm bg-primary text-primary-foreground"
 											: "rounded-bl-sm bg-muted text-foreground",
@@ -191,7 +191,7 @@ function SessionResults({
 	if (appliedItems.length > 0) {
 		return (
 			<div>
-				<p className="mb-2 font-medium text-[11px] text-muted-foreground uppercase tracking-[0.14em]">
+				<p className="mb-2 font-medium text-[11px] text-muted-foreground uppercase tracking-wide">
 					Results
 				</p>
 				<ul className="space-y-1.5">
@@ -275,7 +275,7 @@ function SessionResults({
 	if (changes.length > 0) {
 		return (
 			<div>
-				<p className="mb-2 font-medium text-[11px] text-muted-foreground uppercase tracking-[0.14em]">
+				<p className="mb-2 font-medium text-[11px] text-muted-foreground uppercase tracking-wide">
 					Proposed changes
 				</p>
 				<ul className="space-y-1">
@@ -388,7 +388,7 @@ function SessionDetailView({
 						className="size-4 shrink-0 text-secondary"
 						aria-hidden="true"
 					/>
-					<DialogTitle className="truncate font-serif font-normal text-xl">
+					<DialogTitle className="truncate font-semibold text-xl">
 						AI Update by {author}
 					</DialogTitle>
 					{status ? (
@@ -650,7 +650,7 @@ export function BacklogSessionHistoryDialog({
 				) : (
 					<>
 						<DialogHeader className="border-border/60 border-b px-6 pt-6 pb-4">
-							<DialogTitle className="font-serif font-normal text-2xl">
+							<DialogTitle className="font-semibold text-2xl">
 								Session history
 							</DialogTitle>
 							<DialogDescription>

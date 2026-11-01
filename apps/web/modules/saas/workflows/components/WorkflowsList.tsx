@@ -20,6 +20,7 @@ import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { toast } from "sonner";
 import { useDebounceValue } from "usehooks-ts";
+import { VisualDataPrepStudio } from "./VisualDataPrepStudio";
 import { WorkflowCard } from "./WorkflowCard";
 import { WorkflowsHero } from "./WorkflowsHero";
 
@@ -100,178 +101,208 @@ export function WorkflowsList() {
 	).length;
 
 	return (
-		<div className="space-y-8">
+		<div className="space-y-6">
 			{/* Hero Section */}
 			<WorkflowsHero />
 
-			{/* Status Filter Pills */}
-			<div
-				data-onboarding-target="workflows-status-filter"
-				className="flex flex-wrap justify-center gap-2"
-			>
-				<button
-					type="button"
-					onClick={() => setStatusFilter("all")}
-					className={cn(
-						"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
-						statusFilter === "all"
-							? "border border-border bg-accent text-foreground"
-							: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
-					)}
-				>
-					All ({allCount})
-				</button>
-				<button
-					type="button"
-					onClick={() => setStatusFilter("DRAFT")}
-					className={cn(
-						"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
-						statusFilter === "DRAFT"
-							? "border border-border bg-accent text-foreground"
-							: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
-					)}
-				>
-					Draft ({draftCount})
-				</button>
-				<button
-					type="button"
-					onClick={() => setStatusFilter("ACTIVE")}
-					className={cn(
-						"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
-						statusFilter === "ACTIVE"
-							? "border border-border bg-accent text-foreground"
-							: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
-					)}
-				>
-					Active ({activeCount})
-				</button>
-				<button
-					type="button"
-					onClick={() => setStatusFilter("PAUSED")}
-					className={cn(
-						"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
-						statusFilter === "PAUSED"
-							? "border border-border bg-accent text-foreground"
-							: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
-					)}
-				>
-					Paused ({pausedCount})
-				</button>
-				<button
-					type="button"
-					onClick={() => setStatusFilter("ARCHIVED")}
-					className={cn(
-						"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
-						statusFilter === "ARCHIVED"
-							? "border border-border bg-accent text-foreground"
-							: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
-					)}
-				>
-					Archived ({archivedCount})
-				</button>
-				<button
-					type="button"
-					aria-pressed={scheduledOnly}
-					onClick={() => setScheduledOnly((current) => !current)}
-					className={cn(
-						"flex items-center gap-1.5 rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
-						scheduledOnly
-							? "border border-border bg-accent text-foreground"
-							: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
-					)}
-				>
-					<ClockIcon className="h-3.5 w-3.5" aria-hidden="true" />
-					{t("scheduled")} ({scheduledCount})
-				</button>
-			</div>
+			{/* Databricks Visual Data Prep Interactive Studio */}
+			<VisualDataPrepStudio
+				connectionsHref={`${basePath}/connections`}
+				onCreateWorkflow={handleCreateWorkflow}
+				onOpenWorkflow={(id) =>
+					router.push(`${workflowsBasePath}/${id}`)
+				}
+				workflows={workflows}
+			/>
 
-			{/* Actions Bar */}
-			<div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
-				{/* Search */}
-				<div
-					data-onboarding-target="workflows-search"
-					className="relative flex-1 max-w-md w-full"
-				>
-					<SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-					<SearchInput
-						placeholder="Search workflows..."
-						value={searchQuery}
-						onChange={(e) => setSearchQuery(e.target.value)}
-						className="pl-9"
-					/>
+			{/* Saved Workflows Catalog & Filter Bar */}
+			<div className="space-y-4 pt-2">
+				<div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+					<h2 className="text-sm font-semibold text-foreground">
+						Saved workflows ({allCount})
+					</h2>
+
+					{/* Status Filter Pills */}
+					<div
+						data-onboarding-target="workflows-status-filter"
+						className="flex flex-wrap items-center gap-1.5"
+					>
+						<button
+							type="button"
+							onClick={() => setStatusFilter("all")}
+							className={cn(
+								"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
+								statusFilter === "all"
+									? "border border-border bg-accent text-foreground"
+									: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
+							)}
+						>
+							All ({allCount})
+						</button>
+						<button
+							type="button"
+							onClick={() => setStatusFilter("DRAFT")}
+							className={cn(
+								"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
+								statusFilter === "DRAFT"
+									? "border border-border bg-accent text-foreground"
+									: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
+							)}
+						>
+							Draft ({draftCount})
+						</button>
+						<button
+							type="button"
+							onClick={() => setStatusFilter("ACTIVE")}
+							className={cn(
+								"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
+								statusFilter === "ACTIVE"
+									? "border border-border bg-accent text-foreground"
+									: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
+							)}
+						>
+							Active ({activeCount})
+						</button>
+						<button
+							type="button"
+							onClick={() => setStatusFilter("PAUSED")}
+							className={cn(
+								"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
+								statusFilter === "PAUSED"
+									? "border border-border bg-accent text-foreground"
+									: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
+							)}
+						>
+							Paused ({pausedCount})
+						</button>
+						<button
+							type="button"
+							onClick={() => setStatusFilter("ARCHIVED")}
+							className={cn(
+								"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
+								statusFilter === "ARCHIVED"
+									? "border border-border bg-accent text-foreground"
+									: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
+							)}
+						>
+							Archived ({archivedCount})
+						</button>
+						<button
+							type="button"
+							aria-pressed={scheduledOnly}
+							onClick={() =>
+								setScheduledOnly((current) => !current)
+							}
+							className={cn(
+								"flex items-center gap-1.5 rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
+								scheduledOnly
+									? "border border-border bg-accent text-foreground"
+									: "border border-transparent text-muted-foreground hover:bg-accent hover:text-foreground",
+							)}
+						>
+							<ClockIcon
+								className="h-3.5 w-3.5"
+								aria-hidden="true"
+							/>
+							{t("scheduled")} ({scheduledCount})
+						</button>
+					</div>
 				</div>
 
-				<div className="flex gap-2 items-center">
-					{/* View Toggle */}
-					<div className="flex gap-1 border rounded-md p-1">
-						<Button
-							variant={viewMode === "grid" ? "default" : "ghost"}
-							size="icon-sm"
-							onClick={() => setViewMode("grid")}
-							aria-label="Grid view"
-						>
-							<GridIcon className="h-4 w-4" />
-						</Button>
-						<Button
-							variant={viewMode === "list" ? "default" : "ghost"}
-							size="icon-sm"
-							onClick={() => setViewMode("list")}
-							aria-label="List view"
-						>
-							<ListIcon className="h-4 w-4" />
-						</Button>
+				{/* Actions Bar */}
+				<div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
+					{/* Search */}
+					<div
+						data-onboarding-target="workflows-search"
+						className="relative flex-1 max-w-md w-full"
+					>
+						<SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+						<SearchInput
+							placeholder="Search workflows..."
+							value={searchQuery}
+							onChange={(e) => setSearchQuery(e.target.value)}
+							className="pl-9"
+						/>
 					</div>
 
-					{/* Create Button */}
-					<Button
-						data-onboarding-target="workflows-new"
-						onClick={handleCreateWorkflow}
-					>
-						<PlusIcon className="h-4 w-4 mr-2" />
-						New Workflow
-					</Button>
-				</div>
-			</div>
-
-			{/* Workflows Display */}
-			{isLoading ? (
-				<div className="flex items-center justify-center py-12">
-					<Spinner />
-				</div>
-			) : workflows.length === 0 ? (
-				<div className="text-center py-12">
-					<p className="text-muted-foreground mb-4">
-						{searchQuery || statusFilter !== "all" || scheduledOnly
-							? "No workflows found matching your filters"
-							: "No workflows yet. Create your first workflow to get started!"}
-					</p>
-					{!searchQuery &&
-						statusFilter === "all" &&
-						!scheduledOnly && (
-							<Button onClick={handleCreateWorkflow}>
-								<PlusIcon className="h-4 w-4 mr-2" />
-								Create Your First Workflow
+					<div className="flex gap-2 items-center">
+						{/* View Toggle */}
+						<div className="flex gap-1 border rounded-md p-1">
+							<Button
+								variant={
+									viewMode === "grid" ? "default" : "ghost"
+								}
+								size="icon-sm"
+								onClick={() => setViewMode("grid")}
+								aria-label="Grid view"
+							>
+								<GridIcon className="h-4 w-4" />
 							</Button>
-						)}
+							<Button
+								variant={
+									viewMode === "list" ? "default" : "ghost"
+								}
+								size="icon-sm"
+								onClick={() => setViewMode("list")}
+								aria-label="List view"
+							>
+								<ListIcon className="h-4 w-4" />
+							</Button>
+						</div>
+
+						{/* Create Button */}
+						<Button
+							data-onboarding-target="workflows-new"
+							onClick={handleCreateWorkflow}
+						>
+							<PlusIcon className="h-4 w-4 mr-2" />
+							New Workflow
+						</Button>
+					</div>
 				</div>
-			) : (
-				<div
-					className={
-						viewMode === "grid"
-							? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"
-							: "space-y-3"
-					}
-				>
-					{workflows.map((workflow) => (
-						<WorkflowCard
-							key={workflow.id}
-							workflow={workflow}
-							variant={viewMode}
-							onRefresh={refetch}
-						/>
-					))}
-				</div>
-			)}
+
+				{/* Workflows Display */}
+				{isLoading ? (
+					<div className="flex items-center justify-center py-12">
+						<Spinner />
+					</div>
+				) : workflows.length === 0 ? (
+					<div className="text-center py-12">
+						<p className="text-muted-foreground mb-4">
+							{searchQuery ||
+							statusFilter !== "all" ||
+							scheduledOnly
+								? "No workflows found matching your filters"
+								: "No workflows yet. Create your first workflow to get started!"}
+						</p>
+						{!searchQuery &&
+							statusFilter === "all" &&
+							!scheduledOnly && (
+								<Button onClick={handleCreateWorkflow}>
+									<PlusIcon className="h-4 w-4 mr-2" />
+									Create Your First Workflow
+								</Button>
+							)}
+					</div>
+				) : (
+					<div
+						className={
+							viewMode === "grid"
+								? "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"
+								: "space-y-3"
+						}
+					>
+						{workflows.map((workflow) => (
+							<WorkflowCard
+								key={workflow.id}
+								workflow={workflow}
+								variant={viewMode}
+								onRefresh={refetch}
+							/>
+						))}
+					</div>
+				)}
+			</div>
 		</div>
 	);
 }

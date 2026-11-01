@@ -203,7 +203,7 @@ export function TopicRow({
 	const [declinePending, setDeclinePending] = useState(false);
 	const [publishOpen, setPublishOpen] = useState(false);
 	const [publishPending, setPublishPending] = useState(false);
-	const [postTypesPending, setPostTypesPending] = useState(false);
+	const [_postTypesPending, setPostTypesPending] = useState(false);
 	const [contributorsOpen, setContributorsOpen] = useState(false);
 	const [contributorsPending, setContributorsPending] = useState(false);
 	const [assigneesOpen, setAssigneesOpen] = useState(false);
@@ -521,7 +521,7 @@ export function TopicRow({
 
 	const angleChip = topic.angle ? (
 		<p className="inline-flex w-fit items-center gap-1.5 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
-			<span className="uppercase tracking-[0.15em] text-muted-foreground">
+			<span className="uppercase tracking-wide text-muted-foreground">
 				Angle
 			</span>
 			<span className="text-foreground">{topic.angle}</span>
@@ -600,7 +600,7 @@ export function TopicRow({
 				type="button"
 				aria-label={`Assigned to ${assigneeNames}`}
 				title={`Assigned to ${assigneeNames}`}
-				className="flex items-center -space-x-1.5 rounded-full p-0.5 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+				className="flex items-center -space-x-1.5 rounded-full p-0.5 transition-colors hover:bg-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
 			>
 				{topic.assignees.map((a) => (
 					<Avatar
@@ -795,7 +795,7 @@ export function TopicRow({
 				<span className="font-semibold text-foreground text-xs tabular-nums">
 					{neglect.days}
 				</span>{" "}
-				<span className="text-[11px] uppercase tracking-[0.15em] text-muted-foreground">
+				<span className="text-[11px] uppercase tracking-wide text-muted-foreground">
 					{`${neglect.days === 1 ? "day" : "days"} ${neglect.level === "stale" ? "stale" : "quiet"}`}
 				</span>
 			</p>
@@ -861,7 +861,7 @@ export function TopicRow({
 
 	if (!inbox) {
 		return (
-			<li className="flex items-start justify-between gap-4 rounded-xl border border-border bg-card p-4">
+			<li className="flex items-start justify-between gap-4 rounded-lg border border-border bg-card p-4">
 				<div className="min-w-0 space-y-1">
 					{/* #1851 FR2. The flag-off layout is the rollback path and
 					    stays frozen otherwise — this is a deliberate feature
@@ -896,7 +896,7 @@ export function TopicRow({
 		<li
 			onClick={handleRowClick}
 			className={cn(
-				"cursor-pointer rounded-xl border border-border p-4 transition-colors hover:border-muted-foreground/40",
+				"cursor-pointer rounded-lg border border-border p-4 transition-colors hover:border-muted-foreground/40",
 				// A neglected row recedes by swapping the card surface for the
 				// muted one — NOT by `opacity-*`, which would drag every piece
 				// of text on the row below the AA contrast floor the rest of

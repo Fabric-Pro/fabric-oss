@@ -197,7 +197,7 @@ function RefinementEditor({
 
 			<div
 				className={cn(
-					"overflow-hidden rounded-xl border border-border bg-card",
+					"overflow-hidden rounded-lg border border-border bg-card",
 					// Every diff rule in `DocumentEditor.css` is scoped under
 					// this class. Without it the marks are in the document and
 					// render as unstyled <ins>/<del>.

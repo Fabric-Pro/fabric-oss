@@ -364,6 +364,33 @@ POST /api/rpc/mcp.authority.revoke
 
 Standard API rate limits apply. The gateway does not add additional rate limiting beyond what the underlying MCP servers enforce.
 
+## Stateless Mode, Durable Execution, and MCP Apps
+
+### Stateless Requests
+
+Clients that do not persist `Mcp-Session-Id` across requests (such as serverless workers, one-shot CLI invocations, or stateless desktop bridges) can send `X-Mcp-Stateless: true` or append `?stateless=1` to `/mcp` or `/api/mcp-gateway`. Each request is authenticated and executed independently without requiring an `initialize` handshake first.
+
+### Durable Temporal Tool Execution
+
+Long-running or side-effecting `tools/call` requests can opt into durable execution backed by Temporal workflows:
+
+- **Headers**: `X-Mcp-Durable: true` and optional `X-Mcp-Idempotency-Key: <key>`
+- **JSON-RPC `_meta`**: `{ "_meta": { "durable": true, "idempotencyKey": "<key>" } }`
+
+When enabled, the gateway deterministic workflow ID `mcp-durable-<organizationId>-<toolName>-<idempotencyKey>` deduplicates retries and records execution metadata in `_meta.durableExecution`.
+
+### Interactive MCP Apps (`ui://fabric/*`)
+
+The gateway advertises the `io.modelcontextprotocol/ui` extension (`2026-01-26`) and serves self-contained `text/html;profile=mcp-app` views via `resources/list` and `resources/read`:
+
+| Resource URI | Companion Tool | Purpose |
+|---|---|---|
+| `ui://fabric/project-dashboard` | `fabric_project_dashboard` | Project overview with coding instructions and living memory |
+| `ui://fabric/agent-delegation` | `fabric_delegate_task` | Live task delegation card for Fabric Agents Desktop and remote servers |
+| `ui://fabric/workflow-visualizer` | `fabric_workflow_graph` | Visual DAG inspector for Temporal workflows |
+| `ui://fabric/genie-insights` | `fabric_genie_query` | Databricks Genie Agents and Lakebase insight card |
+| `ui://fabric/visualize` | `fabric_visualize` | Declarative A2UI v0.9.1 multi-component canvas (`KpiGrid`, `BarChart`, `LineChart`, `DataTable`, `BadgeList`, `Timeline`) |
+
 ---
 
 ## Next Steps

@@ -1,12 +1,7 @@
 "use client";
 
-import { resolveBrandColor } from "@repo/utils/brand-colors";
-import {
-	createContext,
-	type PropsWithChildren,
-	useEffect,
-	useRef,
-} from "react";
+import { findBrandColor } from "@repo/utils/brand-colors";
+import { createContext, type PropsWithChildren, useEffect } from "react";
 
 // The brand palette and its contrast helpers live in `@repo/utils/brand-colors`
 // so the Glossy renderer uses the same values. `readableForegroundFor` stays
@@ -29,42 +24,46 @@ export function OrganizationThemeProvider({
 	children,
 	brandColor,
 }: OrganizationThemeProviderProps) {
-	// Store original values to restore on cleanup
-	const originalPrimary = useRef<string | null>(null);
-	const originalPrimaryForeground = useRef<string | null>(null);
-	const originalRing = useRef<string | null>(null);
-
 	useEffect(() => {
 		const root = document.documentElement;
-		// Defaults to the crimson red (matches brand) for a missing or unknown name.
-		const colorValues = resolveBrandColor(brandColor);
-
-		// Store original values on first run
-		if (originalPrimary.current === null) {
-			originalPrimary.current = getComputedStyle(root)
-				.getPropertyValue("--primary")
-				.trim();
-			originalPrimaryForeground.current = getComputedStyle(root)
-				.getPropertyValue("--primary-foreground")
-				.trim();
-			originalRing.current = getComputedStyle(root)
-				.getPropertyValue("--ring")
-				.trim();
-		}
+		const explicitBrand =
+			brandColor && brandColor !== "red"
+				? findBrandColor(brandColor)
+				: null;
+		// Defaults to Warm Bright Orange when no explicit non-red organization brand is set.
+		const colorValues = explicitBrand ?? {
+			hex: "#bc3e0b",
+			hue: "17",
+			saturation: "89%",
+			lightness: "39%",
+			ink: "#bc3e0b",
+			inkDark: "#ff8547",
+		};
 
 		/*
-		 * The design system keeps the primary control neutral (off-white on
-		 * black); an organisation's brand colour is the thread, not the
-		 * button. It tints the accent variables, the active bar, the ink and
-		 * the focus ring, and leaves --primary alone.
+		 * The Databricks DuBois design system uses Warm Bright Orange (#BC3E0B
+		 * in light mode, #FF8547 in dark mode) for primary controls, focus
+		 * rings, and links by default. When an organization configures an
+		 * explicit brand colour, it tints the accent variables, focus ring,
+		 * and link ink while leaving --primary on Warm Bright Orange. When no
+		 * explicit brand is configured, remove inline overrides so :root and
+		 * .dark in theme.css stay live across theme switches.
 		 */
-		root.style.setProperty("--ring", colorValues.hex);
-		root.style.setProperty("--fab-accent-fill", colorValues.hex);
-		root.style.setProperty("--fab-accent", colorValues.inkDark);
-		// Ink tracks the brand too. CSS picks between these by theme, so a
-		// light/dark toggle needs no re-render here.
-		root.style.setProperty("--primary-ink-light", colorValues.ink);
-		root.style.setProperty("--primary-ink-dark", colorValues.inkDark);
+		if (explicitBrand) {
+			root.style.setProperty("--ring", explicitBrand.hex);
+			root.style.setProperty("--fab-accent-fill", explicitBrand.hex);
+			root.style.setProperty("--fab-accent", explicitBrand.inkDark);
+			// Ink tracks the explicit org brand too. CSS picks between these by
+			// theme, so a light/dark toggle needs no re-render here.
+			root.style.setProperty("--primary-ink-light", explicitBrand.ink);
+			root.style.setProperty("--primary-ink-dark", explicitBrand.inkDark);
+		} else {
+			root.style.removeProperty("--primary-ink-light");
+			root.style.removeProperty("--primary-ink-dark");
+			root.style.removeProperty("--fab-accent-fill");
+			root.style.removeProperty("--fab-accent");
+			root.style.removeProperty("--ring");
+		}
 
 		// Set the organization accent color as CSS variables
 		root.style.setProperty("--org-accent-h", colorValues.hue);
@@ -86,25 +85,12 @@ export function OrganizationThemeProvider({
 		);
 
 		return () => {
-			// Cleanup - restore original values
-			if (originalPrimary.current) {
-				root.style.setProperty("--primary", originalPrimary.current);
-			}
-			if (originalPrimaryForeground.current) {
-				root.style.setProperty(
-					"--primary-foreground",
-					originalPrimaryForeground.current,
-				);
-			}
-			// Ink has no pre-existing inline value to restore — it is only ever
-			// set here — so remove it and let theme.css supply the fallback.
+			// Cleanup - remove inline overrides so theme.css(:root / .dark) owns the tokens
 			root.style.removeProperty("--primary-ink-light");
 			root.style.removeProperty("--primary-ink-dark");
 			root.style.removeProperty("--fab-accent-fill");
 			root.style.removeProperty("--fab-accent");
-			if (originalRing.current) {
-				root.style.setProperty("--ring", originalRing.current);
-			}
+			root.style.removeProperty("--ring");
 			// Reset org-accent variables
 			root.style.removeProperty("--org-accent-h");
 			root.style.removeProperty("--org-accent-s");

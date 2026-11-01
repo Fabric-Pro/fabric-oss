@@ -130,6 +130,8 @@ import {
 	useEffectiveOrganizationId,
 	useOrganizationContext,
 } from "@saas/organizations/hooks/use-organization-context";
+import { RobotIcon } from "@saas/shared/components/icons/RobotIcon";
+import { SparklesIcon } from "@saas/shared/components/icons/SparklesIcon";
 import { PageBreadcrumbs } from "@saas/shared/components/PageBreadcrumbs";
 import { SidebarEdgeHandle } from "@saas/shared/components/SidebarEdgeHandle";
 import { useFullscreen } from "@saas/shared/contexts/FullscreenContext";
@@ -158,6 +160,7 @@ import {
 	Brain,
 	CheckCircle2,
 	ChevronLeft,
+	ChevronRight,
 	File as FileIcon,
 	FolderKanban,
 	FolderOpen,
@@ -168,6 +171,7 @@ import {
 	LayoutGrid,
 	Maximize2,
 	Minimize2,
+	PanelLeft,
 	Plus,
 	Scale,
 	ScanSearch,
@@ -371,13 +375,6 @@ export default function FabricAIPage({
 		modeFromUrl === "research",
 	);
 	const [sidebarOpen, setSidebarOpen] = useState(false);
-	// Open sidebar by default on desktop only
-	useEffect(() => {
-		if (typeof window !== "undefined" && window.innerWidth >= 768) {
-			setSidebarOpen(true);
-		}
-	}, []);
-	// Default to history so the page lands on prior runs first.
 	const [activeTab, setActiveTab] = useState<TabType>("tools");
 	const contextProjectId = searchParams.get("projectId");
 	const contextProjectName = searchParams.get("projectName");
@@ -1004,7 +1001,7 @@ export default function FabricAIPage({
 					},
 					{ label: agentInstance.name },
 				]
-			: [{ label: "Advisor" }]),
+			: [{ label: "Genie" }]),
 	];
 
 	return (
@@ -1022,7 +1019,7 @@ export default function FabricAIPage({
 			{/* Breadcrumbs - hidden on mobile, shown from sm up */}
 			<div
 				className={cn(
-					"hidden items-center justify-between border-b bg-transparent px-4 py-3 md:px-6 md:py-4",
+					"hidden h-12 shrink-0 items-center justify-between border-b bg-transparent px-4 md:px-6",
 					!isFullscreen && "sm:flex",
 				)}
 			>
@@ -1038,7 +1035,7 @@ export default function FabricAIPage({
 			</div>
 
 			{/* Content - Full height */}
-			<div className={isFullscreen ? "h-screen" : "h-[calc(100vh-65px)]"}>
+			<div className={isFullscreen ? "h-screen" : "h-[calc(100vh-48px)]"}>
 				<AgentErrorBoundary>
 					<FabricChatContent
 						key={JSON.stringify([
@@ -2151,8 +2148,8 @@ function FabricChatContent({
 
 	// Resizable sidebar state
 	const MIN_SIDEBAR_WIDTH = 240;
-	const MAX_SIDEBAR_WIDTH = 468;
-	const DEFAULT_SIDEBAR_WIDTH = 350;
+	const MAX_SIDEBAR_WIDTH = 440;
+	const DEFAULT_SIDEBAR_WIDTH = 304;
 
 	// Start with default width to avoid hydration mismatch
 	const [sidebarWidth, setSidebarWidth] = useState(DEFAULT_SIDEBAR_WIDTH);
@@ -2188,7 +2185,7 @@ function FabricChatContent({
 	const isMobileViewport = viewportWidth < 768;
 	const effectiveSidebarWidth = useMemo(() => {
 		if (!sidebarOpen) {
-			return 48;
+			return 40;
 		}
 
 		if (isMobileViewport) {
@@ -2363,7 +2360,7 @@ function FabricChatContent({
 									minWidth: effectiveSidebarWidth,
 									maxWidth: effectiveSidebarWidth,
 								}
-							: { width: 48, minWidth: 48, maxWidth: 48 }
+							: { width: 40, minWidth: 40, maxWidth: 40 }
 					}
 					className={cn(
 						"relative flex flex-shrink-0",
@@ -2377,26 +2374,31 @@ function FabricChatContent({
 				>
 					{sidebarOpen ? (
 						<div className="flex h-full min-w-0 flex-1 flex-col border-r border-border bg-sidebar">
-							<div className="border-b border-border px-3 pt-2.5 pb-2">
-								<div className="flex items-center justify-between gap-2 px-2.5 pb-2">
-									<p className="fab-label">Control deck</p>
-									{isCompactViewport ? (
-										<Button
-											variant="ghost"
-											size="icon"
-											className="h-8 w-8 rounded-[4px] text-muted-foreground hover:text-foreground"
-											onClick={() =>
-												setSidebarOpen(false)
-											}
-										>
-											<ChevronLeft className="h-4 w-4" />
-										</Button>
-									) : null}
-								</div>
+							<div className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-border px-3">
+								<p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+									Workspace
+								</p>
+								<Button
+									variant="ghost"
+									size="icon"
+									aria-label="Collapse control deck"
+									className="h-7 w-7 rounded text-muted-foreground hover:text-foreground"
+									onClick={() => setSidebarOpen(false)}
+								>
+									<ChevronLeft className="h-3.5 w-3.5" />
+								</Button>
+							</div>
 
-								{/* Tabs wrap into one or two short rows instead of a
-								    column that ate a third of the deck. */}
-								<div className="flex flex-wrap gap-1">
+							<div className="border-b border-border px-2.5 py-2">
+								{/* Balanced 3-column DuBois segmented tab grid for History, Agents, Tools, Files, Projects, Frames */}
+								<div
+									className={cn(
+										"grid gap-1 rounded-md border border-border/80 bg-muted/40 p-1",
+										tabs.length >= 5
+											? "grid-cols-3"
+											: "grid-cols-2",
+									)}
+								>
 									{tabs.map((tab) => (
 										<button
 											key={tab.id}
@@ -2404,14 +2406,23 @@ function FabricChatContent({
 											onClick={() => setActiveTab(tab.id)}
 											aria-pressed={activeTab === tab.id}
 											className={cn(
-												"flex cursor-pointer items-center gap-1.5 rounded-[4px] border px-2 py-1 text-[12px] transition-colors",
+												"flex h-7 w-full cursor-pointer items-center justify-center gap-1.5 rounded px-1.5 text-[11px] font-medium whitespace-nowrap transition-colors",
 												activeTab === tab.id
-													? "border-border bg-accent text-foreground"
-													: "border-transparent text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+													? "bg-card font-semibold text-primary shadow-2xs ring-1 ring-border/60"
+													: "text-muted-foreground hover:bg-background/60 hover:text-foreground",
 											)}
 										>
-											<tab.icon className="h-3.5 w-3.5 shrink-0" />
-											<span>{tab.label}</span>
+											<tab.icon
+												className={cn(
+													"h-3 w-3 shrink-0",
+													activeTab === tab.id
+														? "text-primary"
+														: "text-muted-foreground",
+												)}
+											/>
+											<span className="truncate">
+												{tab.label}
+											</span>
 										</button>
 									))}
 								</div>
@@ -2671,26 +2682,40 @@ function FabricChatContent({
 							</div>
 						</div>
 					) : (
-						<div className="flex h-full w-full flex-col items-center gap-2 border-r border-border bg-sidebar px-1 py-2.5">
-							{tabs.map((tab) => (
+						<div className="flex h-full w-full flex-col items-center border-r border-border/70 bg-sidebar/60">
+							<div className="flex h-11 w-full shrink-0 items-center justify-center border-b border-border">
 								<Button
-									key={tab.id}
-									variant={
-										activeTab === tab.id
-											? "secondary"
-											: "ghost"
-									}
-									size="icon-sm"
-									onClick={() => {
-										setActiveTab(tab.id);
-										setSidebarOpen(true);
-									}}
-									className="h-9 w-9 rounded-md"
-									title={tab.label}
+									variant="ghost"
+									size="icon"
+									aria-label="Expand control deck"
+									className="h-7 w-7 rounded text-muted-foreground hover:text-foreground"
+									onClick={() => setSidebarOpen(true)}
 								>
-									<tab.icon className="h-4 w-4" />
+									<ChevronRight className="h-3.5 w-3.5" />
 								</Button>
-							))}
+							</div>
+							<div className="flex flex-col items-center gap-1 px-1 py-2">
+								{tabs.map((tab) => (
+									<Button
+										key={tab.id}
+										variant="ghost"
+										size="icon-sm"
+										onClick={() => {
+											setActiveTab(tab.id);
+											setSidebarOpen(true);
+										}}
+										className={cn(
+											"h-8 w-8 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground",
+											activeTab === tab.id &&
+												"bg-primary/[0.12] text-primary",
+										)}
+										title={tab.label}
+										aria-label={tab.label}
+									>
+										<tab.icon className="h-3.5 w-3.5" />
+									</Button>
+								))}
+							</div>
 						</div>
 					)}
 
@@ -2701,12 +2726,10 @@ function FabricChatContent({
 							expandLabel="Expand control deck"
 							collapseLabel="Collapse control deck"
 							// The rail's handle sits at the viewport's middle. This
-							// column starts under the 65px breadcrumb bar, so its
-							// own middle is 32.5px lower; lift the handle to match.
+							// column starts under the 48px (h-12) breadcrumb bar, so its
+							// own middle is 24px lower; lift the handle to match.
 							style={{
-								top: isFullscreen
-									? "50%"
-									: "calc(50% - 32.5px)",
+								top: isFullscreen ? "50%" : "calc(50% - 24px)",
 							}}
 						/>
 					) : null}
@@ -2745,22 +2768,54 @@ function FabricChatContent({
 				style={{ minWidth: isCompactViewport ? 0 : 400 }}
 			>
 				{/* Header */}
-				<header className="flex items-center gap-2 border-b border-border/60 bg-background/30 px-3 py-2 backdrop-blur-sm sm:gap-3 sm:px-4 sm:py-3 md:px-6 lg:h-16 lg:gap-4 lg:py-0 overflow-x-auto overflow-y-hidden">
-					<div className="flex shrink-0 items-center gap-3">
-						<h1 className="hidden text-[15px] font-medium leading-none text-foreground lg:block">
-							Advisor
+				<header className="no-scrollbar flex items-center gap-2 border-b border-border bg-background px-3 py-1.5 sm:px-4 md:px-5 lg:h-11 lg:py-0 overflow-x-auto overflow-y-hidden">
+					<div className="flex shrink-0 items-center gap-2">
+						{chrome.showControlDeck && (
+							<Tooltip>
+								<TooltipTrigger asChild>
+									<Button
+										variant="ghost"
+										size="icon-sm"
+										aria-label={
+											sidebarOpen
+												? "Hide workspace panel"
+												: "Show workspace panel"
+										}
+										aria-pressed={sidebarOpen}
+										onClick={() =>
+											setSidebarOpen(!sidebarOpen)
+										}
+										className={cn(
+											"h-7 w-7 text-muted-foreground hover:text-foreground",
+											sidebarOpen &&
+												"bg-accent text-foreground",
+										)}
+									>
+										<PanelLeft className="h-3.5 w-3.5" />
+									</Button>
+								</TooltipTrigger>
+								<TooltipContent side="bottom">
+									{sidebarOpen
+										? "Hide workspace panel"
+										: "Show workspace panel"}
+								</TooltipContent>
+							</Tooltip>
+						)}
+						<SparklesIcon className="h-4 w-4 shrink-0 text-primary" />
+						<h1 className="text-[13px] font-semibold leading-none text-foreground">
+							{agentInstanceName || "Genie"}
 						</h1>
 					</div>
-					<div className="ml-auto flex shrink-0 items-center gap-1 sm:gap-2.5">
+					<div className="ml-auto flex shrink-0 items-center gap-1.5">
 						{/* New run button */}
 						<Button
 							variant="outline"
 							size="sm"
-							className="h-9 px-2.5"
+							className="h-7 px-2 text-xs"
 							title="New run"
 							onClick={handleNewChat}
 						>
-							<Plus className="h-4 w-4" />
+							<Plus className="h-3.5 w-3.5" />
 							<span className="hidden lg:inline ml-1">New</span>
 						</Button>
 
@@ -2770,11 +2825,11 @@ function FabricChatContent({
 								<Button
 									variant="outline"
 									size="sm"
-									className="h-9 w-9 px-0"
+									className="h-7 w-7 px-0"
 									aria-label="Conversation history"
 									onClick={() => setHistoryOpen(true)}
 								>
-									<History className="h-4 w-4" />
+									<History className="h-3.5 w-3.5" />
 								</Button>
 							</TooltipTrigger>
 							<TooltipContent side="bottom">
@@ -2788,7 +2843,7 @@ function FabricChatContent({
 								<Button
 									variant="outline"
 									size="sm"
-									className="h-9 w-9 px-0"
+									className="h-7 w-7 px-0"
 									aria-pressed={isFullscreen}
 									aria-label={
 										isFullscreen
@@ -2798,9 +2853,9 @@ function FabricChatContent({
 									onClick={onToggleFullscreen}
 								>
 									{isFullscreen ? (
-										<Minimize2 className="h-4 w-4" />
+										<Minimize2 className="h-3.5 w-3.5" />
 									) : (
-										<Maximize2 className="h-4 w-4" />
+										<Maximize2 className="h-3.5 w-3.5" />
 									)}
 								</Button>
 							</TooltipTrigger>
@@ -2822,6 +2877,7 @@ function FabricChatContent({
 						 * engine it was created on in both modes.
 						 */}
 						<InterfaceModeToggle
+							compact
 							value={uiMode}
 							onChange={onUiModeChange}
 							disabled={
@@ -2831,13 +2887,19 @@ function FabricChatContent({
 
 						{uiMode === "advanced" && (
 							<>
-								{/* Agent Mode Toggle — with visible label */}
+								{/* Agent Mode Toggle — Databricks segmented pills */}
 								<TooltipProvider>
-									<div className="flex items-center gap-1 rounded-md border border-border/60 bg-card/35 p-1">
+									<div className="flex items-center gap-0.5 rounded-full border border-border bg-muted/60 p-0.5">
 										<Tooltip>
 											<TooltipTrigger asChild>
 												<button
 													type="button"
+													aria-label="Direct"
+													aria-pressed={
+														loomPrefsHydrated &&
+														!useOrchestrator &&
+														!deepResearchEnabled
+													}
 													disabled={
 														engineLockedToConversation
 													}
@@ -2850,7 +2912,7 @@ function FabricChatContent({
 														);
 													}}
 													className={cn(
-														"flex h-9 items-center justify-center rounded-md px-2.5 gap-1.5 transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+														"flex h-6 items-center justify-center rounded-full px-2.5 gap-1 transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
 														// Suppress active highlight until persisted prefs
 														// hydrate, otherwise the tab paints "Orchestrator
 														// is active" on first render and visibly snaps to
@@ -2859,11 +2921,11 @@ function FabricChatContent({
 														loomPrefsHydrated &&
 															!useOrchestrator &&
 															!deepResearchEnabled
-															? "bg-background shadow-sm text-foreground"
-															: "hover:bg-background/50 text-muted-foreground",
+															? "border border-border bg-card shadow-2xs text-foreground"
+															: "border border-transparent hover:text-foreground text-muted-foreground",
 													)}
 												>
-													<Wrench className="h-4 w-4" />
+													<Wrench className="h-3 w-3" />
 													<span className="hidden text-xs font-medium sm:inline">
 														Direct
 													</span>
@@ -2881,6 +2943,12 @@ function FabricChatContent({
 											<TooltipTrigger asChild>
 												<button
 													type="button"
+													aria-label="Orchestrator"
+													aria-pressed={
+														loomPrefsHydrated &&
+														useOrchestrator &&
+														!deepResearchEnabled
+													}
 													disabled={
 														engineLockedToConversation
 													}
@@ -2901,16 +2969,16 @@ function FabricChatContent({
 														}
 													}}
 													className={cn(
-														"flex h-9 items-center justify-center rounded-md px-2.5 gap-1.5 transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+														"flex h-6 items-center justify-center rounded-full px-2.5 gap-1 transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
 														// See "Direct" branch above — same hydration gate.
 														loomPrefsHydrated &&
 															useOrchestrator &&
 															!deepResearchEnabled
-															? "bg-background shadow-sm text-primary"
-															: "hover:bg-background/50 text-muted-foreground",
+															? "border border-border bg-card shadow-2xs text-foreground"
+															: "border border-transparent hover:text-foreground text-muted-foreground",
 													)}
 												>
-													<Brain className="h-4 w-4" />
+													<Brain className="h-3 w-3" />
 													<span className="hidden text-xs font-medium sm:inline">
 														Orchestrator
 													</span>
@@ -2928,6 +2996,11 @@ function FabricChatContent({
 											<TooltipTrigger asChild>
 												<button
 													type="button"
+													aria-label="Research"
+													aria-pressed={
+														loomPrefsHydrated &&
+														deepResearchEnabled
+													}
 													disabled={
 														engineLockedToConversation
 													}
@@ -2940,15 +3013,15 @@ function FabricChatContent({
 														);
 													}}
 													className={cn(
-														"flex h-9 items-center justify-center rounded-md px-2.5 gap-1.5 transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+														"flex h-6 items-center justify-center rounded-full px-2.5 gap-1 transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50",
 														// See "Direct" branch above — same hydration gate.
 														loomPrefsHydrated &&
 															deepResearchEnabled
-															? "bg-background shadow-sm text-secondary"
-															: "hover:bg-background/50 text-muted-foreground",
+															? "border border-border bg-card shadow-2xs text-foreground"
+															: "border border-transparent hover:text-foreground text-muted-foreground",
 													)}
 												>
-													<Globe className="h-4 w-4" />
+													<Globe className="h-3 w-3" />
 													<span className="hidden text-xs font-medium sm:inline">
 														Research
 													</span>
@@ -2965,12 +3038,9 @@ function FabricChatContent({
 									</div>
 								</TooltipProvider>
 
-								{/* Divider */}
-								<div className="hidden h-8 w-px bg-border/70 md:block" />
-
 								{/* Reasoning Mode Selector — hidden below md */}
 								<TooltipProvider>
-									<div className="hidden md:flex items-center gap-1 rounded-md border border-border/60 bg-card/35 p-1">
+									<div className="hidden md:flex items-center gap-0.5 rounded-full border border-border bg-muted/60 p-0.5">
 										{(
 											[
 												"lite",
@@ -2986,24 +3056,32 @@ function FabricChatContent({
 													<TooltipTrigger asChild>
 														<button
 															type="button"
+															aria-label={
+																config.label
+															}
+															aria-pressed={
+																loomPrefsHydrated &&
+																reasoningMode ===
+																	mode
+															}
 															onClick={() =>
 																setReasoningMode(
 																	mode,
 																)
 															}
 															className={cn(
-																"flex h-9 w-9 items-center justify-center rounded-md transition-colors",
+																"flex h-6 w-6 items-center justify-center rounded-full transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 																// Same hydration gate as the chat-mode tabs.
 																loomPrefsHydrated &&
 																	reasoningMode ===
 																		mode
-																	? "bg-background shadow-sm"
-																	: "hover:bg-background/50",
+																	? "border border-border bg-card shadow-2xs"
+																	: "border border-transparent hover:bg-background/50",
 															)}
 														>
 															<Icon
 																className={cn(
-																	"h-4 w-4",
+																	"h-3 w-3",
 																	config.color,
 																)}
 															/>
@@ -3287,7 +3365,7 @@ function FabricChatContent({
 							systemPrompt={systemPrompt}
 							instanceId={instanceId}
 							starterMessages={resolvedAgentStarterMessages}
-							agentName={agentInstanceName || "Advisor"}
+							agentName={agentInstanceName || "Genie"}
 							agentDescription={
 								agentInstanceDescription ||
 								"Durable multi-agent orchestration powered by Temporal."
@@ -3374,22 +3452,34 @@ function FabricChatContent({
 const DEEP_RESEARCH_SUGGESTIONS = [
 	{
 		label: "AI agents & autonomous systems",
-		emoji: "🤖",
+		description: "Multi-agent orchestration, tool use & memory architectures",
+		icon: RobotIcon,
+		iconTone:
+			"border-primary/20 bg-primary/10 text-primary",
 		prompt: "What are the latest developments in AI agents and autonomous systems?",
 	},
 	{
 		label: "RAG application approaches",
-		emoji: "🔍",
+		description: "Hybrid retrieval, reranking & agentic context pipelines",
+		icon: ScanSearch,
+		iconTone:
+			"border-blue-500/20 bg-blue-500/10 text-blue-600 dark:text-blue-400",
 		prompt: "Compare different approaches to building RAG applications",
 	},
 	{
 		label: "Open source vs proprietary LLMs",
-		emoji: "⚖️",
+		description: "Cost, latency, reasoning benchmarks & governance trade-offs",
+		icon: Scale,
+		iconTone:
+			"border-amber-500/20 bg-amber-500/10 text-amber-600 dark:text-amber-400",
 		prompt: "Analyze the current state of open source LLMs vs proprietary models",
 	},
 	{
 		label: "Prompt engineering best practices",
-		emoji: "✍️",
+		description: "Structured outputs, evaluation harnesses & guardrails",
+		icon: Sparkles,
+		iconTone:
+			"border-emerald-500/20 bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
 		prompt: "Research best practices for prompt engineering in production systems",
 	},
 ];
@@ -3442,17 +3532,10 @@ function DeepResearchInlineChat({
 					{/* Welcome state — matching Orchestrator's hero layout */}
 					{!hasInteracted && (
 						<div className="flex flex-col items-center justify-center pt-12 pb-8">
-							<div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-secondary/10 mb-5">
-								<Globe className="h-8 w-8 text-secondary" />
+							<div className="mb-4 flex h-12 w-12 items-center justify-center rounded-xl border border-primary/20 bg-primary/10 shadow-2xs">
+								<Globe className="h-6 w-6 text-primary" />
 							</div>
-							<h2
-								className="text-2xl text-foreground/85 mb-2"
-								style={{
-									fontFamily:
-										"var(--font-serif, 'EB Garamond', Georgia, serif)",
-									fontWeight: 400,
-								}}
-							>
+							<h2 className="text-2xl font-semibold tracking-tight text-foreground mb-1.5">
 								Deep Research
 							</h2>
 							<p className="text-sm text-muted-foreground max-w-md text-center mb-8">
@@ -3461,26 +3544,39 @@ function DeepResearchInlineChat({
 								structured report.
 							</p>
 
-							{/* Starter messages — same pattern as Orchestrator */}
-							<div className="grid w-full max-w-2xl gap-2 sm:grid-cols-2">
-								{DEEP_RESEARCH_SUGGESTIONS.map((s) => (
-									<button
-										key={s.prompt}
-										type="button"
-										onClick={() => {
-											setInputValue("");
-											onSend(s.prompt);
-										}}
-										className="flex items-start gap-3 rounded-xl border border-border/60 bg-card/40 p-3 text-left text-sm transition-colors hover:bg-muted/60"
-									>
-										<span className="text-lg shrink-0">
-											{s.emoji}
-										</span>
-										<span className="text-muted-foreground leading-snug">
-											{s.label}
-										</span>
-									</button>
-								))}
+							{/* Starter messages — modern vector icons + subtle descriptions */}
+							<div className="grid w-full max-w-2xl gap-2.5 sm:grid-cols-2">
+								{DEEP_RESEARCH_SUGGESTIONS.map((s) => {
+									const SuggestionIcon = s.icon;
+									return (
+										<button
+											key={s.prompt}
+											type="button"
+											onClick={() => {
+												setInputValue("");
+												onSend(s.prompt);
+											}}
+											className="group flex items-start gap-3 rounded-lg border border-border/70 bg-card p-3.5 text-left text-sm shadow-2xs transition-colors hover:border-primary/30 hover:bg-muted/50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+										>
+											<span
+												className={cn(
+													"mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-md border",
+													s.iconTone,
+												)}
+											>
+												<SuggestionIcon className="size-4" />
+											</span>
+											<span className="min-w-0 flex-1">
+												<span className="block font-medium text-foreground group-hover:text-primary transition-colors leading-snug">
+													{s.label}
+												</span>
+												<span className="mt-0.5 block text-xs text-muted-foreground line-clamp-1">
+													{s.description}
+												</span>
+											</span>
+										</button>
+									);
+								})}
 							</div>
 						</div>
 					)}
@@ -3491,7 +3587,7 @@ function DeepResearchInlineChat({
 							{/* User query — styled like a user message bubble */}
 							{query && (
 								<div className="flex justify-end">
-									<div className="max-w-[80%] rounded-2xl rounded-tr-md bg-primary/10 px-4 py-3">
+									<div className="max-w-[80%] rounded-lg rounded-tr-md bg-primary/10 px-4 py-3">
 										<p className="text-sm whitespace-pre-wrap">
 											{query}
 										</p>
@@ -3501,8 +3597,8 @@ function DeepResearchInlineChat({
 
 							{/* Assistant response area */}
 							<div className="flex gap-3">
-								<div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-secondary/10 mt-1">
-									<Globe className="h-4 w-4 text-secondary" />
+								<div className="mt-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10">
+									<Globe className="h-4 w-4 text-primary" />
 								</div>
 								<div className="min-w-0 flex-1 space-y-4">
 									{/* Progress panel */}

@@ -126,7 +126,7 @@ export function ChatApprovalCard(props: ChatApprovalCardProps) {
 
 	if (responded && decision === "stale") {
 		return (
-			<div className="mt-3 flex items-center gap-2 rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-400">
+			<div className="mt-3 flex items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-400">
 				<ShieldAlert className="h-4 w-4 shrink-0" />
 				<span>{APPROVAL_STALE_MESSAGE}</span>
 			</div>
@@ -137,7 +137,7 @@ export function ChatApprovalCard(props: ChatApprovalCardProps) {
 		return (
 			<div
 				className={cn(
-					"mt-3 flex items-center gap-2 rounded-xl border px-4 py-3 text-sm",
+					"mt-3 flex items-center gap-2 rounded-lg border px-4 py-3 text-sm",
 					decision === "approved"
 						? "border-green-200 bg-green-50 text-green-700 dark:border-green-900/50 dark:bg-green-950/20 dark:text-green-400"
 						: "border-red-200 bg-red-50 text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400",
@@ -158,7 +158,7 @@ export function ChatApprovalCard(props: ChatApprovalCardProps) {
 	}
 
 	return (
-		<div className="mt-3 rounded-xl border border-orange-200 bg-orange-50 dark:border-orange-900/50 dark:bg-orange-950/20">
+		<div className="mt-3 rounded-lg border border-orange-200 bg-orange-50 dark:border-orange-900/50 dark:bg-orange-950/20">
 			{/* Header */}
 			<div className="flex items-start gap-3 px-4 py-3">
 				<div className="mt-0.5 flex-shrink-0">

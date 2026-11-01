@@ -189,7 +189,7 @@ export function StoryTagEditor({
 							type="button"
 							className={cn(
 								"inline-flex h-8 items-center gap-1.5 rounded-lg border border-border/60 bg-transparent px-2.5 text-sm font-medium text-muted-foreground hover:text-foreground",
-								"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+								"focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 							)}
 						>
 							<PlusIcon className="size-4" />

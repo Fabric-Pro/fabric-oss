@@ -46,9 +46,9 @@ export const PmSyncConflictBadge = forwardRef<HTMLButtonElement, Props>(
 				title={compactLabel ? ariaLabel : undefined}
 				className={cn(
 					"inline-flex items-center gap-1.5 rounded-md border border-highlight/30 bg-muted px-2 py-0.5",
-					"text-[10px] font-medium uppercase tracking-[0.18em] text-highlight",
+					"text-[10px] font-medium uppercase tracking-wide text-highlight",
 					"transition-colors hover:border-highlight/50 hover:bg-highlight/5",
-					"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-highlight/50",
+					"focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-highlight/50",
 					className,
 				)}
 			>

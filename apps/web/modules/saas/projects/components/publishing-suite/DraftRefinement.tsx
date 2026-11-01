@@ -284,7 +284,7 @@ function RefinementNotice({
 	isRejecting: boolean;
 }) {
 	return (
-		<section className="space-y-2 rounded-xl border border-border bg-muted/40 p-4">
+		<section className="space-y-2 rounded-lg border border-border bg-muted/40 p-4">
 			<p
 				className="text-muted-foreground text-sm leading-relaxed"
 				role={tone}

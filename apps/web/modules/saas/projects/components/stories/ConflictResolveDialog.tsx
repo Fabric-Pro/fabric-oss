@@ -843,12 +843,9 @@ export function ConflictResolveDialog(props: ConflictResolveDialogProps) {
 				}}
 			>
 				<DialogHeader className="space-y-1.5">
-					<DialogTitle
-						className="font-normal text-2xl"
-						style={{ fontFamily: "var(--font-serif)" }}
-					>
+					<DialogTitle className="font-semibold text-2xl">
 						{identifier ? (
-							<span className="mr-2 align-middle font-sans text-sm font-medium tracking-wide text-muted-foreground">
+							<span className="mr-2 align-middle font-sans text-sm font-medium text-muted-foreground">
 								{identifier}
 							</span>
 						) : null}

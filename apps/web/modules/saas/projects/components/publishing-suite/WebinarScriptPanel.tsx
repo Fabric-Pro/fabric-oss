@@ -1144,7 +1144,7 @@ export function WebinarScriptPanel({
 					</p>
 				</>
 			) : (
-				<div className="rounded-xl border border-border bg-muted/40 p-4">
+				<div className="rounded-lg border border-border bg-muted/40 p-4">
 					<p className="whitespace-pre-wrap break-words text-sm leading-relaxed">
 						{working.body}
 					</p>
@@ -1190,7 +1190,7 @@ export function WebinarScriptPanel({
 			) : null}
 
 			{doc?.isScaffold ? (
-				<section className="space-y-1 rounded-xl border border-highlight/40 bg-highlight/10 p-4">
+				<section className="space-y-1 rounded-lg border border-highlight/40 bg-highlight/10 p-4">
 					<h3 className="publishing-label">Scaffold draft</h3>
 					<p className="text-sm leading-relaxed">
 						There wasn't enough confirmed material to write a demo
@@ -1218,7 +1218,7 @@ export function WebinarScriptPanel({
 					    a `<dl>` with one row would repeat "Release status"
 					    verbatim and structure a value that has no second field
 					    to sit beside. */}
-					<p className="rounded-xl border border-border bg-card p-4 text-muted-foreground text-sm leading-relaxed">
+					<p className="rounded-lg border border-border bg-card p-4 text-muted-foreground text-sm leading-relaxed">
 						{RELEASE_STATUS_LABELS[doc.releaseStatus]}
 					</p>
 					{/* Unlike the case study's clamped enums, nothing checks a
@@ -1239,7 +1239,7 @@ export function WebinarScriptPanel({
 				doc.suggestedAssets.needsConfirmation.length > 0) ? (
 				<div className="grid gap-4 sm:grid-cols-2">
 					{doc.suggestedAssets.confirmed.length > 0 ? (
-						<section className="space-y-2 rounded-xl border border-border bg-muted/40 p-4">
+						<section className="space-y-2 rounded-lg border border-border bg-muted/40 p-4">
 							<h3 className="publishing-label">
 								Assets confirmed
 							</h3>
@@ -1257,7 +1257,7 @@ export function WebinarScriptPanel({
 						</section>
 					) : null}
 					{doc.suggestedAssets.needsConfirmation.length > 0 ? (
-						<section className="space-y-2 rounded-xl border border-highlight/40 bg-highlight/10 p-4">
+						<section className="space-y-2 rounded-lg border border-highlight/40 bg-highlight/10 p-4">
 							<h3 className="publishing-label">
 								Assets needing confirmation
 							</h3>

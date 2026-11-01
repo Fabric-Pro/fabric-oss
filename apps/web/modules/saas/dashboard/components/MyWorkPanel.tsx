@@ -1,11 +1,11 @@
 "use client";
 
 import { orpcClient } from "@shared/lib/orpc-client";
+import { useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@ui/components/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@ui/components/tabs";
 import { cn } from "@ui/lib";
-import { useQuery } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import {
 	AlertCircleIcon,
@@ -13,8 +13,8 @@ import {
 	CheckCircle2Icon,
 	FileTextIcon,
 	FolderIcon,
+	LayersIcon,
 	PencilLineIcon,
-	SparklesIcon,
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -65,7 +65,7 @@ const EMPTY_STATES: Record<
 	{ icon: typeof CheckCircle2Icon; title: string; hint: string }
 > = {
 	inProgress: {
-		icon: SparklesIcon,
+		icon: LayersIcon,
 		title: "Nothing in flight",
 		hint: "Pick a feature or start a new one.",
 	},
@@ -89,7 +89,7 @@ const EMPTY_STATES: Record<
 function kindIcon(kind: MyWorkItemKind) {
 	switch (kind) {
 		case "feature":
-			return SparklesIcon;
+			return LayersIcon;
 		case "document":
 			return FileTextIcon;
 		case "project":
@@ -180,7 +180,7 @@ function MyWorkList({
 						key={`${item.kind}-${item.id}`}
 						href={item.href}
 						aria-label={ariaLabel}
-						className="group flex items-center gap-3 px-5 py-3 transition-colors hover:bg-accent/40 focus-visible:bg-accent/40 focus-visible:outline-none"
+						className="group flex items-center gap-3 px-5 py-3 transition-colors hover:bg-accent/40 focus-visible:bg-accent/40 focus-visible:outline-hidden"
 					>
 						<div
 							className={cn(
@@ -292,7 +292,7 @@ export function MyWorkPanel({
 							<TabsTrigger
 								key={t.key}
 								value={t.key}
-								className="text-[11px] uppercase tracking-[0.15em]"
+								className="text-[11px] uppercase tracking-wide"
 							>
 								{t.label}
 								{counts[t.key] > 0 ? (

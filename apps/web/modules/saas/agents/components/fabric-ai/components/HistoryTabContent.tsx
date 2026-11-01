@@ -169,7 +169,7 @@ export function HistoryTabContent({
 		return (
 			<div className="p-3">
 				<output className="block py-8 text-center text-sm text-muted-foreground">
-					<div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-muted">
+					<div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-lg bg-muted">
 						<HistoryIcon
 							className="h-6 w-6 opacity-50"
 							aria-hidden
@@ -203,8 +203,8 @@ export function HistoryTabContent({
 							onClick={() => onSelectConversation(conv)}
 							aria-current={isActive ? "true" : undefined}
 							className={cn(
-								"w-full cursor-pointer overflow-hidden rounded-xl text-left motion-safe:transition-colors motion-safe:duration-200",
-								"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+								"w-full cursor-pointer overflow-hidden rounded-lg text-left motion-safe:transition-colors motion-safe:duration-200",
+								"focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
 								isActive
 									? "bg-muted text-foreground"
 									: "text-muted-foreground hover:bg-muted/60 hover:text-foreground",

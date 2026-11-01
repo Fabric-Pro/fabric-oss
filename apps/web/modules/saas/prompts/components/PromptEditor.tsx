@@ -229,7 +229,7 @@ export function PromptEditor({
 				aria-label="Prompt content"
 				aria-invalid={contentProblem ? true : undefined}
 				aria-describedby={contentProblem ? contentErrorId : undefined}
-				className="min-h-[60vh] resize-y rounded-xl border-border bg-muted/30 px-5 py-4 font-mono text-sm leading-7 shadow-none focus-visible:ring-1"
+				className="min-h-[60vh] resize-y rounded-lg border-border bg-muted/30 px-5 py-4 font-mono text-sm leading-7 shadow-none focus-visible:ring-1"
 			/>
 			{contentProblem && (
 				<p
@@ -246,7 +246,7 @@ export function PromptEditor({
 			{detailsOpen ? (
 				<div
 					id={detailsId}
-					className="app-surface grid gap-4 rounded-xl p-5 sm:grid-cols-2"
+					className="app-surface grid gap-4 rounded-lg p-5 sm:grid-cols-2"
 				>
 					<div className="space-y-1.5">
 						<Label htmlFor="prompt-name">Name</Label>

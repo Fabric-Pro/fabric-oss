@@ -501,9 +501,9 @@ export function OrchestratorConfigPanel({
 }: OrchestratorConfigPanelProps) {
 	const t = useTranslations("tooltips.agents");
 	const [agentsOpen, setAgentsOpen] = useState(true);
-	const [mcpOpen, setMcpOpen] = useState(true);
+	const [mcpOpen, setMcpOpen] = useState(false);
 	const [fabricOpen, setFabricOpen] = useState(true);
-	const [integrationsOpen, setIntegrationsOpen] = useState(true);
+	const [integrationsOpen, setIntegrationsOpen] = useState(false);
 	const [agentSearch, setAgentSearch] = useState("");
 	const [mcpSearch, setMcpSearch] = useState("");
 	const [fabricSearch, setFabricSearch] = useState("");
@@ -787,134 +787,79 @@ export function OrchestratorConfigPanel({
 		(i) => i.isActive && i.hasCredentials,
 	).length;
 
-	// Get names of enabled MCP servers for display (only enabled in both MCP settings AND orchestrator)
-	const enabledMcpNames = useMemo(() => {
-		return mcpConfigs
-			.filter((c) => c.enabled && enabledMcpConfigIds.includes(c.id))
-			.map((c) => c.displayName)
-			.slice(0, 3); // Show first 3
-	}, [mcpConfigs, enabledMcpConfigIds]);
-
-	// Get names of enabled integrations for display (only active with credentials AND in orchestrator preferences)
-	const enabledIntegrationNames = useMemo(() => {
-		return integrations
-			.filter(
-				(i) =>
-					i.isActive &&
-					i.hasCredentials &&
-					enabledIntegrationIds.includes(i.id),
-			)
-			.map((i) => i.name)
-			.slice(0, 3); // Show first 3
-	}, [integrations, enabledIntegrationIds]);
-
-	const enabledAgentNames = useMemo(() => {
-		return allAgents
-			.filter((agent) => enabledAgentIds.includes(agent.id))
-			.map((agent) => agent.displayName || agent.name)
-			.slice(0, 3);
-	}, [allAgents, enabledAgentIds]);
-
-	const enabledFabricNames = useMemo(() => {
-		return FABRIC_AI_TOOLS.filter((tool) =>
-			enabledFabricToolIds.includes(tool.id),
-		)
-			.map((tool) => tool.name)
-			.slice(0, 3);
-	}, [enabledFabricToolIds]);
-
 	const showAgentsSection = showAgents && sectionMode !== "tools";
 	const showToolsSections = sectionMode !== "agents";
 
 	return (
-		<div className={cn("space-y-4", className)}>
+		<div className={cn("space-y-2", className)}>
 			{/* Agents Section - only shown when showAgents is true */}
 			{showAgentsSection && (
 				<Collapsible
 					open={agentsOpen}
 					onOpenChange={setAgentsOpen}
-					className="rounded-md border border-border/60 bg-card/30 p-2"
+					className="rounded-md border border-border bg-card"
 				>
-					<CollapsibleTrigger className="flex w-full items-start justify-between rounded-md px-2 py-2 text-left hover:bg-background/35 transition-colors">
-						<div className="min-w-0">
-							<div className="flex items-center gap-2">
-								<FabricLogo className="h-4 w-4" size={16} />
-								<span className="text-sm font-medium">
-									Agents
-								</span>
-								<Badge
-									variant="secondary"
-									className="h-5 text-[10px]"
-								>
-									{hasMounted
-										? `${enabledAgentsCount}/${totalAgents}`
-										: "—"}
-								</Badge>
-							</div>
-							<p className="mt-1 text-xs leading-5 text-muted-foreground">
-								Choose which specialist agents Fabric can plan
-								with and delegate to.
-							</p>
-							<p className="mt-2 text-[11px] leading-5 text-muted-foreground">
-								{enabledAgentNames.length > 0
-									? `Selected: ${enabledAgentNames.join(", ")}${enabledAgentsCount > 3 ? ` +${enabledAgentsCount - 3} more` : ""}`
-									: "No agents selected yet."}
-							</p>
-						</div>
-						<div className="ml-3 pt-1">
-							<Badge
-								variant="outline"
-								className="rounded-full border-border/50 bg-background/60 px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-muted-foreground"
-							>
-								{agentsOpen ? "Open" : "Closed"}
-							</Badge>
+					<CollapsibleTrigger className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left transition-colors hover:bg-muted/40">
+						<div className="flex min-w-0 items-center gap-2">
 							{agentsOpen ? (
-								<ChevronDown className="mx-auto mt-2 h-4 w-4 text-muted-foreground" />
+								<ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
 							) : (
-								<ChevronRight className="mx-auto mt-2 h-4 w-4 text-muted-foreground" />
+								<ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
 							)}
+							<FabricLogo
+								className="h-3.5 w-3.5 shrink-0"
+								size={14}
+							/>
+							<span className="truncate text-xs font-semibold text-foreground">
+								Specialist Agents
+							</span>
 						</div>
+						<span className="ml-2 shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium text-muted-foreground">
+							{hasMounted
+								? `${enabledAgentsCount}/${totalAgents}`
+								: "—"}
+						</span>
 					</CollapsibleTrigger>
-					<CollapsibleContent className="pt-2">
-						{/* Quick actions */}
-						<div className="mb-3 flex gap-2 px-2">
+					<CollapsibleContent className="border-t border-border/60 px-2.5 pt-2 pb-2.5">
+						{/* Search + Quick actions */}
+						<div className="mb-2 flex items-center gap-1.5">
+							<div className="relative min-w-0 flex-1">
+								<Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+								<SearchInput
+									placeholder="Filter agents..."
+									value={agentSearch}
+									onChange={(e) =>
+										setAgentSearch(e.target.value)
+									}
+									className="h-7 pl-7 text-xs"
+								/>
+							</div>
 							<button
 								type="button"
 								onClick={onEnableAllAgents}
-								className="rounded-full border border-primary/20 bg-primary/10 px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.16em] text-primary transition-colors hover:bg-primary/15"
+								className="shrink-0 rounded px-1.5 py-1 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10"
 							>
-								Enable All
+								All
 							</button>
 							<button
 								type="button"
 								onClick={onDisableAllAgents}
-								className="rounded-full border border-border/55 bg-background/55 px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground transition-colors hover:bg-background/80 hover:text-foreground"
+								className="shrink-0 rounded px-1.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
 							>
-								Disable All
+								None
 							</button>
 						</div>
 
-						{/* Search */}
-						<div className="relative px-2 mb-2">
-							<Search className="absolute left-4 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
-							<SearchInput
-								placeholder="Search agents..."
-								value={agentSearch}
-								onChange={(e) => setAgentSearch(e.target.value)}
-								className="h-7 pl-7 text-xs"
-							/>
-						</div>
-
 						{isLoadingAgents ? (
-							<div className="space-y-2 px-2">
+							<div className="space-y-1.5">
 								{[1, 2, 3].map((i) => (
-									<Skeleton key={i} className="h-12 w-full" />
+									<Skeleton key={i} className="h-8 w-full" />
 								))}
 							</div>
 						) : (
-							<div className="space-y-1 px-2 pr-3">
+							<div className="space-y-0.5">
 								{filteredAgents.length === 0 && agentSearch ? (
-									<p className="text-xs text-muted-foreground text-center py-4">
+									<p className="py-3 text-center text-xs text-muted-foreground">
 										No agents match "{agentSearch}"
 									</p>
 								) : (
@@ -930,57 +875,71 @@ export function OrchestratorConfigPanel({
 											<div
 												key={agent.id}
 												className={cn(
-													"flex items-start justify-between rounded-md border p-2.5 transition-colors",
+													"flex items-center justify-between rounded px-2 py-1.5 transition-colors",
 													isPrioritized
-														? "border-primary/30 bg-primary/10"
-														: "border-border/55 bg-background/45 hover:bg-background/65",
+														? "bg-primary/[0.08]"
+														: "hover:bg-muted/50",
 												)}
 											>
-												<div className="flex-1 min-w-0 mr-2">
-													<div className="flex items-center gap-1.5">
-														<PriorityStarButton
-															isPrioritized={
-																isPrioritized
-															}
-															onToggle={() =>
-																onAgentPrioritize(
-																	agent.id,
-																	!isPrioritized,
-																)
-															}
-															copy={
-																isPrioritized
-																	? t(
-																			"removePriorityAgent",
-																		)
-																	: t(
-																			"prioritizeAgent",
-																		)
-															}
-															activeClassName="text-purple-500"
-															idleClassName="text-muted-foreground/40 hover:text-purple-400"
-														/>
-														<span className="text-xs font-medium truncate">
+												<div className="mr-2 flex min-w-0 flex-1 items-center gap-1.5">
+													<PriorityStarButton
+														isPrioritized={
+															isPrioritized
+														}
+														onToggle={() =>
+															onAgentPrioritize(
+																agent.id,
+																!isPrioritized,
+															)
+														}
+														copy={
+															isPrioritized
+																? t(
+																		"removePriorityAgent",
+																	)
+																: t(
+																		"prioritizeAgent",
+																	)
+														}
+														activeClassName="text-primary"
+														idleClassName="text-muted-foreground/40 hover:text-primary"
+													/>
+													{agent.description ? (
+														<Tooltip>
+															<TooltipTrigger
+																asChild
+															>
+																<span className="truncate text-xs font-medium text-foreground cursor-help">
+																	{agent.displayName ||
+																		agent.name}
+																</span>
+															</TooltipTrigger>
+															<TooltipContent
+																side="top"
+																className="max-w-[240px]"
+															>
+																{
+																	agent.description
+																}
+															</TooltipContent>
+														</Tooltip>
+													) : (
+														<span className="truncate text-xs font-medium text-foreground">
 															{agent.displayName ||
 																agent.name}
 														</span>
-														{agent.scope !==
-															"SYSTEM" && (
-															<Badge
-																variant="outline"
-																className="text-[9px] h-4 px-1"
-															>
-																{agent.scope ===
-																"ORGANIZATION"
-																	? "Org"
-																	: "Personal"}
-															</Badge>
-														)}
-													</div>
-													{agent.description && (
-														<p className="text-[10px] text-muted-foreground line-clamp-1 mt-0.5 ml-[18px]">
-															{agent.description}
-														</p>
+													)}
+													{agent.scope !==
+														"SYSTEM" && (
+														<Badge
+															variant="outline"
+															className="h-4 shrink-0 px-1 text-[9px]"
+														>
+															{agent.scope ===
+															"ORGANIZATION"
+																? "Org"
+																: "Personal"}
+														</Badge>
 													)}
 												</div>
 												<Switch
@@ -993,7 +952,7 @@ export function OrchestratorConfigPanel({
 															checked,
 														)
 													}
-													className="scale-75"
+													className="scale-75 shrink-0"
 												/>
 											</div>
 										);
@@ -1005,103 +964,232 @@ export function OrchestratorConfigPanel({
 				</Collapsible>
 			)}
 
+			{/* Fabric AI Tools Section */}
+			{showToolsSections && (
+				<Collapsible
+					open={fabricOpen}
+					onOpenChange={setFabricOpen}
+					className="rounded-md border border-border bg-card"
+				>
+					<CollapsibleTrigger className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left transition-colors hover:bg-muted/40">
+						<div className="flex min-w-0 items-center gap-2">
+							{fabricOpen ? (
+								<ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+							) : (
+								<ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+							)}
+							<FabricLogo size={14} className="shrink-0" />
+							<span className="truncate text-xs font-semibold text-foreground">
+								Built-in Tools
+							</span>
+						</div>
+						<span className="ml-2 shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium text-muted-foreground">
+							{hasMounted
+								? `${enabledFabricCount}/${totalFabric}`
+								: "—"}
+						</span>
+					</CollapsibleTrigger>
+					<CollapsibleContent className="border-t border-border/60 px-2.5 pt-2 pb-2.5">
+						{/* Search + Quick actions */}
+						<div className="mb-2 flex items-center gap-1.5">
+							<div className="relative min-w-0 flex-1">
+								<Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+								<SearchInput
+									placeholder="Filter tools..."
+									value={fabricSearch}
+									onChange={(e) =>
+										setFabricSearch(e.target.value)
+									}
+									className="h-7 pl-7 text-xs"
+								/>
+							</div>
+							<button
+								type="button"
+								onClick={onEnableAllFabricTools}
+								className="shrink-0 rounded px-1.5 py-1 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10"
+							>
+								All
+							</button>
+							<button
+								type="button"
+								onClick={onDisableAllFabricTools}
+								className="shrink-0 rounded px-1.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+							>
+								None
+							</button>
+						</div>
+
+						{/* Tool list grouped by category */}
+						<div className="space-y-2.5">
+							{Object.entries(fabricToolsByCategory).map(
+								([category, tools]) => (
+									<div key={category}>
+										<div className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/80">
+											{category}
+										</div>
+										<div className="space-y-0.5">
+											{tools.map((tool) => {
+												const isEnabled =
+													enabledFabricToolIds.includes(
+														tool.id,
+													);
+												const isPrioritized =
+													hasMounted &&
+													prioritizedToolIds.includes(
+														tool.id,
+													);
+												return (
+													<div
+														key={tool.id}
+														className={cn(
+															"flex items-center justify-between rounded px-2 py-1.5 transition-colors",
+															isPrioritized
+																? "bg-primary/[0.08]"
+																: "hover:bg-muted/50",
+														)}
+													>
+														<div className="mr-2 flex min-w-0 flex-1 items-center gap-1.5">
+															<PriorityStarButton
+																isPrioritized={
+																	isPrioritized
+																}
+																onToggle={() =>
+																	onToolPrioritize(
+																		tool.id,
+																		!isPrioritized,
+																	)
+																}
+																copy={
+																	isPrioritized
+																		? t(
+																				"removePriorityTool",
+																			)
+																		: t(
+																				"prioritizeTool",
+																			)
+																}
+																activeClassName="text-primary"
+																idleClassName="text-muted-foreground/40 hover:text-primary"
+															/>
+															<Tooltip>
+																<TooltipTrigger
+																	asChild
+																>
+																	<p className="truncate text-xs font-medium text-foreground cursor-help">
+																		{
+																			tool.name
+																		}
+																	</p>
+																</TooltipTrigger>
+																<TooltipContent
+																	side="top"
+																	className="max-w-[240px]"
+																>
+																	{
+																		tool.description
+																	}
+																</TooltipContent>
+															</Tooltip>
+														</div>
+														<Switch
+															checked={isEnabled}
+															onCheckedChange={(
+																checked,
+															) =>
+																onFabricToolToggle(
+																	tool.id,
+																	checked,
+																)
+															}
+															className="scale-75 flex-shrink-0"
+														/>
+													</div>
+												);
+											})}
+										</div>
+									</div>
+								),
+							)}
+							{filteredFabricTools.length === 0 && (
+								<div className="py-3 text-center text-xs text-muted-foreground">
+									No tools found
+								</div>
+							)}
+						</div>
+					</CollapsibleContent>
+				</Collapsible>
+			)}
+
 			{/* MCP Servers Section */}
 			{showToolsSections && (
 				<Collapsible
 					open={mcpOpen}
 					onOpenChange={setMcpOpen}
-					className="rounded-md border border-border/60 bg-card/30 p-2"
+					className="rounded-md border border-border bg-card"
 				>
-					<CollapsibleTrigger className="flex w-full items-start justify-between rounded-md px-2 py-2 text-left hover:bg-background/35 transition-colors">
-						<div className="min-w-0">
-							<div className="flex items-center gap-2">
-								<McpLogo size={16} />
-								<span className="text-sm font-medium">
-									MCP Servers
-								</span>
-								<Badge
-									variant="secondary"
-									className="text-[10px] h-5"
-								>
-									{hasMounted
-										? `${enabledMcpCount}/${totalMcp}`
-										: "—"}
-								</Badge>
-							</div>
-							<p className="mt-1 text-xs leading-5 text-muted-foreground">
-								These are the external systems and tool servers
-								Fabric can call.
-							</p>
-							<p className="mt-2 text-[11px] leading-5 text-muted-foreground">
-								{enabledMcpNames.length > 0
-									? `Selected: ${enabledMcpNames.join(", ")}${enabledMcpCount > 3 ? ` +${enabledMcpCount - 3} more` : ""}`
-									: "No MCP servers selected yet."}
-							</p>
-						</div>
-						<div className="ml-3 pt-1">
-							<Badge
-								variant="outline"
-								className="rounded-full border-border/50 bg-background/60 px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-muted-foreground"
-							>
-								{mcpOpen ? "Open" : "Closed"}
-							</Badge>
+					<CollapsibleTrigger className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left transition-colors hover:bg-muted/40">
+						<div className="flex min-w-0 items-center gap-2">
 							{mcpOpen ? (
-								<ChevronDown className="mx-auto mt-2 h-4 w-4 text-muted-foreground" />
+								<ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
 							) : (
-								<ChevronRight className="mx-auto mt-2 h-4 w-4 text-muted-foreground" />
+								<ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
 							)}
+							<McpLogo size={14} className="shrink-0" />
+							<span className="truncate text-xs font-semibold text-foreground">
+								MCP Servers
+							</span>
 						</div>
+						<span className="ml-2 shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium text-muted-foreground">
+							{hasMounted
+								? `${enabledMcpCount}/${totalMcp}`
+								: "—"}
+						</span>
 					</CollapsibleTrigger>
-					<CollapsibleContent className="pt-2">
-						{/* Quick actions */}
-						<div className="mb-3 flex gap-2 px-2">
+					<CollapsibleContent className="border-t border-border/60 px-2.5 pt-2 pb-2.5">
+						{/* Search + Quick actions */}
+						<div className="mb-2 flex items-center gap-1.5">
+							<div className="relative min-w-0 flex-1">
+								<Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+								<SearchInput
+									placeholder="Filter MCP servers..."
+									value={mcpSearch}
+									onChange={(e) =>
+										setMcpSearch(e.target.value)
+									}
+									className="h-7 pl-7 text-xs"
+								/>
+							</div>
 							<button
 								type="button"
 								onClick={onEnableAllMcp}
-								className="rounded-full border border-primary/20 bg-primary/10 px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.16em] text-primary transition-colors hover:bg-primary/15"
+								className="shrink-0 rounded px-1.5 py-1 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10"
 							>
-								Enable All
+								All
 							</button>
 							<button
 								type="button"
 								onClick={onDisableAllMcp}
-								className="rounded-full border border-border/55 bg-background/55 px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground transition-colors hover:bg-background/80 hover:text-foreground"
+								className="shrink-0 rounded px-1.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
 							>
-								Disable All
+								None
 							</button>
 						</div>
 
-						{/* Search */}
-						<div className="relative px-2 mb-2">
-							<Search className="absolute left-4 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
-							<SearchInput
-								placeholder="Search MCP servers..."
-								value={mcpSearch}
-								onChange={(e) => setMcpSearch(e.target.value)}
-								className="h-7 pl-7 text-xs"
-							/>
-						</div>
-
 						{isLoadingMcp ? (
-							<div className="space-y-2 px-2">
+							<div className="space-y-1.5">
 								{[1, 2].map((i) => (
-									<Skeleton key={i} className="h-12 w-full" />
+									<Skeleton key={i} className="h-8 w-full" />
 								))}
 							</div>
 						) : mcpConfigs.length === 0 ? (
-							<div className="text-center py-4 px-2">
-								<div className="flex justify-center mb-2 opacity-50">
-									<McpLogo size={24} />
-								</div>
-								<p className="text-xs text-muted-foreground">
-									No MCP servers connected
-								</p>
-							</div>
+							<p className="py-3 text-center text-xs text-muted-foreground">
+								No MCP servers connected
+							</p>
 						) : (
-							<div className="space-y-1 px-2 pr-3">
+							<div className="space-y-0.5">
 								{filteredMcpConfigs.length === 0 &&
 								mcpSearch ? (
-									<p className="text-xs text-muted-foreground text-center py-4">
+									<p className="py-3 text-center text-xs text-muted-foreground">
 										No servers match "{mcpSearch}"
 									</p>
 								) : (
@@ -1119,13 +1207,13 @@ export function OrchestratorConfigPanel({
 											<div
 												key={config.id}
 												className={cn(
-													"flex items-center justify-between rounded-md border p-2.5 transition-colors",
+													"flex items-center justify-between rounded px-2 py-1.5 transition-colors",
 													isPrioritized
-														? "border-primary/30 bg-primary/10"
-														: "border-border/55 bg-background/45 hover:bg-background/65",
+														? "bg-primary/[0.08]"
+														: "hover:bg-muted/50",
 												)}
 											>
-												<div className="flex items-center gap-1.5 flex-1 min-w-0 mr-2">
+												<div className="mr-2 flex min-w-0 flex-1 items-center gap-1.5">
 													<PriorityStarButton
 														isPrioritized={
 															isPrioritized
@@ -1145,8 +1233,8 @@ export function OrchestratorConfigPanel({
 																		"prioritizeServer",
 																	)
 														}
-														activeClassName="text-blue-500"
-														idleClassName="text-muted-foreground/40 hover:text-blue-400"
+														activeClassName="text-primary"
+														idleClassName="text-muted-foreground/40 hover:text-primary"
 													/>
 													<McpLogo
 														size={12}
@@ -1157,7 +1245,7 @@ export function OrchestratorConfigPanel({
 															<TooltipTrigger
 																asChild
 															>
-																<span className="text-xs font-medium truncate cursor-help">
+																<span className="truncate text-xs font-medium text-foreground cursor-help">
 																	{
 																		config.displayName
 																	}
@@ -1173,7 +1261,7 @@ export function OrchestratorConfigPanel({
 															</TooltipContent>
 														</Tooltip>
 													) : (
-														<span className="text-xs font-medium truncate">
+														<span className="truncate text-xs font-medium text-foreground">
 															{config.displayName}
 														</span>
 													)}
@@ -1181,7 +1269,7 @@ export function OrchestratorConfigPanel({
 														"ORGANIZATION" && (
 														<Badge
 															variant="outline"
-															className="text-[9px] h-4 px-1 flex-shrink-0"
+															className="h-4 flex-shrink-0 px-1 text-[9px]"
 														>
 															Org
 														</Badge>
@@ -1216,239 +1304,45 @@ export function OrchestratorConfigPanel({
 				</Collapsible>
 			)}
 
-			{/* Fabric AI Tools Section */}
-			{showToolsSections && (
-				<Collapsible
-					open={fabricOpen}
-					onOpenChange={setFabricOpen}
-					className="rounded-md border border-border/60 bg-card/30 p-2"
-				>
-					<CollapsibleTrigger className="flex w-full items-start justify-between rounded-md px-2 py-2 text-left hover:bg-background/35 transition-colors">
-						<div className="min-w-0">
-							<div className="flex items-center gap-2">
-								<FabricLogo size={16} />
-								<span className="text-sm font-medium">
-									Fabric AI Tools
-								</span>
-								<Badge
-									variant="secondary"
-									className="text-[10px] h-5 bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400"
-								>
-									{hasMounted
-										? `${enabledFabricCount}/${totalFabric}`
-										: "—"}
-								</Badge>
-							</div>
-							<p className="mt-1 text-xs leading-5 text-muted-foreground">
-								These are Fabric-native capabilities for web
-								research, pattern execution, and workspace
-								retrieval.
-							</p>
-							<p className="mt-2 text-[11px] leading-5 text-muted-foreground">
-								{enabledFabricNames.length > 0
-									? `Selected: ${enabledFabricNames.join(", ")}${enabledFabricCount > 3 ? ` +${enabledFabricCount - 3} more` : ""}`
-									: "No Fabric tools selected yet."}
-							</p>
-						</div>
-						<div className="ml-3 pt-1">
-							<Badge
-								variant="outline"
-								className="rounded-full border-border/50 bg-background/60 px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-muted-foreground"
-							>
-								{fabricOpen ? "Open" : "Closed"}
-							</Badge>
-							{fabricOpen ? (
-								<ChevronDown className="mx-auto mt-2 h-4 w-4 text-muted-foreground" />
-							) : (
-								<ChevronRight className="mx-auto mt-2 h-4 w-4 text-muted-foreground" />
-							)}
-						</div>
-					</CollapsibleTrigger>
-					<CollapsibleContent className="pt-2">
-						{/* Quick actions */}
-						<div className="mb-3 flex gap-2 px-2">
-							<button
-								type="button"
-								onClick={onEnableAllFabricTools}
-								className="rounded-full border border-primary/20 bg-primary/10 px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.16em] text-primary transition-colors hover:bg-primary/15"
-							>
-								Enable All
-							</button>
-							<button
-								type="button"
-								onClick={onDisableAllFabricTools}
-								className="rounded-full border border-border/55 bg-background/55 px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground transition-colors hover:bg-background/80 hover:text-foreground"
-							>
-								Disable All
-							</button>
-						</div>
-
-						{/* Search */}
-						<div className="relative px-2 mb-2">
-							<Search className="absolute left-4 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
-							<SearchInput
-								placeholder="Search Fabric tools..."
-								value={fabricSearch}
-								onChange={(e) =>
-									setFabricSearch(e.target.value)
-								}
-								className="pl-8 h-7 text-xs"
-							/>
-						</div>
-
-						{/* Tool list grouped by category */}
-						<div className="space-y-3 px-2">
-							{Object.entries(fabricToolsByCategory).map(
-								([category, tools]) => (
-									<div key={category}>
-										<div className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-1.5 px-1">
-											{category}
-										</div>
-										<div className="space-y-1">
-											{tools.map((tool) => {
-												const isEnabled =
-													enabledFabricToolIds.includes(
-														tool.id,
-													);
-												const isPrioritized =
-													hasMounted &&
-													prioritizedToolIds.includes(
-														tool.id,
-													);
-												return (
-													<div
-														key={tool.id}
-														className={cn(
-															"flex items-center justify-between rounded-md border p-2.5 transition-colors",
-															isPrioritized
-																? "border-primary/30 bg-primary/10"
-																: isEnabled
-																	? "border-border/55 bg-background/55"
-																	: "border-border/40 bg-background/30 hover:bg-background/55",
-														)}
-													>
-														<div className="flex items-center gap-1.5 flex-1 min-w-0 mr-2">
-															<PriorityStarButton
-																isPrioritized={
-																	isPrioritized
-																}
-																onToggle={() =>
-																	onToolPrioritize(
-																		tool.id,
-																		!isPrioritized,
-																	)
-																}
-																copy={
-																	isPrioritized
-																		? t(
-																				"removePriorityTool",
-																			)
-																		: t(
-																				"prioritizeTool",
-																			)
-																}
-																activeClassName="text-orange-500"
-																idleClassName="text-muted-foreground/40 hover:text-orange-400"
-															/>
-															<Tooltip>
-																<TooltipTrigger
-																	asChild
-																>
-																	<p className="text-xs font-medium truncate cursor-help">
-																		{
-																			tool.name
-																		}
-																	</p>
-																</TooltipTrigger>
-																<TooltipContent
-																	side="top"
-																	className="max-w-[250px]"
-																>
-																	{
-																		tool.description
-																	}
-																</TooltipContent>
-															</Tooltip>
-														</div>
-														<Switch
-															checked={isEnabled}
-															onCheckedChange={(
-																checked,
-															) =>
-																onFabricToolToggle(
-																	tool.id,
-																	checked,
-																)
-															}
-															className="scale-75 flex-shrink-0"
-														/>
-													</div>
-												);
-											})}
-										</div>
-									</div>
-								),
-							)}
-							{filteredFabricTools.length === 0 && (
-								<div className="text-center py-4 text-xs text-muted-foreground">
-									No Fabric tools found
-								</div>
-							)}
-						</div>
-					</CollapsibleContent>
-				</Collapsible>
-			)}
-
 			{/* Workflow Integrations Section */}
 			{showToolsSections && (
 				<Collapsible
 					open={integrationsOpen}
 					onOpenChange={setIntegrationsOpen}
-					className="rounded-md border border-border/60 bg-card/30 p-2"
+					className="rounded-md border border-border bg-card"
 				>
-					<CollapsibleTrigger className="flex w-full items-start justify-between rounded-md px-2 py-2 text-left hover:bg-background/35 transition-colors">
-						<div className="min-w-0">
-							<div className="flex items-center gap-2">
-								<Plug2 className="h-4 w-4 text-emerald-600" />
-								<span className="text-sm font-medium">
-									Integrations
-								</span>
-								<Badge
-									variant="secondary"
-									className="text-[10px] h-5 bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400"
-								>
-									{hasMounted
-										? `${enabledIntegrationsCount}/${totalIntegrations}`
-										: "—"}
-								</Badge>
-							</div>
-							<p className="mt-1 text-xs leading-5 text-muted-foreground">
-								Enable app connections Fabric can use inside
-								orchestrated workflows.
-							</p>
-							<p className="mt-2 text-[11px] leading-5 text-muted-foreground">
-								{enabledIntegrationNames.length > 0
-									? `Selected: ${enabledIntegrationNames.join(", ")}${enabledIntegrationsCount > 3 ? ` +${enabledIntegrationsCount - 3} more` : ""}`
-									: "No integrations selected yet."}
-							</p>
-						</div>
-						<div className="ml-3 pt-1">
-							<Badge
-								variant="outline"
-								className="rounded-full border-border/50 bg-background/60 px-2 py-1 text-[10px] uppercase tracking-[0.16em] text-muted-foreground"
-							>
-								{integrationsOpen ? "Open" : "Closed"}
-							</Badge>
+					<CollapsibleTrigger className="flex w-full items-center justify-between rounded-md px-3 py-2 text-left transition-colors hover:bg-muted/40">
+						<div className="flex min-w-0 items-center gap-2">
 							{integrationsOpen ? (
-								<ChevronDown className="mx-auto mt-2 h-4 w-4 text-muted-foreground" />
+								<ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
 							) : (
-								<ChevronRight className="mx-auto mt-2 h-4 w-4 text-muted-foreground" />
+								<ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
 							)}
+							<Plug2 className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+							<span className="truncate text-xs font-semibold text-foreground">
+								Integrations
+							</span>
 						</div>
+						<span className="ml-2 shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium text-muted-foreground">
+							{hasMounted
+								? `${enabledIntegrationsCount}/${totalIntegrations}`
+								: "—"}
+						</span>
 					</CollapsibleTrigger>
-					<CollapsibleContent className="pt-2">
-						{/* Quick actions */}
-						<div className="mb-3 flex gap-2 px-2">
+					<CollapsibleContent className="border-t border-border/60 px-2.5 pt-2 pb-2.5">
+						{/* Search + Quick actions */}
+						<div className="mb-2 flex items-center gap-1.5">
+							<div className="relative min-w-0 flex-1">
+								<Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
+								<SearchInput
+									placeholder="Filter integrations..."
+									value={integrationSearch}
+									onChange={(e) =>
+										setIntegrationSearch(e.target.value)
+									}
+									className="h-7 pl-7 text-xs"
+								/>
+							</div>
 							<button
 								type="button"
 								onClick={() =>
@@ -1456,52 +1350,34 @@ export function OrchestratorConfigPanel({
 										integrations.map((i) => i.id),
 									)
 								}
-								className="rounded-full border border-primary/20 bg-primary/10 px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.16em] text-primary transition-colors hover:bg-primary/15"
+								className="shrink-0 rounded px-1.5 py-1 text-[11px] font-medium text-primary transition-colors hover:bg-primary/10"
 							>
-								Enable All
+								All
 							</button>
 							<button
 								type="button"
 								onClick={onDisableAllIntegrations}
-								className="rounded-full border border-border/55 bg-background/55 px-3 py-1.5 text-[10px] font-medium uppercase tracking-[0.16em] text-muted-foreground transition-colors hover:bg-background/80 hover:text-foreground"
+								className="shrink-0 rounded px-1.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
 							>
-								Disable All
+								None
 							</button>
 						</div>
 
-						{/* Search */}
-						<div className="relative px-2 mb-2">
-							<Search className="absolute left-4 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground" />
-							<SearchInput
-								placeholder="Search integrations..."
-								value={integrationSearch}
-								onChange={(e) =>
-									setIntegrationSearch(e.target.value)
-								}
-								className="h-7 pl-7 text-xs"
-							/>
-						</div>
-
 						{isLoadingIntegrations ? (
-							<div className="space-y-2 px-2">
+							<div className="space-y-1.5">
 								{[1, 2].map((i) => (
-									<Skeleton key={i} className="h-12 w-full" />
+									<Skeleton key={i} className="h-8 w-full" />
 								))}
 							</div>
 						) : integrations.length === 0 ? (
-							<div className="text-center py-4 px-2">
-								<div className="flex justify-center mb-2 opacity-50">
-									<Plug2 className="h-6 w-6" />
-								</div>
-								<p className="text-xs text-muted-foreground">
-									No integrations configured
-								</p>
-							</div>
+							<p className="py-3 text-center text-xs text-muted-foreground">
+								No integrations configured
+							</p>
 						) : (
-							<div className="space-y-1 px-2 pr-3">
+							<div className="space-y-0.5">
 								{filteredIntegrations.length === 0 &&
 								integrationSearch ? (
-									<p className="text-xs text-muted-foreground text-center py-4">
+									<p className="py-3 text-center text-xs text-muted-foreground">
 										No integrations match "
 										{integrationSearch}"
 									</p>
@@ -1524,13 +1400,13 @@ export function OrchestratorConfigPanel({
 											<div
 												key={integration.id}
 												className={cn(
-													"flex items-center justify-between rounded-md border p-2.5 transition-colors",
+													"flex items-center justify-between rounded px-2 py-1.5 transition-colors",
 													isPrioritized
-														? "border-primary/30 bg-primary/10"
-														: "border-border/55 bg-background/45 hover:bg-background/65",
+														? "bg-primary/[0.08]"
+														: "hover:bg-muted/50",
 												)}
 											>
-												<div className="flex items-center gap-1.5 flex-1 min-w-0 mr-2">
+												<div className="mr-2 flex min-w-0 flex-1 items-center gap-1.5">
 													<PriorityStarButton
 														isPrioritized={
 															isPrioritized
@@ -1550,12 +1426,12 @@ export function OrchestratorConfigPanel({
 																		"prioritizeIntegration",
 																	)
 														}
-														activeClassName="text-emerald-500"
-														idleClassName="text-muted-foreground/40 hover:text-emerald-400"
+														activeClassName="text-primary"
+														idleClassName="text-muted-foreground/40 hover:text-primary"
 													/>
 													<div
 														className={cn(
-															"w-3 h-3 rounded-sm flex-shrink-0",
+															"h-2.5 w-2.5 flex-shrink-0 rounded-sm",
 															providerInfo?.color ||
 																"bg-gray-400",
 														)}
@@ -1565,7 +1441,7 @@ export function OrchestratorConfigPanel({
 															<TooltipTrigger
 																asChild
 															>
-																<span className="text-xs font-medium truncate cursor-help">
+																<span className="truncate text-xs font-medium text-foreground cursor-help">
 																	{
 																		integration.name
 																	}
@@ -1581,7 +1457,7 @@ export function OrchestratorConfigPanel({
 															</TooltipContent>
 														</Tooltip>
 													) : (
-														<span className="text-xs font-medium truncate">
+														<span className="truncate text-xs font-medium text-foreground">
 															{integration.name}
 														</span>
 													)}
@@ -1590,7 +1466,7 @@ export function OrchestratorConfigPanel({
 													) && (
 														<Badge
 															variant="outline"
-															className="text-[9px] h-4 px-1 flex-shrink-0 text-amber-600"
+															className="h-4 flex-shrink-0 px-1 text-[9px] text-amber-600"
 														>
 															{integrationCredentialBadge(
 																integration,

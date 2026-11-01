@@ -151,7 +151,7 @@ export function PriorityActionsPanel({ actions }: PriorityActionsPanelProps) {
 	return (
 		<section
 			aria-labelledby="priority-actions-heading"
-			className="rounded-2xl border border-border bg-card p-6"
+			className="rounded-lg border border-border bg-card p-6"
 			data-onboarding-target="daily-brief-priority-actions"
 		>
 			<header className="flex items-baseline justify-between gap-4">
@@ -185,7 +185,7 @@ export function PriorityActionsPanel({ actions }: PriorityActionsPanelProps) {
 
 						return (
 							<li key={group.kind} className="space-y-2">
-								<div className="flex items-center gap-2 text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+								<div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
 									<Icon
 										className={cn("size-3.5", tone.icon)}
 										aria-hidden="true"
@@ -226,7 +226,7 @@ export function PriorityActionsPanel({ actions }: PriorityActionsPanelProps) {
 																		action.targetIdentifier
 																	}
 																</span>
-																<span className="text-xs uppercase tracking-[0.16em] text-muted-foreground">
+																<span className="text-xs uppercase tracking-wide text-muted-foreground">
 																	{
 																		TARGET_TYPE_LABELS[
 																			action

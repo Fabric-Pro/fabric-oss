@@ -11,23 +11,37 @@ import {
 	DialogTitle,
 } from "@ui/components/dialog";
 import {
+	CheckCircle2Icon,
 	CodeIcon,
 	CpuIcon,
 	GitBranchIcon,
+	LaptopIcon,
 	ListTodoIcon,
 	Loader2Icon,
+	RefreshCwIcon,
+	ShieldCheckIcon,
+	SlidersHorizontalIcon,
+	SparklesIcon,
 } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 import {
+	buildFabricDesktopNewSessionUrl,
+	buildFabricDesktopViewUrl,
+	buildRemoteAgentServerDelegationUrl,
 	FABRIC_AGENT_CONNECTIONS,
+	FABRIC_AGENT_FALLBACK_POLICIES,
+	type FabricAgentFallbackPolicy,
 	getExecutionProviderDescription,
 	getExecutionProviderLabel,
+	getFabricAgentConnectionModels,
 } from "../../lib/implementation-session-labels";
 import type { UserStory } from "../../lib/stories/types";
 
 export interface StartCodingRunConfirmOptions {
 	serverId?: string;
 	llmConnection?: string;
+	model?: string;
+	fallbackPolicy?: FabricAgentFallbackPolicy;
 	taskId?: string | null;
 }
 
@@ -42,6 +56,8 @@ type Props = {
 	onConfirm: (options?: StartCodingRunConfirmOptions) => void;
 	focusedTaskId?: string | null;
 	initialConnection?: string;
+	initialModel?: string;
+	initialFallbackPolicy?: FabricAgentFallbackPolicy;
 	serverPicker?: ReactNode;
 	serverId?: string;
 	serverRequired?: boolean;
@@ -59,6 +75,8 @@ export function StartCodingRunDialog({
 	onConfirm,
 	focusedTaskId,
 	initialConnection = "default",
+	initialModel = "default",
+	initialFallbackPolicy = "subscription_harnesses",
 	serverPicker,
 	serverId,
 	serverRequired = false,
@@ -66,6 +84,9 @@ export function StartCodingRunDialog({
 }: Props) {
 	const [selectedConnection, setSelectedConnection] =
 		useState<string>(initialConnection);
+	const [selectedModel, setSelectedModel] = useState<string>(initialModel);
+	const [selectedFallbackPolicy, setSelectedFallbackPolicy] =
+		useState<FabricAgentFallbackPolicy>(initialFallbackPolicy);
 	const [selectedTaskId, setSelectedTaskId] = useState<string | null>(
 		focusedTaskId ?? null,
 	);
@@ -100,18 +121,42 @@ export function StartCodingRunDialog({
 	const activeConnectionOption =
 		FABRIC_AGENT_CONNECTIONS.find((c) => c.value === selectedConnection) ??
 		FABRIC_AGENT_CONNECTIONS[0];
+	const availableModels = getFabricAgentConnectionModels(selectedConnection);
+	const activeModelOption =
+		availableModels.find((m) => m.id === selectedModel) ?? null;
+
+	const handleConnectionChange = (nextConnection: string) => {
+		setSelectedConnection(nextConnection);
+		setSelectedModel("default");
+	};
 
 	const handleConfirm = () => {
 		const llmConnection =
 			selectedConnection && selectedConnection !== "default"
 				? selectedConnection
 				: undefined;
+		const model =
+			selectedModel && selectedModel !== "default"
+				? selectedModel
+				: undefined;
+		const fallbackPolicy =
+			selectedFallbackPolicy !== "subscription_harnesses"
+				? selectedFallbackPolicy
+				: undefined;
 		const taskChanged = selectedTaskId !== (focusedTaskId ?? null);
 
-		if (llmConnection || taskChanged || serverId) {
+		if (
+			llmConnection ||
+			model ||
+			fallbackPolicy ||
+			taskChanged ||
+			serverId
+		) {
 			onConfirm({
 				...(serverId ? { serverId } : {}),
 				...(llmConnection ? { llmConnection } : {}),
+				...(model ? { model } : {}),
+				...(fallbackPolicy ? { fallbackPolicy } : {}),
 				...(taskChanged ? { taskId: selectedTaskId } : {}),
 			});
 		} else {
@@ -124,13 +169,13 @@ export function StartCodingRunDialog({
 			<DialogContent className="flex max-h-[90vh] flex-col sm:max-w-[640px]">
 				<DialogHeader className="flex-shrink-0 space-y-4 text-left">
 					<div className="flex items-start gap-3">
-						<div className="flex size-11 shrink-0 items-center justify-center rounded-2xl border border-primary/20 bg-primary/10 shadow-sm">
+						<div className="flex size-11 shrink-0 items-center justify-center rounded-lg border border-primary/20 bg-primary/10 shadow-sm">
 							<CodeIcon className="size-5 text-primary" />
 						</div>
 						<div className="min-w-0 flex-1 space-y-2 pr-8">
 							<Badge
 								variant="outline"
-								className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-0.5 text-[11px] uppercase tracking-[0.16em] text-primary"
+								className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-0.5 text-[11px] uppercase tracking-wide text-primary"
 							>
 								{getExecutionProviderLabel("BACKGROUND_AGENTS")}
 							</Badge>
@@ -150,8 +195,8 @@ export function StartCodingRunDialog({
 				<div className="flex-1 space-y-4 overflow-y-auto py-1 pr-1">
 					{serverPicker}
 					{!hasRepositoryContext && (
-						<div className="rounded-2xl border border-amber-300/40 bg-amber-50/70 p-4 dark:border-amber-700/50 dark:bg-amber-950/20">
-							<p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+						<div className="rounded-lg border border-amber-300/40 bg-amber-50/70 p-4 dark:border-amber-700/50 dark:bg-amber-950/20">
+							<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 								Repository required
 							</p>
 							<p className="mt-2 text-sm leading-6 text-foreground/85">
@@ -165,8 +210,8 @@ export function StartCodingRunDialog({
 
 					<div className="grid gap-4 sm:grid-cols-2">
 						{effectiveRepoOwner && effectiveRepoName && (
-							<div className="rounded-2xl border border-border/60 bg-background p-4">
-								<p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+							<div className="rounded-lg border border-border/60 bg-background p-4">
+								<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 									Repository
 								</p>
 								<p className="mt-2 flex items-center gap-2 text-sm font-medium text-foreground">
@@ -181,8 +226,8 @@ export function StartCodingRunDialog({
 							</div>
 						)}
 
-						<div className="rounded-2xl border border-border/60 bg-background p-4">
-							<p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+						<div className="rounded-lg border border-border/60 bg-background p-4">
+							<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 								Scope
 							</p>
 							<p className="mt-2 flex items-center gap-2 text-sm font-medium text-foreground">
@@ -200,48 +245,212 @@ export function StartCodingRunDialog({
 						</div>
 					</div>
 
-					<div className="rounded-2xl border border-border/60 bg-background p-4">
-						<div className="flex items-center justify-between gap-2">
+					<div className="space-y-3 rounded-lg border border-border/60 bg-background p-4">
+						<div className="flex flex-wrap items-center justify-between gap-2">
 							<label
 								htmlFor="fabric-agent-connection-select"
-								className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground"
+								className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
 							>
 								<CpuIcon className="size-3.5 text-primary" />
-								Agent backend
+								Subscription harness &amp; agent backend
 							</label>
-							<Badge
-								variant="outline"
-								className="rounded-full px-2 py-0.5 text-[10px]"
-							>
-								{activeConnectionOption.label}
-							</Badge>
+							<div className="flex items-center gap-1.5">
+								<Badge
+									variant="secondary"
+									className="rounded-full px-2 py-0.5 text-[10px]"
+								>
+									{activeConnectionOption.subscriptionBadge}
+								</Badge>
+								<Badge
+									variant="outline"
+									className="rounded-full px-2 py-0.5 text-[10px]"
+								>
+									{activeConnectionOption.label}
+								</Badge>
+							</div>
 						</div>
-						<select
-							id="fabric-agent-connection-select"
-							aria-label="Agent backend"
-							value={selectedConnection}
-							onChange={(event) =>
-								setSelectedConnection(event.target.value)
-							}
-							disabled={isLoading}
-							className="mt-2 flex h-9 w-full rounded-xl border border-input bg-background px-3 py-1 text-sm text-foreground shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-						>
-							{FABRIC_AGENT_CONNECTIONS.map((option) => (
-								<option key={option.value} value={option.value}>
-									{option.label}
-								</option>
-							))}
-						</select>
-						<p className="mt-1.5 text-xs text-muted-foreground">
-							{activeConnectionOption.description}
+
+						{/* Quick-select harness pills */}
+						<div className="flex flex-wrap gap-1.5">
+							{FABRIC_AGENT_CONNECTIONS.map((option) => {
+								const isSelected =
+									selectedConnection === option.value;
+								return (
+									<button
+										key={option.value}
+										type="button"
+										disabled={isLoading}
+										onClick={() =>
+											handleConnectionChange(option.value)
+										}
+										className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
+											isSelected
+												? "border-primary bg-primary/10 text-primary"
+												: "border-border/70 bg-muted/20 text-foreground/80 hover:border-border hover:bg-muted/40"
+										}`}
+									>
+										<span>{option.shortLabel}</span>
+									</button>
+								);
+							})}
+						</div>
+
+						<div className="grid gap-3 sm:grid-cols-2">
+							<div>
+								<span className="text-[11px] font-medium text-muted-foreground">
+									Harness connection
+								</span>
+								<select
+									id="fabric-agent-connection-select"
+									aria-label="Agent backend"
+									value={selectedConnection}
+									onChange={(event) =>
+										handleConnectionChange(
+											event.target.value,
+										)
+									}
+									disabled={isLoading}
+									className="mt-1 flex h-9 w-full rounded-lg border border-input bg-background px-3 py-1 text-sm text-foreground shadow-xs transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+								>
+									{FABRIC_AGENT_CONNECTIONS.map((option) => (
+										<option
+											key={option.value}
+											value={option.value}
+										>
+											{option.label}
+										</option>
+									))}
+								</select>
+							</div>
+
+							<div>
+								<label
+									htmlFor="fabric-agent-model-select"
+									className="flex items-center justify-between text-[11px] font-medium text-muted-foreground"
+								>
+									<span>Model (defaults pre-configured)</span>
+									<SparklesIcon className="size-3 text-primary" />
+								</label>
+								<select
+									id="fabric-agent-model-select"
+									aria-label="Agent model"
+									value={selectedModel}
+									onChange={(event) =>
+										setSelectedModel(event.target.value)
+									}
+									disabled={isLoading}
+									className="mt-1 flex h-9 w-full rounded-lg border border-input bg-background px-3 py-1 text-sm text-foreground shadow-xs transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+								>
+									<option value="default">
+										{selectedConnection === "default"
+											? "Server default model (Auto)"
+											: `Harness default (${activeConnectionOption.defaultModel})`}
+									</option>
+									{selectedConnection !== "default" &&
+										availableModels.map((modelOption) => (
+											<option
+												key={modelOption.id}
+												value={modelOption.id}
+											>
+												{modelOption.label} —{" "}
+												{modelOption.tierLabel}
+											</option>
+										))}
+								</select>
+							</div>
+						</div>
+
+						<p className="text-xs text-muted-foreground">
+							{activeModelOption
+								? `${activeModelOption.label}: ${activeModelOption.description}`
+								: activeConnectionOption.description}
 						</p>
 					</div>
 
+					{/* Quota & Rate-Limit Fallback Policy */}
+					<div className="space-y-2.5 rounded-lg border border-border/60 bg-background p-4">
+						<div className="flex flex-wrap items-center justify-between gap-2">
+							<div className="flex items-center gap-2">
+								<RefreshCwIcon className="size-3.5 text-primary" />
+								<p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+									When subscription tokens reach quota limit
+								</p>
+							</div>
+							<Badge
+								variant="outline"
+								className="rounded-full border-primary/25 bg-primary/5 px-2 py-0.5 text-[10px] text-primary"
+							>
+								Resilient routing
+							</Badge>
+						</div>
+
+						<fieldset className="grid gap-2">
+							<legend className="sr-only">
+								Quota fallback policy
+							</legend>
+							{FABRIC_AGENT_FALLBACK_POLICIES.map((policy) => {
+								const isSelected =
+									selectedFallbackPolicy === policy.value;
+								return (
+									<label
+										key={policy.value}
+										className={`flex cursor-pointer items-start justify-between gap-3 rounded-lg border p-3 text-left transition-all ${
+											isSelected
+												? "border-primary bg-primary/[0.05] ring-1 ring-primary/25"
+												: "border-border/60 bg-muted/15 hover:border-border hover:bg-muted/35"
+										}`}
+									>
+										<input
+											type="radio"
+											name="fabric-agent-fallback-policy"
+											value={policy.value}
+											checked={isSelected}
+											disabled={isLoading}
+											onChange={() =>
+												setSelectedFallbackPolicy(
+													policy.value,
+												)
+											}
+											className="sr-only"
+										/>
+										<div className="min-w-0 flex-1 space-y-1">
+											<div className="flex flex-wrap items-center gap-2">
+												<span className="text-xs font-semibold text-foreground">
+													{policy.label}
+												</span>
+												<Badge
+													variant={
+														isSelected
+															? "default"
+															: "secondary"
+													}
+													className="rounded-full px-2 py-0 text-[10px]"
+												>
+													{policy.badge}
+												</Badge>
+											</div>
+											<p className="text-xs leading-5 text-muted-foreground">
+												{policy.description}
+											</p>
+										</div>
+										<div className="mt-0.5 shrink-0">
+											{isSelected ? (
+												<CheckCircle2Icon className="size-4 text-primary" />
+											) : (
+												<ShieldCheckIcon className="size-4 text-muted-foreground/40" />
+											)}
+										</div>
+									</label>
+								);
+							})}
+						</fieldset>
+					</div>
+
 					{displayTasks.length > 0 && (
-						<div className="rounded-2xl border border-border/60 bg-background p-4">
+						<div className="rounded-lg border border-border/60 bg-background p-4">
 							<div className="flex items-center justify-between gap-3">
 								<div>
-									<p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+									<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 										Tasks to implement
 									</p>
 									<p className="mt-0.5 text-xs text-muted-foreground">
@@ -287,7 +496,7 @@ export function StartCodingRunDialog({
 													)
 												}
 												aria-pressed={isPrimary}
-												className={`flex w-full items-start gap-2 rounded-xl border px-3 py-2.5 text-left transition-colors ${
+												className={`flex w-full items-start gap-2 rounded-lg border px-3 py-2.5 text-left transition-colors ${
 													isPrimary
 														? "border-primary/40 bg-primary/[0.06]"
 														: "border-border/50 bg-muted/20 hover:bg-muted/40"
@@ -328,6 +537,78 @@ export function StartCodingRunDialog({
 						implements the assigned work, and opens a pull request.
 						Follow its progress and conversation from this project.
 					</p>
+
+					{/* 1-Click Fabric Desktop & Remote Server Launch Bar */}
+					<div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/20 px-3 py-2">
+						<div className="flex items-center gap-2 text-xs">
+							<LaptopIcon className="size-3.5 text-primary" />
+							<span className="font-medium text-foreground">
+								Open in Fabric Desktop or Remote Agent Server
+							</span>
+						</div>
+						<div className="flex flex-wrap items-center gap-1.5">
+							<Button
+								asChild
+								variant="outline"
+								size="sm"
+								className="h-7 px-2.5 text-xs"
+							>
+								<a
+									href={buildFabricDesktopNewSessionUrl({
+										projectName:
+											repositoryName ||
+											story.title ||
+											"Fabric Project",
+										prompt: `Implement feature "${story.title}"${repositoryOwner && repositoryName ? ` in ${repositoryOwner}/${repositoryName}` : ""}${defaultBranch ? ` (base branch: ${defaultBranch})` : ""}.`,
+									})}
+									data-testid="dialog-launch-fabric-desktop"
+								>
+									<LaptopIcon className="mr-1.5 size-3" />
+									Open in Fabric Desktop
+								</a>
+							</Button>
+							<Button
+								asChild
+								variant="outline"
+								size="sm"
+								className="h-7 px-2.5 text-xs"
+							>
+								<a
+									href={buildRemoteAgentServerDelegationUrl({
+										serverUrl: "https://agents.example.com",
+										projectName:
+											repositoryName ||
+											story.title ||
+											"Fabric Project",
+										prompt: `Implement feature "${story.title}"${repositoryOwner && repositoryName ? ` in ${repositoryOwner}/${repositoryName}` : ""}${defaultBranch ? ` (base branch: ${defaultBranch})` : ""}.`,
+										connection: selectedConnection,
+										model: selectedModel,
+										fallbackPolicy: selectedFallbackPolicy,
+									})}
+									target="_blank"
+									rel="noopener noreferrer"
+									data-testid="dialog-delegate-remote-server"
+								>
+									<CpuIcon className="mr-1.5 size-3" />
+									Delegate to Remote Server
+								</a>
+							</Button>
+							<Button
+								asChild
+								variant="ghost"
+								size="sm"
+								className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+							>
+								<a
+									href={buildFabricDesktopViewUrl("settings")}
+									data-testid="dialog-fabric-desktop-ai-settings"
+								>
+									<SlidersHorizontalIcon className="mr-1 size-3" />
+									AI Connections
+								</a>
+							</Button>
+						</div>
+					</div>
 				</div>
 
 				<DialogFooter className="flex-shrink-0 gap-2 sm:justify-between">

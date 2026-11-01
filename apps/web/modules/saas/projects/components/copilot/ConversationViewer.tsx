@@ -62,7 +62,7 @@ function ForkFromHereButton({
 						type="button"
 						onClick={() => onFork(messageId)}
 						disabled={disabled}
-						className="inline-flex items-center gap-1 rounded text-[11px] text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/40 motion-safe:transition-colors disabled:opacity-50"
+						className="inline-flex items-center gap-1 rounded text-[11px] text-muted-foreground hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-primary/40 motion-safe:transition-colors disabled:opacity-50"
 						// No `aria-label`: the visible text ("Fork from here") names
 						// this button. The label that used to sit here did not contain
 						// that visible string, so it replaced the accessible name with

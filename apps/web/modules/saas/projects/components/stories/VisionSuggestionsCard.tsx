@@ -89,7 +89,7 @@ export function VisionSuggestionsCard({
 					className="size-4 text-muted-foreground"
 					aria-hidden="true"
 				/>
-				<p className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+				<p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
 					Inferred vision
 				</p>
 			</div>

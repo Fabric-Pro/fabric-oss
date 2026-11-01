@@ -80,7 +80,7 @@ export function TestingVerdictCard({
 	return (
 		<section
 			aria-labelledby="testing-verdict-heading"
-			className={cn("rounded-xl border p-4", style.card)}
+			className={cn("rounded-lg border p-4", style.card)}
 		>
 			<div className="flex items-start gap-3">
 				<Icon

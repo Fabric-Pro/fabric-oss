@@ -63,15 +63,15 @@ export function SettingsSidebarLayout({
 			}
 			noGap
 			sidebarClassName={cn(
-				"lg:sticky lg:top-4 lg:self-start lg:max-h-[calc(100vh-2rem)] lg:overflow-visible lg:transition-[width,max-width] lg:duration-200 lg:ease-in-out lg:z-10",
+				"lg:sticky lg:top-0 lg:self-start lg:h-[calc(100vh-88px)] lg:border-r lg:border-border lg:bg-sidebar/60 lg:overflow-visible lg:transition-[width,max-width] lg:duration-200 lg:ease-in-out lg:z-10",
 				isCollapsed
-					? "lg:w-[48px] lg:max-w-[48px]"
+					? "lg:w-[56px] lg:max-w-[56px]"
 					: "lg:w-[224px] lg:max-w-[224px]",
 			)}
 		>
 			{/* A little gutter so the panel's edge handle, which straddles the
 			    boundary, never sits over the first word of the content. */}
-			<div className="w-full lg:pl-3">{children}</div>
+			<div className="w-full lg:pl-6">{children}</div>
 		</SidebarContentLayout>
 	);
 }

@@ -89,7 +89,7 @@ function ReferenceChip({
 				<button
 					type="button"
 					aria-label={`View source ${reference.marker}${reference.label ? `: ${reference.label}` : ""}`}
-					className="mx-0.5 inline-flex items-center rounded-sm bg-primary/10 px-1 align-baseline font-medium text-[0.7em] text-primary no-underline motion-safe:transition-colors hover:bg-primary/20 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+					className="mx-0.5 inline-flex items-center rounded-sm bg-primary/10 px-1 align-baseline font-medium text-[0.7em] text-primary no-underline motion-safe:transition-colors hover:bg-primary/20 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 				>
 					{reference.marker}
 				</button>

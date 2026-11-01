@@ -48,7 +48,7 @@ export function PipelineRunRow({
 				type="button"
 				onClick={() => onOpenDetail(run.id)}
 				aria-label={t("openDetail", { name: title })}
-				className="flex min-w-0 flex-1 items-center gap-3 rounded px-3 py-2.5 text-left motion-safe:transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+				className="flex min-w-0 flex-1 items-center gap-3 rounded px-3 py-2.5 text-left motion-safe:transition-colors hover:bg-accent focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 			>
 				<PipelineProviderIcon provider={run.provider} />
 				<div className="min-w-0 space-y-1">
@@ -99,7 +99,7 @@ export function PipelineRunRow({
 					onClick={(e) => e.stopPropagation()}
 					aria-label={t("openRun")}
 					title={t("openRun")}
-					className="shrink-0 rounded p-2 text-muted-foreground/70 motion-safe:transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+					className="shrink-0 rounded p-2 text-muted-foreground/70 motion-safe:transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 				>
 					<ExternalLinkIcon className="size-4" aria-hidden="true" />
 				</a>

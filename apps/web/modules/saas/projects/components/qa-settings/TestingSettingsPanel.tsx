@@ -132,7 +132,7 @@ export function TestingSettingsPanel({ project, canEdit }: Props) {
 									aria-current={isActive ? "true" : undefined}
 									onClick={() => setSection(s.id)}
 									className={cn(
-										"inline-flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-left font-medium text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring lg:w-full",
+										"inline-flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-left font-medium text-sm transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring lg:w-full",
 										isActive
 											? "bg-accent text-foreground"
 											: "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
@@ -214,7 +214,7 @@ export function TestingSettingsPanel({ project, canEdit }: Props) {
 			<div className="min-w-0 space-y-5 pb-4">
 				<div>
 					<div className="flex items-center gap-1.5">
-						<h3 className="font-serif text-2xl font-normal">
+						<h3 className="text-2xl font-semibold">
 							{active.title}
 						</h3>
 						<SectionAbout

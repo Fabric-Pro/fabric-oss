@@ -149,7 +149,7 @@ function summarizeFilter(snapshot: Record<string, unknown> | null): {
 	if (entries.length === 0) {
 		return { primary: "No filters", more: 0, full: snapshot };
 	}
-	let i = 0;
+	let _i = 0;
 	for (const [key, value] of entries) {
 		if (parts.length >= 2) {
 			break;
@@ -161,7 +161,7 @@ function summarizeFilter(snapshot: Record<string, unknown> | null): {
 		} else {
 			parts.push(`${key}: …`);
 		}
-		i++;
+		_i++;
 	}
 	const more = entries.length - parts.length;
 	return { primary: parts.join(" · "), more, full: snapshot };
@@ -483,7 +483,7 @@ export function AuditLogExportButton({
 						className="w-[360px]"
 						data-testid="audit-export-history-menu"
 					>
-						<DropdownMenuLabel className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+						<DropdownMenuLabel className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
 							<DownloadIcon className="size-3 opacity-70" />
 							{t("settings.auditLog.export.dropdownHeading")}
 						</DropdownMenuLabel>
@@ -506,7 +506,7 @@ export function AuditLogExportButton({
 							</span>
 						</DropdownMenuItem>
 						<DropdownMenuSeparator />
-						<DropdownMenuLabel className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+						<DropdownMenuLabel className="flex items-center gap-2 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
 							<HistoryIcon className="size-3 opacity-70" />
 							{t("settings.auditLog.export.historyHeading")}
 						</DropdownMenuLabel>

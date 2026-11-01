@@ -179,7 +179,7 @@ export function DocumentGenerationProgress({
 	return (
 		<section
 			className={cn(
-				"block w-full max-w-xl mx-auto rounded-xl border border-border bg-card p-6 md:p-8 shadow-lg transition-all text-left",
+				"block w-full max-w-xl mx-auto rounded-lg border border-border bg-card p-6 md:p-8 shadow-lg transition-all text-left",
 				className,
 			)}
 			aria-label="Document generation progress"

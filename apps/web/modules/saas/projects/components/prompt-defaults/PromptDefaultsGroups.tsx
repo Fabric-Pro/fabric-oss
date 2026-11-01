@@ -49,7 +49,7 @@ export function PromptDefaultsGroups({
 								aria-expanded={open}
 								aria-controls={panelId}
 								onClick={() => onToggleGroup(group.key)}
-								className="flex w-full flex-wrap items-center gap-x-2.5 gap-y-1.5 px-4 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none sm:px-6"
+								className="flex w-full flex-wrap items-center gap-x-2.5 gap-y-1.5 px-4 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-hidden sm:px-6"
 							>
 								<ChevronRightIcon
 									aria-hidden="true"

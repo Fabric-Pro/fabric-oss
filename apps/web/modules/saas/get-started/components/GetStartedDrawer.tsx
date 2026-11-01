@@ -164,13 +164,13 @@ export function GetStartedDrawer({
 						return (
 							<section
 								key={group.id}
-								className="overflow-hidden rounded-xl border border-border/70 bg-card"
+								className="overflow-hidden rounded-lg border border-border/70 bg-card"
 							>
 								<button
 									type="button"
 									onClick={() => toggle(group.id)}
 									aria-expanded={isOpen}
-									className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+									className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary"
 								>
 									<span className="min-w-0">
 										<span className="block font-semibold text-[13.5px] text-foreground">
@@ -195,7 +195,7 @@ export function GetStartedDrawer({
 												<li
 													key={`cluster-${row.label}`}
 													role="presentation"
-													className="bg-muted/30 px-4 pt-3 pb-1 font-medium text-[10.5px] text-muted-foreground uppercase tracking-[0.12em]"
+													className="bg-muted/30 px-4 pt-3 pb-1 font-medium text-[10.5px] text-muted-foreground uppercase tracking-wide"
 												>
 													{row.label}
 												</li>
@@ -227,7 +227,7 @@ export function GetStartedDrawer({
 						<button
 							type="button"
 							onClick={onTourPage}
-							className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-border bg-background px-4 py-2.5 font-semibold text-[13.5px] text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+							className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-border bg-background px-4 py-2.5 font-semibold text-[13.5px] text-foreground transition-colors hover:bg-muted focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary"
 						>
 							<SparklesIcon className="size-4 text-primary" />
 							{t("tourThisPage")}
@@ -236,7 +236,7 @@ export function GetStartedDrawer({
 					<button
 						type="button"
 						onClick={onStartTour}
-						className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 font-semibold text-[13.5px] text-primary-foreground transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+						className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2.5 font-semibold text-[13.5px] text-primary-foreground transition-opacity hover:opacity-90 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary"
 					>
 						<CompassIcon className="size-4" />
 						{t("takeTour")}
@@ -245,7 +245,7 @@ export function GetStartedDrawer({
 						href={DOCS_HREF}
 						target="_blank"
 						rel="noopener noreferrer"
-						className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-4 py-2 font-medium text-[13px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+						className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg px-4 py-2 font-medium text-[13px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary"
 					>
 						{t("readDocs")}
 						<ArrowUpRightIcon className="size-3.5" />
@@ -314,7 +314,7 @@ function GetStartedRow({
 						<button
 							type="button"
 							onClick={onShow}
-							className="inline-flex items-center gap-1 font-medium text-[12px] text-primary transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded-sm"
+							className="inline-flex items-center gap-1 font-medium text-[12px] text-primary transition-opacity hover:opacity-80 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary rounded-sm"
 						>
 							<EyeIcon className="size-3.5" />
 							{t("showMe")}
@@ -324,7 +324,7 @@ function GetStartedRow({
 						<button
 							type="button"
 							onClick={onOpen}
-							className="inline-flex items-center gap-1 font-medium text-[12px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded-sm"
+							className="inline-flex items-center gap-1 font-medium text-[12px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary rounded-sm"
 						>
 							<ArrowRightIcon className="size-3.5" />
 							{openLabel}

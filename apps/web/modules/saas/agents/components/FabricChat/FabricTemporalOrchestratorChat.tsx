@@ -52,8 +52,8 @@ import { prepareImageForAi } from "@saas/projects/lib/image-upload-utils";
 import { ClarifyingQuestionCard } from "@saas/shared/components/copilot/ClarifyingQuestionCard";
 import { CopilotSidebarAttachments } from "@saas/shared/components/copilot/CopilotSidebarAttachments";
 import type { AttachedFile as CopilotAttachedFile } from "@saas/shared/components/copilot/use-copilot-document-upload";
-import { FabricLogo } from "@saas/shared/components/FabricLogo";
 import { RobotIcon } from "@saas/shared/components/icons/RobotIcon";
+import { SparklesIcon as GenieSparklesIcon } from "@saas/shared/components/icons/SparklesIcon";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { orpc } from "@shared/lib/orpc-query-utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -107,7 +107,6 @@ import {
 } from "../../../../../components/ai-elements/McpAppFrame";
 import {
 	Message,
-	MessageAvatar,
 	MessageContent,
 } from "../../../../../components/ai-elements/message";
 import {
@@ -233,8 +232,7 @@ function storagePathToProxyUrl(
 	return `/api/storage/image?path=${encodeURIComponent(pathOrUrl)}${orgParam}`;
 }
 
-const ASSISTANT_RESPONSE_SHELL_CLASSNAME =
-	"rounded-[1.4rem] border border-border/60 bg-background/75 px-4 py-3 shadow-[0_18px_50px_-28px_hsl(var(--foreground)/0.55)] backdrop-blur-md supports-[backdrop-filter]:bg-background/55";
+const ASSISTANT_RESPONSE_SHELL_CLASSNAME = "text-sm leading-6 text-foreground";
 
 function sameToolSelection(
 	stored: string[] | null,
@@ -3159,12 +3157,30 @@ export function FabricTemporalOrchestratorChat({
 			? _agentDescription ||
 				"Fabric will keep this run focused on the selected external agent and its capabilities."
 			: "Ask Fabric to plan, research, generate, and coordinate work across your tools.";
-	// Use agent-configured starter messages if available, otherwise defaults
+	// Use agent-configured starter messages if available, otherwise defaults.
+	// Legacy emoji strings (🤖, 🔍, ⚖️, ✍️, etc.) are mapped to crisp modern vector icons.
+	const renderStarterIcon = (emoji?: string, label?: string) => {
+		const lower = (label ?? "").toLowerCase();
+		if (emoji === "🤖" || lower.includes("agent")) {
+			return <RobotIcon className="h-4 w-4 text-primary" />;
+		}
+		if (emoji === "🔍" || lower.includes("search") || lower.includes("rag") || lower.includes("query")) {
+			return <Search className="h-4 w-4 text-blue-600 dark:text-blue-400" />;
+		}
+		if (emoji === "✍️" || emoji === "📝" || lower.includes("prompt") || lower.includes("write") || lower.includes("doc")) {
+			return <NotebookPen className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />;
+		}
+		if (emoji === "📋" || emoji === "🎯" || lower.includes("task") || lower.includes("plan")) {
+			return <SquareCheckBig className="h-4 w-4 text-amber-600 dark:text-amber-400" />;
+		}
+		return <ScrollText className="h-4 w-4 text-primary" />;
+	};
+
 	const agentSuggestions =
 		agentStarterMessages && agentStarterMessages.length > 0
 			? agentStarterMessages.map((msg) => ({
 					label: msg.label,
-					icon: <span className="text-sm">{msg.emoji}</span>,
+					icon: renderStarterIcon(msg.emoji, msg.label),
 					value: msg.prompt,
 				}))
 			: null;
@@ -3206,6 +3222,300 @@ export function FabricTemporalOrchestratorChat({
 		isLoading,
 	];
 
+	const isEmptyThread =
+		messages.length === 0 &&
+		completedExecutions.length === 0 &&
+		!liveMultiAgentView &&
+		!(state.status === "failed" && state.result?.error);
+	const isWelcome = isEmptyThread && !compactMode;
+
+	const composer = (
+		<div
+			className={cn(
+				isWelcome ? "w-full" : "bg-background px-3 sm:px-4 pt-2 pb-3",
+			)}
+		>
+			<div className={cn("min-w-0", !isWelcome && "max-w-3xl mx-auto")}>
+				{(shownBudgetStop ||
+					(liveTurnIsLatest && state.handoffRecommended)) &&
+					!isLoading &&
+					(shownBudgetStop || state.status !== "cancelled") &&
+					conversationId && (
+						<ConversationHandoffCard
+							parentConversationId={conversationId}
+							reason={state.handoffRecommended?.reason ?? ""}
+							summary={stopSummary}
+							budgetStop={shownBudgetStop}
+							organizationId={organizationId}
+							busy={isPreparingSend || isLoading}
+							onContinueInChat={
+								shownBudgetStop && stoppedTurnId
+									? () =>
+											handleSendMessage(
+												"Continue",
+												stoppedTurnId,
+											)
+									: undefined
+							}
+							onContinue={(newConversationId) =>
+								onConversationCreated?.(newConversationId)
+							}
+						/>
+					)}
+				<ChatInput
+					ref={inputRef}
+					value={input}
+					onChange={setInput}
+					onSend={handleSendMessage}
+					onStop={handleStopFromButton}
+					// Stop is visible while the workflow is paused on
+					// `pendingApproval` (AC-9 / decision 20) — cancel
+					// implicitly rejects the proposed step.
+					pendingApproval={isAwaitingApproval}
+					isLoading={isLoading}
+					variant={isWelcome ? "hero" : "default"}
+					placeholder="Ask your question... (type @ to mention a template)"
+					attachTooltip="Attach files"
+					attachDisabled={false}
+					onAttachClick={handleAttachClick}
+					enableImagePaste={true}
+					imageUploader={pastedImageUploader}
+					onPasteNonImageFiles={onPasteNonImageFiles}
+					topSlot={
+						attachedImages.length > 0 ||
+						attachedDocuments.length > 0 ? (
+							<div className="space-y-2">
+								{attachedImages.length > 0 && (
+									<div className="flex flex-wrap gap-2 p-2">
+										{attachedImages.map((img) => (
+											<div
+												key={img.id}
+												className="relative group rounded-lg overflow-hidden border border-border bg-muted/50"
+												style={{
+													width: 72,
+													height: 72,
+												}}
+											>
+												{/* biome-ignore lint/performance/noImgElement: existing preview UI */}
+												<img
+													src={img.previewUrl}
+													alt={img.name}
+													className="w-full h-full object-cover"
+												/>
+												{img.status === "uploading" && (
+													<div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+														<Loader2 className="h-4 w-4 animate-spin text-white" />
+													</div>
+												)}
+												{img.status === "error" && (
+													<div className="absolute inset-0 bg-red-500/40 flex items-center justify-center">
+														<AlertCircle className="h-4 w-4 text-white" />
+													</div>
+												)}
+												<button
+													type="button"
+													onClick={() =>
+														removeAttachedImage(
+															img.id,
+														)
+													}
+													className="absolute top-0.5 right-0.5 bg-black/60 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-opacity"
+												>
+													&times;
+												</button>
+											</div>
+										))}
+									</div>
+								)}
+								{attachedDocuments.length > 0 && (
+									<CopilotSidebarAttachments
+										files={attachedDocuments}
+										onRemove={removeDocument}
+										textareaRef={inputRef}
+									/>
+								)}
+							</div>
+						) : undefined
+					}
+					projectId={attachedProjectId ?? undefined}
+					enableFileMentions={!!attachedProjectId}
+					enableStoryMentions={!!attachedProjectId}
+					enableUserMentions={!!organizationId}
+					organizationId={organizationId}
+					enableTemplateMentions={true}
+					initialSelectedTemplates={sessionTemplates}
+					onSelectedTemplatesChange={onSessionTemplatesChange}
+					onMergedInstructionsChange={setTemplateInstructions}
+					onMergedIntegrationIdsChange={setTemplateIntegrationIds}
+					onMergedMcpConfigIdsChange={setTemplateMcpConfigIds}
+					onMergedFabricToolIdsChange={setTemplateFabricToolIds}
+					headerSlot={
+						hasMounted && (
+							<div className="flex flex-wrap items-center justify-between gap-2">
+								{/* Rendered only when opted in, so the
+								    surfaces that leave the picker off
+								    keep this row's original layout. */}
+								{showAgentPicker && (
+									<div className="flex flex-wrap items-center gap-2">
+										<AgentModelPicker
+											selectedAgents={[
+												...(selectedAgent
+													? [selectedAgent]
+													: []),
+												...multiAgent.extraAgents,
+											]}
+											onToggleAgent={handleToggleAgent}
+											organizationId={organizationId}
+											catalog={agentPickerCatalog}
+										/>
+										{selectedAgent ? (
+											<Badge
+												variant="secondary"
+												className="gap-1 rounded-full"
+												title={
+													inactiveProviderNote ??
+													(activeModelOverride
+														? undefined
+														: "Chosen on Direct. An agent doesn't set the orchestrator's model — pick a model to change it.")
+												}
+											>
+												<RobotIcon className="h-3 w-3" />
+												<AgentVersionIdentity
+													name={selectedAgent.name}
+													instanceId={getSelectedAgentInstanceId(
+														selectedAgent,
+													)}
+													organizationId={
+														organizationId
+													}
+												/>
+												{/* An agent carries no
+												    model of its own, so
+												    it cannot drive this
+												    engine. Labelled
+												    rather than dropped:
+												    vanishing reads as
+												    the selection having
+												    been lost. */}
+												{(!activeModelOverride ||
+													inactiveProviderNote) && (
+													<span className="text-highlight-ink">
+														not applied
+													</span>
+												)}
+												<button
+													type="button"
+													onClick={() =>
+														handleToggleAgent(
+															selectedAgent,
+														)
+													}
+													aria-label={`Clear ${selectedAgent.name}`}
+													className="ml-0.5 text-muted-foreground hover:text-foreground transition-colors"
+												>
+													<XIcon className="h-3 w-3" />
+												</button>
+											</Badge>
+										) : null}
+										<MultiAgentPickBadges
+											agents={multiAgent.extraAgents}
+											organizationId={organizationId}
+											onRemove={multiAgent.toggle}
+										/>
+									</div>
+								)}
+								<ActiveContextIndicator
+									workspaceIds={attachedWorkspaceIds}
+									mcpConfigIds={
+										selectedConversationMcpIds ??
+										enabledToolIds ??
+										undefined
+									}
+									agentIds={enabledAgentIds || undefined}
+									fabricToolIds={
+										enabledFabricToolIds || undefined
+									}
+									integrationIds={
+										enabledIntegrationIds || undefined
+									}
+									projectId={attachedProjectId}
+									onProjectRemove={removeProject}
+									projectRemoveDisabled={isRemovingProject}
+									prioritizedToolIds={prioritizedToolIds}
+									prioritizedAgentIds={prioritizedAgentIds}
+									prioritizedMcpConfigIds={
+										prioritizedMcpConfigIds
+									}
+									prioritizedIntegrationIds={
+										prioritizedIntegrationIds
+									}
+									onToolPrioritize={onToolPrioritize}
+									onAgentPrioritize={onAgentPrioritize}
+									onMcpPrioritize={onMcpPrioritize}
+									onIntegrationPrioritize={
+										onIntegrationPrioritize
+									}
+									organizationId={organizationId}
+								/>
+								{showToolPicker &&
+									!lockConversationToolPicker && (
+										<Button
+											type="button"
+											variant="ghost"
+											size="sm"
+											className="h-6 gap-1.5 rounded-full border border-border/80 bg-muted/40 px-2.5 text-[11px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
+											onClick={() =>
+												setConversationToolPickerOpen(
+													true,
+												)
+											}
+										>
+											<Wrench className="h-3 w-3" />
+											Chat tools
+										</Button>
+									)}
+								{!compactMode &&
+									(state.plan ||
+										artifactSources.length > 0 ||
+										documentArtifacts.length > 0) && (
+										<ArtifactsPanelTrigger
+											onClick={() =>
+												setIsArtifactsPanelOpen(true)
+											}
+											planSteps={
+												state.plan?.steps.length || 0
+											}
+											completedSteps={completedSteps}
+											documentsCount={
+												documentArtifacts.length
+											}
+											sourcesCount={
+												artifactSources.length
+											}
+											isActive={isArtifactsPanelOpen}
+										/>
+									)}
+								{!compactMode && (
+									<MemoryPanelTrigger
+										onClick={() =>
+											setIsMemoryPanelOpen(true)
+										}
+										isActive={isMemoryPanelOpen}
+									/>
+								)}
+							</div>
+						)
+					}
+				/>
+				{!isWelcome && !compactMode && (
+					<p className="mt-1.5 text-center text-xs text-muted-foreground">
+						Always review the accuracy of responses.
+					</p>
+				)}
+			</div>
+		</div>
+	);
+
 	return (
 		<div className="flex h-full overflow-hidden">
 			<div className="flex min-w-0 flex-1 flex-col">
@@ -3213,43 +3523,60 @@ export function FabricTemporalOrchestratorChat({
 				    thread (a message refused before it ran, in a chat with
 				    no earlier turns) still needs the thread, where its
 				    notice renders, rather than the landing. */}
-				{messages.length === 0 &&
-				completedExecutions.length === 0 &&
-				!liveMultiAgentView &&
-				!(state.status === "failed" && state.result?.error) ? (
+				{isEmptyThread ? (
 					compactMode ? (
-						/* The drawer's empty state: one heading and the
-						   starters as flat rows, sized for a side panel. */
-						<div className="flex h-full flex-col overflow-y-auto px-4 py-5 sm:px-6">
-							<div className="mx-auto flex w-full max-w-2xl flex-col gap-5">
-								<h2 className="text-[20px] font-medium leading-7 tracking-[-0.02em] text-foreground">
-									What can I help you with?
-								</h2>
-								<ul className="flex flex-col gap-0.5">
-									{welcomeSuggestions.map((suggestion) => (
-										<li key={suggestion.label}>
-											<button
-												type="button"
-												onClick={() =>
-													handleSuggestionClick(
-														suggestion.value,
-													)
-												}
-												className="flex w-full items-start gap-2.5 rounded-[4px] px-2.5 py-2.5 text-left text-[13px] leading-5 text-muted-foreground transition-colors hover:bg-accent"
-											>
-												<span className="mt-0.5 flex size-4 shrink-0 items-center justify-center text-primary [&_svg]:size-4">
-													{suggestion.icon}
-												</span>
-												<span className="min-w-0">
-													<span className="text-foreground">
-														{suggestion.label}
-													</span>{" "}
-													&mdash; {suggestion.value}
-												</span>
-											</button>
-										</li>
-									))}
-								</ul>
+						/* The drawer's empty state: Databricks Genie style
+						   centered hero + structured starter rows, sized for a side panel. */
+						<div className="flex h-full flex-col overflow-y-auto px-4 py-6 sm:px-6">
+							<div className="mx-auto my-auto flex w-full max-w-2xl flex-col gap-6">
+								<div className="flex flex-col items-center gap-2 text-center">
+									<GenieSparklesIcon
+										className="size-9"
+										aria-hidden="true"
+									/>
+									<h2 className="mt-1 text-xl font-semibold leading-7 tracking-[-0.015em] text-foreground">
+										What can I help you with?
+									</h2>
+									<p className="text-[13px] text-muted-foreground">
+										Ask questions, analyze workspace data,
+										or run multi-step tasks
+									</p>
+								</div>
+								<div className="flex flex-col gap-2">
+									<div className="px-1 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">
+										Suggested prompts
+									</div>
+									<ul className="flex flex-col divide-y divide-border overflow-hidden rounded-lg border border-border bg-card shadow-2xs">
+										{welcomeSuggestions.map(
+											(suggestion) => (
+												<li key={suggestion.label}>
+													<button
+														type="button"
+														onClick={() =>
+															handleSuggestionClick(
+																suggestion.value,
+															)
+														}
+														className="flex w-full items-start gap-3 px-3.5 py-3 text-left text-[13px] leading-5 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+													>
+														<span className="mt-0.5 flex size-4 shrink-0 items-center justify-center text-primary [&_svg]:size-4">
+															{suggestion.icon}
+														</span>
+														<span className="min-w-0">
+															<span className="font-medium text-foreground">
+																{
+																	suggestion.label
+																}
+															</span>{" "}
+															&mdash;{" "}
+															{suggestion.value}
+														</span>
+													</button>
+												</li>
+											),
+										)}
+									</ul>
+								</div>
 							</div>
 						</div>
 					) : (
@@ -3259,6 +3586,7 @@ export function FabricTemporalOrchestratorChat({
 							suggestions={welcomeSuggestions}
 							categories={[]} // No categories for orchestrator - keep it focused
 							onSuggestionClick={handleSuggestionClick}
+							composer={composer}
 							tips={welcomeTips}
 							resume={
 								recentConversation && onResumeConversation
@@ -3281,7 +3609,7 @@ export function FabricTemporalOrchestratorChat({
 					)
 				) : (
 					<Conversation className="flex-1">
-						<ConversationContent className="space-y-4 max-w-4xl mx-auto px-3 sm:px-4 py-4 overflow-x-hidden">
+						<ConversationContent className="space-y-4 max-w-3xl mx-auto px-3 sm:px-4 py-5 overflow-x-hidden">
 							{/* Carried-over context banner (shown for conversations created
 								via "Continue in new chat" handoff). Renders the parent's
 								exhaustion-synthesis summary as a collapsed banner so the
@@ -3351,10 +3679,7 @@ export function FabricTemporalOrchestratorChat({
 																from="user"
 																className="py-2"
 															>
-																<MessageContent
-																	variant="flat"
-																	className="max-w-[70%]"
-																>
+																<MessageContent variant="flat">
 																	{execution.imageUrls &&
 																		execution
 																			.imageUrls
@@ -3406,14 +3731,6 @@ export function FabricTemporalOrchestratorChat({
 																		}
 																	</Response>
 																</MessageContent>
-																<MessageAvatar
-																	src={
-																		userAvatarSrc
-																	}
-																	name={
-																		userDisplayName
-																	}
-																/>
 															</Message>
 														)
 													)}
@@ -3431,59 +3748,43 @@ export function FabricTemporalOrchestratorChat({
 													{execution.plan &&
 														execution.plan.steps
 															.length > 0 && (
-															<div className="flex gap-3">
-																<div className="shrink-0">
-																	<FabricLogo
-																		className="h-8 w-8"
-																		size={
-																			32
-																		}
-																	/>
-																</div>
-																<div className="flex-1 min-w-0">
-																	<Plan
-																		title="Execution Plan"
-																		description={
-																			execution
-																				.plan
-																				.description ||
-																			undefined
-																		}
-																		defaultCollapsed={
-																			true
-																		}
-																		steps={execution.plan.steps.map(
-																			(
-																				step,
-																			): PlanStep => ({
-																				id: step.id,
-																				title: step.description,
-																				description:
-																					step.executor
-																						? `Assigned to: ${
-																								AGENT_DISPLAY_INFO[
-																									step.executor as keyof typeof AGENT_DISPLAY_INFO
-																								]
-																									?.name ||
-																								step.executor
-																							}`
-																						: undefined,
-																				status: "completed" as PlanStepStatus,
-																			}),
-																		)}
-																	/>
-																</div>
+															<div className="w-full min-w-0">
+																<Plan
+																	title="Execution Plan"
+																	description={
+																		execution
+																			.plan
+																			.description ||
+																		undefined
+																	}
+																	defaultCollapsed={
+																		true
+																	}
+																	steps={execution.plan.steps.map(
+																		(
+																			step,
+																		): PlanStep => ({
+																			id: step.id,
+																			title: step.description,
+																			description:
+																				step.executor
+																					? `Assigned to: ${
+																							AGENT_DISPLAY_INFO[
+																								step.executor as keyof typeof AGENT_DISPLAY_INFO
+																							]
+																								?.name ||
+																							step.executor
+																						}`
+																					: undefined,
+																			status: "completed" as PlanStepStatus,
+																		}),
+																	)}
+																/>
 															</div>
 														)}
 
 													{/* Step-by-step execution results */}
-													<div className="flex gap-3">
-														<div className="shrink-0">
-															<FabricLogo
-																className="h-8 w-8"
-																size={32}
-															/>
-														</div>
+													<div className="w-full min-w-0 space-y-4 overflow-hidden">
 														<div className="flex-1 min-w-0 space-y-4 overflow-hidden">
 															{execution.stepResults.map(
 																(
@@ -3871,19 +4172,38 @@ export function FabricTemporalOrchestratorChat({
 																"FAILED" ||
 																execution.terminalStatus ===
 																	"LIMITED") && (
-																<output
-																	className="block text-sm text-muted-foreground"
-																	aria-live="polite"
-																>
-																	{execution.terminalStatus ===
-																	"FAILED"
-																		? "Execution failed"
-																		: "Answer may be incomplete"}
-																</output>
+																<div className="flex items-start gap-2.5 rounded-xl border border-destructive/30 bg-destructive/[0.06] px-4 py-3 text-sm leading-5">
+																	<AlertCircle
+																		className="mt-0.5 size-4 shrink-0 text-destructive"
+																		aria-hidden="true"
+																	/>
+																	<div className="min-w-0 space-y-0.5">
+																		<output
+																			className="block font-medium text-foreground"
+																			aria-live="polite"
+																		>
+																			{execution.terminalStatus ===
+																			"FAILED"
+																				? "Execution failed"
+																				: "Answer may be incomplete"}
+																		</output>
+																		{execution.terminalReason && (
+																			<p className="text-xs text-muted-foreground">
+																				{
+																					execution.terminalReason
+																				}
+																			</p>
+																		)}
+																	</div>
+																</div>
 															)}
 															{execution.terminalReason &&
 																execution.terminalStatus !==
-																	"COMPLETED" && (
+																	"COMPLETED" &&
+																execution.terminalStatus !==
+																	"FAILED" &&
+																execution.terminalStatus !==
+																	"LIMITED" && (
 																	<p className="text-sm text-muted-foreground">
 																		{
 																			execution.terminalReason
@@ -3986,10 +4306,7 @@ export function FabricTemporalOrchestratorChat({
 												from="user"
 												className="py-2"
 											>
-												<MessageContent
-													variant="flat"
-													className="max-w-[70%]"
-												>
+												<MessageContent variant="flat">
 													{message.imageUrls &&
 														message.imageUrls
 															.length > 0 && (
@@ -4035,10 +4352,6 @@ export function FabricTemporalOrchestratorChat({
 														{message.content}
 													</Response>
 												</MessageContent>
-												<MessageAvatar
-													src={userAvatarSrc}
-													name={userDisplayName}
-												/>
 											</Message>
 										);
 									}}
@@ -4052,61 +4365,51 @@ export function FabricTemporalOrchestratorChat({
 									(e) =>
 										e != null && e.id === state.executionId,
 								) && (
-									<div className="flex gap-3">
-										<div className="shrink-0">
-											<FabricLogo
-												className="h-8 w-8"
-												size={32}
-											/>
-										</div>
-										<div className="flex-1 min-w-0 space-y-4">
-											<Plan
-												title="Execution Plan"
-												description={
-													state.plan.description ||
-													undefined
-												}
-												defaultCollapsed={
-													!state.plan.steps.some(
-														(s) =>
-															s.status ===
-																"in_progress" ||
-															s.status ===
-																"awaiting_approval",
-													)
-												}
-												steps={state.plan.steps.map(
-													(step): PlanStep => ({
-														id: step.id,
-														title: step.description,
-														description:
-															step.executor
-																? `Assigned to: ${
-																		AGENT_DISPLAY_INFO[
-																			step.executor as keyof typeof AGENT_DISPLAY_INFO
-																		]
-																			?.name ||
-																		step.executor
-																	}`
-																: undefined,
-														status: (step.status ===
-														"complete"
-															? "completed"
+									<div className="w-full min-w-0 space-y-4">
+										<Plan
+											title="Execution Plan"
+											description={
+												state.plan.description ||
+												undefined
+											}
+											defaultCollapsed={
+												!state.plan.steps.some(
+													(s) =>
+														s.status ===
+															"in_progress" ||
+														s.status ===
+															"awaiting_approval",
+												)
+											}
+											steps={state.plan.steps.map(
+												(step): PlanStep => ({
+													id: step.id,
+													title: step.description,
+													description: step.executor
+														? `Assigned to: ${
+																AGENT_DISPLAY_INFO[
+																	step.executor as keyof typeof AGENT_DISPLAY_INFO
+																]?.name ||
+																step.executor
+															}`
+														: undefined,
+													status: (step.status ===
+													"complete"
+														? "completed"
+														: step.status ===
+																	"in_progress" ||
+																step.status ===
+																	"awaiting_approval"
+															? "in-progress"
 															: step.status ===
-																		"in_progress" ||
+																		"error" ||
 																	step.status ===
-																		"awaiting_approval"
-																? "in-progress"
-																: step.status ===
-																			"error" ||
-																		step.status ===
-																			"skipped"
-																	? "failed"
-																	: "pending") as PlanStepStatus,
-													}),
-												)}
-											/>
-										</div>
+																		"skipped"
+																? "failed"
+																: "pending") as PlanStepStatus,
+												}),
+											)}
+										/>
 									</div>
 								)}
 
@@ -4119,13 +4422,7 @@ export function FabricTemporalOrchestratorChat({
 									(e) =>
 										e != null && e.id === state.executionId,
 								) && (
-									<div className="flex gap-3">
-										<div className="shrink-0">
-											<FabricLogo
-												className="h-8 w-8"
-												size={32}
-											/>
-										</div>
+									<div className="w-full min-w-0 space-y-4 overflow-hidden">
 										<div className="flex-1 min-w-0 space-y-4 overflow-hidden">
 											{/* Completed steps - each with its tool calls then response */}
 											{stepResults.map(
@@ -4206,7 +4503,7 @@ export function FabricTemporalOrchestratorChat({
 																				"px-1.5 py-0.5 rounded text-[10px] font-medium",
 																				delegationError
 																					? "bg-red-100 dark:bg-red-900/30 text-destructive/80"
-																					: "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300",
+																					: "bg-primary/10 text-primary-ink",
 																			)}
 																		>
 																			{delegationError
@@ -4456,9 +4753,9 @@ export function FabricTemporalOrchestratorChat({
 												completedSteps < totalSteps && (
 													<div className="flex items-center gap-2 text-xs text-muted-foreground pl-6 py-2">
 														<div className="flex items-center gap-1">
-															<div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-bounce [animation-delay:0ms]" />
-															<div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-bounce [animation-delay:150ms]" />
-															<div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-bounce [animation-delay:300ms]" />
+															<div className="w-1.5 h-1.5 rounded-full bg-primary animate-bounce [animation-delay:0ms]" />
+															<div className="w-1.5 h-1.5 rounded-full bg-primary animate-bounce [animation-delay:150ms]" />
+															<div className="w-1.5 h-1.5 rounded-full bg-primary animate-bounce [animation-delay:300ms]" />
 														</div>
 														<span>
 															Preparing next
@@ -4472,7 +4769,7 @@ export function FabricTemporalOrchestratorChat({
 												<div className="space-y-3">
 													{/* Current step header */}
 													<div className="flex items-center gap-2 text-xs text-muted-foreground">
-														<Loader2 className="h-3.5 w-3.5 animate-spin text-blue-500" />
+														<Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
 														<span className="font-medium">
 															Step{" "}
 															{completedSteps + 1}
@@ -4729,47 +5026,38 @@ export function FabricTemporalOrchestratorChat({
 										return null;
 									}
 									return (
-										<div className="flex gap-3">
-											<div className="shrink-0">
-												<FabricLogo
-													className="h-8 w-8"
-													size={32}
-												/>
-											</div>
-											<div className="flex-1 min-w-0 space-y-2">
-												{/* Streaming LLM response text */}
-												{hasStreamingText && (
-													<Response
-														className={
-															ASSISTANT_RESPONSE_SHELL_CLASSNAME
+										<div className="w-full min-w-0 space-y-2">
+											{/* Streaming LLM response text */}
+											{hasStreamingText && (
+												<Response
+													className={
+														ASSISTANT_RESPONSE_SHELL_CLASSNAME
+													}
+													streaming
+												>
+													{streamingMsg.content}
+												</Response>
+											)}
+											{/* Phase indicator - shows below text after it finishes, or with dots when waiting */}
+											{showPhaseIndicator && (
+												<div className="flex items-center gap-3">
+													<PhaseIndicator
+														phase={currentPhase}
+														showDots={
+															!hasStreamingText
 														}
-														streaming
-													>
-														{streamingMsg.content}
-													</Response>
-												)}
-												{/* Phase indicator - shows below text after it finishes, or with dots when waiting */}
-												{showPhaseIndicator && (
-													<div className="flex items-center gap-3">
-														<PhaseIndicator
-															phase={currentPhase}
-															showDots={
-																!hasStreamingText
-															}
-															message={
-																progressMessage
-															}
-														/>
-														{totalSteps > 0 && (
-															<span className="text-xs text-muted-foreground">
-																{completedSteps}{" "}
-																/ {totalSteps}{" "}
-																steps
-															</span>
-														)}
-													</div>
-												)}
-											</div>
+														message={
+															progressMessage
+														}
+													/>
+													{totalSteps > 0 && (
+														<span className="text-xs text-muted-foreground">
+															{completedSteps} /{" "}
+															{totalSteps} steps
+														</span>
+													)}
+												</div>
+											)}
 										</div>
 									);
 								})()}
@@ -4787,25 +5075,13 @@ export function FabricTemporalOrchestratorChat({
 								).map((signal) => (
 									<div
 										key={signal.kind}
-										className="flex gap-3"
+										className="w-full min-w-0"
 									>
-										<div className="shrink-0">
-											<FabricLogo
-												className="h-8 w-8"
-												size={32}
-											/>
-										</div>
-										<div className="flex-1 min-w-0">
-											<LimitBanner
-												signal={signal}
-												canManageBilling={
-													canManageBilling
-												}
-												organizationSlug={
-													organizationSlug
-												}
-											/>
-										</div>
+										<LimitBanner
+											signal={signal}
+											canManageBilling={canManageBilling}
+											organizationSlug={organizationSlug}
+										/>
 									</div>
 								))}
 
@@ -4819,22 +5095,14 @@ export function FabricTemporalOrchestratorChat({
 									(e) =>
 										e != null && e.id === state.executionId,
 								) && (
-									<div className="flex gap-3">
-										<div className="shrink-0">
-											<FabricLogo
-												className="h-8 w-8"
-												size={32}
-											/>
-										</div>
-										<div className="flex-1 min-w-0">
-											<Response
-												className={
-													ASSISTANT_RESPONSE_SHELL_CLASSNAME
-												}
-											>
-												{state.result.response}
-											</Response>
-										</div>
+									<div className="w-full min-w-0">
+										<Response
+											className={
+												ASSISTANT_RESPONSE_SHELL_CLASSNAME
+											}
+										>
+											{state.result.response}
+										</Response>
 									</div>
 								)}
 
@@ -4850,29 +5118,21 @@ export function FabricTemporalOrchestratorChat({
 							{liveStoppedMessages.map((cancelledMessage) => (
 								<div
 									key={`cancelled-${cancelledMessage.id}`}
-									className="flex gap-3"
+									className="w-full min-w-0"
 								>
-									<div className="shrink-0">
-										<FabricLogo
-											className="h-8 w-8"
-											size={32}
-										/>
-									</div>
-									<div className="flex-1 min-w-0">
-										{cancelledMessage.content && (
-											<Response
-												className={
-													ASSISTANT_RESPONSE_SHELL_CLASSNAME
-												}
-											>
-												{cancelledMessage.content}
-											</Response>
-										)}
-										{/* Editorial "Stopped" chip — rendered at
-										 * the end of the cancelled turn
-										 * (spec § 4.2 / 8.9). */}
-										<StoppedIndicator />
-									</div>
+									{cancelledMessage.content && (
+										<Response
+											className={
+												ASSISTANT_RESPONSE_SHELL_CLASSNAME
+											}
+										>
+											{cancelledMessage.content}
+										</Response>
+									)}
+									{/* Editorial "Stopped" chip — rendered at
+									 * the end of the cancelled turn
+									 * (spec § 4.2 / 8.9). */}
+									<StoppedIndicator />
 								</div>
 							))}
 
@@ -4892,30 +5152,18 @@ export function FabricTemporalOrchestratorChat({
 										e != null && e.id === state.executionId,
 								) && (
 									<div
-										className="flex gap-3"
+										className="w-full min-w-0"
 										data-testid="failed-turn"
 									>
-										<div className="shrink-0">
-											<FabricLogo
-												className="h-8 w-8"
-												size={32}
-											/>
-										</div>
-										<div
-											className="flex-1 min-w-0"
-											role="alert"
-										>
-											<ChatFailureNotice
-												content={
-													messages.at(-1)?.role ===
-													"assistant"
-														? messages.at(-1)
-																?.content
-														: undefined
-												}
-												error={state.result.error}
-											/>
-										</div>
+										<ChatFailureNotice
+											content={
+												messages.at(-1)?.role ===
+												"assistant"
+													? messages.at(-1)?.content
+													: undefined
+											}
+											error={state.result.error}
+										/>
 									</div>
 								)}
 
@@ -4927,13 +5175,8 @@ export function FabricTemporalOrchestratorChat({
 									(execution) =>
 										execution?.id === state.executionId,
 								) && (
-									<div className="flex gap-3">
-										<div className="w-8 shrink-0" />
-										<div className="flex-1 min-w-0">
-											<AnsweredByModel
-												model={state.model}
-											/>
-										</div>
+									<div className="w-full min-w-0">
+										<AnsweredByModel model={state.model} />
 									</div>
 								)}
 							{/* The live turn runs on API billing (Fizzy
@@ -4944,13 +5187,10 @@ export function FabricTemporalOrchestratorChat({
 									(e) =>
 										e != null && e.id === state.executionId,
 								) && (
-									<div className="flex gap-3">
-										<div className="w-8 shrink-0" />
-										<div className="flex-1 min-w-0">
-											<ApiBillingNotice
-												apiBilling={state.apiBilling}
-											/>
-										</div>
+									<div className="w-full min-w-0">
+										<ApiBillingNotice
+											apiBilling={state.apiBilling}
+										/>
 									</div>
 								)}
 
@@ -4963,21 +5203,14 @@ export function FabricTemporalOrchestratorChat({
 									(e) =>
 										e != null && e.id === state.executionId,
 								) && (
-									<div className="flex gap-3">
-										<div className="w-8 shrink-0" />
-										<div className="flex-1 min-w-0">
-											<TruncationNotice
-												truncated={
-													state.result.truncated
-												}
-												onContinue={(prompt) =>
-													void handleSendMessage(
-														prompt,
-													)
-												}
-												disabled={isLoading}
-											/>
-										</div>
+									<div className="w-full min-w-0">
+										<TruncationNotice
+											truncated={state.result.truncated}
+											onContinue={(prompt) =>
+												void handleSendMessage(prompt)
+											}
+											disabled={isLoading}
+										/>
 									</div>
 								)}
 
@@ -5018,13 +5251,7 @@ export function FabricTemporalOrchestratorChat({
 							 * `clarificationId` key re-mounts the card for a fresh
 							 * question so its internal resolved state resets. */}
 							{state.pendingClarification && (
-								<div className="flex gap-3">
-									<div className="shrink-0">
-										<FabricLogo
-											className="h-8 w-8"
-											size={32}
-										/>
-									</div>
+								<div className="w-full">
 									<div className="flex-1">
 										<ClarifyingQuestionCard
 											key={
@@ -5061,319 +5288,7 @@ export function FabricTemporalOrchestratorChat({
 				)}
 
 				{/* Input Area - Using shared ChatInput component */}
-				<div className="border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 p-2 sm:p-4">
-					<div className="max-w-4xl mx-auto min-w-0">
-						{(shownBudgetStop ||
-							(liveTurnIsLatest && state.handoffRecommended)) &&
-							!isLoading &&
-							(shownBudgetStop || state.status !== "cancelled") &&
-							conversationId && (
-								<ConversationHandoffCard
-									parentConversationId={conversationId}
-									reason={
-										state.handoffRecommended?.reason ?? ""
-									}
-									summary={stopSummary}
-									budgetStop={shownBudgetStop}
-									organizationId={organizationId}
-									busy={isPreparingSend || isLoading}
-									onContinueInChat={
-										shownBudgetStop && stoppedTurnId
-											? () =>
-													handleSendMessage(
-														"Continue",
-														stoppedTurnId,
-													)
-											: undefined
-									}
-									onContinue={(newConversationId) =>
-										onConversationCreated?.(
-											newConversationId,
-										)
-									}
-								/>
-							)}
-						<ChatInput
-							ref={inputRef}
-							value={input}
-							onChange={setInput}
-							onSend={handleSendMessage}
-							onStop={handleStopFromButton}
-							// Stop is visible while the workflow is paused on
-							// `pendingApproval` (AC-9 / decision 20) — cancel
-							// implicitly rejects the proposed step.
-							pendingApproval={isAwaitingApproval}
-							isLoading={isLoading}
-							placeholder="Ask Fabric anything... (type @ to mention a template)"
-							attachTooltip="Attach files"
-							attachDisabled={false}
-							onAttachClick={handleAttachClick}
-							enableImagePaste={true}
-							imageUploader={pastedImageUploader}
-							onPasteNonImageFiles={onPasteNonImageFiles}
-							topSlot={
-								attachedImages.length > 0 ||
-								attachedDocuments.length > 0 ? (
-									<div className="space-y-2">
-										{attachedImages.length > 0 && (
-											<div className="flex flex-wrap gap-2 p-2">
-												{attachedImages.map((img) => (
-													<div
-														key={img.id}
-														className="relative group rounded-lg overflow-hidden border border-border bg-muted/50"
-														style={{
-															width: 72,
-															height: 72,
-														}}
-													>
-														{/* biome-ignore lint/performance/noImgElement: existing preview UI */}
-														<img
-															src={img.previewUrl}
-															alt={img.name}
-															className="w-full h-full object-cover"
-														/>
-														{img.status ===
-															"uploading" && (
-															<div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-																<Loader2 className="h-4 w-4 animate-spin text-white" />
-															</div>
-														)}
-														{img.status ===
-															"error" && (
-															<div className="absolute inset-0 bg-red-500/40 flex items-center justify-center">
-																<AlertCircle className="h-4 w-4 text-white" />
-															</div>
-														)}
-														<button
-															type="button"
-															onClick={() =>
-																removeAttachedImage(
-																	img.id,
-																)
-															}
-															className="absolute top-0.5 right-0.5 bg-black/60 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs opacity-0 group-hover:opacity-100 transition-opacity"
-														>
-															&times;
-														</button>
-													</div>
-												))}
-											</div>
-										)}
-										{attachedDocuments.length > 0 && (
-											<CopilotSidebarAttachments
-												files={attachedDocuments}
-												onRemove={removeDocument}
-												textareaRef={inputRef}
-											/>
-										)}
-									</div>
-								) : undefined
-							}
-							projectId={attachedProjectId ?? undefined}
-							enableFileMentions={!!attachedProjectId}
-							enableStoryMentions={!!attachedProjectId}
-							enableUserMentions={!!organizationId}
-							organizationId={organizationId}
-							enableTemplateMentions={true}
-							initialSelectedTemplates={sessionTemplates}
-							onSelectedTemplatesChange={onSessionTemplatesChange}
-							onMergedInstructionsChange={setTemplateInstructions}
-							onMergedIntegrationIdsChange={
-								setTemplateIntegrationIds
-							}
-							onMergedMcpConfigIdsChange={setTemplateMcpConfigIds}
-							onMergedFabricToolIdsChange={
-								setTemplateFabricToolIds
-							}
-							headerSlot={
-								hasMounted && (
-									<div className="flex flex-wrap items-center justify-between gap-2">
-										{/* Rendered only when opted in, so the
-										    surfaces that leave the picker off
-										    keep this row's original layout. */}
-										{showAgentPicker && (
-											<div className="flex flex-wrap items-center gap-2">
-												<AgentModelPicker
-													selectedAgents={[
-														...(selectedAgent
-															? [selectedAgent]
-															: []),
-														...multiAgent.extraAgents,
-													]}
-													onToggleAgent={
-														handleToggleAgent
-													}
-													organizationId={
-														organizationId
-													}
-													catalog={agentPickerCatalog}
-												/>
-												{selectedAgent ? (
-													<Badge
-														variant="secondary"
-														className="gap-1 rounded-full"
-														title={
-															inactiveProviderNote ??
-															(activeModelOverride
-																? undefined
-																: "Chosen on Direct. An agent doesn't set the orchestrator's model — pick a model to change it.")
-														}
-													>
-														<RobotIcon className="h-3 w-3" />
-														<AgentVersionIdentity
-															name={
-																selectedAgent.name
-															}
-															instanceId={getSelectedAgentInstanceId(
-																selectedAgent,
-															)}
-															organizationId={
-																organizationId
-															}
-														/>
-														{/* An agent carries no
-														    model of its own, so
-														    it cannot drive this
-														    engine. Labelled
-														    rather than dropped:
-														    vanishing reads as
-														    the selection having
-														    been lost. */}
-														{(!activeModelOverride ||
-															inactiveProviderNote) && (
-															<span className="text-highlight-ink">
-																not applied
-															</span>
-														)}
-														<button
-															type="button"
-															onClick={() =>
-																handleToggleAgent(
-																	selectedAgent,
-																)
-															}
-															aria-label={`Clear ${selectedAgent.name}`}
-															className="ml-0.5 text-muted-foreground hover:text-foreground transition-colors"
-														>
-															<XIcon className="h-3 w-3" />
-														</button>
-													</Badge>
-												) : null}
-												<MultiAgentPickBadges
-													agents={
-														multiAgent.extraAgents
-													}
-													organizationId={
-														organizationId
-													}
-													onRemove={multiAgent.toggle}
-												/>
-											</div>
-										)}
-										<ActiveContextIndicator
-											workspaceIds={attachedWorkspaceIds}
-											mcpConfigIds={
-												selectedConversationMcpIds ??
-												enabledToolIds ??
-												undefined
-											}
-											agentIds={
-												enabledAgentIds || undefined
-											}
-											fabricToolIds={
-												enabledFabricToolIds ||
-												undefined
-											}
-											integrationIds={
-												enabledIntegrationIds ||
-												undefined
-											}
-											projectId={attachedProjectId}
-											onProjectRemove={removeProject}
-											projectRemoveDisabled={
-												isRemovingProject
-											}
-											prioritizedToolIds={
-												prioritizedToolIds
-											}
-											prioritizedAgentIds={
-												prioritizedAgentIds
-											}
-											prioritizedMcpConfigIds={
-												prioritizedMcpConfigIds
-											}
-											prioritizedIntegrationIds={
-												prioritizedIntegrationIds
-											}
-											onToolPrioritize={onToolPrioritize}
-											onAgentPrioritize={
-												onAgentPrioritize
-											}
-											onMcpPrioritize={onMcpPrioritize}
-											onIntegrationPrioritize={
-												onIntegrationPrioritize
-											}
-											organizationId={organizationId}
-										/>
-										{showToolPicker &&
-											!lockConversationToolPicker && (
-												<Button
-													type="button"
-													variant="outline"
-													size="sm"
-													onClick={() =>
-														setConversationToolPickerOpen(
-															true,
-														)
-													}
-												>
-													<Wrench className="mr-2 h-4 w-4" />
-													Chat tools
-												</Button>
-											)}
-										{!compactMode &&
-											(state.plan ||
-												artifactSources.length > 0 ||
-												documentArtifacts.length >
-													0) && (
-												<ArtifactsPanelTrigger
-													onClick={() =>
-														setIsArtifactsPanelOpen(
-															true,
-														)
-													}
-													planSteps={
-														state.plan?.steps
-															.length || 0
-													}
-													completedSteps={
-														completedSteps
-													}
-													documentsCount={
-														documentArtifacts.length
-													}
-													sourcesCount={
-														artifactSources.length
-													}
-													isActive={
-														isArtifactsPanelOpen
-													}
-												/>
-											)}
-										{!compactMode && (
-											<MemoryPanelTrigger
-												onClick={() =>
-													setIsMemoryPanelOpen(true)
-												}
-												isActive={isMemoryPanelOpen}
-											/>
-										)}
-									</div>
-								)
-							}
-						/>
-					</div>
-				</div>
+				{isWelcome ? null : composer}
 			</div>
 			{activeFrame ? (
 				<InteractiveContentPanel

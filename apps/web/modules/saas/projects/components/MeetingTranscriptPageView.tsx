@@ -13,22 +13,11 @@
  * edit / annotate / comment / re-sync controls (FR-4, read-only). It receives a
  * pre-fetched, plain-JSON view model from the server route (first paint is the
  * data paint — no client query waterfall), so it is a server component (no
- * `"use client"`, no hooks).
- *
- * Editorial aesthetic (CLAUDE.md / D7):
- *  - Serif page h1 (`font-serif`).
- *  - Editorial section labels (uppercase, `tracking-[0.2em]`, `text-muted-foreground`).
- *  - Warm-neutral cards (`bg-card border border-border`).
- *  - No glassmorphism, no gradient-on-data, no hardcoded hex.
- *  - Transitions wrapped in `motion-safe:`.
- *
- * Summarized banner (D2 / AC3): when `wasSummarized` is true a prominent,
- * tokenized banner renders ABOVE the body conveying — in text, not icon-only —
- * that the stored content is an AI summary, not the full conversation. The
- * summary still renders below.
- */
-
-import { Alert, AlertDescription, AlertTitle } from "@ui/components/alert";
+ * `"use client"`, no hooks). * * Editorial aesthetic (CLAUDE.md / D7): * - Serif page h1 (`font-semibold`). * - Editorial section labels (uppercase, `tracking-[0.2em]`, `text-muted-foreground`). * - Warm-neutral cards (`bg-card border border-border`). * - No glassmorphism, no gradient-on-data, no hardcoded hex. * - Transitions wrapped in `motion-safe:`. * * Summarized banner (D2 / AC3): when `wasSummarized` is true a prominent, * tokenized banner renders ABOVE the body conveying — in text, not icon-only — * that the stored content is an AI summary, not the full conversation. The * summary still renders below. */ import {
+	Alert,
+	AlertDescription,
+	AlertTitle,
+} from "@ui/components/alert";
 import { ArrowLeftIcon, InfoIcon, UsersIcon } from "lucide-react";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
@@ -117,7 +106,7 @@ export function MeetingTranscriptPageView({ transcript, backHref }: Props) {
 					<Link
 						href={backHref}
 						aria-label="Back to project contexts"
-						className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground motion-safe:transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+						className="inline-flex size-8 items-center justify-center rounded-md text-muted-foreground motion-safe:transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 					>
 						<ArrowLeftIcon className="size-4" aria-hidden="true" />
 					</Link>
@@ -162,7 +151,7 @@ export function MeetingTranscriptPageView({ transcript, backHref }: Props) {
 							Meeting Transcript
 						</EditorialLabel>
 						<h1
-							className="font-serif text-3xl font-normal leading-tight tracking-tight text-foreground sm:text-4xl"
+							className="text-xl font-semibold leading-tight tracking-tight text-foreground "
 							aria-describedby="meeting-transcript-eyebrow"
 						>
 							{displayTitle}
@@ -214,7 +203,7 @@ export function MeetingTranscriptPageView({ transcript, backHref }: Props) {
 				>
 					<h2
 						id="meeting-transcript-content-heading"
-						className="sr-only"
+						className="font-semibold sr-only"
 					>
 						Transcript
 					</h2>
@@ -242,7 +231,7 @@ export function MeetingTranscriptPageView({ transcript, backHref }: Props) {
 
 					{hasContent ? (
 						<article
-							className="prose prose-stone dark:prose-invert max-w-none rounded-xl border border-border bg-card p-8 prose-pre:overflow-auto prose-pre:bg-muted prose-pre:border prose-pre:border-border prose-headings:font-serif prose-headings:font-normal"
+							className="prose prose-stone dark:prose-invert max-w-none rounded-lg border border-border bg-card p-8 prose-pre:overflow-auto prose-pre:bg-muted prose-pre:border prose-pre:border-border prose-headings:font-sans prose-headings:font-semibold"
 							data-testid="meeting-transcript-markdown"
 						>
 							<ReactMarkdown remarkPlugins={[remarkGfm]}>
@@ -257,7 +246,7 @@ export function MeetingTranscriptPageView({ transcript, backHref }: Props) {
 						</article>
 					) : (
 						<div
-							className="rounded-xl border border-border bg-muted/30 p-8 text-center text-muted-foreground text-sm"
+							className="rounded-lg border border-border bg-muted/30 p-8 text-center text-muted-foreground text-sm"
 							data-testid="meeting-transcript-empty"
 						>
 							<p className="font-medium text-foreground/80">

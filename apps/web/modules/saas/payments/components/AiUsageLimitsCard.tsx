@@ -10,7 +10,7 @@
  * "Manage limits" / per-row edit affordances.
  * Visual language follows the marketing-page reference set out in
  * `CLAUDE.md` "Design Context": editorial section label (thin red bar +
- * uppercase `tracking-[0.25em]`), warm stone surfaces, no glassmorphism,
+ * uppercase `tracking-wide`), warm stone surfaces, no glassmorphism,
  * no hardcoded hex — every colour resolves to a CSS variable token.
  * Data fetching uses the hooks (`useAiUsageLimits` /
  * `useAiUsageLimitsStatus`) — both share the same `aiUsageLimitsKeys`
@@ -29,6 +29,8 @@ import {
 	useAiUsageLimits,
 	useAiUsageLimitsStatus,
 } from "@saas/payments/hooks/useAiUsageLimits";
+import { orpcClient } from "@shared/lib/orpc-client";
+import { useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { Skeleton } from "@ui/components/skeleton";
 import {
@@ -37,8 +39,6 @@ import {
 	TooltipProvider,
 	TooltipTrigger,
 } from "@ui/components/tooltip";
-import { orpcClient } from "@shared/lib/orpc-client";
-import { useQuery } from "@tanstack/react-query";
 import { cn } from "@ui/lib";
 import {
 	AlertCircleIcon,
@@ -502,7 +502,7 @@ function LimitRow({ row, canManage, onEdit, now, projectName }: LimitRowProps) {
 			type="button"
 			onClick={() => onEdit(limit)}
 			aria-label={t("rowEditAriaLabel", { name: limitName })}
-			className="block w-full rounded-md border border-border/60 bg-background/50 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none"
+			className="block w-full rounded-md border border-border/60 bg-background/50 text-left transition-colors hover:bg-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background motion-reduce:transition-none"
 		>
 			{rowContent}
 		</button>
@@ -632,7 +632,7 @@ export function AiUsageLimitsCard({
 						/>
 						<p
 							id={HEADING_ID}
-							className="font-sans font-normal text-[11px] text-primary uppercase tracking-[0.25em]"
+							className="font-sans font-normal text-[11px] text-primary uppercase tracking-wide"
 						>
 							{t("sectionLabel")}
 						</p>

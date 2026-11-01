@@ -34,7 +34,7 @@ export function SystemHealthPage() {
 			<div className="relative space-y-8 py-8">
 				<header className="max-w-2xl">
 					<p className="app-editorial-label">Platform status</p>
-					<h1 className="mt-3 font-normal font-serif text-4xl text-foreground leading-tight">
+					<h1 className="mt-3 font-semibold text-xl text-foreground leading-tight">
 						System health
 					</h1>
 					<p className="mt-3 text-muted-foreground">

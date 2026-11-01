@@ -72,7 +72,7 @@ export function DashboardHero({
 	return (
 		<div className="flex items-start justify-between gap-4">
 			<div>
-				<h1 className="text-[1.6rem] tracking-[-0.025em] text-foreground sm:text-[1.9rem]">
+				<h1 className="font-semibold text-xl tracking-[-0.025em] text-foreground ">
 					{title}
 				</h1>
 				<p className="fab-label mt-2">{subtitle}</p>

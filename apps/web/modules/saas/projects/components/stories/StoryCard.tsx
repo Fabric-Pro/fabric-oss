@@ -1791,7 +1791,7 @@ function StoryCardImpl({
 											e.stopPropagation();
 											openStoryDetails();
 										}}
-										className="block min-w-0 rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+										className="block min-w-0 rounded-sm text-left focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 										aria-label={`Open details for ${story.title}`}
 									>
 										<span
@@ -1983,7 +1983,7 @@ function StoryCardImpl({
 											data-testid="pm-ticket-status"
 											// biome-ignore lint/a11y/noNoninteractiveTabindex: tooltip trigger for truncated text
 											tabIndex={0}
-											className="min-w-0 truncate rounded-sm text-[11px] text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+											className="min-w-0 truncate rounded-sm text-[11px] text-muted-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 										>
 											<span aria-hidden>
 												{story.pmTicketStatus}

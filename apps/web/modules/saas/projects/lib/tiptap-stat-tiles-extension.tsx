@@ -211,7 +211,7 @@ function StatTilesNodeView({
 					aria-expanded={sourceOpen}
 					aria-controls={sourceId}
 					onClick={toggleSource}
-					className="rounded-sm text-muted-foreground text-xs underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+					className="rounded-sm text-muted-foreground text-xs underline-offset-2 hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
 				>
 					{tEditorTooltips("editStatTilesSource")}
 				</button>

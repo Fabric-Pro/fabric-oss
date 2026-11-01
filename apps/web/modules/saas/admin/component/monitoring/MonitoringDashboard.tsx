@@ -42,7 +42,7 @@ export function MonitoringDashboard() {
 			<header className="space-y-2 border-b border-border/60 pb-6">
 				<p className="app-editorial-label">Reliability</p>
 				<div className="flex items-center gap-3">
-					<h2 className="text-2xl font-normal tracking-tight text-foreground">
+					<h2 className="text-2xl font-semibold tracking-tight text-foreground">
 						Monitoring
 					</h2>
 					<HelpTooltip

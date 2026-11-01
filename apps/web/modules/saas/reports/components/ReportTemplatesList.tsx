@@ -216,7 +216,7 @@ export function ReportTemplatesList({
 				</div>
 			) : filteredTemplates.length === 0 ? (
 				<div className="text-center py-16 space-y-4">
-					<div className="w-12 h-12 rounded-xl bg-muted flex items-center justify-center mx-auto">
+					<div className="w-12 h-12 rounded-lg bg-muted flex items-center justify-center mx-auto">
 						<SparklesIcon className="w-8 h-8 text-muted-foreground" />
 					</div>
 					<div>
@@ -229,7 +229,7 @@ export function ReportTemplatesList({
 								: "Get started by creating your first template"}
 						</p>
 					</div>
-					<Button asChild className="rounded-xl gap-2">
+					<Button asChild className="rounded-lg gap-2">
 						<Link href={`${basePath}/new`}>
 							<PlusIcon className="h-4 w-4" />
 							Create custom template

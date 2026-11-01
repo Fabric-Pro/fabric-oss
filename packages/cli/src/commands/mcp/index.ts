@@ -13,6 +13,7 @@ import type {
 } from "@fabricorg/sdk";
 import { Command } from "commander";
 import { getClient } from "../../lib/client.js";
+import { getApiKey, getBaseUrl } from "../../lib/config.js";
 import { resolveContext } from "../../lib/context.js";
 import { printError, printOutput, printRecord } from "../../lib/output.js";
 
@@ -217,6 +218,331 @@ export function buildMcpCommand(): Command {
 			const { runStdio } = await import("@fabricorg/sdk-mcp/stdio");
 			await runStdio();
 		});
+
+	// -- tools ---------------------------------------------------------------
+	mcp.command("tools")
+		.description(
+			"List MCP tools exposed by the Fabric MCP Gateway (supports stateless MCP mode)",
+		)
+		.option("--org <slug>", "Organization ID or slug")
+		.option("--project <id>", "Project ID to scope the gateway connection")
+		.option("--mode <mode>", "Tool list mode: full|discovery", "full")
+		.option(
+			"--stateless",
+			"Send stateless MCP JSON-RPC request (X-Mcp-Stateless: true)",
+			true,
+		)
+		.option(
+			"--format <format>",
+			"Output format: table|json|yaml|plain",
+			"table",
+		)
+		.option("-q, --quiet", "Print tool names only")
+		.action(
+			async (opts: {
+				org?: string;
+				project?: string;
+				mode: string;
+				stateless?: boolean;
+				format: string;
+				quiet?: boolean;
+			}) => {
+				const apiKey = getApiKey();
+				if (!apiKey) {
+					printError(
+						"Not authenticated. Run `fabric auth login` or set FABRIC_API_KEY.",
+						3,
+					);
+				}
+				const base = (
+					getBaseUrl() ?? "https://app.fabric.pro"
+				).replace(/\/+$/, "");
+				const path = opts.project
+					? `/api/mcp-gateway/projects/${opts.project}`
+					: "/api/mcp-gateway";
+				const url = new URL(`${base}${path}`);
+				if (opts.mode === "discovery") {
+					url.searchParams.set("mode", "discovery");
+				}
+				if (opts.stateless) {
+					url.searchParams.set("stateless", "1");
+				}
+
+				const headers: Record<string, string> = {
+					"Content-Type": "application/json",
+					Accept: "application/json",
+					Authorization: `Bearer ${apiKey}`,
+				};
+				if (opts.org) {
+					headers["X-Organization-Id"] = opts.org;
+				}
+				if (opts.stateless) {
+					headers["X-Mcp-Stateless"] = "true";
+				}
+
+				let res: Response;
+				try {
+					res = await fetch(url.toString(), {
+						method: "POST",
+						headers,
+						body: JSON.stringify({
+							jsonrpc: "2.0",
+							id: 1,
+							method: "tools/list",
+							params: {},
+						}),
+					});
+				} catch (err: unknown) {
+					printError((err as Error).message, 1);
+				}
+
+				const payload = (await res.json()) as {
+					result?: {
+						tools?: Array<{
+							name: string;
+							description?: string;
+							_meta?: { ui?: { resourceUri?: string } };
+						}>;
+					};
+					error?: { message?: string };
+				};
+				if (!res.ok || payload.error) {
+					printError(
+						payload.error?.message ??
+							`MCP Gateway returned HTTP ${res.status}`,
+						1,
+					);
+				}
+
+				const tools = (payload.result?.tools ?? []).map((t) => ({
+					name: t.name,
+					uiApp: t._meta?.ui?.resourceUri ?? "",
+					description: (t.description ?? "").slice(0, 72),
+				}));
+
+				if (opts.quiet) {
+					for (const t of tools) {
+						process.stdout.write(`${t.name}\n`);
+					}
+					return;
+				}
+
+				printOutput(tools, {
+					format: opts.format as
+						| "table"
+						| "json"
+						| "yaml"
+						| "plain",
+					columns: ["name", "uiApp", "description"],
+				});
+			},
+		);
+
+	// -- call ----------------------------------------------------------------
+	mcp.command("call <tool>")
+		.description(
+			"Execute a Fabric MCP tool over Streamable HTTP (supports stateless and durable Temporal execution)",
+		)
+		.option("--org <slug>", "Organization ID or slug")
+		.option("--project <id>", "Project ID to scope the gateway connection")
+		.option("--input <json>", "Tool arguments as JSON object", "{}")
+		.option(
+			"--stateless",
+			"Execute without persisting server session (X-Mcp-Stateless: true)",
+			true,
+		)
+		.option(
+			"--durable",
+			"Execute inside a durable Temporal workflow envelope (X-Mcp-Durable: true)",
+		)
+		.option(
+			"--idempotency-key <key>",
+			"Deterministic idempotency key for durable execution",
+		)
+		.option(
+			"--format <format>",
+			"Output format: table|json|yaml|plain",
+			"json",
+		)
+		.action(
+			async (
+				tool: string,
+				opts: {
+					org?: string;
+					project?: string;
+					input: string;
+					stateless?: boolean;
+					durable?: boolean;
+					idempotencyKey?: string;
+					format: string;
+				},
+			) => {
+				const apiKey = getApiKey();
+				if (!apiKey) {
+					printError(
+						"Not authenticated. Run `fabric auth login` or set FABRIC_API_KEY.",
+						3,
+					);
+				}
+				let toolArgs: Record<string, unknown> = {};
+				try {
+					toolArgs = JSON.parse(opts.input);
+				} catch {
+					printError("--input must be valid JSON", 2);
+				}
+
+				const base = (
+					getBaseUrl() ?? "https://app.fabric.pro"
+				).replace(/\/+$/, "");
+				const path = opts.project
+					? `/api/mcp-gateway/projects/${opts.project}`
+					: "/api/mcp-gateway";
+				const url = new URL(`${base}${path}`);
+				if (opts.stateless) {
+					url.searchParams.set("stateless", "1");
+				}
+
+				const headers: Record<string, string> = {
+					"Content-Type": "application/json",
+					Accept: "application/json",
+					Authorization: `Bearer ${apiKey}`,
+				};
+				if (opts.org) {
+					headers["X-Organization-Id"] = opts.org;
+				}
+				if (opts.stateless) {
+					headers["X-Mcp-Stateless"] = "true";
+				}
+				if (opts.durable) {
+					headers["X-Mcp-Durable"] = "true";
+				}
+
+				let res: Response;
+				try {
+					res = await fetch(url.toString(), {
+						method: "POST",
+						headers,
+						body: JSON.stringify({
+							jsonrpc: "2.0",
+							id: 1,
+							method: "tools/call",
+							params: {
+								name: tool,
+								arguments: toolArgs,
+								...(opts.durable || opts.idempotencyKey
+									? {
+											_meta: {
+												durable: Boolean(opts.durable),
+												...(opts.idempotencyKey
+													? {
+															idempotencyKey:
+																opts.idempotencyKey,
+														}
+													: {}),
+											},
+										}
+									: {}),
+							},
+						}),
+					});
+				} catch (err: unknown) {
+					printError((err as Error).message, 1);
+				}
+
+				const payload = (await res.json()) as {
+					result?: unknown;
+					error?: { message?: string };
+				};
+				if (!res.ok || payload.error) {
+					printError(
+						payload.error?.message ??
+							`MCP tool call failed with HTTP ${res.status}`,
+						1,
+					);
+				}
+
+				printOutput(payload.result ?? payload, {
+					format: opts.format as
+						| "table"
+						| "json"
+						| "yaml"
+						| "plain",
+				});
+			},
+		);
+
+	// -- apps ----------------------------------------------------------------
+	mcp.command("apps")
+		.description(
+			"List or inspect built-in MCP Apps (ui://fabric/*) for native rendering in Fabric Desktop",
+		)
+		.option("--uri <uri>", "Read a specific ui://fabric/* MCP App resource")
+		.option(
+			"--format <format>",
+			"Output format: table|json|yaml|plain",
+			"table",
+		)
+		.option("-q, --quiet", "Print MCP App URIs only")
+		.action(
+			async (opts: {
+				uri?: string;
+				format: string;
+				quiet?: boolean;
+			}) => {
+				const apps = [
+					{
+						uri: "ui://fabric/project-dashboard",
+						name: "Fabric Project Overview & Desktop Launcher",
+						mimeType: "text/html;profile=mcp-app",
+						linkedTool: "fabric_get_project",
+					},
+					{
+						uri: "ui://fabric/agent-delegation",
+						name: "Fabric Agents Delegation & Subscription Credits",
+						mimeType: "text/html;profile=mcp-app",
+						linkedTool: "fabric_list_features",
+					},
+					{
+						uri: "ui://fabric/workflow-visualizer",
+						name: "Fabric Visual Data Prep & Durable Temporal Workflow Inspector",
+						mimeType: "text/html;profile=mcp-app",
+						linkedTool: "fabric_execute_workflow",
+					},
+					{
+						uri: "ui://fabric/genie-insights",
+						name: "Fabric Genie Agent & Lakebase Query Explorer",
+						mimeType: "text/html;profile=mcp-app",
+						linkedTool: "fabric_query_workspace",
+					},
+					{
+						uri: "ui://fabric/visualize",
+						name: "Fabric Interactive A2UI Card Composer",
+						mimeType: "text/html;profile=mcp-app",
+						linkedTool: "fabric_visualize",
+					},
+				];
+
+				const filtered = opts.uri
+					? apps.filter((a) => a.uri === opts.uri)
+					: apps;
+
+				if (opts.quiet) {
+					for (const a of filtered) {
+						process.stdout.write(`${a.uri}\n`);
+					}
+					return;
+				}
+
+				printOutput(filtered, {
+					format: opts.format as
+						| "table"
+						| "json"
+						| "yaml"
+						| "plain",
+					columns: ["uri", "name", "mimeType", "linkedTool"],
+				});
+			},
+		);
 
 	return mcp;
 }

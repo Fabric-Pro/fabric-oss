@@ -176,7 +176,7 @@ export function SystemHealthDashboard() {
 						<button
 							type="button"
 							onClick={() => overview.refetch()}
-							className="mt-3 inline-flex items-center gap-2 rounded-md border border-border/60 px-3 py-1.5 font-medium text-xs transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+							className="mt-3 inline-flex items-center gap-2 rounded-md border border-border/60 px-3 py-1.5 font-medium text-xs transition-colors hover:bg-accent focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary"
 						>
 							<RefreshCwIcon
 								aria-hidden="true"

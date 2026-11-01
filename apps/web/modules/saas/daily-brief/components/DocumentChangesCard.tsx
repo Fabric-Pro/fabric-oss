@@ -119,7 +119,7 @@ export function DocumentChangesCard({
 												v{version.version}
 											</span>
 										) : null}
-										<span className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+										<span className="text-[10px] uppercase tracking-wide text-muted-foreground">
 											{KIND_LABEL[version.kind]}
 										</span>
 										<span className="text-[11px] text-muted-foreground">

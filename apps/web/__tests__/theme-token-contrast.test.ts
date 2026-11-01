@@ -79,7 +79,9 @@ function contrastRatio(a: Rgb, b: Rgb): number {
 function readTokens(theme: "light" | "dark"): Map<string, string> {
 	const css = readFileSync(THEME_CSS, "utf8");
 	const start = css.indexOf(theme === "light" ? "\t:root {" : "\t.dark {");
-	if (start === -1) throw new Error(`theme block ${theme} not found`);
+	if (start === -1) {
+		throw new Error(`theme block ${theme} not found`);
+	}
 	const end = css.indexOf("\n\t}", start);
 	const block = css.slice(start, end === -1 ? undefined : end);
 
@@ -94,7 +96,9 @@ function readTokens(theme: "light" | "dark"): Map<string, string> {
 	for (const [, name, value] of block.matchAll(
 		/^\s*--([\w-]+):\s*(?:var\([^,)]+,\s*)?(#[0-9a-fA-F]{3,8})\s*\)?\s*;/gm,
 	)) {
-		if (name && value) tokens.set(name, value);
+		if (name && value) {
+			tokens.set(name, value);
+		}
 	}
 	return tokens;
 }
@@ -112,9 +116,13 @@ function allPairs(): Pair[] {
 	for (const theme of ["light", "dark"] as const) {
 		const tokens = readTokens(theme);
 		for (const [name, fill] of tokens) {
-			if (name.endsWith("-foreground")) continue;
+			if (name.endsWith("-foreground")) {
+				continue;
+			}
 			const foreground = tokens.get(`${name}-foreground`);
-			if (!foreground) continue;
+			if (!foreground) {
+				continue;
+			}
 			pairs.push({
 				theme,
 				name,
@@ -243,6 +251,80 @@ describe("ink tokens on the neutral surfaces", () => {
 					).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
 				});
 			}
+		}
+
+		for (const surface of [
+			"card",
+			"background",
+			"popover",
+			"muted",
+			"accent",
+		] as const) {
+			const ground = tokens.get(surface);
+			for (const inkToken of ["primary", "primary-ink"] as const) {
+				const value = tokens.get(inkToken);
+				it(`${theme}:--${inkToken} clears AA on --${surface}`, () => {
+					expect(value, `--${inkToken}`).toBeDefined();
+					expect(ground, `--${surface}`).toBeDefined();
+					const ratio = contrastRatio(
+						parseHex(value as string),
+						parseHex(ground as string),
+					);
+					expect(
+						ratio,
+						`--${inkToken} ${value} on --${surface} ${ground} = ${ratio.toFixed(2)}:1`,
+					).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
+				});
+			}
+		}
+	}
+});
+
+describe("control border, focus ring, and button interactive states", () => {
+	const NON_TEXT = 3;
+
+	for (const theme of ["light", "dark"] as const) {
+		const tokens = readTokens(theme);
+
+		for (const surface of ["background", "card", "popover"] as const) {
+			const ground = tokens.get(surface);
+			for (const controlToken of ["input", "ring"] as const) {
+				const value = tokens.get(controlToken);
+				it(`${theme}:--${controlToken} clears 3:1 non-text contrast on --${surface}`, () => {
+					expect(value, `--${controlToken}`).toBeDefined();
+					expect(ground, `--${surface}`).toBeDefined();
+					const ratio = contrastRatio(
+						parseHex(value as string),
+						parseHex(ground as string),
+					);
+					expect(
+						ratio,
+						`--${controlToken} ${value} on --${surface} ${ground} = ${ratio.toFixed(2)}:1`,
+					).toBeGreaterThanOrEqual(NON_TEXT);
+				});
+			}
+		}
+
+		for (const [stateToken, fgToken] of [
+			["primary-hover", "primary-foreground"],
+			["primary-active", "primary-foreground"],
+			["destructive-hover", "destructive-foreground"],
+			["destructive-active", "destructive-foreground"],
+		] as const) {
+			const fill = tokens.get(stateToken);
+			const fg = tokens.get(fgToken);
+			it(`${theme}:--${stateToken} clears AA with --${fgToken}`, () => {
+				expect(fill, `--${stateToken}`).toBeDefined();
+				expect(fg, `--${fgToken}`).toBeDefined();
+				const ratio = contrastRatio(
+					parseHex(fill as string),
+					parseHex(fg as string),
+				);
+				expect(
+					ratio,
+					`--${stateToken} ${fill} / --${fgToken} ${fg} = ${ratio.toFixed(2)}:1`,
+				).toBeGreaterThanOrEqual(AA_NORMAL_TEXT);
+			});
 		}
 	}
 });

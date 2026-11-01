@@ -70,13 +70,13 @@ export function PageBreadcrumbs({
 	return (
 		<div className={className}>
 			<Breadcrumb>
-				<BreadcrumbList>
+				<BreadcrumbList className="text-xs">
 					<BreadcrumbItem>
 						<BreadcrumbLink
 							href={effectiveHomeHref}
-							className="flex items-center gap-1.5 text-[13px]"
+							className="flex items-center gap-1 text-xs"
 						>
-							<HomeIcon className="size-4" />
+							<HomeIcon className="size-3.5" />
 							Home
 						</BreadcrumbLink>
 					</BreadcrumbItem>
@@ -91,13 +91,13 @@ export function PageBreadcrumbs({
 							>
 								<BreadcrumbItem>
 									{isLast || !item.href ? (
-										<BreadcrumbPage className="text-[13px]">
+										<BreadcrumbPage className="text-xs">
 											{item.label}
 										</BreadcrumbPage>
 									) : (
 										<BreadcrumbLink
 											href={item.href}
-											className="text-[13px]"
+											className="text-xs"
 										>
 											{item.label}
 										</BreadcrumbLink>

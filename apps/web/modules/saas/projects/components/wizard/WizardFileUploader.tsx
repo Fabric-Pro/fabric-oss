@@ -601,7 +601,7 @@ export function WizardFileUploader({
 				)}
 
 				<div className="relative z-10 flex flex-col items-center justify-center p-6">
-					<div className="mb-3 rounded-xl bg-muted p-3">
+					<div className="mb-3 rounded-lg bg-muted p-3">
 						<UploadCloudIcon className="h-6 w-6 text-muted-foreground" />
 					</div>
 					<p className="mb-1 text-sm font-medium">

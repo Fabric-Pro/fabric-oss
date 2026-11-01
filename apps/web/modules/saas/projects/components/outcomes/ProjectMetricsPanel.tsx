@@ -50,7 +50,7 @@ interface ShownSecret {
 }
 
 const selectClass =
-	"h-9 w-full rounded-md border border-input bg-background px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+	"h-9 w-full rounded-md border border-input bg-background px-3 text-sm shadow-xs focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring";
 
 function formatValue(value: number | null): string {
 	if (value === null) {
@@ -203,7 +203,7 @@ export function ProjectMetricsPanel({
 	return (
 		<section
 			aria-labelledby={`${id}-title`}
-			className="rounded-2xl border border-border bg-muted/40 p-5 sm:p-6"
+			className="rounded-lg border border-border bg-muted/40 p-5 sm:p-6"
 			data-onboarding-target="outcomes-metrics"
 		>
 			<div className="flex flex-wrap items-start justify-between gap-3">
@@ -211,7 +211,7 @@ export function ProjectMetricsPanel({
 					<span className="editorial-label">{t("label")}</span>
 					<h3
 						id={`${id}-title`}
-						className="mt-2 font-serif text-2xl font-normal"
+						className="mt-2 text-2xl font-semibold"
 					>
 						{t("title")}
 					</h3>
@@ -235,7 +235,7 @@ export function ProjectMetricsPanel({
 			{showAdd && canEdit ? (
 				<form
 					onSubmit={submitCreate}
-					className="mt-5 grid gap-3 rounded-xl border border-border bg-card p-4 sm:grid-cols-2"
+					className="mt-5 grid gap-3 rounded-lg border border-border bg-card p-4 sm:grid-cols-2"
 					aria-label={t("addFormLabel")}
 				>
 					<div className="sm:col-span-2">

@@ -39,8 +39,8 @@ import { useChatScopedProjectFromLauncher } from "@saas/projects/components/exca
 import { prepareImageForAi } from "@saas/projects/lib/image-upload-utils";
 import { CopilotSidebarAttachments } from "@saas/shared/components/copilot/CopilotSidebarAttachments";
 import type { AttachedFile as CopilotAttachedFile } from "@saas/shared/components/copilot/use-copilot-document-upload";
-import { FabricLogo } from "@saas/shared/components/FabricLogo";
 import { RobotIcon } from "@saas/shared/components/icons/RobotIcon";
+import { SparklesIcon as GenieSparklesIcon } from "@saas/shared/components/icons/SparklesIcon";
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Badge } from "@ui/components/badge";
@@ -120,7 +120,6 @@ import {
 import { McpAppFrame } from "../../../../../components/ai-elements/McpAppFrame";
 import {
 	Message,
-	MessageAvatar,
 	MessageContent,
 } from "../../../../../components/ai-elements/message";
 import { Response } from "../../../../../components/ai-elements/response";
@@ -3050,17 +3049,11 @@ export const FabricDirectChat = forwardRef<
 	// on the landing it sits under the heading inside ChatWelcome, so it is
 	// built once here and placed by `isWelcome`.
 	const composer = (
-		<div
-			className={cn(
-				isWelcome
-					? "p-0"
-					: "border-t bg-background/95 p-4 backdrop-blur supports-[backdrop-filter]:bg-background/60",
-			)}
-		>
+		<div className={cn(isWelcome ? "p-0" : "bg-background px-4 pt-2 pb-3")}>
 			<div
 				className={cn(
-					"space-y-3",
-					isWelcome ? "w-full" : "mx-auto max-w-4xl",
+					"space-y-2",
+					isWelcome ? "w-full" : "mx-auto max-w-3xl",
 				)}
 			>
 				{/*
@@ -3316,25 +3309,26 @@ export const FabricDirectChat = forwardRef<
 										{showToolPicker ? (
 											<Button
 												type="button"
-												variant="outline"
+												variant="ghost"
 												size="sm"
+												className="h-6 gap-1.5 rounded-full border border-border/80 bg-muted/40 px-2.5 text-[11px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground"
 												onClick={() =>
 													setConversationToolPickerOpen(
 														true,
 													)
 												}
 											>
-												<Wrench className="mr-2 h-4 w-4" />
+												<Wrench className="h-3 w-3" />
 												Chat tools
 											</Button>
 										) : null}
 									</div>
 									{attachedCodeContext?.filePath ||
 									resolvedCodeReferencePreviews.length > 0 ? (
-										<div className="space-y-2 rounded-xl border border-border/70 bg-muted/25 p-3">
+										<div className="space-y-2 rounded-lg border border-border/70 bg-muted/25 p-3">
 											<div className="flex items-center justify-between gap-3">
 												<div>
-													<p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+													<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 														Code context preview
 													</p>
 													<p className="text-xs text-muted-foreground">
@@ -3548,6 +3542,11 @@ export const FabricDirectChat = forwardRef<
 						}
 					/>
 				</div>
+				{!isWelcome && !compactMode && (
+					<p className="mt-1.5 text-center text-xs text-muted-foreground">
+						Always review the accuracy of responses.
+					</p>
+				)}
 			</div>
 		</div>
 	);
@@ -3558,50 +3557,65 @@ export const FabricDirectChat = forwardRef<
 				{/* Messages Area */}
 				{messages.length === 0 ? (
 					compactMode ? (
-						/* The launcher's empty state: one heading and the
-						   starters as flat rows, the same rows the Advisor
-						   landing uses, sized for a drawer. */
-						<div className="flex h-full flex-col overflow-y-auto px-4 py-5 sm:px-6">
-							<div className="mx-auto flex w-full max-w-2xl flex-col gap-5">
-								<h2 className="text-[20px] font-medium leading-7 tracking-[-0.02em] text-foreground">
-									{instanceId
-										? "What should this agent do?"
-										: "What can I help you with?"}
-								</h2>
-								<ul className="flex flex-col gap-0.5">
-									{quickSuggestions.map((suggestion) => (
-										<li key={suggestion.label}>
-											<button
-												type="button"
-												onClick={() =>
-													handleSuggestionClick(
-														suggestion.value,
-													)
-												}
-												className="flex w-full items-start gap-2.5 rounded-[4px] px-2.5 py-2.5 text-left text-[13px] leading-5 text-muted-foreground transition-colors hover:bg-accent"
-											>
-												<span
-													className="mt-0.5 flex size-4 shrink-0 items-center justify-center [&_svg]:size-4"
-													style={{
-														color:
-															suggestion.color ??
-															"var(--fab-accent)",
-													}}
+						/* The launcher's empty state: Databricks Genie style
+						   centered hero + structured starter rows, sized for a drawer. */
+						<div className="flex h-full flex-col overflow-y-auto px-4 py-6 sm:px-6">
+							<div className="mx-auto my-auto flex w-full max-w-2xl flex-col gap-6">
+								<div className="flex flex-col items-center gap-2 text-center">
+									<GenieSparklesIcon
+										className="size-9"
+										aria-hidden="true"
+									/>
+									<h2 className="mt-1 text-[20px] font-semibold leading-7 tracking-[-0.015em] text-foreground">
+										{instanceId
+											? "What should this agent do?"
+											: "What can I help you with?"}
+									</h2>
+									<p className="text-[13px] text-muted-foreground">
+										{instanceId
+											? "This chat uses the agent's own instructions and attached tools"
+											: "Ask questions, analyze workspace data, or run multi-step tasks"}
+									</p>
+								</div>
+								<div className="flex flex-col gap-2">
+									<div className="px-1 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">
+										Suggested prompts
+									</div>
+									<ul className="flex flex-col divide-y divide-border overflow-hidden rounded-lg border border-border bg-card shadow-2xs">
+										{quickSuggestions.map((suggestion) => (
+											<li key={suggestion.label}>
+												<button
+													type="button"
+													onClick={() =>
+														handleSuggestionClick(
+															suggestion.value,
+														)
+													}
+													className="flex w-full items-start gap-3 px-3.5 py-3 text-left text-[13px] leading-5 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
 												>
-													{suggestion.icon}
-												</span>
-												<span className="min-w-0">
-													<span className="text-foreground">
-														{suggestion.label}
-													</span>{" "}
-													&mdash;{" "}
-													{suggestion.description ??
-														suggestion.value}
-												</span>
-											</button>
-										</li>
-									))}
-								</ul>
+													<span
+														className="mt-0.5 flex size-4 shrink-0 items-center justify-center [&_svg]:size-4"
+														style={{
+															color:
+																suggestion.color ??
+																"var(--fab-accent)",
+														}}
+													>
+														{suggestion.icon}
+													</span>
+													<span className="min-w-0">
+														<span className="font-medium text-foreground">
+															{suggestion.label}
+														</span>{" "}
+														&mdash;{" "}
+														{suggestion.description ??
+															suggestion.value}
+													</span>
+												</button>
+											</li>
+										))}
+									</ul>
+								</div>
 							</div>
 						</div>
 					) : (
@@ -3641,7 +3655,7 @@ export const FabricDirectChat = forwardRef<
 					)
 				) : (
 					<Conversation className="flex-1 relative">
-						<ConversationContent className="space-y-1 max-w-4xl mx-auto px-4 py-4">
+						<ConversationContent className="space-y-3 max-w-3xl mx-auto px-4 py-5">
 							{messages.map((message) => (
 								<MemoizedRow
 									key={message.id}
@@ -3672,25 +3686,6 @@ export const FabricDirectChat = forwardRef<
 										return (
 											<Fragment key={message.id}>
 												<Message from={message.role}>
-													{/* Avatar */}
-													{message.role ===
-													"assistant" ? (
-														<div className="shrink-0 mt-1">
-															<FabricLogo
-																className="h-8 w-8"
-																size={32}
-															/>
-														</div>
-													) : (
-														<MessageAvatar
-															src={userAvatarSrc}
-															name={
-																userDisplayName
-															}
-															className="mt-1"
-														/>
-													)}
-
 													{/* Message Content */}
 													<MessageContent
 														variant="flat"
@@ -3700,6 +3695,20 @@ export const FabricDirectChat = forwardRef<
 																"space-y-3",
 														)}
 													>
+														{message.role ===
+															"assistant" &&
+															!(
+																showTrajectorySteps &&
+																trajectorySteps.length >
+																	0
+															) && (
+																<div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+																	<Sparkles className="size-3.5 shrink-0 text-primary" />
+																	<span>
+																		Genie
+																	</span>
+																</div>
+															)}
 														{showTrajectorySteps &&
 															trajectorySteps.length >
 																0 && (
@@ -4216,7 +4225,7 @@ export const FabricDirectChat = forwardRef<
 
 														{actionCards.length >
 															0 && (
-															<div className="mt-3 rounded-xl border border-border/70 bg-muted/25 p-3">
+															<div className="mt-3 rounded-lg border border-border/70 bg-muted/25 p-3">
 																<div className="mb-2 flex items-center justify-between gap-2">
 																	<div>
 																		<p className="text-xs font-semibold text-foreground">
@@ -4254,7 +4263,7 @@ export const FabricDirectChat = forwardRef<
 																				onClick={
 																					action.onClick
 																				}
-																				className="rounded-lg border border-border/70 bg-background/70 p-2 text-left transition-colors hover:border-primary/35 hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+																				className="rounded-lg border border-border/70 bg-background/70 p-2 text-left transition-colors hover:border-primary/35 hover:bg-accent/40 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
 																			>
 																				<div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-foreground">
 																					<span className="text-primary">
@@ -4728,7 +4737,7 @@ export const FabricDirectChat = forwardRef<
 																							: prev,
 																				)
 																			}
-																			className="mt-1 h-8 w-full rounded-md border border-border bg-background px-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+																			className="mt-1 h-8 w-full rounded-md border border-input bg-card px-2 text-sm text-foreground hover:border-muted-foreground focus-visible:border-ring focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 																			placeholder="triage"
 																		/>
 																	</label>
@@ -4840,15 +4849,9 @@ export const FabricDirectChat = forwardRef<
 										m.role === "assistant" && m.isStreaming,
 								) && (
 									<Message from="assistant" className="py-2">
-										<div className="shrink-0 mt-1">
-											<FabricLogo
-												className="h-8 w-8"
-												size={32}
-											/>
-										</div>
 										<MessageContent variant="flat">
 											<div className="flex items-center gap-2">
-												<Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+												<Sparkles className="size-3.5 shrink-0 text-primary animate-pulse" />
 												<span className="text-sm text-muted-foreground">
 													AI is thinking...
 												</span>

@@ -1419,7 +1419,7 @@ Rules:
 		return (
 			<NodeViewWrapper className="mermaid-wrapper">
 				<HiddenSource />
-				<div className="my-4 flex min-h-[200px] items-center justify-center rounded-xl border bg-muted/30">
+				<div className="my-4 flex min-h-[200px] items-center justify-center rounded-lg border bg-muted/30">
 					<div className="text-sm text-muted-foreground">
 						Loading diagram...
 					</div>
@@ -1863,7 +1863,7 @@ Rules:
 											ref={triggerRef}
 											type="button"
 											aria-label={tMenu("trigger")}
-											className="mermaid-visual-trigger ml-auto inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+											className="mermaid-visual-trigger ml-auto inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 										>
 											<EllipsisVertical
 												className="h-4 w-4"

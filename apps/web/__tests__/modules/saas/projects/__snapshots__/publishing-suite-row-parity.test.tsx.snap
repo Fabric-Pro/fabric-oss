@@ -5,7 +5,7 @@ exports[`PublishingSuiteList row parity > renders the flag-off row exactly as it
   class="space-y-2"
 >
   <li
-    class="flex items-start justify-between gap-4 rounded-xl border border-border bg-card p-4"
+    class="flex items-start justify-between gap-4 rounded-lg border border-border bg-card p-4"
   >
     <div
       class="min-w-0 space-y-1"
@@ -20,7 +20,7 @@ exports[`PublishingSuiteList row parity > renders the flag-off row exactly as it
         class="inline-flex w-fit items-center gap-1.5 rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] text-muted-foreground"
       >
         <span
-          class="uppercase tracking-[0.15em] text-muted-foreground"
+          class="uppercase tracking-wide text-muted-foreground"
         >
           Angle
         </span>
@@ -71,7 +71,7 @@ exports[`PublishingSuiteList row parity > renders the flag-off row exactly as it
         </a>
         <button
           aria-label="Edit URL"
-          class="inline-flex items-center justify-center whitespace-nowrap text-sm font-medium transition-colors duration-200 cursor-pointer disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive active:scale-[0.98] hover:bg-muted hover:text-foreground dark:hover:bg-accent/50 h-8 rounded-[4px] gap-1.5 px-3 has-[>svg]:px-2.5"
+          class="inline-flex items-center justify-center whitespace-nowrap font-medium transition-colors duration-150 cursor-pointer disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 aria-invalid:border-destructive focus-visible:aria-invalid:ring-destructive hover:bg-muted hover:text-foreground active:bg-accent dark:hover:bg-accent/50 dark:active:bg-accent/80 h-8 rounded-md gap-1.5 px-3 text-xs has-[>svg]:px-2.5"
           data-slot="button"
           type="button"
         >
@@ -110,7 +110,7 @@ exports[`PublishingSuiteList row parity > renders the flag-off row exactly as it
         class="flex flex-wrap items-center gap-1.5 pt-1"
       >
         <li
-          class="text-[11px] text-muted-foreground uppercase tracking-[0.15em]"
+          class="text-[11px] text-muted-foreground uppercase tracking-wide"
         >
           Assigned
         </li>
@@ -144,7 +144,7 @@ exports[`PublishingSuiteList row parity > renders the flag-off row exactly as it
           aria-controls="radix-_r_0_"
           aria-expanded="false"
           aria-haspopup="dialog"
-          class="inline-flex items-center justify-center whitespace-nowrap text-sm font-medium transition-colors duration-200 cursor-pointer disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive active:scale-[0.98] hover:bg-muted hover:text-foreground dark:hover:bg-accent/50 h-8 rounded-[4px] gap-1.5 px-3 has-[>svg]:px-2.5"
+          class="inline-flex items-center justify-center whitespace-nowrap font-medium transition-colors duration-150 cursor-pointer disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 aria-invalid:border-destructive focus-visible:aria-invalid:ring-destructive hover:bg-muted hover:text-foreground active:bg-accent dark:hover:bg-accent/50 dark:active:bg-accent/80 h-8 rounded-md gap-1.5 px-3 text-xs has-[>svg]:px-2.5"
           data-slot="button"
           data-state="closed"
           type="button"
@@ -155,7 +155,7 @@ exports[`PublishingSuiteList row parity > renders the flag-off row exactly as it
           aria-controls="radix-_r_1_"
           aria-expanded="false"
           aria-haspopup="dialog"
-          class="inline-flex items-center justify-center whitespace-nowrap text-sm font-medium transition-colors duration-200 cursor-pointer disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive active:scale-[0.98] hover:bg-muted hover:text-foreground dark:hover:bg-accent/50 h-8 rounded-[4px] gap-1.5 px-3 has-[>svg]:px-2.5"
+          class="inline-flex items-center justify-center whitespace-nowrap font-medium transition-colors duration-150 cursor-pointer disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 aria-invalid:border-destructive focus-visible:aria-invalid:ring-destructive hover:bg-muted hover:text-foreground active:bg-accent dark:hover:bg-accent/50 dark:active:bg-accent/80 h-8 rounded-md gap-1.5 px-3 text-xs has-[>svg]:px-2.5"
           data-slot="button"
           data-state="closed"
           type="button"
@@ -197,7 +197,7 @@ exports[`PublishingSuiteList row parity > renders the flag-off row exactly as it
           aria-controls="radix-_r_3_"
           aria-expanded="false"
           aria-haspopup="dialog"
-          class="inline-flex items-center justify-center whitespace-nowrap text-sm font-medium transition-colors duration-200 cursor-pointer disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive active:scale-[0.98] hover:bg-muted hover:text-foreground dark:hover:bg-accent/50 h-8 rounded-[4px] gap-1.5 px-3 has-[>svg]:px-2.5 border border-border border-dashed"
+          class="inline-flex items-center justify-center whitespace-nowrap font-medium transition-colors duration-150 cursor-pointer disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 ring-offset-background focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 aria-invalid:border-destructive focus-visible:aria-invalid:ring-destructive hover:bg-muted hover:text-foreground active:bg-accent dark:hover:bg-accent/50 dark:active:bg-accent/80 h-8 rounded-md gap-1.5 px-3 text-xs has-[>svg]:px-2.5 border border-border border-dashed"
           data-slot="button"
           data-state="closed"
           type="button"
@@ -234,7 +234,7 @@ exports[`PublishingSuiteList row parity > renders the flag-off row exactly as it
         aria-controls="radix-_r_4_"
         aria-expanded="false"
         aria-label="Status for Alpha topic"
-        class="flex h-9 items-center justify-between gap-2 rounded-md bg-background border border-input px-3 py-2 text-base ring-offset-background placeholder:text-foreground/40 focus:outline-hidden focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1 [&>span]:min-w-0 w-[10rem]"
+        class="flex h-9 items-center justify-between gap-2 rounded-md bg-background border border-input px-3 py-2 text-base md:text-sm text-foreground transition-colors duration-150 ring-offset-background data-[placeholder]:text-muted-foreground hover:border-muted-foreground focus:outline-hidden focus:border-ring focus:ring-1 focus:ring-ring data-[state=open]:border-ring data-[state=open]:ring-1 data-[state=open]:ring-ring aria-invalid:border-destructive focus:aria-invalid:border-destructive focus:aria-invalid:ring-destructive data-[state=open]:aria-invalid:border-destructive data-[state=open]:aria-invalid:ring-destructive disabled:border-input disabled:cursor-not-allowed disabled:opacity-50 [&>span]:line-clamp-1 [&>span]:min-w-0 w-[10rem]"
         data-state="closed"
         dir="ltr"
         role="combobox"

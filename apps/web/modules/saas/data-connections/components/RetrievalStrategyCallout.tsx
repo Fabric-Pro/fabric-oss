@@ -38,7 +38,7 @@ export function RetrievalStrategyCallout({
 		return (
 			<div
 				className={cn(
-					"rounded-xl border border-border/60 bg-muted/20 p-3",
+					"rounded-lg border border-border/60 bg-muted/20 p-3",
 					className,
 				)}
 			>

@@ -87,9 +87,7 @@ export default async function OrganizationAdminLayout({
 									{
 										title: t("admin.menu.users"),
 										href: `/app/${organizationSlug}/admin/users`,
-										icon: (
-											<UsersIcon className="size-4 opacity-50" />
-										),
+										icon: <UsersIcon className="size-4" />,
 									},
 									...(config.organizations.enable
 										? [
@@ -99,7 +97,7 @@ export default async function OrganizationAdminLayout({
 													),
 													href: `/app/${organizationSlug}/admin/organizations`,
 													icon: (
-														<Building2Icon className="size-4 opacity-50" />
+														<Building2Icon className="size-4" />
 													),
 												},
 											]
@@ -108,29 +106,27 @@ export default async function OrganizationAdminLayout({
 										title: "Agent Registry",
 										href: `/app/${organizationSlug}/admin/agents`,
 										icon: (
-											<BotMessageSquareIcon className="size-4 opacity-50" />
+											<BotMessageSquareIcon className="size-4" />
 										),
 									},
 									{
 										title: "Feature Flags",
 										href: `/app/${organizationSlug}/admin/feature-flags`,
 										icon: (
-											<ToggleLeftIcon className="size-4 opacity-50" />
+											<ToggleLeftIcon className="size-4" />
 										),
 									},
 									{
 										title: "AI Adoption",
 										href: `/app/${organizationSlug}/admin/ai-adoption`,
 										icon: (
-											<TrendingUpIcon className="size-4 opacity-50" />
+											<TrendingUpIcon className="size-4" />
 										),
 									},
 									{
 										title: "Plan Health",
 										href: `/app/${organizationSlug}/admin/chatgpt-plan-health`,
-										icon: (
-											<GaugeIcon className="size-4 opacity-50" />
-										),
+										icon: <GaugeIcon className="size-4" />,
 									},
 									...(monitoringEnabled
 										? [
@@ -140,7 +136,7 @@ export default async function OrganizationAdminLayout({
 													),
 													href: `/app/${organizationSlug}/admin/monitoring`,
 													icon: (
-														<ActivityIcon className="size-4 opacity-50" />
+														<ActivityIcon className="size-4" />
 													),
 												},
 											]
@@ -149,7 +145,7 @@ export default async function OrganizationAdminLayout({
 										title: t("admin.menu.auditLogExplorer"),
 										href: `/app/${organizationSlug}/admin/audit-log-explorer`,
 										icon: (
-											<ScrollTextIcon className="size-4 opacity-50" />
+											<ScrollTextIcon className="size-4" />
 										),
 									},
 								],

@@ -541,7 +541,7 @@ export function ProjectKanbanRouteView({
 					<div className="w-full max-w-sm space-y-8">
 						{/* Logo + heading */}
 						<div className="flex flex-col items-center gap-5 text-center">
-							<div className="relative flex h-16 w-16 items-center justify-center rounded-2xl border border-border bg-card shadow-sm">
+							<div className="relative flex h-16 w-16 items-center justify-center rounded-lg border border-border bg-card shadow-sm">
 								<FabricLogo size={36} />
 								{/* Offline indicator */}
 								<span className="absolute -bottom-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full border-2 border-background bg-muted">
@@ -565,7 +565,7 @@ export function ProjectKanbanRouteView({
 						<div className="rounded-lg border border-border bg-card divide-y divide-border overflow-hidden">
 							{/* Step 1 */}
 							<div className="px-4 py-3 space-y-2">
-								<div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground">
+								<div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
 									<TerminalIcon className="h-3 w-3" />
 									Step 1 — Install
 								</div>
@@ -579,7 +579,7 @@ export function ProjectKanbanRouteView({
 
 							{/* Step 2 */}
 							<div className="px-4 py-3 space-y-2">
-								<div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.15em] text-muted-foreground">
+								<div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
 									<TerminalIcon className="h-3 w-3" />
 									Step 2 — Run in embed mode
 								</div>

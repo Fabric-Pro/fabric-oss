@@ -222,7 +222,7 @@ export function IntegrationProviderPageContent({
 							color={actionPlugin.color}
 							brandColor={actionPlugin.brandColor}
 							size={56}
-							className="rounded-2xl"
+							className="rounded-lg"
 						/>
 					) : (
 						<ProviderIcon provider={provider} size="lg" />
@@ -293,7 +293,7 @@ export function IntegrationProviderPageContent({
 							<button
 								type="button"
 								onClick={() => setIncidentDrawerOpen(true)}
-								className="inline-flex items-center gap-1.5 rounded-sm text-xs font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+								className="inline-flex items-center gap-1.5 rounded-sm text-xs font-medium text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring/40"
 							>
 								<HistoryIcon className="h-3.5 w-3.5" />
 								View incident timeline
@@ -450,7 +450,7 @@ export function IntegrationProviderPageContent({
 									{actionPlugin.actions.map((action) => (
 										<div
 											key={action.slug}
-											className="rounded-xl border p-4"
+											className="rounded-lg border p-4"
 										>
 											<div className="flex items-center gap-2">
 												<p className="font-medium">
@@ -458,7 +458,7 @@ export function IntegrationProviderPageContent({
 												</p>
 												<Badge
 													variant="outline"
-													className="text-[10px] uppercase tracking-[0.15em]"
+													className="text-[10px] uppercase tracking-wide"
 												>
 													{action.category}
 												</Badge>
@@ -484,10 +484,10 @@ export function IntegrationProviderPageContent({
 								</CardDescription>
 							</CardHeader>
 							<CardContent className="space-y-3">
-								<div className="rounded-xl border p-4">
+								<div className="rounded-lg border p-4">
 									<div className="flex items-start justify-between gap-3">
 										<div>
-											<p className="text-xs font-medium uppercase tracking-[0.24em] text-muted-foreground">
+											<p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
 												Actions
 											</p>
 											<p className="mt-2 whitespace-nowrap text-lg font-semibold leading-none">

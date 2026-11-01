@@ -53,7 +53,7 @@ export function ReleaseNoteDetailModal({
 							Release Notes
 						</span>
 					</div>
-					<DialogTitle className="font-serif text-2xl font-normal text-foreground">
+					<DialogTitle className="text-2xl font-semibold text-foreground">
 						{content?.headline ?? "Release note"}
 					</DialogTitle>
 					{dateLabel ? (

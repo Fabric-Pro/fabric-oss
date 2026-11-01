@@ -75,7 +75,7 @@ export function UserMenu({ showUserName }: { showUserName?: boolean }) {
 			<DropdownMenuTrigger asChild>
 				<button
 					type="button"
-					className="flex min-w-0 cursor-pointer w-full items-center justify-between gap-2 rounded-lg outline-hidden focus-visible:ring-2 focus-visible:ring-primary md:px-2.5 md:py-2 md:hover:bg-muted/40 transition-colors"
+					className="flex min-w-0 cursor-pointer w-full items-center justify-between gap-2 rounded-md focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring md:px-2.5 md:py-2 md:hover:bg-muted/60 transition-colors duration-150"
 					aria-label="User menu"
 				>
 					<span className="flex min-w-0 items-center gap-2">
@@ -85,7 +85,7 @@ export function UserMenu({ showUserName }: { showUserName?: boolean }) {
 								<span className="block truncate font-medium text-sm">
 									{name}
 								</span>
-								<span className="block truncate text-xs opacity-70">
+								<span className="block truncate text-xs text-muted-foreground">
 									{email}
 								</span>
 							</span>
@@ -93,7 +93,7 @@ export function UserMenu({ showUserName }: { showUserName?: boolean }) {
 					</span>
 
 					{showUserName && (
-						<MoreVerticalIcon className="size-4 shrink-0 text-foreground/50" />
+						<MoreVerticalIcon className="size-4 shrink-0 text-muted-foreground" />
 					)}
 				</button>
 			</DropdownMenuTrigger>
@@ -101,12 +101,12 @@ export function UserMenu({ showUserName }: { showUserName?: boolean }) {
 			<DropdownMenuContent
 				align="end"
 				sideOffset={8}
-				className="w-[270px] rounded-2xl border-border/70 bg-card/95 p-2 shadow-xl shadow-foreground/10"
+				className="w-[270px] rounded-lg border-border bg-popover p-1.5 shadow-md"
 			>
-				<div className="flex items-center gap-3 rounded-xl bg-muted/35 p-3">
+				<div className="flex items-center gap-3 rounded-md bg-muted/50 p-2.5">
 					<UserAvatar name={name ?? ""} avatarUrl={image} />
 					<div className="min-w-0 leading-tight">
-						<DropdownMenuLabel className="p-0 text-sm font-medium">
+						<DropdownMenuLabel className="p-0 text-sm font-semibold text-foreground">
 							{name}
 						</DropdownMenuLabel>
 						<span className="block truncate text-xs text-muted-foreground">
@@ -117,16 +117,16 @@ export function UserMenu({ showUserName }: { showUserName?: boolean }) {
 
 				{/* Color mode — inline toggle */}
 				<DropdownMenuItem
-					className="mt-2 flex items-center justify-between gap-4 rounded-xl px-3 py-2.5 hover:bg-muted/50 focus:bg-muted/50 cursor-default"
+					className="mt-1.5 flex items-center justify-between gap-4 rounded-sm px-2.5 py-2 hover:bg-muted/50 focus:bg-muted/50 cursor-default"
 					onSelect={(e) => e.preventDefault()}
 				>
-					<span className="text-sm text-foreground/85">
+					<span className="text-sm text-foreground">
 						{t("app.userMenu.colorMode")}
 					</span>
 					<ColorModeToggle />
 				</DropdownMenuItem>
 
-				<div className="my-2 h-px bg-border/60" />
+				<div className="my-1.5 h-px bg-border" />
 
 				{/*
 				 * Account Settings — offered in EVERY context (Fizzy #1875,
@@ -142,7 +142,7 @@ export function UserMenu({ showUserName }: { showUserName?: boolean }) {
 				 * organization context here is established behaviour, not an
 				 * oversight — please don't "fix" it to a context-relative path.
 				 */}
-				<DropdownMenuItem asChild className="rounded-xl px-3 py-2.5">
+				<DropdownMenuItem asChild className="rounded-sm px-2.5 py-2">
 					<Link href="/app/settings/general">
 						<SettingsIcon className="mr-2 size-4 text-muted-foreground" />
 						{t("app.userMenu.accountSettings")}
@@ -153,7 +153,7 @@ export function UserMenu({ showUserName }: { showUserName?: boolean }) {
 				{isOrgContext && !config.organizations.hideOrganization && (
 					<DropdownMenuItem
 						asChild
-						className="rounded-xl px-3 py-2.5"
+						className="rounded-sm px-2.5 py-2"
 					>
 						<Link href={settingsPath}>
 							<Building2Icon className="mr-2 size-4 text-muted-foreground" />
@@ -165,7 +165,7 @@ export function UserMenu({ showUserName }: { showUserName?: boolean }) {
 				{user.role === "admin" && (
 					<DropdownMenuItem
 						asChild
-						className="rounded-xl px-3 py-2.5"
+						className="rounded-sm px-2.5 py-2"
 					>
 						<Link href={adminPath}>
 							<ShieldCheckIcon className="mr-2 size-4 text-muted-foreground" />
@@ -174,7 +174,7 @@ export function UserMenu({ showUserName }: { showUserName?: boolean }) {
 					</DropdownMenuItem>
 				)}
 
-				<DropdownMenuItem asChild className="rounded-xl px-3 py-2.5">
+				<DropdownMenuItem asChild className="rounded-sm px-2.5 py-2">
 					<Link href="/">
 						<HomeIcon className="mr-2 size-4 text-muted-foreground" />
 						{t("app.userMenu.home")}
@@ -183,7 +183,7 @@ export function UserMenu({ showUserName }: { showUserName?: boolean }) {
 
 				<DropdownMenuItem
 					onClick={onLogout}
-					className="rounded-xl px-3 py-2.5 text-destructive focus:text-destructive"
+					className="rounded-sm px-2.5 py-2 text-destructive focus:text-destructive"
 				>
 					<LogOutIcon className="mr-2 size-4" />
 					{t("app.userMenu.logout")}

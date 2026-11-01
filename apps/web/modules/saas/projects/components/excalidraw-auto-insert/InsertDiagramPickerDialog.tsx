@@ -516,7 +516,7 @@ function PickerRowList({
 						onClick={() => onPick(row)}
 						className={cn(
 							"flex w-full items-center gap-3 px-3 py-2 text-left text-sm",
-							"hover:bg-accent focus-visible:bg-accent focus-visible:outline-none",
+							"hover:bg-accent focus-visible:bg-accent focus-visible:outline-hidden",
 							idx === focusedIndex && "bg-accent",
 						)}
 						aria-label={`Insert into ${row.title}`}

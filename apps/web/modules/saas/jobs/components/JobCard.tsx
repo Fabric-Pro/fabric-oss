@@ -178,7 +178,7 @@ function JobSteps({ steps }: { steps: JobStep[] }) {
 							</span>
 						) : null}
 					</span>
-					<span className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+					<span className="text-[10px] uppercase tracking-wide text-muted-foreground">
 						{t(`stepStatus.${step.status}`)}
 					</span>
 				</li>
@@ -256,7 +256,7 @@ export function JobCard({ job }: { job: JobListItem }) {
 			) : null}
 
 			<div className="mt-2 flex items-center justify-between gap-2">
-				<span className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+				<span className="text-[10px] uppercase tracking-wide text-muted-foreground">
 					{job.status === "RUNNING"
 						? t("startedAgo", {
 								time: formatDistanceToNow(

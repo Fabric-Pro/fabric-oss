@@ -22,14 +22,14 @@ export function GeneratingState({ phase }: GeneratingStateProps) {
 		<output
 			aria-live="polite"
 			aria-atomic="true"
-			className="flex flex-col items-center justify-center rounded-2xl border border-border bg-card p-12 text-center"
+			className="flex flex-col items-center justify-center rounded-lg border border-border bg-card p-12 text-center"
 		>
 			<div className="flex items-center gap-1.5" aria-hidden="true">
 				<span className="size-2 rounded-full bg-muted-foreground/40 motion-safe:animate-bounce [animation-delay:0ms]" />
 				<span className="size-2 rounded-full bg-muted-foreground/40 motion-safe:animate-bounce [animation-delay:150ms]" />
 				<span className="size-2 rounded-full bg-muted-foreground/40 motion-safe:animate-bounce [animation-delay:300ms]" />
 			</div>
-			<p className="mt-5 font-serif text-xl font-normal leading-tight text-foreground">
+			<p className="mt-5 text-xl font-semibold leading-tight text-foreground">
 				Generating your brief…
 			</p>
 			<p className="mt-2 text-sm text-muted-foreground">

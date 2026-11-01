@@ -110,7 +110,7 @@ export function SavedViewsMenu({
 						<button
 							type="button"
 							aria-label={t("removeAria", { name: view.name })}
-							className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100"
+							className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:text-destructive focus-visible:opacity-100 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100"
 							onClick={(e) => {
 								// The row applies the view; the X must not.
 								e.stopPropagation();

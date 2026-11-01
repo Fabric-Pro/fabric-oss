@@ -43,7 +43,7 @@ export default async function OrgPromptCatalogPage({
 			/>
 
 			<div className="space-y-2">
-				<h1 className="font-serif text-3xl">Prompt catalog</h1>
+				<h1 className="font-semibold text-3xl">Prompt catalog</h1>
 				<p className="text-muted-foreground">
 					Browse by the action you are trying to perform, and see
 					which prompt runs it today.

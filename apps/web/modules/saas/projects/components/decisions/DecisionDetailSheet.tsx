@@ -328,7 +328,7 @@ export function DecisionDetailSheet({
 									onReverted={onChanged}
 								/>
 							</div>
-							<SheetTitle className="break-words font-serif text-2xl font-normal leading-tight">
+							<SheetTitle className="break-words text-2xl font-semibold leading-tight">
 								{decision.title}
 							</SheetTitle>
 							<SheetDescription className="flex items-center gap-1.5 text-xs">

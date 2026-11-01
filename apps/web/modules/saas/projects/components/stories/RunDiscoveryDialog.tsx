@@ -232,7 +232,7 @@ export function RunDiscoveryDialog({
 		<Dialog open={open} onOpenChange={onOpenChange}>
 			<DialogContent className="sm:max-w-lg">
 				<DialogHeader>
-					<DialogTitle className="font-serif text-2xl font-normal">
+					<DialogTitle className="text-2xl font-semibold">
 						<span className="inline-flex items-center gap-2">
 							{t("dialog.title")}
 							<InfoTip label={tTips("discoveryRunHelp")}>

@@ -74,7 +74,7 @@ export function SelectedPathsList({
 								)}
 								disabled={disabled}
 								onClick={item.onRemove}
-								className="rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
+								className="rounded-sm focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
 							>
 								<XIcon className="size-3" aria-hidden="true" />
 							</button>
@@ -105,7 +105,7 @@ export function SelectedPathsList({
 										disabled || item.onReinclude === null
 									}
 									onClick={item.onReinclude ?? undefined}
-									className="rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
+									className="rounded-sm focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
 								>
 									<XIcon
 										className="size-3"

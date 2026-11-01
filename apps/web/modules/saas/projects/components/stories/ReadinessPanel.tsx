@@ -173,7 +173,7 @@ export function ReadinessPanel({
 									<button
 										type="button"
 										className={cn(
-											"inline-flex cursor-help items-center gap-1.5 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+											"inline-flex cursor-help items-center gap-1.5 rounded text-left focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 											blocks
 												? "text-foreground"
 												: "text-muted-foreground",
@@ -189,7 +189,7 @@ export function ReadinessPanel({
 											)}
 										/>
 										{t(`gaps.${code}`)}
-										<span className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+										<span className="text-[10px] uppercase tracking-wide text-muted-foreground">
 											{blocks
 												? t("blocks")
 												: t("advisory")}

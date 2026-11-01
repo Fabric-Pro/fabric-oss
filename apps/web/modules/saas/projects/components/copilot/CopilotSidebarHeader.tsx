@@ -258,7 +258,7 @@ function VisibilityChip({
 					}`}
 					onClick={handleToggle}
 					disabled={isMutating}
-					className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium border transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-card disabled:opacity-60 disabled:cursor-not-allowed border-border bg-background hover:bg-muted text-foreground"
+					className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium border transition-colors duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-card disabled:opacity-60 disabled:cursor-not-allowed border-border bg-background hover:bg-muted text-foreground"
 				>
 					{isPrivate ? (
 						<LockIcon className="size-3" aria-hidden="true" />

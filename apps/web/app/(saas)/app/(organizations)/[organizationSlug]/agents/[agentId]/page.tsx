@@ -353,7 +353,7 @@ export default function OrganizationAgentDetailsPage() {
 					</div>
 
 					<div className="flex flex-col lg:flex-row gap-8 items-start">
-						<div className="relative w-full lg:w-80 aspect-video lg:aspect-square rounded-2xl overflow-hidden border bg-card/50">
+						<div className="relative w-full lg:w-80 aspect-video lg:aspect-square rounded-lg overflow-hidden border bg-card/50">
 							<Image
 								src={heroImage}
 								alt={agent.displayName}

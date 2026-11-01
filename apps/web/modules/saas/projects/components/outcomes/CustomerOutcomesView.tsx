@@ -76,9 +76,9 @@ export function CustomerOutcomesView({
 			)}
 			aria-label={`${projectName} outcomes`}
 		>
-			<header className="bg-dot-grid relative rounded-2xl border border-border bg-card px-5 py-8 sm:px-8 sm:py-10">
+			<header className="bg-dot-grid relative rounded-lg border border-border bg-card px-5 py-8 sm:px-8 sm:py-10">
 				<SectionLabel>Outcomes</SectionLabel>
-				<h1 className="mt-3 font-serif text-3xl font-normal leading-tight sm:text-4xl">
+				<h1 className="mt-3 text-xl font-semibold leading-tight ">
 					{projectName}
 				</h1>
 				{visionPurpose ? (
@@ -120,10 +120,10 @@ export function CustomerOutcomesView({
 			<div className="mt-8 grid gap-8">
 				<section
 					aria-labelledby="outcomes-metrics"
-					className="rounded-2xl border border-border bg-muted/40 p-5 sm:p-6"
+					className="rounded-lg border border-border bg-muted/40 p-5 sm:p-6"
 				>
 					<SectionLabel>Success metrics</SectionLabel>
-					<h2 id="outcomes-metrics" className="sr-only">
+					<h2 id="outcomes-metrics" className="font-semibold sr-only">
 						Success metrics
 					</h2>
 					{outcomes.metrics.length === 0 ? (
@@ -135,7 +135,7 @@ export function CustomerOutcomesView({
 								return (
 									<li
 										key={metric.name}
-										className="rounded-xl border border-border bg-card p-4"
+										className="rounded-lg border border-border bg-card p-4"
 									>
 										<div className="flex items-baseline justify-between gap-3">
 											<span className="text-sm font-medium">
@@ -196,10 +196,10 @@ export function CustomerOutcomesView({
 
 				<section
 					aria-labelledby="outcomes-shipped"
-					className="rounded-2xl border border-border bg-muted/40 p-5 sm:p-6"
+					className="rounded-lg border border-border bg-muted/40 p-5 sm:p-6"
 				>
 					<SectionLabel>Shipped</SectionLabel>
-					<h2 id="outcomes-shipped" className="sr-only">
+					<h2 id="outcomes-shipped" className="font-semibold sr-only">
 						Shipped
 					</h2>
 					{outcomes.shipped.length === 0 ? (
@@ -240,10 +240,10 @@ export function CustomerOutcomesView({
 
 				<section
 					aria-labelledby="outcomes-demos"
-					className="rounded-2xl border border-border bg-muted/40 p-5 sm:p-6"
+					className="rounded-lg border border-border bg-muted/40 p-5 sm:p-6"
 				>
 					<SectionLabel>Demos</SectionLabel>
-					<h2 id="outcomes-demos" className="sr-only">
+					<h2 id="outcomes-demos" className="font-semibold sr-only">
 						Demos
 					</h2>
 					{outcomes.demos.length === 0 ? (
@@ -285,10 +285,13 @@ export function CustomerOutcomesView({
 
 				<section
 					aria-labelledby="outcomes-decisions"
-					className="rounded-2xl border border-border bg-muted/40 p-5 sm:p-6"
+					className="rounded-lg border border-border bg-muted/40 p-5 sm:p-6"
 				>
 					<SectionLabel>Decisions</SectionLabel>
-					<h2 id="outcomes-decisions" className="sr-only">
+					<h2
+						id="outcomes-decisions"
+						className="font-semibold sr-only"
+					>
 						Decisions
 					</h2>
 					{outcomes.decisions.length === 0 ? (

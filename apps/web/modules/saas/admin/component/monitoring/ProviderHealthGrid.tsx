@@ -188,7 +188,7 @@ export function ProviderHealthGrid() {
 				<div className="flex items-center gap-2">
 					<h2
 						id="provider-health-heading"
-						className="font-serif text-2xl font-normal tracking-tight text-foreground/95"
+						className="text-2xl font-semibold tracking-tight text-foreground/95"
 					>
 						Provider health
 					</h2>

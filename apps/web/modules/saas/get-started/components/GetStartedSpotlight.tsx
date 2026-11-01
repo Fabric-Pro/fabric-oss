@@ -584,7 +584,7 @@ export function GetStartedSpotlight({
 					{spotlight && rect ? (
 						<div
 							aria-hidden="true"
-							className="pointer-events-auto absolute rounded-xl"
+							className="pointer-events-auto absolute rounded-lg"
 							style={{
 								left: rect.x,
 								top: rect.y,
@@ -598,7 +598,7 @@ export function GetStartedSpotlight({
 						>
 							<span
 								aria-hidden="true"
-								className="motion-safe:animate-pulse pointer-events-none absolute -inset-0.5 rounded-xl border border-primary/60"
+								className="motion-safe:animate-pulse pointer-events-none absolute -inset-0.5 rounded-lg border border-primary/60"
 							/>
 						</div>
 					) : (
@@ -618,7 +618,7 @@ export function GetStartedSpotlight({
 						aria-describedby="onboarding-tour-body"
 						tabIndex={-1}
 						className={cn(
-							"pointer-events-auto fixed w-[380px] max-w-[calc(100vw-28px)] rounded-2xl border border-border bg-card p-4 text-card-foreground shadow-xl outline-none",
+							"pointer-events-auto fixed w-[380px] max-w-[calc(100vw-28px)] rounded-lg border border-border bg-card p-4 text-card-foreground shadow-xl outline-none",
 							"motion-safe:animate-in motion-safe:fade-in-0 motion-safe:zoom-in-95",
 						)}
 						style={{
@@ -653,7 +653,7 @@ export function GetStartedSpotlight({
 							<span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
 								<StepIcon className="size-4" />
 							</span>
-							<span className="flex-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+							<span className="flex-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
 								{single
 									? t("onboarding.tour.showMeEyebrow")
 									: t("onboarding.tour.stepCounter", {
@@ -665,7 +665,7 @@ export function GetStartedSpotlight({
 								type="button"
 								onClick={onDismiss}
 								aria-label={t("onboarding.tour.dismiss")}
-								className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+								className="flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary"
 							>
 								<XIcon className="size-4" />
 							</button>
@@ -688,7 +688,7 @@ export function GetStartedSpotlight({
 							<button
 								type="button"
 								onClick={goToCta}
-								className="mb-3.5 inline-flex items-center gap-1.5 text-[12.5px] font-medium text-primary transition-opacity hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded-sm"
+								className="mb-3.5 inline-flex items-center gap-1.5 text-[12.5px] font-medium text-primary transition-opacity hover:opacity-80 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary rounded-sm"
 							>
 								{noProject
 									? t("onboarding.tour.createProject")
@@ -702,7 +702,7 @@ export function GetStartedSpotlight({
 								<button
 									type="button"
 									onClick={onFinish}
-									className="inline-flex items-center gap-1 rounded-lg bg-primary px-4 py-2 font-semibold text-[13px] text-primary-foreground shadow-sm transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-card"
+									className="inline-flex items-center gap-1 rounded-lg bg-primary px-4 py-2 font-semibold text-[13px] text-primary-foreground shadow-sm transition-opacity hover:opacity-90 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-card"
 								>
 									<CheckIcon className="size-3.5" />
 									{t("onboarding.tour.gotIt")}
@@ -746,7 +746,7 @@ export function GetStartedSpotlight({
 											)}
 											onClick={() => onGoTo(n)}
 											className={cn(
-												"h-1.5 rounded-full transition-[width,background-color] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+												"h-1.5 rounded-full transition-[width,background-color] focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary",
 												cardClamped
 													? "flex-1"
 													: n === index
@@ -773,7 +773,7 @@ export function GetStartedSpotlight({
 										<button
 											type="button"
 											onClick={onBack}
-											className="inline-flex items-center gap-1 rounded-lg border border-border bg-background px-2.5 py-1.5 font-medium text-[13px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+											className="inline-flex items-center gap-1 rounded-lg border border-border bg-background px-2.5 py-1.5 font-medium text-[13px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary"
 										>
 											<ChevronLeftIcon className="size-3.5" />
 											{t("onboarding.tour.back")}
@@ -783,7 +783,7 @@ export function GetStartedSpotlight({
 										<button
 											type="button"
 											onClick={onSkipStep}
-											className="rounded-lg px-2.5 py-1.5 font-medium text-[13px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+											className="rounded-lg px-2.5 py-1.5 font-medium text-[13px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary"
 										>
 											{t("onboarding.tour.skip")}
 										</button>
@@ -792,7 +792,7 @@ export function GetStartedSpotlight({
 										<button
 											type="button"
 											onClick={onFinish}
-											className="inline-flex items-center gap-1 rounded-lg bg-primary px-4 py-2 font-semibold text-[13px] text-primary-foreground shadow-sm transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-card"
+											className="inline-flex items-center gap-1 rounded-lg bg-primary px-4 py-2 font-semibold text-[13px] text-primary-foreground shadow-sm transition-opacity hover:opacity-90 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-card"
 										>
 											<CheckIcon className="size-3.5" />
 											{t("onboarding.tour.done")}
@@ -801,7 +801,7 @@ export function GetStartedSpotlight({
 										<button
 											type="button"
 											onClick={onNext}
-											className="inline-flex items-center gap-1 rounded-lg bg-primary px-4 py-2 font-semibold text-[13px] text-primary-foreground shadow-sm transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-card"
+											className="inline-flex items-center gap-1 rounded-lg bg-primary px-4 py-2 font-semibold text-[13px] text-primary-foreground shadow-sm transition-opacity hover:opacity-90 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-card"
 										>
 											{t("onboarding.tour.next")}
 											<ChevronRightIcon className="size-3.5" />
@@ -817,7 +817,7 @@ export function GetStartedSpotlight({
 						<button
 							type="button"
 							onClick={onDismiss}
-							className="pointer-events-auto fixed bottom-5 left-5 rounded-full border border-border bg-card px-4 py-1.5 font-medium text-[12.5px] text-muted-foreground shadow-md transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+							className="pointer-events-auto fixed bottom-5 left-5 rounded-full border border-border bg-card px-4 py-1.5 font-medium text-[12.5px] text-muted-foreground shadow-md transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary"
 						>
 							{t("onboarding.tour.skipTour")}
 						</button>

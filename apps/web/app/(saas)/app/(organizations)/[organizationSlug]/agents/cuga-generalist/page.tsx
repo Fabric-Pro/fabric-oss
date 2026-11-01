@@ -261,7 +261,7 @@ function CugaContent({ activeTab, setActiveTab }: CugaContentProps) {
 			{/* Hero Section */}
 			<div className="text-center space-y-4">
 				<div className="flex items-center justify-center gap-3">
-					<div className="h-16 w-16 rounded-2xl bg-gradient-to-br from-purple-500 to-blue-600 flex items-center justify-center">
+					<div className="h-16 w-16 rounded-lg bg-gradient-to-br from-purple-500 to-blue-600 flex items-center justify-center">
 						<Bot className="h-8 w-8 text-white" />
 					</div>
 				</div>

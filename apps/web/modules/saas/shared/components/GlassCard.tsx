@@ -36,10 +36,10 @@ export function GlassCard({
 		// biome-ignore lint/a11y/useAriaPropsSupportedByRole: aria-label is valid when role="button" is set; Biome cannot analyze the conditional role
 		<div
 			className={cn(
-				"group relative overflow-hidden rounded-xl border bg-card transition-colors",
-				hover && "hover:border-primary/30 hover:bg-muted/40",
+				"group relative overflow-hidden rounded-lg border border-border bg-card transition-colors duration-150",
+				hover && "hover:border-primary/40 hover:bg-muted/40",
 				interactive &&
-					"cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+					"cursor-pointer focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 				paddingMap[padding],
 				className,
 			)}

@@ -37,7 +37,7 @@ export function LauncherSessionHistory({
 				<h3
 					ref={heading}
 					tabIndex={-1}
-					className="app-editorial-label focus-visible:outline-none"
+					className="app-editorial-label focus-visible:outline-hidden"
 				>
 					Conversation history
 				</h3>

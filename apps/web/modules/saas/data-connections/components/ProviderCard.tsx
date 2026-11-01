@@ -77,69 +77,74 @@ export function IntegrationTile({
 			href={href}
 			scroll={scroll}
 			data-testid={testId}
-			className="group flex flex-col gap-2 rounded-[10px] border border-border bg-card px-4 py-3.5 transition-colors hover:bg-accent"
+			className="group flex items-center gap-3.5 rounded-lg border border-border bg-card px-4 py-4 shadow-2xs transition-colors hover:border-foreground/20 hover:bg-muted/30"
 		>
-			<div className="flex items-center gap-3">
-				<span className="flex size-7 shrink-0 items-center justify-center [&>svg]:size-7 [&>img]:size-7">
-					{icon}
-				</span>
-				<span className="flex min-w-0 flex-1 items-center gap-2">
-					<span className="truncate text-[15px] font-medium text-foreground">
-						{name}
-					</span>
-					{pip ? (
-						<TooltipProvider delayDuration={150}>
-							<Tooltip>
-								<TooltipTrigger asChild>
-									<span
-										role="img"
-										aria-label={`${name} provider status: ${pip.label}`}
-										className={cn(
-											"size-1.5 shrink-0 rounded-full",
-											pip.class,
-										)}
-									/>
-								</TooltipTrigger>
-								<TooltipContent className="text-xs">
-									{name}: {pip.label}
-								</TooltipContent>
-							</Tooltip>
-						</TooltipProvider>
-					) : null}
-				</span>
-				{needsReconnect ? (
-					<span className="inline-flex h-5 items-center gap-1 rounded-full bg-destructive/10 px-1.5 text-destructive">
-						<AlertTriangle className="size-3" aria-hidden="true" />
-						<span className="text-[10px] leading-none">
-							Reconnect
+			<span className="flex size-9 shrink-0 items-center justify-center rounded-md [&>svg]:size-8 [&>img]:size-8">
+				{icon}
+			</span>
+			<div className="flex min-w-0 flex-1 flex-col gap-0.5">
+				<div className="flex items-center justify-between gap-2">
+					<span className="flex min-w-0 flex-1 items-center gap-2">
+						<span className="truncate text-[14px] font-medium leading-5 text-foreground">
+							{name}
 						</span>
-						<span className="sr-only">needed</span>
-					</span>
-				) : connected ? (
-					<span className="inline-flex h-5 items-center gap-1 rounded-full bg-muted px-1.5 text-muted-foreground">
-						<Check className="size-3" aria-hidden="true" />
-						<span className="sr-only">
-							{partial ? "Partly connected" : "Connected"}
-						</span>
-						{partial ? (
-							<span className="text-[10px] leading-none">
-								Partly
-							</span>
+						{pip ? (
+							<TooltipProvider delayDuration={150}>
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<span
+											role="img"
+											aria-label={`${name} provider status: ${pip.label}`}
+											className={cn(
+												"size-1.5 shrink-0 rounded-full",
+												pip.class,
+											)}
+										/>
+									</TooltipTrigger>
+									<TooltipContent className="text-xs">
+										{name}: {pip.label}
+									</TooltipContent>
+								</Tooltip>
+							</TooltipProvider>
 						) : null}
 					</span>
-				) : (
-					<>
-						<Plus
-							className="size-4 shrink-0 text-muted-foreground transition-colors group-hover:text-foreground"
-							aria-hidden="true"
-						/>
-						<span className="sr-only">Not connected</span>
-					</>
-				)}
+					{needsReconnect ? (
+						<span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-full bg-destructive/10 px-1.5 text-destructive">
+							<AlertTriangle
+								className="size-3"
+								aria-hidden="true"
+							/>
+							<span className="text-[10px] leading-none">
+								Reconnect
+							</span>
+							<span className="sr-only">needed</span>
+						</span>
+					) : connected ? (
+						<span className="inline-flex h-5 shrink-0 items-center gap-1 rounded-full bg-muted px-1.5 text-muted-foreground">
+							<Check className="size-3" aria-hidden="true" />
+							<span className="sr-only">
+								{partial ? "Partly connected" : "Connected"}
+							</span>
+							{partial ? (
+								<span className="text-[10px] leading-none">
+									Partly
+								</span>
+							) : null}
+						</span>
+					) : (
+						<>
+							<Plus
+								className="size-4 shrink-0 text-muted-foreground/70 opacity-0 transition-opacity group-hover:opacity-100 group-hover:text-foreground"
+								aria-hidden="true"
+							/>
+							<span className="sr-only">Not connected</span>
+						</>
+					)}
+				</div>
+				<p className="truncate text-xs leading-4 text-muted-foreground">
+					{description}
+				</p>
 			</div>
-			<p className="truncate text-[13px] text-muted-foreground">
-				{description}
-			</p>
 		</Link>
 	);
 }

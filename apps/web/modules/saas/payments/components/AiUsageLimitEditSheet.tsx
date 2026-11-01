@@ -588,7 +588,7 @@ export function AiUsageLimitEditSheet({
 											aria-label={t(
 												"fieldWindowInfoAria",
 											)}
-											className="inline-flex size-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+											className="inline-flex size-4 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 										>
 											<InfoIcon
 												className="size-3.5"

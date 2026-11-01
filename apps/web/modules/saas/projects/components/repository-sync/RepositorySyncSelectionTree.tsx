@@ -400,7 +400,7 @@ function TreeRow({
 					<button
 						type="button"
 						aria-label={node.name}
-						className="rounded-sm text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+						className="rounded-sm text-muted-foreground focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 					>
 						<ChevronRightIcon
 							className={cn(

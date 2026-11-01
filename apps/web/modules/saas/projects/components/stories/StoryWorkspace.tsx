@@ -6469,7 +6469,7 @@ export function StoryWorkspace({
 																isStagePickerLoading
 															}
 															aria-label="Change maturation status"
-															className="flex items-center gap-2 px-2 h-8 -ml-2 rounded-md hover:bg-muted/40 transition-colors group focus:outline-none focus-visible:outline-none focus-visible:bg-muted/40 disabled:opacity-50 disabled:cursor-not-allowed"
+															className="flex items-center gap-2 px-2 h-8 -ml-2 rounded-md hover:bg-muted/40 transition-colors group focus:outline-none focus-visible:outline-hidden focus-visible:bg-muted/40 disabled:opacity-50 disabled:cursor-not-allowed"
 														>
 															<span
 																className="size-2 rounded-full shrink-0"
@@ -6608,7 +6608,7 @@ export function StoryWorkspace({
 																	<button
 																		type="button"
 																		aria-label="Change drafting stage"
-																		className="flex items-center gap-2 px-2 h-8 -ml-2 rounded-md hover:bg-muted/40 transition-colors group focus:outline-none focus-visible:outline-none focus-visible:bg-muted/40"
+																		className="flex items-center gap-2 px-2 h-8 -ml-2 rounded-md hover:bg-muted/40 transition-colors group focus:outline-none focus-visible:outline-hidden focus-visible:bg-muted/40"
 																	>
 																		{/* Progress steps. When the feature is CLOSED the
 													  steps render but all dots are blank/muted — the
@@ -7586,7 +7586,7 @@ export function StoryWorkspace({
 																		"pendingReview.regionLabel",
 																	)}
 																	data-testid="spec-tab-review-region"
-																	className="focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+																	className="focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
 																>
 																	{/* Confirm-time change summary (v2 only) —
 																	  advisory, sits above the diff bar; renders

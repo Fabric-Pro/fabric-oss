@@ -278,7 +278,7 @@ function HeaderInner({
 				{t("settings.auditLog.traceDiagram.title")}
 			</span>
 			<div className="flex flex-wrap items-center justify-between gap-3">
-				<div className="font-serif text-2xl">
+				<div className="font-semibold text-2xl">
 					{t("settings.auditLog.traceDiagram.title")}
 				</div>
 				<div className="flex items-center gap-2">
@@ -596,7 +596,7 @@ function DiagramSurface({
 					<span className="app-editorial-label">
 						{t("settings.auditLog.traceDiagram.title")}
 					</span>
-					<div className="font-serif text-xl text-foreground">
+					<div className="font-semibold text-xl text-foreground">
 						{t("settings.auditLog.traceDiagram.empty")}
 					</div>
 					<p className="text-muted-foreground">

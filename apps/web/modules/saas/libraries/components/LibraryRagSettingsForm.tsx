@@ -116,7 +116,7 @@ export function LibraryRagSettingsForm({
 			{!compact && (
 				<div className="flex items-center justify-between">
 					<div className="flex items-center gap-3">
-						<div className="rounded-xl bg-gradient-to-br from-amber-500 to-orange-500 p-2.5">
+						<div className="rounded-lg bg-gradient-to-br from-amber-500 to-orange-500 p-2.5">
 							<SettingsIcon className="size-5 text-white" />
 						</div>
 						<div>

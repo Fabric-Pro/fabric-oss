@@ -659,7 +659,7 @@ export function TopicQuestionsPanel({
 							    belongs to the section above and would read as a
 							    second section if repeated here. */}
 							{isGrouped ? (
-								<h4 className="font-medium text-[11px] text-muted-foreground uppercase tracking-[0.16em]">
+								<h4 className="font-medium text-[11px] text-muted-foreground uppercase tracking-wide">
 									{group.label}
 								</h4>
 							) : null}
@@ -1728,7 +1728,7 @@ function AnsweredCard({
 
 function EmptyState({ children }: { children: React.ReactNode }) {
 	return (
-		<p className="rounded-xl border border-border border-dashed bg-muted/40 p-6 text-center text-muted-foreground text-sm">
+		<p className="rounded-lg border border-border border-dashed bg-muted/40 p-6 text-center text-muted-foreground text-sm">
 			{children}
 		</p>
 	);

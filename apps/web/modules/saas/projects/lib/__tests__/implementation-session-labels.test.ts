@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+	buildFabricDesktopNewSessionUrl,
+	buildRemoteAgentServerDelegationUrl,
 	FABRIC_AGENT_CONNECTIONS,
 	getExecutionProviderDescription,
 	getExecutionProviderLabel,
@@ -27,11 +29,11 @@ describe("implementation-session recommendation helper", () => {
 			"default",
 			"claude-max",
 			"codex",
-			"cursor-cli",
-			"antigravity-cli",
 			"droid-cli",
 			"grok-cli",
 			"kimi-cli",
+			"antigravity-cli",
+			"cursor-cli",
 		]);
 		expect(getFabricAgentConnectionLabel("claude-max")).toBe("Claude Max");
 		expect(getFabricAgentConnectionLabel("droid-cli")).toBe(
@@ -68,6 +70,37 @@ describe("implementation-session recommendation helper", () => {
 		expect(recommendation.provider).toBe("BACKGROUND_AGENTS");
 		expect(recommendation.reason).toContain(
 			"Direct implementation needs a connected repository",
+		);
+	});
+
+	it("builds Fabric Desktop deep links and Remote Fabric Agents Server delegation URLs with subscription harness and fallback policy", () => {
+		const desktopUrl = buildFabricDesktopNewSessionUrl({
+			projectName: "Payments V2",
+			projectId: "proj_123",
+			prompt: "Implement OAuth callback",
+			send: true,
+		});
+		expect(desktopUrl).toContain("fabricagents://action/new-chat?");
+		expect(desktopUrl).toContain("name=Payments+V2");
+
+		const remoteUrl = buildRemoteAgentServerDelegationUrl({
+			serverUrl: "https://agents.example.com",
+			projectName: "Payments V2",
+			projectId: "proj_123",
+			connection: "claude-max",
+			model: "claude-opus-4-6",
+			fallbackPolicy: "subscription_harnesses",
+			origin: "https://app.example.com",
+			prompt: "Implement OAuth callback",
+		});
+		expect(remoteUrl).toContain("https://agents.example.com/?");
+		expect(remoteUrl).toContain("project=Payments+V2");
+		expect(remoteUrl).toContain("projectId=proj_123");
+		expect(remoteUrl).toContain("harness=claude-max");
+		expect(remoteUrl).toContain("model=claude-opus-4-6");
+		expect(remoteUrl).toContain("fallback=subscription_harnesses");
+		expect(remoteUrl).toContain(
+			"mcpGateway=https%3A%2F%2Fapp.example.com%2Fapi%2Fmcp-gateway%2Fprojects%2Fproj_123",
 		);
 	});
 });

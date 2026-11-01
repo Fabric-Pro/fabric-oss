@@ -149,14 +149,14 @@ export function AtlasGraphLegend({
 	}
 
 	return (
-		<div className="absolute left-3 top-3 z-10 max-w-[14rem] rounded-xl border border-border/70 bg-card/95 p-2.5 shadow-sm">
+		<div className="absolute left-3 top-3 z-10 max-w-[14rem] rounded-lg border border-border/70 bg-card/95 p-2.5 shadow-sm">
 			<button
 				type="button"
 				aria-expanded={true}
 				aria-controls={listId}
 				aria-label={t("collapse")}
 				onClick={() => setCollapsed(true)}
-				className="flex w-full items-center justify-between gap-2 rounded-md text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+				className="flex w-full items-center justify-between gap-2 rounded-md text-[11px] font-medium uppercase tracking-wide text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 			>
 				{t("title")}
 				<ChevronDownIcon aria-hidden="true" className="size-3.5" />
@@ -199,7 +199,7 @@ export function AtlasGraphLegend({
 								<TooltipTrigger asChild>
 									<button
 										type="button"
-										className="flex w-full cursor-help items-center gap-2 rounded text-left text-[12px] text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+										className="flex w-full cursor-help items-center gap-2 rounded text-left text-[12px] text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 									>
 										{swatchAndLabel}
 									</button>
@@ -223,7 +223,7 @@ export function AtlasGraphLegend({
 			    the graph actually has connections. */}
 			{connections.length > 0 && (
 				<>
-					<p className="mt-3 text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+					<p className="mt-3 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 						{t("connectionsTitle")}
 					</p>
 					<ul className="mt-2 flex flex-col gap-1.5">

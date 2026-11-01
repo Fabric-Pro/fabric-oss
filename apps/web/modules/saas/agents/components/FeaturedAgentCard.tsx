@@ -3,8 +3,9 @@
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { cn } from "@ui/lib";
-import { ArrowRightIcon } from "lucide-react";
+import { Sparkles, X } from "lucide-react";
 import Link from "next/link";
+import { useState } from "react";
 
 interface AgentCapability {
 	icon: React.ReactNode;
@@ -38,9 +39,8 @@ interface FeaturedAgentCardProps {
 /**
  * Featured Agent Card
  *
- * A prominent card for showcasing featured/important agents
- * with their capabilities and quick access button.
- * Mobile-first layout: stacks vertically on small screens.
+ * Compact Databricks Genie One style horizontal banner for showcasing the
+ * primary workspace orchestrator agent with quick launch CTA.
  */
 export function FeaturedAgentCard({
 	name,
@@ -49,118 +49,68 @@ export function FeaturedAgentCard({
 	icon,
 	badge,
 	badgeVariant = "default",
-	capabilities,
-	statusItems = [],
 	isPrimary = false,
-	ctaLabel = "Start Chat",
+	ctaLabel = "Explore Advisor",
 }: FeaturedAgentCardProps) {
+	const [dismissed, setDismissed] = useState(false);
+
+	if (dismissed) {
+		return null;
+	}
+
 	return (
 		<div
 			className={cn(
-				"relative overflow-hidden rounded-xl border p-5 sm:p-6",
+				"relative flex flex-col gap-3 rounded-xl border px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between",
 				isPrimary
-					? "border-primary/20 bg-gradient-to-br from-primary/5 via-background to-background"
-					: "border-border bg-gradient-to-br from-muted/30 via-background to-background",
+					? "border-border bg-muted/40 dark:bg-muted/25"
+					: "border-border bg-card",
 			)}
 		>
-			{/* Gradient blob decoration */}
-			<div
-				className={cn(
-					"pointer-events-none absolute -right-16 -top-16 h-48 w-48 rounded-full blur-3xl",
-					isPrimary ? "bg-primary/10" : "bg-muted/20",
-				)}
-			/>
-
-			{/* ── Header ── */}
-			<div className="relative flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-				{/* Left: icon + name + description */}
-				<div className="flex min-w-0 gap-3">
-					<div
-						className={cn(
-							"flex h-11 w-11 shrink-0 items-center justify-center rounded-xl sm:h-12 sm:w-12",
-							isPrimary ? "bg-primary/10" : "bg-muted",
+			{/* Left: icon badge + title + description */}
+			<div className="flex min-w-0 items-center gap-3.5">
+				<div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-border/60 bg-card text-primary shadow-2xs">
+					{icon || <Sparkles className="h-5 w-5 text-primary" />}
+				</div>
+				<div className="min-w-0">
+					<div className="flex flex-wrap items-center gap-2">
+						<h3 className="text-[13px] font-semibold leading-5 text-foreground">
+							Take your agents further in {name}
+						</h3>
+						{badge && (
+							<Badge
+								variant={badgeVariant}
+								className="h-5 shrink-0 px-1.5 text-[11px] font-normal"
+							>
+								{badge}
+							</Badge>
 						)}
-					>
-						{icon}
 					</div>
-					<div className="min-w-0">
-						<div className="flex flex-wrap items-center gap-2">
-							<h3 className="text-lg font-semibold leading-tight sm:text-xl">
-								{name}
-							</h3>
-							{badge && (
-								<Badge
-									variant={badgeVariant}
-									className="shrink-0 text-xs"
-								>
-									{badge}
-								</Badge>
-							)}
-						</div>
-						<p className="mt-1 text-sm leading-snug text-muted-foreground sm:text-base">
-							{description}
-						</p>
-					</div>
+					<p className="mt-0.5 line-clamp-1 text-[13px] leading-5 text-muted-foreground">
+						{description}
+					</p>
 				</div>
-
-				{/* CTA: full-width on mobile, auto on sm+ */}
-				<Link href={href} className="sm:shrink-0">
-					<Button
-						size="lg"
-						variant={isPrimary ? "default" : "outline"}
-						className="w-full gap-2 sm:w-auto"
-					>
-						{ctaLabel}
-						<ArrowRightIcon className="h-4 w-4" />
-					</Button>
-				</Link>
 			</div>
 
-			{/* ── Capabilities grid ── */}
-			<div className="relative mt-4 grid grid-cols-2 gap-2 sm:gap-3 md:grid-cols-4">
-				{capabilities.map((cap) => (
-					<div
-						key={cap.label}
-						className="flex items-start gap-2 rounded-lg bg-muted/50 p-2.5 transition-colors hover:bg-muted sm:p-3"
-					>
-						<div
-							className={cn(
-								"flex h-7 w-7 shrink-0 items-center justify-center rounded-md sm:h-8 sm:w-8",
-								isPrimary ? "bg-primary/10" : "bg-background",
-							)}
-						>
-							{cap.icon}
-						</div>
-						<div className="min-w-0">
-							<div className="text-xs font-medium leading-snug sm:text-sm">
-								{cap.label}
-							</div>
-							<div className="mt-0.5 text-xs leading-snug text-muted-foreground">
-								{cap.description}
-							</div>
-						</div>
-					</div>
-				))}
+			{/* Right: Pill CTA + Dismiss button */}
+			<div className="flex shrink-0 items-center gap-2">
+				<Button
+					asChild
+					size="sm"
+					variant={isPrimary ? "default" : "outline"}
+					className="h-8 rounded-full px-4 text-xs font-medium"
+				>
+					<Link href={href}>{ctaLabel}</Link>
+				</Button>
+				<button
+					type="button"
+					onClick={() => setDismissed(true)}
+					aria-label="Dismiss banner"
+					className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+				>
+					<X className="h-4 w-4" />
+				</button>
 			</div>
-
-			{/* ── Status row — wraps gracefully on mobile ── */}
-			{statusItems.length > 0 && (
-				<div className="relative mt-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-xs text-muted-foreground sm:text-sm">
-					<span className="flex items-center gap-1.5">
-						<span className="h-2 w-2 shrink-0 rounded-full bg-green-500" />
-						Active
-					</span>
-					{statusItems.map((item, index) => (
-						<span
-							key={`status-${index}`}
-							className="flex items-center gap-1.5"
-						>
-							<span className="text-border">•</span>
-							{item}
-						</span>
-					))}
-				</div>
-			)}
 		</div>
 	);
 }

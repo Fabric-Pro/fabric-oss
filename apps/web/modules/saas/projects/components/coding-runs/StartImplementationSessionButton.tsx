@@ -15,6 +15,7 @@ import {
 	getExecutionProviderLabel,
 	getExecutionProviderPlatformLabel,
 	getImplementationRecommendation,
+	loadProjectDelegationPreferences,
 } from "../../lib/implementation-session-labels";
 import type { UserStory } from "../../lib/stories/types";
 import { RemoteAgentServerPicker } from "./RemoteAgentServerPicker";
@@ -176,6 +177,7 @@ export function StartImplementationSessionButton({
 				...(options?.llmConnection
 					? { llmConnection: options.llmConnection }
 					: {}),
+				...(options?.model ? { model: options.model } : {}),
 			});
 		},
 		onSuccess: async (result) => {
@@ -190,6 +192,8 @@ export function StartImplementationSessionButton({
 			});
 		},
 	});
+
+	const delegationPrefs = loadProjectDelegationPreferences(projectId);
 
 	const handleButtonClick = () => {
 		if (isKanbanLocal) {
@@ -224,6 +228,9 @@ export function StartImplementationSessionButton({
 				isLoading={startMutation.isPending}
 				onConfirm={(options) => startMutation.mutate(options)}
 				focusedTaskId={focusedTaskId}
+				initialConnection={delegationPrefs.defaultConnection}
+				initialModel={delegationPrefs.defaultModel}
+				initialFallbackPolicy={delegationPrefs.fallbackPolicy}
 				serverId={selectedServerId}
 				serverRequired={servers.data?.enabled === true}
 				serverLoading={servers.isPending || servers.isError}

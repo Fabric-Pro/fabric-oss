@@ -2,6 +2,12 @@ import { callMcpTool } from "@repo/mcp";
 import { isReadOnlyBlockedOutput } from "@repo/utils";
 import { getSession } from "@saas/auth/lib/server";
 import { authorizeMcpConfigRequest } from "@saas/mcp/lib/authorize-mcp-config-request";
+import {
+	executeWithDurableEnvelope,
+	isDurableMcpToolRequest,
+} from "@saas/mcp/lib/gateway/mcp-apps";
+import { executePlatformTool } from "@saas/mcp/lib/gateway/platform-tools";
+import { isPlatformToolName } from "@saas/mcp/lib/gateway/tool-eligibility";
 import type { NextRequest } from "next/server";
 
 /**
@@ -29,8 +35,15 @@ export async function POST(request: NextRequest) {
 			return Response.json({ error: "Unauthorized" }, { status: 401 });
 		}
 
-		const { configId, toolName, args, organizationId, projectId } =
-			await request.json();
+		const {
+			configId,
+			toolName,
+			args,
+			organizationId,
+			projectId,
+			durable,
+			idempotencyKey,
+		} = await request.json();
 
 		if (!configId || !toolName) {
 			return Response.json(
@@ -50,6 +63,62 @@ export async function POST(request: NextRequest) {
 		});
 		if (!authorization.ok) {
 			return authorization.response;
+		}
+
+		// Built-in Fabric platform tool execution for MCP Apps (`configId === "platform"`)
+		if (configId === "platform" && isPlatformToolName(toolName)) {
+			const gatewaySession = {
+				sessionId: `mcp-app-${userId}`,
+				userId,
+				organizationId: organizationId ?? null,
+				projectId: projectId ?? null,
+				userName: session.user.name || "",
+				email: session.user.email || "",
+				role: (session.user.role as "user" | "admin") || "user",
+				credential: "session" as const,
+				scopes: ["*"],
+				createdAt: new Date(),
+				expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+			};
+			const toolArgs = (args || {}) as Record<string, unknown>;
+			const shouldRunDurable =
+				durable === true ||
+				isDurableMcpToolRequest(request, undefined, toolArgs);
+
+			const runPlatform = () =>
+				callMcpTool({
+					toolName,
+					projectId,
+					execute: () =>
+						executePlatformTool(toolName, toolArgs, gatewaySession),
+				});
+
+			const rawResult = await runPlatform();
+			if (isReadOnlyBlockedOutput(rawResult)) {
+				return Response.json(
+					{
+						error: rawResult.error,
+						errorCode: rawResult.code,
+					},
+					{ status: 409 },
+				);
+			}
+
+			const finalResult = shouldRunDurable
+				? await executeWithDurableEnvelope({
+						toolName,
+						toolArgs,
+						organizationId: organizationId ?? null,
+						userId,
+						idempotencyKey:
+							typeof idempotencyKey === "string"
+								? idempotencyKey
+								: undefined,
+						execute: async () => rawResult,
+					})
+				: rawResult;
+
+			return Response.json(finalResult);
 		}
 
 		// Use @modelcontextprotocol/sdk Client directly for tool execution

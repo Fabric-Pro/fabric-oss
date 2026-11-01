@@ -82,7 +82,7 @@ export function ProjectArtifactsList({
 					<div className="flex items-center gap-1.5">
 						<h2
 							data-onboarding-target="artifacts-header"
-							className="font-serif text-3xl leading-tight text-foreground"
+							className="font-semibold text-xl leading-tight text-foreground"
 						>
 							Artifacts
 						</h2>

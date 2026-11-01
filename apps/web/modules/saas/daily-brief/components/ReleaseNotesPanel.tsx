@@ -328,7 +328,7 @@ export function ReleaseNotesPanel({
 	return (
 		<section
 			aria-label="Release notes"
-			className="rounded-2xl border border-border bg-card p-6"
+			className="rounded-lg border border-border bg-card p-6"
 		>
 			<header className="flex items-center gap-2">
 				<RocketIcon
@@ -754,7 +754,7 @@ function OtherChanges({
 	return (
 		<div className="border-l-2 border-border/60 pl-3">
 			<div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-				<p className="font-sans text-xs uppercase tracking-[0.16em] text-muted-foreground">
+				<p className="font-sans text-xs uppercase tracking-wide text-muted-foreground">
 					Other changes
 				</p>
 				<p className="text-[11px] text-muted-foreground">{summary}</p>
@@ -812,7 +812,7 @@ function CollapsibleCategoryGroup({
 					aria-hidden="true"
 					className="size-3 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/collapsible:rotate-90"
 				/>
-				<span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-foreground/70">
+				<span className="text-[11px] font-semibold uppercase tracking-wide text-foreground/70">
 					{OTHER_CATEGORY_LABELS[category]} ({items.length})
 				</span>
 			</CollapsibleTrigger>
@@ -892,7 +892,7 @@ function ManageHiddenFooter({
 }) {
 	return (
 		<Collapsible className="group/collapsible mt-6 border-t border-border/60 pt-4">
-			<CollapsibleTrigger className="flex items-center gap-1.5 rounded text-left text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50">
+			<CollapsibleTrigger className="flex items-center gap-1.5 rounded text-left text-xs font-medium uppercase tracking-wide text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50">
 				<ChevronRightIcon
 					aria-hidden="true"
 					className="size-3 shrink-0 motion-safe:transition-transform group-data-[state=open]/collapsible:rotate-90"

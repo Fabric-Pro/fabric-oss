@@ -168,7 +168,7 @@ export function ThresholdConfigDisplay() {
 				<div className="flex items-center gap-2">
 					<h2
 						id="threshold-config-heading"
-						className="font-serif text-2xl font-normal tracking-tight text-foreground/95"
+						className="text-2xl font-semibold tracking-tight text-foreground/95"
 					>
 						Alert thresholds
 					</h2>
@@ -188,7 +188,7 @@ export function ThresholdConfigDisplay() {
 
 			<Card className="app-surface border-border/60">
 				<CardHeader>
-					<CardTitle className="text-base font-medium">
+					<CardTitle className="text-base font-semibold">
 						Error-rate burn-rate windows
 					</CardTitle>
 				</CardHeader>

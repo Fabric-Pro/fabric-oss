@@ -22,7 +22,7 @@ import {
 	PopoverTrigger,
 } from "@ui/components/popover";
 import { cn } from "@ui/lib";
-import { InfoIcon } from "lucide-react";
+import { FolderUpIcon, InfoIcon, UploadIcon } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -188,15 +188,63 @@ export function ConnectionsTabs({
 			<p className="max-w-2xl text-sm leading-6 text-muted-foreground">
 				{CONNECTIONS_INTRO}
 			</p>
-			<div className="max-w-2xl rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground">
-				{MCP_ACCESS_HINT}{" "}
-				<Link
-					href={apiKeysHref}
-					className="font-medium text-primary underline underline-offset-4 hover:text-primary/90"
-				>
-					{MCP_ACCESS_LINK_LABEL}
-				</Link>
-				. <span className="italic">(https://fabric.pro/mcp)</span>
+
+			{/* Databricks Data Ingestion style Quick-Setup Action Cards */}
+			<div className="space-y-2.5">
+				<div className="text-[13px] font-semibold text-foreground">
+					Quick setup
+				</div>
+				<div className="grid max-w-4xl grid-cols-1 gap-4 sm:grid-cols-2">
+					<button
+						type="button"
+						onClick={() => select("mcp")}
+						className="group flex flex-col items-start rounded-lg border border-border bg-card p-4 text-left shadow-2xs transition-all hover:border-foreground/25 hover:bg-muted/20"
+					>
+						<div className="flex items-center gap-3">
+							<span className="flex size-8 shrink-0 items-center justify-center rounded-[6px] bg-[#1B6EC2] text-white shadow-2xs">
+								<UploadIcon
+									className="size-4"
+									aria-hidden="true"
+								/>
+							</span>
+							<span className="text-sm font-semibold text-foreground group-hover:text-primary transition-colors">
+								Create or modify MCP server
+							</span>
+						</div>
+						<div className="mt-2.5 text-xs leading-relaxed text-foreground/65">
+							Connect custom tools, internal databases, or scripts
+							to your workspace through the Model Context
+							Protocol.
+						</div>
+					</button>
+
+					<div className="flex flex-col items-start rounded-lg border border-border bg-card p-4 text-left shadow-2xs transition-all hover:border-foreground/25">
+						<div className="flex items-center gap-3">
+							<span className="flex size-8 shrink-0 items-center justify-center rounded-[6px] bg-[#1B6EC2] text-white shadow-2xs">
+								<FolderUpIcon
+									className="size-4"
+									aria-hidden="true"
+								/>
+							</span>
+							<span className="text-sm font-semibold text-foreground">
+								Connect external tools to Fabric
+							</span>
+						</div>
+						<div className="mt-2.5 text-xs leading-relaxed text-foreground/65">
+							{MCP_ACCESS_HINT}{" "}
+							<Link
+								href={apiKeysHref}
+								className="font-medium text-primary underline underline-offset-4 hover:text-primary/90"
+							>
+								{MCP_ACCESS_LINK_LABEL}
+							</Link>
+							.{" "}
+							<span className="italic">
+								(https://fabric.pro/mcp)
+							</span>
+						</div>
+					</div>
+				</div>
 			</div>
 			<ConnectionsPageContent
 				addHref={addHref}

@@ -121,17 +121,17 @@ export default async function SettingsLayout({
 				{
 					title: t("settings.menu.organization.general"),
 					href: `${organizationSettingsBasePath}/general`,
-					icon: <Settings2Icon className="size-4 opacity-50" />,
+					icon: <Settings2Icon className="size-4" />,
 				},
 				{
 					title: t("settings.menu.organization.members"),
 					href: `${organizationSettingsBasePath}/members`,
-					icon: <Users2Icon className="size-4 opacity-50" />,
+					icon: <Users2Icon className="size-4" />,
 				},
 				{
 					title: "API Keys",
 					href: `${organizationSettingsBasePath}/api-keys`,
-					icon: <KeyIcon className="size-4 opacity-50" />,
+					icon: <KeyIcon className="size-4" />,
 				},
 			],
 		},
@@ -142,17 +142,17 @@ export default async function SettingsLayout({
 				{
 					title: "AI Providers",
 					href: `${organizationSettingsBasePath}/ai-providers`,
-					icon: <BrainCircuitIcon className="size-4 opacity-50" />,
+					icon: <BrainCircuitIcon className="size-4" />,
 				},
 				{
 					title: "AI Models",
 					href: `${organizationSettingsBasePath}/ai-models`,
-					icon: <SparklesIcon className="size-4 opacity-50" />,
+					icon: <SparklesIcon className="size-4" />,
 				},
 				{
 					title: "AI Memory",
 					href: `${organizationSettingsBasePath}/ai-memory`,
-					icon: <HistoryIcon className="size-4 opacity-50" />,
+					icon: <HistoryIcon className="size-4" />,
 				},
 				...(companyContextEnabled
 					? [
@@ -161,21 +161,19 @@ export default async function SettingsLayout({
 									"settings.menu.organization.companyContext",
 								),
 								href: `${organizationSettingsBasePath}/company-context`,
-								icon: (
-									<Building2Icon className="size-4 opacity-50" />
-								),
+								icon: <Building2Icon className="size-4" />,
 							},
 						]
 					: []),
 				{
 					title: "RAG Providers",
 					href: `${organizationSettingsBasePath}/rag-providers`,
-					icon: <FileTextIcon className="size-4 opacity-50" />,
+					icon: <FileTextIcon className="size-4" />,
 				},
 				{
 					title: "Search Providers",
 					href: `${organizationSettingsBasePath}/search-providers`,
-					icon: <SearchIcon className="size-4 opacity-50" />,
+					icon: <SearchIcon className="size-4" />,
 				},
 				...(parlumeEnabled
 					? [
@@ -184,7 +182,7 @@ export default async function SettingsLayout({
 									"settings.menu.organization.meetingAssistant",
 								),
 								href: `${organizationSettingsBasePath}/meeting-assistant`,
-								icon: <MicIcon className="size-4 opacity-50" />,
+								icon: <MicIcon className="size-4" />,
 							},
 						]
 					: []),
@@ -197,17 +195,17 @@ export default async function SettingsLayout({
 				{
 					title: "OpenAPI Services",
 					href: `${organizationSettingsBasePath}/openapi`,
-					icon: <LinkIcon className="size-4 opacity-50" />,
+					icon: <LinkIcon className="size-4" />,
 				},
 				{
 					title: "Agent Registry",
 					href: `${organizationSettingsBasePath}/agents`,
-					icon: <RobotIcon className="size-4 opacity-50" />,
+					icon: <RobotIcon className="size-4" />,
 				},
 				{
 					title: "Prompts",
 					href: `${organizationSettingsBasePath}/prompts`,
-					icon: <ScrollTextIcon className="size-4 opacity-50" />,
+					icon: <ScrollTextIcon className="size-4" />,
 				},
 			],
 		},
@@ -221,7 +219,7 @@ export default async function SettingsLayout({
 				{
 					title: "AI Usage",
 					href: `${organizationSettingsBasePath}/usage`,
-					icon: <BarChart3Icon className="size-4 opacity-50" />,
+					icon: <BarChart3Icon className="size-4" />,
 				},
 				// Audit Log is visible to owners, admins, and deployment
 				// admins (the env-list SRE bypass). Members and viewers
@@ -232,9 +230,7 @@ export default async function SettingsLayout({
 							{
 								title: t("settings.auditLog.menu.organization"),
 								href: `${organizationSettingsBasePath}/audit-log`,
-								icon: (
-									<ClipboardListIcon className="size-4 opacity-50" />
-								),
+								icon: <ClipboardListIcon className="size-4" />,
 							},
 						]
 					: []),
@@ -247,9 +243,7 @@ export default async function SettingsLayout({
 							{
 								title: "User Activity",
 								href: `${organizationSettingsBasePath}/user-activity`,
-								icon: (
-									<ActivityIcon className="size-4 opacity-50" />
-								),
+								icon: <ActivityIcon className="size-4" />,
 							},
 						]
 					: []),
@@ -259,9 +253,7 @@ export default async function SettingsLayout({
 							{
 								title: t("settings.menu.organization.billing"),
 								href: `${organizationSettingsBasePath}/billing`,
-								icon: (
-									<CreditCardIcon className="size-4 opacity-50" />
-								),
+								icon: <CreditCardIcon className="size-4" />,
 							},
 						]
 					: []),
@@ -281,9 +273,7 @@ export default async function SettingsLayout({
 									"settings.menu.organization.dangerZone",
 								),
 								href: `${organizationSettingsBasePath}/danger-zone`,
-								icon: (
-									<TriangleAlertIcon className="size-4 opacity-50" />
-								),
+								icon: <TriangleAlertIcon className="size-4" />,
 							},
 						],
 					},
@@ -323,27 +313,27 @@ export default async function SettingsLayout({
 				{
 					title: t("settings.menu.account.general"),
 					href: `${organizationSettingsBasePath}/account/profile`,
-					icon: <SettingsIcon className="size-4 opacity-50" />,
+					icon: <SettingsIcon className="size-4" />,
 				},
 				{
 					title: t("settings.menu.account.security"),
 					href: `${organizationSettingsBasePath}/account/security`,
-					icon: <LockKeyholeIcon className="size-4 opacity-50" />,
+					icon: <LockKeyholeIcon className="size-4" />,
 				},
 				{
 					title: "Notifications",
 					href: `${organizationSettingsBasePath}/account/notifications`,
-					icon: <BellIcon className="size-4 opacity-50" />,
+					icon: <BellIcon className="size-4" />,
 				},
 				{
 					title: t("settings.menu.account.connectedAgents"),
 					href: `${organizationSettingsBasePath}/account/connected-agents`,
-					icon: <BotIcon className="size-4 opacity-50" />,
+					icon: <BotIcon className="size-4" />,
 				},
 				{
 					title: t("settings.menu.account.dangerZone"),
 					href: `${organizationSettingsBasePath}/account/danger-zone`,
-					icon: <TriangleAlertIcon className="size-4 opacity-50" />,
+					icon: <TriangleAlertIcon className="size-4" />,
 				},
 			],
 		},

@@ -245,10 +245,10 @@ export function CodingRunTimeline({
 
 	return (
 		<div className="space-y-4">
-			<div className="rounded-2xl border border-border/60 bg-muted/[0.28] p-4">
+			<div className="rounded-lg border border-border/60 bg-muted/[0.28] p-4">
 				<div className="flex flex-wrap items-start justify-between gap-3">
 					<div className="space-y-2">
-						<p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+						<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 							Current status
 						</p>
 						<div className="flex items-center gap-2.5">
@@ -350,14 +350,14 @@ export function CodingRunTimeline({
 				liveStatus?.liveStatus?.providerStatus === "failed") && (
 				<div
 					role="alert"
-					className="rounded-2xl border border-destructive/30 bg-destructive/5 p-4"
+					className="rounded-lg border border-destructive/30 bg-destructive/5 p-4"
 				>
 					<div className="flex items-start gap-3">
-						<div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-destructive/10 text-destructive">
+						<div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-destructive/10 text-destructive">
 							<AlertTriangleIcon className="size-4" />
 						</div>
 						<div className="min-w-0 flex-1">
-							<p className="text-[11px] font-medium uppercase tracking-[0.16em] text-destructive">
+							<p className="text-[11px] font-medium uppercase tracking-wide text-destructive">
 								Execution failure details
 							</p>
 							<p className="mt-1 break-words text-sm text-foreground/90">
@@ -372,11 +372,11 @@ export function CodingRunTimeline({
 			)}
 
 			<section
-				className="rounded-2xl border border-border/60 bg-background p-4"
+				className="rounded-lg border border-border/60 bg-background p-4"
 				aria-label="Execution progress"
 			>
 				<div className="flex items-center justify-between gap-2">
-					<p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+					<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 						Task &amp; execution progress
 					</p>
 					{activeBranch && (
@@ -390,7 +390,7 @@ export function CodingRunTimeline({
 					{progressSteps.map((step) => (
 						<li
 							key={step.key}
-							className={`flex items-center gap-2 rounded-xl border px-3 py-2 text-xs ${
+							className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-xs ${
 								step.state === "completed"
 									? "border-primary/25 bg-primary/[0.04] text-foreground"
 									: step.state === "active"
@@ -416,13 +416,13 @@ export function CodingRunTimeline({
 			</section>
 
 			{primaryTaskLabel && (
-				<div className="rounded-2xl border border-highlight/20 bg-highlight/5 p-4">
+				<div className="rounded-lg border border-highlight/20 bg-highlight/5 p-4">
 					<div className="flex items-start gap-3">
-						<div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-highlight/10 text-highlight">
+						<div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-highlight/10 text-highlight">
 							<WorkflowIcon className="size-4" />
 						</div>
 						<div className="min-w-0 flex-1">
-							<p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+							<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 								Primary task focus
 							</p>
 							<p className="mt-1 text-sm font-semibold text-foreground">
@@ -451,14 +451,14 @@ export function CodingRunTimeline({
 				(isNativeSession && run.status === "COMPLETED")) &&
 				run.provider === "BACKGROUND_AGENTS" &&
 				!privateSession && (
-					<div className="rounded-2xl border border-highlight/30 bg-highlight/5 p-4">
+					<div className="rounded-lg border border-highlight/30 bg-highlight/5 p-4">
 						<div className="flex items-start gap-3">
-							<div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-highlight/10 text-highlight">
+							<div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-highlight/10 text-highlight">
 								<MessagesSquareIcon className="size-4" />
 							</div>
 							<div className="min-w-0 flex-1 space-y-3">
 								<div>
-									<p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+									<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 										{run.status === "COMPLETED"
 											? "Continue this session"
 											: "Agent awaiting input"}
@@ -536,9 +536,9 @@ export function CodingRunTimeline({
 						href={sessionUrl}
 						target={isDeepLink ? undefined : "_blank"}
 						rel={isDeepLink ? undefined : "noopener noreferrer"}
-						className="flex min-h-14 items-center gap-3 rounded-xl border border-primary/30 bg-primary/[0.04] px-4 py-3 text-sm transition-colors hover:bg-primary/[0.08]"
+						className="flex min-h-14 items-center gap-3 rounded-lg border border-primary/30 bg-primary/[0.04] px-4 py-3 text-sm transition-colors hover:bg-primary/[0.08]"
 					>
-						<div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10">
+						<div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10">
 							<MonitorIcon className="size-4 text-primary" />
 						</div>
 						<div className="min-w-0 flex-1">
@@ -562,9 +562,9 @@ export function CodingRunTimeline({
 						href={pullRequestUrl}
 						target="_blank"
 						rel="noopener noreferrer"
-						className="flex min-h-14 items-center gap-3 rounded-xl border border-border/60 bg-background px-4 py-3 text-sm transition-colors hover:bg-muted/40"
+						className="flex min-h-14 items-center gap-3 rounded-lg border border-border/60 bg-background px-4 py-3 text-sm transition-colors hover:bg-muted/40"
 					>
-						<div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10">
+						<div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10">
 							<GitPullRequestIcon className="size-4 text-primary" />
 						</div>
 						<div className="min-w-0 flex-1">
@@ -613,10 +613,10 @@ export function CodingRunTimeline({
 
 			{run.events && run.events.length > 0 && (
 				<div className="space-y-2">
-					<p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+					<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 						Activity
 					</p>
-					<div className="max-h-[260px] divide-y divide-border/40 overflow-y-auto rounded-2xl border border-border/60 bg-background">
+					<div className="max-h-[260px] divide-y divide-border/40 overflow-y-auto rounded-lg border border-border/60 bg-background">
 						{collapseEvents(run.events).map(
 							(event, index, events) => {
 								const detail = formatEventPayloadDetail(
@@ -677,7 +677,7 @@ export function CodingRunTimeline({
 					size="sm"
 					type="button"
 					autoLoading={false}
-					className="w-full rounded-xl"
+					className="w-full rounded-lg"
 					onClick={onCancel}
 				>
 					<SquareIcon className="mr-2 size-3.5" />
@@ -689,7 +689,7 @@ export function CodingRunTimeline({
 				<Button
 					variant="outline"
 					size="sm"
-					className="w-full rounded-xl"
+					className="w-full rounded-lg"
 					asChild
 				>
 					<a
@@ -718,13 +718,13 @@ function MetadataTile({
 	hint?: string;
 }) {
 	return (
-		<div className="rounded-xl border border-border/60 bg-background px-4 py-3">
+		<div className="rounded-lg border border-border/60 bg-background px-4 py-3">
 			<div className="flex items-start gap-3">
-				<div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+				<div className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
 					<Icon className="size-4" />
 				</div>
 				<div className="min-w-0 flex-1">
-					<p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+					<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 						{label}
 					</p>
 					<p className="mt-1 break-words text-sm font-medium text-foreground">

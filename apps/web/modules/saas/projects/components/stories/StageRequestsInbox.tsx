@@ -177,7 +177,7 @@ export function StageRequestsInbox({
 		<Sheet open={open} onOpenChange={onOpenChange}>
 			<SheetContent className="flex w-full flex-col sm:max-w-xl">
 				<SheetHeader>
-					<SheetTitle className="font-serif text-2xl font-normal">
+					<SheetTitle className="text-2xl font-semibold">
 						{t("title")}
 					</SheetTitle>
 					<SheetDescription>{t("description")}</SheetDescription>

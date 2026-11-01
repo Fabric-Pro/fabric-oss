@@ -197,7 +197,7 @@ export function TopicBlockers({
 							className="rounded-lg border border-highlight/40 bg-highlight/10 px-3 py-2"
 						>
 							<p className="flex flex-wrap items-center gap-2">
-								<span className="rounded-full border border-highlight/50 px-2 py-0.5 font-medium text-[10px] text-foreground uppercase tracking-[0.14em]">
+								<span className="rounded-full border border-highlight/50 px-2 py-0.5 font-medium text-[10px] text-foreground uppercase tracking-wide">
 									{label}
 								</span>
 								<span className="font-medium text-foreground text-sm">

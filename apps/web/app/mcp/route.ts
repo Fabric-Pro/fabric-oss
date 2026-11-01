@@ -49,6 +49,14 @@ import {
 	executePlatformTool,
 	PLATFORM_TOOL_DEFINITIONS,
 } from "../../modules/saas/mcp/lib/gateway/platform-tools";
+import {
+	executeWithDurableEnvelope,
+	FABRIC_MCP_APP_RESOURCES,
+	FABRIC_TOOL_UI_RESOURCE_MAP,
+	isDurableMcpToolRequest,
+	isStatelessMcpRequest,
+	readFabricMcpAppResource,
+} from "../../modules/saas/mcp/lib/gateway/mcp-apps";
 import type {
 	GatewayCredential,
 	GatewaySession,
@@ -1446,7 +1454,21 @@ function buildToolsForSession(
 		: [];
 
 	if (session.gatewaySession) {
-		tools.push(...PLATFORM_TOOL_DEFINITIONS, ...BROWSER_TOOL_DEFINITIONS);
+		const platformWithUi = PLATFORM_TOOL_DEFINITIONS.map((tool) => {
+			const uiResourceUri = FABRIC_TOOL_UI_RESOURCE_MAP[tool.name];
+			if (!uiResourceUri) {
+				return tool;
+			}
+			return {
+				...tool,
+				_meta: {
+					...(tool._meta ?? {}),
+					ui: { resourceUri: uiResourceUri },
+					"ui/resourceUri": uiResourceUri,
+				},
+			};
+		});
+		tools.push(...platformWithUi, ...BROWSER_TOOL_DEFINITIONS);
 	}
 
 	return tools;
@@ -1464,7 +1486,7 @@ function getServerCapabilities(options: McpRouteOptions) {
 	}
 	// No standalone GET SSE stream in production (GET → 405), so a
 	// listChanged notification could never reach a client.
-	return { tools: {} };
+	return { tools: {}, resources: {} };
 }
 
 function getPromptResult(
@@ -2439,12 +2461,38 @@ function createRequestSession(
 				)) as any;
 			}
 
-			if (PLATFORM_TOOL_DEFINITIONS.some((tool) => tool.name === name)) {
-				const result = (await executePlatformTool(
-					name,
+	if (PLATFORM_TOOL_DEFINITIONS.some((tool) => tool.name === name)) {
+				const rawMeta = (requestMessage.params as Record<
+					string,
+					unknown
+				>)._meta as Record<string, unknown> | undefined;
+				const durable = isDurableMcpToolRequest(
+					null,
+					requestMessage.params as Record<string, unknown>,
 					args,
-					session.gatewaySession,
-				)) as any;
+				);
+				const runPlatform = () =>
+					executePlatformTool(
+						name,
+						args,
+						session.gatewaySession!,
+					);
+				const result = (
+					durable
+						? await executeWithDurableEnvelope({
+								toolName: name,
+								toolArgs: args,
+								organizationId:
+									session.gatewaySession.organizationId,
+								userId: session.gatewaySession.userId,
+								idempotencyKey:
+									typeof rawMeta?.idempotencyKey === "string"
+										? rawMeta.idempotencyKey
+										: undefined,
+								execute: runPlatform,
+							})
+						: await runPlatform()
+				) as any;
 
 				// The switch tool mutates the in-memory session; this route
 				// stores sessions across requests, so the move has to be
@@ -2470,6 +2518,31 @@ function createRequestSession(
 			);
 		},
 	);
+
+	if (!routeOptions.enableConformanceFixtures) {
+		session.server.setRequestHandler(
+			ListResourcesRequestSchema,
+			async () => ({
+				resources: [...FABRIC_MCP_APP_RESOURCES],
+			}),
+		);
+
+		session.server.setRequestHandler(
+			ReadResourceRequestSchema,
+			async (request) => {
+				const appResource = readFabricMcpAppResource(
+					request.params.uri,
+				);
+				if (appResource) {
+					return appResource;
+				}
+				throw new McpError(
+					ErrorCode.InvalidParams,
+					`Resource ${request.params.uri} not found`,
+				);
+			},
+		);
+	}
 
 	if (routeOptions.enableConformanceFixtures) {
 		session.server.setRequestHandler(
@@ -2707,6 +2780,29 @@ async function handlePostRequest(
 		}
 
 		return response;
+	}
+
+	if (isStatelessMcpRequest(request)) {
+		recordReachForServedRequest();
+		const session = createRequestSession(authResult, {
+			enableSessionManagement: false,
+			routeOptions,
+		});
+		(session.transport as any)._initialized = true;
+		await session.server.connect(session.transport);
+		const statelessResponse = await session.transport.handleRequest(
+			request,
+			{
+				parsedBody,
+			},
+		);
+		const headers = new Headers(statelessResponse.headers);
+		headers.set("X-Mcp-Stateless", "true");
+		return new Response(statelessResponse.body, {
+			status: statelessResponse.status,
+			statusText: statelessResponse.statusText,
+			headers,
+		});
 	}
 
 	const sessionId = getSessionIdHeader(request);

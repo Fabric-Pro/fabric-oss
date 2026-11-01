@@ -104,6 +104,14 @@ import {
 	searchTools,
 } from "@saas/mcp/lib/gateway/discovery-tools";
 import {
+	executeWithDurableEnvelope,
+	FABRIC_MCP_APP_RESOURCES,
+	FABRIC_TOOL_UI_RESOURCE_MAP,
+	isDurableMcpToolRequest,
+	isStatelessMcpRequest,
+	readFabricMcpAppResource,
+} from "@saas/mcp/lib/gateway/mcp-apps";
+import {
 	checkPageCall,
 	pageCallSession,
 } from "@saas/mcp/lib/gateway/page-call-guard";
@@ -887,6 +895,7 @@ async function getOrCreateSession(
 	authResult: AuthResult,
 	selection: ParsedServerSelection,
 	toolListMode: ParsedToolListMode,
+	stateless = false,
 ): Promise<
 	| {
 			ok: true;
@@ -896,8 +905,8 @@ async function getOrCreateSession(
 	  }
 	| { ok: false; message: string }
 > {
-	// Try existing session from the centralized session store
-	if (mcpSessionId) {
+	// Try existing session from the centralized session store (unless stateless)
+	if (mcpSessionId && !stateless) {
 		const existing = getGatewaySession(mcpSessionId);
 		if (existing && existing.userId === authResult.userId) {
 			if (
@@ -954,7 +963,7 @@ async function getOrCreateSession(
 		// and run it acts from on every request, so there is nothing a stored
 		// session could remember that the request does not say again — and a
 		// session per chat turn would only pile up.
-		persist: authResult.credential !== "service",
+		persist: authResult.credential !== "service" && !stateless,
 		scopes: authResult.scopes,
 		serverSelection: serverSelection.entries,
 		toolListMode: toolListMode.mode,
@@ -1045,6 +1054,8 @@ function isServedMethod(method: string): boolean {
 		case "notifications/initialized":
 		case "tools/list":
 		case "tools/call":
+		case "resources/list":
+		case "resources/read":
 		case "ping":
 			return true;
 		default:
@@ -1229,9 +1240,15 @@ export async function handleGatewayPost(
 	// Handle notifications (no id)
 	if (rpcRequest.id === undefined || rpcRequest.id === null) {
 		const mcpSessionId = request.headers.get("mcp-session-id") || "";
+		const headers: Record<string, string> = {
+			"Mcp-Session-Id": mcpSessionId,
+		};
+		if (isStatelessMcpRequest(request)) {
+			headers["X-Mcp-Stateless"] = "true";
+		}
 		return new NextResponse(null, {
 			status: 202,
-			headers: { "Mcp-Session-Id": mcpSessionId },
+			headers,
 		});
 	}
 
@@ -1252,6 +1269,7 @@ export async function handleGatewayPost(
 	// The `mode` parameter is read on both URLs. Like the selection, it is
 	// applied only when this request creates the session.
 	const toolListMode = parseToolListMode(searchParams);
+	const stateless = isStatelessMcpRequest(request);
 
 	// Get or create MCP session
 	const incomingSessionId = request.headers.get("mcp-session-id");
@@ -1260,6 +1278,7 @@ export async function handleGatewayPost(
 		authResult,
 		selection,
 		toolListMode,
+		stateless,
 	);
 	if (!opened.ok) {
 		return jsonRpcError(rpcRequest.id, -32602, opened.message);
@@ -1287,48 +1306,81 @@ export async function handleGatewayPost(
 	// browser session carries no key identity and writes nothing.
 	recordCliReach(authResult);
 
+	let response: NextResponse;
+
 	// Route by method
 	switch (rpcRequest.method) {
 		case "initialize":
-			return handleInitialize(
+			response = await handleInitialize(
 				rpcRequest.id,
 				sessionId,
 				clientNameOf(rpcRequest.params),
 				session,
 			);
+			break;
 
 		case "notifications/initialized":
-			return new NextResponse(null, {
+			response = new NextResponse(null, {
 				status: 202,
 				headers: { "Mcp-Session-Id": sessionId },
 			});
+			break;
 
 		case "tools/list":
-			return handleToolsList(rpcRequest.id, session, sessionId);
+			response = await handleToolsList(rpcRequest.id, session, sessionId);
+			break;
 
 		case "tools/call":
-			return handleToolsCall(
+			response = await handleToolsCall(
 				rpcRequest.id,
 				rpcRequest.params,
 				session,
 				sessionId,
 				request.headers.get(PAGE_FRAME_HEADER),
+				isDurableMcpToolRequest(
+					request,
+					rpcRequest.params,
+					(rpcRequest.params?.arguments || {}) as Record<
+						string,
+						unknown
+					>,
+				),
 			);
+			break;
+
+		case "resources/list":
+			response = handleResourcesList(rpcRequest.id, sessionId);
+			break;
+
+		case "resources/read":
+			response = handleResourcesRead(
+				rpcRequest.id,
+				rpcRequest.params,
+				sessionId,
+			);
+			break;
 
 		case "ping":
-			return jsonRpcSuccess(rpcRequest.id, {}, sessionId);
+			response = jsonRpcSuccess(rpcRequest.id, {}, sessionId);
+			break;
 
 		// Unreachable — `isServedMethod` above refuses an unknown method before
 		// the record is written — and kept as the closed answer, so this switch
 		// gaining a case that the predicate does not list fails safe.
 		default:
-			return jsonRpcError(
+			response = jsonRpcError(
 				rpcRequest.id,
 				-32601,
 				`Method not found: ${rpcRequest.method}`,
 				sessionId,
 			);
+			break;
 	}
+
+	if (stateless) {
+		response.headers.set("X-Mcp-Stateless", "true");
+	}
+	return response;
 }
 
 // ─── DELETE Handler ─────────────────────────────────────────────────────────
@@ -1702,11 +1754,46 @@ async function handleInitialize(
 			},
 			capabilities: {
 				tools: { listChanged: true },
+				resources: { listChanged: false },
 			},
 			instructions: gatewayInstructions(clientName, session),
 		},
 		sessionId,
 	);
+}
+
+function handleResourcesList(
+	id: string | number,
+	sessionId: string,
+): NextResponse {
+	return jsonRpcSuccess(
+		id,
+		{
+			resources: FABRIC_MCP_APP_RESOURCES,
+		},
+		sessionId,
+	);
+}
+
+function handleResourcesRead(
+	id: string | number,
+	params: Record<string, unknown> | undefined,
+	sessionId: string,
+): NextResponse {
+	const uri = typeof params?.uri === "string" ? params.uri : "";
+	if (!uri) {
+		return jsonRpcError(id, -32602, "Missing resource uri", sessionId);
+	}
+	const resource = readFabricMcpAppResource(uri);
+	if (!resource) {
+		return jsonRpcError(
+			id,
+			-32002,
+			`Resource not found: ${uri}`,
+			sessionId,
+		);
+	}
+	return jsonRpcSuccess(id, resource, sessionId);
 }
 
 async function handleToolsList(
@@ -1761,12 +1848,25 @@ async function handleToolsList(
 
 		// Return in MCP format with authority metadata for connected tools
 		const mcpTools = tools.map((t) => {
+			const uiResourceUri = FABRIC_TOOL_UI_RESOURCE_MAP[t.name];
+			const mergedMeta =
+				t._meta || uiResourceUri
+					? {
+							...(t._meta ?? {}),
+							...(uiResourceUri
+								? {
+										ui: { resourceUri: uiResourceUri },
+										"ui/resourceUri": uiResourceUri,
+									}
+								: {}),
+						}
+					: undefined;
 			const base = {
 				name: t.name,
 				description: t.description,
 				inputSchema: t.inputSchema,
 				...(t.annotations ? { annotations: t.annotations } : {}),
-				...(t._meta ? { _meta: t._meta } : {}),
+				...(mergedMeta ? { _meta: mergedMeta } : {}),
 			};
 
 			// Add authority metadata for connected server tools
@@ -1827,6 +1927,7 @@ async function handleToolsCall(
 	session: GatewaySession,
 	sessionId: string,
 	pageFrameId: string | null,
+	durable = false,
 ): Promise<NextResponse> {
 	const toolName = params?.name as string;
 	let toolArgs = (params?.arguments || {}) as Record<string, unknown>;
@@ -1860,21 +1961,37 @@ async function handleToolsCall(
 	// The meta-tools exist only in discovery mode. In full mode their names
 	// reach the dispatch below and are answered "Unknown tool", as before the
 	// mode existed.
-	const result =
+	const executeCall = () =>
 		callSession.toolListMode === "discovery" &&
 		isDiscoveryToolName(toolName)
-			? await handleDiscoveryToolCall(
+			? handleDiscoveryToolCall(
 					toolName,
 					toolArgs,
 					callSession,
 					sessionId,
 				)
-			: await dispatchToolCall(
+			: dispatchToolCall(
 					toolName,
 					toolArgs,
 					callSession,
 					sessionId,
 				);
+
+	const result = durable
+		? await executeWithDurableEnvelope({
+				toolName,
+				toolArgs,
+				organizationId: callSession.organizationId,
+				userId: callSession.userId,
+				idempotencyKey:
+					typeof (params?._meta as Record<string, unknown> | undefined)
+						?.idempotencyKey === "string"
+						? ((params?._meta as Record<string, unknown>)
+								.idempotencyKey as string)
+						: undefined,
+				execute: executeCall,
+			})
+		: await executeCall();
 	return jsonRpcSuccess(id, result, sessionId);
 }
 

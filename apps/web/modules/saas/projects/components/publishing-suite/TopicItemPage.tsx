@@ -1265,7 +1265,7 @@ export function TopicItemPage({
 		// below offering "Try again".
 		return (
 			<div className="space-y-4">
-				<h1 className="font-serif text-2xl">Topic not found</h1>
+				<h1 className="font-semibold text-2xl">Topic not found</h1>
 				<p className="text-muted-foreground text-sm">
 					This topic may have been deleted, or it belongs to another
 					project.
@@ -1314,7 +1314,7 @@ export function TopicItemPage({
 				<p className="publishing-label">Publishing topic</p>
 				<div className="flex flex-wrap items-start justify-between gap-3">
 					<div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
-						<h1 className="font-serif font-normal text-3xl leading-tight">
+						<h1 className="font-semibold text-xl leading-tight">
 							{topic.title}
 						</h1>
 						{/* The angle is a LABEL — "Feature release note", "How-to",
@@ -2200,7 +2200,7 @@ function TopicNotes({
 
 function EmptyState({ children }: { children: React.ReactNode }) {
 	return (
-		<p className="rounded-xl border border-border border-dashed bg-muted/40 p-6 text-center text-muted-foreground text-sm">
+		<p className="rounded-lg border border-border border-dashed bg-muted/40 p-6 text-center text-muted-foreground text-sm">
 			{children}
 		</p>
 	);

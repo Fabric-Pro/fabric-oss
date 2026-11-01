@@ -15,7 +15,7 @@ export interface EmptyBriefStateProps {
 
 export function EmptyBriefState({ onRegenerate }: EmptyBriefStateProps) {
 	return (
-		<div className="relative overflow-hidden rounded-2xl border border-border bg-card p-12 text-center">
+		<div className="relative overflow-hidden rounded-lg border border-border bg-card p-12 text-center">
 			<div
 				className="pointer-events-none absolute inset-0 opacity-40"
 				style={{
@@ -27,7 +27,7 @@ export function EmptyBriefState({ onRegenerate }: EmptyBriefStateProps) {
 			/>
 			<div className="relative">
 				<span className="editorial-label">No activity</span>
-				<h2 className="mt-4 font-serif text-3xl font-normal leading-tight text-foreground">
+				<h2 className="mt-4 text-xl font-semibold leading-tight text-foreground">
 					Nothing new to brief on
 				</h2>
 				<p className="mx-auto mt-3 max-w-md text-sm leading-6 text-muted-foreground">

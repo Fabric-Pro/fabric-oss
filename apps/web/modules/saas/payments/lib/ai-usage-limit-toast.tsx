@@ -1,7 +1,7 @@
 "use client";
 
 import { useTranslations } from "next-intl";
-import { useCallback, type ReactNode } from "react";
+import { type ReactNode, useCallback } from "react";
 import { toast } from "sonner";
 
 /**
@@ -255,7 +255,7 @@ export function showAiUsageLimitToast(
 						<button
 							type="button"
 							aria-label={ariaLabel}
-							className="rounded-sm text-[11px] font-medium text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring whitespace-nowrap"
+							className="rounded-sm text-[11px] font-medium text-primary underline-offset-2 hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring whitespace-nowrap"
 							onClick={() => {
 								if (typeof window !== "undefined") {
 									window.location.assign(manageUrl);

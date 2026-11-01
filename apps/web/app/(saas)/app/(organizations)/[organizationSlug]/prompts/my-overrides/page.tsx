@@ -31,7 +31,7 @@ export default async function MyOverridesPage({
 			/>
 
 			<div className="space-y-2">
-				<h1 className="font-serif text-3xl">My Overrides</h1>
+				<h1 className="font-semibold text-3xl">My Overrides</h1>
 				<p className="text-muted-foreground">
 					Every action where your own default prompt is in force.
 					Personal defaults follow you across organizations.

@@ -52,7 +52,7 @@ export function MetricCard({
 					<>
 						{/* Label + icon */}
 						<div className="flex items-center justify-between mb-2.5">
-							<p className="text-[10px] font-bold text-muted-foreground uppercase tracking-[0.12em]">
+							<p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wide">
 								{title}
 							</p>
 							{customIcon ? (

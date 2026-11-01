@@ -39,7 +39,7 @@ export function SegmentedControl<T extends string>({
 				<RadioGroupPrimitive.Item
 					className={cn(
 						"px-3 py-1.5 text-muted-foreground text-sm motion-safe:transition-colors",
-						"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+						"focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
 						"data-[state=checked]:bg-foreground data-[state=checked]:text-background",
 						"disabled:cursor-not-allowed disabled:opacity-50",
 					)}

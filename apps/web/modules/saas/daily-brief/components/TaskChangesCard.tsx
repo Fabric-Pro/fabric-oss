@@ -52,7 +52,7 @@ export function TaskChangesCard({
 										in {item.storyIdentifier}
 									</span>
 								) : null}
-								<span className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+								<span className="text-[10px] uppercase tracking-wide text-muted-foreground">
 									{KIND_LABEL[item.kind]}
 								</span>
 							</div>

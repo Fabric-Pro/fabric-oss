@@ -70,7 +70,7 @@ function ExcalidrawEmbedNodeView({ node, editor, getPos }: ReactNodeViewProps) {
 	// `<ExcalidrawPreview>` needs `checkpointId` + `configId` to fetch the
 	// scene; the resource URI is informational (it shows up on the chat
 	// side because McpAppFrame uses it to route to the Excalidraw branch).
-	const resourceUri = node.attrs["data-resource-uri"] as string | undefined;
+	const _resourceUri = node.attrs["data-resource-uri"] as string | undefined;
 	const configId = node.attrs["data-config-id"] as string | undefined;
 	const checkpointId = node.attrs["data-checkpoint-id"] as string | undefined;
 	// Resolve the org for the tenant-scoped `read_checkpoint` fetch. Prefer an
@@ -143,7 +143,7 @@ function ExcalidrawEmbedNodeView({ node, editor, getPos }: ReactNodeViewProps) {
 				    the user toward the editing surface — the embedded canvas
 				    here is view-first, edit-by-going-to-chat. */}
 				<div className="flex items-center justify-between gap-2 border-b bg-muted/30 px-3 py-2">
-					<div className="flex items-center gap-2 text-xs uppercase tracking-[0.15em] text-muted-foreground">
+					<div className="flex items-center gap-2 text-xs uppercase tracking-wide text-muted-foreground">
 						<svg
 							className="h-3.5 w-3.5"
 							viewBox="0 0 24 24"

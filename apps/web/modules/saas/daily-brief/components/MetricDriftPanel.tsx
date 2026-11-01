@@ -48,7 +48,7 @@ export function MetricDriftPanel({
 	return (
 		<section
 			aria-label="Metric drift"
-			className="rounded-2xl border border-highlight/40 bg-highlight/5 p-6"
+			className="rounded-lg border border-highlight/40 bg-highlight/5 p-6"
 		>
 			<div className="flex items-baseline justify-between gap-3">
 				<span className="editorial-label">Metric drift</span>

@@ -111,7 +111,7 @@ export function ExecutionTimeline({
 		<TooltipProvider delayDuration={500}>
 			<div className="space-y-1.5">
 				<div className="flex items-center justify-between text-xs text-muted-foreground mb-2">
-					<span className="uppercase tracking-[0.18em] font-medium">
+					<span className="uppercase tracking-wide font-medium">
 						Timeline
 					</span>
 					{totalElapsed > 0 && (

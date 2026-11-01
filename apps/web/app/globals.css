@@ -75,42 +75,55 @@ body[data-scroll-locked] {
 }
 
 /*
- * Fabric design system (fabric-web/design/fabric-design-system.md).
- * The reading face is the system grotesque, the stack augmentcode.com
- * uses; nothing is downloaded for it. Headings are regular weight with
- * tight tracking; the emphasis is in size and space, not weight.
+ * Fabric Workspace design system (design.md — Databricks DuBois aesthetics).
+ * The reading face is the clean technical sans stack (Inter / system-ui).
+ * Headings use semi-bold (600) weight with crisp tracking for dense workspace
+ * scanability; strong emphasis uses semi-bold (600) and medium (500).
  */
 :root {
-	--font-sans: var(--font-inter), -apple-system, BlinkMacSystemFont, "Helvetica Neue", Helvetica, Arial, sans-serif;
+	--font-sans: var(--font-inter), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Helvetica, Arial, sans-serif;
 	--font-display: var(--font-sans);
 	--font-serif: var(--font-sans);
 }
 
-body {
-	font-family: var(--font-sans);
-	font-size: 14px;
-}
+@layer base {
+	body {
+		font-family: var(--font-sans);
+		font-size: 13px;
+		line-height: 20px;
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+	}
 
-h1, h2 {
-	font-family: var(--font-sans);
-	font-weight: 400;
-	letter-spacing: -0.025em;
-	line-height: 1.1;
-}
+	h1, h2 {
+		font-family: var(--font-sans);
+		font-weight: 600;
+		letter-spacing: -0.015em;
+	}
 
-h3, h4, h5, h6 {
-	font-family: var(--font-sans);
-	font-weight: 400;
-	letter-spacing: -0.015em;
-}
+	h3, h4, h5, h6 {
+		font-family: var(--font-sans);
+		font-weight: 600;
+		letter-spacing: -0.01em;
+	}
 
-h1 { font-size: 1.5rem; }
-h2 { font-size: 1.25rem; }
-h3 { font-size: 1.0625rem; line-height: 1.5rem; }
+	h1 { font-size: 1.25rem; line-height: 1.75rem; }
+	h2 { font-size: 1rem; line-height: 1.5rem; }
+	h3 { font-size: 0.875rem; line-height: 1.25rem; }
 
-/* Nothing on screen is bold; strong emphasis reads as medium. */
-b, strong, .font-bold, .font-semibold {
-	font-weight: 500;
+	/* Databricks Workspace (DuBois) iconography uses crisp 1.5px strokes */
+	svg.lucide {
+		stroke-width: 1.5px;
+	}
+
+	b, strong {
+		font-weight: 600;
+	}
+
+	/* Code blocks with monospace font */
+	pre, code, kbd, samp {
+		font-family: var(--font-mono);
+	}
 }
 
 /*
@@ -129,20 +142,17 @@ html .uppercase.tracking-widest,
 html .uppercase.tracking-wider,
 html .uppercase.tracking-wide,
 html .uppercase[class*="tracking-["] {
-	letter-spacing: 0.06em;
+	letter-spacing: 0.02em;
 }
 
-/* Labels: mono, small, sentence case, muted. Never capitals. */
+/* Labels: crisp workspace label, semi-bold, sentence case, muted. */
 .fab-label {
-	font-family: var(--font-mono);
-	font-size: 11px;
-	letter-spacing: 0.1em;
+	font-family: var(--font-sans);
+	font-size: 12px;
+	font-weight: 600;
+	line-height: 1.3333;
+	letter-spacing: 0.01em;
 	color: var(--muted-foreground);
-}
-
-/* Code blocks with monospace font */
-pre, code, kbd, samp {
-	font-family: var(--font-mono);
 }
 
 /* Consistent pointer cursor for interactive controls */
@@ -179,15 +189,15 @@ input[type="reset"]:not(:disabled) {
 .animate-stagger-5 { animation-delay: 0.25s; }
 
 /* Shared premium app surface utilities */
-/* The page kicker, in the design system: mono, sentence case, muted, a crimson square before it. */
+/* The page kicker, in the DuBois design system: semi-bold sans, sentence case, muted, with an accent square. */
 .app-editorial-label {
 	display: inline-flex;
 	align-items: center;
-	gap: 0.625rem;
-	font-family: var(--font-mono);
-	font-size: 11px;
-	font-weight: 400;
-	letter-spacing: 0.1em;
+	gap: 0.5rem;
+	font-family: var(--font-sans);
+	font-size: 12px;
+	font-weight: 600;
+	letter-spacing: 0.01em;
 	text-transform: none;
 	color: var(--muted-foreground);
 }
@@ -197,6 +207,7 @@ input[type="reset"]:not(:disabled) {
 	display: block;
 	width: 6px;
 	height: 6px;
+	border-radius: 2px;
 	background: var(--fab-accent-fill);
 }
 
@@ -243,9 +254,10 @@ input[type="reset"]:not(:disabled) {
 }
 
 .app-soft-badge {
-	border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
-	background: color-mix(in srgb, var(--muted) 64%, transparent);
-	color: color-mix(in srgb, var(--foreground) 70%, var(--muted-foreground));
+	border: 1px solid var(--border);
+	background: var(--muted);
+	color: var(--muted-foreground);
+	font-weight: 500;
 }
 
 /* Shared low-contrast scrollbars for chat surfaces and embedded panels */
@@ -757,11 +769,13 @@ input[type="reset"]:not(:disabled) {
 }
 
 /* Smooth transitions for theme switching */
-@media (prefers-reduced-motion: no-preference) {
-	* {
-		transition-property: background-color, border-color, color;
-		transition-duration: 150ms;
-		transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+@layer base {
+	@media (prefers-reduced-motion: no-preference) {
+		* {
+			transition-property: background-color, border-color, color;
+			transition-duration: 150ms;
+			transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+		}
 	}
 }
 
@@ -847,25 +861,26 @@ input[type="reset"]:not(:disabled) {
 	background-size: 32px 32px;
 }
 
-/* Section label style (red + left border) */
+/* Section label style (DuBois technical eyebrow + primary bar) */
 .editorial-label {
 	display: inline-flex;
 	align-items: center;
-	gap: 0.75rem;
+	gap: 0.5rem;
 	font-family: var(--font-sans);
-	font-size: 0.6875rem;
-	font-weight: 400;
-	letter-spacing: 0.25em;
+	font-size: 0.75rem;
+	font-weight: 600;
+	letter-spacing: 0.04em;
 	text-transform: uppercase;
-	color: #B91C1C;
+	color: var(--muted-foreground);
 }
 
 .editorial-label::before {
 	content: "";
 	display: block;
 	width: 2px;
-	height: 1rem;
-	background: #B91C1C;
+	height: 0.75rem;
+	background: var(--primary);
+	border-radius: 1px;
 	flex-shrink: 0;
 }
 
@@ -885,12 +900,12 @@ input[type="reset"]:not(:disabled) {
 .publishing-label {
 	display: inline-flex;
 	align-items: center;
-	gap: 0.75rem;
+	gap: 0.5rem;
 	font-family: var(--font-sans);
-	font-size: 0.6875rem;
+	font-size: 0.75rem;
 	font-weight: 600;
-	letter-spacing: 0.22em;
-	text-transform: uppercase;
+	letter-spacing: 0.02em;
+	text-transform: none;
 	color: var(--muted-foreground);
 }
 
@@ -1029,7 +1044,7 @@ del.bg-red-200 {
 
 @layer base {
 	.dark ::selection {
-		background-color: rgba(59, 130, 246, 0.4);
+		background-color: rgba(255, 143, 150, 0.35);
 		color: var(--foreground);
 	}
 }
@@ -1492,10 +1507,10 @@ html:root .copilotKitHeader {
  * opacity, three of them coloured, and they stop for reduced motion.
  */
 .advisor-title {
-	font-size: 36px;
-	font-weight: 500;
-	line-height: 40px;
-	letter-spacing: -0.025em;
+	font-size: 24px;
+	font-weight: 600;
+	line-height: 32px;
+	letter-spacing: -0.015em;
 }
 
 .advisor-glyph {

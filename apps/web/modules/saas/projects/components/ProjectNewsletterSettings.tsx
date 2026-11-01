@@ -90,7 +90,7 @@ type Props = {
 };
 
 const sectionTitleClass =
-	"text-[11px] font-medium uppercase tracking-[0.22em] text-muted-foreground";
+	"text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
 
 const DAY_OF_WEEK_LABELS = [
 	{ value: "0", label: "Sunday" },
@@ -964,7 +964,7 @@ export function ProjectNewsletterSettings({
 				</p>
 
 				<div className="mt-5 space-y-5">
-					<div className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-border p-4">
+					<div className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-border p-4">
 						<div className="min-w-0">
 							<p className="font-medium text-foreground">
 								Enable newsletter
@@ -988,7 +988,7 @@ export function ProjectNewsletterSettings({
 						/>
 					</div>
 
-					<div className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-border p-4">
+					<div className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-border p-4">
 						<div className="min-w-0">
 							<p className="font-medium text-foreground">
 								Require review before sending
@@ -1044,7 +1044,7 @@ export function ProjectNewsletterSettings({
 								reviewer email, which needs mail configured.
 							</p>
 							{hasLinkedChatChannels ? (
-								<ul className="divide-y divide-border rounded-xl border border-border">
+								<ul className="divide-y divide-border rounded-lg border border-border">
 									{linkedChatChannels.map((channel) => {
 										const key = chatChannelKey(channel);
 										const checked =
@@ -1432,7 +1432,7 @@ export function ProjectNewsletterSettings({
 						<div className="mt-5 space-y-2">
 							<p className={sectionTitleClass}>Chat channels</p>
 							{hasLinkedChatChannels ? (
-								<ul className="divide-y divide-border rounded-xl border border-border">
+								<ul className="divide-y divide-border rounded-lg border border-border">
 									{linkedChatChannels.map((channel) => {
 										const key = chatChannelKey(channel);
 										const checked =
@@ -1559,7 +1559,7 @@ export function ProjectNewsletterSettings({
 						</p>
 					) : (
 						<>
-							<ul className="divide-y divide-border rounded-xl border border-border">
+							<ul className="divide-y divide-border rounded-lg border border-border">
 								{pagedActiveSubscribers.map((sub) => (
 									<SubscriberRow
 										key={sub.id}
@@ -1609,7 +1609,7 @@ export function ProjectNewsletterSettings({
 									<p className={sectionTitleClass}>
 										Unsubscribed
 									</p>
-									<ul className="mt-2 divide-y divide-border rounded-xl border border-border">
+									<ul className="mt-2 divide-y divide-border rounded-lg border border-border">
 										{pagedUnsubscribedSubscribers.map(
 											(sub) => (
 												<SubscriberRow
@@ -1811,7 +1811,7 @@ export function ProjectNewsletterSettings({
 							return (
 								<div
 									key={p.id}
-									className="rounded-xl border border-border p-4"
+									className="rounded-lg border border-border p-4"
 								>
 									<p className="font-medium text-foreground">
 										{content?.headline ?? "Release notes"}
@@ -2201,7 +2201,7 @@ export function ProjectNewsletterSettings({
 				</p>
 
 				<div className="mt-5 space-y-5">
-					<div className="flex flex-wrap items-start justify-between gap-3 rounded-xl border border-border p-4">
+					<div className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-border p-4">
 						<div className="min-w-0">
 							<p className="font-medium text-foreground">
 								{tEmbed("enableLabel")}
@@ -2490,7 +2490,7 @@ export function ProjectNewsletterSettings({
 							</div>
 
 							{/* Regenerate token */}
-							<div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border p-4">
+							<div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border p-4">
 								<div className="min-w-0">
 									<p className="font-medium text-foreground">
 										{tEmbed("regenerateLabel")}

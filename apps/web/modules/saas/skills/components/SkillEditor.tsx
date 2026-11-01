@@ -143,10 +143,10 @@ const SUGGESTED_TAGS = [
 ];
 
 const builderSectionClassName =
-	"rounded-2xl border border-border/60 bg-card/60 p-6";
+	"rounded-lg border border-border/60 bg-card/60 p-6";
 
 const subtleInputClassName =
-	"rounded-xl border border-border/60 bg-background/55 shadow-none";
+	"rounded-lg border border-border/60 bg-background/55 shadow-none";
 
 export function SkillEditor({ skill }: SkillEditorProps) {
 	const router = useRouter();
@@ -368,7 +368,7 @@ export function SkillEditor({ skill }: SkillEditorProps) {
 												<TooltipTrigger asChild>
 													<div
 														className={cn(
-															"w-11 h-11 rounded-xl bg-gradient-to-br flex items-center justify-center shadow-md shrink-0",
+															"w-11 h-11 rounded-lg bg-gradient-to-br flex items-center justify-center shadow-md shrink-0",
 															selectedCategory.gradient,
 														)}
 													>
@@ -473,7 +473,7 @@ export function SkillEditor({ skill }: SkillEditorProps) {
 								</p>
 							</div>
 
-							<div className="rounded-2xl border border-border/60 bg-card/40 p-5">
+							<div className="rounded-lg border border-border/60 bg-card/40 p-5">
 								<div className="flex flex-wrap gap-2">
 									{CATEGORY_OPTIONS.map((cat) => {
 										const Icon = cat.icon;
@@ -491,7 +491,7 @@ export function SkillEditor({ skill }: SkillEditorProps) {
 													)
 												}
 												className={cn(
-													"flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium transition-all",
+													"flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-all",
 													isSelected
 														? "border border-primary/40 bg-primary/10 text-primary shadow-sm"
 														: "border border-border/60 bg-background/55 text-muted-foreground hover:border-border hover:bg-background/75 hover:text-foreground",
@@ -660,7 +660,7 @@ export function SkillEditor({ skill }: SkillEditorProps) {
 										variant="outline"
 										onClick={handleAddTag}
 										disabled={!tagInput.trim()}
-										className="rounded-xl"
+										className="rounded-lg"
 									>
 										<PlusIcon className="h-4 w-4" />
 									</Button>
@@ -697,11 +697,11 @@ export function SkillEditor({ skill }: SkillEditorProps) {
 				<div className="w-72 border-l bg-slate-50 dark:bg-slate-900/50 min-h-[calc(100vh-57px)]">
 					<div className="sticky top-[57px] p-6">
 						{/* Preview card */}
-						<div className="mb-6 p-4 rounded-xl bg-white dark:bg-slate-800 border shadow-sm">
+						<div className="mb-6 p-4 rounded-lg bg-white dark:bg-slate-800 border shadow-sm">
 							<div className="flex items-center gap-3 mb-3">
 								<div
 									className={cn(
-										"w-10 h-10 rounded-xl bg-gradient-to-br flex items-center justify-center shadow-sm",
+										"w-10 h-10 rounded-lg bg-gradient-to-br flex items-center justify-center shadow-sm",
 										selectedCategory
 											? selectedCategory.gradient
 											: "from-primary/80 to-primary",

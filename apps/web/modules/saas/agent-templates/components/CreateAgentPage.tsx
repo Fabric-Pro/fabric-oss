@@ -1192,7 +1192,7 @@ export function CreateAgentPage({
 										<p className="text-[10px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
 											Agent Builder
 										</p>
-										<h1 className="font-sans text-base font-normal leading-tight">
+										<h1 className="font-sans text-base font-semibold leading-tight">
 											{isEditMode
 												? "Edit Agent"
 												: isCustomAgent
@@ -1295,7 +1295,7 @@ export function CreateAgentPage({
 											onChange={(e) =>
 												setInstructions(e.target.value)
 											}
-											className="min-h-[400px] rounded-xl border-border bg-muted/40 p-4 font-mono text-sm"
+											className="min-h-[400px] rounded-lg border-border bg-muted/40 p-4 font-mono text-sm"
 											placeholder={
 												instructionsPlaceholder ||
 												"Describe how this agent should behave, what context it should use, and how it should respond."
@@ -1516,7 +1516,7 @@ export function CreateAgentPage({
 
 											<div
 												className={cn(
-													"rounded-xl border p-4",
+													"rounded-lg border p-4",
 													hasAllRequiredIntegrations
 														? "border-success/20 bg-success/5"
 														: "border-destructive/20 bg-destructive/5",
@@ -1673,7 +1673,7 @@ export function CreateAgentPage({
 															<div
 																key={key}
 																className={cn(
-																	"rounded-xl border p-4",
+																	"rounded-lg border p-4",
 																	hasConfigs
 																		? "border-success/20 bg-success/5"
 																		: "border-destructive/20 bg-destructive/5",
@@ -1862,7 +1862,7 @@ export function CreateAgentPage({
 
 									<div className="grid grid-cols-1 gap-4 md:grid-cols-2">
 										{/* ── Searchable knowledge card ── */}
-										<div className="flex flex-col rounded-xl border border-border bg-card">
+										<div className="flex flex-col rounded-lg border border-border bg-card">
 											<div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
 												<div className="flex items-center gap-2.5">
 													<div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-primary/10">
@@ -1954,7 +1954,7 @@ export function CreateAgentPage({
 														)}
 													</div>
 												) : (
-													<div className="rounded-xl border border-dashed border-border p-4 text-center">
+													<div className="rounded-lg border border-dashed border-border p-4 text-center">
 														<Square3Stack3DIcon className="mx-auto mb-2 h-5 w-5 text-muted-foreground/30" />
 														<p className="text-xs text-muted-foreground">
 															No searchable
@@ -2000,7 +2000,7 @@ export function CreateAgentPage({
 										</div>
 
 										{/* ── Capabilities card ── */}
-										<div className="flex flex-col rounded-xl border border-border bg-card">
+										<div className="flex flex-col rounded-lg border border-border bg-card">
 											<div className="flex items-center justify-between border-b border-border/60 px-4 py-3">
 												<div className="flex items-center gap-2.5">
 													<div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-secondary/10">
@@ -2169,7 +2169,7 @@ export function CreateAgentPage({
 														)}
 													</div>
 												) : (
-													<div className="rounded-xl border border-dashed border-border p-4 text-center">
+													<div className="rounded-lg border border-dashed border-border p-4 text-center">
 														<McpLogo
 															size={20}
 															className="mx-auto mb-2 opacity-30"
@@ -2258,7 +2258,7 @@ export function CreateAgentPage({
 												))}
 										</div>
 									) : (
-										<div className="rounded-xl border border-dashed border-border p-5 text-center">
+										<div className="rounded-lg border border-dashed border-border p-5 text-center">
 											<ZapIcon className="mx-auto mb-2 h-5 w-5 text-muted-foreground/40" />
 											<p className="text-sm text-muted-foreground">
 												No triggers configured. The
@@ -2303,7 +2303,7 @@ export function CreateAgentPage({
 																e.target.value,
 															)
 														}
-														className="h-11 rounded-xl border-border bg-muted/40 pr-10"
+														className="h-11 rounded-lg border-border bg-muted/40 pr-10"
 														placeholder={
 															template.displayName
 																? `e.g., ${template.displayName}`
@@ -2336,7 +2336,7 @@ export function CreateAgentPage({
 													through the `sr-only` child. */}
 												<Tooltip>
 													<TooltipTrigger asChild>
-														<div className="flex h-11 w-11 items-center justify-center rounded-xl border border-primary/20 bg-primary/10">
+														<div className="flex h-11 w-11 items-center justify-center rounded-lg border border-primary/20 bg-primary/10">
 															<CategoryIcon className="h-5 w-5 text-primary" />
 															<span className="sr-only">
 																{tooltipT(
@@ -2382,7 +2382,7 @@ export function CreateAgentPage({
 															e.target.value,
 														)
 													}
-													className="min-h-[80px] resize-none rounded-xl border-border bg-muted/40 pr-10"
+													className="min-h-[80px] resize-none rounded-lg border-border bg-muted/40 pr-10"
 													placeholder={
 														descriptionPlaceholder ||
 														"Explain what this agent does and when someone should use it."
@@ -2414,7 +2414,7 @@ export function CreateAgentPage({
 												Execution Mode
 											</Label>
 											<div className="space-y-3">
-												<div className="grid grid-cols-2 gap-1.5 rounded-xl border border-border bg-muted/40 p-1.5">
+												<div className="grid grid-cols-2 gap-1.5 rounded-lg border border-border bg-muted/40 p-1.5">
 													<button
 														type="button"
 														className={cn(
@@ -2522,7 +2522,7 @@ export function CreateAgentPage({
 												{/* Goal input - shown when goal_oriented is selected */}
 												{executionMode ===
 													"goal_oriented" && (
-													<div className="space-y-4 rounded-xl border border-secondary/20 bg-secondary/5 p-4">
+													<div className="space-y-4 rounded-lg border border-secondary/20 bg-secondary/5 p-4">
 														<div>
 															<Label
 																htmlFor="agent-goal"
@@ -2539,7 +2539,7 @@ export function CreateAgentPage({
 																			.value,
 																	)
 																}
-																className="min-h-[80px] resize-none rounded-xl border-border bg-background"
+																className="min-h-[80px] resize-none rounded-lg border-border bg-background"
 																placeholder="Describe the goal this agent should achieve, e.g., 'Analyze customer feedback and generate a summary report with key insights and recommendations'"
 																rows={3}
 															/>
@@ -2601,7 +2601,7 @@ export function CreateAgentPage({
 												<Label className="text-sm font-medium mb-2 block">
 													External API Access
 												</Label>
-												<div className="space-y-3 rounded-xl border border-border bg-muted/40 p-4">
+												<div className="space-y-3 rounded-lg border border-border bg-muted/40 p-4">
 													<div className="flex items-center justify-between">
 														<div>
 															<p className="text-sm font-medium">
@@ -2813,7 +2813,7 @@ export function CreateAgentPage({
 										<div className="space-y-0 divide-y divide-border/60">
 											{/* ── 1. Setup checklist ── */}
 											<div className="px-5 py-4">
-												<p className="mb-3 text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+												<p className="mb-3 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
 													Setup checklist
 												</p>
 												<ul className="space-y-2">
@@ -2913,7 +2913,7 @@ export function CreateAgentPage({
 											{/* ── 2. Template tips ── */}
 											{/* ── 3. Writing good instructions ── */}
 											<div className="px-5 py-4">
-												<p className="mb-3 text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+												<p className="mb-3 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
 													Writing good instructions
 												</p>
 												<ul className="space-y-3">
@@ -2945,7 +2945,7 @@ export function CreateAgentPage({
 
 											{/* ── 4. Ready to test callout ── */}
 											<div className="px-5 py-4">
-												<div className="rounded-xl bg-muted/60 p-3.5">
+												<div className="rounded-lg bg-muted/60 p-3.5">
 													<p className="mb-1 text-xs font-semibold text-foreground">
 														After you create
 													</p>

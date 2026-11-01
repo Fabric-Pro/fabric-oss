@@ -131,7 +131,7 @@ export function StoryKindRegenerationNotice({
 							id={headingId}
 							ref={headingRef}
 							tabIndex={-1}
-							className="text-sm font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+							className="text-sm font-medium text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
 						>
 							{tone === "running"
 								? t("inFlightTitle")

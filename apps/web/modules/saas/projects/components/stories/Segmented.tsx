@@ -28,7 +28,7 @@ export function Segmented<T extends string>({
 }) {
 	return (
 		<div className="space-y-1.5">
-			<p className="font-medium text-[11px] text-muted-foreground uppercase tracking-[0.14em]">
+			<p className="font-medium text-[11px] text-muted-foreground uppercase tracking-wide">
 				{label}
 			</p>
 			<div

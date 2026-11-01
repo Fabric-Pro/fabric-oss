@@ -472,7 +472,7 @@ export function NotionIntegrationPageBrowser({
 										<button
 											type="button"
 											className={cn(
-												"flex-1 min-w-0 flex items-center gap-3 text-left focus-visible:outline-none",
+												"flex-1 min-w-0 flex items-center gap-3 text-left focus-visible:outline-hidden",
 												confirmLoading &&
 													"cursor-not-allowed",
 											)}

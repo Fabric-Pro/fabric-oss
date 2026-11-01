@@ -109,7 +109,7 @@ export function McpServerIcon({
 				height={size}
 				onError={() => setAttemptIndex((prev) => prev + 1)}
 				className={cn(
-					"shrink-0 rounded-xl border border-border/60 bg-white/95 object-contain p-1.5 shadow-sm dark:bg-white/92",
+					"shrink-0 rounded-lg border border-border/60 bg-white/95 object-contain p-1.5 shadow-sm dark:bg-white/92",
 					className,
 					imageClassName,
 				)}
@@ -120,7 +120,7 @@ export function McpServerIcon({
 	return (
 		<div
 			className={cn(
-				"flex shrink-0 items-center justify-center rounded-xl border border-border/60 bg-white/95 text-muted-foreground shadow-sm dark:bg-white/92",
+				"flex shrink-0 items-center justify-center rounded-lg border border-border/60 bg-white/95 text-muted-foreground shadow-sm dark:bg-white/92",
 				className,
 				fallbackClassName,
 			)}

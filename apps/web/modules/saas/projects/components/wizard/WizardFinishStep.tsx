@@ -126,7 +126,7 @@ export function WizardFinishStep({
 	return (
 		<div className="space-y-8">
 			<div>
-				<p className="text-[11px] font-medium uppercase tracking-[0.24em] text-muted-foreground">
+				<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 					Finish setup
 				</p>
 				<h2
@@ -146,7 +146,7 @@ export function WizardFinishStep({
 			</div>
 
 			{/* What was set up */}
-			<Card className="rounded-2xl border border-border bg-card p-6">
+			<Card className="rounded-lg border border-border bg-card p-6">
 				<h3 className="mb-4 text-sm font-medium text-foreground">
 					What was set up
 				</h3>

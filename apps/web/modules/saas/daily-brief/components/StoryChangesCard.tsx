@@ -110,7 +110,7 @@ export function StoryChangesCard({
 									className="text-xs"
 								>
 									<div className="flex items-center gap-2">
-										<span className="text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+										<span className="text-[10px] uppercase tracking-wide text-muted-foreground">
 											{KIND_LABEL[event.kind]}
 										</span>
 										<span className="text-[11px] text-muted-foreground">

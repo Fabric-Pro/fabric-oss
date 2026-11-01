@@ -364,7 +364,7 @@ export function DataSourcesSheet({
 					<div className="p-6">
 						{/* Configuration form */}
 						{configuring && configuringPlugin && (
-							<div className="mb-6 p-5 border rounded-xl bg-muted/30">
+							<div className="mb-6 p-5 border rounded-lg bg-muted/30">
 								<div className="flex items-center justify-between mb-5">
 									<div className="flex items-center gap-4">
 										<IntegrationBrandIcon
@@ -375,7 +375,7 @@ export function DataSourcesSheet({
 												configuringPlugin.brandColor
 											}
 											size={56}
-											className="rounded-xl shadow-lg"
+											className="rounded-lg shadow-lg"
 										/>
 										<div>
 											<h4 className="font-semibold text-lg">

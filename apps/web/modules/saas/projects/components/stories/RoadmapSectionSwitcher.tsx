@@ -67,7 +67,7 @@ export function RoadmapSectionSwitcher({
 								aria-label={label}
 								onClick={() => onChange(option)}
 								className={cn(
-									"flex items-center gap-1.5 whitespace-nowrap rounded px-2.5 py-1 font-medium text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+									"flex items-center gap-1.5 whitespace-nowrap rounded px-2.5 py-1 font-medium text-xs transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 									active
 										? "bg-primary text-primary-foreground"
 										: "text-muted-foreground hover:bg-accent hover:text-foreground",

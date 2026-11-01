@@ -310,7 +310,7 @@ export function ProviderHealthBadge({
 							type="button"
 							aria-label={ariaLabel}
 							onClick={onClickOpenDrawer}
-							className="appearance-none rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+							className="appearance-none rounded-md focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
 						>
 							<span role="status" className="contents">
 								{badgeBody}

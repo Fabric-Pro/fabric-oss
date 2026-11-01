@@ -31,7 +31,7 @@ describe("brand color map", () => {
 				saturation: "91%",
 				lightness: "60%",
 				ink: "#0a5adb",
-				inkDark: "#3780f6",
+				inkDark: "#5c9eff",
 			},
 			purple: {
 				hex: "#8b5cf6",
@@ -39,7 +39,7 @@ describe("brand color map", () => {
 				saturation: "81%",
 				lightness: "56%",
 				ink: "#7616d0",
-				inkDark: "#ab62ef",
+				inkDark: "#b775f3",
 			},
 			pink: {
 				hex: "#ec4899",
@@ -47,7 +47,7 @@ describe("brand color map", () => {
 				saturation: "81%",
 				lightness: "60%",
 				ink: "#d01673",
-				inkDark: "#eb3d94",
+				inkDark: "#f45ca5",
 			},
 			orange: {
 				hex: "#ea580c",
@@ -79,7 +79,7 @@ describe("brand color map", () => {
 				saturation: "84%",
 				lightness: "67%",
 				ink: "#1216d3",
-				inkDark: "#7779f3",
+				inkDark: "#8b8df6",
 			},
 		});
 	});

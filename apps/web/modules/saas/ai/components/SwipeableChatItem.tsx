@@ -38,7 +38,7 @@ export function SwipeableChatItem({
 				variant="ghost"
 				onClick={onSelect}
 				className={cn(
-					"h-auto w-full justify-start rounded-xl px-2.5 py-1.5 pr-9 text-left transition-colors",
+					"h-auto w-full justify-start rounded-lg px-2.5 py-1.5 pr-9 text-left transition-colors",
 					isActive
 						? "bg-muted/80 text-foreground/85"
 						: "text-muted-foreground hover:bg-muted/45 hover:text-foreground/85",

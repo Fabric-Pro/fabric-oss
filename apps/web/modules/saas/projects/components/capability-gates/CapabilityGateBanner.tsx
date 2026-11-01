@@ -202,7 +202,7 @@ function CapabilityGateSubjects({
 							type="button"
 							onClick={() => onSubjectSelect(subject.id)}
 							title={subject.label}
-							className="block max-w-[32ch] truncate rounded-sm font-medium text-foreground underline decoration-foreground/30 underline-offset-2 hover:decoration-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							className="block max-w-[32ch] truncate rounded-sm font-medium text-foreground underline decoration-foreground/30 underline-offset-2 hover:decoration-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 						>
 							{subject.label}
 						</button>
@@ -283,7 +283,7 @@ export function CapabilityGateBanner({
 			// a screen-reader user mid-sentence for news that can wait.
 			role={view.tone === "destructive" ? "alert" : "status"}
 			className={cn(
-				"relative flex items-start gap-3 overflow-hidden rounded-xl border p-4 pl-5",
+				"relative flex items-start gap-3 overflow-hidden rounded-lg border p-4 pl-5",
 				"motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:animate-in",
 				TONE_CONTAINER[view.tone],
 				className,
@@ -377,7 +377,7 @@ export function CapabilityGateBanner({
 						<button
 							type="button"
 							aria-label={t("dismiss.action")}
-							className="-mr-1 -mt-1 flex size-7 shrink-0 items-center justify-center self-start rounded-md text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							className="-mr-1 -mt-1 flex size-7 shrink-0 items-center justify-center self-start rounded-md text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 						>
 							<XIcon className="size-4" aria-hidden="true" />
 						</button>

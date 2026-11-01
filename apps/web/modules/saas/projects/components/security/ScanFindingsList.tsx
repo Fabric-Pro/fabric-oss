@@ -1137,7 +1137,7 @@ function SeveritySectionBlock({
 		<section aria-labelledby={headingId} className="space-y-2.5">
 			<h3
 				id={headingId}
-				className="flex items-center gap-2 font-semibold text-[11px] text-muted-foreground uppercase tracking-[0.12em]"
+				className="flex items-center gap-2 font-semibold text-[11px] text-muted-foreground uppercase tracking-wide"
 			>
 				<span
 					aria-hidden="true"

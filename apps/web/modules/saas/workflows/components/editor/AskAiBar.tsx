@@ -21,7 +21,7 @@ interface AskAiBarProps
 }
 
 const BAR_CLASS =
-	"pointer-events-auto flex h-11 w-full max-w-[520px] items-center gap-2.5 rounded-xl border border-input bg-card pl-3.5 pr-2";
+	"pointer-events-auto flex h-11 w-full max-w-[520px] items-center gap-2.5 rounded-lg border border-input bg-card pl-3.5 pr-2";
 
 function ShortcutHint() {
 	return (

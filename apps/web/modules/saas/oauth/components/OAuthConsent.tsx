@@ -136,7 +136,7 @@ export function OAuthConsent() {
 		<div className="flex flex-col gap-5">
 			<div className="space-y-2">
 				<p className="app-editorial-label">{t("label")}</p>
-				<h1 className="font-serif font-normal text-2xl leading-snug">
+				<h1 className="font-semibold text-2xl leading-snug">
 					{project
 						? t("projectTitle", {
 								client: clientName,

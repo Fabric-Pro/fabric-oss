@@ -430,7 +430,7 @@ export function NominationQueue() {
 
 									{nomination.changeSummary && (
 										<div className="rounded-md bg-muted p-3">
-											<p className="flex items-center gap-1.5 font-medium text-muted-foreground text-xs uppercase tracking-[0.14em]">
+											<p className="flex items-center gap-1.5 font-medium text-muted-foreground text-xs uppercase tracking-wide">
 												{nomination.summaryDegraded ? (
 													<AlertTriangleIcon
 														aria-hidden="true"

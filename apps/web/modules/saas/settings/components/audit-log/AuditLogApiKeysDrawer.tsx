@@ -405,7 +405,7 @@ export function AuditLogApiKeysDrawer({
 						<span className="app-editorial-label">
 							{t("settings.auditLog.apiKeysDrawer.title")}
 						</span>
-						<SheetTitle className="font-serif text-2xl">
+						<SheetTitle className="font-semibold text-2xl">
 							{t("settings.auditLog.apiKeysDrawer.title")}
 						</SheetTitle>
 						<SheetDescription className="max-w-prose">

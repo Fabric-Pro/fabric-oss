@@ -248,34 +248,34 @@ function ContextPill({
 	const t = useTranslations("tooltips.agents");
 	const colorClasses = {
 		green: {
-			pill: "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300",
-			dot: "bg-green-500",
-			header: "text-success dark:text-green-400",
-			star: "text-success",
+			pill: "border border-border/80 bg-muted/40 text-muted-foreground hover:bg-muted hover:text-foreground",
+			dot: "bg-emerald-500/80",
+			header: "text-foreground",
+			star: "text-primary",
 		},
 		blue: {
-			pill: "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300",
-			dot: "bg-blue-500",
-			header: "text-blue-600 dark:text-blue-400",
-			star: "text-blue-500",
+			pill: "border border-border/80 bg-muted/40 text-muted-foreground hover:bg-muted hover:text-foreground",
+			dot: "bg-primary/75",
+			header: "text-foreground",
+			star: "text-primary",
 		},
 		purple: {
-			pill: "bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300",
-			dot: "bg-purple-500",
-			header: "text-purple-600 dark:text-purple-400",
-			star: "text-purple-500",
+			pill: "border border-border/80 bg-muted/40 text-muted-foreground hover:bg-muted hover:text-foreground",
+			dot: "bg-primary/75",
+			header: "text-foreground",
+			star: "text-primary",
 		},
 		orange: {
-			pill: "bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-300",
-			dot: "bg-orange-500",
-			header: "text-highlight dark:text-orange-400",
-			star: "text-orange-500",
+			pill: "border border-border/80 bg-muted/40 text-muted-foreground hover:bg-muted hover:text-foreground",
+			dot: "bg-muted-foreground/60",
+			header: "text-foreground",
+			star: "text-primary",
 		},
 		emerald: {
-			pill: "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300",
-			dot: "bg-emerald-500",
-			header: "text-emerald-600 dark:text-emerald-400",
-			star: "text-emerald-500",
+			pill: "border border-border/80 bg-muted/40 text-muted-foreground hover:bg-muted hover:text-foreground",
+			dot: "bg-emerald-500/80",
+			header: "text-foreground",
+			star: "text-primary",
 		},
 	};
 
@@ -289,12 +289,12 @@ function ContextPill({
 			<HoverCardTrigger asChild>
 				<span
 					className={cn(
-						"inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium cursor-default transition-colors hover:opacity-80",
+						"inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium cursor-default transition-colors",
 						colors.pill,
 					)}
 				>
 					<span
-						className={cn("w-1.5 h-1.5 rounded-full", colors.dot)}
+						className={cn("h-1.5 w-1.5 rounded-full", colors.dot)}
 					/>
 					{count} {count === 1 ? singularLabel : label}
 					{prioritizedCount > 0 && (
@@ -611,95 +611,10 @@ export function ActiveContextIndicator({
 	return (
 		<div
 			className={cn(
-				"flex flex-wrap items-center gap-1.5 sm:gap-2 min-w-0",
+				"flex flex-wrap items-center gap-1.5 min-w-0",
 				className,
 			)}
 		>
-			<div className="flex items-center gap-1 shrink-0">
-				<span className="text-[10px] text-muted-foreground whitespace-nowrap">
-					Active context:
-				</span>
-				<Tooltip>
-					<TooltipTrigger asChild>
-						<Info className="h-3 w-3 text-muted-foreground/50 cursor-help" />
-					</TooltipTrigger>
-					<TooltipContent
-						side="top"
-						align="start"
-						className="max-w-[380px] p-3"
-					>
-						<div className="space-y-3 text-xs">
-							<p className="font-medium">How Fabric AI Works</p>
-							<ul className="space-y-1.5 text-muted-foreground">
-								<li className="flex gap-2">
-									<span className="text-primary">•</span>
-									<span>
-										<strong>Hover</strong> on pills to see
-										available tools, agents, and workspaces
-									</span>
-								</li>
-								<li className="flex gap-2">
-									<Star className="h-3 w-3 text-highlight flex-shrink-0 mt-0.5" />
-									<span>
-										<strong>Star items</strong> to
-										prioritize them - starred tools/agents
-										are used first
-									</span>
-								</li>
-							</ul>
-
-							<div className="border-t pt-2">
-								<p className="font-medium mb-1.5">
-									Teach Me Your Preferences
-								</p>
-								<p className="text-muted-foreground mb-2">
-									Add &quot;remember&quot; phrases to any
-									message:
-								</p>
-								<ul className="space-y-1 text-muted-foreground">
-									<li className="flex gap-2">
-										<span className="text-highlight">
-											✦
-										</span>
-										<span>
-											&quot;Remember to always show data
-											in tables&quot;
-										</span>
-									</li>
-									<li className="flex gap-2">
-										<span className="text-highlight">
-											✦
-										</span>
-										<span>
-											&quot;I prefer detailed
-											responses&quot;
-										</span>
-									</li>
-									<li className="flex gap-2">
-										<span className="text-highlight">
-											✦
-										</span>
-										<span>
-											&quot;From now on, use bullet
-											points&quot;
-										</span>
-									</li>
-									<li className="flex gap-2">
-										<span className="text-highlight">
-											✦
-										</span>
-										<span>
-											&quot;Don&apos;t forget to include
-											timestamps&quot;
-										</span>
-									</li>
-								</ul>
-							</div>
-						</div>
-					</TooltipContent>
-				</Tooltip>
-			</div>
-
 			{workspaceIds.length > 0 && (
 				<ContextPill
 					count={workspaceIds.length}
@@ -743,8 +658,8 @@ export function ActiveContextIndicator({
 			{fabricToolIds.length > 0 && (
 				<ContextPill
 					count={fabricToolIds.length}
-					label="Fabric tools"
-					singularLabel="Fabric tool"
+					label="tools"
+					singularLabel="tool"
 					color="orange"
 					icon={<FabricLogo size={14} />}
 					items={fabricToolItems}
@@ -769,13 +684,13 @@ export function ActiveContextIndicator({
 			)}
 
 			{projectId && (
-				<span className="inline-flex items-center gap-0.5 rounded-full bg-primary/10 pr-0.5 text-[10px] font-medium text-primary">
+				<span className="inline-flex items-center gap-0.5 rounded-full border border-primary/25 bg-primary/10 pr-0.5 text-[11px] font-medium text-primary">
 					<button
 						type="button"
 						onClick={onProjectClick}
 						className={cn(
-							"inline-flex items-center gap-1 rounded-full py-0.5 pl-1.5 transition-opacity hover:opacity-80",
-							onProjectRemove ? "pr-0.5" : "pr-1.5",
+							"inline-flex items-center gap-1 rounded-full py-0.5 pl-2 transition-opacity hover:opacity-80",
+							onProjectRemove ? "pr-0.5" : "pr-2",
 							onProjectClick
 								? "cursor-pointer"
 								: "cursor-default",
@@ -797,6 +712,38 @@ export function ActiveContextIndicator({
 					) : null}
 				</span>
 			)}
+
+			<Tooltip>
+				<TooltipTrigger asChild>
+					<Info className="h-3 w-3 shrink-0 text-muted-foreground/50 hover:text-muted-foreground cursor-help" />
+				</TooltipTrigger>
+				<TooltipContent
+					side="top"
+					align="start"
+					className="max-w-[380px] p-3"
+				>
+					<div className="space-y-3 text-xs">
+						<p className="font-medium">How Genie Context Works</p>
+						<ul className="space-y-1.5 text-muted-foreground">
+							<li className="flex gap-2">
+								<span className="text-primary">•</span>
+								<span>
+									<strong>Hover</strong> on pills to see
+									available tools, agents, and workspaces
+								</span>
+							</li>
+							<li className="flex gap-2">
+								<Star className="h-3 w-3 text-primary flex-shrink-0 mt-0.5" />
+								<span>
+									<strong>Star items</strong> to prioritize
+									them — starred tools and agents are used
+									first
+								</span>
+							</li>
+						</ul>
+					</div>
+				</TooltipContent>
+			</Tooltip>
 		</div>
 	);
 }

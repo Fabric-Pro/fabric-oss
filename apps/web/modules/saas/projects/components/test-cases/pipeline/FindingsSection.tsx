@@ -74,7 +74,7 @@ function CorrelatedFiles({ diff }: { diff: Finding["analysisDiff"] }) {
 	return (
 		<div className="mt-2 border-border/60 border-t pt-1.5">
 			<div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
-				<span className="font-medium text-[10px] text-muted-foreground uppercase tracking-[0.14em]">
+				<span className="font-medium text-[10px] text-muted-foreground uppercase tracking-wide">
 					{t("analysis.changedSince")}
 				</span>
 				<span className="font-mono text-[10px] text-muted-foreground">
@@ -363,7 +363,7 @@ export function FindingsSection({
 									{f.analysedAt && f.suspectedCause && (
 										<div className="mt-2 rounded-md border border-border border-dashed px-2 py-1.5">
 											<div className="flex flex-wrap items-center gap-1.5">
-												<span className="font-medium text-[10px] text-muted-foreground uppercase tracking-[0.14em]">
+												<span className="font-medium text-[10px] text-muted-foreground uppercase tracking-wide">
 													{t("analysis.label")}
 												</span>
 												{f.suspectedKind && (

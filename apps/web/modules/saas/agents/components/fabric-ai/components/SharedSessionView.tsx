@@ -1,7 +1,5 @@
 "use client";
 
-import { AnsweredClarification } from "../../FabricChat/shared/AnsweredClarification";
-import { clarificationOf } from "../../../lib/clarification-turns";
 import type { ConversationDetail } from "@saas/agents/lib/conversation-list";
 import type { ChatEngine } from "@saas/agents/lib/interface-mode-engine";
 import { userMessageOf } from "@saas/shared/lib/user-message-of";
@@ -13,6 +11,8 @@ import { UsersIcon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Response } from "../../../../../../components/ai-elements/response";
+import { clarificationOf } from "../../../lib/clarification-turns";
+import { AnsweredClarification } from "../../FabricChat/shared/AnsweredClarification";
 
 /**
  * A teammate's transcript can point at an image on any server, and what the
@@ -123,7 +123,7 @@ export function SharedSessionView({
 				aria-label="Shared conversation transcript"
 				// biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling transcript has to be reachable from the keyboard to be read
 				tabIndex={0}
-				className="min-h-0 flex-1 overflow-y-auto px-4 py-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+				className="min-h-0 flex-1 overflow-y-auto px-4 py-4 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
 			>
 				{messages.length === 0 ? (
 					<p className="text-sm text-muted-foreground">

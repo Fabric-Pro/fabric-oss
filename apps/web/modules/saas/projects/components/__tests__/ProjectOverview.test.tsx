@@ -223,4 +223,30 @@ describe("ProjectOverview — opening a document from the pipeline", () => {
 		expect(screen.getByText("Failed Doc")).toBeInTheDocument();
 		expect(screen.queryByRole("link")).not.toBeInTheDocument();
 	});
+
+	it("allows switching remote server target, subscription harness, and quota fallback choice from the Project Overview", async () => {
+		const onNavigateToTab = vi.fn();
+		renderOverview([], onNavigateToTab);
+
+		const localButton = screen.getByRole("button", {
+			name: /Local \(:9100\)/i,
+		});
+		await userEvent.click(localButton);
+		expect(localButton).toHaveAttribute("aria-pressed", "true");
+
+		const claudeButton = screen.getByRole("button", { name: "Claude" });
+		await userEvent.click(claudeButton);
+		expect(screen.getByText("claude-sonnet-5-5")).toBeInTheDocument();
+
+		const paidApiFallbackButton = screen.getByRole("button", {
+			name: /Use organization's paid API provider/i,
+		});
+		await userEvent.click(paidApiFallbackButton);
+		expect(paidApiFallbackButton).toHaveAttribute("aria-pressed", "true");
+
+		await userEvent.click(
+			screen.getByRole("button", { name: /Manage remote servers/i }),
+		);
+		expect(onNavigateToTab).toHaveBeenCalledWith("settings");
+	});
 });

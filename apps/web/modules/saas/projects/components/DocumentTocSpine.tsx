@@ -58,7 +58,7 @@ export function DocumentTocSpine({
 				// so an outset ring would be clipped by the parent's
 				// overflow-hidden — the same clipping that cut the old pill in
 				// half while the rail was 0px wide.
-				"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
+				"focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
 				isExpanded ? "bg-card" : "bg-background",
 				className,
 			)}
@@ -70,7 +70,7 @@ export function DocumentTocSpine({
 			<span
 				aria-hidden="true"
 				className={cn(
-					"[writing-mode:vertical-rl] whitespace-nowrap text-[11px] font-medium uppercase tracking-[0.18em] motion-safe:transition-colors",
+					"[writing-mode:vertical-rl] whitespace-nowrap text-[11px] font-medium uppercase tracking-wide motion-safe:transition-colors",
 					// Let the caption give up height instead of pushing the
 					// chevron out of the column on a short rail.
 					"min-h-0 overflow-hidden",

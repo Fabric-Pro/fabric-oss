@@ -144,7 +144,7 @@ export function WorkflowCard({
 				<div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
 					<Link
 						href={`${basePath}/${workflow.id}`}
-						className="flex-1 min-w-0 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						className="flex-1 min-w-0 rounded-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 					>
 						<h3 className="font-medium mb-1">{workflow.name}</h3>
 						<p className="text-sm text-muted-foreground line-clamp-1">
@@ -225,7 +225,7 @@ export function WorkflowCard({
 
 	// Grid view — compact tile
 	return (
-		<div className="group relative flex flex-col rounded-xl border bg-card transition-colors hover:border-primary/30 hover:bg-muted/20">
+		<div className="group relative flex flex-col rounded-lg border bg-card transition-colors hover:border-primary/30 hover:bg-muted/20">
 			{/* Header */}
 			<div
 				data-testid="workflow-card-header"

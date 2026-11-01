@@ -47,7 +47,7 @@ export function SourceCard({
 	return (
 		<section
 			className={cn(
-				"flex h-full flex-col rounded-2xl border border-border bg-card p-6",
+				"flex h-full flex-col rounded-lg border border-border bg-card p-6",
 				className,
 			)}
 			aria-labelledby={`source-card-${sourceLabel.replace(/\s+/g, "-").toLowerCase()}`}

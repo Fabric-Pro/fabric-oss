@@ -183,7 +183,7 @@ export function CugaAuthenticatedChat({
 			{/* Messages Area */}
 			{messages.length === 0 ? (
 				<div className="flex-1 flex flex-col items-center justify-center text-center text-muted-foreground p-4">
-					<div className="h-16 w-16 rounded-2xl bg-gradient-to-br from-purple-500 to-blue-600 flex items-center justify-center mb-6">
+					<div className="h-16 w-16 rounded-lg bg-gradient-to-br from-purple-500 to-blue-600 flex items-center justify-center mb-6">
 						<Bot className="h-10 w-10 text-white" />
 					</div>
 					<h3 className="text-xl font-medium mb-3 text-foreground">

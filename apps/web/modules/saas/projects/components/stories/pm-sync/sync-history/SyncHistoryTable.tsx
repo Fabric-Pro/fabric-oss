@@ -134,7 +134,7 @@ export function SyncHistoryTable({
 
 	return (
 		<div>
-			<div className="overflow-hidden rounded-xl border border-border bg-card">
+			<div className="overflow-hidden rounded-lg border border-border bg-card">
 				<Table>
 					<TableHeader>
 						<TableRow>
@@ -164,7 +164,7 @@ export function SyncHistoryTable({
 												{row.title}
 											</p>
 											<p className="truncate text-xs text-muted-foreground">
-												<span className="uppercase tracking-[0.12em]">
+												<span className="uppercase tracking-wide">
 													{row.entityType}
 												</span>
 												<span className="mx-1.5">
@@ -200,7 +200,7 @@ export function SyncHistoryTable({
 												href={row.externalUrl}
 												target="_blank"
 												rel="noopener noreferrer"
-												className="inline-flex items-center gap-1 rounded-sm text-sm text-primary hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+												className="inline-flex items-center gap-1 rounded-sm text-sm text-primary hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 												aria-label={`Open ${row.title} in ${pmToolLabel}`}
 											>
 												Open
@@ -260,7 +260,7 @@ export function SyncHistoryPager({
 
 function SyncHistoryTableSkeleton() {
 	return (
-		<div className="overflow-hidden rounded-xl border border-border bg-card">
+		<div className="overflow-hidden rounded-lg border border-border bg-card">
 			<div className="space-y-3 p-4">
 				{["a", "b", "c", "d", "e"].map((key) => (
 					<Skeleton key={key} className="h-10 w-full rounded-md" />

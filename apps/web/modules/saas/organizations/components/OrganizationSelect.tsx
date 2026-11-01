@@ -169,7 +169,7 @@ export function OrganzationSelect({
 		}
 		return (
 			<div className={className}>
-				<div className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5">
+				<div className="flex w-full items-center gap-2 rounded-md px-2 py-1.5">
 					<div className="size-6 shrink-0 animate-pulse rounded-full bg-muted" />
 					<div className="h-3.5 flex-1 animate-pulse rounded bg-muted" />
 					<ChevronsUpDownIcon className="size-3.5 shrink-0 opacity-20" />
@@ -181,7 +181,7 @@ export function OrganzationSelect({
 	// Shared dropdown body — identical for the expanded and collapsed triggers.
 	const menuContent = (
 		<>
-			<DropdownMenuLabel className="text-foreground/60 text-xs font-medium pb-1">
+			<DropdownMenuLabel className="text-muted-foreground text-xs font-semibold pb-1">
 				{t("organizations.organizationSelect.organizations")}
 			</DropdownMenuLabel>
 			<DropdownMenuRadioGroup
@@ -270,7 +270,7 @@ export function OrganzationSelect({
 									"organizations.organizationSelect.workspaceLabel",
 									{ name: triggerLabel },
 								)}
-								className="relative flex size-9 shrink-0 items-center justify-center rounded-lg outline-none hover:bg-muted/40 transition-colors data-[state=open]:bg-muted/40 focus-visible:ring-1 focus-visible:ring-primary/35"
+								className="relative flex size-9 shrink-0 items-center justify-center rounded-md hover:bg-muted/60 transition-colors duration-150 data-[state=open]:bg-muted/60 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 							>
 								{showOrgPresentation && displayOrg ? (
 									<OrganizationLogo
@@ -316,7 +316,7 @@ export function OrganzationSelect({
 			<DropdownMenu modal={false}>
 				<DropdownMenuTrigger
 					aria-busy={isSwitching}
-					className="flex w-full items-center gap-2 rounded-lg border border-border/30 px-2.5 py-2 text-left outline-none hover:bg-muted/40 transition-colors data-[state=open]:bg-muted/40 data-[state=open]:border-border/50"
+					className="flex w-full items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1.5 text-left transition-colors duration-150 hover:border-muted-foreground hover:bg-muted/40 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:border-muted-foreground data-[state=open]:bg-muted/40"
 				>
 					{showOrgPresentation && displayOrg ? (
 						<>
@@ -360,7 +360,7 @@ export function OrganzationSelect({
 						// unreliably across screen readers.
 						<Spinner className="size-3.5 shrink-0" />
 					) : (
-						<ChevronsUpDownIcon className="size-3.5 shrink-0 text-muted-foreground/50" />
+						<ChevronsUpDownIcon className="size-3.5 shrink-0 text-muted-foreground" />
 					)}
 				</DropdownMenuTrigger>
 

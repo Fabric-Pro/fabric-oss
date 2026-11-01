@@ -245,7 +245,7 @@ export function ReportConfigBanner({
 						key={item.id}
 						role={item.tone === "destructive" ? "alert" : "status"}
 						className={cn(
-							"relative flex items-start gap-3 overflow-hidden rounded-xl border p-4 pl-5",
+							"relative flex items-start gap-3 overflow-hidden rounded-lg border p-4 pl-5",
 							"motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1",
 							TONE_CONTAINER[item.tone],
 						)}
@@ -312,7 +312,7 @@ export function ReportConfigBanner({
 							onClick={() =>
 								setDismissed((prev) => [...prev, item.id])
 							}
-							className="-mr-1 -mt-1 flex size-7 shrink-0 items-center justify-center self-start rounded-md text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							className="-mr-1 -mt-1 flex size-7 shrink-0 items-center justify-center self-start rounded-md text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 						>
 							<XIcon className="size-4" aria-hidden />
 						</button>

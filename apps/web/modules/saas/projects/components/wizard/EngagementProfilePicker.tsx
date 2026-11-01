@@ -75,7 +75,7 @@ export function EngagementProfilePicker({
 						<label
 							key={profile}
 							className={cn(
-								"flex h-full flex-col gap-2 rounded-xl border p-4 text-left transition-colors",
+								"flex h-full flex-col gap-2 rounded-lg border p-4 text-left transition-colors",
 								"has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring has-[:focus-visible]:ring-offset-2 has-[:focus-visible]:ring-offset-background",
 								selected
 									? "border-primary bg-primary/5"

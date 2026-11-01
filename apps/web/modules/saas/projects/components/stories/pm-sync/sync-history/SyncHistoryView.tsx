@@ -68,7 +68,7 @@ export function SyncHistoryView({ projectId, active }: Props) {
 				tabIndex={0}
 				role="group"
 				aria-label="Sync history entries"
-				className="min-h-0 flex-1 overflow-y-auto px-6 py-4 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+				className="min-h-0 flex-1 overflow-y-auto px-6 py-4 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
 			>
 				{isError ? (
 					<HistoryError onRetry={() => refetch()} />

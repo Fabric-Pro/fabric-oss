@@ -766,7 +766,7 @@ export function PmSyncCloudToggle({
 					data-state={state}
 					data-pm-tool-type={brandedToolType ?? undefined}
 					className={cn(
-						"inline-flex items-center justify-center transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
+						"inline-flex items-center justify-center transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
 						iconColorClass,
 						className,
 					)}
@@ -802,7 +802,7 @@ export function PmSyncCloudToggle({
 						aria-label={ariaLabel}
 						data-state={state}
 						className={cn(
-							"inline-flex items-center justify-center text-destructive hover:text-destructive/80 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
+							"inline-flex items-center justify-center text-destructive hover:text-destructive/80 cursor-pointer focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
 							className,
 						)}
 						onClick={(e) => {
@@ -835,7 +835,7 @@ export function PmSyncCloudToggle({
 					// biome-ignore lint/a11y/noNoninteractiveTabindex: the span is intentionally non-interactive, but Radix Tooltip needs a focusable trigger so keyboard users can open the tooltip on focus — the actionable element lives inside the tooltip body (a real <Link> to Settings > Integrations).
 					tabIndex={0}
 					className={cn(
-						"inline-flex items-center justify-center text-destructive cursor-default focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
+						"inline-flex items-center justify-center text-destructive cursor-default focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
 						className,
 					)}
 				>
@@ -858,7 +858,7 @@ export function PmSyncCloudToggle({
 					data-state={state}
 					data-pm-tool-type={brandedToolType ?? undefined}
 					className={cn(
-						"inline-flex items-center justify-center rounded-full p-0.5 ring-1 ring-highlight transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+						"inline-flex items-center justify-center rounded-full p-0.5 ring-1 ring-highlight transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 						iconColorClass,
 						className,
 					)}
@@ -948,7 +948,7 @@ export function PmSyncCloudToggle({
 					!showLabel &&
 						state === "synced-with-failure" &&
 						"ring-1 ring-destructive",
-					"cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+					"cursor-pointer focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 					isPending && "cursor-default opacity-70",
 					className,
 				)}

@@ -138,4 +138,72 @@ describe("StartCodingRunDialog", () => {
 
 		expect(onConfirm).toHaveBeenCalledWith({ taskId: "task_1" });
 	});
+
+	it("allows selecting a pre-configured harness model and choosing organization paid API fallback", () => {
+		const onConfirm = vi.fn();
+
+		render(
+			<StartCodingRunDialog
+				open
+				onOpenChange={vi.fn()}
+				story={story}
+				repositoryOwner="acme"
+				repositoryName="fabric"
+				defaultBranch="main"
+				onConfirm={onConfirm}
+			/>,
+		);
+
+		fireEvent.change(screen.getByLabelText("Agent backend"), {
+			target: { value: "claude-max" },
+		});
+		fireEvent.change(screen.getByLabelText("Agent model"), {
+			target: { value: "claude-opus-5-5" },
+		});
+		fireEvent.click(
+			screen.getByRole("radio", {
+				name: /Use organization's paid API provider/i,
+			}),
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Start implementation session",
+			}),
+		);
+
+		expect(onConfirm).toHaveBeenCalledWith({
+			llmConnection: "claude-max",
+			model: "claude-opus-5-5",
+			fallbackPolicy: "org_paid_api",
+		});
+	});
+
+	it("renders 1-click Fabric Desktop deep links for new session and AI connections", () => {
+		render(
+			<StartCodingRunDialog
+				open
+				onOpenChange={vi.fn()}
+				story={story}
+				repositoryOwner="acme"
+				repositoryName="fabric"
+				defaultBranch="main"
+				onConfirm={vi.fn()}
+			/>,
+		);
+
+		const desktopLink = screen.getByTestId("dialog-launch-fabric-desktop");
+		expect(desktopLink).toHaveAttribute(
+			"href",
+			expect.stringContaining("fabricagents://action/new-chat?"),
+		);
+
+		const aiSettingsLink = screen.getByTestId(
+			"dialog-fabric-desktop-ai-settings",
+		);
+		expect(aiSettingsLink).toHaveAttribute(
+			"href",
+			"fabricagents://settings",
+		);
+	});
 });

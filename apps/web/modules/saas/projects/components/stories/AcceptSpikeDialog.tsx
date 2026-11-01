@@ -128,13 +128,13 @@ export function AcceptSpikeDialog({
 			<DialogContent className="flex max-h-[90vh] flex-col sm:max-w-[560px]">
 				<DialogHeader className="flex-shrink-0 space-y-4 text-left">
 					<div className="flex items-start gap-3">
-						<div className="flex size-11 shrink-0 items-center justify-center rounded-2xl border border-secondary/30 bg-secondary/10">
+						<div className="flex size-11 shrink-0 items-center justify-center rounded-lg border border-secondary/30 bg-secondary/10">
 							<CheckCircleIcon className="size-5 text-secondary" />
 						</div>
 						<div className="min-w-0 flex-1 space-y-2 pr-8">
 							<Badge
 								variant="outline"
-								className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-0.5 text-[11px] uppercase tracking-[0.16em] text-primary"
+								className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-0.5 text-[11px] uppercase tracking-wide text-primary"
 							>
 								{t("kindBadge")}
 							</Badge>
@@ -164,8 +164,8 @@ export function AcceptSpikeDialog({
 					}}
 				>
 					{question && (
-						<div className="rounded-2xl border border-border/60 bg-muted/40 p-4">
-							<p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+						<div className="rounded-lg border border-border/60 bg-muted/40 p-4">
+							<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 								{t("questionLabel")}
 							</p>
 							<p className="mt-2 text-sm leading-6 text-foreground/90">

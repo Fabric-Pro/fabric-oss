@@ -133,7 +133,7 @@ function ResultCount({
 							onClick={onToggleBodyMatches}
 							aria-expanded={bodyMatchesShown}
 							data-testid="roadmap-body-match-toggle"
-							className="inline-flex items-center gap-1 rounded font-normal normal-case tracking-normal text-muted-foreground/70 underline-offset-2 transition-colors hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							className="inline-flex items-center gap-1 rounded font-normal normal-case tracking-normal text-muted-foreground/70 underline-offset-2 transition-colors hover:text-foreground hover:underline focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
 						>
 							{bodyMatchesShown ? (
 								<>

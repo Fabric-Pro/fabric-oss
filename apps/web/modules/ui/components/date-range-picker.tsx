@@ -121,7 +121,7 @@ export function DateRangePicker({
 					disabled={disabled}
 					title={open ? undefined : text}
 					className={cn(
-						"inline-flex h-9 w-40 shrink-0 items-center justify-between gap-1.5 border-border bg-transparent px-2.5 py-1 text-xs font-medium text-muted-foreground hover:text-foreground",
+						"inline-flex h-9 w-40 shrink-0 items-center justify-between gap-1.5 border-input bg-card px-2.5 py-1 text-xs font-medium text-muted-foreground hover:border-muted-foreground hover:text-foreground disabled:border-input",
 						(selected.from || selected.to) &&
 							"border-primary/50 bg-primary/10 text-primary",
 						className,

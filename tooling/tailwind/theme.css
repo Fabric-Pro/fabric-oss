@@ -7,6 +7,8 @@
 	--color-popover-foreground: var(--popover-foreground);
 	--color-primary: var(--primary);
 	--color-primary-foreground: var(--primary-foreground);
+	--color-primary-hover: var(--primary-hover);
+	--color-primary-active: var(--primary-active);
 	--color-primary-ink: var(--primary-ink);
 	--color-secondary: var(--secondary);
 	--color-secondary-foreground: var(--secondary-foreground);
@@ -18,6 +20,8 @@
 	--color-success-foreground: var(--success-foreground);
 	--color-destructive: var(--destructive);
 	--color-destructive-foreground: var(--destructive-foreground);
+	--color-destructive-hover: var(--destructive-hover);
+	--color-destructive-active: var(--destructive-active);
 	--color-border: var(--border);
 	--color-input: var(--input);
 	--color-ring: var(--ring);
@@ -25,9 +29,23 @@
 	--color-highlight-foreground: var(--highlight-foreground);
 	--color-highlight-ink: var(--highlight-ink);
 	--color-sidebar: var(--sidebar);
-	--radius-lg: var(--radius);
-	--radius-md: calc(var(--radius) - 1px);
+	--radius-lg: calc(var(--radius) + 2px);
+	--radius-md: var(--radius);
 	--radius-sm: calc(var(--radius) - 1px);
+
+	/* Databricks Workspace (DuBois Design System) verbatim typographic scale */
+	--text-xs: 0.75rem;
+	--text-xs--line-height: 1rem;
+	--text-sm: 0.8125rem;
+	--text-sm--line-height: 1.25rem;
+	--text-base: 1rem;
+	--text-base--line-height: 1.5rem;
+	--text-lg: 1.125rem;
+	--text-lg--line-height: 1.625rem;
+	--text-xl: 1.25rem;
+	--text-xl--line-height: 1.75rem;
+	--text-2xl: 1.5rem;
+	--text-2xl--line-height: 2rem;
  
 	/* Font families are defined in Document.tsx and applied via CSS variables */
 
@@ -113,60 +131,63 @@
 
 @layer base {
 	/*
-	 * Fabric design system tokens (fabric-web/design/fabric-design-system.md).
-	 * Dark is the brand; light is the alternate the theme switch offers.
-	 * The shadcn names below are mapped onto the system's --fab-* values so
-	 * every existing bg-card / text-muted-foreground / border-border usage
-	 * lands on the new palette without touching a component.
+	 * Fabric Workspace design system tokens (design.md — Databricks DuBois aesthetics).
+	 * High-density technical workspace palette: cool slate-tinted canvas, pure white
+	 * elevated cards in light mode (deep carbon-navy in dark mode), Databricks Crimson
+	 * interactive controls (--primary / --ring), and Databricks Brand Lava emblem accents.
 	 */
 	:root {
 		/*
-		 * Light. Neutral, as cosmos.augmentcode.com: white page, a light grey
-		 * rail, dark grey controls, colour only on the thread. Nothing here is
-		 * red except the kicker square and the active bar (--fab-accent-fill).
+		 * Light (Databricks Workspace / DuBois). Crisp white main canvas (#ffffff)
+		 * and cards (#ffffff), cool grey navigation rail (#f6f7f9), deep
+		 * navy-charcoal ink (#11171c), high-contrast control border (#7d90a0, >=3:1),
+		 * and Warm Bright Orange (#bc3e0b / #ea580c) primary actions and focus rings.
 		 */
-		--border: #e5e5e5;
-		--input: #e5e5e5;
-		--ring: #0d0d0d;
+		--border: #dce0e5;
+		--input: #7d90a0;
+		--ring: #bc3e0b;
 		--background: #ffffff;
-		--foreground: #0d0d0d;
-		--primary: #0d0d0d;
+		--foreground: #11171c;
+		--primary: #bc3e0b;
 		--primary-foreground: #ffffff;
-		--primary-ink: var(--primary-ink-light, #b30000);
-		--secondary: #f4f4f4;
-		--secondary-foreground: #1a1a1a;
-		--destructive: #b3261e;
+		--primary-hover: #a33307;
+		--primary-active: #8a2a05;
+		--primary-ink: var(--primary-ink-light, #bc3e0b);
+		--secondary: #f1f3f6;
+		--secondary-foreground: #11171c;
+		--destructive: #b8223b;
 		--destructive-foreground: #ffffff;
-		--success: #1d6b3f;
+		--destructive-hover: #9e102c;
+		--destructive-active: #630316;
+		--success: #277c43;
 		--success-foreground: #ffffff;
-		--muted: #f4f4f4;
-		--muted-foreground: #5d5d5d;
-		--accent: #ececec;
-		--accent-foreground: #1a1a1a;
+		--muted: #f1f3f6;
+		--muted-foreground: #4f6170;
+		--accent: #e8edf2;
+		--accent-foreground: #11171c;
 		--popover: #ffffff;
-		--popover-foreground: #1a1a1a;
+		--popover-foreground: #11171c;
 		--card: #ffffff;
-		--card-foreground: #1a1a1a;
-		--highlight: #8a5e12;
+		--card-foreground: #11171c;
+		--highlight: #8a5a00;
 		--highlight-foreground: #ffffff;
-		/* Amber as INK on a light surface, not as a fill. The ochre --highlight
-		 * is dark enough to be its own ink: 5.69:1 on --card, 5.5:1 on
-		 * --background, so the two stay one colour. */
-		--highlight-ink: #8a5e12;
-		--radius: 0.625rem;
+		/* Warning ink on a light surface: #8a5a00 clears AA on --card (5.93:1)
+		 * and --background (5.93:1). */
+		--highlight-ink: #8a5a00;
+		--radius: 0.25rem;
 
-		/* The rail */
-		--sidebar: #f9f9f9;
+		/* The workspace navigation rail (Databricks #F6F7F9) */
+		--sidebar: #f6f7f9;
 
-		/* The thread */
-		--fab-accent: #b30000;
-		--fab-accent-fill: #eb0600;
-		--fab-accent-wash: rgba(235, 6, 0, 0.08);
-		/* Composer pill: hairline plus a soft lift, the ChatGPT treatment. */
-		--fab-composer-shadow: 0 0 0 1px rgba(0, 0, 0, 0.04), 0 2px 12px rgba(0, 0, 0, 0.06);
-		--fab-warn: #8a5e12;
-		--fab-bad: #b3261e;
-		--fab-good: #1d6b3f;
+		/* Brand thread & kicker accents */
+		--fab-accent: #d94e14;
+		--fab-accent-fill: #ea580c;
+		--fab-accent-wash: rgba(234, 88, 12, 0.08);
+		/* Composer pill: hairline plus a soft lift */
+		--fab-composer-shadow: 0 0 0 1px rgba(17, 23, 28, 0.06), 0 2px 12px rgba(17, 23, 28, 0.06);
+		--fab-warn: #8a5a00;
+		--fab-bad: #b8223b;
+		--fab-good: #277c43;
 
 		/* fumadocs */
 		--fd-banner-height: 4.5rem;
@@ -176,46 +197,52 @@
 
 	.dark {
 		/*
-		 * Dark. Charcoal, not black: the page a shade above the rail, panels
-		 * a shade above the page, off-white ink, light grey controls.
+		 * Dark (DuBois Dark). Deep carbon-navy canvas (#11171c, grey800), elevated
+		 * slate cards (#182026) and popovers (#1f272d), recessed dark rail (#0d1216),
+		 * cool off-white ink (#e8ecf0, grey050), >=3:1 control border (#647686),
+		 * and Warm Bright Orange (#ff8547) controls.
 		 */
-		--border: #2e2e2e;
-		--input: #3a3a3a;
-		--ring: #d4d4d4;
-		--background: #1c1c1c;
-		--foreground: #ececec;
-		--primary: #e4e4e4;
-		--primary-foreground: #141414;
-		--primary-ink: var(--primary-ink-dark, #ff8577);
-		--secondary: #262626;
-		--secondary-foreground: #ececec;
-		--destructive: #ff5c5c;
-		--destructive-foreground: #141414;
-		--success: #9be86a;
-		--success-foreground: #141414;
-		--muted: #242424;
-		--muted-foreground: #9a9a9a;
-		--accent: #2a2a2a;
-		--accent-foreground: #ececec;
-		--popover: #232323;
-		--popover-foreground: #ececec;
-		--card: #222222;
-		--card-foreground: #ececec;
-		--highlight: #fcad00;
-		--highlight-foreground: #1c1917;
-		/* Dark mode's amber is already light enough to read as ink on --card
-		 * (10.41:1), so the ink token simply follows the fill here. */
-		--highlight-ink: #fbbf24;
+		--border: #2b3640;
+		--input: #647686;
+		--ring: #ff8547;
+		--background: #11171c;
+		--foreground: #e8ecf0;
+		--primary: #ff8547;
+		--primary-foreground: #11171c;
+		--primary-hover: #ff9863;
+		--primary-active: #ffaa7d;
+		--primary-ink: var(--primary-ink-dark, #ff8547);
+		--secondary: #222c34;
+		--secondary-foreground: #e8ecf0;
+		--destructive: #ff8a93;
+		--destructive-foreground: #11171c;
+		--destructive-hover: #ff9ca4;
+		--destructive-active: #ffafb5;
+		--success: #4cc36e;
+		--success-foreground: #11171c;
+		--muted: #1e262d;
+		--muted-foreground: #94a3b3;
+		--accent: #26323d;
+		--accent-foreground: #e8ecf0;
+		--popover: #1f272d;
+		--popover-foreground: #e8ecf0;
+		--card: #182026;
+		--card-foreground: #e8ecf0;
+		--highlight: #f5b027;
+		--highlight-foreground: #11171c;
+		/* Dark mode's warning fill is light enough to read as ink on --card (8.73:1)
+		 * and --background (9.56:1), so the ink token follows the fill. */
+		--highlight-ink: #f5b027;
 
-		--sidebar: #171717;
+		--sidebar: #0d1216;
 
-		--fab-accent: #ff8577;
-		--fab-accent-fill: #eb0600;
-		--fab-accent-wash: rgba(235, 6, 0, 0.12);
+		--fab-accent: #ff8547;
+		--fab-accent-fill: #ea580c;
+		--fab-accent-wash: rgba(255, 133, 71, 0.12);
 		--fab-composer-shadow: none;
-		--fab-warn: #fcad00;
-		--fab-bad: #ff5c5c;
-		--fab-good: #9be86a;
+		--fab-warn: #f5b027;
+		--fab-bad: #ff8a93;
+		--fab-good: #4cc36e;
 
 		--bg-texture: none;
 		--bg-gradient: none;

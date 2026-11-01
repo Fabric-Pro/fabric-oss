@@ -17,20 +17,7 @@
  * **AgentConversation** model (no document ref, no per-conversation
  * visibility), so that drawer cannot back this surface. We instead reuse the
  * shared, domain-agnostic pieces:
- *   - `<ChatHistoryGroup variant="editorial">` — the SAME bucketed list the
- *     project drawer renders (title, preview, message count, relative time).
- *   - `useConversationHistory(...)` — the existing AgentConversation list hook.
- *   - The project drawer's `<Sheet>` chrome + editorial header + empty-state
- *     idiom, so the two surfaces look identical.
- *
- * Visual constraints (project CLAUDE.md design context):
- *   - `bg-card` surface, `border-l border-border`; NO `backdrop-blur`, NO
- *     gradient orbs, NO hardcoded hex.
- *   - Editorial section label (thin red bar + uppercase tracked) + serif
- *     empty-state heading via `--font-serif`.
- */
-
-import type { ChatHistoryGroupItem } from "@saas/ai/components/ChatHistoryGroup";
+ *   - `<ChatHistoryGroup variant="editorial">` — the SAME bucketed list the * project drawer renders (title, preview, message count, relative time). * - `useConversationHistory(...)` — the existing AgentConversation list hook. * - The project drawer's `<Sheet>` chrome + editorial header + empty-state * idiom, so the two surfaces look identical. * * Visual constraints (project CLAUDE.md design context): * - `bg-card` surface, `border-l border-border`; NO `backdrop-blur`, NO * gradient orbs, NO hardcoded hex. * - Editorial section label (thin red bar + uppercase tracked) + serif * empty-state heading via `--font-semibold`. */ import type { ChatHistoryGroupItem } from "@saas/ai/components/ChatHistoryGroup";
 import { ChatHistoryGroup } from "@saas/ai/components/ChatHistoryGroup";
 import {
 	Sheet,
@@ -248,10 +235,7 @@ function EmptyState() {
 					Chat history
 				</span>
 			</div>
-			<h2
-				className="text-xl font-normal leading-snug text-foreground"
-				style={{ fontFamily: "var(--font-serif)" }}
-			>
+			<h2 className="text-xl font-semibold leading-snug text-foreground">
 				No conversations yet.
 			</h2>
 			<p className="text-xs text-muted-foreground">

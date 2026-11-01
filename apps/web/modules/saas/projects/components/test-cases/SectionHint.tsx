@@ -44,7 +44,7 @@ export function SectionHint({
 					// a 14×14 target — under the 24×24 minimum, and a genuinely
 					// hard thing to hit on a phone.
 					className={cn(
-						"-m-[5px] inline-flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+						"-m-[5px] inline-flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground/70 transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 						className,
 					)}
 				>

@@ -242,7 +242,7 @@ export function FileSourceTabContent({
 			{/* biome-ignore lint/a11y/noStaticElementInteractions: file drop zone uses drag events, not click; file input inside handles keyboard/click access */}
 			<div
 				className={cn(
-					"relative overflow-hidden rounded-xl border-2 border-dashed bg-card transition-colors",
+					"relative overflow-hidden rounded-lg border-2 border-dashed bg-card transition-colors",
 					isDragOver
 						? "border-primary bg-accent"
 						: "border-border hover:border-muted-foreground",
@@ -252,7 +252,7 @@ export function FileSourceTabContent({
 				onDrop={handleDrop}
 			>
 				<div className="relative z-10 flex flex-col items-center justify-center p-8">
-					<div className="mb-4 rounded-2xl border border-border bg-card p-4 text-primary">
+					<div className="mb-4 rounded-lg border border-border bg-card p-4 text-primary">
 						<UploadCloudIcon className="size-8" />
 					</div>
 					<p className="mb-1 font-medium">

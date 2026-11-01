@@ -486,9 +486,7 @@ export function TestCasesList({
 			>
 				<div className="flex flex-wrap items-center gap-x-4 gap-y-2 py-3">
 					<div className="flex items-center gap-1.5">
-						<h2 className="font-serif text-2xl font-normal">
-							{t("title")}
-						</h2>
+						<h2 className="text-2xl font-semibold">{t("title")}</h2>
 						<PageTourButton pageId="test-cases" />
 					</div>
 
@@ -602,7 +600,7 @@ export function TestCasesList({
 												setSelectedPlanId(null);
 											}}
 											className={cn(
-												"inline-flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2.5 font-medium text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
+												"inline-flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2.5 font-medium text-sm transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
 												active
 													? "border-primary text-foreground"
 													: "border-transparent text-muted-foreground hover:text-foreground",
@@ -853,7 +851,7 @@ export function TestCasesList({
 						 * laid out past the card's right edge and clipped, with no
 						 * scrollbar to reach them.
 						 */}
-						<div className="@container rounded-xl border bg-card">
+						<div className="@container rounded-lg border bg-card">
 							<div>
 								<CasesTableHeader
 									stickyTop={headHeight}
@@ -1115,7 +1113,7 @@ export function TestCasesList({
 			 */}
 			{selectionCount > 0 && canEdit && (
 				<div className="pointer-events-none fixed inset-x-0 bottom-5 z-50 flex justify-center px-4">
-					<div className="pointer-events-auto max-w-full overflow-x-auto rounded-2xl border bg-card shadow-lg">
+					<div className="pointer-events-auto max-w-full overflow-x-auto rounded-lg border bg-card shadow-lg">
 						<BulkActionsBar
 							projectId={projectId}
 							organizationId={organizationId}

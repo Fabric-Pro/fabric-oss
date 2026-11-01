@@ -799,71 +799,94 @@ export async function POST(req: NextRequest) {
 				).model;
 			}
 		} catch (error) {
-			if (error instanceof SubscriptionPlanExhaustedError) {
-				return planExhaustedResponse(
+			if (envelope && !invokesAgent) {
+				tenantConfig = {
+					aiGatewayUrl: null,
+					providerConfig: null,
+					metadata: {
+						modelString: "",
+						provider: "CUSTOM" as const,
+						configId: null,
+						configSource: null,
+						selectionSource: "none",
+						canonicalName: "",
+						billingMode: "external_provider" as const,
+						billingCustomerId: null,
+					},
+					trackUsage: () => {},
+				};
+				planEligible = false;
+				agentOnPlan = false;
+			} else {
+				if (error instanceof SubscriptionPlanExhaustedError) {
+					return planExhaustedResponse(
+						error,
+						false,
+						error.personalKeyOption,
+					);
+				}
+				// The member's plan is on here but needs reconnecting: refuse rather
+				// than run the agents on the organization's API billing.
+				const reconnect = chatGptPlanReconnectRefusal(error);
+				if (reconnect) {
+					return new Response(JSON.stringify(reconnect.body), {
+						status: reconnect.status,
+						headers: { "Content-Type": "application/json" },
+					});
+				}
+				// AI usage-limit chokepoint hit a HARD limit.
+				// Surface the rich payload so the client
+				// fetch interceptor can render the shared destructive toast
+				// instead of the generic "AI service is busy" 429 copy.
+				if (error instanceof AiUsageLimitExceededError) {
+					return new Response(
+						JSON.stringify({
+							error: error.message,
+							code: "AI_USAGE_LIMIT_EXCEEDED",
+							data: {
+								limitId: error.limitId,
+								dimension: error.dimension,
+								window: error.window,
+								used: error.used.toString(),
+								max: error.max.toString(),
+								manageLimitsUrl: error.manageLimitsUrl,
+							},
+						}),
+						{
+							status: 429,
+							headers: { "Content-Type": "application/json" },
+						},
+					);
+				}
+				if (error instanceof TenantConfigError) {
+					return new Response(
+						JSON.stringify({
+							error: error.message,
+							code: error.code,
+						}),
+						{
+							status: error.httpStatus,
+							headers: { "Content-Type": "application/json" },
+						},
+					);
+				}
+				logger.error("[CopilotKit] Failed to resolve tenant config", {
 					error,
-					false,
-					error.personalKeyOption,
-				);
-			}
-			// The member's plan is on here but needs reconnecting: refuse rather
-			// than run the agents on the organization's API billing.
-			const reconnect = chatGptPlanReconnectRefusal(error);
-			if (reconnect) {
-				return new Response(JSON.stringify(reconnect.body), {
-					status: reconnect.status,
-					headers: { "Content-Type": "application/json" },
 				});
-			}
-			// AI usage-limit chokepoint hit a HARD limit.
-			// Surface the rich payload so the client
-			// fetch interceptor can render the shared destructive toast
-			// instead of the generic "AI service is busy" 429 copy.
-			if (error instanceof AiUsageLimitExceededError) {
 				return new Response(
 					JSON.stringify({
-						error: error.message,
-						code: "AI_USAGE_LIMIT_EXCEEDED",
-						data: {
-							limitId: error.limitId,
-							dimension: error.dimension,
-							window: error.window,
-							used: error.used.toString(),
-							max: error.max.toString(),
-							manageLimitsUrl: error.manageLimitsUrl,
-						},
+						error:
+							error instanceof Error
+								? error.message
+								: "No AI provider configured. Please configure an AI provider in Settings → AI Providers.",
+						code: "AI_GATEWAY_MISSING",
 					}),
 					{
-						status: 429,
+						status: 400,
 						headers: { "Content-Type": "application/json" },
 					},
 				);
 			}
-			if (error instanceof TenantConfigError) {
-				return new Response(
-					JSON.stringify({ error: error.message, code: error.code }),
-					{
-						status: error.httpStatus,
-						headers: { "Content-Type": "application/json" },
-					},
-				);
-			}
-			logger.error("[CopilotKit] Failed to resolve tenant config", {
-				error,
-			});
-			return new Response(
-				JSON.stringify({
-					error:
-						error instanceof Error
-							? error.message
-							: "No AI provider configured. Please configure an AI provider in Settings → AI Providers.",
-					code: "AI_GATEWAY_MISSING",
-				}),
-				{
-					status: 400,
-					headers: { "Content-Type": "application/json" },
-				},
-			);
 		}
 
 		// What the chat may do on its document (Fizzy #2946), resolved per

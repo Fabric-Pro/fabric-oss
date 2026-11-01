@@ -31,7 +31,7 @@ export default async function PromptGovernancePage({
 			/>
 
 			<div className="space-y-2">
-				<h1 className="font-serif text-3xl">Org Overrides</h1>
+				<h1 className="font-semibold text-3xl">Org Overrides</h1>
 				<p className="text-muted-foreground">
 					Which actions this organization has set its own prompt for,
 					and which are still using the Fabric default.

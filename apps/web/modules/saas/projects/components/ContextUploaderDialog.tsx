@@ -520,7 +520,7 @@ export function ContextUploaderDialog({
 					    horizontally instead of forcing the dialog wider than its
 					    container; `no-scrollbar` keeps the editorial look (matches
 					    the ProjectDetails tab row). */}
-					<div className="no-scrollbar flex min-w-0 items-center gap-1 overflow-x-auto rounded-xl border border-border bg-card p-1.5">
+					<div className="no-scrollbar flex min-w-0 items-center gap-1 overflow-x-auto rounded-lg border border-border bg-card p-1.5">
 						{tabs.map((tab) => {
 							const Icon = tab.icon;
 							const isActive = activeTab === tab.id;
@@ -588,7 +588,7 @@ export function ContextUploaderDialog({
 										setFileDocumentTag(e.target.value)
 									}
 									disabled={isLoading}
-									className="mt-2 flex h-9 w-full rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+									className="mt-2 flex h-9 w-full rounded-md border border-input bg-background text-foreground px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
 								>
 									{DOCUMENT_TAG_OPTIONS.map((opt) => (
 										<option
@@ -634,7 +634,7 @@ export function ContextUploaderDialog({
 							id="context-tabpanel-teams"
 							aria-labelledby="context-tab-teams"
 						>
-							<div className="mb-4 rounded-2xl border border-border bg-card p-4 text-primary">
+							<div className="mb-4 rounded-lg border border-border bg-card p-4 text-primary">
 								<MicrosoftTeamsIcon className="size-8" />
 							</div>
 							<h3 className="mb-2 font-medium text-foreground">
@@ -669,7 +669,7 @@ export function ContextUploaderDialog({
 							id="context-tabpanel-slack"
 							aria-labelledby="context-tab-slack"
 						>
-							<div className="mb-4 rounded-2xl border border-border bg-card p-4 text-primary">
+							<div className="mb-4 rounded-lg border border-border bg-card p-4 text-primary">
 								<SlackIcon className="size-8" />
 							</div>
 							<h3 className="mb-2 font-medium text-foreground">
@@ -704,7 +704,7 @@ export function ContextUploaderDialog({
 							id="context-tabpanel-google-docs"
 							aria-labelledby="context-tab-google-docs"
 						>
-							<div className="mb-4 rounded-2xl border border-border bg-card p-4 text-foreground">
+							<div className="mb-4 rounded-lg border border-border bg-card p-4 text-foreground">
 								<GoogleDriveIcon className="size-8" />
 							</div>
 							<h3 className="mb-2 font-medium text-foreground">
@@ -732,7 +732,7 @@ export function ContextUploaderDialog({
 							id="context-tabpanel-notion"
 							aria-labelledby="context-tab-notion"
 						>
-							<div className="mb-4 rounded-2xl border border-border bg-card p-4 text-foreground">
+							<div className="mb-4 rounded-lg border border-border bg-card p-4 text-foreground">
 								<NotionIcon className="size-8" />
 							</div>
 							<h3 className="mb-2 font-medium text-foreground">
@@ -840,7 +840,7 @@ export function ContextUploaderDialog({
 							id="context-tabpanel-confluence"
 							aria-labelledby="context-tab-confluence"
 						>
-							<div className="mb-4 rounded-2xl border border-border bg-card p-4 text-foreground">
+							<div className="mb-4 rounded-lg border border-border bg-card p-4 text-foreground">
 								<ConfluenceIcon className="size-8" />
 							</div>
 							<h3 className="mb-2 font-medium text-foreground">

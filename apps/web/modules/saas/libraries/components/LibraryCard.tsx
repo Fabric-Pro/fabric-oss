@@ -63,7 +63,7 @@ export function LibraryCard({
 		<div
 			data-onboarding-target="libraries-card"
 			className={cn(
-				"group relative flex flex-col rounded-xl border bg-card transition-all hover:border-primary/30 hover:shadow-md",
+				"group relative flex flex-col rounded-lg border bg-card transition-all hover:border-primary/30 hover:shadow-md",
 				isArchived && "opacity-60",
 			)}
 		>

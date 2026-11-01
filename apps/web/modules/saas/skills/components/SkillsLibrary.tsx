@@ -14,7 +14,16 @@ import {
 	SelectValue,
 } from "@ui/components/select";
 import { cn } from "@ui/lib";
-import { ArrowUpDownIcon, PlusIcon, SearchIcon, StarIcon } from "lucide-react";
+import {
+	ArrowUpDownIcon,
+	LayoutGridIcon,
+	PlusIcon,
+	PuzzleIcon,
+	SearchIcon,
+	SparklesIcon,
+	StarIcon,
+	TrendingUpIcon,
+} from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useDebounceValue } from "usehooks-ts";
@@ -92,22 +101,34 @@ export function SkillsLibrary({ organizationId: propOrgId }: Props) {
 	];
 
 	return (
-		<div className="space-y-6">
+		<div className="space-y-4">
 			<SkillsHero />
 
-			{/* Category + Featured Pills */}
-			{categories.length > 0 && (
-				<div className="flex flex-wrap gap-2">
+			{/* Filter Pills + Actions Bar (Databricks Workspace DuBois toolbar) */}
+			<div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+				<div className="flex flex-wrap items-center gap-2">
 					<button
 						type="button"
-						onClick={() => setCategoryFilter("all")}
+						onClick={() => {
+							setCategoryFilter("all");
+							setIsFeatured(false);
+							setSortValue("updatedAt-desc");
+						}}
+						aria-pressed={
+							categoryFilter === "all" &&
+							!isFeatured &&
+							sortValue !== "useCount-desc"
+						}
 						className={cn(
-							"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
-							categoryFilter === "all" && !isFeatured
-								? "bg-primary text-primary-foreground"
-								: "bg-card hover:bg-card/80 text-foreground/70 hover:text-foreground border",
+							"inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-sm transition-colors duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
+							categoryFilter === "all" &&
+								!isFeatured &&
+								sortValue !== "useCount-desc"
+								? "border-primary bg-primary/[0.10] text-foreground font-medium dark:bg-primary/[0.20]"
+								: "border-border bg-card text-foreground hover:bg-muted/60",
 						)}
 					>
+						<SparklesIcon className="size-4 text-foreground" />
 						All
 					</button>
 					<button
@@ -116,55 +137,86 @@ export function SkillsLibrary({ organizationId: propOrgId }: Props) {
 							setIsFeatured(!isFeatured);
 							setCategoryFilter("all");
 						}}
+						aria-pressed={isFeatured}
 						className={cn(
-							"rounded-full px-4 py-2 font-medium text-sm transition-all flex items-center gap-1.5",
+							"inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-sm transition-colors duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
 							isFeatured
-								? "bg-amber-500 text-white"
-								: "bg-card hover:bg-card/80 text-foreground/70 hover:text-foreground border",
+								? "border-primary bg-primary/[0.10] text-foreground font-medium dark:bg-primary/[0.20]"
+								: "border-border bg-card text-foreground hover:bg-muted/60",
 						)}
 					>
-						<StarIcon className="h-3.5 w-3.5" />
+						<StarIcon className="size-4 text-foreground" />
 						Featured
 					</button>
-					{categories.map((cat) => (
-						<button
-							key={cat}
-							type="button"
-							onClick={() => {
-								setCategoryFilter(cat);
-								setIsFeatured(false);
-							}}
-							className={cn(
-								"rounded-[6px] px-3.5 py-1.5 text-sm transition-colors",
-								categoryFilter === cat && !isFeatured
-									? "bg-primary text-primary-foreground"
-									: "bg-card hover:bg-card/80 text-foreground/70 hover:text-foreground border",
-							)}
-						>
-							{cat}
-						</button>
-					))}
+					<button
+						type="button"
+						onClick={() => {
+							setIsFeatured(false);
+							setCategoryFilter("all");
+							setSortValue(
+								sortValue === "useCount-desc"
+									? "updatedAt-desc"
+									: "useCount-desc",
+							);
+						}}
+						aria-pressed={
+							!isFeatured &&
+							categoryFilter === "all" &&
+							sortValue === "useCount-desc"
+						}
+						className={cn(
+							"inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-sm transition-colors duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
+							!isFeatured &&
+								categoryFilter === "all" &&
+								sortValue === "useCount-desc"
+								? "border-primary bg-primary/[0.10] text-foreground font-medium dark:bg-primary/[0.20]"
+								: "border-border bg-card text-foreground hover:bg-muted/60",
+						)}
+					>
+						<TrendingUpIcon className="size-4 text-foreground" />
+						Popular
+					</button>
+					{categories.map((cat) => {
+						const selected = categoryFilter === cat && !isFeatured;
+						return (
+							<button
+								key={cat}
+								type="button"
+								onClick={() => {
+									setCategoryFilter(cat);
+									setIsFeatured(false);
+								}}
+								aria-pressed={selected}
+								className={cn(
+									"inline-flex h-8 items-center gap-1.5 rounded-full border px-3.5 text-sm transition-colors duration-150 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
+									selected
+										? "border-primary bg-primary/[0.10] text-foreground font-medium dark:bg-primary/[0.20]"
+										: "border-border bg-card text-foreground hover:bg-muted/60",
+								)}
+							>
+								<LayoutGridIcon className="size-4 text-foreground" />
+								{cat}
+							</button>
+						);
+					})}
 				</div>
-			)}
 
-			{/* Actions Bar */}
-			<div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center justify-between">
-				<div className="flex flex-1 gap-2 w-full sm:w-auto">
+				<div className="flex flex-wrap items-center gap-2 shrink-0">
 					<div
 						data-onboarding-target="skills-search"
-						className="relative flex-1 max-w-md"
+						className="relative w-full sm:w-56"
 					>
-						<SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+						<SearchIcon className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
 						<SearchInput
 							placeholder="Search skills..."
 							value={searchQuery}
 							onChange={(e) => setSearchQuery(e.target.value)}
-							className="pl-9"
+							className="h-8 pl-8"
 						/>
 					</div>
 
 					<Select value={scopeFilter} onValueChange={setScopeFilter}>
-						<SelectTrigger className="w-[160px]">
+						<SelectTrigger className="h-8 w-[140px]">
 							<SelectValue placeholder="Scope" />
 						</SelectTrigger>
 						<SelectContent>
@@ -180,9 +232,9 @@ export function SkillsLibrary({ organizationId: propOrgId }: Props) {
 					<Select value={sortValue} onValueChange={setSortValue}>
 						<SelectTrigger
 							data-onboarding-target="skills-sort"
-							className="w-[170px]"
+							className="h-8 w-[160px]"
 						>
-							<ArrowUpDownIcon className="h-3.5 w-3.5 mr-1.5 text-muted-foreground" />
+							<ArrowUpDownIcon className="size-3.5 mr-1.5 text-muted-foreground" />
 							<SelectValue placeholder="Sort" />
 						</SelectTrigger>
 						<SelectContent>
@@ -193,42 +245,50 @@ export function SkillsLibrary({ organizationId: propOrgId }: Props) {
 							))}
 						</SelectContent>
 					</Select>
-				</div>
 
-				<Button
-					data-onboarding-target="skills-new"
-					onClick={() => router.push(`${basePath}/skills/new`)}
-				>
-					<PlusIcon className="h-4 w-4 mr-2" />
-					New Skill
-				</Button>
+					<Button
+						data-onboarding-target="skills-new"
+						size="sm"
+						onClick={() => router.push(`${basePath}/skills/new`)}
+					>
+						<PlusIcon className="size-3.5" />
+						New Skill
+					</Button>
+				</div>
 			</div>
 
 			{/* Skills Grid */}
 			{isLoading ? (
-				<div className="flex items-center justify-center py-12">
+				<div className="flex items-center justify-center py-16">
 					<Spinner />
 				</div>
 			) : skills.length === 0 ? (
-				<div className="text-center py-12">
-					<p className="text-muted-foreground mb-4">
+				<div className="flex flex-col items-center justify-center py-16 text-center space-y-3">
+					<PuzzleIcon
+						className="size-10 text-muted-foreground/45"
+						strokeWidth={1.5}
+						aria-hidden="true"
+					/>
+					<p className="text-sm text-muted-foreground">
 						{searchQuery ||
 						scopeFilter !== "all" ||
 						categoryFilter !== "all" ||
 						isFeatured
 							? "No skills found matching your filters"
-							: "No skills yet. Create your first skill to get started!"}
+							: "No skills yet"}
 					</p>
 					{!searchQuery &&
 						scopeFilter === "all" &&
 						categoryFilter === "all" &&
 						!isFeatured && (
 							<Button
+								size="sm"
+								variant="outline"
 								onClick={() =>
 									router.push(`${basePath}/skills/new`)
 								}
 							>
-								<PlusIcon className="h-4 w-4 mr-2" />
+								<PlusIcon className="size-3.5" />
 								Create Your First Skill
 							</Button>
 						)}

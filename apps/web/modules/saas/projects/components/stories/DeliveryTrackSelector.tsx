@@ -106,7 +106,7 @@ export function DeliveryTrackSelector({
 				</span>
 				{setBy ? (
 					<span
-						className="inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground"
+						className="inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
 						data-testid="delivery-track-set-by"
 					>
 						{setBy === "AI" ? (

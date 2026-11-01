@@ -102,7 +102,7 @@ export function PriorityEditor({
 							onClick={() => setSelected(option)}
 							disabled={isSaving}
 							className={cn(
-								"rounded-md border px-2.5 py-1 font-semibold text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60",
+								"rounded-md border px-2.5 py-1 font-semibold text-xs transition-colors focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60",
 								active
 									? "border-primary bg-primary/10 text-primary-ink"
 									: "border-border text-muted-foreground hover:text-foreground",

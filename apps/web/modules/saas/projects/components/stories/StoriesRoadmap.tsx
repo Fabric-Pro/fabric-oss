@@ -2903,7 +2903,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 		return (
 			<div className="space-y-4">
 				{[1, 2, 3, 4].map((i) => (
-					<Skeleton key={i} className="h-32 w-full rounded-xl" />
+					<Skeleton key={i} className="h-32 w-full rounded-lg" />
 				))}
 			</div>
 		);
@@ -3256,7 +3256,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 										<button
 											type="button"
 											onClick={toggleShowClosed}
-											className="underline underline-offset-2 text-primary hover:text-primary/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded-sm"
+											className="underline underline-offset-2 text-primary hover:text-primary/80 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 rounded-sm"
 										>
 											Show hidden work items
 										</button>
@@ -3574,7 +3574,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 																			items.length
 																		}
 																	</span>
-																	<span className="[writing-mode:vertical-rl] text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+																	<span className="[writing-mode:vertical-rl] text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 																		{
 																			section.label
 																		}
@@ -3659,7 +3659,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 																				: undefined
 																		}
 																	/>
-																	<span className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+																	<span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 																		{
 																			section.label
 																		}
@@ -3811,7 +3811,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 															aria-expanded={
 																!isCollapsed
 															}
-															className="group/section flex flex-1 items-center gap-2 py-2 text-left transition-colors hover:text-foreground focus-visible:outline-none"
+															className="group/section flex flex-1 items-center gap-2 py-2 text-left transition-colors hover:text-foreground focus-visible:outline-hidden"
 														>
 															<ChevronDownIcon
 																aria-hidden
@@ -3841,7 +3841,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 																		: undefined
 																}
 															/>
-															<span className="text-[11px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+															<span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
 																{section.label}
 															</span>
 															<span className="text-[11px] tabular-nums text-muted-foreground/50">
@@ -3890,7 +3890,7 @@ export function StoriesRoadmap({ projectId }: Props) {
 						createPortal(
 							<DragOverlay dropAnimation={DRAG_DROP_ANIMATION}>
 								{activeStory && (
-									<div className="flex w-full max-w-xl items-center gap-2.5 rounded-xl border border-primary/40 bg-card px-3 py-2.5 shadow-2xl ring-1 ring-primary/10 cursor-grabbing">
+									<div className="flex w-full max-w-xl items-center gap-2.5 rounded-lg border border-primary/40 bg-card px-3 py-2.5 shadow-2xl ring-1 ring-primary/10 cursor-grabbing">
 										<StoryKindIcon
 											kind={activeStory.kind}
 											priority={activeStory.priority}

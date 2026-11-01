@@ -107,7 +107,7 @@ export function ActivitySection({
 	return (
 		<div className="space-y-2">
 			<div className="flex flex-wrap items-center justify-between gap-2">
-				<p className="font-medium text-muted-foreground text-xs uppercase tracking-[0.14em]">
+				<p className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
 					{t("activity.heading")}
 				</p>
 				{total > items.length && (

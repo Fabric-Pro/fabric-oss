@@ -1,8 +1,11 @@
 # UI Style Guide
 
+- **Audience**: Engineers and AI agents
+- **Owner**: Frontend platform maintainers
+
 > **Precedence**: This document is a **strict specification**, not guidelines. Treat it as mandatory for all frontend implementation.
 >
-> **Related**: For React component patterns and CSS methodology, see `fabric/standards/frontend/components.md` and `fabric/standards/frontend/css.md`. This guide focuses on visual consistency, design tokens, and component reuse.
+> **Related**: For the full Databricks Workspace (DuBois) design system specification, token contrast tables, and component anatomy, see [`design.md`](../design.md). For React component patterns and CSS methodology, see `fabric/standards/frontend/components.md` and `fabric/standards/frontend/css.md`. This guide focuses on visual consistency, design tokens, and component reuse.
 
 ---
 
@@ -20,10 +23,15 @@ Use Tailwind utilities that map to CSS variables. Never use hex values or arbitr
 | `foreground` | `text-foreground` | Primary text |
 | `primary` | `bg-primary`, `text-primary`, `border-primary` | Primary actions, links |
 | `primary-foreground` | `text-primary-foreground` | Text on primary |
+| `primary-hover` | `hover:bg-primary-hover` | Primary button hover fill |
+| `primary-active` | `active:bg-primary-active` | Primary button pressed fill |
+| `primary-ink` | `text-primary-ink` | Brand-aware inline text/link ink |
 | `secondary` | `bg-secondary`, `text-secondary` | Secondary actions |
 | `muted` | `bg-muted`, `text-muted-foreground` | Muted backgrounds, secondary text |
 | `accent` | `bg-accent`, `text-accent-foreground` | Hover states, highlights |
 | `destructive` | `bg-destructive`, `text-destructive` | Errors, delete actions |
+| `destructive-hover` | `hover:bg-destructive-hover` | Destructive button hover fill |
+| `destructive-active` | `active:bg-destructive-active` | Destructive button pressed fill |
 | `success` | `bg-success`, `text-success` | Success states |
 | `border` | `border-border` | Borders |
 | `input` | `border-input`, `bg-input` | Form inputs |
@@ -31,14 +39,15 @@ Use Tailwind utilities that map to CSS variables. Never use hex values or arbitr
 | `card` | `bg-card`, `text-card-foreground` | Card surfaces |
 | `popover` | `bg-popover`, `text-popover-foreground` | Overlays |
 | `highlight` | `bg-highlight`, `text-highlight-foreground` | Emphasis |
+| `highlight-ink` | `text-highlight-ink` | Warning text/icons on neutral surfaces |
 
 ### Radius
 
-| Token | Tailwind | Usage |
-| --- | --- | --- |
-| `--radius` | `rounded-lg` | Cards, dialogs |
-| `--radius-md` | `rounded-md` | Buttons, inputs |
-| `--radius-sm` | `rounded-sm` | Small elements |
+| Token | Tailwind | Resolved Size | Usage |
+| --- | --- | --- | --- |
+| `--radius-lg` | `rounded-lg` | `6px` (`calc(var(--radius) + 2px)`) | Cards, dialogs, popovers |
+| `--radius-md` | `rounded-md` | `4px` (`var(--radius)`) | Buttons, inputs, select triggers |
+| `--radius-sm` | `rounded-sm` | `3px` (`calc(var(--radius) - 1px)`) | Menu items, badges, checkboxes |
 
 ### Usage Rule
 
@@ -104,7 +113,7 @@ Use the existing spacing system consistently. Align with current layouts (cards,
 ### Form Controls
 
 - Height: `h-9` (default)
-- Padding: `px-3`, `py-2` (or `py-1` for inputs)
+- Padding: `px-3`, `py-2` (or `py-1.5` for inputs)
 - Radius: `rounded-md`
 - Border: `border border-input`
 
@@ -115,11 +124,14 @@ Use the existing spacing system consistently. Align with current layouts (cards,
 
 ### Shadows
 
+In-flow cards, buttons, and inputs are flat (`shadow-none`) and rely on `1px` borders (`border-border` / `border-input`). Drop shadows are reserved for floating overlays and switch thumbs:
+
 | Class | Usage |
 | --- | --- |
-| `shadow-xs` | Inputs, subtle elevation |
-| `shadow-sm` | Cards, buttons |
-| `shadow-elevated` | Cards on hover, modals |
+| `shadow-none` | Cards, buttons, inputs (default in-flow surfaces) |
+| `shadow-sm` | Switch thumbs |
+| `shadow-md` | Dropdown menus, select popovers, popovers, hover cards |
+| `shadow-elevated` | Dialogs, alert dialogs, sheets |
 
 ### Layering
 
@@ -168,7 +180,7 @@ today and are being reconciled, so do not read them as precedent.
 
 ## 4. Typography
 
-- **Headings**: `font-display` (via CSS variable), `font-semibold`, `tracking-tight`, `letter-spacing: -0.025em`
+- **Headings**: `font-display` (via CSS variable), `font-semibold`, `letter-spacing: -0.025em` (`h1`–`h2`) and `-0.015em` (`h3`–`h6`) in `@layer base`
 - **Body**: `text-foreground`
 - **Muted/secondary**: `text-muted-foreground`
 - **Sizes**: `text-sm`, `text-base`, `text-lg`, `text-xl`, `text-2xl`
@@ -177,8 +189,9 @@ today and are being reconciled, so do not read them as precedent.
 
 - `text-2xl` / `text-xl` — Page titles
 - `text-lg` — Section titles, dialog titles
-- `text-base` — Body
-- `text-sm` — Secondary text, labels
+- `text-base` — Mobile form controls (`text-base md:text-sm`)
+- `text-sm` — Primary body text (`14px`), desktop controls, labels
+- `text-xs` — Secondary captions, table column headers
 
 ---
 
@@ -191,18 +204,18 @@ today and are being reconciled, so do not read them as precedent.
 
 ### Focus States
 
-- Use `focus-visible:ring-ring`, `focus-visible:ring-[3px]` for focus indicators
-- Ensure `outline-none` with visible ring replacement
+- Use `focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ring-offset-background` on buttons, toggles, and tabs, `focus-visible:outline-hidden focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring` on text inputs, and `focus:outline-hidden focus:border-ring focus:ring-1 focus:ring-ring` on `SelectTrigger` for crisp Databricks Crimson focus indicators
+- Prefer `focus-visible:outline-hidden` / `focus:outline-hidden` over `outline-none` so `forced-colors: active` (Windows High Contrast) retains a visible focus outline
 
 ### Loading States
 
 - Button: `loading` prop shows spinner
-- Disabled: `disabled:opacity-50`, `disabled:cursor-not-allowed`
+- Disabled: `disabled:opacity-50`, `disabled:pointer-events-none` (buttons) or `disabled:cursor-not-allowed` (form controls)
 
 ### Transitions
 
-- Use `transition-all duration-200` or `duration-300` for state changes
-- Prefer `transition-colors` for color-only changes
+- Use `transition-colors duration-150` for interactive controls (buttons, inputs, selects, menu items, table rows)
+- Do not add scale-bounce transforms (`active:scale-*`) to standard workspace buttons or controls
 
 ### Pagination
 

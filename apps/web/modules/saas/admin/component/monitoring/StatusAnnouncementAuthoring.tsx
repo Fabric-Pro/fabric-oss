@@ -236,7 +236,7 @@ export function StatusAnnouncementAuthoring() {
 										}
 										className={cn(
 											"rounded-full border px-2.5 py-1 text-xs transition-colors",
-											"focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+											"focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-primary",
 											// Solid fill when selected: text-primary on a
 											// 10% tint of itself measured 3.64:1 in dark
 											// mode, below the AA floor.
