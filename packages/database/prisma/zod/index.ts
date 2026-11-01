@@ -1600,6 +1600,12 @@ export const WorkflowExecutionLogScalarFieldEnumSchema = z.enum(['id', 'executio
 
 export type WorkflowExecutionLogScalarFieldEnum = z.infer<typeof WorkflowExecutionLogScalarFieldEnumSchema>;
 
+// File: ProjectRemoteAgentServerScalarFieldEnum.schema.ts
+
+export const ProjectRemoteAgentServerScalarFieldEnumSchema = z.enum(['id', 'projectId', 'userId', 'name', 'scope', 'url', 'profileId', 'encryptedSecret', 'isActive', 'createdAt', 'updatedAt'])
+
+export type ProjectRemoteAgentServerScalarFieldEnum = z.infer<typeof ProjectRemoteAgentServerScalarFieldEnumSchema>;
+
 // File: WorkflowIntegrationScalarFieldEnum.schema.ts
 
 export const WorkflowIntegrationScalarFieldEnumSchema = z.enum(['id', 'workflowId', 'userId', 'organizationId', 'provider', 'name', 'credentials', 'usageScope', 'settings', 'isActive', 'createdAt', 'updatedAt', 'lastUsedAt'])
@@ -10376,6 +10382,25 @@ export const WorkflowExecutionLogSchema = z.object({
 });
 
 export type WorkflowExecutionLogType = z.infer<typeof WorkflowExecutionLogSchema>;
+
+
+// File: ProjectRemoteAgentServer.schema.ts
+
+export const ProjectRemoteAgentServerSchema = z.object({
+  id: z.string(),
+  projectId: z.string(),
+  userId: z.string(),
+  name: z.string(),
+  scope: z.string().default("PRIVATE"),
+  url: z.string(),
+  profileId: z.string(),
+  encryptedSecret: z.string(),
+  isActive: z.boolean().default(true),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
+
+export type ProjectRemoteAgentServerType = z.infer<typeof ProjectRemoteAgentServerSchema>;
 
 
 // File: WorkflowIntegration.schema.ts

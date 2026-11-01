@@ -62,6 +62,41 @@ beforeEach(() => {
 });
 
 describe("CodingRunTimeline", () => {
+	it("shows project progress without offering controls or native access to another developer's private session", async () => {
+		const base = await mockGetCodingRun();
+		await mockGetCodingRun.withImplementation(
+			async () => ({
+				...base,
+				provider: "BACKGROUND_AGENTS",
+				externalUrl: null,
+				providerSessionId: null,
+				providerMetadata: {
+					executionRuntime: "fabric-agent-server",
+					privateSession: true,
+				},
+			}),
+			async () => {
+				renderWithQueryClient(
+					<CodingRunTimeline
+						codingRunId="example-private-run"
+						organizationId="example-org"
+						onCancel={vi.fn()}
+					/>,
+				);
+				expect(
+					await screen.findByText("privateSession"),
+				).toBeInTheDocument();
+				expect(
+					screen.queryByRole("button", { name: "Cancel Session" }),
+				).not.toBeInTheDocument();
+				expect(
+					screen.queryByRole("link", {
+						name: /Open in Fabric Agents/,
+					}),
+				).not.toBeInTheDocument();
+			},
+		);
+	});
 	it("emphasizes the primary task for task-scoped implementation sessions", async () => {
 		renderWithQueryClient(
 			<CodingRunTimeline codingRunId="run_1" organizationId="org_1" />,
@@ -177,7 +212,8 @@ it("keeps the draft and request identity when a follow-up needs a retry", async 
 		async () => ({
 			...base,
 			provider: "BACKGROUND_AGENTS",
-			status: "AWAITING_REVIEW",
+			status: "COMPLETED",
+			providerMetadata: { executionRuntime: "fabric-agent-server" },
 		}),
 		async () => {
 			mockSendFollowUp
@@ -256,7 +292,8 @@ it("retains the unresolved prompt identity after the dialog unmounts and reopens
 		async () => ({
 			...base,
 			provider: "BACKGROUND_AGENTS",
-			status: "AWAITING_REVIEW",
+			status: "COMPLETED",
+			providerMetadata: { executionRuntime: "fabric-agent-server" },
 		}),
 		async () => {
 			mockSendFollowUp
@@ -303,6 +340,34 @@ it("retains the unresolved prompt identity after the dialog unmounts and reopens
 					sessionStorage.getItem("coding-prompt:example-remount-run"),
 				).toBeNull(),
 			);
+		},
+	);
+});
+
+it("directs native checkpoints to the authenticated client without treating text as approval", async () => {
+	const base = await mockGetCodingRun();
+	await mockGetCodingRun.withImplementation(
+		async () => ({
+			...base,
+			provider: "BACKGROUND_AGENTS",
+			status: "AWAITING_REVIEW",
+			providerMetadata: { executionRuntime: "fabric-agent-server" },
+		}),
+		async () => {
+			renderWithQueryClient(
+				<CodingRunTimeline
+					codingRunId="example-checkpoint"
+					organizationId="example-org"
+				/>,
+			);
+			expect(
+				await screen.findByText(
+					/Sending a reply here does not approve them/,
+				),
+			).toBeInTheDocument();
+			expect(
+				screen.queryByPlaceholderText("Reply to the agent…"),
+			).not.toBeInTheDocument();
 		},
 	);
 });

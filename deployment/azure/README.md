@@ -384,3 +384,9 @@ az monitor metrics list \
 4. **Configure DNS** - Point custom domains to Container Apps
 5. **Enable HTTPS** - Container Apps provides automatic TLS
 6. **Configure Alerts** - Set email/Slack notifications for monitoring
+
+## Fabric Agents coding execution
+
+The remote coding bridge is opt-in. The main template exposes `fabricAgentsExecutionBridgeEnabled` (false by default), `fabricAgentsDefaultConnection`, and `fabricAgentsDefaultModel`; `deploy.sh` forwards `FABRIC_AGENTS_EXECUTION_BRIDGE_ENABLED`, `FABRIC_AGENTS_DEFAULT_CONNECTION`, and `FABRIC_AGENTS_DEFAULT_MODEL`. Supply these explicitly on each deployment and align the separately deployed API. Endpoint and service HMAC credentials continue using the existing Key Vault references.
+
+Hosted pipelines use a separate template copy; this repository does not update it automatically. Port the parameters and environment mapping there before staging qualification. Use the [execution acceptance and cutover guide](../../docs/features/fabric-agents-execution-acceptance.md) to verify the protocol-2 server, host-local credentials, native-work drain, matching API/worker settings, real PR delivery, and rollback before retiring the legacy executor.

@@ -24,6 +24,7 @@ import {
 	SquareIcon,
 	WorkflowIcon,
 } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { useState } from "react";
 import { toast } from "sonner";
 import {
@@ -40,6 +41,7 @@ import {
 	getPendingCodingPrompt,
 } from "../../lib/pending-coding-prompt";
 import { asSpikeRunView } from "../../lib/spike-runs";
+import { RemoteSessionConversation } from "./RemoteSessionConversation";
 import { SpikeRunCard } from "./SpikeRunCard";
 
 type Props = {
@@ -58,6 +60,7 @@ export function CodingRunTimeline({
 	onFollowUpSent,
 	projectId,
 }: Props) {
+	const t = useTranslations("projects.remoteAgents");
 	const [followUpMessage, setFollowUpMessage] = useState("");
 	const queryClient = useQueryClient();
 
@@ -94,6 +97,9 @@ export function CodingRunTimeline({
 			"PR_OPENED",
 		].includes(run.status);
 
+	const privateSession =
+		asProviderMetadata(run?.providerMetadata)?.privateSession === true;
+
 	const { data: liveStatus } = useQuery({
 		queryKey: ["codingRunLiveStatus", codingRunId],
 		queryFn: async () =>
@@ -103,7 +109,7 @@ export function CodingRunTimeline({
 						organizationId: organizationId ?? null,
 					})
 				: null,
-		enabled: !!run && !!isRunActive,
+		enabled: !!run && !!isRunActive && !privateSession,
 		refetchInterval: (query) => {
 			const providerStatus = query.state.data?.liveStatus?.providerStatus;
 			if (
@@ -200,6 +206,7 @@ export function CodingRunTimeline({
 			: null);
 	const eventCount = run.events?.length ?? 0;
 	const _metadata = asProviderMetadata(run.providerMetadata);
+	const remoteTarget = asProviderMetadata(_metadata?.executionTarget);
 	const connectionLabel = getFabricAgentConnectionLabel(
 		typeof _metadata?.llmConnection === "string"
 			? _metadata.llmConnection
@@ -215,6 +222,8 @@ export function CodingRunTimeline({
 		run.pullRequestBranch ||
 		run.targetBranch ||
 		null;
+	const isNativeSession =
+		_metadata?.executionRuntime === "fabric-agent-server";
 	const isFabricAgentsSession =
 		run.provider === "BACKGROUND_AGENTS" ||
 		Boolean(sessionUrl?.startsWith("fabric-agent://"));
@@ -270,6 +279,11 @@ export function CodingRunTimeline({
 							>
 								{getExecutionProviderLabel(run.provider)}
 							</Badge>
+							{typeof remoteTarget?.name === "string" && (
+								<Badge variant="outline">
+									{remoteTarget.name}
+								</Badge>
+							)}
 							{connectionLabel && (
 								<Badge
 									variant="outline"
@@ -316,6 +330,12 @@ export function CodingRunTimeline({
 					</div>
 				</div>
 			</div>
+
+			{privateSession && (
+				<p className="text-sm text-muted-foreground">
+					{t("privateSession")}
+				</p>
+			)}
 
 			{isSpike && spikeRun && spikeStoryId && spikeProjectId && (
 				<SpikeRunCard
@@ -418,9 +438,19 @@ export function CodingRunTimeline({
 				</div>
 			)}
 
+			{typeof remoteTarget?.connectionId === "string" && (
+				<RemoteSessionConversation
+					active={isActive}
+					codingRunId={codingRunId}
+					organizationId={organizationId}
+				/>
+			)}
+
 			{(run.status === "AWAITING_REVIEW" ||
-				liveStatus?.liveStatus?.providerStatus === "paused") &&
-				run.provider === "BACKGROUND_AGENTS" && (
+				liveStatus?.liveStatus?.providerStatus === "paused" ||
+				(isNativeSession && run.status === "COMPLETED")) &&
+				run.provider === "BACKGROUND_AGENTS" &&
+				!privateSession && (
 					<div className="rounded-2xl border border-highlight/30 bg-highlight/5 p-4">
 						<div className="flex items-start gap-3">
 							<div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-highlight/10 text-highlight">
@@ -429,59 +459,69 @@ export function CodingRunTimeline({
 							<div className="min-w-0 flex-1 space-y-3">
 								<div>
 									<p className="text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
-										Agent awaiting input
+										{run.status === "COMPLETED"
+											? "Continue this session"
+											: "Agent awaiting input"}
 									</p>
 									<p className="mt-1 text-sm text-foreground/80">
-										The agent has paused and is waiting for
-										your review or instructions before
-										continuing.
+										Continue this session with another
+										instruction. Native permission, sign-in,
+										and tool-input requests must be resolved
+										in the authenticated Fabric Agents
+										client. Sending a reply here does not
+										approve them.
 									</p>
 								</div>
-								<div className="flex gap-2">
-									<Textarea
-										placeholder="Reply to the agent…"
-										value={followUpMessage}
-										onChange={(e) =>
-											setFollowUpMessage(e.target.value)
-										}
-										rows={2}
-										className="resize-none text-sm"
-										onKeyDown={(e) => {
-											if (
-												e.key === "Enter" &&
-												(e.metaKey || e.ctrlKey) &&
-												followUpMessage.trim()
-											) {
-												e.preventDefault();
+								{(!isNativeSession ||
+									run.status === "COMPLETED") && (
+									<div className="flex gap-2">
+										<Textarea
+											placeholder="Reply to the agent…"
+											value={followUpMessage}
+											onChange={(e) =>
+												setFollowUpMessage(
+													e.target.value,
+												)
+											}
+											rows={2}
+											className="resize-none text-sm"
+											onKeyDown={(e) => {
+												if (
+													e.key === "Enter" &&
+													(e.metaKey || e.ctrlKey) &&
+													followUpMessage.trim()
+												) {
+													e.preventDefault();
+													sendFollowUp.mutate(
+														followUpMessage.trim(),
+													);
+												}
+											}}
+										/>
+										<Button
+											type="button"
+											size="icon"
+											variant="outline"
+											className="mt-auto shrink-0"
+											disabled={
+												!followUpMessage.trim() ||
+												sendFollowUp.isPending
+											}
+											onClick={() =>
 												sendFollowUp.mutate(
 													followUpMessage.trim(),
-												);
+												)
 											}
-										}}
-									/>
-									<Button
-										type="button"
-										size="icon"
-										variant="outline"
-										className="mt-auto shrink-0"
-										disabled={
-											!followUpMessage.trim() ||
-											sendFollowUp.isPending
-										}
-										onClick={() =>
-											sendFollowUp.mutate(
-												followUpMessage.trim(),
-											)
-										}
-										aria-label="Send reply"
-									>
-										{sendFollowUp.isPending ? (
-											<Loader2Icon className="size-4 animate-spin" />
-										) : (
-											<MessageSquareIcon className="size-4" />
-										)}
-									</Button>
-								</div>
+											aria-label="Send reply"
+										>
+											{sendFollowUp.isPending ? (
+												<Loader2Icon className="size-4 animate-spin" />
+											) : (
+												<MessageSquareIcon className="size-4" />
+											)}
+										</Button>
+									</div>
+								)}
 								<p className="text-[11px] text-muted-foreground">
 									⌘↵ to send
 								</p>
@@ -558,7 +598,11 @@ export function CodingRunTimeline({
 				<MetadataTile
 					icon={CodeIcon}
 					label="Provider session"
-					value={run.providerSessionId || "Pending"}
+					value={
+						privateSession
+							? t("privateLabel")
+							: run.providerSessionId || "Pending"
+					}
 					hint={
 						connectionLabel
 							? `${getExecutionProviderLabel(run.provider)} · ${connectionLabel}`
@@ -627,7 +671,7 @@ export function CodingRunTimeline({
 				</div>
 			)}
 
-			{isActive && onCancel && (
+			{isActive && onCancel && !privateSession && (
 				<Button
 					variant="outline"
 					size="sm"

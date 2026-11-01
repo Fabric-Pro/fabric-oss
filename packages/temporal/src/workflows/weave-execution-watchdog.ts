@@ -14,7 +14,7 @@
  * `TERMINATED_STALE` with an audit-log entry.
  */
 
-import { log, proxyActivities } from "@temporalio/workflow";
+import { log, patched, proxyActivities } from "@temporalio/workflow";
 import type * as activities from "../activities";
 
 const {
@@ -58,6 +58,7 @@ export interface WeaveExecutionWatchdogOutput {
 export async function weaveExecutionWatchdogWorkflow(
 	input: WeaveExecutionWatchdogInput = {},
 ): Promise<WeaveExecutionWatchdogOutput> {
+	const confirmedCleanup = patched("fabric-agents-watchdog-cancellation-v2");
 	// `process.env` reads are non-deterministic in Temporal workflows
 	// under SDK 1.16 + reuseV8Context — so the env-or-default fallback
 	// for `staleAfterMinutes` lives inside `findStaleWeaveSessions`
@@ -94,9 +95,12 @@ export async function weaveExecutionWatchdogWorkflow(
 			// Call provider cleanup directly — the workflow may have died
 			// before its own finally ran, so we can't rely on the polite
 			// path having torn the session down.
-			await cleanupWeaveResourcesActivity({
+			const cleanup = await cleanupWeaveResourcesActivity({
 				sessionId: row.sessionId,
 				provider: row.provider,
+				...(confirmedCleanup && row.providerMetadata
+					? { providerMetadata: row.providerMetadata }
+					: {}),
 				userId: row.userId,
 				organizationId: row.organizationId,
 				weaveExecutionId: row.kind === "weave" ? row.id : null,
@@ -106,6 +110,16 @@ export async function weaveExecutionWatchdogWorkflow(
 				runDurationMs: Date.now() - row.startedAtMs,
 			});
 
+			if (
+				confirmedCleanup &&
+				row.requiresConfirmedCleanup &&
+				!cleanup.destroyed
+			) {
+				log.warn("native_watchdog_cancellation_unconfirmed", {
+					id: row.id,
+				});
+				continue;
+			}
 			await markWeaveExecutionStale({
 				kind: row.kind,
 				id: row.id,

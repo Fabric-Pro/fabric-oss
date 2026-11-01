@@ -4,7 +4,10 @@ const f = vi.hoisted(() => ({
 	handler: undefined as unknown as (args: any) => Promise<any>,
 	get: vi.fn(),
 }));
-vi.mock("@repo/database", () => ({ getCodingRun: f.get }));
+vi.mock("@repo/database", () => ({
+	getCodingRun: f.get,
+	hasProjectAccess: async () => true,
+}));
 vi.mock("../../../orpc/procedures", () => {
 	const chain: any = {
 		use: () => chain,
@@ -24,6 +27,7 @@ vi.mock("../../../orpc/procedures", () => {
 });
 import "../procedures/get-coding-run";
 const run = {
+	projectId: "example-project",
 	id: "example-run",
 	provider: "BACKGROUND_AGENTS",
 	providerSessionId: "example-session",

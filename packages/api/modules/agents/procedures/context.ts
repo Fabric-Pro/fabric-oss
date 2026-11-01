@@ -13,6 +13,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { stripRemoteCodingRunSummary } from "../../projects/lib/strip-internal-story-fields";
 
 const agentContextInput = z.object({
 	projectId: z.string(),
@@ -184,37 +185,40 @@ async function loadAgentContext(
 				updatedAt: true,
 			},
 		}),
-		db.codingRun.findMany({
-			where: { projectId: input.projectId },
-			orderBy: { updatedAt: "desc" },
-			take: CODING_RUN_LIMIT,
-			select: {
-				id: true,
-				storyId: true,
-				storyTaskId: true,
-				executionChannel: true,
-				provider: true,
-				status: true,
-				externalStatus: true,
-				externalUrl: true,
-				pullRequestUrl: true,
-				lastProviderEventAt: true,
-				createdAt: true,
-				updatedAt: true,
-				story: {
-					select: {
-						identifier: true,
-						title: true,
+		db.codingRun
+			.findMany({
+				where: { projectId: input.projectId },
+				orderBy: { updatedAt: "desc" },
+				take: CODING_RUN_LIMIT,
+				select: {
+					id: true,
+					storyId: true,
+					storyTaskId: true,
+					executionChannel: true,
+					provider: true,
+					status: true,
+					externalStatus: true,
+					externalUrl: true,
+					providerMetadata: true,
+					pullRequestUrl: true,
+					lastProviderEventAt: true,
+					createdAt: true,
+					updatedAt: true,
+					story: {
+						select: {
+							identifier: true,
+							title: true,
+						},
+					},
+					storyTask: {
+						select: {
+							identifier: true,
+							title: true,
+						},
 					},
 				},
-				storyTask: {
-					select: {
-						identifier: true,
-						title: true,
-					},
-				},
-			},
-		}),
+			})
+			.then((runs) => runs.map(stripRemoteCodingRunSummary)),
 		input.taskId
 			? Promise.resolve(null)
 			: countArchitectureDecisionsByStatus(input.projectId),

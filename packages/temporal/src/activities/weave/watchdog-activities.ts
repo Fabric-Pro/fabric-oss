@@ -1,3 +1,4 @@
+import { isFabricAgentsBridgeEnabled } from "../../lib/coding-execution/bridge-rollout";
 /**
  * Weave Execution Watchdog Activities
  *
@@ -24,6 +25,8 @@ export interface StaleWeaveRow {
 	organizationId: string | null;
 	workflowId: string;
 	startedAtMs: number;
+	providerMetadata?: unknown;
+	requiresConfirmedCleanup?: boolean;
 }
 
 export interface FindStaleWeaveSessionsInput {
@@ -101,6 +104,7 @@ export async function findStaleWeaveSessions(
 			select: {
 				id: true,
 				providerSessionId: true,
+				providerMetadata: true,
 				userId: true,
 				organizationId: true,
 				startedAt: true,
@@ -125,6 +129,9 @@ export async function findStaleWeaveSessions(
 				workflowId: r.workflowId,
 				// biome-ignore lint/style/noNonNullAssertion: filtered above
 				startedAtMs: r.startedAt!.getTime(),
+				...(isFabricAgentsBridgeEnabled()
+					? { requiresConfirmedCleanup: true }
+					: {}),
 			})),
 		...codingRows
 			.filter((r) => r.startedAt !== null && !!r.workflowId)
@@ -133,6 +140,15 @@ export async function findStaleWeaveSessions(
 				id: r.id,
 				sessionId: r.providerSessionId,
 				provider: r.provider,
+				...(r.providerMetadata
+					? { providerMetadata: r.providerMetadata }
+					: {}),
+				...(r.provider === "BACKGROUND_AGENTS" &&
+				(isFabricAgentsBridgeEnabled() ||
+					(r.providerMetadata as Record<string, unknown> | null)
+						?.executionRuntime === "fabric-agent-server")
+					? { requiresConfirmedCleanup: true }
+					: {}),
 				userId: r.userId,
 				organizationId: r.organizationId,
 				// biome-ignore lint/style/noNonNullAssertion: filtered above

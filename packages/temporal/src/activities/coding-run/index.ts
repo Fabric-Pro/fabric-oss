@@ -32,6 +32,7 @@ import { getCodingExecutionProvider } from "../../lib/coding-execution/get-provi
 import { getLocalKanbanSessionUrl } from "../../lib/coding-execution/local-kanban-provider";
 import { dispatchLifecycleEvent } from "../../lib/lifecycle-dispatcher";
 
+export * from "./follow-up";
 // Spike run activities (plan Slice 3) live in ./spike and are part of this
 // activity module so the workflow can proxy them alongside the others.
 export * from "./spike";
@@ -53,6 +54,7 @@ export interface CreateCodingRunRecordInput {
 }
 
 export interface CreateExecutionSessionInput {
+	providerMetadata?: unknown;
 	fabricAgentsBridgeEnabled?: boolean;
 	provider: CodingRunProvider;
 	repoOwner: string;
@@ -99,6 +101,7 @@ export interface BuildImplementationPromptInput {
 export interface PollExecutionStatusInput {
 	provider: CodingRunProvider;
 	sessionId: string;
+	providerMetadata?: unknown;
 }
 
 export interface PollBackgroundAgentStatusOutput {
@@ -117,6 +120,7 @@ export interface SyncCodingRunArtifactsInput {
 	codingRunId: string;
 	provider: CodingRunProvider;
 	sessionId: string;
+	providerMetadata?: unknown;
 }
 
 export interface SyncCodingRunArtifactsOutput {
@@ -147,6 +151,7 @@ export interface AddCodingRunEventInput {
 }
 
 export interface SendExecutionPromptInput {
+	providerMetadata?: unknown;
 	provider: CodingRunProvider;
 	sessionId: string;
 	content: string;
@@ -158,6 +163,7 @@ export interface SendExecutionPromptInput {
 export interface CancelExecutionSessionInput {
 	provider: CodingRunProvider;
 	sessionId: string;
+	providerMetadata?: unknown;
 }
 
 // -- Helper --
@@ -251,7 +257,23 @@ export async function createExecutionSession(
 				"VALIDATION_ERROR",
 			);
 		}
-		const provider = getCodingExecutionProvider(input.provider);
+		if (
+			input.provider === "BACKGROUND_AGENTS" &&
+			input.fabricAgentsBridgeEnabled === true &&
+			(!input.projectId ||
+				!input.userId ||
+				!input.organizationId ||
+				!(await canEditProject(input.projectId, input.userId)))
+		) {
+			throw ApplicationFailure.nonRetryable(
+				"Coding session creation is no longer authorized",
+				"INVALID_SESSION",
+			);
+		}
+		const provider = getCodingExecutionProvider(
+			input.provider,
+			"providerMetadata" in input ? input.providerMetadata : undefined,
+		);
 		const result = await provider.createSession({
 			repoOwner: input.repoOwner,
 			repoName: input.repoName,
@@ -438,7 +460,10 @@ export async function sendExecutionPrompt(
 	// Read-only mode: a prompt drives more commits/PR updates on
 	// the connected repository — same gate as createExecutionSession.
 	await failIfProjectReadOnly(input.projectId);
-	const provider = getCodingExecutionProvider(input.provider);
+	const provider = getCodingExecutionProvider(
+		input.provider,
+		"providerMetadata" in input ? input.providerMetadata : undefined,
+	);
 	if (input.provider !== "BACKGROUND_AGENTS") {
 		await provider.sendPrompt(
 			input.sessionId,
@@ -505,7 +530,10 @@ export async function sendExecutionPrompt(
 export async function pollExecutionStatus(
 	input: PollExecutionStatusInput,
 ): Promise<PollBackgroundAgentStatusOutput> {
-	const provider = getCodingExecutionProvider(input.provider);
+	const provider = getCodingExecutionProvider(
+		input.provider,
+		"providerMetadata" in input ? input.providerMetadata : undefined,
+	);
 	const status = await provider.getSessionStatus(input.sessionId);
 
 	const prArtifact = status.artifacts.find(
@@ -548,7 +576,10 @@ export async function pollExecutionStatus(
 export async function syncCodingRunArtifacts(
 	input: SyncCodingRunArtifactsInput,
 ): Promise<SyncCodingRunArtifactsOutput> {
-	const provider = getCodingExecutionProvider(input.provider);
+	const provider = getCodingExecutionProvider(
+		input.provider,
+		"providerMetadata" in input ? input.providerMetadata : undefined,
+	);
 	const status = await provider.getSessionStatus(input.sessionId);
 
 	const prArtifact = status.artifacts.find(
@@ -635,6 +666,9 @@ export async function addCodingRunEventActivity(
 export async function cancelExecutionSession(
 	input: CancelExecutionSessionInput,
 ): Promise<void> {
-	const provider = getCodingExecutionProvider(input.provider);
+	const provider = getCodingExecutionProvider(
+		input.provider,
+		"providerMetadata" in input ? input.providerMetadata : undefined,
+	);
 	await provider.cancelSession(input.sessionId);
 }

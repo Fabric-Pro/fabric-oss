@@ -46,6 +46,10 @@ IMAGE_TAG="${GITHUB_SHA:-$(git rev-parse --short HEAD)}"
 # run silently rolls the worker and weave-planners back to the Bicep defaults.
 DATABASE_AUTH_PROVIDER="${DATABASE_AUTH_PROVIDER:-password}"
 WORKER_RLS_MODE="${WORKER_RLS_MODE:-bypassrls}"
+FABRIC_AGENTS_EXECUTION_BRIDGE_ENABLED="${FABRIC_AGENTS_EXECUTION_BRIDGE_ENABLED:-false}"
+FABRIC_AGENTS_DEFAULT_CONNECTION="${FABRIC_AGENTS_DEFAULT_CONNECTION:-}"
+FABRIC_AGENTS_DEFAULT_MODEL="${FABRIC_AGENTS_DEFAULT_MODEL:-}"
+case "$FABRIC_AGENTS_EXECUTION_BRIDGE_ENABLED" in true|false) ;; *) echo "FABRIC_AGENTS_EXECUTION_BRIDGE_ENABLED must be true or false" >&2; exit 1 ;; esac
 
 echo "=============================================="
 echo "Azure Container Apps Deployment"
@@ -148,6 +152,9 @@ az deployment group create \
   --template-file "deployment/azure/main.bicep" \
   --parameters "envName=${ENVIRONMENT}" "imageTag=${IMAGE_TAG}" "uniqueSuffix=${UNIQUE_SUFFIX}" \
     "databaseAuthProvider=${DATABASE_AUTH_PROVIDER}" "workerRlsMode=${WORKER_RLS_MODE}" \
+    "fabricAgentsExecutionBridgeEnabled=${FABRIC_AGENTS_EXECUTION_BRIDGE_ENABLED}" \
+    "fabricAgentsDefaultConnection=${FABRIC_AGENTS_DEFAULT_CONNECTION}" \
+    "fabricAgentsDefaultModel=${FABRIC_AGENTS_DEFAULT_MODEL}" \
   --output table
 
 echo ""

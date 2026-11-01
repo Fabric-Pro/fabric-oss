@@ -146,7 +146,10 @@ describe("cleanupWeaveResourcesActivity", () => {
 		});
 
 		expect(result).toEqual({ destroyed: true, alreadyTerminal: false });
-		expect(mocks.getProviderMock).toHaveBeenCalledWith("BACKGROUND_AGENTS");
+		expect(mocks.getProviderMock).toHaveBeenCalledWith(
+			"BACKGROUND_AGENTS",
+			undefined,
+		);
 		expect(mocks.cancelSessionMock).toHaveBeenCalledWith("sess-abc");
 
 		expect(mocks.logInfoMock).toHaveBeenCalledWith(
@@ -487,5 +490,20 @@ describe("cleanupWeaveResourcesActivity — DB reconciliation", () => {
 		expect(mocks.weaveExecutionUpdateManyMock).not.toHaveBeenCalled();
 		expect(mocks.weaveExecutionFindUniqueMock).not.toHaveBeenCalled();
 		expect(mocks.weavePlanUpdateManyMock).not.toHaveBeenCalled();
+	});
+});
+
+describe("native cleanup confirmation", () => {
+	it.each([
+		"getaddrinfo ENOTFOUND example.com",
+		"HTTP 404 readiness unavailable",
+	])("keeps %s unconfirmed", async (message) => {
+		mocks.cancelSessionMock.mockRejectedValueOnce(new Error(message));
+		const result = await cleanupWeaveResourcesActivity({
+			...BASE_INPUT,
+			sessionId: "example-session",
+			providerMetadata: { executionRuntime: "fabric-agent-server" },
+		});
+		expect(result.destroyed).toBe(false);
 	});
 });

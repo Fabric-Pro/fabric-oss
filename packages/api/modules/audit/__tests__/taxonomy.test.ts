@@ -308,8 +308,8 @@ describe("audit.taxonomy handler", () => {
 		// + 1 org.member.left for voluntary departures = 223.
 		// + 1 project.document_analysis.resolved (a saved revision applied a
 		// finding's recommendation and recorded it as Resolved; stable key,
-		// run id and version only, never text, Fizzy #2946) = 224.
-		expect(result.actions).toHaveLength(224);
+		// run id and version only, never text), plus native session continuation = 225.
+		expect(result.actions).toHaveLength(225);
 		expect(result.actions).toContain("org.member.left");
 		expect(result.actions).toContain("org.chat_approval.decided");
 		expect(result.actions).toContain("org.chat_run.cancel_requested");
@@ -498,6 +498,9 @@ describe("audit.taxonomy handler", () => {
 		// the workflow's finally block and the watchdog cron.
 		expect(result.actions).toContain("weave.session.terminated_on_exit");
 		expect(result.actions).toContain("weave.session.terminated_stale");
+		expect(result.actions).toContain(
+			"weave.session.continuation_requested",
+		);
 		// Atlas analysis lifecycle + per-node regenerate
 		// + monitored-branch configuration.
 		expect(result.actions).toContain("atlas.analysis.requested");

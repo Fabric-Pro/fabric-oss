@@ -6,12 +6,34 @@ import { StartImplementationSessionButton } from "../StartImplementationSessionB
 
 const f = vi.hoisted(() => ({
 	start: vi.fn().mockResolvedValue({ codingRunId: "example-run" }),
+	list: vi.fn().mockResolvedValue({
+		enabled: true,
+		canShare: false,
+		servers: [
+			{
+				id: "example-private",
+				name: "My server",
+				scope: "PRIVATE",
+				url: "https://private.example.com",
+				ownedByCaller: true,
+			},
+			{
+				id: "example-team",
+				name: "Team server",
+				scope: "TEAM",
+				url: "https://team.example.com",
+				ownedByCaller: false,
+			},
+		],
+	}),
 }));
 vi.mock("@saas/organizations/hooks/use-organization-context", () => ({
 	useOrganizationContext: () => ({ organizationId: "example-org" }),
 }));
 vi.mock("@shared/lib/orpc-client", () => ({
-	orpcClient: { codingRuns: { start: f.start } },
+	orpcClient: {
+		codingRuns: { start: f.start, remoteServers: { list: f.list } },
+	},
 }));
 vi.mock("@shared/lib/orpc-query-utils", () => ({
 	orpc: {
@@ -64,6 +86,13 @@ it("submits the selected task repository through the real parent mutation when t
 			/>
 		</QueryClientProvider>,
 	);
+	await screen.findByRole("option", { name: "Team server" });
+	expect(
+		screen.getByRole("button", { name: "Start implementation session" }),
+	).toBeDisabled();
+	fireEvent.change(screen.getByRole("combobox", { name: "title" }), {
+		target: { value: "example-team" },
+	});
 	fireEvent.click(
 		screen.getByRole("button", { name: "Start implementation session" }),
 	);
@@ -74,6 +103,7 @@ it("submits the selected task repository through the real parent mutation when t
 				storyId: "example-story",
 				taskId: "example-task",
 				organizationId: "example-org",
+				serverId: "example-team",
 			}),
 		),
 	);

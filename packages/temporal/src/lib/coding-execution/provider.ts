@@ -108,6 +108,14 @@ export function getProviderCapabilities(
 export type PromptDeliveryResult = void | { messageId: string };
 
 export interface CodingExecutionProvider {
+	getSessionMessages?(sessionId: string): Promise<{
+		messages: Array<{
+			id: string;
+			role: "user" | "assistant";
+			content: string;
+		}>;
+		webUrl?: string;
+	}>;
 	/**
 	 * Capability flags (plan §F4). Read via `getProviderCapabilities()`.
 	 */

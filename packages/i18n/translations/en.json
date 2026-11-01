@@ -1027,7 +1027,7 @@
 				},
 				"roadmap": {
 					"title": "Plan on the Roadmap",
-					"body": "The Roadmap work area shows your work items in the selected layout. Browse, prioritize and track the work here, then sync it to your PM tool. Use the controls above it to filter, sort or change the view."
+					"body": "The Roadmap work area shows your work items in the selected layout. Browse, prioritize and track work, then sync it to your PM tool. When remote servers are enabled, use Start work → Fabric Agents in Coding to choose your own or a team server and follow its session."
 				},
 				"todos": {
 					"body": "To Do gathers what you owe across this workspace — action items your meetings produced and to-dos you wrote yourself — into one list you can snooze, reassign, and tick off.",
@@ -3254,6 +3254,35 @@
 		"welcome": "Welcome {name}!"
 	},
 	"projects": {
+		"remoteAgents": {
+			"privateLabel": "Private session",
+			"privateSession": "This session runs on another developer’s private server. Project progress and pull requests are visible; its conversation and controls are private.",
+			"loadingServers": "Loading remote servers…",
+			"loadServersFailed": "Could not load remote servers. Try again before assigning work.",
+			"title": "Remote server",
+			"choose": "Choose a remote server",
+			"mine": "My servers",
+			"team": "Team servers",
+			"privateHelp": "Only you can assign work to this connection. It uses the accounts signed in on your server.",
+			"teamHelp": "Project members can assign work using the accounts configured on this shared server.",
+			"emptyHelp": "Choose a team server or connect your own. Provider and Git credentials stay on the remote host.",
+			"connect": "Connect a remote server",
+			"connectionHelp": "Connect an existing Fabric Agents server that the Portal API and worker can reach. Use its dedicated execution service secret, not a provider API key or desktop sign-in token.",
+			"name": "Connection name",
+			"url": "Server URL",
+			"secret": "Execution service secret",
+			"visibility": "Who can use this connection",
+			"verify": "Verify and connect",
+			"disconnect": "Disconnect from new work",
+			"conversation": "Remote session",
+			"conversationHelp": "Recent conversation from the actual remote session. Open Fabric Agents to resolve tool approvals or sign-in requests.",
+			"openBrowser": "Open in browser",
+			"loading": "Loading remote conversation…",
+			"retry": "Retry",
+			"noMessages": "No conversation messages are available yet.",
+			"you": "Developer",
+			"agent": "Agent"
+		},
 		"engagement": {
 			"sectionLabel": "Engagement",
 			"title": "How this engagement is run",

@@ -21,6 +21,7 @@ const activityStubs = vi.hoisted(() => ({
 }));
 
 vi.mock("@temporalio/workflow", () => ({
+	patched: () => true,
 	log: {
 		info: vi.fn(),
 		warn: vi.fn(),
@@ -251,5 +252,17 @@ describe("weaveExecutionWatchdogWorkflow", () => {
 				process.env.WEAVE_MAX_RUN_MINUTES = originalEnv;
 			}
 		}
+	});
+	it("keeps the active slot when native shutdown is not confirmed", async () => {
+		activityStubs.findStaleWeaveSessions.mockResolvedValue({
+			rows: [{ ...baseRow, requiresConfirmedCleanup: true }],
+		});
+		activityStubs.cleanupWeaveResourcesActivity.mockResolvedValue({
+			destroyed: false,
+			alreadyTerminal: false,
+		});
+		const result = await weaveExecutionWatchdogWorkflow();
+		expect(activityStubs.markWeaveExecutionStale).not.toHaveBeenCalled();
+		expect(result.killedWeave).toBe(0);
 	});
 });

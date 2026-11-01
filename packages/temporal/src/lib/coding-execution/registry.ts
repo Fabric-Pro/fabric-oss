@@ -149,7 +149,54 @@ export function listCodingExecutionAdapterDefinitions(): CodingExecutionAdapterD
  */
 export function getCodingExecutionProvider(
 	provider: CodingRunProvider,
+	metadata?: unknown,
 ): CodingExecutionProvider {
+	if (
+		provider === "BACKGROUND_AGENTS" &&
+		metadata &&
+		typeof metadata === "object" &&
+		"executionRuntime" in metadata &&
+		metadata.executionRuntime === "fabric-agent-server"
+	) {
+		if (!isFabricAgentsBridgeEnabled()) {
+			throw new Error(
+				"Restore the native execution mode for this run before continuing",
+			);
+		}
+		const target =
+			"executionTarget" in metadata
+				? metadata.executionTarget
+				: undefined;
+		if (
+			!target ||
+			typeof target !== "object" ||
+			!("url" in target) ||
+			typeof target.url !== "string" ||
+			!("profileId" in target) ||
+			typeof target.profileId !== "string"
+		) {
+			throw new Error(
+				"This historical session has no pinned execution target; reconcile it before continuing",
+			);
+		}
+		return new FabricBackgroundAdapter({
+			...target,
+			url: target.url,
+			profileId: target.profileId,
+		});
+	}
+	if (
+		provider === "BACKGROUND_AGENTS" &&
+		metadata &&
+		typeof metadata === "object" &&
+		"executionRuntime" in metadata &&
+		metadata.executionRuntime === "legacy-background-agents" &&
+		isFabricAgentsBridgeEnabled()
+	) {
+		throw new Error(
+			"This legacy session cannot be routed to the native executor; restore its original execution mode",
+		);
+	}
 	// Apply rate limiting for local providers
 	if (provider !== "BACKGROUND_AGENTS") {
 		if (!localProviderRateLimiter.tryAcquire()) {

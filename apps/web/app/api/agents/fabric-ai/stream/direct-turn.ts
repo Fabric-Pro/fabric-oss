@@ -15,6 +15,7 @@ import {
 	forbiddenOrganizationResponse,
 	resolveRequestedOrganization,
 } from "@repo/api/lib/requested-organization";
+import { stripRemoteCodingRunSummary } from "@repo/api/modules/projects/lib/strip-internal-story-fields";
 import { AiUsageLimitExceededError } from "@repo/payments";
 import {
 	type ActivityHeartbeatDetails,
@@ -247,22 +248,27 @@ async function buildAgentContextSystemPrompt({
 					updatedAt: true,
 				},
 			}),
-			db.codingRun.findMany({
-				where: { projectId },
-				orderBy: { updatedAt: "desc" },
-				take: AGENT_CONTEXT_CODING_RUN_LIMIT,
-				select: {
-					id: true,
-					status: true,
-					provider: true,
-					executionChannel: true,
-					externalUrl: true,
-					pullRequestUrl: true,
-					updatedAt: true,
-					story: { select: { identifier: true, title: true } },
-					storyTask: { select: { identifier: true, title: true } },
-				},
-			}),
+			db.codingRun
+				.findMany({
+					where: { projectId },
+					orderBy: { updatedAt: "desc" },
+					take: AGENT_CONTEXT_CODING_RUN_LIMIT,
+					select: {
+						id: true,
+						status: true,
+						provider: true,
+						executionChannel: true,
+						externalUrl: true,
+						providerMetadata: true,
+						pullRequestUrl: true,
+						updatedAt: true,
+						story: { select: { identifier: true, title: true } },
+						storyTask: {
+							select: { identifier: true, title: true },
+						},
+					},
+				})
+				.then((runs) => runs.map(stripRemoteCodingRunSummary)),
 		]);
 
 		if (!project) {

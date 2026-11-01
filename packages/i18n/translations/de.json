@@ -2921,6 +2921,35 @@
 		"description": "Um weiterzumachen, wähle bitte einen Plan aus."
 	},
 	"projects": {
+		"remoteAgents": {
+			"privateLabel": "Private Sitzung",
+			"privateSession": "Diese Sitzung läuft auf dem privaten Server eines anderen Entwicklers. Projektfortschritt und Pull Requests sind sichtbar; Unterhaltung und Steuerung bleiben privat.",
+			"loadingServers": "Remote-Server werden geladen…",
+			"loadServersFailed": "Remote-Server konnten nicht geladen werden. Versuche es vor der Zuweisung erneut.",
+			"title": "Remote-Server",
+			"choose": "Remote-Server auswählen",
+			"mine": "Meine Server",
+			"team": "Team-Server",
+			"privateHelp": "Nur du kannst dieser Verbindung Aufgaben zuweisen. Sie nutzt die auf deinem Server angemeldeten Konten.",
+			"teamHelp": "Projektmitglieder können Aufgaben über die Konten dieses gemeinsamen Servers zuweisen.",
+			"emptyHelp": "Wähle einen Team-Server oder verbinde deinen eigenen. Anbieter- und Git-Zugangsdaten bleiben auf dem Remote-Host.",
+			"connect": "Remote-Server verbinden",
+			"connectionHelp": "Verbinde einen vorhandenen Fabric-Agents-Server, den Portal-API und Worker erreichen können. Verwende dessen dediziertes Ausführungsgeheimnis, keinen Anbieter-API-Schlüssel oder Desktop-Anmeldetoken.",
+			"name": "Verbindungsname",
+			"url": "Server-URL",
+			"secret": "Ausführungsgeheimnis",
+			"visibility": "Wer diese Verbindung nutzen kann",
+			"verify": "Prüfen und verbinden",
+			"disconnect": "Für neue Aufgaben trennen",
+			"conversation": "Remote-Sitzung",
+			"conversationHelp": "Aktuelle Unterhaltung der tatsächlichen Remote-Sitzung. Öffne Fabric Agents für Werkzeugfreigaben oder Anmeldeanfragen.",
+			"openBrowser": "Im Browser öffnen",
+			"loading": "Remote-Unterhaltung wird geladen…",
+			"retry": "Erneut versuchen",
+			"noMessages": "Noch keine Nachrichten verfügbar.",
+			"you": "Entwickler",
+			"agent": "Agent"
+		},
 		"codingInstructions": {
 			"fileHistory": {
 				"button": "Verlauf",

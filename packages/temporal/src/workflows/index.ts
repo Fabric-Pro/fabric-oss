@@ -918,3 +918,5 @@ export {
 } from "./workspace-document-processing";
 // Weave: Loom/Tapestry workflows removed — weave agents are now orchestrated
 // by Fabric Loom via A2A agent delegation.
+
+export { codingRunFollowUpWorkflow } from "./coding-run-follow-up";
