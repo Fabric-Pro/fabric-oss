@@ -172,6 +172,19 @@ describe.skipIf(!sourceRoot)(
 					promptId: "example-prompt-1",
 				}),
 			).toEqual(first);
+			const conversation = await adapter.getSessionMessages(sessionId);
+			expect(conversation.messages).toEqual([
+				{ id: first.messageId, role: "user", content: "work" },
+			]);
+			const browserLink = new URL(
+				conversation.webUrl ?? "https://missing.example.com",
+			);
+			expect(browserLink.searchParams.get("ws")).toBe(
+				"example-workspace",
+			);
+			expect(browserLink.searchParams.get("route")).toBe(
+				`allSessions/session/${sessionId}`,
+			);
 			expect(
 				JSON.parse(await readFile(join(root, "native.json"), "utf8"))
 					.sends,

@@ -11,7 +11,7 @@
  */
 
 import { ORPCError } from "@orpc/client";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
 	handlers,
@@ -22,6 +22,7 @@ const {
 	mockGetTemporalClient,
 	workflowGetHandle,
 	workflowSignal,
+	mockNativeCancel,
 } = vi.hoisted(() => {
 	const handlers: Record<string, (...args: unknown[]) => unknown> = {};
 	const mockGetCodingRun = vi.fn();
@@ -40,12 +41,14 @@ const {
 		mockGetTemporalClient,
 		workflowGetHandle,
 		workflowSignal,
+		mockNativeCancel: vi.fn(),
 	};
 });
 
 vi.mock("@repo/database", () => ({
 	getCodingRun: mockGetCodingRun,
 	getProjectMemberRole: mockGetProjectMemberRole,
+	canEditProject: mockHasPermission,
 	updateCodingRunStatus: mockUpdateCodingRunStatus,
 }));
 
@@ -55,6 +58,9 @@ vi.mock("@repo/permissions", () => ({
 	resolveProjectPermissions: vi.fn(() => new Set<string>()),
 }));
 
+vi.mock("@repo/temporal/coding-execution", () => ({
+	getCodingExecutionProvider: () => ({ cancelSession: mockNativeCancel }),
+}));
 vi.mock("@repo/temporal", () => ({
 	getTemporalClient: mockGetTemporalClient,
 }));
@@ -74,6 +80,7 @@ vi.mock("../../../orpc/procedures", () => {
 		tenantProtectedProcedure: chainable,
 		Permissions: new Proxy({}, { get: (_t, p) => String(p) }),
 		requirePermission: () => (c: unknown) => c,
+		requireInputOrgPermission: () => (c: unknown) => c,
 		resolveOrganizationId: vi.fn(
 			(organizationId: string | null | undefined) =>
 				organizationId ?? null,
@@ -245,5 +252,52 @@ describe("cancelCodingRun — guards", () => {
 
 		await expectORPCError(callCancel(), "NOT_FOUND");
 		expect(workflowGetHandle).not.toHaveBeenCalled();
+	});
+});
+
+afterEach(() => vi.unstubAllEnvs());
+describe("native cancellation confirmation", () => {
+	it("reports recovery instead of promising cancellation when session creation is unbound and its workflow is gone", async () => {
+		vi.stubEnv("FABRIC_AGENTS_EXECUTION_BRIDGE_ENABLED", "true");
+		mockGetCodingRun.mockResolvedValue({
+			...baseRun,
+			status: "QUEUED",
+			provider: "BACKGROUND_AGENTS",
+			providerSessionId: null,
+			providerMetadata: { executionRuntime: "fabric-agent-server" },
+		});
+		workflowSignal.mockRejectedValue(workflowNotFoundError());
+		const error = await expectORPCError(callCancel(), "CONFLICT");
+		expect(error.message).toContain(
+			"Reconcile work on the original server",
+		);
+		expect(mockNativeCancel).not.toHaveBeenCalled();
+		expect(mockUpdateCodingRunStatus).not.toHaveBeenCalled();
+	});
+	it("keeps the active slot while native session creation is in flight", async () => {
+		vi.stubEnv("FABRIC_AGENTS_EXECUTION_BRIDGE_ENABLED", "true");
+		mockGetCodingRun.mockResolvedValue({
+			...baseRun,
+			provider: "BACKGROUND_AGENTS",
+			providerSessionId: null,
+			providerMetadata: { executionRuntime: "fabric-agent-server" },
+		});
+		expect(await callCancel()).toEqual({ status: "cancelling" });
+		expect(workflowSignal).toHaveBeenCalledWith("cancelCodingRun");
+		expect(mockUpdateCodingRunStatus).not.toHaveBeenCalled();
+	});
+	it("does not publish CANCELLED on an unknown native stop result", async () => {
+		vi.stubEnv("FABRIC_AGENTS_EXECUTION_BRIDGE_ENABLED", "true");
+		mockGetCodingRun.mockResolvedValue({
+			...baseRun,
+			provider: "BACKGROUND_AGENTS",
+			providerSessionId: "example-session",
+			providerMetadata: { executionRuntime: "fabric-agent-server" },
+		});
+		mockNativeCancel.mockRejectedValueOnce(
+			new Error("Cancellation unknown"),
+		);
+		await expect(callCancel()).rejects.toThrow("Cancellation unknown");
+		expect(mockUpdateCodingRunStatus).not.toHaveBeenCalled();
 	});
 });

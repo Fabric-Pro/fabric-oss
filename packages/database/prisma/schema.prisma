@@ -2731,6 +2731,8 @@ model Project {
   deletionReminderSentAt     DateTime? // Track when reminder email was sent
   deletedMeetingArchives     DeletedMeetingArchive[]
 
+  remoteAgentServers ProjectRemoteAgentServer[]
+
   @@index([userId])
   @@index([deletedAt])
   @@index([organizationId])
@@ -14838,6 +14840,30 @@ model WorkflowExecutionLog {
 enum WorkflowIntegrationUsageScope {
   OWNER_ONLY
   ORGANIZATION_SHARED
+}
+
+/// A project connection to a Fabric Agents execution profile. Provider/Git
+/// credentials stay on that host; only its service HMAC secret is encrypted here.
+/// PRIVATE connections are usable only by their owner within the organization.
+/// Migration-owned CHECK restricts scope to PRIVATE/TEAM; apply:rls installs
+/// the project and connection-owner policy before non-worker access.
+model ProjectRemoteAgentServer {
+  id              String   @id @default(cuid())
+  projectId       String
+  userId          String
+  name            String
+  scope           String   @default("PRIVATE")
+  url             String
+  profileId       String
+  encryptedSecret String
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  project         Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, isActive])
+  @@index([userId])
+  @@map("project_remote_agent_server")
 }
 
 model WorkflowIntegration {

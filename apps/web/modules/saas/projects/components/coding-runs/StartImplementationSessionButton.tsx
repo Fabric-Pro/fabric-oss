@@ -2,9 +2,10 @@
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { orpc } from "@shared/lib/orpc-query-utils";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import { CodeIcon } from "lucide-react";
+import { useTranslations } from "next-intl";
 import { type ComponentProps, useState } from "react";
 import { toast } from "sonner";
 import { orpcClient } from "../../../../shared/lib/orpc-client";
@@ -16,6 +17,7 @@ import {
 	getImplementationRecommendation,
 } from "../../lib/implementation-session-labels";
 import type { UserStory } from "../../lib/stories/types";
+import { RemoteAgentServerPicker } from "./RemoteAgentServerPicker";
 import {
 	type StartCodingRunConfirmOptions,
 	StartCodingRunDialog,
@@ -64,6 +66,7 @@ export function StartImplementationSessionButton({
 	initialExecutionProvider,
 }: StartImplementationSessionButtonProps) {
 	const queryClient = useQueryClient();
+	const t = useTranslations("projects.remoteAgents");
 	const { organizationId } = useOrganizationContext();
 	const [internalOpen, setInternalOpen] = useState(false);
 	const isOpen = controlledOpen ?? internalOpen;
@@ -82,6 +85,23 @@ export function StartImplementationSessionButton({
 	const effectiveProvider =
 		initialExecutionProvider ?? recommendation.provider;
 	const isKanbanLocal = effectiveProvider === "KANBAN_LOCAL";
+	const [serverId, setServerId] = useState("");
+	const servers = useQuery({
+		queryKey: ["remoteAgentServers", projectId, organizationId],
+		gcTime: 0,
+		queryFn: () =>
+			orpcClient.codingRuns.remoteServers.list({
+				projectId,
+				organizationId,
+			}),
+		enabled: isOpen && !isKanbanLocal,
+		retry: false,
+	});
+	const selectedServerId = servers.data?.servers.some(
+		(server) => server.id === serverId,
+	)
+		? serverId
+		: undefined;
 
 	const invalidateStoryQueries = async () => {
 		await Promise.all([
@@ -152,6 +172,7 @@ export function StartImplementationSessionButton({
 				organizationId: organizationId ?? null,
 				executionChannel: "BACKGROUND_AGENTS",
 				provider: "BACKGROUND_AGENTS",
+				...(options?.serverId ? { serverId: options.serverId } : {}),
 				...(options?.llmConnection
 					? { llmConnection: options.llmConnection }
 					: {}),
@@ -203,6 +224,36 @@ export function StartImplementationSessionButton({
 				isLoading={startMutation.isPending}
 				onConfirm={(options) => startMutation.mutate(options)}
 				focusedTaskId={focusedTaskId}
+				serverId={selectedServerId}
+				serverRequired={servers.data?.enabled === true}
+				serverLoading={servers.isPending || servers.isError}
+				serverPicker={
+					servers.isPending ? (
+						<output>{t("loadingServers")}</output>
+					) : servers.isError ? (
+						<div role="alert" className="space-y-2">
+							<p className="text-sm text-destructive">
+								{t("loadServersFailed")}
+							</p>
+							<Button
+								variant="outline"
+								type="button"
+								onClick={() => servers.refetch()}
+							>
+								{t("retry")}
+							</Button>
+						</div>
+					) : servers.data?.enabled ? (
+						<RemoteAgentServerPicker
+							projectId={projectId}
+							organizationId={organizationId}
+							servers={servers.data.servers}
+							canShare={servers.data.canShare}
+							value={selectedServerId ?? ""}
+							onChange={setServerId}
+						/>
+					) : undefined
+				}
 			/>
 		</>
 	);

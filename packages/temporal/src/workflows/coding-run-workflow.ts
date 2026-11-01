@@ -104,6 +104,7 @@ export const providerCompleteSignal =
 	defineSignal<[ProviderCompletePayload]>("providerComplete");
 
 export interface CodingRunWorkflowInput {
+	providerMetadata?: unknown;
 	codingRunId: string;
 	projectId: string;
 	storyId: string;
@@ -198,9 +199,17 @@ export async function codingRunWorkflow(
 		bridgePatch &&
 		(!gatedCutover || input.fabricAgentsBridgeEnabled === true);
 
+	const durableLifecycle =
+		useFabricAgentsBridge && patched("fabric-agents-lifecycle-v2");
+
 	const state = {
 		plan,
 		useFabricAgentsBridge,
+		providerMetadata: durableLifecycle
+			? input.providerMetadata
+			: (undefined as unknown),
+		stopConfirmed: false,
+		sessionCreationAttempted: false,
 		cancelled: false,
 		currentStatus: "STARTING",
 		sessionId: null as string | null,
@@ -210,6 +219,49 @@ export async function codingRunWorkflow(
 		signalReceived: false,
 		signalPayload: null as ProviderCompletePayload | null,
 	};
+
+	async function confirmNativeStop(): Promise<boolean> {
+		if (!durableLifecycle) {
+			return true;
+		}
+		if (state.stopConfirmed) {
+			return true;
+		}
+		if (!state.sessionId && !state.sessionCreationAttempted) {
+			return true;
+		}
+		try {
+			if (!state.sessionId) {
+				throw new Error("Session creation outcome is unknown");
+			}
+			const sessionId = state.sessionId;
+			await CancellationScope.nonCancellable(() =>
+				cancelExecutionSession({
+					provider,
+					sessionId,
+					providerMetadata: state.providerMetadata,
+				}),
+			);
+			state.stopConfirmed = true;
+			return true;
+		} catch {
+			await CancellationScope.nonCancellable(async () => {
+				await updateCodingRunStatusActivity({
+					codingRunId,
+					status: "AWAITING_REVIEW",
+				});
+				await addCodingRunEventActivity({
+					codingRunId,
+					eventType: "cancellation_unknown",
+					payload: {
+						message:
+							"Remote shutdown requires reconciliation before another run can start",
+					},
+				});
+			});
+			return false;
+		}
+	}
 
 	log.info("Starting coding run workflow", {
 		codingRunId,
@@ -241,6 +293,9 @@ export async function codingRunWorkflow(
 		codingRunId,
 		status: state.currentStatus,
 		sessionId: state.sessionId,
+		...(state.providerMetadata
+			? { providerMetadata: state.providerMetadata }
+			: {}),
 		pullRequestUrl: state.pullRequestUrl,
 		pollCount: state.pollCount,
 	}));
@@ -270,10 +325,20 @@ export async function codingRunWorkflow(
 
 		if (state.cancelled) {
 			exitReason = "cancelled";
+			if (durableLifecycle && !(await confirmNativeStop())) {
+				return {
+					codingRunId,
+					status: "failed",
+					error: "Cancellation requires recovery",
+				};
+			}
 			return await handleCancellation(
 				codingRunId,
 				provider,
 				state.sessionId,
+				state.providerMetadata,
+				durableLifecycle,
+				state.stopConfirmed,
 			);
 		}
 
@@ -313,14 +378,28 @@ export async function codingRunWorkflow(
 
 		if (state.cancelled) {
 			exitReason = "cancelled";
+			if (durableLifecycle && !(await confirmNativeStop())) {
+				return {
+					codingRunId,
+					status: "failed",
+					error: "Cancellation requires recovery",
+				};
+			}
 			return await handleCancellation(
 				codingRunId,
 				provider,
 				state.sessionId,
+				state.providerMetadata,
+				durableLifecycle,
+				state.stopConfirmed,
 			);
 		}
 
+		state.sessionCreationAttempted = true;
 		const sessionResult = await createExecutionSession({
+			...(durableLifecycle && input.providerMetadata
+				? { providerMetadata: input.providerMetadata }
+				: {}),
 			...(gatedCutover
 				? { fabricAgentsBridgeEnabled: useFabricAgentsBridge }
 				: {}),
@@ -352,7 +431,32 @@ export async function codingRunWorkflow(
 				: {}),
 		});
 		state.sessionId = sessionResult.sessionId;
+		if (durableLifecycle) {
+			state.providerMetadata = sessionResult.providerMetadata;
+		}
 
+		if (durableLifecycle && state.cancelled) {
+			await updateCodingRunStatusActivity({
+				codingRunId,
+				status: "STARTING",
+				data: {
+					providerSessionId: state.sessionId,
+					providerMetadata: sessionResult.providerMetadata,
+				},
+			});
+			if (!(await confirmNativeStop())) {
+				return {
+					codingRunId,
+					status: "failed",
+					error: "Cancellation requires recovery",
+				};
+			}
+			await updateCodingRunStatusActivity({
+				codingRunId,
+				status: "CANCELLED",
+			});
+			return { codingRunId, status: "cancelled" };
+		}
 		state.currentStatus = "RUNNING";
 		await updateCodingRunStatusActivity({
 			codingRunId,
@@ -373,16 +477,29 @@ export async function codingRunWorkflow(
 
 		if (state.cancelled) {
 			exitReason = "cancelled";
+			if (durableLifecycle && !(await confirmNativeStop())) {
+				return {
+					codingRunId,
+					status: "failed",
+					error: "Cancellation requires recovery",
+				};
+			}
 			return await handleCancellation(
 				codingRunId,
 				provider,
 				state.sessionId,
+				state.providerMetadata,
+				durableLifecycle,
+				state.stopConfirmed,
 			);
 		}
 
 		await sendExecutionPrompt({
 			provider,
 			sessionId: state.sessionId,
+			...(state.providerMetadata
+				? { providerMetadata: state.providerMetadata }
+				: {}),
 			content: prompt,
 			authorId: userId,
 			projectId,
@@ -411,10 +528,20 @@ export async function codingRunWorkflow(
 
 		if (state.cancelled) {
 			exitReason = "cancelled";
+			if (durableLifecycle && !(await confirmNativeStop())) {
+				return {
+					codingRunId,
+					status: "failed",
+					error: "Cancellation requires recovery",
+				};
+			}
 			return await handleCancellation(
 				codingRunId,
 				provider,
 				state.sessionId,
+				state.providerMetadata,
+				durableLifecycle,
+				state.stopConfirmed,
 			);
 		}
 
@@ -441,6 +568,9 @@ export async function codingRunWorkflow(
 					codingRunId,
 					provider,
 					sessionId: state.sessionId,
+					...(state.providerMetadata
+						? { providerMetadata: state.providerMetadata }
+						: {}),
 				});
 				if (useFabricAgentsBridge && synced?.pullRequestUrl) {
 					const hadPrBefore = Boolean(state.pullRequestUrl);
@@ -456,8 +586,10 @@ export async function codingRunWorkflow(
 						});
 					}
 				}
-			} catch {
-				/* non-critical */
+			} catch (error) {
+				if (durableLifecycle) {
+					throw error;
+				}
 			}
 		}
 
@@ -470,6 +602,13 @@ export async function codingRunWorkflow(
 					Boolean(state.pullRequestUrl));
 
 		if (hasSucceeded) {
+			if (!(await confirmNativeStop())) {
+				return {
+					codingRunId,
+					status: "failed",
+					error: "Remote cleanup requires recovery",
+				};
+			}
 			const finalFabricStatus = isBridgeRun
 				? "COMPLETED"
 				: state.currentStatus === "PR_OPENED"
@@ -509,6 +648,13 @@ export async function codingRunWorkflow(
 			finalProviderStatus === "stopped" ||
 			(useFabricAgentsBridge && finalProviderStatus === "archived")
 		) {
+			if (!(await confirmNativeStop())) {
+				return {
+					codingRunId,
+					status: "failed",
+					error: "Cancellation requires recovery",
+				};
+			}
 			state.currentStatus = "CANCELLED";
 			await updateCodingRunStatusActivity({
 				codingRunId,
@@ -527,6 +673,13 @@ export async function codingRunWorkflow(
 			? `Coding run timed out after ${(MAX_POLL_ITERATIONS * POLL_INTERVAL_SECONDS) / 60} minutes`
 			: state.lastError || "Coding agent session failed";
 
+		if (!(await confirmNativeStop())) {
+			return {
+				codingRunId,
+				status: "failed",
+				error: "Remote cleanup requires recovery",
+			};
+		}
 		state.currentStatus = "FAILED";
 		await updateCodingRunStatusActivity({ codingRunId, status: "FAILED" });
 		await addCodingRunEventActivity({
@@ -551,6 +704,13 @@ export async function codingRunWorkflow(
 			codingRunId,
 			error: errorMsg,
 		});
+		if (!(await confirmNativeStop())) {
+			return {
+				codingRunId,
+				status: "failed",
+				error: "Remote cleanup requires recovery",
+			};
+		}
 		state.currentStatus = "FAILED";
 		// Leave `exitReason` as its default `"exception"` so the audit
 		// log distinguishes unhandled throws from the deliberate
@@ -590,9 +750,15 @@ export async function codingRunWorkflow(
 		// never reuse or rename.
 		if (patched("coding-run-cleanup-on-exit-v1")) {
 			await CancellationScope.nonCancellable(async () => {
-				await cleanupWeaveResourcesActivity({
+				const cleanup = await cleanupWeaveResourcesActivity({
 					sessionId: state.sessionId,
+					...(state.providerMetadata
+						? { providerMetadata: state.providerMetadata }
+						: {}),
 					provider,
+					...(state.stopConfirmed
+						? { stopAlreadyConfirmed: true }
+						: {}),
 					userId,
 					organizationId: organizationId ?? null,
 					codingRunId,
@@ -600,6 +766,26 @@ export async function codingRunWorkflow(
 					workflowId,
 					runDurationMs: Date.now() - workflowStartedAtMs,
 				});
+				if (
+					durableLifecycle &&
+					!state.stopConfirmed &&
+					state.sessionId &&
+					cleanup &&
+					!cleanup.destroyed
+				) {
+					await updateCodingRunStatusActivity({
+						codingRunId,
+						status: "AWAITING_REVIEW",
+					});
+					await addCodingRunEventActivity({
+						codingRunId,
+						eventType: "cancellation_unknown",
+						payload: {
+							message:
+								"Remote cleanup is unconfirmed; recover the existing session before starting another run",
+						},
+					});
+				}
 			});
 		}
 	}
@@ -612,6 +798,7 @@ async function processReceivedSignal(
 	state: {
 		plan: CodingRunPlan;
 		currentStatus: string;
+		providerMetadata?: unknown;
 		pullRequestUrl: string | null;
 		lastError: string | null;
 		signalPayload: ProviderCompletePayload | null;
@@ -647,7 +834,14 @@ async function processReceivedSignal(
 			codingRunId,
 			status: "PR_OPENED",
 		});
-		await syncCodingRunArtifacts({ codingRunId, provider, sessionId });
+		await syncCodingRunArtifacts({
+			codingRunId,
+			provider,
+			sessionId,
+			...(state.providerMetadata
+				? { providerMetadata: state.providerMetadata }
+				: {}),
+		});
 	}
 
 	return state.signalPayload.providerStatus;
@@ -662,6 +856,7 @@ async function runHybridLoop(
 		useFabricAgentsBridge: boolean;
 		cancelled: boolean;
 		currentStatus: string;
+		providerMetadata?: unknown;
 		pullRequestUrl: string | null;
 		lastError: string | null;
 		pollCount: number;
@@ -712,6 +907,7 @@ async function runPollLoop(
 		useFabricAgentsBridge: boolean;
 		cancelled: boolean;
 		currentStatus: string;
+		providerMetadata?: unknown;
 		pullRequestUrl: string | null;
 		lastError: string | null;
 		pollCount: number;
@@ -758,7 +954,13 @@ async function runPollLoop(
 
 		let statusResult: Awaited<ReturnType<typeof pollExecutionStatus>>;
 		try {
-			statusResult = await pollStatus({ provider, sessionId });
+			statusResult = await pollStatus({
+				provider,
+				sessionId,
+				...(state.providerMetadata
+					? { providerMetadata: state.providerMetadata }
+					: {}),
+			});
 		} catch (pollError) {
 			const errMsg = extractErrorMessage(pollError);
 			log.warn("Poll failed, will retry", {
@@ -839,7 +1041,14 @@ async function runPollLoop(
 			) {
 				state.currentStatus = "PR_OPENED";
 			}
-			await syncCodingRunArtifacts({ codingRunId, provider, sessionId });
+			await syncCodingRunArtifacts({
+				codingRunId,
+				provider,
+				sessionId,
+				...(state.providerMetadata
+					? { providerMetadata: state.providerMetadata }
+					: {}),
+			});
 			await addCodingRunEventActivity({
 				codingRunId,
 				eventType: "pr_opened",
@@ -956,12 +1165,40 @@ async function handleCancellation(
 	codingRunId: string,
 	provider: "BACKGROUND_AGENTS" | "KANBAN_LOCAL",
 	sessionId: string | null,
+	providerMetadata?: unknown,
+	strictCancellation = false,
+	stopAlreadyConfirmed = false,
 ): Promise<CodingRunWorkflowOutput> {
 	log.info("Cancelling coding run", { codingRunId, sessionId });
-	if (sessionId) {
+	if (sessionId && !stopAlreadyConfirmed) {
 		try {
-			await cancelExecutionSession({ provider, sessionId });
+			await cancelExecutionSession({
+				provider,
+				sessionId,
+				...(providerMetadata
+					? { providerMetadata: providerMetadata }
+					: {}),
+			});
 		} catch (e) {
+			if (strictCancellation) {
+				await updateCodingRunStatusActivity({
+					codingRunId,
+					status: "AWAITING_REVIEW",
+				});
+				await addCodingRunEventActivity({
+					codingRunId,
+					eventType: "cancellation_unknown",
+					payload: {
+						message:
+							"Cancellation has not been confirmed; inspect the existing session",
+					},
+				});
+				return {
+					codingRunId,
+					status: "failed",
+					error: "Cancellation requires recovery",
+				};
+			}
 			log.warn("Failed to cancel execution session", {
 				codingRunId,
 				error: extractErrorMessage(e),

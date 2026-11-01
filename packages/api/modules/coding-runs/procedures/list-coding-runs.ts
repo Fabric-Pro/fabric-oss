@@ -1,7 +1,7 @@
 /**
  * List Coding Runs Procedure
  *
- * AUTHORIZATION: Tenant-isolated via XOR pattern
+ * AUTHORIZATION: Tenant scope, project visibility, and private/team runtime projection
  */
 
 import { listCodingRunsForStory, listCodingRunsForTask } from "@repo/database";
@@ -12,6 +12,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { publicCodingRuns } from "../lib/public-run";
 
 export const listCodingRunsProcedure = tenantProtectedProcedure
 	.use(requireInputOrgPermission(Permissions.AGENT_READ))
@@ -36,18 +37,24 @@ export const listCodingRunsProcedure = tenantProtectedProcedure
 		);
 
 		if (input.storyTaskId) {
-			return listCodingRunsForTask(
-				input.storyTaskId,
+			return publicCodingRuns(
+				await listCodingRunsForTask(
+					input.storyTaskId,
+					user.id,
+					organizationId,
+				),
 				user.id,
-				organizationId,
 			);
 		}
 
 		if (input.storyId) {
-			return listCodingRunsForStory(
-				input.storyId,
+			return publicCodingRuns(
+				await listCodingRunsForStory(
+					input.storyId,
+					user.id,
+					organizationId,
+				),
 				user.id,
-				organizationId,
 			);
 		}
 

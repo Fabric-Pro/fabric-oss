@@ -127,3 +127,77 @@ describe("native bridge cutover history compatibility", () => {
 		60_000,
 	);
 });
+
+it("cancels native creation before dispatching a prompt and replays the cancellation history", async () => {
+	const env = await TestWorkflowEnvironment.createTimeSkipping();
+	const workflowId = "example-cancel-native-creation";
+	const order: string[] = [];
+	try {
+		const worker = await Worker.create({
+			connection: env.nativeConnection,
+			workflowBundle,
+			taskQueue: workflowId,
+			activities: {
+				buildImplementationPrompt: async () => "Synthetic work",
+				createExecutionSession: async () => {
+					await env.client.workflow
+						.getHandle(workflowId)
+						.signal("cancelCodingRun");
+					return { sessionId: "example-session" };
+				},
+				sendExecutionPrompt: async () => {
+					order.push("prompt");
+				},
+				cancelExecutionSession: async () => {
+					order.push("confirmed-stop");
+				},
+				updateCodingRunStatusActivity: async ({
+					status,
+				}: {
+					status: string;
+				}) => {
+					order.push(status);
+				},
+				addCodingRunEventActivity: async () => {},
+				cleanupWeaveResourcesActivity: async () => ({
+					destroyed: true,
+					alreadyTerminal: false,
+				}),
+			},
+		});
+		const handle = await env.client.workflow.start("codingRunWorkflow", {
+			workflowId,
+			taskQueue: workflowId,
+			args: [
+				{
+					codingRunId: "example-run",
+					projectId: "example-project",
+					storyId: "example-story",
+					userId: "example-user",
+					organizationId: "example-org",
+					provider: "BACKGROUND_AGENTS",
+					repositoryOwner: "example-org",
+					repositoryName: "example-repo",
+					storyTitle: "Example",
+					targetBranch: "main",
+					fabricAgentsBridgeEnabled: true,
+				},
+			],
+		});
+		expect(await worker.runUntil(handle.result())).toMatchObject({
+			status: "cancelled",
+		});
+		expect(order).not.toContain("prompt");
+		expect(order).not.toContain("RUNNING");
+		expect(order.indexOf("confirmed-stop")).toBeLessThan(
+			order.indexOf("CANCELLED"),
+		);
+		await Worker.runReplayHistory(
+			{ workflowBundle },
+			await handle.fetchHistory(),
+			workflowId,
+		);
+	} finally {
+		await env.teardown();
+	}
+}, 60_000);

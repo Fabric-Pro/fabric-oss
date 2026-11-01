@@ -425,7 +425,7 @@ const PROJECT_GROUP: GsGroup = {
 			id: "roadmap",
 			label: "Roadmap",
 			description:
-				"Track features and tasks through delivery stages, spot bottlenecks, and sync to your PM tool. Switch to the Priority view for a shared, scored worklist with a full history of every priority change.",
+				"Track features and tasks through delivery stages, spot bottlenecks, and sync to your PM tool. When remote servers are enabled, assign work from a feature’s Start work menu to your own or a team server and inspect its session. Switch to Priority for the shared, scored worklist.",
 			icon: MapIcon,
 			projectTab: "stories",
 			anchor: anchorForProjectTab("stories"),

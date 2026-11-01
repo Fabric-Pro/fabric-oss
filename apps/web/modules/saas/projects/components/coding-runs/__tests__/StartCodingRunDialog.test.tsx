@@ -108,7 +108,9 @@ describe("StartCodingRunDialog", () => {
 		);
 
 		expect(
-			screen.getByText(/How setup & PR execution works/i),
+			screen.getByText(
+				/Your selected server creates an isolated worktree/i,
+			),
 		).toBeInTheDocument();
 		// Initially blocked because project has no repo and no task is selected yet
 		expect(

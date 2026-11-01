@@ -11,16 +11,13 @@ import {
 	DialogTitle,
 } from "@ui/components/dialog";
 import {
-	CheckCircle2Icon,
 	CodeIcon,
 	CpuIcon,
 	GitBranchIcon,
-	GitPullRequestIcon,
 	ListTodoIcon,
 	Loader2Icon,
-	TerminalIcon,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import {
 	FABRIC_AGENT_CONNECTIONS,
 	getExecutionProviderDescription,
@@ -29,6 +26,7 @@ import {
 import type { UserStory } from "../../lib/stories/types";
 
 export interface StartCodingRunConfirmOptions {
+	serverId?: string;
 	llmConnection?: string;
 	taskId?: string | null;
 }
@@ -44,6 +42,10 @@ type Props = {
 	onConfirm: (options?: StartCodingRunConfirmOptions) => void;
 	focusedTaskId?: string | null;
 	initialConnection?: string;
+	serverPicker?: ReactNode;
+	serverId?: string;
+	serverRequired?: boolean;
+	serverLoading?: boolean;
 };
 
 export function StartCodingRunDialog({
@@ -57,6 +59,10 @@ export function StartCodingRunDialog({
 	onConfirm,
 	focusedTaskId,
 	initialConnection = "default",
+	serverPicker,
+	serverId,
+	serverRequired = false,
+	serverLoading = false,
 }: Props) {
 	const [selectedConnection, setSelectedConnection] =
 		useState<string>(initialConnection);
@@ -102,8 +108,9 @@ export function StartCodingRunDialog({
 				: undefined;
 		const taskChanged = selectedTaskId !== (focusedTaskId ?? null);
 
-		if (llmConnection || taskChanged) {
+		if (llmConnection || taskChanged || serverId) {
 			onConfirm({
+				...(serverId ? { serverId } : {}),
 				...(llmConnection ? { llmConnection } : {}),
 				...(taskChanged ? { taskId: selectedTaskId } : {}),
 			});
@@ -141,6 +148,7 @@ export function StartCodingRunDialog({
 				</DialogHeader>
 
 				<div className="flex-1 space-y-4 overflow-y-auto py-1 pr-1">
+					{serverPicker}
 					{!hasRepositoryContext && (
 						<div className="rounded-2xl border border-amber-300/40 bg-amber-50/70 p-4 dark:border-amber-700/50 dark:bg-amber-950/20">
 							<p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
@@ -315,94 +323,11 @@ export function StartCodingRunDialog({
 						</div>
 					)}
 
-					<div className="rounded-2xl border border-border/60 bg-muted/20 p-4">
-						<div className="flex items-center gap-2">
-							<TerminalIcon className="size-3.5 text-primary" />
-							<p className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-								How setup &amp; PR execution works
-							</p>
-						</div>
-						<ol className="mt-2.5 space-y-1.5 text-xs leading-5 text-muted-foreground">
-							<li className="flex items-start gap-2">
-								<CheckCircle2Icon className="mt-0.5 size-3.5 shrink-0 text-primary" />
-								<span>
-									<strong className="font-medium text-foreground">
-										1. Start &amp; authenticate{" "}
-										<code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-foreground">
-											fabric-agent-server
-										</code>
-										:
-									</strong>{" "}
-									Run{" "}
-									<code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-foreground">
-										FABRIC_SERVER_TOKEN=&lt;secret-32+chars&gt;
-										fabric-agent-server --port 9100
-									</code>
-									, configure a workspace &amp; backend
-									connection, and authenticate{" "}
-									<code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-foreground">
-										gh auth login
-									</code>{" "}
-									(or{" "}
-									<code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-foreground">
-										GH_TOKEN
-									</code>
-									) for GitHub push &amp; PR creation.
-								</span>
-							</li>
-							<li className="flex items-start gap-2">
-								<CheckCircle2Icon className="mt-0.5 size-3.5 shrink-0 text-primary" />
-								<span>
-									<strong className="font-medium text-foreground">
-										2. Connect Fabric worker &amp; API:
-									</strong>{" "}
-									Set{" "}
-									<code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-foreground">
-										BACKGROUND_AGENTS_URL
-									</code>{" "}
-									(e.g.{" "}
-									<code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-foreground">
-										http://127.0.0.1:9100
-									</code>{" "}
-									locally or{" "}
-									<code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-foreground">
-										https://agent-node.example.ts.net:9100
-									</code>{" "}
-									over Tailscale) and{" "}
-									<code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-foreground">
-										BACKGROUND_AGENTS_INTERNAL_SECRET=&lt;shared-32+char-hmac-secret&gt;
-									</code>{" "}
-									on both{" "}
-									<code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-foreground">
-										fabric-agent-server
-									</code>{" "}
-									and the Temporal worker / API server.
-								</span>
-							</li>
-							<li className="flex items-start gap-2">
-								<GitPullRequestIcon className="mt-0.5 size-3.5 shrink-0 text-primary" />
-								<span>
-									<strong className="font-medium text-foreground">
-										3. Isolated worktree &amp; GitHub PR:
-									</strong>{" "}
-									The server creates an isolated branch (
-									<code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-foreground">
-										feat/&lt;slug&gt;
-									</code>
-									) from{" "}
-									<code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-foreground">
-										{effectiveBranch}
-									</code>
-									, implements the assigned task, runs tests,
-									and opens a Pull Request against{" "}
-									<code className="rounded bg-muted px-1 py-0.5 font-mono text-[11px] text-foreground">
-										{effectiveBranch}
-									</code>
-									.
-								</span>
-							</li>
-						</ol>
-					</div>
+					<p className="text-xs leading-5 text-muted-foreground">
+						Your selected server creates an isolated worktree,
+						implements the assigned work, and opens a pull request.
+						Follow its progress and conversation from this project.
+					</p>
 				</div>
 
 				<DialogFooter className="flex-shrink-0 gap-2 sm:justify-between">
@@ -422,7 +347,12 @@ export function StartCodingRunDialog({
 						<Button
 							type="button"
 							onClick={handleConfirm}
-							disabled={isLoading || !hasRepositoryContext}
+							disabled={
+								isLoading ||
+								!hasRepositoryContext ||
+								serverLoading ||
+								(serverRequired && !serverId)
+							}
 						>
 							{isLoading ? (
 								<>

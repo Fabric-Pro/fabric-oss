@@ -37,11 +37,15 @@ export function CodingRunDialog({
 				id: codingRunId,
 				organizationId: organizationId ?? null,
 			}),
-		onSuccess: () => {
+		onSuccess: (result) => {
 			queryClient.invalidateQueries({
 				queryKey: ["codingRun", codingRunId],
 			});
-			toast.success("Coding run cancelled");
+			toast.success(
+				result.status === "cancelling"
+					? "Cancellation requested; waiting for the agent to stop"
+					: "Coding run cancelled",
+			);
 		},
 		onError: () => {
 			toast.error("Failed to cancel coding run");
@@ -70,10 +74,11 @@ export function CodingRunDialog({
 								Implementation session
 							</DialogTitle>
 							<DialogDescription className="max-w-[56ch] text-sm leading-6">
-								Track isolated worktree progress on Fabric
-								Agents, reply to agent prompts, jump directly
-								into the desktop or Web UI session, and inspect
-								the opened pull request.
+								Track work on Fabric Agents, read the remote
+								conversation, continue completed work, and
+								inspect the pull request. Resolve native
+								approvals in the authenticated Fabric Agents
+								client.
 							</DialogDescription>
 							{featureTitle && (
 								<div className="rounded-xl border border-border/60 bg-muted/30 px-3 py-2">

@@ -17,6 +17,8 @@ import {
 	buildProjectMemberOrTenantConsistentPolicySQL,
 	buildProjectMemberOrTenantPolicySQL,
 	buildProjectSelfMemberOrTenantPolicySQL,
+	buildRemoteAgentServerPolicySQL,
+	buildRemoteAgentServerWritePolicies,
 	ORGANIZATION_SHARED_READ_POLICY,
 	PROJECT_GUEST_READ_POLICY,
 } from "./rls-policy-sql";
@@ -808,6 +810,10 @@ async function applyRLS() {
 
 			// Coding runs - Background agent execution
 			{ name: "coding_run", policy: "user_owned" },
+			{
+				name: "project_remote_agent_server",
+				policy: "remote_agent_server",
+			},
 
 			// Runtime authority (Pipes-style session-scoped authorization)
 			{ name: "authority_session", policy: "strict" }, // EITHER userId OR orgId
@@ -1177,6 +1183,10 @@ async function applyRLS() {
 							`;
 						break;
 
+					case "remote_agent_server":
+						policySQL = buildRemoteAgentServerPolicySQL();
+						extraPolicies = buildRemoteAgentServerWritePolicies();
+						break;
 					case "project_scoped":
 						// No direct tenant columns — inherit access from the
 						// parent project row via projectId. Same EXISTS pattern

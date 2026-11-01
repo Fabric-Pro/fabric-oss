@@ -7,6 +7,7 @@ import {
 	resolveOrganizationId,
 	tenantProtectedProcedure,
 } from "../../../orpc/procedures";
+import { stripRemoteCodingRunSummary } from "../../projects/lib/strip-internal-story-fields";
 
 const inputSchema = z.object({
 	projectId: z.string(),
@@ -113,35 +114,38 @@ export const listAgentActivity = tenantProtectedProcedure
 					createdAt: true,
 				},
 			}),
-			db.codingRun.findMany({
-				where: {
-					projectId: input.projectId,
-					...tenantFilter,
-				},
-				orderBy: { createdAt: "desc" },
-				take: input.limit,
-				select: {
-					id: true,
-					status: true,
-					provider: true,
-					executionChannel: true,
-					externalUrl: true,
-					pullRequestUrl: true,
-					createdAt: true,
-					story: {
-						select: {
-							identifier: true,
-							title: true,
+			db.codingRun
+				.findMany({
+					where: {
+						projectId: input.projectId,
+						...tenantFilter,
+					},
+					orderBy: { createdAt: "desc" },
+					take: input.limit,
+					select: {
+						id: true,
+						status: true,
+						provider: true,
+						executionChannel: true,
+						externalUrl: true,
+						providerMetadata: true,
+						pullRequestUrl: true,
+						createdAt: true,
+						story: {
+							select: {
+								identifier: true,
+								title: true,
+							},
+						},
+						storyTask: {
+							select: {
+								identifier: true,
+								title: true,
+							},
 						},
 					},
-					storyTask: {
-						select: {
-							identifier: true,
-							title: true,
-						},
-					},
-				},
-			}),
+				})
+				.then((runs) => runs.map(stripRemoteCodingRunSummary)),
 			db.skill.findMany({
 				where: {
 					isPublished: true,

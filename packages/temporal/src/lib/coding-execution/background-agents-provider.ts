@@ -1,3 +1,6 @@
+import type { RemoteAgentTarget } from "@repo/database";
+import { fetchAgentEndpoint } from "@repo/utils/agent-endpoint";
+import { z } from "zod";
 import { getAuthHeaders } from "./auth";
 import {
 	debugLog,
@@ -20,7 +23,7 @@ import type {
 	HealthCheckResult,
 	SessionStatus,
 } from "./provider";
-import { validateCreateSessionParams } from "./schemas";
+import { validateCreateSessionParams, validateSessionStatus } from "./schemas";
 
 /** Branch-only delivery must be qualified against the replacement runtime before offering spikes. */
 export const FABRIC_BACKGROUND_CAPABILITIES: CodingExecutionProviderCapabilities =
@@ -36,9 +39,25 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 	private readonly controlPlaneUrl: string;
 	private readonly controlPlaneSecret: string;
 
-	constructor() {
-		this.controlPlaneUrl = getBackgroundAgentsUrl().replace(/\/+$/, "");
-		this.controlPlaneSecret = getBackgroundAgentsSecret();
+	constructor(
+		private readonly expectedTarget?: RemoteAgentTarget,
+		private readonly registration?: { url: string; secret: string },
+	) {
+		this.controlPlaneUrl = (
+			registration?.url ??
+			(expectedTarget?.connectionId
+				? expectedTarget.url
+				: getBackgroundAgentsUrl())
+		).replace(/\/+$/, "");
+		this.controlPlaneSecret =
+			registration?.secret ??
+			(expectedTarget?.connectionId ? "" : getBackgroundAgentsSecret());
+		if (expectedTarget && expectedTarget.url !== this.controlPlaneUrl) {
+			throw new SessionValidationError(
+				"BACKGROUND_AGENTS",
+				"This run belongs to another execution endpoint. Restore its configured target; do not reroute the session.",
+			);
+		}
 	}
 
 	async createSession(params: CreateSessionParams): Promise<{
@@ -53,9 +72,15 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 		const llmConnection =
 			validated.llmConnection ??
 			params.llmConnection ??
-			getFabricAgentsDefaultConnection();
+			(this.expectedTarget?.connectionId
+				? undefined
+				: getFabricAgentsDefaultConnection());
 		const model =
-			validated.model ?? params.model ?? getFabricAgentsDefaultModel();
+			validated.model ??
+			params.model ??
+			(this.expectedTarget?.connectionId
+				? undefined
+				: getFabricAgentsDefaultModel());
 		const targetMachine = validated.targetMachine ?? params.targetMachine;
 		const headBranch = validated.headBranch ?? params.headBranch;
 
@@ -69,7 +94,8 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 			targetMachine,
 		});
 
-		const res = await fetch(`${this.controlPlaneUrl}/sessions`, {
+		const readiness = await this.executionReadiness(params);
+		const res = await this.request(`${this.controlPlaneUrl}/sessions`, {
 			method: "POST",
 			headers: getAuthHeaders(this.controlPlaneSecret),
 			signal: AbortSignal.timeout(240_000),
@@ -141,6 +167,30 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 				"Provider returned an empty sessionId",
 			);
 		}
+		if (data.externalUrl) {
+			let valid = false;
+			try {
+				const link = new URL(data.externalUrl);
+				valid =
+					!link.username &&
+					!link.password &&
+					((/^fabricagents[0-9]*:$/.test(link.protocol) &&
+						link.hostname === "workspace" &&
+						!link.search &&
+						!link.hash) ||
+						(link.protocol === "https:" &&
+							link.origin ===
+								new URL(this.controlPlaneUrl).origin));
+			} catch {
+				/* Invalid URI is rejected before it reaches product links. */
+			}
+			if (!valid) {
+				throw new SessionValidationError(
+					"BACKGROUND_AGENTS",
+					"Provider returned an untrusted session link",
+				);
+			}
+		}
 		debugLog("Fabric Agents coding session created", {
 			sessionId: data.sessionId,
 			externalUrl: data.externalUrl,
@@ -155,6 +205,11 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 			providerMetadata: {
 				...data.providerMetadata,
 				executionRuntime: "fabric-agent-server",
+				executionTarget: {
+					...this.expectedTarget,
+					url: this.controlPlaneUrl,
+					profileId: readiness.profileId,
+				},
 			},
 		};
 	}
@@ -171,6 +226,9 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 				"A stable promptId is required",
 			);
 		}
+		if (this.expectedTarget) {
+			await this.executionReadiness();
+		}
 		const encodedSessionId = encodeURIComponent(sessionId);
 		debugLog("Sending prompt to background agent", {
 			sessionId,
@@ -178,7 +236,7 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 			authorId,
 		});
 
-		const res = await fetch(
+		const res = await this.request(
 			`${this.controlPlaneUrl}/sessions/${encodedSessionId}/prompt`,
 			{
 				method: "POST",
@@ -243,14 +301,20 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 	}
 
 	async getSessionStatus(sessionId: string): Promise<SessionStatus> {
+		if (this.expectedTarget) {
+			await this.executionReadiness();
+		}
 		const encodedSessionId = encodeURIComponent(sessionId);
 		debugLog("Getting background agent session status", { sessionId });
 
 		const [sessionRes, artifactsRes] = await Promise.all([
-			fetch(`${this.controlPlaneUrl}/sessions/${encodedSessionId}`, {
-				headers: getAuthHeaders(this.controlPlaneSecret),
-			}),
-			fetch(
+			this.request(
+				`${this.controlPlaneUrl}/sessions/${encodedSessionId}`,
+				{
+					headers: getAuthHeaders(this.controlPlaneSecret),
+				},
+			),
+			this.request(
 				`${this.controlPlaneUrl}/sessions/${encodedSessionId}/artifacts`,
 				{
 					headers: getAuthHeaders(this.controlPlaneSecret),
@@ -274,6 +338,13 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 			);
 		}
 
+		if (!artifactsRes.ok) {
+			throw new NetworkError(
+				"BACKGROUND_AGENTS",
+				"session artifacts",
+				artifactsRes.status,
+			);
+		}
 		const session = (await sessionRes.json()) as {
 			id: string;
 			status: SessionStatus["status"];
@@ -293,7 +364,13 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 			artifacts = Array.isArray(body) ? body : (body?.artifacts ?? []);
 		}
 
-		return {
+		if (session.id !== sessionId) {
+			throw new SessionValidationError(
+				"BACKGROUND_AGENTS",
+				"Provider returned another session identity",
+			);
+		}
+		const result = validateSessionStatus({
 			id: session.id,
 			status: session.status,
 			branchName: session.branchName ?? null,
@@ -310,14 +387,31 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 							? Date.parse(a.createdAt) || Date.now()
 							: Date.now(),
 			})),
-		};
+		});
+		for (const artifact of result.artifacts) {
+			if (
+				artifact.url &&
+				!/^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/.test(
+					artifact.url,
+				)
+			) {
+				throw new SessionValidationError(
+					"BACKGROUND_AGENTS",
+					"Invalid pull request artifact URL",
+				);
+			}
+		}
+		return result;
 	}
 
 	async cancelSession(sessionId: string): Promise<void> {
+		if (this.expectedTarget) {
+			await this.executionReadiness();
+		}
 		const encodedSessionId = encodeURIComponent(sessionId);
 		debugLog("Cancelling background agent session", { sessionId });
 
-		const res = await fetch(
+		const res = await this.request(
 			`${this.controlPlaneUrl}/sessions/${encodedSessionId}/stop`,
 			{
 				method: "POST",
@@ -329,8 +423,8 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 		if (!res.ok) {
 			const text = await res.text();
 			if (res.status === 404) {
-				// Session already gone, that's fine
-				return;
+				// A missing native binding does not establish that its work has stopped.
+				throw new RecoveryRequiredError();
 			}
 			throw new NetworkError(
 				"BACKGROUND_AGENTS",
@@ -339,38 +433,171 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 				new Error(text),
 			);
 		}
+		const outcome = await res.json();
+		if (outcome?.confirmed !== true) {
+			throw new RecoveryRequiredError();
+		}
+	}
+
+	/** Authenticated protocol readiness, separate from the public liveness endpoint. */
+	async executionReadiness(params?: CreateSessionParams): Promise<
+		Record<string, unknown> & {
+			profileId: string;
+			ready: boolean;
+			executionTarget: { url: string; profileId: string };
+		}
+	> {
+		const res = await this.request(
+			`${this.controlPlaneUrl}/sessions/readiness`,
+			{
+				method: params ? "POST" : "GET",
+				headers: getAuthHeaders(this.controlPlaneSecret),
+				...(params
+					? {
+							body: JSON.stringify({
+								repoOwner: params.repoOwner,
+								repoName: params.repoName,
+								organizationId: params.organizationId,
+								llmConnection:
+									params.llmConnection ??
+									(this.expectedTarget?.connectionId
+										? undefined
+										: getFabricAgentsDefaultConnection()),
+								model:
+									params.model ??
+									(this.expectedTarget?.connectionId
+										? undefined
+										: getFabricAgentsDefaultModel()),
+								targetMachine: params.targetMachine,
+							}),
+						}
+					: {}),
+			},
+		);
+		if (res.status === 401 || res.status === 403) {
+			throw new AuthError(
+				"BACKGROUND_AGENTS",
+				"Execution readiness authorization failed",
+			);
+		}
+		if (!res.ok) {
+			throw new SessionValidationError(
+				"BACKGROUND_AGENTS",
+				"Execution readiness failed; check host provider and repository access",
+			);
+		}
+		const data = z
+			.object({
+				protocolVersion: z.literal(2),
+				profileId: z.string().min(1),
+				ready: z.boolean(),
+				capabilities: z.object({
+					durableReceipts: z.literal(true),
+					wholeRunCancellation: z.literal(true),
+				}),
+			})
+			.passthrough()
+			.parse(await res.json());
+		if (!data.ready) {
+			const checks =
+				data.checks && typeof data.checks === "object"
+					? data.checks
+					: {};
+			const failed = Object.entries(checks)
+				.filter(([, value]) => value === false)
+				.map(([key]) => key)
+				.join(", ");
+			throw new SessionValidationError(
+				"BACKGROUND_AGENTS",
+				`Execution readiness checks failed${failed ? `: ${failed}` : ""}`,
+			);
+		}
+		if (
+			this.expectedTarget &&
+			data.profileId !== this.expectedTarget.profileId
+		) {
+			throw new SessionValidationError(
+				"BACKGROUND_AGENTS",
+				"Execution profile changed; recover this run on its original profile",
+			);
+		}
+		return {
+			...data,
+			executionTarget: {
+				...this.expectedTarget,
+				url: this.controlPlaneUrl,
+				profileId: data.profileId,
+			},
+		};
+	}
+
+	async getSessionMessages(sessionId: string) {
+		await this.executionReadiness();
+		const response = await this.request(
+			`${this.controlPlaneUrl}/sessions/${encodeURIComponent(sessionId)}/messages`,
+			{ headers: getAuthHeaders(this.controlPlaneSecret) },
+		);
+		if (!response.ok) {
+			throw new Error(
+				"Remote conversation is unavailable on this server build",
+			);
+		}
+		const data = z
+			.object({
+				messages: z
+					.array(
+						z.object({
+							id: z.string(),
+							role: z.enum(["user", "assistant"]),
+							content: z.string().max(20000),
+						}),
+					)
+					.max(50),
+				webPath: z.string().optional(),
+			})
+			.parse(await response.json());
+		const webUrl = data.webPath?.startsWith("/?")
+			? new URL(data.webPath, this.controlPlaneUrl).href
+			: undefined;
+		return { messages: data.messages, ...(webUrl ? { webUrl } : {}) };
+	}
+
+	private async request(
+		url: string,
+		options: RequestInit = {},
+	): Promise<Response> {
+		let requestOptions = options;
+		if (this.expectedTarget?.connectionId) {
+			const { getRemoteAgentServerSecret } = await import(
+				"@repo/database"
+			);
+			const secret = await getRemoteAgentServerSecret(
+				this.expectedTarget,
+				options.method === "POST" &&
+					(url.endsWith("/sessions") || url.endsWith("/prompt")),
+			);
+			requestOptions = { ...options, headers: getAuthHeaders(secret) };
+		}
+		const send =
+			this.expectedTarget?.connectionId || this.registration
+				? fetchAgentEndpoint
+				: fetch;
+		return send(url, {
+			...requestOptions,
+			redirect: "error",
+			signal: options.signal ?? AbortSignal.timeout(20_000),
+		});
 	}
 
 	async healthCheck(): Promise<HealthCheckResult> {
 		const startedAt = Date.now();
 
 		try {
-			const res = await fetch(`${this.controlPlaneUrl}/health`, {
-				headers: getAuthHeaders(this.controlPlaneSecret),
-			});
-
-			if (!res.ok) {
-				return {
-					healthy: false,
-					latencyMs: Date.now() - startedAt,
-					details: {
-						statusCode: res.status,
-						statusText: res.statusText,
-					},
-				};
-			}
-
-			const body = (await res.json()) as Record<string, unknown> | null;
-			const statusField =
-				body && typeof body === "object" ? body.status : undefined;
-			const healthy =
-				statusField === undefined ||
-				statusField === "ok" ||
-				statusField === "healthy";
+			const readiness = await this.executionReadiness();
 			return {
-				healthy,
+				healthy: readiness.ready,
 				latencyMs: Date.now() - startedAt,
-				details: body ?? undefined,
+				details: readiness,
 			};
 		} catch (error) {
 			return {

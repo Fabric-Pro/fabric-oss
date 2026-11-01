@@ -453,14 +453,16 @@ export const AUDIT_ACTIONS = [
 	"incident.commented",
 	"incident.auto_resolved",
 	"incident.manual_resolved",
-	// weave (2) — Weave/CodingRun session lifecycle. Both actions are
-	// emitted from Temporal activities (never directly from workflow code).
+	// weave (3) — Weave/CodingRun session lifecycle. Both actions are
+	// Termination is emitted from Temporal activities; continuation admission is
+	// recorded at the authenticated API boundary.
 	// `terminated_on_exit` is the happy-path teardown written by the
 	// workflow's finally block on every exit (success, failure, OAuth
 	// block, cancel, exception). `terminated_stale` is the watchdog
 	// cron's force-kill of a row that exceeded its hard ceiling.
 	"weave.session.terminated_on_exit",
 	"weave.session.terminated_stale",
+	"weave.session.continuation_requested",
 	// atlas (6) — Atlas analysis lifecycle + on-demand
 	// node regeneration + monitored-branch configuration. `requested` is
 	// user-initiated (UI Re-analyse); `cancelled` is the user-initiated

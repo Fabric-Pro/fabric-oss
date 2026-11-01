@@ -351,6 +351,7 @@ const ORG_ONLY_TABLES = new Set([
  * are handled as a follow-up.
  */
 const PROJECT_SCOPED_TABLES: Record<string, string> = {
+	ProjectRemoteAgentServer: "projectId",
 	TodoItem: "projectId",
 	Project: "__id__",
 	ProjectDocument: "projectId",
@@ -474,6 +475,7 @@ const PARENT_SCOPED_TABLES: Record<
 		projectPath: "projectId" | "proposal.projectId" | "write.projectId";
 	}
 > = {
+	ProjectRemoteAgentServer: { relation: "project", projectPath: "projectId" },
 	// project_stage_approver.userId is the *approver*, not a tenant column.
 	ProjectStageApprover: { relation: "project", projectPath: "projectId" },
 	PendingBacklogProposalDuplicateResolution: {
@@ -541,6 +543,19 @@ export function getParentScopedFilter(
 			? { organizationId: ctx.organizationId }
 			: { userId: ctx.userId, organizationId: null };
 	const tenantFilter = { [parent.relation]: parentWhere };
+	// Remote execution credentials are private even within an organization.
+	// Keep this boundary when the application role bypasses database RLS.
+	const withVisibility = (filter: Record<string, any>) => {
+		if (modelName !== "ProjectRemoteAgentServer") {
+			return filter;
+		}
+		if (ctx.type !== "organization") {
+			return { id: "___BLOCKED___" };
+		}
+		return {
+			AND: [filter, { OR: [{ userId: ctx.userId }, { scope: "TEAM" }] }],
+		};
+	};
 
 	// Project-scoped guests (an accepted ProjectMember row without org
 	// membership) are granted `allowedProjectIds` by the permission
@@ -557,10 +572,10 @@ export function getParentScopedFilter(
 							projectId: { in: ctx.allowedProjectIds },
 						},
 					};
-		return { OR: [tenantFilter, guestFilter] };
+		return withVisibility({ OR: [tenantFilter, guestFilter] });
 	}
 
-	return tenantFilter;
+	return withVisibility(tenantFilter);
 }
 
 /**
