@@ -22,6 +22,10 @@ const { listAttachments } = vi.hoisted(() => ({
 }));
 
 // The attachment list call lives in AttachmentsTab via orpcClient.
+vi.mock("@saas/shared/components/PortalAiGate", () => ({
+	PortalAiGate: ({ children }: { children: import("react").ReactNode }) =>
+		children,
+}));
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: { projects: { stories: { listAttachments } } },
 }));

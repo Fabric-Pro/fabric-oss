@@ -1,3 +1,4 @@
+import { AIProviderNotConfiguredError } from "@repo/ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
@@ -22,6 +23,10 @@ const mocks = vi.hoisted(() => ({
 	generateMaturationSummary: vi.fn(),
 	resolveSummaryInstructions: vi.fn(),
 	extractMaturationQuestions: vi.fn(),
+}));
+
+vi.mock("@repo/ai", () => ({
+	AIProviderNotConfiguredError: class AIProviderNotConfiguredError extends Error {},
 }));
 
 vi.mock("@repo/database", () => ({
@@ -98,6 +103,30 @@ beforeEach(() => {
 });
 
 describe("seedMaturationSurfaces", () => {
+	it("skips optional AI summary without a configured provider while still parsing questions and leaving the summary retryable", async () => {
+		mocks.generateMaturationSummary.mockRejectedValue(
+			new AIProviderNotConfiguredError("No AI provider configured"),
+		);
+		expect(
+			await seedMaturationSurfaces({ feature: feature(), tenantFilter }),
+		).toEqual({
+			summaryGenerated: false,
+			questionsScanned: true,
+			minted: 2,
+		});
+		expect(mocks.setSummaryDigest).not.toHaveBeenCalled();
+		expect(mocks.setLastSummaryHash).not.toHaveBeenCalled();
+		expect(mocks.setLastQuestionScanHash).toHaveBeenCalledTimes(1);
+	});
+	it("continues to surface unexpected summary failures", async () => {
+		mocks.generateMaturationSummary.mockRejectedValue(
+			new Error("Provider transport failed"),
+		);
+		await expect(
+			seedMaturationSurfaces({ feature: feature(), tenantFilter }),
+		).rejects.toThrow("Provider transport failed");
+		expect(mocks.setLastSummaryHash).not.toHaveBeenCalled();
+	});
 	it("is a no-op when the Clean Spec is empty (no model calls, no writes)", async () => {
 		const out = await seedMaturationSurfaces({
 			feature: feature({ description: "", acceptanceCriteria: "" }),

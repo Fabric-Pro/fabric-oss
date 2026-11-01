@@ -14,6 +14,10 @@ const { copilotKitProps } = vi.hoisted(() => ({
 	copilotKitProps: [] as Array<{ threadId?: string; agent?: string }>,
 }));
 
+vi.mock("@saas/shared/components/PortalAiGate", () => ({
+	PortalAiGate: ({ children }: { children: import("react").ReactNode }) =>
+		children,
+}));
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: {
 		projects: {

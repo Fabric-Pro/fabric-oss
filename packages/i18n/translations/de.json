@@ -512,6 +512,7 @@
 		"fallbackHeadline": "Release Note"
 	},
 	"common": {
+		"loading": "Wird geladen…",
 		"confirmation": {
 			"cancel": "Abbrechen",
 			"confirm": "Bestätigen"
@@ -2922,6 +2923,12 @@
 	},
 	"projects": {
 		"remoteAgents": {
+			"portalAiErrorTitle": "KI-Assistent nicht verfügbar",
+			"portalAiErrorHelp": "Der KI-Assistent konnte nicht gestartet werden. Versuchen Sie es erneut oder prüfen Sie die Portal-KI-Konfiguration. Remote-Zuweisungen sind weiterhin über „Arbeit starten“ verfügbar.",
+			"openServer": "Server öffnen",
+			"portalAiTitle": "KI-Unterstützung im Portal ist nicht eingerichtet",
+			"portalAiHelp": "Richten Sie einen KI-Anbieter im Portal ein, um KI-gestützte Bearbeitung zu nutzen. Über „Arbeit starten“ können Sie dieses Feature weiterhin einem Remote-Agenten zuweisen. Dabei werden die Zugangsdaten des ausgewählten Servers verwendet.",
+			"configurePortalAi": "Portal-KI einrichten",
 			"privateLabel": "Private Sitzung",
 			"privateSession": "Diese Sitzung läuft auf dem privaten Server eines anderen Entwicklers. Projektfortschritt und Pull Requests sind sichtbar; Unterhaltung und Steuerung bleiben privat.",
 			"loadingServers": "Remote-Server werden geladen…",

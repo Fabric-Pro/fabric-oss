@@ -16,6 +16,7 @@ import {
 import { CopilotChatSessionProvider } from "@saas/shared/components/copilot/CopilotChatSessionProvider";
 import type { MessageAttachmentListItem } from "@saas/shared/components/copilot/MessageAttachmentList";
 import { useCopilotErrorHandler } from "@saas/shared/components/copilot/use-copilot-error-handler";
+import { PortalAiGate } from "@saas/shared/components/PortalAiGate";
 import { useFocusMode } from "@saas/shared/contexts/FocusModeContext";
 import { useFullscreen } from "@saas/shared/contexts/FullscreenContext";
 import { orpc } from "@shared/lib/orpc-query-utils";
@@ -43,7 +44,9 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { useTranslations } from "next-intl";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useFeatureMaturationV2Enabled } from "../../hooks/useFeatureMaturationV2Enabled";
 import { useMaturationViewMode } from "../../hooks/useMaturationViewMode";
 import {
@@ -113,6 +116,7 @@ export function StoryWorkspacePage({
 	initialAssistantVisibility = "SHARED",
 	initialAssistantVisibilityLockedAt = null,
 }: Props) {
+	const tRemote = useTranslations("projects.remoteAgents");
 	const { setIsFullscreen } = useFullscreen();
 	const { isFocusMode, registerFocusModeAvailable } = useFocusMode();
 	const router = useRouter();
@@ -371,6 +375,50 @@ export function StoryWorkspacePage({
 			</div>
 		);
 	}
+
+	const aiUnavailableFallback = (reason: "setup" | "runtime") => (
+		<>
+			{titleSlotEl &&
+				createPortal(
+					<h1 className="text-2xl font-medium tracking-tight">
+						{story.title}
+					</h1>,
+					titleSlotEl,
+				)}
+			<div className="flex h-full items-center justify-center p-6">
+				<div className="max-w-md w-full bg-card border border-border rounded-lg p-6 shadow-sm">
+					<div className="flex items-start gap-4">
+						<div className="shrink-0">
+							<AlertCircle className="h-6 w-6 text-highlight" />
+						</div>
+						<div className="flex-1 space-y-2">
+							<h2 className="text-base font-semibold text-foreground">
+								{tRemote(
+									reason === "setup"
+										? "portalAiTitle"
+										: "portalAiErrorTitle",
+								)}
+							</h2>
+							<p className="text-sm text-muted-foreground">
+								{tRemote(
+									reason === "setup"
+										? "portalAiHelp"
+										: "portalAiErrorHelp",
+								)}
+							</p>
+							<Link
+								href={`${basePath}/settings/ai-providers`}
+								className="inline-flex items-center gap-2 mt-2 text-sm font-medium text-primary hover:text-primary/80"
+							>
+								{tRemote("configurePortalAi")}
+								<ExternalLink className="h-3.5 w-3.5" />
+							</Link>
+						</div>
+					</div>
+				</div>
+			</div>
+		</>
+	);
 
 	return (
 		// Page chrome shifts its right edge when the CopilotKit chat opens
@@ -742,111 +790,84 @@ export function StoryWorkspacePage({
 				    configured. The fallback below keeps the page chrome
 				    (breadcrumb with the PM-sync toggle, back button, etc.)
 				    intact and tells the user exactly how to recover. */}
-				<AgentErrorBoundary
-					fallback={
-						<div className="flex h-full items-center justify-center p-6">
-							<div className="max-w-md w-full bg-card border border-border rounded-lg p-6 shadow-sm">
-								<div className="flex items-start gap-4">
-									<div className="shrink-0">
-										<AlertCircle className="h-6 w-6 text-highlight" />
-									</div>
-									<div className="flex-1 space-y-2">
-										<h2 className="text-base font-semibold text-foreground">
-											AI assistant unavailable
-										</h2>
-										<p className="text-sm text-muted-foreground">
-											The feature editor uses CopilotKit
-											to provide AI-assisted grooming. Add
-											an OpenAI, Anthropic, Vercel AI
-											Gateway, or OpenRouter key to enable
-											the editor.
-										</p>
-										<Link
-											href={`${basePath}/settings/ai-providers`}
-											className="inline-flex items-center gap-2 mt-2 text-sm font-medium text-primary hover:text-primary/80"
-										>
-											Configure AI provider
-											<ExternalLink className="h-3.5 w-3.5" />
-										</Link>
-									</div>
-								</div>
-							</div>
-						</div>
-					}
-				>
-					<CopilotKit
-						runtimeUrl={copilotRuntimeUrl}
-						// The 1.70 client defaults to probing GET <runtimeUrl>/info
-						// before falling back to single-route POST; our route is
-						// POST-only, so that probe 405s and surfaces as an error
-						// toast. useSingleEndpoint skips the probe — keep every
-						// <CopilotKit> mount in sync with this one.
-						useSingleEndpoint
-						agent="project_document_generator"
-						threadId={assistantThread.threadId}
-						showDevConsole={false}
-						enableInspector={false}
-						onError={onCopilotError}
+				<PortalAiGate fallback={aiUnavailableFallback("setup")}>
+					<AgentErrorBoundary
+						fallback={aiUnavailableFallback("runtime")}
 					>
-						{/* One `useCopilotChatInternal()` for the whole
+						<CopilotKit
+							runtimeUrl={copilotRuntimeUrl}
+							// The 1.70 client defaults to probing GET <runtimeUrl>/info
+							// before falling back to single-route POST; our route is
+							// POST-only, so that probe 405s and surfaces as an error
+							// toast. useSingleEndpoint skips the probe — keep every
+							// <CopilotKit> mount in sync with this one.
+							useSingleEndpoint
+							agent="project_document_generator"
+							threadId={assistantThread.threadId}
+							showDevConsole={false}
+							enableInspector={false}
+							onError={onCopilotError}
+						>
+							{/* One `useCopilotChatInternal()` for the whole
 						  surface. On 1.70 every call site of that hook (and
 						  of `useCopilotChat`) opens its own agent/connect,
 						  so the read-only consumers below share this one
 						  instead of each connecting — Fizzy #2389. */}
-						<AssistantThreadProvider value={assistantThread}>
-							<CopilotChatSessionProvider>
-								{/* StoryWorkspace is ALWAYS rendered — both v1 and v2 —
+							<AssistantThreadProvider value={assistantThread}>
+								<CopilotChatSessionProvider>
+									{/* StoryWorkspace is ALWAYS rendered — both v1 and v2 —
 						  so the maturation stage dropdown, Enhance, Start work,
 						  and all surrounding chrome stay intact. When
 						  `maturationV2` is true the editor region is fronted by
 						  the three-tab control (Clean Spec tab IS this same
 						  TipTap editor); when false it renders the classic
 						  single editor unchanged. */}
-								<StoryWorkspace
-									story={story}
-									canEdit={canEdit}
-									canAddTags={canAddTags}
-									canManageAllTags={canManageAllTags}
-									maturationV2={showMaturationV2}
-									projectId={projectId}
-									projectName={project.name}
-									projectRepository={{
-										url: project.repositoryUrl,
-										owner: project.repositoryOwner,
-										name: project.repositoryName,
-										branch: project.defaultBranch,
-									}}
-									onClose={handleClose}
-									onStoryUpdated={() => refetchStory()}
-									titleSlot={titleSlotEl}
-									actionSlot={actionSlotEl}
-									saveSlot={saveSlotEl}
-									documentRefKind={documentRefKind}
-									initialAssistantConversationId={
-										initialAssistantConversationId
-									}
-									initialAssistantVisibility={
-										initialAssistantVisibility
-									}
-									initialAssistantVisibilityLockedAt={
-										initialAssistantVisibilityLockedAt
-									}
-									initialAssistantMessages={
-										initialAssistantMessages as ReadonlyArray<
-											Record<string, unknown>
-										>
-									}
-									initialPersistedMessageIds={
-										initialPersistedMessageIds
-									}
-									initialAttachmentsByMessageId={
-										initialAttachmentsByMessageId
-									}
-								/>
-							</CopilotChatSessionProvider>
-						</AssistantThreadProvider>
-					</CopilotKit>
-				</AgentErrorBoundary>
+									<StoryWorkspace
+										story={story}
+										canEdit={canEdit}
+										canAddTags={canAddTags}
+										canManageAllTags={canManageAllTags}
+										maturationV2={showMaturationV2}
+										projectId={projectId}
+										projectName={project.name}
+										projectRepository={{
+											url: project.repositoryUrl,
+											owner: project.repositoryOwner,
+											name: project.repositoryName,
+											branch: project.defaultBranch,
+										}}
+										onClose={handleClose}
+										onStoryUpdated={() => refetchStory()}
+										titleSlot={titleSlotEl}
+										actionSlot={actionSlotEl}
+										saveSlot={saveSlotEl}
+										documentRefKind={documentRefKind}
+										initialAssistantConversationId={
+											initialAssistantConversationId
+										}
+										initialAssistantVisibility={
+											initialAssistantVisibility
+										}
+										initialAssistantVisibilityLockedAt={
+											initialAssistantVisibilityLockedAt
+										}
+										initialAssistantMessages={
+											initialAssistantMessages as ReadonlyArray<
+												Record<string, unknown>
+											>
+										}
+										initialPersistedMessageIds={
+											initialPersistedMessageIds
+										}
+										initialAttachmentsByMessageId={
+											initialAttachmentsByMessageId
+										}
+									/>
+								</CopilotChatSessionProvider>
+							</AssistantThreadProvider>
+						</CopilotKit>
+					</AgentErrorBoundary>
+				</PortalAiGate>
 			</div>
 		</div>
 	);

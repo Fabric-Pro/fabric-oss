@@ -56,6 +56,10 @@ const fakePage = vi.hoisted(() => {
 	return page;
 });
 const runSignal = vi.hoisted(() => ({ active: false }));
+vi.mock("@saas/shared/components/PortalAiGate", () => ({
+	PortalAiGate: ({ children }: { children: import("react").ReactNode }) =>
+		children,
+}));
 vi.mock("@saas/shared/components/copilot/use-user-run-signal", () => ({
 	useUserRunSignal: () => ({
 		isUserGenerationActive: runSignal.active,
