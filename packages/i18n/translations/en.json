@@ -630,6 +630,7 @@
 		"fallbackHeadline": "Release note"
 	},
 	"common": {
+		"loading": "Loading…",
 		"confirmation": {
 			"cancel": "Cancel",
 			"confirm": "Confirm"
@@ -3255,6 +3256,12 @@
 	},
 	"projects": {
 		"remoteAgents": {
+			"portalAiErrorTitle": "AI assistant unavailable",
+			"portalAiErrorHelp": "The AI assistant could not start. Retry or check your Portal AI configuration. Remote assignment remains available from Start work.",
+			"openServer": "Open server",
+			"portalAiTitle": "Portal AI grooming is not configured",
+			"portalAiHelp": "Configure a Portal AI provider to use assisted grooming. You can still assign this feature to a remote agent from Start work; it uses credentials on the selected server.",
+			"configurePortalAi": "Configure Portal AI",
 			"privateLabel": "Private session",
 			"privateSession": "This session runs on another developer’s private server. Project progress and pull requests are visible; its conversation and controls are private.",
 			"loadingServers": "Loading remote servers…",

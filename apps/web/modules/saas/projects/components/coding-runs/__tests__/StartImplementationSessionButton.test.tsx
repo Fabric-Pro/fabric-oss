@@ -93,6 +93,14 @@ it("submits the selected task repository through the real parent mutation when t
 	fireEvent.change(screen.getByRole("combobox", { name: "title" }), {
 		target: { value: "example-team" },
 	});
+	expect(screen.getByRole("link", { name: "openServer" })).toHaveAttribute(
+		"href",
+		"https://team.example.com",
+	);
+	expect(screen.getByRole("link", { name: "openServer" })).toHaveAttribute(
+		"rel",
+		"noopener noreferrer",
+	);
 	fireEvent.click(
 		screen.getByRole("button", { name: "Start implementation session" }),
 	);

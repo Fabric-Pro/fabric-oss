@@ -18,6 +18,10 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@saas/shared/components/PortalAiGate", () => ({
+	PortalAiGate: ({ children }: { children: import("react").ReactNode }) =>
+		children,
+}));
 vi.mock("@shared/lib/orpc-client", () => ({
 	orpcClient: { projects: { stories: { listAttachments: vi.fn() } } },
 }));

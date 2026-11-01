@@ -110,6 +110,17 @@ export function RemoteAgentServerPicker({
 					? t(selected.scope === "TEAM" ? "teamHelp" : "privateHelp")
 					: t("emptyHelp")}
 			</p>
+			{selected && (
+				<Button asChild variant="outline" size="sm">
+					<a
+						href={selected.url}
+						target="_blank"
+						rel="noopener noreferrer"
+					>
+						{t("openServer")}
+					</a>
+				</Button>
+			)}
 			{selected &&
 				(selected.scope === "PRIVATE"
 					? selected.ownedByCaller

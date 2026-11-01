@@ -35,6 +35,10 @@ import {
 const { mockUseFeatureMaturationV2Enabled } = vi.hoisted(() => ({
 	mockUseFeatureMaturationV2Enabled: vi.fn(),
 }));
+vi.mock("@saas/shared/components/PortalAiGate", () => ({
+	PortalAiGate: ({ children }: { children: import("react").ReactNode }) =>
+		children,
+}));
 vi.mock("../../../hooks/useFeatureMaturationV2Enabled", () => ({
 	useFeatureMaturationV2Enabled: () => mockUseFeatureMaturationV2Enabled(),
 }));
