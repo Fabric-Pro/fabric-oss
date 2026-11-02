@@ -91,6 +91,12 @@ const SHOTS = {
 		["#shot-live", "parlume-live-session.png"],
 		["#shot-chat", "parlume-meeting-chat.png"],
 	],
+	"fabric-agents-delegation": [
+		["#shot-server-picker", "fabric-agents-server-picker.png"],
+		["#shot-start-run", "fabric-agents-start-run-dialog.png"],
+		["#shot-live-webui", "fabric-agents-live-portal-webui.png"],
+		["#shot-ai-providers", "fabric-agents-ai-providers.png"],
+	],
 };
 
 const GOOGLE_FONTS_CSS =

@@ -6,12 +6,19 @@ import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Input } from "@ui/components/input";
 import { Label } from "@ui/components/label";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipProvider,
+	TooltipTrigger,
+} from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
 import {
 	Building2Icon,
 	CheckCircle2Icon,
 	CopyIcon,
 	ExternalLinkIcon,
+	HelpCircleIcon,
 	KeyRoundIcon,
 	LaptopIcon,
 	PlusCircleIcon,
@@ -163,6 +170,35 @@ export function RemoteAgentServerPicker({
 					>
 						{t("title")}
 					</Label>
+					<TooltipProvider delayDuration={150}>
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<a
+									href="/docs/features/projects#personal-vs-organization-remote-servers"
+									target="_blank"
+									rel="noopener noreferrer"
+									data-testid="remote-server-picker-docs-link"
+									aria-label="Personal and Organization Fabric Agents Remote Server documentation"
+									className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+								>
+									<HelpCircleIcon className="size-3" />
+									Docs
+								</a>
+							</TooltipTrigger>
+							<TooltipContent className="max-w-xs space-y-1 text-xs leading-relaxed">
+								<p className="font-semibold">
+									Personal vs. Organization Remote Servers
+								</p>
+								<p>
+									Register multiple Personal servers (
+									<code>PRIVATE</code>, visible only to you)
+									or shared Organization servers (
+									<code>TEAM</code>). Click to open the full
+									setup guide.
+								</p>
+							</TooltipContent>
+						</Tooltip>
+					</TooltipProvider>
 				</div>
 
 				<div className="inline-flex items-center rounded-md border border-border/70 bg-muted/30 p-0.5 text-xs">

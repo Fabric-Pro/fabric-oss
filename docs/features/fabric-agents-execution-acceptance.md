@@ -96,18 +96,19 @@ Before deploying this slice, apply `20261031210344_project_remote_agent_servers`
 Once the bridge is enabled, a project server connection is registered (or the compatibility default is configured for existing API/Weave callers), and the project has a connected GitHub repository:
 
 1. **Project Implementation Defaults (`Project Settings → Implementation Defaults`)**:
-   - Select **Remote execution — Fabric Agents** as the default implementation path (or **Local execution — Local development** when queueing work for `fabric-kanban`).
+   - Select **Fabric Agents Remote Server** (`fabric-agent-server`) or **Fabric Agents Desktop** (`fabricagents://`) as the default implementation path.
    - Optionally set a default checkout directory if the server maps a pre-existing repository path.
-2. **Direct Feature & Task Implementation (`Start work → Fabric Agents`)**:
-   - On any published feature in the **Roadmap** tab (or via **Implement** on an individual task row), open **Start work → Fabric Agents**.
-   - **Task assignment**: Choose either the entire feature (all open tasks) or a single focused task.
-   - **Remote server**: Select one of **My servers** or **Team servers**; connect an existing server from the dialog when needed.
+2. **Direct Feature & Task Implementation (`Start work → Send to Fabric Agents…`)**:
+   - On any published feature in the **Roadmap** tab (or via **Send to Fabric Agents** on an individual task row), open **Start work → Send to Fabric Agents…**.
+   - **Task assignment**: Choose either the entire feature (all open tasks) or a single focused primary task.
+   - **Remote server**: Select one of **Personal** (`PRIVATE`) or **Organization** (`TEAM`) servers; register a new server with 1-click presets and token generation directly from the dialog when needed.
    - **Fabric Agents backend**: The picker lists the server/provider catalogue. Initial application cutover qualifies **Claude Max / Anthropic** with confirmed shutdown; other backends fail readiness until their shutdown capability is implemented and qualified. Choose **Server default** only when it resolves to that qualified connection.
-   - Click **Delegate to Fabric Agents** to create an isolated git worktree on a dedicated `feat/<slug>` branch and start the session.
+   - Click **Send to Fabric Agents** to create an isolated git worktree on a dedicated `feat/<slug>` branch and start the session.
 3. **Approved Weave Plans (`Plan with Weave → Approve → Fabric Agents`)**:
    - After approving a feature-linked Weave plan, click **Fabric Agents** on the plan card to delegate multi-step execution and monitor it in the Weave execution monitor.
-4. **Live Progress, Follow-Up Replies, and Deep-Linking**:
+4. **Live Progress, Embedded Server Web UI, Follow-Up Replies, and Deep-Linking**:
    - Open the session dialog from the feature or task badge to view the 4-stage execution progress stepper (`1. Worktree & session` → `2. Implementing task` → `3. Pull Request` → `4. Completed`).
+   - Click **View Live Server Web UI in Portal** to embed the real `fabric-agent-server` Web UI directly inside the coding run drawer, or click **Open in new tab** for a full-window browser view.
    - After a native turn completes, use **Continue this session** to send another instruction with durable prompt receipt tracking and renewed observation of the same session. When a native session pauses (`AWAITING_REVIEW`), resolve permission, sign-in, and tool-input checkpoints in the authenticated Fabric Agents client; ordinary text in Fabric does not approve them.
    - Click **Open in Fabric Agents** (`fabricagents://workspace/<desktop-workspace-id>/...`) to open the live session in the Fabric Agents desktop application, or click **View PR** once the pull request is opened.
 

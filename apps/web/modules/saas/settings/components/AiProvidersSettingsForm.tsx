@@ -41,6 +41,7 @@ import { RadioGroup, RadioGroupItem } from "@ui/components/radio-group";
 import {
 	Tooltip,
 	TooltipContent,
+	TooltipProvider,
 	TooltipTrigger,
 } from "@ui/components/tooltip";
 import {
@@ -49,6 +50,7 @@ import {
 	DatabaseIcon,
 	EyeIcon,
 	EyeOffIcon,
+	HelpCircleIcon,
 	LaptopIcon,
 	LoaderIcon,
 	PlayIcon,
@@ -983,9 +985,41 @@ export function AiProvidersSettingsForm({
 
 					{/* Fabric Agents Remote Server & Desktop Section */}
 					<div>
-						<h4 className="app-editorial-label mb-3">
-							Fabric Agents Remote Server &amp; Desktop
-						</h4>
+						<div className="mb-3 flex flex-wrap items-center gap-2">
+							<h4 className="app-editorial-label">
+								Fabric Agents Remote Server &amp; Desktop
+							</h4>
+							<TooltipProvider delayDuration={150}>
+								<Tooltip>
+									<TooltipTrigger asChild>
+										<a
+											href="/docs/features/ai-providers#remote--subscription-agent-bridges"
+											target="_blank"
+											rel="noopener noreferrer"
+											data-testid="ai-providers-bridges-docs-link"
+											aria-label="Fabric Agents Remote Server and Desktop AI bridge documentation"
+											className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+										>
+											<HelpCircleIcon className="size-3" />
+											Docs
+										</a>
+									</TooltipTrigger>
+									<TooltipContent className="max-w-xs space-y-1 text-xs leading-relaxed">
+										<p className="font-semibold">
+											Remote &amp; Subscription Agent
+											Bridges
+										</p>
+										<p>
+											Connect a Personal or Organization
+											Fabric Agents Remote Server or
+											Fabric Agents Desktop to route AI
+											requests through your subscription
+											harnesses.
+										</p>
+									</TooltipContent>
+								</Tooltip>
+							</TooltipProvider>
+						</div>
 						<div className="grid auto-rows-fr gap-4 md:grid-cols-2">
 							{/* Card 1: Fabric Agents Remote Server (CUSTOM) */}
 							{(() => {

@@ -3,7 +3,13 @@
 import { orpcClient } from "@shared/lib/orpc-client";
 import { useQuery } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
-import { ExternalLinkIcon, MonitorIcon } from "lucide-react";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipProvider,
+	TooltipTrigger,
+} from "@ui/components/tooltip";
+import { ExternalLinkIcon, HelpCircleIcon, MonitorIcon } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
 
@@ -35,7 +41,37 @@ export function RemoteSessionConversation({
 			aria-label={t("conversation")}
 		>
 			<div className="flex flex-wrap items-center justify-between gap-2">
-				<h3 className="text-sm font-medium">{t("conversation")}</h3>
+				<div className="flex items-center gap-2">
+					<h3 className="text-sm font-medium">{t("conversation")}</h3>
+					<TooltipProvider delayDuration={150}>
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<a
+									href="/docs/features/projects#viewing-the-live-server-web-ui-inside-the-fabric-portal"
+									target="_blank"
+									rel="noopener noreferrer"
+									data-testid="live-session-webui-docs-link"
+									aria-label="Live Server Web UI in Portal documentation"
+									className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+								>
+									<HelpCircleIcon className="size-3" />
+									Docs
+								</a>
+							</TooltipTrigger>
+							<TooltipContent className="max-w-xs space-y-1 text-xs leading-relaxed">
+								<p className="font-semibold">
+									Live Server Web UI &amp; Session Stream
+								</p>
+								<p>
+									Click &ldquo;View Live Server Web UI in
+									Portal&rdquo; to embed the real Fabric
+									Agents Remote Server Web UI inline, or send
+									follow-up instructions below.
+								</p>
+							</TooltipContent>
+						</Tooltip>
+					</TooltipProvider>
+				</div>
 				{liveWebUrl && (
 					<div className="flex flex-wrap items-center gap-1.5">
 						<Button

@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fabric Agents Delegation &amp; Remote Server (documentation examples)</title>
+<link rel="stylesheet" href="../.fonts/fonts.css">
+<style>
+/* Current light tokens from tooling/tailwind/theme.css. */
+:root{
+  --border:#dce0e5; --ring:#bc3e0b;
+  --background:#ffffff; --foreground:#11171c;
+  --primary:#bc3e0b; --primary-foreground:#ffffff;
+  --secondary:#f1f3f6; --secondary-foreground:#11171c;
+  --muted:#f1f3f6; --muted-foreground:#4f6170;
+  --accent:#e8edf2; --card:#ffffff;
+  --radius:0.25rem; --radius-lg:calc(var(--radius) + 2px);
+  --font-sans:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{width:1048px;padding:24px;background:var(--background);color:var(--foreground);font-family:var(--font-sans);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.shot{margin-bottom:40px;background:var(--background);padding:24px;border:1px solid var(--border);border-radius:12px}
+.wide{width:1000px}.dialog{width:840px;background:var(--card);padding:24px}
+.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.between{justify-content:space-between}.top{align-items:flex-start}
+.muted{color:var(--muted-foreground)}.small{font-size:12px}.xsmall{font-size:11px}.space{margin-top:16px}.tight{margin-top:6px}
+h1{font-size:20px;font-weight:600}h2{font-size:18px;font-weight:600}h3{font-size:14px;font-weight:600}h4{font-size:13px;font-weight:600}
+button{border:1px solid var(--border);border-radius:7px;padding:6px 11px;background:var(--card);font:inherit;font-size:12.5px;font-weight:500;color:var(--foreground);white-space:nowrap}
+.primary{background:var(--primary);border-color:var(--primary);color:var(--primary-foreground)}
+.badge{font-family:"JetBrains Mono",monospace;font-size:11px;border:1px solid var(--border);border-radius:6px;padding:2px 7px;background:var(--muted)}
+.badge-emerald{background:#ecfdf5;border-color:#a7f3d0;color:#047857;font-family:var(--font-sans);font-weight:500}
+.badge-blue{background:#eff6ff;border-color:#bfdbfe;color:#1d4ed8;font-family:var(--font-sans);font-weight:500}
+.badge-violet{background:#f5f3ff;border-color:#ddd6fe;color:#6d28d9;font-family:var(--font-sans);font-weight:500}
+code,pre,.mono{font-family:"JetBrains Mono",monospace;font-size:12px}
+code{background:var(--muted);padding:2px 5px;border-radius:4px}
+pre{padding:12px 14px;border:1px solid var(--border);border-radius:8px;background:var(--muted);line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.card-box{border:1px solid var(--border);border-radius:10px;padding:14px;background:var(--card);display:flex;flex-direction:column;justify-content:space-between}
+.card-box.selected{border-color:var(--foreground);box-shadow:0 0 0 1px var(--foreground);background:#fafafa}
+.segment{display:inline-flex;background:var(--muted);padding:3px;border-radius:8px}
+.segment span{padding:5px 10px;font-size:12px;color:var(--muted-foreground)}
+.segment .chosen{background:var(--background);border:1px solid var(--border);border-radius:6px;font-weight:500;color:var(--foreground)}
+.input{padding:8px 11px;border:1px solid var(--border);border-radius:7px;background:var(--background);font-size:13px;width:100%}
+.drawer{border:1px solid var(--border);border-radius:10px;padding:16px;background:#fafafa;margin-top:14px}
+.stepper{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:14px}
+.step-pill{border:1px solid var(--border);border-radius:8px;padding:8px 10px;font-size:12px;background:var(--muted)}
+.step-pill.done{background:#ecfdf5;border-color:#a7f3d0;color:#065f46}
+.step-pill.active{background:#eff6ff;border-color:#93c5fd;color:#1e40af;font-weight:600}
+.webui-frame{border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-top:14px;background:#0f172a;color:#f8fafc}
+.webui-bar{background:#1e293b;padding:8px 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #334155;font-size:12px}
+.webui-body{display:grid;grid-template-columns:230px 1fr;min-height:250px}
+.webui-side{border-right:1px solid #334155;padding:12px;font-size:12px;background:#0f172a}
+.webui-main{padding:14px;font-size:12.5px;background:#0b1120;display:flex;flex-direction:column;justify-content:space-between}
+.webui-main code{background:#1e293b;color:#38bdf8;border:1px solid #334155}
+.msg{border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-top:8px;background:var(--card);font-size:12.5px}
+.footer{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:18px;padding-top:14px;border-top:1px solid var(--border)}
+.help-pill{display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--muted-foreground);border:1px solid var(--border);border-radius:999px;padding:1px 7px;background:var(--muted)}
+</style>
+</head>
+<body>
+
+<!-- Shot 1: RemoteAgentServerPicker with Personal (PRIVATE) & Organization (TEAM) servers + 1-click setup drawer -->
+<section id="shot-server-picker" class="shot dialog">
+  <div class="row between">
+    <div>
+      <div class="row">
+        <h2>Fabric Agents Remote Servers</h2>
+        <span class="help-pill">? Docs: Personal &amp; Org Servers</span>
+      </div>
+      <p class="muted small tight">Register multiple personal servers (only visible to you) or shared organization servers for your team.</p>
+    </div>
+    <div class="segment">
+      <span class="chosen">All (3)</span>
+      <span>Personal (2)</span>
+      <span>Organization (1)</span>
+    </div>
+  </div>
+
+  <div class="grid3 space">
+    <div class="card-box selected">
+      <div>
+        <div class="row between">
+          <h4>My MacBook Pro (:9100)</h4>
+          <span class="badge badge-emerald">Active</span>
+        </div>
+        <p class="mono xsmall muted tight">http://127.0.0.1:9100</p>
+        <div class="row tight">
+          <span class="badge">Personal (only me)</span>
+          <span class="badge">claude-max</span>
+        </div>
+      </div>
+      <div class="row between space">
+        <span class="xsmall muted">Verified 2m ago</span>
+        <button>Selected ✓</button>
+      </div>
+    </div>
+
+    <div class="card-box">
+      <div>
+        <div class="row between">
+          <h4>Linux Devbox (Tailscale)</h4>
+          <span class="badge">Ready</span>
+        </div>
+        <p class="mono xsmall muted tight">https://devbox.example.com</p>
+        <div class="row tight">
+          <span class="badge">Personal (only me)</span>
+          <span class="badge">codex-plus</span>
+        </div>
+      </div>
+      <div class="row between space">
+        <span class="xsmall muted">Verified 1h ago</span>
+        <button>Use server</button>
+      </div>
+    </div>
+
+    <div class="card-box">
+      <div>
+        <div class="row between">
+          <h4>Team Shared Agent Server</h4>
+          <span class="badge badge-blue">Organization</span>
+        </div>
+        <p class="mono xsmall muted tight">https://agents.example.com</p>
+        <div class="row tight">
+          <span class="badge">Shared with team</span>
+          <span class="badge">6 harnesses</span>
+        </div>
+      </div>
+      <div class="row between space">
+        <span class="xsmall muted">Org Default</span>
+        <button>Use server</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="drawer">
+    <div class="row between">
+      <div>
+        <h3>Register a Personal or Organization Fabric Agents Server</h3>
+        <p class="small muted">Choose a preset below, generate a token, and run the 1-line startup command on your host.</p>
+      </div>
+      <div class="row">
+        <button class="primary">Preset: Personal Local (:9100)</button>
+        <button>Preset: Organization Remote Server</button>
+      </div>
+    </div>
+
+    <div class="grid2 space">
+      <div>
+        <div class="row between">
+          <label class="small">Server Name</label>
+          <div class="segment"><span class="chosen">Personal (PRIVATE)</span><span>Organization (TEAM)</span></div>
+        </div>
+        <div class="input tight">My MacBook Pro (:9100)</div>
+      </div>
+      <div>
+        <div class="row between">
+          <label class="small">Server URL &amp; Execution Secret (<code>FABRIC_AGENT_SERVER_TOKEN</code>)</label>
+          <span class="badge badge-emerald">Token ready</span>
+        </div>
+        <div class="row tight" style="flex-wrap:nowrap">
+          <div class="input mono" style="flex:1">http://127.0.0.1:9100</div>
+          <button>Generate token</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="space">
+      <div class="row between">
+        <label class="small">Step 2 — Run this 1-line command in your terminal to start the server</label>
+        <button>Copy command</button>
+      </div>
+      <pre class="tight">FABRIC_AGENT_SERVER_TOKEN="fab_srv_9f8a2b3c4d5e6f7a8b9c0d1e2f3a4b5c" npx -y @fabricorg/agent-server --port 9100</pre>
+    </div>
+
+    <div class="row between space">
+      <span class="small muted">Personal servers use your local CLI subscriptions (Claude Max, Codex, Cursor, Droid, Kimi, Grok) with zero API cost.</span>
+      <div class="row">
+        <button>Cancel</button>
+        <button class="primary">Save &amp; Test Connection</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Shot 2: StartCodingRunDialog showing Target, Server Picker, Primary Task Assignment & Subscription Harness -->
+<section id="shot-start-run" class="shot dialog">
+  <div class="row between">
+    <div>
+      <div class="row">
+        <h2>Send to Fabric Agents</h2>
+        <span class="badge">Feature #EXAMPLE-14</span>
+        <span class="help-pill">? Delegation Guide</span>
+      </div>
+      <p class="small muted tight">Delegate implementation to your Fabric Agents Remote Server or Fabric Agents Desktop using subscription harnesses.</p>
+    </div>
+    <span class="muted">×</span>
+  </div>
+
+  <div class="grid2 space">
+    <div class="card-box selected">
+      <div class="row between">
+        <h4>Fabric Agents Remote Server</h4>
+        <span class="badge badge-emerald">Selected</span>
+      </div>
+      <p class="small muted tight">Run in an isolated git worktree on your Personal (:9100) or Organization Remote Server with live embedded Web UI.</p>
+    </div>
+    <div class="card-box">
+      <div class="row between">
+        <h4>Fabric Agents Desktop</h4>
+        <span class="badge">fabricagents://</span>
+      </div>
+      <p class="small muted tight">Launch directly inside the native Fabric Agents Desktop app on your workstation with local repository checkout.</p>
+    </div>
+  </div>
+
+  <div class="grid2 space">
+    <div>
+      <label class="small"><strong>1. Target Remote Server</strong> (Personal or Organization)</label>
+      <div class="input tight row between">
+        <span><strong>My MacBook Pro (:9100)</strong> · <span class="mono xsmall muted">http://127.0.0.1:9100</span></span>
+        <span class="badge badge-emerald">Personal</span>
+      </div>
+    </div>
+    <div>
+      <label class="small"><strong>2. Task Assignment Scope</strong></label>
+      <div class="input tight row between">
+        <span>Task 1: Implement OAuth PKCE callback &amp; unit tests</span>
+        <span class="badge">1 of 3 tasks</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid2 space">
+    <div>
+      <label class="small"><strong>3. Subscription Harness &amp; Model</strong></label>
+      <div class="input tight row between">
+        <span><strong>Claude Max</strong> · <span class="mono xsmall">claude-sonnet-4-5</span></span>
+        <span class="badge badge-violet">Zero API Cost</span>
+      </div>
+    </div>
+    <div>
+      <label class="small"><strong>4. When Subscription Credits Exhaust</strong></label>
+      <div class="input tight row between">
+        <span>Failover across subscription harnesses (Codex → Cursor → Droid)</span>
+        <span class="badge">Free</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    <div class="row">
+      <button>Copy MCP Task Prompt</button>
+      <button>Open in Fabric Agents Desktop</button>
+    </div>
+    <div class="row">
+      <button>Cancel</button>
+      <button class="primary">Send to Fabric Agents</button>
+    </div>
+  </div>
+</section>
+
+<!-- Shot 3: CodingRunTimeline + RemoteSessionConversation with Embedded Live Fabric Agents Remote Server Web UI inside the Portal -->
+<section id="shot-live-webui" class="shot wide">
+  <div class="row between">
+    <div>
+      <div class="row">
+        <h2>Coding Run · Implement OAuth PKCE callback</h2>
+        <span class="badge badge-blue">RUNNING</span>
+        <span class="badge mono">feat/oauth-pkce-callback</span>
+      </div>
+      <p class="small muted tight">Server: <strong>My MacBook Pro (:9100)</strong> (Personal) · Harness: <strong>Claude Max (claude-sonnet-4-5)</strong> · Repository: <code>example-org/payments-service</code></p>
+    </div>
+    <div class="row">
+      <button class="primary">Hide Embedded Server Web UI</button>
+      <button>Open in new tab ↗</button>
+      <button>Open in Fabric Desktop</button>
+    </div>
+  </div>
+
+  <div class="stepper">
+    <div class="step-pill done">✓ 1. Worktree &amp; session</div>
+    <div class="step-pill active">● 2. Implementing task</div>
+    <div class="step-pill">3. Pull Request</div>
+    <div class="step-pill">4. Completed</div>
+  </div>
+
+  <!-- Embedded Live Fabric Agents Remote Server Web UI inside Fabric Portal -->
+  <div class="webui-frame">
+    <div class="webui-bar">
+      <div class="row">
+        <span style="color:#34d399">● Live Fabric Agents Remote Server Web UI</span>
+        <span class="mono xsmall" style="color:#94a3b8">http://127.0.0.1:9100/sessions/sess_9f8a2b · Embedded in Fabric Portal</span>
+      </div>
+      <div class="row">
+        <span class="xsmall" style="color:#cbd5e1">Worktree: feat/oauth-pkce-callback</span>
+      </div>
+    </div>
+    <div class="webui-body">
+      <div class="webui-side">
+        <p style="color:#94a3b8;font-weight:600;margin-bottom:8px">ACTIVE WORKSPACE SESSIONS</p>
+        <div style="background:#1e293b;padding:8px;border-radius:6px;border:1px solid #475569;margin-bottom:6px">
+          <p style="font-weight:600;color:#f8fafc">#EXAMPLE-14 · OAuth PKCE</p>
+          <p class="mono xsmall" style="color:#38bdf8">claude-max · running</p>
+        </div>
+        <p style="color:#94a3b8;font-weight:600;margin:12px 0 6px">MODIFIED FILES (3)</p>
+        <p class="mono xsmall" style="color:#cbd5e1;padding:3px 0">+ src/auth/pkce.ts</p>
+        <p class="mono xsmall" style="color:#cbd5e1;padding:3px 0">M src/routes/callback.ts</p>
+        <p class="mono xsmall" style="color:#34d399;padding:3px 0">+ test/pkce.test.ts</p>
+      </div>
+      <div class="webui-main">
+        <div>
+          <p class="mono xsmall" style="color:#94a3b8">[00:48:12] Created git worktree on branch feat/oauth-pkce-callback</p>
+          <p class="mono xsmall" style="color:#94a3b8">[00:48:19] Loaded project coding instructions (AGENTS.md) and task acceptance criteria</p>
+          <p class="mono xsmall" style="color:#e2e8f0;margin-top:6px">▸ Writing PKCE S256 verifier validation in <code>src/auth/pkce.ts</code> and running <code>pnpm test</code>...</p>
+          <pre style="background:#020617;border-color:#1e293b;color:#34d399;margin-top:8px;padding:8px 10px">✓ test/pkce.test.ts (6 tests) 142ms — All acceptance criteria verified</pre>
+        </div>
+        <div class="row between" style="margin-top:12px;padding-top:10px;border-top:1px solid #1e293b">
+          <span class="xsmall" style="color:#94a3b8">Connected directly to Fabric Agents Remote Server</span>
+          <span class="xsmall" style="color:#34d399">Streaming live events</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Portal Follow-Up Instruction Box -->
+  <div class="row space">
+    <div class="input" style="flex:1">Send a follow-up instruction to this running session (e.g., "Also add rate-limit headers to the callback endpoint")...</div>
+    <button class="primary">Send to session</button>
+  </div>
+</section>
+
+<!-- Shot 4: AI Providers Databricks-style uniform cards for Fabric Agents Remote Server & Fabric Agents Desktop -->
+<section id="shot-ai-providers" class="shot wide">
+  <div class="row between">
+    <div>
+      <div class="row">
+        <h2>Remote &amp; Subscription Agent Bridges</h2>
+        <span class="help-pill">? Docs: AI Providers &amp; Bridges</span>
+      </div>
+      <p class="small muted tight">Connect Fabric Agents Remote Server or Fabric Agents Desktop to route AI chat, Advisor, and document generation through your subscription harnesses.</p>
+    </div>
+    <div class="segment">
+      <span class="chosen">Organization</span>
+      <span>Personal</span>
+    </div>
+  </div>
+
+  <div class="grid2 space">
+    <div class="card-box">
+      <div>
+        <div class="row between">
+          <h3>Fabric Agents Remote Server</h3>
+          <div class="row">
+            <span class="badge badge-emerald">Active</span>
+            <span class="badge badge-violet">Zero API Cost</span>
+          </div>
+        </div>
+        <p class="small muted tight">Connect to a Fabric Agents Remote Server (personal or organization), Ollama, vLLM, LM Studio, or any OpenAI-compatible /v1 endpoint.</p>
+        <p class="mono xsmall muted space">Endpoint: https://agents.example.com/v1 · 6 subscription harnesses ready</p>
+      </div>
+      <div class="row between space" style="padding-top:12px;border-top:1px solid var(--border);flex-wrap:nowrap">
+        <button>Configure Remote Server</button>
+        <div class="row" style="flex-wrap:nowrap">
+          <button>Test</button>
+          <button>Open Web UI ↗</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card-box">
+      <div>
+        <div class="row between">
+          <h3>Fabric Agents Desktop</h3>
+          <span class="badge badge-violet">Zero API Cost</span>
+        </div>
+        <p class="small muted tight">Route AI requests through your local Fabric Agents Desktop app and subscription harnesses (ChatGPT Plus/Pro, Claude Max, Cursor, Droid, Kimi, Grok) without per-token API fees.</p>
+        <p class="mono xsmall muted space">Local Bridge: http://127.0.0.1:4318/v1 · Deep-link: fabricagents://</p>
+      </div>
+      <div class="row between space" style="padding-top:12px;border-top:1px solid var(--border)">
+        <button class="primary">Connect Fabric Agents Desktop</button>
+        <button>Launch Desktop App</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+</body>
+</html>

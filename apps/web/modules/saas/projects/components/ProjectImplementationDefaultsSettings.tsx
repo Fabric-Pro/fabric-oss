@@ -6,9 +6,16 @@ import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
 import { Card } from "@ui/components/card";
 import {
+	Tooltip,
+	TooltipContent,
+	TooltipProvider,
+	TooltipTrigger,
+} from "@ui/components/tooltip";
+import {
 	Building2Icon,
 	CheckCircle2Icon,
 	CpuIcon,
+	HelpCircleIcon,
 	LaptopIcon,
 	RefreshCwIcon,
 	ServerCogIcon,
@@ -127,6 +134,35 @@ export function ProjectImplementationDefaultsSettings({
 								>
 									Subscription Offload Ready
 								</Badge>
+								<TooltipProvider delayDuration={150}>
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<a
+												href="/docs/features/projects#delegating-coding-runs-to-fabric-agents"
+												target="_blank"
+												rel="noopener noreferrer"
+												data-testid="implementation-defaults-docs-link"
+												aria-label="Fabric Agents delegation defaults documentation"
+												className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-muted/40 px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+											>
+												<HelpCircleIcon className="size-3" />
+												Setup Guide
+											</a>
+										</TooltipTrigger>
+										<TooltipContent className="max-w-xs space-y-1 text-xs leading-relaxed">
+											<p className="font-semibold">
+												Project Delegation Defaults
+											</p>
+											<p>
+												Learn how to configure multiple
+												Personal servers, shared
+												Organization servers,
+												subscription harnesses, and the
+												embedded Server Web UI.
+											</p>
+										</TooltipContent>
+									</Tooltip>
+								</TooltipProvider>
 							</div>
 							<p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">
 								Delegate coding tasks to{" "}

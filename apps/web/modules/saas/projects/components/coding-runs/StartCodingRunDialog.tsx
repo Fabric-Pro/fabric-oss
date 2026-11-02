@@ -11,11 +11,18 @@ import {
 	DialogTitle,
 } from "@ui/components/dialog";
 import {
+	Tooltip,
+	TooltipContent,
+	TooltipProvider,
+	TooltipTrigger,
+} from "@ui/components/tooltip";
+import {
 	CheckCircle2Icon,
 	CodeIcon,
 	CopyIcon,
 	CpuIcon,
 	GitBranchIcon,
+	HelpCircleIcon,
 	LaptopIcon,
 	ListTodoIcon,
 	Loader2Icon,
@@ -220,12 +227,47 @@ export function StartCodingRunDialog({
 							<CodeIcon className="size-5 text-primary" />
 						</div>
 						<div className="min-w-0 flex-1 space-y-2 pr-8">
-							<Badge
-								variant="outline"
-								className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-0.5 text-[11px] uppercase tracking-wide text-primary"
-							>
-								{getExecutionProviderLabel("BACKGROUND_AGENTS")}
-							</Badge>
+							<div className="flex flex-wrap items-center gap-2">
+								<Badge
+									variant="outline"
+									className="rounded-full border-primary/20 bg-primary/5 px-2.5 py-0.5 text-[11px] uppercase tracking-wide text-primary"
+								>
+									{getExecutionProviderLabel(
+										"BACKGROUND_AGENTS",
+									)}
+								</Badge>
+								<TooltipProvider delayDuration={150}>
+									<Tooltip>
+										<TooltipTrigger asChild>
+											<a
+												href="/docs/features/projects#delegating-coding-runs-to-fabric-agents"
+												target="_blank"
+												rel="noopener noreferrer"
+												data-testid="start-coding-run-docs-link"
+												aria-label="Delegating Coding Runs to Fabric Agents documentation"
+												className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-muted/40 px-2.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+											>
+												<HelpCircleIcon className="size-3" />
+												Delegation Guide
+											</a>
+										</TooltipTrigger>
+										<TooltipContent className="max-w-xs space-y-1 text-xs leading-relaxed">
+											<p className="font-semibold">
+												Delegating Coding Runs to Fabric
+												Agents
+											</p>
+											<p>
+												Learn how to configure Personal
+												or Organization Remote Servers,
+												assign specific tasks, use
+												subscription harnesses, and
+												watch the live Server Web UI
+												inside the portal.
+											</p>
+										</TooltipContent>
+									</Tooltip>
+								</TooltipProvider>
+							</div>
 							<DialogTitle className="text-xl leading-tight sm:text-2xl">
 								Send to{" "}
 								{getExecutionProviderLabel("BACKGROUND_AGENTS")}

@@ -15,6 +15,12 @@ import {
 } from "@saas/projects/lib/implementation-session-labels";
 import { Badge } from "@ui/components/badge";
 import { Button } from "@ui/components/button";
+import {
+	Tooltip,
+	TooltipContent,
+	TooltipProvider,
+	TooltipTrigger,
+} from "@ui/components/tooltip";
 import { cn } from "@ui/lib";
 import {
 	Building2Icon,
@@ -23,6 +29,7 @@ import {
 	CopyIcon,
 	CpuIcon,
 	ExternalLinkIcon,
+	HelpCircleIcon,
 	KeyRoundIcon,
 	LaptopIcon,
 	RefreshCwIcon,
@@ -199,6 +206,34 @@ export function LaunchFabricDesktopBar({
 						<KeyRoundIcon className="mr-1 size-3" />
 						OAuth Login
 					</Button>
+					<TooltipProvider delayDuration={150}>
+						<Tooltip>
+							<TooltipTrigger asChild>
+								<a
+									href="/docs/features/projects#delegating-coding-runs-to-fabric-agents"
+									target="_blank"
+									rel="noopener noreferrer"
+									data-testid="launch-desktop-bar-docs-link"
+									aria-label="Fabric Agents Remote Server delegation documentation"
+									className="inline-flex items-center gap-1 rounded-full border border-border/70 bg-muted/40 px-2 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+								>
+									<HelpCircleIcon className="size-3" />
+									Docs
+								</a>
+							</TooltipTrigger>
+							<TooltipContent className="max-w-xs space-y-1 text-xs leading-relaxed">
+								<p className="font-semibold">
+									Remote Server Delegation &amp; Live Web UI
+								</p>
+								<p>
+									Configure Personal or Organization Remote
+									Servers, select your subscription harness,
+									and embed the live Server Web UI inside the
+									Fabric Portal.
+								</p>
+							</TooltipContent>
+						</Tooltip>
+					</TooltipProvider>
 				</div>
 			</div>
 
