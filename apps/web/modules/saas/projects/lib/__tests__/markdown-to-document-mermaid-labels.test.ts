@@ -51,6 +51,7 @@ vi.mock("../document-export-helpers", async (importOriginal) => {
 	};
 });
 
+import { ALWAYS_WRAPPED_LABEL_CHARS } from "@repo/utils/proposal-artifact/diagram-label-wrap";
 import { renderMermaidToPng } from "../markdown-to-document";
 
 const LONG_LABEL =
@@ -74,6 +75,23 @@ describe("renderMermaidToPng with beautiful-mermaid", () => {
 		expect(drawn.startsWith("flowchart LR")).toBe(true);
 		expect(drawn.replace(/<br\/>/g, " ").replace(/\s+/g, " ")).toContain(
 			"Agree the example pilot scope",
+		);
+	});
+
+	it("breaks a 57-character label dense in narrow letters", async () => {
+		const narrow =
+			"implementation — implementation of the agreed pilot scope";
+		expect(narrow.length).toBeGreaterThanOrEqual(
+			ALWAYS_WRAPPED_LABEL_CHARS,
+		);
+
+		await renderMermaidToPng(
+			`flowchart LR\n  a["${narrow}"] --> b["Review"]`,
+		);
+
+		expect(engine.calls).toHaveLength(1);
+		expect(engine.calls[0]?.source).toContain(
+			"implementation —<br/>implementation of the agreed<br/>pilot scope",
 		);
 	});
 

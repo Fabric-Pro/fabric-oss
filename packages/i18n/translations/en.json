@@ -487,6 +487,7 @@
 			"dontHaveAnAccount": "Don't have an account yet?",
 			"forgotPassword": "Forgot password?",
 			"hints": {
+				"passwordSet": "Password set. Sign in with your new password.",
 				"invalidCredentials": "The email or password you entered are invalid. Please try again.",
 				"linkSent": {
 					"message": "We have sent you a link to continue. Please check your inbox.",
@@ -1111,6 +1112,7 @@
 		"roles": {
 			"admin": "Admin",
 			"member": "Member",
+			"none": "No role",
 			"owner": "Owner"
 		},
 		"settings": {

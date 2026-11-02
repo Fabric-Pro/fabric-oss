@@ -21,6 +21,7 @@ import {
 	labelElements,
 	MONO_TRACKING,
 	num,
+	outlinedBox,
 	PANEL_OPACITY,
 	spoken,
 	svgDocument,
@@ -185,7 +186,7 @@ export function layersFigureSvg(
 			const boxWidth = row.boxWidths[index];
 			const highlight = node.classes.includes("highlight");
 			body.push(
-				`<rect class="box" x="${num(x)}" y="${num(boxTop)}" width="${num(boxWidth)}" height="${num(boxHeight)}" rx="3" fill="${highlight ? colors.tint : colors.surface}" stroke="${highlight ? colors.primary : colors.border}"/>`,
+				`<rect class="box" ${outlinedBox(x, boxTop, boxWidth, boxHeight)} rx="3" fill="${highlight ? colors.tint : colors.surface}" stroke="${highlight ? colors.primary : colors.border}"/>`,
 			);
 			const label = row.labels[index];
 			const first =

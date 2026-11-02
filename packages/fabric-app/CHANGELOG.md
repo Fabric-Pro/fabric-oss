@@ -1,5 +1,21 @@
 # fabric-app
 
+## 1.16.35
+
+### Patch Changes
+
+- 6f670d4: Agent chats stop request-bound work when the browser disconnects and keep cleanup running until partial replies are saved.
+- 6f670d4: Stop the recurring-error scan filing autoscaler metric gaps that a revision rollout, a replica start or a brief metrics outage explains.
+- 6f670d4: Stop request-bound agent replies when their response closes, preserving interrupted Atlas answers while durable conversations continue after a viewer disconnects. Load registered agent chat data directly through its authorized server procedures instead of making two HTTP calls back to the application before rendering.
+- 6f670d4: Flowchart node labels of 40 characters or more are now broken into lines on a document page and when a document is downloaded, and in a client proposal's PDF wherever that prints larger than the label on one line, so most labels of 40 to 59 characters with dashes or narrow letters no longer run past their box.
+- 6f670d4: A document generation that fails part-way now falls back to a fresh generation or fails, instead of saving the partial text as a complete document.
+- 6f670d4: Log which Temporal activity failed and why once it runs out of retries, instead of only a generic failure message.
+- 6f670d4: Show every member's role on the organization Members page instead of a blank field when the viewer cannot assign that role.
+- 6f670d4: Let project and organization admins connect and configure PM tools, which until now only owners could do.
+- 6f670d4: The last card of a process or timeline figure, and the last box of a layers figure without a cross-cutting column, now print their outline in full instead of losing their right edge at the page column.
+- 6f670d4: Wait for the organization context before loading a registered agent's Try workspace, avoiding a transient access error during navigation.
+- 6f670d4: Setting a first password now signs you out cleanly and asks you to sign in with it, instead of trapping you in a redirect loop on a blank page.
+
 ## 1.16.34
 
 ### Patch Changes

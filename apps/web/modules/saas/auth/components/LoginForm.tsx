@@ -168,6 +168,10 @@ export function LoginForm({
 			verifiedShownRef.current = true;
 			toast.success(t("auth.verification.confirmed"));
 		}
+		if (searchParams.get("passwordSet") === "1") {
+			verifiedShownRef.current = true;
+			toast.success(t("auth.login.hints.passwordSet"));
+		}
 	}, [searchParams, t]);
 
 	useEffect(() => {

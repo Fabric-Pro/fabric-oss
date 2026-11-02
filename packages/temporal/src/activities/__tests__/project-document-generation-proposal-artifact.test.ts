@@ -2237,6 +2237,308 @@ describe("artifact mode — a cut stream, cancellation and fallback", () => {
 });
 
 // -----------------------------------------------------------------------------
+// An agent run that ended in an error, and a fallback that did not finish
+// (Fizzy #2946)
+// -----------------------------------------------------------------------------
+
+/** What the agent ends a run with when its write was cut off. */
+const AGENT_RUN_ERROR =
+	"The document could not be written: the response was cut off at the model's output limit.";
+
+/**
+ * The agent's final state after a write that never completed: the last
+ * preview of the write's arguments, beside the error the run ended with.
+ */
+function failedValues(document: string): StreamChunk {
+	return { event: "values", data: { document, error: AGENT_RUN_ERROR } };
+}
+
+/**
+ * The sentence a failed fallback ends with after the agent failed first. It
+ * names no cause: the agent may have been reached and ended in an error.
+ */
+const FALLBACK_CAUSE =
+	"This ran as a fallback because the primary document generation did not complete; an administrator can find the underlying error in the audit log.";
+
+/** A PRD, which never runs in artifact mode. */
+function generatePrd() {
+	return generateDocumentWithAgent({
+		projectId: "project-1",
+		documentId: "doc-1",
+		documentType: "PRD",
+		prompt: "",
+		contexts: ["The client picks 4,000 orders a day on paper."],
+		userId: "user-1",
+		organizationId: "org-1",
+		aiToken: "token-1",
+		hasRagContexts: true,
+	});
+}
+
+/** The audit row of a generation whose agent stream failed. */
+function agentStreamFailureAudit() {
+	return expect.objectContaining({
+		action: "project.document_generation.failed",
+		metadata: expect.objectContaining({
+			phase: "agent_stream",
+			error: expect.stringContaining(AGENT_RUN_ERROR),
+		}),
+	});
+}
+
+describe("an agent run that ended in an error", () => {
+	beforeEach(() => {
+		promptLibraryRenders();
+		fallbackProduces(FALLBACK_DOCUMENT);
+	});
+
+	it("never returns an artifact Proposal's last preview: the sections stay, the preview is marked stopped, and the bounded fallback writes the document", async () => {
+		agentStreams([preview(PREVIEW_ONE), failedValues(PREVIEW_ONE)]);
+
+		const result = await generateArtifact();
+
+		expect(result.content).toBe(FALLBACK_DOCUMENT);
+		expect(liveWrites()).toEqual([SECTIONS_ONE]);
+		expect(mocks.clearLiveContent).not.toHaveBeenCalled();
+		expect(milestoneWrites()).toEqual([MILESTONE]);
+		expect(mocks.streamText).toHaveBeenCalledTimes(1);
+		expect(mocks.streamText.mock.calls[0]?.[0]).toHaveProperty(
+			"abortSignal",
+		);
+		expect(activityLogger.warn).toHaveBeenCalledWith(
+			FALLING_BACK,
+			expect.objectContaining({
+				error: expect.stringContaining(AGENT_RUN_ERROR),
+			}),
+		);
+		expect(mocks.recordAuditDurable).toHaveBeenCalledWith(
+			agentStreamFailureAudit(),
+		);
+	});
+
+	it("never returns another type's last preview: the fallback writes the document, as for a failed stream", async () => {
+		const partial = "## Overview\n\nThe problem: paper-based pick";
+		agentStreams([preview(partial), failedValues(partial)]);
+
+		const result = await generatePrd();
+
+		expect(result.content).toBe(FALLBACK_DOCUMENT);
+		expect(mocks.streamText).toHaveBeenCalledTimes(1);
+		expect(mocks.streamText.mock.calls[0]?.[0]).not.toHaveProperty(
+			"abortSignal",
+		);
+		expect(mocks.activityContext).not.toHaveBeenCalled();
+		expect(activityLogger.warn).toHaveBeenCalledWith(
+			FALLING_BACK,
+			expect.objectContaining({
+				error: expect.stringContaining(AGENT_RUN_ERROR),
+			}),
+		);
+		expect(mocks.recordAuditDurable).toHaveBeenCalledWith(
+			agentStreamFailureAudit(),
+		);
+	});
+
+	it.each([
+		["an artifact Proposal", generateArtifact],
+		["a PRD", generatePrd],
+	])(
+		"keeps %s run that ended without an error on the agent's document",
+		async (_label, generate) => {
+			agentStreams([
+				preview(PREVIEW_ONE),
+				{
+					event: "values",
+					data: { document: FINAL_DOCUMENT, error: undefined },
+				},
+			]);
+
+			const result = await generate();
+
+			expect(result.content).toBe(FINAL_DOCUMENT);
+			expect(mocks.streamText).not.toHaveBeenCalled();
+			expect(mocks.recordAuditDurable).not.toHaveBeenCalled();
+		},
+	);
+
+	// Only a non-empty string is an error the agent reported.
+	it.each([
+		["an artifact Proposal", "an empty string", generateArtifact, ""],
+		["an artifact Proposal", "a number", generateArtifact, 42],
+		["an artifact Proposal", "an object", generateArtifact, { code: "E1" }],
+		["a PRD", "an empty string", generatePrd, ""],
+		["a PRD", "a number", generatePrd, 42],
+		["a PRD", "an object", generatePrd, { code: "E1" }],
+	])(
+		"keeps %s run on the agent's document when the error beside it is %s",
+		async (_label, _kind, generate, error) => {
+			agentStreams([
+				preview(PREVIEW_ONE),
+				{ event: "values", data: { document: FINAL_DOCUMENT, error } },
+			]);
+
+			const result = await generate();
+
+			expect(result.content).toBe(FINAL_DOCUMENT);
+			expect(mocks.streamText).not.toHaveBeenCalled();
+			expect(mocks.recordAuditDurable).not.toHaveBeenCalled();
+		},
+	);
+
+	// The agent was reached and reported its own error, so the failed
+	// fallback's message must not send the reader looking for an outage.
+	it.each([
+		[
+			"an artifact Proposal",
+			"error",
+			generateArtifact,
+			'"proposal"',
+			"(finish reason: error)",
+		],
+		[
+			"an artifact Proposal",
+			"length",
+			generateArtifact,
+			'"proposal"',
+			"stopped at the model's output-token limit",
+		],
+		["a PRD", "error", generatePrd, '"prd"', "(finish reason: error)"],
+		[
+			"a PRD",
+			"length",
+			generatePrd,
+			'"prd"',
+			"stopped at the model's output-token limit",
+		],
+	])(
+		'fails %s fallback that ends with "%s" naming its ending and no cause, and quoting nothing',
+		async (_label, finishReason, generate, documentType, ending) => {
+			agentStreams([preview(PREVIEW_ONE), failedValues(PREVIEW_ONE)]);
+			fallbackEndsWith(PARTIAL_FALLBACK, finishReason);
+
+			const error = await failureOf(generate());
+
+			expect(error).toBeInstanceOf(Error);
+			const message = (error as Error).message;
+			expect(message).toContain(
+				`Document generation for ${documentType}`,
+			);
+			expect(message).toContain(ending);
+			expect(message).toContain(FALLBACK_CAUSE);
+			expect(message).not.toContain("could not be reached");
+			expect(message).not.toContain(AGENT_RUN_ERROR);
+			expect(message).not.toContain("Agent run ended with an error");
+			expect(message).not.toContain(PREVIEW_ONE);
+			expect(message).not.toContain(PARTIAL_FALLBACK);
+			expect(mocks.recordAuditDurable).toHaveBeenCalledWith(
+				agentStreamFailureAudit(),
+			);
+		},
+	);
+});
+
+/**
+ * The fallback writes `text` and ends for `finishReason`, with the provider's
+ * own reason when one is given.
+ */
+function fallbackEndsWith(
+	text: string,
+	finishReason: string,
+	rawFinishReason?: string,
+) {
+	mocks.streamText.mockImplementation(() => ({
+		textStream: (async function* () {
+			yield text;
+		})(),
+		finishReason: Promise.resolve(finishReason),
+		rawFinishReason: Promise.resolve(rawFinishReason),
+		usage: Promise.resolve({ outputTokens: 100 }),
+	}));
+}
+
+/** What a fallback that died part-way had written. */
+const PARTIAL_FALLBACK = "## Overview\n\nThe problem: paper-based pick";
+
+describe("a gateway fallback that did not finish", () => {
+	beforeEach(() => {
+		promptLibraryRenders();
+		// The agent ends without a document, so the fallback writes it.
+		agentStreams([]);
+	});
+
+	it.each(["error", "content-filter", "other"])(
+		'fails on a "%s" finish and never returns the partial text',
+		async (finishReason) => {
+			fallbackEndsWith(PARTIAL_FALLBACK, finishReason);
+
+			const error = await failureOf(generatePrd());
+
+			expect(error).toBeInstanceOf(Error);
+			const message = (error as Error).message;
+			expect(message).toContain('Document generation for "prd"');
+			expect(message).toContain(finishReason);
+			expect(message).not.toContain(PARTIAL_FALLBACK);
+			expect(message).not.toMatch(/output-token limit/);
+		},
+	);
+
+	it("fails an artifact Proposal's bounded fallback that ended in an error", async () => {
+		fallbackEndsWith(PARTIAL_FALLBACK, "error");
+
+		const error = await failureOf(generateArtifact());
+
+		expect(error).toBeInstanceOf(Error);
+		expect((error as Error).message).toContain('"proposal"');
+		expect(mocks.streamText.mock.calls[0]?.[0]).toHaveProperty(
+			"abortSignal",
+		);
+	});
+
+	it("still fails at the output-token limit with the truncation message", async () => {
+		fallbackEndsWith(PARTIAL_FALLBACK, "length");
+
+		const error = await failureOf(generatePrd());
+
+		expect((error as Error).message).toMatch(
+			/^Document generation for "prd" stopped at the model's output-token limit after producing /,
+		);
+	});
+
+	it("returns the document of a fallback that finished", async () => {
+		fallbackEndsWith(`${FALLBACK_DOCUMENT}\n`, "stop");
+
+		const result = await generatePrd();
+
+		expect(result.content).toBe(FALLBACK_DOCUMENT);
+		expect(activityLogger.warn).not.toHaveBeenCalledWith(
+			"Gateway fallback ended without stopping",
+			expect.anything(),
+		);
+	});
+
+	it("logs the finish reasons and the partial text's length, never the text", async () => {
+		// A dead Responses stream and a gateway that omits finish_reason both
+		// end as "other"; the provider's raw reason tells them apart.
+		fallbackEndsWith(PARTIAL_FALLBACK, "other", "unknown_reason");
+
+		await failureOf(generatePrd());
+
+		expect(activityLogger.warn).toHaveBeenCalledWith(
+			"Gateway fallback ended without stopping",
+			{
+				documentType: "prd",
+				finishReason: "other",
+				rawFinishReason: "unknown_reason",
+				partialLength: PARTIAL_FALLBACK.length,
+			},
+		);
+		expect(
+			JSON.stringify(vi.mocked(activityLogger.warn).mock.calls),
+		).not.toContain(PARTIAL_FALLBACK);
+	});
+});
+
+// -----------------------------------------------------------------------------
 // Artifact mode: a stalled database or realtime call never holds the run up
 // -----------------------------------------------------------------------------
 

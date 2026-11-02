@@ -449,17 +449,83 @@ it("replica-readiness requires all proof clauses and event recheck", () => {
 	);
 });
 
-it("shares only the external metric reason, with teardown first", () => {
+it("shares only the autoscaler metric reasons, with teardown first", () => {
 	const reasons = PLATFORM_NOISE_RULES.flatMap((rule) => [
 		...rule.failureReasons,
 	]);
 	expect(
-		reasons.filter((reason, index) => reasons.indexOf(reason) !== index),
-	).toEqual(["FailedGetExternalMetric"]);
+		new Set(
+			reasons.filter(
+				(reason, index) => reasons.indexOf(reason) !== index,
+			),
+		),
+	).toEqual(
+		new Set(["FailedGetExternalMetric", "FailedComputeMetricsReplicas"]),
+	);
 	expect(PLATFORM_NOISE_RULES.slice(4).map((rule) => rule.id)).toEqual([
 		"autoscaler-teardown",
 		"metrics-service-blip",
+		"autoscaler-replica-start",
+		"resource-metrics-blip",
 	]);
+});
+
+it("autoscaler-replica-start requires all proof clauses and event recheck", () => {
+	const q = buildErrorGroupQuery(SCOPE);
+	expect(q).toContain(
+		'let _proof6_0 = _systemLogs\n| where _reason in ("ContainerStarted")\n| where isnotempty(_revision)',
+	);
+	expect(q).toContain(
+		'let _noise6_0 = _systemLogs\n| where _reason in ("FailedComputeMetricsReplicas")',
+	);
+	expect(q).toContain("| where okAt <= failAt and okAt >= failAt - 2m");
+	expect(q).toContain(
+		'| extend _rule6 = coalesce(_proven6, false) and _reason in ("FailedComputeMetricsReplicas") and _log endswith "(pods might be unready)"',
+	);
+});
+
+it("resource-metrics-blip requires all proof clauses and event recheck", () => {
+	const q = buildErrorGroupQuery(SCOPE);
+	expect(q).toContain(
+		'let _failures7 = materialize(_systemLogs\n| where _reason in ("FailedComputeMetricsReplicas") and _log endswith "(get pods.metrics.k8s.io)"\n| where isnotempty(_app)',
+	);
+	expect(q).toContain(
+		'| extend _rule7 = coalesce(_proven7, false) and _reason in ("FailedComputeMetricsReplicas") and _log endswith "(get pods.metrics.k8s.io)"',
+	);
+});
+
+it("never sets aside a readiness failure on simultaneity alone", () => {
+	const simultaneous = PLATFORM_NOISE_RULES.filter((rule) =>
+		rule.proofs.some((proof) => "kind" in proof),
+	);
+	const cpuRules = simultaneous.filter((rule) =>
+		rule.failureReasons.includes("FailedComputeMetricsReplicas"),
+	);
+
+	expect(cpuRules.map((rule) => rule.id)).toEqual(["resource-metrics-blip"]);
+	expect(cpuRules[0]?.log?.value).not.toContain("pods might be unready");
+});
+
+it("keeps external and CPU metric failures out of each other's peer count", () => {
+	const families = PLATFORM_NOISE_RULES.filter((rule) =>
+		rule.proofs.some((proof) => "kind" in proof),
+	).map((rule) => [...rule.failureReasons]);
+
+	expect(families).toEqual([
+		["FailedGetExternalMetric"],
+		["FailedComputeMetricsReplicas"],
+	]);
+});
+
+it("leaves every other CPU metric failure to be reported", () => {
+	const rule = PLATFORM_NOISE_RULES.find(
+		(candidate) => candidate.id === "autoscaler-replica-start",
+	);
+	expect(rule?.log).toEqual({
+		operator: "endswith",
+		value: "(pods might be unready)",
+	});
+	expect(rule?.key).toBe("revision");
 });
 it("sums noise rows and unions capped apps", () => {
 	const result = parseErrorGroupResponse({
@@ -506,7 +572,7 @@ it("removes explained events before grouping and reports rules outside the cap",
 		q.indexOf("| take 25"),
 	);
 	expect(q).toContain(
-		'| extend _noiseRule = case(_rule0, "key-vault-canceled", _rule1, "replica-scheduling", _rule2, "revision-autoscaler", _rule3, "replica-readiness", _rule4, "autoscaler-teardown", _rule5, "metrics-service-blip", "")',
+		'| extend _noiseRule = case(_rule0, "key-vault-canceled", _rule1, "replica-scheduling", _rule2, "revision-autoscaler", _rule3, "replica-readiness", _rule4, "autoscaler-teardown", _rule5, "metrics-service-blip", _rule6, "autoscaler-replica-start", _rule7, "resource-metrics-blip", "")',
 	);
 	expect(q).toContain("by GroupKey = _noiseRule");
 	expect(q).toContain(
@@ -525,7 +591,7 @@ it("requires all clauses: A proof reason", () => {
 });
 it("requires all clauses: A failure reason", () => {
 	expect(buildErrorGroupQuery(SCOPE)).toContain(
-		'let _noise4_0 = _systemLogs\n| where _reason in ("FailedGetExternalMetric")\n| where isnotempty(_revision)',
+		'let _noise4_0 = _systemLogs\n| where _reason in ("FailedGetExternalMetric", "FailedComputeMetricsReplicas")\n| where isnotempty(_revision)',
 	);
 });
 it("requires all clauses: A before direction", () => {
@@ -555,7 +621,7 @@ it("requires all clauses: A union", () => {
 });
 it("requires all clauses: A event recheck", () => {
 	expect(buildErrorGroupQuery(SCOPE)).toContain(
-		'| extend _rule4 = coalesce(_proven4, false) and _reason in ("FailedGetExternalMetric")\n',
+		'| extend _rule4 = coalesce(_proven4, false) and _reason in ("FailedGetExternalMetric", "FailedComputeMetricsReplicas")\n',
 	);
 });
 it("requires all clauses: B failure reason", () => {

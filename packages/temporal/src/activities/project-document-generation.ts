@@ -1674,12 +1674,39 @@ async function runBoundedFallback(input: {
 		// Fail loudly: a document cut off at the output-token limit is not a
 		// success. Throw rather than save a truncated document (workflows must
 		// fail loudly — same rule as ContextUpdateTruncatedError).
-		if ((await stream.finishReason) === "length") {
+		const finishReason = await stream.finishReason;
+		// Every ending but "stop" fails below. A dead Responses stream ends as
+		// "other" with no raw reason, and so does an OpenAI-compatible gateway
+		// that omits finish_reason: the provider's raw reason is how an
+		// operator tells them apart. The partial text's length only, never
+		// the text.
+		if (finishReason !== "stop") {
+			activityLogger.warn("Gateway fallback ended without stopping", {
+				documentType: input.documentType,
+				finishReason,
+				rawFinishReason: await stream.rawFinishReason,
+				partialLength: text.length,
+			});
+		}
+		if (finishReason === "length") {
 			throw new Error(
 				describeTruncation({
 					documentType: input.documentType,
 					requestedBudget: maxOutputTokens,
 					observedOutputTokens: await readOutputTokens(stream.usage),
+					primaryStreamFailure: input.primaryStreamFailure,
+				}),
+			);
+		}
+		// Only a model that stopped by itself finished the document. The text
+		// stream drops error parts, so a stream that died part-way ends quietly
+		// with "error"; that text, like a filtered or unexplained ending, is
+		// partial and is never saved (Fizzy #2946).
+		if (finishReason !== "stop") {
+			throw new Error(
+				describeUnfinished({
+					documentType: input.documentType,
+					finishReason,
 					primaryStreamFailure: input.primaryStreamFailure,
 				}),
 			);
@@ -2831,7 +2858,20 @@ ${formattingRules}`;
 						streamLimits?.observe(chunk.event);
 
 						if (chunk.event === "values" && chunk.data) {
-							const data = chunk.data as { document?: string };
+							const data = chunk.data as {
+								document?: string;
+								error?: unknown;
+							};
+							// The agent ended the run in an error, so it wrote no
+							// document: the `document` beside it is at most the
+							// last preview of a write that never completed
+							// (Fizzy #2946). The run fails over as for a failed
+							// stream.
+							if (typeof data.error === "string" && data.error) {
+								throw new Error(
+									`Agent run ended with an error: ${data.error}`,
+								);
+							}
 							if (data.document) {
 								documentContent = data.document;
 								// Log progress (heartbeat is handled by background loop)
@@ -3375,6 +3415,16 @@ async function readOutputTokens(
 }
 
 /**
+ * The sentence a fallback's failure ends with when the primary agent stream
+ * failed first. That failure may be a service that could not be reached, a
+ * stream that was cut, or an error the agent itself ended its run with, so
+ * the sentence names no cause and quotes nothing, for the reasons
+ * {@link describeTruncation} gives; it points the reader to the audit log.
+ */
+const FALLBACK_CAUSE_NOTE =
+	" This ran as a fallback because the primary document generation did not complete; an administrator can find the underlying error in the audit log.";
+
+/**
  * Build the user-facing message for a generation that stopped on the model's
  * output-token limit.
  *
@@ -3397,17 +3447,33 @@ function describeTruncation(input: {
 			? "an unreported number of"
 			: `${input.observedOutputTokens}`;
 
-	// Names the FIRST failure without quoting it. `primaryStreamFailure` is the
-	// generation client's own error text — an HTTP body from the internal service,
-	// or a socket error carrying its host and port — and this string is rendered
+	// Points at the FIRST failure without naming or quoting it.
+	// `primaryStreamFailure` is the generation client's own error text — an HTTP
+	// body from the internal service, a socket error carrying its host and port,
+	// or the error the agent ended its run with — and this string is rendered
 	// verbatim to every project member through `generationError`. The raw cause
 	// belongs in the audit ledger, which is admin-gated; here it would be both
 	// unusable to the reader and an internal-topology leak.
-	const cause = input.primaryStreamFailure
-		? " This ran as a fallback because the document generation service could not be reached; an administrator can find the underlying error in the audit log."
-		: "";
+	const cause = input.primaryStreamFailure ? FALLBACK_CAUSE_NOTE : "";
 
 	return `Document generation for "${input.documentType}" stopped at the model's output-token limit after producing ${produced} tokens against a requested budget of ${budget}.${cause}`;
+}
+
+/**
+ * The failure of a fallback that ended for any reason but stopping by itself
+ * or the output-token limit: a stream that died part-way, a content filter, or
+ * an ending the provider does not explain (Fizzy #2946). Rendered to every
+ * project member like {@link describeTruncation}, so it names the finish
+ * reason and quotes nothing.
+ */
+function describeUnfinished(input: {
+	documentType: string;
+	finishReason: string | undefined;
+	primaryStreamFailure: string | undefined;
+}): string {
+	const cause = input.primaryStreamFailure ? FALLBACK_CAUSE_NOTE : "";
+
+	return `Document generation for "${input.documentType}" ended before the document was finished (finish reason: ${input.finishReason ?? "none reported"}), so the partial document was not saved.${cause}`;
 }
 
 export function repairMalformedMermaidFences(source: string): string {

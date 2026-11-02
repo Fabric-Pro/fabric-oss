@@ -46,29 +46,32 @@ A left-to-right chain of nodes whose labels are whole sentences is several thous
 
 | Step | SVG size | Printed labels |
 |---|---|---|
-| As written, `flowchart LR` | 3977 × 74 px | 1.62 pt |
-| Labels of 60 characters or more broken, still `LR` | 1037 × 154 px | 6.23 pt |
-| Turned top-down | 249 × 679 px | 9.75 pt |
+| As written, `flowchart LR` | 2314 × 74 px | 2.79 pt |
+| Labels of 40 characters or more broken, still `LR` | 989 × 154 px | 6.53 pt |
+| Broken, turned top-down | 232 × 510 px | 9.75 pt |
+| As written, turned top-down | 948 × 311 px | 6.81 pt |
 
-The export lays out the first two rows and keeps the second, whose labels print larger, then turns it. Recompute any row as 13 × min(1, 662.4 / width, 792 / height) × 0.75. The four-step sentence chain in `render-diagrams.test.ts` lays out at about 1781 × 74 px left to right as written (3.6 pt). With its two labels of 60 characters or more broken, it lays out at about 1307 × 104 px left to right (4.9 pt) and 375 × 395 px top-down (9.75 pt).
+The export lays out the first two rows and keeps the second, whose labels print larger. It is below the floor, so the export turns both copies top-down and keeps the broken one, whose labels print larger. Recompute any row as 13 × min(1, 662.4 / width, 792 / height) × 0.75. The four-step sentence chain in `render-diagrams.test.ts` lays out at about 1781 × 74 px left to right as written (3.6 pt). With its four labels of 40 characters or more broken, it lays out at about 1005 × 104 px left to right (6.4 pt) and 253 × 460 px top-down (9.75 pt).
 
-Height matters for tall diagrams. Breaking labels makes a diagram narrower but taller. An eight-step top-down chain of 73-character labels lays out at 487 × 650 px as written (9.75 pt), but at 229 × 1053 px with its labels broken (7.33 pt), so the copy as written is kept. The six-item timeline in the Glossy layout, broken and turned, is 251 × 984 px. That fits the column but prints at about 7.8 pt, so the export warns.
+Height matters for tall diagrams. Breaking labels makes a diagram narrower but taller. An eight-step top-down chain of 73-character labels lays out at 487 × 650 px as written (9.75 pt), but at 229 × 1053 px with its labels broken (7.33 pt), so the copy as written is kept.
+
+The same holds once a diagram is turned. An eight-step left-to-right chain of 40- to 55-character labels prints larger sideways with its labels broken: 2023 × 91 px (3.19 pt) against 3195 × 74 px (2.02 pt). Turned top-down, though, the broken copy is 245 × 918 px (8.42 pt) and the copy as written is 384 × 650 px (9.75 pt), so the copy as written, turned, is kept. The six-item timeline in the Glossy layout is 251 × 984 px broken and turned (7.84 pt) and 775 × 481 px turned as written (8.33 pt). The export keeps the second, still below the floor, and warns.
 
 ## What the export does
 
-The export and the live page share one module, `@repo/utils/proposal-artifact/diagram-label-wrap`: the helpers below, the measure and its limits (`printedNodeLabelPt`, `PRINT_COLUMN_PX`, `PRINT_FIGURE_MAX_HEIGHT_PX`, `PRINT_LABEL_FLOOR_PT`), the 60-character pass (`ALWAYS_WRAPPED_LABEL_CHARS`) and the 8 px canvas margin (`DIAGRAM_CANVAS_PADDING_PX`). The labels are found with the same node patterns beautiful-mermaid's parser uses, so the patterns must be checked again after an engine upgrade.
+The export and the live page share one module, `@repo/utils/proposal-artifact/diagram-label-wrap`: the helpers below, the measure and its limits (`printedNodeLabelPt`, `PRINT_COLUMN_PX`, `PRINT_FIGURE_MAX_HEIGHT_PX`, `PRINT_LABEL_FLOOR_PT`), the 40-character pass (`ALWAYS_WRAPPED_LABEL_CHARS`) and the 8 px canvas margin (`DIAGRAM_CANVAS_PADDING_PX`). The labels are found with the same node patterns beautiful-mermaid's parser uses, so the patterns must be checked again after an engine upgrade.
 
 `packages/temporal/src/activities/proposal-export/render-diagrams.ts` applies the formula to every flowchart and state diagram. Other kinds (charts, sequence, class, ER) size their text by rules of their own and are not measured. `renderOne`:
 
-1. **Chooses between the copy as written and one with labels of 60 characters or more broken.** The export lays out the copy as written. When `wrapFlowchartNodeLabels` with `minChars: ALWAYS_WRAPPED_LABEL_CHARS` changes anything, it lays out that copy too. That copy breaks each such one-line node label: the title before a ` — `/` – `/` - ` dash, then a trailing parenthesis, then at words, up to about 30 characters a line. Labels that already have line breaks or inline formatting are left as written. No word is cut or dropped. The copy whose labels print larger is kept. On a tie the broken copy is kept, because its labels stay inside their boxes. A copy the engine refuses drops out. The steps below start from the copy kept.
-2. **Re-lays it top-down.** If the graph is below the floor, `turnFlowchartTopDown` changes an `LR`/`RL` header to `TD` in the copy only. The fence in the document is untouched. The render whose labels print larger is kept.
+1. **Chooses between the copy as written and one with labels of 40 characters or more broken.** The export lays out the copy as written. When `wrapFlowchartNodeLabels` with `minChars: ALWAYS_WRAPPED_LABEL_CHARS` changes anything, it lays out that copy too. That copy breaks each such one-line node label: the title before a ` — `/` – `/` - ` dash, then a trailing parenthesis, then at words, up to about 30 characters a line. Labels that already have line breaks or inline formatting are left as written. No word is cut or dropped. The copy whose labels print larger is kept. On a tie the broken copy is kept, because its labels stay inside their boxes. A copy the engine refuses drops out. The steps below start from the copy kept.
+2. **Re-lays it top-down.** If the graph is below the floor, `turnFlowchartTopDown` changes an `LR`/`RL` header to `TD` in the copy only. The fence in the document is untouched. When the broken copy was kept, the copy as written is turned too, because broken labels make a turned diagram taller and a tall one prints smaller. The render whose labels print larger is kept; the broken one wins a tie.
 3. **Breaks the remaining long labels.** If the diagram is still below the floor, `wrapFlowchartNodeLabels` without `minChars` breaks every one-line node label longer than one wrapped line, the same way. The larger render wins again.
 4. **Warns.** A diagram still below the floor prints as it is and counts toward one `DIAGRAM_BELOW_PRINT_FLOOR` export warning. The download menu shows it as `exportWarningDiagramBelowPrintFloor` (`DocumentDownloadDropdown.tsx`).
 
 The live page draws its own copy the same way. `drawDiagram` in `apps/web/modules/saas/projects/lib/tiptap-mermaid-extension.tsx` draws with the same canvas margin:
 
 - **A client-document Proposal's page** makes the export's choice and follows its floor rule. It measures each drawing's width and height against the print column and the figure height, so the page shows the layout the PDF prints.
-- **Other documents** always draw the copy with labels of 60 characters or more broken (see the next section for why), since height does not matter on screen. They keep the direction their author wrote.
+- **Other documents** always draw the copy with labels of 40 characters or more broken (see the next section for why), since height does not matter on screen. They keep the direction their author wrote.
 
 Only the drawn copy changes, never the fence. After that, `mermaid-diagram-sizing.ts` shrinks a diagram only as far as its smallest label stays at `MIN_DIAGRAM_LABEL_PX = 12`, and a wider one scrolls sideways in its container.
 
@@ -78,9 +81,25 @@ The generation side helps too. Proposal diagrams the visuals step writes use a s
 
 beautiful-mermaid sizes a node box from `measureTextWidth`: a per-character width table (`getCharWidth`) × font size × a weight ratio of 0.54 to 0.60. It never measures the font that is printed. The export prints in Inter, which ran wider than the estimate in the PDFs we reviewed, so a long label could spill past its box. Wrapping shortens each line and makes the spill smaller. Treat the SVG width the renderer reports as a good estimate of size, not a guarantee that the text fits its shape.
 
-On the live page, the estimate came out about 8% short for Inter at 500 weight and 13 px. A box gives its label 20 px of padding on each side, so any single line longer than about 500 px spilled out of its box. That is roughly 65 to 85 characters, and the page and the export both break labels from 60. The 8 px canvas margin does not change this: it is the space around the whole drawing, while the 20 px is inside each box.
+On the live page the font is Inter at 500 weight and 13 px. Measured in the browser against the boxes the engine drew, the estimate runs short by:
 
-The height-aware choice has a cost. When breaking would make a diagram taller than a printed figure may be, the PDF, the DOCX and a Proposal's page keep its long labels on one line. A label of 75 characters or more can then touch the edge of its box. Labels that print too small to read would be worse. The engine also writes its `font` option inside quotes (`font-family: '<font>', system-ui`). The page used to pass a whole font stack there, which no family matches, so the text was drawn in system-ui. It now passes the single family `Inter`, the font the width table is tuned for.
+- about 5 to 9% for plain prose (0.3 to 0.5 px a character);
+- 13 to 30% for text dense in narrow letters and dashes, up to about 1 px a character, such as "implementation — implementation of the agreed pilot scope" (57 characters, estimated at 326 px, drawn 370 px wide in a 366 px box);
+- almost nothing for capitals.
+
+Measured one glyph at a time, the em dash is 5.5 px wider than its estimate. Lower-case m is 2.6 px wider, the hyphen 2.2, w 1.8, and f and t about 1.4. Narrow i and l are close to their estimates (0.24 px), and r, s, E and L are drawn narrower than estimated.
+
+A box gives its label 20 px of padding on each side, so a one-line label spills once that shortfall passes 40 px. Prose would need 80 characters or more for that; the longest prose label measured, 54 characters, still had 8.8 px to spare on each side. Text dense in narrow letters and dashes, at up to about 1 px a character, reaches it from about 41 characters. The first such label seen to spill had 44.
+
+The threshold rests on that kind of text. The page, the export and the browser download break labels from 40 characters. Among the narrow-letter labels measured, every one of 39 characters or fewer stayed inside its box with at least 1.1 px to spare on each side. The browser download draws in Helvetica, which is 6 to 11% narrower than Inter for lower-case text, so its labels have more room.
+
+Text dense in m, w and hyphens with an em dash runs further short, at 1 to 1.4 px a character. "momentum — minimum-time multi-team flow" (39 characters) spills by 6 px a side, and a 30-character line of the same text by about 1 px. No character count keeps such text inside its box, so a label like that can still spill.
+
+The print fonts are Inter 4.1 at 400, 600, 700 and 800, with no 500. Print therefore draws node labels in Inter Regular, 1 to 4 px narrower a label than on the page, which only adds room.
+
+The 8 px canvas margin does not change any of this: it is the space around the whole drawing, while the 20 px is inside each box.
+
+The height-aware choice has a cost. When breaking would make a diagram taller than a printed figure may be, the PDF, the DOCX and a Proposal's page keep its long labels on one line. A one-line label can then reach past the edge of its box: from about 44 characters for text dense in narrow letters and dashes, and from about 30 for text dense in m, w and hyphens. Prose labels up to the 55 characters measured stayed inside. Labels that print too small to read would be worse. The engine also writes its `font` option inside quotes (`font-family: '<font>', system-ui`). The page used to pass a whole font stack there, which no family matches, so the text was drawn in system-ui. It now passes the single family `Inter`, the font the width table is tuned for.
 
 ## The lesson: judge the rendered PDF, not the data
 
@@ -90,10 +109,10 @@ The 3 pt chart passed every data-level assertion. Before saying an export "works
 
 `packages/temporal/src/activities/proposal-export/__tests__/render-diagrams.test.ts`:
 
-- "the print legibility floor (Fizzy #2946)": the print column equals (8.5 − 2 × 0.8) × 96 and prints at 9.75 pt; a sideways chain of sentence labels is laid out top-down once and prints at 9 pt or more; a label too long even top-down is kept sideways once broken and prints at 9 pt or more; a sideways pair of 70-character labels stays sideways with its labels broken, as the live page draws it; labels under 60 characters are broken only once top-down is still below the floor; a broken copy the engine refuses drops out; a tall top-down chain of 73-character labels prints as written, and a shorter one whose two copies tie keeps the broken one; the better render is kept and the warning raised when even broken labels are too wide; a figure shrunk below the floor by its height warns, and so does one whose kept broken copy is still too wide; a top-down diagram too wide to turn still warns.
-- "long node labels broken for print (Fizzy #2946)": labels of 130 characters or more print at 9 pt or more with every word kept; labels with existing breaks are left alone; every common node shape is handled, quoted or not; six-item timelines and flows reach the floor; the same timeline in the Glossy layout, broken and turned, is too tall and warns.
+- "the print legibility floor (Fizzy #2946)": the print column equals (8.5 − 2 × 0.8) × 96 and prints at 9.75 pt; a sideways chain of sentence labels is laid out top-down once and prints at 9 pt or more; a label too long even top-down is kept sideways once broken and prints at 9 pt or more; a sideways pair of 70-character labels stays sideways with its labels broken, as the live page draws it; a 57-character label dense in narrow letters is broken even in a diagram the floor rule turns; a sideways chain of eight 40- to 55-character labels prints top-down as written, which prints larger than its broken copy turned; labels under 40 characters are broken only once top-down is still below the floor; a broken copy the engine refuses drops out; a tall top-down chain of 73-character labels prints as written, and a shorter one whose two copies tie keeps the broken one; the better render is kept and the warning raised when even broken labels are too wide; a figure shrunk below the floor by its height warns, and so does one whose kept broken copy is still too wide; a top-down diagram too wide to turn still warns.
+- "long node labels broken for print (Fizzy #2946)": labels of 130 characters or more print at 9 pt or more with every word kept; labels with existing breaks are left alone; every common node shape is handled, quoted or not; six-item timelines and flows reach the floor; the same timeline in the Glossy layout prints larger turned as written than broken and turned, still below the floor, and warns.
 
-`print-column-parity.test.ts` checks that the shared print column is the Word writer's text width, that the figure height is its tallest picture and shorter than the page's 888 px text area, and that the export measures with the shared values. On the live side, `tiptap-mermaid-label-legibility.test.tsx` draws the same 70-character pair sideways with its labels broken and the 8 px margin. It also draws the tall chain as written on a Proposal's page and broken on any other page.
+`print-column-parity.test.ts` checks that the shared print column is the Word writer's text width, that the figure height is its tallest picture and shorter than the page's 888 px text area, and that the export measures with the shared values. On the live side, `tiptap-mermaid-label-legibility.test.tsx` draws the same 70-character pair sideways with its labels broken and the 8 px margin. It also draws the tall chain as written on a Proposal's page and broken on any other page, and the eight-step sideways chain top-down as written on a Proposal's page. It breaks the 57-character label on both pages, and `markdown-to-document-mermaid-labels.test.ts` breaks it in the browser download.
 
 These tests lay out with the real renderer and measure the SVG's `viewBox` width and height. Keep it that way: a mocked width cannot catch a layout that grew.
 

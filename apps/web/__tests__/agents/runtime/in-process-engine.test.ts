@@ -385,6 +385,33 @@ describe("InProcessEngine", () => {
 		await expect(verified(stream.events)).resolves.toHaveLength(5);
 	});
 
+	it("does not start a turn when the response closes while admission is pending", async () => {
+		let resolveAdmission: (value: InProcessAdmission<string>) => void =
+			() => {};
+		const admission = new Promise<InProcessAdmission<string>>((resolve) => {
+			resolveAdmission = resolve;
+		});
+		const provider = vi.fn(answer);
+		const engine = new EchoEngine(CALLER, provider, async () => admission);
+		const stream = collector();
+		const running = engine.run(
+			{ threadId: THREAD, input: input() },
+			stream,
+		);
+		await vi.waitFor(() => expect(engine.admits).toBe(1));
+
+		stream.close();
+		resolveAdmission({ ok: true, turn: "plans" });
+		await running;
+
+		expect(m.checkRateLimit).toHaveBeenCalledOnce();
+		expect(engine.turns).toEqual([]);
+		expect(provider).not.toHaveBeenCalled();
+		expect(stream.events).toEqual([]);
+		expect(await engine.isRunning(THREAD)).toBe(false);
+		expect(await engine.stop(THREAD)).toBe(false);
+	});
+
 	it("replays nothing on connect", async () => {
 		const stream = collector();
 

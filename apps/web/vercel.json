@@ -3,6 +3,11 @@
 	"buildCommand": "cd ../.. && export DOCKER_BUILD=true NEXT_TYPECHECK_SPLIT=true && pnpm turbo build --filter=@repo/web",
 	"installCommand": "cd ../.. && pnpm install --filter @repo/web... --filter .",
 	"ignoreCommand": "sh scripts/vercel-ignore.sh",
+	"functions": {
+		"app/api/agents/runtime/**": {
+			"supportsCancellation": true
+		}
+	},
 	"framework": "nextjs",
 	"outputDirectory": ".next"
 }

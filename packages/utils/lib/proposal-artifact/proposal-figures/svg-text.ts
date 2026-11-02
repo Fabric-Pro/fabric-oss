@@ -82,6 +82,32 @@ export function num(value: number): string {
 	return String(Math.round(value * 10) / 10);
 }
 
+/** A box's outline: the SVG default stroke width, which no box overrides. */
+const OUTLINE_WIDTH = 1;
+
+/**
+ * The `x`, `y`, `width` and `height` of an outlined box that fills the area
+ * from (`x`, `y`), outline included. A stroke is centred on the rect's edge
+ * and the root clips at its viewBox, so a box drawn to the figure's edge
+ * would lose half its border there: the rect is inset by half the
+ * outline. Its edges are rounded rather than its size, so the outline ends
+ * at the area's edge and never past it.
+ */
+export function outlinedBox(
+	x: number,
+	y: number,
+	width: number,
+	height: number,
+): string {
+	const inset = OUTLINE_WIDTH / 2;
+	const round = (value: number) => Math.round(value * 10) / 10;
+	const left = round(x + inset);
+	const top = round(y + inset);
+	const right = round(x + width - inset);
+	const bottom = round(y + height - inset);
+	return `x="${num(left)}" y="${num(top)}" width="${num(right - left)}" height="${num(bottom - top)}"`;
+}
+
 /** The roles a palette must carry; anything else on the object is ignored. */
 export const FIGURE_PALETTE_ROLES = [
 	"ink",

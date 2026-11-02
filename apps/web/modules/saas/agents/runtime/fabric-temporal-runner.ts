@@ -13,6 +13,7 @@ import {
 	type AgentRunnerRunRequest,
 	type AgentRunnerStopRequest,
 } from "@copilotkit/runtime/v2";
+import { runInBackground } from "@repo/api/modules/weave/lib/run-in-background";
 import { Observable } from "rxjs";
 import type { RunStream, RuntimeEngine } from "./engine";
 
@@ -43,8 +44,8 @@ export function resolveStreamWindowMs(
 
 /**
  * The agent the runtime registers for each engine. CopilotKit clones it per
- * request and hands it to the runner, which runs every turn on Temporal, so
- * its own `run` is never reached.
+ * request and hands it to the runner, which dispatches to the chat's engine,
+ * so its own `run` is never reached.
  */
 export class FabricRuntimeAgent extends AbstractAgent {
 	run(_input: RunAgentInput): Observable<BaseEvent> {
@@ -73,8 +74,9 @@ export class FabricRuntimeAgent extends AbstractAgent {
 
 /**
  * An Observable for one SSE response. `produce` runs once per subscription;
- * the stream's `isClosed` turns true when the client goes away, which never
- * cancels the run behind it.
+ * the stream's `isClosed` turns true when the client goes away. Each engine
+ * owns its cancellation behavior; the producer stays registered until its
+ * cleanup finishes.
  */
 function runStream(
 	streamWindowMs: number,
@@ -82,6 +84,9 @@ function runStream(
 ): Observable<BaseEvent> {
 	return new Observable<BaseEvent>((subscriber) => {
 		let closed = false;
+		// Register cleanup before disconnect can end the function invocation.
+		const cleanup = Promise.withResolvers<void>();
+		runInBackground(cleanup.promise);
 		produce({
 			emit: (event) => {
 				if (!closed) {
@@ -90,10 +95,12 @@ function runStream(
 			},
 			isClosed: () => closed,
 			deadline: Date.now() + streamWindowMs,
-		}).then(
-			() => subscriber.complete(),
-			(error: unknown) => subscriber.error(error),
-		);
+		})
+			.then(
+				() => subscriber.complete(),
+				(error: unknown) => subscriber.error(error),
+			)
+			.finally(cleanup.resolve);
 		return () => {
 			closed = true;
 		};
@@ -101,11 +108,11 @@ function runStream(
 }
 
 /**
- * CopilotKit's runner for Fabric's chat engines: every run is a Temporal
- * workflow the engine starts and observes, so the workflow, not the HTTP
- * response, owns the turn. A response tails it for at most the stream window
- * and the client reconnects with `connect`; a closed response never cancels
- * it; only `stop` does.
+ * CopilotKit's runner for Fabric's durable and request/reply chat engines.
+ * A durable engine's workflow owns its turn: a response tails it for at most
+ * the stream window and the client reconnects with `connect`. Closing that
+ * response only detaches its observer; `stop` cancels the workflow. A request/
+ * reply engine instead aborts its turn when the response closes.
  *
  * Built per request for the authenticated caller (the endpoint binds it into
  * each engine). Engines are picked by the runtime agent id for a run or a

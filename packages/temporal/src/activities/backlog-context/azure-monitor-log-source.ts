@@ -226,7 +226,10 @@ export const PLATFORM_NOISE_RULES: readonly PlatformNoiseRule[] = [
 	},
 	{
 		id: "autoscaler-teardown",
-		failureReasons: ["FailedGetExternalMetric"],
+		failureReasons: [
+			"FailedGetExternalMetric",
+			"FailedComputeMetricsReplicas",
+		],
 		key: "revision",
 		proofs: [
 			{
@@ -244,6 +247,40 @@ export const PLATFORM_NOISE_RULES: readonly PlatformNoiseRule[] = [
 	{
 		id: "metrics-service-blip",
 		failureReasons: ["FailedGetExternalMetric"],
+		key: "app",
+		proofs: [
+			{
+				kind: "simultaneous",
+				minApps: 3,
+				withinMinutes: 1,
+				persistence: { maxDistinctMinutes: 3, spanMinutes: 15 },
+			},
+		],
+	},
+	// A new replica has no CPU sample until the metrics service has scraped it,
+	// so the autoscaler cannot compute a target for its first moments. Only that
+	// message is set aside, and only right after a container started on the
+	// revision: every other CPU metric failure stays reported.
+	{
+		id: "autoscaler-replica-start",
+		failureReasons: ["FailedComputeMetricsReplicas"],
+		log: { operator: "endswith", value: "(pods might be unready)" },
+		key: "revision",
+		proofs: [
+			{
+				reasons: ["ContainerStarted"],
+				direction: "before",
+				gapMinutes: 2,
+			},
+		],
+	},
+	// `metrics-service-blip` for the CPU metrics API. A rule of its own, and
+	// limited to that API's failure message, so a replica start cannot pass as
+	// an outage and external-metric failures cannot supply the peer count.
+	{
+		id: "resource-metrics-blip",
+		failureReasons: ["FailedComputeMetricsReplicas"],
+		log: { operator: "endswith", value: "(get pods.metrics.k8s.io)" },
 		key: "app",
 		proofs: [
 			{

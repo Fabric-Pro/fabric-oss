@@ -26,4 +26,12 @@ export const WORKFLOW_INTERCEPTOR_MODULES: readonly string[] = [
 	// child workflow and continue-as-new the workflow starts.
 	resolve(__dirname, "..", "workflows", "correlation-workflow-interceptor"),
 	resolve(__dirname, "..", "workflows", "chat-replay-workflow-interceptor"),
+	// Logs which activity failed and why, which `ActivityFailure` alone does
+	// not tell telemetry. Stays last: see the module's `interceptors` export.
+	resolve(
+		__dirname,
+		"..",
+		"workflows",
+		"activity-failure-workflow-interceptor",
+	),
 ];

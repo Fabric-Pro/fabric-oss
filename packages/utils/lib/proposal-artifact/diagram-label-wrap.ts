@@ -147,21 +147,28 @@ const WRAPPED_LABEL_LINE_CHARS = 30;
 
 /**
  * The shortest node label always broken into lines before a flowchart is
- * drawn, in characters, on the live page and in print alike.
- * beautiful-mermaid sizes a node from an estimate of its text's width plus
- * 20 px of padding a side, and for Inter at its 13 px labels the estimate
- * runs about 8% short. Once a line's estimate passes about 500 px (some 65
- * to 85 characters of prose), that shortfall is more than the box's 40 px
- * of padding, and the text spills out of its box. Breaking from 60
- * characters keeps a margin: such a label is broken into lines of at most
- * 30 characters, each well inside its box. That padding is the engine's
- * own, inside every box; {@link DIAGRAM_CANVAS_PADDING_PX} is the margin
- * around the whole drawing and does not change it. In print, and on a page
- * that prints, the copy as written is kept instead when its labels print
- * larger: broken labels make a diagram taller, and a tall one is shrunk to
- * the height a figure may be.
+ * drawn, in characters: on the live page, in print and in the browser
+ * download. beautiful-mermaid sizes a node from an estimate of its text's
+ * width plus 20 px of padding a side, and for Inter at its 13 px labels,
+ * measured in the browser, the estimate runs short. For plain prose it runs
+ * 5 to 9% short, and a 54-character prose label still had 8.8 px to spare
+ * a side. For text dense in narrow letters and dashes it runs up to about
+ * 30%, or 1 px a character, short, worst for t, f, m and dashes (an em dash
+ * by 5.5 px), which uses up the 40 px of padding from about 41 characters:
+ * the first such label seen to spill had 44. The threshold rests on that
+ * kind of text: from 40, a label is broken into lines of at most 30
+ * characters, and every such label of 39 characters or fewer measured
+ * stayed inside its box, with at least 1.1 px to spare a side. Text dense
+ * in m, w and hyphens runs short by up to 1.4 px a character and can still
+ * spill from about 30. The browser download draws in Helvetica, 6 to 11%
+ * narrower than Inter for lower-case text, so the same threshold leaves its
+ * labels more room. That padding is the engine's own, inside every box;
+ * {@link DIAGRAM_CANVAS_PADDING_PX} is the margin around the whole drawing
+ * and does not change it. In print, and on a page that prints, the copy as
+ * written is kept instead when its labels print larger: broken labels make
+ * a diagram taller, and a tall one is shrunk to the height a figure may be.
  */
-export const ALWAYS_WRAPPED_LABEL_CHARS = 60;
+export const ALWAYS_WRAPPED_LABEL_CHARS = 40;
 
 /**
  * beautiful-mermaid 1.1.3's flowchart node shapes, in the order its parser
