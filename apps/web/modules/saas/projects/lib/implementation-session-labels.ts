@@ -468,7 +468,7 @@ export function getExecutionChannelLabel(channel?: string | null): string {
 export function getExecutionProviderLabel(provider?: string | null): string {
 	switch (provider) {
 		case "KANBAN_LOCAL":
-			return "Local development";
+			return "Fabric Agents Desktop";
 		default:
 			return "Fabric Agents";
 	}
@@ -479,7 +479,7 @@ export function getExecutionProviderPlatformLabel(
 ): string {
 	switch (provider) {
 		case "KANBAN_LOCAL":
-			return "Fabric Kanban";
+			return "Fabric Agents Desktop";
 		default:
 			return "Fabric Agents";
 	}
@@ -490,7 +490,7 @@ export function getExecutionProviderDescription(
 ): string {
 	switch (provider) {
 		case "KANBAN_LOCAL":
-			return "Runs in your checked-out repository through Fabric Kanban. Run fabric-kanban locally to pull queued work.";
+			return "Runs in your local repository through Fabric Agents Desktop or your Personal Fabric Agents Remote Server using your subscription tokens.";
 		default:
 			return "Runs in an isolated git worktree on Fabric Agents with live desktop & Web UI session tracking.";
 	}
@@ -524,7 +524,7 @@ export function getImplementationRecommendation(
 	return {
 		channel: "BACKGROUND_AGENTS",
 		provider: "BACKGROUND_AGENTS",
-		reason: "Fabric Agents is the recommended path for direct implementation in an isolated git worktree. Choose local development only when Fabric Kanban should pull queued work into a manual checkout.",
+		reason: "Fabric Agents is the recommended path for direct implementation in an isolated git worktree on your Personal or Organization Fabric Agents Remote Server, or locally in Fabric Agents Desktop.",
 	};
 }
 

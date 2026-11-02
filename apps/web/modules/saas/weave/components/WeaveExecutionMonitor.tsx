@@ -702,11 +702,11 @@ export function WeaveExecutionMonitor({
 		mergedExecution.implementationSession?.provider === "BACKGROUND_AGENTS"
 			? "Open Fabric Agents session"
 			: mergedExecution.implementationSession?.provider === "KANBAN_LOCAL"
-				? "Open Fabric Kanban"
+				? "Open Fabric Agents Desktop"
 				: "Open implementation runtime";
 	const runtimeLinkUnavailableTitle =
 		mergedExecution.implementationSession?.provider === "KANBAN_LOCAL"
-			? "Fabric Kanban"
+			? "Fabric Agents Desktop"
 			: mergedExecution.implementationSession?.provider ===
 					"BACKGROUND_AGENTS"
 				? "Fabric Agents"

@@ -132,10 +132,10 @@ export function StartImplementationSessionButton({
 		implementationDefaultProvider,
 	});
 
-	// Effective provider: caller-specified overrides project default which overrides recommendation
-	const effectiveProvider =
+	// Consolidated on Fabric Agents (Remote Server & Desktop)
+	const _effectiveProvider =
 		initialExecutionProvider ?? recommendation.provider;
-	const isKanbanLocal = effectiveProvider === "KANBAN_LOCAL";
+	const isKanbanLocal = false;
 	const delegationPrefs = loadProjectDelegationPreferences(projectId);
 	const [serverId, setServerId] = useState("");
 	const servers = useQuery({
@@ -186,7 +186,7 @@ export function StartImplementationSessionButton({
 			toast.success(
 				`Queued for ${getExecutionProviderLabel("KANBAN_LOCAL")}`,
 				{
-					description: `Run fabric-kanban in your repository to pull queued items from ${getExecutionProviderPlatformLabel("KANBAN_LOCAL")}.`,
+					description: `Open ${getExecutionProviderPlatformLabel("KANBAN_LOCAL")} in your repository to run queued items.`,
 				},
 			);
 		},

@@ -2169,14 +2169,14 @@ function StoryCardImpl({
 												) : (
 													<FolderKanbanIcon className="size-4 mr-2" />
 												)}
-												Open Fabric Kanban
+												Open Fabric Agents Desktop
 											</DropdownMenuItem>
 										</TooltipTrigger>
 										{!hasRepository && (
 											<TooltipContent side="left">
 												Configure a repository in
 												project settings to enable
-												Kanban
+												Fabric Agents Desktop
 											</TooltipContent>
 										)}
 									</Tooltip>

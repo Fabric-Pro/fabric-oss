@@ -1128,10 +1128,15 @@ export function WeavePlanList({
 																)}
 															</p>
 															<p className="mt-1 leading-6">
-																Run
-																fabric-kanban
-																locally to pull
-																queued work.
+																Launch Fabric
+																Agents Desktop
+																or your Personal
+																Fabric Agents
+																Remote Server to
+																run queued work
+																using your
+																subscription
+																tokens.
 															</p>
 															{kanbanRuntimeDetection ===
 																"not-detected" && (

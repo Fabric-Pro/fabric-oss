@@ -2,8 +2,6 @@
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
 import { ExecuteWithWeaveButton } from "@saas/weave/components";
-import { orpc } from "@shared/lib/orpc-query-utils";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@ui/components/button";
 import {
 	DropdownMenu,
@@ -29,23 +27,16 @@ import {
 	LaptopIcon,
 	SearchIcon,
 	SparklesIcon,
-	TerminalIcon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
-import { toast } from "sonner";
-import { orpcClient } from "../../../../shared/lib/orpc-client";
 import {
 	type ExecutionChannel,
 	type ExecutionProvider,
 	getExecutionProviderDescription,
-	getExecutionProviderLabel,
 	getExecutionProviderPlatformLabel,
 } from "../../lib/implementation-session-labels";
-import {
-	getReadinessErrorGaps,
-	isStoryRunnable,
-} from "../../lib/stories/readiness";
+import { isStoryRunnable } from "../../lib/stories/readiness";
 import type { UserStory } from "../../lib/stories/types";
 import { StartImplementationSessionButton } from "../coding-runs/StartImplementationSessionButton";
 import { RunDiscoveryDialog } from "./RunDiscoveryDialog";
@@ -96,7 +87,6 @@ export function StartWorkButton({
 	onImplementationStarted,
 }: Props) {
 	const { organizationId } = useOrganizationContext();
-	const queryClient = useQueryClient();
 	const [internalImplementationOpen, setInternalImplementationOpen] =
 		useState(false);
 	const implementationOpen =
@@ -178,80 +168,6 @@ export function StartWorkButton({
 	const isQueued = kanbanQueue?.status === "PENDING";
 	const isPulled = kanbanQueue?.status === "PULLED";
 	const isCompleted = kanbanQueue?.status === "COMPLETED";
-
-	const queueMutation = useMutation({
-		mutationFn: async () => {
-			return await orpcClient.projects.stories.queueForKanban({
-				projectId,
-				storyId: story.id,
-				organizationId: organizationId ?? null,
-			});
-		},
-		onSuccess: async () => {
-			await Promise.all([
-				queryClient.invalidateQueries({
-					queryKey: orpc.projects.stories.list.queryKey({
-						input: { projectId, organizationId },
-					}),
-				}),
-				queryClient.invalidateQueries({
-					queryKey: orpc.projects.stories.get.queryKey({
-						input: {
-							projectId,
-							storyId: story.id,
-							organizationId,
-						},
-					}),
-				}),
-			]);
-			toast.success(
-				`Queued for ${getExecutionProviderLabel("KANBAN_LOCAL")}`,
-				{
-					description:
-						"Run `fabric-kanban` in your repository to pull queued items.",
-				},
-			);
-			onImplementationStarted?.();
-		},
-		onError: (error) => {
-			const gaps = getReadinessErrorGaps(error);
-			if (gaps) {
-				toast.error(tReadiness("toasts.notReadyTitle"), {
-					description:
-						gaps.missing.length > 0
-							? gaps.missing
-									.map((gap) => tReadiness(`gaps.${gap}`))
-									.join(", ")
-							: error.message,
-				});
-				return;
-			}
-			toast.error(
-				`Failed to queue for ${getExecutionProviderLabel("KANBAN_LOCAL")}`,
-				{
-					description: error.message,
-				},
-			);
-		},
-	});
-
-	const localDevelopmentDescription = (() => {
-		if (!hasRepositoryContext) {
-			return "Connect a repository first";
-		}
-		if (isQueued) {
-			return "Queued — waiting to be pulled by fabric-kanban";
-		}
-		if (isPulled) {
-			return "Pulled into local development. Queue again to re-implement.";
-		}
-		if (isCompleted) {
-			return kanbanQueue?.branchName
-				? `Ready for review on branch ${kanbanQueue.branchName}. Queue again to re-implement.`
-				: "Ready for review. Queue again to re-implement.";
-		}
-		return "Queue for local development. Run `fabric-kanban` in your repo to pull.";
-	})();
 
 	return (
 		<>
@@ -385,7 +301,7 @@ export function StartWorkButton({
 
 							<DropdownMenuSeparator />
 
-							{/* Background Agents */}
+							{/* Fabric Agents Remote Server */}
 							<DropdownMenuItem
 								disabled={runBlocked}
 								aria-disabled={runBlocked}
@@ -403,68 +319,21 @@ export function StartWorkButton({
 								<div className="space-y-1">
 									<p className="flex items-center gap-2 text-sm font-medium">
 										<CloudIcon className="size-4" />
-										{getExecutionProviderLabel(
-											"BACKGROUND_AGENTS",
-										)}
+										Fabric Agents Remote Server
 									</p>
 									<p className="text-xs leading-5 text-muted-foreground">
 										{getExecutionProviderDescription(
 											"BACKGROUND_AGENTS",
 										)}
 									</p>
+									<p className="text-[11px] leading-5 text-muted-foreground/80">
+										Personal or Organization Fabric Agents
+										Remote Server
+									</p>
 								</div>
 							</DropdownMenuItem>
 
-							{/* Local development */}
-							<DropdownMenuItem
-								disabled={
-									!hasRepositoryContext ||
-									queueMutation.isPending ||
-									runBlocked
-								}
-								aria-disabled={
-									!hasRepositoryContext || runBlocked
-								}
-								title={
-									runBlocked
-										? (blockedReason ?? undefined)
-										: undefined
-								}
-								onClick={() => {
-									if (hasRepositoryContext && !runBlocked) {
-										queueMutation.mutate();
-									}
-								}}
-							>
-								<div className="space-y-1">
-									<p className="flex items-center gap-2 text-sm font-medium">
-										<LaptopIcon className="size-4" />
-										{getExecutionProviderLabel(
-											"KANBAN_LOCAL",
-										)}
-										{isQueued && (
-											<span className="ml-auto text-[10px] text-amber-500">
-												Re-queue
-											</span>
-										)}
-										{isPulled && (
-											<span className="ml-auto text-[10px] text-muted-foreground">
-												Re-queue
-											</span>
-										)}
-									</p>
-									<p className="text-xs leading-5 text-muted-foreground">
-										{localDevelopmentDescription}
-									</p>
-									<p className="text-[11px] leading-5 text-muted-foreground/80">
-										Powered by{" "}
-										{getExecutionProviderPlatformLabel(
-											"KANBAN_LOCAL",
-										)}
-									</p>
-								</div>
-							</DropdownMenuItem>
-							{/* Use your coding tool (MCP / CLI) */}
+							{/* Fabric Agents Desktop */}
 							<DropdownMenuItem
 								disabled={runBlocked}
 								aria-disabled={runBlocked}
@@ -482,13 +351,21 @@ export function StartWorkButton({
 							>
 								<div className="space-y-1">
 									<p className="flex items-center gap-2 text-sm font-medium">
-										<TerminalIcon className="size-4" />
-										Use your coding tool (MCP / CLI)
+										<LaptopIcon className="size-4" />
+										Fabric Agents Desktop &amp; Subscription
+										CLI
 									</p>
 									<p className="text-xs leading-5 text-muted-foreground">
-										Copy a prompt for Claude Code, Codex,
-										Cursor, Antigravity, or Fabric Desktop
-										with MCP tools to update task status.
+										Launch Fabric Agents Desktop locally or
+										copy an MCP prompt for Claude Code,
+										Codex, Cursor, or Antigravity using your
+										subscription tokens.
+									</p>
+									<p className="text-[11px] leading-5 text-muted-foreground/80">
+										Powered by{" "}
+										{getExecutionProviderPlatformLabel(
+											"KANBAN_LOCAL",
+										)}
 									</p>
 								</div>
 							</DropdownMenuItem>

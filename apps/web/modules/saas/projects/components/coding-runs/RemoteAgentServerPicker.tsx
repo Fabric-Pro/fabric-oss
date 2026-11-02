@@ -10,14 +10,30 @@ import { cn } from "@ui/lib";
 import {
 	Building2Icon,
 	CheckCircle2Icon,
+	CopyIcon,
 	ExternalLinkIcon,
+	KeyRoundIcon,
 	LaptopIcon,
 	PlusCircleIcon,
 	ServerIcon,
+	TerminalIcon,
 	Trash2Icon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useId, useState } from "react";
+import { toast } from "sonner";
+
+function generateServerSecret(): string {
+	const bytes = new Uint8Array(24);
+	if (typeof crypto !== "undefined" && crypto.getRandomValues) {
+		crypto.getRandomValues(bytes);
+	} else {
+		for (let i = 0; i < bytes.length; i++) {
+			bytes[i] = Math.floor(Math.random() * 256);
+		}
+	}
+	return `fab_srv_${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
 
 export interface RemoteAgentServerOption {
 	id: string;
@@ -106,6 +122,9 @@ export function RemoteAgentServerPicker({
 		}
 		setUrl("http://127.0.0.1:9100");
 		setScope("PRIVATE");
+		if (secret.length < 32) {
+			setSecret(generateServerSecret());
+		}
 	};
 
 	const applyTeamPreset = () => {
@@ -118,7 +137,17 @@ export function RemoteAgentServerPicker({
 		if (canShare) {
 			setScope("TEAM");
 		}
+		if (secret.length < 32) {
+			setSecret(generateServerSecret());
+		}
 	};
+
+	const effectiveSecretForCommand =
+		secret.length >= 32 ? secret : "<your-32+-char-secret>";
+	const setupCommand =
+		scope === "TEAM"
+			? `docker run -d --name fabric-agents-server -p 9100:9100 -e FABRIC_SERVER_TOKEN="${effectiveSecretForCommand}" ghcr.io/fabric-pro/fabric-agent-server:latest`
+			: `FABRIC_SERVER_TOKEN="${effectiveSecretForCommand}" npx -y @fabricorg/agent-server --port 9100`;
 
 	return (
 		<section
@@ -407,9 +436,24 @@ export function RemoteAgentServerPicker({
 					</div>
 					<div className="grid gap-3 sm:grid-cols-2">
 						<div className="space-y-1.5">
-							<Label htmlFor={`${id}-secret`} className="text-xs">
-								{t("secret")}
-							</Label>
+							<div className="flex items-center justify-between gap-2">
+								<Label
+									htmlFor={`${id}-secret`}
+									className="text-xs"
+								>
+									{t("secret")}
+								</Label>
+								<button
+									type="button"
+									onClick={() =>
+										setSecret(generateServerSecret())
+									}
+									className="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
+								>
+									<KeyRoundIcon className="size-3" />
+									Generate token
+								</button>
+							</div>
 							<Input
 								id={`${id}-secret`}
 								type="password"
@@ -444,6 +488,52 @@ export function RemoteAgentServerPicker({
 							</select>
 						</div>
 					</div>
+
+					{/* 1-Click Copyable Bootstrap Command */}
+					<div className="space-y-1.5 rounded-md border border-primary/20 bg-primary/[0.03] p-2.5">
+						<div className="flex flex-wrap items-center justify-between gap-2">
+							<span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-foreground">
+								<TerminalIcon className="size-3.5 text-primary" />
+								{scope === "TEAM"
+									? "1-Line Organization Server Setup (uses team pooled seats / org subscription plan)"
+									: "1-Line Personal Server Setup (uses your local subscription CLIs)"}
+							</span>
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								className="h-6 gap-1 px-2 text-[11px]"
+								onClick={async () => {
+									try {
+										let tokenToUse = secret;
+										if (tokenToUse.length < 32) {
+											tokenToUse = generateServerSecret();
+											setSecret(tokenToUse);
+										}
+										const cmd =
+											scope === "TEAM"
+												? `docker run -d --name fabric-agents-server -p 9100:9100 -e FABRIC_SERVER_TOKEN="${tokenToUse}" ghcr.io/fabric-pro/fabric-agent-server:latest`
+												: `FABRIC_SERVER_TOKEN="${tokenToUse}" npx -y @fabricorg/agent-server --port 9100`;
+										await navigator.clipboard.writeText(
+											cmd,
+										);
+										toast.success(
+											"Copied server startup command with generated secret token",
+										);
+									} catch {
+										toast.error("Failed to copy command");
+									}
+								}}
+							>
+								<CopyIcon className="size-3" />
+								Copy setup command
+							</Button>
+						</div>
+						<code className="block break-all rounded border border-border/60 bg-background px-2 py-1.5 font-mono text-[11px] text-foreground">
+							{setupCommand}
+						</code>
+					</div>
+
 					<Button
 						type="button"
 						size="sm"

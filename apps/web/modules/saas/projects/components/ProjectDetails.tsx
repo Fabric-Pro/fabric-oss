@@ -1593,10 +1593,13 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 														1
 													</span>
 													<span>
-														Install the CLI
+														Launch Fabric Agents
+														Desktop or start your
+														remote server
 														<code className="ml-1.5 block mt-1 rounded bg-muted px-2 py-1 font-mono text-xs text-foreground">
-															npm i -g
-															@fabriccode/kanban@latest
+															npx -y
+															@fabricorg/agent-server
+															--port 9100
 														</code>
 													</span>
 												</li>
@@ -1605,11 +1608,14 @@ function ProjectDetailsTabs({ projectId, organizationSlug }: Props) {
 														2
 													</span>
 													<span>
-														Run in embed mode from
-														your repo
+														Sign in with your
+														subscription harness
+														(Claude Max, Codex,
+														Grok, Droid, Kimi)
 														<code className="ml-1.5 block mt-1 rounded bg-muted px-2 py-1 font-mono text-xs text-foreground">
-															fabric-kanban
-															--embed
+															fabric agents
+															delegate --project{" "}
+															{projectId}
 														</code>
 													</span>
 												</li>

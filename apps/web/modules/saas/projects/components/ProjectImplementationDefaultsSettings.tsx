@@ -24,9 +24,7 @@ import {
 	FABRIC_AGENT_CONNECTIONS,
 	FABRIC_AGENT_FALLBACK_POLICIES,
 	type FabricAgentFallbackPolicy,
-	getExecutionProviderDescription,
 	getExecutionProviderLabel,
-	getExecutionProviderPlatformLabel,
 	getFabricAgentConnectionModels,
 	loadProjectDelegationPreferences,
 	type ProjectDelegationPreferences,
@@ -497,63 +495,89 @@ export function ProjectImplementationDefaultsSettings({
 				</div>
 
 				<div className="grid items-stretch gap-5 xl:grid-cols-2">
-					{/* Fabric Agents Card */}
+					{/* Personal Fabric Agents Remote Server Card */}
 					<div className="group relative flex h-full flex-col overflow-hidden rounded-lg border border-primary/20 bg-gradient-to-br from-primary/[0.03] to-primary/[0.06] p-5 shadow-xs">
-						<div className="mb-3 flex items-center gap-3">
-							<div className="flex size-8 items-center justify-center rounded-lg bg-primary/10 ring-1 ring-primary/20">
-								<ServerCogIcon className="size-4 text-primary" />
+						<div className="mb-3 flex items-center justify-between gap-3">
+							<div className="flex items-center gap-3">
+								<div className="flex size-8 items-center justify-center rounded-lg bg-primary/10 ring-1 ring-primary/20">
+									<LaptopIcon className="size-4 text-primary" />
+								</div>
+								<h4 className="font-semibold text-sm text-foreground">
+									Personal Fabric Agents Remote Server
+								</h4>
 							</div>
-							<h4 className="font-semibold text-sm text-foreground">
-								{getExecutionProviderLabel("BACKGROUND_AGENTS")}{" "}
-								CLI Quickstart
-							</h4>
+							<Badge
+								variant="outline"
+								className="rounded-full px-2 py-0.5 text-[10px]"
+							>
+								Personal Subscription Tokens
+							</Badge>
 						</div>
 						<p className="mb-3 text-xs leading-relaxed text-muted-foreground">
-							{getExecutionProviderDescription(
-								"BACKGROUND_AGENTS",
-							)}
+							Runs on your workstation (
+							<code className="font-mono text-foreground">
+								127.0.0.1:9100
+							</code>
+							) or personal cloud tunnel. Uses the personal
+							subscription CLIs already logged in on your machine
+							(Claude Max, Codex, Grok, Droid, Kimi, Antigravity,
+							Cursor) — private to your account with zero API
+							token fees.
 						</p>
 						<div className="mt-auto space-y-2 rounded-lg border border-primary/15 bg-background/60 p-3">
 							<div className="flex items-center gap-2">
 								<TerminalIcon className="size-3.5 text-muted-foreground" />
 								<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-									Start remote server (:9100)
+									1-Line Personal Server Quickstart (:9100)
 								</p>
 							</div>
 							<code className="block font-mono text-xs text-foreground">
-								FABRIC_SERVER_TOKEN=&lt;secret&gt;
-								fabric-agent-server --port 9100
+								FABRIC_SERVER_TOKEN=&lt;secret&gt; npx -y
+								@fabricorg/agent-server --port 9100
 							</code>
 						</div>
 					</div>
 
-					{/* Fabric Kanban Card */}
+					{/* Organization Fabric Agents Remote Server & Desktop Card */}
 					<div className="group relative flex h-full flex-col overflow-hidden rounded-lg border border-primary/20 bg-gradient-to-br from-primary/[0.03] to-primary/[0.06] p-5 shadow-xs">
-						<div className="mb-3 flex items-center gap-3">
-							<div className="flex size-8 items-center justify-center rounded-lg bg-primary/10 ring-1 ring-primary/20">
-								<LaptopIcon className="size-4 text-primary" />
+						<div className="mb-3 flex items-center justify-between gap-3">
+							<div className="flex items-center gap-3">
+								<div className="flex size-8 items-center justify-center rounded-lg bg-primary/10 ring-1 ring-primary/20">
+									<ServerCogIcon className="size-4 text-primary" />
+								</div>
+								<h4 className="font-semibold text-sm text-foreground">
+									Organization Fabric Agents Remote Server
+								</h4>
 							</div>
-							<h4 className="font-semibold text-sm text-foreground">
-								{getExecutionProviderLabel("KANBAN_LOCAL")}
-							</h4>
+							<Badge
+								variant="outline"
+								className="rounded-full px-2 py-0.5 text-[10px]"
+							>
+								Team Pooled Seats &amp; Org Plan
+							</Badge>
 						</div>
 						<p className="mb-3 text-xs leading-relaxed text-muted-foreground">
-							Queues features for local development through{" "}
-							{getExecutionProviderPlatformLabel("KANBAN_LOCAL")}.
+							Runs on a shared team VM or container in isolated
+							git worktrees. Uses team-authenticated subscription
+							seats on the server profile, your
+							organization&apos;s shared ChatGPT/Claude
+							subscription plan, or automatic fallback to your
+							organization&apos;s AI provider API key.
 							{hasRepositoryContext
 								? ` Connected repository: ${project.repositoryOwner}/${project.repositoryName}.`
-								: " Connect a repository to pull queued items."}
+								: " Connect a repository to dispatch coding runs."}
 						</p>
 						<div className="mt-auto space-y-2 rounded-lg border border-primary/15 bg-background/60 p-3">
 							<div className="flex items-center gap-2">
 								<TerminalIcon className="size-3.5 text-muted-foreground" />
 								<p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-									Install &amp; run
+									1-Line Organization Server (Docker / VM)
 								</p>
 							</div>
 							<code className="block font-mono text-xs text-foreground">
-								npm install -g @fabriccode/kanban@latest
-								&amp;&amp; fabric-kanban
+								docker run -d -p 9100:9100 -e
+								FABRIC_SERVER_TOKEN=&lt;secret&gt;
+								ghcr.io/fabric-pro/fabric-agent-server:latest
 							</code>
 						</div>
 					</div>
