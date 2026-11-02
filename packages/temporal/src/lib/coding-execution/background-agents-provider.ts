@@ -83,6 +83,8 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 				: getFabricAgentsDefaultModel());
 		const targetMachine = validated.targetMachine ?? params.targetMachine;
 		const headBranch = validated.headBranch ?? params.headBranch;
+		const fallbackPolicy =
+			validated.fallbackPolicy ?? params.fallbackPolicy;
 
 		debugLog("Creating Fabric Agents coding session", {
 			repoOwner: validated.repoOwner,
@@ -92,6 +94,7 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 			llmConnection,
 			model,
 			targetMachine,
+			fallbackPolicy,
 		});
 
 		const readiness = await this.executionReadiness(params);
@@ -113,6 +116,7 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 				llmConnection,
 				model,
 				targetMachine,
+				...(fallbackPolicy ? { fallbackPolicy } : {}),
 			}),
 		});
 
@@ -204,6 +208,10 @@ export class FabricBackgroundAdapter implements CodingExecutionProvider {
 				: {}),
 			providerMetadata: {
 				...data.providerMetadata,
+				...(fallbackPolicy ? { fallbackPolicy } : {}),
+				...(llmConnection ? { llmConnection } : {}),
+				...(model ? { model } : {}),
+				...(targetMachine ? { targetMachine } : {}),
 				executionRuntime: "fabric-agent-server",
 				executionTarget: {
 					...this.expectedTarget,

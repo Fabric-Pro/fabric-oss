@@ -20,12 +20,63 @@ import { requireScope } from "../external-api/middleware/api-key-auth";
 import type { ExternalApiVariables } from "../external-api/types";
 import { enqueuePmSync } from "../projects/lib/enqueue-pm-sync";
 import {
+	stripInternalStoryFields,
+	stripInternalStoryFieldsFromMany,
+} from "../projects/lib/strip-internal-story-fields";
+import {
 	badRequest,
 	forbidden,
 	notFound,
 	ok,
 	resolveV1Context,
 } from "./helpers";
+
+function redactV1CodingRun<T extends Record<string, unknown>>(run: T): T {
+	const metadata = run.providerMetadata as
+		| { executionRuntime?: unknown }
+		| null
+		| undefined;
+	return {
+		...run,
+		providerSessionId: null,
+		externalUrl: null,
+		externalStatus: null,
+		providerMetadata:
+			typeof metadata?.executionRuntime === "string"
+				? { executionRuntime: metadata.executionRuntime }
+				: null,
+	};
+}
+
+function redactV1StoryCodingRuns<T extends object>(
+	story: T,
+): Omit<T, "labels"> {
+	const stripped = stripInternalStoryFields(story) as Record<string, unknown>;
+	if (Array.isArray(stripped.codingRuns)) {
+		stripped.codingRuns = stripped.codingRuns.map((run) =>
+			run && typeof run === "object"
+				? redactV1CodingRun(run as Record<string, unknown>)
+				: run,
+		);
+	}
+	if (Array.isArray(stripped.tasks)) {
+		stripped.tasks = stripped.tasks.map((task) => {
+			if (!task || typeof task !== "object") {
+				return task;
+			}
+			const taskRecord = { ...(task as Record<string, unknown>) };
+			if (Array.isArray(taskRecord.codingRuns)) {
+				taskRecord.codingRuns = taskRecord.codingRuns.map((run) =>
+					run && typeof run === "object"
+						? redactV1CodingRun(run as Record<string, unknown>)
+						: run,
+				);
+			}
+			return taskRecord;
+		});
+	}
+	return stripped as Omit<T, "labels">;
+}
 
 export function registerFeatureRoutes(
 	app: Hono<{ Variables: ExternalApiVariables }>,
@@ -79,7 +130,11 @@ export function registerFeatureRoutes(
 				assigneeId,
 			});
 
-			return c.json(ok(result.stories, { total: result.total }));
+			return c.json(
+				ok(stripInternalStoryFieldsFromMany(result.stories), {
+					total: result.total,
+				}),
+			);
 		},
 	);
 
@@ -115,7 +170,7 @@ export function registerFeatureRoutes(
 				return c.json(notFound("Feature"), 404);
 			}
 
-			return c.json(ok(story));
+			return c.json(ok(redactV1StoryCodingRuns(story)));
 		},
 	);
 

@@ -123,6 +123,7 @@ import {
 } from "../../hooks/useRoadmapView";
 import { uploadStoryAttachment } from "../../lib/attachment-upload-utils";
 import { shouldAutoOpenBacklogChat } from "../../lib/backlog-chat-intake";
+import { ACTIVE_CODING_RUN_STATUSES } from "../../lib/coding-run-visibility";
 import { getCreateStoryErrorMessage } from "../../lib/create-story-error-message";
 import { uploadStoryImage } from "../../lib/image-upload-utils";
 import {
@@ -273,17 +274,6 @@ const PRIORITY_SECTION_DOT: Record<string, string> = {
 	P3_LOW: "bg-success",
 };
 
-// Coding-run statuses that count as "active work" (drive the roadmap's
-// auto-refresh poll). Module-level Set: O(1) membership + a stable identity so
-// the active-work scan can be memoized.
-const ACTIVE_CODING_RUN_STATUSES = new Set([
-	"QUEUED",
-	"STARTING",
-	"RUNNING",
-	"AWAITING_REVIEW",
-	"PR_OPENED",
-]);
-
 // Stage lanes for the "Group by: Stage" mode, in drafting-flow order.
 const STAGE_SECTIONS: { key: MaturationStatus; label: string }[] = [
 	{ key: "TO_DO", label: "To Do" },
@@ -427,7 +417,7 @@ type Props = {
 	organizationSlug?: string | null;
 };
 
-export function StoriesRoadmap({ projectId }: Props) {
+export function StoriesRoadmap({ projectId, organizationSlug }: Props) {
 	const queryClient = useQueryClient();
 	const router = useRouter();
 	const searchParams = useSearchParams();
@@ -439,7 +429,11 @@ export function StoriesRoadmap({ projectId }: Props) {
 	// effect can scroll the row into view and pulse a highlight ring once the
 	// stories query has rendered.
 	const focusStoryId = searchParams.get("storyId");
-	const { organizationId, basePath } = useOrganizationContext();
+	const { organizationId, basePath: contextBasePath } =
+		useOrganizationContext();
+	const basePath = organizationSlug
+		? `/app/${organizationSlug}`
+		: contextBasePath;
 	const tUi = useTranslations("projects.stories.roadmapUi");
 	const tDelivery = useTranslations("projects.stories.deliveryTrack");
 	const classificationQueryKey = useMemo(
@@ -564,6 +558,9 @@ export function StoriesRoadmap({ projectId }: Props) {
 	const [implementationStoryId, setImplementationStoryId] = useState<
 		string | null
 	>(null);
+	const [implementationTaskId, setImplementationTaskId] = useState<
+		string | null
+	>(null);
 	const [implementationDialogOpen, setImplementationDialogOpen] =
 		useState(false);
 
@@ -571,10 +568,14 @@ export function StoriesRoadmap({ projectId }: Props) {
 		setActiveCodingRunId(codingRunId);
 	}, []);
 
-	const handleStartImplementationSession = useCallback((storyId: string) => {
-		setImplementationStoryId(storyId);
-		setImplementationDialogOpen(true);
-	}, []);
+	const handleStartImplementationSession = useCallback(
+		(storyId: string, taskId?: string) => {
+			setImplementationStoryId(storyId);
+			setImplementationTaskId(taskId ?? null);
+			setImplementationDialogOpen(true);
+		},
+		[],
+	);
 
 	// Sync workflow state
 	const [chatOpen, setChatOpen] = useState(false);
@@ -2337,9 +2338,33 @@ export function StoriesRoadmap({ projectId }: Props) {
 				projectId,
 				storyId,
 				taskId,
+				organizationId: organizationId ?? null,
 			});
 		},
-		onSuccess: () => {
+		onMutate: async ({ storyId, taskId }) => {
+			const key = getStoriesQueryKey(projectId, organizationId);
+			await queryClient.cancelQueries({ queryKey: key });
+			const previous = patchStoriesCache(new Set([storyId]), (s) => ({
+				...s,
+				tasks: s.tasks.map((t) =>
+					t.id === taskId ? { ...t, isCompleted: !t.isCompleted } : t,
+				),
+			}));
+			return { previous, key };
+		},
+		onError: (error, _vars, context) => {
+			if (context?.previous !== undefined) {
+				queryClient.setQueryData(
+					context.key,
+					context.previous as never,
+				);
+			}
+			toast.error("Failed to update task", {
+				description:
+					error instanceof Error ? error.message : String(error),
+			});
+		},
+		onSettled: () => {
 			queryClient.invalidateQueries({
 				queryKey: getStoriesQueryKey(projectId, organizationId),
 			});
@@ -2408,6 +2433,16 @@ export function StoriesRoadmap({ projectId }: Props) {
 		setCreateDialogStatusId(defaultStatus.id);
 		setCreateDialogOpen(true);
 	}, [statuses]);
+
+	const firstStoryId = stories[0]?.id;
+	useEffect(() => {
+		if (!firstStoryId) {
+			return;
+		}
+		router.prefetch?.(
+			buildStoryDetailsRoute(basePath, projectId, firstStoryId),
+		);
+	}, [router, basePath, projectId, firstStoryId]);
 
 	const handleSelectStory = useCallback(
 		(storyId: string) => {
@@ -2849,6 +2884,9 @@ export function StoriesRoadmap({ projectId }: Props) {
 			onExecuteWithWeave={handleExecuteWithWeave}
 			onStartImplementationSession={handleStartImplementationSession}
 			hasRepository={!!projectData?.project?.repositoryUrl}
+			canExecuteAgents={projectData?.project?.canExecuteAgents ?? false}
+			readOnlyMode={projectData?.project?.readOnlyMode ?? false}
+			projectName={projectData?.project?.name}
 			onCodingRunClick={handleCodingRunClick}
 			mergedIntoIdentifier={mergedIntoIdentifierOf(story)}
 			duplicateInfo={getDuplicateInfo(story.id)}
@@ -4049,6 +4087,14 @@ export function StoriesRoadmap({ projectId }: Props) {
 							<StartImplementationSessionButton
 								projectId={projectId}
 								story={implementationStory}
+								projectName={projectData?.project?.name}
+								canExecuteAgents={
+									projectData?.project?.canExecuteAgents ??
+									false
+								}
+								readOnlyMode={
+									projectData?.project?.readOnlyMode ?? false
+								}
 								repositoryOwner={
 									projectData?.project?.repositoryOwner
 								}
@@ -4074,11 +4120,13 @@ export function StoriesRoadmap({ projectId }: Props) {
 										| null
 										| undefined
 								}
+								focusedTaskId={implementationTaskId}
 								open={implementationDialogOpen}
 								onOpenChange={(open) => {
 									setImplementationDialogOpen(open);
 									if (!open) {
 										setImplementationStoryId(null);
+										setImplementationTaskId(null);
 									}
 								}}
 								hideTrigger

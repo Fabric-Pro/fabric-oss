@@ -206,4 +206,41 @@ describe("StartCodingRunDialog", () => {
 			"fabricagents://settings",
 		);
 	});
+
+	it("copies the MCP task prompt without any hardcoded agents.example.com hostname", () => {
+		const writeText = vi.fn().mockResolvedValue(undefined);
+		Object.assign(navigator, {
+			clipboard: { writeText },
+		});
+
+		render(
+			<StartCodingRunDialog
+				open
+				onOpenChange={vi.fn()}
+				story={story}
+				repositoryOwner="acme"
+				repositoryName="fabric"
+				defaultBranch="main"
+				onConfirm={vi.fn()}
+			/>,
+		);
+
+		expect(
+			screen.getByText(
+				/Prefer to run Claude Code, Codex, Cursor, Antigravity, or Fabric Desktop directly\?/i,
+			),
+		).toBeInTheDocument();
+		expect(document.body.textContent).not.toContain("agents.example.com");
+
+		const copyBtn = screen.getByTestId("dialog-copy-mcp-prompt");
+		fireEvent.click(copyBtn);
+
+		expect(writeText).toHaveBeenCalledTimes(1);
+		const copiedPrompt = writeText.mock.calls[0]?.[0] as string;
+		expect(copiedPrompt).toContain(
+			'Implement feature US-1 ("User registration")',
+		);
+		expect(copiedPrompt).toContain("fabric_complete_task");
+		expect(copiedPrompt).not.toContain("agents.example.com");
+	});
 });

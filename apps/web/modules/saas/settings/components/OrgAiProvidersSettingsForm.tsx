@@ -1,6 +1,7 @@
 "use client";
 
 import { useOrganizationContext } from "@saas/organizations/hooks/use-organization-context";
+import { buildFabricDesktopViewUrl } from "@saas/projects/lib/implementation-session-labels";
 import { AnthropicCapabilityNotice } from "@saas/settings/components/AnthropicCapabilityNotice";
 import { aiProviderSiteUrl } from "@saas/settings/lib/provider-sites";
 import { SettingsItem } from "@saas/shared/components/SettingsItem";
@@ -34,8 +35,10 @@ import {
 	EyeIcon,
 	EyeOffIcon,
 	InfoIcon,
+	LaptopIcon,
 	LoaderIcon,
 	PlayIcon,
+	ServerIcon,
 	SettingsIcon,
 	StarIcon,
 } from "lucide-react";
@@ -48,6 +51,7 @@ import {
 	embeddingsOnlyTakenBy,
 	GATEWAY_SUB_PROVIDERS,
 	getCloudProviders,
+	getCustomRemoteProvider,
 	getDirectProviders,
 	getGatewayProviders,
 	hasCompleteCredentials,
@@ -56,6 +60,7 @@ import {
 	isServicePrincipalMode,
 	type ProviderWithIcon,
 } from "../lib/ai-providers";
+import { ChatgptConnectCommand } from "./chatgpt-plan/ChatgptConnectCommand";
 import { useEmbeddingsChangeConfirmation } from "./EmbeddingsChangeConfirmDialog";
 import {
 	EmbeddingsBadge,
@@ -110,6 +115,8 @@ export function OrgAiProvidersSettingsForm({
 	const [testingProviderId, setTestingProviderId] = useState<string | null>(
 		null,
 	);
+	const [subscriptionBridgeDialogOpen, setSubscriptionBridgeDialogOpen] =
+		useState(false);
 
 	// Query AI configuration status for organization
 	const { data: configStatus, isLoading: isLoadingStatus } = useQuery({
@@ -153,6 +160,7 @@ export function OrgAiProvidersSettingsForm({
 				clientSecret: data.clientSecret,
 				baseUrl: data.baseUrl,
 				deploymentName: data.deploymentName,
+				organizationId: organizationId ?? undefined,
 			});
 		},
 	});
@@ -462,13 +470,18 @@ export function OrgAiProvidersSettingsForm({
 		: { apiKey };
 
 	/**
-	 * Azure AI Foundry's deployment name. Test Connection and Save both send
-	 * this one value, so a passing test exercised the deployment that is saved.
+	 * Azure AI Foundry's deployment name or CUSTOM remote bridge's optional
+	 * default model / deployment ID. Test Connection and Save both send this
+	 * value, so a passing test exercised the deployment that is saved.
+	 * For CUSTOM, an empty string on Save explicitly clears a previously saved
+	 * model override.
 	 */
 	const deploymentNamePayload =
-		selectedProvider?.id === "AZURE_AI_FOUNDRY" && deploymentName
-			? deploymentName
-			: undefined;
+		selectedProvider?.id === "AZURE_AI_FOUNDRY"
+			? deploymentName.trim() || undefined
+			: selectedProvider?.id === "CUSTOM"
+				? deploymentName.trim()
+				: undefined;
 
 	/**
 	 * True only when the passing test covered the values currently in the form.
@@ -518,7 +531,7 @@ export function OrgAiProvidersSettingsForm({
 				baseUrl: selectedProvider.requiresBaseUrl
 					? customBaseUrl
 					: undefined,
-				deploymentName: deploymentNamePayload,
+				deploymentName: deploymentNamePayload || undefined,
 			});
 
 			// The user may have edited a field while the request was in flight;
@@ -724,6 +737,7 @@ export function OrgAiProvidersSettingsForm({
 	};
 
 	// Use memoized provider lists from centralized config
+	const customRemoteProvider = useMemo(() => getCustomRemoteProvider(), []);
 	const gatewayProviders = useMemo(() => getGatewayProviders(), []);
 	const directProviders = useMemo(() => getDirectProviders(), []);
 	const cloudProviders = useMemo(() => getCloudProviders(), []);
@@ -994,12 +1008,227 @@ export function OrgAiProvidersSettingsForm({
 							</div>
 						)}
 
+					{/* Remote & Subscription Agent Bridges Section */}
+					<div>
+						<h4 className="app-editorial-label mb-3">
+							Remote & Subscription Agent Bridges
+						</h4>
+						<div className="grid auto-rows-fr gap-4 md:grid-cols-2">
+							{/* Card 1: Fabric Remote Server / OpenAI-Compatible Endpoint (CUSTOM) */}
+							{(() => {
+								const provider = customRemoteProvider;
+								const isConfigured = isProviderConfigured(
+									provider.id,
+								);
+								const isDefault = isProviderDefault(
+									provider.id,
+								);
+								const Icon = provider.icon;
+
+								return (
+									<Card
+										key={provider.id}
+										className={`relative flex h-full min-h-[210px] flex-col justify-between p-4 transition-all hover:shadow-xs ${!readOnly ? "hover:border-primary/50" : ""} ${isDefault ? "border-success/40" : ""}`}
+									>
+										<div className="flex flex-1 flex-col justify-between gap-3">
+											<div className="flex items-start gap-3">
+												<div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border/60 bg-muted/40">
+													<ServerIcon className="size-4 text-primary" />
+												</div>
+												<div className="min-w-0 flex-1">
+													<div className="flex min-w-0 flex-wrap items-center gap-1.5">
+														<h4
+															className="truncate font-semibold text-sm"
+															title={
+																provider.name
+															}
+														>
+															{provider.name}
+														</h4>
+														{isDefault && (
+															<Badge
+																variant="success"
+																className="shrink-0 text-xs"
+															>
+																<StarIcon className="mr-1 size-3" />
+																Default
+															</Badge>
+														)}
+														{isConfigured && (
+															<Badge
+																variant="outline"
+																className="shrink-0 border-success/40 text-xs text-success"
+															>
+																<CheckCircleIcon className="mr-1 size-3" />
+																Active
+															</Badge>
+														)}
+														<Icon className="sr-only" />
+													</div>
+													<p
+														className="mt-1 line-clamp-2 min-h-[2.5rem] text-muted-foreground text-xs"
+														title={
+															provider.description
+														}
+													>
+														{provider.description}
+													</p>
+												</div>
+											</div>
+
+											<div className="mt-auto flex flex-wrap items-center gap-2 border-t border-border/40 pt-3">
+												<Button
+													variant="outline"
+													size="sm"
+													className="flex-1"
+													onClick={() =>
+														handleConfigureProvider(
+															provider,
+														)
+													}
+													disabled={readOnly}
+												>
+													<SettingsIcon className="mr-2 size-4" />
+													{readOnly
+														? "View"
+														: isConfigured
+															? "Reconfigure"
+															: "Configure"}
+												</Button>
+												{isConfigured && (
+													<Tooltip>
+														<TooltipTrigger asChild>
+															<Button
+																variant="outline"
+																size="sm"
+																type="button"
+																autoLoading={
+																	false
+																}
+																onClick={() =>
+																	handleTestSavedConnection(
+																		provider.id,
+																	)
+																}
+																disabled={
+																	testingProviderId ===
+																	provider.id
+																}
+															>
+																{testingProviderId ===
+																provider.id ? (
+																	<LoaderIcon className="mr-1 size-3 animate-spin" />
+																) : (
+																	<PlayIcon className="mr-1 size-3" />
+																)}
+																Test
+															</Button>
+														</TooltipTrigger>
+														<TooltipContent side="bottom">
+															<p>
+																Verify the
+																connection is
+																working
+															</p>
+														</TooltipContent>
+													</Tooltip>
+												)}
+												{isConfigured &&
+													!isDefault &&
+													canSetDefault(
+														provider.id,
+													) &&
+													!readOnly && (
+														<Button
+															variant="outline"
+															size="sm"
+															onClick={() =>
+																handleSetDefault(
+																	provider.id,
+																)
+															}
+															disabled={
+																defaultSwitchTarget !==
+																null
+															}
+														>
+															<StarIcon className="mr-1 size-3" />
+															Set Default
+														</Button>
+													)}
+											</div>
+										</div>
+									</Card>
+								);
+							})()}
+
+							{/* Card 2: Subscription & Desktop Agents (ChatGPT Plus/Pro & Fabric Desktop) */}
+							<Card
+								className={`relative flex h-full min-h-[210px] flex-col justify-between p-4 transition-all hover:shadow-xs ${!readOnly ? "hover:border-primary/50" : ""}`}
+							>
+								<div className="flex flex-1 flex-col justify-between gap-3">
+									<div className="flex items-start gap-3">
+										<div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border/60 bg-muted/40">
+											<LaptopIcon className="size-4 text-primary" />
+										</div>
+										<div className="min-w-0 flex-1">
+											<div className="flex min-w-0 flex-wrap items-center gap-1.5">
+												<h4
+													className="truncate font-semibold text-sm"
+													title="Subscription & Desktop Agents"
+												>
+													Subscription & Desktop
+													Agents
+												</h4>
+												<Badge
+													variant="secondary"
+													className="shrink-0 text-xs"
+												>
+													Zero API Cost
+												</Badge>
+											</div>
+											<p
+												className="mt-1 line-clamp-2 min-h-[2.5rem] text-muted-foreground text-xs"
+												title="Route AI requests through your ChatGPT Plus/Pro subscription bridge or local Fabric Desktop proxy without paying per-token API fees."
+											>
+												Route AI requests through your
+												ChatGPT Plus/Pro subscription
+												bridge or local Fabric Desktop
+												proxy without paying per-token
+												API fees.
+											</p>
+										</div>
+									</div>
+
+									<div className="mt-auto flex flex-wrap items-center gap-2 border-t border-border/40 pt-3">
+										<Button
+											variant="outline"
+											size="sm"
+											className="flex-1"
+											onClick={() =>
+												setSubscriptionBridgeDialogOpen(
+													true,
+												)
+											}
+											disabled={readOnly}
+										>
+											<LaptopIcon className="mr-2 size-4" />
+											{readOnly
+												? "View"
+												: "Connect Subscription / Desktop"}
+										</Button>
+									</div>
+								</div>
+							</Card>
+						</div>
+					</div>
+
 					{/* AI Gateways Section */}
 					<div>
 						<h4 className="app-editorial-label mb-3">
 							AI Gateways
 						</h4>
-						<div className="grid gap-4 md:grid-cols-2">
+						<div className="grid auto-rows-fr gap-4 md:grid-cols-2">
 							{gatewayProviders.map((provider) => {
 								const isConfigured = isProviderConfigured(
 									provider.id,
@@ -1021,9 +1250,9 @@ export function OrgAiProvidersSettingsForm({
 								return (
 									<Card
 										key={provider.id}
-										className={`relative p-4 transition-colors ${!readOnly ? "hover:border-primary/50" : ""} ${isDefault ? "border-success/40" : ""}`}
+										className={`relative flex h-full min-h-[210px] flex-col justify-between p-4 transition-all hover:shadow-xs ${!readOnly ? "hover:border-primary/50" : ""} ${isDefault ? "border-success/40" : ""}`}
 									>
-										<div className="space-y-3">
+										<div className="flex flex-1 flex-col justify-between gap-3">
 											<div className="flex items-start gap-3">
 												<SiteFavicon
 													url={aiProviderSiteUrl(
@@ -1036,9 +1265,14 @@ export function OrgAiProvidersSettingsForm({
 														<Icon className="size-4" />
 													}
 												/>
-												<div className="flex-1">
-													<div className="flex min-w-0 items-center gap-2">
-														<h4 className="truncate font-semibold">
+												<div className="min-w-0 flex-1">
+													<div className="flex min-w-0 flex-wrap items-center gap-1.5">
+														<h4
+															className="truncate font-semibold text-sm"
+															title={
+																provider.name
+															}
+														>
 															{provider.name}
 														</h4>
 														{isDefault && (
@@ -1070,13 +1304,18 @@ export function OrgAiProvidersSettingsForm({
 															/>
 														)}
 													</div>
-													<p className="mt-1 text-muted-foreground text-xs">
+													<p
+														className="mt-1 line-clamp-2 min-h-[2.5rem] text-muted-foreground text-xs"
+														title={
+															provider.description
+														}
+													>
 														{provider.description}
 													</p>
 												</div>
 											</div>
 
-											<div className="flex gap-2 flex-wrap">
+											<div className="mt-auto flex flex-wrap items-center gap-2 border-t border-border/40 pt-3">
 												<Button
 													variant="outline"
 													size="sm"
@@ -1253,7 +1492,7 @@ export function OrgAiProvidersSettingsForm({
 						<h4 className="app-editorial-label mb-3">
 							Direct Providers
 						</h4>
-						<div className="grid items-start gap-4 md:grid-cols-2 lg:grid-cols-3">
+						<div className="grid auto-rows-fr gap-4 md:grid-cols-2 lg:grid-cols-3">
 							{directProviders.map((provider) => {
 								const isConfigured = isProviderConfigured(
 									provider.id,
@@ -1275,9 +1514,9 @@ export function OrgAiProvidersSettingsForm({
 								return (
 									<Card
 										key={provider.id}
-										className={`relative p-4 transition-colors ${!readOnly ? "hover:border-primary/50" : ""} ${isDefault ? "border-success/40" : ""}`}
+										className={`relative flex h-full min-h-[210px] flex-col justify-between p-4 transition-all hover:shadow-xs ${!readOnly ? "hover:border-primary/50" : ""} ${isDefault ? "border-success/40" : ""}`}
 									>
-										<div className="space-y-3">
+										<div className="flex flex-1 flex-col justify-between gap-3">
 											<div className="flex items-start gap-3">
 												<SiteFavicon
 													url={aiProviderSiteUrl(
@@ -1290,9 +1529,14 @@ export function OrgAiProvidersSettingsForm({
 														<Icon className="size-4" />
 													}
 												/>
-												<div className="flex-1">
-													<div className="flex min-w-0 items-center gap-2">
-														<h4 className="truncate font-semibold text-sm">
+												<div className="min-w-0 flex-1">
+													<div className="flex min-w-0 flex-wrap items-center gap-1.5">
+														<h4
+															className="truncate font-semibold text-sm"
+															title={
+																provider.name
+															}
+														>
 															{provider.name}
 														</h4>
 														{isDefault && (
@@ -1323,7 +1567,12 @@ export function OrgAiProvidersSettingsForm({
 															/>
 														)}
 													</div>
-													<p className="mt-1 line-clamp-2 text-muted-foreground text-xs">
+													<p
+														className="mt-1 line-clamp-2 min-h-[2.5rem] text-muted-foreground text-xs"
+														title={
+															provider.description
+														}
+													>
 														{provider.description}
 													</p>
 												</div>
@@ -1333,7 +1582,7 @@ export function OrgAiProvidersSettingsForm({
 												providerId={provider.id}
 											/>
 
-											<div className="flex gap-2 flex-wrap">
+											<div className="mt-auto flex flex-wrap items-center gap-2 border-t border-border/40 pt-3">
 												<Button
 													variant="outline"
 													size="sm"
@@ -1495,7 +1744,7 @@ export function OrgAiProvidersSettingsForm({
 							Enterprise cloud AI services that require additional
 							configuration like resource endpoints.
 						</p>
-						<div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+						<div className="grid auto-rows-fr gap-4 md:grid-cols-2 lg:grid-cols-3">
 							{cloudProviders.map((provider) => {
 								const isConfigured = isProviderConfigured(
 									provider.id,
@@ -1517,9 +1766,9 @@ export function OrgAiProvidersSettingsForm({
 								return (
 									<Card
 										key={provider.id}
-										className={`relative p-4 transition-colors ${!readOnly ? "hover:border-primary/50" : ""} ${isDefault ? "border-success/40" : ""}`}
+										className={`relative flex h-full min-h-[210px] flex-col justify-between p-4 transition-all hover:shadow-xs ${!readOnly ? "hover:border-primary/50" : ""} ${isDefault ? "border-success/40" : ""}`}
 									>
-										<div className="space-y-3">
+										<div className="flex flex-1 flex-col justify-between gap-3">
 											<div className="flex items-start gap-3">
 												<SiteFavicon
 													url={aiProviderSiteUrl(
@@ -1532,9 +1781,14 @@ export function OrgAiProvidersSettingsForm({
 														<Icon className="size-4" />
 													}
 												/>
-												<div className="flex-1">
-													<div className="flex min-w-0 items-center gap-2">
-														<h4 className="truncate font-semibold text-sm">
+												<div className="min-w-0 flex-1">
+													<div className="flex min-w-0 flex-wrap items-center gap-1.5">
+														<h4
+															className="truncate font-semibold text-sm"
+															title={
+																provider.name
+															}
+														>
 															{provider.name}
 														</h4>
 														{isDefault && (
@@ -1565,13 +1819,18 @@ export function OrgAiProvidersSettingsForm({
 															/>
 														)}
 													</div>
-													<p className="mt-1 line-clamp-2 text-muted-foreground text-xs">
+													<p
+														className="mt-1 line-clamp-2 min-h-[2.5rem] text-muted-foreground text-xs"
+														title={
+															provider.description
+														}
+													>
 														{provider.description}
 													</p>
 												</div>
 											</div>
 
-											<div className="flex gap-2 flex-wrap">
+											<div className="mt-auto flex flex-wrap items-center gap-2 border-t border-border/40 pt-3">
 												<Button
 													variant="outline"
 													size="sm"
@@ -1971,6 +2230,27 @@ export function OrgAiProvidersSettingsForm({
 										"Enter gateway URL"
 									}
 								/>
+								{selectedProvider.id === "CUSTOM" && (
+									<div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+										<span className="text-muted-foreground text-xs">
+											Quick preset:
+										</span>
+										<Button
+											type="button"
+											variant="outline"
+											size="sm"
+											className="h-6 px-2 text-xs"
+											onClick={() =>
+												handleBaseUrlChange(
+													"http://127.0.0.1:4100/v1",
+												)
+											}
+										>
+											Local Desktop Proxy
+											(127.0.0.1:4100/v1)
+										</Button>
+									</div>
+								)}
 								{selectedProvider.baseUrlHelp && (
 									<p className="text-muted-foreground text-xs">
 										{selectedProvider.baseUrlHelp}
@@ -2004,6 +2284,33 @@ export function OrgAiProvidersSettingsForm({
 									you gave when deploying a model in Azure AI
 									Foundry (e.g., "gpt-4o" or
 									"my-custom-deployment").
+								</p>
+							</div>
+						)}
+
+						{/* Default Model / Deployment ID Input (Optional for CUSTOM) */}
+						{selectedProvider?.id === "CUSTOM" && (
+							<div className="space-y-2">
+								<Label htmlFor="deploymentName">
+									Default Model / Deployment ID (Optional)
+								</Label>
+								<Input
+									id="deploymentName"
+									type="text"
+									value={deploymentName}
+									onChange={(e) =>
+										handleDeploymentNameChange(
+											e.target.value,
+										)
+									}
+									placeholder="e.g., gpt-4o, llama3.3, qwen2.5-coder"
+								/>
+								<p className="text-muted-foreground text-xs">
+									When set, requests to this endpoint use this
+									model/deployment identifier. Leave blank to
+									pass the selected catalog model ID directly
+									(probed with <code>gpt-4o</code> during
+									connection tests).
 								</p>
 							</div>
 						)}
@@ -2209,6 +2516,103 @@ export function OrgAiProvidersSettingsForm({
 							) : (
 								"Save Changes"
 							)}
+						</Button>
+					</DialogFooter>
+				</DialogContent>
+			</Dialog>
+
+			{/* Subscription & Desktop Agents Bridge Dialog */}
+			<Dialog
+				open={subscriptionBridgeDialogOpen && !readOnly}
+				onOpenChange={setSubscriptionBridgeDialogOpen}
+			>
+				<DialogContent className="max-w-lg">
+					<DialogHeader>
+						<DialogTitle>
+							Connect Subscription & Desktop Agents
+						</DialogTitle>
+						<DialogDescription>
+							Use your existing ChatGPT Plus/Pro subscription or
+							Fabric Desktop local proxy to serve AI requests
+							without per-token API charges.
+						</DialogDescription>
+					</DialogHeader>
+
+					<div className="space-y-4">
+						<div className="space-y-2 rounded-lg border border-border p-3.5">
+							<div className="flex items-center justify-between gap-2">
+								<p className="font-medium text-sm">
+									1. ChatGPT Plus / Pro Subscription Bridge
+								</p>
+								<Badge variant="secondary" className="text-xs">
+									CLI Bridge
+								</Badge>
+							</div>
+							<p className="text-muted-foreground text-xs">
+								Run this command in your terminal to link your
+								ChatGPT Plus or Pro account to Fabric:
+							</p>
+							<ChatgptConnectCommand />
+						</div>
+
+						<div className="space-y-2 rounded-lg border border-border p-3.5">
+							<div className="flex items-center justify-between gap-2">
+								<p className="font-medium text-sm">
+									2. Fabric Desktop Local OpenAI Proxy
+								</p>
+								<Badge variant="outline" className="text-xs">
+									Desktop App
+								</Badge>
+							</div>
+							<p className="text-muted-foreground text-xs">
+								Open Fabric Desktop Settings to enable the local
+								OpenAI-compatible proxy (default{" "}
+								<code>http://127.0.0.1:4100/v1</code> for
+								self-hosted / local Fabric instances, or expose
+								an HTTPS tunnel / remote bridge URL for hosted
+								deployments).
+							</p>
+							<div className="flex flex-wrap items-center gap-2 pt-1">
+								<Button variant="outline" size="sm" asChild>
+									<a
+										href={buildFabricDesktopViewUrl(
+											"settings",
+										)}
+									>
+										<LaptopIcon className="mr-1.5 size-3.5" />
+										Open Fabric Desktop Settings
+									</a>
+								</Button>
+								<Button
+									variant="secondary"
+									size="sm"
+									type="button"
+									onClick={() => {
+										setSubscriptionBridgeDialogOpen(false);
+										handleConfigureProvider(
+											customRemoteProvider,
+										);
+										handleBaseUrlChange(
+											"http://127.0.0.1:4100/v1",
+										);
+									}}
+								>
+									<ServerIcon className="mr-1.5 size-3.5" />
+									Configure Local Proxy Endpoint
+								</Button>
+							</div>
+						</div>
+					</div>
+
+					<DialogFooter>
+						<Button
+							variant="outline"
+							type="button"
+							onClick={() =>
+								setSubscriptionBridgeDialogOpen(false)
+							}
+						>
+							Close
 						</Button>
 					</DialogFooter>
 				</DialogContent>

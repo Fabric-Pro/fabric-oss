@@ -271,7 +271,9 @@ export const setOrgModelPreferenceProcedure = tenantProtectedProcedure
 		// Gateway providers can route to any model, so skip mapping check for them
 		if (!isGatewayProvider(provider)) {
 			const hasMapping = model.providerMappings.some(
-				(m) => m.provider === provider,
+				(m) =>
+					m.provider === provider ||
+					(provider === "CUSTOM" && m.provider === "OPENAI_DIRECT"),
 			);
 			if (!hasMapping) {
 				throw new ORPCError("BAD_REQUEST", {

@@ -301,7 +301,10 @@ export function RemoteAgentServerPicker({
 				</div>
 			</div>
 
-			<details className="group rounded-md border border-dashed border-border/80 bg-muted/15 px-3 py-2">
+			<details
+				open={servers.length === 0}
+				className="group rounded-md border border-dashed border-border/80 bg-muted/15 px-3 py-2"
+			>
 				<summary className="flex cursor-pointer list-none items-center justify-between gap-2 text-xs font-medium text-foreground">
 					<span className="inline-flex items-center gap-1.5 underline underline-offset-4">
 						<PlusCircleIcon className="size-3.5 text-primary" />
@@ -315,6 +318,32 @@ export function RemoteAgentServerPicker({
 					<p className="text-xs leading-5 text-muted-foreground">
 						{t("connectionHelp")}
 					</p>
+					<ol className="list-decimal space-y-1 rounded-md border border-border/60 bg-background/80 p-2.5 pl-6 text-[11px] leading-5 text-muted-foreground">
+						<li>
+							Start your{" "}
+							<code className="font-mono text-foreground">
+								fabric-agent-server
+							</code>{" "}
+							or open <strong>Fabric Desktop</strong> and enable{" "}
+							<strong>Execution Bridge</strong> in Settings.
+						</li>
+						<li>
+							Copy the endpoint URL (e.g.{" "}
+							<code className="font-mono text-foreground">
+								http://127.0.0.1:9100
+							</code>{" "}
+							on a self-hosted local stack or{" "}
+							<code className="font-mono text-foreground">
+								https://agents.example.com
+							</code>{" "}
+							via HTTPS tunnel) and the 32+ character shared
+							secret.
+						</li>
+						<li>
+							Verify and connect below so this project can
+							dispatch coding runs directly.
+						</li>
+					</ol>
 
 					<div className="flex flex-wrap items-center gap-2">
 						<span className="text-[11px] font-medium text-muted-foreground">

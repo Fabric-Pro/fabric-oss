@@ -9,6 +9,7 @@ import { useTranslations } from "next-intl";
 import { type ComponentProps, useState } from "react";
 import { toast } from "sonner";
 import { orpcClient } from "../../../../shared/lib/orpc-client";
+import { hasActiveCodingRunOnStory } from "../../lib/coding-run-visibility";
 import {
 	type ExecutionChannel,
 	type ExecutionProvider,
@@ -17,7 +18,9 @@ import {
 	getImplementationRecommendation,
 	loadProjectDelegationPreferences,
 } from "../../lib/implementation-session-labels";
+import { isStoryRunnable } from "../../lib/stories/readiness";
 import type { UserStory } from "../../lib/stories/types";
+import { useStoryReadiness } from "../stories/useStoryReadiness";
 import { RemoteAgentServerPicker } from "./RemoteAgentServerPicker";
 import {
 	type StartCodingRunConfirmOptions,
@@ -27,6 +30,9 @@ import {
 interface StartImplementationSessionButtonProps {
 	projectId: string;
 	story: UserStory;
+	projectName?: string | null;
+	canExecuteAgents?: boolean;
+	readOnlyMode?: boolean;
 	repositoryOwner?: string | null;
 	repositoryName?: string | null;
 	defaultBranch?: string | null;
@@ -49,6 +55,9 @@ interface StartImplementationSessionButtonProps {
 export function StartImplementationSessionButton({
 	projectId,
 	story,
+	projectName,
+	canExecuteAgents = true,
+	readOnlyMode = false,
 	repositoryOwner,
 	repositoryName,
 	defaultBranch,
@@ -68,10 +77,51 @@ export function StartImplementationSessionButton({
 }: StartImplementationSessionButtonProps) {
 	const queryClient = useQueryClient();
 	const t = useTranslations("projects.remoteAgents");
+	const tReadiness = useTranslations("projects.stories.readiness");
 	const { organizationId } = useOrganizationContext();
 	const [internalOpen, setInternalOpen] = useState(false);
 	const isOpen = controlledOpen ?? internalOpen;
 	const setIsOpen = controlledOnOpenChange ?? setInternalOpen;
+
+	const { data: readiness } = useStoryReadiness({
+		projectId,
+		storyId: story.id,
+		organizationId,
+		version: story.version,
+	});
+	// When readiness is returned by the server, enforce it; when readiness query is not mocked in unit tests or fails, fall back to PUBLISHED check.
+	const runnable = readiness
+		? isStoryRunnable(readiness)
+		: story.draftingStage === "PUBLISHED" &&
+			story.deliveryTrack !== "DEFER";
+	const hasActiveRun = hasActiveCodingRunOnStory(story);
+	const readinessBlocked =
+		!canExecuteAgents ||
+		readOnlyMode ||
+		hasActiveRun ||
+		(readiness ? !runnable : false);
+	const readinessReason = (() => {
+		if (!canExecuteAgents) {
+			return "You do not have permission to execute coding runs on this project.";
+		}
+		if (readOnlyMode) {
+			return "Project is in read-only mode.";
+		}
+		if (hasActiveRun) {
+			return "An implementation session is already active on this feature.";
+		}
+		if (readiness && !runnable) {
+			if (readiness.draftingStage !== "PUBLISHED") {
+				return tReadiness("startWork.blockedNotPublished");
+			}
+			if (readiness.missing.length > 0) {
+				return `${tReadiness("startWork.blocked")} ${readiness.missing
+					.map((gap) => tReadiness(`gaps.${gap}`))
+					.join(", ")}`;
+			}
+		}
+		return null;
+	})();
 
 	const hasRepositoryContext = !!repositoryOwner && !!repositoryName;
 	const recommendation = getImplementationRecommendation({
@@ -95,14 +145,14 @@ export function StartImplementationSessionButton({
 				projectId,
 				organizationId,
 			}),
-		enabled: isOpen && !isKanbanLocal,
+		enabled: isOpen && !isKanbanLocal && canExecuteAgents && !readOnlyMode,
 		retry: false,
 	});
-	const selectedServerId = servers.data?.servers.some(
+	const selectedServer = servers.data?.servers.find(
 		(server) => server.id === serverId,
-	)
-		? serverId
-		: undefined;
+	);
+	const selectedServerId = selectedServer?.id;
+	const bridgeEnabled = servers.data?.enabled !== false;
 
 	const invalidateStoryQueries = async () => {
 		await Promise.all([
@@ -173,11 +223,20 @@ export function StartImplementationSessionButton({
 				organizationId: organizationId ?? null,
 				executionChannel: "BACKGROUND_AGENTS",
 				provider: "BACKGROUND_AGENTS",
-				...(options?.serverId ? { serverId: options.serverId } : {}),
-				...(options?.llmConnection
-					? { llmConnection: options.llmConnection }
+				...(bridgeEnabled
+					? {
+							...(options?.serverId
+								? { serverId: options.serverId }
+								: {}),
+							...(options?.llmConnection
+								? { llmConnection: options.llmConnection }
+								: {}),
+							...(options?.model ? { model: options.model } : {}),
+							...(options?.fallbackPolicy
+								? { fallbackPolicy: options.fallbackPolicy }
+								: {}),
+						}
 					: {}),
-				...(options?.model ? { model: options.model } : {}),
 			});
 		},
 		onSuccess: async (result) => {
@@ -211,7 +270,7 @@ export function StartImplementationSessionButton({
 					size={size}
 					className={className}
 					onClick={handleButtonClick}
-					disabled={queueMutation.isPending}
+					disabled={queueMutation.isPending || readinessBlocked}
 				>
 					<CodeIcon className="mr-2 size-4" />
 					{label}
@@ -222,6 +281,8 @@ export function StartImplementationSessionButton({
 				open={isOpen}
 				onOpenChange={setIsOpen}
 				story={story}
+				projectId={projectId}
+				projectName={projectName ?? undefined}
 				repositoryOwner={repositoryOwner ?? undefined}
 				repositoryName={repositoryName ?? undefined}
 				defaultBranch={defaultBranch ?? "main"}
@@ -231,6 +292,10 @@ export function StartImplementationSessionButton({
 				initialConnection={delegationPrefs.defaultConnection}
 				initialModel={delegationPrefs.defaultModel}
 				initialFallbackPolicy={delegationPrefs.fallbackPolicy}
+				bridgeEnabled={bridgeEnabled}
+				readinessBlocked={readinessBlocked}
+				readinessReason={readinessReason}
+				selectedServerUrl={selectedServer?.url}
 				serverId={selectedServerId}
 				serverRequired={servers.data?.enabled === true}
 				serverLoading={servers.isPending || servers.isError}

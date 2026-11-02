@@ -274,6 +274,20 @@ export async function createExecutionSession(
 			input.provider,
 			"providerMetadata" in input ? input.providerMetadata : undefined,
 		);
+		const rawFallbackPolicy =
+			input.providerMetadata &&
+			typeof input.providerMetadata === "object" &&
+			!Array.isArray(input.providerMetadata) &&
+			"fallbackPolicy" in input.providerMetadata
+				? (input.providerMetadata as { fallbackPolicy?: unknown })
+						.fallbackPolicy
+				: undefined;
+		const fallbackPolicy =
+			rawFallbackPolicy === "subscription_harnesses" ||
+			rawFallbackPolicy === "org_paid_api" ||
+			rawFallbackPolicy === "pause_on_limit"
+				? rawFallbackPolicy
+				: undefined;
 		const result = await provider.createSession({
 			repoOwner: input.repoOwner,
 			repoName: input.repoName,
@@ -291,6 +305,7 @@ export async function createExecutionSession(
 			llmConnection: input.llmConnection,
 			model: input.model,
 			targetMachine: input.targetMachine,
+			...(fallbackPolicy ? { fallbackPolicy } : {}),
 		});
 
 		if (input.provider === "KANBAN_LOCAL") {

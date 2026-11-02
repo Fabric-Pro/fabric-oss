@@ -782,6 +782,30 @@ const getStoryByIdInclude = {
 			},
 		},
 	},
+	codingRuns: {
+		take: 1,
+		orderBy: { createdAt: "desc" as const },
+		select: {
+			id: true,
+			executionChannel: true,
+			provider: true,
+			status: true,
+			providerSessionId: true,
+			pullRequestUrl: true,
+			pullRequestNumber: true,
+			externalUrl: true,
+			externalStatus: true,
+			providerMetadata: true,
+			storyTask: {
+				select: {
+					id: true,
+					identifier: true,
+					title: true,
+				},
+			},
+			createdAt: true,
+		},
+	},
 	kanbanQueue: {
 		take: 1,
 		orderBy: { queuedAt: "desc" as const },

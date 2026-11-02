@@ -469,13 +469,19 @@ async function upsertOrganizationProvider({
 			const existingConfig =
 				(existing.config as Record<string, unknown>) || {};
 			// Store API key in dedicated encrypted column, remove from JSON config
+			const normalizedDeploymentName =
+				deploymentName !== undefined
+					? deploymentName.trim() || undefined
+					: undefined;
 			const newConfig = {
 				...existingConfig,
 				// Remove apiKey from config (now stored in encryptedApiKey column)
 				apiKey: undefined,
 				...(enabledProviders !== undefined && { enabledProviders }),
 				...(baseUrl !== undefined && { baseUrl }),
-				...(deploymentName !== undefined && { deploymentName }),
+				...(deploymentName !== undefined && {
+					deploymentName: normalizedDeploymentName,
+				}),
 			};
 
 			const updated = await tx.cloudProviderConfig.update({
@@ -508,10 +514,16 @@ async function upsertOrganizationProvider({
 		}
 
 		// Create new
+		const normalizedDeploymentName =
+			deploymentName !== undefined
+				? deploymentName.trim() || undefined
+				: undefined;
 		const newConfig = {
 			...(enabledProviders !== undefined && { enabledProviders }),
 			...(baseUrl !== undefined && { baseUrl }),
-			...(deploymentName !== undefined && { deploymentName }),
+			...(normalizedDeploymentName !== undefined && {
+				deploymentName: normalizedDeploymentName,
+			}),
 		};
 
 		const created = await tx.cloudProviderConfig.create({
@@ -643,7 +655,10 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 		// Apply the connection-test URL rules here as well so direct saves cannot
 		// bypass them, regardless of the provider's authentication mode.
 		if (
-			(provider === "DATABRICKS" || provider === "AZURE_AI_FOUNDRY") &&
+			(provider === "DATABRICKS" ||
+				provider === "AZURE_AI_FOUNDRY" ||
+				provider === "CLOUDFLARE_AI" ||
+				provider === "CUSTOM") &&
 			input.baseUrl?.trim()
 		) {
 			const urlValidation = validateProviderUrl(
@@ -654,7 +669,11 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 				const providerUrlName =
 					provider === "DATABRICKS"
 						? "Databricks workspace"
-						: "Azure AI Foundry";
+						: provider === "AZURE_AI_FOUNDRY"
+							? "Azure AI Foundry"
+							: provider === "CLOUDFLARE_AI"
+								? "Cloudflare AI Gateway"
+								: "Custom / Remote Server";
 				throw new ORPCError("BAD_REQUEST", {
 					message: `Invalid ${providerUrlName} URL: ${
 						urlValidation.error ?? "not an allowed provider URL"
@@ -884,6 +903,10 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 					// Update existing - merge with existing config
 					const existingConfig =
 						(existing.config as Record<string, unknown>) || {};
+					const normalizedDeploymentName =
+						input.deploymentName !== undefined
+							? input.deploymentName.trim() || undefined
+							: undefined;
 					// Store API key in dedicated encrypted column, remove from JSON config
 					const newConfig = {
 						...existingConfig,
@@ -896,7 +919,7 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 							baseUrl: input.baseUrl,
 						}),
 						...(input.deploymentName !== undefined && {
-							deploymentName: input.deploymentName,
+							deploymentName: normalizedDeploymentName,
 						}),
 					};
 
@@ -930,6 +953,10 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 				}
 
 				// Create new
+				const normalizedDeploymentName =
+					input.deploymentName !== undefined
+						? input.deploymentName.trim() || undefined
+						: undefined;
 				const newConfig = {
 					...(input.enabledProviders !== undefined && {
 						enabledProviders: input.enabledProviders,
@@ -937,8 +964,8 @@ export const upsertUserProviderProcedure = tenantProtectedProcedure
 					...(input.baseUrl !== undefined && {
 						baseUrl: input.baseUrl,
 					}),
-					...(input.deploymentName !== undefined && {
-						deploymentName: input.deploymentName,
+					...(normalizedDeploymentName !== undefined && {
+						deploymentName: normalizedDeploymentName,
 					}),
 				};
 

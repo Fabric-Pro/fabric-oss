@@ -467,7 +467,7 @@ const PROJECT_GROUP: GsGroup = {
 			id: "coding-agents",
 			label: "Coding Agents",
 			description:
-				"Run local AI coding agents from your repo — they pick up features and sync progress back to Fabric.",
+				"Delegate features and tasks to remote Fabric Agents servers, local desktop agents, or subscription CLIs via MCP, and sync progress back to Fabric.",
 			icon: BotIcon,
 			projectTab: "kanban",
 			anchor: anchorForProjectTab("kanban"),

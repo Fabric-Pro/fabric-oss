@@ -14,6 +14,8 @@
  * boundaries share one definition and cannot drift apart.
  */
 
+import { validateCustomProviderUrl } from "@repo/utils/agent-endpoint";
+
 /**
  * Allowed provider domains for SSRF protection.
  * Prevents requests to internal endpoints and unauthorized domains.
@@ -57,6 +59,11 @@ export function validateProviderUrl(
 	url: string,
 	provider: string,
 ): { valid: boolean; error?: string } {
+	if (provider === "CUSTOM") {
+		const error = validateCustomProviderUrl(url.trim());
+		return error ? { valid: false, error } : { valid: true };
+	}
+
 	try {
 		const parsed = new URL(url);
 

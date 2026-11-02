@@ -29,6 +29,7 @@ import {
 	LaptopIcon,
 	SearchIcon,
 	SparklesIcon,
+	TerminalIcon,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useState } from "react";
@@ -55,6 +56,13 @@ type Props = {
 	projectId: string;
 	storyId: string;
 	story: UserStory;
+	projectName?: string;
+	canExecuteAgents?: boolean;
+	readOnlyMode?: boolean;
+	hasActiveCodingRun?: boolean;
+	implementationOpen?: boolean;
+	onImplementationOpenChange?: (open: boolean) => void;
+	focusedTaskId?: string | null;
 	repositoryOwner?: string | null;
 	repositoryName?: string | null;
 	defaultBranch?: string | null;
@@ -70,6 +78,13 @@ export function StartWorkButton({
 	projectId,
 	storyId,
 	story,
+	projectName,
+	canExecuteAgents = false,
+	readOnlyMode = false,
+	hasActiveCodingRun = false,
+	implementationOpen: controlledImplementationOpen,
+	onImplementationOpenChange: controlledOnImplementationOpenChange,
+	focusedTaskId = null,
 	repositoryOwner,
 	repositoryName,
 	defaultBranch,
@@ -82,7 +97,12 @@ export function StartWorkButton({
 }: Props) {
 	const { organizationId } = useOrganizationContext();
 	const queryClient = useQueryClient();
-	const [implementationOpen, setImplementationOpen] = useState(false);
+	const [internalImplementationOpen, setInternalImplementationOpen] =
+		useState(false);
+	const implementationOpen =
+		controlledImplementationOpen ?? internalImplementationOpen;
+	const setImplementationOpen =
+		controlledOnImplementationOpenChange ?? setInternalImplementationOpen;
 	const [weaveOpen, setWeaveOpen] = useState(false);
 	const [discoveryOpen, setDiscoveryOpen] = useState(false);
 	const [spikeOpen, setSpikeOpen] = useState(false);
@@ -113,8 +133,22 @@ export function StartWorkButton({
 		(story.deliveryTrack === "SPIKE" ||
 			readiness?.effectiveTrack === "SPIKE");
 	const runnable = isStoryRunnable(readiness);
-	const runBlocked = readinessPending || !runnable;
+	const runBlocked =
+		readinessPending ||
+		!runnable ||
+		!canExecuteAgents ||
+		readOnlyMode ||
+		hasActiveCodingRun;
 	const blockedReason = (() => {
+		if (!canExecuteAgents) {
+			return "You do not have permission to execute coding runs on this project.";
+		}
+		if (readOnlyMode) {
+			return "Project is in read-only mode.";
+		}
+		if (hasActiveCodingRun) {
+			return "An implementation session is already active on this feature.";
+		}
 		if (readinessPending) {
 			return tReadiness("loading");
 		}
@@ -430,6 +464,34 @@ export function StartWorkButton({
 									</p>
 								</div>
 							</DropdownMenuItem>
+							{/* Use your coding tool (MCP / CLI) */}
+							<DropdownMenuItem
+								disabled={runBlocked}
+								aria-disabled={runBlocked}
+								title={
+									runBlocked
+										? (blockedReason ?? undefined)
+										: undefined
+								}
+								onClick={() => {
+									if (!runBlocked) {
+										setImplementationOpen(true);
+									}
+								}}
+								data-testid="start-work-use-coding-tool"
+							>
+								<div className="space-y-1">
+									<p className="flex items-center gap-2 text-sm font-medium">
+										<TerminalIcon className="size-4" />
+										Use your coding tool (MCP / CLI)
+									</p>
+									<p className="text-xs leading-5 text-muted-foreground">
+										Copy a prompt for Claude Code, Codex,
+										Cursor, Antigravity, or Fabric Desktop
+										with MCP tools to update task status.
+									</p>
+								</div>
+							</DropdownMenuItem>
 							{/* Discovery run (plan Slice 4): DISCOVERY-track features
 							    draft an integration contract instead of code. */}
 							{story.deliveryTrack === "DISCOVERY" && (
@@ -472,6 +534,10 @@ export function StartWorkButton({
 			<StartImplementationSessionButton
 				projectId={projectId}
 				story={story}
+				projectName={projectName}
+				canExecuteAgents={canExecuteAgents}
+				readOnlyMode={readOnlyMode}
+				focusedTaskId={focusedTaskId}
 				repositoryOwner={repositoryOwner}
 				repositoryName={repositoryName}
 				defaultBranch={defaultBranch}

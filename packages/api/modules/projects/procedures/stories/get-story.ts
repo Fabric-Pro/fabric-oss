@@ -128,6 +128,16 @@ export const getStoryProcedure = tenantProtectedProcedure
 			effectivePerms,
 			ProjectPerms.STORY_DELETE,
 		);
+		const canExecuteAgents = hasPermission(
+			effectivePerms,
+			ProjectPerms.AGENT_EXECUTE,
+		);
 
-		return { story: resolvedStory, canEdit, canAddTags, canManageAllTags };
+		return {
+			story: resolvedStory,
+			canEdit,
+			canAddTags,
+			canManageAllTags,
+			canExecuteAgents,
+		};
 	});

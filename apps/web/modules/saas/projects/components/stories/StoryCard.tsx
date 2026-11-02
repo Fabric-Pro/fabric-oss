@@ -86,6 +86,11 @@ import {
 	type RoadmapFieldKey,
 } from "../../hooks/useRoadmapView";
 import {
+	ACTIVE_CODING_RUN_STATUSES,
+	hasActiveCodingRunOnStory,
+	hasActiveStoryLevelCodingRun,
+} from "../../lib/coding-run-visibility";
+import {
 	formatPrimaryTaskLabel,
 	getImplementationSessionLinks,
 	summarizeTaskSessionVisibility,
@@ -151,15 +156,6 @@ import {
 	useStoryKindRegeneration,
 	watchStoryKindRegeneration,
 } from "./useStoryKindRegeneration";
-
-const ACTIVE_CODING_RUN_STATUSES = new Set([
-	"QUEUED",
-	"STARTING",
-	"RUNNING",
-	"AWAITING_REVIEW",
-	"PR_OPENED",
-	"DEMO_READY",
-]);
 
 const ACTIVE_AGENT_STATUSES = new Set(["running", "working", "executing"]);
 
@@ -264,10 +260,14 @@ type Props = {
 	onOpenDetails?: (storyId: string) => void;
 	/** Callback to execute this feature with Weave multi-agent orchestration */
 	onExecuteWithWeave?: (storyId: string) => void;
-	/** Callback to start an implementation session for this feature */
-	onStartImplementationSession?: (storyId: string) => void;
+	/** Callback to start an implementation session for this feature or a specific task */
+	onStartImplementationSession?: (storyId: string, taskId?: string) => void;
 	/** Whether the project has a GitHub repository configured */
 	hasRepository?: boolean;
+	/** Whether the current user has AGENT_EXECUTE permission */
+	canExecuteAgents?: boolean;
+	/** Whether the project is in read-only mode (e.g. billing / capability gate) */
+	readOnlyMode?: boolean;
 	/** Callback when the coding run indicator is clicked */
 	onCodingRunClick?: (codingRunId: string) => void;
 	/** Potential-duplicate info from the roadmap scan. When present, a
@@ -339,6 +339,8 @@ function StoryCardImpl({
 	onExecuteWithWeave,
 	onStartImplementationSession,
 	hasRepository = false,
+	canExecuteAgents = false,
+	readOnlyMode = false,
 	onCodingRunClick,
 	duplicateInfo,
 	mergedIntoIdentifier,
@@ -371,6 +373,29 @@ function StoryCardImpl({
 		name: projectName ?? story.identifier,
 	});
 	const [tasksExpanded, setTasksExpanded] = useState(false);
+	const storyHasActiveRun = hasActiveCodingRunOnStory(story);
+	const storyHasActiveStoryLevelRun = hasActiveStoryLevelCodingRun(story);
+	const canStartImplementationBase =
+		Boolean(onStartImplementationSession) &&
+		canExecuteAgents &&
+		!readOnlyMode &&
+		story.draftingStage === "PUBLISHED" &&
+		story.deliveryTrack !== "DEFER";
+	const canStartImplementation =
+		canStartImplementationBase && !storyHasActiveRun;
+	const canImplementTask =
+		canStartImplementationBase && !storyHasActiveStoryLevelRun;
+	const startImplementationDisabledReason = !canExecuteAgents
+		? "You do not have permission to execute coding runs on this project."
+		: readOnlyMode
+			? "Project is in read-only mode."
+			: story.draftingStage !== "PUBLISHED"
+				? tReadiness("startWork.blockedNotPublished")
+				: story.deliveryTrack === "DEFER"
+					? "Deferred items cannot start an implementation session."
+					: storyHasActiveRun
+						? "An implementation session is already active on this feature."
+						: null;
 	const [isRenaming, setIsRenaming] = useState(false);
 	const [renameValue, setRenameValue] = useState(story.title);
 	const [isOpeningDetails, setIsOpeningDetails] = useState(false);
@@ -432,14 +457,23 @@ function StoryCardImpl({
 		transition,
 	};
 
+	const prefetchStoryDetails = () => {
+		if (!projectId || !story.id) {
+			return;
+		}
+		router.prefetch?.(
+			buildStoryDetailsRoute(basePath, projectId, story.id),
+		);
+	};
+
 	const openStoryDetails = () => {
 		if (isOpeningDetails) {
 			return;
 		}
 		setIsOpeningDetails(true);
-		// Safety: if we're still mounted after 400ms, navigation was blocked
-		// (e.g. by codingRunPendingRef guard) — unlock the card.
-		setTimeout(() => setIsOpeningDetails(false), 400);
+		// Safety: if we're still mounted after 4s (e.g. navigation was blocked
+		// by codingRunPendingRef guard or aborted), unlock the card.
+		setTimeout(() => setIsOpeningDetails(false), 4000);
 		if (onOpenDetails) {
 			onOpenDetails(story.id);
 			return;
@@ -1103,7 +1137,10 @@ function StoryCardImpl({
 			style={{ order: orderOf("flags") }}
 		>
 			{isOpeningDetails && (
-				<Loader2Icon className="size-3.5 animate-spin text-primary" />
+				<Loader2Icon
+					data-loading-spinner
+					className="size-3.5 shrink-0 animate-spin text-primary"
+				/>
 			)}
 
 			{/* Fizzy #2048 — the body redraft a type change
@@ -1543,12 +1580,14 @@ function StoryCardImpl({
 				(group) => group.dataset.secondaryKind === "flags",
 			);
 			if (flags) {
-				const chips = Array.from(flags.children) as HTMLElement[];
+				const chips = (
+					Array.from(flags.children) as HTMLElement[]
+				).filter((chip) => !chip.hasAttribute("data-loading-spinner"));
 				const clippedAt = (reserveSummary: boolean) => {
 					flags.style.maxWidth = `${Math.max(0, budget - (reserveSummary ? 32 : 0))}px`;
 					const edge = flags.getBoundingClientRect().right;
 					return chips.filter(
-						(chip) => chip.getBoundingClientRect().right > edge,
+						(chip) => chip.getBoundingClientRect().right > edge + 1,
 					);
 				};
 				let clipped = clippedAt(labels.length > 0);
@@ -1636,6 +1675,8 @@ function StoryCardImpl({
 								"pointer-events-none opacity-70",
 						)}
 						data-row-layout
+						onMouseEnter={prefetchStoryDetails}
+						onFocus={prefetchStoryDetails}
 						onMouseDown={(e) => {
 							// FR-9: middle-click (button 1) opens the same destination in
 							// a new tab. Listening on `mousedown` instead of `auxclick`
@@ -2145,17 +2186,38 @@ function StoryCardImpl({
 										<>
 											<DropdownMenuSeparator />
 											{onStartImplementationSession && (
-												<DropdownMenuItem
-													onClick={() =>
-														onStartImplementationSession(
-															story.id,
-														)
-													}
-													disabled={!hasRepository}
-												>
-													<CodeIcon className="size-4 mr-2" />
-													Start Implementation Session
-												</DropdownMenuItem>
+												<Tooltip>
+													<TooltipTrigger asChild>
+														<span className="block">
+															<DropdownMenuItem
+																onClick={() =>
+																	onStartImplementationSession(
+																		story.id,
+																	)
+																}
+																disabled={
+																	!canStartImplementation
+																}
+															>
+																<CodeIcon className="size-4 mr-2" />
+																Start
+																Implementation
+																Session
+															</DropdownMenuItem>
+														</span>
+													</TooltipTrigger>
+													{!canStartImplementation &&
+														startImplementationDisabledReason && (
+															<TooltipContent
+																side="left"
+																className="max-w-xs"
+															>
+																{
+																	startImplementationDisabledReason
+																}
+															</TooltipContent>
+														)}
+												</Tooltip>
 											)}
 											{onExecuteWithWeave && (
 												<DropdownMenuItem
@@ -2411,12 +2473,22 @@ function StoryCardImpl({
 							key={task.id}
 							task={task}
 							onToggle={() => onTaskToggle?.(story.id, task.id)}
+							onOpenStory={openStoryDetails}
+							onImplementTask={
+								canImplementTask && onStartImplementationSession
+									? () =>
+											onStartImplementationSession(
+												story.id,
+												task.id,
+											)
+									: undefined
+							}
 						/>
 					))}
 					{story.tasks.length > 5 && (
 						<button
 							type="button"
-							onClick={() => onSelect(story.id)}
+							onClick={openStoryDetails}
 							className="text-xs text-muted-foreground hover:text-primary"
 						>
 							+{story.tasks.length - 5} more tasks...
@@ -2619,16 +2691,21 @@ function getAgentStatusDisplay(
 
 /**
  * TaskPreviewItem - Compact task item for story card expansion.
- * Tasks are checkbox-only by design — see bug "Clicking AI-generated task
- * navigates to blank/error page". External `target="_blank"` Vibe links
- * (session/project/issue) are kept since they don't navigate the current page.
+ * Clicking the checkbox toggles task completion; clicking the task title or row
+ * opens the parent work item's details view. External `target="_blank"` Vibe
+ * links (session/project/issue) stop propagation so they don't navigate the
+ * current page.
  */
 function TaskPreviewItem({
 	task,
 	onToggle,
+	onOpenStory,
+	onImplementTask,
 }: {
 	task: StoryTask;
 	onToggle: () => void;
+	onOpenStory?: () => void;
+	onImplementTask?: () => void;
 }) {
 	const agentDisplay = getAgentStatusDisplay(
 		task.agentStatus,
@@ -2639,6 +2716,10 @@ function TaskPreviewItem({
 		task.agentStatus !== "completed" &&
 		task.agentStatus !== "failed" &&
 		task.agentStatus !== "cancelled";
+	const hasActiveCodingRun = Boolean(
+		task.latestCodingRun &&
+			ACTIVE_CODING_RUN_STATUSES.has(task.latestCodingRun.status),
+	);
 	const taskRunLinks = task.latestCodingRun
 		? getImplementationSessionLinks({
 				provider: task.latestCodingRun.provider,
@@ -2648,9 +2729,12 @@ function TaskPreviewItem({
 		: null;
 
 	return (
+		// biome-ignore lint/a11y/useKeyWithClickEvents: keyboard activation is handled by the inner task title button and checkbox
+		// biome-ignore lint/a11y/noStaticElementInteractions: row click delegates to openStoryDetails while keeping checkbox and links independent
 		<div
+			onClick={onOpenStory}
 			className={cn(
-				"flex items-center gap-2 group/task rounded-md transition-colors",
+				"flex items-center gap-2 group/task rounded-md transition-colors cursor-pointer",
 				hasActiveAgent && "bg-muted/50 px-1.5 py-1 -mx-1.5",
 			)}
 		>
@@ -2661,14 +2745,40 @@ function TaskPreviewItem({
 				onClick={(e) => e.stopPropagation()}
 			/>
 
-			<span
+			<button
+				type="button"
+				onClick={(e) => {
+					e.stopPropagation();
+					onOpenStory?.();
+				}}
 				className={cn(
-					"flex-1 text-left text-xs truncate",
+					"flex-1 text-left text-xs truncate hover:text-primary transition-colors cursor-pointer focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring rounded-sm",
 					task.isCompleted && "line-through text-muted-foreground",
 				)}
 			>
 				{task.title}
-			</span>
+			</button>
+
+			{onImplementTask &&
+				!task.isCompleted &&
+				!hasActiveAgent &&
+				!hasActiveCodingRun && (
+					<Button
+						type="button"
+						variant="ghost"
+						size="sm"
+						onClick={(e) => {
+							e.stopPropagation();
+							onImplementTask();
+						}}
+						aria-label={`Implement task ${task.identifier}`}
+						data-testid={`roadmap-task-implement-${task.id}`}
+						className="h-5 px-1.5 text-[11px] gap-1 opacity-100 sm:opacity-0 sm:group-hover/task:opacity-100 sm:group-focus-within/task:opacity-100 focus-visible:opacity-100 shrink-0"
+					>
+						<CodeIcon className="size-3" />
+						<span>Implement</span>
+					</Button>
+				)}
 
 			{agentDisplay && (
 				<Badge
